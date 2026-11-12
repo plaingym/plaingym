@@ -2,7 +2,7 @@
 import { and, eq } from 'drizzle-orm';
 import { forGym, forSystem, gyms, plans, chargeTypes, memberships, invoices, revisionGuard, assertRevised, writeAudit, uuidv7, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
-import type { SetupOwnerRequest, SetupGymDetails, SetupPacksRequest, SetupWebsiteRequest, SetupSmtpRequest, SetupGoogleRequest, SetupStripeRequest, SetupBackupRequest, SetupBackupConfirmRequest, SetupFinishRequest } from '@plaingym/shared/contracts';
+import type { SetupOwnerRequest, SetupGymDetails, SetupPacksRequest, SetupWebsiteRequest, SetupSmtpRequest, SetupGoogleRequest, SetupDecisionRequest, SetupStripeRequest, SetupBackupRequest, SetupBackupConfirmRequest, SetupFinishRequest } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { reserveGym } from '../../core/tenancy-bootstrap.js';
@@ -10,7 +10,7 @@ import { createOwnerService, type ProvisionOwner } from '../staff/auth.owner.js'
 import { createAccountService } from '../../infra/auth/accounts.js';
 import { authConfig } from '../../infra/auth/config.js';
 import { createSmtpResolver, encryptSmtpConfig, sendSmtpTest, storedSmtpFromRequest, type SendSmtpTest } from '../settings/smtp.js';
-import { encryptGoogleConfig } from '../settings/google-login.js';
+import { encryptGoogleConfig, requireGoogleClient, type CheckGoogle } from '../settings/google-login.js';
 import { requireBackupDestination, type CheckBackupDestination } from '../settings/backup-destination.js';
 import { googleFromEnvironment } from '../../infra/auth/google.js';
 import { backupColumns, backupKeyPair, newBlobKey, recipientOf } from './backup-key.js';
@@ -20,7 +20,8 @@ import { setupTestMessage } from '../../emails/setup/setup.js';
 import { processAlive, processStart, type ProcessLease } from './setup.process.js';
 import { createStripeStep } from './stripe-step.js';
 
-interface Progress { completedSteps: number[]; completed: boolean; ownerId?: string; backupRecipient?: string; }
+/** `googleSkipped` and `backupsLater` record the owner's decisions so a reopened wizard resumes past them. */
+interface Progress { completedSteps: number[]; completed: boolean; ownerId?: string; backupRecipient?: string; googleSkipped?: boolean; backupsLater?: boolean; }
 type Gym = typeof gyms.$inferSelect;
 const initial = (): Progress => ({ completedSteps: [0], completed: false });
 function progress(gym: Gym): Progress {
@@ -30,9 +31,12 @@ function progress(gym: Gym): Progress {
   return value;
 }
 function present(gym?: Gym) {
-  const state = gym ? progress(gym) : { completedSteps: [], completed: false };
-  return { currentStep: Math.min(8, [0, 1, 2, 3, 4, 5, 6, 7].find((step) => !state.completedSteps.includes(step)) ?? 8),
-    completedSteps: state.completedSteps, completed: state.completed, revision: gym?.revision ?? 1 };
+  const state: Progress = gym ? progress(gym) : { completedSteps: [], completed: false };
+  const first = [0, 1, 2, 3, 4, 5, 6, 7].find((step) => !state.completedSteps.includes(step)) ?? 8;
+  // Backups set up later: the wizard resumes at the last step, which offers a way back to them.
+  return { currentStep: Math.min(8, first === 7 && state.backupsLater ? 8 : first),
+    completedSteps: state.completedSteps, completed: state.completed, revision: gym?.revision ?? 1,
+    googleSkipped: state.googleSkipped === true, backupsLater: state.backupsLater === true };
 }
 const missing = () => new AppError('not_found', 'Setup is unavailable');
 
@@ -43,6 +47,8 @@ export function createSetupService(options: {
   /** Tests replace the storage probe; production checks write, read and delete permissions. */
   checkDestination?: CheckBackupDestination;
   stripeProvisioner?: Parameters<typeof createStripeStep>[0]['provisioner'];
+  /** Tests fake Google's token endpoint; production asks it about each client before saving. */
+  checkGoogle?: CheckGoogle;
 }) {
   const scope = options.scope ?? forGym, system = options.system ?? forSystem, clock = options.clock ?? defaultClock;
   const env = options.env;
@@ -217,7 +223,11 @@ export function createSetupService(options: {
     async google(context: MutationContext, input: SetupGoogleRequest) {
       if ((env.TENANCY ?? 'single') !== 'single' || env.DEMO_MODE === 'true') throw missing();
       if (googleFromEnvironment(env)) throw new AppError('conflict', 'This install’s configuration sets Google sign-in', { google: ['install_configured'] });
-      const value = encryptGoogleConfig(options.key, context.gymId, { clientId: input.clientId, clientSecret: input.clientSecret });
+      // Only this setup's owner, at this point and revision, may have a client checked; then Google is asked outside any transaction.
+      await current(context, input.revision, 6);
+      const credentials = { clientId: input.clientId, clientSecret: input.clientSecret };
+      const check = await requireGoogleClient(credentials, options.origin, options.checkGoogle);
+      const value = encryptGoogleConfig(options.key, context.gymId, credentials);
       const gym = await scope(context.gymId, async (tx) => {
         const [before] = await tx.select().from(gyms).where(eq(gyms.id, context.gymId)).for('update');
         if (!before) throw missing();
@@ -233,7 +243,29 @@ export function createSetupService(options: {
           after: { source: 'gym', revision: after.revision }, occurredAt: clock.now() });
         return after;
       });
-      return { configured: true as const, revision: gym.revision };
+      return { configured: true as const, check, revision: gym.revision };
+    },
+    /**
+     * Records a decision so a reopened wizard resumes past it: skipping the Google page (after step 5), setting backups
+     * up later (after step 6), or taking that back. Changes no completed step; audited like the steps.
+     */
+    async decide(context: MutationContext, input: SetupDecisionRequest) {
+      const change = input.decision === 'skip_google' ? { googleSkipped: true } : { backupsLater: input.decision === 'backups_later' };
+      const needs = input.decision === 'skip_google' ? 5 : 6;
+      return present(await scope(context.gymId, async (tx) => {
+        const [before] = await tx.select().from(gyms).where(eq(gyms.id, context.gymId)).for('update');
+        if (!before) throw missing();
+        const state = progress(before);
+        if (context.actor.kind !== 'user' || state.ownerId !== context.actor.userId) throw missing();
+        if (!state.completedSteps.includes(needs)) throw new AppError('conflict', 'Complete the preceding setup step');
+        assertRevised(before.revision === input.revision ? [before] : []);
+        const guard = revisionGuard(gyms.revision, input.revision);
+        const after = assertRevised(await tx.update(gyms).set({ settings: { ...before.settings as object, setup: { ...state, ...change } },
+          revision: guard.next, updatedAt: clock.now() }).where(and(eq(gyms.id, context.gymId), guard.matches)).returning());
+        await writeAudit(tx, { gymId: context.gymId, actorKind: 'user', actorUserId: context.actor.userId, action: 'setup.decision_recorded',
+          targetType: 'gym', targetId: context.gymId, after: { decision: input.decision, revision: after.revision }, occurredAt: clock.now() });
+        return after;
+      }));
     },
     /** Step 6 validates the restricted key and registers the webhook outside any transaction. */
     stripe(context: MutationContext, input: SetupStripeRequest) { return stripeStep.configure(context, input); },

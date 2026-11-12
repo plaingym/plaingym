@@ -30,6 +30,6 @@ export { authConfig } from './config.js';
 export { createAuthService, authEndpoints } from './service.js';
 export type { AuthService, AuthServiceOptions, ResolvedAuthGym, GoogleAuthExtension } from './service.js';
 export { sessionMiddleware } from './middleware.js';
-export { createGoogleAuthExtension, googleFromEnvironment, googleCallbackPath } from './google.js';
+export { createGoogleAuthExtension, googleFromEnvironment, googleCallbackPath, googleEnvironmentProblem, checkGoogleClient } from './google.js';
 export type { GoogleCredentials } from './google.js';
 export { createAccountService } from './accounts.js';

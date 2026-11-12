@@ -13,6 +13,7 @@ import { TestClock } from '../../core/clock.js';
 import { createServerRegistry } from '../../core/registry.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { encryptSmtpConfig } from '../settings/smtp.js';
+import { encryptGoogleConfig } from '../settings/google-login.js';
 import { PostgresJobStatsQuery } from '../../infra/jobs/postgres.js';
 import { createStatusProviders, lastEmailTest } from './status.providers.js';
 import { createHealthService, healthProvider } from './status.js';
@@ -94,6 +95,24 @@ describe('built-in providers', () => {
     // The install's own SMTP settings are never tested by the gym.
     expect(lastEmailTest([{ action: 'setup.step_completed', after: { step: 5 }, occurredAt: new Date('2026-10-20T09:00:00Z') }], false)).toBeNull();
   });
+  it('reports Google sign-in: the install’s client, the gym’s own, none, and a malformed variable by name and reason', async () => {
+    const single = { ...env, TENANCY: 'single' };
+    expect(await tile('google_login', gymA, { env: { ...env, GOOGLE_CLIENT_ID: 'install-id', GOOGLE_CLIENT_SECRET: 'install-secret' } }))
+      .toMatchObject({ status: 'healthy', details: { configured: true }, message: expect.stringContaining('server configuration') });
+    expect(await tile('google_login', gymA, { env })).toMatchObject({ status: 'not_configured', details: { configured: false }, message: 'Google sign-in is off.' });
+    const own = uuidv7();
+    await factory('gyms', own, { googleConfig: encryptGoogleConfig(key, own, { clientId: 'gym-client-id', clientSecret: 'private-gym-secret' }) });
+    expect(await tile('google_login', own, { env: single })).toMatchObject({ status: 'healthy', message: expect.stringContaining('own client') });
+    // Multi-gym installs ignore a stored client.
+    expect(await tile('google_login', own, { env })).toMatchObject({ status: 'not_configured' });
+    for (const [bad, text] of [[{ GOOGLE_CLIENT_ID: 'has space', GOOGLE_CLIENT_SECRET: 'private-secret' }, 'GOOGLE_CLIENT_ID contains a space'],
+      [{ GOOGLE_CLIENT_ID: 'id', GOOGLE_CLIENT_SECRET: 'x'.repeat(513) }, 'GOOGLE_CLIENT_SECRET is longer than 512 characters'],
+      [{ GOOGLE_CLIENT_ID: 'only-the-id' }, 'GOOGLE_CLIENT_SECRET is not set']] as const) {
+      const result = await tile('google_login', own, { env: { ...single, ...bad } });
+      expect(result).toMatchObject({ status: 'error', details: null, message: expect.stringContaining(text) });
+      expect(JSON.stringify(result)).not.toMatch(/has space|private|xxxx|only-the-id|gym-client-id/);
+    }
+  });
   it('surfaces corrupt encrypted SMTP as unavailable without leaking its contents', async () => {
     const id = uuidv7(); await factory('gyms', id, { smtpConfig: 'sensitive-invalid-ciphertext' });
     const result = await createHealthService(providers()).get(context(id));
@@ -145,6 +164,7 @@ const examples: Record<HealthTile['id'], NonNullable<HealthTile['details']>> = {
   last_charge_run: { lastStartedAt: null, lastCompletedAt: null, result: 'succeeded', invoicesProcessed: 1, failures: 0 },
   automatic_updates: { enabled: true, lastAttemptAt: null, result: 'up_to_date', fromVersion: null, toVersion: null },
   update_available: { currentVersion: '0.1.0', latestVersion: '0.1.0', available: false, releaseUrl: null },
+  google_login: { configured: true },
 };
 describe('generic provider composition', () => {
   it.each(healthTileIds)('accepts healthy and failing states for %s through the frozen provider interface', async (id) => {
@@ -165,7 +185,7 @@ describe('generic provider composition', () => {
     expect(result.data.tiles.map((t) => t.id)).toEqual(healthTileIds);
     expect(result.data.tiles.find((t) => t.id === 'smtp')).toMatchObject({ status: 'unavailable' });
     expect(result.data.tiles.find((t) => t.id === 'disk')).toMatchObject({ status: 'unavailable' });
-    expect(result.data.tiles.filter((t) => t.status === 'not_configured')).toHaveLength(7);
+    expect(result.data.tiles.filter((t) => t.status === 'not_configured')).toHaveLength(8);
     expect(JSON.stringify(result)).not.toContain('SMTP credentials');
   });
   it('does not call providers for a denied role and rejects duplicate registration', async () => {

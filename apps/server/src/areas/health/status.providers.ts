@@ -9,6 +9,7 @@ import { sourceUrl } from '../../core/source-link.js';
 import { restoreStagingDirectory } from '../../core/maintenance-credentials.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
 import { createSmtpResolver } from '../settings/smtp.js';
+import { createGoogleClientResolver } from '../settings/google-login.js';
 import { healthProvider, statusMessage } from './status.js';
 import { createBackupHealthProvider } from './status-backups.js';
 import { createUpdateAvailableProvider } from './updates.js';
@@ -56,6 +57,17 @@ export function createStatusProviders(options: StatusOptions = {}) {
         .from(auditEvents).where(inArray(auditEvents.action, emailTestActions)).orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(50));
       return { id: 'smtp', status: configured ? 'healthy' : 'not_configured', checkedAt: context.clock.now().toISOString(),
         details: { configured, lastTestAt: lastEmailTest(rows, source === 'gym') }, message: statusMessage(configured ? source === 'gym' ? 'smtpGym' : 'smtpInstall' : 'smtpMissing') };
+    }),
+    // A malformed GOOGLE_* variable no longer stops the app: this tile says which one and why, until it is fixed.
+    healthProvider('google_login', async (context) => {
+      const tenancy = (env.TENANCY ?? 'single') === 'multi' ? 'multi' : 'single';
+      const resolver = createGoogleClientResolver({ key: parseEncryptionKey(env.APP_ENCRYPTION_KEY ?? ''), env, tenancy, scope });
+      const checkedAt = context.clock.now().toISOString();
+      if (resolver.problem) return { id: 'google_login', status: 'error', checkedAt, details: null,
+        message: statusMessage('googleProblem.' + resolver.problem.reason, { variable: resolver.problem.variable }) };
+      const configured = await resolver.credentials(context.gymId) !== null;
+      return { id: 'google_login', status: configured ? 'healthy' : 'not_configured', checkedAt, details: { configured },
+        message: statusMessage(configured ? resolver.install ? 'googleInstall' : 'googleGym' : 'googleMissing') };
     }),
     healthProvider('disk', async (context) => {
       // Multi-gym apps hold no restore staging (even if the variable is set by hand), so there the uploads volume alone is checked.

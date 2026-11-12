@@ -15,7 +15,10 @@ import { createAuthBootstrapRoutes } from '../../areas/staff/auth.bootstrap.js';
 import { authConfig } from './config.js';
 import { createAuthService, type GoogleAuthExtension } from './service.js';
 import { sessionMiddleware } from './middleware.js';
-import { createGoogleAuthExtension, googleCallbackPath, googleFromEnvironment, googleStateGymKey, type GoogleCredentials } from './google.js';
+import { assertNoTransaction } from '@plaingym/shared/transaction';
+import { setLogSink } from '../../core/log.js';
+import { checkGoogleClient, createGoogleAuthExtension, googleCallbackPath, googleEnvironmentProblem, googleFromEnvironment, googleStateGymKey,
+  googleTokenEndpoint, type GoogleCredentials } from './google.js';
 
 const database = useTestDatabase(), factory = createFactories(database), clock = new TestClock('2026-11-03T16:00:00Z');
 const secret = 'google-login-test-secret-at-least-32-characters';
@@ -90,15 +93,72 @@ async function user(gymId: string, emailVerified: boolean) {
 const googleAccounts = (userId: string) => database.system.db.select().from(authAccount).where(eq(authAccount.userId, userId));
 const sessions = (userId: string) => database.system.db.select().from(authSession).where(eq(authSession.userId, userId));
 
+describe('Google client check', () => {
+  const redirectUri = 'https://gym.example.org' + googleCallbackPath;
+  /** A faked token endpoint: records each request and answers with the given OAuth error. */
+  const endpoint = (answer: () => Response | Promise<Response>) => {
+    const requests: { url: string; body: URLSearchParams }[] = [];
+    const fake = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      assertNoTransaction('fake Google token endpoint');
+      requests.push({ url: String(url), body: new URLSearchParams(String(init?.body)) });
+      return answer();
+    }) as unknown as typeof fetch;
+    return { fake, requests };
+  };
+  const oauthError = (error: string, status = 400) => () => Response.json({ error, error_description: 'details' }, { status });
+  it('passes a client Google accepted, refuses one it did not know, and saves anything else as unknown', async () => {
+    const accepted = endpoint(oauthError('invalid_grant'));
+    expect(await checkGoogleClient(credentials, { redirectUri, fetch: accepted.fake })).toBe('accepted');
+    expect(accepted.requests).toHaveLength(1);
+    expect(accepted.requests[0]!.url).toBe(googleTokenEndpoint);
+    expect(Object.fromEntries(accepted.requests[0]!.body)).toEqual({ grant_type: 'authorization_code', code: 'plaingym-client-check',
+      redirect_uri: redirectUri, client_id: credentials.clientId, client_secret: credentials.clientSecret });
+    expect(await checkGoogleClient(credentials, { redirectUri, fetch: endpoint(oauthError('invalid_client', 401)).fake })).toBe('rejected');
+    for (const answer of [oauthError('invalid_request'), oauthError('unauthorized_client'), () => new Response('<html>busy</html>', { status: 503 }),
+      () => Response.json({ access_token: 'unexpected' }), () => { throw new TypeError('network down'); }])
+      expect(await checkGoogleClient(credentials, { redirectUri, fetch: endpoint(answer).fake })).toBe('unknown');
+  });
+  it('gives up after its timeout and counts that as unknown', async () => {
+    const hanging = ((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('timed out', 'TimeoutError')));
+    })) as unknown as typeof fetch;
+    expect(await checkGoogleClient(credentials, { redirectUri, fetch: hanging, timeoutMs: 20 })).toBe('unknown');
+  });
+});
+
 describe('Google credentials', () => {
   it('come from the instance configuration, both or neither, and never in demo mode', () => {
     expect(googleFromEnvironment({})).toBeNull();
     expect(googleFromEnvironment({ GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '' })).toBeNull(); // Compose passes unset values as empty
     expect(googleFromEnvironment({ GOOGLE_CLIENT_ID: ' id ', GOOGLE_CLIENT_SECRET: 'secret' })).toEqual({ clientId: 'id', clientSecret: 'secret' });
-    expect(() => googleFromEnvironment({ GOOGLE_CLIENT_ID: 'id' })).toThrow(/both/);
-    expect(() => googleFromEnvironment({ GOOGLE_CLIENT_SECRET: 'secret' })).toThrow(/both/);
-    expect(() => googleFromEnvironment({ GOOGLE_CLIENT_ID: 'an id', GOOGLE_CLIENT_SECRET: 'secret' })).toThrow(/Invalid/);
     expect(googleFromEnvironment({ DEMO_MODE: 'true', GOOGLE_CLIENT_ID: 'id', GOOGLE_CLIENT_SECRET: 'secret' })).toBeNull();
+    expect(googleEnvironmentProblem({ GOOGLE_CLIENT_ID: ' id ', GOOGLE_CLIENT_SECRET: 'secret' })).toBeNull();
+  });
+  it('ignore malformed values instead of stopping the app, and log once which variable and why, never the value', () => {
+    const lines: string[] = [], previous = setLogSink((line) => lines.push(line));
+    try {
+      const cases = [
+        [{ GOOGLE_CLIENT_ID: 'id' }, { variable: 'GOOGLE_CLIENT_SECRET', reason: 'missing' }],
+        [{ GOOGLE_CLIENT_SECRET: 'private-secret' }, { variable: 'GOOGLE_CLIENT_ID', reason: 'missing' }],
+        [{ GOOGLE_CLIENT_ID: 'an id', GOOGLE_CLIENT_SECRET: 'private-secret' }, { variable: 'GOOGLE_CLIENT_ID', reason: 'whitespace' }],
+        [{ GOOGLE_CLIENT_ID: 'id', GOOGLE_CLIENT_SECRET: 'private\tsecret' }, { variable: 'GOOGLE_CLIENT_SECRET', reason: 'whitespace' }],
+        [{ GOOGLE_CLIENT_ID: 'i'.repeat(513), GOOGLE_CLIENT_SECRET: 'private-secret' }, { variable: 'GOOGLE_CLIENT_ID', reason: 'too_long' }],
+        [{ GOOGLE_CLIENT_ID: 'id', GOOGLE_CLIENT_SECRET: 's'.repeat(513) }, { variable: 'GOOGLE_CLIENT_SECRET', reason: 'too_long' }],
+      ] as const;
+      for (const [env, problem] of cases) {
+        expect(googleEnvironmentProblem(env)).toEqual(problem);
+        expect(googleFromEnvironment(env)).toBeNull();
+        expect(googleFromEnvironment(env)).toBeNull();
+      }
+      expect(googleEnvironmentProblem({ DEMO_MODE: 'true', GOOGLE_CLIENT_ID: 'an id' })).toBeNull();
+      const logged = lines.map((line) => JSON.parse(line) as Record<string, string>);
+      expect(logged).toHaveLength(cases.length);
+      expect(logged.map(({ variable, reason }) => ({ variable, reason }))).toEqual(cases.map(([, problem]) => problem));
+      expect(logged[0]).toMatchObject({ level: 'error', event: 'auth.google_environment_invalid', message: expect.stringContaining('GOOGLE_CLIENT_SECRET is not set') });
+      expect(logged[2]!.message).toMatch(/GOOGLE_CLIENT_ID contains a space/);
+      expect(logged[4]!.message).toMatch(/longer than 512 characters/);
+      expect(lines.join('\n')).not.toMatch(/private|an id|iiii|ssss/);
+    } finally { setLogSink(previous); }
   });
   it('without them, neither Google endpoint exists', async () => {
     const f = await fixture(single, null);

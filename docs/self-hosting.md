@@ -85,6 +85,12 @@ cd /opt/plaingym
 sudo docker compose exec -T app gym-app setup-link
 ```
 
+The wizard checks each field's format as you leave it ("Looks right", or what to
+fix), and keeps what you typed into the open step, except passwords, secrets and
+keys, in this browser until the step saves, so a reopened wizard picks up where you
+left off. A skipped Google page and backups set up later are remembered on the
+server. When a step fails, the message at the top of the step is scrolled into view.
+
 The wizard's steps:
 
 1. **Start fresh or restore a backup.** A restore needs the bucket, its
@@ -99,18 +105,27 @@ The wizard's steps:
 5. **Your website**: use the built-in public website, or link to the site you
    already have.
 6. **Email delivery**: your sending service's SMTP details. The wizard sends a test
-   message and saves the settings only if it arrives. Follow your provider's SPF
+   message and saves the settings only if it is accepted, then stays on the step
+   to say where it went until you choose **Continue**. Many hosting providers block
+   outgoing mail on ports 25, 465 and 587: if the test times out, use your sending
+   service's alternative port, such as 2525. Follow your provider's SPF
    and DKIM instructions. Once email works, sign-in switches to emailed links
    (`AUTH_PASSWORD_LOGIN=auto`).
 
    An optional **Google sign-in** page follows: enter a Google OAuth client's ID
    and secret to let staff and members sign in with Google, or skip it (see
-   [Google sign-in](configuration.md#google-sign-in)). The wizard skips the page
-   when `.env` already sets Google.
+   [Google sign-in](configuration.md#google-sign-in)). Before saving, the app asks
+   Google whether it knows the client: a client Google refuses isn't saved. Google
+   checks the redirect address only at sign-in, so after setup sign out and sign in
+   with Google once. The wizard skips the page when `.env` already sets Google.
 7. **Payments**: a Stripe restricted key (see [Stripe](#stripe)), or skip.
-8. **Backups**: the bucket and its credentials. The app generates a backup key pair
-   and shows the private key **once**: download it, keep it somewhere safe off
-   this server, and confirm. Or choose **Set up later**.
+8. **Backups**: the bucket and its credentials. The endpoint is the storage
+   service's address without the bucket name. The app checks the bucket, generates a
+   backup key pair and shows the private key **once**: copy or download it, keep it
+   somewhere safe off this server, then paste it back under **Confirm you saved the
+   key**. Closing the wizard before that makes a new key next time. The wizard then
+   says backups are on; the first snapshot runs at the start of the next hour. Or
+   choose **Set up later**.
 9. **Import or start fresh**: import members, households, memberships and history
    from CSV exports, or start empty.
 
@@ -355,7 +370,7 @@ primary color also brand `/join`, `/trial` and `/drop-in`. With the website off,
 | :--- | :--- |
 | App logs | `sudo docker compose logs app` (one JSON object per line, rotated by Docker) |
 | Access log | Off by default; `CADDY_ACCESS_LOG=stderr` in `.env` turns it on (`deploy/README.md`, "Access log") |
-| Health | The admin's **Health** page: last backup, email, Stripe webhooks, charge runs, disk space, failed jobs, the running version and the last automatic update |
+| Health | The admin's **Health** page: last backup, email, Stripe webhooks, charge runs, disk space, failed jobs, the running version, the last automatic update, available updates and Google sign-in (which names a malformed `GOOGLE_*` variable) |
 | Automatic updates | On by default; owners switch them in **Settings → Updates**. The timer's log: `journalctl -u plaingym-update` |
 | Restart | `sudo docker compose up -d` in `/opt/plaingym` |
 | Replay a Stripe event | `sudo docker compose exec -T app gym-app replay --gym <gym-id> <event-id>` |

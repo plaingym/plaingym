@@ -17,6 +17,7 @@ const details = {
   last_charge_run: { lastStartedAt: now, lastCompletedAt: now, result: 'succeeded', invoicesProcessed: 1, failures: 0 },
   automatic_updates: { enabled: true, lastAttemptAt: now, result: 'rolled_back', fromVersion: '0.1.0', toVersion: '0.1.1' },
   update_available: { currentVersion: '0.1.0', latestVersion: '0.2.0', available: true, releaseUrl: 'https://example.com/release' },
+  google_login: { configured: true },
 };
 const tiles = healthTileIds.map((id) => ({ id, status: 'healthy', checkedAt: now, message: 'Status checked', details: details[id] }));
 
@@ -29,10 +30,10 @@ describe('health contracts', () => {
     expect(healthTileSchema.safeParse({ id, status: 'healthy', checkedAt: now, message: 'Checked', details: null }).success).toBe(false);
     expect(healthTileSchema.safeParse({ id, status: 'healthy', checkedAt: null, message: 'Checked', details: details[id] }).success).toBe(false);
   });
-  it('requires all nine tiles exactly once and accepts initial placeholders for unconfigured providers', () => {
-    expect(healthResponseSchema.parse({ data: { generatedAt: now, tiles } }).data.tiles).toHaveLength(9);
+  it('requires all ten tiles exactly once and accepts initial placeholders for unconfigured providers', () => {
+    expect(healthResponseSchema.parse({ data: { generatedAt: now, tiles } }).data.tiles).toHaveLength(10);
     const placeholders = healthTileIds.map((id) => ({ id, status: 'not_configured', checkedAt: null, message: 'Not configured', details: null }));
-    expect(healthResponseSchema.parse({ data: { generatedAt: now, tiles: placeholders } }).data.tiles).toHaveLength(9);
+    expect(healthResponseSchema.parse({ data: { generatedAt: now, tiles: placeholders } }).data.tiles).toHaveLength(10);
     expect(healthResponseSchema.safeParse({ data: { generatedAt: now, tiles: tiles.slice(1) } }).success).toBe(false);
     expect(healthResponseSchema.safeParse({ data: { generatedAt: now, tiles: [...tiles.slice(1), tiles[1]] } }).success).toBe(false);
   });

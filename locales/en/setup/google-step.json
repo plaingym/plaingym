@@ -2,5 +2,7 @@
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
   "title": "Google sign-in (optional)",
   "intro": "Let staff and members sign in with a Google account as well. It signs in existing logins only: the Google address must match the login's verified email. You can skip this and set it up later in Settings → Google sign-in.",
-  "skip": "Skip Google sign-in"
+  "skip": "Skip Google sign-in",
+  "saved": "Saved. Google accepted this client ID and secret. Google checks the redirect address only at sign-in: after setup, sign out and sign in with Google once.",
+  "unchecked": "Saved, but Google couldn't be asked to check this client just now, so it may be wrong. After setup, sign out and sign in with Google once; if it fails, enter the client again in Settings → Google sign-in."
 }

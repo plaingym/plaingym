@@ -131,9 +131,12 @@ export async function wizard(page: Page, config: Config, setupLink: string): Pro
   const privateKey = (await page.locator('pre').textContent())!.trim();
   expect(privateKey.startsWith('AGE-SECRET-KEY-1')).toBe(true);
   await writeFile(resolve(config.artifacts, 'witness-draft.json'), JSON.stringify({ memberId, photoSha256, privateKey, gymName }), { mode: 0o600 });
-  await page.getByLabel('Backup private key', { exact: true }).fill(privateKey);
+  await page.getByLabel('Paste your saved private key', { exact: true }).fill(privateKey);
   await page.getByRole('checkbox', { name: 'I saved my private key somewhere safe', exact: true }).check();
-  await page.getByRole('button', { name: 'Confirm saved key', exact: true }).click();
+  await page.getByRole('button', { name: 'Check the saved key', exact: true }).click();
+  // The backup step stays with its confirmation until the owner continues.
+  await expect(page.getByRole('status').filter({ hasText: 'Backups are on' })).toBeVisible();
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Import or start fresh', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Start fresh', exact: true }).click();
   await expect(page.getByRole('status')).toContainText('Setup is complete.');

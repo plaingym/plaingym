@@ -67,7 +67,7 @@ API:
 | `Button` | Variants `default`, `secondary`, `outline`, `ghost`, `destructive`, `link`; sizes `default`, `sm`, `icon` (all 44 px tall; give `icon` buttons an `aria-label`) |
 | `Page`, `PageHeader`, `PageSection` | Page container, title and actions, titled sections |
 | `LoadingState`, `EmptyState`, `ErrorState` | Loading, empty and failed states |
-| `Card`, `Alert`, `Badge` | Grouped content, inline messages, status labels (`tone`: `default`, `success`, `warning`, `destructive`, `muted`) |
+| `Card`, `Alert`, `Badge` | Grouped content, inline messages (`Alert` `variant`: `info`, the default, or `error` for a failure, with the destructive colours and an icon; `FormMessage` shows a form's result and scrolls to and focuses an error, as `useRevealed` does for any element), status labels (`tone`: `default`, `success`, `warning`, `destructive`, `muted`) |
 | `Input`, `Select`, `Textarea`, `CheckboxField`, `Label` | Form controls |
 | `Autocomplete` | One searchable selection input; keyboard arrows, Enter and Escape, selected label, loading/empty feedback; suggestions flow within scrollable dialogs |
 | `TableContainer`, `StackedList`, `StackedItem` | Wide tables and their phone layout |

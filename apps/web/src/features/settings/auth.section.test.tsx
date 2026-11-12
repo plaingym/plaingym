@@ -51,12 +51,12 @@ describe('Settings → Google sign-in', () => {
     const secret = screen.getByLabelText('Client secret') as HTMLInputElement;
     expect(secret.type).toBe('password');
     const saved: GoogleLogin = { ...off, source: 'gym', clientId: 'gym-client.apps.googleusercontent.com', clientSecretSet: true, revision: 4 };
-    server.PUT.mockImplementation(async () => { google = saved; return reply(200, { data: saved }); });
+    server.PUT.mockImplementation(async () => { google = saved; return reply(200, { data: { ...saved, check: 'accepted' } }); });
     await userEvent.type(screen.getByLabelText('Client ID'), ' gym-client.apps.googleusercontent.com ');
     await userEvent.type(secret, 'gym-secret');
     const invalidate = vi.spyOn(cache, 'invalidateQueries');
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect(await screen.findByRole('status')).toHaveProperty('textContent', 'Saved. The next Google sign-in uses this client.');
+    expect((await screen.findByRole('status')).textContent).toMatch(/^Saved. Google accepted this client ID and secret. Google checks the redirect address only at sign-in/);
     expect(server.PUT).toHaveBeenCalledWith('/api/settings/integrations/google',
       { signal: expect.any(AbortSignal), body: { revision: 3, clientId: 'gym-client.apps.googleusercontent.com', clientSecret: 'gym-secret' } });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['shell', 'bootstrap'] });
@@ -65,6 +65,34 @@ describe('Settings → Google sign-in', () => {
     // The form closes: the secret is nowhere on the page.
     expect(screen.queryByLabelText('Client secret')).toBeNull();
     expect(document.body.innerHTML).not.toContain('gym-secret');
+  });
+  it('refuses a client Google rejected with a field error, and warns when Google could not check one', async () => {
+    section();
+    await screen.findByText(/Google sign-in is off/);
+    server.PUT.mockResolvedValueOnce(refusal(400, 'reason', 'google_rejected'));
+    await userEvent.type(screen.getByLabelText('Client ID'), 'wrong-client');
+    await userEvent.type(screen.getByLabelText('Client secret'), 'wrong-secret');
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/doesn't recognise this client ID and secret/);
+    expect(alert.dataset.variant).toBe('error');
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+    for (const name of ['Client ID', 'Client secret']) expect(screen.getByLabelText(name).getAttribute('aria-invalid')).toBe('true');
+    const saved: GoogleLogin = { ...off, source: 'gym', clientId: 'unchecked-client', clientSecretSet: true, revision: 4 };
+    server.PUT.mockImplementation(async () => { google = saved; return reply(200, { data: { ...saved, check: 'unknown' } }); });
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect((await screen.findByRole('status')).textContent).toMatch(/^Saved, but Google couldn't be asked to check this client/);
+  });
+  it('says which GOOGLE_* variable is malformed and why', async () => {
+    google = { ...off, installProblem: { variable: 'GOOGLE_CLIENT_SECRET', reason: 'too_long' } };
+    section();
+    expect(await screen.findByText(/GOOGLE_CLIENT_SECRET in the server's .env file is longer than 512 characters/)).toBeDefined();
+    // The gym's own client can still be entered.
+    expect(screen.getByLabelText('Client ID')).toBeDefined();
+    cleanup();
+    google = { ...off, editable: false, installProblem: { variable: 'GOOGLE_CLIENT_ID', reason: 'whitespace' } };
+    section();
+    expect(await screen.findByText(/GOOGLE_CLIENT_ID in the server's .env file contains a space/)).toBeDefined();
   });
   it('replaces the client with both values, and turns it off unless Google is the owner’s only way in', async () => {
     google = { ...off, source: 'gym', clientId: 'gym-client', clientSecretSet: true, removeBlocked: true };

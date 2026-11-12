@@ -2,10 +2,11 @@
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { forGym, gyms } from '@plaingym/db';
-import { googleClientValueSchema } from '@plaingym/shared/contracts';
+import { AppError } from '@plaingym/shared';
+import { googleCallbackPath, googleClientValueSchema, type GoogleClientCheck } from '@plaingym/shared/contracts';
 import { decryptSecret, encryptSecret } from '../../core/secrets.js';
 import { readStoredSecret } from './unreadable-secret.js';
-import { googleFromEnvironment, type GoogleCredentials } from '../../infra/auth/google.js';
+import { checkGoogleClient, googleEnvironmentProblem, googleFromEnvironment, type GoogleCredentials } from '../../infra/auth/google.js';
 
 /** The gym's own Google OAuth client, stored encrypted in `gyms.google_config_encrypted` (secret class `google_config`). */
 export const storedGoogleSchema = z.strictObject({ clientId: googleClientValueSchema, clientSecret: googleClientValueSchema });
@@ -19,6 +20,20 @@ export function encryptGoogleConfig(key: Buffer, gymId: string, credentials: Goo
 export function readGoogleConfig(key: Buffer, value: string | null, gymId: string): GoogleCredentials | null {
   return readStoredSecret(key, 'google_config', gymId, value, () =>
     readGoogleSchema.parse(JSON.parse(decryptSecret(key, { secretClass: 'google_config', owner: gymId }, value!))));
+}
+
+/** Asks Google about a client before it is saved; tests replace it with a faked token endpoint. */
+export type CheckGoogle = (credentials: GoogleCredentials, redirectUri: string) => Promise<GoogleClientCheck | 'rejected'>;
+const defaultCheck: CheckGoogle = (credentials, redirectUri) => checkGoogleClient(credentials, { redirectUri });
+/**
+ * The setup wizard's and Settings' check of a client about to be saved, outside any transaction: a client Google refused
+ * is a field error (`google_rejected`), anything else is saved with the check's result for the reply.
+ */
+export async function requireGoogleClient(credentials: GoogleCredentials, origin: string, check: CheckGoogle = defaultCheck): Promise<GoogleClientCheck> {
+  const result = await check(credentials, origin + googleCallbackPath);
+  if (result === 'rejected')
+    throw new AppError('invalid_request', 'Google did not accept this client ID and secret', { reason: ['google_rejected'] });
+  return result;
 }
 
 export interface GoogleClientOptions {
@@ -49,6 +64,8 @@ export function createGoogleClientResolver(options: GoogleClientOptions) {
     editable,
     /** The install's client when set, which then wins over a stored one. */
     install,
+    /** Why the install's `GOOGLE_*` variables were ignored, when they are malformed (null otherwise). */
+    problem: googleEnvironmentProblem(options.env),
     async credentials(gymId: string): Promise<GoogleCredentials | null> {
       if (install) return install;
       return editable ? stored(gymId) : null;

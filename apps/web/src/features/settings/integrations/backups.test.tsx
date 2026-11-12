@@ -35,9 +35,9 @@ describe('Settings → Backups', () => {
     const user = userEvent.setup(); renderSection();
     expect(await screen.findByText(/Last restorable snapshot/)).toBeDefined();
     const confirm = screen.getByRole('form', { name: 'Confirm and start using it' });
-    await user.type(within(confirm).getByLabelText('Paste the private key you saved'), privateKey);
+    await user.type(within(confirm).getByLabelText('Paste your saved private key'), privateKey);
     await user.click(within(confirm).getByRole('checkbox', { name: /I saved my private key/ }));
-    await user.click(within(confirm).getByRole('button', { name: 'Confirm and start using it' }));
+    await user.click(within(confirm).getByRole('button', { name: 'Check the saved key' }));
     expect(await screen.findByText('No restorable snapshot under this key at the current destination yet.')).toBeDefined();
     expect(screen.queryByText(/Last restorable snapshot/)).toBeNull();
   });
@@ -75,15 +75,22 @@ describe('Settings → Backups', () => {
     expect(client.POST).toHaveBeenCalledWith('/api/settings/integrations/backups', { signal: expect.any(AbortSignal), body: { revision: 3, destination: { endpoint: 'https://s3.example.test',
       region: 'auto', bucket: 'new-bucket', accessKeyId: 'access-id', secretAccessKey: 'access-secret' } } });
     expect(await screen.findByText(privateKey)).toBeDefined();
-    expect(screen.getByText(/It is shown once/)).toBeDefined();
+    expect(screen.getByText(/It is shown only once/)).toBeDefined();
+    // The parts are labelled, the key wraps, and the confirmation is its own section.
+    expect(screen.getByRole('group', { name: 'Backup private key: keep it secret' }).textContent).toContain(privateKey);
+    expect(screen.getByText(privateKey).className).toMatch(/break-all/);
+    expect(screen.getByRole('group', { name: 'Public key: snapshots are encrypted to it; safe to share' }).textContent).toContain(publicKey);
+    expect(screen.getByRole('button', { name: 'Copy to clipboard' })).toBeDefined();
+    expect(within(screen.getByRole('region', { name: 'Confirm you saved the key' })).getByText(/Paste the private key from where you stored it/)).toBeDefined();
+    expect(screen.queryByText(/this key is replaced/)).toBeNull();
     expect(screen.getByText(/wait for you to confirm the private key/)).toBeDefined();
     const confirm = screen.getByRole('form', { name: 'Confirm and start using it' });
-    await user.type(within(confirm).getByLabelText('Paste the private key you saved'), privateKey);
+    await user.type(within(confirm).getByLabelText('Paste your saved private key'), privateKey);
     // Nothing is sent until the owner says they saved the key.
-    await user.click(within(confirm).getByRole('button', { name: 'Confirm and start using it' }));
+    await user.click(within(confirm).getByRole('button', { name: 'Check the saved key' }));
     expect(client.POST).toHaveBeenCalledTimes(1);
     await user.click(within(confirm).getByRole('checkbox', { name: /I saved my private key/ }));
-    await user.click(within(confirm).getByRole('button', { name: 'Confirm and start using it' }));
+    await user.click(within(confirm).getByRole('button', { name: 'Check the saved key' }));
     expect(client.POST).toHaveBeenLastCalledWith('/api/settings/integrations/backups/confirm', { signal: expect.any(AbortSignal), body: { revision: 5, privateKey } });
     expect((await screen.findByRole('status')).textContent).toContain('now use the new destination');
     expect(document.body.textContent).not.toContain(privateKey);
@@ -105,17 +112,21 @@ describe('Settings → Backups', () => {
       await user.type(within(setup).getByLabelText(field!), value!);
     await user.click(within(setup).getByRole('button', { name: 'Generate backup key' }));
     expect((await screen.findByRole('alert')).textContent).toContain('nothing was changed');
-    expect(screen.queryByText(/It is shown once/)).toBeNull();
+    expect(screen.queryByText(/It is shown only once/)).toBeNull();
   });
   it('explains a key that doesn’t match the pending one', async () => {
     current = pending;
     client.POST.mockResolvedValue(refusal(400, 'privateKey', 'mismatch'));
     const user = userEvent.setup(); renderSection();
     const confirm = await screen.findByRole('form', { name: 'Confirm and start using it' });
-    await user.type(within(confirm).getByLabelText('Paste the private key you saved'), 'AGE-SECRET-KEY-1WRONG');
+    await user.type(within(confirm).getByLabelText('Paste your saved private key'), 'AGE-SECRET-KEY-1WRONG');
     await user.click(within(confirm).getByRole('checkbox', { name: /I saved my private key/ }));
-    await user.click(within(confirm).getByRole('button', { name: 'Confirm and start using it' }));
-    expect((await screen.findByRole('alert')).textContent).toContain('doesn’t match');
+    await user.click(within(confirm).getByRole('button', { name: 'Check the saved key' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe("This key doesn't match the one shown. Paste the whole key, starting with AGE-SECRET-KEY-.");
+    // The error variant, focused so an owner scrolled down sees it.
+    expect(alert.dataset.variant).toBe('error');
+    await vi.waitFor(() => expect(document.activeElement).toBe(alert));
   });
   it('has no backups part in multi-gym mode, and nothing to change in a sandbox', async () => {
     current = { ...integrations, backups: null }; renderSection();

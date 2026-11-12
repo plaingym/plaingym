@@ -10,17 +10,23 @@ import { createFactories } from '@plaingym/db/testing/factories';
 import { createAccountService } from '../infra/auth/accounts.js';
 import { authConfig } from '../infra/auth/config.js';
 import { PostgresJobs } from '../infra/jobs/postgres.js';
+import { googleTokenEndpoint } from '../infra/auth/google.js';
+import { setLogSink } from './log.js';
 import { clock } from './clock.js';
 import { startRuntime, type Runtime } from './runtime.js';
 
 // Composition test: the runtime builds the Google extension from the environment, reports it in the login methods,
-// and registers the automatic updates tile.
+// registers the automatic updates tile, and starts without the install's Google client when its variables are malformed.
 const db = useTestDatabase(), factory = createFactories(db), gymId = uuidv7();
 const origin = 'https://gym.example.test';
 let runtime: Runtime | undefined, directory: string, ownerCreated = false;
 beforeAll(async () => { await factory('gyms', gymId); });
 beforeEach(async () => {
   vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
+  // Google's token endpoint, faked: a save asks it about the client (and it knows every client here); nothing else is faked.
+  const original = globalThis.fetch;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => String(input instanceof Request ? input.url : input) === googleTokenEndpoint
+    ? Promise.resolve(Response.json({ error: 'invalid_grant' }, { status: 400 })) : original(input, init));
   directory = await mkdtemp(join(tmpdir(), 'plaingym-google-runtime-'));
 });
 afterEach(async () => {
@@ -51,9 +57,6 @@ it('offers Google sign-in only when both credentials are configured', async () =
   expect((await request('/api/auth/sign-in/social', { method: 'POST', body: JSON.stringify({ provider: 'google' }) })).status).toBe(404);
 });
 
-it('refuses to start with only half of the Google configuration', async () => {
-  await expect(startRuntime(environment({ GOOGLE_CLIENT_ID: 'client-id.apps.googleusercontent.com' }))).rejects.toThrow();
-});
 
 /** Starts the runtime and signs in the gym's owner (created once, with a password), returning the session cookie. */
 async function startAsOwner(extra: NodeJS.ProcessEnv = {}): Promise<string> {
@@ -103,6 +106,26 @@ it('lets the install\'s variables win over a stored client', async () => {
   runtime = await startRuntime(environment({ GOOGLE_CLIENT_ID: 'install-client', GOOGLE_CLIENT_SECRET: 'install-client-secret' }));
   const start = await request('/api/auth/sign-in/social', { method: 'POST', body: JSON.stringify({ provider: 'google' }) });
   expect(new URL((await start.json() as { url: string }).url).searchParams.get('client_id')).toBe('install-client');
+});
+
+it.each([
+  ['only one of the two set', { GOOGLE_CLIENT_ID: 'client-id.apps.googleusercontent.com' }, { variable: 'GOOGLE_CLIENT_SECRET', reason: 'missing' }, 'GOOGLE_CLIENT_SECRET is not set'],
+  ['whitespace', { GOOGLE_CLIENT_ID: 'client id', GOOGLE_CLIENT_SECRET: 'client-secret' }, { variable: 'GOOGLE_CLIENT_ID', reason: 'whitespace' }, 'GOOGLE_CLIENT_ID contains a space'],
+  ['too long', { GOOGLE_CLIENT_ID: 'client-id', GOOGLE_CLIENT_SECRET: 's'.repeat(513) }, { variable: 'GOOGLE_CLIENT_SECRET', reason: 'too_long' }, 'GOOGLE_CLIENT_SECRET is longer than 512 characters'],
+] as const)('starts without Google when the configuration has %s, and says why on Health and in Settings', async (_name, extra, problem, text) => {
+  const lines: string[] = [], previous = setLogSink((line) => lines.push(line));
+  let cookie: string;
+  try { cookie = await startAsOwner(extra); } finally { setLogSink(previous); }
+  expect(lines.filter((line) => line.includes('auth.google_environment_invalid')).map((line) => JSON.parse(line) as Record<string, string>))
+    .toEqual([expect.objectContaining({ ...problem, message: expect.stringContaining(text) })]);
+  // The malformed install client is ignored, so the client the owner stored earlier in this file signs in.
+  const start = await request('/api/auth/sign-in/social', { method: 'POST', body: JSON.stringify({ provider: 'google' }) });
+  expect(new URL((await start.json() as { url: string }).url).searchParams.get('client_id')).toBe('stored-client');
+  const tile = (await (await request('/api/health', { cookie })).json()).data.tiles.find((candidate: { id: string }) => candidate.id === 'google_login');
+  expect(tile).toMatchObject({ status: 'error', details: null, message: expect.stringContaining(problem.variable) });
+  const settings = (await (await request('/api/settings/integrations/google', { cookie })).json()).data;
+  expect(settings).toMatchObject({ source: 'gym', editable: true, installProblem: problem });
+  expect(JSON.stringify([lines, tile, settings])).not.toMatch(/client id|client-secret|ssss/);
 });
 
 it('reads the update banner route from the environment the runtime runs with', async () => {

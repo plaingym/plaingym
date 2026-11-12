@@ -6,9 +6,21 @@ import { gymAddressSchema, gymTimezoneSchema, storedTimezoneSchema } from './set
 
 export const setupStepSchema = z.int32().min(0).max(8);
 export const setupTimezoneSchema = gymTimezoneSchema;
+/**
+ * `googleSkipped` and `backupsLater` are the owner's recorded decisions (`decide`): a reopened wizard passes the Google
+ * page, and with backups set up later it resumes at step 8 (`currentStep`). Both can be changed later in Settings.
+ */
 export const setupStatusResponseSchema = z.strictObject({ data: z.strictObject({
   currentStep: setupStepSchema, completedSteps: z.array(setupStepSchema), completed: z.boolean(), revision: revisionSchema,
+  googleSkipped: z.boolean().default(false), backupsLater: z.boolean().default(false),
 }) });
+/**
+ * A decision the wizard records so it survives a reopened browser: skip the Google page (after step 5), set backups up
+ * later (after step 6), or take back a later decision to set backups up now. It changes no completed step.
+ */
+export const setupDecisionRequestSchema = z.strictObject({
+  revision: revisionSchema, decision: z.enum(['skip_google', 'backups_later', 'backups_now']),
+});
 export const setupStartRequestSchema = z.strictObject({ choice: z.literal('fresh') });
 export const setupOwnerRequestSchema = z.strictObject({
   name: z.string().trim().min(1), email: z.email().toLowerCase(), password: z.string().min(12).max(128),
@@ -52,12 +64,28 @@ export const googleClientValueSchema = z.string().trim().min(1).max(512).regex(/
 export const googleCallbackPath = '/api/auth/callback/google';
 /**
  * The optional Google sign-in page after the email step (step 5): the gym's own OAuth client, stored encrypted. It
- * changes no step; skipping it sends nothing. Refused when the install's configuration sets Google.
+ * changes no step; skipping it is recorded with the `skip_google` decision. Refused when the install's configuration sets Google.
  */
 export const setupGoogleRequestSchema = z.strictObject({
   revision: revisionSchema, clientId: googleClientValueSchema, clientSecret: googleClientValueSchema,
 });
-export const setupGoogleResponseSchema = z.strictObject({ data: z.strictObject({ configured: z.literal(true), revision: revisionSchema }) });
+/**
+ * What Google's token endpoint said of a client before it was saved (a made-up authorization code, no sign-in):
+ * `accepted` when it knew the client ID and secret, `unknown` when it couldn't be asked or gave another answer (saved
+ * anyway, with a warning). A client Google refused (`invalid_client`) is not saved: the request answers 400 with the
+ * reason `google_rejected`. Google checks the redirect address only at sign-in.
+ */
+export const googleClientCheckSchema = z.enum(['accepted', 'unknown']);
+/**
+ * Why the install's `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` were not used: one of them is `missing` (only the other
+ * is set), contains `whitespace`, or is `too_long` (over 512 characters). The app then starts without the install's client.
+ */
+export const googleEnvironmentProblemSchema = z.strictObject({
+  variable: z.enum(['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET']), reason: z.enum(['missing', 'whitespace', 'too_long']),
+});
+export const setupGoogleResponseSchema = z.strictObject({ data: z.strictObject({
+  configured: z.literal(true), check: googleClientCheckSchema, revision: revisionSchema,
+}) });
 export const restrictedKeyPattern = /^rk_(test|live)_[A-Za-z0-9]+$/;
 export const setupStripeRequestSchema = z.discriminatedUnion('choice', [
   z.strictObject({ choice: z.literal('skip'), revision: revisionSchema }),
@@ -121,6 +149,7 @@ export const setupContracts = {
   website: { method: 'put', path: '/api/setup/website', permission: { kind: 'staff', capability: 'integrations.manage' }, gate: 'setup_owner', step: 4, body: setupWebsiteRequestSchema, response: setupStatusResponseSchema },
   smtp: { method: 'put', path: '/api/setup/smtp', permission: { kind: 'staff', capability: 'integrations.manage' }, gate: 'setup_owner', step: 5, body: setupSmtpRequestSchema, response: setupSmtpResponseSchema },
   google: { method: 'put', path: '/api/setup/google', permission: { kind: 'staff', capability: 'integrations.manage' }, gate: 'setup_owner', step: 5, body: setupGoogleRequestSchema, response: setupGoogleResponseSchema },
+  decide: { method: 'put', path: '/api/setup/decisions', permission: { kind: 'staff', capability: 'integrations.manage' }, gate: 'setup_owner', step: 5, body: setupDecisionRequestSchema, response: setupStatusResponseSchema },
   stripe: { method: 'put', path: '/api/setup/stripe', permission: { kind: 'staff', capability: 'integrations.manage' }, gate: 'setup_owner', step: 6, body: setupStripeRequestSchema, response: setupStripeResponseSchema },
   backups: { method: 'post', path: '/api/setup/backups', permission: { kind: 'staff', capability: 'integrations.manage' }, gate: 'setup_owner', step: 7, body: setupBackupRequestSchema, response: setupBackupKeyResponseSchema },
   confirmBackupKey: { method: 'post', path: '/api/setup/backups/confirm', permission: { kind: 'staff', capability: 'integrations.manage' }, gate: 'setup_owner', step: 7, body: setupBackupConfirmRequestSchema, response: setupBackupConfirmResponseSchema },
@@ -135,6 +164,9 @@ export type SetupPacksRequest = z.infer<typeof setupPacksRequestSchema>;
 export type SetupWebsiteRequest = z.infer<typeof setupWebsiteRequestSchema>;
 export type SetupSmtpRequest = z.infer<typeof setupSmtpRequestSchema>;
 export type SetupGoogleRequest = z.infer<typeof setupGoogleRequestSchema>;
+export type SetupDecisionRequest = z.infer<typeof setupDecisionRequestSchema>;
+export type GoogleClientCheck = z.infer<typeof googleClientCheckSchema>;
+export type GoogleEnvironmentProblem = z.infer<typeof googleEnvironmentProblemSchema>;
 export type SetupStripeRequest = z.infer<typeof setupStripeRequestSchema>;
 export type SetupS3Credentials = z.infer<typeof setupS3CredentialsSchema>;
 export type SetupBackupRequest = z.infer<typeof setupBackupRequestSchema>;

@@ -22,7 +22,7 @@ import { createStripeConnection, readStripeConfig, restrictedKeyMode, type Strip
 import { backupColumns, backupKeyPair, newBlobKey, recipientOf } from '../setup/backup-key.js';
 import { customerUnlinkedAction, stripeTestClearedAction as testClearedAction } from '../billing/customers.js';
 import { encryptSmtpConfig, readSmtpSchema, sendSmtpTest, smtpFromEnvironment, storedSmtpFromRequest, type SendSmtpTest } from './smtp.js';
-import { createGoogleClientResolver, encryptGoogleConfig, readGoogleConfig } from './google-login.js';
+import { createGoogleClientResolver, encryptGoogleConfig, readGoogleConfig, requireGoogleClient, type CheckGoogle } from './google-login.js';
 import { readStoredSecret } from './unreadable-secret.js';
 import { requireBackupDestination, type CheckBackupDestination } from './backup-destination.js';
 
@@ -65,6 +65,8 @@ export interface IntegrationsOptions {
   clock?: Clock; scope?: typeof forGym;
   /** Tests replace SMTP delivery, Stripe provisioning and the Stripe transport used to identify an account. */
   sendTest?: SendSmtpTest; provisioner?: (key: string) => StripeProvisioner; transport?: (key: string) => PaymentTransport;
+  /** Tests fake Google's token endpoint; production asks it about each client before saving. */
+  checkGoogle?: CheckGoogle;
 }
 
 /**
@@ -362,7 +364,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     const after = signIn(Boolean(gym.smtpConfig) || installSmtp);
     const removeBlocked = source === 'gym' && !after.magicLink && !(after.password && await options.hasPassword(userId));
     return { source, editable, unreadable: editable && Boolean(gym.googleConfig) && !stored, clientId: stored?.clientId ?? null,
-      clientSecretSet: source === 'gym', removeBlocked, revision: gym.revision };
+      clientSecretSet: source === 'gym', removeBlocked, revision: gym.revision, ...(google.problem && !sandbox ? { installProblem: google.problem } : {}) };
   }
   /** Fails fast on a stale revision before any network call; the save checks it again. */
   async function assertCurrent(gymId: string, revision: number): Promise<Gym> {
@@ -426,10 +428,14 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     async saveGoogle(context: MutationContext, input: SaveGoogleLoginRequest): Promise<GoogleLogin> {
       assertGoogle();
       const userId = userOf(context);
-      const value = encryptGoogleConfig(options.key, context.gymId, { clientId: input.clientId, clientSecret: input.clientSecret });
+      // A stale form fails before Google is asked; then the check runs outside any transaction, and a refused client is not saved.
+      await assertCurrent(context.gymId, input.revision);
+      const credentials = { clientId: input.clientId, clientSecret: input.clientSecret };
+      const check = await requireGoogleClient(credentials, await options.origin(context.gymId), options.checkGoogle);
+      const value = encryptGoogleConfig(options.key, context.gymId, credentials);
       const after = await save(context, input.revision, async (gym) => ({ set: { googleConfig: value },
         action: 'integrations.google_saved', before: googleAudit(gym), after: googleAudit }));
-      return googleLogin(after, userId);
+      return { ...await googleLogin(after, userId), check };
     },
 
     /** Turns Google sign-in off for the gym. Refused while it would leave the signed-in owner no way to sign in. */

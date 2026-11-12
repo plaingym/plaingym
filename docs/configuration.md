@@ -28,7 +28,8 @@ way, such as in development or with your own Compose file.
 
 After changing `.env`, run `sudo docker compose up -d` in the install directory.
 The app checks its configuration on start and refuses to start with a clear
-message when a value is missing or invalid.
+message when a value is missing or invalid. The Google sign-in variables are the
+exception: a malformed one turns off only Google sign-in from `.env` (see below).
 
 A test (`apps/server/src/core/configuration.docs.test.ts`) fails when the server
 or the image's start-up scripts read a variable, or `deploy/compose.yaml` uses
@@ -128,7 +129,7 @@ resolve only to public addresses, whichever way the variable is set.
 | `AUTH_PASSWORD_LOGIN` | `auto` | `auto`: password sign-in only for a gym with no email set up, magic links otherwise. `on`: always offer passwords. `off`: never (required in multi-gym mode); a single-gym install without email then has no way to sign in. |
 | `RATE_LIMIT_PER_MINUTE` | `300` | Requests per minute per gym and client address before the app answers 429, from 1 to 100,000. A single-gym install counts them before looking the gym up, so requests that would get a 404 (before setup, say) count too. Sign-in, kiosk PINs and CSP reports keep their own limits; sign-in's, per client address and per account, have no setting (`security-model.md`, Sign-in). |
 | `UPDATE_CHECK` | `on` | `off` stops the app asking GitHub once a day for the newest release (the "Update available" banner and the Health page's update tile), for an install that must not call out; so does any value other than `on`, `true` or `1`. It sends no token and no data about the install. A multi-gym install never checks. The banner reads the releases of `RELEASE_REPOSITORY` (see [Automatic patch updates](#automatic-patch-updates)). |
-| `GOOGLE_CLIENT_ID` | unset | The client ID of a Google OAuth client. With `GOOGLE_CLIENT_SECRET`, turns on **Sign in with Google** for staff and members (see below), and wins over a client the owner entered in the app. Set both or neither; an empty value counts as unset. Ignored in demo mode. |
+| `GOOGLE_CLIENT_ID` | unset | The client ID of a Google OAuth client. With `GOOGLE_CLIENT_SECRET`, turns on **Sign in with Google** for staff and members (see below), and wins over a client the owner entered in the app. Set both or neither; an empty value counts as unset. A malformed pair (only one set, a space or line break in a value, or a value over 512 characters) doesn't stop the app: it starts without them and says which variable is wrong and why (see below). Ignored in demo mode. |
 | `GOOGLE_CLIENT_SECRET` | unset | That client's secret. |
 
 ### Google sign-in
@@ -145,6 +146,19 @@ Google sign-in is optional. Its OAuth client comes from one of two places:
   set, they win: **Settings → Google sign-in** then says the install's configuration
   sets Google and offers no form, and the wizard skips its Google page. This is the
   only source in multi-gym mode, where a gym owner never enters OAuth credentials.
+  When the pair is malformed (only one of the two set, a space or line break in a
+  value, or a value longer than 512 characters), the app still starts, without that
+  client: it logs `auth.google_environment_invalid` once, naming the variable and the
+  reason but never the value, and the **Google sign-in** tile on the Health page and
+  **Settings → Google sign-in** say the same until you correct `.env` and restart.
+  A client the owner entered in the app is used meanwhile.
+
+Before saving a client entered in the app, the wizard and Settings ask Google's token
+endpoint about it with a made-up authorization code. If Google says it doesn't know
+the client ID and secret, nothing is saved and the form says so. If Google can't be
+reached or gives another answer, the client is saved with a warning that it couldn't
+be checked. Google checks the redirect address only at a real sign-in, so after
+saving, sign out and sign in with Google once.
 
 Without a client the sign-in page shows no Google button. To set one up:
 

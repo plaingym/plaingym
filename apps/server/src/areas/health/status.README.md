@@ -59,3 +59,8 @@ development; source archives use `<package version>+unknown` and commit `unknown
 The version tile includes the short commit in its message. `/healthz` exposes both
 the version and full commit without caching, for the browser's navigation guard.
 Build metadata (`+...`) never counts as a release for update checks.
+
+The Google sign-in tile (`google_login`) is `healthy` when the gym has a Google client (the install's `GOOGLE_*`
+variables, or in single-gym mode the gym's stored client) and `not_configured` otherwise. When the install's variables
+are malformed (only one set, whitespace, over 512 characters), the app starts without them and the tile is `error`,
+its message naming the variable and the reason (never the value) until `.env` is corrected and the app restarted.

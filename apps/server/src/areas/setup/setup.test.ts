@@ -8,7 +8,7 @@ import { eq } from 'drizzle-orm';
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
 import { gyms, auditEvents, ranks, programs, staffRoles } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
-import { gymAddressSchema, setupContracts, setupStatusResponseSchema } from '@plaingym/shared/contracts';
+import { googleCallbackPath, gymAddressSchema, setupContracts, setupStatusResponseSchema } from '@plaingym/shared/contracts';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { createApp } from '../../core/app.js';
 import { TestClock } from '../../core/clock.js';
@@ -26,6 +26,7 @@ import { loadBackupConfig } from '../health/restore.config.js';
 import { identityToRecipient, generateIdentity } from '../../infra/age/index.js';
 import { createSetupService } from './setup.js';
 import { createSetupRoutes } from './setup.routes.js';
+import type { CheckGoogle } from '../settings/google-login.js';
 
 const database = useTestDatabase(), clock = new TestClock('2026-10-22T12:00:00Z');
 const key = parseEncryptionKey('ab'.repeat(32)), origin = 'http://gym.localhost';
@@ -34,8 +35,9 @@ const env = { AUTH_SECRET: 'setup-test-secret-with-at-least-32-characters', AUTH
 const config = authConfig(env), sendTest = vi.fn(async () => { assertNoTransaction('setup test email'); });
 const checkDestination = vi.fn(async () => { assertNoTransaction('setup backup destination check'); });
 const ownerService = createOwnerService({ accounts: createAccountService(config), clock, async sendMagicLink() { throw new Error('Password bootstrap must not send a link'); } });
+const checkGoogle = vi.fn<CheckGoogle>(async () => { assertNoTransaction('setup Google check'); return 'accepted'; });
 const registered = vi.fn(async () => ({ endpointId: 'we_synthetic', webhookSecret: 'whsec_private_signing_secret', reused: false }));
-const service = createSetupService({ key, origin, clock, env, provisionOwner: ownerService, sendTest, checkDestination,
+const service = createSetupService({ key, origin, clock, env, provisionOwner: ownerService, sendTest, checkDestination, checkGoogle,
   stripeProvisioner: () => ({ async validate() { assertNoTransaction('setup Stripe validation'); }, register: registered,
     async retire() { return { deleted: [], failures: [] }; }, async remove() { return false; }, async check() { return { status: 'current' as const }; } }) });
 const smtp = createSmtpResolver({ key, env, scope: database.forGym });
@@ -139,6 +141,8 @@ describe('first-boot setup', () => {
     const google = { clientId: 'setup-client.apps.googleusercontent.com', clientSecret: 'private-google-secret' };
     // The optional Google page follows the email step.
     expect((await call('/api/setup/google', 'PUT', { ...google, revision }, cookie)).status).toBe(409);
+    expect((await call('/api/setup/decisions', 'PUT', { revision, decision: 'skip_google' }, cookie)).status).toBe(409);
+    expect(checkGoogle).not.toHaveBeenCalled();
     const mail = { choice: 'configure', revision, host: 'smtp.example.org', port: 587, secure: false,
       username: 'sender', password: 'private-smtp-password', from: 'gym@example.org', testTo: owner.email };
     sendTest.mockRejectedValueOnce(new Error('provider leaked secret'));
@@ -154,12 +158,27 @@ describe('first-boot setup', () => {
     expect((await call('/api/setup/google', 'PUT', { ...google, revision })).status).toBe(401);
     expect((await call('/api/setup/google', 'PUT', { ...google, clientSecret: 'has space', revision }, cookie)).status).toBe(400);
     expect((await call('/api/setup/google', 'PUT', { ...google, revision: revision - 1 }, cookie)).status).toBe(409);
+    expect(checkGoogle).not.toHaveBeenCalled();
+    // A client Google's token endpoint refused is a field error, and nothing is stored.
+    checkGoogle.mockResolvedValueOnce('rejected');
+    const googleRefused = await call('/api/setup/google', 'PUT', { ...google, revision }, cookie);
+    expect(googleRefused.status).toBe(400);
+    expect(await googleRefused.json()).toMatchObject({ error: { details: { reason: ['google_rejected'] } } });
+    expect(await database.forSystem((tx) => tx.select({ google: gyms.googleConfig, revision: gyms.revision }).from(gyms))).toEqual([{ google: null, revision }]);
     const googleSaved = await call('/api/setup/google', 'PUT', { ...google, revision }, cookie);
-    expect(await googleSaved.json()).toEqual({ data: { configured: true, revision: revision + 1 } });
+    expect(await googleSaved.json()).toEqual({ data: { configured: true, check: 'accepted', revision: revision + 1 } });
+    expect(checkGoogle).toHaveBeenLastCalledWith(google, origin + googleCallbackPath);
     const [withGoogle] = await database.forSystem((tx) => tx.select().from(gyms));
     expect(JSON.parse(decryptSecret(key, { secretClass: 'google_config', owner: gymId }, withGoogle!.googleConfig!))).toEqual(google);
     // It changes no step: payments come next.
-    expect(await service.status()).toMatchObject({ currentStep: 6, completedSteps: [0, 1, 2, 3, 4, 5] });
+    expect(await service.status()).toMatchObject({ currentStep: 6, completedSteps: [0, 1, 2, 3, 4, 5], googleSkipped: false, backupsLater: false });
+    revision = (await service.status()).revision;
+    // Recorded decisions survive a reopened wizard; backups can be set up later only after the payments step.
+    expect((await call('/api/setup/decisions', 'PUT', { revision, decision: 'backups_later' }, cookie)).status).toBe(409);
+    expect((await call('/api/setup/decisions', 'PUT', { revision, decision: 'skip_google' })).status).toBe(401);
+    expect((await call('/api/setup/decisions', 'PUT', { revision: revision - 1, decision: 'skip_google' }, cookie)).status).toBe(409);
+    const skipped = await call('/api/setup/decisions', 'PUT', { revision, decision: 'skip_google' }, cookie);
+    expect(await skipped.json()).toMatchObject({ data: { currentStep: 6, completedSteps: [0, 1, 2, 3, 4, 5], googleSkipped: true, backupsLater: false, revision: revision + 1 } });
     revision = (await service.status()).revision;
     const stripe = await call('/api/setup/stripe', 'PUT', { choice: 'configure', restrictedKey: 'rk_test_PrivateSetupKey', revision }, cookie);
     expect(await stripe.json()).toMatchObject({ data: { configured: true, mode: 'test', webhookRegistered: true } });
@@ -167,6 +186,13 @@ describe('first-boot setup', () => {
     const [configured] = await database.forSystem((tx) => tx.select().from(gyms));
     expect(JSON.parse(decryptSecret(key, { secretClass: 'stripe_config', owner: gymId }, configured!.stripeConfig!))).toEqual({ apiKey: 'rk_test_PrivateSetupKey',
       mode: 'test', endpointId: 'we_synthetic', webhookSecret: 'whsec_private_signing_secret' });
+    revision = (await service.status()).revision;
+    const later = await call('/api/setup/decisions', 'PUT', { revision, decision: 'backups_later' }, cookie);
+    expect(await later.json()).toMatchObject({ data: { currentStep: 8, completedSteps: [0, 1, 2, 3, 4, 5, 6], googleSkipped: true, backupsLater: true } });
+    expect(await service.status()).toMatchObject({ currentStep: 8, backupsLater: true });
+    revision = (await service.status()).revision;
+    const now = await call('/api/setup/decisions', 'PUT', { revision, decision: 'backups_now' }, cookie);
+    expect(await now.json()).toMatchObject({ data: { currentStep: 7, backupsLater: false, googleSkipped: true } });
     revision = (await service.status()).revision;
     const destination = { endpoint: 'https://s3.example.org', region: 'auto', bucket: 'gym-backups', accessKeyId: 'access-key', secretAccessKey: 'private-storage-key' };
     checkDestination.mockRejectedValueOnce(new Error('Forbidden'));
@@ -196,12 +222,14 @@ describe('first-boot setup', () => {
     expect(JSON.stringify([row, audits], (_key, value: unknown) => typeof value === 'bigint' ? value.toString() : value)).not.toContain(keys.privateKey);
     expect(JSON.stringify(audits)).not.toMatch(/private-smtp-password|private-storage-key|owner-password|PrivateSetupKey|whsec_|private-google-secret|setup-client/);
     expect(audits.find((audit) => audit.action === 'setup.google_saved')).toMatchObject({ before: { source: 'none' }, after: { source: 'gym' } });
+    expect(audits.filter((audit) => audit.action === 'setup.decision_recorded').map((audit) => (audit.after as { decision: string }).decision).sort())
+      .toEqual(['backups_later', 'backups_now', 'skip_google']);
     expect(audits.every((audit) => audit.occurredAt.getTime() === clock.now().getTime())).toBe(true);
     revision = (await service.status()).revision;
     expect((await call('/api/setup/finish', 'POST', { choice: 'fresh', revision }, cookie)).status).toBe(200);
-    for (const name of ['status', 'start', 'owner', 'gym', 'packs', 'website', 'smtp', 'google', 'stripe', 'backups', 'confirmBackupKey', 'finish'] as const) {
+    for (const name of ['status', 'start', 'owner', 'gym', 'packs', 'website', 'smtp', 'google', 'decide', 'stripe', 'backups', 'confirmBackupKey', 'finish'] as const) {
       const contract = setupContracts[name];
-      const result = await call(contract.path, contract.method.toUpperCase(), name === 'status' ? undefined : name === 'start' ? { choice: 'fresh' } : name === 'owner' ? owner : name === 'gym' ? { ...details, revision } : name === 'packs' ? { revision, packs: [] } : name === 'website' ? { revision, websiteEnabled: true, existingSiteUrl: null } : name === 'smtp' || name === 'stripe' ? { revision, choice: 'skip' } : name === 'google' ? { ...google, revision } : name === 'backups' ? { revision, destination } : name === 'confirmBackupKey' ? { revision, privateKey: keys.privateKey } : { revision, choice: 'fresh' }, cookie);
+      const result = await call(contract.path, contract.method.toUpperCase(), name === 'status' ? undefined : name === 'start' ? { choice: 'fresh' } : name === 'owner' ? owner : name === 'gym' ? { ...details, revision } : name === 'packs' ? { revision, packs: [] } : name === 'website' ? { revision, websiteEnabled: true, existingSiteUrl: null } : name === 'smtp' || name === 'stripe' ? { revision, choice: 'skip' } : name === 'google' ? { ...google, revision } : name === 'decide' ? { revision, decision: 'skip_google' } : name === 'backups' ? { revision, destination } : name === 'confirmBackupKey' ? { revision, privateKey: keys.privateKey } : { revision, choice: 'fresh' }, cookie);
       expect(result.status, name).toBe(404);
     }
     const [finished] = await database.forSystem((tx) => tx.select().from(gyms).where(eq(gyms.id, gymId)));

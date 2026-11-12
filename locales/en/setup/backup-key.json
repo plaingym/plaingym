@@ -1,0 +1,17 @@
+{
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "warning": "Save the private key below somewhere safe, away from this server, such as a password manager. It is shown only once, and without it nobody can open your backups.",
+  "privateLabel": "Backup private key: keep it secret",
+  "copy": "Copy to clipboard",
+  "download": "Download private key",
+  "copied": "Copied.",
+  "selected": "The key is selected: copy it with your keyboard or the browser's menu.",
+  "publicLabel": "Public key: snapshots are encrypted to it; safe to share",
+  "replaced": "If you close this page before confirming, this key is replaced: generate a new one and save that instead.",
+  "confirmTitle": "Confirm you saved the key",
+  "confirmHint": "Paste the private key from where you stored it, so we know your copy is complete.",
+  "pasteLabel": "Paste your saved private key",
+  "check": "Check the saved key",
+  "checking": "Checking…",
+  "mismatch": "This key doesn't match the one shown. Paste the whole key, starting with AGE-SECRET-KEY-."
+}

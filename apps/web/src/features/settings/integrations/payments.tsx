@@ -4,6 +4,7 @@ import { useState, type FormEvent } from 'react';
 import type { PaymentsIntegration } from '@plaingym/shared/contracts';
 import { api } from '../../../lib/api.js';
 import { Button } from '../../../components/ui/button.js';
+import { FormMessage } from '../../../components/ui/alert.js';
 import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
 import { CheckboxField } from '../../../components/ui/select.js';
@@ -65,7 +66,7 @@ export function PaymentsIntegrationSection({ payments, editable, lastEventAt, st
       {lastEventAt ? text('payments.lastEvent', { time: new Date(lastEventAt).toLocaleString() }) : label('noEvent')}</p>}
     {editable && payments.accountLocked && <p className="text-sm text-muted-foreground">{label(payments.mode === 'test' ? 'lockedTest' : 'locked')}</p>}
     {editable && payments.importedCustomersOnly && <p className="text-sm text-muted-foreground">{label('importedOnly')}</p>}
-    {message && <p role={message.kind} className="rounded-md border border-border p-3 text-sm">{message.text}</p>}
+    <FormMessage message={message}/>
     {!editable ? null : switchKey ? <form onSubmit={(event) => void confirmSwitch(event)} aria-label={label('switchTitle')}>
       <fieldset disabled={busy} className="grid min-w-0 gap-4 rounded-md border border-border p-3">
         <h4 className="text-sm font-semibold">{label('switchTitle')}</h4>

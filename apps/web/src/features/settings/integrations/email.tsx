@@ -5,6 +5,7 @@ import { useState, type FormEvent } from 'react';
 import { saveEmailIntegrationResponseSchema, type EmailIntegration, type SignInMethods } from '@plaingym/shared/contracts';
 import { api } from '../../../lib/api.js';
 import { Button } from '../../../components/ui/button.js';
+import { FormMessage } from '../../../components/ui/alert.js';
 import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
 import { CheckboxField, Select } from '../../../components/ui/select.js';
@@ -65,7 +66,7 @@ export function EmailIntegrationSection({ email, editable, state }: { email: Ema
       ? text('email.sourceGym', { host: email.host ?? '', port: email.port ?? '', security: label('security_' + (email.security ?? 'starttls')), from: email.from ?? '' })
       : label(email.source === 'install' ? 'sourceInstall' : 'sourceNone')}</p>
     <p className="text-sm text-muted-foreground">{text('email.signIn', { methods: methods(email.signIn) })}</p>
-    {message && <p role={message.kind} className="rounded-md border border-border p-3 text-sm">{message.text}</p>}
+    <FormMessage message={message}/>
     {editable && <>
       {email.source === 'gym' && <div className="grid min-w-0 gap-2">
         {email.removeBlocked ? <p className="text-sm text-muted-foreground">{label('onlySignIn')}</p>

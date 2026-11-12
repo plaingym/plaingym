@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
 import { gyms, auditEvents, uuidv7, RevisionConflictError } from '@plaingym/db';
@@ -13,6 +13,7 @@ import { errorHandler, respondError } from '../../core/errors.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
 import { createSetupService } from './setup.js';
 import { createSetupRoutes } from './setup.routes.js';
+import type { CheckGoogle } from '../settings/google-login.js';
 import { createSmtpResolver } from '../settings/smtp.js';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 
@@ -72,7 +73,8 @@ describe('setup owner authorization and tenant isolation', () => {
     const input: Record<string, unknown> = {
       gym: { revision: 1, name: 'Forged', timezone: 'UTC', currency: 'USD', address: {}, branding: { logoKey: null, primaryColor: null } },
       packs: { revision: 1, packs: [] }, website: { revision: 1, websiteEnabled: true, existingSiteUrl: null },
-      smtp: { revision: 1, choice: 'skip' }, google: { revision: 1, clientId: 'forged-client', clientSecret: 'forged-secret' }, stripe: { revision: 1, choice: 'skip' },
+      smtp: { revision: 1, choice: 'skip' }, google: { revision: 1, clientId: 'forged-client', clientSecret: 'forged-secret' },
+      decide: { revision: 1, decision: 'skip_google' }, stripe: { revision: 1, choice: 'skip' },
       backups: { revision: 1, destination: { endpoint: 'https://s3.example.org', bucket: 'x', region: 'auto', accessKeyId: 'x', secretAccessKey: 'x' } },
       confirmBackupKey: { revision: 1, privateKey: 'AGE-SECRET-KEY-1ABC' }, finish: { revision: 1, choice: 'fresh' },
     };
@@ -83,6 +85,15 @@ describe('setup owner authorization and tenant isolation', () => {
   });
   it('rejects an owner identity that does not own this setup, even with a forged gym principal', async () => {
     await expect(service.website({ gymId: gymB, actor: { kind: 'user', userId: userA } }, { revision: 1, websiteEnabled: true, existingSiteUrl: null })).rejects.toMatchObject({ code: 'not_found' });
+  });
+  it('records decisions and asks Google only for this setup’s owner', async () => {
+    const check = vi.fn<CheckGoogle>(async () => 'accepted');
+    const guarded = createSetupService({ key: parseEncryptionKey('ab'.repeat(32)), origin: 'http://gym.localhost', env: {}, scope: database.forGym, system: database.forSystem, clock, checkGoogle: check });
+    const forged = { gymId: gymB, actor: { kind: 'user', userId: userA } } as const;
+    await expect(guarded.decide(forged, { revision: 1, decision: 'skip_google' })).rejects.toMatchObject({ code: 'not_found' });
+    await expect(guarded.google(forged, { revision: 1, clientId: 'forged-client', clientSecret: 'forged-secret' })).rejects.toMatchObject({ code: 'not_found' });
+    expect(check).not.toHaveBeenCalled();
+    expect((await database.forGym(gymB, (tx) => tx.select().from(gyms)))[0]).toMatchObject({ revision: 1, googleConfig: null });
   });
   it('serializes simultaneous saves and keeps the audit atomic', async () => {
     const context = { gymId: gymA, actor: { kind: 'user', userId: userA } } as const;

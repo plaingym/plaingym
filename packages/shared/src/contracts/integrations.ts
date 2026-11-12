@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { EndpointContract } from './definition.js';
 import { revisionSchema } from './common.js';
 import type { RoutePermission } from '../permissions.js';
-import { googleClientValueSchema, setupS3CredentialsSchema, setupSmtpRequestSchema, restrictedKeyPattern } from './setup.js';
+import { googleClientCheckSchema, googleClientValueSchema, googleEnvironmentProblemSchema, setupS3CredentialsSchema, setupSmtpRequestSchema, restrictedKeyPattern } from './setup.js';
 
 /** Email, Stripe and backups after setup: owners only, like the setup steps that first configure them. */
 const own = { kind: 'staff', capability: 'integrations.manage' } as const satisfies RoutePermission;
@@ -114,6 +114,10 @@ export const googleLoginSchema = z.strictObject({
   /** A stored client cannot be read and may be removed or replaced; it never enables sign-in. */
   unreadable: z.boolean().default(false),
   removeBlocked: z.boolean(), revision: revisionSchema,
+  /** Only on a save's reply: what Google's token endpoint said of the saved client (`googleClientCheckSchema`). */
+  check: googleClientCheckSchema.optional(),
+  /** Set when the install's `GOOGLE_*` variables are malformed and were ignored: which one, and why. */
+  installProblem: googleEnvironmentProblemSchema.optional(),
 });
 export const googleLoginResponseSchema = z.strictObject({ data: googleLoginSchema });
 /** Replaces the stored client: both values are always sent, so a secret is never kept for another client ID. */

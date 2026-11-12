@@ -7,7 +7,7 @@ import type { RoutePermission } from '../permissions.js';
 /** Every built-in tile is present even while its provider is not configured. */
 export const healthTileIds = [
   'last_backup', 'failed_jobs', 'smtp', 'disk', 'version', 'stripe_webhooks',
-  'last_charge_run', 'automatic_updates', 'update_available',
+  'last_charge_run', 'automatic_updates', 'update_available', 'google_login',
 ] as const;
 export const healthTileIdSchema = z.enum(healthTileIds);
 export const healthStatusSchema = z.enum(['healthy', 'warning', 'error', 'not_configured', 'unavailable']);
@@ -45,7 +45,12 @@ export const updateAvailableHealthDetailsSchema = z.strictObject({
   currentVersion: z.string().min(1), latestVersion: z.string().min(1), available: z.boolean(),
   releaseUrl: z.url({ protocol: /^https?$/ }).nullable(),
 });
-export const updateAvailableHealthTileSchema = z.strictObject({ ...common, id: z.literal('update_available'), details: updateAvailableHealthDetailsSchema.nullable() });
+/**
+ * Google sign-in: on when the install's configuration or (single-gym) the gym's stored client sets it. An `error` tile
+ * says which `GOOGLE_*` variable is malformed and why; the app then starts without the install's client.
+ */
+export const googleLoginHealthDetailsSchema = z.strictObject({ configured: z.boolean() });
+export const updateAvailableHealthTileSchema =z.strictObject({ ...common, id: z.literal('update_available'), details: updateAvailableHealthDetailsSchema.nullable() });
 export const healthTileSchema = z.discriminatedUnion('id', [
   z.strictObject({ ...common, id: z.literal('last_backup'), details: backupHealthDetailsSchema.nullable() }),
   z.strictObject({ ...common, id: z.literal('failed_jobs'), details: failedJobsHealthDetailsSchema.nullable() }),
@@ -56,6 +61,7 @@ export const healthTileSchema = z.discriminatedUnion('id', [
   z.strictObject({ ...common, id: z.literal('last_charge_run'), details: chargeRunHealthDetailsSchema.nullable() }),
   z.strictObject({ ...common, id: z.literal('automatic_updates'), details: automaticUpdatesHealthDetailsSchema.nullable() }),
   updateAvailableHealthTileSchema,
+  z.strictObject({ ...common, id: z.literal('google_login'), details: googleLoginHealthDetailsSchema.nullable() }),
 ]).refine((value) => value.status !== 'healthy' || (value.details !== null && value.checkedAt !== null),
   'A healthy tile requires a successful check and its details');
 export const healthResponseSchema = z.strictObject({ data: z.strictObject({

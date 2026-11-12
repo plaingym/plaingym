@@ -17,9 +17,20 @@ Skipping SMTP keeps the existing gym and install configuration.
 The optional Google page after the email step (`PUT /api/setup/google`, contract step 5)
 stores the gym's own OAuth client with `encryptGoogleConfig` (`settings/google-login.ts`)
 in `gyms.google_config_encrypted`, under the revision, and audits `setup.google_saved`
-with neither value. It needs step 5 complete and changes no step; skipping it sends
-nothing (the wizard remembers the skip for the browser session). It is refused with
+with neither value. It needs step 5 complete and changes no step. Once the owner, step
+and revision check out, and before any transaction, `requireGoogleClient` asks Google's
+token endpoint about the client (`checkGoogleClient` in `infra/auth/google.ts`, a
+made-up authorization code, with a timeout): `invalid_client` refuses the save with
+the reason `google_rejected`, `invalid_grant` answers `check: 'accepted'`, and any
+other answer or a network failure saves with `check: 'unknown'`. It is refused with
 `install_configured` when the install's `GOOGLE_*` variables are set, which win.
+
+`PUT /api/setup/decisions` records the owner's decisions in the setup progress,
+audited as `setup.decision_recorded`, without changing a completed step:
+`skip_google` (after step 5) and `backups_later` or `backups_now` (after step 6).
+Status reports them as `googleSkipped` and `backupsLater`, and with backups set up
+later and step 7 the first unfinished one, `currentStep` is 8, so a reopened wizard
+resumes past both.
 
 Backup setup first probes the destination through `settings/backup-destination.ts`
 (list, write, read and delete under the gym's prefix), refusing with `unreachable`

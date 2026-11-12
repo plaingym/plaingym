@@ -49,7 +49,7 @@ export function createSetupRoutes(options: SetupRoutesOptions = {}) {
     route({ ...account, request: body(account.body), responses: response(account.response) }, async (c) => { await recover(); return c.json({ data: await getService().owner(c.req.valid('json')) }, 200); }),
     route({ ...begin, request: body(begin.body), responses: response(begin.response) }, async (c) => c.json({ data: await getRestore().start(c.req.valid('json')) }, 200)),
     route({ ...restoreStatus, request: { params: restoreStatus.params }, responses: response(restoreStatus.response) }, async (c) => c.json({ data: await getRestore().status(c.req.valid('param').jobId) }, 200)),
-    ...(['gym', 'packs', 'website', 'smtp', 'google', 'stripe', 'backups', 'confirmBackupKey', 'finish'] as const).map((name) => {
+    ...(['gym', 'packs', 'website', 'smtp', 'google', 'decide', 'stripe', 'backups', 'confirmBackupKey', 'finish'] as const).map((name) => {
       const contract = setupContracts[name];
       return route({ ...contract, request: body(contract.body), responses: response(contract.response) }, async (c) => {
         const context = owner(c), input = c.req.valid('json');
@@ -60,6 +60,7 @@ export function createSetupRoutes(options: SetupRoutesOptions = {}) {
           case 'website': return c.json({ data: await service.website(context, setupContracts.website.body.parse(input)) }, 200);
           case 'smtp': return c.json({ data: await service.smtp(context, setupContracts.smtp.body.parse(input)) }, 200);
           case 'google': return c.json({ data: await service.google(context, setupContracts.google.body.parse(input)) }, 200);
+          case 'decide': return c.json({ data: await service.decide(context, setupContracts.decide.body.parse(input)) }, 200);
           case 'stripe': return c.json({ data: await service.stripe(context, setupContracts.stripe.body.parse(input)) }, 200);
           case 'backups': return c.json({ data: await service.backups(context, setupContracts.backups.body.parse(input)) }, 200);
           case 'confirmBackupKey': return c.json({ data: await service.confirmBackupKey(context, setupContracts.confirmBackupKey.body.parse(input)) }, 200);

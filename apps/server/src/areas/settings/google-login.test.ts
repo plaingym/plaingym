@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
 import { auditEvents, gyms, uuidv7 } from '@plaingym/db';
@@ -19,7 +20,7 @@ import { createAuthService } from '../../infra/auth/service.js';
 import { createGoogleAuthExtension } from '../../infra/auth/google.js';
 import { createIntegrationsService, type IntegrationsOptions } from './integrations.js';
 import { createIntegrationsRoutes } from './integrations.routes.js';
-import { createGoogleClientResolver, encryptGoogleConfig, readGoogleConfig } from './google-login.js';
+import { createGoogleClientResolver, encryptGoogleConfig, readGoogleConfig, type CheckGoogle } from './google-login.js';
 import { encryptSmtpConfig } from './smtp.js';
 
 const database = useTestDatabase(), factory = createFactories(database), clock = new TestClock('2026-11-04T12:00:00Z');
@@ -28,8 +29,10 @@ const env = { AUTH_SECRET: 'google-settings-secret-with-32-characters!', TENANCY
 const installGoogle = { GOOGLE_CLIENT_ID: 'install-client.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET: 'install-secret-never-shown' };
 const clientId = 'gym-client.apps.googleusercontent.com', clientSecret = 'gym-secret-never-shown';
 const withPassword = new Set<string>();
+/** Google's token endpoint, faked: accepts every client unless a test says otherwise. */
+const checkGoogle = vi.fn<CheckGoogle>(async () => { assertNoTransaction('settings Google check'); return 'accepted'; });
 const base: IntegrationsOptions = { key, env, config: authConfig(env, false), origin: async () => 'https://gym.invalid',
-  hasPassword: async (userId) => withPassword.has(userId), clock, scope: database.forGym };
+  hasPassword: async (userId) => withPassword.has(userId), clock, scope: database.forGym, checkGoogle };
 const service = createIntegrationsService(base);
 const gymA = uuidv7(), gymB = uuidv7();
 let owner: string, ownerB: string;
@@ -93,11 +96,34 @@ describe('Settings → Google sign-in', () => {
       expect((await call(server(), 'PUT', { revision: before.revision, ...bad })).status).toBe(400);
     const saved = googleLoginResponseSchema.parse((await save(server(), before.revision, ' ' + clientId + ' ')).json).data;
     // No email anywhere and no password of the owner's own: Google is now their only way in.
-    expect(saved).toEqual({ source: 'gym', editable: true, unreadable: false, clientId, clientSecretSet: true, removeBlocked: true, revision: before.revision + 1 });
+    expect(saved).toEqual({ source: 'gym', editable: true, unreadable: false, clientId, clientSecretSet: true, removeBlocked: true, revision: before.revision + 1, check: 'accepted' });
+    expect(checkGoogle).toHaveBeenLastCalledWith({ clientId, clientSecret }, 'https://gym.invalid/api/auth/callback/google');
     expect(JSON.parse(decryptSecret(key, { secretClass: 'google_config', owner: gymA }, (await row()).googleConfig!))).toEqual({ clientId, clientSecret });
-    expect(await read()).toEqual(saved);
+    expect(await read()).toEqual({ ...saved, check: undefined }); // Only a save's reply carries the check.
     const [audit] = await database.forGym(gymA, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'integrations.google_saved')));
     expect(audit).toMatchObject({ actorUserId: owner, targetId: gymA, before: { source: 'none' }, after: { source: 'gym', revision: saved.revision } });
+  });
+  it('asks Google before saving: a refused client is a field error and stays unsaved, an unknown answer saves with a warning', async () => {
+    const current = await read(), calls = checkGoogle.mock.calls.length;
+    expect((await save(server(), current.revision - 1, 'stale-client')).status).toBe(409);
+    expect(checkGoogle.mock.calls.length).toBe(calls);
+    checkGoogle.mockResolvedValueOnce('rejected');
+    const refused = await save(server(), current.revision, 'refused-client', 'refused-secret-never-shown');
+    expect(refused.status).toBe(400);
+    expect(refused.json?.error?.details).toEqual({ reason: ['google_rejected'] });
+    expect(await read()).toMatchObject({ clientId, revision: current.revision });
+    checkGoogle.mockResolvedValueOnce('unknown');
+    const unknown = googleLoginResponseSchema.parse((await save(server(), current.revision)).json).data;
+    expect(unknown).toMatchObject({ source: 'gym', clientId, check: 'unknown', revision: current.revision + 1 });
+  });
+  it('says which GOOGLE_* variable is malformed and why, and still lets the owner store the gym’s client', async () => {
+    for (const [bad, problem] of [[{ GOOGLE_CLIENT_ID: 'has space', GOOGLE_CLIENT_SECRET: 'x' }, { variable: 'GOOGLE_CLIENT_ID', reason: 'whitespace' }],
+      [{ GOOGLE_CLIENT_ID: 'x', GOOGLE_CLIENT_SECRET: 'y'.repeat(513) }, { variable: 'GOOGLE_CLIENT_SECRET', reason: 'too_long' }],
+      [{ GOOGLE_CLIENT_SECRET: 'only-the-secret' }, { variable: 'GOOGLE_CLIENT_ID', reason: 'missing' }]] as const) {
+      const status = await read(server({ routesService: createIntegrationsService({ ...base, env: { ...env, ...bad } }) }));
+      expect(status).toMatchObject({ source: 'gym', editable: true, clientId, installProblem: problem });
+    }
+    expect(await read()).not.toHaveProperty('installProblem');
   });
   it('refuses a stale revision and replaces both values on a new save', async () => {
     const current = await read();
