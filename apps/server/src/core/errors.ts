@@ -29,6 +29,7 @@ export function normalizeError(error: unknown): AppError {
 
 export function respondError(context: Context<RequestEnvironment>, error: unknown): Response {
   const safe = normalizeError(error);
+  if (safe.code === 'rate_limited' && !context.res.headers.has('Retry-After')) context.header('Retry-After', '1');
   return context.json(errorResponse(safe, context.get('context').requestId), safe.status);
 }
 

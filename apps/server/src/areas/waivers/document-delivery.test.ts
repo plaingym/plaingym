@@ -7,6 +7,7 @@ import { TestClock } from '../../core/clock.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import { errorHandler } from '../../core/errors.js';
 import { digest } from './snapshot.js';
+import { documentReadBudget } from './document-read.js';
 import { createWaiverDocumentDelivery, createWaiverDocumentDownloadRoute, readWaiverDocument } from './document-delivery.js';
 
 async function fixture() {
@@ -32,10 +33,23 @@ async function fixture() {
 describe('waiver document delivery', () => {
   it('limits junk tokens by client without denying other readers in the same gym', async () => {
     const f = await fixture(), app = f.app();
-    for (let i = 0; i < 10; i++) expect((await app.request('/api/waivers/template-document?token=junk')).status).toBe(404);
+    for (let i = 0; i < documentReadBudget; i++) expect((await app.request('/api/waivers/template-document?token=junk')).status).toBe(404);
     const limited = await app.request(f.url.href);
     expect(limited.status).toBe(429); expect(limited.headers.get('retry-after')).toBe('60');
+    expect(limited.headers.get('content-type')).toContain('text/html');
+    expect(await limited.text()).toContain('Wait a minute, then reload');
     expect((await app.request(f.url.href, { headers: { 'test-client': '192.0.2.2' } })).status).toBe(200);
+  });
+  it('serves a shared address through eight frames and repeated document opens', async () => {
+    const f = await fixture(), app = f.app();
+    for (let i = 0; i < 32; i++) expect((await app.request(f.url.href)).status).toBe(200);
+  });
+  it('turns an unavailable document into a safe page for its frame', async () => {
+    const f = await fixture();
+    const response = await f.app().request('/api/waivers/template-document?token=junk');
+    expect(response.status).toBe(404); expect(response.headers.get('content-type')).toContain('text/html');
+    const html = await response.text();
+    expect(html).toContain('Return to the signing page'); expect(html).toContain('href="/source"');
   });
   it('uses an application URL with a five-minute expiry and survives service recreation', async () => {
     const f = await fixture();

@@ -332,6 +332,14 @@ Details: `apps/server/src/infra/auth/README.md`.
   Validated waiver documents allow same-origin framing, with a sandboxed policy
   and `X-Frame-Options: SAMEORIGIN`; public signing pages allow these same-origin
   frames. An always-visible document link supports browsers without inline PDFs.
+  Uploads accept plain web, email and page links and a `GoTo` opening-page action;
+  other annotation subtypes, active actions, forms and embedded files are refused.
+  Rendering a signed record checks its stored document hash and resource bounds
+  without reapplying upload acceptance policy. Document processing allows at most
+  two waiting jobs per gym within its eight-job queue; overload returns 429 with
+  `Retry-After`. Template reads allow 300 requests per gym/client per minute so
+  members sharing an address can read several documents, and refused frames show
+  a retry page.
   Public pages, signed links and downloads send stricter policies of their own; the
   public website's pages run no script and allow only their structured-data block,
   by the response's nonce.

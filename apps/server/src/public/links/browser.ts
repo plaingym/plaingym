@@ -26,7 +26,7 @@ export function linkBrowser() {
     if (!response.ok || (path === '/complete' && response.status !== 200)) {
       // The customer state is explicit and contains no processor identifiers.
       const result = await response.json().catch(() => ({})) as { cardSetupUnavailable?: boolean };
-      say(result.cardSetupUnavailable ? 'customerMissing' : response.status === 409 ? 'conflict' : 'failed');
+      say(result.cardSetupUnavailable ? 'customerMissing' : response.status === 429 ? 'retry' : response.status === 409 ? 'conflict' : 'failed');
       throw new Error('request failed');
     }
     return response.json() as Promise<{ data: Record<string, unknown> }>;

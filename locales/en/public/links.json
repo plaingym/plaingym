@@ -57,6 +57,7 @@
   "done": "You're all set",
   "doneBody": "Thank you. Your details have been received.",
   "reload": "Reload page",
+  "retry": "The server is busy. Wait a moment, then try again.",
   "javascript": "Please enable JavaScript to complete this page.",
   "completedTitle": "You're all set",
   "completed_onboarding": "Your card details and required documents have been saved. Thank you.",

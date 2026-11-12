@@ -9,6 +9,17 @@ import messages from '../../../../../locales/en/public/links.json' with { type: 
 const t = createTranslator({ 'public/links': messages });
 const now = new Date('2026-10-25T12:00:00Z');
 describe('signed-link presentation and return receipts', () => {
+  it('frames only unsigned PDF templates after a signature', () => {
+    const member = { id: 'member', firstName: 'Alex', lastName: 'Example', dateOfBirth: '2000-01-01', revision: 1 };
+    const template = { name: 'Terms', kind: 'waiver' as const, version: 1, body: '', retiredAt: null, createdAt: now.toISOString(),
+      document: { key: 'document.pdf', hash: 'a'.repeat(64), pages: 1, bytes: 100 } };
+    const page = linkPage({ now, timezone: 'UTC', t, documentBase: '/l/token/documents/', data: { purpose: 'sign_waiver', member,
+      templates: [{ ...template, id: 'signed' }, { ...template, id: 'unsigned' }], signatures: [{ id: 'signature', memberId: member.id,
+        templateId: 'signed', snapshot: '{}', snapshotHash: '', signatureImageKey: '', signatureImageHash: '', signedAt: now.toISOString() }] } });
+    expect(page.match(/<iframe/g)).toHaveLength(1);
+    expect(page).toContain('src="/l/token/documents/unsigned"');
+    expect(page).not.toContain('/l/token/documents/signed');
+  });
   it.each(['USD', 'KWD'])('shows only the settlement note for a zero %s invoice', currency => {
     const page = linkPage({ now, timezone: 'UTC', t, data: { purpose: 'pay_invoice', invoice: { lines: [], invoice: {
       id: 'invoice', number: 1, kind: 'one_off', status: 'open', dueOn: '2026-10-25', amountCents: 0, currency, paidAt: null,

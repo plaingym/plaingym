@@ -14,6 +14,7 @@ import { authorize } from '../staff/auth.permissions.js';
 import { FakeUploads } from '../../infra/storage/index.js';
 import { demoSignaturePng } from '../../demo/seed/waivers-image.js';
 import { createWaiversService } from './waivers.js';
+import { documentReadBudget } from './document-read.js';
 import { createWaiverRoutes } from './waivers.routes.js';
 import { configureWaivers } from './waivers.routes.js';
 import { createApp } from '../../app.js';
@@ -83,7 +84,7 @@ describe('waiver route authorization', () => {
     }
     expect((await app.request('/api/waivers/template-documents', { method: 'POST', headers: { 'content-type': 'application/pdf' }, body: 'invalid' })).status).toBe(429);
     const path = `/api/waivers/templates/${template.id}/document`;
-    for (let i = 0; i < 10; i++) expect((await app.request(path)).status).toBe(200);
+    for (let i = 0; i < documentReadBudget; i++) expect((await app.request(path)).status).toBe(200);
     expect((await app.request(path)).status).toBe(429);
     expect((await app.request(path, { headers: { 'test-ip': '192.0.2.2' } })).status).toBe(200);
   });

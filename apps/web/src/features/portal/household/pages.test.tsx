@@ -267,7 +267,7 @@ describe('portal waivers page', () => {
     expect(dialog.isConnected).toBe(false);
     expect(screen.queryByRole('alert')).toBeNull();
   });
-  it('lets an adult member sign their own waiver through the self routes', async () => {
+  it.each([false, true])('lets an adult retry a busy signing request through the self routes (busy: %s)', async busy => {
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ clearRect: vi.fn(), fillText: vi.fn() } as unknown as CanvasRenderingContext2D);
     vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,YQ==');
     const view = mount(<PortalWaivers />, (path, init) => {
@@ -275,7 +275,8 @@ describe('portal waivers page', () => {
       if (path.startsWith('/api/portal/waivers/pending')) return page([{ memberId: ids.adult, template }]);
       if (path.startsWith('/api/portal/waivers?')) return page([]);
       if (path === '/api/portal/waivers/signature-images') return image;
-      if (path === '/api/portal/waivers' && init?.method === 'POST') return { data: { ...signature, memberId: ids.adult } };
+      if (path === '/api/portal/waivers' && init?.method === 'POST') return busy
+        ? Response.json({ error: { code: 'rate_limited' } }, { status: 429 }) : { data: { ...signature, memberId: ids.adult } };
       return undefined;
     }, { context: adult }), user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: 'Review and sign' }));
@@ -289,6 +290,7 @@ describe('portal waivers page', () => {
     const body = JSON.parse(String(view.calls('POST', '/api/portal/waivers')[0]![1]!.body));
     expect(body).toMatchObject({ memberId: ids.adult, templateId: ids.template, signer: { kind: 'self', name: 'Alex Rivera' }, consent: true, signatureImageKey: 'gym/waivers/x.png' });
     expect(view.calls('GET', '/api/portal/household/waivers')).toHaveLength(0);
+    if (busy) expect((await within(dialog).findByRole('alert')).textContent).toContain('The server is busy');
   });
   it('does not submit a blank canvas after switching away from a drawn signature', async () => {
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ clearRect: vi.fn(), fillText: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn() } as unknown as CanvasRenderingContext2D);

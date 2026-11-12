@@ -10,6 +10,7 @@ import type { RequestContext, RequestEnvironment } from '../../core/context.js';
 import { createWaiversService, type WaiversService, type WaiverOptions } from './waivers.js';
 import { documentByteLimit } from '../../infra/pdf/document.js';
 import { createWaiverDocumentDownloadRoute } from './document-delivery.js';
+import { documentReadLimit } from './document-read.js';
 
 let configured: WaiversService | undefined;
 export function configureWaivers(options: WaiverOptions) { configured = createWaiversService(options); return configured; }
@@ -21,7 +22,7 @@ export function createWaiverRoutes(service?: WaiversService) {
   const get = () => { const value = service ?? configured; if (!value) throw new Error('Waivers not configured'); return value; };
   const pdfLimit = rateLimit({ limit: 10, windowMs: 60_000, perGym: true });
   const uploadLimit = rateLimit({ limit: 10, windowMs: 60_000, perGym: true });
-  const documentLimit = rateLimit({ limit: 10, windowMs: 60_000 });
+  const documentLimit = documentReadLimit();
   const limitDemoPdf: MiddlewareHandler<RequestEnvironment> = async (ctx, next) => {
     if (await get().isDemo(ctx.get('context').gym.gymId)) return pdfLimit(ctx, next);
     await next();

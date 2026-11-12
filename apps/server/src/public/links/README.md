@@ -71,7 +71,12 @@ after image storage and PDF preflight. The original signing implementation
 validates the image, guardian details and current template and persists the
 immutable snapshot. The page never supplies document text or a snapshot.
 A member waiver link completes with the member's last missing current signature
-in the same transaction. The browser reloads after each signature; tablet mode
+in the same transaction. The browser reloads after each signature. Pages show
+previews only for templates still unsigned, and each unsigned template is
+framed once across the household. Document reads have a separate 300-per-minute
+budget per gym/client, with a plain retry page for a refused frame or open link.
+PDF queue overload shows a retry message rather than a changed-document warning.
+Tablet mode
 clears only when the server reports completion. An already-fully-signed member's
 link completes on first open under the same link lock and shows "already done",
 so it needs no dummy signature. Current means the latest version of each family,

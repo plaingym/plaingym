@@ -6,6 +6,7 @@ import { AppError, createTranslator, type Translator } from '@plaingym/shared';
 import { portalSignedLinkContracts as contracts, signedLinkActionContracts as actions, signedLinkCardUnavailableSchema, portalAccessContracts, waiverDocumentReadContracts } from '@plaingym/shared/contracts';
 import type { PortalInvitationService } from '../../areas/members/household-users.invitations.js';
 import { rateLimit } from '../../core/rate-limit.js';
+import { documentReadLimit } from '../../areas/waivers/document-read.js';
 import { setPolicy } from '../../core/csp.js';
 import { route, type RouteRegistration } from '../../core/registry.js';
 import type { RequestEnvironment } from '../../core/context.js';
@@ -83,10 +84,10 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
   const textResponses = { 200: { description: 'Signed-link page' }, 404: { description: 'Unavailable signed link' } };
   const publicRoute = (entry: RouteRegistration) => protect(entry, false);
   const result: RouteRegistration[] = [
-    protect(route({ ...waiverDocumentReadContracts.link, middleware: rateLimit({ limit: 10 }),
+    protect(route({ ...waiverDocumentReadContracts.link, middleware: documentReadLimit(),
       request: { params: waiverDocumentReadContracts.link.params }, responses: json(waiverDocumentReadContracts.link.response) }, async c =>
       c.json(await options().service.document(c.get('context'), c.req.valid('param').templateId), 200))),
-    publicRoute(route({ method: 'get', path: '/l/{token}/documents/{templateId}', permission: { kind: 'public' }, middleware: rateLimit({ limit: 10 }),
+    publicRoute(route({ method: 'get', path: '/l/{token}/documents/{templateId}', permission: { kind: 'public' }, middleware: documentReadLimit(true),
       request: { params: z.strictObject({ token: z.string().max(128), templateId: z.uuid() }) }, responses: { 302: { description: 'Open the waiver document' } } }, async c => {
       const context = c.get('context'), params = c.req.valid('param');
       const resolved = await options().links.resolve(context.gym.gymId, params.token);

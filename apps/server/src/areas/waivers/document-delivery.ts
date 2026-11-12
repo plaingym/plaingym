@@ -6,7 +6,7 @@ import { waiverDocumentSchema, type WaiverDocument } from '@plaingym/shared/cont
 import type { Uploads } from '../../infra/storage/index.js';
 import { route } from '../../core/registry.js';
 import { setPolicy } from '../../core/csp.js';
-import { rateLimit } from '../../core/rate-limit.js';
+import { documentReadLimit } from './document-read.js';
 import { clock as defaultClock } from '../../core/clock.js';
 import { digest } from './snapshot.js';
 
@@ -88,7 +88,7 @@ export type WaiverDocumentDelivery = ReturnType<typeof createWaiverDocumentDeliv
 /** Both disk and S3 documents use this response so their security headers are identical. */
 export function createWaiverDocumentDownloadRoute(delivery: () => WaiverDocumentDelivery) {
   return route({ method: 'get', path: documentDownloadPath, permission: { kind: 'public' },
-    middleware: rateLimit({ limit: 10, windowMs: 60_000 }),
+    middleware: documentReadLimit(true),
     request: { query: z.strictObject({ token: z.string().max(2048) }) },
     responses: { 200: { description: 'Waiver template document', content: { 'application/pdf': { schema: z.string().openapi({ format: 'binary' }) } } } },
   }, async ctx => {

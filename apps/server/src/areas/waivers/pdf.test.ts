@@ -4,12 +4,29 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { getDocument, OPS } from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { PDFDocument, PDFName } from '@cantoo/pdf-lib';
+import { validateDocumentPdf } from '../../infra/pdf/document.js';
 import { renderWaiver } from './pdf.js';
 import { missingGlyphs } from '../../infra/pdf/index.js';
-import { digest, needsGuardian, readSnapshot } from './snapshot.js';
+import { digest, needsGuardian, readSnapshot, serializeSnapshot } from './snapshot.js';
 import { pdfFixture, scripts } from './pdf.fixture.js';
 
 describe('immutable waiver rendering', () => {
+  it('renders a hash-matching stored document despite current upload policy, and refuses changed bytes', async () => {
+    const doc = await PDFDocument.create(); doc.addPage();
+    doc.getPage(0).node.set(PDFName.of('Annots'), doc.context.obj([{ Type: 'Annot', Subtype: 'Text', Rect: [0, 0, 100, 100] }]));
+    const bytes = await doc.save(), f = pdfFixture('');
+    const snapshot = readSnapshot(f.snapshot, f.snapshotHash);
+    const stored = serializeSnapshot({ ...snapshot, template: { ...snapshot.template, document: {
+      key: '01900000-0000-7000-8000-000000000003/waivers/templates/01900000-0000-7000-8000-000000000004.pdf',
+      hash: digest(bytes), bytes: bytes.length, pages: 1,
+    } } });
+    await expect(validateDocumentPdf(bytes)).rejects.toThrow(/active content/);
+    const rendered = await renderWaiver(stored.snapshot, stored.snapshotHash, f.png, async () => bytes, 'gym-stored');
+    expect((await PDFDocument.load(rendered)).getPageCount()).toBe(2);
+    const changed = Uint8Array.from(bytes); changed[10] = changed[10]! ^ 1;
+    await expect(renderWaiver(stored.snapshot, stored.snapshotHash, f.png, changed)).rejects.toThrow('Waiver document integrity failure');
+  });
   for (const script of scripts) it('independently extracts and embeds ' + script, async () => {
     const f = pdfFixture(script, script), bytes = await renderWaiver(f.snapshot, f.snapshotHash, f.png);
     const task = getDocument({ data: Uint8Array.from(bytes), useSystemFonts: false, disableFontFace: true, fontExtraProperties: true });
@@ -72,6 +89,22 @@ describe('immutable waiver rendering', () => {
     expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(9);
     expect(results.filter(r => r.status === 'rejected')).toHaveLength(3);
     await expect(renderWaiver(f.snapshot, f.snapshotHash, f.png)).resolves.toBeInstanceOf(Uint8Array);
+  });
+  it('refuses a full text-render queue before reading a stored PDF', async () => {
+    const doc = await PDFDocument.create(); doc.addPage();
+    const bytes = await doc.save(), f = pdfFixture('Hello');
+    const snapshot = readSnapshot(f.snapshot, f.snapshotHash);
+    const stored = serializeSnapshot({ ...snapshot, template: { ...snapshot.template, body: '', document: {
+      key: '01900000-0000-7000-8000-000000000003/waivers/templates/01900000-0000-7000-8000-000000000004.pdf',
+      hash: digest(bytes), bytes: bytes.length, pages: 1,
+    } } });
+    const running = Promise.allSettled(Array.from({ length: 9 }, () => renderWaiver(f.snapshot, f.snapshotHash, f.png)));
+    let reads = 0;
+    try {
+      await expect(renderWaiver(stored.snapshot, stored.snapshotHash, f.png, async () => { reads++; return bytes; }, 'busy-details'))
+        .rejects.toMatchObject({ code: 'rate_limited' });
+      expect(reads).toBe(0);
+    } finally { await running; }
   });
   it('requires guardians until the eighteenth local birthday, and for unknown birthdays', () => {
     const now = new Date('2026-10-24T01:00:00Z');

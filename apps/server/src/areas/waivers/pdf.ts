@@ -27,13 +27,17 @@ export async function validateTemplatePdf(template: { name: string; body: string
 }
 
 /** Waiver-specific content and layout. Only the persisted text determines the footer. */
-export async function renderWaiver(snapshotText: string, snapshotHash: string, png: Uint8Array, document?: Uint8Array): Promise<Uint8Array> {
+export async function renderWaiver(snapshotText: string, snapshotHash: string, png: Uint8Array, document?: Uint8Array | (() => Promise<Uint8Array>), gymId?: string): Promise<Uint8Array> {
   if (snapshotText.length > 600_000) throw new AppError('invalid_request', 'Waiver is too large');
   const snapshot = readSnapshot(snapshotText, snapshotHash);
   validateSignatureImage(png);
   if (digest(png) !== snapshot.signatureImage.hash) throw new Error('Waiver image integrity failure');
-  if (snapshot.template.document && (!document || digest(document) !== snapshot.template.document.hash || document.length !== snapshot.template.document.bytes))
-    throw new Error('Waiver document integrity failure');
+  const original = async () => {
+    const bytes = typeof document === 'function' ? await document() : document;
+    if (!bytes || digest(bytes) !== snapshot.template.document!.hash || bytes.length !== snapshot.template.document!.bytes)
+      throw new Error('Waiver document integrity failure');
+    return bytes;
+  };
   const blocks = templateBlocks(snapshot.template);
   blocks.push({ kind: 'text', text: `${t('waivers/waivers:member')}: ${snapshot.member.firstName} ${snapshot.member.lastName}` },
     { kind: 'text', text: `${t('waivers/waivers:signer')}: ${snapshot.signer.name}` });
@@ -42,6 +46,6 @@ export async function renderWaiver(snapshotText: string, snapshotHash: string, p
   if (snapshot.commitmentEndsOn) blocks.push({ kind: 'text', text: `${t('waivers/waivers:commitment')}: ${snapshot.commitmentEndsOn}` });
   blocks.push({ kind: 'image', bytes: png, width: 240, height: 70 });
   const metadata = { title: snapshot.template.name, createdAt: new Date(snapshot.signedAt) };
-  const details = await renderPdf({ ...metadata, footer: 'SHA-256 ' + digest(snapshotText), blocks });
-  return snapshot.template.document ? appendSignaturePdf(document!, details, metadata) : details;
+  const details = () => renderPdf({ ...metadata, footer: 'SHA-256 ' + digest(snapshotText), blocks });
+  return snapshot.template.document ? appendSignaturePdf(original, details, metadata, gymId) : details();
 }

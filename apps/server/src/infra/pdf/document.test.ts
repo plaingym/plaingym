@@ -2,7 +2,7 @@
 import { deflateSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import PDFKit from 'pdfkit';
-import { PDFDocument, PDFName, PDFDict } from '@cantoo/pdf-lib';
+import { PDFDocument, PDFName, PDFDict, PDFString } from '@cantoo/pdf-lib';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { appendSignaturePdf, documentByteLimit, validateDocumentPdf } from './document.js';
 import { waiverPdf } from '../../../../../deploy/test/memory/waiver-pdf.mjs';
@@ -43,6 +43,87 @@ function handBuilt(...extra: (string | readonly [string, Buffer])[]) {
   return Buffer.concat(parts);
 }
 describe('untrusted PDF validation', () => {
+  it('accepts Word-style web, email and internal links with a GoTo open action', async () => {
+    const doc = await PDFDocument.load(hybridPdf());
+    doc.getPage(0).node.set(PDFName.of('Annots'), doc.context.obj([
+      ...['https://example.test/waiver', 'mailto:info@example.test'].map(uri => doc.context.register(doc.context.obj({
+        Type: 'Annot', Subtype: 'Link', Rect: [0, 0, 100, 100], F: 4, A: { S: 'URI', URI: PDFString.of(uri) },
+      }))),
+      doc.context.register(doc.context.obj({ Type: 'Annot', Subtype: 'Link', Rect: [0, 0, 100, 100],
+        A: { S: 'GoTo', D: [doc.getPage(0).ref, 'Fit'] } })),
+    ]));
+    doc.catalog.set(PDFName.of('OpenAction'), doc.context.obj({ S: 'GoTo', D: [doc.getPage(0).ref, 'Fit'] }));
+    expect(await validateDocumentPdf(await doc.save())).toMatchObject({ pages: 1 });
+  });
+  it.each(['JavaScript', 'Launch', 'SubmitForm', 'Named', 'GoToR'])('rejects a Link with a %s action', async action => {
+    const doc = await PDFDocument.load(await fixture(1));
+    doc.getPage(0).node.set(PDFName.of('Annots'), doc.context.obj([{ Type: 'Annot', Subtype: 'Link', Rect: [0, 0, 100, 100], A: { S: action } }]));
+    await expect(validateDocumentPdf(await doc.save())).rejects.toThrow(/active content/);
+  });
+  it.each(['javascript:alert(1)', 'file:///tmp/waiver', 'data:text/html,hello'])('rejects an active or local URI: %s', async uri => {
+    const doc = await PDFDocument.load(await fixture(1));
+    doc.getPage(0).node.set(PDFName.of('Annots'), doc.context.obj([{ Type: 'Annot', Subtype: 'Link', Rect: [0, 0, 100, 100], A: { S: 'URI', URI: PDFString.of(uri) } }]));
+    await expect(validateDocumentPdf(await doc.save())).rejects.toThrow(/active content/);
+  });
+  it.each(['Named', 'Hide', 'ResetForm', 'SetOCGState', 'GoTo3DView'])('rejects %s in a Link that claims to be structural attributes', async action => {
+    const doc = await PDFDocument.load(await fixture(1));
+    doc.getPage(0).node.set(PDFName.of('Annots'), doc.context.obj([{ Type: 'StructElem', Subtype: 'Link', Rect: [0, 0, 100, 100], A: { S: action } }]));
+    await expect(validateDocumentPdf(await doc.save())).rejects.toThrow(/active content/);
+  });
+  it('accepts structure attributes with or without /Type, and refuses an action behind a claimed structure type', async () => {
+    const doc = await PDFDocument.load(await fixture(1));
+    const root = doc.context.register(doc.context.obj({ Type: 'StructTreeRoot' }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), root);
+    for (const type of [{ Type: 'StructElem' }, {}])
+      doc.context.register(doc.context.obj({ ...type, S: 'Table', P: root, A: { O: 'Table', Summary: PDFString.of('Fees') } }));
+    expect(await validateDocumentPdf(await doc.save())).toMatchObject({ pages: 1 });
+    const item = doc.context.register(doc.context.obj({ Type: 'StructElem', Title: PDFString.of('Print'), A: { S: 'Named', N: 'Print' } }));
+    doc.catalog.set(PDFName.of('Outlines'), doc.context.obj({ First: item, Last: item, Count: 1 }));
+    await expect(validateDocumentPdf(await doc.save())).rejects.toThrow(/active content/);
+  });
+  it('reports a failed storage read as itself, not as a malformed PDF', async () => {
+    await expect(validateDocumentPdf(async () => { throw new Error('storage unavailable'); }, 'gym-read'))
+      .rejects.toThrow('storage unavailable');
+  });
+  it('refuses URI open actions and chained actions even when the first action is safe', async () => {
+    const doc = await PDFDocument.load(await fixture(1));
+    doc.catalog.set(PDFName.of('OpenAction'), doc.context.obj({ S: 'URI', URI: PDFString.of('https://example.test') }));
+    await expect(validateDocumentPdf(await doc.save())).rejects.toThrow(/active content/);
+    doc.catalog.set(PDFName.of('OpenAction'), doc.context.obj({ S: 'GoTo', D: [doc.getPage(0).ref, 'Fit'], Next: { S: 'Launch' } }));
+    await expect(validateDocumentPdf(await doc.save())).rejects.toThrow(/active content/);
+  });
+  it('renders stored pages that upload policy now refuses, keeping resource bounds', async () => {
+    const doc = await PDFDocument.load(await fixture(1));
+    doc.getPage(0).node.set(PDFName.of('Annots'), doc.context.obj([{ Type: 'Annot', Subtype: 'Text', Rect: [0, 0, 100, 100] }]));
+    const original = await doc.save();
+    await expect(validateDocumentPdf(original)).rejects.toThrow(/active content/);
+    const signed = await appendSignaturePdf(original, await fixture(1), signedCopy);
+    expect((await PDFDocument.load(signed)).getPageCount()).toBe(2);
+    await expect(appendSignaturePdf(Buffer.alloc(documentByteLimit + 1), await fixture(1), signedCopy)).rejects.toThrow(/10 MiB/);
+  });
+  it('limits a gym to two waiters and refuses excess work before reading bytes', async () => {
+    const bytes = await fixture(1);
+    let release!: () => void, reads = 0;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const active = validateDocumentPdf(async () => { await gate; return bytes; }, 'gym-a');
+    const waiting = [validateDocumentPdf(bytes, 'gym-a'), validateDocumentPdf(bytes, 'gym-a')];
+    try {
+      await expect(validateDocumentPdf(async () => { reads++; return bytes; }, 'gym-a')).rejects.toMatchObject({ code: 'rate_limited' });
+      expect(reads).toBe(0);
+      waiting.push(validateDocumentPdf(bytes, 'gym-b'));
+    } finally { release(); await Promise.all([active, ...waiting]); }
+    expect(await validateDocumentPdf(bytes, 'gym-a')).toMatchObject({ pages: 1 });
+  });
+  it('bounds the total queue, rejecting lazy downloads before their storage read', async () => {
+    const bytes = await fixture(1); let release!: () => void, reads = 0;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const active = validateDocumentPdf(async () => { await gate; return bytes; }, 'gym-first');
+    const waiting = Array.from({ length: 8 }, (_, i) => validateDocumentPdf(bytes, 'gym-' + i));
+    try {
+      await expect(appendSignaturePdf(async () => { reads++; return bytes; }, bytes, signedCopy, 'gym-last')).rejects.toMatchObject({ code: 'rate_limited' });
+      expect(reads).toBe(0);
+    } finally { release(); await Promise.all([active, ...waiting]); }
+  });
   it.each([['Word hybrid', hybridPdf], ['linearized', linearizedPdf], ...[0, 1, 2, 3, 4].map(filter => [`predicted xref ${filter}`, () => predictedXrefPdf(filter)] as const)] as const)('accepts %s and preserves the text a separate reader sees', async (_name, make) => {
     const bytes = make();
     expect(await validateDocumentPdf(bytes)).toEqual({ pages: 1, bytes: bytes.length });

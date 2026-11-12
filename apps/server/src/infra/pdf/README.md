@@ -5,7 +5,10 @@
 pages without painting or reflowing the original pages. It uses
 `@cantoo/pdf-lib` 2.11.1 (MIT) for parsing and page copying; PDFKit still generates
 the signing page. Validation and copying run in process, without network requests
-or evaluation, with one active operation and at most eight waiting requests.
+or evaluation, with one active operation and at most eight waiting requests,
+including at most two waiting per gym. Excess work receives `rate_limited` (429)
+with `Retry-After: 1`. Callers pass their gym ID and lazy storage reads so a refused
+operation never loads the stored document into memory.
 
 The upload envelope is checked before the repair-oriented parser runs: a PDF
 header, complete objects and streams, exact cross-reference offsets and a final
@@ -22,14 +25,19 @@ ordinary bookmark style flags; external-file keys are checked in their stream or
 reference-XObject context. References to another reference are refused because the
 copying parser and viewer can resolve them differently. Duplicate objects, page-tree cycles/sharing, inconsistent counts, and unsupported stream
 encodings are refused. Every parsed dictionary is checked for active actions,
-forms, annotations, alternate appearances, attachments, optional-content layers and external references. Annotated documents must be flattened to a static PDF. Parser
+forms, alternate appearances, attachments, optional-content layers and external references.
+Plain `Link` annotations may navigate within the document or use HTTP, HTTPS and
+email addresses. A `GoTo` open action may select the opening page. Other annotation
+subtypes, action types and action chains are refused; those documents must be flattened. Parser
 success alone does not establish that an upload is valid. Refusals for conflicting
 revisions or unsupported compression ask for a flattened new copy or a standard
 Flate export respectively.
 
 The waiver service separately checks the stored document hash against the
 immutable signing snapshot before rendering or serving it. Original pages have
-no added stamp; the generated details page carries the snapshot hash. Independent
+their bounded structural parse checked again, but upload acceptance policy is not
+reapplied to signed records. Later policy changes therefore do not invalidate them.
+Original pages have no added stamp; the generated details page carries the snapshot hash. Independent
 PDF.js text-extraction tests check page order and the signing details.
 
 `renderPdf({ title, createdAt, footer, blocks })` accepts text, image and page-break
@@ -41,7 +49,8 @@ SHA-256 verified and parsed individually on first use, then reused. A compact
 coverage map selects faces without opening them; Latin-only and Cyrillic-only
 documents load only Noto Sans. Each document
 has its own subset and a bounded measurement cache. One render runs at a time;
-eight requests may wait, and excess requests receive a retryable conflict.
+eight requests may wait, and excess requests receive `rate_limited` (429) with
+`Retry-After: 1`.
 Documents are limited to 100 pages, 100,000 text characters and 8 MiB output.
 
 The renderer wraps at word/grapheme boundaries. It applies bidi embedding levels,

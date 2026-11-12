@@ -58,11 +58,12 @@ export function linkPage({ data, state, portalClaim, tablet = false, now, timezo
     const id = member.id + '-' + template.id;
     const signed = data.signatures.some(s => s.memberId === member.id && s.templateId === template.id);
     const guardian = needsGuardian(member.dateOfBirth, now, timezone);
-    const preview = !previewed.has(template.id); previewed.add(template.id);
+    const preview = !signed && !previewed.has(template.id);
+    if (!signed) previewed.add(template.id);
     return h('section', { class: panel }, h('h3', { class: 'text-lg font-semibold' }, template.name),
       h('p', null, text('member', { name: member.firstName + ' ' + member.lastName })),
       h('p', { class: 'text-sm text-muted-foreground' }, text('version', { version: template.version })),
-      waiverDocumentView(template, t, documentBase ? documentBase + template.id : undefined, preview),
+      signed ? null : waiverDocumentView(template, t, documentBase ? documentBase + template.id : undefined, preview),
       signed ? h('p', { class: 'font-semibold' }, text('signed')) : h('form', { 'data-waiver': true, 'data-member': member.id, 'data-template': template.id, 'data-version': template.version, class: 'space-y-4' },
         guardian ? h('p', null, text('guardian')) : null,
         h('label', { for: id + '-kind', class: 'block space-y-1' }, text('signerKind'),
@@ -114,5 +115,5 @@ export function linkPage({ data, state, portalClaim, tablet = false, now, timezo
         h('h1', { class: 'text-2xl font-bold' }, text('completedTitle')),
         h('p', null, text('completed_' + (data?.purpose ?? 'onboarding'))),
         h('a', { class: button, href: '/portal' }, text('portalSignIn')))) : null,
-      ...['failed', 'conflict', 'customerMissing', 'busy', 'confirming', 'signatureRequired', 'incomplete', 'done', 'doneBody', 'portalReady', 'portalEmailSent'].map(key => h('span', { hidden: true, 'data-message': key }, text(key))))).toString();
+      ...['failed', 'conflict', 'retry', 'customerMissing', 'busy', 'confirming', 'signatureRequired', 'incomplete', 'done', 'doneBody', 'portalReady', 'portalEmailSent'].map(key => h('span', { hidden: true, 'data-message': key }, text(key))))).toString();
 }

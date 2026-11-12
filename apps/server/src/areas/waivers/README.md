@@ -110,6 +110,13 @@ creating or publishing a version. A version can switch between text and PDF.
 Documents are limited to 10 MiB and 20 pages, validated before storage under a new
 immutable `${gymId}/waivers/templates/<uuid>.pdf` key, and never logged. The demo
 refuses these uploads with its existing uploads-disabled message.
+Plain web, email and internal page links and a `GoTo` open action are accepted;
+other annotations, actions, forms and embedded files are refused. Signed copies
+verify the snapshot's document hash and size and retain bounded structural parsing,
+without reapplying upload policy to a legal record. Document parsing and copying
+allow one active job and eight waiting jobs, with at most two waiting per gym.
+The slot is reserved before reading the stored document; overload is a retryable
+`rate_limited` response (429 with `Retry-After: 1`), distinct from a changed waiver.
 
 Staff document reads require `members.read`. Portal and signed-link reads check
 the household credential and expose only current templates; public join and
@@ -123,12 +130,15 @@ open and read the document before confirming; an unavailable preview is not cons
 React previews retain their initial URL while the separate link refreshes, so a
 refresh or a failed background request does not reset the reader's page.
 URL issuance checks storage metadata; serving the PDF verifies its full bytes.
-Document reads and downloads have separate ten-per-minute limits per client and
-gym. Uploads have a separate ten-per-minute gym budget, independent of reads and
+Document URL reads and template downloads have separate 300-per-minute limits per
+client and gym, allowing families sharing a Wi-Fi address to read multiple documents.
+Refused frames and explicit opens show a plain retry page, including `Retry-After`
+on a 429; JSON URL requests keep the API error response. Signed-link pages preview
+only unsigned templates. Uploads have a separate ten-per-minute gym budget, independent of reads and
 the demo's signed-copy budget. Invalid tokens cannot exhaust another client's budget.
 
 Upload validation rejects malformed or encrypted documents, active actions,
-attachments, forms, annotations, alternate appearances, external references and optional-content layers. Flatten annotations before uploading. Ambiguous
+attachments, forms, non-link annotations, alternate appearances, external-file references and optional-content layers. Flatten unsupported annotations before uploading. Ambiguous
 incremental revisions and excessively complex object graphs are refused; save
 a flattened new PDF in those cases. Single-revision Word hybrid files, linearized
 files and predicted cross-reference streams are supported. Signing and rendering verify the original

@@ -13,6 +13,7 @@ import { createWaiversService } from './waivers.js';
 import { createWaiverDocumentDelivery } from './document-delivery.js';
 import { waiverDocumentFixture } from './document.fixture.js';
 import { readSnapshot } from './snapshot.js';
+import { validateDocumentPdf } from '../../infra/pdf/document.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 async function fixture() {
@@ -38,6 +39,24 @@ async function extracted(bytes: Uint8Array) {
   } finally { await task.destroy(); }
 }
 describe('uploaded waiver documents against PostgreSQL', () => {
+  it.each(['sign', 'download', 'publish'] as const)('refuses a busy %s before reading the stored document', async operation => {
+    const f = await fixture();
+    const signature = operation === 'download' ? await f.service.sign(f.ctx, f.input, { timezone: 'UTC', ipAddress: '192.0.2.1' }) : undefined;
+    const bytes = await waiverDocumentFixture(); let release!: () => void, reads = 0;
+    const get = f.uploads.get.bind(f.uploads);
+    f.uploads.get = async key => { if (key === f.document.key) reads++; return get(key); };
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const active = validateDocumentPdf(async () => { await gate; return bytes; }, f.gymId);
+    const waiting = [validateDocumentPdf(bytes, f.gymId), validateDocumentPdf(bytes, f.gymId)];
+    try {
+      const request = operation === 'sign' ? f.service.sign(f.ctx, f.input, { timezone: 'UTC', ipAddress: '192.0.2.1' })
+        : operation === 'download' ? f.service.pdf(f.gymId, signature!.id)
+        : f.service.publishTemplate(f.ctx, f.template.id, { name: f.template.name, kind: f.template.kind, body: '', document: f.document, expectedVersion: 1 });
+      await expect(request).rejects.toMatchObject({ code: 'rate_limited' });
+      expect(reads).toBe(0);
+      expect((await f.service.listSignatures(f.gymId)).data).toHaveLength(operation === 'download' ? 1 : 0);
+    } finally { release(); await Promise.all([active, ...waiting]); }
+  });
   it('issues document links from metadata without buffering bytes, and refuses deleted uploads', async () => {
     const f = await fixture();
     f.uploads.get = async () => { throw new Error('Link issuance must not read the document'); };

@@ -11,7 +11,7 @@ function fixture(purpose = 'update_card', tablet = false) {
   vi.stubGlobal('history', { replaceState: vi.fn() });
   document.body.dataset.purpose = purpose; document.body.dataset.tablet = String(tablet);
   document.body.innerHTML = '<main><p id="feedback"></p><button data-complete>Check again</button><footer>Source code</footer></main><template id="completed-message"><section tabindex="-1"><h1>You are all set</h1><p>Saved successfully</p></section></template>'
-    + ['busy', 'confirming', 'incomplete', 'conflict', 'failed'].map(key => `<span hidden data-message="${key}">${key}</span>`).join('');
+    + ['busy', 'confirming', 'incomplete', 'conflict', 'retry', 'failed'].map(key => `<span hidden data-message="${key}">${key}</span>`).join('');
   const fetch = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ data: { completed: false } })));
   vi.stubGlobal('fetch', fetch);
   return { location, fetch, feedback: document.getElementById('feedback')!, button: document.querySelector('button')! };
@@ -35,6 +35,13 @@ it('shows incomplete only after five increasing waits and retains the manual but
   await vi.advanceTimersByTimeAsync(1);
   expect(f.fetch).toHaveBeenCalledTimes(6); expect(f.feedback.textContent).toBe('incomplete'); expect(f.button.disabled).toBe(false);
   f.button.click(); await vi.advanceTimersByTimeAsync(0); expect(f.fetch).toHaveBeenCalledTimes(7);
+});
+it('keeps an overloaded request retryable without calling it a changed document', async () => {
+  const f = fixture('sign_waiver'); f.location.href = 'https://gym.test/l/token';
+  f.fetch.mockResolvedValue(new Response(JSON.stringify({ error: { code: 'rate_limited' } }), { status: 429 }));
+  linkBrowser(); f.button.click(); await vi.advanceTimersByTimeAsync(0);
+  expect(f.feedback.textContent).toBe('retry'); expect(f.button.disabled).toBe(false);
+  expect(f.location.reload).not.toHaveBeenCalled();
 });
 it('confirms an onboarding return even with an unsubmitted portal claim form', async () => {
   const f = fixture('onboarding');

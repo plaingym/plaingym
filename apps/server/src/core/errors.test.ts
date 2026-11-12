@@ -25,6 +25,7 @@ it.each([
   });
   const response = await app.request('/api/fixture');
   expect(response.status).toBe(status);
+  if (status === 429) expect(response.headers.get('Retry-After')).toBe('1');
   const body = await response.json();
   if (code) expect(body.error.code).toBe(code);
   expect(body.requestId).toBe(response.headers.get('x-request-id'));

@@ -2,6 +2,7 @@
 import { bodyLimit } from 'hono/body-limit';
 import { AppError } from '@plaingym/shared';
 import { portalContracts as contracts, waiverDocumentReadContracts } from '@plaingym/shared/contracts';
+import { documentReadLimit } from '../waivers/document-read.js';
 import { rateLimit } from '../../core/rate-limit.js';
 import { portalRoute as route, portalIdentity } from './auth.permissions.js';
 import { ok } from './household.js';
@@ -47,7 +48,7 @@ export function createPortalWaiverRoutes(service: PortalWaiverService = createPo
   return [
     ...(['portal', 'household'] as const).map(name => {
       const contract = waiverDocumentReadContracts[name];
-      return route({ ...contract, middleware: rateLimit({ limit: 10 }), request: { params: contract.params }, responses: ok('Waiver document link', contract.response) }, async c => {
+      return route({ ...contract, middleware: documentReadLimit(), request: { params: contract.params }, responses: ok('Waiver document link', contract.response) }, async c => {
         c.header('Cache-Control', 'no-store');
         return c.json(await service.document(portalIdentity(c.get('context')), name === 'portal' ? 'self' : 'household', c.req.valid('param').templateId), 200);
       });

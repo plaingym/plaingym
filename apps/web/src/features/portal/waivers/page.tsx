@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { portalContracts as contracts, waiverSigningSnapshotSchema, type PortalContext, type WaiverTemplate } from '@plaingym/shared/contracts';
 import { useBootstrap } from '../../../app/context.js';
 import { t } from '../../../lib/i18n.js';
+import { ApiError } from '../../../lib/api.js';
 import { Button } from '../../../components/ui/button.js';
 import { Alert } from '../../../components/ui/alert.js';
 import { Dialog } from '../../../components/ui/dialog.js';
@@ -100,7 +101,7 @@ export function SignWaiver({ template, member, minor, endpoints, scope, close, s
       own(await scope.call(endpoints.sign, { memberId: member.id, templateId: template.id, templateVersion: template.version, consent: true, ...uploaded.current,
         signer: minor ? { kind: 'guardian', name: signer, relationship: String(data.get('relationship')).trim() } : { kind: 'self', name: signer } }));
       await saved();
-    } catch (failure) { setError(text(conflict(failure) ? 'changed' : 'signFailed')); } finally { setBusy(false); }
+    } catch (failure) { setError(text(failure instanceof ApiError && failure.status === 429 ? 'retry' : conflict(failure) ? 'changed' : 'signFailed')); } finally { setBusy(false); }
   }
   const reset = () => { uploaded.current = null; };
   return <Dialog title={text('reviewSign')} closeLabel={text('close')} dismissible={!busy} unsavedChanges={changed} onClose={close} size="wide">

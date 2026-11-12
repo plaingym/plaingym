@@ -15,6 +15,7 @@ import { createSettingsService } from '../../areas/settings/settings.js';
 import { createWaiversService } from '../../areas/waivers/waivers.js';
 import { createWaiverDocumentDelivery } from '../../areas/waivers/document-delivery.js';
 import { waiverDocumentFixture } from '../../areas/waivers/document.fixture.js';
+import { documentReadBudget } from '../../areas/waivers/document-read.js';
 import { readSnapshot } from '../../areas/waivers/snapshot.js';
 import { FakeUploads } from '../../infra/storage/index.js';
 import { demoUploads } from '../../demo/uploads.js';
@@ -151,7 +152,11 @@ describe('core public pages through the production registrations', () => {
       const document = await f.waivers.uploadDocument({ gymId: f.gymId, actor: { kind: 'system' } }, await waiverDocumentFixture());
       await db.forGym(f.gymId, tx => tx.update(waiverTemplates).set({ body: '', documentKey: document.key, documentHash: document.hash, documentPages: document.pages, documentBytes: document.bytes }).where(eq(waiverTemplates.id, f.template.id)));
       const documentPath = `/api/public/waivers/${f.template.id}/document`;
-      expect((await f.server.request(origin + documentPath)).status).toBe(200);
+      for (let i = 0; i < 20; i++) expect((await f.server.request(origin + documentPath + '?view=1')).status).toBe(302);
+      for (let i = 20; i < documentReadBudget; i++) expect((await f.server.request(origin + documentPath)).status).toBe(200);
+      const refused = await f.server.request(origin + documentPath + '?view=1');
+      expect(refused.status).toBe(429); expect(refused.headers.get('retry-after')).toBe('60');
+      expect(refused.headers.get('content-type')).toContain('text/html'); expect(await refused.text()).toContain('Wait a minute');
       expect((await f.app(f.otherGym).request(origin + documentPath)).status).toBe(404);
       expect(await (await f.server.request(origin + '/drop-in')).text()).toContain('Open the document');
     }

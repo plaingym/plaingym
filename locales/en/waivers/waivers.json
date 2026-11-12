@@ -48,7 +48,11 @@
   "textDocument": "Waiver text",
   "documentKind": "Document format",
   "uploadDocument": "Upload a PDF",
-  "documentLimits": "Up to 10 MiB and 20 pages. Use a static PDF without passwords, forms, attachments or links.",
+  "documentLimits": "Up to 10 MiB and 20 pages. Plain web, email and page links are allowed. Use a PDF without passwords, forms, attachments or active content.",
+  "documentRetryTitle": "Document could not be opened",
+  "documentRetryBody": "The server is busy. Wait a minute, then reload this document. Read it before signing; if it still will not open, contact the gym.",
+  "documentUnavailableBody": "Return to the signing page and open the document again. Read it before signing; if it still will not open, contact the gym.",
+  "documentSource": "Source code",
   "documentRequired": "Choose a PDF before saving.",
   "documentSelected": "PDF uploaded and validated."
 }

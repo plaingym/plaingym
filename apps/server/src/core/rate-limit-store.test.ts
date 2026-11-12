@@ -10,6 +10,7 @@ import { cacheRefusals, rateLimit, type SharedRateLimitStore } from './rate-limi
 import { createIntakeRateLimitStore, registerIntakeRateLimits, sweepIntakeRateLimits } from './rate-limit-store.js';
 import { PostgresJobs } from '../infra/jobs/postgres.js';
 import { createPublicRoutes } from '../public/pages/pages.routes.js';
+import { documentReadBudget } from '../areas/waivers/document-read.js';
 import { createJoinRoutes } from '../public/pages/join.routes.js';
 import { createLinkRoutes } from '../public/links/links.routes.js';
 import { createPortalInvitationRoutes } from '../areas/portal/access.routes.js';
@@ -104,11 +105,11 @@ it('public route factories use the registered shared store before their validato
     });
     expect(response.status, route.id).toBe(429);
   }
-  // Document reads have their own ten-per-client-per-minute download limit. An exhausted intake
-  // budget must not deny them; after ten attempts their own limiter precedes validation.
+  // Document reads have their own budget for a shared address. An exhausted intake
+  // budget must not deny them; their own limiter still precedes validation.
   const buckets = () => db.forSystem(tx => tx.select().from(intakeRateLimits).where(eq(intakeRateLimits.gymId, f.gymId)));
   const before = await buckets();
-  for (let attempt = 0; attempt < 10; attempt++) {
+  for (let attempt = 0; attempt < documentReadBudget; attempt++) {
     expect((await app.request('/api/public/waivers/invalid/document')).status).toBe(400);
   }
   const denied = await app.request('/api/public/waivers/invalid/document');

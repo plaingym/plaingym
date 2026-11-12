@@ -1,21 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 /* eslint-disable no-control-regex -- PDF whitespace includes the NUL byte. */
 import { inflateSync } from 'node:zlib';
-import { PDFDocument, PDFArray, PDFDict, PDFName, PDFNumber, PDFRawStream, PDFRef, PDFInvalidObject, PDFContext, PDFObjectParser, type PDFObject } from '@cantoo/pdf-lib';
+import { PDFDocument, PDFArray, PDFDict, PDFName, PDFNumber, PDFString, PDFHexString, PDFRawStream, PDFRef, PDFInvalidObject, PDFContext, PDFObjectParser, type PDFObject } from '@cantoo/pdf-lib';
 import { AppError } from '@plaingym/shared';
 import { scanPdfObject } from './document-syntax.js';
 
 export const documentByteLimit = 10 * 1024 * 1024;
 function invalid(message = 'The PDF is truncated or malformed. Save a new PDF from the original document and upload it again'): never { throw new AppError('invalid_request', message); }
 const activeMessage = 'The PDF contains active content, forms, attachments, hidden content or external references. Remove these features or save a flattened static copy';
-const forbidden = new Set(['JavaScript', 'JS', 'OpenAction', 'AA', 'Launch', 'EmbeddedFiles', 'EmbeddedFile', 'Filespec',
+const forbidden = new Set(['JavaScript', 'JS', 'AA', 'Launch', 'EmbeddedFiles', 'EmbeddedFile', 'Filespec',
   // A file specification's /Type is optional in practice, so its file entries are refused by name.
   'AF', 'EF', 'RF',
-  'AcroForm', 'XFA', 'URI', 'GoToR', 'GoToE', 'SubmitForm', 'ImportData', 'RichMedia', 'Movie', 'Sound', 'Rendition',
+  'AcroForm', 'XFA', 'GoToR', 'GoToE', 'SubmitForm', 'ImportData', 'RichMedia', 'Movie', 'Sound', 'Rendition',
   'OCProperties', 'OC', 'OCG', 'OCMD', 'Encrypt', 'FFilter', 'FDecodeParms', 'OPI', 'PS',
-  // Annotations can expose alternate appearances, 3D content, actions or hidden states.
-  // Require a flattened static export rather than asking a viewer to interpret them.
-  'Annots', '3D', '3DD', '3DA', '3DView', '3DRef', 'RichMediaContent', 'RichMediaSettings',
+  '3D', '3DD', '3DA', '3DView', '3DRef', 'RichMediaContent', 'RichMediaSettings',
   'Collection', 'AlternatePresentations', 'PresSteps', 'Alternates']);
 
 /** `eol` counts the bytes before `endstream` that could be a line ending or the stream's own last data. */
@@ -169,6 +167,8 @@ function resolveSections(entries: Map<string, EnvelopeObject>, sections: Map<num
   return { xrefs, root };
 }
 
+/** Structural parsing and resource bounds are shared by uploads and immutable records.
+ * Upload acceptance policy lives separately, so later policy changes cannot invalidate a signed record. */
 async function load(bytes: Uint8Array) {
   if (bytes.length > documentByteLimit) invalid('The PDF must be no larger than 10 MiB');
   const { objects: entries, sections, tails } = envelope(bytes);
@@ -276,18 +276,11 @@ async function load(bytes: Uint8Array) {
     if (seen.has(object)) return; seen.add(object);
     if (object instanceof PDFInvalidObject) invalid();
     if (object instanceof PDFRawStream) {
-      if (object.dict.has(PDFName.of('F'))) invalid(activeMessage);
       visit(object.dict, depth + 1);
     }
     else if (object instanceof PDFArray) object.asArray().forEach(item => visit(item, depth + 1));
     else if (object instanceof PDFDict) {
-      for (const [key, item] of object.entries()) {
-        const value = item instanceof PDFRef ? document.context.lookup(item) : item;
-        if (forbidden.has(key.decodeText()) || ['Type', 'Subtype', 'S'].includes(key.decodeText()) && value instanceof PDFName && forbidden.has(value.decodeText()) ||
-          // Only the action can name another file: /Type /Thread is an ordinary article thread.
-          key === PDFName.of('S') && value === PDFName.of('Thread') ||
-          key === PDFName.of('Ref') && (object.lookup(PDFName.of('Type')) === PDFName.of('XObject') || object.lookup(PDFName.of('Subtype')) === PDFName.of('Form')))
-          invalid(activeMessage);
+      for (const item of object.values()) {
         visit(item, depth + 1);
       }
     }
@@ -326,28 +319,99 @@ async function load(bytes: Uint8Array) {
   return document;
 }
 
+function validateUploadPolicy(document: PDFDocument) {
+  const name = PDFName.of;
+  const links = new Set<PDFObject>(), uriActions = new Set<PDFObject>(), actions = new Set<PDFObject>();
+  const dicts: PDFDict[] = [];
+  const seen = new Set<PDFObject>();
+  const collect = (object: PDFObject): void => {
+    if (seen.has(object)) return; seen.add(object);
+    if (object instanceof PDFRawStream) {
+      if (object.dict.has(name('F'))) invalid(activeMessage);
+      collect(object.dict);
+    } else if (object instanceof PDFArray) object.asArray().forEach(collect);
+    else if (object instanceof PDFDict) { dicts.push(object); object.values().forEach(collect); }
+  };
+  for (const [, object] of document.context.enumerateIndirectObjects()) collect(object);
+  for (const dict of dicts) {
+    for (const key of ['A', 'OpenAction']) {
+      const action = dict.lookup(name(key));
+      // Tagged PDFs use /A for structure attributes, which have no /S; every action has one.
+      // A claimed /Type can't exempt an /A, since viewers ignore it on outlines and annotations.
+      if (action instanceof PDFDict && (key === 'OpenAction' || action.has(name('S')))) actions.add(action);
+    }
+    if (!dict.has(name('Annots'))) continue;
+    const annots = dict.lookup(name('Annots'));
+    if (!(annots instanceof PDFArray)) invalid(activeMessage);
+    for (const raw of annots.asArray()) {
+      const annot = raw instanceof PDFRef ? document.context.lookup(raw) : raw;
+      if (!(annot instanceof PDFDict) || annot.lookup(name('Subtype')) !== name('Link') ||
+        ['AP', 'AS', 'AA'].some(key => annot.has(name(key)))) invalid(activeMessage);
+      const flags = annot.lookup(name('F'));
+      if (flags && (!(flags instanceof PDFNumber) || (flags.asNumber() & (1 | 2 | 32)) !== 0)) invalid(activeMessage);
+      links.add(annot);
+      const action = annot.lookup(name('A'));
+      if (action && !(action instanceof PDFDict)) invalid(activeMessage);
+      if (action instanceof PDFDict) { uriActions.add(action); actions.add(action); }
+    }
+  }
+  for (const dict of dicts) {
+    if (dict.lookup(name('Type')) === name('Annot') && !links.has(dict) ||
+      dict.has(name('Subtype')) && dict.lookup(name('Subtype')) === name('Link') && !links.has(dict)) invalid(activeMessage);
+    if (dict.has(name('OpenAction'))) {
+      const action = dict.lookup(name('OpenAction'));
+      if (!(action instanceof PDFDict) || action.lookup(name('S')) !== name('GoTo')) invalid(activeMessage);
+    }
+    const action = dict.lookup(name('S'));
+    // /S is also used by ordinary graphics dictionaries (for example /S /Transparency).
+    const isAction = dict.lookup(name('Type')) === name('Action') || actions.has(dict);
+    if (isAction && (action !== name('GoTo') && action !== name('URI') || dict.has(name('Next')))) invalid(activeMessage);
+    if (dict.has(name('URI')) || dict.lookup(name('S')) === name('URI')) {
+      const uri = dict.lookup(name('URI'));
+      if (!uriActions.has(dict) || dict.lookup(name('S')) !== name('URI') ||
+        !(uri instanceof PDFString || uri instanceof PDFHexString) || !/^(https?:|mailto:)/i.test(uri.decodeText())) invalid(activeMessage);
+    }
+    for (const [key, item] of dict.entries()) {
+      const value = item instanceof PDFRef ? document.context.lookup(item) : item;
+      if (forbidden.has(key.decodeText()) || ['Type', 'Subtype', 'S'].includes(key.decodeText()) && value instanceof PDFName && forbidden.has(value.decodeText()) ||
+        key === name('S') && value === name('Thread') ||
+        key === name('Ref') && (dict.lookup(name('Type')) === name('XObject') || dict.lookup(name('Subtype')) === name('Form'))) invalid(activeMessage);
+    }
+  }
+}
+
 let active = false;
-/** Upload parsing is serialized with a bounded queue; callers retry excess requests. */
-const queue: (() => void)[] = [];
-async function bounded<T>(work: () => Promise<T>) {
+/** One active operation, eight waiting in total, and at most two waiting per gym. */
+const queue: { gymId: string; run: () => void }[] = [];
+async function bounded<T>(gymId: string, work: () => Promise<T>) {
   if (active) {
-    if (queue.length >= 8) throw new AppError('conflict', 'PDF processing is busy; please retry');
-    await new Promise<void>(resolve => queue.push(resolve));
+    if (queue.length >= 8 || queue.filter(entry => entry.gymId === gymId).length >= 2)
+      throw new AppError('rate_limited', 'PDF processing is busy; please retry shortly');
+    await new Promise<void>(resolve => queue.push({ gymId, run: resolve }));
   } else active = true;
   try { return await work(); }
-  finally { const next = queue.shift(); if (next) next(); else active = false; }
+  finally { const next = queue.shift(); if (next) next.run(); else active = false; }
 }
-export function validateDocumentPdf(bytes: Uint8Array): Promise<{ pages: number; bytes: number }> {
-  return bounded(async () => {
-    try { return { pages: (await load(bytes)).getPageCount(), bytes: bytes.length }; }
+type PdfBytes = Uint8Array | (() => Promise<Uint8Array>);
+const readBytes = async (input: PdfBytes) => typeof input === 'function' ? input() : input;
+export function validateDocumentPdf(input: PdfBytes, gymId = 'unscoped'): Promise<{ pages: number; bytes: number }> {
+  return bounded(gymId, async () => {
+    // A storage or integrity failure is not a malformed upload, so it stays outside the catch below.
+    const bytes = await readBytes(input);
+    try {
+      const document = await load(bytes);
+      validateUploadPolicy(document);
+      return { pages: document.getPageCount(), bytes: bytes.length };
+    }
     catch (error) { if (error instanceof AppError) throw error; invalid(); }
   });
 }
 /** Original page contents/resources are copied, never painted, stamped or reflowed.
  * The signing sets the metadata, as on a generated copy, so a later render doesn't restate its date. */
-export function appendSignaturePdf(original: Uint8Array, signature: Uint8Array, details: { title: string; createdAt: Date }): Promise<Uint8Array> {
-  return bounded(async () => {
-    const document = await load(original), signed = await PDFDocument.load(signature);
+export function appendSignaturePdf(original: PdfBytes, signature: PdfBytes, details: { title: string; createdAt: Date }, gymId = 'unscoped'): Promise<Uint8Array> {
+  return bounded(gymId, async () => {
+    // Refuse a busy details renderer before loading the stored original, too.
+    const signed = await PDFDocument.load(await readBytes(signature)), document = await load(await readBytes(original));
     const result = await PDFDocument.create({ updateMetadata: false });
     for (const page of await result.copyPages(document, document.getPageIndices())) result.addPage(page);
     for (const page of await result.copyPages(signed, signed.getPageIndices())) result.addPage(page);

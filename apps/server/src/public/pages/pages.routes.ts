@@ -5,6 +5,7 @@ import { AppError, createTranslator, type Translator } from '@plaingym/shared';
 import { publicContracts as contracts, paginationSchema, publicTrialRequestSchema, waiverDocumentReadContracts } from '@plaingym/shared/contracts';
 import { route, type RouteRegistration } from '../../core/registry.js';
 import { rateLimit } from '../../core/rate-limit.js';
+import { documentReadLimit } from '../../areas/waivers/document-read.js';
 import { setPolicy } from '../../core/csp.js';
 import { cachedLinkAsset } from '../links/assets.js';
 import { createPublicPagesService, type PublicPagesOptions, type PublicPagesService } from './service.js';
@@ -38,7 +39,7 @@ export function createPublicRoutes(supplied?: PublicRoutesOptions): readonly Rou
     });
   } });
   const result: RouteRegistration[] = [
-    route({ ...waiverDocumentReadContracts.public, middleware: rateLimit({ limit: 10 }),
+    route({ ...waiverDocumentReadContracts.public, middleware: documentReadLimit(ctx => ctx.req.query('view') === '1'),
       request: { params: waiverDocumentReadContracts.public.params, query: waiverDocumentReadContracts.public.query },
       responses: { ...json(waiverDocumentReadContracts.public.response), 302: { description: 'Open the waiver document' } } }, async ctx => {
       const result = await options().service.document(ctx.get('context').gym.gymId, ctx.req.valid('param').templateId);

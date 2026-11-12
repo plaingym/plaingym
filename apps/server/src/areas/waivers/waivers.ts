@@ -82,7 +82,7 @@ export function createWaiversService(options: WaiverOptions) {
   async function validateTemplate(gymId: string, input: c.WaiverCreateTemplateRequest) {
     if (!input.document) return validateTemplatePdf(input);
     service.documentDelivery();
-    const result = await validateDocumentPdf(await documentBytes(gymId, input.document));
+    const result = await validateDocumentPdf(() => documentBytes(gymId, input.document!), gymId);
     if (result.pages !== input.document.pages) invalid('Waiver document page count mismatch');
     await validateTemplatePdf({ name: input.name, body: '' });
   }
@@ -151,7 +151,7 @@ export function createWaiversService(options: WaiverOptions) {
       // DemoUploads owns the existing uploads-disabled error. It refuses before examining the file.
       if (uploads instanceof DemoUploads) await uploads.put();
       service.documentDelivery();
-      const validated = await validateDocumentPdf(bytes);
+      const validated = await validateDocumentPdf(bytes, ctx.gymId);
       await uploads.put(key, bytes, 'application/pdf');
       try { await scope(ctx.gymId, tx => audit(tx, ctx, 'waiver.template_document.uploaded', key.split('/').at(-1)!.slice(0, -4))); }
       catch (error) { await uploads.markDeleted(key); throw error; }
@@ -219,7 +219,7 @@ export function createWaiversService(options: WaiverOptions) {
       // No rendering/storage work runs inside either short transaction.
       const preparedDocument = readSnapshot(prepared.snapshot.snapshot, prepared.snapshot.snapshotHash).template.document;
       await (options.render ?? renderWaiver)(prepared.snapshot.snapshot, prepared.snapshot.snapshotHash, png,
-        preparedDocument ? await documentBytes(ctx.gymId, preparedDocument) : undefined);
+        preparedDocument ? () => documentBytes(ctx.gymId, preparedDocument) : undefined, ctx.gymId);
       return scope(ctx.gymId, async tx => {
         const checked = await prepare(tx);
         if (checked.kind === 'existing') return checked.value;
@@ -251,7 +251,7 @@ export function createWaiversService(options: WaiverOptions) {
       const render = async () => {
         const png = await image(gymId, row.memberId, row.signatureImageKey, row.signatureImageHash);
         return (options.render ?? renderWaiver)(row.snapshot, row.snapshotHash, png,
-          snapshot.template.document ? await documentBytes(gymId, snapshot.template.document) : undefined);
+          snapshot.template.document ? () => documentBytes(gymId, snapshot.template.document!) : undefined, gymId);
       };
       const freshKey = () => `${gymId}/waivers/${row.memberId}/pdf/${uuidv7(clock.now().getTime())}.pdf`;
       let key: string;
