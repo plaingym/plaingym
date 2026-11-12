@@ -43,7 +43,8 @@ export function createKioskCheckinHelpers(options: {
   }
   async function record(gymId: string, deviceId: string, member: KioskMemberIdentity, sessionId: string | null): Promise<KioskCheckinResult> {
     try {
-      // Open mat is never deduplicated; a session check-in reports an earlier one instead of recording again.
+      // Attendance serializes and deduplicates live open mat per member per gym-local day.
+      // A session check-in reports an earlier one instead of recording again.
       // References can disappear after selection; the lookup must stay inside the neutral error boundary too.
       if (sessionId && (await attendance.list(gymId, { memberId: member.id, sessionId, limit: 1, offset: 0 })).pagination.total)
         return { status: 'already_checked_in', member };

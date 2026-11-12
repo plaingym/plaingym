@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { parseResponse } from '../../lib/response.js';
 import { checkinCodeContracts, checkinCodeResponseSchema, kioskCheckinResponseSchema, type CheckinCodeResponse } from '@plaingym/shared/contracts';
-import { KioskAuthError } from './api.js';
+import { checkKioskVersion, KioskAuthError } from './api.js';
 
 export type CheckinCode = CheckinCodeResponse['data'];
 export class QrRequestError extends Error { constructor(readonly status: number) { super('Request failed'); } }
 export async function qrCheckin(token: string, code: string, sessionId?: string | null) {
+  await checkKioskVersion();
   const response = await fetch('/api/kiosk/checkin/qr', { method: 'POST', credentials: 'omit', cache: 'no-store', redirect: 'error',
     signal: AbortSignal.timeout(15_000), headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
     body: JSON.stringify({ code, ...(sessionId === undefined ? {} : { sessionId }) }) });

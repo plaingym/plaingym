@@ -71,6 +71,27 @@ test('demo entry creates a gym, the slim bar and demo menu work at every size, f
     await expect(page.getByLabel('Your name', { exact: true })).toHaveCount(0);
     await accessibleLayout(page, info, 'kiosk-choice-' + size.width);
   }
+  // Exercise both camera failures on the real kiosk at phone, tablet and desktop widths.
+  for (const enumerationFails of [true, false]) {
+    await page.evaluate((fails) => {
+      Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: {
+        enumerateDevices: async () => { if (fails) throw new Error('unavailable'); return [{ kind: 'videoinput' }]; },
+        getUserMedia: async () => { throw new Error('permission denied'); },
+      } });
+    }, enumerationFails);
+    await page.getByRole('button', { name: 'Scan a QR code', exact: true }).click();
+    await expect(page.getByText(enumerationFails ? /This device can't scan/ : /Allow camera access/)).toBeVisible();
+    if (!enumerationFails) {
+      await page.getByRole('button', { name: 'Try again', exact: true }).click();
+      await expect(page.getByText(/Allow camera access/)).toBeVisible();
+    }
+    for (const size of sizes) {
+      await page.setViewportSize(size);
+      await accessibleLayout(page, info, 'kiosk-camera-' + enumerationFails + '-' + size.width);
+      await page.screenshot({ path: info.outputPath('kiosk-camera-' + enumerationFails + '-' + size.width + '.png'), fullPage: true });
+    }
+    await page.getByRole('button', { name: 'Start over', exact: true }).click();
+  }
   await page.getByRole('button', { name: 'Name and PIN', exact: true }).click();
   await expect(page.getByText(/Search the full name Marcus Rivera with household PIN 2468/)).toHaveCount(1);
   for (const size of sizes) {
@@ -159,5 +180,17 @@ test('demo entry creates a gym, the slim bar and demo menu work at every size, f
   await page.keyboard.press('Escape');
   await expect(preview).toHaveCount(0);
   await expect(previewButton).toBeFocused();
+
+  await page.addInitScript(() => {
+    Storage.prototype.setItem = () => { throw new Error('Storage blocked'); };
+  });
+  await page.goto(sandbox.origin + '/demo#kioskToken=blocked-demo-device');
+  await expect(page.getByRole('alert')).toContainText("couldn't save");
+  expect(new URL(page.url()).hash).toContain('kioskToken=blocked-demo-device');
+  for (const size of sizes) {
+    await page.setViewportSize(size);
+    await accessibleLayout(page, info, 'demo-token-save-error-' + size.width);
+    await page.screenshot({ path: info.outputPath('demo-token-save-error-' + size.width + '.png'), fullPage: true });
+  }
 
 });

@@ -5,6 +5,13 @@ import { forgetToken, kioskApi, KioskAuthError, readToken, saveToken } from './a
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); window.localStorage.clear(); window.history.replaceState(null, '', '/kiosk'); });
 describe('kiosk device transport', () => {
+  it.each([null, 'old-device'])('ignores a whitespace-only fragment without replacing stored token %s', (stored) => {
+    if (stored) saveToken(stored);
+    window.history.replaceState(null, '', '/kiosk#token=%20');
+    const failed = vi.fn();
+    expect(readToken(failed)).toBe(stored);
+    expect(failed).not.toHaveBeenCalled();
+  });
   it('takes a device token out of the fragment and never puts credentials or rosters in the URL', () => {
     window.history.replaceState(null, '', '/kiosk#token=new-device');
     expect(readToken()).toBe('new-device');

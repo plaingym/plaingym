@@ -148,6 +148,16 @@ describe('QR check-in and revocable member codes', () => {
       .toMatchObject({ status: 'checked_in' });
     expect(await visits(member.id)).toHaveLength(1);
   });
+  it('records only one open-mat visit when a response is discarded and QR requests race with a retry', async () => {
+    const member = await person(), issued = await issue(member);
+    const server = app();
+    // The device never sees the committed first response.
+    await server.request('/api/kiosk/checkin/qr', request(issued.code!));
+    const responses = await Promise.all(Array.from({ length: 3 }, () =>
+      server.request('/api/kiosk/checkin/qr', request(issued.code!))));
+    expect(responses.map((response) => response.status)).toEqual([200, 200, 200]);
+    expect(await visits(member.id)).toHaveLength(1);
+  });
   it('keeps inactive/erased members, waiver and billing failures neutral and private', async () => {
     const member = await person(), issued = await issue(member);
     const blocked = createQrCheckin({ scope: db.forGym, clock, codes, standing: createStandingChecks([

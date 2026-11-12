@@ -22,6 +22,7 @@ export const useDemoSandbox = () => useDemoMode() === 'sandbox';
 export function DemoShell({ children }: { children: ReactNode }) {
   // Capture before a child route's login guard can redirect and discard the fragment.
   const [kioskToken, setKioskToken] = useState(() => new URLSearchParams(window.location.hash.slice(1)).get('kioskToken'));
+  const [tokenSaveFailed, setTokenSaveFailed] = useState(false);
   const discovery = useQuery({
     queryKey: ['demo', 'discovery', window.location.origin],
     // Let an in-flight discovery finish across a StrictMode/root remount, so it
@@ -58,7 +59,8 @@ export function DemoShell({ children }: { children: ReactNode }) {
   const activeSandbox = mode?.mode === 'sandbox' && !discovery.isError && !expired;
   useEffect(() => {
     if (!activeSandbox || !kioskToken) return;
-    saveToken(kioskToken);
+    if (!saveToken(kioskToken)) { setTokenSaveFailed(true); return; }
+    setTokenSaveFailed(false);
     const fragment = new URLSearchParams(window.location.hash.slice(1));
     if (fragment.has('kioskToken')) {
       fragment.delete('kioskToken');
@@ -68,10 +70,11 @@ export function DemoShell({ children }: { children: ReactNode }) {
     setKioskToken(null);
   }, [activeSandbox, kioskToken]);
   return <DemoContext.Provider value={discovery.isError || expired ? undefined : mode}><LoginContext.Provider value={login}>
+    {tokenSaveFailed && <div className="p-4"><Alert role="alert">{t('kiosk/kiosk:setupSaveError')}</Alert></div>}
     {(discovery.isError || expired) && <div className="p-4" role="alert">
       <p>{t('demo/demo:error')}</p><Button type="button" onClick={() => { void refetch(); }}>{t('shell/shell:retry')}</Button>
     </div>}
-    <DemoNotice /><DemoEntry />{kioskToken && (discovery.isPending || activeSandbox) ? <LoadingState /> : children}
+    <DemoNotice /><DemoEntry />{kioskToken && (discovery.isPending || activeSandbox) ? (tokenSaveFailed ? null : <LoadingState />) : children}
   </LoginContext.Provider></DemoContext.Provider>;
 }
 export function DemoEntry() {

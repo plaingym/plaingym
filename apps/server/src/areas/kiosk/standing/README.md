@@ -39,8 +39,9 @@ Sessions open for check-in one hour before starting and close at their end.
 A single booking is selected automatically; otherwise the member chooses among
 current sessions or open mat. Attendance goes through `createAttendanceService`
 with `source: 'kiosk'` and the device audit actor. The attendance service
-deduplicates session check-ins under concurrency. Session-less open-mat visits
-retain each explicit tap. The browser makes one attempt per submission, never
+deduplicates session check-ins under concurrency. Live session-less open-mat
+visits count once per member per gym-local day, including concurrent retries
+after a lost response. The browser makes one attempt per submission, never
 queues offline visits, and never retries an uncertain write automatically.
 
 The kiosk works with keyboard input or the touch keypad and offers the browser's

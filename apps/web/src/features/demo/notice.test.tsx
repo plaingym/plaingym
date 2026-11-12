@@ -12,7 +12,7 @@ vi.stubGlobal('fetch', fetcher);
 const { DemoShell, DemoKioskHint, TryDemoButton, useDemoLogin, useDemoSandbox } = await import('./notice.js');
 const { readToken } = await import('../kiosk/api.js');
 beforeEach(() => { fetcher.mockReset(); localStorage.clear(); route.pathname = '/admin'; window.history.replaceState(null, '', '/admin'); });
-afterEach(() => { cleanup(); vi.useRealTimers(); focusManager.setFocused(undefined); onlineManager.setOnline(true); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); focusManager.setFocused(undefined); onlineManager.setOnline(true); });
 afterAll(() => vi.unstubAllGlobals());
 it('announces creation immediately, prevents repeat activation, and navigates only after success', async () => {
   let finish!: (response: Response) => void;
@@ -42,6 +42,16 @@ function start(client = new QueryClient({ defaultOptions: { queries: { retry: fa
   const view = render(<StrictMode><QueryClientProvider client={client}><DemoShell>{children}</DemoShell></QueryClientProvider></StrictMode>);
   return { ...view, client };
 }
+it('keeps a failed kiosk handoff in the fragment and explains blocked storage before mounting a route', async () => {
+  window.history.replaceState(null, '', '/demo#kioskToken=demo-device');
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
+  fetcher.mockResolvedValue(Response.json({ data: { mode: 'sandbox', expiresAt: '2099-01-01T00:00:00.000Z', join: false } }));
+  start();
+  expect((await screen.findByRole('alert')).textContent).toContain('save');
+  expect(window.location.hash).toContain('kioskToken=demo-device');
+  expect(screen.queryByText('Login screen')).toBeNull();
+  expect(screen.queryByText('Sandbox consumer')).toBeNull();
+});
 it('shares one successful disabled discovery across navigation, focus, reconnect and root remounts', async () => {
   fetcher.mockResolvedValue(Response.json({ data: { mode: 'disabled' } }));
   const first = start();

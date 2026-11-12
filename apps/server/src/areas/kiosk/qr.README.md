@@ -22,7 +22,9 @@ encrypted gym-key resolver and photo storage. Both QR and name/PIN check-in use
 `kiosk/checkin.ts` for private identities, current sessions, the real
 `class_bookings` query (`booked` only), and attendance recording. Exactly one
 booked current session is selected automatically; several offer only booked
-sessions, while zero offers all current sessions. Open mat is never deduplicated.
+sessions, while zero offers all current sessions. Live open mat is deduplicated
+per member per gym-local day by the attendance service under a member row lock,
+including retries after a lost response and simultaneous QR and name/PIN requests.
 
 The staff read/replace/revoke endpoints use the shared check-in-code contracts
 and require `members.manage`. Device tokens remain restricted by the existing
@@ -38,6 +40,15 @@ fallback. Frames are never uploaded. Results reset after eight seconds, and
 unfinished scans and session choices after sixty seconds. Codes stay in memory
 only and are cleared with the result. Camera tracks and polling stop on exit.
 The staff tab renders codes using zero-dependency `uqr` 0.1.3 (MIT).
+
+Camera access failures offer **Try again** directly; failed device enumeration
+uses the unavailable-camera message. Before each lookup or check-in, production
+kiosks check `/healthz` against their bundle's release and reload on a mismatch.
+Responses remain strictly parsed to reject unexpected private fields. The shared
+version guard prevents repeated reloads if a stale bundle is served again.
+Whitespace-only setup fragments do not replace a saved device token. A failed
+replacement save still requires setup rather than silently using the old token.
+Demo handoffs retain their fragment and show the storage error if saving fails.
 
 Tests exercise the actual area route registrations with device middleware,
 staff permission matrices, gym/household isolation, revocation and regeneration,

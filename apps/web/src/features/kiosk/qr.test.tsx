@@ -25,6 +25,23 @@ afterEach(() => { cleanup(); vi.resetAllMocks(); vi.useRealTimers(); setCamera(u
 /** The page mounts the flow already open, so the camera starts without a tap. */
 async function start() { await act(async () => { await Promise.resolve(); }); }
 async function scan() { await act(async () => { found(code); }); }
+it('retries camera access directly after permission is allowed', async () => {
+  vi.mocked(scanQrCamera).mockRejectedValueOnce(new Error('permission denied'));
+  render(<QrCheckin {...flow()}/>); await start();
+  expect(screen.getByText(/Allow camera access/)).toBeDefined();
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Try again' })); });
+  expect(scanQrCamera).toHaveBeenCalledTimes(2);
+  await scan();
+  expect(screen.getByText('Dana P.')).toBeDefined();
+});
+it('uses the unavailable-camera wording when device enumeration fails', async () => {
+  setCamera({ getUserMedia: vi.fn(), enumerateDevices: vi.fn().mockRejectedValue(new Error('unavailable')) });
+  render(<QrCheckin {...flow()}/>); await start();
+  expect(screen.getByText(/This device can't scan/)).toBeDefined();
+  expect(screen.queryByText(/Allow camera access/)).toBeNull();
+  expect(screen.getByRole('button', { name: 'Use name and PIN' })).toBeDefined();
+  expect(scanQrCamera).not.toHaveBeenCalled();
+});
 it('scans, prompts for a class or open mat, then clears the person and code', async () => {
   const props = flow();
   render(<QrCheckin {...props}/>);
@@ -99,7 +116,7 @@ it('does not start scanning when enumeration finds only audio devices', async ()
 it('handles failed enumeration and ignores enumeration after unmount', async () => {
   setCamera({ getUserMedia: vi.fn(), enumerateDevices: vi.fn().mockRejectedValue(new Error('denied')) });
   const view = render(<QrCheckin {...flow()}/>); await start();
-  expect(screen.getByText(/Allow camera access/)).toBeDefined();
+  expect(screen.getByText(/This device can't scan/)).toBeDefined();
   expect(scanQrCamera).not.toHaveBeenCalled(); view.unmount();
   let finish!: (value: { kind: string }[]) => void;
   setCamera({ getUserMedia: vi.fn(), enumerateDevices: () => new Promise((resolve) => { finish = resolve; }) });

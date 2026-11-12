@@ -115,4 +115,6 @@ app* option.
    response restarts the idle period; unfinished QR selections reset after 60
    seconds without pointer or keyboard activity anywhere on the kiosk page.
    Completed results reset after eight seconds without activity. After a request
-   error, **Try again** starts a fresh scan.
+   error, **Try again** starts a fresh scan. A camera access error also offers
+   **Try again** after allowing access. Production kiosks check the server release
+   before each lookup or check-in and reload when their bundle is stale.

@@ -44,9 +44,9 @@ export function QrCheckin({ token, onUnauthorized, onClose, onNamePin, onProgres
     const started = generation.current;
     const element = video.current;
     void (async () => {
-      const devices = await navigator.mediaDevices.enumerateDevices();
+      const devices = await navigator.mediaDevices.enumerateDevices().catch(() => undefined);
       if (cancelled || started !== generation.current) return;
-      if (!devices.some((device) => device.kind === 'videoinput')) {
+      if (!devices?.some((device) => device.kind === 'videoinput')) {
         setScanning(false); setMessage('noCamera'); return;
       }
       return scanQrCamera(element, (value) => {
@@ -64,7 +64,7 @@ export function QrCheckin({ token, onUnauthorized, onClose, onNamePin, onProgres
     {scanning && <><p>{text('cameraHelp')}</p><video ref={video} aria-label={text('camera')} muted playsInline className="aspect-[4/3] w-full rounded-lg bg-muted object-cover"/></>}
     {!scanning && !result && !message && <p role="status">{text('checking')}</p>}
     {message && <><Alert role="status">{text(message)}</Alert>
-      {message === 'requestError' && <Button className={big + ' w-full'} onClick={() => { reset(); setScanning(true); }}>{text('retry')}</Button>}
+      {(message === 'requestError' || message === 'cameraError') && <Button className={big + ' w-full'} onClick={() => { reset(); setScanning(true); }}>{text('retry')}</Button>}
       {(message === 'cameraError' || message === 'noCamera' || message === 'requestError') && <Button className={big + ' w-full'} onClick={() => { reset(); onNamePin(); }}>{text('usePin')}</Button>}</>}
     {result && <div aria-live="polite" className="space-y-4">
       {result.status !== 'see_front_desk' && <p className="break-words text-2xl">{result.member.firstName} {result.member.lastInitial}.</p>}
