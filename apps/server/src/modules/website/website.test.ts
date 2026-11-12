@@ -17,7 +17,7 @@ import { authorize } from '../../areas/staff/auth.permissions.js';
 import { createSettingsService } from '../../areas/settings/settings.js';
 import { createModuleSettings } from '../../areas/settings/module-settings.js';
 import { configurePublicPages } from '../../public/pages/pages.routes.js';
-import { logoVersion } from '../../public/pages/service.js';
+import { logoVersion } from '../../public/short-hash.js';
 import { setLogSink } from '../../core/log.js';
 import { zonedInstant } from '@plaingym/shared/time';
 import { createWaiversService } from '../../areas/waivers/waivers.js';
@@ -255,6 +255,20 @@ describe('the pages', () => {
 });
 
 describe('the customization API', () => {
+  it('keeps an unset setup color as null through saves and their audit records', async () => {
+    const gymId = uuidv7(), branding = { primaryColor: null, logoKey: null };
+    await factory('gyms', gymId, { branding });
+    const context = { gymId, actor: { kind: 'system' } } as const;
+    await service.update(context, editable(await service.settings(gymId)));
+    expect((await settings.get(gymId)).branding).toEqual(branding);
+    const audits = await db.forGym(gymId, tx => tx.select().from(auditEvents));
+    const audit = audits.find(row => row.action === 'settings.module.updated')!;
+    expect((audit.before as { branding: unknown }).branding).toEqual(branding);
+    expect((audit.after as { branding: unknown }).branding).toEqual(branding);
+    await service.update(context, { ...editable(await service.settings(gymId)), primaryColor: '#123456' });
+    await service.update(context, { ...editable(await service.settings(gymId)), primaryColor: null });
+    expect((await settings.get(gymId)).branding).toEqual(branding);
+  });
   it('reads content a newer release added keys to, and a save keeps those keys', async () => {
     const gymId = uuidv7(), photoId = uuidv7();
     const photo = { id: photoId, key: `${gymId}/website/photos/mat.jpg`, contentType: 'image/jpeg', alt: 'Mat', newerKey: 'kept' };
@@ -342,7 +356,10 @@ describe('the customization API', () => {
     const first = (await settings.get(gymA)).branding.logoKey!;
     expect((await uploaded.json() as { data: { logoVersion: string } }).data.logoVersion).toBe(logoVersion(first));
     expect(first.startsWith(`${gymA}/website/logo/`)).toBe(true);
-    expect((await get('/public/pages/logo/' + await revision())).status).toBe(200);
+    expect((await get('/public/pages/logo/' + await revision())).status).toBe(400);
+    const image = await get('/public/pages/logo/' + logoVersion(first));
+    expect(image.status).toBe(200);
+    expect(image.headers.get('Cache-Control')).toBe('public, max-age=31536000, immutable');
     expect(await (await get('/')).text()).toContain(`/public/pages/logo/${logoVersion(first)}`);
     const logoOnCorePages = async (key: string) => {
       for (const path of ['/trial', '/drop-in', '/trial/received', '/drop-in/received']) {

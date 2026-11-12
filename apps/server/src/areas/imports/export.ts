@@ -30,9 +30,9 @@ export function createExportService(options: { uploadsFor: UploadsFor; jobs: Job
       completedAt: job.completedAt ? new Date(job.completedAt) : null, downloadUrl: job.downloadUrl,
       expiresAt: job.expiresAt ? new Date(job.expiresAt) : null }).where(whereRun(gymId, job.id)));
   }
-  async function* entries(gymId: string, cutoff: Date): AsyncGenerator<ArchiveEntry> {
+  async function* entries(gymId: string, cutoff: Date, datasets: ExportJob['datasets']): AsyncGenerator<ArchiveEntry> {
     const encoder = new TextEncoder();
-    for (const name of exportDatasets) {
+    for (const name of datasets) {
       const dataset = exportCatalog[name], columns = Object.keys(dataset.columns);
       yield { name: name + '.csv', body: (async function* () {
         yield encoder.encode(csvLine(columns)); let after: string | undefined;
@@ -113,7 +113,7 @@ export function createExportService(options: { uploadsFor: UploadsFor; jobs: Job
       }
       const uploads = await options.uploadsFor(gymId), archiveKey = key(gymId, id, 'export.zip');
       try {
-        await uploads.put(archiveKey, archiveStream(entries(gymId, new Date(job.createdAt))), 'application/zip');
+        await uploads.put(archiveKey, archiveStream(entries(gymId, new Date(job.createdAt), job.datasets)), 'application/zip');
         const downloadUrl = await uploads.signedUrl(archiveKey, DOWNLOAD_LIFETIME);
         if (!downloadUrl) throw new Error('Export download is unavailable');
         await finish(gymId, { ...job, status: 'succeeded', completedAt: clock.now().toISOString(),

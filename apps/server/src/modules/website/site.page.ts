@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { jsx as h } from 'hono/jsx';
-import { createHash } from 'node:crypto';
+import { shortHash } from '../../public/short-hash.js';
 import type { Translator } from '@plaingym/shared';
 import { formatMoney } from '../../core/money.js';
 import type { Site, SiteClass, SitePlan, SiteSession } from './service.js';
@@ -251,7 +251,7 @@ export function renderSitePage(input: SitePageInput): string {
 
 /** Hash the rendered colors so restoring an older settings revision cannot reuse a different theme's URL. */
 export const siteThemeVersion = (primary: string | null, accent: string | null) =>
-  createHash('sha256').update(siteThemeCss(primary, accent)).digest('hex').slice(0, 12);
+  shortHash(siteThemeCss(primary, accent));
 
 /** Validated colors only: nothing a gym types can reach the stylesheet except a `#rrggbb` value. */
 export function siteThemeCss(primary: string | null, accent: string | null) {

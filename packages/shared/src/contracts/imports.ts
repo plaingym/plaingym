@@ -72,8 +72,9 @@ export const exportDatasetSchema = z.enum(exportDatasets);
 export const createExportRequestSchema = z.strictObject({ format: z.literal('csv') });
 export const exportJobSchema = z.strictObject({
   id: idSchema, status: z.enum(['pending', 'running', 'succeeded', 'failed']),
-  datasets: z.array(exportDatasetSchema).length(exportDatasets.length).refine(
-    (items) => new Set(items).size === exportDatasets.length, 'Export every gym-owned dataset once',
+  // A saved manifest can predate datasets added by a newer release.
+  datasets: z.array(exportDatasetSchema).min(1).refine(
+    (items) => new Set(items).size === items.length, 'Export each saved dataset once',
   ),
   createdAt: instantSchema, completedAt: instantSchema.nullable(),
   downloadUrl: z.url({ protocol: /^https?$/ }).nullable(), expiresAt: instantSchema.nullable(),

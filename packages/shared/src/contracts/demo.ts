@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { z } from 'zod';
-import type { EndpointContract } from './definition.js';
+import type { EndpointContract, RawEndpointContract } from './definition.js';
 export const demoRoleSchema = z.enum(['owner', 'coach', 'student']);
 export type DemoRole = z.infer<typeof demoRoleSchema>;
 /** Stripe's documented test card; sandboxes only ever use the shared test-mode account. */
@@ -43,5 +43,6 @@ export const demoContracts = {
   signInLink: { method: 'post', path: '/api/demo/sign-in-link', permission: { kind: 'public' }, body: demoSignInLinkRequest, response: demoSignInLinkResponse },
   outbox: { method: 'get', path: '/api/demo/outbox', permission: { kind: 'staff', capability: 'settings.manage' }, query: outboxQuery, response: outboxResponse },
   message: { method: 'get', path: '/api/demo/outbox/{id}', permission: { kind: 'staff', capability: 'settings.manage' }, params: outboxParams, response: outboxMessageResponse },
-  preview: { method: 'get', path: '/api/demo/outbox/{id}/preview', permission: { kind: 'staff', capability: 'settings.manage' }, params: outboxParams, response: z.string() },
-} as const satisfies Record<string, EndpointContract>;
+  preview: { method: 'get', path: '/api/demo/outbox/{id}/preview', permission: { kind: 'staff', capability: 'settings.manage' }, params: outboxParams,
+    responses: { 200: { description: 'Message HTML for the sandboxed preview frame', content: { 'text/html': { schema: z.string() } } } } },
+} as const satisfies Record<string, EndpointContract | RawEndpointContract>;

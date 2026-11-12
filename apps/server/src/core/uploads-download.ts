@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { z } from '@hono/zod-openapi';
+import { installContracts } from '@plaingym/shared/contracts';
 import type { Context } from 'hono';
 import { AppError } from '@plaingym/shared';
 import { LocalUploads, type Uploads } from '../infra/storage/index.js';
-import { uploadDownloadPath } from '../infra/storage/runtime.js';
 import type { RequestEnvironment } from './context.js';
 import { setPolicy } from './csp.js';
 import { route, type RouteRegistration } from './registry.js';
@@ -19,10 +18,7 @@ export function createUploadDownloadRoute(options: {
   readonly uploadsFor: (gymId: string) => Promise<Uploads>;
   readonly origin: (context: Context<RequestEnvironment>) => string;
 }): RouteRegistration {
-  // TODO: promote this install route into the shared contracts.
-  return route({ method: 'get', path: uploadDownloadPath, permission: { kind: 'public' },
-    responses: { 200: { description: 'Signed file download', content: { 'application/octet-stream': { schema: z.string().openapi({ format: 'binary' }) } } } },
-  }, async (c) => {
+  return route(installContracts.uploadDownload, async (c) => {
     const uploads = await options.uploadsFor(c.get('context').gym.gymId);
     // Links are signed for the gym's public origin; behind the proxy the request URL is plain HTTP.
     const requested = new URL(c.req.url), signed = new URL(requested.pathname + requested.search, options.origin(c));

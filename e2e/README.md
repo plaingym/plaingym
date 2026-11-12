@@ -242,7 +242,7 @@ management contracts are absent from the running application and are not in
 this inventory. The QR check-in contract is also absent until its implementation
 exists. Billing dashboard stubs are outside this mat suite.
 
-The core public trial/drop-in pages and assets are included, with logo revisions
+The core public trial/drop-in pages and assets are included, with logo hashes
 as path parameters. Only the four explicitly listed public intake submissions
 may answer 429 when the sweep exhausts their shared production budget; validation
 still runs after the limiter. The snapshot additions come from the running

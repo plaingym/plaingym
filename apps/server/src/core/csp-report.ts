@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { OpenAPIHono } from '@hono/zod-openapi';
 import { AppError } from '@plaingym/shared';
+import { installContracts } from '@plaingym/shared/contracts';
 import type { Context, MiddlewareHandler } from 'hono';
 import type { RequestEnvironment } from './context.js';
 import { cspReportBytes } from './body-limit.js';
-import { cspReportPath } from './csp.js';
 import { logInfo } from './log.js';
 import { RateBuckets, rateLimit, type RateBucket, type RateLimitOptions } from './rate-limit.js';
 import { route, type PermissionMiddleware } from './registry.js';
@@ -158,10 +158,7 @@ function reportBudget(options: CspReportOptions): MiddlewareHandler<RequestEnvir
  * Whatever the body holds, a request within the body cap and the limits answers 204.
  */
 export function mountCspReports(app: OpenAPIHono<RequestEnvironment>, authorize: PermissionMiddleware, options: CspReportOptions = {}): void {
-  // TODO: promote the public install contract into shared contracts.
-  route({ method: 'post', path: cspReportPath, permission: { kind: 'public' }, middleware: reportBudget(options),
-    responses: { 204: { description: 'Report received (or ignored)' } },
-  }, async (context) => {
+  route({ ...installContracts.cspReport, middleware: reportBudget(options) }, async (context) => {
     const type = (context.req.header('content-type') ?? '').split(';', 1)[0]!.trim().toLowerCase();
     const format = Object.hasOwn(formats, type) ? formats[type as keyof typeof formats] : undefined;
     if (format) {

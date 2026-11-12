@@ -34,9 +34,10 @@ pages. The core public pages stay `noindex` and out of the sitemap.
 
 The logo is core's `/public/pages/logo/{version}`. The pages address it by a short
 hash of the logo's key, so the address changes with the file and survives settings
-saves (the one search engines keep and an open page holds); the gym's current
-revision is accepted too. A page view reads the `gyms` row once, for the gym and
-the module's settings together. Public images (the logo, photos and coach photos)
+saves (the one search engines keep and an open page holds). Only the current key's
+hash is accepted; a matching image is cached for one year as immutable. A page view
+reads the `gyms` row once, for the gym and the module's settings together.
+Public images (the logo, photos and coach photos)
 share one helper, `serveGymImage`: the gym's own key, a PNG, JPEG or WebP, at most
 2 MB, else 404.
 

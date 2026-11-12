@@ -21,15 +21,16 @@ test('logo URLs follow the upload across website, core pages and admin previews 
   const settings = (await owner.json<{ data: { revision: number; websiteEnabled: boolean } }>('/api/settings')).data;
   if (!settings.websiteEnabled) await owner.json('/api/settings', 'PATCH', { revision: settings.revision, websiteEnabled: true });
   const read = async () => (await owner.json<{ data: Website }>('/api/website')).data;
+  const original = await read();
+  const editable = ({ revision, tagline, about, phone, email, primaryColor, accentColor, photos }: Website) =>
+    ({ revision, tagline, about, phone, email, primaryColor, accentColor, photos });
   const upload = async () => (await owner.json<{ data: Website }>('/api/website/logo', 'POST', {
     revision: (await read()).revision, contentType: 'image/png', base64: png,
   })).data;
   try {
     const first = await upload();
     expect(first.logoVersion).toMatch(/^[a-f0-9]{12}$/);
-    const editable = { revision: first.revision, tagline: first.tagline, about: first.about, phone: first.phone,
-      email: first.email, primaryColor: first.primaryColor, accentColor: first.accentColor, photos: first.photos };
-    const saved = (await owner.json<{ data: Website }>('/api/website', 'PUT', { ...editable, tagline: 'A new tagline' })).data;
+    const saved = (await owner.json<{ data: Website }>('/api/website', 'PUT', { ...editable(first), tagline: 'A new tagline' })).data;
     expect(saved.logoVersion).toBe(first.logoVersion);
     const second = await upload();
     expect(second.logoVersion).not.toBe(first.logoVersion);
@@ -55,11 +56,22 @@ test('logo URLs follow the upload across website, core pages and admin previews 
       await page.screenshot({ path: info.outputPath(`admin-logo-${width}.png`) });
     }
   } finally {
-    const current = await read();
-    await owner.json('/api/website/logo', 'DELETE', { revision: current.revision });
+    // Cleanup failures are recorded without replacing the failure that brought us here.
+    const cleanup = async (description: string, action: () => Promise<unknown>) => {
+      try { await action(); }
+      catch (error) { info.annotations.push({ type: 'cleanup', description: description + ': ' + String(error) }); }
+    };
+    await cleanup('Restore website content', async () => {
+      await owner.json('/api/website', 'PUT', { ...editable(original), revision: (await read()).revision });
+    });
+    await cleanup('Remove test logo', async () => {
+      await owner.json('/api/website/logo', 'DELETE', { revision: (await read()).revision });
+    });
     if (!settings.websiteEnabled) {
-      const currentSettings = (await owner.json<{ data: { revision: number } }>('/api/settings')).data;
-      await owner.json('/api/settings', 'PATCH', { revision: currentSettings.revision, websiteEnabled: false });
+      await cleanup('Restore website toggle', async () => {
+        const currentSettings = (await owner.json<{ data: { revision: number } }>('/api/settings')).data;
+        await owner.json('/api/settings', 'PATCH', { revision: currentSettings.revision, websiteEnabled: false });
+      });
     }
   }
 });

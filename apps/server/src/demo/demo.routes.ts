@@ -90,9 +90,7 @@ export function createDemoRoutes(service: DemoService, options: { installOrigin:
     // The outbox's preview frame loads the message from here rather than from srcdoc, which would take the admin page's
     // policy: email HTML keeps its inline styles under a policy of its own, which runs no script, loads nothing and
     // may be framed only by the app's own pages.
-    route({ ...preview, request: { params: preview.params },
-      responses: { 200: { description: 'Message HTML for the sandboxed preview frame', content: { 'text/html': { schema: preview.response } } } },
-    }, async (c) => {
+    route({ ...preview, request: { params: preview.params } }, async (c) => {
       const gymId = c.get('context').gym.gymId; await service.live(gymId);
       const html = await outbox.preview(gymId, c.req.valid('param').id);
       c.header('cache-control', 'no-store'); c.header('x-content-type-options', 'nosniff'); c.header('referrer-policy', 'no-referrer');

@@ -2,7 +2,7 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { programs, ranks, rankSystems, memberRanks, installedPacks } from '../../../db/src/schema/index.js';
 import {
-  ranksContracts, programSchema, rankSchema, rankSystemSchema, promotionSchema,
+  ranksContracts, promotionCriterionSchema, programSchema, rankSchema, rankSystemSchema, promotionSchema,
   createRankRequestSchema, updateProgramRequestSchema, updateRankRequestSchema, updateRankSystemRequestSchema,
   bulkPromoteRequestSchema, promotionEligibilitySchema, applyContentPackRequestSchema,
   programListQuerySchema, type Program, type Rank, type RankSystem, type Promotion, type InstalledPack,
@@ -101,5 +101,14 @@ describe('rank and promotion contracts', () => {
       : ['listPrograms', 'listRankSystems', 'listRanks', 'listPromotions'].includes(operation)
         ? ['owner', 'admin', 'coach', 'front_desk'] : ['owner', 'admin'];
     for (const role of staffRoles) expect(canStaff([role], contract.permission.capability)).toBe(expected.includes(role));
+  });
+});
+
+describe('ranks response validation', () => {
+  it('retains JSON validation under the shared OpenAPI annotation', () => {
+    const config = promotionCriterionSchema.shape.config;
+    expect(config.parse({ nested: [null, { count: 3, enabled: true }] })).toEqual({ nested: [null, { count: 3, enabled: true }] });
+    expect(config.safeParse({ invalid: () => 1 }).success).toBe(false);
+    expect(config.meta()).toEqual({ type: 'object', additionalProperties: {} });
   });
 });

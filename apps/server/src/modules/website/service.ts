@@ -9,7 +9,8 @@ import { clock as defaultClock } from '../../core/clock.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import type { Uploads } from '../../infra/storage/index.js';
 import { createModuleSettings, readGymAndModuleSettings, type ModuleSettings } from '../../areas/settings/module-settings.js';
-import { logoVersion, serveGymImage } from '../../public/pages/service.js';
+import { serveGymImage } from '../../public/pages/service.js';
+import { logoVersion } from '../../public/short-hash.js';
 import { addsTaxOnTop } from '../../areas/billing/invoicing/adds-tax-on-top.js';
 import { validatePhoto } from '../../areas/members/photos.js';
 import { releaseFiles } from '../../infra/storage/release.js';
@@ -69,9 +70,7 @@ function present(saved: ModuleSettings): WebsiteSettings {
 }
 /** The branding with a new primary color, or none (the default theme). */
 function withPrimaryColor(branding: GymBranding, primaryColor: string | null): GymBranding {
-  const next: GymBranding = { ...branding };
-  delete next.primaryColor;
-  return primaryColor ? { ...next, primaryColor } : next;
+  return { ...branding, primaryColor };
 }
 
 async function readPlans(tx: Transaction, currency: string): Promise<SitePlan[]> {

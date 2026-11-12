@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, inArray } from 'drizzle-orm';
-import { createHash } from 'node:crypto';
+import { logoVersion } from '../short-hash.js';
 import { isDeepStrictEqual } from 'node:util';
 import { forGym, type Transaction, members, households, auditEvents, waiverTemplates, uuidv7, writeAudit } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
@@ -30,8 +30,6 @@ const missing = (): never => { throw new AppError('not_found', 'Admission not fo
 export const servedImageTypes: readonly string[] = ['image/png', 'image/jpeg', 'image/webp'];
 export const maxServedImageBytes = 2_000_000;
 const imageMissing = (): never => { throw new AppError('not_found', 'Image not found'); };
-/** A short hash of a logo key: the logo URL's version, which changes with the file and survives settings saves. */
-export const logoVersion = (key: string) => createHash('sha256').update(key).digest('hex').slice(0, 12);
 /**
  * One of the gym's own uploads as a public image: not found for a key outside `prefix` (the gym's ID by default), a
  * missing or deleted file, a type that isn't a served image type or a file over the size cap.
@@ -107,10 +105,10 @@ export function createPublicPagesService(options: PublicPagesOptions) {
         logoKey: gym.branding.logoKey ?? null, primaryColor: gym.branding.primaryColor ?? null },
       dropInFee } });
     },
-    /** `version` is the logo key's version (`logoVersion`) or the gym's current revision. */
+    /** Only the hash of the current immutable logo key identifies the image. */
     async logo(gymId: string, version: string) {
       const gym = await scope(gymId, tx => readGymSettings(tx, gymId)), key = gym.branding.logoKey;
-      if (!key || !options.uploadsFor || version !== logoVersion(key) && version !== String(gym.revision)) return missing();
+      if (!key || !options.uploadsFor || version !== logoVersion(key)) return missing();
       return serveGymImage(await options.uploadsFor(gymId), gymId, key);
     },
     async trial(gymId: string, body: unknown, timezone: string, requestId?: string) {

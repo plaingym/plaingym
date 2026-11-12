@@ -65,7 +65,7 @@ describe('import and export contracts', () => {
     expect([...exportDatasets].sort()).toEqual(tableNames.filter((name) => !systemNames.has(name) && !runState.has(name)).sort());
     for (const name of [...systemNames, ...runState]) expect(exportDatasetSchema.safeParse(name).success).toBe(false);
   });
-  it('requires all datasets once and gives a download only to a completed export', () => {
+  it('reads unique saved dataset subsets and gives a download only to a completed export', () => {
     const pending = { id, status: 'pending', datasets: [...exportDatasets], createdAt: now,
       completedAt: null, downloadUrl: null, expiresAt: null };
     expect(exportJobSchema.parse(pending)).toEqual(pending);
@@ -74,10 +74,23 @@ describe('import and export contracts', () => {
     const complete = { ...pending, status: 'succeeded', completedAt: now,
       downloadUrl: 'https://example.com/export', expiresAt: '2026-10-22T20:00:00Z' };
     expect(exportJobSchema.parse(complete)).toEqual(complete);
-    expect(exportJobSchema.safeParse({ ...complete, datasets: exportDatasets.slice(1) }).success).toBe(false);
+    const olderDatasets = exportDatasets.filter(name => !['announcements', 'announcement_opt_outs', 'leads', 'lead_contacts'].includes(name));
+    for (const saved of [pending, complete]) expect(exportJobSchema.parse({ ...saved, datasets: olderDatasets }).datasets).toEqual(olderDatasets);
+    expect(exportJobSchema.safeParse({ ...complete, datasets: [] }).success).toBe(false);
+    expect(exportJobSchema.safeParse({ ...complete, datasets: ['unknown_dataset'] }).success).toBe(false);
     expect(exportJobSchema.safeParse({ ...complete, datasets: [...exportDatasets.slice(1), exportDatasets[1]] }).success).toBe(false);
   });
   it.each(Object.entries(importsContracts))('%s permits managers and denies coaches/front desk', (_operation, contract) => {
     for (const role of staffRoles) expect(canStaff([role], contract.permission.capability)).toBe(['owner', 'admin'].includes(role));
+  });
+});
+
+describe('imports response validation', () => {
+  it('retains file and size validation under the binary annotation', () => {
+    expect(uploadCsvRequestSchema.safeParse({ file: new File(['a,b'], 'roster.csv') }).success).toBe(true);
+    expect(uploadCsvRequestSchema.safeParse({ file: 'roster.csv' }).success).toBe(false);
+    expect(uploadCsvRequestSchema.safeParse({ file: new File([], 'empty.csv') }).success).toBe(false);
+    expect(uploadCsvRequestSchema.safeParse({ file: new File([new Uint8Array(20 * 1024 * 1024 + 1)], 'large.csv') }).success).toBe(false);
+    expect(uploadCsvRequestSchema.shape.file.meta()).toEqual({ type: 'string', format: 'binary' });
   });
 });

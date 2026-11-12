@@ -21,3 +21,12 @@ export interface EndpointContract {
   readonly response: z.ZodType;
   readonly successStatus?: 200 | 201;
 }
+
+/** Non-JSON endpoints keep their status codes, media types and headers beside the permission. */
+export interface RawEndpointContract extends Omit<EndpointContract, 'response' | 'successStatus'> {
+  readonly responses: Readonly<Record<number, {
+    readonly description: string;
+    readonly content?: Readonly<Record<string, { readonly schema: z.ZodType }>>;
+    readonly headers?: Readonly<Record<string, { readonly schema: { readonly type: 'string'; readonly format?: string } }>>;
+  }>>;
+}

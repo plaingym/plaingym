@@ -23,7 +23,7 @@ import { demoSignatureReservation } from '../../demo/waiver-signatures.js';
 import { demoSignaturePng } from '../../demo/seed/waivers-image.js';
 import { configurePublicPages, createPublicRoutes } from './pages.routes.js';
 import { themeCss } from './page.js';
-import { logoVersion } from './service.js';
+import { logoVersion } from '../short-hash.js';
 
 const db = useTestDatabase(), factory = createFactories(db), png = demoSignaturePng();
 const origin = 'https://gym.example.test';
@@ -91,9 +91,14 @@ describe('core public pages through the production registrations', () => {
       const response = await other.request(origin + path), text = await response.text();
       expect(response.status).toBe(200); expect(text).not.toContain('North'); expect(text).not.toContain(f.template.id); expect(text).not.toContain('#ffff00');
     }
-    expect((await other.request(origin + '/public/pages/logo/1')).status).toBe(404);
-    expect((await f.server.request(origin + '/public/pages/logo/1')).headers.get('content-type')).toBe('image/png');
-    expect((await f.server.request(origin + '/public/pages/logo/2')).status).toBe(404);
+    const path = origin + '/public/pages/logo/' + logoVersion(f.gymId + '/logo.png');
+    expect((await other.request(path)).status).toBe(404);
+    const image = await f.server.request(path);
+    expect(image.headers.get('content-type')).toBe('image/png');
+    expect(image.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+    expect((await f.server.request(origin + '/public/pages/logo/1')).status).toBe(400);
+    expect((await f.server.request(origin + '/public/pages/logo/' + logoVersion('old-logo'))).status).toBe(404);
+    await expect(f.service.logo(f.gymId, '1')).rejects.toMatchObject({ code: 'not_found' });
     expect(await (await f.server.request(origin + '/trial')).text()).toContain(`src="/public/pages/logo/${logoVersion(f.gymId + '/logo.png')}"`);
     const config = await (await f.server.request(origin + '/api/public/config')).json();
     expect(publicContracts.config.response.parse(config).data.dropInFee).toEqual({ amountCents: 2500, currency: 'CAD', plusTax: false });
@@ -270,10 +275,10 @@ describe('core public pages through the production registrations', () => {
     const f = await fixture();
     const settings = createSettingsService({ scope: db.forGym, clock: f.clock });
     await settings.update({ gymId: f.otherGym, actor: { kind: 'system' } }, 'general', { revision: 1, branding: { logoKey: f.gymId + '/logo.png' } });
-    expect((await f.app(f.otherGym).request(origin + '/public/pages/logo/2')).status).toBe(404);
+    expect((await f.app(f.otherGym).request(origin + '/public/pages/logo/' + logoVersion(f.gymId + '/logo.png'))).status).toBe(404);
     await f.uploads.get(f.gymId)!.put(f.gymId + '/logo.svg', new TextEncoder().encode('<svg/>'), 'image/svg+xml');
     await settings.update({ gymId: f.gymId, actor: { kind: 'system' } }, 'general', { revision: 1, branding: { logoKey: f.gymId + '/logo.svg' } });
-    expect((await f.server.request(origin + '/public/pages/logo/2')).status).toBe(404);
+    expect((await f.server.request(origin + '/public/pages/logo/' + logoVersion(f.gymId + '/logo.svg'))).status).toBe(404);
   });
   it('rejects cross-origin mutations through the production CSRF guard', async () => {
     const f = await fixture();

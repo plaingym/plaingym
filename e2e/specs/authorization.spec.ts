@@ -40,7 +40,7 @@ const inScope = (path: string) => /^\/api\/(bookings(?:\/|$)|portal\/(?:bookings
     '/api/portal/waiver-templates/{templateId}/document', '/api/public/waivers/{templateId}/document', '/l/{token}/documents/{templateId}',
     '/api/dashboard', '/api/health/charge-failures', '/api/health/charge-failures/dismiss', '/api/settings/go-live', '/api/setup/finish', '/staff-invitation',
     '/api/account', '/api/account/email', '/api/account/email/confirm', '/account-email'].includes(path)
-  || /^\/(?:csp-report|api\/public\/(?:config|waivers|trial|drop-in|plans|join)|drop-in\/signatures|public\/pages\/(?:client\.js|styles\.css|theme\.css|logo\/\{revision\})|(?:trial|drop-in)(?:\/received)?|l\/(?:\{token\}|client\.js|styles\.css|cleared|return)|join(?:\/(?:signatures|checkout|return|cancelled|sign-in|portal-login|client\.js))?)$/.test(path);
+  || /^\/(?:csp-report|api\/public\/(?:config|waivers|trial|drop-in|plans|join)|drop-in\/signatures|public\/pages\/(?:client\.js|styles\.css|theme\.css|logo\/\{version\})|(?:trial|drop-in)(?:\/received)?|l\/(?:\{token\}|client\.js|styles\.css|cleared|return)|join(?:\/(?:signatures|checkout|return|cancelled|sign-in|portal-login|client\.js))?)$/.test(path);
 const key = (entry: Pick<Entry, 'method' | 'path'>) => `${entry.method} ${entry.path}`;
 // Each intake form and its API route share ten attempts per gym/IP per fifteen minutes, before validation.
 // The sweep deliberately exhausts that production budget across roles; only these public

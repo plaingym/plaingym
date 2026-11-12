@@ -3,7 +3,7 @@ import { jsx as h } from 'hono/jsx';
 import type { Translator } from '@plaingym/shared';
 import type { PublicBranding, WaiverTemplate } from '@plaingym/shared/contracts';
 import { formatMoney } from '../../core/money.js';
-import { logoVersion } from './service.js';
+import { logoVersion } from '../short-hash.js';
 /** Native browser preview and a separate link also work without JavaScript. */
 export function waiverDocumentView(template: WaiverTemplate, t: Translator, href = `/api/public/waivers/${template.id}/document?view=1`, preview = true) {
   if (!template.document) return h('div', { class: 'max-h-96 overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-4', tabindex: 0, 'aria-label': template.name }, template.body);

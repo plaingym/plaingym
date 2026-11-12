@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { demoEntryResponse, demoLoginRequest, demoMenuResponse, demoSignInLinkResponse } from './index.js';
+import { demoContracts, demoEntryResponse, demoLoginRequest, demoMenuResponse, demoSignInLinkResponse, outboxMessageResponse, outboxResponse } from './index.js';
 
 const expiresAt = '2099-10-24T12:00:00.000Z';
 describe('demo discovery', () => {
@@ -30,5 +30,20 @@ describe('demo sign-ins', () => {
     expect(demoSignInLinkResponse.safeParse({ data: { href: '/api/auth/magic-link/verify?token=t' } }).success).toBe(true);
     for (const href of ['https://evil.example/api/auth/magic-link/verify?token=t', '//evil.example/api/auth/magic-link/verify?token=t', '/admin/outbox', '/api/auth/magic-link/verify'])
       expect(demoSignInLinkResponse.safeParse({ data: { href } }).success, href).toBe(false);
+  });
+});
+
+describe('demo response validation', () => {
+  const id = '019a08bf-1234-7000-8000-000000000001';
+
+  it('omits HTML from JSON responses while keeping the HTML preview', () => {
+    const message = { id, subject: 'Hello', recipient: 'pat@example.test', text: 'Hello', sentAt: '2026-11-05T00:00:00Z' };
+    expect(outboxResponse.parse({ data: [message], next: null }).data[0]).not.toHaveProperty('html');
+    expect(outboxResponse.safeParse({ data: [{ ...message, html: '<p>Hello</p>' }], next: null }).success).toBe(false);
+    expect(outboxMessageResponse.parse({ data: message }).data).not.toHaveProperty('html');
+    expect(outboxMessageResponse.safeParse({ data: { ...message, html: '<p>Hello</p>' } }).success).toBe(false);
+    expect(demoContracts.preview.params.safeParse({ id: 'invalid' }).success).toBe(false);
+    expect(demoContracts.preview.responses[200].content['text/html'].schema.parse('<p>Hello</p>')).toBe('<p>Hello</p>');
+    expect(demoContracts.preview.permission).toEqual(demoContracts.message.permission);
   });
 });

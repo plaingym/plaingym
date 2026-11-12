@@ -5,6 +5,7 @@ import type { plans } from '../../../db/src/schema/index.js';
 import {
   publicContracts, publicJoinRequestSchema, publicTrialRequestSchema, publicDropInRequestSchema,
   publicSubmissionResponseSchema, publicPlanSchema, publicPageConfigResponseSchema, type PublicPlan,
+  publicSignatureUploadSchema, publicAdmissionSchema, publicAdmissionResponseSchema, joinAdmissionSchema, joinAdmissionResponseSchema,
 } from './index.js';
 
 const id = '019a08bf-1234-7000-8000-000000000001';
@@ -66,5 +67,41 @@ describe('core public page contracts', () => {
       expect(contract.permission).toEqual({ kind: 'public' });
       expect(contract.path).toMatch(/^\/api\/public\/|^\/(?:drop-in|join)\/signatures$/);
     }
+  });
+});
+
+describe('public response validation', () => {
+  const id = '019a08bf-1234-7000-8000-000000000001';
+  const member = { firstName: 'Pat', lastName: 'Example', dateOfBirth: '1990-01-01' };
+  const contact = { name: 'Pat', email: 'pat@example.test' };
+  const signature = { templateId: id, templateVersion: 1, pngBase64: 'aGVsbG8=' };
+  const image = { templateId: id, templateVersion: 1, signatureImageKey: 'gym/signature.png', signatureImageHash: 'a'.repeat(64) };
+
+  it('bounds encoded signatures without replacing decoded PNG validation', () => {
+    expect(publicSignatureUploadSchema.parse(signature)).toEqual(signature);
+    for (const pngBase64 of ['', 'invalid!', 'a'.repeat(350_001)])
+      expect(publicSignatureUploadSchema.safeParse({ ...signature, pngBase64 }).success).toBe(false);
+    expect(publicSignatureUploadSchema.safeParse({ ...signature, templateVersion: 0 }).success).toBe(false);
+  });
+
+  it('keeps drop-in admission strict and bounded to eight signatures', () => {
+    const input = { contact, member, honeypot: '', signatures: [signature] };
+    expect(publicAdmissionSchema.parse(input)).toEqual(input);
+    for (const signatures of [[], Array.from({ length: 9 }, () => signature)])
+      expect(publicAdmissionSchema.safeParse({ ...input, signatures }).success).toBe(false);
+    expect(publicAdmissionSchema.safeParse({ ...input, householdId: id }).success).toBe(false);
+    expect(publicAdmissionResponseSchema.parse({ data: [image] })).toEqual({ data: [image] });
+  });
+
+  it('keeps join admission bounded to six people and eight signatures each', () => {
+    const signed = { ...signature, signer: { kind: 'self', name: 'Visitor' } };
+    const person = { member, signatures: [signed] };
+    const input = { contact, planId: id, honeypot: '', members: [person] };
+    expect(joinAdmissionSchema.parse(input)).toEqual(input);
+    for (const members of [[], Array.from({ length: 7 }, () => person), [{ member, signatures: [] }],
+      [{ member, signatures: Array.from({ length: 9 }, () => signed) }], [{ member, signatures: [signature] }]])
+      expect(joinAdmissionSchema.safeParse({ ...input, members }).success).toBe(false);
+    expect(joinAdmissionSchema.safeParse({ ...input, householdId: id }).success).toBe(false);
+    expect(joinAdmissionResponseSchema.parse({ data: [[image]] })).toEqual({ data: [[image]] });
   });
 });

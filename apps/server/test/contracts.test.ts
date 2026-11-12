@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { z } from '@hono/zod-openapi';
 import * as exports from '@plaingym/shared/contracts';
 import { isRoutePermission } from '@plaingym/shared';
-import type { EndpointContract } from '@plaingym/shared/contracts';
+import type { EndpointContract, RawEndpointContract } from '@plaingym/shared/contracts';
 
 const directory = fileURLToPath(new URL('../../../packages/shared/src/contracts/', import.meta.url));
 const modules = (await readdir(directory, { recursive: true }))
@@ -21,7 +21,7 @@ describe('combined contract inventory', () => {
     const seen = new Map<string, string>();
     expect(collections.length).toBeGreaterThan(0);
     for (const [area, endpoints] of collections) {
-      for (const [name, endpoint] of Object.entries(endpoints as Record<string, EndpointContract>)) {
+      for (const [name, endpoint] of Object.entries(endpoints as Record<string, EndpointContract | RawEndpointContract>)) {
         const key = endpoint.method + ' ' + endpoint.path.replace(/\{[^}]+\}/g, '{}');
         expect(seen.get(key), area + '.' + name + ' duplicates ' + seen.get(key)).toBeUndefined();
         seen.set(key, area + '.' + name);
@@ -30,34 +30,29 @@ describe('combined contract inventory', () => {
   });
   it('uses one flat input layout and valid permission and response declarations', () => {
     for (const [area, endpoints] of collections) {
-      // Install declarations also describe the source redirect and OpenAPI document.
-      // They preserve their response status, media type and headers in `responses`.
-      if (area === 'installContracts') {
-        for (const endpoint of Object.values(exports.installContracts)) {
-          expect(endpoint).not.toHaveProperty('request');
-          expect(endpoint.permission).toEqual({ kind: 'public' });
-          for (const [status, response] of Object.entries(endpoint.responses)) {
-            expect(['200', '302']).toContain(status);
-            if ('content' in response) {
-              expect(status).toBe('200');
-              expect(response.content['application/json'].schema).toBeInstanceOf(z.ZodType);
-            } else {
-              expect(status).toBe('302');
-              expect(response.headers.Location.schema).toEqual({ type: 'string', format: 'uri' });
-            }
-          }
-        }
-        continue;
-      }
-      for (const endpoint of Object.values(endpoints as Record<string, EndpointContract>)) {
+      for (const endpoint of Object.values(endpoints as Record<string, EndpointContract | RawEndpointContract>)) {
         expect(endpoint).not.toHaveProperty('request');
         expect(isRoutePermission(endpoint.permission)).toBe(true);
         for (const permission of endpoint.additionalPermissions ?? []) expect(isRoutePermission(permission)).toBe(true);
         for (const schema of [endpoint.params, endpoint.query, endpoint.body]) {
           if (schema !== undefined) expect(schema).toBeInstanceOf(z.ZodType);
         }
-        expect(endpoint.response).toBeInstanceOf(z.ZodType);
-        expect([200, 201]).toContain(endpoint.successStatus ?? 200);
+        if ('responses' in endpoint) {
+          // A raw endpoint declares its answers in `responses` alone, never a JSON `response` beside them.
+          expect(endpoint, area).not.toHaveProperty('response');
+          expect(endpoint, area).not.toHaveProperty('successStatus');
+          expect(Object.keys(endpoint.responses).length, area).toBeGreaterThan(0);
+          for (const [status, response] of Object.entries(endpoint.responses)) {
+            expect(Number(status)).toBeGreaterThanOrEqual(100);
+            expect(Number(status)).toBeLessThan(600);
+            expect(response.description).toEqual(expect.any(String));
+            for (const media of Object.values(response.content ?? {})) expect(media.schema).toBeInstanceOf(z.ZodType);
+            for (const header of Object.values(response.headers ?? {})) expect(header.schema.type).toBe('string');
+          }
+        } else {
+          expect(endpoint.response).toBeInstanceOf(z.ZodType);
+          expect([200, 201]).toContain(endpoint.successStatus ?? 200);
+        }
       }
     }
   });

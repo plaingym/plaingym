@@ -203,6 +203,20 @@ describe('import pipeline using Postgres and immutable uploads', () => {
   });
 });
 describe('full CSV exports', () => {
+  it('finishes a pending export with its saved manifest across a catalog upgrade', async () => {
+    const { exports, jobs } = services(), job = await exports.create(actor, 'UTC');
+    expect(job.datasets).toEqual([...exportDatasets]);
+    const datasets = exportDatasets.filter(name => !['announcements', 'announcement_opt_outs', 'leads', 'lead_contacts'].includes(name));
+    await database.forGym(gymA, tx => tx.update(exportRuns).set({ datasets }).where(eq(exportRuns.id, job.id)));
+    expect(exportJobSchema.parse(await exports.get(gymA, job.id)).datasets).toEqual(datasets);
+    await jobs.runNext();
+    const finished = exportJobSchema.parse(await exports.get(gymA, job.id));
+    expect(finished).toMatchObject({ status: 'succeeded', datasets });
+    const storage = await uploadsFor(gymA);
+    const raw = await new Response(await storage.get(`${gymA}/imports/exports/${job.id}/export.zip`)).text();
+    for (const dataset of datasets) expect(raw).toContain(dataset + '.csv');
+    for (const dataset of ['announcements', 'announcement_opt_outs', 'leads', 'lead_contacts']) expect(raw).not.toContain(dataset + '.csv');
+  });
   it('exports all datasets and excludes other gyms, credentials, and nested secret carriers', async () => {
     const b = await factory('members', gymB, { firstName: 'OTHER_GYM_PRIVATE' });
     await factory('members', gymA, { firstName: '=FORMULA', checkinCodeHash: 'c'.repeat(64) });

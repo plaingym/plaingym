@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { z } from '@hono/zod-openapi';
 import { AppError } from '@plaingym/shared';
+import { installContracts } from '@plaingym/shared/contracts';
 import { route, type RouteRegistration } from '../../../core/registry.js';
 import { PaymentWebhookError } from '../../../infra/payments/webhook-error.js';
 import type { WebhookInbox } from './inbox.js';
@@ -17,14 +18,7 @@ export function createWebhookInboxRoutes(inbox: Pick<WebhookInbox, 'receive'>, o
   /** Demo uses one install endpoint and one shared test account; no hostname selects the gym. */
   demoGyms?: () => Promise<readonly { gymId: string }[]>;
 } = {}): readonly RouteRegistration[] {
-  return [route({
-    // TODO: promote this raw-body install/tenant endpoint to the shared HTTP contracts.
-    method: 'post', path: '/webhooks/stripe', permission: { kind: 'public' },
-    responses: {
-      200: { description: 'Stored, duplicate, or unrelated event', content: { 'application/json': { schema: z.object({ received: z.literal(true) }) } } },
-      400: { description: 'Invalid webhook', content: { 'application/json': { schema: z.object({ error: z.literal('webhook_invalid') }) } } },
-    },
-  }, async (context) => {
+  return [route(installContracts.stripeWebhook, async (context) => {
     const body = new Uint8Array(await context.req.arrayBuffer()), signature = context.req.header('stripe-signature') ?? '';
     const gyms = options.demoGyms ? await options.demoGyms() : [context.get('context').gym];
     if (!gyms.length) throw new AppError('unavailable', 'Payments are not set up for this gym');

@@ -36,10 +36,17 @@ Success responses use `{ data }`. Errors use
 `AppError` represents a safe public error; `errorResponse` redacts other errors.
 
 The shared contracts include install liveness, source metadata and redirect, and
-the OpenAPI document (`installContracts`), public signature admission, and the demo
-HTML preview. Install contracts carry their response media types and redirect
-status in `responses`. Rank JSON configuration and CSV upload fields carry OpenAPI
-metadata on their shared Zod schemas, retaining their runtime validation.
+the OpenAPI document, CSP reports, signed upload downloads and Stripe webhooks
+(`installContracts`), public signature admission, and the demo HTML preview.
+`EndpointContract` describes JSON responses; `RawEndpointContract` carries explicit
+response media types, headers and status codes in `responses`. Both check methods
+and permissions at compile time. Rank JSON configuration and CSV upload fields
+carry OpenAPI metadata on their shared Zod schemas, retaining their runtime validation.
+
+New CSV exports always save the complete current dataset catalog. Reads accept
+unique, nonempty subsets of that catalog so runs from older releases remain
+readable. A pending export streams the manifest saved when it was created, even
+if an upgrade has added datasets.
 
 `reportsContracts.attendance` declares the attendance report for `reports.read`
 (owners, admins and coaches), and `reportsContracts.revenue` declares the

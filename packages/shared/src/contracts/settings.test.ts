@@ -2,7 +2,8 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { gyms } from '../../../db/src/schema/index.js';
 import {
-  gymSettingsSchema, gymTimezoneSchema, setupTimezoneSchema, updateGymSettingsRequestSchema, updateBookingRulesRequestSchema,
+  gymBrandingSchema, setupGymDetailsSchema, gymSettingsSchema, gymTimezoneSchema, setupTimezoneSchema,
+  updateGymSettingsRequestSchema, updateBookingRulesRequestSchema,
   updateGymCurrencyRequestSchema, updateGoLiveRequestSchema, updateDropInSettingsRequestSchema, settingsContracts,
   errorResponse, AppError, type GymSettings, type BookingRules, type GoLiveSwitches,
 } from './index.js';
@@ -101,5 +102,14 @@ describe('gym settings contracts', () => {
   });
   it.each(Object.entries(settingsContracts))('%s allows managers and denies coaches/front desk', (_operation, contract) => {
     for (const role of staffRoles) expect(canStaff([role], contract.permission.capability)).toBe((contract.permission.capability === 'ownership.transfer' ? ['owner'] : ['owner', 'admin']).includes(role));
+  });
+});
+
+describe('settings response validation', () => {
+  it('accepts the same null brand color in setup and settings', () => {
+    const branding = { logoKey: null, primaryColor: null };
+    const details = { name: 'Gym', timezone: 'UTC', currency: 'USD', address: {}, branding, revision: 1 };
+    expect(setupGymDetailsSchema.parse(details).branding).toEqual(gymBrandingSchema.parse(branding));
+    expect(gymBrandingSchema.safeParse({ primaryColor: '#12345g' }).success).toBe(false);
   });
 });

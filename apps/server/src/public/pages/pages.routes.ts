@@ -68,9 +68,10 @@ export function createPublicRoutes(supplied?: PublicRoutesOptions): readonly Rou
     route({ method: 'get', path: '/public/pages/theme.css', permission: { kind: 'public' }, responses: { 200: { description: 'Gym colors' } } }, async ctx => {
       ctx.header('Content-Type', 'text/css; charset=utf-8'); return ctx.body(themeCss((await options().service.config(ctx.get('context').gym.gymId)).data.gym.primaryColor));
     }),
-    route({ method: 'get', path: '/public/pages/logo/{revision}', permission: { kind: 'public' },
-      request: { params: z.object({ revision: z.string().regex(/^(?:[1-9]\d*|[0-9a-f]{12})$/) }) }, responses: { 200: { description: 'Gym logo' } } }, async ctx => {
-      const logo = await options().service.logo(ctx.get('context').gym.gymId, ctx.req.valid('param').revision);
+    route({ method: 'get', path: '/public/pages/logo/{version}', permission: { kind: 'public' },
+      request: { params: z.object({ version: z.string().regex(/^[0-9a-f]{12}$/) }) }, responses: { 200: { description: 'Gym logo' } } }, async ctx => {
+      const logo = await options().service.logo(ctx.get('context').gym.gymId, ctx.req.valid('param').version);
+      ctx.header('Cache-Control', 'public, max-age=31536000, immutable');
       ctx.header('Content-Type', logo.contentType); return ctx.body(logo.stream);
     }),
   ];
