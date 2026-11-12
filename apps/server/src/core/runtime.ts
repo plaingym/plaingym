@@ -167,7 +167,8 @@ async function prepare(env: NodeJS.ProcessEnv) {
   const config = demo.enabled ? authConfig({ ...env, AUTH_PASSWORD_LOGIN: 'off' }, true) : authConfig(env);
   const install = publicOrigin(env) ?? (demo.enabled ? `https://${demo.domain}` : undefined);
   if (mode === 'single' && !install) throw new Error('Set GYM_HOSTNAME or PUBLIC_ORIGIN');
-  // Both Google variables or neither: half a configuration fails boot, before the database opens. Demo mode ignores them.
+  // Both Google variables or neither: a malformed pair does not stop boot. The app starts without the install's client and
+  // logs the variable and the reason once, and Health and Settings show it. Demo mode ignores them.
   googleFromEnvironment(env);
   await initializeDatabase(required(env, 'DATABASE_URL'), poolSize(env));
   const smtp = demo.enabled ? undefined : createSmtpResolver({ key, env });
