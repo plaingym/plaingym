@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, screen, within } from '@testing-library/react';
+import { cleanup, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { Integrations } from '@plaingym/shared/contracts';
 import { health, integrations, refusal, renderSection, reply, serve } from './fixtures.test-helper.js';
@@ -20,6 +20,17 @@ beforeEach(() => { for (const fn of Object.values(client)) fn.mockReset(); curre
 afterEach(cleanup);
 
 describe('Settings → Backups', () => {
+  it('enables Back up now immediately when a first backup key is confirmed', async () => {
+    current = { ...pending, backups: { ...pending.backups!, configured: false, destination: null, publicKey: null } };
+    client.POST.mockImplementation(async () => { current = { ...configured, revision: 6 }; return reply(200, { data: current }); });
+    const user = userEvent.setup(); renderSection();
+    expect((await screen.findByRole('button', { name: 'Back up now' })).hasAttribute('disabled')).toBe(true);
+    const form = screen.getByRole('form', { name: 'Confirm and start using it' });
+    await user.type(within(form).getByLabelText('Paste your saved private key'), privateKey);
+    await user.click(within(form).getByRole('checkbox', { name: /I saved my private key/ }));
+    await user.click(within(form).getByRole('button', { name: 'Check the saved key' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Back up now' }).hasAttribute('disabled')).toBe(false));
+  });
   it('refreshes health after confirming a new key and drops the old-key snapshot', async () => {
     current = pending;
     let changed = false;
@@ -40,6 +51,7 @@ describe('Settings → Backups', () => {
     await user.click(within(confirm).getByRole('button', { name: 'Check the saved key' }));
     expect(await screen.findByText('No restorable snapshot under this key at the current destination yet.')).toBeDefined();
     expect(screen.queryByText(/Last restorable snapshot/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Back up now' }).hasAttribute('disabled')).toBe(false);
   });
   it('waits longer than other saves while the destination is checked', async () => {
     expect(destinationCheckTimeoutMs).toBeGreaterThan(saveTimeoutMs);

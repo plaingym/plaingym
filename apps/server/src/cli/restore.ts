@@ -17,6 +17,7 @@ import { issuePaths, restoreFailureReason } from './restore.reason.js';
 import { RestoreFailure } from '../areas/health/restore.failure.js';
 import { z } from 'zod';
 import { logInfo } from '../core/log.js';
+import { withRestoreFiles } from './restore.files.js';
 
 function required(name: string): string {
   const value = process.env[name];
@@ -41,6 +42,13 @@ function restoreOptions(environment: ReturnType<typeof maintenanceEnvironment>) 
   return { ...options, ...(uploads.restoreStore ? { uploadsStore: uploads.restoreStore } : {}) };
 }
 export async function maintenanceCommand(args: readonly string[]): Promise<void> {
+  if (args[0] === 'restore-files') {
+    if (args.length !== 2 || !z.uuid().safeParse(args[1]).success) throw new RestoreFailure('Usage: restore-files SNAPSHOT');
+    await withRestoreFiles(process.stdin, dirname(required('BACKUP_STAGING_DIR')),
+      path => maintenanceCommand(['restore', args[1]!, '--config', path]));
+    process.stdout.write('Restore complete; billing and member emails remain paused; backup pruning is on hold\n');
+    return;
+  }
   if (args[0] === 'migrate') {
     const database = new PostgresMaintenance(required('MAINTENANCE_DATABASE_URL'));
     await database.migrate();
@@ -136,7 +144,7 @@ export const commands: readonly Command[] = [{
 }, {
   id: 'restore', description: 'Restore an authenticated encrypted install snapshot',
   async run(args, io) {
-    try { await maintenanceCommand(['restore', ...args]); io.stdout('Restore complete; billing remains paused'); return 0; }
+    try { await maintenanceCommand(['restore', ...args]); io.stdout('Restore complete; billing and member emails remain paused; backup pruning is on hold'); return 0; }
     catch (error) {
       io.stderr('Restore failed: ' + restoreFailureReason(error));
       await reportRestoreResume(io.stderr);

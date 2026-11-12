@@ -382,6 +382,14 @@ messages name that original restore point. Keep that image locally. Restore a
 pre-upgrade snapshot like any other, from the setup wizard on a fresh install or
 with `gym-app restore`.
 
+`restore.sh SNAPSHOT_ID CONFIG_JSON KEY_FILE` takes host file paths, streams them
+to the maintenance CLI, and removes its app-owned 0600 copies after the restore
+(in a 0700 directory on the data volume). The installer copies the helper for new
+installs; existing installs copy `deploy/restore.sh` from the matching release.
+See [the restore guide](../docs/restoring.md#restore-from-the-command-line).
+Restore leaves billing and member emails off. Backups continue with retention
+pruning held until an owner confirms in Settings or Health that the old server is gone.
+
 Backups use the key pair created in the setup wizard; an old
 `BACKUP_RECIPIENT` line in `.env` is ignored.
 

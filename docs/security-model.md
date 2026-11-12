@@ -276,6 +276,9 @@ by setup, the gym CLI, staff and portal invitations, and the join flow.
 * **Setup.** The first owner is created, or a backup restored, only with the
   `SETUP_TOKEN` from the server's `.env`, sent from the private link the installer
   prints. A valid certificate for the hostname is not enough.
+* **Restore safety.** Restore turns billing and member emails off and holds backup
+  pruning until an owner explicitly confirms the old server is gone. The backup
+  request action is for owners/admins; releasing pruning is owner-only and audited.
 
 Details: `apps/server/src/infra/auth/README.md`.
 

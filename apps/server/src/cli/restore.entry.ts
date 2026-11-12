@@ -16,6 +16,6 @@ try {
   await maintenanceCommand(args);
 } catch (error) {
   reportMaintenanceFailure(args, error);
-  if (args[0] === 'restore' || args[0] === 'resume') await reportRestoreResume();
+  if (args[0] === 'restore' || args[0] === 'restore-files' || args[0] === 'resume') await reportRestoreResume();
   process.exitCode = error instanceof KeyRotationRefusedError ? error.exitCode : 1;
 } finally { await closeDatabase(); }

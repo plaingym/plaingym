@@ -249,6 +249,14 @@ in the admin shows the last successful backup and any failure.
 **Keep the private key safe.** It is shown once, in setup or when you replace it
 under **Settings**. Without it, the backups can't be opened by anyone.
 
+Before a risky change, choose **Back up now** on the **System health → Last backup**
+tile (owners and admins), or in **Settings → Email, payments and backups** (owners).
+It queues a manual snapshot, shows progress, then the completed time and snapshot
+ID. Only one manual request can be queued or running; a restore or incomplete
+backup setup refuses the action. Manual snapshots count toward normal retention.
+Without the admin, run `sudo docker compose exec -T app node /app/maintenance.mjs snapshot`
+in the installation directory and keep the snapshot ID it prints.
+
 ### Restore
 
 Restore onto a fresh install:
@@ -259,14 +267,18 @@ Restore onto a fresh install:
    `snapshots/` in the bucket) and your backup private key.
 
 The restore verifies the snapshot, loads the database and files, and re-encrypts
-the stored secrets for the new install. Billing stays paused until a
-reconciliation with Stripe finishes and the owner turns it back on under
-**Settings → Go live**.
+the stored secrets for the new install. Billing and member emails stay paused;
+turn them on in **Settings → Go live** only after shutting down the old server
+(billing also requires payment reconciliation). New snapshots continue, but
+pruning is held until the owner confirms **the old server is gone** in the
+backups section of Settings or on the Last backup tile. Once a held bucket
+reaches the retention budget, new snapshots fail until the owner confirms.
 
-The same restore runs from the command line with
-`gym-app restore <snapshot-id> --config <file>`, where the file is a private JSON
-file holding the bucket details and the path to the private key
-(`apps/server/src/areas/health/backups.protocol.md`). An interrupted restore
+For a command-line restore, run `sudo ./restore.sh SNAPSHOT_ID CONFIG_JSON KEY_FILE`
+with the host's private config and key files. The helper stages app-owned private
+copies and removes them afterwards; see [restoring.md](restoring.md#restore-from-the-command-line).
+The lower-level `gym-app restore <snapshot-id> --config <file>` remains available
+for files already inside the container. An interrupted restore
 resumes when the app restarts.
 
 ## Updates

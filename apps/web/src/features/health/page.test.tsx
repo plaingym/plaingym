@@ -26,7 +26,9 @@ const ok = (data: unknown) => ({ response: new Response(), data }) as never;
 const GET = vi.mocked(api.GET) as unknown as ReturnType<typeof vi.fn>, POST = vi.mocked(api.POST) as unknown as ReturnType<typeof vi.fn>;
 /** Serve the tiles, and the open charge failure reports from `reports` (read again after every dismissal); the charge-run tile reports failures while any report is open. */
 function serve(reports: () => unknown[] = () => []) {
-  GET.mockImplementation(async (path: string) => ok(path === '/api/health/charge-failures' ? { data: reports() } : { data: { generatedAt: checkedAt, tiles: tiles(reports().length > 0) } }));
+  GET.mockImplementation(async (path: string) => ok(path === '/api/health/charge-failures' ? { data: reports() }
+    : path === '/api/health/backups' ? { data: { available: true, configured: true, pruningHeld: false, revision: 1, manual: null } }
+    : { data: { generatedAt: checkedAt, tiles: tiles(reports().length > 0) } }));
 }
 const healthCalls = () => GET.mock.calls.filter(([path]) => path === '/api/health').length;
 beforeEach(() => { bootstrap(); serve(); });

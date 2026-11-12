@@ -49,7 +49,7 @@ export function useIntegrations() {
     if (saved.status === 409) await query.refetch();
     return { status: saved.status, reason: reasonOf(saved.error), result: null, moved: saved.moved };
   }
-  return { integrations: query.data, ready: Boolean(query.data && gym.settings), failed: query.isError || gym.failed, reload, change };
+  return { integrations: query.data, gymId: gym.settings?.id, ready: Boolean(query.data && gym.settings), failed: query.isError || gym.failed, reload, change };
 }
 /** Picks a reply whose data is the integrations themselves. */
 export const integrationsOf = (data: unknown) => ({ integrations: parseResponse(integrationsResponseSchema, data).data, result: null });

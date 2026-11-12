@@ -17,6 +17,7 @@ export const backupHealthDetailsSchema = z.strictObject({
   latestRestorableAt: instantSchema.nullable(), ageSeconds: count.nullable(), overdue: z.boolean(),
   /** A verified destination has no complete snapshot known to use the current recipient. False when the check failed. */
   noneUnderCurrentKey: z.boolean().default(false),
+  pruningHeld: z.boolean().default(false),
   retainedBytes: count, retentionBudgetBytes: count, pruningStopped: z.boolean(), keyReminder: z.boolean(),
 });
 export const failedJobsHealthDetailsSchema = z.strictObject({
@@ -105,6 +106,24 @@ export const autoUpdateSettingsResponseSchema = z.strictObject({ data: autoUpdat
 export const updateAutoUpdateSettingsRequestSchema = z.strictObject({ enabled: z.boolean(), revision: revisionSchema });
 const manageSettings = { kind: 'staff', capability: 'settings.manage' } satisfies RoutePermission;
 const manageIntegrations = { kind: 'staff', capability: 'integrations.manage' } satisfies RoutePermission;
+export const manualBackupSchema = z.strictObject({
+  requestId: idSchema, status: z.enum(['queued', 'running', 'succeeded', 'failed']),
+  requestedAt: instantSchema, completedAt: instantSchema.nullable(), snapshotId: idSchema.nullable(),
+});
+export const backupControlSchema = z.strictObject({
+  available: z.boolean(), configured: z.boolean(), pruningHeld: z.boolean(), revision: revisionSchema,
+  manual: manualBackupSchema.nullable(),
+});
+export const backupControlResponseSchema = z.strictObject({ data: backupControlSchema });
+export const backupControlContracts = {
+  get: { method: 'get', path: '/api/health/backups', permission: manageSettings, response: backupControlResponseSchema },
+  now: { method: 'post', path: '/api/health/backups/now', permission: manageSettings,
+    body: z.strictObject({ requestId: idSchema }), response: backupControlResponseSchema },
+  confirm: { method: 'post', path: '/api/health/backups/confirm-old-server-gone', permission: manageIntegrations,
+    body: z.strictObject({ revision: revisionSchema, confirmed: z.literal(true) }), response: backupControlResponseSchema },
+} as const satisfies Record<string, EndpointContract>;
+export type BackupControl = z.infer<typeof backupControlSchema>;
+export type ManualBackup = z.infer<typeof manualBackupSchema>;
 /** Owners only, like the email, payment and backup settings. */
 export const autoUpdateContracts = {
   get: { method: 'get', path: '/api/health/auto-update', permission: manageIntegrations, response: autoUpdateSettingsResponseSchema },

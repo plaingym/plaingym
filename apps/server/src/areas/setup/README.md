@@ -52,7 +52,9 @@ blob key).
 Restore runs through `RestoreService`, outside the HTTP activity lease. The small
 external setup journal stores the random polling ID, snapshot ID, and safe status;
 it never stores credentials or private identities. Polling can recognize completion
-after maintenance resumes a verified restore. Billing remains paused.
+after maintenance resumes a verified restore. Billing and member emails remain
+paused; backup pruning stays held until an owner confirms the old server is gone
+in Settings or Health.
 
 The payment step supports skipping configuration. The finish handler currently
 accepts a fresh start. Both use the shared setup contracts.

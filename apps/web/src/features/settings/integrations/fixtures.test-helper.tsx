@@ -28,5 +28,7 @@ export const renderSection = () => render(<QueryClientProvider client={new Query
 /** Answers GETs for the settings, the integrations and the health checks. */
 export function serve(GET: { mockImplementation(fn: (path: string) => Promise<unknown>): unknown }, current: () => Integrations, tiles = health(null, null)) {
   GET.mockImplementation(async (path: string) => path === '/api/settings' ? reply(200, { data: settings })
+    : path === '/api/health/backups' ? reply(200, { data: { available: true, configured: current().backups?.configured ?? false,
+      pruningHeld: false, revision: current().revision, manual: null } })
     : path === '/api/health' ? reply(200, tiles) : reply(200, { data: current() }));
 }

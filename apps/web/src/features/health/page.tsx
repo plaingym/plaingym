@@ -11,6 +11,7 @@ import { Alert } from '../../components/ui/alert.js';
 import { Button } from '../../components/ui/button.js';
 import { Card } from '../../components/ui/card.js';
 import { ChargeFailures } from './charge-failures.js';
+import { BackupActions } from './backups.js';
 
 const label = (key: string) => t('health/status:' + key);
 function detailValue(key: string, value: unknown) {
@@ -28,9 +29,10 @@ function detailValue(key: string, value: unknown) {
 function detailRows(tile: HealthTile): [key: string, label: string, value: unknown][] {
   if (!tile.details) return [];
   const versions = tile.id === 'automatic_updates' ? tile.details : null;
-  return Object.entries(tile.details).filter(([key, value]) => key !== 'keyReminder' && key !== 'noneUnderCurrentKey'
+  return Object.entries(tile.details).filter(([key, value]) => key !== 'keyReminder' && key !== 'noneUnderCurrentKey' && key !== 'pruningHeld'
     && !(versions && (key === 'fromVersion' || key === 'toVersion') && value === null))
-    .map(([key, value]) => [key, label(versions && (key === 'fromVersion' || key === 'toVersion') ? `field.${key}.${versions.result}` : 'field.' + key), value]);
+    .map(([key, value]) => [key, label(versions && (key === 'fromVersion' || key === 'toVersion') ? `field.${key}.${versions.result}` : 'field.' + key),
+      tile.id === 'last_backup' && key === 'pruningStopped' ? tile.details!.pruningStopped || tile.details!.pruningHeld : value]);
 }
 /** Every tile uses the same presentation, including tiles supplied by other providers. */
 export function HealthTiles({ tiles, extras = {} }: { tiles: readonly HealthTile[]; extras?: Partial<Record<HealthTile['id'], ReactNode>> }) {
@@ -50,7 +52,7 @@ export function HealthTiles({ tiles, extras = {} }: { tiles: readonly HealthTile
     </Card>;
   })}</div>;
 }
-function HealthPanel({ gymId }: { gymId: string }) {
+function HealthPanel({ gymId, owner }: { gymId: string; owner: boolean }) {
   // Refresh reads the tiles and the charge failure list together: both sit under this key.
   const cache = useQueryClient();
   const query = useQuery({ queryKey: ['health', gymId], queryFn: async ({ signal }) => {
@@ -60,7 +62,9 @@ function HealthPanel({ gymId }: { gymId: string }) {
   }, refetchInterval: 60_000 });
   return <main className="mx-auto max-w-7xl space-y-6 p-6">
     <div className="flex items-center justify-between gap-4"><h1 className="text-2xl font-semibold">{label('title')}</h1><Button variant="outline" disabled={query.isFetching} onClick={() => void cache.invalidateQueries({ queryKey: ['health', gymId] })}>{label('refresh')}</Button></div>
-    {query.isPending ? <p role="status">{label('loading')}</p> : query.isError ? <Alert>{label('loadFailed')}</Alert> : <HealthTiles tiles={query.data.tiles} extras={{ last_charge_run: <ChargeFailures gymId={gymId} reporting={query.data.tiles.some((tile) => tile.id === 'last_charge_run' && tile.status === 'error')}/> }}/>}
+    {query.isPending ? <p role="status">{label('loading')}</p> : query.isError ? <Alert>{label('loadFailed')}</Alert> : <HealthTiles tiles={query.data.tiles} extras={{
+      last_backup: <BackupActions gymId={gymId} owner={owner}/>,
+      last_charge_run: <ChargeFailures gymId={gymId} reporting={query.data.tiles.some((tile) => tile.id === 'last_charge_run' && tile.status === 'error')}/> }}/>}
   </main>;
 }
 export function HealthPage() {
@@ -68,5 +72,5 @@ export function HealthPage() {
   if (bootstrap.isPending) return <p role="status">{label('loading')}</p>;
   if (bootstrap.isError) return <Alert>{label('loadFailed')}</Alert>;
   if (!bootstrap.data.session || !canStaff(bootstrap.data.session.roles, 'settings.manage')) return <Alert>{label('noAccess')}</Alert>;
-  return <HealthPanel gymId={bootstrap.data.gym.id}/>;
+  return <HealthPanel gymId={bootstrap.data.gym.id} owner={canStaff(bootstrap.data.session.roles, 'integrations.manage')}/>;
 }

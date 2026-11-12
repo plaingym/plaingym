@@ -85,6 +85,7 @@ if [ "$existing" = false ]; then
   install -m 0644 "$SOURCE/postgres/01-roles.sh" "$ROOT/postgres/01-roles.sh"
   install -m 0700 "$SOURCE/update.sh" "$ROOT/update.sh"
   install -m 0700 "$SOURCE/rotate-key.sh" "$ROOT/rotate-key.sh"
+  install -m 0700 "$SOURCE/restore.sh" "$ROOT/restore.sh"
   # Generate independent passwords; nothing is written to stdout.
   {
     printf 'COMPOSE_PROJECT_NAME=plaingym\nAPP_IMAGE=%s\nGYM_HOSTNAME=%s\nACME_EMAIL=%s\nPOSTGRES_DB=plaingym\n' "$image" "$hostname" "$email"

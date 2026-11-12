@@ -16,6 +16,7 @@ export interface InstallBackupConfig {
   readonly recipient: string; readonly blobKey: Buffer; readonly appEncryptionKey: Buffer;
   readonly budgetBytes: number; readonly destination: z.infer<typeof destinationSchema>;
   readonly gymId: string;
+  readonly pruningHeld?: boolean;
 }
 export class BackupsNotConfiguredError extends Error {
   constructor(message = 'Backup destination and public key are not configured') { super(message); this.name = 'BackupsNotConfiguredError'; }
@@ -36,7 +37,8 @@ export async function loadBackupConfig(appKey: Buffer): Promise<InstallBackupCon
   const budgetBytes = Number(gym.backupRetentionBytes ?? 8_000_000_000n);
   if (!Number.isSafeInteger(budgetBytes)) throw new Error('Invalid retention budget');
   return { recipient: gym.backupPublicKey, blobKey: parseEncryptionKey(decryptSecret(appKey, { secretClass: 'backup_blob_key', owner: gym.id }, gym.backupBlobKey)),
-    appEncryptionKey: appKey, budgetBytes, destination, gymId: gym.id };
+    appEncryptionKey: appKey, budgetBytes, destination, gymId: gym.id,
+    pruningHeld: (gym.settings as { backupPruningHeld?: unknown }).backupPruningHeld === true };
 }
 /** Whether this install takes snapshots. An unconfigured or multi-gym install answers false; other failures throw. */
 export async function backupsConfigured(appKey: Buffer): Promise<boolean> {

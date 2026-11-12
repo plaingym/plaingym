@@ -16,7 +16,7 @@ import { SchemaCompatibilityError } from '@plaingym/db/client';
 export function reportMaintenanceFailure(args: readonly string[], error: unknown, stderr: (line: string) => void = (line) => process.stderr.write(line + '\n')): void {
   // Their messages are fixed text that names what to do, plus the schema guard's validated version and snapshot identifiers.
   stderr(error instanceof BackupsNotSetUpError || error instanceof KeyRotationRefusedError || error instanceof SchemaCompatibilityError ? error.message
-    : args[0] === 'restore' || args[0] === 'resume' ? 'Restore failed: ' + restoreFailureReason(error)
+    : args[0] === 'restore' || args[0] === 'restore-files' || args[0] === 'resume' ? 'Restore failed: ' + restoreFailureReason(error)
       : error instanceof RestoreFailure ? error.message
         : 'Maintenance command failed; check configuration and restore state');
   const command = args[0];

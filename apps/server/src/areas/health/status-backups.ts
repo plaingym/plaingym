@@ -51,15 +51,17 @@ export function createBackupHealthProvider(options: {
       const newestSnapshot = state.snapshots.find((snapshot) => snapshot.id === newest?.id);
       const nextSnapshotBytes = newestSnapshot ? newestSnapshot.database.size + newestSnapshot.manifest.size : 0;
       const capacity = retainedBytes + nextSnapshotBytes + 128 * 1024 * 1024 > settings.budgetBytes;
-      return { id: 'last_backup', status: overdue || capacity ? 'warning' : 'healthy', checkedAt,
+      return { id: 'last_backup', status: overdue || capacity || settings.pruningHeld ? 'warning' : 'healthy', checkedAt,
         message: statusMessage(capacity ? 'backupCapacity' : !latest ? 'backupNoneUnderKey' : overdue ? 'backupOverdue' : 'backupHealthy'),
         details: { latestRestorableAt: latest?.startedAt.toISOString() ?? null, ageSeconds, overdue,
-          noneUnderCurrentKey: !latest, retainedBytes, retentionBudgetBytes: settings.budgetBytes, pruningStopped: false, keyReminder: true } };
+          noneUnderCurrentKey: !latest, retainedBytes, retentionBudgetBytes: settings.budgetBytes, pruningStopped: false,
+          pruningHeld: settings.pruningHeld ?? false, keyReminder: true } };
     } catch {
       // The authenticated inventory is also pruning's safety check. Do not claim a snapshot is restorable when it fails.
       return { id: 'last_backup', status: 'error', checkedAt, message: statusMessage('backupPruningStopped'),
         details: { latestRestorableAt: null, ageSeconds: null, overdue: true, retainedBytes: 0,
-          noneUnderCurrentKey: false, retentionBudgetBytes: settings.budgetBytes, pruningStopped: true, keyReminder: true } };
+          noneUnderCurrentKey: false, retentionBudgetBytes: settings.budgetBytes, pruningStopped: true,
+          pruningHeld: settings.pruningHeld ?? false, keyReminder: true } };
     } finally { destination.close(); }
   });
 }

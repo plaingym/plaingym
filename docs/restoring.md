@@ -21,6 +21,14 @@ that file to run older code against the newer database. The source installation'
 
 ## What you need
 
+To capture recent changes before planned work, owners and admins can choose
+**Back up now** on **System health → Last backup**; owners can also use it in
+**Settings → Email, payments and backups**. Wait for the completed snapshot's time
+and ID. The action queues one manual snapshot; a second request is refused until it
+finishes, and requests during a restore or before backup setup are refused.
+Without the admin, run `sudo docker compose exec -T app node /app/maintenance.mjs snapshot`
+from the installation directory. It prints the new snapshot ID.
+
 Settings and System health report the last restorable snapshot for the current
 backup key and destination. After changing either, they report none under that
 key yet until a matching snapshot succeeds. Keep older private keys to restore
@@ -64,10 +72,9 @@ same way. The wizard is skipped, because the restored gym is already set up.
 
 ## What to check afterwards
 
-1. **Billing is paused.** It stays off until you turn it on yourself, so no one is
-   charged by a restored copy by surprise. **Member emails** keep the setting they had
-   in the backup: if the old server is still running, turn them off on **Settings →
-   Go live** until it is shut down, so members don't get two copies of each email.
+1. **Billing and member emails are paused.** Both stay off until you turn them on
+   yourself in **Settings → Go live**, so a restored copy doesn't charge members or
+   send duplicate member emails while the old server still runs.
 2. **Reconcile payments.** The app compares its payment records with Stripe. Open
    **Settings → Go live**; the checklist's *Payment reconciliation* item must be
    clear. If it shows unresolved items, correct them and use **Check restored
@@ -85,9 +92,14 @@ same way. The wizard is skipped, because the restored gym is already set up.
    are accepted without clearing anything).
 4. **Backups.** Check that the **System health** page shows a new successful backup. If the
    backup key was lost or you want a new one, replace it under **Settings → Email,
-   payments and backups**.
+   payments and backups**. New snapshots continue, but retention pruning is held.
+   After shutting down the old server, the owner must use **Confirm the old server
+   is gone** in Settings or on the Last backup tile and confirm **Resume backup
+   pruning**. The confirmation is audited; until then no snapshot or backup blob
+   is pruned, so the bucket grows, and once it reaches the retention budget new
+   snapshots fail.
 5. **Only one install should run the gym.** If the old server is still up, shut it
-   down as soon as the restore is done, and always before you turn billing on.
+   down as soon as the restore is done, and always before you turn billing or member emails on.
    Otherwise two installs charge the same members, send them the same emails, and
    both take and prune snapshots in the same backup bucket.
 
@@ -96,8 +108,7 @@ same way. The wizard is skipped, because the restored gym is already set up.
 Use this when the wizard can't be reached, or to script a restore. Run it on the
 fresh install, before anyone has completed setup.
 
-1. Create a private JSON file with the bucket details and the path of a file holding
-   the private key:
+1. Create a private JSON file with the bucket details:
 
    ```json
    {
@@ -105,30 +116,26 @@ fresh install, before anyone has completed setup.
      "endpoint": "https://example.r2.cloudflarestorage.com",
      "region": "auto",
      "accessKeyId": "…",
-     "secretAccessKey": "…",
-     "identityFile": "/var/lib/plaingym/backup-key.txt"
+     "secretAccessKey": "…"
    }
    ```
 
    `endpoint` is optional (leave it out for AWS S3), `region` defaults to `auto`, and
    the key file holds the private key as downloaded.
-2. Put both files inside the app container, on its data volume (`/var/lib/plaingym`).
-   A file under `/opt/plaingym` on the server is not visible there. Writing them
-   through the container makes them belong to the app's user and readable by no one
-   else:
+2. Save that configuration as `restore.json` and the downloaded private key as
+   `backup-key.txt` on the host. Keep both private (`chmod 600 restore.json backup-key.txt`).
+   The installer supplies `restore.sh`; on an older install, copy it from the
+   matching release's `deploy/restore.sh` and make it executable.
+3. From the installation directory, run the helper with the host file paths:
 
    ```sh
    cd /opt/plaingym
-   sudo docker compose exec -T app sh -c 'umask 077; cat > /var/lib/plaingym/restore.json' < restore.json
-   sudo docker compose exec -T app sh -c 'umask 077; cat > /var/lib/plaingym/backup-key.txt' < backup-key.txt
+   sudo ./restore.sh SNAPSHOT_ID /path/to/restore.json /path/to/backup-key.txt
    ```
-3. Run:
-
-   ```sh
-   sudo docker compose exec -T app gym-app restore SNAPSHOT_ID --config /var/lib/plaingym/restore.json
-   ```
-
-   It prints "Restore complete; billing remains paused" when it succeeds. When it fails
+   It streams both files to the maintenance CLI, which writes an app-owned 0700
+   directory and 0600 files on the data volume, sets the key path automatically,
+   and removes those copies on success or failure. It prints that billing and member
+   emails remain paused and pruning is held when it succeeds. When it fails
    it prints `Restore failed: ` and the reason, then "A verified restore can be resumed
    with the maintenance CLI" only if an unfinished restore is staged. The reason names
    a configuration field, a code or an error name, never a path, key, credential or field value:
@@ -172,11 +179,14 @@ fresh install, before anyone has completed setup.
    Fix what it names. If the resume hint appeared, a restore is staged and a new
    `restore` is refused, so finish it as in **If a restore is interrupted**; otherwise
    run the command again.
-4. Delete both files, from the container and from wherever you wrote them:
+4. Remove the host's temporary copies of both files. Keep your original backup
+   private key in safe storage. A forcibly killed helper can leave a private
+   `restore-input-*` directory on the data volume; remove that directory once no
+   helper uses it. Resume uses the verified restore staging, not those input files.
 
-   ```sh
-   sudo docker compose exec -T app rm /var/lib/plaingym/restore.json /var/lib/plaingym/backup-key.txt
-   ```
+The lower-level command remains `gym-app restore SNAPSHOT_ID --config PRIVATE_JSON_FILE`.
+For that command, the JSON also needs `identityFile` naming a key file already
+inside the app container; you manage those files yourself.
 
 Details of the file, the snapshot format and the lock are in
 `apps/server/src/areas/health/backups.protocol.md`.

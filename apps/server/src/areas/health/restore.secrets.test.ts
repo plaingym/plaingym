@@ -80,6 +80,7 @@ describe('install snapshot contents after a restore', { timeout: 60_000 }, () =>
         });
       } finally { await connection.close(); }
       const oldMaintenance = new PostgresMaintenance(old.maintenanceUrl, dockerTools);
+      expect(await oldMaintenance.pruningHeld()).toBe(true); // No schema is unknown state, so never delete.
       const snapshot = await f.backup({ database: oldMaintenance }).snapshot();
       await f.restore().restore(snapshot.id, f.identity);
       await f.targetMaintenance.migrate();

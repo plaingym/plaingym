@@ -145,6 +145,23 @@ export class PostgresMaintenance {
     for await (const chunk of output) { void chunk; }
   }
   async migrate(): Promise<void> { await migrateDatabase(this.url); }
+  /** Read under the backup lock, including for CLI snapshots and upload sweeps. */
+  async pruningHeld(): Promise<boolean> {
+    const connection = openConnection(this.url, 1);
+    try {
+      // A snapshot can predate the app schema. Unknown restore state must stop deletion,
+      // while still allowing a snapshot that can be migrated forward during restore.
+      const [schema] = await connection.sql<{ current: boolean }[]>`select exists (
+        select 1 from information_schema.columns
+        where table_schema = 'public' and table_name = 'gyms' and column_name = 'settings'
+      ) as current`;
+      if (!schema?.current) return true;
+      const rows = await connection.sql<{ held: boolean }[]>`select exists (
+        select 1 from gyms where settings->'backupPruningHeld' = 'true'::jsonb
+      ) as held`;
+      return rows[0]!.held;
+    } finally { await connection.close(); }
+  }
   /** The restored install's gyms, for restoring their object-store uploads. */
   async gymIds(): Promise<string[]> {
     const connection = openConnection(this.url, 1);
@@ -170,10 +187,12 @@ export class PostgresMaintenance {
           }
           afterField?.(field.secretClass);
         }
-        const gyms = await tx.execute<{ id: string }>(sql`update gyms set billing_enabled = false,
+        const gyms = await tx.execute<{ id: string }>(sql`update gyms set billing_enabled = false, member_emails_enabled = false,
+          settings = (settings - 'manualBackup') || '{"backupPruningHeld":true}'::jsonb,
           revision = revision + 1, updated_at = ${clock.now().toISOString()} returning id`);
         for (const gym of gyms) await writeAudit(tx, { gymId: gym.id, actorKind: 'system',
-          action: 'restore.completed', targetType: 'gym', targetId: gym.id, occurredAt: clock.now() });
+          action: 'restore.completed', targetType: 'gym', targetId: gym.id,
+          after: { billingEnabled: false, memberEmailsEnabled: false, backupPruningHeld: true }, occurredAt: clock.now() });
       });
     } finally { await connection.close(); }
   }

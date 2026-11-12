@@ -57,7 +57,7 @@ export class BackupService {
       let committed = false;
       try {
         // An unverifiable inventory stops pruning but never the next snapshot: one interrupted run must not end backups.
-        try { await pruneUnlocked(o.store, o.blobKey, sources, startedAt, 0, o.budgetBytes, new Date(startedAt.getTime() - 1), this.runs); }
+        try { if (!await o.database.pruningHeld()) await pruneUnlocked(o.store, o.blobKey, sources, startedAt, 0, o.budgetBytes, new Date(startedAt.getTime() - 1), this.runs); }
         catch (error) { if (!(error instanceof UnverifiedInventory)) throw error; }
         const previous = await inventory(o.store, o.blobKey, this.runs);
         const reusable = new Map(previous.snapshots.flatMap((s) => s.uploads.map((u) => [u.blob, u] as const)));
@@ -141,8 +141,11 @@ export class BackupService {
   }
   async prune(): Promise<{ retainedBytes: number; protectedKeys: ReadonlySet<string> }> {
     const o = this.options;
-    return o.database.locked(async () => pruneUnlocked(o.store, o.blobKey, await o.uploads(), o.clock.now(),
-      o.reserveBytes, o.budgetBytes, o.clock.now(), this.runs));
+    return o.database.locked(async () => {
+      if (await o.database.pruningHeld()) throw new UnverifiedInventory('Restore pruning hold; the owner must confirm the old server is gone');
+      return pruneUnlocked(o.store, o.blobKey, await o.uploads(), o.clock.now(),
+        o.reserveBytes, o.budgetBytes, o.clock.now(), this.runs);
+    });
   }
 }
 /** Useful for restore verification and operator diagnostics without exposing recovery plaintext. */

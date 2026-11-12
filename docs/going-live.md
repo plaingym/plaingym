@@ -3,8 +3,9 @@
 
 A new install starts with **billing and member emails off**, so you can import
 members, set up plans and check everything while your old system keeps running. A
-restored install starts with billing off and member emails as they were in the
-backup ([restoring.md](restoring.md#what-to-check-afterwards)). This guide takes you from there to charging members. The two switches
+restored install also starts with both off. Shut down the old server before turning
+either back on, and confirm it is gone in the backups section to release the
+pruning hold ([restoring.md](restoring.md#what-to-check-afterwards)). This guide takes you from there to charging members. The two switches
 are on **Settings → Go live**.
 
 ## What each switch does

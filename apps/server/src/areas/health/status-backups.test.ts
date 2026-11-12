@@ -35,6 +35,11 @@ async function snapshot(startedAt = clock.now(), status = 'succeeded', recipient
 async function read(config?: InstallBackupConfig | null) { return healthTileSchema.parse(await provider(config).read(context)); }
 
 describe('last-backup health', () => {
+  it('reports a restore pruning hold without treating a complete snapshot as damaged', async () => {
+    const complete = await snapshot();
+    expect(await read({ ...settings, pruningHeld: true })).toMatchObject({ status: 'warning',
+      details: { pruningHeld: true, pruningStopped: false, latestRestorableAt: complete.startedAt } });
+  });
   it('does not call an old-key or legacy snapshot restorable under a replacement key', async () => {
     await snapshot(new Date('2026-10-22T11:00:00Z'));
     const changed = { ...settings, recipient: 'age1replacement' };

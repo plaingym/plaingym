@@ -5,14 +5,20 @@ import type { JobRegistration } from '../../core/registry.js';
 import type { PostgresJobs } from '../../infra/jobs/postgres.js';
 import { backupKindSchema } from './backups.format.js';
 import type { BackupService } from './backups.js';
+import { createBackupControl, manualBackupJob } from './restore.backup-control.js';
 
 // Read from a stored job: a newer release may add keys, which this one ignores after a rollback.
 export const backupPayload = z.object({ kind: backupKindSchema });
 /** Install-wide schedules use explicit system jobs, never a gym registry entry. */
 export const jobs: readonly JobRegistration[] = [];
 export function registerBackupJobs(queue: PostgresJobs, backup: Pick<BackupService, 'snapshot'>,
-  clock: Clock, isRestoring: () => Promise<boolean> = async () => false) {
+  clock: Clock, isRestoring: () => Promise<boolean> = async () => false,
+  control = createBackupControl({ clock, queue, isRestoring })) {
   const name = 'health.backup';
+  queue.handle(manualBackupJob, async (payload, context) => {
+    const { requestId } = z.object({ requestId: z.uuid() }).parse(payload);
+    await control.run(context.gymId, requestId, () => backup.snapshot('manual'));
+  }, { lane: 'batch' });
   queue.handleSystem(name, async (payload) => {
     if (await isRestoring()) throw new Error('Restore in progress');
     const { kind } = backupPayload.parse(payload);

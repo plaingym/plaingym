@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { parseResponse } from '../../../lib/response.js';
 import { useState, type FormEvent } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { createBackupKeyResponseSchema, type BackupsIntegration } from '@plaingym/shared/contracts';
 import { api } from '../../../lib/api.js';
 import { Button } from '../../../components/ui/button.js';
@@ -10,6 +11,7 @@ import { CheckboxField } from '../../../components/ui/select.js';
 import { FormMessage } from '../../../components/ui/alert.js';
 import { BackupKeyPanel, ConfirmKeySection, confirmKeyLabels } from '../../setup/backup-key.js';
 import { failedText, integrationsOf, refusedText, text, type useIntegrations } from './state.js';
+import { BackupActions } from '../../health/backups.js';
 
 const label = (key: string) => text('backups.' + key);
 /**
@@ -31,6 +33,7 @@ function Field({ name, type = 'text', value, text: shown }: { name: string; type
  * private key is shown once, and nothing used until the owner pastes it back.
  */
 export function BackupsIntegrationSection({ backups, lastSnapshot, state }: { backups: BackupsIntegration; lastSnapshot: LastSnapshot; state: ReturnType<typeof useIntegrations> }) {
+  const cache = useQueryClient();
   const [busy, setBusy] = useState(false), [open, setOpen] = useState(false);
   const [created, setCreated] = useState<{ privateKey: string; publicKey: string } | null>(null);
   const [message, setMessage] = useState<{ kind: 'status' | 'alert'; text: string } | null>(null);
@@ -55,7 +58,10 @@ export function BackupsIntegrationSection({ backups, lastSnapshot, state }: { ba
     const privateKey = String(new FormData(event.currentTarget).get('privateKey') ?? '').trim();
     void run(async () => {
       const reply = await state.change((revision, signal) => api.POST('/api/settings/integrations/backups/confirm', { signal, body: { revision, privateKey } }), integrationsOf);
-      if (reply.status < 300) { setCreated(null); setMessage({ kind: 'status', text: label('confirmed') }); }
+      if (reply.status < 300) {
+        setCreated(null); setMessage({ kind: 'status', text: label('confirmed') });
+        if (state.gymId) await cache.invalidateQueries({ queryKey: ['health', state.gymId, 'backups'] });
+      }
       else setMessage({ kind: 'alert', text: reply.reason === 'mismatch' || reply.status === 400 ? confirmKeyLabels.mismatch()
         : reply.reason === 'no_pending_key' ? label('noPending') : refusedText(reply) });
     });
@@ -71,6 +77,7 @@ export function BackupsIntegrationSection({ backups, lastSnapshot, state }: { ba
       : lastSnapshot.noneUnderCurrentKey ? label('noneUnderKey')
       : lastSnapshot.at ? text('backups.lastSnapshot', { time: new Date(lastSnapshot.at).toLocaleString() }) : label('noSnapshot')}</p>}
     <p className="text-sm text-muted-foreground">{text('backups.retention', { size: gigabytes(backups.retentionBudgetBytes) })}</p>
+    {state.gymId && <BackupActions gymId={state.gymId} owner onConfirmed={state.reload}/>}
     {backups.configured && <p className="text-sm">{label('changeWarning')}</p>}
     <FormMessage message={message}/>
     {pending && <p role="note" className="rounded-md [overflow-wrap:anywhere] border border-border p-3 text-sm">{text('backups.pending', { bucket: pending.destination.bucket })}</p>}
