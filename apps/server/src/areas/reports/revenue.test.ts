@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
-import { invoiceLineItems, invoices, memberships, payments, uuidv7 } from '@plaingym/db';
+import { invoiceLineItems, invoices, memberships, payments, refunds, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError, errorResponse, staffRoles, type StaffRole } from '@plaingym/shared';
@@ -62,6 +62,56 @@ const url = (input = query) => '/api/reports/revenue?' + new URLSearchParams(inp
 const amounts = (payments: number, refunds = 0) => ({ payments, refunds, net: payments - refunds });
 
 describe('revenue report with real PostgreSQL and RLS', () => {
+  it.each(['parts', 'cents'])('nets every signed group to zero after a full refund in %s, including history before the range', async mode => {
+    const f = await fixture();
+    const bill = await invoice(f, [
+      { kind: 'membership', membershipId: f.membership.id, amountCents: 50 },
+      { kind: 'signup_fee', membershipId: f.membership.id, amountCents: 50 },
+      { kind: 'discount', amountCents: -10 },
+      { kind: 'tax', taxRateId: f.tax.id, amountCents: 10, taxRateMillionths: 100000, taxInclusive: false },
+    ]);
+    const paid = await payment(f, bill.id, 100, '2026-03-04T12:00:00Z');
+    await factory('refunds', f.gymId, { paymentId: paid.id, amountCents: 1, status: 'succeeded', resolvedAt: new Date('2026-04-01T12:00:00Z') });
+    await database.forGym(f.gymId, tx => tx.insert(refunds).values(Array.from({ length: mode === 'parts' ? 1 : 99 }, () => ({
+      gymId: f.gymId, paymentId: paid.id, amountCents: mode === 'parts' ? 99 : 1, currency: 'USD', status: 'succeeded',
+      resolvedAt: new Date('2026-05-01T12:00:00Z'),
+    }))));
+    const buckets = (await service.get(f, query)).data.currencies[0]!.buckets;
+    expect(buckets.map(bucket => bucket.totals.refunds)).toEqual([0, 0, 1, 99]);
+    for (const group of buckets[1]!.groups) {
+      const returned = buckets.flatMap(bucket => bucket.groups).filter(row => row.kind === group.kind && row.id === group.id)
+        .reduce((sum, row) => sum + row.refunds, 0);
+      expect(returned).toBe(group.payments);
+    }
+    const may = (await service.get(f, { from: '2026-05', to: '2026-05' })).data.currencies[0]!.buckets[0];
+    expect(may).toEqual(buckets[3]);
+  });
+  it('preserves a closed refund month through a real reversal and counts the negative refund in its own month', async () => {
+    const f = await fixture(), bill = await invoice(f, [
+      { kind: 'membership', membershipId: f.membership.id, amountCents: 50 },
+      { kind: 'signup_fee', membershipId: f.membership.id, amountCents: 50 },
+    ]);
+    const paid = await payment(f, bill.id, 100, '2026-02-04T12:00:00Z');
+    const refundClock = new TestClock('2026-03-15T12:00:00Z');
+    const transitions = createInvoiceTransitions({ scope: database.forGym, clock: refundClock });
+    const context = { gymId: f.gymId, actor: { kind: 'system' as const } };
+    const request = { invoiceId: bill.id, paymentId: paid.id, refundId: uuidv7(), amountCents: 1, currency: 'USD', processorId: 're_' + uuidv7() };
+    await transitions.refund(context, { ...request, status: 'succeeded' });
+    const closed = await service.get(f, { from: '2026-03', to: '2026-03' });
+    refundClock.set('2026-04-01T04:00:00Z');
+    await transitions.refund(context, { ...request, status: 'failed' });
+    expect(await service.get(f, { from: '2026-03', to: '2026-03' })).toEqual(closed);
+    const april = revenueReportResponseSchema.parse(await service.get(f, { from: '2026-04', to: '2026-04' }));
+    expect(april.data.currencies[0]!.buckets[0]!.totals).toEqual({ ...amounts(0, -1), netBeforeTax: 1, netTax: 0 });
+    const replacement = { ...request, refundId: uuidv7(), processorId: 're_' + uuidv7(), amountCents: 100 };
+    refundClock.set('2026-05-01T12:00:00Z');
+    await transitions.refund(context, { ...replacement, status: 'succeeded' });
+    const buckets = (await service.get(f, query)).data.currencies[0]!.buckets;
+    expect(buckets.map(bucket => bucket.totals.refunds)).toEqual([0, 1, -1, 100]);
+    for (const kind of ['plan', 'signup_fee']) expect(buckets.flatMap(bucket => bucket.groups)
+      .filter(group => group.kind === kind).reduce((sum, group) => sum + group.net, 0)).toBe(0);
+    expect(await service.get(f, { from: '2026-03', to: '2026-03' })).toEqual(closed);
+  });
   it('has known answers over local month boundaries, DST, later refunds, discounts, archived names and frozen months', async () => {
     const f = await fixture();
     const bill = await invoice(f, [
@@ -119,6 +169,23 @@ describe('revenue report with real PostgreSQL and RLS', () => {
     const response = await service.get(f, { from: '2026-10', to: '2026-11' });
     expect(response.data.currencies[0]!.buckets.map(bucket => bucket.totals.payments)).toEqual([1, 3]);
     expect(response.data.currencies[0]!.buckets[1]).toMatchObject({ startsAt: '2026-11-01T04:00:00.000Z', endsAt: '2026-12-01T05:00:00.000Z' });
+  });
+  it('keeps a reversal recorded before its own success time after the success, so the report still nets to zero', async () => {
+    const f = await fixture(), bill = await invoice(f, [
+      { kind: 'membership', membershipId: f.membership.id, amountCents: 50 },
+      { kind: 'signup_fee', membershipId: f.membership.id, amountCents: 50 },
+    ]);
+    const paid = await payment(f, bill.id, 100, '2026-02-04T12:00:00Z');
+    const refundClock = new TestClock('2026-03-15T12:00:00Z');
+    const transitions = createInvoiceTransitions({ scope: database.forGym, clock: refundClock });
+    const context = { gymId: f.gymId, actor: { kind: 'system' as const } };
+    const request = { invoiceId: bill.id, paymentId: paid.id, refundId: uuidv7(), amountCents: 30, currency: 'USD', processorId: 're_' + uuidv7() };
+    await transitions.refund(context, { ...request, status: 'succeeded' });
+    refundClock.set('2026-03-15T11:59:59Z');
+    await transitions.refund(context, { ...request, status: 'failed' });
+    const march = revenueReportResponseSchema.parse(await service.get(f, { from: '2026-03', to: '2026-03' })).data.currencies[0]!.buckets[0]!;
+    expect(march.totals.refunds).toBe(0);
+    for (const group of march.groups) expect(group.refunds).toBe(0);
   });
   it('separates currencies, including whole-yen odd amounts, without a combined total', async () => {
     // Current schema enforces one currency per gym. Assemble two real scoped datasets to test the response's currency partition.
@@ -273,6 +340,8 @@ describe('revenue report with real PostgreSQL and RLS', () => {
     const long = await measure({ from: '2024-12', to: '2026-11' });
     expect(short.reportStatements).toHaveLength(4); expect(long.reportStatements).toHaveLength(4);
     expect(short.statements).toHaveLength(7); expect(long.statements).toHaveLength(7);
+    expect(long.parameterCounts).toEqual(short.parameterCounts);
+    expect(Math.max(...long.parameterCounts)).toBeLessThan(100);
     expect(long.result.data.currencies[0]!.buckets.reduce((sum, bucket) => sum + bucket.totals.payments, 0)).toBe(1050);
   });
 });

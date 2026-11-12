@@ -16,7 +16,8 @@ Monthly buckets cover whole local months, including the current month.
 
 All boundaries are local midnights converted by `@plaingym/shared/time` with
 `gap: 'shift'`. Weeks across daylight-saving changes can have 167 or 169 hours.
-SQL joins the supplied instant boundaries; it performs no timezone conversion.
+SQL assigns each visit to the sorted bucket starts with `width_bucket`, then
+joins on the bucket number, retaining empty buckets. It performs no timezone conversion.
 
 `createAttendanceReportService` takes `forGym` (overridable in tests) and receives
 gym ID, timezone and clock on each call. The route gets these from request context;
@@ -45,7 +46,8 @@ limit and gym-local month boundaries as attendance; there is no granularity opti
 
 Each bucket has `activeAtStart`, `new`, `imported`, `cancelled`, `netChange`,
 `activeAtEnd`, `frozenAtEnd`, and `churn`. Churn is an integer `numerator`
-(cancelled) and positive `denominator` (active at start), or null when the
+(distinct members active at the month's start who cancel during it) and positive
+`denominator` (active at start), or null when the
 denominator is zero. Clients format the percentage.
 
 Activity starts at the first active assignment, activation or membership import
@@ -66,8 +68,10 @@ The service unions each member's overlapping or touching memberships before
 counting entries and exits. Cancelling one overlapping membership is not churn.
 Leaving and returning counts a cancellation and a new entry, including within
 one month. An activity interval starting with an import enters `imported` instead
-of `new`; an overlapping addition never adds another member. A member with any
-live frozen membership counts once in `frozenAtEnd`.
+of `new`; an overlapping addition never adds another member. `cancelled` still
+counts every exit, including same-month joiners and repeated exits. Churn counts
+each member in its starting cohort at most once. A member counts once in
+`frozenAtEnd` only when every live membership is frozen at that boundary.
 
 Snapshots are immediately before local midnight at the boundary: an activation
 exactly on the first enters that month's `new` or `imported`; a cancellation
@@ -76,7 +80,9 @@ exactly on the first is in that month's `cancelled`. This preserves
 between adjacent months. Current-month buckets cover the full calendar month.
 
 `members.query.ts` joins memberships to the four lifecycle audit actions in one
-statement in one `forGym` call, using the gym/action/target audit index. This keeps
+statement in one `forGym` call, using the gym/action/target audit index. It skips
+memberships cancelled before the first boundary and projects only the three
+status fields needed from audit snapshots. This keeps
 the membership rows and their history in the same database snapshot. The
 TypeScript service reconstructs live and frozen intervals without a history table.
 The existing reports route barrel mounts it; no extra runtime wiring is needed.
@@ -94,9 +100,12 @@ The route also requires an owner or admin role before validation: combining coac
 and front desk capabilities does not grant revenue access.
 
 Payments count in the gym-local month of `paid_at`, across card, cash, check and
-other methods. Only `succeeded` refunds count, in the local month of `resolved_at`;
-their invoice and payment can predate the report. A later refund reduces its own
-month, leaving the earlier payment month unchanged. Pending, failed and canceled
+other methods. Refunds count in the local month they succeeded; their invoice
+and payment can predate the report. A later refund reduces its own month, leaving
+the earlier payment month unchanged. If a successful processor refund later fails,
+the `billing.refund.reversed` audit event preserves its original success instant:
+the success month stays unchanged, and a negative refund increases net revenue in
+the reversal month. Pending refunds, failures without a previous success, canceled
 refunds and disputes do not reduce revenue. No invoice means no revenue, including
 a frozen month without an invoice.
 
@@ -111,7 +120,16 @@ Unapplied until a successful refund reverses it. Older payments without that
 explicit marker are treated as accepted, matching billing transitions. An empty
 or zero-amount invoice also leaves its receipt Unapplied. Refunds are allocated
 over their own payment's allocated parts, including discounts and Unapplied,
-with the same exact integer rule. Each refund is allocated independently.
+with the same exact integer rule. For each payment, successes and reversals are
+ordered by instant and refund ID. Each contributes the allocation of the running
+net refund total minus its previous allocation. Earlier events outside the range
+establish the starting allocation; a full refund therefore nets every group to
+zero, even when paid back one minor unit at a time. Reversals reduce that running
+total in their own month, leaving earlier allocations unchanged. With three or
+more parts, largest-remainder allocation is not monotone as the running total
+increases: a positive refund can allocate a negative minor unit to one group and
+an extra unit to another. Each month's groups still add exactly to its refund
+total, and a full refund still nets every group to zero.
 
 `plan` groups membership lines by the plan each line recorded when it was billed
 (`invoice_line_items.plan_id`); `signup_fee` is a separate group for that plan.
@@ -129,9 +147,14 @@ net`, including signed discount refunds; groups add exactly to monthly totals.
 `revenue.allocation.ts` uses BigInt products and signed floor/remainder arithmetic
 internally, returning safe integer minor units. `createRevenueReportService`
 reuses the shared local-month boundaries. `revenue.query.ts` performs four
-statements in one short `forGym` call: received payments, resolved refunds with
-their payments, touched invoice lines joined to current catalog names, and
-payment acceptance audit markers. No statement is added per invoice or month.
+statements in one short `forGym` call: received payments, refund histories with
+their payments and reversal snapshots, touched invoice lines joined to current
+catalog names, and payment acceptance audit markers. Touched lines and markers
+use the IDs from the first two reads as bound UUID arrays, so bind counts stay
+fixed as payment counts grow without re-reading payment history. The refund
+candidate subquery unions the indexed success range with reversal audit events;
+an `ARRAY` InitPlan supplies payment IDs for indexed refund-history lookups.
+No statement is added per invoice or month.
 The report only reads billing data and requires no extra runtime configuration.
 
 ## Timing and indexes
@@ -152,30 +175,18 @@ bound per service call. They compare each 24-month result before and after addin
 the second gym and check the underlying readers' rows, IDs and known totals.
 Every measured query and EXPLAIN uses the app role and forced RLS.
 
-One warm-cache workstation run on PostgreSQL 18.6 and Node 24.22.1 measured these
-whole-service times in milliseconds, before and after migration `0028`:
-
-| Report | Months | Before | After |
-| --- | ---: | ---: | ---: |
-| Attendance | 1 | 11.43 | 14.45 |
-| Attendance | 12 | 92.58 | 114.14 |
-| Attendance | 24 | 118.75 | 162.43 |
-| Members | 1 | 7.18 | 15.24 |
-| Members | 12 | 7.40 | 20.32 |
-| Members | 24 | 7.52 | 9.83 |
-| Revenue | 1 | 20.95 | 20.26 |
-| Revenue | 12 | 109.13 | 197.13 |
-| Revenue | 24 | 140.64 | 182.86 |
-
-These are individual observations on a shared machine, not performance targets.
+Earlier individual whole-service observations around migration `0028` ranged
+from 7 to 197 ms on a shared workstation (PostgreSQL 18.6, Node 24.22.1).
+They used separate connections and are not comparative performance evidence or targets.
 Timing includes validation, bucket generation, transaction, query transfer and
 aggregation; connection initialization, fixture construction, warming and EXPLAIN
 replays are outside the timer. Broad ranges need every fixture row for that gym;
 the planner keeps their existing scans, so the time indexes do not promise to
-speed up full-history reports. Members needs the complete lifecycle history and
-gets no new index.
+speed up full-history reports. Members keeps the lifecycle history of memberships
+that can overlap the requested range and gets no new index.
 
-The extra one-month probe justifies the three new `(gym_id, time)` B-tree indexes:
+The original one-month probe justified the three `(gym_id, time)` B-tree indexes
+added in `0028` (these observations predate the cumulative refund query):
 
 - Attendance's old `(gym_id, member_id, occurred_at)` bitmap index scan touches
   755 shared buffers for 3,360 visits. `attendances_gym_occurred_at_idx` touches 4;
@@ -190,9 +201,21 @@ The upgrade test starts at the secured, populated `0027` schema and verifies the
 index definitions, existing rows and isolation after migration.
 
 Run `pnpm exec vitest run apps/server/src/areas/reports/timing.test.ts` to repeat.
-Set `REPORT_TIMING_ARTIFACT` to a writable file path to retain full captured
-`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` plans and timings. For a baseline run,
+Set `REPORT_TIMING_ARTIFACT` to a writable file path to opt into full captured
+`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` plans for every case and retain timings.
+The artifact is written once after the suite. Ordinary runs replay the
+dedicated 24-month weekly attendance plan check, which verifies an equality join
+on bucket numbers rather than visit-time inequalities, and a one-month revenue
+plan check. The latter requires indexed payment and refund time bounds and
+payment-ID lookups for cumulative refund history, and verifies that the lines
+and markers statements do not scan payments or refunds again. It builds a separate
+gym with the same fixture and 5,000 additional one-minor-unit refunds in an older
+month: small refund tables can legitimately favor a sequential history scan.
+For a baseline run,
 also set `REPORT_TIMING_WITHOUT_TIME_INDEXES=1`: it removes only these three
 indexes from this test file's disposable clone, leaving the migrated template
 unchanged. Unset it for the indexed comparison. Plan replays use the original
-driver SQL and bind parameters in a fresh transaction scoped to the same gym.
+driver SQL and bind parameters in a fresh transaction scoped to the gym captured
+from each statement's `set_config` binds. The 30-second statement timeout applies
+only to opt-in plan measurements; ordinary statement-count callers keep their
+normal timeout. Revenue tests also bound each statement's bind-parameter count.

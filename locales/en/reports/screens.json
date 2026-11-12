@@ -68,6 +68,6 @@
   "revenueTable": "Revenue data ({currency})",
   "revenueCurrency": "Revenue — {currency}",
   "attendanceHelp": "All programs shows totals followed by program rows. Unique members are counted separately in each row; do not add them across programs. Weekly boundary periods can be partial.",
-  "membersHelp": "New and imported members are separate. Churn is cancellations divided by active members at the start, or N/A when that count is zero. Current-period counts are provisional.",
-  "revenueHelp": "Receipts use their paid month and successful refunds their resolved month. Tax has its own group rows. Totals include tax; discounts are negative. Amounts are plain decimals in the currency shown, and currencies are never combined."
+  "membersHelp": "New and imported members are separate. Churn counts distinct members active at the month's start who cancel during it, divided by active members at the start, or N/A when that count is zero. Frozen at end counts a member only when every live membership is frozen. Current-period counts are provisional.",
+  "revenueHelp": "Receipts use their paid month and refunds the month they succeeded. A later reversal counts as a negative refund in its own month, leaving the success month unchanged. Tax has its own group rows. Totals include tax; discounts are negative. Amounts are plain decimals in the currency shown, and currencies are never combined."
 }

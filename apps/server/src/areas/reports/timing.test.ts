@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { writeFile } from 'node:fs/promises';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { and, eq, lt } from 'drizzle-orm';
+import { payments, refunds } from '@plaingym/db';
 // eslint-disable-next-line no-restricted-imports, database/system-tables -- Test-clone statistics and optional baseline-index experiment only.
 import { openConnection } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
@@ -28,6 +30,7 @@ const reports = [
 let gym: Awaited<ReturnType<typeof buildFullReportGym>>, neighbour: typeof gym;
 const alone = new Map<string, unknown>();
 const evidence: Record<string, unknown> = {};
+function nodes(node: ReportPlanNode): ReportPlanNode[] { return [node, ...(node.Plans ?? []).flatMap(nodes)]; }
 
 function scans(node: ReportPlanNode): unknown[] {
   return [...(node['Relation Name'] || node['Index Name'] ? [{ node: node['Node Type'], table: node['Relation Name'], index: node['Index Name'],
@@ -56,30 +59,86 @@ beforeAll(async () => {
   console.info('Report fixture: ' + JSON.stringify(evidence.fixture));
 }, 120_000);
 
+afterAll(async () => {
+  if (process.env.REPORT_TIMING_ARTIFACT) await writeFile(process.env.REPORT_TIMING_ARTIFACT, JSON.stringify(evidence, null, 2) + '\n');
+});
+
 describe('full-gym report statement counts, time and app-role plans', () => {
   for (const report of reports) for (const months of [1, 12, 24]) it(`${report.name}: ${months} months beside another full gym`, async () => {
     const context = { ...gym, clock };
-    // Warm once so measured runs compare the same cache state. EXPLAIN replays are outside the timer.
+    // Warm database buffers; the measured connection initializes separately. EXPLAIN is outside the timer.
     await report.create(database.forGym).get(context, range(months));
     const measured = await measureReportStatements<unknown>(database.appUrl, scope => report.create(scope)
-      .get(context, range(months)), gym.gymId);
+      .get(context, range(months)), Boolean(process.env.REPORT_TIMING_ARTIFACT));
     expect(measured.reportStatements).toHaveLength(report.statements);
     expect(measured.statements).toHaveLength(report.statements + 3); // BEGIN, gym context, COMMIT.
     expect(measured.milliseconds).toBeLessThan(15_000);
-    expect(measured.plans).toHaveLength(report.statements);
+    if (process.env.REPORT_TIMING_ARTIFACT) expect(measured.plans).toHaveLength(report.statements);
+    expect(Math.max(...measured.parameterCounts)).toBeLessThan(100);
     if (months === 24) expect(measured.result).toEqual(alone.get(report.name));
     const key = `${report.name}-${months}`;
     evidence[key] = { milliseconds: measured.milliseconds, plans: measured.plans };
     console.info(key + ': ' + JSON.stringify({ milliseconds: measured.milliseconds,
       plans: measured.plans.map(plan => ({ milliseconds: plan['Execution Time'], scans: scans(plan.Plan) })) }));
-    // Retain complete EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) output when gathering review evidence.
-    if (process.env.REPORT_TIMING_ARTIFACT) await writeFile(process.env.REPORT_TIMING_ARTIFACT, JSON.stringify(evidence, null, 2) + '\n');
   }, 60_000);
 });
 
+it('assigns 24 months of weekly visits once before joining the empty bucket list', async () => {
+  const measured = await measureReportStatements(database.appUrl, scope => createAttendanceReportService(scope).get({ ...gym, clock },
+    { ...range(24), granularity: 'week' }), true);
+  const planNodes = measured.plans.flatMap(plan => nodes(plan.Plan));
+  const bucketJoin = planNodes.find(node => /bucket/.test(node['Hash Cond'] ?? node['Merge Cond'] ?? ''));
+  expect(bucketJoin).toBeDefined();
+  expect(planNodes.some(node => /occurred_at/.test(node['Join Filter'] ?? ''))).toBe(false);
+  expect(measured.reportStatements[0]).toContain('width_bucket');
+  evidence.weeklyAttendancePlan = measured.plans;
+  console.info('Weekly attendance bucket join: ' + JSON.stringify({ type: bucketJoin?.['Node Type'],
+    condition: bucketJoin?.['Hash Cond'] ?? bucketJoin?.['Merge Cond'], scans: measured.plans.flatMap(plan => scans(plan.Plan)) }));
+}, 60_000);
+
+it('uses revenue time indexes for a selective month and reuses touched IDs without rescanning payment history', async () => {
+  // A tiny refund table legitimately prefers a sequential scan. Give this independent gym
+  // enough old refunds to make the selective history lookup matter, without changing known answers.
+  const planGym = await buildFullReportGym(database, 'USD');
+  await database.forGym(planGym.gymId, async tx => {
+    const [oldPayment] = await tx.select({ id: payments.id }).from(payments)
+      .where(and(eq(payments.gymId, planGym.gymId), lt(payments.paidAt, new Date('2025-02-01T00:00:00Z')))).limit(1);
+    await tx.insert(refunds).values(Array.from({ length: 5000 }, () => ({ gymId: planGym.gymId, paymentId: oldPayment!.id,
+      amountCents: 1, currency: 'USD', status: 'succeeded', resolvedAt: new Date('2025-02-15T12:00:00Z') })));
+  });
+  const maintenance = openConnection(database.maintenanceUrl, 1);
+  try {
+    for (const table of ['payments', 'refunds', 'invoices', 'audit_events']) await maintenance.sql`analyze ${maintenance.sql(table)}`;
+  } finally { await maintenance.close(); }
+  const measured = await measureReportStatements(database.appUrl, scope => createRevenueReportService(scope).get({ ...planGym, clock }, range(1)), true);
+  const received = nodes(measured.plans[0]!.Plan), returned = nodes(measured.plans[1]!.Plan);
+  evidence.selectiveRevenuePlans = measured.plans;
+  console.info('Selective revenue plans: ' + JSON.stringify(measured.plans.map(plan => ({ scans: scans(plan.Plan) }))));
+  // These assertions intentionally require range bounds in Index Cond, not merely an index's name.
+  // A gym-only index scan with a range filter would read all of that gym's history again.
+  if (process.env.REPORT_TIMING_WITHOUT_TIME_INDEXES !== '1') {
+    const paymentRange = received.find(node => node['Index Name'] === 'payments_gym_paid_at_idx');
+    expect(paymentRange?.['Index Cond']).toMatch(/paid_at >=/);
+    expect(paymentRange?.['Index Cond']).toMatch(/paid_at </);
+    const refundRange = returned.find(node => node['Index Name'] === 'refunds_gym_resolved_at_idx');
+    expect(refundRange?.['Index Cond']).toMatch(/resolved_at >=/);
+    expect(refundRange?.['Index Cond']).toMatch(/resolved_at </);
+  }
+  const refundHistory = returned.find(node => node['Index Name'] === 'refunds_payment_idx');
+  expect(refundHistory?.['Index Cond']).toMatch(/payment_id = ANY/);
+  expect(measured.plans.slice(2).flatMap(plan => nodes(plan.Plan))
+    .some(node => node['Relation Name'] === 'payments' || node['Relation Name'] === 'refunds')).toBe(false);
+  expect(measured.reportStatements).toHaveLength(4);
+  expect(Math.max(...measured.parameterCounts)).toBeLessThan(100);
+}, 60_000);
+
 it('reads only the requested gym rows for a 24-month range, with known nonempty answers', async () => {
   const context = { ...gym, clock }, boundaries = reportBuckets(range(24), context);
-  const history = await database.forGym(gym.gymId, tx => membersHistory(tx, gym.gymId));
+  const history = await database.forGym(gym.gymId, tx => membersHistory(tx, gym.gymId, new Date(boundaries[0]!.startsAt)));
+  const december = await database.forGym(gym.gymId, tx => membersHistory(tx, gym.gymId, new Date('2025-12-01T05:00:00Z')));
+  expect(december.rows).toHaveLength(270);
+  console.info('Members history after projection: ' + JSON.stringify({ fullRangeBytes: Buffer.byteLength(JSON.stringify(history)),
+    decemberRows: december.rows.length, decemberEvents: december.events.length, decemberBytes: Buffer.byteLength(JSON.stringify(december)) }));
   expect(history.rows).toHaveLength(300);
   expect(history.events).toHaveLength(390);
   expect(history.rows.every(row => gym.membershipIds.has(row.id) && gym.memberIds.has(row.memberId))).toBe(true);

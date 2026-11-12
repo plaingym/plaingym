@@ -15,13 +15,15 @@ export function attendanceAggregate(tx: Transaction, gymId: string, buckets: rea
     with boundaries as (
       select * from jsonb_to_recordset(${boundaries}::jsonb) as b(bucket integer, start timestamptz, "end" timestamptz)
     ), visits as materialized (
-      select id, member_id, session_id, program_id, occurred_at from ${attendances}
+      select id, member_id, session_id, program_id,
+        width_bucket(occurred_at, array(select start from boundaries order by bucket)) - 1 as bucket
+      from ${attendances}
       where gym_id = ${gymId}::uuid and occurred_at >= ${buckets[0]!.startsAt}::timestamptz
         and occurred_at < ${buckets.at(-1)!.endsAt}::timestamptz
     ), bucket_visits as (
       select b.bucket, a.id, a.member_id, links.program_id, p.name as program_name
       from boundaries b
-      left join visits a on a.occurred_at >= b.start and a.occurred_at < b."end"
+      left join visits a on a.bucket = b.bucket
       left join lateral (
         select a.program_id where a.program_id is not null
         union

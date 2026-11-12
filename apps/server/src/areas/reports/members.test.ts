@@ -58,6 +58,25 @@ function identity(response: Awaited<ReturnType<typeof service.get>>) {
 }
 
 describe('members report with real PostgreSQL and RLS', () => {
+  it('limits churn to distinct members active at the start while keeping all cancellations in the column', async () => {
+    const f = await fixture();
+    const existing = await assigned(f, '2026-02-01T12:00:00Z', { status: 'cancelled', cancelledAt: new Date('2026-03-05T12:00:00Z') });
+    await assigned(f, '2026-03-10T12:00:00Z', { memberId: existing.memberId, householdId: existing.householdId,
+      status: 'cancelled', cancelledAt: new Date('2026-03-20T12:00:00Z') });
+    for (let index = 0; index < 5; index++) await assigned(f, '2026-03-02T12:00:00Z', {
+      status: 'cancelled', cancelledAt: new Date('2026-03-25T12:00:00Z') });
+    const result = await service.get(f, query); identity(result);
+    expect(result.data.buckets[0]).toMatchObject({ activeAtStart: 1, new: 6, cancelled: 7, activeAtEnd: 0,
+      churn: { numerator: 1, denominator: 1 } });
+  });
+  it('counts a frozen member only while every live membership is frozen, including overlap boundaries', async () => {
+    const f = await fixture(), frozen = await assigned(f, '2026-02-01T12:00:00Z');
+    await event(f, frozen, 'frozen', '2026-03-05T12:00:00Z', 'frozen', 'active');
+    await assigned(f, '2026-02-15T12:00:00Z', { memberId: frozen.memberId, householdId: frozen.householdId,
+      status: 'cancelled', cancelledAt: new Date('2026-04-01T04:00:00Z') });
+    const result = await service.get(f, query); identity(result);
+    expect(result.data.buckets.map(bucket => [bucket.activeAtEnd, bucket.frozenAtEnd])).toEqual([[1, 0], [1, 1], [1, 1]]);
+  });
   it('rebuilds known monthly answers across DST, midnight, freeze, conversion, overlaps, return, import, erasure and fallback', async () => {
     const f = await fixture();
     await assigned(f, '2026-03-01T04:59:59.999Z', { status: 'cancelled', cancelledAt: new Date('2026-04-15T12:00:00Z') });
