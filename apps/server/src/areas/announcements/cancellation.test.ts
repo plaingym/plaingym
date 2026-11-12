@@ -121,7 +121,7 @@ it('commits the recipient snapshot, note and job with cancellation, and rolls ev
 });
 it('mails only the snapshot’s booked and waitlisted members, combines a household address and ignores announcement opt-outs', async () => {
   const f = await fixture();
-  const first = await f.booked({ firstName: 'Mia', email: ' SHARED@example.test ' });
+  const first = await f.booked({ firstName: 'Mia', email: '\t SHARED@example.test\u00a0' });
   const second = await f.booked({ householdId: first.householdId, firstName: 'Noa', email: 'shared@example.test' }, 'waitlisted');
   await db.forGym(f.gymId, tx => tx.insert(announcementOptOuts).values({ gymId: f.gymId, memberId: first.id }));
   await f.booked({ firstName: 'Cancelled person' }, 'cancelled');
@@ -151,7 +151,7 @@ it.each(['disabled', 'opt_out', 'undeliverable', 'erased', 'missing_email'] as c
 });
 it.each(['emailOptOut', 'emailDeliverable'] as const)('blocks a shared address if any member there has %s suppression', async field => {
   const f = await fixture(); await f.booked({ email: 'same@example.test' });
-  await factory('members', f.gymId, { email: ' SAME@example.test ', [field]: field === 'emailOptOut' });
+  await factory('members', f.gymId, { email: '\t SAME@example.test\u00a0', [field]: field === 'emailOptOut' });
   await f.cancel(); await f.run(); expect(f.email.messages).toHaveLength(0);
 });
 it('rechecks address groups and the go-live switch after mailer preparation', async () => {

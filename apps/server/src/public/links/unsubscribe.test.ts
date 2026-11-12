@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { expect, it } from 'vitest';
+import { afterEach, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { announcementOptOuts, auditEvents, members, signedLinks, uuidv7 } from '@plaingym/db';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createApp } from '../../app.js';
 import { TestClock } from '../../core/clock.js';
+import { configureSharedRateLimits } from '../../core/rate-limit.js';
+import { createIntakeRateLimitStore } from '../../core/rate-limit-store.js';
 import type { Principal } from '../../core/context.js';
 import { areaContributions } from '../../core/registry-areas.js';
 import { authorize } from '../../areas/staff/auth.permissions.js';
@@ -19,9 +21,12 @@ import { configureLinkPages } from './links.routes.js';
 
 const db = useTestDatabase(), factory = createFactories(db), origin = 'https://gym.example.test';
 const api = '/api/links/unsubscribe', oneClickBody = 'List-Unsubscribe=One-Click';
-it('opts out 31 different members from one provider address without consuming the page budget', async () => {
-  const f = await fixture(), ids: string[] = [];
-  for (let i = 0; i < 31; i++) {
+let resetLimits: (() => void) | undefined;
+afterEach(() => { resetLimits?.(); resetLimits = undefined; });
+it.each(['single', 'multi'] as const)('opts out 301 different members from one provider address without consuming the page budget (%s)', async tenancy => {
+  const f = await fixture(tenancy), ids: string[] = [];
+  resetLimits = configureSharedRateLimits(createIntakeRateLimitStore(db.forSystem));
+  for (let i = 0; i < 301; i++) {
     const member = await factory('members', f.gymId, { householdId: f.member.householdId });
     ids.push(member.id);
     const token = await db.forGym(f.gymId, tx => issueUnsubscribeLink(tx, f.gymId, member.id, f.clock.now()));
@@ -33,7 +38,23 @@ it('opts out 31 different members from one provider address without consuming th
   expect((await f.request('POST', { optedOut: true })).status).toBe(429);
   expect((await f.click()).status).toBe(200);
 });
-async function fixture() {
+it('junk POSTs from 34 addresses cannot spend another provider address\'s one-click budget', async () => {
+  const f = await fixture(), counters = new Map<string, number>();
+  // Exercise the registered shared-store path without 10,200 database counter writes.
+  resetLimits = configureSharedRateLimits({ async consume(input) {
+    const key = [input.gymId, input.routeKey, input.clientKey].join(':');
+    const count = (counters.get(key) ?? 0) + 1; counters.set(key, count);
+    return { allowed: count <= input.limit, resetAt: input.now + input.windowMs };
+  } });
+  for (let client = 1; client <= 34; client++) {
+    for (let i = 0; i < 300; i++) expect((await f.click(oneClickBody, 'junk-' + i, f.server,
+      { 'test-peer': `198.51.100.${client}` })).status).toBe(404);
+  }
+  expect((await f.click()).status).toBe(200);
+  expect((await db.forGym(f.gymId, tx => tx.select().from(announcementOptOuts))).map(row => row.memberId)).toEqual([f.member.id]);
+  expect(counters.size).toBe(35);
+});
+async function fixture(tenancy: 'single' | 'multi' = 'multi') {
   const gymId = uuidv7(), otherGym = uuidv7(), clock = new TestClock('2026-11-09T12:00:00Z');
   await factory('gyms', gymId); await factory('gyms', otherGym);
   const member = await factory('members', gymId, { firstName: 'Target', email: 'secret@example.test', emailOptOut: true });
@@ -47,8 +68,8 @@ async function fixture() {
     gymNameFor: async () => 'Example Academy', stylesheet: async () => '', browserScript: async () => '',
     waivers: createWaiversService({ scope: db.forGym, clock, uploadsFor: async () => uploads }),
     checkout: createSignedLinkCheckout({ scope: db.forGym, clock, paymentsFor: async () => payments, originFor: async () => origin }) });
-  const app = (resolvedGym = gymId, principal: Principal = { kind: 'anonymous' }) => createApp({ clock, skipSetup: true,
-    authorize, origin, contributions: areaContributions, rateLimit: { peerAddress: () => '203.0.113.25' },
+  const app = (resolvedGym = gymId, principal: Principal = { kind: 'anonymous' }) => createApp({ clock, skipSetup: true, tenancy,
+    authorize, origin, contributions: areaContributions, rateLimit: { peerAddress: c => c.req.header('test-peer') ?? '203.0.113.25' },
     resolveGym: async (c, next) => { c.set('context', { ...c.get('context'), gym: { gymId: resolvedGym, timezone: 'UTC', enabledModules: new Set() } }); await next(); },
     session: async (c, next) => { c.set('context', { ...c.get('context'), principal }); await next(); } });
   const server = app();

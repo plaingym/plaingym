@@ -123,6 +123,11 @@ also set, when that address is in Cloudflare's published ranges
 client instead, if it's a valid address. Pass the same `clientIp` helper and proxy
 options to the auth binding.
 
+`POST /l/<token>` uses the one-click unsubscribe route's named 10,000/minute
+per-gym/client budget instead of the general flood budget. GETs and the preference
+API retain general flood protection. This permits one mail provider to unsubscribe
+many members without sharing a budget with junk requests from other addresses.
+
 `SOURCE_URL` is read when constructing the app, defaults to the public source
 repository, and is passed through Docker and Compose. Footers can use `/source`
 or load `/api/source` to follow a runtime override. Existing SPA footers use

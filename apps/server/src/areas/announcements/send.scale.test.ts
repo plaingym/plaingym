@@ -61,7 +61,7 @@ it.each([25, 250])('bounds recipient reads and rank rows in a %i-member send', a
   const groups = reads.filter(read => read.sql.includes('left join "announcement_opt_outs"'));
   const ranks = reads.filter(read => read.sql.includes('from "member_ranks"'));
   expect(groups).toHaveLength(size); expect(ranks).toHaveLength(size);
-  expect(groups.every(read => read.rows === 1 && read.sql.includes('lower(btrim(') && !read.sql.includes('ilike'))).toBe(true);
+  expect(groups.every(read => read.rows === 1 && read.sql.includes('"members"."email_address"') && !read.sql.includes('ilike'))).toBe(true);
   expect(ranks.every(read => read.rows === 1 && read.sql.includes('"member_ranks"."member_id" in'))).toBe(true);
   expect(reads.length).toBeLessThanOrEqual(size * 14 + 10);
   expect(reads.reduce((total, read) => total + read.rows, 0)).toBeLessThanOrEqual(size * 15 + 60);

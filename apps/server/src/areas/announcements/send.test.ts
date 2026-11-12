@@ -146,6 +146,18 @@ it('skips opt-outs after confirmation and rechecks after mail preparation', asyn
   await f.run(row.id); expect(f.email.messages).toHaveLength(0);
   expect(await f.service.get(f.gymId, row.id)).toMatchObject({ status: 'sent', skipped: 2 });
 });
+it.each(['\t', '\u00a0'])('keeps a legacy %j-padded address in its suppression group during delivery', async whitespace => {
+  for (const kind of ['emailOptOut', 'emailDeliverable', 'announcement'] as const) {
+    const f = await fixture(); await f.member({ email: 'shared@example.test' });
+    const row = await f.send();
+    const blocked = await f.member({ email: whitespace + 'SHARED@example.test' + whitespace, status: 'cancelled',
+      ...(kind === 'emailOptOut' ? { emailOptOut: true } : kind === 'emailDeliverable' ? { emailDeliverable: false } : {}) });
+    if (kind === 'announcement') await factory('announcementOptOuts', f.gymId, { memberId: blocked.id });
+    await f.run(row.id);
+    expect(f.email.messages).toHaveLength(0);
+    expect(await f.service.get(f.gymId, row.id)).toMatchObject({ skipped: 1, sent: 0, status: 'sent' });
+  }
+});
 it.each(['announcement', 'global', 'program', 'status', 'erasure'] as const)('rechecks %s changes made while rendering, before reserving or sending', async change => {
   const f = await fixture(), member = await f.member({ email: 'shared@example.test' });
   const sibling = await f.member({ email: ' SHARED@example.test ', status: 'cancelled' });

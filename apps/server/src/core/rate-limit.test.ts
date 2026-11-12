@@ -41,6 +41,19 @@ it('isolates rate-limit buckets by gym', async () => {
   expect((await app.request('https://b.example/api/action')).status).toBe(200);
 });
 
+it.each(['multi', 'single'] as const)('exempts only one-click POSTs from the general flood budget (%s)', async tenancy => {
+  const { app } = fixture({}, tenancy);
+  const token = 'x'.repeat(43);
+  app.post('/l/:token', rateLimit({ sharedKey: 'test.oneClick', limit: 3 }), c => c.json({ ok: true }));
+  app.get('/l/:token', c => c.json({ ok: true }));
+  for (let i = 0; i < 2; i++) expect((await app.request('/api/action')).status).toBe(200);
+  expect((await app.request('/api/action')).status).toBe(429);
+  expect((await app.request('/l/' + token)).status).toBe(429);
+  expect((await app.request('/l/' + token + '/extra', { method: 'POST' })).status).toBe(429);
+  for (let i = 0; i < 3; i++) expect((await app.request('/l/' + token, { method: 'POST' })).status).toBe(200);
+  expect((await app.request('/l/' + token, { method: 'POST' })).status).toBe(429);
+});
+
 it.each(['multi', 'single'] as const)('ignores spoofed forwarding headers when the socket peer is not trusted (%s)', async (tenancy) => {
   const { app } = fixture({ limit: 1, trustedProxy: (address) => address === '192.0.2.5' }, tenancy);
   expect((await app.request('/api/action', { headers: { 'x-forwarded-for': '192.0.2.1' } })).status).toBe(200);

@@ -26,7 +26,6 @@ export interface CancellationNoticeOptions {
   demoMode?: boolean;
   demoEmailFor?(gymId: string): Email;
 }
-const normalize = (address: string) => address.trim().toLowerCase();
 const noticeKey = (sessionId: string, memberId: string) => `schedule-cancel-notice:${sessionId}:${memberId}`;
 
 export function createCancellationNotice(options: CancellationNoticeOptions) {
@@ -76,9 +75,10 @@ export function createCancellationNotice(options: CancellationNoticeOptions) {
       const addresses = new Set<string>();
       // Bound query parameter counts even for a large roster. Only the cancellation's snapshot may receive mail.
       for (let offset = 0; offset < notice.memberIds.length; offset += 100) {
-        const rows = await scope(gymId, tx => tx.select({ email: members.email }).from(members)
+        // The stored address is the same normalization `group` looks up.
+        const rows = await scope(gymId, tx => tx.select({ address: members.emailAddress }).from(members)
           .where(inArray(members.id, notice.memberIds.slice(offset, offset + 100))));
-        for (const row of rows) if (row.email?.trim()) addresses.add(normalize(row.email));
+        for (const row of rows) if (row.address) addresses.add(row.address);
       }
       if (!addresses.size) return;
       const origin = new URL(await options.origin(gymId));

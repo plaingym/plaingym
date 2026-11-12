@@ -31,7 +31,13 @@ reuse with different content, audience or sender conflicts. The announcement,
 recipient rows (inserted in chunks of 100), audit, and idempotent job commit in one
 transaction. The job uses the batch lane and its existing per-gym concurrency cap.
 
-Each normalized address (trimmed and lower-cased) occurs once. Any member at an
+Each normalized address (trimmed and lower-cased) occurs once. The stored generated
+`members.email_address` column trims ECMAScript whitespace, including tabs and
+non-breaking spaces, using the same character set as the JavaScript normalizer.
+Announcements and cancellation notices read the address from that column, so
+PostgreSQL's `lower()` is the only case folding they group by. The
+`(gym_id, email_address)` index supports address-group reads under forced RLS;
+the original email and member write paths are unchanged. Any member at an
 address with `email_opt_out`, `announcement_opt_outs`, or undeliverable email blocks
 the whole address, even when that member is outside the selected status/program
 audience. Anonymized members and missing addresses are excluded. Confirmation

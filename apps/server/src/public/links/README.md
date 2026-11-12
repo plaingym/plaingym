@@ -28,8 +28,10 @@ For mail clients, a cookie-less `POST /l/<token>` accepts only the RFC 8058 body
 exactly `List-Unsubscribe=One-Click` as `application/x-www-form-urlencoded` (an
 optional UTF-8 charset is accepted), or `multipart/form-data` with that one field
 and value and nothing else. Its separate route budget is 10,000 requests per gym
-per minute, shared across provider addresses; the preference button/API keeps its
-30-request per gym/client/minute budget. The app's general flood limit also applies.
+and client per minute, so junk from other addresses cannot spend a provider's
+budget. `POST /l/<token>` is exempt from the app's general flood limit, allowing a
+provider to unsubscribe more than 300 members from one address. The preference
+button/API keeps its 30-request per gym/client/minute budget and general flood limit.
 It returns the same 404 for unknown, expired,
 revoked, used, wrong-purpose and other gyms' tokens. Cookie-bearing requests
 retain the normal same-origin CSRF check. Repeated opt-outs are no-ops. The

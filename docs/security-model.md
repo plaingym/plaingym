@@ -82,9 +82,10 @@ pages.
   untouched. This link grants no household, billing or waiver access and is
   excluded from staff link lists, resends and revocation. Preference writes lock
   and recheck the link and member, with their audit in the same transaction.
-  The cookie-less one-click route has a separate 10,000/minute per-gym budget;
-  the page button/API keeps 30/minute per gym/client. The app's general flood
-  protection still applies to both.
+  The one-click POST has a separate 10,000/minute per gym/client budget and is
+  exempt from the general flood limit. Junk from other client addresses cannot
+  spend a provider's budget. The page button/API keeps 30/minute per gym/client
+  and the app's general flood protection.
 * **Kiosk.** A kiosk authenticates with a revocable device token (256 random bits,
   stored as a SHA-256 hash, checked on every request) that reaches only the
   check-in endpoints, never a staff session. Settings shows the token once, as a
@@ -288,7 +289,8 @@ Details: `apps/server/src/infra/auth/README.md`.
   single-gym install it runs before the gym is looked up, keyed per client for the
   whole install (the one gym's budget, whatever `Host` a request carries), so a
   refused request costs no database work; a multi-gym install checks it after
-  resolving the gym. Sign-in,
+  resolving the gym. The one-click unsubscribe `POST /l/<token>` uses its own
+  10,000/minute per gym/client budget instead. Sign-in,
   kiosk PINs and CSP reports have their own limits. Behind Caddy, `TRUST_PROXY=true`
   makes the last `X-Forwarded-For` entry the client address; nothing else trusts
   forwarded headers, except that with `TRUST_CLOUDFLARE=true` (set by the installer

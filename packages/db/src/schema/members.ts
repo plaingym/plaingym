@@ -3,6 +3,7 @@ import { sql } from 'drizzle-orm';
 import { boolean, check, customType, date, foreignKey, index, integer, jsonb, pgTable, text, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { authUser } from './auth.js';
 import { base, choice, instant, ref, revision, revisionCheck, scoped, sha256Check } from './common.js';
+import { normalizedMemberAddress } from './member-address.js';
 /** Query parameters use the same PostgreSQL collation and folding as the generated column. */
 const foldedText = customType<{ data: string }>({ dataType: () => 'text', toDriver: value => sql`lower(${value})` });
 export const households = pgTable('households', {
@@ -22,6 +23,7 @@ export const members = pgTable('members', {
   firstName: text('first_name').notNull(), lastName: text('last_name').notNull(),
   lastNameFolded: foldedText('last_name_folded').generatedAlwaysAs(sql`lower(last_name)`),
   emailFolded: foldedText('email_folded').generatedAlwaysAs(sql`lower(email)`),
+  emailAddress: text('email_address').generatedAlwaysAs(normalizedMemberAddress(sql`email`)),
   email: text('email'), phone: text('phone'), photoKey: text('photo_key'), dateOfBirth: date('date_of_birth'),
   status: text('status').notNull().default('prospect'),
   emergencyContacts: jsonb('emergency_contacts').notNull().default([]), medicalNotes: text('medical_notes'),
@@ -36,6 +38,7 @@ export const members = pgTable('members', {
   index('members_gym_status_idx').on(t.gymId, t.status),
   index('members_gym_last_name_folded_idx').on(t.gymId, t.lastNameFolded).where(sql`${t.anonymizedAt} is null`),
   index('members_gym_email_folded_idx').on(t.gymId, t.emailFolded).where(sql`${t.anonymizedAt} is null`),
+  index('members_gym_address_idx').on(t.gymId, t.emailAddress),
   choice('members_status_check', t.status, ['prospect', 'trial', 'active', 'frozen', 'cancelled', 'visitor']),
   check('members_checkin_version_check', sql`${t.checkinCodeVersion} > 0`),
   sha256Check('members_checkin_hash_check', t.checkinCodeHash),

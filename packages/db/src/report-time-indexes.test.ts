@@ -3,7 +3,7 @@ import { expect, it } from 'vitest';
 import { openConnection } from './client.js';
 import { uuidv7 } from './id.js';
 import { migrateDatabase } from './migrate.js';
-import { attendances, payments, refunds } from './schema/index.js';
+import { attendances, members, payments, refunds } from './schema/index.js';
 import { useUpgradeTestDatabase } from './testing/database-upgrade.js';
 import { createFactories } from './testing/factories.js';
 
@@ -14,7 +14,11 @@ it('adds only the report time indexes to populated tables, preserving rows and g
   const gymId = uuidv7(), otherGymId = uuidv7();
   await factory('gyms', gymId); await factory('gyms', otherGymId);
   const instant = new Date('2025-06-01T12:00:00Z');
-  await factory('attendances', gymId, { occurredAt: instant });
+  const household = await factory('households', gymId);
+  // Explicit returning avoids requesting later generated member columns before the upgrade.
+  const [member] = await database.forGym(gymId, tx => tx.insert(members).values({ gymId, householdId: household.id,
+    firstName: 'Test', lastName: 'Member' }).returning({ id: members.id }));
+  await factory('attendances', gymId, { memberId: member!.id, occurredAt: instant });
   const payment = await factory('payments', gymId, { paidAt: instant });
   await factory('refunds', gymId, { paymentId: payment.id, status: 'succeeded', resolvedAt: instant });
   await factory('refunds', gymId, { paymentId: payment.id, status: 'pending', resolvedAt: null });

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// eslint-disable-next-line database/system-tables -- Isolated normalized-address expression over gym-owned members only; no system-table access.
-import { sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { members } from '@plaingym/db';
+export { normalizeAddress } from '@plaingym/db/schema/member-address';
 
-/** Isolated SQL expression: exact normalized address equality, including legacy surrounding spaces. */
-export const addressEquals = (address: string) => sql`lower(btrim(${members.email})) = ${address}`;
+/** The stored normalization allows an indexed equality under forced row-level security. */
+export const addressEquals = (address: string) => eq(members.emailAddress, address);

@@ -180,6 +180,12 @@ export function rateLimit(options: RateLimitOptions = {}): MiddlewareHandler<Req
   }
   const buckets = new RateBuckets(maxBuckets, (bucket) => bucket.count >= limit);
   return async (context, next) => {
+    // RFC 8058 providers share source addresses. This POST has its own named, higher per-client budget;
+    // the ordinary flood budget must neither block it nor charge it against browser traffic.
+    if (!options.sharedKey && context.req.method === 'POST' && /^\/l\/[^/]+$/.test(context.req.path)) {
+      await next();
+      return;
+    }
     const { clock, gym, clientIp: resolved } = context.get('context');
     const store = options.sharedStore ?? sharedStore;
     if (options.sharedKey && store) {
