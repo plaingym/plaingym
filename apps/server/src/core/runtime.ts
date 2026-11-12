@@ -129,6 +129,8 @@ import { createBillingAlerts, createDisputeAlertProvider, sendAlertJob } from '.
 import { configureBillingAlerts } from '../areas/billing/alerts/alerts.jobs.js';
 import { createAccountService } from '../infra/auth/accounts.js';
 import { configureStaffAuth } from '../areas/staff/auth.routes.js';
+import { configureAccount } from '../areas/staff/auth.account.js';
+import { createEmailChangeService } from '../infra/auth/email-change.js';
 import type { Jobs } from '../infra/jobs/index.js';
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -259,6 +261,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   configurePortalBookingRoutes(bookingDelivery);
   const accounts = createAccountService(config);
   configureStaffAuth({ accounts, config, smtpConfigured });
+  // A login changes its own sign-in email through a link sent to the new address, in the gym's own mail and origin.
+  configureAccount({ service: createEmailChangeService({ config }), smtpConfigured, mail: gymMail });
   // Webhooks and restore reconciliation publish a recorded dispute's alert through the same service as the hourly scan.
   const alerts = createBillingAlerts({ jobs: queue, settings: createGymSettingsAccessor(), accounts, clock, prepare: gymMail });
   configureBillingAlerts(alerts);
