@@ -226,7 +226,9 @@ The End-to-end workflow installs this package independently of the application.
 tests. The running OpenAPI document must match it. It includes every portal route,
 the signed-link API (`/api/links/<purpose>`, which answers 401 without the link's
 own token) and the signed-link pages under `/l/`. It includes the locally
-declared photo, invitation-page and schedule-options routes. Household-login
+declared photo, invitation-page and schedule-options routes, and the account routes
+with the sign-in email change page (public in the registry: the account and change
+request answer anonymous callers with 401). Household-login
 management contracts are absent from the running application and are not in
 this inventory. The QR check-in contract is also absent until its implementation
 exists. Billing dashboard stubs are outside this mat suite.

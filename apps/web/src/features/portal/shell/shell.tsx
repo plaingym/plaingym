@@ -100,8 +100,10 @@ export function HouseholdPicker({ households, onChoose, pending = false, failed 
       </Button></li>)}</ul>
   </Page>;
 }
-export function PortalLayout({ name, person, scope, entries, children, onSignOut, signingOut = false, switcher }:
-  { name: string; person?: string; scope?: PortalContext['role']; entries: readonly NavigationEntry[]; children: ReactNode; onSignOut(): void; signingOut?: boolean; switcher?: ReactNode }) {
+export function PortalLayout({ name, person, scope, entries, children, onSignOut, signingOut = false, switcher, account = false }:
+  { name: string; person?: string; scope?: PortalContext['role']; entries: readonly NavigationEntry[]; children: ReactNode; onSignOut(): void; signingOut?: boolean; switcher?: ReactNode;
+    /** Shows the link to the login's own account page; the household picker has no page to show it in. */
+    account?: boolean }) {
   const [open, setOpen] = useState(false), [online, setOnline] = useState(navigator.onLine);
   const pathname = useRouterState({ select: state => state.location.pathname });
   useEffect(() => setOpen(false), [pathname]);
@@ -121,6 +123,7 @@ export function PortalLayout({ name, person, scope, entries, children, onSignOut
         </p>}
       </div>
       {switcher && <div className="order-last flex w-full min-w-0 sm:order-none sm:w-auto">{switcher}</div>}
+      {account && <Button asChild variant="ghost"><Link to="/portal/account" activeProps={{ 'aria-current': 'page' }}>{t('auth/account:menuLink')}</Link></Button>}
       <Button variant="ghost" onClick={onSignOut} disabled={signingOut}>{text('signOut')}</Button>
     </header>
     <div className="flex min-w-0 flex-1 flex-col md:flex-row">
@@ -233,7 +236,7 @@ function AuthenticatedPortal() {
   }
   const switcher = households.data.households.length > 1
     ? <HouseholdSwitcher households={households.data.households} current={current} onChoose={id => { if (id !== current) choose.mutate(id); }} disabled={choose.isPending} /> : undefined;
-  return <PortalLayout name={bootstrap.data.gym.name} person={person} scope={context.data.role} entries={portalNavigation(createRegistries().portalNav.all(), context.data.role, bootstrap.data.gym.enabledModules)} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending} switcher={switcher}>
+  return <PortalLayout name={bootstrap.data.gym.name} person={person} scope={context.data.role} entries={portalNavigation(createRegistries().portalNav.all(), context.data.role, bootstrap.data.gym.enabledModules)} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending} switcher={switcher} account>
     {context.isError && !households.isFetching && <ErrorState message={text('failed')} onRetry={() => { void households.refetch(); void context.refetch(); }} />}
     <PortalRecoveryNotice />{(signOut.isError || choose.isError) && <Alert>{text(choose.isError ? 'chooseFailed' : 'failed')}</Alert>}<Outlet key={current} />
   </PortalLayout>;

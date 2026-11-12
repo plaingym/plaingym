@@ -6,6 +6,7 @@ export * from './common.js';
 export * from './members.js';
 export * from './staff.js';
 export * from './shell.js';
+export * from './account.js';
 export * from './links.js';
 export * from './announcements.js';
 export * from './schedule.js';

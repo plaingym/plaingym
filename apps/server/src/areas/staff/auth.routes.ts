@@ -4,6 +4,7 @@ import { AppError } from '@plaingym/shared';
 import { route } from '../../core/registry.js';
 import { resetStaffPassword } from './auth.reset.js';
 import { createAuthBootstrapRoutes } from './auth.bootstrap.js';
+import { createAccountRoutes } from './auth.account.js';
 import type { AccountService } from '../../infra/auth/accounts.js';
 import { passwordLogin, type AuthConfig } from '../../infra/auth/config.js';
 
@@ -17,7 +18,7 @@ export function configureStaffAuth(options: StaffAuthOptions) { configured = opt
 
 const contract = staffContracts.resetPassword;
 export function createStaffAuthRoutes(options?: StaffAuthOptions) {
-  return [...createAuthBootstrapRoutes(), route({
+  return [...createAuthBootstrapRoutes(), ...createAccountRoutes(), route({
   method: contract.method, path: contract.path, permission: contract.permission,
   request: { params: contract.params, body: { required: true, content: { 'application/json': { schema: contract.body } } } },
   responses: { 200: { description: 'Password reset', content: { 'application/json': { schema: contract.response } } } },

@@ -34,6 +34,8 @@ shows the generic "Signed in" label, never the previous household's name beside 
 The header shows the gym's name and, under it, the signed-in person's name and their
 scope in the open household (account holder or member), so switching logins or
 households never loses track of who is signed in; a long name truncates, the scope stays.
+Beside sign-out, **Your account** opens `/portal/account` (`features/account`), where the login sees its sign-in
+email, methods and households and changes its email; the household picker has no such link.
 The portal then reads the authenticated context and renders enabled `portalNav`
 contributions using the current member role. The shared login page handles sign-in.
 The invitation page consumes its fragment token in memory and removes it from

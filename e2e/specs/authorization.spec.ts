@@ -37,7 +37,8 @@ const inScope = (path: string) => /^\/api\/(bookings(?:\/|$)|portal\/(?:bookings
   || path === '/api/leads' || path.startsWith('/api/leads/')
   || ['/api/links/unsubscribe', '/api/waivers/template-documents', '/api/waivers/templates/{templateId}/document', '/api/waivers/template-document',
     '/api/portal/waiver-templates/{templateId}/document', '/api/public/waivers/{templateId}/document', '/l/{token}/documents/{templateId}',
-    '/api/dashboard', '/api/health/charge-failures', '/api/health/charge-failures/dismiss', '/api/settings/go-live', '/api/setup/finish', '/staff-invitation'].includes(path)
+    '/api/dashboard', '/api/health/charge-failures', '/api/health/charge-failures/dismiss', '/api/settings/go-live', '/api/setup/finish', '/staff-invitation',
+    '/api/account', '/api/account/email', '/api/account/email/confirm', '/account-email'].includes(path)
   || /^\/(?:csp-report|api\/public\/(?:config|waivers|trial|drop-in|plans|join)|drop-in\/signatures|public\/pages\/(?:client\.js|styles\.css|theme\.css|logo\/\{revision\})|(?:trial|drop-in)(?:\/received)?|l\/(?:\{token\}|client\.js|styles\.css|cleared|return)|join(?:\/(?:signatures|checkout|return|cancelled|sign-in|portal-login|client\.js))?)$/.test(path);
 const key = (entry: Pick<Entry, 'method' | 'path'>) => `${entry.method} ${entry.path}`;
 // Each intake form and its API route share ten attempts per gym/IP per fifteen minutes, before validation.
@@ -53,7 +54,9 @@ const receiptReturn = 'GET /l/return';
 // This public capability requires a valid signed query token, not a session.
 const documentCapability = 'GET /api/waivers/template-document';
 // Public portal routes that act for the signed-in user (choosing a household, completing a claim): anonymous callers get 401.
-const signedInPublic = new Set(['GET /api/portal/households', 'POST /api/portal/households/current', 'POST /api/portal/claims/complete']);
+// The account routes act for the signed-in login too: its own account and sign-in email change.
+const signedInPublic = new Set(['GET /api/portal/households', 'POST /api/portal/households/current', 'POST /api/portal/claims/complete',
+  'GET /api/account', 'POST /api/account/email']);
 
 test('the running route inventory matches the reviewed authorization sweep', async ({ install }, info) => {
   const actual = Object.entries(install.document.paths).flatMap(([path, methods]) =>

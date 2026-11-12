@@ -44,6 +44,7 @@ function AccountMenu({ session, onSignOut, signingOut }: { session: ShellSession
       <p className="px-3 pb-2 pt-1 text-sm text-muted-foreground">
         {session.displayName === null ? sessionName(session) : <>{t('shell/shell:signedInAs')} <span className="break-words font-medium text-foreground">{sessionName(session)}</span></>}{session.roles.length > 0 && ` (${roleNames(session)})`}
       </p>
+      <Button asChild variant="ghost" className="w-full justify-start"><Link to="/admin/account" onClick={() => setOpen(false)}>{t('auth/account:menuLink')}</Link></Button>
       <Button variant="ghost" className="w-full justify-start" onClick={onSignOut} disabled={signingOut}>{t('shell/shell:signOut')}</Button>
     </div>
   </div>;

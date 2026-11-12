@@ -959,6 +959,34 @@
   },
   {
     "method": "GET",
+    "path": "/api/account",
+    "permission": {
+      "kind": "public"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/account/email",
+    "permission": {
+      "kind": "public"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/account/email/confirm",
+    "permission": {
+      "kind": "public"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/account-email",
+    "permission": {
+      "kind": "public"
+    }
+  },
+  {
+    "method": "GET",
     "path": "/api/members/{memberId}/checkin-code",
     "permission": {
       "kind": "staff",

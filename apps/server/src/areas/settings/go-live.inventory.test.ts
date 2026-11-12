@@ -25,6 +25,7 @@ const boundaries = {
   'infra/email/deliveries.ts': 'keyed send state around a transport its callers chose; each caller above checks its own switch',
   'infra/email/smtp.ts': 'administrative SMTP test, delivery transport guarded by its member callers',
   'infra/auth/delivery.ts': 'security: requested login links are exempt',
+  'infra/auth/email-change.ts': 'security: a login asked for its own sign-in email change link and notice; exempt',
   'areas/staff/profiles.invitations.ts': 'staff invitations are exempt',
   'areas/members/household-users.invitations.ts': 'staff-initiated portal invitations use the gym SMTP mailer outside the transaction',
   'public/pages/notifications.ts': 'staff-only owner/admin runtime recipients are exempt; visitor confirmations require memberEmailsEnabled',

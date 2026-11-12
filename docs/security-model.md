@@ -273,6 +273,29 @@ by setup, the gym CLI, staff and portal invitations, and the join flow.
   their own (a member who is also staff counts as staff). An owner resets their
   own password with `gym-app auth reset-password <email>` on the server. A reset
   deletes all of the user's sessions.
+* **Sign-in email changes.** Every staff and portal login has an account page
+  (`/admin/account`, `/portal/account`) showing its sign-in email, sign-in methods
+  and access in the gym, where it may change its email. The routes act only for
+  the session's own login; no request names another. The app sends a link to the
+  new address, stored hashed under the issuing gym for one hour and one use, and
+  the change applies only when that link is opened, on that gym's hostname; a link
+  opened while another login is signed in on the browser is refused. An address
+  another login uses is refused, when asked and again when the link is opened. A
+  login may ask five times an hour. Applying the change marks the new address
+  verified, ends the login's other sessions (the session that asked stays signed
+  in), writes an audit event without either address, and sends the old address a
+  notice that names the new one only masked.
+  * **A linked Google account is unlinked** when the email changes. Google joins a
+    login only by a matching verified address, and was linked for the old one; kept,
+    it would go on signing in to a login that address no longer names (an old work
+    account, say). The next Google sign-in with the new address's account links again.
+    A password is kept.
+  * **Single-gym installs only.** In multi-gym mode one login's address is shared by
+    every gym it belongs to, so no gym may change it for the others; the page says so.
+  * **Lost mailbox.** An owner who can no longer read the old address moves their
+    login with `gym-app auth change-email <old> <new>` on the server. Server access
+    is the proof, as for a password reset: the change applies at once, ends every
+    session of the login, unlinks Google and is audited as the system.
 * **Setup.** The first owner is created, or a backup restored, only with the
   `SETUP_TOKEN` from the server's `.env`, sent from the private link the installer
   prints. A valid certificate for the hostname is not enough.

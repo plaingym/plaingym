@@ -173,6 +173,13 @@ claim login links through the auth service's `sendLoginLink`. Email delivery use
 the gym SMTP resolver. Tests exercise these exports with real PostgreSQL and the
 real registrations.
 
+A portal login sees and changes its own sign-in email on its account page
+(`/portal/account`), served by the staff area's account routes
+(`areas/staff/auth.account.ts`, described in `areas/staff/profiles.md`). They act
+only for the session's own login, never take a household or login from the
+request, and refuse a change link opened while another household's login is
+signed in.
+
 The PWA manifest, generated PNG icons and service worker are public assets.
 The worker has no fetch handler and stores no offline caches. Portal API responses
 are private and uncached; the portal needs an internet connection.
