@@ -122,6 +122,11 @@ compose up -d --pull missing --wait --wait-timeout 180
 compose exec -T app /app/deploy/database.sh migrate
 compose exec -T app node /app/deploy/healthcheck.mjs
 history_install
+# Keep release unit templates beside the scripts, so updates and rollbacks retain the complete host generation.
+if [ "$existing" = false ]; then
+  install -d -m 0755 "$ROOT/systemd"
+  for unit in plaingym-update.service plaingym-update.timer; do install -m 0644 "$SOURCE/systemd/$unit" "$ROOT/systemd/$unit"; done
+fi
 # Nightly patch updates (update.sh --patch): the timer fires hourly, and update.sh acts once a night in the gym's
 # timezone. The owner turns them off in Settings → Updates; the timer stays and then only records the skip.
 # Installed before the public checks below, so an install that a DNS or proxy setting holds up is still complete.

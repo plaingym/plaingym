@@ -96,13 +96,31 @@ image prune; images pulled by other tools are left alone.
 
 ### Update
 
-Host files are copied only at installation; updating the app image does not
-refresh scripts, Compose files, systemd units or `release-signing.pem`. Follow
-the release's instructions to copy new or changed host files from its `deploy/`
-directory into `/opt/plaingym` by hand, preserving your `.env` and local settings.
-Installs made before key rotation was added must copy `rotate-key.sh` from the
-release and make it executable before using it. Keep its companion `lib.sh` and
-other host files at the versions required by that release.
+The updater refreshes `update.sh`, `lib.sh`, `rotate-key.sh` and both systemd units
+with the release.
+The updater checks the signed manifest, the deployment archive and every host-file
+digest before stopping the app. Once the app is healthy, it replaces each file by
+an atomic rename and reloads systemd. The running updater finishes from the file
+it opened; the next run uses the new one. The updater preserves `.env`, Compose,
+Caddy and PostgreSQL configuration. A release changing those configuration files
+still names the required manual steps in its upgrade notes.
+
+Previous copies stay in `.host-history/`, associated with the image they ran with.
+A failed replacement restores them before restarting the previous image. After a
+power loss, the next invocation recovers `.host-update` before doing another update.
+`--rollback` restores the previous host files and units when a saved copy exists.
+Do not remove these directories while an update or recovery is unfinished.
+
+The signing key must remain the currently trusted key. A release cannot rotate it
+automatically, and rolling back never restores an older signing key. If a signing
+key must change, verify the replacement through the maintainer's trusted release
+instructions and install it explicitly before updating. This is separate from
+rotating the installation's encryption key with `rotate-key.sh`.
+
+Installs whose updater predates host-file updates need a one-time manual copy of
+reviewed `update.sh` and `lib.sh` before using this mechanism: until then, they refuse
+releases that carry host-file digests, and nightly updates skip them. Older signed
+releases without host-file digests still update only the image.
 
 While `/opt/plaingym/.rotate-key.inflight` exists, a manual update fails and
 the nightly update skips, both saying that key rotation is unfinished. Rerun `rotate-key.sh` to finish
@@ -134,7 +152,8 @@ architecture. `latest` is refused. The script:
 2. stops the app and takes a pre-upgrade backup, encrypted to your backup key;
 3. starts the new image, which applies its database migrations before it reports
    healthy;
-4. records the new image in `.env` only once the new version is healthy, as
+4. installs the verified host files and units, keeping the previous copies;
+5. records the new image in `.env` only once the new version is healthy, as
    `IMAGE:vX.Y.Z@DIGEST` from the signed release manifest.
 
 It prints "Already on the requested image." and does nothing else when you ask for the

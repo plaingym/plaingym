@@ -161,7 +161,7 @@ manifest_value() { # MANIFEST KEY; missing or repeated keys have no value.
 manifest_check() { # MANIFEST VERSION
   [ "$(wc -c < "$1")" -le 4096 ] || return 1
   # Every line is key=value without spaces or carriage returns, and no key repeats.
-  awk '!/^[a-z0-9._\/]+=[!-~]+$/ { bad = 1 } { sub(/=.*/, ""); if (seen[$0]++) bad = 1 } END { exit bad }' "$1" || return 1
+  awk '!/^[a-z0-9._\/-]+=[!-~]+$/ { bad = 1 } { sub(/=.*/, ""); if (seen[$0]++) bad = 1 } END { exit bad }' "$1" || return 1
   case "$(manifest_value "$1" format)" in
     plaingym-release-manifest/1) ;;
     plaingym-release-manifest/2)
@@ -175,7 +175,118 @@ manifest_check() { # MANIFEST VERSION
   valid_image_name "$(manifest_value "$1" image)" || return 1
   manifest_value "$1" digest | grep -Eq '^sha256:[a-f0-9]{64}$' || return 1
   manifest_value "$1" revision | grep -Eq '^[a-f0-9]{40}$' || return 1
-  manifest_value "$1" migrations | grep -Eq '^sha256:[a-f0-9]{64}$'
+  manifest_value "$1" migrations | grep -Eq '^sha256:[a-f0-9]{64}$' || return 1
+  if [ -n "$(manifest_value "$1" host_format)" ]; then
+    [ "$(manifest_value "$1" host_format)" = 1 ] || return 1
+    [ "$(manifest_value "$1" deploy_archive)" = "plaingym-deploy-$2.tar.gz" ] || return 1
+    manifest_value "$1" deploy_archive_sha256 | grep -Eq '^sha256:[a-f0-9]{64}$' || return 1
+    for host_file in $host_files; do
+      manifest_value "$1" "host.$(printf '%s' "$host_file" | tr '[:upper:]' '[:lower:]')" | grep -Eq '^sha256:[a-f0-9]{64}$' || return 1
+    done
+  elif grep -q '^host\.' "$1"; then return 1; fi
+}
+# Only these release-owned files may be installed. Configuration, secrets, state and local overrides stay outside it.
+host_files='update.sh lib.sh rotate-key.sh release-signing.pem systemd/plaingym-update.service systemd/plaingym-update.timer'
+host_units='plaingym-update.service plaingym-update.timer'
+host_units_dir() { printf '%s\n' "${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"; }
+host_mode() { case "$1" in update.sh|rotate-key.sh) echo 0700 ;; *) echo 0644 ;; esac; }
+# Prepare only data from the already verified manifest; no script from the archive is sourced or executed.
+# Returns 2 when the archive can't be downloaded, and 1 when it or a file fails a check.
+host_download() { # MANIFEST BASE_URL WORK
+  [ -n "$(manifest_value "$1" host_format)" ] || return 0 # Releases predating host updates.
+  download "$2/$(manifest_value "$1" deploy_archive)" "$3/host.tar.gz" 52428800 || return 2
+  printf '%s  %s\n' "$(manifest_value "$1" deploy_archive_sha256 | sed 's/^sha256://')" "$3/host.tar.gz" | sha256sum -c - >/dev/null 2>&1 || return 1
+  mkdir "$3/host" || return 1
+  for host_file in $host_files; do
+    tar -xzf "$3/host.tar.gz" -C "$3/host" --no-same-owner -- "deploy/$host_file" || return 1
+    host_path="$3/host/deploy/$host_file"
+    [ -f "$host_path" ] && [ ! -L "$host_path" ] || return 1
+    host_hash=$(manifest_value "$1" "host.$(printf '%s' "$host_file" | tr '[:upper:]' '[:lower:]')")
+    [ "sha256:$(sha256sum "$host_path" | cut -d' ' -f1)" = "$host_hash" ] || return 1
+  done
+  # Trust never transfers just because an archive names another key. Rotation is a separate, explicit host step.
+  openssl pkey -pubin -in "$ROOT/release-signing.pem" -outform DER -out "$3/trusted.der" || return 1
+  openssl pkey -pubin -in "$3/host/deploy/release-signing.pem" -outform DER -out "$3/release.der" || return 1
+  cmp -s "$3/trusted.der" "$3/release.der" || return 1
+  # update.sh uses this prepared directory only after host_download succeeds.
+  # shellcheck disable=SC2034
+  host_source="$3/host/deploy"
+}
+host_capture() { # DESTINATION: keep originals, including their absence, before the first replacement.
+  mkdir -p "$1/files" "$1/units" || return 1
+  for host_file in $host_files; do
+    if [ -e "$ROOT/$host_file" ]; then
+      mkdir -p "$1/files/$(dirname "$host_file")" || return 1
+      cp -p "$ROOT/$host_file" "$1/files/$host_file" || return 1
+    fi
+  done
+  for host_unit in $host_units; do
+    [ ! -e "$(host_units_dir)/$host_unit" ] || cp -p "$(host_units_dir)/$host_unit" "$1/units/$host_unit" || return 1
+  done
+}
+host_replace() { # SOURCE DEST MODE: rename within the destination filesystem; running shells retain the old inode.
+  mkdir -p "$(dirname "$2")" || return 1
+  install -m "$3" "$1" "$2.host-next" || return 1
+  mv -f "$2.host-next" "$2"
+}
+host_restore() { # SNAPSHOT: repeatable after an interrupted restoration.
+  for host_file in $host_files; do
+    # An explicit trust-key change made since a snapshot must never be undone by an image rollback.
+    [ "$host_file" != release-signing.pem ] || continue
+    if [ -f "$1/files/$host_file" ]; then
+      host_replace "$1/files/$host_file" "$ROOT/$host_file" "$(host_mode "$host_file")" || return 1
+    else rm -f "$ROOT/$host_file" || return 1; fi
+  done
+  for host_unit in $host_units; do
+    if [ -f "$1/units/$host_unit" ]; then
+      host_replace "$1/units/$host_unit" "$(host_units_dir)/$host_unit" 0644 || return 1
+    else rm -f "$(host_units_dir)/$host_unit" || return 1; fi
+  done
+  systemctl daemon-reload || return 1
+  sync -f "$ROOT" "$(host_units_dir)"
+}
+host_recover() { # The pin commits the transaction. Before it, every failure restores the previous files.
+  [ -d "$ROOT/.host-update" ] || return 0
+  [ -s "$ROOT/.host-update/target" ] && [ -d "$ROOT/.host-update/before/files" ] || return 1
+  if [ "$(read_env APP_IMAGE)" != "$(cat "$ROOT/.host-update/target")" ]; then
+    echo 'Restoring host files from the unfinished update.' >&2
+    host_restore "$ROOT/.host-update/before" || return 1
+  fi
+  # Persist the pin (or restoration) before retiring the journal. A kill during recursive deletion must not
+  # leave a half-deleted directory that the next invocation could mistake for a complete recovery snapshot.
+  sync -f "$ROOT" "$(host_units_dir)" || return 1
+  host_retired=$(mktemp -d "$ROOT/.host-retired.XXXXXX") || return 1
+  mv "$ROOT/.host-update" "$host_retired/transaction" || return 1
+  sync -f "$ROOT" || return 1
+  rm -rf -- "$host_retired"
+}
+host_apply() { # SOURCE TARGET_PIN PREVIOUS_IMAGE_ID
+  host_journal=$(mktemp -d "$ROOT/.host-prepare.XXXXXX") || return 1
+  if ! host_capture "$host_journal/before" || ! printf '%s\n' "$2" > "$host_journal/target"; then
+    rm -rf -- "$host_journal"; return 1
+  fi
+  mkdir -p "$ROOT/.host-history" || return 1
+  # Preserve the first copy for this image; a later rollback must not rewrite its original host generation.
+  if [ ! -d "$ROOT/.host-history/${3#sha256:}" ]; then
+    rm -rf -- "$ROOT/.host-history/${3#sha256:}.next" || return 1
+    cp -Rp "$host_journal/before" "$ROOT/.host-history/${3#sha256:}.next" || return 1
+    mv "$ROOT/.host-history/${3#sha256:}.next" "$ROOT/.host-history/${3#sha256:}" || return 1
+  fi
+  mv "$host_journal" "$ROOT/.host-update" || return 1
+  sync -f "$ROOT" || return 1
+  if [ -d "$1/files" ]; then
+    host_restore "$1" || return 1
+  else
+    for host_file in $host_files; do
+      host_replace "$1/$host_file" "$ROOT/$host_file" "$(host_mode "$host_file")" || return 1
+    done
+    for host_unit in $host_units; do
+      sed "s#@ROOT@#$ROOT#g" "$1/systemd/$host_unit" > "$ROOT/.host-update/$host_unit" || return 1
+      host_replace "$ROOT/.host-update/$host_unit" "$(host_units_dir)/$host_unit" 0644 || return 1
+    done
+    systemctl daemon-reload || return 1
+    sync -f "$ROOT" "$(host_units_dir)" || return 1
+  fi
 }
 # The newest patch of VERSION's minor among TAGS (one per line), or nothing if VERSION is the newest.
 newest_patch() { # VERSION TAGS

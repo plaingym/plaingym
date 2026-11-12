@@ -16,6 +16,13 @@ development version is `0.4.0`. Public tagged releases start at `1.0.0`.
 | Minor (`1.Y.0`) | Features, optional settings, and expand-only migrations. | The owner updates after reading the upgrade notes. |
 | Major (`X.0.0`) | Anything requiring owner action: a removed or newly required setting, a PostgreSQL major, or stored data older code cannot read. | Follow the release's manual upgrade and recovery instructions. |
 
+The signed release manifest includes the deployment archive and individual host-file
+digests. Updates install those files with the image and retain previous copies for
+rollback, including the updater and its systemd units. The release signing key must
+stay the current trusted key; replacing that trust key is an explicit host step,
+and rollback never reverts it. See the [updating guide](updating.md#update) for
+recovery, local overrides and the one-time upgrade for older host scripts.
+
 Before 1.0 there is no compatibility promise. From 1.0, each release's schema and
 stored data must run the previous minor's code. Migrations expand first and remove
 old shapes only after that compatibility window.

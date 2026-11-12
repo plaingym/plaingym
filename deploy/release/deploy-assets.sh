@@ -50,9 +50,16 @@ run_git archive --format=tar -o "$stage/source.tar" "$revision" deploy
 tar -x -C "$stage" -f "$stage/source.tar"
 if [ ! -f "$stage/deploy/install.sh" ] || [ ! -f "$stage/deploy/bootstrap.sh" ]; then fail "$revision has no deploy/install.sh and deploy/bootstrap.sh."; fi
 openssl pkey -pubin -in "$public" -pubout -out "$stage/deploy/release-signing.pem"
+mkdir -p "$out"
+# These are the exact archive bytes, including the public key supplied for this release (or a dry run).
+printf 'host_format=1\n' > "$out/host-digests.txt"
+for host_file in $host_files; do
+  if [ ! -f "$stage/deploy/$host_file" ] || [ -L "$stage/deploy/$host_file" ]; then fail "Missing host file: $host_file"; fi
+  printf 'host.%s=sha256:%s\n' "$(printf '%s' "$host_file" | tr '[:upper:]' '[:lower:]')" \
+    "$(sha256sum "$stage/deploy/$host_file" | cut -d' ' -f1)" >> "$out/host-digests.txt"
+done
 key=$(sed '/^-----/d' "$stage/deploy/release-signing.pem" | tr -d '\r\n')
 printf '%s\n' "$key" | grep -Eq '^[A-Za-z0-9+/]{1,64}={0,2}$' || fail 'The public key does not fit on one PEM line.'
-mkdir -p "$out"
 archive="$out/plaingym-deploy-$version.tar.gz"
 # GNU tar and gzip -n: sorted names, the commit's time, root owner and plain modes, no gzip name or time.
 tar --sort=name --format=gnu --mtime="@$(run_git show -s --format=%ct "$revision")" --owner=0 --group=0 --numeric-owner \

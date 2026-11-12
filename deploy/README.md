@@ -612,12 +612,31 @@ and `schema-compatibility.yaml.before` the guard it replaced, so a failed update
 later run can take it down if nothing migrated. If a migrated attempt leaves the
 pinned image below the floor, `.schema-recovery` keeps its identity until forward
 recovery succeeds; a retry that changes nothing preserves that record and floor
-(`docs/updating.md`). A release changing
-a file the installer copies (`update.sh`, `lib.sh`, `rotate-key.sh`, `compose.yaml`,
-`Caddyfile`, `postgres/`, systemd units or the signing key) names the required manual
-host-file steps in its notes;
-host files do not update themselves. Format 2 requires the current host scripts:
-copy reviewed `update.sh` and `lib.sh` into the install before using its new manifests.
+(`docs/updating.md`). Releases carry the host files in the deployment archive, with
+individual digests in the signed manifest. `update.sh` verifies the archive and
+each file before stopping the app. After health checks, it replaces `update.sh`,
+`lib.sh`, `rotate-key.sh`,
+`release-signing.pem` (only the same trusted key), and both systemd unit templates;
+it renders the installed units for this directory and reloads systemd. Each file
+uses a temporary sibling and atomic rename, so the updater's running shell keeps
+reading its original inode. `.env`, Compose, Caddy and PostgreSQL configuration
+are preserved. A release changing those files names its manual configuration
+steps in the upgrade notes; the updater never replaces local configuration.
+
+`.host-update` journals the old files and rendered units before the first rename.
+Until `.env` pins the target image, a failure or next invocation after an
+interruption restores those files. After the pin it keeps the new files.
+`.host-history/<image-id>/` retains previous generations for `--rollback`; older
+images without a saved generation retain their current host files on rollback.
+Back up these directories with the install and keep them through recovery. The
+signing key is never rolled back, and a different key in an archive is refused:
+key rotation requires verifying and installing a new trusted public key explicitly
+through the maintainer's release instructions, before updating. `rotate-key.sh`
+rotates the app's encryption key, not this release trust key.
+
+An install with older host scripts needs a one-time manual refresh of reviewed
+`update.sh` and `lib.sh` to gain this path. Manifests without `host_format` retain
+their image-only behavior.
 
 The **Release** workflow (`.github/workflows/release.yml`) runs on a pushed
 `vX.Y.Z` tag. It accepts only an annotated tag that GitHub verified as signed,
@@ -672,6 +691,13 @@ digest.linux/amd64=sha256:<64 hex digits>
 digest.linux/arm64=sha256:<64 hex digits>
 deploy_archive=plaingym-deploy-v1.2.3.tar.gz
 deploy_archive_sha256=sha256:<64 hex digits>
+host_format=1
+host.update.sh=sha256:<64 hex digits>
+host.lib.sh=sha256:<64 hex digits>
+host.rotate-key.sh=sha256:<64 hex digits>
+host.release-signing.pem=sha256:<64 hex digits>
+host.systemd/plaingym-update.service=sha256:<64 hex digits>
+host.systemd/plaingym-update.timer=sha256:<64 hex digits>
 revision=<40 hex digits>
 migrations=sha256:<64 hex digits>
 released=2026-11-03T12:00:00Z
@@ -680,18 +706,27 @@ released=2026-11-03T12:00:00Z
 * `digest` is the multi-arch index; installs pull `IMAGE:VERSION@DIGEST`. The
   `digest.linux/*` lines are its per-architecture images.
 * `deploy_archive` names the release's deployment files and `deploy_archive_sha256`
-  is their SHA-256, which the release `bootstrap.sh` checks. `update.sh` doesn't read
-  them, and manifests from before them stay valid.
+  is their SHA-256, checked by the release `bootstrap.sh` and the updater.
+  `host_format=1` requires all six `host.*` digests and the archive fields.
+  The updater extracts only the fixed list above and checks every digest; it never
+  executes or sources scripts from the downloaded archive during the current run.
 * `revision` is the tagged commit.
 * `migrations` is the digest of the migrations directory, computed as
   `update.sh` does (`find . -type f | LC_ALL=C sort | xargs sha256sum | sha256sum`
   in it).
+  Patch updates compare the new image with both this signed value and the running
+  image; an incorrect signed value is refused as `manifest_invalid`.
 * `rollback_floor` is the oldest compatible release. A patch preserves its minor's
   floor; an incompatible major sets the floor to itself. The release workflow smoke-tests
   the previous minor on the new database before publishing a compatible `vX.Y.0`, and
   Image checks runs the same test on any commit that changes the migrations. Older code
   accepts a newer release's table only with the security shape every table has
   ([versioning guide](../docs/versioning.md#compatibility-from-10)).
-* The current reader also accepts format 1. The old reader rejects the new underscore
-  key, so the format is bumped to 2 and the host scripts must be refreshed manually.
+* The current reader also accepts format 1 and older manifests without host digests.
+  Older readers, including format 2 readers from before host digests, reject a
+  manifest with `host.*` keys (their names contain `-`): until the one-time
+  host-script refresh above, nightly updates skip such a release as `manifest_invalid`
+  and a manual update refuses it.
+* A deployment archive that can't be downloaded is skipped as `manifest_unavailable`,
+  like the manifest itself.
 * GitHub release notes come from the matching `CHANGELOG.md` section.

@@ -36,6 +36,7 @@ case "$*" in
   *' ps -q app') echo container-1 ;;
   'inspect container-1 '*) if [ "${FAIL_AT:-}" = settle ]; then echo 'healthy 1'; else echo 'healthy 0'; fi ;;
   *' exec -T app gym-app auto-update check') cat "$FIXTURES/check" ;;
+  *' exec -T postgres '*) echo '20|1000' ;;
   *' exec -T app gym-app auto-update record '*)
     [ "${FAIL_AT:-}" != record ] || exit 1
     case "$*" in *' --reason refused'*) exit 2 ;; esac
@@ -50,6 +51,7 @@ case "$*" in
     esac ;;
   'image inspect '*'org.opencontainers.image.version'*)
     case "$3" in
+      "$PREVIOUS_ID") echo v1.2.3 ;;
       *@sha256:*) if [ -n "${DISTINCT_IDS:-}" ]; then version_in "$3"; else echo "${TARGET_LABEL:-v1.2.5}"; fi ;;
       *) echo "${CURRENT_LABEL:-v1.2.3}" ;;
     esac ;;
@@ -84,6 +86,7 @@ case "$url" in
   https://api.github.com/repos/example/app/releases?per_page=100) [ "${FAIL_AT:-}" != releases ] || exit 22; cp "$FIXTURES/releases.json" "$output" ;;
   https://github.com/example/app/releases/download/*/release-manifest.txt) [ "${FAIL_AT:-}" != manifest ] || exit 22; cp "$FIXTURES/manifest" "$output" ;;
   https://github.com/example/app/releases/download/*/release-manifest.txt.sig) cp "$FIXTURES/manifest.sig" "$output" ;;
+  https://github.com/example/app/releases/download/*/plaingym-deploy-*.tar.gz) [ "${FAIL_AT:-}" != archive ] || exit 22; cp "$FIXTURES/host.tar.gz" "$output" ;;
   *) exit 22 ;;
 esac
 MOCK
@@ -92,7 +95,39 @@ cat > "$temporary/bin/date" <<'MOCK'
 #!/bin/sh
 case "$*" in '+%H') echo "${FAKE_HOUR:-03}" ;; '+%F') echo "${FAKE_DAY:-2026-11-03}" ;; *) exec /bin/date "$@" ;; esac
 MOCK
-chmod 0700 "$temporary/bin/docker" "$temporary/bin/curl" "$temporary/bin/date"
+REAL_OPENSSL=$(command -v openssl)
+REAL_MV=$(command -v mv)
+export REAL_OPENSSL REAL_MV
+cat > "$temporary/bin/openssl" <<'MOCK'
+#!/bin/sh
+printf 'openssl %s\n' "$*" >> "$CALLS"
+exec "$REAL_OPENSSL" "$@"
+MOCK
+cat > "$temporary/bin/systemctl" <<'MOCK'
+#!/bin/sh
+printf 'systemctl %s\n' "$*" >> "$CALLS"
+if [ "${FAIL_AT:-}" = host_reload ] && [ ! -f "$FIXTURES/reload_failed" ]; then
+  touch "$FIXTURES/reload_failed"; exit 1
+fi
+MOCK
+cat > "$temporary/bin/mv" <<'MOCK'
+#!/bin/sh
+case "$*" in
+  *'.env.next '*)
+    if [ "${FAIL_AT:-}" = host_pin_signal ]; then "$REAL_MV" "$@"; kill -TERM "$PPID"; exit 0; fi ;;
+  *'.host-retired.'*)
+    if [ "${FAIL_AT:-}" = host_cleanup_killed ]; then "$REAL_MV" "$@"; kill -KILL "$PPID"; exit 1; fi ;;
+  *lib.sh.host-next*)
+    if [ ! -f "$FIXTURES/mv_failed" ]; then
+      case "${FAIL_AT:-}" in
+        host_midway) touch "$FIXTURES/mv_failed"; exit 1 ;;
+        host_killed) touch "$FIXTURES/mv_failed"; "$REAL_MV" "$@"; kill -KILL "$PPID"; exit 1 ;;
+      esac
+    fi ;;
+esac
+exec "$REAL_MV" "$@"
+MOCK
+chmod 0700 "$temporary/bin/docker" "$temporary/bin/curl" "$temporary/bin/date" "$temporary/bin/openssl" "$temporary/bin/systemctl" "$temporary/bin/mv"
 
 openssl genpkey -algorithm ed25519 -out "$temporary/release/key.pem" 2>/dev/null
 openssl pkey -in "$temporary/release/key.pem" -pubout -out "$temporary/release/public.pem"
@@ -107,6 +142,7 @@ write_manifest() {
 # checks [RESTORE] [ENABLED] [BACKUPS]: what `gym-app auto-update check` answers.
 checks() { printf 'restore=%s\nsetup=true\nenabled=%s\nbackups=%s\ntimezone=America/Denver\n' "${1:-false}" "${2:-true}" "${3:-true}" > "$FIXTURES/check"; }
 make_install() {
+  printf 'Case: %s\n' "$1"
   case_dir="$temporary/$1"
   mkdir "$case_dir"
   cp "$source_dir/update.sh" "$source_dir/lib.sh" "$case_dir/"
@@ -115,8 +151,13 @@ make_install() {
   printf 'APP_IMAGE=ghcr.io/example/app:v1.2.3\nRELEASE_REPOSITORY=example/app\nFAKE_SECRET=private-test-value\n' > "$case_dir/.env"
   : > "$CALLS"; : > "$RECORDS"
   rm -f "$FIXTURES/down" "$FIXTURES/removed"
+  rm -f "$FIXTURES/mv_failed" "$FIXTURES/reload_failed" "$FIXTURES/generations"
+  SYSTEMD_UNIT_DIR="$case_dir/units"
+  export SYSTEMD_UNIT_DIR
+  mkdir "$SYSTEMD_UNIT_DIR"
   write_manifest v1.2.5
   checks
+  : > "$CALLS" # Fixture signing is setup, not an updater call (including the lock-refusal case).
 }
 # expect_status STATUS [NAME=VALUE...] ARGS...: run update.sh with the fixture settings given, expecting STATUS.
 expect_status() {
@@ -287,6 +328,14 @@ never ' stop app'
 make_install pull
 expect_status 1 FAIL_AT=pull --patch --now
 recorded "--result skipped --reason pull_failed --from v1.2.3 --to v1.2.5"
+never ' stop app'
+
+# The image-to-image check is not a substitute for the digest promised by the signed manifest.
+make_install signed-migrations
+sed -i "s/^migrations=.*/migrations=sha256:$(printf 'e%.0s' $(seq 64))/" "$FIXTURES/manifest"
+openssl pkeyutl -sign -inkey "$FIXTURES/key.pem" -rawin -in "$FIXTURES/manifest" -out "$FIXTURES/manifest.sig"
+expect_status 1 --patch --now
+recorded "--result skipped --reason manifest_invalid --from v1.2.3 --to v1.2.5"
 never ' stop app'
 
 # A snapshot that can't be taken skips the update and restarts the running version.
@@ -517,4 +566,135 @@ for arguments in '--patch extra' '--now' '--patch --later'; do
   # shellcheck disable=SC2086
   if sh "$case_dir/update.sh" $arguments > /dev/null 2>&1; then echo "Accepted: $arguments" >&2; exit 1; fi
 done
-echo 'PASS: patch selection, signature, digest and migration checks, setting off, skipped snapshot, rollback, window, pending results.'
+# Host updates use a real archive and signatures, with distinguishable old and new scripts and units.
+host_release() {
+  mkdir -p "$case_dir/systemd" "$case_dir/postgres"
+  cp "$source_dir/rotate-key.sh" "$case_dir/"
+  cp "$source_dir/Caddyfile" "$case_dir/"
+  cp "$source_dir/postgres/01-roles.sh" "$case_dir/postgres/"
+  cp "$source_dir/systemd/"* "$case_dir/systemd/"
+  for unit in plaingym-update.service plaingym-update.timer; do printf 'old unit %s\n' "$unit" > "$SYSTEMD_UNIT_DIR/$unit"; done
+  mkdir -p "$FIXTURES/host/deploy"
+  cp -R "$case_dir/systemd" "$case_dir/postgres" "$FIXTURES/host/deploy/"
+  for file in update.sh lib.sh rotate-key.sh compose.yaml Caddyfile release-signing.pem; do cp "$case_dir/$file" "$FIXTURES/host/deploy/"; done
+  awk '{ print; if ($0 == "set -eu") print "echo new-updater >> \"$FIXTURES/generations\"" }' "$case_dir/update.sh" > "$FIXTURES/host/deploy/update.sh"
+  printf '\n# New library generation\n' >> "$FIXTURES/host/deploy/lib.sh"
+  printf '\n# New unit generation\n' >> "$FIXTURES/host/deploy/systemd/plaingym-update.service"
+  write_manifest v1.2.5
+  sed -i 's#manifest/1#manifest/2#' "$FIXTURES/manifest"
+  printf 'rollback_floor=v1.2.0\n' >> "$FIXTURES/manifest"
+  host_sign
+}
+host_sign() {
+  tar -czf "$FIXTURES/host.tar.gz" -C "$FIXTURES/host" deploy
+  # Replace only the host extension when signing again.
+  sed '/^host[._]/d; /^deploy_archive/d' "$FIXTURES/manifest" > "$FIXTURES/manifest.next"
+  mv "$FIXTURES/manifest.next" "$FIXTURES/manifest"
+  printf 'host_format=1\ndeploy_archive=plaingym-deploy-v1.2.5.tar.gz\ndeploy_archive_sha256=sha256:%s\n' \
+    "$(sha256sum "$FIXTURES/host.tar.gz" | cut -d' ' -f1)" >> "$FIXTURES/manifest"
+  for file in update.sh lib.sh rotate-key.sh release-signing.pem systemd/plaingym-update.service systemd/plaingym-update.timer; do
+    printf 'host.%s=sha256:%s\n' "$(printf '%s' "$file" | tr '[:upper:]' '[:lower:]')" \
+      "$(sha256sum "$FIXTURES/host/deploy/$file" | cut -d' ' -f1)" >> "$FIXTURES/manifest"
+  done
+  openssl pkeyutl -sign -inkey "$FIXTURES/key.pem" -rawin -in "$FIXTURES/manifest" -out "$FIXTURES/manifest.sig"
+}
+old_hosts() {
+  cmp -s "$source_dir/update.sh" "$case_dir/update.sh"
+  cmp -s "$source_dir/lib.sh" "$case_dir/lib.sh"
+  grep -qx 'old unit plaingym-update.service' "$SYSTEMD_UNIT_DIR/plaingym-update.service"
+  pinned "${1:-ghcr.io/example/app:v1.2.3}"
+  [ ! -d "$case_dir/.host-update" ]
+}
+make_install host-success
+host_release
+expect_status 0 --patch --now
+pinned "$target"
+for file in update.sh lib.sh systemd/plaingym-update.service; do cmp -s "$case_dir/$file" "$FIXTURES/host/deploy/$file"; done
+grep -q 'New unit generation' "$SYSTEMD_UNIT_DIR/plaingym-update.service"
+grep -qx "ExecStart=/bin/sh $case_dir/update.sh --patch" "$SYSTEMD_UNIT_DIR/plaingym-update.service"
+called 'systemctl daemon-reload'
+[ "$(line_of 'openssl pkeyutl -verify')" -lt "$(line_of 'curl .*plaingym-deploy-')" ]
+[ ! -e "$FIXTURES/generations" ] # The running shell finishes the inode it opened before replacement.
+expect_status 0 CURRENT_LABEL=v1.2.5 --patch --now
+grep -qx new-updater "$FIXTURES/generations" # The next invocation uses the new updater.
+# Rollback restores the scripts and rendered units kept with the previous image.
+# An explicitly replaced trust key must survive that rollback, even though the snapshot held the old one.
+openssl pkey -in "$FIXTURES/other.pem" -pubout -out "$case_dir/release-signing.pem"
+cp "$case_dir/release-signing.pem" "$temporary/rotated-public.pem"
+expect_status 0 CURRENT_LABEL=v1.2.5 --rollback
+old_hosts "$PREVIOUS_ID"
+cmp -s "$temporary/rotated-public.pem" "$case_dir/release-signing.pem"
+
+make_install host-manual
+host_release
+expect_status 0 "$target"
+pinned "$target"
+cmp -s "$case_dir/update.sh" "$FIXTURES/host/deploy/update.sh"
+expect_status 0 --rollback
+old_hosts "$PREVIOUS_ID"
+
+for failure in host_midway host_reload; do
+  make_install "$failure"
+  host_release
+  expect_status 1 "FAIL_AT=$failure" --patch --now
+  old_hosts
+done
+# A process killed between renames leaves a durable journal; the next invocation restores before acting.
+make_install host-killed
+host_release
+expect_status 137 FAIL_AT=host_killed --patch --now
+[ -d "$case_dir/.host-update" ]
+checks false false
+expect_status 1 --patch --now # Reports recovery of the interrupted automatic attempt.
+old_hosts
+
+make_install host-cleanup-killed
+host_release
+expect_status 137 FAIL_AT=host_cleanup_killed --patch --now
+pinned "$target"
+[ ! -d "$case_dir/.host-update" ]
+expect_status 0 CURRENT_LABEL=v1.2.5 --patch --now
+pinned "$target"
+cmp -s "$case_dir/update.sh" "$FIXTURES/host/deploy/update.sh"
+
+make_install host-pin-signal
+host_release
+expect_status 130 FAIL_AT=host_pin_signal --patch --now
+pinned "$target"
+cmp -s "$case_dir/update.sh" "$FIXTURES/host/deploy/update.sh"
+recorded "--result updated --from v1.2.3 --to v1.2.5"
+never "up -d .* IMAGE=$PREVIOUS_ID"
+
+for corruption in archive file signature key; do
+  make_install "host-$corruption"
+  host_release
+  case "$corruption" in
+    archive) printf 'tampered' >> "$FIXTURES/host.tar.gz" ;;
+    file)
+      printf '# tampered\n' >> "$FIXTURES/host/deploy/lib.sh"
+      tar -czf "$FIXTURES/host.tar.gz" -C "$FIXTURES/host" deploy
+      # Even a correctly signed archive digest cannot override the signed digest of an individual file.
+      sed -i "s/^deploy_archive_sha256=.*/deploy_archive_sha256=sha256:$(sha256sum "$FIXTURES/host.tar.gz" | cut -d' ' -f1)/" "$FIXTURES/manifest"
+      openssl pkeyutl -sign -inkey "$FIXTURES/key.pem" -rawin -in "$FIXTURES/manifest" -out "$FIXTURES/manifest.sig" ;;
+    signature) printf 'released=changed\n' >> "$FIXTURES/manifest" ;;
+    key) openssl pkey -in "$FIXTURES/other.pem" -pubout -out "$FIXTURES/host/deploy/release-signing.pem"; host_sign ;;
+  esac
+  expect_status 1 --patch --now
+  old_hosts
+  never ' stop app'
+done
+# An archive that can't be downloaded is a transient skip, not a refused release.
+make_install host-download
+host_release
+expect_status 1 FAIL_AT=archive --patch --now
+recorded "--result skipped --reason manifest_unavailable --from v1.2.3 --to v1.2.5"
+old_hosts
+never ' stop app'
+make_install host-download-manual
+host_release
+expect_status 1 FAIL_AT=archive "$target"
+grep -q 'Could not download the deployment files of v1.2.5' "$temporary/output"
+old_hosts
+never ' stop app'
+
+echo 'PASS: patch selection, signature, digest and migration checks, setting off, skipped snapshot, rollback, window, pending results; signed host generations, tampering, partial failure, interruption and rollback.'

@@ -170,6 +170,11 @@ archive="$temporary/release/plaingym-deploy-v1.2.3.tar.gz"
 [ "$(manifest_value "$manifest" deploy_archive_sha256)" = "sha256:$(sha256sum "$archive" | cut -d' ' -f1)" ]
 mkdir "$temporary/archive"
 tar -xzf "$archive" -C "$temporary/archive"
+[ "$(manifest_value "$manifest" host_format)" = 1 ]
+for file in $host_files; do
+  field="host.$(printf '%s' "$file" | tr '[:upper:]' '[:lower:]')"
+  [ "$(manifest_value "$manifest" "$field")" = "sha256:$(sha256sum "$temporary/archive/deploy/$file" | cut -d' ' -f1)" ]
+done
 for file in install.sh lib.sh update.sh bootstrap.sh compose.yaml Caddyfile; do
   git -C "$source_dir/.." show "$revision:deploy/$file" | cmp -s - "$temporary/archive/deploy/$file" || { echo "The archive's $file is not the commit's." >&2; exit 1; }
 done

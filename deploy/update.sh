@@ -32,6 +32,7 @@ ATTEMPT="$ROOT/.schema-attempt"
 RECOVERY="$ROOT/.schema-recovery"
 recovery_version=
 work=
+host_source=
 # A requested update fails; the nightly patch run has nothing to do.
 rotation_check() {
   [ -f "$ROOT/.rotate-key.inflight" ] || return 0
@@ -53,6 +54,7 @@ stopped=false
 changed=false
 interrupted=false
 previous_id=
+swap_pin=
 attempt_end=failed
 recovery_notice() {
   failed_version=$(cut -f3 "$RECOVERY")
@@ -100,6 +102,12 @@ rollback() {
 cleanup() {
   exit_status=$?
   trap - EXIT HUP INT TERM
+  # The rename of .env commits both the image and its host files, even if a signal arrived immediately after it.
+  if [ "$changed" = true ] && [ "$(read_env APP_IMAGE)" = "$swap_pin" ]; then
+    changed=false; stopped=false; stage=finished
+  fi
+  # Restore before rollback uses Compose or any other release-owned file. Leave the journal for a retry on failure.
+  if ! host_recover; then echo 'Host file recovery failed; run update.sh again to retry it.' >&2; exit 1; fi
   outcome=unchanged
   if [ "$exit_status" -ne 0 ] && [ "$changed" = true ]; then
     if [ "$requested_rollback" = true ]; then echo 'Rollback failed; restarting the original image.' >&2
@@ -137,6 +145,7 @@ cleanup() {
 }
 # Stop the app, snapshot, start the target, check it, and pin it. The manual path pulls first.
 swap_image() { # TARGET
+  swap_pin=$1
   if [ "$requested_rollback" = false ] && [ -z "$recovery_version" ]; then
     app_running || fail 'The app must be running before an update.'
   fi
@@ -200,6 +209,7 @@ swap_image() { # TARGET
   stage=health
   APP_IMAGE="$1" compose exec -T app node /app/deploy/healthcheck.mjs
   [ "$patch" = false ] || settle "$1"
+  if [ -n "$host_source" ]; then host_apply "$host_source" "$1" "$previous_id" || fail 'Could not install the signed host files; restoring the previous copies.'; fi
   # Startup completes migrations before reporting healthy. Publish the pin only afterwards.
   awk -v image="$1" 'BEGIN { found=0 } /^APP_IMAGE=/ { print "APP_IMAGE=" image; found=1; next } { print } END { if (!found) print "APP_IMAGE=" image }' "$ROOT/.env" > "$ROOT/.env.next"
   chmod 0600 "$ROOT/.env.next"
@@ -382,6 +392,7 @@ flock -n 9 || { [ "$patch" = true ] && { echo 'Another update is running; this r
 rotation_check
 trap cleanup EXIT
 trap 'interrupted=true; exit 130' HUP INT TERM
+host_recover || fail 'Could not recover host files from an interrupted update.'
 
 # A run killed outright during a manual update left its record: finish what its exit handler would have done.
 # This run only does that, even when --rollback started it, so it reports the earlier update, not a rollback.
@@ -428,6 +439,7 @@ if [ "$requested_rollback" = true ]; then
   # Pin it by name, tag and digest like an update, so the image can be pulled again if it is ever removed. An image
   # with no registry digest (a local build) has nowhere to come back from, so it keeps its image ID.
   pin=$(registry_pin "$target_id" "$to_version")
+  if [ -d "$ROOT/.host-history/${target_id#sha256:}" ]; then host_source="$ROOT/.host-history/${target_id#sha256:}"; fi
   swap_image "${pin:-$target}"
   printf 'Rolled back to %s by digest. Pre-upgrade snapshot: %s.\n' "$to_version" "$snapshot"
   exit 0
@@ -472,6 +484,10 @@ if [ "$patch" = false ]; then
     if ! version_at_least "$from_version" "$target_floor"; then
       echo "$to_version has rollback floor $target_floor. Once it migrates the database, $from_version can't run on it: --rollback will refuse, and the way back is the pre-upgrade snapshot (docs/restoring.md)."
     fi
+    host_status=0
+    host_download "$work/manifest" "https://github.com/$repository/releases/download/$to_version" "$work" || host_status=$?
+    [ "$host_status" -ne 2 ] || fail "Could not download the deployment files of $to_version. Nothing was installed."
+    [ "$host_status" -eq 0 ] || fail 'Invalid signed host files or release signing key change. Nothing was installed.'
   fi
   if [ -n "$recovery_version" ] && ! valid_version "$to_version"; then
     fail "Recovery requires $recovery_version or a newer compatible signed release. Nothing was changed."
@@ -601,6 +617,11 @@ old=$(migrations_of "$current") || old=
 new=$(migrations_of "$target") || new=
 if ! printf '%s\n' "$old" | grep -Eq "$hash" || ! printf '%s\n' "$new" | grep -Eq "$hash"; then finish skipped image_check_failed 1; fi
 [ "$old" = "$new" ] || finish skipped migration_in_patch 1
+[ "sha256:$new" = "$(manifest_value "$work/manifest" migrations)" ] || finish skipped manifest_invalid 1
+host_status=0
+host_download "$work/manifest" "https://github.com/$repository/releases/download/$tag" "$work" || host_status=$?
+[ "$host_status" -ne 2 ] || finish skipped manifest_unavailable 1
+[ "$host_status" -eq 0 ] || finish skipped manifest_invalid 1
 
 history_install
 swap_image "$target"
