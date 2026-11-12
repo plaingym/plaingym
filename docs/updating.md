@@ -96,7 +96,7 @@ image prune; images pulled by other tools are left alone.
 
 ### Update
 
-The updater refreshes `update.sh`, `lib.sh`, `rotate-key.sh` and both systemd units
+The updater refreshes `update.sh`, `lib.sh`, `rotate-key.sh`, `restore.sh` and both systemd units
 with the release.
 The updater checks the signed manifest, the deployment archive and every host-file
 digest before stopping the app. Once the app is healthy, it replaces each file by

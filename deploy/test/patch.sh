@@ -569,14 +569,14 @@ done
 # Host updates use a real archive and signatures, with distinguishable old and new scripts and units.
 host_release() {
   mkdir -p "$case_dir/systemd" "$case_dir/postgres"
-  cp "$source_dir/rotate-key.sh" "$case_dir/"
+  cp "$source_dir/rotate-key.sh" "$source_dir/restore.sh" "$case_dir/"
   cp "$source_dir/Caddyfile" "$case_dir/"
   cp "$source_dir/postgres/01-roles.sh" "$case_dir/postgres/"
   cp "$source_dir/systemd/"* "$case_dir/systemd/"
   for unit in plaingym-update.service plaingym-update.timer; do printf 'old unit %s\n' "$unit" > "$SYSTEMD_UNIT_DIR/$unit"; done
   mkdir -p "$FIXTURES/host/deploy"
   cp -R "$case_dir/systemd" "$case_dir/postgres" "$FIXTURES/host/deploy/"
-  for file in update.sh lib.sh rotate-key.sh compose.yaml Caddyfile release-signing.pem; do cp "$case_dir/$file" "$FIXTURES/host/deploy/"; done
+  for file in update.sh lib.sh rotate-key.sh restore.sh compose.yaml Caddyfile release-signing.pem; do cp "$case_dir/$file" "$FIXTURES/host/deploy/"; done
   awk '{ print; if ($0 == "set -eu") print "echo new-updater >> \"$FIXTURES/generations\"" }' "$case_dir/update.sh" > "$FIXTURES/host/deploy/update.sh"
   printf '\n# New library generation\n' >> "$FIXTURES/host/deploy/lib.sh"
   printf '\n# New unit generation\n' >> "$FIXTURES/host/deploy/systemd/plaingym-update.service"
@@ -592,7 +592,7 @@ host_sign() {
   mv "$FIXTURES/manifest.next" "$FIXTURES/manifest"
   printf 'host_format=1\ndeploy_archive=plaingym-deploy-v1.2.5.tar.gz\ndeploy_archive_sha256=sha256:%s\n' \
     "$(sha256sum "$FIXTURES/host.tar.gz" | cut -d' ' -f1)" >> "$FIXTURES/manifest"
-  for file in update.sh lib.sh rotate-key.sh release-signing.pem systemd/plaingym-update.service systemd/plaingym-update.timer; do
+  for file in update.sh lib.sh rotate-key.sh restore.sh release-signing.pem systemd/plaingym-update.service systemd/plaingym-update.timer; do
     printf 'host.%s=sha256:%s\n' "$(printf '%s' "$file" | tr '[:upper:]' '[:lower:]')" \
       "$(sha256sum "$FIXTURES/host/deploy/$file" | cut -d' ' -f1)" >> "$FIXTURES/manifest"
   done

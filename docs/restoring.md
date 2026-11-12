@@ -124,8 +124,7 @@ fresh install, before anyone has completed setup.
    the key file holds the private key as downloaded.
 2. Save that configuration as `restore.json` and the downloaded private key as
    `backup-key.txt` on the host. Keep both private (`chmod 600 restore.json backup-key.txt`).
-   The installer supplies `restore.sh`; on an older install, copy it from the
-   matching release's `deploy/restore.sh` and make it executable.
+   The installer supplies `restore.sh`, and each release's update refreshes it.
 3. From the installation directory, run the helper with the host file paths:
 
    ```sh

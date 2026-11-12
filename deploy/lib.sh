@@ -186,10 +186,10 @@ manifest_check() { # MANIFEST VERSION
   elif grep -q '^host\.' "$1"; then return 1; fi
 }
 # Only these release-owned files may be installed. Configuration, secrets, state and local overrides stay outside it.
-host_files='update.sh lib.sh rotate-key.sh release-signing.pem systemd/plaingym-update.service systemd/plaingym-update.timer'
+host_files='update.sh lib.sh rotate-key.sh restore.sh release-signing.pem systemd/plaingym-update.service systemd/plaingym-update.timer'
 host_units='plaingym-update.service plaingym-update.timer'
 host_units_dir() { printf '%s\n' "${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"; }
-host_mode() { case "$1" in update.sh|rotate-key.sh) echo 0700 ;; *) echo 0644 ;; esac; }
+host_mode() { case "$1" in update.sh|rotate-key.sh|restore.sh) echo 0700 ;; *) echo 0644 ;; esac; }
 # Prepare only data from the already verified manifest; no script from the archive is sourced or executed.
 # Returns 2 when the archive can't be downloaded, and 1 when it or a file fails a check.
 host_download() { # MANIFEST BASE_URL WORK

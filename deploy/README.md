@@ -385,7 +385,7 @@ with `gym-app restore`.
 `restore.sh SNAPSHOT_ID CONFIG_JSON KEY_FILE` takes host file paths, streams them
 to the maintenance CLI, and removes its app-owned 0600 copies after the restore
 (in a 0700 directory on the data volume). The installer copies the helper for new
-installs; existing installs copy `deploy/restore.sh` from the matching release.
+installs, and each release's update refreshes it with the other host files.
 See [the restore guide](../docs/restoring.md#restore-from-the-command-line).
 Restore leaves billing and member emails off. Backups continue with retention
 pruning held until an owner confirms in Settings or Health that the old server is gone.
@@ -615,7 +615,7 @@ recovery succeeds; a retry that changes nothing preserves that record and floor
 (`docs/updating.md`). Releases carry the host files in the deployment archive, with
 individual digests in the signed manifest. `update.sh` verifies the archive and
 each file before stopping the app. After health checks, it replaces `update.sh`,
-`lib.sh`, `rotate-key.sh`,
+`lib.sh`, `rotate-key.sh`, `restore.sh`,
 `release-signing.pem` (only the same trusted key), and both systemd unit templates;
 it renders the installed units for this directory and reloads systemd. Each file
 uses a temporary sibling and atomic rename, so the updater's running shell keeps
@@ -695,6 +695,7 @@ host_format=1
 host.update.sh=sha256:<64 hex digits>
 host.lib.sh=sha256:<64 hex digits>
 host.rotate-key.sh=sha256:<64 hex digits>
+host.restore.sh=sha256:<64 hex digits>
 host.release-signing.pem=sha256:<64 hex digits>
 host.systemd/plaingym-update.service=sha256:<64 hex digits>
 host.systemd/plaingym-update.timer=sha256:<64 hex digits>
@@ -707,7 +708,7 @@ released=2026-11-03T12:00:00Z
   `digest.linux/*` lines are its per-architecture images.
 * `deploy_archive` names the release's deployment files and `deploy_archive_sha256`
   is their SHA-256, checked by the release `bootstrap.sh` and the updater.
-  `host_format=1` requires all six `host.*` digests and the archive fields.
+  `host_format=1` requires all seven `host.*` digests and the archive fields.
   The updater extracts only the fixed list above and checks every digest; it never
   executes or sources scripts from the downloaded archive during the current run.
 * `revision` is the tagged commit.
