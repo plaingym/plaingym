@@ -134,5 +134,7 @@
   "next": "Next",
   "denied": "You do not have access to invoices.",
   "householdInvoices": "Invoices belong to the household and may include other household members.",
-  "confirm": "Confirm"
+  "confirm": "Confirm",
+  "sendUncertain": "The earlier email may have been delivered, but we could not confirm it. Choose Send again only if you want another email.",
+  "sendAgain": "Send again"
 }

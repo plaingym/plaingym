@@ -45,14 +45,14 @@ describe('send commands', () => {
     await expect(replay(gymA, key)).rejects.toMatchObject({ code: 'conflict' });
     await expect(reserve(key)).rejects.toMatchObject({ code: 'conflict' });
     clock.advance(emailInFlightMs);
-    expect(await replay(gymA, key)).toEqual({ result: { linkId: 'first' } });
+    expect(await replay(gymA, key)).toEqual({ result: { linkId: 'first' }, outcome: 'unknown' });
     await expect(reserve(key)).rejects.toMatchObject({ code: 'conflict' });
   });
   it('keeps a possibly accepted attempt from running again', async () => {
     const key = 'test.unknown:' + uuidv7(), email = new FakeEmail();
     email.respondNext(new DeliveryError('unknown', 'Reply lost'));
     await expect(deliveries.attempt(await reserve(key), email, message)).rejects.toThrow('Reply lost');
-    expect(await replay(gymA, key)).toEqual({ result: { linkId: 'first' } });
+    expect(await replay(gymA, key)).toEqual({ result: { linkId: 'first' }, outcome: 'unknown' });
   });
   it.each(['refused', 'suppressed', 'released'] as const)('runs a %s attempt again under its key', async outcome => {
     const key = 'test.again:' + uuidv7(), email = new FakeEmail(), first = await reserve(key);
@@ -90,4 +90,25 @@ describe('send commands', () => {
     expect(recipientDigest(' Payer@Example.test ')).toBe(recipientDigest('payer@example.test'));
     expect(recipientDigest('payer@example.test')).not.toContain('payer');
   });
+});
+
+it('makes a failed release visible and allows it to be retried without sending', async () => {
+  const key = 'test.release-write:' + uuidv7(), reservation = await reserve(key);
+  let fail = true;
+  const writer = createEmailDeliveries({ clock, scope: async (gymId, fn) => {
+    if (fail) throw new Error('Outcome write failed');
+    return database.forGym(gymId, fn);
+  } });
+  await expect(writer.release(reservation)).rejects.toThrow('Outcome write failed');
+  fail = false;
+  await writer.release(reservation);
+  expect(await replay(gymA, key)).toBeUndefined();
+});
+it('reports an accepted email with a failed outcome write as uncertain on replay', async () => {
+  const key = 'test.accepted-write:' + uuidv7(), reservation = await reserve(key), email = new FakeEmail();
+  const writer = createEmailDeliveries({ clock, scope: async () => { throw new Error('Outcome write failed'); } });
+  await expect(writer.attempt(reservation, email, message)).rejects.toMatchObject({ acceptance: 'unknown' });
+  expect(email.messages).toHaveLength(1);
+  clock.advance(emailInFlightMs);
+  expect(await replay(gymA, key)).toMatchObject({ outcome: 'unknown' });
 });

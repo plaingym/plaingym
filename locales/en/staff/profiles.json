@@ -64,5 +64,7 @@
   "searchButton": "Search",
   "noProfiles": "No staff profiles yet",
   "noProfilesHelp": "Add a profile for each coach or staff member. Profiles can appear on the public website; access is granted separately below.",
-  "emptyHelp": "Try a different name."
+  "emptyHelp": "Try a different name.",
+  "sendUncertain": "The earlier email may have been delivered, but we could not confirm it. Choose Send again only if you want another email.",
+  "sendAgain": "Send again"
 }

@@ -60,7 +60,7 @@ describe('one-off signed link send commands', () => {
     f.fake.respondNext(new DeliveryError('unknown', 'Reply lost'));
     await expect(f.links.send(f.context, f.update(generation))).rejects.toMatchObject({ code: 'unavailable' });
     const replayed = await f.links.send(f.context, f.update(generation));
-    expect(replayed.revokedAt).toBeNull();
+    expect(replayed).toMatchObject({ revokedAt: null, outcome: 'unknown' });
     expect(f.fake.messages).toHaveLength(0);
     expect(await f.count()).toBe(1);
   });

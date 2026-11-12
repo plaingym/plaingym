@@ -291,7 +291,7 @@ export const portalInvitationRequestSchema = z.discriminatedUnion('delivery', [
 // The household login is created only when the invitee accepts, so an invitation has no login yet.
 export const portalPendingInvitationSchema = z.strictObject({ userId: idSchema, scope: z.enum(['payer', 'member']), memberId: idSchema.nullable(), expiresAt: instantSchema });
 export const portalInvitationResponseSchema = z.strictObject({ data: z.discriminatedUnion('delivery', [
-  z.strictObject({ delivery: z.literal('email'), invitation: portalPendingInvitationSchema }),
+  z.strictObject({ delivery: z.literal('email'), invitation: portalPendingInvitationSchema, outcome: z.literal('unknown').optional() }),
   z.strictObject({ delivery: z.literal('print'), invitation: portalPendingInvitationSchema, invitationUrl: z.url({ protocol: /^https?$/ }) }),
 ]) });
 /** An invitation staff issued that nobody has accepted yet; the login exists only after acceptance. */

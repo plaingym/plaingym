@@ -58,7 +58,7 @@ describe('portal invitation send commands', () => {
     const f = await fixture(), generation = uuidv7();
     f.fake.respondNext(new DeliveryError('unknown', 'Reply lost'));
     await expect(f.service.invite(f.actor, f.home.id, f.request(generation), origin)).rejects.toThrow('Reply lost');
-    await f.service.invite(f.actor, f.home.id, f.request(generation), origin);
+    expect(await f.service.invite(f.actor, f.home.id, f.request(generation), origin)).toMatchObject({ data: { delivery: 'email', outcome: 'unknown' } });
     expect(f.fake.messages).toHaveLength(0);
   });
   it.each([

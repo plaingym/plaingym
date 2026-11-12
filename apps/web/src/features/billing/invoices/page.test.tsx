@@ -327,3 +327,26 @@ describe('invoice and household payment UI', () => {
     await screen.findByText('The card payment is still being resolved. Check back shortly.');
   });
 });
+
+it('shows an uncertain pay-link replay and changes generation only on a deliberate resend', async () => {
+  sessionStorage.clear();
+  const f = transport(), base = f.fetcher.getMockImplementation()!;
+  let uncertain = true;
+  f.fetcher.mockImplementation(async (path, options) => {
+    const response = await base(path, options);
+    if (String(path) !== '/api/links/send' || !uncertain) return response;
+    const body = await response.json() as { data: Record<string, unknown> };
+    return Response.json({ data: { ...body.data, outcome: 'unknown' } });
+  });
+  start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={desk} client={f.client}/>);
+  fireEvent.click(await screen.findByRole('button', { name: 'Send or share pay link' }));
+  fireEvent.click(within(screen.getByRole('region')).getByRole('button', { name: 'Confirm' }));
+  await screen.findByText(/earlier email may have been delivered/);
+  expect(screen.queryByText('Pay link sent to the household.')).toBeNull();
+  uncertain = false;
+  fireEvent.click(screen.getByRole('button', { name: 'Send again' }));
+  await screen.findByText('Pay link sent to the household.');
+  const sends = f.fetcher.mock.calls.filter(([path]) => String(path) === '/api/links/send').map(([, options]) => JSON.parse(String(options?.body)) as { sendGeneration: string });
+  expect(sends).toHaveLength(2); expect(sends[1]!.sendGeneration).not.toBe(sends[0]!.sendGeneration);
+  sessionStorage.clear();
+});

@@ -55,6 +55,13 @@ export const createSignedLinkResponseSchema = z.strictObject({
     token: z.string().min(32).regex(/^[A-Za-z0-9_-]+$/),
   }),
 });
+/** An uncertain replay never resends; the caller can choose a new send generation. */
+const sendOutcome = { outcome: z.literal('unknown').optional() };
+export const sendSignedLinkResponseSchema = z.strictObject({ data: z.discriminatedUnion('purpose', [
+  signedLinkSchema.options[0].extend(sendOutcome), signedLinkSchema.options[1].extend(sendOutcome),
+  signedLinkSchema.options[2].extend(sendOutcome), signedLinkSchema.options[3].extend(sendOutcome),
+  signedLinkSchema.options[4].extend(sendOutcome),
+]) });
 export const signedLinkResponseSchema = z.strictObject({ data: signedLinkSchema });
 export const signedLinkListResponseSchema = listResponseSchema(signedLinkSchema);
 export const signedLinkParamsSchema = z.strictObject({ linkId: idSchema });
@@ -160,7 +167,7 @@ export const linksContracts = {
   createLink: { method: 'post', path: '/api/links', permission: { kind: 'staff', capability: 'links.send' },
     body: createSignedLinkRequestSchema, response: createSignedLinkResponseSchema },
   sendLink: { method: 'post', path: '/api/links/send', permission: { kind: 'staff', capability: 'links.send' },
-    body: sendSignedLinkRequestSchema, response: signedLinkResponseSchema },
+    body: sendSignedLinkRequestSchema, response: sendSignedLinkResponseSchema },
   listLinks: { method: 'get', path: '/api/links', permission: { kind: 'staff', capability: 'links.send' },
     query: signedLinkListQuerySchema, response: signedLinkListResponseSchema },
   getLink: { method: 'get', path: '/api/links/{linkId}', permission: { kind: 'staff', capability: 'links.send' },

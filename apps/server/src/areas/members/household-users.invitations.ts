@@ -90,7 +90,7 @@ export function createPortalInvitationService(options: PortalInvitationOptions) 
           await assertManager(tx);
           return deliveries.replay(tx, actor.gymId, command.key, command.digest);
         });
-        if (replayed) return { data: { delivery: 'email' as const, invitation: portalPendingInvitationSchema.parse(replayed.result) } };
+        if (replayed) return { data: { delivery: 'email' as const, invitation: portalPendingInvitationSchema.parse(replayed.result), ...(replayed.outcome ? { outcome: replayed.outcome } : {}) } };
       }
       let result: { token: string; invitation: z.infer<typeof portalPendingInvitationSchema>; reservation: EmailReservation | null } | undefined;
       await accounts.provisionUser(actor.gymId, input.email, input.email, actor.clock, async (tx, userId) => {

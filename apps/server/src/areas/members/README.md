@@ -118,3 +118,5 @@ and attendance rows, and photo storage/cleanup.
 failure after the writes and the no-customer case, with the fake and PostgreSQL queues.
 
 The gate is `pnpm check-types`, `pnpm lint`, `pnpm test` and `pnpm compliance`.
+
+An emailed portal invitation replay with an uncertain delivery returns `data.outcome: "unknown"`, without issuing another invitation or sending email. The access form keeps the pending generation across reloads and offers a deliberate Send again action when the earlier email may have arrived.

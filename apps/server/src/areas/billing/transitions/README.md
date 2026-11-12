@@ -194,12 +194,16 @@ household recipient helper shared with signed-link delivery and billing alerts. 
 dunning recheck the persisted switch immediately before each send, after preparing
 the transport and links. Suppression revokes undisclosed dunning links. Staff
 notices remain exempt from the member-email switch. Tokens are
-never persisted in effect/audit payloads; failed deliveries revoke their links.
+never persisted in effect/audit payloads; definite non-sends revoke their undisclosed links.
 Messages live in `locales/en/billing/transitions.json`; a supplied translator
 falls back to the English catalog for missing keys.
-SMTP delivery is at least once if a process dies after SMTP accepts a message but
-before the completion audit commits; transport-level exactly-once delivery is not
-provided by Email. Ordinary transition/webhook replay creates one delivery job.
+The durable delivery key prevents another attempt after an accepted or uncertain
+send. Dunning reserves that key and creates both signed links in the same short
+transaction, remembering only their IDs. A crash before commit leaves neither
+link nor reservation. A definite non-send revokes the links; an uncertain send
+keeps them usable and a retry mints no new pair. Outcome-write failures are
+reported rather than swallowed. Ordinary transition/webhook replay creates one
+delivery job.
 
 Runtime wiring: nothing in the runtime calls the transitions yet, so
 `configureTransitionEffects` is not called and the hourly sweep does nothing.

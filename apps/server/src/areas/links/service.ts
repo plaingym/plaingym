@@ -257,7 +257,7 @@ export function createSignedLinksService(options: {
       const digest = commandDigest([request.purpose === 'pay_invoice' ? request.invoiceId : null,
         request.purpose === 'sign_waiver' ? request.memberId : null, request.campaignId ?? null]);
       const replayed = await scope(context.gymId, tx => deliveries.replay(tx, context.gymId, key, digest));
-      if (replayed) return get(context.gymId, sentLinkSchema.parse(replayed.result).linkId);
+      if (replayed) return { ...await get(context.gymId, sentLinkSchema.parse(replayed.result).linkId), ...(replayed.outcome ? { outcome: replayed.outcome } : {}) };
       const { created, reservation } = await scope(context.gymId, async tx => {
         const reservation = await deliveries.reserve(tx, context.gymId, key, digest);
         // Check the invoice before minting. Manual notices keep a revoked metadata record
@@ -294,10 +294,10 @@ export function createSignedLinksService(options: {
         disclosed = await deliverSignedLink({ scope, context, link: created.link, token: created.token, delivery: { ...prepared, email },
           manualPayment: created.link.revokedAt !== null });
       } catch (error) {
-        if (!entered) await deliveries.release(reservation);
         // A definite non-send can't leave an undisclosed credential active, and a retry mints a new one. A possibly
         // delivered link stays usable: a replay returns it and never sends another.
         if (!entered || suppressed || deliveryAcceptance(error) === 'not_accepted') await revoke(context, created.link.id);
+        if (!entered) await deliveries.release(reservation);
         throw new AppError('unavailable', 'Signed link email was not delivered');
       }
       // The email was delivered, so a failure here must not report otherwise.

@@ -54,7 +54,7 @@ export function createStaffInvitationService(options: StaffInvitationOptions) {
           await assertStaffManager(tx, actor.actorUserId);
           return deliveries.replay(tx, actor.gymId, command.key, command.digest);
         });
-        if (replayed) return { data: { delivery: 'email', staffRole: staffRoleSchema.parse(replayed.result) } };
+        if (replayed) return { data: { delivery: 'email', staffRole: staffRoleSchema.parse(replayed.result), ...(replayed.outcome ? { outcome: replayed.outcome } : {}) } };
       }
       let result: { staffRole: InviteStaffResponse['data']['staffRole']; token: string; reservation: EmailReservation | null } | undefined;
       await accounts.provisionUser(actor.gymId, email, email, actor.clock, async (tx, userId) => {

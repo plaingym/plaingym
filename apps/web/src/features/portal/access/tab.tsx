@@ -26,21 +26,26 @@ export function PortalAccessTab({ memberId }: ExtensionViewProps) {
     queryFn: ({ signal }) => memberRequest(portalAccessContracts.logins.response, `/api/households/${householdId}/portal-logins?offset=${offset}&limit=20`, 'GET', undefined, signal) });
   const pending = useQuery({ queryKey: [...key, 'invitations'], enabled: !!householdId,
     queryFn: ({ signal }) => memberRequest(portalAccessContracts.invitations.response, `/api/households/${householdId}/portal-invitations`, 'GET', undefined, signal) });
-  const inviteSend = useRef(createSendGeneration());
+  const [uncertain, setUncertain] = useState(false);
+  const inviteSend = useRef(createSendGeneration('portal-invitation'));
   const operation = useMutation({ mutationFn: async () => {
     if (!householdId || !edit) return;
     if (edit === 'invite') {
       const request = { email, scope, memberId: scope === 'member' ? memberId : null };
+      if (uncertain) { inviteSend.current.sent(); setUncertain(false); }
       const result = await memberRequest(portalAccessContracts.invite.response, `/api/households/${householdId}/portal-invitations`, 'POST',
         delivery === 'email' ? { ...request, delivery, sendGeneration: inviteSend.current.for({ householdId, ...request }) } : { ...request, delivery });
-      if (delivery === 'email') inviteSend.current.sent();
+      const unknown = result.data.delivery === 'email' && result.data.outcome === 'unknown';
+      setUncertain(unknown);
+      if (delivery === 'email' && !unknown) inviteSend.current.sent();
       if (result.data.delivery === 'print') setInvitation(result.data.invitationUrl);
+      return unknown;
     } else if (edit.kind === 'withdraw') await memberRequest(portalAccessContracts.revokeInvitation.response, `/api/households/${householdId}/portal-invitations/${edit.invitation.id}`, 'DELETE');
     else if (edit.kind === 'revoke') await memberRequest(membersContracts.revokeHouseholdUser.response, `/api/households/${householdId}/users/${edit.login.id}`, 'DELETE');
     else await memberRequest(portalAccessContracts.resetPassword.response, `/api/households/${householdId}/users/${edit.login.id}/password`, 'POST', { newPassword: password });
-  }, onSuccess: async () => { setEdit(null); setPassword(''); await cache.invalidateQueries({ queryKey: key }); }, onError: () => setPassword('') });
+  }, onSuccess: async (unknown) => { if (!unknown) setEdit(null); setPassword(''); await cache.invalidateQueries({ queryKey: key }); }, onError: () => setPassword('') });
   // Every dialog starts from member-only access, so a payer grant is always a deliberate choice.
-  const open = (value: typeof edit) => { operation.reset(); setInvitation(null); setEdit(value); setEmail(person.data?.data.email ?? ''); setScope('member'); setDelivery('print'); setPassword(''); };
+  const open = (value: typeof edit) => { operation.reset(); setUncertain(false); setInvitation(null); setEdit(value); setEmail(person.data?.data.email ?? ''); setScope('member'); setDelivery('print'); setPassword(''); };
   // A password-mode join: after checking the person, staff issue the printed payer invitation for the household's address.
   const confirm = (address: string | null) => { open('invite'); setEmail(address ?? ''); setScope('payer'); setDelivery('print'); };
   const awaiting = users.data?.awaitingConfirmation;
@@ -50,7 +55,7 @@ export function PortalAccessTab({ memberId }: ExtensionViewProps) {
   if (person.isError || users.isError) return <ErrorState onRetry={() => { void person.refetch(); void users.refetch(); }} />;
   return <section className="space-y-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">{text('title')}</h2><p className="text-muted-foreground">{text('description')}</p></div><Button onClick={() => open('invite')}>{text('invite')}</Button></div>
     {awaiting && <div className="min-w-0 space-y-3 rounded-lg border border-border bg-muted p-4"><p className="font-medium">{text('awaitingTitle')}</p><p className="break-all">{awaiting.email ?? text('noAddress')}</p><p>{text('awaitingHelp')}</p><Button variant="outline" onClick={() => confirm(awaiting.email)}>{text('confirm')}</Button></div>}
-    {operation.isSuccess && <p role="status">{text('saved')}</p>}
+    {operation.isSuccess && !uncertain && <p role="status">{text('saved')}</p>}
     {invitation && <div className="space-y-2 rounded-lg border border-border p-4"><p className="font-medium">{text('privateLink')}</p><p className="break-all select-all">{invitation}</p><Button variant="outline" onClick={() => window.print()}>{text('print')}</Button></div>}
     {!users.data.data.length && <EmptyState title={text('empty')} />}
     {pending.isError && <Alert>{text('pendingFailed')} <Button variant="outline" onClick={() => void pending.refetch()}>{text('retry')}</Button></Alert>}
@@ -64,7 +69,7 @@ export function PortalAccessTab({ memberId }: ExtensionViewProps) {
         <div className="space-y-2"><Label htmlFor="portal-scope">{text('scope')}</Label><Select id="portal-scope" value={scope} onChange={event => setScope(event.target.value as 'payer' | 'member')}><option value="member">{text('member')}</option><option value="payer">{text('payer')}</option></Select></div>
         <div className="space-y-2"><Label htmlFor="portal-delivery">{text('delivery')}</Label><Select id="portal-delivery" value={delivery} onChange={event => setDelivery(event.target.value as 'email' | 'print')}><option value="print">{text('printDelivery')}</option><option value="email">{text('emailDelivery')}</option></Select></div>
       </> : edit.kind === 'reset' ? <div className="space-y-2"><Label htmlFor="portal-password">{text('password')}</Label><Input id="portal-password" type="password" autoComplete="new-password" required minLength={12} maxLength={128} value={password} onChange={event => setPassword(event.target.value)} /></div> : <p>{text(edit.kind === 'withdraw' ? 'confirmWithdraw' : 'confirmRevoke')}</p>}
-        {operation.isError && <Alert>{text('failed')}</Alert>}<Button type="submit" disabled={operation.isPending}>{text(label)}</Button>
+        {operation.isError && <Alert>{text('failed')}</Alert>}{uncertain && edit === 'invite' && <Alert>{text('sendUncertain')}</Alert>}<Button type="submit" disabled={operation.isPending}>{text(uncertain && edit === 'invite' ? 'sendAgain' : label)}</Button>
       </form>
     </Dialog>}
   </section>;

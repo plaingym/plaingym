@@ -156,3 +156,23 @@ describe('keyed billing notices', () => {
     expect(f.fake.messages).toHaveLength(2);
   });
 });
+
+it('rolls dunning links and the reservation back together if the worker fails before commit', async () => {
+  const f = await fixture(), notice = await f.notice(uuidv7());
+  let crash = true;
+  const notifications = createTransitionNotifications({ clock: f.clock,
+    scope: (gymId, fn) => db.forGym(gymId, async tx => {
+      const result = await fn(tx);
+      if (crash && (await tx.select().from(signedLinks)).length === 2) throw new Error('Worker crashed');
+      return result;
+    }), settings: createGymSettingsAccessor({ scope: db.forGym }),
+    prepare: async () => ({ email: f.fake, origin: 'https://gym.example.invalid' }), staffRecipients: async () => [] });
+  await expect(notifications.dunning({ ...notice, actionRequired: false })).rejects.toThrow('Worker crashed');
+  expect(await f.links()).toHaveLength(0);
+  expect(await db.forGym(f.gymId, tx => tx.select().from(emailDeliveries))).toHaveLength(0);
+  expect(f.fake.messages).toHaveLength(0);
+  crash = false;
+  await notifications.dunning({ ...notice, actionRequired: false });
+  expect(await f.links()).toHaveLength(2);
+  expect(f.fake.messages).toHaveLength(1);
+});

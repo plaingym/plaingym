@@ -103,3 +103,45 @@ it('previews by profile ID and clears photos through a revisioned profile update
   await user.click(screen.getByLabelText('Remove photo')); await user.click(screen.getByRole('button', { name: 'Save profile' }));
   await waitFor(() => expect(service.updateProfile).toHaveBeenCalledWith(profile.id, expect.objectContaining({ revision: 7, photoKey: null })));
 });
+
+it('reuses a lost invitation after remount and offers a deliberate resend when its outcome is uncertain', async () => {
+  sessionStorage.clear();
+  const service = services(), user = userEvent.setup(), staffRole = { id: 'new-role', userId: 'new-user', role: 'coach' as const, revision: 1, createdAt: profile.createdAt };
+  vi.mocked(service.invite).mockRejectedValueOnce(new Error('Reply lost'))
+    .mockResolvedValueOnce({ delivery: 'email', staffRole, outcome: 'unknown' }).mockResolvedValue({ delivery: 'email', staffRole });
+  let view = render(<StaffManagement roles={['owner']} passwordEnabled services={service}/>);
+  const fill = async () => {
+    await screen.findByRole('button', { name: 'Edit Alex Coach' });
+    await user.type(screen.getByLabelText('Email address'), 'reload@example.test');
+    await user.selectOptions(screen.getByLabelText('Delivery'), 'email');
+    await user.click(screen.getByRole('button', { name: 'Invite staff' }));
+  };
+  await fill(); await screen.findByText(/Unable to save or load staff/);
+  view.unmount(); view = render(<StaffManagement roles={['owner']} passwordEnabled services={service}/>);
+  await fill();
+  expect((await screen.findByRole('alert')).textContent).toContain('may have been delivered');
+  const generations = () => vi.mocked(service.invite).mock.calls.map(([input]) => input.delivery === 'email' ? input.sendGeneration : null);
+  expect(generations()[1]).toBe(generations()[0]);
+  await user.click(screen.getByRole('button', { name: 'Send again' }));
+  await waitFor(() => expect(generations()).toHaveLength(3));
+  expect(generations()[2]).not.toBe(generations()[1]);
+  await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  view.unmount(); sessionStorage.clear();
+});
+
+it('shows a later failure after an uncertain invitation', async () => {
+  sessionStorage.clear();
+  const service = services(), user = userEvent.setup(), staffRole = { id: 'new-role', userId: 'new-user', role: 'coach' as const, revision: 1, createdAt: profile.createdAt };
+  vi.mocked(service.invite).mockResolvedValue({ delivery: 'email', staffRole, outcome: 'unknown' });
+  const view = render(<StaffManagement roles={['owner']} passwordEnabled services={service}/>);
+  await screen.findByRole('button', { name: 'Edit Alex Coach' });
+  await user.type(screen.getByLabelText('Email address'), 'later@example.test');
+  await user.selectOptions(screen.getByLabelText('Delivery'), 'email');
+  await user.click(screen.getByRole('button', { name: 'Invite staff' }));
+  expect((await screen.findByRole('alert')).textContent).toContain('may have been delivered');
+  vi.mocked(service.profiles).mockRejectedValueOnce(new Error('Down'));
+  await user.click(screen.getByRole('button', { name: 'Reload staff' }));
+  await screen.findByText(/Unable to save or load staff/);
+  expect(screen.queryByText(/may have been delivered/)).toBeNull();
+  view.unmount(); sessionStorage.clear();
+});

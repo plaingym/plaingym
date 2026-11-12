@@ -110,3 +110,5 @@ can read an answer with newly added fields. Required fields, field types and
 refinements still apply. Request validation and the OpenAPI schemas remain strict.
 Kiosk lookup and check-in answers remain strict to reject unexpected private fields
 on shared devices.
+
+Emailed pay links, staff invitations and portal invitations keep pending send generations in tab-local session storage across reloads, keyed by the form and request identity. Confirmed sends clear the generation. An uncertain replay displays a warning and a Send again action; that deliberate action chooses a new generation. If the browser blocks session storage, retries retain their generation only while the form stays mounted.

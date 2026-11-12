@@ -6,10 +6,10 @@ import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { cardChargeIssue } from '@plaingym/shared/money';
 import type { InvoiceSnapshot } from '../../../core/interfaces/invoice-transitions.js';
 import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
-import { createEmailDeliveries, deliveryAcceptance, recipientDigest, type Email, type RecordedEmailResult } from '../../../infra/email/index.js';
+import { createEmailDeliveries, DeliveryError, deliveryAcceptance, recipientDigest, type Email } from '../../../infra/email/index.js';
 import { clock as defaultClock } from '../../../core/clock.js';
 import { formatMoney } from '../../../core/money.js';
-import { createSignedLinksService } from '../../links/service.js';
+import { createSignedLinksIn, createSignedLinksService } from '../../links/service.js';
 import { householdRecipient } from '../../members/household-recipient.js';
 
 export interface TransitionNotice {
@@ -65,15 +65,6 @@ export function createTransitionNotifications(options: {
     // notice has one recipient and no address in its key: an erased member's address leaves nothing behind, and an address
     // changed between retries gets no second notice. Rows an earlier release keyed per recipient are adopted first.
     const keyFor = (to: string) => staff ? `${base}:${recipientDigest(to)}` : base;
-    if (!staff) await scope(gymId, tx => deliveries.adopt(tx, gymId, base));
-    // An accepted or possibly accepted notice is never sent again, so no second link is minted for it.
-    const pending: string[] = [];
-    for (const to of new Set(recipients)) {
-      const state = await deliveries.state(gymId, keyFor(to));
-      if (state === 'sending') throw new Error('Billing notice is still being sent');
-      if (state !== 'accepted' && state !== 'unknown') pending.push(to);
-    }
-    if (!pending.length) return;
     const prepared = await options.prepare(gymId);
     const t: Translator = (key, values) => {
       const translated = prepared.t?.(key, values);
@@ -82,61 +73,61 @@ export function createTransitionNotifications(options: {
     const origin = new URL(prepared.origin);
     if (!['https:', 'http:'].includes(origin.protocol) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash)
       throw new Error('Invalid billing notification origin');
-    let payUrl = '', updateUrl = '', uncertain = false;
-    const minted: string[] = [];
-    const revokeMinted = async () => { for (const linkId of minted) await links.revoke({ gymId, actor: { kind: 'system' } }, linkId); };
-    try {
-      const manualPayment = (kind === 'action' || kind === 'failed') && !!cardChargeIssue(invoice.amountCents, invoice.currency);
-      if ((kind === 'action' || kind === 'failed') && !manualPayment) {
-        const context = { gymId, actor: { kind: 'system' as const } };
-        const base = { householdId: invoice.householdId, expiresAt: new Date(clock.now().getTime() + 21 * 86400_000).toISOString() };
-        const pay = await links.create(context, { ...base, purpose: 'pay_invoice', invoiceId: invoice.id });
-        minted.push(pay.link.id);
-        const update = await links.create(context, { ...base, purpose: 'update_card' });
-        minted.push(update.link.id);
-        payUrl = new URL(`/l/${pay.token}`, origin).href;
-        updateUrl = new URL(`/l/${update.token}`, origin).href;
-      }
-      const values = { number: invoice.number, amount: formatMoney(amountCents ?? notice.payment?.amountCents ?? invoice.amountCents, invoice.currency), payUrl, updateUrl,
-        credits: credits ?? 0 };
-      const message = manualPayment ? 'manual' : kind;
-      const title = t(`billing/transitions:${message}Subject`, values);
-      // A failed refund of a class pack also names the credits the refund took back, which staff restore if owed.
-      const creditsNote = credits && (kind === 'refundFailed' || kind === 'refundReversed') ? '\n\n' + t('billing/transitions:creditsReversedNote', values) : '';
-      const text = t(`billing/transitions:${message}Body`, values) + creditsNote;
-      let failure: unknown;
-      for (const to of pending) {
+    const context = { gymId, actor: { kind: 'system' as const } };
+    const manualPayment = (kind === 'action' || kind === 'failed') && !!cardChargeIssue(invoice.amountCents, invoice.currency);
+    let failure: unknown;
+    for (const to of new Set(recipients)) {
+      try {
+        if (!to || /[\r\n\0]/.test(to)) throw new Error('Invalid billing email recipient');
+        if (!staff && !(await options.settings.get(gymId)).memberEmailsEnabled) return;
+        const key = keyFor(to);
+        const pending = await scope(gymId, async tx => {
+          if (!staff) await deliveries.adopt(tx, gymId, base);
+          const reservation = await deliveries.reserve(tx, gymId, key);
+          if (!reservation) return;
+          const linkFields = { householdId: invoice.householdId, expiresAt: new Date(clock.now().getTime() + 21 * 86400_000).toISOString() };
+          const created = (kind === 'action' || kind === 'failed') && !manualPayment
+            ? await createSignedLinksIn(tx, context, [{ ...linkFields, purpose: 'pay_invoice', invoiceId: invoice.id },
+              { ...linkFields, purpose: 'update_card' }], clock.now()) : [];
+          await deliveries.remember(tx, reservation, { linkIds: created.map(item => item.link.id) });
+          return { reservation, created };
+        });
+        if (!pending) continue;
+        let attempted = false;
         try {
-          if (!to || /[\r\n\0]/.test(to)) throw new Error('Invalid billing email recipient');
+          const payUrl = pending.created[0] ? new URL(`/l/${pending.created[0].token}`, origin).href : '';
+          const updateUrl = pending.created[1] ? new URL(`/l/${pending.created[1].token}`, origin).href : '';
+          const values = { number: invoice.number, amount: formatMoney(amountCents ?? notice.payment?.amountCents ?? invoice.amountCents, invoice.currency),
+            payUrl, updateUrl, credits: credits ?? 0 };
+          const message = manualPayment ? 'manual' : kind;
+          const title = t(`billing/transitions:${message}Subject`, values);
+          const creditsNote = credits && (kind === 'refundFailed' || kind === 'refundReversed') ? '\n\n' + t('billing/transitions:creditsReversedNote', values) : '';
+          const text = t(`billing/transitions:${message}Body`, values) + creditsNote;
           if (!staff && !(await options.settings.get(gymId)).memberEmailsEnabled) {
-            await revokeMinted();
+            for (const item of pending.created) await links.revoke(context, item.link.id);
+            await deliveries.release(pending.reservation);
             return;
           }
-          let sent: RecordedEmailResult;
-          try {
-            sent = await deliveries.send(gymId, keyFor(to), prepared.email, { to, subject: title, text, html: `<p>${escape(text).replaceAll('\n', '<br>')}</p>` });
-          } catch (error) {
-            uncertain = deliveryAcceptance(error) !== 'not_accepted';
-            throw error;
-          }
-          // Another attempt holds the key, so this attempt's links were never sent.
-          if (sent.status === 'skipped') await revokeMinted();
-          if (sent.status === 'suppressed' && staff) throw new Error('Staff notice was suppressed');
-          if (sent.status === 'suppressed' && minted.length) throw new Error('Dunning email was suppressed');
+          attempted = true;
+          const sent = await deliveries.attempt(pending.reservation, prepared.email, { to, subject: title, text, html: `<p>${escape(text).replaceAll('\n', '<br>')}</p>` });
+          if (sent.status === 'suppressed' && (staff || pending.created.length))
+            throw new DeliveryError('not_accepted', staff ? 'Staff notice was suppressed' : 'Dunning email was suppressed');
         } catch (error) {
-          // One refused staff address doesn't hold up the others: the notice fails once every recipient was tried, and its
-          // retry reaches only those it provably missed. A member notice has one recipient (and its links), so it fails at once.
-          if (!staff) throw error;
-          failure ??= error;
+          // Revoke before a release write: a failed outcome write must not leave a known undisclosed link active.
+          if (!attempted || deliveryAcceptance(error) === 'not_accepted')
+            for (const item of pending.created) await links.revoke(context, item.link.id);
+          if (!attempted) await deliveries.release(pending.reservation);
+          throw error;
         }
+      } catch (error) {
+        // A refused staff address must not prevent the other recipients from getting the notice.
+        if (!staff) throw error;
+        failure ??= error;
       }
-      if (failure !== undefined) throw failure;
-    } catch (error) {
-      // A possibly delivered link stays usable, because it is never sent again.
-      if (!uncertain) await revokeMinted();
-      throw error;
     }
+    if (failure !== undefined) throw failure;
   }
+
   async function memberRecipients(gymId: string, householdId: string): Promise<string[]> {
     if (!(await options.settings.get(gymId)).memberEmailsEnabled) return [];
     return scope(gymId, async tx => {

@@ -65,7 +65,7 @@ describe('staff invitation send commands', () => {
     const f = fixture(), generation = uuidv7();
     f.fake.respondNext(new DeliveryError('unknown', 'Reply lost'));
     await expect(f.service.inviteStaff(f.actor, f.request(generation), origin)).rejects.toThrow('Reply lost');
-    await f.service.inviteStaff(f.actor, f.request(generation), origin);
+    expect(await f.service.inviteStaff(f.actor, f.request(generation), origin)).toMatchObject({ data: { delivery: 'email', outcome: 'unknown' } });
     expect(f.fake.messages).toHaveLength(0);
   });
   it.each([

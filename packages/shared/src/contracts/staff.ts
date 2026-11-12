@@ -72,7 +72,7 @@ export const inviteStaffRequestSchema = z.discriminatedUnion('delivery', [
 /** Printed invitation URLs are returned once at creation and never in a profile or role list. */
 export const inviteStaffResponseSchema = z.strictObject({
   data: z.discriminatedUnion('delivery', [
-    z.strictObject({ delivery: z.literal('email'), staffRole: staffRoleSchema }),
+    z.strictObject({ delivery: z.literal('email'), staffRole: staffRoleSchema, outcome: z.literal('unknown').optional() }),
     z.strictObject({ delivery: z.literal('print'), staffRole: staffRoleSchema, invitationUrl: z.url() }),
   ]),
 });

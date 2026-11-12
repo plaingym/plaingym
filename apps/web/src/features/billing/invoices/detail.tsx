@@ -26,7 +26,8 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
   const [action, setAction] = useState<Action | null>(null), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const [message, setMessage] = useState(''), [url, setUrl] = useState(''), [cardOffset, setCardOffset] = useState(0);
   const actionTitle = useId(), heading = useRef<HTMLHeadingElement>(null), trigger = useRef<HTMLElement | null>(null);
-  const linkSend = useRef(createSendGeneration());
+  const [uncertain, setUncertain] = useState(false);
+  const linkSend = useRef(createSendGeneration('invoice-link'));
   const [draft, setDraft] = useState(false), [discard, setDiscard] = useState(false), keep = useRef<HTMLButtonElement>(null);
   const markSaved = useDialogSaved();
   useDialogOperation(busy);
@@ -37,7 +38,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
   const household = useQuery({ queryKey: ['billing', gymId, 'household', homeId], queryFn: () => client.household(homeId!), enabled: !!homeId });
   const cards = useQuery({ queryKey: ['billing', gymId, 'cards', homeId, cardOffset], queryFn: () => client.cards(homeId!, cardOffset), enabled: !!homeId });
   const allCards = useQuery({ queryKey: ['billing', gymId, 'activeCards', homeId], queryFn: () => client.activeDefaultCard(homeId!), enabled: !!homeId });
-  function open(next: Action) { trigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setError(''); setMessage(''); setUrl(''); setDraft(false); setDiscard(false); setAction(next); }
+  function open(next: Action) { setUncertain(false); trigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setError(''); setMessage(''); setUrl(''); setDraft(false); setDiscard(false); setAction(next); }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!detail.data || !action || busy) return;
     const form = new FormData(event.currentTarget), invoice = detail.data.invoice;
@@ -59,12 +60,15 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
         { householdId: invoice.householdId, paymentMethodId: action.card.id });
       if (action.kind === 'receipt') { await client.call('resendReceipt', {}, { invoiceId }); setMessage(text('receiptQueued')); }
       if (action.kind === 'link') {
-        const sendGeneration = form.get('delivery') === 'email' ? linkSend.current.for(invoiceId) : undefined;
+        if (uncertain && form.get('delivery') === 'email') { linkSend.current.sent(); setUncertain(false); }
+        const sendGeneration = form.get('delivery') === 'email' ? linkSend.current.for({ gymId, invoiceId }) : undefined;
         const result = await client.link({ purpose: 'pay_invoice', householdId: invoice.householdId, invoiceId,
           expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString() }, sendGeneration);
-        if (sendGeneration) linkSend.current.sent();
+        const unknown = 'outcome' in result.data && result.data.outcome === 'unknown';
+        setUncertain(unknown);
+        if (sendGeneration && !unknown) linkSend.current.sent();
         if ('token' in result.data) { setUrl(new URL('/l/' + result.data.token, location.origin).href); }
-        else setMessage(text('linkSent'));
+        else setMessage(text(unknown ? 'sendUncertain' : 'linkSent'));
       }
       await cache.invalidateQueries({ queryKey: ['billing', gymId] });
       markSaved(); setDraft(false);
@@ -148,7 +152,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
           {action.kind === 'revoke' && <p>{text('removeHelp')} · {action.card.last4}</p>}
           {action.kind === 'link' && <Label className="block">{text('delivery')}<Select name="delivery"><option value="email">{text('emailLink')}</option><option value="copy">{text('showLink')}</option></Select></Label>}
           {url ? <Label className="block">{text('linkReady')}<Input readOnly value={url} onFocus={event => event.target.select()}/></Label>
-            : <Button type="submit" className="w-full sm:w-auto">{text(busy ? 'saving' : 'confirm')}</Button>}
+            : <Button type="submit" className="w-full sm:w-auto">{text(busy ? 'saving' : uncertain ? 'sendAgain' : 'confirm')}</Button>}
         </fieldset>
       </form>}
     </section>}

@@ -38,7 +38,8 @@ export function StaffManagement({ roles: actorRoles, passwordEnabled, services =
   const [totalRoles, setTotalRoles] = useState(0), [offset, setOffset] = useState(0), [roleOffset, setRoleOffset] = useState(0), [search, setSearch] = useState('');
   const [editing, setEditing] = useState<StaffProfile | null>(null), [creating, setCreating] = useState(false);
   const [message, setMessage] = useState(''), [busy, setBusy] = useState(false), [invitationUrl, setInvitationUrl] = useState('');
-  const inviteSend = useRef(createSendGeneration());
+  const [uncertain, setUncertain] = useState(false);
+  const inviteSend = useRef(createSendGeneration('staff-invitation'));
   const [revoking, setRevoking] = useState<string | null>(null);
   const allowed = canStaff(actorRoles, 'staff.manage');
   function error(e: unknown) { setMessage(label((e instanceof StaffRequestError || e instanceof ApiError) && e.status === 409 ? 'conflict' : 'error')); }
@@ -55,7 +56,7 @@ export function StaffManagement({ roles: actorRoles, passwordEnabled, services =
     return () => { active = false; };
   }, [allowed, offset, roleOffset, search, services]);
   async function action(work: () => Promise<void>) {
-    setBusy(true); setMessage('');
+    setBusy(true); setMessage(''); setUncertain(false);
     try { await work(); await load(); setMessage(label('saved')); } catch (e) { error(e); }
     finally { setBusy(false); }
   }
@@ -69,18 +70,22 @@ export function StaffManagement({ roles: actorRoles, passwordEnabled, services =
   return <Page>
     <PageHeader className="print:hidden" title={label('title')} actions={<Button variant="outline" disabled={busy}
       onClick={() => void action(async () => { closeEditor(); setRevoking(null); })}>{label('reload')}</Button>}/>
-    {!(creating || editing) && <Notice message={message}/>}
+    {!(creating || editing || uncertain) && <Notice message={message}/>}
     <PageSection title={label('invite')} className="print:space-y-0"><div className="space-y-4 rounded-xl border border-border bg-card p-4 sm:p-6">
       <form className="print:hidden" onSubmit={(event) => submit(event, async (data) => {
         setInvitationUrl(''); const request = { email: value(data, 'email'), role: value(data, 'role') as AssignableStaffRole };
         const email = value(data, 'delivery') === 'email';
+        if (uncertain) { inviteSend.current.sent(); setUncertain(false); }
         const result = await services.invite(email ? { ...request, delivery: 'email', sendGeneration: inviteSend.current.for(request) } : { ...request, delivery: 'print' });
-        if (email) inviteSend.current.sent();
+        const unknown = result.delivery === 'email' && result.outcome === 'unknown';
+        setUncertain(unknown);
+        if (email && !unknown) inviteSend.current.sent();
         if (result.delivery === 'print') setInvitationUrl(result.invitationUrl);
       })}><fieldset disabled={busy} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[2fr_1fr_1fr_auto] lg:items-end">
         <Field text={label('email')}><Input name="email" type="email" required autoComplete="email"/></Field><RoleSelect/>
         <Field text={label('delivery')}><Select name="delivery" defaultValue="print"><option value="print">{label('printLink')}</option><option value="email">{label('sendEmail')}</option></Select></Field>
-        <Button type="submit">{label('invite')}</Button></fieldset></form>
+        <Button type="submit">{label(uncertain ? 'sendAgain' : 'invite')}</Button></fieldset></form>
+      {uncertain && <Alert>{label('sendUncertain')}</Alert>}
       {invitationUrl && <div className="space-y-3 border-t border-border pt-4">
         <Field text={label('invitationUrl')}><Textarea className="break-all font-mono text-sm" rows={4} readOnly value={invitationUrl} onFocus={(event) => event.currentTarget.select()}/></Field>
         <p className="text-sm">{label('printHelp')}</p>

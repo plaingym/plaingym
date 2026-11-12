@@ -100,11 +100,11 @@ export function createEmailDeliveries(options: { scope?: typeof forGym; clock?: 
       .where(eq(emailDeliveries.id, row.id));
     return { id: row.id, attempts: row.attempts + 1 };
   }
-  /** Only this attempt's reservation may be resolved. A failed write leaves `sending`, which turns `unknown`: safe. */
+  /** Only this attempt's reservation may be resolved. Failed writes are visible to the caller. */
   const record = (reservation: EmailReservation, next: Exclude<EmailDeliveryState, 'sending'>) =>
     scope(reservation.gymId, tx => tx.update(emailDeliveries).set({ state: next, updatedAt: clock.now() })
       .where(and(eq(emailDeliveries.id, reservation.id), eq(emailDeliveries.attempts, reservation.attempts),
-        eq(emailDeliveries.state, 'sending')))).catch(() => undefined);
+        eq(emailDeliveries.state, 'sending'))));
   /** Calls the transport for a committed reservation and records the outcome. A message builder that throws releases the
    * reservation, since nothing reached the transport. */
   async function attempt(reservation: EmailReservation, email: Email,
@@ -121,10 +121,12 @@ export function createEmailDeliveries(options: { scope?: typeof forGym; clock?: 
     try {
       result = await email.sendEmail(built);
     } catch (error) {
-      await record(reservation, deliveryAcceptance(error) === 'not_accepted' ? 'not_accepted' : 'unknown');
+      try { await record(reservation, deliveryAcceptance(error) === 'not_accepted' ? 'not_accepted' : 'unknown'); }
+      catch (cause) { throw new DeliveryError(deliveryAcceptance(error), 'Email delivery outcome could not be recorded', { cause }); }
       throw error;
     }
-    await record(reservation, result.status === 'sent' ? 'accepted' : 'not_accepted');
+    try { await record(reservation, result.status === 'sent' ? 'accepted' : 'not_accepted'); }
+    catch (cause) { throw new DeliveryError(result.status === 'sent' ? 'unknown' : 'not_accepted', 'Email delivery outcome could not be recorded', { cause }); }
     return result;
   }
   /** Rejects with a `not_accepted` DeliveryError whenever this call did not reach the transport. */
@@ -145,18 +147,23 @@ export function createEmailDeliveries(options: { scope?: typeof forGym; clock?: 
    * it hasn't run or was definitely not sent (run it). A generation used for another request, or an attempt still in flight,
    * is a conflict.
    */
-  async function replay(tx: Transaction, gymId: string, key: string, digest: string): Promise<{ result: unknown } | undefined> {
+  async function replay(tx: Transaction, gymId: string, key: string, digest: string): Promise<{ result: unknown; outcome?: 'unknown' } | undefined> {
     validKey(key);
     const [row] = await tx.select().from(emailDeliveries).where(and(eq(emailDeliveries.gymId, gymId), eq(emailDeliveries.key, key)));
     if (!row) return undefined;
     if (row.commandDigest !== digest) throw otherRequest();
     const current = settled(row);
     if (current === 'sending') throw stillSending();
-    return current === 'not_accepted' ? undefined : { result: row.commandResult };
+    return current === 'not_accepted' ? undefined : { result: row.commandResult, ...(current === 'unknown' ? { outcome: 'unknown' as const } : {}) };
   }
-  /** Reserves the key in the caller's transaction, after `replay` found nothing to return. Losing a race to it is a conflict. */
-  async function reserve(tx: Transaction, gymId: string, key: string, digest: string): Promise<EmailReservation> {
+  /** Reserves a key in the credential transaction. Commands pass their digest after `replay`; losing a race is a conflict.
+   * Persisted notices omit the digest and get nothing when an earlier attempt was accepted or uncertain. */
+  async function reserve(tx: Transaction, gymId: string, key: string, digest: string): Promise<EmailReservation>;
+  async function reserve(tx: Transaction, gymId: string, key: string): Promise<EmailReservation | undefined>;
+  async function reserve(tx: Transaction, gymId: string, key: string, digest?: string): Promise<EmailReservation | undefined> {
     const reserved = await claim(tx, gymId, key, digest);
+    // A persisted notice has no client command to replay; accepted or uncertain means its work is finished.
+    if ('skipped' in reserved && digest === undefined) return undefined;
     if ('inFlight' in reserved || 'skipped' in reserved) throw stillSending();
     return { gymId, ...reserved };
   }

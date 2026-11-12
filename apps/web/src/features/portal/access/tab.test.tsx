@@ -13,13 +13,18 @@ const homeId = '019ab4f0-0000-7000-8000-000000000001', memberId = '019ab4f0-0000
 const person = { id: memberId, householdId: homeId, firstName: 'Alex', lastName: 'Smith', email: null, phone: null, photoKey: null, dateOfBirth: '1990-01-01',
   status: 'active', emergencyContacts: [], emailOptOut: false, emailDeliverable: true, anonymizedAt: null, revision: 1, createdAt: '2026-10-22T12:00:00Z' };
 const invitation = { id: inviteId, scope: 'member', memberId, memberName: 'Alex Smith', email: 'alex@example.test', expiresAt: '2026-11-04T12:00:00.000Z' };
-let outstanding: unknown[] = [], fail = false, listFails = false;
+let outstanding: unknown[] = [], fail = false, listFails = false, uncertain = false;
+const generations: string[] = [];
 const calls: [string, string][] = [];
 function stubFetch() {
   vi.stubGlobal('fetch', vi.fn(async (path: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET';
     calls.push([method, path]);
     const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+    if (path === `/api/households/${homeId}/portal-invitations` && method === 'POST') {
+      generations.push((JSON.parse(String(init?.body)) as { sendGeneration: string }).sendGeneration);
+      return json({ data: { delivery: 'email', invitation: { userId: memberId, scope: 'member', memberId, expiresAt: invitation.expiresAt }, ...(uncertain ? { outcome: 'unknown' } : {}) } });
+    }
     if (path === '/api/members/' + memberId) return json({ data: person });
     if (path.includes('/portal-logins')) return json({ data: [], pagination: { limit: 20, offset: 0, total: 0 } });
     if (path === `/api/households/${homeId}/portal-invitations` && method === 'GET') return listFails ? json({ error: { code: 'internal' } }, 500) : json({ data: outstanding });
@@ -35,7 +40,7 @@ function start() {
   vi.mocked(useBootstrap).mockReturnValue(new QueryObserver(new QueryClient(), { queryKey: ['bootstrap'], initialData: data, queryFn: async () => data }).getCurrentResult());
   return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><PortalAccessTab memberId={memberId}/></QueryClientProvider>);
 }
-beforeEach(() => { outstanding = [invitation]; fail = false; listFails = false; calls.length = 0; stubFetch(); });
+beforeEach(() => { sessionStorage.clear(); uncertain = false; generations.length = 0; outstanding = [invitation]; fail = false; listFails = false; calls.length = 0; stubFetch(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('portal access tab invitations', () => {
@@ -73,4 +78,36 @@ describe('portal access tab invitations', () => {
     expect((await screen.findByRole('alert')).textContent).toContain("couldn't update portal access");
     expect(screen.getByText('alex@example.test')).toBeDefined();
   });
+});
+
+it('keeps an uncertain invitation in the dialog with a deliberate resend', async () => {
+  uncertain = true; const user = userEvent.setup(); start();
+  await user.click(await screen.findByRole('button', { name: 'Invite' }));
+  await user.type(screen.getByLabelText('Login email'), 'alex@example.test');
+  await user.selectOptions(screen.getByLabelText('Invitation delivery'), 'email');
+  await user.click(screen.getByRole('dialog').querySelector('button[type=submit]')!);
+  expect((await screen.findByRole('alert')).textContent).toContain('may have been delivered');
+  expect(generations).toHaveLength(1);
+  uncertain = false; await user.click(screen.getByRole('button', { name: 'Send again' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(generations).toHaveLength(2); expect(generations[1]).not.toBe(generations[0]);
+});
+
+it('drops a stale uncertain warning when the dialog reopens, and replays the same generation', async () => {
+  uncertain = true; const user = userEvent.setup(); start();
+  const send = async () => {
+    await user.click(await screen.findByRole('button', { name: 'Invite' }));
+    await user.type(screen.getByLabelText('Login email'), 'alex@example.test');
+    await user.selectOptions(screen.getByLabelText('Invitation delivery'), 'email');
+  };
+  await send(); await user.click(screen.getByRole('dialog').querySelector('button[type=submit]')!);
+  await screen.findByRole('alert');
+  await user.click(screen.getByRole('button', { name: 'Cancel' }));
+  await user.click(screen.getByRole('button', { name: 'Discard changes' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  await send();
+  expect(screen.queryByRole('alert')).toBeNull(); expect(screen.queryByRole('button', { name: 'Send again' })).toBeNull();
+  await user.click(screen.getByRole('dialog').querySelector('button[type=submit]')!);
+  await screen.findByRole('alert');
+  expect(generations).toHaveLength(2); expect(generations[1]).toBe(generations[0]);
 });
