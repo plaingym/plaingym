@@ -18,7 +18,7 @@ import { PostgresMaintenance } from '../areas/health/backups.database.js';
 import { RestoreGate } from '../areas/health/restore.gate.js';
 import { maintenanceCommand } from './restore.js';
 import { reportMaintenanceFailure } from './restore.failure.js';
-import { KeyRotationPartialError, KeyRotationRefusedError, rotateKey } from './restore.rotate-key.js';
+import { KeyRotationPartialError, KeyRotationRefusedError, KeyRotationUnstartedError, rotateKey } from './restore.rotate-key.js';
 
 const db = useTestDatabase(), make = createFactories(db);
 const current = randomBytes(32), next = randomBytes(32), third = randomBytes(32), gymId = uuidv7();
@@ -38,8 +38,28 @@ async function refusal(options: Partial<Parameters<typeof rotateKey>[0]>): Promi
   const error = await rotateKey({ database: new PostgresMaintenance(db.maintenanceUrl), currentKey: hex(current), newKey: hex(next),
     gate: null, ...io(), ...options }).catch((caught: unknown) => caught);
   expect(error).toBeInstanceOf(KeyRotationRefusedError);
-  expect((error as KeyRotationRefusedError).exitCode).toBe(error instanceof KeyRotationPartialError ? 2 : 3);
+  expect((error as KeyRotationRefusedError).exitCode).toBe(error instanceof KeyRotationPartialError ? 2 : error instanceof KeyRotationUnstartedError ? 4 : 3);
   return error as KeyRotationRefusedError;
+}
+/** A maintenance handle whose rotations give up waiting for app sessions after half a second, not 30. */
+function quickDrain(): PostgresMaintenance {
+  const database = new PostgresMaintenance(db.maintenanceUrl), original = database.rotateKey.bind(database);
+  vi.spyOn(database, 'rotateKey').mockImplementation((from, to, afterCommit) => original(from, to, afterCommit, 500));
+  return database;
+}
+async function appCanConnect(): Promise<boolean> {
+  const connection = openConnection(db.maintenanceUrl, 1);
+  try {
+    const [row] = await connection.sql<{ granted: boolean }[]>`select has_database_privilege('app', current_database(), 'CONNECT') as granted`;
+    return row!.granted;
+  } finally { await connection.close(); }
+}
+async function withMaintenanceEnvironment(action: () => Promise<void>): Promise<void> {
+  const saved = process.env.MAINTENANCE_DATABASE_URL;
+  process.env.MAINTENANCE_DATABASE_URL = db.maintenanceUrl;
+  try { await action(); } finally {
+    if (saved === undefined) delete process.env.MAINTENANCE_DATABASE_URL; else process.env.MAINTENANCE_DATABASE_URL = saved;
+  }
 }
 beforeAll(async () => {
   directory = await mkdtemp(join(tmpdir(), 'plaingym-rotate-key-'));
@@ -70,7 +90,9 @@ describe('maintenance.mjs rotate-key', { timeout: 60_000 }, () => {
     await rm(gate.statePath);
     // The factories above used the app's pool, whose connections are still open.
     expect(await new PostgresMaintenance(db.maintenanceUrl).appSessions()).toBeGreaterThan(0);
-    expect((await refusal({ gate })).message).toMatch(/^Key rotation refused: \d+ app sessions remain;/);
+    const error = await refusal({ gate, database: quickDrain() });
+    expect(error.message).toMatch(/^Key rotation refused: \d+ app sessions remain;/);
+    expect(error.exitCode).toBe(3);
     expect(JSON.stringify(await storedValues()) === JSON.stringify(before)).toBe(true);
   });
 
@@ -79,7 +101,11 @@ describe('maintenance.mjs rotate-key', { timeout: 60_000 }, () => {
     await db.app.close(); await db.system.close();
     expect(await new PostgresMaintenance(db.maintenanceUrl).appSessions()).toBe(0);
     await rotateKey({ database: new PostgresMaintenance(db.maintenanceUrl), currentKey: hex(current), newKey: hex(next), gate: new RestoreGate(directory), ...io() });
-    await new PostgresMaintenance(db.maintenanceUrl).restoreAppConnect();
+    // The fence stays until the host lifts it with the restore-connect command, against this real database.
+    expect(await appCanConnect()).toBe(false);
+    await withMaintenanceEnvironment(() => maintenanceCommand(['restore-connect']));
+    expect(await appCanConnect()).toBe(true);
+    await expect(maintenanceCommand(['restore-connect', 'extra'])).rejects.toThrow('Usage: restore-connect');
     expect(output).toEqual(['Stored secrets re-encrypted with the new key (2 values changed)']);
     const after = await storedValues();
     const openedStripe = openSecret(next, stripe, after.stripe);
@@ -96,14 +122,38 @@ describe('maintenance.mjs rotate-key', { timeout: 60_000 }, () => {
     const before = await storedValues();
     // The install now runs with `next`; one value is under a key it doesn't have.
     const error = await refusal({ currentKey: hex(next), newKey: hex(current) });
-    expect(error.message).toBe('1 stored secrets open with neither key, so nothing was changed. Check that APP_ENCRYPTION_KEY is the key '
-      + 'the install runs with; a setting listed above that is already unreadable can be removed and entered again');
+    // No value opens with the new key, so no run of this rotation committed anything: the host may restart the app.
+    expect(error).toBeInstanceOf(KeyRotationUnstartedError);
+    expect(error.message).toBe('1 stored secrets open with neither key, so this run changed nothing. No stored secret uses the new key yet, '
+      + 'so the app can restart with the current key. Check that APP_ENCRYPTION_KEY is the key the install runs with; a setting listed '
+      + 'above that is already unreadable can be removed and entered again');
     expect(output).toEqual(['Opens with neither key: smtp_config of gym ' + gymId]);
     expect(JSON.stringify(await storedValues()) === JSON.stringify(before)).toBe(true);
     const lines: string[] = [], logs: string[] = [], previous = setLogSink((line) => logs.push(line));
     try { reportMaintenanceFailure(['rotate-key'], error, (line) => lines.push(line)); } finally { setLogSink(previous); }
     expect(lines).toEqual([error.message]);
     for (const text of [...output, ...lines, ...logs]) for (const key of [current, next, third]) expect(text.includes(hex(key))).toBe(false);
+  });
+
+  it('keeps a resumed rotation stopped when a value already uses the new key and another opens with neither', async () => {
+    output = [];
+    const connection = openConnection(db.maintenanceUrl, 1);
+    // As after an earlier run that committed the Stripe page: Stripe is under the new key, SMTP under neither.
+    try { await connection.sql`update gyms set stripe_config_encrypted = ${encryptSecret(current, stripe, 'stripe-private')} where id = ${gymId}::uuid`; }
+    finally { await connection.close(); }
+    const before = await storedValues();
+    const error = await refusal({ currentKey: hex(next), newKey: hex(current) });
+    expect(error).toBeInstanceOf(KeyRotationPartialError);
+    expect(error.message).toBe('1 stored secrets open with neither key, so this run changed nothing. An earlier run already re-encrypted 1 '
+      + 'values with the new key, so the app must stay stopped until the rotation finishes. Check that APP_ENCRYPTION_KEY is the key the '
+      + 'install runs with');
+    expect(output).toEqual(['Opens with neither key: smtp_config of gym ' + gymId]);
+    expect(JSON.stringify(await storedValues()) === JSON.stringify(before)).toBe(true);
+    await withMaintenanceEnvironment(() => maintenanceCommand(['restore-connect']));
+    // Back to the install's key, as the tests below expect.
+    const reset = openConnection(db.maintenanceUrl, 1);
+    try { await reset.sql`update gyms set stripe_config_encrypted = ${encryptSecret(next, stripe, 'stripe-private')} where id = ${gymId}::uuid`; }
+    finally { await reset.close(); }
   });
 
   it('rewrites both gyms\' v1 values in a multi-gym migrate run with the app key it is given', async () => {

@@ -437,16 +437,20 @@ Old versions and documents referenced by signatures remain retained after retire
   old key to the new one, gym by gym in short transactions under the backup lock,
   after checking that each value opens with one of the two keys. It refuses while
   a restore is unfinished. Before reading secrets, maintenance revokes database
-  CONNECT from `app` and `PUBLIC`, waits up to 30 seconds for existing app sessions
-  to close, and refuses with their remaining count if any persist. It never
+  CONNECT from `app` and `PUBLIC`, refuses if `app` can still connect (a grant from
+  another role or through role membership), waits up to 30 seconds for existing app
+  sessions to close, and refuses with their remaining count if any persist. It never
   terminates a session or gains signaling privileges. Under the backup lock, it
   verifies that every value opens as `v2` with the new key and checks again for
   app sessions. The rotation helper retains the fence on every return; the host
-  restores `app` CONNECT after switching `.env`, or after a definite preflight
-  refusal (exit 3) when every attempt changed nothing; `PUBLIC` stays revoked.
-  The marker durably records that pages may commit before each attempt. A partial
-  failure (exit 2), any other uncertain failure, or a refusal following either
-  keeps the app stopped and CONNECT revoked. A failed final check leaves the host's key unchanged;
+  restores `app` CONNECT (`maintenance.mjs restore-connect`) after switching
+  `.env`, after a definite preflight refusal (exit 3) when every attempt changed
+  nothing, or after a refusal whose check found no value under the new key (exit
+  4), which proves no attempt committed a page; `PUBLIC` stays revoked.
+  The marker durably records that pages may commit before each attempt, once the
+  database accepts connections. A partial failure (exit 2, also a refusal that found
+  values already under the new key), any other uncertain failure, or an exit-3
+  refusal following either keeps the app stopped and CONNECT revoked. A failed final check leaves the host's key unchanged;
   run `rotate-key.sh` again to finish with the same two
   keys. Pending
   backup credentials awaiting confirmation are re-encrypted by rotation and

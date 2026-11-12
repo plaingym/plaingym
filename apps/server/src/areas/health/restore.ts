@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash } from 'node:crypto';
-import { RestoreFailure } from './restore.failure.js';
+import { RestoreFailure, s3Reason } from './restore.failure.js';
 import { mkdtemp, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { z, ZodError } from 'zod';
@@ -16,7 +16,7 @@ import { LocalUploads } from '../../infra/storage/index.js';
 import type { BackupObjectStore, S3Uploads } from '../../infra/storage/index.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
 import { PostgresMaintenance } from './backups.database.js';
-import { atomicJson, childPath, exists, fileStream, privateDirectory, readJson, saveStream } from './backups.files.js';
+import { atomicJson, childPath, exists, fileStream, missing, privateDirectory, readJson, saveStream } from './backups.files.js';
 import { manifestSchema, publicReferences, readReferences, snapshotPrefix, validateReferences, verifyReferences } from './backups.format.js';
 import type { Manifest } from './backups.format.js';
 import { verifyFile } from './backups.js';
@@ -58,6 +58,14 @@ const stateSchema = z.strictObject({
   uploads: z.enum(['directory', 'store']).optional(),
 });
 export type RestorePhase = z.infer<typeof phaseSchema>;
+const stagedFailure = 'The staged restore failed; preserve the restore state and check the server before retrying resume';
+/** After a failed journal write: whether the journal names `staging` (true), doesn't (false), or can't be read (null). */
+async function journalNames(path: string, staging: string): Promise<boolean | null> {
+  try {
+    const journal = await readJson(path);
+    return typeof journal === 'object' && journal !== null && (journal as { staging?: unknown }).staging === staging;
+  } catch (error) { return missing(error) ? false : null; }
+}
 export interface RestoreOptions {
   readonly database: PostgresMaintenance;
   readonly store: BackupObjectStore;
@@ -96,6 +104,7 @@ export class RestoreService {
         throw new RestoreFailure('Restore staging and uploads must share a filesystem');
       }
       const prefix = snapshotPrefix(id);
+      // Set once the journal may name this staging: from then on only a finished or resumed restore removes it.
       let activated = false;
       try {
         const manifestCipher = join(staging, 'manifest.age');
@@ -138,7 +147,15 @@ export class RestoreService {
           currentKey: createHash('sha256').update(o.appEncryptionKey).digest('hex'),
           uploads: o.uploadsStore ? 'store' as const : 'directory' as const };
         // Durable activation closes admission on every process sharing this data volume.
-        await atomicJson(o.gate.statePath, state);
+        try { await atomicJson(o.gate.statePath, state); }
+        catch (error) {
+          // The rename may have published the journal before the directory sync failed (EIO, EMFILE). It is then
+          // active and `resume` needs this staging; one that can't be read back might be, so its staging stays too.
+          const published = await journalNames(o.gate.statePath, state.staging);
+          activated = published !== false;
+          if (published) throw new RestoreFailure(stagedFailure, { cause: error });
+          throw error;
+        }
         activated = true;
         return { state, manifest };
       } catch (error) {
@@ -184,7 +201,10 @@ export class RestoreService {
     try { await action(); }
     catch (error) {
       if (error instanceof RestoreFailure) throw error;
-      throw new RestoreFailure('The staged restore failed; preserve the restore state and check the server before retrying resume', { cause: error });
+      // After activation only the install's uploads bucket is an S3 store: the snapshot is already staged.
+      const s3 = s3Reason(error, 'uploads');
+      throw new RestoreFailure(s3 ? 'The staged restore failed: ' + s3.charAt(0).toLowerCase() + s3.slice(1)
+        + '; preserve the restore state, fix the uploads bucket, then retry resume' : stagedFailure, { cause: error });
     }
   }
   async #resume(state: z.infer<typeof stateSchema>, manifest: Manifest): Promise<void> {

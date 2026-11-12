@@ -19,6 +19,7 @@ import { useRestoreFixture } from './restore.fixture.test-helper.js';
 vi.mock('node:fs/promises', async importOriginal => ({ ...await importOriginal<typeof import('node:fs/promises')>() }));
 
 const f = useRestoreFixture({ shared: true });
+const invalidLease = 'The restore activity lease is invalid; stop the app, delete the restore-activity folder on its data volume, then start the app';
 let base: string;
 beforeAll(async () => { base = (await f.prepare(() => f.backup().snapshot())).id; });
 async function rejects(action: Promise<unknown>, message: string) {
@@ -74,7 +75,39 @@ it.each([false, true])('rejects an invalid activity lease (invalid JSON: %s)', a
   const path = join(f.gate().activityDirectory, randomUUID() + '.json');
   await atomicJson(path, { pid: 'private-value' });
   if (invalidJson) await writeFile(path, '{');
-  await rejects(f.gate().close(), 'The restore activity lease is invalid; stop the app and check restore state');
+  await rejects(f.gate().close(), invalidLease);
+});
+it('finishes a staged restore once the invalid lease folder is deleted, as its reason says', async () => {
+  await stage();
+  await atomicJson(join(f.gate().activityDirectory, randomUUID() + '.json'), { pid: 'private-value' });
+  // Every start resumes first, so until the folder goes the app can't start.
+  await rejects(f.restore().resume(), invalidLease);
+  await rejects(f.restore().resume(), invalidLease);
+  expect(await f.gate().hasStagedRestore()).toBe(true);
+  // With the app stopped no lease is live: deleting the folder is the documented step.
+  await rm(f.gate().activityDirectory, { recursive: true, force: true });
+  await f.restore().resume();
+  expect(await f.gate().isClosed()).toBe(false);
+  expect((await f.secretRows()).gym.billingEnabled).toBe(false);
+});
+it.skipIf(process.platform === 'win32')('keeps the staging of a journal whose rename landed before its directory sync failed', async () => {
+  const open = files.open, target = join(f.root, 'target');
+  let failed = false;
+  // atomicJson syncs the journal's directory after the rename (not on Windows): fail that sync once.
+  const spy = vi.spyOn(files, 'open').mockImplementation(async (path, ...rest) => {
+    if (!failed && path === target && rest[0] === 'r') { failed = true; throw Object.assign(new Error('I/O error'), { code: 'EIO' }); }
+    return await open(path, ...rest);
+  });
+  try { await rejects(f.restore().restore(base, f.identity), staged); }
+  finally { spy.mockRestore(); }
+  expect(failed).toBe(true);
+  const journal = await readJson(f.gate().statePath) as { phase: string; staging: string };
+  expect(journal.phase).toBe('verified');
+  expect(await files.stat(join(f.root, 'target', 'staging', journal.staging, 'database.dump'))).toBeTruthy();
+  expect(await f.gate().isClosed()).toBe(true);
+  await f.restore().resume();
+  expect(await f.gate().isClosed()).toBe(false);
+  expect((await f.secretRows()).gym.billingEnabled).toBe(false);
 });
 it.each([false, true])('rejects an inconsistent upload switch (missing: %s)', async missing => {
   const state = await stage();
@@ -195,7 +228,7 @@ it('reports an oversized lease without snapshot advice', async () => {
   const path = join(f.gate().activityDirectory, randomUUID() + '.json');
   await atomicJson(path, {});
   await writeFile(path, ' '.repeat(16 * 1024 * 1024 + 1));
-  await rejects(f.gate().close(), 'The restore activity lease is invalid; stop the app and check restore state');
+  await rejects(f.gate().close(), invalidLease);
 });
 it.each([false, true])('reports a failed database tool after activation (resume: %s)', async resume => {
   if (resume) await stage();

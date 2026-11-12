@@ -65,7 +65,9 @@ Then:
 2. **Check backups.** The **System health** page should show a recent successful backup
    under the current key at the current destination. After changing either, wait
    for the first matching snapshot. Setup and Settings check that the destination
-   credentials can list, write, read and delete a probe before generating a key.
+   credentials can list, write, read and delete a probe under `blobs/`, where
+   snapshots write, before generating a key. Credentials or a bucket policy may
+   be limited to the `snapshots/` and `blobs/` prefixes.
 3. **Check past billing dates.** Memberships whose next due date has already passed will
    be invoiced for each missed period once billing is on. Reconcile them against your
    old system now ([importing.md](importing.md#memberships-columns)).

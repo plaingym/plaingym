@@ -21,7 +21,7 @@ const label = (key: string) => text('backups.' + key);
 export const destinationCheckTimeoutMs = 2 * 60_000;
 const gigabytes = (bytes: number) => new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(bytes / 1e9) + ' GB';
 /** What the health check knows about the last snapshot: undefined while it loads or when it couldn't be checked. */
-export type LastSnapshot = { at: string | null; noneUnderCurrentKey?: boolean } | 'unknown' | undefined;
+export type LastSnapshot = { at: string | null; noneUnderCurrentKey: boolean } | 'unknown' | undefined;
 function Field({ name, type = 'text', value, text: shown }: { name: string; type?: string; value?: string | undefined; text?: string }) {
   return <div className="grid min-w-0 gap-2">
     <Label htmlFor={'integrations-backup-' + name}>{shown ?? label(name)}</Label>
@@ -74,8 +74,8 @@ export function BackupsIntegrationSection({ backups, lastSnapshot, state }: { ba
       : <p className="text-sm">{label('notConfigured')}</p>}
     {backups.publicKey && <p className="text-sm text-muted-foreground [overflow-wrap:anywhere]">{text('backups.publicKey', { key: backups.publicKey })}</p>}
     {backups.configured && lastSnapshot !== undefined && <p className="text-sm text-muted-foreground">{lastSnapshot === 'unknown' ? label('snapshotUnknown')
-      : lastSnapshot.noneUnderCurrentKey ? label('noneUnderKey')
-      : lastSnapshot.at ? text('backups.lastSnapshot', { time: new Date(lastSnapshot.at).toLocaleString() }) : label('noSnapshot')}</p>}
+      : lastSnapshot.noneUnderCurrentKey || lastSnapshot.at === null ? label('noneUnderKey')
+      : text('backups.lastSnapshot', { time: new Date(lastSnapshot.at).toLocaleString() })}</p>}
     <p className="text-sm text-muted-foreground">{text('backups.retention', { size: gigabytes(backups.retentionBudgetBytes) })}</p>
     {state.gymId && <BackupActions gymId={state.gymId} owner onConfirmed={state.reload}/>}
     {backups.configured && <p className="text-sm">{label('changeWarning')}</p>}

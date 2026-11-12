@@ -11,7 +11,7 @@ import { withJobTransaction, type Jobs, type JobRecovery } from '../../infra/job
 import { PostgresJobs } from '../../infra/jobs/postgres.js';
 import { RestoreGate } from './restore.gate.js';
 import { dirname } from 'node:path';
-import { BackupsNotConfiguredError, InstallBackupGymCountError, loadBackupConfig } from './restore.config.js';
+import { isBackupsUnconfigured, loadBackupConfig } from './restore.config.js';
 
 export const manualBackupJob = 'health.backup.manual';
 const t = createTranslator(locales.en ?? {});
@@ -33,7 +33,7 @@ export function createBackupControl(options: {
   const isRestoring = options.isRestoring ?? (async () => !!process.env.BACKUP_STAGING_DIR && await new RestoreGate(dirname(process.env.BACKUP_STAGING_DIR)).isClosed());
   const configuredGym = options.configuredGym ?? (async () => {
     try { return (await loadBackupConfig(parseEncryptionKey(process.env.APP_ENCRYPTION_KEY ?? ''))).gymId; }
-    catch (error) { if (error instanceof BackupsNotConfiguredError || error instanceof InstallBackupGymCountError) return null; throw error; }
+    catch (error) { if (isBackupsUnconfigured(error)) return null; throw error; }
   });
   const read = async (tx: Parameters<Parameters<typeof forGym>[1]>[0], gymId: string, lock = false) => {
     const query = tx.select().from(gyms).where(eq(gyms.id, gymId));

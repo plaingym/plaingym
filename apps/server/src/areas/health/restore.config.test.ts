@@ -6,7 +6,14 @@ import { TestClock } from '../../core/clock.js';
 import { generateIdentity, identityToRecipient } from '../../infra/age/index.js';
 import { FakeUploads } from '../../infra/storage/index.js';
 import { PostgresMaintenance } from './backups.database.js';
-import { configuredBackup } from './restore.config.js';
+import { BackupsNotConfiguredError, configuredBackup, InstallBackupGymCountError, isBackupsUnconfigured } from './restore.config.js';
+
+it('names the two answers that mean the install takes no snapshots, and only those', () => {
+  expect(isBackupsUnconfigured(new BackupsNotConfiguredError())).toBe(true);
+  expect(isBackupsUnconfigured(new InstallBackupGymCountError())).toBe(true);
+  expect(isBackupsUnconfigured(new Error('Backup destination and public key are not configured'))).toBe(false);
+  expect(isBackupsUnconfigured(undefined)).toBe(false);
+});
 
 it('snapshots uploads through the runtime storage resolver, whichever backend the install uses', async () => {
   const gymId = uuidv7(), clock = new TestClock('2026-10-23T12:00:00Z'), source = new FakeUploads(gymId, clock);

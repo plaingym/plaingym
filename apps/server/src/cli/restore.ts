@@ -65,6 +65,13 @@ export async function maintenanceCommand(args: readonly string[]): Promise<void>
       gate: staging ? new RestoreGate(dirname(staging)) : null });
     return;
   }
+  if (args[0] === 'restore-connect') {
+    // Lifts rotate-key's fence; deploy/rotate-key.sh decides when that is safe.
+    if (args.length !== 1) throw new Error('Usage: restore-connect');
+    await new PostgresMaintenance(required('MAINTENANCE_DATABASE_URL')).restoreAppConnect();
+    process.stdout.write('The app role can connect again\n');
+    return;
+  }
   const environment = maintenanceEnvironment();
   try { await maintenance(args, environment); } finally { environment.uploads.close(); }
 }

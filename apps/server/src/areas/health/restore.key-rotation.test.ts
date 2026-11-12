@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { describe, expect, inject, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { authAccount, encryptedFields, gyms, uuidv7 } from '@plaingym/db';
-import { cloneDatabase } from '@plaingym/db/testing/database';
+import { cloneDatabase, databaseUrl } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { assertCatalog } from '../../../../../packages/db/src/security/catalog.js';
 // Maintenance fixtures must not keep an app session connected during a rotation.
@@ -12,7 +12,7 @@ import { assertCatalog } from '../../../../../packages/db/src/security/catalog.j
 import { openConnection, scopedDatabase } from '@plaingym/db/client';
 import { decryptSecret, encryptSecret, openSecret, type SecretClass, type SecretContext } from '../../core/secrets.js';
 import { legacySecret } from '../../core/secrets.test-helper.js';
-import { KeyRotationIncompleteError, PostgresMaintenance, UnreadableSecretsError } from './backups.database.js';
+import { KeyRotationFenceError, KeyRotationIncompleteError, PostgresMaintenance, UnreadableSecretsError } from './backups.database.js';
 
 const oldKey = randomBytes(32), newKey = randomBytes(32);
 const columns = {
@@ -81,12 +81,44 @@ describe('APP_ENCRYPTION_KEY rotation', { timeout: 60_000 }, () => {
       try {
         await app.sql`select 1`;
         const before = await stored();
-        await expect(maintenance.rotateKey(oldKey, newKey)).rejects.toThrow('1 app sessions remain');
+        // The drain limit is a parameter, so this refusal waits half a second instead of the default 30.
+        const started = Date.now();
+        await expect(maintenance.rotateKey(oldKey, newKey, undefined, 500)).rejects.toThrow('1 app sessions remain');
+        expect(Date.now() - started).toBeLessThan(15_000);
         expect(JSON.stringify([...(await stored())]) === JSON.stringify([...before])).toBe(true);
         await expect(probe.sql`select 1`).rejects.toMatchObject({ code: '42501' });
         await maintenance.restoreAppConnect();
         await probe.sql`select 1`;
       } finally { await app.close(); await probe.close(); }
+    });
+  });
+
+  it('refuses before draining or rewriting when app keeps CONNECT through a role it is a member of', async () => {
+    await withInstall(oldKey, async ({ maintenance, stored }) => {
+      const admin = openConnection(databaseUrl(inject('testDatabase').adminUrl, maintenance.databaseName), 1);
+      const role = 'rotation_fence_' + randomBytes(6).toString('hex'), name = maintenance.databaseName;
+      try {
+        // Another grantor's grant to a role app belongs to: the rotation's REVOKE can't remove it.
+        await admin.sql`create role ${admin.sql(role)} nologin`;
+        await admin.sql`grant connect on database ${admin.sql(name)} to ${admin.sql(role)}`;
+        await admin.sql`grant ${admin.sql(role)} to app`;
+        const before = await stored(), app = openConnection(databaseUrl(inject('testDatabase').appUrl, name), 1);
+        try {
+          await app.sql`select 1`;
+          // The fence check comes first: an open app session would otherwise hold the rotation for the whole drain.
+          await expect(maintenance.rotateKey(oldKey, newKey)).rejects.toBeInstanceOf(KeyRotationFenceError);
+        } finally { await app.close(); }
+        expect(JSON.stringify([...(await stored())]) === JSON.stringify([...before])).toBe(true);
+        // Without the membership the revoke holds, and the same rotation goes ahead.
+        await admin.sql`revoke ${admin.sql(role)} from app`;
+        await maintenance.rotateKey(oldKey, newKey);
+        expectRotated(await stored(), newKey, oldKey);
+      } finally {
+        await admin.sql`revoke ${admin.sql(role)} from app`.catch(() => undefined);
+        await admin.sql`revoke connect on database ${admin.sql(name)} from ${admin.sql(role)}`.catch(() => undefined);
+        await admin.sql`drop role if exists ${admin.sql(role)}`;
+        await admin.close();
+      }
     });
   });
 

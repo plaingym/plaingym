@@ -27,9 +27,15 @@ const maintenanceFields: readonly SecretField[] = [...encryptedFields.map((field
 type SecretRow = { id: string } & Record<string, string | null>;
 /** Where a stored secret that neither key opens is: its class and its row's ID, never its value. */
 export interface UnreadableSecret { readonly secretClass: SecretClass; readonly owner: string }
-/** A key rotation's check found stored secrets that open with neither key, so it changed nothing. */
+/**
+ * A key rotation's check found stored secrets that open with neither key, so this run changed nothing. `rotated` counts
+ * the values that already open as `v2` with the new key: only an earlier run's committed page can have written one, so
+ * none means no run of this rotation changed anything.
+ */
 export class UnreadableSecretsError extends Error {
-  constructor(readonly unreadable: readonly UnreadableSecret[]) { super('Stored secrets open with neither key'); this.name = 'UnreadableSecretsError'; }
+  constructor(readonly unreadable: readonly UnreadableSecret[], readonly rotated: number) {
+    super('Stored secrets open with neither key'); this.name = 'UnreadableSecretsError';
+  }
 }
 /**
  * Each table's registered secret columns; every value belongs to its row's `id`. `gyms` comes last, so a single-gym
@@ -47,22 +53,27 @@ async function secretRows(tx: Transaction | Connection['db'], table: string, fie
   return [...await tx.execute<SecretRow>(sql`select id, ${columns} from ${sql.identifier(table)} where (${holds})
     ${after ? sql`and id > ${after}::uuid` : sql``} order by id limit ${limit} ${options.lock ? sql`for update` : sql``}`)];
 }
-/** A row's values as `v2` under `to` (only those that change), and those that open with neither key. */
+/**
+ * A row's values as `v2` under `to` (only those that change), those that open with neither key, and how many are
+ * already `v2` under `to` (`done`).
+ */
 function rewriteRow(row: SecretRow, fields: readonly SecretField[], from: Buffer, to: Buffer) {
   const set = new Map<SecretField, string>(), unreadable: UnreadableSecret[] = [];
+  let done = 0;
   for (const field of fields) {
     const value = row[field.column];
     if (value == null) continue;
     try {
       const next = reencryptSecret(from, to, { secretClass: field.secretClass, owner: row.id }, value);
       if (next !== null) set.set(field, next);
+      else done++;
     } catch {
       // Pending credentials that open with neither key stay as they are, so they never block a restore or a
       // rotation: confirming them answers that staff must generate a new backup key.
       if (!field.pending) unreadable.push({ secretClass: field.secretClass, owner: row.id });
     }
   }
-  return { set, unreadable };
+  return { set, unreadable, done };
 }
 async function updateRow(tx: Transaction, table: string, id: string, set: ReadonlyMap<SecretField, string>): Promise<void> {
   if (!set.size) return;
@@ -86,8 +97,18 @@ export interface ToolCommand { command: string; args: string[]; env: NodeJS.Proc
 export type ToolRunner = (tool: 'pg_dump' | 'pg_restore', env: NodeJS.ProcessEnv) => ToolCommand;
 const nativeTools: ToolRunner = (tool, env) => ({ command: tool, args: [], env });
 export class PostgresMaintenance {
+  /** The database the URL names, for the tools and for `GRANT`/`REVOKE CONNECT`. */
+  readonly databaseName: string;
   constructor(readonly url: string, readonly tools: ToolRunner = nativeTools) {
-    if (new URL(url).username !== 'maintenance') throw new RestoreFailure('Backups and restore require maintenance');
+    const parsed = new URL(url);
+    if (parsed.username !== 'maintenance') throw new RestoreFailure('MAINTENANCE_DATABASE_URL must name the maintenance database role');
+    this.databaseName = decodeURIComponent(parsed.pathname.slice(1));
+  }
+  /** Runs `action` on `connection` when the caller already holds one open, otherwise on a new one it then closes. */
+  async #on<T>(connection: Connection | undefined, action: (connection: Connection) => Promise<T>): Promise<T> {
+    if (connection) return action(connection);
+    const opened = openConnection(this.url, 1);
+    try { return await action(opened); } finally { await opened.close(); }
   }
   async locked<T>(action: () => Promise<T>): Promise<T> {
     assertNoTransaction('backup.lock');
@@ -100,7 +121,7 @@ export class PostgresMaintenance {
   async tool(tool: 'pg_dump' | 'pg_restore', args: string[], input?: string): Promise<ReadableStream<Uint8Array>> {
     const url = new URL(this.url);
     const env = { ...process.env, PGHOST: url.hostname, PGPORT: url.port || '5432',
-      PGDATABASE: decodeURIComponent(url.pathname.slice(1)), PGUSER: 'maintenance',
+      PGDATABASE: this.databaseName, PGUSER: 'maintenance',
       PGPASSWORD: decodeURIComponent(url.password), PGCONNECT_TIMEOUT: '10',
       ...(url.searchParams.get('sslmode') ? { PGSSLMODE: url.searchParams.get('sslmode')! } : {}) };
     const command = this.tools(tool, env);
@@ -140,7 +161,7 @@ export class PostgresMaintenance {
         await tx`drop schema if exists drizzle cascade`;
       });
     } finally { await connection.close(); }
-    const output = await this.tool('pg_restore', ['--dbname=' + decodeURIComponent(new URL(this.url).pathname.slice(1)),
+    const output = await this.tool('pg_restore', ['--dbname=' + this.databaseName,
       '--single-transaction', '--exit-on-error', '--no-owner'], path);
     for await (const chunk of output) { void chunk; }
   }
@@ -245,31 +266,40 @@ export class PostgresMaintenance {
    * opens with one of the keys: if any doesn't (a wrong `from`), it throws {@link UnreadableSecretsError} and changes
    * nothing. It then commits a gym or a page of other rows at a time, and is safe to run again after a crash: a value
    * that opens as `v2` with `to` is done.
-   * Revokes CONNECT from app and PUBLIC, then waits up to 30 seconds for existing app sessions to drain without
-   * terminating them. The fence remains on success and failure, including preflight refusal on a resumed rotation.
-   * The caller must call restoreAppConnect only after switching .env, or abandoning an attempt known to have
-   * committed no pages across every run. PUBLIC stays revoked.
+   * Revokes CONNECT from app and PUBLIC and refuses ({@link KeyRotationFenceError}) if `app` can still connect, through
+   * a grant from another role or a role it is a member of. It then waits up to `drainMilliseconds` (30 seconds) for
+   * existing app sessions to drain without terminating them. The fence remains on success and failure, including a
+   * preflight refusal on a resumed rotation. The host (`deploy/rotate-key.sh`) restores app's CONNECT with
+   * `maintenance.mjs restore-connect` ({@link restoreAppConnect}) only after switching .env, or abandoning an attempt
+   * known to have committed no pages across every run. PUBLIC stays revoked.
    */
-  async rotateKey(from: Buffer, to: Buffer, afterCommit?: (table: string) => void | Promise<void>): Promise<{ rewritten: number }> {
+  async rotateKey(from: Buffer, to: Buffer, afterCommit?: (table: string) => void | Promise<void>,
+    drainMilliseconds = 30_000): Promise<{ rewritten: number }> {
     assertNoTransaction('secrets.rotate');
     if (from.length !== 32 || to.length !== 32 || from.equals(to)) throw new Error('Key rotation needs two different keys');
     let rewriting = false;
     return this.locked(async () => {
       const connection = openConnection(this.url, 1);
       try {
-        const name = sql.identifier(decodeURIComponent(new URL(this.url).pathname.slice(1)));
-        await connection.db.execute(sql`revoke connect on database ${name} from app, public`);
-        // The host already stopped the app. Allow shutdown connections 30 seconds to drain; never kill one.
-        const deadline = Date.now() + 30_000;
-        let sessions = await this.appSessions();
+        await connection.db.execute(sql`revoke connect on database ${sql.identifier(this.databaseName)} from app, public`);
+        // REVOKE only warns when it removes nothing, so check what app is left with.
+        const [fence] = await connection.sql<{ granted: boolean }[]>`select has_database_privilege('app', current_database(), 'CONNECT') as granted`;
+        if (fence?.granted !== false) throw new KeyRotationFenceError();
+        // The host already stopped the app. Allow shutdown connections time to drain; never kill one.
+        const deadline = Date.now() + drainMilliseconds;
+        let sessions = await this.appSessions(connection);
         while (sessions > 0 && Date.now() < deadline) {
           await new Promise((resolve) => setTimeout(resolve, 250));
-          sessions = await this.appSessions();
+          sessions = await this.appSessions(connection);
         }
         if (sessions > 0) throw new KeyRotationSessionsError(sessions);
         const unreadable: UnreadableSecret[] = [];
-        await walkSecrets(connection.db, (row, fields) => { unreadable.push(...rewriteRow(row, fields, from, to).unreadable); });
-        if (unreadable.length) throw new UnreadableSecretsError(unreadable);
+        let rotated = 0;
+        await walkSecrets(connection.db, (row, fields) => {
+          const result = rewriteRow(row, fields, from, to);
+          unreadable.push(...result.unreadable); rotated += result.done;
+        });
+        if (unreadable.length) throw new UnreadableSecretsError(unreadable, rotated);
         // A lost COMMIT acknowledgement is uncertain too: only preflight failures guarantee no pages committed.
         rewriting = true;
         const { rewritten } = await this.#rewriteSecrets(from, to, { legacyOnly: false, skipUnreadable: false,
@@ -278,7 +308,7 @@ export class PostgresMaintenance {
           const { set, unreadable: remaining } = rewriteRow(row, fields, from, to);
           if (set.size || remaining.length) throw new KeyRotationIncompleteError('A stored secret changed during key rotation');
         });
-        const remainingSessions = await this.appSessions();
+        const remainingSessions = await this.appSessions(connection);
         if (remainingSessions > 0) throw new KeyRotationIncompleteError('App sessions appeared during key rotation');
         return { rewritten };
       } finally { await connection.close(); }
@@ -289,21 +319,17 @@ export class PostgresMaintenance {
       throw error;
     });
   }
-  async restoreAppConnect(): Promise<void> {
-    const connection = openConnection(this.url, 1);
-    try {
-      const name = sql.identifier(decodeURIComponent(new URL(this.url).pathname.slice(1)));
-      await connection.db.execute(sql`grant connect on database ${name} to app`);
-    } finally { await connection.close(); }
+  /** Lifts a key rotation's fence: grants CONNECT on this database back to `app` (`PUBLIC` stays revoked, as in bootstrap). */
+  async restoreAppConnect(connection?: Connection): Promise<void> {
+    await this.#on(connection, async ({ db }) => { await db.execute(sql`grant connect on database ${sql.identifier(this.databaseName)} to app`); });
   }
   /** Open sessions of the `app` role in this database: a key rotation needs every app process stopped. */
-  async appSessions(): Promise<number> {
-    const connection = openConnection(this.url, 1);
-    try {
-      const [row] = await connection.sql<{ count: number }[]>`select count(*)::int as count from pg_stat_activity
+  async appSessions(connection?: Connection): Promise<number> {
+    return this.#on(connection, async ({ sql: query }) => {
+      const [row] = await query<{ count: number }[]>`select count(*)::int as count from pg_stat_activity
         where datname = current_database() and usename = 'app'`;
       return row?.count ?? 0;
-    } finally { await connection.close(); }
+    });
   }
   /** Restore receipt belongs to the external protocol, never to a table overwritten by pg_restore. */
   newId(): string { return uuidv7(); }
@@ -313,6 +339,14 @@ export class KeyRotationIncompleteError extends Error {
   constructor(reason: string, options?: ErrorOptions) {
     super(reason + '; run rotate-key.sh again to finish with the same keys', options);
     this.name = 'KeyRotationIncompleteError';
+  }
+}
+/** A preflight refusal: after the revoke, `app` can still connect, so stopped app processes could start again. */
+export class KeyRotationFenceError extends Error {
+  constructor() {
+    super('Key rotation refused: the app role can still connect after CONNECT was revoked from it and PUBLIC, through a grant '
+      + 'from another role or a role it is a member of; remove that grant and retry');
+    this.name = 'KeyRotationFenceError';
   }
 }
 export class KeyRotationSessionsError extends Error {

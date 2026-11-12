@@ -138,7 +138,9 @@ restores CONNECT after a crash, including one after `.env` was already switched.
 Only a definite preflight refusal (exit 3), with no earlier attempt that may have
 committed pages, restores CONNECT and restarts the app with its old key. Repeated
 clean refusals restart it each time so settings can be corrected in the admin;
-a refusal after a partial or uncertain attempt keeps the fence and app stopped.
+an exit-3 refusal after a partial or uncertain attempt keeps the fence and app
+stopped. A refusal that finds a value neither key opens and none under the new
+key (exit 4) proves no attempt committed anything, so it restarts the app too.
 The marker records this distinction durably before each attempt. The one-off
 command bypasses the image's normal entrypoint so a retained fence cannot block
 the maintenance connection needed to finish the rotation.

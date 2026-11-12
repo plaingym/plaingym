@@ -19,10 +19,14 @@ export interface InstallBackupConfig {
   readonly pruningHeld?: boolean;
 }
 export class BackupsNotConfiguredError extends Error {
-  constructor(message = 'Backup destination and public key are not configured') { super(message); this.name = 'BackupsNotConfiguredError'; }
+  constructor() { super('Backup destination and public key are not configured'); this.name = 'BackupsNotConfiguredError'; }
 }
 export class InstallBackupGymCountError extends Error {
   constructor() { super('Install snapshots require exactly one configured gym'); this.name = 'InstallBackupGymCountError'; }
+}
+/** Whether {@link loadBackupConfig} failed because this install takes no snapshots, rather than on an error. */
+export function isBackupsUnconfigured(error: unknown): boolean {
+  return error instanceof BackupsNotConfiguredError || error instanceof InstallBackupGymCountError;
 }
 /** Owner configuration is read in system context; credentials remain encrypted on the gym row. */
 export async function loadBackupConfig(appKey: Buffer): Promise<InstallBackupConfig> {
@@ -43,7 +47,7 @@ export async function loadBackupConfig(appKey: Buffer): Promise<InstallBackupCon
 /** Whether this install takes snapshots. An unconfigured or multi-gym install answers false; other failures throw. */
 export async function backupsConfigured(appKey: Buffer): Promise<boolean> {
   try { await loadBackupConfig(appKey); return true; }
-  catch (error) { if (error instanceof BackupsNotConfiguredError || error instanceof InstallBackupGymCountError) return false; throw error; }
+  catch (error) { if (isBackupsUnconfigured(error)) return false; throw error; }
 }
 /** `uploadsFor` is the runtime storage resolver, so snapshots capture uploads wherever the install keeps them. */
 export function configuredBackup(config: InstallBackupConfig, database: PostgresMaintenance,

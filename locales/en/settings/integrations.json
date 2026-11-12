@@ -93,7 +93,6 @@
   "backups.publicKey": "Backup public key: {key}",
   "backups.lastSnapshot": "Last restorable snapshot: {time}.",
   "backups.noneUnderKey": "No restorable snapshot under this key at the current destination yet.",
-  "backups.noSnapshot": "No restorable snapshot yet.",
   "backups.snapshotUnknown": "The last snapshot couldn’t be checked.",
   "backups.retention": "Retention budget: {size}. Snapshots keep 24 hourly, 7 nightly, 4 weekly, and up to 2 pre-upgrade copies when space allows.",
   "backups.changeWarning": "After a change, new snapshots use the new destination and key, starting right after you confirm. Snapshots under the old key stay readable only with that key until retention removes them, so keep the old key until then. A new bucket starts empty, and the app no longer manages the old one: its snapshots stay there until you delete them.",

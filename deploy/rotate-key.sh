@@ -32,14 +32,25 @@ write_inflight() { # MAY_HAVE_COMMITTED; replace atomically and durably before c
   sync
 }
 restore_connect() {
-  # The database owner restores only app's CONNECT; PUBLIC stays revoked as in bootstrap.
+  # As the maintenance role (the database owner), grants CONNECT back to app only; PUBLIC stays revoked as in bootstrap.
+  # Like the rotation, a one-off that bypasses the entrypoint, whose app-role check cannot connect under the fence.
+  compose run --rm --no-deps -T --entrypoint node app /app/maintenance.mjs restore-connect </dev/null
+}
+wait_for_database() {
+  # The one-off below skips the entrypoint's database wait, so a database still starting would read as an
+  # uncertain failure: wait here, before an attempt is recorded as one that may commit.
+  tries=0
   # shellcheck disable=SC2016
-  printf '%s\n' "SELECT format('GRANT CONNECT ON DATABASE %I TO app', current_database())" '\gexec' |
-    compose exec -T postgres sh -c 'PGPASSWORD="$MAINTENANCE_PASSWORD" exec psql -h 127.0.0.1 -U maintenance -d "$POSTGRES_DB" -X -v ON_ERROR_STOP=1'
+  until compose exec -T postgres sh -c 'exec pg_isready -q -h 127.0.0.1 -U postgres -d "$POSTGRES_DB"' </dev/null; do
+    tries=$((tries + 1))
+    [ "$tries" -lt 30 ] || return 1
+    sleep 1
+  done
 }
 cleanup() {
   exit_status=$?
   trap - EXIT HUP INT TERM
+  unset NEW_APP_ENCRYPTION_KEY
   if [ "$exit_status" -ne 0 ] && [ "$stopped" = true ] && [ "$switched" = false ]; then
     if [ "$interrupted" = true ]; then
       echo 'Interrupted. The app stays stopped; run ./rotate-key.sh again to finish the key rotation.' >&2
@@ -82,29 +93,32 @@ else
   write_inflight false
 fi
 
+wait_for_database || fail 'PostgreSQL is not accepting connections (see docker compose ps postgres). This run changed nothing; run this again once it is.'
 if [ "$current" = "$old" ]; then
   stopped=true
   compose stop app
   # Bypass the image entrypoint: its app-role check cannot connect under a retained fence. This image already ran
   # on this install, so no startup wait/resume/migrate is needed; rotate-key checks the restore gate itself.
-  # Both keys reach the one-off container through the environment, never a command line.
-  # Exported, not a prefix assignment: POSIX leaves unspecified whether one reaches a shell function's commands.
-  export NEW_APP_ENCRYPTION_KEY="$new"
   previously_committed=$may_have_committed
   # A killed host or an unclassified command failure must leave durable evidence that pages may have committed.
   write_inflight true
   may_have_committed=true
   rotation_status=0
+  # Both keys reach the one-off container through the environment, never a command line, and only this one gets
+  # the new key: the restore-connect one-off in cleanup runs without it.
+  # Exported, not a prefix assignment: POSIX leaves unspecified whether one reaches a shell function's commands.
+  export NEW_APP_ENCRYPTION_KEY="$new"
   compose run --rm --no-deps -T --entrypoint node -e NEW_APP_ENCRYPTION_KEY app /app/maintenance.mjs rotate-key || rotation_status=$?
+  unset NEW_APP_ENCRYPTION_KEY
   if [ "$rotation_status" -ne 0 ]; then
-    # Only exit 3 proves this attempt changed nothing; it cannot clear an earlier attempt's uncertainty.
-    if [ "$rotation_status" -eq 3 ] && [ "$previously_committed" = false ]; then
+    # Exit 3 proves only that this attempt changed nothing, so it cannot clear an earlier attempt's uncertainty.
+    # Exit 4 also found no stored value under the new key: no attempt, earlier ones included, committed a page.
+    if [ "$rotation_status" -eq 4 ] || { [ "$rotation_status" -eq 3 ] && [ "$previously_committed" = false ]; }; then
       write_inflight false
       may_have_committed=false
     fi
     fail 'The key rotation failed (reason above); rerun with the same keys in .rotate-key.inflight.'
   fi
-  unset NEW_APP_ENCRYPTION_KEY
   # Every stored secret now opens with the new key: only then does .env name it.
   awk -v key="$new" 'BEGIN { found=0 } /^APP_ENCRYPTION_KEY=/ { print "APP_ENCRYPTION_KEY=" key; found=1; next } { print } END { if (!found) print "APP_ENCRYPTION_KEY=" key }' "$ROOT/.env" > "$ROOT/.env.next"
   chmod 0600 "$ROOT/.env.next"

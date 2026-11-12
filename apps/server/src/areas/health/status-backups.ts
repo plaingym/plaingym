@@ -3,7 +3,7 @@ import { desc, eq, inArray } from 'drizzle-orm';
 import { backupRuns, forSystem } from '@plaingym/db';
 import { parseEncryptionKey } from '../../core/secrets.js';
 import { createS3Client, S3BackupObjectStore, type BackupObjectStore } from '../../infra/storage/index.js';
-import { BackupsNotConfiguredError, InstallBackupGymCountError, loadBackupConfig, type InstallBackupConfig } from './restore.config.js';
+import { isBackupsUnconfigured, loadBackupConfig, type InstallBackupConfig } from './restore.config.js';
 import { inventory, prunePlan, UnverifiedInventory } from './backups.retention.js';
 import { healthProvider, statusMessage } from './status.js';
 
@@ -17,10 +17,7 @@ export function createBackupHealthProvider(options: {
   const config = options.config ?? (async () => {
     if (env.TENANCY === 'multi') return null;
     try { return await loadBackupConfig(parseEncryptionKey(env.APP_ENCRYPTION_KEY ?? '')); }
-    catch (error) {
-      if (error instanceof BackupsNotConfiguredError || error instanceof InstallBackupGymCountError) return null;
-      throw error;
-    }
+    catch (error) { if (isBackupsUnconfigured(error)) return null; throw error; }
   });
   const open = options.store ?? ((settings: InstallBackupConfig) => {
     const client = createS3Client({ region: settings.destination.region,

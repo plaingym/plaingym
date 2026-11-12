@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { logInfo } from '../core/log.js';
 import { parseEncryptionKey } from '../core/secrets.js';
-import { KeyRotationIncompleteError, KeyRotationSessionsError, UnreadableSecretsError, type PostgresMaintenance } from '../areas/health/backups.database.js';
+import { KeyRotationFenceError, KeyRotationIncompleteError, KeyRotationSessionsError, UnreadableSecretsError,
+  type PostgresMaintenance } from '../areas/health/backups.database.js';
 import type { RestoreGate } from '../areas/health/restore.gate.js';
 
-/** Exit 3 proves a preflight refusal changed nothing. Its message names what to do, never a value. */
+/**
+ * Exit 3 proves a preflight refusal changed nothing in this run; an earlier, uncertain run may still have. Its message
+ * names what to do, never a value.
+ */
 export class KeyRotationRefusedError extends Error {
   readonly exitCode: number = 3;
   constructor(message: string, options?: ErrorOptions) { super(message, options); this.name = 'KeyRotationRefusedError'; }
@@ -12,6 +16,13 @@ export class KeyRotationRefusedError extends Error {
 /** Exit 2 means committed pages may require the new key: the host must keep the app stopped. */
 export class KeyRotationPartialError extends KeyRotationRefusedError {
   override readonly exitCode = 2;
+}
+/**
+ * Exit 4 is a refusal whose check found no stored value under the new key: no run of this rotation, earlier ones
+ * included, committed a page, so the host can lift the fence and restart the app with the current key.
+ */
+export class KeyRotationUnstartedError extends KeyRotationRefusedError {
+  override readonly exitCode = 4;
 }
 export interface KeyRotationOptions {
   readonly database: PostgresMaintenance;
@@ -48,11 +59,16 @@ export async function rotateKey(options: KeyRotationOptions): Promise<void> {
   } catch (error) {
     if (complete) throw new KeyRotationPartialError('Stored secrets were rotated; run rotate-key.sh again to finish with the same keys');
     if (error instanceof KeyRotationIncompleteError) throw new KeyRotationPartialError(error.message, { cause: error });
-    if (error instanceof KeyRotationSessionsError) throw new KeyRotationRefusedError(error.message);
+    if (error instanceof KeyRotationSessionsError || error instanceof KeyRotationFenceError) throw new KeyRotationRefusedError(error.message);
     if (!(error instanceof UnreadableSecretsError)) throw error;
     for (const value of error.unreadable)
       stderr('Opens with neither key: ' + value.secretClass + ' of ' + (value.secretClass.startsWith('oauth_') ? 'sign-in account ' : 'gym ') + value.owner);
-    throw new KeyRotationRefusedError(error.unreadable.length + ' stored secrets open with neither key, so nothing was changed. '
+    const unreadable = error.unreadable.length + ' stored secrets open with neither key, so this run changed nothing. ';
+    // A rerun after an uncertain attempt lands here too: the count says whether that attempt committed anything.
+    if (error.rotated) throw new KeyRotationPartialError(unreadable + 'An earlier run already re-encrypted ' + error.rotated
+      + ' values with the new key, so the app must stay stopped until the rotation finishes. '
+      + 'Check that APP_ENCRYPTION_KEY is the key the install runs with', { cause: error });
+    throw new KeyRotationUnstartedError(unreadable + 'No stored secret uses the new key yet, so the app can restart with the current key. '
       + 'Check that APP_ENCRYPTION_KEY is the key the install runs with; a setting listed above that is already unreadable can be removed and entered again');
   }
 }

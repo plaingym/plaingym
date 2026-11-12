@@ -24,10 +24,21 @@ case "$*" in
     [ "${FAIL_AT:-}" != killed ] || exit 137
     [ "${FAIL_AT:-}" != unexpected ] || exit 1
     [ "${FAIL_AT:-}" != signal ] || { kill -TERM "$PPID"; exit 1; }
-    case "${FAIL_AT:-}" in rotate|preflight-connect) echo 'Stored secrets open with neither key, so nothing was changed.' >&2; exit 3 ;; esac ;;
+    case "${FAIL_AT:-}" in rotate|preflight-connect) echo 'Stored secrets open with neither key, so this run changed nothing.' >&2; exit 3 ;; esac
+    [ "${FAIL_AT:-}" != unstarted ] || { echo 'No stored secret uses the new key yet.' >&2; exit 4; } ;;
+  *' run --rm --no-deps -T --entrypoint node app /app/maintenance.mjs restore-connect')
+    # A one-off like the rotation: the key never reaches it, and the host decides when the fence lifts.
+    [ -z "${NEW_APP_ENCRYPTION_KEY:-}" ] || exit 98
+    case "${FAIL_AT:-}" in connect|preflight-connect) exit 1 ;; esac ;;
   *' run '*) echo 'Unexpected rotation command' >&2; exit 99 ;;
   *'up -d '*) [ "${FAIL_AT:-}" != startup ] ;;
-  *' exec -T postgres '*) cat >/dev/null; case "${FAIL_AT:-}" in connect|preflight-connect) exit 1 ;; esac ;;
+  *' exec -T postgres sh -c exec pg_isready '*)
+    # The database answers after STARTING_CHECKS failed checks, or never with FAIL_AT=database.
+    [ "${FAIL_AT:-}" != database ] || exit 2
+    checks=$(cat "$INSTALL/.database-checks" 2>/dev/null || echo 0)
+    echo $((checks + 1)) > "$INSTALL/.database-checks"
+    [ "$checks" -ge "${STARTING_CHECKS:-0}" ] || exit 1 ;;
+  *' exec -T postgres '*) echo 'Unexpected database command' >&2; exit 99 ;;
   *' node /app/deploy/healthcheck.mjs') [ "${FAIL_AT:-}" != health ] ;;
 esac
 MOCK
@@ -79,21 +90,21 @@ for failure in partial killed unexpected signal connect; do
   grep -qx 'may_have_committed=true' "$case_dir/.rotate-key.inflight"
   if [ "$failure" != connect ]; then
     [ "$(key_of)" = "$original" ]
-    if grep -q ' exec -T postgres ' "$CALLS"; then echo 'Released fence after an uncertain rotation' >&2; exit 1; fi
+    if grep -q ' restore-connect' "$CALLS"; then echo 'Released fence after an uncertain rotation' >&2; exit 1; fi
   fi
   no_leaks "$original" "$new"
   if [ "$failure" = partial ]; then
     : > "$CALLS"
     if FAIL_AT=rotate APP_DOWN=true sh "$case_dir/rotate-key.sh" > "$temporary/output" 2>&1; then exit 1; fi
     if grep -q ' up -d ' "$CALLS"; then echo 'Started app after a failed partial-rotation retry' >&2; exit 1; fi
-    if grep -q ' exec -T postgres ' "$CALLS"; then echo 'Released fence after a failed partial-rotation retry' >&2; exit 1; fi
+    if grep -q ' restore-connect' "$CALLS"; then echo 'Released fence after a failed partial-rotation retry' >&2; exit 1; fi
     grep -qx 'may_have_committed=true' "$case_dir/.rotate-key.inflight"
     no_leaks "$original" "$new"
   fi
   : > "$CALLS"
   APP_DOWN=true sh "$case_dir/rotate-key.sh" > "$temporary/output" 2>&1
   [ "$(key_of)" = "$new" ]
-  [ "$(line_of ' exec -T postgres ')" -lt "$(line_of ' up -d ')" ]
+  [ "$(line_of ' restore-connect')" -lt "$(line_of ' up -d ')" ]
   [ ! -e "$case_dir/.rotate-key.inflight" ]
   no_leaks "$original" "$new"
 done
@@ -116,7 +127,7 @@ grep -qx "new=$new" "$case_dir/.rotate-key.inflight"
 grep -qx 'may_have_committed=false' "$case_dir/.rotate-key.inflight"
 [ "$(stat -c %a "$case_dir/.rotate-key.inflight")" = 600 ]
 tail -n 1 "$CALLS" | grep -q ' up -d '
-[ "$(line_of ' exec -T postgres ')" -lt "$(line_of ' up -d ')" ]
+[ "$(line_of ' restore-connect')" -lt "$(line_of ' up -d ')" ]
 grep -q 'run ./rotate-key.sh again' "$temporary/output"
 no_leaks "$original" "$new"
 # A second clean refusal still restarts the healthy app so the owner can fix a setting in the admin.
@@ -143,11 +154,51 @@ new=$(printf 'b%.0s' $(seq 64))
 printf 'old=%s\nnew=%s\n' "$original" "$new" > "$case_dir/.rotate-key.inflight"
 if FAIL_AT=rotate APP_DOWN=true sh "$case_dir/rotate-key.sh" > "$temporary/output" 2>&1; then exit 1; fi
 grep -qx 'may_have_committed=true' "$case_dir/.rotate-key.inflight"
-if grep -q -e ' up -d ' -e ' exec -T postgres ' "$CALLS"; then echo 'Released a legacy partial fence' >&2; exit 1; fi
+if grep -q -e ' up -d ' -e ' restore-connect' "$CALLS"; then echo 'Released a legacy partial fence' >&2; exit 1; fi
 : > "$CALLS"
 APP_DOWN=true sh "$case_dir/rotate-key.sh" > "$temporary/output" 2>&1
 [ "$(key_of)" = "$new" ]
 [ ! -e "$case_dir/.rotate-key.inflight" ]
+no_leaks "$original" "$new"
+
+# Exit 4 found no value under the new key: even after an uncertain attempt, the host clears the state, lifts the
+# fence and restarts the app with the current key, so the unreadable setting can be fixed in the admin.
+for earlier in legacy partial; do
+  make_install "unstarted-$earlier"
+  if [ "$earlier" = legacy ]; then
+    new=$(printf 'b%.0s' $(seq 64))
+    printf 'old=%s\nnew=%s\n' "$original" "$new" > "$case_dir/.rotate-key.inflight"
+  else
+    if FAIL_AT=partial sh "$case_dir/rotate-key.sh" > "$temporary/output" 2>&1; then exit 1; fi
+    new=$(cat "$RECEIVED")
+    : > "$CALLS"
+  fi
+  if FAIL_AT=unstarted APP_DOWN=true sh "$case_dir/rotate-key.sh" > "$temporary/output" 2>&1; then exit 1; fi
+  grep -qx 'may_have_committed=false' "$case_dir/.rotate-key.inflight"
+  grep -qx "new=$new" "$case_dir/.rotate-key.inflight"
+  [ "$(key_of)" = "$original" ]
+  [ "$(line_of ' rotate-key$')" -lt "$(line_of ' restore-connect')" ]
+  [ "$(line_of ' restore-connect')" -lt "$(line_of ' up -d ')" ]
+  grep -q 'Restarting the app with the current key' "$temporary/output"
+  if grep -q 'Stored secrets may use the new key' "$temporary/output"; then exit 1; fi
+  no_leaks "$original" "$new"
+done
+# A database still starting is waited for, before the attempt is recorded as one that may commit.
+make_install starting
+STARTING_CHECKS=2 sh "$case_dir/rotate-key.sh" > "$temporary/output" 2>&1
+[ "$(grep -c ' pg_isready ' "$CALLS")" -eq 3 ]
+[ "$(line_of ' pg_isready ')" -lt "$(line_of ' stop app')" ]
+[ "$(key_of)" = "$(cat "$RECEIVED")" ]
+[ ! -e "$case_dir/.rotate-key.inflight" ]
+# One that never answers: the rerun stops before the app or the marker, so a clean marker stays clean.
+make_install unready
+new=$(printf 'b%.0s' $(seq 64))
+printf 'old=%s\nnew=%s\nmay_have_committed=false\n' "$original" "$new" > "$case_dir/.rotate-key.inflight"
+if FAIL_AT=database sh "$case_dir/rotate-key.sh" > "$temporary/output" 2>&1; then exit 1; fi
+grep -q 'PostgreSQL is not accepting connections' "$temporary/output"
+grep -qx 'may_have_committed=false' "$case_dir/.rotate-key.inflight"
+if grep -q -e ' stop app' -e ' rotate-key$' -e ' up -d ' "$CALLS"; then echo 'Acted without the database' >&2; exit 1; fi
+[ "$(key_of)" = "$original" ]
 no_leaks "$original" "$new"
 
 # The marker can't record a new attempt: the rotation never starts, so a clean state still restarts the app.
@@ -155,7 +206,7 @@ make_install unrecorded
 printf 'old=%s\nnew=%s\nmay_have_committed=false\n' "$original" "$new" > "$case_dir/.rotate-key.inflight"
 mkdir "$case_dir/.rotate-key.inflight.next"
 if APP_DOWN=true sh "$case_dir/rotate-key.sh" > "$temporary/output" 2>&1; then exit 1; fi
-if grep -q ' run ' "$CALLS"; then echo 'Started a rotation without recording it' >&2; exit 1; fi
+if grep -q ' rotate-key$' "$CALLS"; then echo 'Started a rotation without recording it' >&2; exit 1; fi
 if grep -q 'Stored secrets may use the new key' "$temporary/output"; then exit 1; fi
 grep -q ' up -d ' "$CALLS"
 grep -qx 'may_have_committed=false' "$case_dir/.rotate-key.inflight"
@@ -212,4 +263,4 @@ if sh "$case_dir/rotate-key.sh" > "$temporary/output" 2>&1; then exit 1; fi
 grep -q 'neither key' "$temporary/output"
 [ "$(key_of)" = "$original" ]
 [ ! -s "$CALLS" ]
-echo 'PASS: key rotation order, fenced entrypoint bypass, durable retry state, definite refusals, uncertain failures, resume, no key on a command line.'
+echo 'PASS: key rotation order, fenced entrypoint bypass, database wait, durable retry state, definite refusals, exit 4 clearing uncertainty, uncertain failures, resume, no key on a command line.'

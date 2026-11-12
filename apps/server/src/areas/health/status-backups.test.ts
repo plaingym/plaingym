@@ -52,7 +52,8 @@ describe('last-backup health', () => {
     expect(await read({ ...changed, destination: { ...changed.destination, bucket: 'new-bucket' } })).toMatchObject({
       status: 'warning', details: { latestRestorableAt: null, noneUnderCurrentKey: true } });
   });
-  it.each([new configuration.BackupsNotConfiguredError('Reworded diagnostic'), new configuration.InstallBackupGymCountError()])(
+  class Reworded extends configuration.BackupsNotConfiguredError { override message = 'Reworded diagnostic'; }
+  it.each([new Reworded(), new configuration.InstallBackupGymCountError()])(
     'recognizes unconfigured backups by type', async (error) => {
       const spy = vi.spyOn(configuration, 'loadBackupConfig').mockRejectedValue(error);
       try {

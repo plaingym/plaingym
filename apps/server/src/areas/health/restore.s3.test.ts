@@ -2,6 +2,8 @@
 import '@hono/zod-openapi';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { RestoreService } from './restore.js';
+import { RestoreFailure } from './restore.failure.js';
+import { restoreFailureReason } from '../../cli/restore.reason.js';
 import { S3Uploads } from '../../infra/storage/index.js';
 import { useRestoreFixture } from './restore.fixture.test-helper.js';
 
@@ -48,6 +50,19 @@ describe('into an install that keeps uploads in S3', () => {
     await expect(f.restore().resume()).rejects.toThrow('Upload storage changed');
     await storeRestore('uploads-new').resume();
     expect(await new Response(await bucketUploads('uploads-new').get(gymId + '/s3-photo')).text()).toBe('S3 source bytes');
+    expect(await f.gate().isClosed()).toBe(false);
+  });
+  it('names the uploads bucket and its error code when publishing fails after activation, then resumes', async () => {
+    f.server.state.fail = (method, key) => key.startsWith('uploads-failing/') && method !== 'GET' && method !== 'HEAD';
+    try {
+      const failure = await storeRestore('uploads-failing').restore(snapshotId, f.identity).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(RestoreFailure);
+      expect(restoreFailureReason(failure)).toBe('The staged restore failed: the uploads bucket answered with error InternalError; '
+        + 'preserve the restore state, fix the uploads bucket, then retry resume');
+      expect(await f.gate().hasStagedRestore()).toBe(true);
+    } finally { f.server.state.fail = undefined; }
+    await storeRestore('uploads-failing').resume();
+    expect(await new Response(await bucketUploads('uploads-failing').get(gymId + '/s3-photo')).text()).toBe('S3 source bytes');
     expect(await f.gate().isClosed()).toBe(false);
   });
 });

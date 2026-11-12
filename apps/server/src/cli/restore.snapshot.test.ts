@@ -42,7 +42,8 @@ it('keeps the generic line for every other failure', () => {
   expect(messages).toEqual(['Maintenance command failed; check configuration and restore state']);
 });
 it('recognizes unconfigured backups even when their diagnostic message changes', async () => {
-  const spy = vi.spyOn(configuration, 'loadBackupConfig').mockRejectedValue(new configuration.BackupsNotConfiguredError('Reworded diagnostic'));
+  class Reworded extends configuration.BackupsNotConfiguredError { override message = 'Reworded diagnostic'; }
+  const spy = vi.spyOn(configuration, 'loadBackupConfig').mockRejectedValue(new Reworded());
   try { await expect(maintenanceCommand(['snapshot'])).rejects.toBeInstanceOf(BackupsNotSetUpError); }
   finally { spy.mockRestore(); }
 });

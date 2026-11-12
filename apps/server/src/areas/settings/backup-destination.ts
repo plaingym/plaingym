@@ -7,11 +7,18 @@ import { logError } from '../../core/log.js';
 
 export type CheckBackupDestination = (destination: CreateBackupKeyRequest['destination'], gymId: string) => Promise<void>;
 
-/** A unique, non-sensitive probe under this gym's prefix; never touches a snapshot or an existing object. */
-export async function probeBackupDestination(store: BackupObjectStore, gymId: string): Promise<void> {
-  const name = `${gymId}/backup-probes/${randomUUID()}`;
+/**
+ * A unique, non-sensitive probe where snapshots write, so credentials scoped to `snapshots/` and `blobs/` pass and
+ * ones that can't write there don't. It lists an unused snapshot prefix, then writes, reads back and deletes a blob
+ * named `blobs/probe-<uuid>`: no snapshot references it and no blob is named that way (theirs are hex digests), so
+ * a probe whose cleanup failed doesn't stop pruning, which deletes it with the other unreferenced blobs. It never
+ * touches a snapshot or an existing object.
+ */
+export async function probeBackupDestination(store: BackupObjectStore): Promise<void> {
+  const id = randomUUID(), name = `blobs/probe-${id}`;
   const value = new TextEncoder().encode('PlainGym backup destination check');
-  await store.listObjects(`${gymId}/backup-probes/`);
+  await store.listObjects(`snapshots/${id}/`);
+  await store.listObjects(name);
   try {
     await store.putObject(name, new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(value); controller.close(); } }));
     const body = await store.getObject(name);
@@ -32,10 +39,10 @@ export async function probeBackupDestination(store: BackupObjectStore, gymId: st
   await store.deleteObject(name);
 }
 
-const checkBackupDestination: CheckBackupDestination = async (destination, gymId) => {
+const checkBackupDestination: CheckBackupDestination = async (destination) => {
   const client = createS3Client({ region: destination.region, endpoint: destination.endpoint,
     credentials: { accessKeyId: destination.accessKeyId, secretAccessKey: destination.secretAccessKey } });
-  try { await probeBackupDestination(new S3BackupObjectStore({ client, bucket: destination.bucket }), gymId); }
+  try { await probeBackupDestination(new S3BackupObjectStore({ client, bucket: destination.bucket })); }
   finally { client.destroy(); }
 };
 

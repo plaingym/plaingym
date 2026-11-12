@@ -15,6 +15,11 @@ import { RestoreFailure } from './restore.failure.js';
 export const unfinishedRestorePhases = ['verified', 'database_restored', 'migrated', 'rekeyed', 'moving_old', 'moving_new', 'uploads_switched'] as const;
 const leaseSchema = z.strictObject({ pid: z.number().int().positive(), started: z.string().nullable() });
 const t = createTranslator(locales.en ?? {});
+/**
+ * A lease only marks a request or job of a running process, so once every process on the data volume has stopped,
+ * no lease is live and the folder can go; the next start's `resume` then drains nothing and carries on.
+ */
+const invalidLease = 'The restore activity lease is invalid; stop the app, delete the restore-activity folder on its data volume, then start the app';
 async function processStart(pid: number): Promise<string | null> {
   if (process.platform !== 'linux') return null;
   // Linux start ticks distinguish an abandoned lease from a reused PID after container restart.
@@ -71,7 +76,7 @@ export class RestoreGate {
         const path = join(this.activityDirectory, name);
         try {
           const parsed = leaseSchema.safeParse(await readActivity(path));
-          if (!parsed.success) throw new RestoreFailure('The restore activity lease is invalid; stop the app and check restore state');
+          if (!parsed.success) throw new RestoreFailure(invalidLease);
           const lease = parsed.data;
           try {
             process.kill(lease.pid, 0);
@@ -83,7 +88,7 @@ export class RestoreGate {
           }
         } catch (error) {
           if (error instanceof SyntaxError || (error instanceof Error && error.message === 'Metadata exceeds size limit'))
-            throw new RestoreFailure('The restore activity lease is invalid; stop the app and check restore state');
+            throw new RestoreFailure(invalidLease);
           if (!missing(error)) throw error;
         }
       }

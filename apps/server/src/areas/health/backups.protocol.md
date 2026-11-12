@@ -10,13 +10,20 @@ node maintenance.mjs snapshot pre-upgrade
 node maintenance.mjs restore SNAPSHOT_UUID --config /private/restore.json
 node maintenance.mjs resume
 node maintenance.mjs rotate-key
+node maintenance.mjs restore-connect
 ```
 
 `migrate` then rewrites stored secrets still in `v1` envelopes as `v2` when
 `APP_ENCRYPTION_KEY` is set. `rotate-key` re-encrypts every registered secret
 from `APP_ENCRYPTION_KEY` to `NEW_APP_ENCRYPTION_KEY` under the backup lock, with
 the app stopped (`deploy/rotate-key.sh` runs it; `deploy/README.md`, "Rotating
-the encryption key").
+the encryption key"). It fences the app out by revoking `CONNECT` from `app` and
+`PUBLIC`, and refuses if `app` can still connect. Its exit code tells the host
+what may have changed: 0 done, 2 values may already be under the new key, 3 a
+refusal that changed nothing in this run, 4 a refusal whose check found no value
+under the new key (so no run committed anything), 1 anything else.
+`restore-connect` lifts the fence (grants `CONNECT` back to `app`; `PUBLIC` stays
+revoked); the host script decides when that is safe.
 
 The bundle reads `MAINTENANCE_DATABASE_URL`, `APP_ENCRYPTION_KEY`, `BACKUP_STAGING_DIR`,
 `UPLOADS_DIR`, and the `UPLOADS_S3_*` settings when uploads live in S3: snapshots
@@ -87,6 +94,11 @@ outside the overwritten database. `RestoreGate.middleware()` wraps requests;
 processes on an install share the container PID namespace and data volume.
 Closing the gate waits for admitted work to finish. Linux process-start ticks
 allow abandoned leases to be distinguished from reused PIDs after restart.
+A lease only marks admitted work of a running process, so with every process on
+the data volume stopped, `restore-activity/` holds no live lease and can be
+deleted: that is the way out when one is unreadable (`docs/restoring.md`).
+The journal counts as written once its rename has landed: if the directory sync
+after it fails, the staging it names is kept for `resume`.
 A service using the gate must never initiate restore from inside its own activity
 lease: the setup coordinator calls the service outside the wrapped request.
 

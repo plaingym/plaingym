@@ -185,7 +185,7 @@ it('prints a fixed migration diagnostic for a non-maintenance role', async () =>
     expect(await commands.find(command => command.id === 'migrate')!.run([], {
       stdout: line => lines.push(line), stderr: line => lines.push(line),
     })).toBe(1);
-    expect(lines).toEqual(['Migration failed: Backups and restore require maintenance']);
+    expect(lines).toEqual(['Migration failed: MAINTENANCE_DATABASE_URL must name the maintenance database role']);
   } finally { vi.stubEnv('MAINTENANCE_DATABASE_URL', previous); }
 });
 it('throws the public failure type for invalid restore command usage', async () => {

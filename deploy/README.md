@@ -503,7 +503,11 @@ requires the app to be running. It then:
 1. generates a new key and writes the current and new keys to
    `.rotate-key.inflight` (mode 0600), before anything is encrypted with the new
    one;
-2. stops the app and runs `node /app/maintenance.mjs rotate-key` in a one-off
+2. waits up to 30 seconds for `pg_isready` in the `postgres` service, and
+   otherwise stops with nothing changed: the one-off below skips the
+   entrypoint's database wait, and a database still starting would otherwise
+   count as an uncertain failure;
+3. stops the app and runs `node /app/maintenance.mjs rotate-key` in a one-off
    app container, with the current key from `.env` and the new one in the
    container's environment (`NEW_APP_ENCRYPTION_KEY`, never on a command line).
    It bypasses the image entrypoint, whose app-role check cannot connect under
@@ -511,35 +515,42 @@ requires the app to be running. It then:
    install; the rotation checks the restore gate itself without startup migrations.
    As the `maintenance` role and under the backup lock, the command refuses while
    a restore is unfinished. It revokes database CONNECT from `app` and `PUBLIC`,
-   waits up to 30 seconds for existing app sessions to close, and refuses with
-   their remaining count if any persist. It never terminates sessions. It checks
-   that every value in the encrypted-field registry opens with one of the two
-   keys (if one doesn't, it lists where, by secret class and gym or sign-in
-   account ID, and changes nothing), then re-encrypts them as `v2` envelopes, a
-   page of sign-in accounts and then one gym per short transaction. Pending
-   backup credentials in settings are included (ones neither key opens are left
-   as they are; confirming them asks for a new backup key). Before reporting
-   success it verifies every value opens as `v2` with the new key and checks for
-   app sessions again, still under the backup lock; a failed check requires a rerun
-   with the same keys;
-3. writes the new key into `.env`, restores CONNECT to `app` (`PUBLIC` stays
-   revoked), recreates the app from it, runs the health
-   check, and removes `.rotate-key.inflight`.
+   and refuses if `app` can still connect (a grant from another role, or through
+   a role `app` is a member of). It waits up to 30 seconds for existing app
+   sessions to close, and refuses with their remaining count if any persist. It
+   never terminates sessions. It checks that every value in the encrypted-field
+   registry opens with one of the two keys (if one doesn't, it lists where, by
+   secret class and gym or sign-in account ID, changes nothing, and says whether
+   any value already opens with the new key), then re-encrypts them as `v2`
+   envelopes, a page of sign-in accounts and then one gym per short transaction.
+   Pending backup credentials in settings are included (ones neither key opens
+   are left as they are; confirming them asks for a new backup key). Before
+   reporting success it verifies every value opens as `v2` with the new key and
+   checks for app sessions again, still under the backup lock; a failed check
+   requires a rerun with the same keys;
+4. writes the new key into `.env`, restores CONNECT to `app` with
+   `node /app/maintenance.mjs restore-connect` in another one-off app container
+   (`PUBLIC` stays revoked), recreates the app from it, runs the health check,
+   and removes `.rotate-key.inflight`.
 
 A definite preflight refusal (maintenance exit code 3) restores CONNECT and
 restarts the app with the current key if no earlier attempt may have committed
 pages. Repeated clean refusals restart it each time, allowing settings to be fixed
 in the admin. Before each attempt the marker durably records that pages may
 commit; only a definite refusal with no earlier uncertainty clears that state.
-Older markers without this state are treated as possibly committed.
-A partial rewrite (maintenance exit code 2), any other uncertain failure (including
-exit 1), a refusal after either, or a run that can't write `.env` after
-step 2 succeeded leaves the app stopped, since stored secrets may already open
+Exit code 4 clears it too, after any earlier attempt: some value opens with
+neither key and none opens with the new key yet, so no attempt committed a page,
+and the app restarts with the current key so that setting can be fixed in the
+admin. Older markers without this state are treated as possibly committed.
+A partial rewrite (maintenance exit code 2, which a refusal also returns when
+some values already open with the new key), any other uncertain failure (including
+exit 1), an exit-3 refusal after either, or a run that can't write `.env` after
+step 3 succeeded leaves the app stopped, since stored secrets may already open
 only with the new key. A failed CONNECT grant also leaves it stopped. In each case
 `.rotate-key.inflight` stays, and running `rotate-key.sh` again finishes the same
 rotation: values that already open with the new key are done. Keep the file
 until a run finishes, because it holds the only copy of the new key until then.
-If the app doesn't start after step 3, `.env` already holds the new key; the
+If the app doesn't start after step 4, `.env` already holds the new key; the
 next run restores CONNECT again before starting the app. This also recovers a
 crash between switching `.env` and granting CONNECT.
 
@@ -577,7 +588,9 @@ CONNECT grant, start, health check), `.env` changing only after the rotation,
 a restart with the current key after repeated clean preflight refusals, the exact
 entrypoint bypass, durable marker state before each attempt, staying stopped
 after a partial rewrite, generic or abnormal exit, refused partial retry,
-failed CONNECT grant or `.env` write,
+failed CONNECT grant or `.env` write, an exit-4 refusal that restarts the app after
+an uncertain or older marker, waiting for a database that is still starting and
+changing nothing when it never answers,
 finishing with the same new key and restoring CONNECT on the next run,
 the refusals, and that no key reaches a command line or the output. The separate
 image smoke test uses actual PostgreSQL, app, and Caddy containers:

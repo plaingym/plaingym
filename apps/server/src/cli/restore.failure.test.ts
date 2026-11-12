@@ -40,7 +40,7 @@ describe('maintenance command failure', () => {
     const failure = (() => { try { return new PostgresMaintenance('postgres://app:DBPASSWORD@db.invalid/gym'); } catch (error) { return error; } })();
     const messages: string[] = [], previous = setLogSink(() => undefined);
     try { reportMaintenanceFailure(['migrate'], failure, (line) => messages.push(line)); } finally { setLogSink(previous); }
-    expect(messages).toEqual(['Backups and restore require maintenance']);
+    expect(messages).toEqual(['MAINTENANCE_DATABASE_URL must name the maintenance database role']);
   });
   it('logs a command name only when it looks like one', () => {
     for (const arg of ['/srv/SECRETPATH/restore', 'postgres://maintenance:DBPASSWORD@db.invalid/gym']) {
