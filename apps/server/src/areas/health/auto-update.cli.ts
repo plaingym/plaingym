@@ -7,6 +7,7 @@ import { clock as defaultClock } from '../../core/clock.js';
 import { restoreStagingDirectory } from '../../core/maintenance-credentials.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
 import { listGyms, singleGymId, tenancyMode } from '../../core/tenancy.js';
+import { DeliveryError } from '../../infra/email/index.js';
 import { createAutoUpdateSettings, type AutoUpdateSettings } from '../settings/auto-update.js';
 import { autoUpdateAttemptSchema, createAutoUpdateAttempts, type AutoUpdateAttempt } from './auto-update.js';
 import { createAutoUpdateNotices } from './auto-update.notices.js';
@@ -27,7 +28,7 @@ export interface AutoUpdateCommandOptions {
   hasGym?: () => Promise<boolean>;
   notify?: (gymId: string, attempt: AutoUpdateAttempt) => Promise<void>;
 }
-const usage = 'Usage: gym-app auto-update check | gym-app auto-update record --at INSTANT --result RESULT [--reason REASON] [--from VERSION] [--to VERSION] [--failures COUNT] [--down-at INSTANT]';
+const usage = 'Usage: gym-app auto-update check | gym-app auto-update record|notice --at INSTANT --result RESULT [--reason REASON] [--from VERSION] [--to VERSION] [--failures COUNT] [--down-at INSTANT] [--notice deferred]';
 const flags = { '--at': 'attemptedAt', '--result': 'result', '--reason': 'reason', '--from': 'fromVersion', '--to': 'toVersion',
   '--failures': 'failures', '--down-at': 'downAt' } as const;
 /**
@@ -38,6 +39,7 @@ const flags = { '--at': 'attemptedAt', '--result': 'result', '--reason': 'reason
  *   created the gym, or `enabled=…`, `backups=…` and the gym's `timezone=…`, one `key=value` per line.
  * * `record` stores one attempt's result for the `automatic_updates` health tile. `--failures` is how many automatic
  *   attempts at the target release have failed so far, and `--down-at` when a recovered failed rollback's site went down.
+ *   `--notice deferred` leaves delivery to the host's separate notice queue; `notice` sends without recording again.
  *
  * Single-gym installs only: an install serving several gyms has no updater timer.
  */
@@ -60,9 +62,15 @@ export function createAutoUpdateCommand(options: AutoUpdateCommandOptions = {}):
         io.stdout(['restore=false', 'setup=true', `enabled=${setting.enabled}`, `backups=${await backups()}`, `timezone=${setting.timezone}`].join('\n'));
         return 0;
       }
-      if (args[0] === 'record' && args.length % 2 === 1) {
+      if (['record', 'notice'].includes(args[0] ?? '') && args.length % 2 === 1) {
         const input: Record<string, string | number | null> = { reason: null, fromVersion: null, toVersion: null }, seen = new Set<string>();
+        let deferred = false;
         for (let index = 1; index < args.length; index += 2) {
+          if (args[index] === '--notice') {
+            if (args[0] !== 'record' || args[index + 1] !== 'deferred' || deferred) { io.stderr(usage); return 2; }
+            deferred = true;
+            continue;
+          }
           const key = flags[args[index] as keyof typeof flags], value = args[index + 1]!;
           if (!key || seen.has(key)) { io.stderr(usage); return 2; }
           seen.add(key);
@@ -73,11 +81,21 @@ export function createAutoUpdateCommand(options: AutoUpdateCommandOptions = {}):
         if (!attempt.success) { io.stderr('Invalid attempt: ' + attempt.error.issues.map((issue) => issue.path.join('.') || issue.message).join(', ')); return 2; }
         if (await restoring()) { io.stderr('A restore is in progress; nothing was recorded'); return 1; }
         const gymId = await resolveGymId();
-        await createAutoUpdateAttempts({ ...options.scope ? { scope: options.scope } : {}, clock: options.clock ?? defaultClock })
-          .record(gymId, attempt.data);
-        // A definite non-send leaves the host's pending report for retry. Uncertain/accepted sends never resend.
-        await (options.notify ?? createAutoUpdateNotices({ env, ...options.scope ? { scope: options.scope } : {}, clock: options.clock ?? defaultClock }))(gymId, attempt.data);
-        io.stdout('Recorded.');
+        if (args[0] === 'record') {
+          await createAutoUpdateAttempts({ ...options.scope ? { scope: options.scope } : {}, clock: options.clock ?? defaultClock })
+            .record(gymId, attempt.data);
+          io.stdout('Recorded.');
+        }
+        if (!deferred) {
+          try {
+            await (options.notify ?? createAutoUpdateNotices({ env, ...options.scope ? { scope: options.scope } : {}, clock: options.clock ?? defaultClock }))(gymId, attempt.data);
+          } catch (error) {
+            // The result is already stored. Only proof of a non-send warrants a notice retry; an uncertain send,
+            // lookup, decryption or rendering error must not hold back later results or resend an accepted email.
+            io.stderr(error instanceof Error ? error.message : 'Automatic update notice failed');
+            if (error instanceof DeliveryError && error.acceptance === 'not_accepted') return 3;
+          }
+        }
         return 0;
       }
       io.stderr(usage);

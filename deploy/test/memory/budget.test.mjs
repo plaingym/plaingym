@@ -110,6 +110,14 @@ const healthy = (name, seconds) => {
 const judge = (samples, mode = 'capped', facts = { containers: { app: { oomKilled: false, restarts: 0 } }, nodeOptions: '--max-old-space-size=256' }) =>
   evaluate(summarize(samples, marks), { mode, facts });
 const healthySummary = summarize(run({ shape: healthy, capped: false }), marks);
+test('separates the hourly update check peak from its baseline and the later load', () => {
+  const summary = summarize(run({ shape: (name, seconds) => name === 'app' && seconds >= 12 && seconds <= 14 ? 330 : healthy(name, seconds) }),
+    { ...marks, autoUpdateCheckStart: start + 12_000, autoUpdateCheckEnd: start + 14_000 });
+  assert.equal(summary.autoUpdateCheck.peakStackProcessBytes, (330 + 50 + 52) * MiB);
+  assert.equal(summary.autoUpdateCheck.samples, 5);
+  assert.ok(summary.autoUpdateCheck.baselineStackProcessBytes > 0);
+  assert.equal(healthySummary.autoUpdateCheck, null);
+});
 const judgeRun = (summary = healthySummary, failures = [], containers = {}) =>
   assessRun(summary, { mode: 'uncapped', failures, facts: { containers } });
 

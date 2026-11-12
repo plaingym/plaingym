@@ -5,6 +5,11 @@ The **Memory** workflow (`.github/workflows/memory.yml`) runs a whole self-hoste
 fails when it uses more memory than the budget, or when anything is killed for memory. It runs on
 every integration branch and push to `main`, nightly, and on demand.
 
+After setup and seeding, each run measures one `gym-app auto-update check` beside the running app.
+`summary.json` records the CLI's kernel peak RSS in `facts.autoUpdateCheckPeakRssBytes` and the cgroup
+sampler's baseline and peak stack process memory in `summary.autoUpdateCheck`. The kernel high-water
+measurement captures short CLI peaks between the sampler's 500 ms samples; general budgets stay unchanged.
+
     node --test deploy/test/memory/budget.test.mjs    # budget arithmetic and failure classification, no Docker
     node deploy/test/memory/run.mjs --mode both        # builds committed HEAD, then measures it
     node --test deploy/test/memory/waiver-budget.test.mjs

@@ -5,7 +5,7 @@ import { clock as defaultClock } from '../../core/clock.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
 import { createAccountService } from '../../infra/auth/accounts.js';
 import { authConfig } from '../../infra/auth/config.js';
-import { createEmailDeliveries, recipientDigest, SmtpEmail, type Email, type SmtpConfig } from '../../infra/email/index.js';
+import { createEmailDeliveries, DeliveryError, recipientDigest, SmtpEmail, type Email, type SmtpConfig } from '../../infra/email/index.js';
 import { createSmtpResolver } from '../settings/smtp.js';
 import { createSettingsService } from '../settings/settings.js';
 import { renderAutoUpdateNotice } from '../../emails/health/auto-update.js';
@@ -32,12 +32,16 @@ export function createAutoUpdateNotices(options: AutoUpdateNoticeOptions = {}) {
       time: formatAutoUpdateTime(attempt.attemptedAt, gym.timezone),
       message: describeAttempt(true, attempt, new Date(attempt.attemptedAt), { timezone: gym.timezone }).message });
     const deliveries = createEmailDeliveries({ scope, clock }), email = options.transport?.(config) ?? new SmtpEmail(config);
+    const errors: unknown[] = [];
     try {
       // Owners get separate messages; neither their addresses nor SMTP credentials reach an audit row.
       for (const to of new Set(recipients.map(address => address.trim().toLowerCase()))) {
         const key = `auto-update:${new Date(attempt.attemptedAt).toISOString()}:${attempt.toVersion}:${recipientDigest(to)}`;
-        await deliveries.send(gymId, key, email, { ...rendered, to });
+        // One owner's failed send must not keep the notice from the others: the host may not retry it.
+        try { await deliveries.send(gymId, key, email, { ...rendered, to }); } catch (error) { errors.push(error); }
       }
     } finally { email.close?.(); }
+    // A definite non-send wins, so the host retries it; the delivery keys skip owners already sent to.
+    if (errors.length) throw errors.find(error => error instanceof DeliveryError && error.acceptance === 'not_accepted') ?? errors[0];
   };
 }

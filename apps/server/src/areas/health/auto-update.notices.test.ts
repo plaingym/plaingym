@@ -75,9 +75,20 @@ it('retries a definite non-send but never repeats a possibly accepted notice', a
   const next = { ...attempt, attemptedAt: '2026-11-05T16:30:00Z' };
   f.email.respondNext(new DeliveryError('unknown', 'Lost reply'));
   await expect(send(f.gymId, next)).rejects.toThrow();
-  await send(f.gymId, next);
-  // The uncertain recipient is skipped, while the other owner still receives a notice.
+  // The other owner still receives the notice in the same call, and a replay skips the uncertain recipient.
   expect(f.email.messages).toHaveLength(3);
+  await send(f.gymId, next);
+  expect(f.email.messages).toHaveLength(3);
+});
+it('still notifies the other owner when the host command meets an uncertain send', async () => {
+  const f = await fixture(), command = createAutoUpdateCommand({ env, clock, scope: db.forGym, resolveGymId: async () => f.gymId,
+    restoring: async () => false, notify: f.build() });
+  const io = { stdout: () => {}, stderr: () => {} };
+  f.email.respondNext(new DeliveryError('unknown', 'Lost reply'));
+  // Exit 0 means the host drops the notice, so the second owner must be reached in this one run.
+  expect(await command.run(['notice', '--at', attempt.attemptedAt, '--result', 'rolled_back', '--reason', 'health_check_failed',
+    '--from', 'v1.2.3', '--to', 'v1.2.4'], io)).toBe(0);
+  expect(f.email.messages).toHaveLength(1);
 });
 it('sends through the host record command and deduplicates concurrent replays', async () => {
   const f = await fixture(), notify = f.build();
@@ -89,4 +100,18 @@ it('sends through the host record command and deduplicates concurrent replays', 
   expect(results).toContain(0);
   expect(await command.run(args, io)).toBe(0);
   expect(f.email.messages).toHaveLength(2);
+});
+it('stores a deferred failure and its recovery, then sends only the recovery notice with per-owner replay protection', async () => {
+  const f = await fixture(), command = createAutoUpdateCommand({ env, clock, scope: db.forGym, resolveGymId: async () => f.gymId,
+    restoring: async () => false, notify: f.build() });
+  const io = { stdout: () => {}, stderr: () => {} };
+  const failed = ['--at', '2026-11-03T15:05:00Z', '--result', 'failed', '--reason', 'rollback_failed', '--from', 'v1.2.3', '--to', 'v1.2.4'];
+  const recovered = ['--at', attempt.attemptedAt, '--result', 'rolled_back', '--reason', 'rollback_failed', '--from', 'v1.2.3', '--to', 'v1.2.4', '--down-at', '2026-11-03T15:02:00Z'];
+  expect(await command.run(['record', ...failed, '--notice', 'deferred'], io)).toBe(0);
+  expect(await command.run(['record', ...recovered, '--notice', 'deferred'], io)).toBe(0);
+  expect(f.email.messages).toHaveLength(0);
+  expect(await command.run(['notice', ...recovered], io)).toBe(0);
+  expect(await command.run(['notice', ...recovered], io)).toBe(0);
+  expect(f.email.messages).toHaveLength(2);
+  expect(f.email.messages.every(message => message.text.includes('the site was down'))).toBe(true);
 });

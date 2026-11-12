@@ -50,12 +50,14 @@ compatible() {
 }
 case "$*" in
   *' ps --status running --services') [ "${APP_STATE:-running}" != running ] || echo app ;;
-  "image inspect "*" --format {{.Id}}") case "$3" in "$OLDER_ID") echo "$OLDER_ID" ;; *:v1.9.0|"$PREVIOUS_ID") echo "$PREVIOUS_ID" ;; *"$INITIAL_ID") echo "$INITIAL_ID" ;; *) echo "$DIGEST" ;; esac ;;
+  "image inspect "*" --format {{.Id}}")
+    case "$3" in *:v1.9.0|"$PREVIOUS_ID") [ "${PIN_REMOVED:-}" != true ] || { echo 'No such image' >&2; exit 1; } ;; esac
+    case "$3" in "$OLDER_ID") echo "$OLDER_ID" ;; *:v1.9.0|"$PREVIOUS_ID") echo "$PREVIOUS_ID" ;; *"$INITIAL_ID") echo "$INITIAL_ID" ;; *) echo "$DIGEST" ;; esac ;;
   'image inspect '*'org.opencontainers.image.version'*) version_of "$3" ;;
   'image inspect '*RepoDigests*) echo "ghcr.io/example/app@$DIGEST" ;;
   *' snapshot pre-upgrade'|*' snapshot manual')
     compatible "${APP_IMAGE:-$PREVIOUS_ID}"
-    [ "${FAIL_AT:-}" != snapshot ] || exit 1
+    case "${FAIL_AT:-}" in snapshot|snapshot_rollback) exit 1 ;; esac
     # Pruning runs before capture and keeps only the two latest pre-upgrade snapshots. Manual snapshots
     # use separate retention tiers; their timing is irrelevant to the pre-upgrade quota tested here.
     if [ -f "$SNAPSHOTS/pre-upgrade" ]; then
@@ -74,6 +76,7 @@ case "$*" in
   *' node /app/deploy/healthcheck.mjs') [ "${FAIL_AT:-}" != health ] ;;
   *'up -d '*)
     compatible "${APP_IMAGE:-$PREVIOUS_ID}"
+    [ "${FAIL_AT:-}" != snapshot_rollback ] || exit 1
     if [ "${APP_IMAGE:-}" != "$PREVIOUS_ID" ] && [ "${APP_IMAGE:-}" != "$OLDER_ID" ]; then
       case "${FAIL_AT:-}" in
         before_migrating) exit 1 ;;
@@ -91,7 +94,7 @@ cat > "$temporary/bin/curl" <<'MOCK'
 url= output=
 while [ "$#" -gt 0 ]; do case "$1" in -o) output=$2; shift 2 ;; https://*) url=$1; shift ;; *) shift ;; esac; done
 case "$url" in
-  https://github.com/example/app/releases/download/*/release-manifest.txt) cp "$FIXTURES/manifest" "$output" ;;
+  https://github.com/example/app/releases/download/*/release-manifest.txt) [ "${FAIL_AT:-}" != manifest ] || exit 22; cp "$FIXTURES/manifest" "$output" ;;
   https://github.com/example/app/releases/download/*/release-manifest.txt.sig) cp "$FIXTURES/manifest.sig" "$output" ;;
   *) exit 22 ;;
 esac
@@ -142,6 +145,45 @@ outcomes() { [ "$(cut -f4 "$case_dir/version-history.tsv" | tr '\n' ' ')" = "$1"
 # shellcheck source=deploy/lib.sh
 installed() { (ROOT=$case_dir; . "$case_dir/lib.sh"; "$@"); }
 floor() { installed schema_floor; }
+
+# A missing manual release manifest gives an actionable error before stopping the app.
+make_install manifest-unavailable v2.0.0 v2.0.0
+update 1 FAIL_AT=manifest
+said 'Could not download the signed release manifest and signature'
+said 'RELEASE_REPOSITORY'
+if grep -q 'stop app\|snapshot pre-upgrade\|up -d' "$CALLS"; then exit 1; fi
+
+for app_state in stopped restarting; do
+  make_install "rollback_snapshot_$app_state" v1.10.0 v1.9.0
+  installed history_record v1.8.0 "$OLDER_ID" install v1.8.0 -
+  installed history_record v1.9.0 "$PREVIOUS_ID" update v1.8.0 -
+  if APP_STATE="$app_state" FAIL_AT=snapshot sh "$case_dir/update.sh" --rollback > "$temporary/output" 2>&1; then exit 1; fi
+  said 'the app stays stopped'
+  if grep -q 'up -d' "$CALLS"; then echo 'Restarted an app that was already down after a failed snapshot.' >&2; exit 1; fi
+  pinned ghcr.io/example/app:v1.9.0
+done
+
+# A snapshot failure that also fails to restart the original image reports the failed rollback first.
+make_install rollback_snapshot_restart_failed v1.10.0 v1.9.0
+installed history_record v1.8.0 "$OLDER_ID" install v1.8.0 -
+installed history_record v1.9.0 "$PREVIOUS_ID" update v1.8.0 -
+if FAIL_AT=snapshot_rollback sh "$case_dir/update.sh" --rollback > "$temporary/output" 2>&1; then exit 1; fi
+said 'Rollback: failed, rollback_failed'
+if grep -q 'Rollback: skipped, snapshot_failed' "$temporary/output"; then exit 1; fi
+
+# A migrated failure can recover after the obsolete pinned image has been pruned.
+make_install recovery-pruned v2.0.0 v2.0.0
+update 1 FAIL_AT=after_migrating
+update 1 PIN_REMOVED=true APP_STATE=stopped FAIL_AT=database
+said "The database's migrations couldn't be read. The app stays stopped"
+if grep -q 'current version is restarting' "$temporary/output"; then exit 1; fi
+update 137 PIN_REMOVED=true APP_STATE=stopped FAIL_AT=killed
+[ -e "$case_dir/.schema-attempt" ]
+update 1 PIN_REMOVED=true APP_STATE=stopped
+said 'An earlier update was interrupted'
+[ ! -e "$case_dir/.schema-attempt" ] && [ -e "$case_dir/.schema-recovery" ]
+update 0 PIN_REMOVED=true APP_STATE=stopped
+pinned "ghcr.io/example/app:$TARGET@$digest"
 
 # The owner is told before anything stops; the attempt fails before migrating; the previous version starts again and
 # the floor doesn't stay, so a later rollback isn't refused because of an update that changed nothing.

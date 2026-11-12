@@ -17,7 +17,9 @@ case "$*" in
   # The requested release is another image; its digest names the running one.
   'image inspect example:v1.0.1 --format {{.Id}}') echo sha256:next; exit 0 ;;
   'image inspect '*) echo sha256:previous; exit 0 ;;
-  *' ps --status running --services') [ "${APP_STATE:-running}" != running ] || echo app ;;
+  *' ps --status running --services')
+    [ "${FAIL_AT:-}" != compose ] || { echo 'Cannot connect to the Docker daemon' >&2; exit 1; }
+    [ "${APP_STATE:-running}" != running ] || echo app ;;
   *' pull app') [ "${FAIL_AT:-}" != pull ] ;;
   *' snapshot pre-upgrade')
     [ "${FAIL_AT:-}" != snapshot ] || { echo 'Backups are not set up: set them up in Settings → Email, payments and backups, then run the update again' >&2; exit 1; } ;;
@@ -81,6 +83,13 @@ for app_state in stopped restarting; do
   grep -qx APP_IMAGE=example:v1.0.0 "$case_dir/.env"
   if grep -q 'stop app\|snapshot pre-upgrade\|up -d' "$CALLS"; then exit 1; fi
 done
+make_install compose-error
+if FAIL_AT=compose sh "$case_dir/update.sh" example:v1.0.1 > "$temporary/output" 2>&1; then exit 1; fi
+grep -q 'Cannot connect to the Docker daemon' "$temporary/output"
+grep -q 'Could not check whether the app is running' "$temporary/output"
+if grep -q 'The app must be running' "$temporary/output"; then exit 1; fi
+if grep -q 'stop app\|snapshot pre-upgrade\|up -d' "$CALLS"; then exit 1; fi
+
 make_install locked
 touch "$case_dir/.rotate-key.inflight"
 for arguments in 'example:v1.0.1' '--patch --now'; do

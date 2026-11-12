@@ -84,6 +84,11 @@ export function summarize(samples, marks) {
   const spanMs = times.at(-1) - times[0];
   return {
     services,
+    autoUpdateCheck: Number.isFinite(marks.autoUpdateCheckStart) && Number.isFinite(marks.autoUpdateCheckEnd) ? {
+      baselineStackProcessBytes: processSum(within(samples, marks.autoUpdateCheckStart - 2000, marks.autoUpdateCheckStart)),
+      peakStackProcessBytes: processSum(within(samples, marks.autoUpdateCheckStart, marks.autoUpdateCheckEnd)),
+      samples: within(samples, marks.autoUpdateCheckStart, marks.autoUpdateCheckEnd).length,
+    } : null,
     stack: {
       peakProcessBytes: processSum(run),
       freshIdleBytes: fresh.length ? stack((n) => services[n].freshIdleBytes) : null,

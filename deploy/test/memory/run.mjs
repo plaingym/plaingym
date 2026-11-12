@@ -162,6 +162,7 @@ async function oneRun(mode, image) {
     '-f', join(deploy, 'compose.yaml'), '-f', join(here, 'compose.memory.yaml')];
   const saveSummary = (result) => writeFile(join(out, 'summary.json'), JSON.stringify(result, null, 2));
   const phaseTimes = {};
+  let autoUpdateCheckPeakRssBytes = null;
   const mark = (name) => {
     // A restart may stop the sampler before it can record the final marks. Keep bounds for the samples it did record.
     phaseTimes[name] = Date.now();
@@ -212,6 +213,18 @@ async function oneRun(mode, image) {
       await psql("select pg_prewarm('memory_ballast')");
       log('seeded; settling before the load');
       await sleep(10_000);
+      await attempt('autoUpdateCheckStart mark', () => mark('autoUpdateCheckStart'));
+      // The CLI's own kernel high-water RSS catches peaks shorter than the cgroup sampler's 500 ms interval.
+      const nodeOptions = mode === 'capped' ? '--max-old-space-size=256' : '--no-deprecation';
+      const probe = "process.on('exit',()=>console.error('AUTO_UPDATE_CHECK_MAX_RSS='+process.resourceUsage().maxRSS*1024))";
+      const checked = await run('docker', [...compose, 'exec', '-T', '-e',
+        `NODE_OPTIONS=${nodeOptions} --import=data:text/javascript,${encodeURIComponent(probe)}`,
+        'app', 'gym-app', 'auto-update', 'check']);
+      autoUpdateCheckPeakRssBytes = Number(/AUTO_UPDATE_CHECK_MAX_RSS=(\d+)/.exec(checked.error)?.[1]);
+      if (!(autoUpdateCheckPeakRssBytes > 0) || !checked.out.includes('setup=true')) throw new Error('Missing automatic update check memory evidence');
+      log(`auto-update check peak RSS: ${(autoUpdateCheckPeakRssBytes / 1024 ** 2).toFixed(1)} MiB`);
+      await attempt('autoUpdateCheckEnd mark', () => mark('autoUpdateCheckEnd'));
+      await sleep(2000);
       await attempt('loadStart mark', () => mark('loadStart'));
       // Attach handlers immediately: a failed spawn or an interrupt must not leave an unhandled rejection.
       const observe = (name, operation) => attempt(name, async () => {
@@ -237,7 +250,7 @@ async function oneRun(mode, image) {
     await sleep(12_000);
     await attempt('settled mark', () => mark('settled'));
     await attempt('stop sampler', () => docker('stop', '-t', '5', sampler));
-    const facts = { containers: {}, nodeOptions: undefined, jobs: [] };
+    const facts = { containers: {}, nodeOptions: undefined, jobs: [], autoUpdateCheckPeakRssBytes };
     for (const service of ['app', 'postgres', 'caddy']) {
       await attempt('inspect ' + service, async () => {
         const [state] = JSON.parse((await docker('inspect', short[service])).out);

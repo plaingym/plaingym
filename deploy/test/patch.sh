@@ -16,7 +16,7 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir "$temporary/bin" "$temporary/release"
-export PATH="$temporary/bin:$PATH" CALLS="$temporary/calls" RECORDS="$temporary/records" FIXTURES="$temporary/release"
+export PATH="$temporary/bin:$PATH" CALLS="$temporary/calls" RECORDS="$temporary/records" NOTIFIED="$temporary/notified" FIXTURES="$temporary/release"
 export UPDATE_SETTLE_SECONDS=0
 digest=sha256:$(printf 'd%.0s' $(seq 64))
 export DIGEST="$digest"
@@ -40,8 +40,15 @@ case "$*" in
   *' exec -T app gym-app auto-update record '*)
     [ "${FAIL_AT:-}" != record ] || exit 1
     case "$*" in *' --reason refused'*) exit 2 ;; esac
-    printf '%s\n' "$*" | sed 's/.* auto-update record //' >> "$RECORDS" ;;
+    case "$*" in *' --notice deferred') ;; *) echo 'Host must defer notices until results are stored' >&2; exit 1 ;; esac
+    printf '%s\n' "$*" | sed 's/.* auto-update record //; s/ --notice deferred$//' >> "$RECORDS" ;;
+  *' exec -T app gym-app auto-update notice '*)
+    [ "${FAIL_AT:-}" != notice ] || exit 3
+    case "${FAIL_AT:-}:$*" in notice_one:*' --to v1.2.4 '*) exit 3 ;; esac
+    printf '%s\n' "$*" | sed 's/.* auto-update notice //' >> "$NOTIFIED" ;;
   "image inspect "*" --format {{.Id}}") [ "${FAIL_AT:-}" != previous ] || exit 1
+    # GONE_REF: a reference removed outside the updater (docker image prune -a, say).
+    [ "$3" != "${GONE_REF:-}" ] || exit 1
     case "$3" in
       sha256:*) echo "$3" ;;
       *:v1.2.1@*) echo "sha256:$(printf 'b%.0s' $(seq 64))" ;;
@@ -149,7 +156,7 @@ make_install() {
   cp "$temporary/release/public.pem" "$case_dir/release-signing.pem"
   : > "$case_dir/compose.yaml"
   printf 'APP_IMAGE=ghcr.io/example/app:v1.2.3\nRELEASE_REPOSITORY=example/app\nFAKE_SECRET=private-test-value\n' > "$case_dir/.env"
-  : > "$CALLS"; : > "$RECORDS"
+  : > "$CALLS"; : > "$RECORDS"; : > "$NOTIFIED"
   rm -f "$FIXTURES/down" "$FIXTURES/removed"
   rm -f "$FIXTURES/mv_failed" "$FIXTURES/reload_failed" "$FIXTURES/generations"
   SYSTEMD_UNIT_DIR="$case_dir/units"
@@ -403,6 +410,8 @@ recorded '--result rolled_back --reason rollback_failed --from v1.2.3 --to v1.2.
 grep -q '^Automatic patch update: rolled_back, rollback_failed (running v1.2.3, newest v1.2.5).$' "$temporary/output"
 [ ! -e "$case_dir/.auto-update.inflight" ] && [ ! -e "$case_dir/auto-update.result" ]
 # The site went down when the update stopped the app, before the recovery's own report.
+[ "$(wc -l < "$NOTIFIED")" -eq 1 ]
+grep -q -- '--result rolled_back --reason rollback_failed' "$NOTIFIED"
 down_at=$(tail -n 1 "$RECORDS" | sed 's/.* --down-at //')
 [ "$(/bin/date -u -d "$down_at" +%s)" -le "$(/bin/date -u -d "$(tail -n 1 "$RECORDS" | cut -d' ' -f2)" +%s)" ]
 grep -qx 'failures.v1.2.5=1' "$case_dir/auto-update.state"
@@ -465,6 +474,66 @@ never 'auto-update check'
 grep -Eq '^[0-9T:Z-]+ skipped check_failed - - - -$' "$case_dir/auto-update.result"
 
 # A result the app can't take yet (restoring, or down) waits and is recorded first on the next run.
+make_install notice-retry
+printf '2026-11-03T08:00:00Z rolled_back health_check_failed v1.2.3 v1.2.4 1 -\n' > "$case_dir/auto-update.result"
+expect_status 0 FAIL_AT=notice --patch --now
+[ ! -e "$case_dir/auto-update.result" ]
+[ "$(wc -l < "$RECORDS")" -eq 2 ]
+recorded '--result updated --from v1.2.3 --to v1.2.5'
+[ "$(wc -l < "$case_dir/auto-update.notices")" -eq 1 ]
+grep -q 'An owner notice could not be sent yet' "$temporary/output"
+expect_status 0 FAKE_HOUR=14 --patch
+[ ! -e "$case_dir/auto-update.notices" ]
+[ "$(wc -l < "$NOTIFIED")" -eq 1 ]
+# One refused notice cannot hold back the next notice.
+make_install notice-fairness
+printf '2026-11-03T08:00:00Z rolled_back health_check_failed v1.2.3 v1.2.4 1 -\n2026-11-03T09:00:00Z rolled_back health_check_failed v1.2.3 v1.2.5 1 -\n' > "$case_dir/auto-update.result"
+expect_status 0 FAIL_AT=notice_one FAKE_HOUR=14 --patch
+[ "$(wc -l < "$NOTIFIED")" -eq 1 ]
+grep -q -- '--to v1.2.5' "$NOTIFIED"
+[ "$(wc -l < "$case_dir/auto-update.notices")" -eq 1 ]
+grep -q 'v1.2.4' "$case_dir/auto-update.notices"
+expect_status 0 FAKE_HOUR=14 --patch
+[ "$(wc -l < "$NOTIFIED")" -eq 2 ]
+[ ! -e "$case_dir/auto-update.notices" ]
+# A notice queue write failure keeps the result pending for a safe replay.
+make_install notice-storage-error
+mkdir "$case_dir/auto-update.notices"
+printf '2026-11-03T08:00:00Z rolled_back health_check_failed v1.2.3 v1.2.4 1 -\n' > "$case_dir/auto-update.result"
+expect_status 0 FAKE_HOUR=14 --patch
+[ "$(wc -l < "$case_dir/auto-update.result")" -eq 1 ]
+rmdir "$case_dir/auto-update.notices"
+expect_status 0 FAKE_HOUR=14 --patch
+[ ! -e "$case_dir/auto-update.result" ]
+[ "$(wc -l < "$NOTIFIED")" -eq 1 ]
+
+# Manual-only installs enforce the same three-image retention policy and discard stale inventory references.
+make_install manual-pruning
+stale_id="sha256:$(printf 'f%.0s' $(seq 64))"
+printf 'ghcr.io/example/app:v1.2.99@%s\t%s\tv1.2.99\n' "$digest" "$stale_id" > "$case_dir/auto-update-images.tsv"
+for patch_number in 4 5 6 7 8; do
+  write_manifest "v1.2.$patch_number"
+  expect_status 0 DISTINCT_IDS=1 CURRENT_LABEL="v1.2.$((patch_number - 1))" "ghcr.io/example/app:v1.2.$patch_number@$digest"
+done
+[ "$(cut -f3 "$case_dir/auto-update-images.tsv" | tr '\n' ' ')" = 'v1.2.6 v1.2.7 v1.2.8 ' ]
+never 'image prune'
+grep -q -- 'trimmed' "$case_dir/version-history.tsv"
+# An image still on the rollback stack keeps its saved pin after something outside the updater removed it.
+gone_ref=$(awk -F '\t' '$3 == "v1.2.7" { print $1 }' "$case_dir/auto-update-images.tsv")
+[ -n "$gone_ref" ]
+write_manifest v1.2.9
+expect_status 0 DISTINCT_IDS=1 CURRENT_LABEL=v1.2.8 "GONE_REF=$gone_ref" "ghcr.io/example/app:v1.2.9@$digest"
+[ "$(cut -f3 "$case_dir/auto-update-images.tsv" | tr '\n' ' ')" = 'v1.2.7 v1.2.8 v1.2.9 ' ]
+write_manifest v1.2.5
+# One refusal does not stop later notices, and unsent outage failures are superseded by their recovery.
+make_install notice-recovery
+printf '2026-11-03T09:05:00Z failed rollback_failed v1.2.3 v1.2.5 1 -\n2026-11-03T10:05:00Z rolled_back rollback_failed v1.2.3 v1.2.5 1 2026-11-03T09:02:00Z\n' > "$case_dir/auto-update.result"
+expect_status 0 FAKE_HOUR=14 --patch
+[ "$(wc -l < "$RECORDS")" -eq 2 ]
+[ "$(wc -l < "$NOTIFIED")" -eq 1 ]
+grep -q -- '--result rolled_back --reason rollback_failed' "$NOTIFIED"
+[ ! -e "$case_dir/auto-update.result" ] && [ ! -e "$case_dir/auto-update.notices" ]
+
 make_install restore
 checks true
 expect_status 0 FAIL_AT=record --patch --now
@@ -485,6 +554,14 @@ recorded "--result rolled_back --reason interrupted --from v1.2.3 --to v1.2.5 --
 grep -q ' up -d --no-deps --wait --wait-timeout 90 app IMAGE=configured' "$CALLS"
 never 'auto-update check'
 [ ! -e "$case_dir/.auto-update.inflight" ]
+# A rollback request settles the killed patch first, leaving the healthy pin and history alone.
+make_install interrupted-rollback
+printf 'v1.2.3 v1.2.5 2026-11-03T09:02:00Z -\n' > "$case_dir/.auto-update.inflight"
+expect_status 1 --rollback
+recorded '--result rolled_back --reason interrupted --from v1.2.3 --to v1.2.5 --failures 1'
+pinned ghcr.io/example/app:v1.2.3
+[ ! -e "$case_dir/.auto-update.inflight" ]
+never 'snapshot pre-upgrade'
 # A marker from before it held more than the versions reads the same way.
 make_install interrupted-older
 printf 'v1.2.3 v1.2.5\n' > "$case_dir/.auto-update.inflight"

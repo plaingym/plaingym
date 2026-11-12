@@ -16,6 +16,7 @@ temporary=$(mktemp -d)
 run_id="release-test-$$-$(date +%s)"
 registry_name=
 registry=
+pulled_ref=
 cleanup() {
   status=$?
   if [ "$status" -ne 0 ] && [ -f "$temporary/output" ]; then echo '--- last output:' >&2; cat "$temporary/output" >&2; fi
@@ -26,6 +27,9 @@ cleanup() {
         timeout -k 5 120 docker image rm -f "$cleanup_image" >/dev/null 2>&1 || echo "Cleanup incomplete: $cleanup_image" >&2 ;;
       esac
     done
+  fi
+  if [ -n "$pulled_ref" ] && docker image inspect "$pulled_ref" >/dev/null 2>&1; then
+    timeout -k 5 120 docker image rm "$pulled_ref" >/dev/null 2>&1 || echo "Cleanup incomplete: $pulled_ref" >&2
   fi
   rm -rf -- "$temporary"
 }
@@ -64,12 +68,12 @@ set_version 1.2.1
 git commit -q -am 'fix: one'
 fixed=$(git rev-parse HEAD)
 [ "$(sh "$check_tag" v1.2.1 "$fixed")" = v1.2.0 ]
-GITHUB_REF_NAME=release/1.2 sh "$temporary/check-branch.sh"
+RELEASE_BRANCH=release/1.2 sh "$temporary/check-branch.sh"
 # A fix that adds a migration, or changes only the journal, is not a patch release.
 printf 'alter table a add b int;\n' > packages/db/src/migrations/0001_second.sql
 git add -A; git commit -q -m 'fix: migration'
 expect_refusal 'migrations differ from v1.2.0' v1.2.1
-if GITHUB_REF_NAME=release/1.2 sh "$temporary/check-branch.sh" > "$temporary/branch-output" 2>&1; then
+if RELEASE_BRANCH=release/1.2 sh "$temporary/check-branch.sh" > "$temporary/branch-output" 2>&1; then
   echo 'Release branch accepted a migration.' >&2; exit 1
 fi
 grep -q 0001_second.sql "$temporary/branch-output"
@@ -148,7 +152,8 @@ manifest_check "$manifest" v1.2.3
 [ "$(manifest_value "$manifest" image)" = "$registry/release-test/app" ]
 digest=$(manifest_value "$manifest" digest)
 # The exact canonical reference the updater records can be removed without a global prune.
-docker pull "$registry/release-test/app:v1.2.3@$digest" > "$temporary/pull-output" 2>&1
+pulled_ref="$registry/release-test/app:v1.2.3@$digest"
+docker pull "$pulled_ref" > "$temporary/pull-output" 2>&1
 timeout -k 5 30 docker image rm "$registry/release-test/app:v1.2.3@$digest" > "$temporary/remove-output" 2>&1
 for arch in amd64 arm64; do
   manifest_value "$manifest" "digest.linux/$arch" | grep -Eq '^sha256:[a-f0-9]{64}$'

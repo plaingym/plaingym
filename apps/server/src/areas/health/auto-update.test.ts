@@ -6,6 +6,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { healthTileSchema } from '@plaingym/shared/contracts';
 import { TestClock } from '../../core/clock.js';
+import { DeliveryError } from '../../infra/email/index.js';
 import { createAutoUpdateSettings } from '../settings/auto-update.js';
 import messages from '../../../../../locales/en/health/auto-update.json' with { type: 'json' };
 import {
@@ -333,15 +334,39 @@ describe('gym-app auto-update', () => {
     const f = await fixture(), notices: string[] = [];
     const notify = async (_gymId: string, recorded: AutoUpdateAttempt) => {
       notices.push(recorded.attemptedAt);
-      if (notices.length === 1) throw new Error('SMTP refused the notice');
+      if (notices.length === 1) throw new DeliveryError('not_accepted', 'SMTP refused the notice');
     };
     const args = ['record', '--at', '2026-11-03T16:05:00Z', '--result', 'failed', '--reason', 'rollback_failed', '--from', 'v1.2.3', '--to', 'v1.2.4'];
-    expect(await f.command({ notify }).run(args, f.io().io)).toBe(1);
+    expect(await f.command({ notify }).run(args, f.io().io)).toBe(3);
     f.clock.advance(3_600_000);
     expect(await f.command({ notify }).run(args, f.io().io)).toBe(0);
     expect(notices).toHaveLength(2);
     const rows = await db.forGym(f.gymId, tx => tx.select({ id: auditEvents.id }).from(auditEvents).where(eq(auditEvents.action, autoUpdateAttemptAction)));
     expect(rows).toHaveLength(1);
+  });
+  it('stores later results while a notice waits, and retries the notice without changing the tile', async () => {
+    const f = await fixture(), notices: AutoUpdateAttempt[] = [];
+    const notify = async (_gymId: string, value: AutoUpdateAttempt) => { notices.push(value); };
+    const args = ['--at', '2026-11-03T16:05:00Z', '--result', 'failed', '--reason', 'rollback_failed', '--from', 'v1.2.3', '--to', 'v1.2.4'];
+    expect(await f.command({ notify }).run(['record', ...args, '--notice', 'deferred'], f.io().io)).toBe(0);
+    expect(notices).toEqual([]);
+    expect(await f.command({ notify }).run(['record', '--at', '2026-11-04T16:05:00Z', '--result', 'up_to_date', '--from', 'v1.2.3'], f.io().io)).toBe(0);
+    expect(await f.command({ notify }).run(['notice', ...args], f.io().io)).toBe(0);
+    expect(notices.at(-1)).toMatchObject({ result: 'failed' });
+    expect(await f.attempts.latest(f.gymId)).toMatchObject({ result: 'up_to_date' });
+    const rows = await db.forGym(f.gymId, tx => tx.select({ id: auditEvents.id }).from(auditEvents).where(eq(auditEvents.action, autoUpdateAttemptAction)));
+    expect(rows).toHaveLength(2);
+  });
+  it('logs permanent notice errors and uncertain sends without keeping the stored result pending', async () => {
+    const f = await fixture();
+    for (const error of [new Error('SMTP settings cannot be decrypted'), new DeliveryError('unknown', 'Lost reply')]) {
+      const out = f.io();
+      expect(await f.command({ notify: async () => { throw error; } }).run(['record', '--at', '2026-11-03T16:05:00Z',
+        '--result', 'failed', '--reason', 'rollback_failed', '--from', 'v1.2.3', '--to', 'v1.2.4'], out.io)).toBe(0);
+      expect(out.err).toEqual([error.message]);
+      expect(out.out).toEqual(['Recorded.']);
+    }
+    expect(await f.attempts.latest(f.gymId)).toMatchObject({ result: 'failed' });
   });
   it('refuses malformed input, an install serving several gyms, and reports failures without a stack', async () => {
     const f = await fixture();

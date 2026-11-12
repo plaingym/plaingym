@@ -410,7 +410,7 @@ The app never holds the Docker socket. The updater asks the app, through
 progress, whether automatic updates are on (the owner's switch in **Settings →
 Updates**, on by default), whether backups are set up, and the gym's timezone;
 until the setup wizard has created the gym, it stops there without a result. It
-reports each night's result back through `gym-app auto-update record`, which
+reports each night's result back through `gym-app auto-update record --notice deferred`, which
 the **Automatic updates** tile on the Health page shows. Results the app can't
 take yet (it is down or restoring) wait in `auto-update.result`, one line each in
 order, and are sent first on the next run; a later result never replaces an
@@ -418,14 +418,17 @@ unsent one, and a result the app refuses as invalid is dropped with a line in th
 journal. `auto-update.state` holds the timezone, the night of the last check (its
 date, zone and time), and the failed attempts per release.
 
-When SMTP is configured, `record` sends each owner one notice for a rolled-back
+When SMTP is configured, `gym-app auto-update notice` sends each owner one notice for a rolled-back
 or failed attempt, through the gym's SMTP settings (or the install fallback).
 While the app is down no email can go out, so an update whose rollback also
-failed is reported only once the app runs again: first the failure, then the
-recovery, which says when the site went down and when it came back.
+failed is reported only once the app runs again. The host records both results, then replaces an unsent
+failure notice with the recovery notice, which says when the site went down and when it came back.
 Durable delivery reservations prevent a repeated report from resending an
-accepted or uncertain email. A definite non-send may be retried with the pending
-report. The health tile keeps stale errors visible and formats the last check in
+accepted or uncertain email. A definite SMTP refusal leaves only the notice in `auto-update.notices`;
+each run retries each notice once after recording the queued results, so later results and notices still
+go through. `record` without deferral, and `notice`, exit 3 for a definite non-send; result storage errors
+exit 1 and invalid input exits 2. Other notice errors (owner lookup, SMTP decryption or rendering)
+are logged and exit 0 after the result is stored. The health tile keeps stale errors visible and formats the last check in
 the gym's timezone. A never-run install becomes stale 50 hours after its first
 health read; transient skips raise the update banner after two consecutive
 attempts. An invalid `RELEASE_REPOSITORY` raises a warning that patches cannot
@@ -602,9 +605,14 @@ identifier. `starting` and `failed` attempts matter because migrations may alrea
 have run; `abandoned` closes an attempt that left the database as it was, so its floor
 doesn't count. `update.sh --rollback` checks all recorded floors before changing
 anything, and reads the rows as a stack, so each run goes one version further back;
-`trimmed` takes an older entry off that stack once a patch update removed its image
+`trimmed` takes an older entry off that stack once a successful manual or patch update removed its image
 (**Automatic patch updates**, above), so `--rollback` goes back at most two versions
-from a patch update.
+from an update. `auto-update-images.tsv` also saves registry pins for manual updates and their previous
+image, so `--rollback` can pull a removed image and verify its ID and version. Local builds without
+registry digests still need their image on disk. Pruning removes inventory rows whose reference no longer
+resolves to the recorded image, except for images still on the rollback stack, whose pins stay so a removed
+image can be pulled again. A rollback request first settles an interrupted nightly
+patch; a failed snapshot preserves an app that was already stopped.
 `schema-compatibility.yaml` passes the checked floor, schema release and snapshot to
 the app. Keep it with the database. It goes up before a new image starts. Before
 each manual release update, `.schema-attempt` keeps the database's migration state

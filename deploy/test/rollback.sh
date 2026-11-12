@@ -151,6 +151,9 @@ printf 'COMPOSE_PROJECT_NAME=%s\nAPP_IMAGE=%s\n' "$run_id" "$name:v1.3.0@${new_d
 history_record v1.2.0 "$old_id" install v1.2.0 -
 history_record v1.3.0 "$new_id" update v1.2.0 00000000-0000-4000-8000-000000000004
 compose up -d --wait --wait-timeout 30 > "$temporary/output" 2>&1
+printf '%s\t%s\tv1.2.0\n' "$name:v1.2.0@${old_digest#*@}" "$old_id" > "$ROOT/auto-update-images.tsv"
+docker image rm -f "$old_id" > /dev/null
+if docker image inspect "$old_id" > /dev/null 2>&1; then echo 'The previous image is still local.' >&2; exit 1; fi
 sh "$ROOT/update.sh" --rollback > "$temporary/output" 2>&1
 [ "$(read_env APP_IMAGE)" = "$name:v1.2.0@${old_digest#*@}" ]
 # The image goes, every name of it included; the next start pulls it back by the pin and serves the same version.

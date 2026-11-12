@@ -12,19 +12,22 @@ permissions:
   contents: read
 jobs:
   release-migrations:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')) || (github.event_name == 'pull_request' && startsWith(github.base_ref, 'release/'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Refuse database changes on a release branch
         shell: sh
+        env:
+          RELEASE_BRANCH: ${{ github.base_ref || github.ref_name }}
         run: |
           # release-migrations-start (also exercised in deploy/test/release.sh)
           set -eu
-          minor=${GITHUB_REF_NAME#release/}
+          minor=${RELEASE_BRANCH#release/}
           printf '%s\n' "$minor" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
           previous=$(git tag --list "v$minor.*" --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
           [ -n "$previous" ] || { echo 'No release to compare migrations with.' >&2; exit 1; }

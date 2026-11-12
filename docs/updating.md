@@ -44,6 +44,11 @@ example after setting up backups:
 sudo /opt/plaingym/update.sh --patch --now
 ```
 
+An SMTP refusal does not delay later results on the health tile. The host keeps refused notices separately
+and retries each on its next run, with the same per-owner delivery key. An unsent failed-rollback notice is
+replaced by the recovery notice for that outage. Accepted or uncertain sends are never repeated. Other
+notice errors, such as unreadable SMTP settings, are logged in the updater journal without blocking results.
+
 | The tile says | What to do |
 | :--- | :--- |
 | Backups aren't set up | Set them up in **Settings → Email, payments and backups**; the next night's check installs the release. |
@@ -73,7 +78,7 @@ on a hand-installed Compose deployment. An invalid `RELEASE_REPOSITORY` also
 raises a warning: patches cannot install until it is a valid `owner/name` and
 the app is restarted. Neither path segment may consist only of dots.
 
-After a successful automatic update, the updater keeps the current image and the two
+After a successful automatic or manual update, the updater keeps the current image and the two
 before it, so `--rollback` can go back up to two versions. It removes the images of
 older versions (the installer's included, once it is three updates back) and the images
 it pulled for releases that were rolled back. It never forces a removal or runs a global
@@ -156,6 +161,13 @@ architecture. `latest` is refused. The script:
 5. records the new image in `.env` only once the new version is healthy, as
    `IMAGE:vX.Y.Z@DIGEST` from the signed release manifest.
 
+An image with a release version label requires its signed release manifest and signature, even when
+the image came from a mirror or a local build. There is no verification override. For a fork, set
+`RELEASE_REPOSITORY=owner/repository` in the install's `.env` to the GitHub repository publishing its
+signed releases and install its release signing public key. A network outage, missing release assets,
+invalid signature or digest mismatch stops the update while the current app keeps running. Check the
+reported repository and release, restore network access or publish the correct signed assets, then retry.
+
 It prints "Already on the requested image." and does nothing else when you ask for the
 image you run, by its tag or its digest.
 
@@ -186,8 +198,14 @@ separate container, and the same floor check applies before anything changes.
 The history records the attempt and outcome; the health page records a successful
 rollback as a version change with its source and destination versions.
 
+If an interrupted nightly patch left its marker, `--rollback` first starts the pinned image and
+reports that patch's recovery; run `--rollback` again to request a separate rollback. A failed
+snapshot leaves an app that was already stopped or restarting stopped. If the previous image was
+removed, the updater pulls its saved registry pin and verifies the image ID and version before
+stopping the app. An image with no saved registry pin must be pulled by the owner first.
+
 Running it again goes back one more version, as far as the floor allows, and never
-forward to the version you just left. After an automatic update it goes back at most
+forward to the version you just left. After an automatic or manual update it goes back at most
 two versions, since older images are removed. To go forward again, update to that release.
 
 After a rollback the nightly update skips the release you left, and any older patch
@@ -251,5 +269,7 @@ nothing, it closes as `abandoned` and contributes no rollback floor.
 * Open **System health** and check the running version, the last backup and that
   nothing is failing.
 * Sign in as staff and as a member to confirm the admin and portal load.
-* Keep the previous image while you need `--rollback`. Pruning it removes that
-  recovery option; `sudo docker image ls` lists local images.
+* Keep local builds while you need `--rollback`: they have no registry pin to pull again.
+  Registry images with a saved pin can be pulled again automatically if removed.
+  Forward recovery keeps the failed release's compatible image for snapshots; it does not need
+  the obsolete pinned image that can no longer run on the migrated database.
