@@ -166,8 +166,10 @@ Producers that need a job to commit with application writes use
 `withJobTransaction(forGym, gymId, callback)` and pass its caller transaction to
 `Jobs.enqueue` as the optional fourth argument. Enqueue uses that same gym-scoped
 handle for insertion and deduplication; ordinary enqueue inside a transaction is
-rejected. The last household member's erasure queues customer redaction this way,
-then calls the payment provider after commit.
+rejected. Member erasure queues all of its cleanup this way (each revoked card's
+detach, the release of the erased photo and signature images, and the last
+household member's customer redaction), then calls the payment provider and file
+storage after commit.
 
 ## Billing
 

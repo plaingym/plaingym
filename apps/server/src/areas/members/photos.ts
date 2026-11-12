@@ -39,12 +39,6 @@ export function createMemberPhotoService(members: MembersService, uploadsFor: Me
       if (!stream) throw new AppError('not_found', 'Photo not found');
       return { stream, contentType: metadata.contentType };
     },
-    /** Storage calls happen after the erasure commits: the photo and signed-waiver images it released. */
-    async anonymize(context: MutationContext, memberId: string, revision: number) {
-      const { member, files } = await members.eraseMember(context, memberId, { revision });
-      await releaseFiles(context.gymId, files, uploadsFor, 'member.photo.release_failed');
-      return member;
-    },
     async update(context: MutationContext, memberId: string, input: Parameters<MembersService['updateMember']>[2]) {
       const before = await members.getMember(context.gymId, memberId);
       const saved = await members.updateMember(context, memberId, input);

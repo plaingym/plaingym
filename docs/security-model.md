@@ -425,9 +425,12 @@ Old versions and documents referenced by signatures remain retained after retire
   revokes its cards, clears each card's billing name, email, phone and address at
   Stripe before detaching it, and clears the Stripe Customer's name, email, phone,
   address, shipping details, description, individual and business names and invoice
-  custom fields, and deletes its tax IDs. The customer-redaction retry job commits
-  in the same transaction as the erasure, so a crash cannot lose the retry between
-  clearing the local customer ID and queuing it. Provider calls run after commit.
+  custom fields, and deletes its tax IDs. Every retry job of an erasure (each
+  revoked card's detach, the release of the erased photo and signature images, and
+  the customer redaction) commits in the same transaction as the erasure, so a
+  crash or a later failure cannot lose a retry between clearing the local data and
+  queuing it; an erasure never runs without the job queue. Provider and storage
+  calls run after commit, and waitlist promotion for the freed places runs last.
   Customers erased before this was complete
   are redacted once from the erasure audits
   (`apps/server/src/areas/members/README.md`).

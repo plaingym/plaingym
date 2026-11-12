@@ -13,6 +13,7 @@ import { errorHandler } from '../../core/errors.js';
 import { createServerRegistry } from '../../core/registry.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { createMembersService } from '../members/members.js';
+import { FakeJobs } from '../../infra/jobs/index.js';
 import { measureReportStatements } from '../reports/statements.test-helper.js';
 import { createLeadsService } from './list.js';
 import { createLeadsRoutes } from './list.routes.js';
@@ -191,7 +192,7 @@ describe('leads list and edits against PostgreSQL and forced RLS', () => {
   it('removes an actually erased member from every lead route and leaves other household members visible', async () => {
     const f = await fixture(), member = await person(f, 'lost'), server = app(f);
     const other = await person(f, 'new', { householdId: member.householdId });
-    await createMembersService({ scope: db.forGym, clock: f.clock }).anonymizeMember(f.context, member.id, { revision: 1 });
+    await createMembersService({ scope: db.forGym, clock: f.clock }).eraseMember(f.context, member.id, { revision: 1 }, { jobs: new FakeJobs(f.clock), timezone: 'UTC' });
     for (const probe of probes) expect((await request(server, member.id, probe.method, probe.suffix, probe.body)).status).toBe(404);
     expect((await f.service.list(f, { includeLost: true })).data.map(row => row.memberId)).toEqual([other.id]);
   });

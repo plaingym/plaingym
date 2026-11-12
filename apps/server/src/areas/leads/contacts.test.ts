@@ -13,6 +13,7 @@ import { errorHandler } from '../../core/errors.js';
 import { createServerRegistry } from '../../core/registry.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { createMembersService } from '../members/members.js';
+import { FakeJobs } from '../../infra/jobs/index.js';
 import { createLeadContactsService } from './contacts.js';
 import { createLeadContactsRoutes } from './contacts.routes.js';
 import { createLeadsService } from './list.js';
@@ -166,7 +167,7 @@ describe('lead contact log against PostgreSQL and forced RLS', () => {
   it('makes an actually erased member\'s contacts unreadable and removes them', async () => {
     const f = await fixture(), member = await person(f, 'new'), server = app(f);
     await f.service.log(f.context, member.id, { revision: 1, channel: 'call', note: 'Private note' });
-    await createMembersService({ scope: db.forGym, clock: f.clock }).anonymizeMember(f.context, member.id, { revision: 1 });
+    await createMembersService({ scope: db.forGym, clock: f.clock }).eraseMember(f.context, member.id, { revision: 1 }, { jobs: new FakeJobs(f.clock), timezone: 'UTC' });
     for (const probe of probes)
       expect((await request(server, member.id, probe.method, probe.body && { ...probe.body, revision: 2 })).status).toBe(404);
     expect(await contacts(f)).toEqual([]);

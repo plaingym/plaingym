@@ -27,23 +27,32 @@ under each session's row lock, clears their waitlist positions without
 renumbering others, and unlinks staff profiles from the erased member. Bookings
 for sessions that have started stay as history. For a household's last member it
 also revokes active cards, clears the local Stripe customer ID and holds open and
-past-due invoices for review. `eraseMember` returns `files`, `revokedCards` and
-`erasedCustomerId` (the cleared Stripe customer ID) for storage cleanup, provider
-detachment and customer redaction after commit. The runtime passes the billing
-detach callback, the customer redaction callback (`Payments.redactCustomer`) and
-the job queue through `configureMembers`. The route passes the queue and timezone
-into `eraseMember`, which inserts the `members.erasure.redact_customer`
-job carrying the customer ID in the erasure transaction: the erasure and job both
-commit or both roll back. Its key remains `redact:<customer ID>`, with 12 attempts
-and a one-minute delay after the inline attempt. No job is inserted without a
-cleared customer ID. The route queues detach jobs for revoked cards after commit,
-before attempting either provider call, and the
+past-due invoices for review. `eraseMember` takes the job queue and the gym's
+timezone as a required argument and inserts every cleanup job in the erasure
+transaction, so the erasure and its jobs commit or roll back together:
+`billing.payments.detach` for each card it revoked (key `detach:<card ID>`,
+12 attempts), `members.erasure.release_files` for the photo and signature images
+it released (key `release:<member ID>`, 12 attempts, a one-minute delay), and,
+when it cleared a customer ID, `members.erasure.redact_customer` carrying that ID
+(key `redact:<customer ID>`, 12 attempts, a one-minute delay). It returns `files`,
+`revokedCards` and `erasedCustomerId` (the cleared Stripe customer ID) for an
+immediate attempt after commit. The runtime passes the billing detach callback,
+the customer redaction callback (`Payments.redactCustomer`), file storage and the
+job queue (required) through `configureMembers`; without a queue the erasure route
+refuses with `unavailable` before changing anything. After commit the route
+detaches each card, redacts the customer and marks the files deleted, each attempt
+logged on failure (identifiers only) and left to its job; then it promotes the
+waitlist of each session the erasure freed a place in, logging a session whose
+promotion fails (`members.erasure.promotion_failed`) and going on with the rest.
+The request succeeds once the erasure commits. The release job checks that every
+key carries the job's gym prefix and retries a storage failure; marking a file
+deleted again is harmless. The
 `household.anonymized` audit event records the cleared customer ID. The Stripe
 Customer is kept for the books: its name
 becomes `Erased member` and its email, phone, address, shipping details, description, individual and business names and invoice
 custom fields are cleared and its tax IDs deleted. The detach jobs carry `redactBillingDetails: true`, so each card's billing
 name, email, phone and address are cleared before the card is detached (Stripe updates only an attached card). A failed attempt
-is logged with identifiers only and the erasure still succeeds, since the job retries it.
+is logged with identifiers only and the erasure still succeeds, since its committed job retries it.
 
 Customers erased before the redaction covered every field are handled by `members.erasure.redact_earlier`, a daily job
 (`erasure-redaction.ts`): per gym it reads the `household.anonymized` audits' `before.stripeCustomerId`, queues one
@@ -52,7 +61,6 @@ Customers erased before the redaction covered every field are handled by `member
 reads only the gym's own audits (row-level security), needs no start-up wiring, and also re-queues the redaction of a later
 erasure whose own job ran out of attempts. It skips a customer that a household of the gym links today (the gym reused it), and
 queues at most 200 customers per run; the next run continues. Redaction is idempotent, so a repeat is harmless.
-Failed file cleanup returns an error.
 Unused households can be deleted; referenced households return a conflict.
 
 `hashHouseholdPin` and `verifyHouseholdPin` take the per-gym secret, gym ID,

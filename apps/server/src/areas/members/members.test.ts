@@ -8,7 +8,8 @@ import { createFactories } from '@plaingym/db/testing/factories';
 import { canStaff, staffRoles, type StaffRole } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { createMembersService } from './members.js';
-import { createErasureJobs, createMembersRoutes, redactCustomerJob } from './members.routes.js';
+import { createErasureJobs, createMembersRoutes, redactCustomerJob, releaseErasedFilesJob } from './members.routes.js';
+import { detachJob } from '../billing/payments.mutations.js';
 import { createMemberPhotoJobs } from './members.jobs.js';
 import { createMemberPhotoService } from './photos.js';
 import { hashHouseholdPin, verifyHouseholdPin } from './pin.js';
@@ -30,13 +31,15 @@ const stores = new Map<string, FakeUploads>(), uploadsFor = async (gymId: string
 };
 const photos = createMemberPhotoService(service, uploadsFor);
 const context = (gymId = gymA) => ({ gymId, actor: { kind: 'system' as const } });
+/** The queue an erasure commits its cleanup jobs to. */
+const erasureQueue = (jobs = new FakeJobs(clock)) => ({ jobs, timezone: 'UTC' });
 let userId: string;
 beforeAll(async () => { await factory('gyms', gymA); await factory('gyms', gymB); userId = (await factory('authUser', gymA)).id; });
 function server(principal: Principal, gymId = gymA) {
   const app = new OpenAPIHono<RequestEnvironment>({ defaultHook: (result, ctx) => { if (!result.success) return respondError(ctx, result.error); } });
   app.use('*', async (ctx, next) => { ctx.set('context', { principal, gym: { gymId, timezone: 'UTC', enabledModules: new Set() }, requestId: 'test', clock }); await next(); });
   app.onError(errorHandler);
-  createServerRegistry({ routes: createMembersRoutes(service, uploadsFor) }).mount(app, authorize, new Set()); return app;
+  createServerRegistry({ routes: createMembersRoutes(service, uploadsFor, { jobs: new FakeJobs(clock) }) }).mount(app, authorize, new Set()); return app;
 }
 function erasureServer(erasure: Parameters<typeof createMembersRoutes>[2]) {
   const app = new OpenAPIHono<RequestEnvironment>();
@@ -193,7 +196,13 @@ describe('members and households', () => {
     // Supply valid contacts before uploading; the fixture intentionally exercises scrubbing JSON too.
     await database.forGym(gymA, (tx) => tx.update(members).set({ emergencyContacts: [{ name: 'Private contact', phone: '123', email: null, relationship: null }] }).where(eq(members.id, person.id)));
     const uploaded = await photos.upload(context(), person.id, 1, png, 'image/png');
-    const saved = await photos.anonymize(context(), person.id, uploaded.revision);
+    const jobs = new FakeJobs(clock);
+    const { member: saved, files } = await service.eraseMember(context(), person.id, { revision: uploaded.revision }, erasureQueue(jobs));
+    expect(files).toEqual([uploaded.photoKey, signatureKey]);
+    // The photo and signature image are marked deleted by the release job the erasure committed.
+    const release = createErasureJobs({ uploadsFor }).find(job => job.id === releaseErasedFilesJob)!;
+    for (const job of jobs.jobs.filter(job => job.name === releaseErasedFilesJob))
+      await release.handler(job.payload, { jobId: 'release', gymId: gymA, timezone: 'UTC', attempt: 1, clock });
     expect(saved.id).toBe(person.id); expect(saved.anonymizedAt).toBe(clock.now().toISOString());
     const raw = await database.forGym(gymA, async (tx) => ({ member: (await tx.select().from(members).where(eq(members.id, person.id)))[0]!,
       home: (await tx.select().from(households).where(eq(households.id, home.id)))[0]!,
@@ -218,7 +227,7 @@ describe('members and households', () => {
   it('preserves another household member and shared contacts while clearing the shared PIN', async () => {
     const { home, person } = await routeFixture(gymA);
     const sibling = await factory('members', gymA, { householdId: home.id });
-    await service.anonymizeMember(context(), person.id, { revision: 1 });
+    await service.eraseMember(context(), person.id, { revision: 1 }, erasureQueue());
     expect(await service.getHousehold(gymA, home.id)).toMatchObject({ name: home.name });
     expect(await service.getMember(gymA, sibling.id)).toMatchObject({ firstName: sibling.firstName });
   });
@@ -235,10 +244,14 @@ describe('members and households', () => {
     const other = await routeFixture(gymA), otherCard = await factory('paymentMethods', gymA, { householdId: other.home.id, isDefault: true });
     const otherBill = await bill(other.home.id, 'open');
     const foreign = await routeFixture(gymB), foreignCard = await factory('paymentMethods', gymB, { householdId: foreign.home.id, isDefault: true });
-    await expect(service.eraseMember(context(gymB), person.id, { revision: 1 })).rejects.toMatchObject({ code: 'not_found' });
-    const erased = await service.eraseMember(context(), person.id, { revision: 1 });
+    await expect(service.eraseMember(context(gymB), person.id, { revision: 1 }, erasureQueue())).rejects.toMatchObject({ code: 'not_found' });
+    const jobs = new FakeJobs(clock), erased = await service.eraseMember(context(), person.id, { revision: 1 }, erasureQueue(jobs));
     expect(erased.revokedCards).toEqual(another ? [] : [{ id: card.id, processorId: card.processorId }]);
     expect(erased.erasedCustomerId).toBe(another ? null : customerId);
+    // Only the card this erasure revoked gets a detach job, committed with it; the earlier revoked card already had its own.
+    expect(jobs.jobs.filter(job => job.name === detachJob).map(job => job.payload))
+      .toEqual(another ? [] : [{ paymentMethodId: card.id, redactBillingDetails: true }]);
+    expect(jobs.jobs.filter(job => job.name === redactCustomerJob).map(job => job.payload)).toEqual(another ? [] : [{ customerId }]);
     const state = await database.forGym(gymA, async tx => ({
       home: (await tx.select().from(households).where(eq(households.id, home.id)))[0]!,
       cards: await tx.select().from(paymentMethods).where(inArray(paymentMethods.id, [card.id, revoked.id, otherCard.id])),
@@ -264,7 +277,7 @@ describe('members and households', () => {
     const otherProfile = await factory('staffProfiles', gymA, { memberId: other.person.id });
     // Serialize a concurrent capacity writer with erasure using the same session lock.
     await Promise.all([
-      service.eraseMember(context(), person.id, { revision: 1 }),
+      service.eraseMember(context(), person.id, { revision: 1 }, erasureQueue()),
       database.forGym(gymA, async tx => { await tx.select().from(classSessions).where(eq(classSessions.id, sessions[0]!.id)).for('update'); }),
     ]);
     const state = await database.forGym(gymA, async tx => ({
@@ -277,9 +290,7 @@ describe('members and households', () => {
     expect(state.staff.find(row => row.id === profile.id)!.memberId).toBeNull();
     expect(state.staff).toContainEqual(otherProfile);
   });
-  it.each([
-    { failure: false, queued: true }, { failure: true, queued: true }, { failure: true, queued: false },
-  ])('detaches all revoked cards after commit and reports only failures without a retry (%o)', async ({ failure, queued }) => {
+  it.each([false, true])('detaches all revoked cards after commit and logs a failed attempt, which its committed job retries (failure: %s)', async failure => {
     const { home, person } = await routeFixture(gymA);
     const cards = await Promise.all([1, 2].map(() => factory('paymentMethods', gymA, { householdId: home.id, processorId: 'pm_erase_' + uuidv7().replaceAll('-', '') })));
     const payments = new FakePayments(gymA, clock), jobs = new FakeJobs(clock);
@@ -299,27 +310,25 @@ describe('members and households', () => {
     app.use('*', async (ctx, next) => { ctx.set('context', { principal: { kind: 'staff', gymId: gymA, userId, roles: ['owner'] }, gym: { gymId: gymA, timezone: 'UTC', enabledModules: new Set() }, requestId: 'erase', clock }); await next(); });
     const errors: unknown[] = [];
     app.onError((error, ctx) => { errors.push(error); return errorHandler(error, ctx); });
-    createServerRegistry({ routes: createMembersRoutes(service, uploadsFor, { detachCard, ...(queued ? { jobs } : {}) }) }).mount(app, authorize, new Set());
+    createServerRegistry({ routes: createMembersRoutes(service, uploadsFor, { detachCard, jobs }) }).mount(app, authorize, new Set());
     const logs: unknown[] = [], previousLog = setLogSink(entry => { logs.push(JSON.parse(entry)); });
     try {
       // The erasure has committed; a queued retry makes a provider outage a logged warning, not a failed request.
-      expect((await send(app, `/api/members/${person.id}/anonymize`, 'POST', { revision: 1 })).status, String(errors[0])).toBe(failure && !queued ? 500 : 200);
+      expect((await send(app, `/api/members/${person.id}/anonymize`, 'POST', { revision: 1 })).status, String(errors[0])).toBe(200);
     } finally { setLogSink(previousLog); }
     expect(detachCard).toHaveBeenCalledTimes(2);
     // An erasure clears each card's billing details before it detaches the card; the failed card keeps them until its retry.
     for (const card of cards) expect(detachCard).toHaveBeenCalledWith(gymA, card.processorId, { redactBillingDetails: true });
     expect(payments.billingDetails(cards[1]!.processorId)).toBeUndefined();
     expect(payments.billingDetails(cards[0]!.processorId)).toEqual(failure ? { name: 'Pat Payer', email: 'payer@example.test', phone: '+15555550100' } : undefined);
-    expect(jobs.jobs).toHaveLength(queued ? 2 : 0);
-    if (queued) expect(jobs.jobs.map(job => job.payload)).toEqual(expect.arrayContaining(cards.map(card => ({ paymentMethodId: card.id, redactBillingDetails: true }))));
-    expect(logs.filter(entry => (entry as { event?: string }).event === 'members.erasure.detach_failed')).toEqual(failure && queued ? [expect.objectContaining({ event: 'members.erasure.detach_failed', gymId: gymA, memberId: person.id, paymentMethodId: cards[0]!.id })] : []);
+    expect(jobs.jobs).toHaveLength(2);
+    expect(jobs.jobs.map(job => job.payload)).toEqual(expect.arrayContaining(cards.map(card => ({ paymentMethodId: card.id, redactBillingDetails: true }))));
+    expect(logs.filter(entry => (entry as { event?: string }).event === 'members.erasure.detach_failed')).toEqual(failure ? [expect.objectContaining({ event: 'members.erasure.detach_failed', gymId: gymA, memberId: person.id, paymentMethodId: cards[0]!.id })] : []);
     expect(JSON.stringify(logs)).not.toContain('Provider unavailable');
     const stored = await database.forGym(gymA, tx => tx.select().from(paymentMethods).where(eq(paymentMethods.householdId, home.id)));
     expect(stored.every(card => card.revokedAt && !card.isDefault)).toBe(true);
   });
-  it.each([
-    { failure: false, queued: true }, { failure: true, queued: true }, { failure: true, queued: false },
-  ])('redacts the last member\'s provider customer after commit and retries it from a queued job (%o)', async ({ failure, queued }) => {
+  it.each([false, true])('redacts the last member\'s provider customer after commit and retries it from a queued job (failure: %s)', async failure => {
     const { home, person } = await routeFixture(gymA), customerId = 'cus_redact_' + uuidv7().replaceAll('-', '');
     await database.forGym(gymA, tx => tx.update(households).set({ stripeCustomerId: customerId }).where(eq(households.id, home.id)));
     const payments = new FakePayments(gymA, clock), jobs = new FakeJobs(clock);
@@ -332,25 +341,24 @@ describe('members and households', () => {
       if (failure) throw new Error('Provider unavailable');
       await payments.redactCustomer(id);
     });
-    const app = erasureServer({ redactCustomer, ...(queued ? { jobs } : {}) });
+    const app = erasureServer({ redactCustomer, jobs });
     const logs: unknown[] = [], previousLog = setLogSink(entry => { logs.push(JSON.parse(entry)); });
     try {
-      expect((await send(app, `/api/members/${person.id}/anonymize`, 'POST', { revision: 1 })).status).toBe(failure && !queued ? 500 : 200);
+      expect((await send(app, `/api/members/${person.id}/anonymize`, 'POST', { revision: 1 })).status).toBe(200);
     } finally { setLogSink(previousLog); }
     expect(redactCustomer).toHaveBeenCalledExactlyOnceWith(gymA, customerId);
     const cleared = { phone: null, description: null, address: null, shipping: null, individualName: null, businessName: null, customFields: null, taxIds: [] };
     expect(payments.customer(customerId)).toEqual(failure ? { name: null, email: 'payer@example.test', ...details, individualName: null, businessName: null, customFields: null, taxIds: [] }
       : { name: 'Erased member', email: null, ...cleared });
-    expect(jobs.jobs.map(job => ({ name: job.name, payload: job.payload }))).toEqual(queued ? [{ name: redactCustomerJob, payload: { customerId } }] : []);
+    expect(jobs.jobs.map(job => ({ name: job.name, payload: job.payload }))).toEqual([{ name: redactCustomerJob, payload: { customerId } }]);
     // The retry waits a minute, after the inline attempt, which it then finds already redacted.
-    if (queued) expect(jobs.jobs[0]!.runAt.getTime()).toBe(clock.now().getTime() + 60_000);
+    expect(jobs.jobs[0]!.runAt.getTime()).toBe(clock.now().getTime() + 60_000);
     expect(logs.filter(entry => (entry as { event?: string }).event === 'members.erasure.redact_failed'))
-      .toEqual(failure && queued ? [expect.objectContaining({ gymId: gymA, memberId: person.id })] : []);
+      .toEqual(failure ? [expect.objectContaining({ gymId: gymA, memberId: person.id })] : []);
     expect(JSON.stringify(logs)).not.toContain(customerId);
     // The erasure's audit keeps the cleared customer ID (not personal data) as a durable record for redaction.
     expect((await database.forGym(gymA, tx => tx.select().from(auditEvents).where(and(eq(auditEvents.action, 'household.anonymized'),
       eq(auditEvents.targetId, home.id)))))[0]!.before).toEqual({ stripeCustomerId: customerId });
-    if (!queued) return;
     // The retry needs only the job's payload: the household no longer stores the customer ID. It is safe to repeat.
     const [job] = createErasureJobs({ redactCustomer: (_gymId, id) => payments.redactCustomer(id) });
     for (let run = 1; run <= 2; run++) await job!.handler(jobs.jobs[0]!.payload, { jobId: 'redact', gymId: gymA, timezone: 'UTC', attempt: run, clock });
@@ -378,7 +386,7 @@ describe('members and households', () => {
     const frozen = await owned(person.id, 'frozen', { resumesOn: '2026-03-01' });
     const ended = await owned(person.id, 'cancelled', { cancelledAt: new Date('2025-12-01Z') });
     const siblings = await owned(sibling.id, 'active');
-    await service.anonymizeMember(context(), person.id, { revision: 1 });
+    await service.eraseMember(context(), person.id, { revision: 1 }, erasureQueue());
     const rows = new Map((await database.forGym(gymA, (tx) => tx.select().from(memberships))).map((row) => [row.id, row]));
     for (const id of [active.id, trial.id, frozen.id])
       expect(rows.get(id)).toMatchObject({ status: 'cancelled', cancelledAt: clock.now(), resumesOn: null, revision: 2 });

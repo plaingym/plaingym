@@ -20,7 +20,7 @@ beforeAll(async () => { await factory('gyms', gymA); await factory('gyms', gymB)
 async function erased(gymId: string, customerId: string | null) {
   const home = await factory('households', gymId), person = await factory('members', gymId, { householdId: home.id });
   if (customerId) await database.forGym(gymId, tx => tx.update(households).set({ stripeCustomerId: customerId }).where(eq(households.id, home.id)));
-  await service.anonymizeMember({ gymId, actor: { kind: 'system' } }, person.id, { revision: 1 });
+  await service.eraseMember({ gymId, actor: { kind: 'system' } }, person.id, { revision: 1 }, { jobs: new FakeJobs(clock), timezone: 'UTC' });
   return home;
 }
 const customer = (tag: string) => `cus_${tag}_${uuidv7().replaceAll('-', '')}`;

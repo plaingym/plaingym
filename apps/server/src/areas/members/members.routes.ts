@@ -12,9 +12,9 @@ import { createMemberPhotoService, type MemberUploads } from './photos.js';
 import type { HouseholdPinSecret } from './pin.js';
 import type { Jobs } from '../../infra/jobs/index.js';
 import { promoteWaitlist } from '../bookings/bookings.js';
-import { detachJob } from '../billing/payments.mutations.js';
 import type { DetachOptions } from '../../infra/payments/index.js';
-import { queueEarlierRedactions, redactCustomerJob, redactEarlierJob } from './erasure-redaction.js';
+import { releaseFiles } from '../../infra/storage/release.js';
+import { queueEarlierRedactions, redactCustomerJob, redactEarlierJob, releaseErasedFiles, releaseErasedFilesJob } from './erasure-redaction.js';
 
 function mutation(context: RequestContext) {
   if (context.principal.kind !== 'staff' || context.principal.gymId !== context.gym.gymId) throw new AppError('not_found', 'Resource not found');
@@ -36,23 +36,34 @@ function jsonRoute(contract: c.EndpointContract, handler: (context: RequestConte
 
 type ErasureOptions = { clock?: Clock; detachCard?: (gymId: string, processorId: string, options?: DetachOptions) => Promise<void>;
   /** Payments.redactCustomer for the gym: the erased household's provider customer keeps no name or email. */
-  redactCustomer?: (gymId: string, customerId: string) => Promise<void>; jobs?: Pick<Jobs, 'enqueue'> };
-export { redactCustomerJob };
+  redactCustomer?: (gymId: string, customerId: string) => Promise<void>;
+  /** Erasure commits its cleanup jobs with it: without a queue the erasure route refuses (`unavailable`) before erasing. */
+  jobs?: Pick<Jobs, 'enqueue'> };
+export { redactCustomerJob, releaseErasedFilesJob };
 const redactPayload = z.object({ customerId: z.string().regex(/^cus_[A-Za-z0-9_]+$/) });
 type Composition = ErasureOptions & { service: MembersService; photos: ReturnType<typeof createMemberPhotoService> | undefined; uploadsFor?: MemberUploads };
 let configured: Composition | undefined;
-/** Runtime supplies the gym key for household PINs and file storage for photos before serving requests. */
-export function configureMembers(options: ErasureOptions & { pinSecret: HouseholdPinSecret; uploadsFor: MemberUploads; clock?: Clock }) {
+/** Runtime supplies the gym key for household PINs, file storage for photos and the job queue for erasure before serving requests. */
+export function configureMembers(options: ErasureOptions & { pinSecret: HouseholdPinSecret; uploadsFor: MemberUploads; jobs: Pick<Jobs, 'enqueue'>; clock?: Clock }) {
   const service = createMembersService({ pinSecret: options.pinSecret, ...(options.clock ? { clock: options.clock } : {}) });
   configured = { ...options, service, photos: createMemberPhotoService(service, options.uploadsFor) };
 }
-/** Retries redaction of an erased household's provider customer; the payload carries the ID the erasure cleared. */
-export function createErasureJobs(supplied?: Pick<ErasureOptions, 'redactCustomer' | 'jobs'> & { scope?: typeof forGym }): readonly JobRegistration[] {
+/**
+ * The erasure's retries: redaction of an erased household's provider customer (the payload carries the ID the erasure
+ * cleared) and the release of the erased member's files (the payload carries their keys). Card detaches use the billing
+ * area's `billing.payments.detach` job.
+ */
+export function createErasureJobs(supplied?: Pick<ErasureOptions, 'redactCustomer' | 'jobs'> & { scope?: typeof forGym; uploadsFor?: MemberUploads }): readonly JobRegistration[] {
   return [{ id: redactCustomerJob, async handler(payload, ctx) {
     const { customerId } = redactPayload.parse(payload);
     const redact = (supplied ?? configured)?.redactCustomer;
     if (!redact) throw new Error('Customer redaction is not configured');
     await redact(ctx.gymId, customerId);
+  } },
+  { id: releaseErasedFilesJob, async handler(payload, ctx) {
+    const uploadsFor = (supplied ?? configured)?.uploadsFor;
+    if (!uploadsFor) throw new Error('Erased file release is not configured');
+    await releaseErasedFiles(payload, ctx.gymId, uploadsFor);
   } },
   // Customers erased before the redaction covered every field are queued once each (a marker audit keeps a rerun quiet), then
   // the same check keeps every later erasure's redaction from being lost with an exhausted job. It needs no start-up wiring.
@@ -78,41 +89,30 @@ export function createMembersRoutes(service?: MembersService, uploadsFor?: Membe
       return { data: photos ? await photos.update(mutation(ctx), p.memberId!, input) : await service.updateMember(mutation(ctx), p.memberId!, input) };
     }),
     jsonRoute(contracts.anonymizeMember, async (ctx, p, _q, b) => {
-      const { revision } = c.anonymizeMemberRequestSchema.parse(b), { service, uploadsFor, detachCard, redactCustomer, jobs } = current();
-      const { member, files, revokedCards, freedSessionIds, erasedCustomerId } = await service.eraseMember(mutation(ctx), p.memberId!, { revision },
-        jobs ? { jobs, timezone: ctx.gym.timezone } : undefined);
-      for (const sessionId of freedSessionIds) await promoteWaitlist(ctx.gym.gymId, sessionId,
-        current().clock ? { clock: current().clock! } : {});
-      // Queue every detach before attempting it, so an outage leaves durable retries. An erasure also clears each card's billing
-      // details (name, email, phone, address) before detaching it; a staff card removal leaves them.
-      for (const card of revokedCards) if (jobs) await jobs.enqueue(detachJob, { paymentMethodId: card.id, redactBillingDetails: true }, {
-        gymId: ctx.gym.gymId, timezone: ctx.gym.timezone, idempotencyKey: `detach:${card.id}`, maxAttempts: 12,
-      });
-      const cleanup = await Promise.allSettled([
-        ...revokedCards.map(async card => {
-          if (!detachCard) throw new AppError('unavailable', 'Card removal is not configured');
-          try { await detachCard(ctx.gym.gymId, card.processorId, { redactBillingDetails: true }); }
-          catch (error) {
-            // The erasure has committed and the queued job retries the detach; without a queue, report it.
-            if (!jobs) throw error;
-            logError('members.erasure.detach_failed', { gymId: ctx.gym.gymId, memberId: p.memberId!, paymentMethodId: card.id });
-          }
+      const { revision } = c.anonymizeMemberRequestSchema.parse(b), { service, uploadsFor, detachCard, redactCustomer, jobs, clock } = current();
+      // The erasure commits its cleanup jobs with it, so it never runs without a queue.
+      if (!jobs) throw new AppError('unavailable', 'Erasure is not configured');
+      const gymId = ctx.gym.gymId, memberId = p.memberId!;
+      const { member, files, revokedCards, freedSessionIds, erasedCustomerId } = await service.eraseMember(mutation(ctx), memberId, { revision },
+        { jobs, timezone: ctx.gym.timezone });
+      // The erasure and its detach, release and redaction jobs have committed. Each immediate attempt below is a head start on
+      // its job: a failure is logged with identifiers only, a missing callback leaves the work to the job, and the request succeeds.
+      await Promise.all([
+        ...(detachCard ? revokedCards : []).map(async card => {
+          try { await detachCard!(gymId, card.processorId, { redactBillingDetails: true }); }
+          catch { logError('members.erasure.detach_failed', { gymId, memberId, paymentMethodId: card.id }); }
         }),
-        ...(erasedCustomerId ? [erasedCustomerId] : []).map(async customerId => {
-          if (!redactCustomer) throw new AppError('unavailable', 'Customer redaction is not configured');
-          try { await redactCustomer(ctx.gym.gymId, customerId); }
-          catch (error) {
-            // As with cards, the queued job retries a provider outage after the committed erasure.
-            if (!jobs) throw error;
-            logError('members.erasure.redact_failed', { gymId: ctx.gym.gymId, memberId: p.memberId! });
-          }
+        ...(redactCustomer && erasedCustomerId ? [erasedCustomerId] : []).map(async customerId => {
+          try { await redactCustomer!(gymId, customerId); }
+          catch { logError('members.erasure.redact_failed', { gymId, memberId }); }
         }),
-        ...files.map(async key => {
-          if (!uploadsFor) throw new AppError('unavailable', 'Photo storage is not configured');
-          await (await uploadsFor(ctx.gym.gymId)).markDeleted(key);
-        }),
+        ...(uploadsFor ? [releaseFiles(gymId, files, uploadsFor, 'members.erasure.release_failed')] : []),
       ]);
-      for (const result of cleanup) if (result.status === 'rejected') throw result.reason;
+      // Waitlist promotion comes last, and one session's failure neither stops the others nor fails the committed erasure.
+      for (const sessionId of freedSessionIds) {
+        try { await promoteWaitlist(gymId, sessionId, clock ? { clock } : {}); }
+        catch (error) { logError('members.erasure.promotion_failed', { gymId, memberId, sessionId }, error); }
+      }
       return { data: member };
     }),
     jsonRoute(contracts.getMedicalNotes, async (ctx, p) => ({ data: await current().service.getMedicalNotes(ctx.gym.gymId, p.memberId!) })),

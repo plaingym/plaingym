@@ -12,6 +12,7 @@ import { createMembershipService } from '../memberships.js';
 import { createPaymentService } from '../payments.js';
 import { createChargeRunner } from './index.js';
 import { createMembersService } from '../../members/members.js';
+import { FakeJobs } from '../../../infra/jobs/index.js';
 import { useRunnerFixture } from './runner.fixture.test-helper.js';
 
 const { db, factory, fixture, invoice } = useRunnerFixture();
@@ -27,7 +28,7 @@ describe('charge runner with PostgreSQL', () => {
       occurredAt: new Date(f.clock.now().getTime() - 3 * 86400000), after: { retryDays: [3, 7] } });
     const create = vi.spyOn(f.provider, 'createCharge');
     const members = createMembersService({ scope: db.forGym, clock: f.clock });
-    await members.eraseMember({ gymId: f.gymId, actor: { kind: 'system' } }, f.member.id, { revision: 1 });
+    await members.eraseMember({ gymId: f.gymId, actor: { kind: 'system' } }, f.member.id, { revision: 1 }, { jobs: new FakeJobs(f.clock), timezone: 'UTC' });
     expect(await f.runner.daily(f.gymId)).toMatchObject({ attempted: 0, errors: [] });
     for (const invoiceId of [bill.id, pastDue.id]) expect(await f.runner.charge(f.gymId, invoiceId, { mode: 'retry' }))
       .toEqual({ status: 'skipped', reason: 'needs_review' });

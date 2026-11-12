@@ -18,6 +18,7 @@ import { createMemberHouseholdContext } from '../members/household-users.context
 import { rememberPortalApp, portalTestHeaders } from '../portal/household.fixture.js';
 import { createPortalAuthorization } from '../portal/auth.permissions.js';
 import { createMembersService } from '../members/members.js';
+import { FakeJobs } from '../../infra/jobs/index.js';
 import { createMembersRoutes } from '../members/members.routes.js';
 import { createBookingService, promoteWaitlist } from './bookings.js';
 import { createBookingRoutes } from './bookings.routes.js';
@@ -53,7 +54,7 @@ function app(f: Fixture, principal: Principal, fake = false, production = false)
   const households = fake ? f.fake : createMemberHouseholdContext(db.forGym);
   const portal = createPortalBookingService({ households, householdScope: db.forHousehold, bookings: service });
   return rememberPortalApp(createApp({ clock, skipSetup: true, origin: 'http://localhost',
-    contributions: production ? areaContributions : { routes: [...createMembersRoutes(createMembersService({ scope: db.forGym, clock }), undefined, { clock }), ...createBookingRoutes(service), ...createPortalBookingRoutes(portal)] },
+    contributions: production ? areaContributions : { routes: [...createMembersRoutes(createMembersService({ scope: db.forGym, clock }), undefined, { clock, jobs: new FakeJobs(clock) }), ...createBookingRoutes(service), ...createPortalBookingRoutes(portal)] },
     resolveGym: async (c, next) => { c.set('context', { ...c.get('context'), gym: { gymId: f.gymId, timezone: 'UTC', enabledModules: new Set() } }); await next(); },
     session: async (c, next) => { c.set('context', { ...c.get('context'), principal }); await next(); },
     authorize: createPortalAuthorization(households),

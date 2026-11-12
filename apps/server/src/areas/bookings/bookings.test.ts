@@ -8,6 +8,7 @@ import { TestClock } from '../../core/clock.js';
 import { createBookingService, promoteWaitlist } from './bookings.js';
 import { createScheduleService } from '../schedule/schedule.js';
 import { createMembersService } from '../members/members.js';
+import { FakeJobs } from '../../infra/jobs/index.js';
 import { createSettingsService } from '../settings/settings.js';
 
 const db = useTestDatabase(), factory = createFactories(db), page = { limit: 50, offset: 0 };
@@ -143,7 +144,7 @@ describe('booking transactions', () => {
   it('exports promotion for each session freed by erasure and does not book an erased member again', async () => {
     const f = await fixture(), booked = await f.book(), waiting = await f.book(f.other.id);
     const memberService = createMembersService(f.options);
-    const erased = await memberService.eraseMember(f.actor, f.member.id, { revision: f.member.revision });
+    const erased = await memberService.eraseMember(f.actor, f.member.id, { revision: f.member.revision }, { jobs: new FakeJobs(f.clock), timezone: 'UTC' });
     expect(erased.freedSessionIds).toEqual([f.session.id]);
     const before = (await f.service.list(f.gymId, page)).data;
     expect(before.find(row => row.id === booked.id)?.status).toBe('cancelled');
@@ -212,7 +213,7 @@ describe('booking transactions', () => {
   it('erasure after the cutoff frees the place without promoting the waitlist', async () => {
     const f = await fixture(); await f.book(); const waiting = await f.book(f.other.id);
     f.clock.set('2026-10-30T17:30:00Z');
-    const erased = await createMembersService(f.options).eraseMember(f.actor, f.member.id, { revision: f.member.revision });
+    const erased = await createMembersService(f.options).eraseMember(f.actor, f.member.id, { revision: f.member.revision }, { jobs: new FakeJobs(f.clock), timezone: 'UTC' });
     expect(erased.freedSessionIds).toEqual([f.session.id]);
     expect(await promoteWaitlist(f.gymId, f.session.id, f.options)).toEqual([]);
     expect((await f.service.list(f.gymId, page)).data.find(row => row.id === waiting.id)).toMatchObject({ status: 'waitlisted' });

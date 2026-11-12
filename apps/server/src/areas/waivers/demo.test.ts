@@ -16,13 +16,21 @@ import { createRuntimeUploads } from '../../infra/storage/runtime.js';
 import { s3Server } from '../../infra/storage/s3-server.test-helper.js';
 import { demoSignaturePng } from '../../demo/seed/waivers-image.js';
 import { createMembersService } from '../members/members.js';
-import { createMemberPhotoService } from '../members/photos.js';
+import { releaseErasedFiles, releaseErasedFilesJob } from '../members/erasure-redaction.js';
+import { FakeJobs } from '../../infra/jobs/index.js';
+import type { MutationContext } from '../../core/interfaces/common.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { createWaiversService } from './waivers.js';
 import { configureWaivers } from './waivers.routes.js';
 import { renderWaiver } from './pdf.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
+/** Erases a member with its cleanup queued, then runs the file release the erasure committed, as the queue would. */
+async function erase(clock: TestClock, uploadsFor: Parameters<typeof releaseErasedFiles>[2], context: MutationContext, memberId: string, revision: number) {
+  const jobs = new FakeJobs(clock);
+  await createMembersService({ scope: db.forGym, clock }).eraseMember(context, memberId, { revision }, { jobs, timezone: 'UTC' });
+  for (const job of jobs.jobs) if (job.name === releaseErasedFilesJob) await releaseErasedFiles(job.payload, context.gymId, uploadsFor);
+}
 
 /** Count the HTTP requests reaching the S3 protocol fixture, including failed writes. */
 async function countedS3() {
@@ -163,8 +171,7 @@ it('falls back to fresh tombstoned PDFs after a cached upload leaves an unreadab
     }
     const pdfs = (await uploads.list(prefix)).filter(file => file.contentType === 'application/pdf');
     expect(pdfs).toHaveLength(2); expect(pdfs.every(file => file.deletedAt)).toBe(true);
-    const photos = createMemberPhotoService(createMembersService({ scope: db.forGym, clock: f.clock }), f.uploads.forGym);
-    await photos.anonymize(gym.ctx, gym.member.id, gym.member.revision);
+    await erase(f.clock, f.uploads.forGym, gym.ctx, gym.member.id, gym.member.revision);
     expect((await pdfRequest(f)).status).toBe(404);
     expect((await uploads.list(prefix)).every(file => file.deletedAt)).toBe(true);
   } finally { await f.close(); }
@@ -197,9 +204,7 @@ it('refuses every visitor put and erases cached PDFs with their signature images
     for (const key of [gym.signature.signatureImageKey, `${gym.gymId}/waivers/${gym.member.id}/pdf/${uuidv7()}.pdf`])
       await expect(uploads.put(key, new Uint8Array([1]), 'application/pdf')).rejects.toMatchObject({ code: 'forbidden' });
     expect(f.s3.methods).toHaveLength(before);
-    const members = createMembersService({ scope: db.forGym, clock: f.clock });
-    const photos = createMemberPhotoService(members, f.uploads.forGym);
-    await photos.anonymize(gym.ctx, gym.member.id, gym.member.revision);
+    await erase(f.clock, f.uploads.forGym, gym.ctx, gym.member.id, gym.member.revision);
     expect((await pdfRequest(f)).status).toBe(404);
     const files = await uploads.list();
     expect(files.filter(file => file.contentType === 'application/pdf')).toHaveLength(1);
@@ -213,10 +218,9 @@ it('refuses every visitor put and erases cached PDFs with their signature images
 it('does not publish a PDF or fresh link when the member is erased during rendering', async () => {
   const f = await fixture();
   try {
-    const gym = f.gyms[0]!, members = createMembersService({ scope: db.forGym, clock: f.clock });
-    const photos = createMemberPhotoService(members, f.uploads.forGym);
+    const gym = f.gyms[0]!;
     configureWaivers({ scope: db.forGym, clock: f.clock, uploadsFor: f.uploads.forGym, render: async (...args) => {
-      await photos.anonymize(gym.ctx, gym.member.id, gym.member.revision);
+      await erase(f.clock, f.uploads.forGym, gym.ctx, gym.member.id, gym.member.revision);
       return renderWaiver(...args);
     } });
     expect((await pdfRequest(f)).status).toBe(404);

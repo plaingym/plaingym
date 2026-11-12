@@ -2,10 +2,25 @@
 import { and, eq, inArray, isNotNull, or } from 'drizzle-orm';
 import { auditEvents, forGym, households, writeAudit } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
+import { z } from 'zod';
 import type { Jobs } from '../../infra/jobs/index.js';
+import type { Uploads } from '../../infra/storage/index.js';
 
 /** Queues the provider redaction of the customer an erased household had. */
 export const redactCustomerJob = 'members.erasure.redact_customer';
+/** Marks deleted the photo and signature images an erasure released; committed with the erasure, under `release:<member ID>`. */
+export const releaseErasedFilesJob = 'members.erasure.release_files';
+const releasePayload = z.object({ keys: z.array(z.string().min(1)).min(1) });
+/**
+ * The release job's work: every key must carry the job's gym prefix, and marking a key deleted again is harmless, so a retry
+ * after a partial run repeats only what is left. A storage failure throws, and the queue retries it.
+ */
+export async function releaseErasedFiles(payload: unknown, gymId: string, uploadsFor: (gymId: string) => Promise<Pick<Uploads, 'markDeleted'>>) {
+  const { keys } = releasePayload.parse(payload);
+  if (keys.some(key => !key.startsWith(`${gymId}/`))) throw new Error('Erased file key outside the job gym');
+  const uploads = await uploadsFor(gymId);
+  for (const key of keys) await uploads.markDeleted(key);
+}
 /** Daily check that every erased household's provider customer has a redaction queued (see `queueEarlierRedactions`). */
 export const redactEarlierJob = 'members.erasure.redact_earlier';
 /** Audited (target: the erased household) when the check above queued that household's customer; the marker keeps a rerun from queuing it again. */
