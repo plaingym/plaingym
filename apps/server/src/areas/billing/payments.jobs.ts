@@ -9,10 +9,12 @@ import type { TransitionNotifications } from './transitions/notifications.js';
 import { snapshot } from './transitions/store.js';
 import type { DetachOptions, Payments } from '../../infra/payments/index.js';
 import type { InvoiceTransitions } from '../../core/interfaces/invoice-transitions.js';
-import { detachJob, receiptJob, refundRetryWindowMs, settleLapsed } from './payments.mutations.js';
+import { detachJob, receiptJob } from './payments.mutations.js';
+import { refundRetryWindowMs, settleLapsed } from './transitions/lapsed-refunds.js';
 
 export const lapsedRefundJob = 'billing.payments.settle_lapsed';
-/** The ordinary per-gym job lane serializes this sweep with duplicate-refund workers. No transaction holds a provider call. */
+/** The ordinary per-gym job lane serializes this sweep with duplicate-refund workers. A staff retry still sending a row
+ * is waited for (`settleLapsed`). No transaction holds a provider call. */
 export function createLapsedRefundJobs(options: { scope?: typeof forGym; clock: Clock; transitions: InvoiceTransitions;
   payments(gymId: string): Promise<Payments> }): readonly JobRegistration[] {
   const scope = options.scope ?? forGym;
@@ -21,15 +23,21 @@ export function createLapsedRefundJobs(options: { scope?: typeof forGym; clock: 
       .innerJoin(payments, eq(payments.id, refunds.paymentId)).where(and(eq(refunds.status, 'pending'), isNotNull(refunds.taggedAt),
         isNull(refunds.processorId), lte(refunds.createdAt, new Date(options.clock.now().getTime() - refundRetryWindowMs)),
         eq(payments.method, 'card'))).orderBy(asc(refunds.createdAt), asc(refunds.id)).limit(100));
-    // Resolve the provider only when there is work; a gym without Stripe has nothing to settle.
-    if (!rows.length) return;
-    const provider = await options.payments(context.gymId);
-    // A row that can't settle stays pending for staff. The oldest come first, so it must not hold back the rows behind it,
-    // and the run still ends failed.
-    const failures: unknown[] = [];
+    // Resolve the provider only when a payment needs Stripe; a gym without Stripe has nothing to settle, and a payment
+    // marked as test is released without it.
+    let provider: Promise<Payments> | undefined;
+    const providerFor = () => provider ??= options.payments(context.gymId);
+    // Each payment's refunds are listed once. A row that can't settle stays pending for staff. The oldest come first, so
+    // it must not hold back the rows behind it, and the run still ends failed.
+    const byPayment = new Map<string, { payment: typeof rows[number]['payment']; reservations: (typeof rows[number]['reservation'])[] }>();
     for (const { reservation, payment } of rows) {
-      await settleLapsed(options, { gymId: context.gymId, actor: { kind: 'system' } }, provider, payment, [reservation])
-        .catch((error: unknown) => { failures.push(error); });
+      const group = byPayment.get(payment.id) ?? { payment, reservations: [] };
+      group.reservations.push(reservation); byPayment.set(payment.id, group);
+    }
+    const failures: unknown[] = [];
+    for (const { payment, reservations } of byPayment.values()) {
+      await settleLapsed({ scope, clock: options.clock, transitions: options.transitions }, { gymId: context.gymId, actor: { kind: 'system' } },
+        providerFor, payment, reservations).catch((error: unknown) => { failures.push(error); });
     }
     if (failures.length) throw failures[0];
   } }];

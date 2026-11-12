@@ -45,18 +45,35 @@ reservation can't take it (see the webhook handlers' README). A retry reads
 the tag from the stored row, so its request never changes; a reservation from
 before the column stays untagged and is sent without the metadata, as it was. A lost response leaves the
 reservation pending, and an explicit retry reuses that reservation's key inside
-the 23-hour window. Past it, the duplicate-refund worker, an hourly per-gym job,
+the 23-hour window. A retry takes only a row the app sent under that key: a reservation,
+or the app's own refund. A pending refund made outside the app (its row ID is derived
+from its processor ID) or a duplicate payment's reservation is never retried, since its
+key would be new and Stripe would make a second refund; a request beside one answers
+`pending_refund`. The window is checked with the time read under the invoice lock, in
+the transaction that records the send (`billing.refund.sending`, with a `sendId`) before
+Stripe is called; the request records `billing.refund.sent` once Stripe answers or fails.
+Past the window, the duplicate-refund worker, an hourly per-gym job,
 or a staff refund request on the payment settles a tagged
 reservation that has no processor refund, from `Payments.listRefunds`: the refund naming
 the row is recorded, and with none the row is released (`failed`), since no retry can
 reach Stripe any more. A staff request that settles one moves no money and answers `refund_reconciled`, so
 staff decide again from the settled payment, and the stuck row no longer blocks the
-switch to live, go-live or a restore check. Ambiguous matches require staff resolution:
+switch to live, go-live or a restore check. A row released this way by the worker or the
+job sends staff a notice naming the invoice and amount (see the transitions README); a
+staff request that releases one is answered directly. Settling first waits for every send
+a staff request started: under the invoice lock it reads the send records, and a row with
+an unfinished send stays pending (a staff request answers `refund_in_progress`) until the
+send records its end, since Stripe may still be making that refund. Only a crash leaves a
+send unfinished; its hold lapses after an hour, far beyond the provider's 20-second
+timeout. No request can start a send once the window has passed, so a settle that holds
+the lock sees every send there will be. Ambiguous matches require staff resolution:
 a staff request answers `refund_reconciliation`, and the hourly job leaves that row pending,
 settles the rest of the batch and ends failed.
 The hourly job selects up to 100 lapsed tagged reservations, oldest first, in short
-gym-scoped transactions, and calls Stripe only after those transactions commit.
-It runs in the ordinary per-gym job lane alongside the duplicate-refund worker;
+gym-scoped transactions, and calls Stripe only after those transactions commit, listing
+each payment's refunds once. A reservation on a payment marked `Stripe test mode` is
+released without calling Stripe: the live key can't read it, and the staff path never
+sends one (below). It runs in the ordinary per-gym job lane alongside the duplicate-refund worker;
 neither path sends a new refund after the window. It leaves reservations inside the
 window, untagged rows, and rows with a processor ID alone. Repeated runs are safe.
 Older pending refunds, untagged or already
@@ -136,7 +153,10 @@ Register `createLapsedRefundJobs({ clock, transitions, payments })` alongside th
 runtime's other job contributions. It schedules `billing.payments.settle_lapsed`
 at minute 43 of every hour for each gym through `Jobs.schedule`. Its payments
 resolver and transitions must be the same ones used by the duplicate worker and
-staff refunds. No provider is required when the gym has no eligible reservations.
+staff refunds. No provider is required when the gym has no eligible reservations, or
+when they are all on payments marked as test. The window, the send records and the
+settling rule live in `transitions/lapsed-refunds.ts`, shared by the staff path, the job
+and the duplicate worker.
 Routes and the receipt/detach jobs already contribute through their existing area parts.
 The runtime delegates card detachment to the gym's payment adapter. Tests exercise the real area registrations
 through `createApp`, the real PostgreSQL transitions, and the receipt/detach jobs;

@@ -390,8 +390,17 @@ describe('matching a processor refund to a refund reservation', () => {
     expect(await row(f, older)).toMatchObject({ status: 'pending', processorId: null });
     expect(await row(f, newer)).toMatchObject({ status: 'failed', processorId: null });
     expect(await row(f, processorRefundId(f.gymId, refund.id))).toMatchObject({ status: 'succeeded', amountCents: 4000 });
-    const effects = (await f.read()).audits.filter(audit => audit.action === 'billing.invoice.effect_created');
-    expect(effects.filter(audit => (audit.after as { notice?: string }).notice === 'refund_failed')).toEqual([]);
+    const effects = (await f.read()).audits.filter(audit => audit.action === 'billing.transition.effect.created');
+    expect(effects.filter(audit => (audit.after as { kind?: string }).kind === 'staff_notice')).toEqual([]);
+  });
+  it('releases an unmarked reservation too when a refund naming another reservation leaves it no room', async () => {
+    const f = await fixture(), intentId = await charged(f), legacy = await reserve(f, 8000, false);
+    // A refund made outside the app, whose metadata names a reservation this gym doesn't have.
+    const refund = await f.provider.refund({ chargeId: intentId, amount: 4000, idempotencyKey: 'edited', reservationId: uuidv7() });
+    await delivered(f, refund.id); await delivered(f, refund.id);
+    expect(await row(f, legacy)).toMatchObject({ status: 'failed', processorId: null });
+    expect(await row(f, processorRefundId(f.gymId, refund.id))).toMatchObject({ status: 'succeeded', amountCents: 4000 });
+    expect((await f.read()).invoice.status).toBe('partially_refunded');
   });
   it('records as external a refund that reached the processor after its reservation was released', async () => {
     const f = await fixture(), intentId = await charged(f), reservation = await reserve(f, 2000);

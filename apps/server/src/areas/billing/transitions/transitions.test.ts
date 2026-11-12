@@ -24,6 +24,7 @@ import { createTransitionJobs } from './transitions.jobs.js';
 import { createTransitionNotifications } from './notifications.js';
 import { applyChargeOutcome } from './outcomes.js';
 import { effectCreated, effectCompleted, effectPublished } from './store.js';
+import { refundRetryWindowMs } from './lapsed-refunds.js';
 import { invoiceTransitionsContract } from '../../../core/interfaces/invoice-transitions.contract.js';
 import type { InvoiceEffect } from '../../../core/interfaces/invoice-transitions.js';
 
@@ -589,6 +590,26 @@ describe('invoice transitions with real PostgreSQL', () => {
     await cash.drain();
     expect(refundNotices(await cash.read())).toEqual([]);
     expect(cash.email.messages).toHaveLength(staff);
+  });
+  it('tells staff once about a reservation the app releases after its window, and not about one released inside it', async () => {
+    const f = await fixture(); await f.transitions.cardSucceeded(f.context, f.success); await f.drain();
+    const base = { invoiceId: f.invoice.id, paymentId: f.success.paymentId, currency: 'CAD', status: 'pending' as const, tagged: true };
+    const lapsed = { ...base, refundId: uuidv7(), amountCents: 3000 }, recent = { ...base, refundId: uuidv7(), amountCents: 2000 };
+    await f.transitions.refund(f.context, lapsed);
+    f.clock.advance(refundRetryWindowMs);
+    await f.transitions.refund(f.context, recent);
+    const sent = f.email.messages.length;
+    for (const request of [lapsed, recent]) {
+      expect((await f.transitions.refund(f.context, { ...request, status: 'failed' })).outcome).toBe('applied');
+      expect((await f.transitions.refund(f.context, { ...request, status: 'failed' })).outcome).toBe('ignored');
+    }
+    await f.drain(); await f.drain();
+    expect(f.email.messages.slice(sent)).toMatchObject([{ to: 'staff@example.invalid', subject: "Refund for invoice 1 wasn't sent",
+      text: `A refund of ${formatMinorUnits(3000, 'CAD')} for invoice 1 was requested in billing, but the request never reached Stripe, `
+        + "so it was cancelled and the payer hasn't received it from this request. Check the payment in Stripe and in billing, "
+        + 'and refund the payer again only if they are still owed.' }]);
+    expect((await f.read()).audits.filter(row => row.action === effectCreated && (row.after as { notice?: string }).notice === 'refund_released')
+      .map(row => (row.after as { refundId: string }).refundId)).toEqual([lapsed.refundId]);
   });
   it('records a refund staff cancel as canceled, releases its amount and sends no notice', async () => {
     const f = await fixture(); await f.transitions.cardSucceeded(f.context, f.success); await f.drain();

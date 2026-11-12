@@ -33,12 +33,12 @@ export function processorRefundId(gymId: string, processorId: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-/** The newest tagged reservations an external refund pushes past the payment. The processor never lets its refunds
- * exceed the payment, so these can't have reached it. */
-function outrunReservations(rows: readonly RefundRow[], tagged: readonly RefundRow[], external: number, paid: number) {
+/** The newest reservations an external refund pushes past the payment. The processor never lets its refunds exceed the
+ * payment, so these can't have reached it as refunds of their own. */
+function outrunReservations(rows: readonly RefundRow[], reservations: readonly RefundRow[], external: number, paid: number) {
   let excess = rows.filter(row => !refundReleased(row)).reduce((sum, row) => sum + row.amountCents, external - paid);
   const outrun: RefundRow[] = [];
-  for (const row of [...tagged].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))) {
+  for (const row of [...reservations].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))) {
     if (excess <= 0) break;
     outrun.push(row);
     excess -= row.amountCents;
@@ -81,9 +81,10 @@ export function createDisputeRefundWriter(options: DisputeRefundOptions) {
   }
   /** Applies a processor refund through the refund transition. A refund that names a tagged reservation on this payment
    * takes that row; an untagged reservation, from before the marker, keeps matching any refund of its payment. Every
-   * other refund is external: it gets a deterministic ID, so every path records it as one row, and it leaves tagged
+   * other refund is external: it gets a deterministic ID, so every path records it as one row, and it leaves
    * reservations to the app's own refund, unless the processor has no room left for them: those never reached it, and
-   * are released. False when the refund does not belong to this payment. */
+   * are released (untagged ones too, once a refund naming another reservation leaves them unmatched). False when the
+   * refund does not belong to this payment. */
   async function refund(gymId: string, payment: Payment, value: Refund): Promise<boolean> {
     const currency = value.currency.toUpperCase();
     if (value.metadata.gymId !== gymId || currency !== payment.currency) return false;
@@ -101,8 +102,9 @@ export function createDisputeRefundWriter(options: DisputeRefundOptions) {
           || untagged[0]!.currency !== currency) throw new Error('Refund reservation is ambiguous');
         return { refundId: untagged[0]!.id, outrun: [] };
       }
+      // An untagged reservation is outrun too: it is left here only when this refund names another reservation.
       return { refundId: processorRefundId(gymId, value.id),
-        outrun: refundReleased(value) ? [] : outrunReservations(rows, tagged, value.amount, payment.amountCents) };
+        outrun: refundReleased(value) ? [] : outrunReservations(rows, reservations, value.amount, payment.amountCents) };
     });
     // Each move is a transition of its own, which rechecks the row under the invoice lock. A replay after a crash here
     // finds the amount already released.

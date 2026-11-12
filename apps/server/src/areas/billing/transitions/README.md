@@ -178,7 +178,18 @@ sale whose full refund had already reversed unused credits, the email also names
 those credits, which staff add back by adjustment if the payer is still owed the
 pack. A class pack paid after its member was erased grants no credits and queues a
 `notice: 'credits_not_granted'` staff notice (once per sale) so staff can refund
-the payer. Because a failed
+the payer. Any other reservation the app releases on its own (a system actor, with no
+processor refund) once its 23-hour retry window has passed queues a
+`notice: 'refund_released'` staff notice naming the invoice and the amount, and saying
+the request never reached Stripe: staff last saw it pending, and the payer may still be
+owed it. That covers the hourly job settling a staff refund no Stripe refund names,
+including one on a payment marked as test, and a dashboard refund that outran a staff
+refund past its window. A duplicate payment's reservation released this way gets the
+`duplicate_released` notice instead. A staff request that releases one
+is answered directly and queues none, and a reservation a dashboard refund outran inside
+the window queues none either. The window, the send records that keep a staff retry
+still in flight from being released, and the settling rule live in `lapsed-refunds.ts`
+(see the payments README). Because a failed
 refund never moves again, a replayed webhook or rerun reconciliation queues no
 second notice. A refund cancelled at the processor (usually by staff in its
 dashboard; the Stripe adapter reports it as `canceled`) is recorded as `canceled`
@@ -187,8 +198,8 @@ a failure. A canceled automatic duplicate-payment refund completes its effect th
 same way.
 
 `createTransitionNotifications` sends localized receipts, signed pay/update-card
-links, and staff notices (a duplicate card payment, a failed processor refund, or
-a duplicate payment's released reservation).
+links, and staff notices (a duplicate card payment, a failed processor refund, a
+duplicate payment's released reservation, or a staff refund released after its window).
 Runtime must supply a gym SMTP resolver (or demo outbox), trusted canonical origin and staff recipients. Household email respects
 the gym's email switch and matching member opt-outs/deliverability, through the
 household recipient helper shared with signed-link delivery and billing alerts. Receipts and

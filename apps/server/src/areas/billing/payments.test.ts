@@ -34,6 +34,7 @@ import { createChargeRunner, type ChargeResult } from './runner/index.js';
 import { configurePayments, createPaymentRoutes } from './payments.routes.js';
 import { createLapsedRefundJobs, createPaymentJobs, lapsedRefundJob } from './payments.jobs.js';
 import { detachJob } from './payments.mutations.js';
+import { refundSending, refundSendLeaseMs, refundSent } from './transitions/lapsed-refunds.js';
 
 const db = useTestDatabase(), factory = createFactories(db), origin = 'https://gym.example.test';
 async function fixture() {
@@ -437,11 +438,100 @@ describe('one-off collection and payment durability', () => {
     await db.forGym(f.gymId, tx => tx.update(refunds).set({ createdAt: new Date(f.clock.now().getTime() - 23 * 3600_000) })
       .where(eq(refunds.id, later)));
     const own = await f.provider.refund({ chargeId: paid.paymentIntentId!, amount: 500, idempotencyKey: 'lost', reservationId: refundId });
-    vi.spyOn(f.provider, 'listRefunds').mockResolvedValue([own, { ...own, id: 're_ambiguous' }]);
+    const listed = vi.spyOn(f.provider, 'listRefunds').mockResolvedValue([own, { ...own, id: 're_ambiguous' }]);
     const [job] = createLapsedRefundJobs({ scope: db.forGym, clock: f.clock, transitions: f.options.transitions, payments: async () => f.provider });
     await expect(job!.handler({}, { jobId: uuidv7(), gymId: f.gymId, timezone: 'UTC', attempt: 1, clock: f.clock })).rejects.toThrow('Ambiguous');
     expect(await refundRows(payment.id, f)).toEqual(expect.arrayContaining([expect.objectContaining({ id: refundId, status: 'pending' }),
       expect.objectContaining({ id: later, status: 'failed', processorId: null })]));
+    // Both rows are on one payment, whose refunds are listed once.
+    expect(listed).toHaveBeenCalledTimes(1);
+  });
+  const releasedNotices = async (f: Fixture) => (await db.forGym(f.gymId, tx => tx.select().from(auditEvents)
+    .where(eq(auditEvents.action, 'billing.transition.effect.created'))))
+    .filter(row => (row.after as { notice?: string }).notice === 'refund_released').map(row => (row.after as { refundId: string }).refundId);
+  it('tells staff when the scheduled job releases a staff refund, but not when a staff request settles it', async () => {
+    const f = await fixture(), { payment, refundId } = await lapsedReservation(f);
+    const run = scheduleLapsed(f); await run(); await run();
+    expect(await refundRows(payment.id, f)).toMatchObject([{ id: refundId, status: 'failed', processorId: null }]);
+    expect(await releasedNotices(f)).toEqual([refundId]);
+    const staffed = await fixture(), lapsed = await lapsedReservation(staffed);
+    await expect(staffed.service.refund(staffed.context, lapsed.payment.id, { ...staffRefund, amountCents: 1000 }))
+      .rejects.toMatchObject({ details: { reason: ['refund_reconciled'] } });
+    expect(await refundRows(lapsed.payment.id, staffed)).toMatchObject([{ id: lapsed.refundId, status: 'failed', processorId: null }]);
+    expect(await releasedNotices(staffed)).toEqual([]);
+  });
+  it('the scheduled job releases a lapsed reservation on a payment marked as test without reaching Stripe', async () => {
+    const f = await fixture(), { payment, refundId } = await lapsedReservation(f);
+    await db.forGym(f.gymId, tx => tx.update(payments).set({ reference: stripeTestPaymentReference }).where(eq(payments.id, payment.id)));
+    const provider = vi.fn(async () => f.provider);
+    const [job] = createLapsedRefundJobs({ scope: db.forGym, clock: f.clock, transitions: f.options.transitions, payments: provider });
+    await job!.handler({}, { jobId: uuidv7(), gymId: f.gymId, timezone: 'UTC', attempt: 1, clock: f.clock });
+    expect(provider).not.toHaveBeenCalled();
+    expect(await refundRows(payment.id, f)).toMatchObject([{ id: refundId, status: 'failed', processorId: null }]);
+    expect(await releasedNotices(f)).toEqual([refundId]);
+  });
+  it('waits for a staff retry still sending as the window passes, and records its refund, with no notice', async () => {
+    const f = await fixture(), { payment, refundId } = await lapsedReservation(f);
+    // The retry starts a minute before the window ends; while Stripe makes the refund, the window passes and the job runs.
+    f.clock.set(new Date(f.clock.now().getTime() - 60_000).toISOString());
+    const run = scheduleLapsed(f), send = f.provider.refund.bind(f.provider), listed = vi.spyOn(f.provider, 'listRefunds');
+    vi.spyOn(f.provider, 'refund').mockImplementationOnce(async request => {
+      f.clock.advance(5 * 60_000); await run();
+      expect(listed).not.toHaveBeenCalled();
+      expect(await refundRows(payment.id, f)).toMatchObject([{ id: refundId, status: 'pending', processorId: null }]);
+      return send(request);
+    });
+    expect(await f.service.refund(f.context, payment.id, { ...staffRefund, amountCents: 1000 })).toMatchObject({ id: refundId, status: 'succeeded' });
+    await run();
+    expect(await refundRows(payment.id, f)).toMatchObject([{ id: refundId, status: 'succeeded', processorId: expect.any(String) }]);
+    expect(await releasedNotices(f)).toEqual([]);
+    expect((await f.service.getInvoice(f.gymId, f.invoice.id)).invoice.status).toBe('partially_refunded');
+  });
+  it('holds a reservation a crashed staff retry left sending until its lease ends, and staff hear it is in progress', async () => {
+    const f = await fixture(), { payment, refundId } = await lapsedReservation(f);
+    const sending = (sendId: string, action = refundSending) => factory('auditEvents', f.gymId, { action, targetType: 'refund',
+      targetId: refundId, after: { sendId }, occurredAt: new Date(f.clock.now().getTime() - 2 * 60_000) });
+    // An earlier send finished; the last one never recorded its end.
+    const finished = uuidv7(); await sending(finished); await sending(finished, refundSent); await sending(uuidv7());
+    const listed = vi.spyOn(f.provider, 'listRefunds'), refund = vi.spyOn(f.provider, 'refund');
+    await expect(f.service.refund(f.context, payment.id, { ...staffRefund, amountCents: 1000 }))
+      .rejects.toMatchObject({ code: 'conflict', details: { reason: ['refund_in_progress'] } });
+    const run = scheduleLapsed(f); await run();
+    expect(listed).not.toHaveBeenCalled();
+    expect(await refundRows(payment.id, f)).toMatchObject([{ id: refundId, status: 'pending' }]);
+    f.clock.advance(refundSendLeaseMs); await run();
+    expect(listed).toHaveBeenCalledTimes(1); expect(refund).not.toHaveBeenCalled();
+    expect(await refundRows(payment.id, f)).toMatchObject([{ id: refundId, status: 'failed', processorId: null }]);
+    expect(await releasedNotices(f)).toEqual([refundId]);
+  });
+  it('answers a staff refund beside a pending refund made in Stripe with pending_refund, and sends nothing', async () => {
+    const f = await fixture(); await f.service.charge(f.context, f.invoice.id);
+    const payment = (await f.service.getInvoice(f.gymId, f.invoice.id)).payments[0]!, paid = await paymentRow(payment.id, f);
+    f.provider.respondNextRefund('pending');
+    const external = await f.provider.refund({ chargeId: paid.paymentIntentId!, amount: 1000, idempotencyKey: 'dashboard' });
+    await createDisputeRefundWriter({ scope: db.forGym, clock: f.clock, transitions: f.options.transitions }).refund(f.gymId, paid, external);
+    const refund = vi.spyOn(f.provider, 'refund');
+    for (const amountCents of [1000, 500])
+      await expect(f.service.refund(f.context, payment.id, { ...staffRefund, amountCents }))
+        .rejects.toMatchObject({ code: 'conflict', details: { reason: ['pending_refund'] } });
+    expect(refund).not.toHaveBeenCalled();
+    expect(await refundRows(payment.id, f)).toMatchObject([{ id: processorRefundId(f.gymId, external.id), status: 'pending', processorId: external.id }]);
+  });
+  it('retries the staff reservation, never a pending refund made in Stripe that sorts before it', async () => {
+    const f = await fixture(); await f.service.charge(f.context, f.invoice.id);
+    const payment = (await f.service.getInvoice(f.gymId, f.invoice.id)).payments[0]!;
+    f.provider.loseNextResponse('refund');
+    await expect(f.service.refund(f.context, payment.id, { ...staffRefund, amountCents: 1000 })).rejects.toThrow();
+    const [reservation] = await refundRows(payment.id, f);
+    // A processor refund whose derived row ID sorts first, as one rarely does.
+    let processorId = '';
+    for (let n = 0; !processorId || processorRefundId(f.gymId, processorId) >= reservation!.id; n++) processorId = `re_dashboard_${n}`;
+    await f.options.transitions.refund({ gymId: f.gymId, actor: { kind: 'system' } }, { invoiceId: f.invoice.id, paymentId: payment.id,
+      refundId: processorRefundId(f.gymId, processorId), processorId, amountCents: 1000, currency: 'USD', status: 'pending' });
+    const refund = vi.spyOn(f.provider, 'refund');
+    expect(await f.service.refund(f.context, payment.id, { ...staffRefund, amountCents: 1000 })).toMatchObject({ id: reservation!.id, status: 'succeeded' });
+    expect(refund.mock.calls.map(([request]) => request.idempotencyKey)).toEqual([`refund:${reservation!.id}`]);
+    expect(await refundRows(payment.id, f)).toHaveLength(2);
   });
   it('answers a staff refund on an ambiguous reservation with a conflict and sends nothing', async () => {
     const f = await fixture(), { payment, paid, refundId } = await lapsedReservation(f);

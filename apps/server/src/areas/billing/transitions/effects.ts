@@ -13,7 +13,7 @@ import type { Payments, Refund } from '../../../infra/payments/index.js';
 import type { TransitionNotifications } from './notifications.js';
 import { retryAt } from '../runner/eligibility.js';
 import { createPackCredits } from '../packs/credits.js';
-import { pastRefundWindow, settleLapsed } from '../payments.mutations.js';
+import { pastRefundWindow, sameRefund, settleLapsed } from './lapsed-refunds.js';
 import { abandonedAttempt, audit, effectCompleted, effectCreated, effectPublished, lockInvoice, recorded, snapshot, terminal,
   type TransitionEffect } from './store.js';
 
@@ -74,7 +74,7 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
       const invoice = await lockInvoice(tx, work.invoiceId);
       const payment = work.paymentId ? (await tx.select().from(payments).where(eq(payments.id, work.paymentId)))[0] : undefined;
       if (payment && payment.invoiceId !== invoice.id) notFound();
-      const refund = work.notice === 'refund_failed' && work.refundId
+      const refund = (work.notice === 'refund_failed' || work.notice === 'refund_released') && work.refundId
         ? (await tx.select().from(refunds).where(eq(refunds.id, work.refundId)))[0] : undefined;
       if (refund && refund.paymentId !== payment?.id) notFound();
       const refunded = work.notice === 'duplicate_released' && payment
@@ -126,6 +126,9 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
       } else if (work.notice === 'credits_not_granted') {
         if (!sale) throw new Error('Credits notice has no class pack sale');
         await options.notifications.staffNotice({ ...data, reason: 'credits_not_granted', credits: sale.credits });
+      } else if (work.notice === 'refund_released') {
+        if (!refund) throw new Error('Released refund notice has no refund');
+        await options.notifications.staffNotice({ ...data, reason: 'refund_released', refund });
       } else if (work.notice !== 'refund_failed') await options.notifications.staffNotice(data);
       else if (refund) await options.notifications.staffNotice({ ...data, reason: 'refund_failed', refund, reversed,
         ...(reversedCredits > 0 ? { reversedCredits } : {}) });
@@ -147,27 +150,29 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
           // A lost response must be reconciled before another refund request, including after process restart. A tagged
           // reservation takes only the refund that names it; any other is external, which the webhook records. An
           // untagged one, from before the marker, can only match by its payment.
-          const tag = reservation.taggedAt ? { reservationId: reservation.id } : {};
-          const matches = new Map<string, Refund>();
-          let listed: readonly Refund[] | undefined;
-          if (reservation.taggedAt) {
-            listed = await provider.listRefunds(payment.paymentIntentId);
-            for (const refund of listed) if (refund.reservationId === reservation.id) matches.set(refund.id, refund);
-          } else {
-            let cursor: string | undefined;
-            do {
-              const page = await provider.listChangesSince(reservation.createdAt, cursor ? { cursor } : {});
-              for (const change of page.changes) if (change.kind === 'refund'
-                && [payment.chargeId, payment.paymentIntentId].includes(change.object.chargeId)) matches.set(change.object.id, change.object);
-              cursor = page.nextCursor ?? undefined;
-            } while (cursor !== undefined);
-          }
-          if (matches.size > 1) throw new Error('Ambiguous duplicate refund; staff resolution required');
-          if (reservation.taggedAt && pastRefundWindow(reservation, clock)) {
-            await settleLapsed({ clock, transitions: options.transitions }, system(gymId), provider, payment, [reservation], listed);
-          } else {
+          const lapsed = () => reservation.taggedAt !== null && pastRefundWindow(reservation, clock);
+          const settle = () => settleLapsed({ scope, clock, transitions: options.transitions }, system(gymId), async () => provider, payment, [reservation]);
+          if (lapsed()) await settle();
+          else {
+            const tag = reservation.taggedAt ? { reservationId: reservation.id } : {};
+            const matches = new Map<string, Refund>();
+            if (reservation.taggedAt) {
+              for (const refund of await provider.listRefunds(payment.paymentIntentId))
+                if (refund.reservationId === reservation.id) matches.set(refund.id, refund);
+            } else {
+              let cursor: string | undefined;
+              do {
+                const page = await provider.listChangesSince(reservation.createdAt, cursor ? { cursor } : {});
+                for (const change of page.changes) if (change.kind === 'refund'
+                  && [payment.chargeId, payment.paymentIntentId].includes(change.object.chargeId)) matches.set(change.object.id, change.object);
+                cursor = page.nextCursor ?? undefined;
+              } while (cursor !== undefined);
+            }
+            if (matches.size > 1) throw new Error('Ambiguous duplicate refund; staff resolution required');
             refund = [...matches.values()][0];
-            if (!refund) {
+            // The window may have passed while Stripe was read: a tagged reservation is then settled like any lapsed one.
+            if (!refund && lapsed()) await settle();
+            else if (!refund) {
               if (pastRefundWindow(reservation, clock))
                 throw new Error('Refund idempotency window elapsed; reconciliation required');
               refund = await provider.refund({ chargeId: payment.paymentIntentId, amount: payment.amountCents,
@@ -176,9 +181,7 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
           }
         }
         if (refund) {
-          if (refund.amount !== payment.amountCents || refund.currency.toUpperCase() !== payment.currency
-            || ![payment.paymentIntentId, payment.chargeId].includes(refund.chargeId) || refund.metadata.gymId !== gymId)
-            throw new Error('Refund identity or money mismatch');
+          if (!sameRefund(refund, payment, payment, gymId)) throw new Error('Refund identity or money mismatch');
           await options.transitions.refund(system(gymId), { invoiceId: invoice.id, paymentId: payment.id,
             refundId: reservation.id, processorId: refund.id, amountCents: refund.amount,
             currency: payment.currency, status: refund.status });

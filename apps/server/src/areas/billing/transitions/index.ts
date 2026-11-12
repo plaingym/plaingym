@@ -8,6 +8,7 @@ import { conflict, instant, notFound, requireMoney, type MutationContext } from 
 import type { CardSuccess, CardFailure, ManualPayment, RefundTransition, InvoiceTransitions, InvoiceTransitionResult } from '../../../core/interfaces/invoice-transitions.js';
 import { logError } from '../../../core/log.js';
 import { readBillingRules } from '../../settings/settings.js';
+import { pastRefundWindow } from './lapsed-refunds.js';
 import { accepted, audit, canceledAttempt, confirmAbandoned, effect, lockInvoice, paymentRecorded, recorded, result, snapshot, terminal,
   type InvoiceRow } from './store.js';
 
@@ -199,6 +200,12 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
         // staff hear what stayed with the gym.
         else if (request.status === 'failed' && previous?.reason === 'duplicate_payment')
           await effect(tx, context, clock, { kind: 'staff_notice', notice: 'duplicate_released', invoiceId: invoice.id,
+            paymentId: payment.id, refundId: request.refundId });
+        // Any other reservation the app releases on its own once its retry window has passed (no refund at Stripe names
+        // it) tells staff, who last saw it pending: the payer may still be owed it. A staff request that releases one is
+        // answered directly instead, and one a refund made in Stripe outran inside the window was made by someone there.
+        else if (request.status === 'failed' && previous && context.actor.kind === 'system' && pastRefundWindow(previous, clock))
+          await effect(tx, context, clock, { kind: 'staff_notice', notice: 'refund_released', invoiceId: invoice.id,
             paymentId: payment.id, refundId: request.refundId });
         if (!(request.status === 'succeeded' || reversed && ['partially_refunded', 'refunded'].includes(invoice.status))
           || !await accepted(tx, payment.id)) return result('applied', invoice);

@@ -32,12 +32,14 @@ the parent, never that ID). Any other refund, such as one made in Stripe's dashb
 is recorded as external under the UUIDv5, whether it ended succeeded, failed or
 canceled, and leaves tagged reservations to the app's own refund. If it leaves no room
 for them on the payment, Stripe can't have accepted those refunds, so the newest are
-released as `failed`, with no processor refund. A staff reservation sends no notice; a
+released as `failed`, with no processor refund. A staff reservation inside its retry
+window sends no notice (one past it tells staff, as the hourly job's release does); a
 duplicate-payment reservation tells staff what's left unrefunded (see the transitions
 README). A refund that still turns up naming a released row is recorded as external. An untagged reservation,
 from before `refunds.tagged_at`, keeps the older match: a refund with no named
 reservation attaches to the payment's single untagged reservation of that amount, and
-any other amount is an error. Tagged duplicate-payment refunds reuse the worker's
+any other amount is an error. A refund naming a reservation the payment doesn't have
+is external, and an untagged reservation it leaves no room for is released like a tagged one. Tagged duplicate-payment refunds reuse the worker's
 reservation the same way, and the worker's own reconciliation takes only a refund
 naming its reservation.
 
