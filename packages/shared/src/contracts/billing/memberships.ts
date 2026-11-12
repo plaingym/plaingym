@@ -8,6 +8,20 @@ import {
 import { billingIntervalSchema, refinePriceStep } from './catalog.js';
 
 export { membershipStatusSchema } from '../states.js';
+export const membershipDiscountSelectionSchema = z.union([
+  z.strictObject({ discountId: idSchema }),
+  z.strictObject({ code: z.string().regex(/^[A-Za-z0-9-]{3,40}$/) }),
+]);
+/** Locked-in terms of the current application, independent of later catalog edits. */
+export const appliedMembershipDiscountSchema = z.strictObject({
+  id: idSchema, discountId: idSchema, name: z.string().min(1).max(100),
+  percentBasisPoints: z.int32().min(1).max(10_000).nullable(),
+  amountCents: amountCentsSchema.positive().nullable(), currency: currencySchema,
+  waivesSignupFee: z.boolean(), duration: z.enum(['once', 'cycles', 'forever']).nullable(),
+  cyclesLeft: z.int32().nonnegative().nullable(), planIds: z.array(idSchema),
+});
+export type MembershipDiscountSelection = z.infer<typeof membershipDiscountSelectionSchema>;
+export type AppliedMembershipDiscount = z.infer<typeof appliedMembershipDiscountSchema>;
 export const membershipSchema = z.strictObject({
   id: idSchema,
   createdAt: instantSchema,
@@ -32,6 +46,7 @@ export const membershipSchema = z.strictObject({
   scheduledAmountCents: amountCentsSchema.nonnegative().nullable(),
   scheduledInterval: billingIntervalSchema.nullable(),
   scheduledOn: dateSchema.nullable(),
+  discount: appliedMembershipDiscountSchema.nullable().default(null),
   revision: revisionSchema,
 });
 export const membershipResponseSchema = z.strictObject({ data: membershipSchema });
@@ -54,6 +69,7 @@ export const assignMembershipRequestSchema = z.strictObject({
   startsOn: dateSchema,
   nextDueOn: dateSchema,
   firstPeriod: z.enum(['prorate_now', 'next_billing_date']).default('prorate_now'),
+  discount: membershipDiscountSelectionSchema.optional(),
 });
 export const updateMembershipRequestSchema = z.strictObject({
   revision: revisionSchema,

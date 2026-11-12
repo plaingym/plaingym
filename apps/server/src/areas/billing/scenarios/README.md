@@ -15,6 +15,7 @@ Time comes from `TestClock`; there are no sleeps or increased test timeouts.
 
 | File | Coverage |
 | --- | --- |
+| `discounts.test.ts` | Assignment discounts over four billing cycles: once, three cycles, forever and fixed amounts; trial and off-day stubs; prorated and full first periods; signup waiver and fee-only completion; locked-in terms; zero settlement; rollback and concurrent cycle builds; frozen skips and staff permissions |
 | `class-packs.test.ts` | Sell a three-credit pack, collect a saved card through real transitions and effects with the synthetic Stripe transport, check in by kiosk and staff, then fully refund only the unused credit; a membership holder spends none |
 | `plan-switch.test.ts` | Schedule a switch to a taxed plan after a paid cycle; the next daily run (run twice) bills and collects the new price and its tax once, with the new plan on the line, and the revenue report keeps the earlier cycle under the old plan |
 | `plan-switch-now.test.ts` | Upgrade to a taxed plan now through the membership routes after a paid cycle (the request sent twice): one proration invoice for the preview's total, charged once with the saved card and paid, with the new plan on its line; the next daily run (run twice) bills the new price and its tax |

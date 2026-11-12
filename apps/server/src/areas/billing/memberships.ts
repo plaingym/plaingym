@@ -18,12 +18,21 @@ import { cancelScheduledSwitchRequestSchema, checkSwitch, clearedSwitch, planSwi
   type PlanSwitchedNowAudit, type RecordedSwitchRequest, type SwitchPlanRequest, type SwitchScheduledAudit } from './memberships.plan-change.js';
 import { checkNow, issuable, planTaxes, prorateNow, switchPreview } from './memberships.plan-change.now.js';
 import { issue } from './runner/store.js';
+import { applyDiscount, liveDiscounts, presentDiscount, resolveDiscount } from './discounts/apply.js';
 
 type Row = typeof memberships.$inferSelect;
 // The override reason stays out of the Membership contract (erasure clears it; no response or audit carries it).
-const present = ({ gymId: _gymId, anniversaryOn: _anniversaryOn, switchOverrideReason: _reason, ...row }: Row): c.Membership => c.membershipSchema.parse({ ...row,
+const serialize = ({ gymId: _gymId, anniversaryOn: _anniversaryOn, switchOverrideReason: _reason, ...row }: Row,
+  discount: c.AppliedMembershipDiscount | null): c.Membership => c.membershipSchema.parse({ ...row, discount,
   createdAt: row.createdAt.toISOString(), frozenAt: row.frozenAt?.toISOString() ?? null,
   cancelledAt: row.cancelledAt?.toISOString() ?? null });
+async function present(tx: Transaction, row: Row) {
+  return serialize(row, presentDiscount((await liveDiscounts(tx, [row.id])).get(row.id)));
+}
+// Sort recursively: the discount selection is part of the persisted replay key too.
+const fingerprint = (request: AssignMembership) => JSON.stringify(request, (_key, value: unknown) =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value);
 const conflict = (message: string): never => { throw new AppError('conflict', message); };
 /**
  * A frozen membership that was never active: its latest freeze froze a pending or trial membership. Resuming it is its
@@ -72,7 +81,8 @@ export function createMembershipService(options: MembershipOptions = {}) {
   async function assign(context: MutationContext, request: AssignMembership, alignHousehold = false): Promise<c.Membership> {
     c.idSchema.parse(request.id);
     c.assignMembershipRequestSchema.parse({ householdId: request.householdId, memberId: request.memberId, planId: request.planId,
-      startsOn: request.startsOn, nextDueOn: request.nextDueOn, firstPeriod: request.firstPeriod });
+      startsOn: request.startsOn, nextDueOn: request.nextDueOn, firstPeriod: request.firstPeriod, discount: request.discount });
+    if (request.discountUseTaken && !request.discount) conflict('A reserved discount use requires a discount');
     const gym = await settings.get(context.gymId);
     return scope(context.gymId, async tx => {
       // Household serialization makes repeated assignment IDs and family alignment deterministic.
@@ -81,8 +91,8 @@ export function createMembershipService(options: MembershipOptions = {}) {
       if (previous) {
         const audit = (await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(eq(auditEvents.targetId, request.id), eq(auditEvents.action, 'billing.membership.assigned'))))[0];
         const recorded = audit?.after as { request?: AssignMembership } | undefined;
-        if (!recorded?.request || JSON.stringify(recorded.request, Object.keys(recorded.request).sort()) !== JSON.stringify(request, Object.keys(request).sort())) conflict('Assignment ID reused with different parameters');
-        return present(previous);
+        if (!recorded?.request || fingerprint(recorded.request) !== fingerprint(request)) conflict('Assignment ID reused with different parameters');
+        return present(tx, previous);
       }
       const member = catalogMissing((await tx.select().from(members).where(and(eq(members.id, request.memberId), eq(members.householdId, home.id))).for('share'))[0]);
       if (member.anonymizedAt) conflict('Erased members cannot receive a membership');
@@ -133,11 +143,18 @@ export function createMembershipService(options: MembershipOptions = {}) {
       const billing: AssignmentBilling = { firstPeriod: request.firstPeriod, startsOn: request.startsOn, nextDueOn,
         ...(row.anniversaryOn === null ? {} : { annualAnchorOn: row.anniversaryOn }),
         amountCents: plan.amountCents, currency: plan.currency, signupFeeCents: plan.signupFeeCents, taxes: attached };
-      const result = present(row);
+      if (request.discount) {
+        const resolved = await resolveDiscount(tx, request.discount, { planIds: [plan.id], timezone: gym.timezone, clock,
+          ...(request.discountUseTaken ? { useTaken: true } : {}) });
+        const applied = await applyDiscount(tx, context, clock, resolved, row, request.discountUseTaken);
+        if (applied.waivesSignupFee) billing.signupFeeCents = 0;
+      }
+      const result = await present(tx, row);
       await catalogAudit(tx, context, clock, 'billing.membership.assigned', 'membership', row.id, undefined, { request, membership: result, billing });
       await options.onAssigned?.(tx, context, result, billing);
       if (status === 'active') await markLeadWon(tx, { ...context, memberId: member.id, now: clock.now() });
-      return result;
+      // A full first period may have used a discount cycle; return the discount as it now stands, as a replay would.
+      return request.discount ? present(tx, row) : result;
     });
   }
   /** Locks the household, then the membership: the order the cycle build takes them in. */
@@ -161,8 +178,8 @@ export function createMembershipService(options: MembershipOptions = {}) {
       const changes = await change(tx, before), guard = revisionGuard(memberships.revision, request.revision);
       const after = assertRevised(await tx.update(memberships).set({ ...changes, revision: guard.next })
         .where(and(eq(memberships.id, before.id), guard.matches)).returning());
-      await catalogAudit(tx, context, clock, 'billing.membership.' + action, 'membership', before.id, present(before), present(after));
-      return present(after);
+      await catalogAudit(tx, context, clock, 'billing.membership.' + action, 'membership', before.id, await present(tx, before), await present(tx, after));
+      return present(tx, after);
     });
   }
   const service = {
@@ -170,7 +187,7 @@ export function createMembershipService(options: MembershipOptions = {}) {
     assignFromCatalog(context: MutationContext, input: c.AssignMembershipRequest) {
       return assign(context, { ...c.assignMembershipRequestSchema.parse(input), id: uuidv7() }, true);
     },
-    async get(gymId: string, id: string) { return scope(gymId, async tx => present(await getRow(tx, id))); },
+    async get(gymId: string, id: string) { return scope(gymId, async tx => present(tx, await getRow(tx, id))); },
     async list(gymId: string, input: unknown) {
       const query = c.membershipListQuerySchema.parse(input);
       return scope(gymId, async tx => {
@@ -181,7 +198,8 @@ export function createMembershipService(options: MembershipOptions = {}) {
           query.dueOnOrBefore ? lte(memberships.nextDueOn, query.dueOnOrBefore) : undefined);
         const total = await tx.$count(memberships, where);
         const rows = await tx.select().from(memberships).where(where).orderBy(asc(memberships.nextDueOn), asc(memberships.id)).limit(query.limit).offset(query.offset);
-        return { data: rows.map(present), pagination: { limit: query.limit, offset: query.offset, total } };
+        const applied = await liveDiscounts(tx, rows.map(row => row.id));
+        return { data: rows.map(row => serialize(row, presentDiscount(applied.get(row.id)))), pagination: { limit: query.limit, offset: query.offset, total } };
       });
     },
     async activate(context: MutationContext, request: MembershipEdit & { nextDueOn?: string }) {
@@ -266,18 +284,18 @@ export function createMembershipService(options: MembershipOptions = {}) {
         // Only a reason the commitment needed is kept.
         const reason = overrideUsed ? request.override?.reason ?? null : null;
         if (request.timing === 'next_billing_date') {
-          const after = present(await saveSwitch(tx, before, scheduledSwitch(before, plan, reason)));
+          const after = await present(tx, await saveSwitch(tx, before, scheduledSwitch(before, plan, reason)));
           const audit: SwitchScheduledAudit = { request: recorded, overrideUsed, membership: after };
-          await catalogAudit(tx, context, clock, switchScheduledAction, 'membership', before.id, present(before), audit);
+          await catalogAudit(tx, context, clock, switchScheduledAction, 'membership', before.id, await present(tx, before), audit);
           return { membership: after, invoiceId: null };
         }
         checkNow(before, plan, today);
         // Quoted from the membership before the switch: the difference against what the current period was billed at.
-        const invoice = kind === 'upgrade' ? issuable(await prorateNow(tx, before, present(before), plan, today)) : null;
-        const after = present(await saveSwitch(tx, before, switchedNow(before, plan, kind, reason)));
+        const invoice = kind === 'upgrade' ? issuable(await prorateNow(tx, before, await present(tx, before), plan, today)) : null;
+        const after = await present(tx, await saveSwitch(tx, before, switchedNow(before, plan, kind, reason)));
         const invoiceId = invoice ? await issue(tx, context, clock, invoice) : null;
         const audit: PlanSwitchedNowAudit = { request: recorded, overrideUsed, kind, invoiceId, membership: after };
-        await catalogAudit(tx, context, clock, planSwitchedAction, 'membership', before.id, present(before), audit);
+        await catalogAudit(tx, context, clock, planSwitchedAction, 'membership', before.id, await present(tx, before), audit);
         return { membership: after, invoiceId };
       });
     },
@@ -291,7 +309,7 @@ export function createMembershipService(options: MembershipOptions = {}) {
         const row = catalogMissing((await tx.select().from(memberships).where(eq(memberships.id, membershipId)))[0]);
         const plan = catalogMissing((await tx.select().from(plans).where(eq(plans.id, query.planId)))[0]);
         const member = catalogMissing((await tx.select({ anonymizedAt: members.anonymizedAt }).from(members).where(eq(members.id, row.memberId)))[0]);
-        return switchPreview(tx, row, present(row), member, plan, query.timing, localDate(clock.now(), gym.timezone));
+        return switchPreview(tx, row, await present(tx, row), member, plan, query.timing, localDate(clock.now(), gym.timezone));
       });
     },
     /**
@@ -309,8 +327,8 @@ export function createMembershipService(options: MembershipOptions = {}) {
         if (before.scheduledPlanId === null) throw new AppError('conflict', 'No plan switch is scheduled', { reason: ['none_scheduled'] });
         if (before.scheduledPlanId === before.planId)
           refuse('price_change', 'A price change left by a switch made now isn\'t cancelled; change the price instead');
-        const after = present(await saveSwitch(tx, before, clearedSwitch(before)));
-        await catalogAudit(tx, context, clock, switchCancelledAction, 'membership', before.id, present(before), after);
+        const after = await present(tx, await saveSwitch(tx, before, clearedSwitch(before)));
+        await catalogAudit(tx, context, clock, switchCancelledAction, 'membership', before.id, await present(tx, before), after);
         return after;
       });
     },

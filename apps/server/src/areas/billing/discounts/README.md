@@ -38,5 +38,32 @@ per membership; ended applications retain their reason and terms.
 `createDiscountCatalogService` accepts the existing `CatalogOptions` (database
 scope, clock and gym settings accessor). `createDiscountCatalogRoutes` accepts
 an optional service. Its production contribution is mounted by the billing
-routes barrel. This catalog does not apply discounts or increment uses; it does
-not change invoice calculations, membership operations or public signup.
+routes barrel. The catalog edits terms; `apply.ts` applies them during membership
+assignment and supplies the runner with their snapshots.
+
+Staff assignment accepts `discount: { discountId }` or `discount: { code }`.
+Codes match without regard to case. An inactive or unknown discount returns
+`discount_unknown` in the error's `details.reason`; other refusals are
+`discount_ended`, `discount_used_up` and `discount_plan`. The end date includes
+the whole local day in the gym's timezone. Eligibility is checked when applied.
+
+Lock order is household, membership, then discount. `resolveDiscount` locks the
+catalog row and reads the eligible plans. Its public audience returns the same
+neutral error for every refusal. `takeDiscountUses` reserves one or more uses
+under that lock; callers reserving several applications do so together in the
+same transaction. `applyDiscount` writes the snapshot. The internal lifecycle
+flag `discountUseTaken` is only for callers that already reserved that use in
+the encompassing transaction; the HTTP request never accepts it. Assignment
+replays compare the whole request, including the discount, before reserving.
+
+Every application takes a use, including a fee-only waiver; cancellation does
+not return it. Fee-only applications finish with `completed` at assignment.
+The membership response includes the live snapshot's name, terms, eligible
+plans and cycles left, or null when no live application remains. Invoices use
+that snapshot even if the catalog's name, code or eligibility changes later.
+Only a billed full cycle consumes one `once` or `cycles` cycle, including a
+first period that starts on its period boundary and so bills a whole period.
+Prorated first periods, off-day stubs, trials and skipped frozen periods
+consume none. The last
+cycle marks the application `completed` in the transaction advancing the due
+date. Forever applications have no cycle counter.

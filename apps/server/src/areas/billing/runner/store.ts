@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, desc, eq, inArray, lte } from 'drizzle-orm';
 import { allocateInvoiceNumber, auditEvents, households, invoiceLineItems, invoices, memberships, paymentAttempts, plans, planTaxRates,
-  taxRates, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
+  taxRates, uuidv7, writeAudit, assertRevised, type Transaction } from '@plaingym/db';
 import { createTranslator, type Clock } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import { membershipSchema } from '@plaingym/shared/contracts';
@@ -11,8 +11,9 @@ import type { GymSettings } from '../../../core/interfaces/gym-settings.js';
 import type { MembershipOptions } from '../memberships.js';
 import { applyScheduledSwitch } from '../memberships.plan-change.js';
 import { stripeTestClearedAction } from '../customers.js';
-import { calculateCycleInvoice, calculateFirstPeriod, calculateOneOffInvoice, type CalculatedInvoice,
+import { calculateCycleInvoice, calculateFirstPeriod, calculateOneOffInvoice, previousBillingDate, type CalculatedInvoice,
   type PricedMembership } from '../invoicing/index.js';
+import { liveDiscounts, presentDiscount, priceDiscount, takeDiscountCycle } from '../discounts/apply.js';
 
 const t = createTranslator(locales.en ?? {});
 export const system = (gymId: string): MutationContext => ({ gymId, actor: { kind: 'system' } });
@@ -59,9 +60,11 @@ async function priced(tx: Transaction, row: typeof memberships.$inferSelect): Pr
     .where(eq(planTaxRates.planId, row.planId));
   const { gymId: _gymId, anniversaryOn, switchOverrideReason: _reason, ...fields } = row;
   void [_gymId, _reason];
-  return { membership: membershipSchema.parse({ ...fields, createdAt: row.createdAt.toISOString(),
+  const discount = presentDiscount((await liveDiscounts(tx, [row.id])).get(row.id)), price = priceDiscount(discount);
+  return { membership: membershipSchema.parse({ ...fields, discount, createdAt: row.createdAt.toISOString(),
     frozenAt: row.frozenAt?.toISOString() ?? null, cancelledAt: row.cancelledAt?.toISOString() ?? null }),
-    description: plan.name, taxRates: taxes, ...(anniversaryOn === null ? {} : { annualAnchorOn: anniversaryOn }) };
+    description: plan.name, taxRates: taxes, ...(price ? { discount: price } : {}),
+    ...(anniversaryOn === null ? {} : { annualAnchorOn: anniversaryOn }) };
 }
 /** One household/date per transaction; the household lock also serializes assignment. */
 export async function generateCycle(tx: Transaction, gym: GymSettings, clock: Clock, householdId: string, today: string) {
@@ -89,8 +92,13 @@ export async function generateCycle(tx: Transaction, gym: GymSettings, clock: Cl
       { cycleInvoiceId: previous.id, dueOn, periodStartsOn: result.invoice.periodStartsOn, periodEndsOn: result.invoice.periodEndsOn });
   }
   for (const change of result.nextDueDates) {
-    await tx.update(memberships).set({ nextDueOn: change.nextDueOn, revision: change.expectedRevision + 1 })
-      .where(and(eq(memberships.id, change.membershipId), eq(memberships.revision, change.expectedRevision)));
+    assertRevised(await tx.update(memberships).set({ nextDueOn: change.nextDueOn, revision: change.expectedRevision + 1 })
+      .where(and(eq(memberships.id, change.membershipId), eq(memberships.revision, change.expectedRevision))).returning({ id: memberships.id }));
+    const row = current.find(row => row.id === change.membershipId)!;
+    // An off-day monthly stub ends at the billing day but starts after the preceding full-period boundary.
+    const full = row.interval === 'annual' || change.previousDueOn === previousBillingDate({ dueOn: change.nextDueOn,
+      interval: 'monthly', billingDay: home.billingDay });
+    if (!change.skipped && result.invoice && full) await takeDiscountCycle(tx, system(gym.gymId), clock, row.id);
     await audit(tx, system(gym.gymId), clock, 'billing.membership.period_advanced', 'membership', change.membershipId, change);
   }
   return true;
@@ -100,11 +108,15 @@ export function assignmentInvoices(clock: Clock): NonNullable<MembershipOptions[
   return async (tx, context, membership, billing) => {
     const home = (await tx.select().from(households).where(eq(households.id, membership.householdId)))[0]!;
     const plan = (await tx.select().from(plans).where(eq(plans.id, membership.planId)))[0]!;
+    const discount = priceDiscount(membership.discount);
     const input = { ...pricing(home, membership.currency), membership, description: plan.name,
+      ...(discount ? { discount } : {}),
       taxRates: billing.taxes, firstPeriod: billing.firstPeriod,
       ...(billing.annualAnchorOn === undefined ? {} : { annualAnchorOn: billing.annualAnchorOn }) };
     const first = calculateFirstPeriod(input);
     if (first.invoice) await issue(tx, context, clock, first.invoice);
+    // A first period starting on its period boundary bills a full cycle, so it uses one like the cycle build does.
+    if (first.invoice && first.billedDays === first.periodDays) await takeDiscountCycle(tx, context, clock, membership.id);
     if (billing.signupFeeCents > 0) await issue(tx, context, clock, calculateOneOffInvoice({
       householdId: home.id, currency: membership.currency, dueOn: membership.startsOn,
       charges: [{ kind: 'signup_fee', description: t('billing/runner:signupFee', { plan: plan.name }),

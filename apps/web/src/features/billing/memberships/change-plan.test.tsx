@@ -16,7 +16,7 @@ const plan: Plan = { id: id(2), createdAt, name: 'Unlimited classes', currency: 
 const premium: Plan = { ...plan, id: id(7), name: 'Premium', amountCents: 15000 };
 const basic: Plan = { ...plan, id: id(8), name: 'Basic', amountCents: 6000 };
 const membership: Membership = { id: id(3), createdAt, memberId: id(4), householdId: id(5), planId: plan.id, status: 'active', currency: 'CAD', amountCents: 10000, interval: 'monthly', startsOn: '2026-10-01', nextDueOn: '2026-11-01', trialEndsOn: null, frozenAt: null, resumesOn: null, cancelledAt: null, commitmentEndsOn: null,
-  scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null, revision: 3 };
+  scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null, discount: null, revision: 3 };
 const upgrade: MembershipSwitchPreview = { planId: premium.id, timing: 'next_billing_date', kind: 'upgrade', currency: 'CAD', priceStartsOn: '2026-11-01', commitmentBlocks: false, proration: null };
 type Handler = (input: unknown, params: Record<string, string>, query: Record<string, string | number | undefined>) => Promise<unknown>;
 function start(options: { plans?: Plan[]; row?: Membership; preview?: (query: Record<string, string | number | undefined>) => MembershipSwitchPreview; switchPlan?: Handler; cancel?: Handler; update?: Handler } = {}) {

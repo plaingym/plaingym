@@ -4,5 +4,9 @@
   "currencyMismatch": "The discount currency must match the gym currency.",
   "duplicate": "A discount with this name or code already exists.",
   "maxUses": "The maximum uses cannot be lower than the uses already taken.",
-  "termsUsed": "This discount has been used. Create another discount to change its terms."
+  "termsUsed": "This discount has been used. Create another discount to change its terms.",
+  "discount_unknown": "This discount is not available.",
+  "discount_ended": "This discount has ended.",
+  "discount_used_up": "This discount has no uses left.",
+  "discount_plan": "This discount does not apply to the selected plan."
 }

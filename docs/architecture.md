@@ -189,8 +189,12 @@ source of truth; Stripe is the processor. In outline:
   front-desk message; staff may still record the visit without a credit.
   The [discount catalog](../apps/server/src/areas/billing/discounts/README.md)
   lets owners and admins manage named percentage, fixed-amount and signup-fee
-  waiver terms, with plan eligibility and optional codes. These catalog routes
-  do not apply discounts or change invoice calculations.
+  waiver terms, with plan eligibility and optional codes. Staff can select one
+  by ID or code when assigning a membership. Applications reserve uses under a
+  row lock and retain their terms; recurring billing consumes an allowance only
+  for a full cycle, in the transaction advancing the due date. Partial periods
+  receive the discount without consuming an allowance, and waived signup fees
+  produce no invoice.
 * **Invoicing** (`areas/billing/invoicing/`): pure calculation of invoice lines and tax.
 * **Charge runner** (`areas/billing/runner/`): the daily run charges saved cards in
   two steps (create, then confirm) with idempotency keys, retries on the gym's

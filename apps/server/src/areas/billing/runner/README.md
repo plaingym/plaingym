@@ -55,6 +55,15 @@ no saved card, attempt, provider resolution, customer adoption or Checkout calls
 Billing enablement and review holds still apply. Settlement records no payment
 and sends no receipt, but queues normal membership activation.
 
+Cycle pricing reads each membership's live discount snapshot. A billed full
+cycle consumes one `once` or `cycles` allowance in the same transaction as its
+invoice and due-date advance; the last marks the snapshot `completed`. An
+off-day monthly stub gets its prorated discount without using a cycle. Frozen
+skips and trials consume none. First-period assignment invoices also receive
+the snapshot's discount; a prorated one consumes no cycle, while one that bills
+a whole period consumes one in the assignment transaction. A signup fee waiver
+suppresses the fee invoice. Catalog edits do not alter locked-in terms.
+
 Automatic collection includes cycles and one-offs with at least one line whose
 lines are all membership, sign-up fee, discount or tax. Staff one-offs with a
 `charge` line, including mixed invoices, never auto-charge. The assignment route

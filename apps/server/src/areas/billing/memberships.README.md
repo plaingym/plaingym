@@ -1,6 +1,22 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Annual billing anniversary
 
+## Discounts at assignment
+
+The staff assignment API accepts one optional `discount`, selected by
+`discountId` or a case-insensitive `code`, under the existing `plans.manage`
+permission. Its active state, local end date, use limit and plan eligibility are
+checked under a row lock inside the assignment transaction. Uses and membership
+terms commit together; replaying the internal assignment ID consumes no second
+use, and reusing it with another discount is a conflict. The response's
+`discount` is the live snapshot (name, terms and cycles left) or null.
+
+First-period invoices receive the discount; a waived signup fee creates no fee
+invoice. Fee-only waivers complete at assignment. Full cycle invoices, including a
+first period that bills a whole period, consume a `once` or `cycles` allowance,
+while prorations, trials and frozen skipped periods do not. A zero first invoice settles and activates through the normal runner and
+transition jobs. Catalog edits leave existing application terms unchanged.
+
 ## Lead conversion
 
 When a trial membership activates, its member also becomes `active` if their

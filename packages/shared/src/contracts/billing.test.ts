@@ -47,7 +47,7 @@ const membership: Membership = {
   planId: ids.plan, ...price, interval: 'monthly', status: 'active', nextDueOn: '2026-11-21',
   startsOn: '2026-10-21', trialEndsOn: null, frozenAt: null, resumesOn: null,
   cancelledAt: null, commitmentEndsOn: '2027-10-21', scheduledPlanId: null, scheduledAmountCents: null,
-  scheduledInterval: null, scheduledOn: null, revision: 1,
+  scheduledInterval: null, scheduledOn: null, discount: null, revision: 1,
 };
 const invoice: Invoice = {
   id: ids.invoice, createdAt: now, householdId: ids.household, ...price, kind: 'cycle',
@@ -343,7 +343,7 @@ describe('locked schema compatibility', () => {
     expectTypeOf<PaymentAttempt>().toExtend<Partial<Wire<typeof paymentAttempts.$inferSelect>>>();
     expectTypeOf<Refund>().toExtend<Partial<Wire<typeof refunds.$inferSelect>>>();
     expectTypeOf<Exclude<keyof Invoice, keyof typeof invoices.$inferSelect>>().toEqualTypeOf<never>();
-    expectTypeOf<Exclude<keyof Membership, keyof typeof memberships.$inferSelect>>().toEqualTypeOf<never>();
+    expectTypeOf<Exclude<keyof Membership, keyof typeof memberships.$inferSelect>>().toEqualTypeOf<'discount'>();
   });
   it('requires revisions in catalog and membership responses', () => {
     const tax = { id: ids.tax, createdAt: now, name: 'Tax', rateMillionths: 50_000, inclusive: false, active: true, revision: 1 };

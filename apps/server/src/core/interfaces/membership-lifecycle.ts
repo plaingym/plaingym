@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { Clock } from '@plaingym/shared';
-import type { Id, IsoDate, IsoInstant, Money, Revision } from '@plaingym/shared/contracts';
+import type { Id, IsoDate, IsoInstant, Money, Revision, MembershipDiscountSelection } from '@plaingym/shared/contracts';
 import { dateSchema, moneySchema } from '@plaingym/shared/contracts';
 import { clock as systemClock } from '../clock.js';
 import { conflict, notFound, requireRevision, scopedKey } from './common.js';
@@ -34,6 +34,9 @@ export interface AssignMembership {
   readonly initialStatus?: 'pending' | 'trial' | 'active';
   /** Invoice engine handles the first charge after assignment; this call never charges. */
   readonly firstPeriod: 'prorate_now' | 'next_billing_date';
+  readonly discount?: MembershipDiscountSelection | undefined;
+  /** Internal only: caller reserved this application's use in the same transaction. */
+  readonly discountUseTaken?: boolean;
 }
 export interface UpdateMembership extends MembershipEdit {
   readonly planId?: Id | undefined;
