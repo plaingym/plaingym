@@ -51,10 +51,9 @@ after it ran (no gym, household or invitee), and those a process on the 0013 rel
 Migration `0015_refund_canceled.sql` widens `refunds_status_check` to allow `canceled`, for a refund
 cancelled at the processor before it completed. Every existing row already satisfies the new check.
 Migration `0016_drop_in_charge_type.sql` adds nullable `gyms.drop_in_charge_type_id`, the charge type
-whose price the public drop-in page shows. Existing gyms keep null. It has no foreign key: one would
-make the `gyms` and `charge_types` schema modules import each other, which breaks loading them in some
-orders. Instead, the settings service accepts only a charge type visible under the gym's row-level
-security, and the drop-in fee reader also matches it on `gym_id`, so a stale or foreign ID shows no fee.
+whose price the public drop-in page shows. Existing gyms keep null. The settings service accepts only
+a charge type visible under the gym's row-level security, and the drop-in fee reader also matches it
+on `gym_id`.
 Migration `0017_google_config.sql` adds nullable `gyms.google_config_encrypted`, a gym's own Google
 OAuth client (secret class `google_config`). Existing gyms keep null, which leaves Google sign-in to
 the install's `GOOGLE_*` variables as before.
@@ -143,11 +142,23 @@ discount, membership and household references in the same gym. A partial unique
 index permits only one live discount per membership. All three use forced RLS
 and are exported; existing rows in every other table are unchanged. This
 migration does not apply discounts or change invoices.
+Migration `0032_drop_in_charge_type_fk.sql` is reviewed SQL (`drizzle-kit generate --custom`): it adds
+the composite foreign key `gyms_drop_in_charge_type_fk` from `gyms (id, drop_in_charge_type_id)` to
+`charge_types (gym_id, id)`, so the drop-in charge type is always one of the gym's own. Declaring it in
+the schema would make the `gyms` and `charge_types` schema modules import each other, which breaks
+loading them in some orders, so `schema/gyms.ts` names it in a comment instead and the snapshot
+doesn't carry it. It first clears an ID that names none of the gym's charge types (such an ID already
+showed no fee), then adds the key `NOT VALID` and validates it. An archived charge type still exists,
+so a gym that chose one keeps it. A chosen charge type can't be deleted; deleting the gym removes both.
 
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver
-error as a cause.
+error as a cause. `isConnectionError(error)` says whether an error, or one of its causes, means the
+database itself is unusable: a lost, refused or timed-out connection (SQLSTATE class `08`, the
+driver's `CONNECTION_*` and `CONNECT_TIMEOUT`, Node network errors), a server shutting down or out of
+connection slots (`57P01`–`57P04`, `53300`), a refused login (`28000`, `28P01`) or a read-only server
+(`25006`). Work that loops over gyms stops on one instead of failing once per gym.
 
 Run generation from this package with `pnpm exec drizzle-kit generate --name <name>`.
 Commit the generated SQL and metadata together. Add an SPDX SQL comment to generated
@@ -196,7 +207,10 @@ Call `migrateDatabase(maintenanceUrl)` before `initializeDatabase(appUrl)` and b
 serving requests. Migration uses a dedicated connection and a session advisory lock.
 After Drizzle finishes, `applySecurity` forces enabled RLS and restores the declared
 write restrictions. `assertCatalog` then checks actual policies, role properties,
-ownership, table and column privileges, tenant keys and foreign keys. Restore uses
+ownership, table and column privileges, tenant keys and foreign keys, and refuses a
+view without `security_invoker` or not owned by `maintenance`, a materialized view or
+foreign table the app can use, and a `SECURITY DEFINER` function the app can run or a trigger uses
+(the schema declares none, so any of these comes from a newer release or outside the app). Restore uses
 the same migration/security entry point. A failed check prevents successful startup.
 
 Advisory locks are registered in `src/locks.ts`. `advisoryLocks` holds the

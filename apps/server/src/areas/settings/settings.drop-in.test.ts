@@ -2,7 +2,7 @@
 import '@hono/zod-openapi';
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { auditEvents, chargeTypes, gyms, taxRates, uuidv7 } from '@plaingym/db';
+import { auditEvents, chargeTypes, databaseCode, gyms, taxRates, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { gymSettingsResponseSchema, publicContracts } from '@plaingym/shared/contracts';
@@ -125,8 +125,11 @@ describe('drop-in fee setting through real PostgreSQL and the settings and publi
     expect((await f.patch({ revision: revision + 1, dropInChargeTypeId: f.mat.id })).status).toBe(409);
     expect((await f.patch({ revision, dropInChargeTypeId: 'not-an-id' })).status).toBe(400);
     expect((await f.patch({ revision, dropInChargeTypeId: f.mat.id, amountCents: 100 })).status).toBe(400);
-    // Even another gym's ID written straight to the column shows no fee: the reader matches the charge type on the gym.
-    await database.forGym(f.gymId, tx => tx.update(gyms).set({ dropInChargeTypeId: f.foreign.id }).where(eq(gyms.id, f.gymId)));
+    // The database refuses another gym's ID written straight to the column, so the setting stays unset and shows no fee.
+    const written = await database.forGym(f.gymId, tx => tx.update(gyms).set({ dropInChargeTypeId: f.foreign.id }).where(eq(gyms.id, f.gymId)))
+      .then(() => 'stored', (error: unknown) => databaseCode(error));
+    expect(written).toBe('23503');
+    expect(await f.service.get(f.gymId)).toMatchObject({ dropInChargeTypeId: null });
     expect(await f.dropInFeeFor(f.gymId)).toBeNull();
     const html = await f.page();
     expect(html).toContain('Contact the gym to confirm the mat fee');

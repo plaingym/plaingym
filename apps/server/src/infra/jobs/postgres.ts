@@ -2,12 +2,12 @@
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { and, asc, eq, inArray, lt, notInArray, or, sql } from 'drizzle-orm';
-import { advisoryLockNamespace, advisoryLocks, forGym, forSystem, jobs, jobScheduleCursors, uuidv7 } from '@plaingym/db';
+import { advisoryLockNamespace, advisoryLocks, forGym, forSystem, isConnectionError, jobs, jobScheduleCursors, uuidv7 } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import type { JobStatsQuery, JobStats } from '../../core/interfaces/job-stats.js';
 import type { Id } from '@plaingym/shared/contracts';
-import { instantSchema, idSchema } from '@plaingym/shared/contracts';
+import { instantSchema, idSchema, storedTimezoneSchema } from '@plaingym/shared/contracts';
 import { clock as systemClock } from '../../core/clock.js';
 import { describeError, logError } from '../../core/log.js';
 import type { Jobs, JobOptions, JobHandler, HandleOptions, JobContext, JobRecovery, FailedJob } from './index.js';
@@ -84,18 +84,6 @@ const nameIn = (names: Iterable<string>) => {
 // Schema keys are (gym_id, idempotency_key); namespace caller keys by job name.
 const hashKey = (name: string, key: string) => createHash('sha256').update(JSON.stringify([name, key])).digest('hex');
 
-/** Drizzle wraps driver errors in `cause`; a lost database must end the whole tick. */
-function connectionError(error: unknown): boolean {
-  const seen = new Set<unknown>();
-  while (error && typeof error === 'object' && !seen.has(error)) {
-    seen.add(error);
-    const code = 'code' in error ? error.code : undefined;
-    if (typeof code === 'string' && (code.startsWith('08') || code.startsWith('CONNECTION_')
-      || ['57P01', '57P02', '57P03', 'CONNECT_TIMEOUT', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ENETUNREACH', 'EHOSTUNREACH', 'ENOTFOUND', 'EAI_AGAIN'].includes(code))) return true;
-    error = 'cause' in error ? error.cause : undefined;
-  }
-  return false;
-}
 
 export class PostgresJobs implements Jobs, JobRecovery {
   readonly #database: Scope;
@@ -333,44 +321,37 @@ export class PostgresJobs implements Jobs, JobRecovery {
     // One query reads a batch of gyms' cursors, instead of a scan of job payloads per gym and schedule.
     const cursors = Map.groupBy(await this.#database.forSystem((tx) => tx.select().from(jobScheduleCursors)
       .where(inArray(jobScheduleCursors.gymId, gyms.map((gym) => gym.gymId)))), (row) => row.gymId);
-    for (const gym of gyms) {
-      try {
-        new Intl.DateTimeFormat('en', { timeZone: gym.timezone });
-        const current = new Map((cursors.get(gym.gymId) ?? []).filter((row) => row.timezone === gym.timezone
-          && row.expression === this.#schedules.get(row.name)).map((row) => [row.name, row.lastOccurrence]));
-        // All of a gym's missing cursors are seeded in one transaction, before any of its occurrences is enqueued.
-        const missing = [...this.#schedules].filter(([name]) => !current.has(name));
-        const existing = new Set((cursors.get(gym.gymId) ?? []).map((row) => row.name));
-        if (missing.length) {
-          try {
-            for (const [name, at] of await this.#seed(gym, missing, existing, now)) current.set(name, at);
-          } catch (error) {
-            if (connectionError(error)) throw error;
-            // Keep the normal batched seed; isolate a bad schedule by retrying each missing seed below.
-          }
+    for (const gym of gyms) await this.#isolate({ gymId: gym.gymId }, async () => {
+      storedTimezoneSchema.parse(gym.timezone);
+      const current = new Map((cursors.get(gym.gymId) ?? []).filter((row) => row.timezone === gym.timezone
+        && row.expression === this.#schedules.get(row.name)).map((row) => [row.name, row.lastOccurrence]));
+      const missing = [...this.#schedules].filter(([name]) => !current.has(name));
+      const existing = new Set((cursors.get(gym.gymId) ?? []).map((row) => row.name));
+      // Several missing cursors are seeded in one transaction, before any of the gym's occurrences is enqueued. If that
+      // fails, each schedule's own seed below isolates the bad one; with one missing, its own seed is the only attempt.
+      if (missing.length > 1) await this.#isolate({ gymId: gym.gymId, stage: 'seed_all' }, async () => {
+        for (const [name, at] of await this.#seed(gym, missing, existing, now)) current.set(name, at);
+      });
+      for (const [name, expression] of this.#schedules) await this.#isolate({ gymId: gym.gymId, schedule: name }, async () => {
+        if (!current.has(name)) {
+          const seeded = await this.#seed(gym, [[name, expression]], existing, now);
+          current.set(name, seeded.get(name)!);
         }
-        for (const [name, expression] of this.#schedules) {
-          try {
-            if (!current.has(name)) {
-              const seeded = await this.#seed(gym, [[name, expression]], existing, now);
-              current.set(name, seeded.get(name)!);
-            }
-            let count = 0;
-            for (const at of cronOccurrences(expression, gym.timezone, current.get(name)!, now)) {
-              if (count++ >= this.#maxScheduled) break;
-              await this.#enqueue(name, {}, { timezone: gym.timezone, runAt: at,
-                idempotencyKey: JSON.stringify(['cron', expression, gym.timezone, occurrenceKey(at, gym.timezone)]) },
-              gym.gymId, { name, expression, at: at.toISOString() });
-            }
-          } catch (error) {
-            if (connectionError(error)) throw error;
-            logError('jobs.schedule_error', { gymId: gym.gymId, schedule: name }, error);
-          }
+        let count = 0;
+        for (const at of cronOccurrences(expression, gym.timezone, current.get(name)!, now)) {
+          if (count++ >= this.#maxScheduled) break;
+          await this.#enqueue(name, {}, { timezone: gym.timezone, runAt: at,
+            idempotencyKey: JSON.stringify(['cron', expression, gym.timezone, occurrenceKey(at, gym.timezone)]) },
+          gym.gymId, { name, expression, at: at.toISOString() });
         }
-      } catch (error) {
-        if (connectionError(error)) throw error;
-        logError('jobs.schedule_error', { gymId: gym.gymId }, error);
-      }
+      });
+    });
+  }
+  /** Logs a failure and carries on with the next gym or schedule; a lost database ends the whole tick instead. */
+  async #isolate(fields: Record<string, string>, fn: () => Promise<void>): Promise<void> {
+    try { await fn(); } catch (error) {
+      if (isConnectionError(error)) throw error;
+      logError('jobs.schedule_error', fields, error);
     }
   }
   async #scheduleRetention(now: Date): Promise<void> {

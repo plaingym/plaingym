@@ -72,8 +72,12 @@ it doesn't declare when the table has the security shape every table has: owner
 `maintenance`, row-level security enabled and forced, exactly the gym policy or one
 system access kind's policies, for the `app` role only, and no privilege beyond
 select, insert, update and delete. Any other unknown table stops the start, and so
-does a missing table or any change to a table that release declares. A minor can
-therefore add a table or a column, but tightening a table the previous minor declares
+does a missing table or any change to a table that release declares. A view is
+accepted only when owned by `maintenance` with `security_invoker` set; a
+materialized view or foreign table only when the `app` role can't use it; and a
+`SECURITY DEFINER` function only when the `app` role can't run it and no trigger
+uses it. A minor can
+therefore add a table, a column or such a view, but tightening a table the previous minor declares
 (a new policy, a revoked privilege) breaks the promise and needs a major.
 
 ## Build identity

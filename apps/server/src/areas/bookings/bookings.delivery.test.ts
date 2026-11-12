@@ -12,7 +12,7 @@ import { FakeJobs } from '../../infra/jobs/index.js';
 import { encryptSmtpConfig } from '../settings/smtp.js';
 import { captureSmtp } from '../../infra/email/test-smtp.js';
 import { createBookingService } from './bookings.js';
-import { createBookingDelivery, createBookingMailer, noticeJob, promotionJob } from './bookings.delivery.js';
+import { createBookingDelivery, createBookingMailer, noticeJob, promotionJob, promotionNoticeDays } from './bookings.delivery.js';
 import { createBookingJobs } from './bookings.jobs.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
@@ -44,6 +44,27 @@ describe('promotion jobs and notices', () => {
     await unsent.delivery.promote(unsent.gymId, unsent.session.id);
     await restarted.sweep(unsent.gymId);
     expect(fresh.jobs).toMatchObject([{ name: noticeJob, payload: { bookingId: unsent.queued.id } }]);
+  });
+  it('stops recovering or sending an unsent notice once its promotion is older than the job retention window', async () => {
+    const f = await fixture();
+    // The notice job finishes without a sent audit, as it does without SMTP; its key is later pruned.
+    const withoutSmtp = createBookingDelivery({ ...f.options, jobs: new FakeJobs(f.clock), mailer: async () => null });
+    await withoutSmtp.promote(f.gymId, f.session.id);
+    await withoutSmtp.send(f.gymId, f.queued.id);
+    await db.forGym(f.gymId, tx => tx.update(classSessions).set({ startsAt: new Date('2026-12-30T18:00:00Z'), endsAt: new Date('2026-12-30T19:00:00Z') })
+      .where(eq(classSessions.id, f.session.id)));
+    const sweepAfter = async (days: number) => {
+      f.clock.set(new Date(Date.parse('2026-10-29T16:00:00Z') + days * 86_400_000).toISOString());
+      const fresh = new FakeJobs(f.clock), restarted = createBookingDelivery({ ...f.options, jobs: fresh, mailer: async () => f.email });
+      await restarted.sweep(f.gymId);
+      return { fresh, restarted };
+    };
+    expect((await sweepAfter(promotionNoticeDays - 1)).fresh.jobs).toMatchObject([{ name: noticeJob, payload: { bookingId: f.queued.id } }]);
+    const late = await sweepAfter(promotionNoticeDays + 1);
+    expect(late.fresh.jobs).toHaveLength(0);
+    // A notice job still queued from before (or retried) no longer sends, though the gym has SMTP now.
+    await late.restarted.send(f.gymId, f.queued.id);
+    expect(f.email.messages).toHaveLength(0);
   });
   it('registered jobs promote once and deliver one escaped, gym-local notice on replay', async () => {
     const f = await fixture();

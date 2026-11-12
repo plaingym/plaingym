@@ -74,13 +74,18 @@ identify a schedule generation: a different expression or timezone replaces the
 cursor and starts a new generation at the current minute, even when returning to
 an earlier expression or timezone. Only a schedule with no cursor is seeded from
 the newest occurrence row of that generation, as earlier releases kept it, so an
-upgrade neither skips nor repeats occurrences; all of a gym's missing cursors are
-seeded in one transaction before any of its occurrences is enqueued. If that seed
-fails, missing schedules are retried individually to isolate the failure. Invalid
-timezones are rejected before seeding. Schedule handler effects need the same
+upgrade neither skips nor repeats occurrences; when two or more of a gym's cursors
+are missing, they are seeded in one transaction before any of its occurrences is
+enqueued. If that seed fails, it is logged once and the missing schedules are
+retried individually to isolate the failure; a single missing schedule is seeded
+only individually. Invalid timezones are rejected before seeding. Schedule handler effects need the same
 idempotency guarantees as other jobs. A scheduling failure is logged as
 `jobs.schedule_error` with its gym ID and, for a schedule-specific failure, its
-schedule name; other schedules and gyms continue. Connection failures end the tick.
+schedule name (`stage: 'seed_all'` for the shared seed); other schedules and gyms
+continue. Failures that mean the database itself is unusable end the tick instead
+of logging once per gym: a lost or refused connection, a server shutting down or
+out of connection slots, a refused login (for example a rotated password), or a
+read-only server (`isConnectionError` in `@plaingym/db`).
 
 ## Batch lane
 
@@ -123,3 +128,7 @@ Retention filters protected rows before acquiring row locks. If retention remove
 an idempotency conflict between enqueue's insert and lookup, enqueue retries the
 insert once. The booking recovery sweep skips promotions with a durable
 `booking.notice_sent` audit, so pruning their job keys does not recreate sent notices.
+It also looks only at promotions from the last 14 days, the succeeded-job window, and
+the notice job sends nothing for an older one: a notice that finished without a sent
+audit (member emails off, no SMTP, a suppressed address) is never enqueued again after
+its key is pruned, and never goes out weeks late.

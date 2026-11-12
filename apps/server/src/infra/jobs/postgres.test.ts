@@ -523,7 +523,7 @@ describe('schedule cursors', () => {
     ]);
     expect(await rows()).toMatchObject([{ gymId: gymB, name: 'tick' }]);
   });
-  it.each(['ECONNREFUSED', 'CONNECTION_CLOSED', 'CONNECT_TIMEOUT', '08006', '57P01'].flatMap(code => [
+  it.each(['ECONNREFUSED', 'CONNECTION_CLOSED', 'CONNECT_TIMEOUT', '08006', '57P01', '53300', '28P01', '57P04', '25006'].flatMap(code => [
     { code, stage: 'seed' }, { code, stage: 'enqueue' },
   ]))('ends a tick on wrapped $code during $stage without visiting later gyms', async ({ code, stage }) => {
     const visited: string[] = [];
@@ -566,10 +566,36 @@ describe('schedule cursors', () => {
     q.schedule('good', '* * * * *', async () => {});
     const lines: string[] = [], previous = setLogSink(line => lines.push(line));
     try { await q.scheduleDue(); } finally { setLogSink(previous); }
-    expect(lines.map(line => JSON.parse(line))).toMatchObject([
+    const logged = lines.map(line => JSON.parse(line) as Record<string, unknown>);
+    // A failed seed of all missing schedules is logged once, without a schedule name, before the per-schedule seeds.
+    expect(logged).toMatchObject([
+      ...(failure === 'seed' ? [{ event: 'jobs.schedule_error', gymId: gymA, stage: 'seed_all' }] : []),
       { event: 'jobs.schedule_error', gymId: gymA, schedule: 'bad' },
     ]);
+    expect(logged[0]).not.toHaveProperty(failure === 'seed' ? 'schedule' : 'stage');
     expect((await rows()).map(r => r.name)).toEqual(['good']);
+  });
+  it('seeds a single missing schedule once per tick, not in a shared attempt as well', async () => {
+    const first = queue({ listGyms: async () => [{ gymId: gymA, timezone: 'UTC' }] });
+    first.schedule('good', '* * * * *', async () => {});
+    await first.scheduleDue();
+    // Malformed history makes the upgrade seed of 'bad' fail on every tick.
+    await database.forSystem(tx => tx.insert(jobs).values({ gymId: gymA, name: 'bad', status: 'succeeded', runAt: clock.now(),
+      idempotencyKey: uuidv7(), payload: { version: 1, timezone: 'UTC', value: {}, schedule: { expression: '* * * * *', at: 'not a time' } } }));
+    let failures = 0;
+    const q = new PostgresJobs({ clock, listGyms: async () => [{ gymId: gymA, timezone: 'UTC' }],
+      database: { ...database, forGym: async (gymId, fn) => {
+        try { return await database.forGym(gymId, fn); } catch (error) { failures++; throw error; }
+      } } });
+    q.schedule('good', '* * * * *', async () => {}); q.schedule('bad', '* * * * *', async () => {});
+    clock.advance(60_000);
+    const lines: string[] = [], previous = setLogSink(line => lines.push(line));
+    try { await q.scheduleDue(); await q.scheduleDue(); } finally { setLogSink(previous); }
+    expect(failures).toBe(2);
+    expect(lines.map(line => JSON.parse(line))).toMatchObject([
+      { event: 'jobs.schedule_error', gymId: gymA, schedule: 'bad' }, { event: 'jobs.schedule_error', gymId: gymA, schedule: 'bad' },
+    ]);
+    expect((await rows()).filter(r => r.name === 'good')).toHaveLength(2);
   });
   it('schedules from the worker once per clock minute, not on every poll', async () => {
     const q = make(); const tick = vi.spyOn(q, 'scheduleDue');

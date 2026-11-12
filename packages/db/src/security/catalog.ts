@@ -21,6 +21,41 @@ function expectedSystemPolicies(access: string) {
 }
 const accessKinds = ['system', 'gym', 'gym-config'];
 /**
+ * This image declares no views, materialized views, foreign tables or functions, so any in `public` comes from a
+ * newer release (after a rollback) or from outside the app. Each is accepted only if the app can't use it to read
+ * past row-level security: a view runs its queries as its owner unless it is `security_invoker`, and `maintenance`
+ * bypasses row-level security; a materialized view or foreign table has no row-level security at all; and a
+ * `SECURITY DEFINER` function runs as its owner, including as a trigger, which fires whatever the firing role may execute.
+ * Column grants count as well as table grants, and `security_invoker` is read as Postgres reads a boolean option.
+ */
+async function viewFailures(sql: Sql): Promise<string[]> {
+  const failures: string[] = [];
+  const relations = await sql`
+    select c.relname, c.relkind, pg_get_userbyid(c.relowner) as owner,
+      coalesce((select o.option_value::boolean from pg_options_to_table(c.reloptions) o
+        where o.option_name = 'security_invoker'), false) as security_invoker,
+      has_any_column_privilege('app', c.oid, 'SELECT, INSERT, UPDATE') or has_table_privilege('app', c.oid, 'DELETE') as usable,
+      has_table_privilege('app', c.oid, 'TRUNCATE, TRIGGER') or has_any_column_privilege('app', c.oid, 'REFERENCES') as other_privileges
+    from pg_class c join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public' and c.relkind in ('v', 'm', 'f') order by c.relname
+  `;
+  for (const relation of relations) {
+    const name = String(relation.relname);
+    if (relation.owner !== 'maintenance') failures.push(name + ': wrong owner');
+    if (relation.other_privileges) failures.push(name + ': unexpected view privileges');
+    if (relation.relkind === 'v') {
+      if (!relation.security_invoker) failures.push(name + ': view without security_invoker');
+    } else if (relation.usable) failures.push(name + ': ' + (relation.relkind === 'm' ? 'materialized view' : 'foreign table') + ' without row-level security');
+  }
+  const definers = await sql`
+    select p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.prosecdef and (has_function_privilege('app', p.oid, 'EXECUTE')
+      or exists (select 1 from pg_trigger t where t.tgfoid = p.oid)) order by p.proname
+  `;
+  for (const definer of definers) failures.push(String(definer.proname) + ': security definer function');
+  return failures;
+}
+/**
  * Checks the live catalog, including properties not represented by Drizzle snapshots. A table this image doesn't
  * declare comes from a newer release, after a rollback (docs/versioning.md). It is accepted only with the security
  * shape every table has: owner `maintenance`, ENABLE and FORCE, exactly the gym policy or one system access kind's
@@ -119,6 +154,7 @@ export async function assertCatalog(sql: Sql) {
       }
     }
   }
+  failures.push(...await viewFailures(sql));
   // FK enforcement bypasses RLS: both sides of every tenant relationship must carry gym_id.
   const foreignKeys = await sql`
     select c.conname, source.relname as source_table, target.relname as target_table,

@@ -91,6 +91,50 @@ describe('a table this image does not declare', () => {
   });
 });
 
+describe('a view, materialized view or function this image does not declare', () => {
+  const invokerView = 'create view newer_view with (security_invoker = true) as select id, gym_id from members;';
+  const matview = 'create materialized view newer_matview as select id, gym_id from members with no data;';
+  const definer = `create function newer_fn() returns bigint language sql security definer as 'select count(*) from members';`;
+  afterEach(async () => {
+    await maintenance.sql.unsafe('drop trigger if exists newer_trigger on members; drop function if exists newer_trigger_fn(); drop view if exists newer_view; drop materialized view if exists newer_matview; drop function if exists newer_fn()');
+  });
+  it.each([
+    ['a security_invoker view', invokerView],
+    ['a security_invoker view whose option reads t', 'create view newer_view with (security_invoker = t) as select id, gym_id from members;'],
+    ['a materialized view the app cannot use', `${matview} revoke all on newer_matview from app;`],
+    ['a security definer function the app cannot run', `${definer} revoke execute on function newer_fn() from public, app;`],
+    ['a function that runs as its caller', `create function newer_fn() returns bigint language sql as 'select count(*) from members'; grant execute on function newer_fn() to app;`],
+  ])('is accepted as %s', async (_name, statements) => {
+    await maintenance.sql.unsafe(statements);
+    await expect(assertCatalog(database.app.sql)).resolves.toEqual({ tableCount: 69, tenantTableCount: expect.any(Number) });
+  });
+  it.each([
+    ['a view that runs as its owner', 'create view newer_view as select id, gym_id from members;', 'newer_view: view without security_invoker'],
+    ['a view with security_invoker off', 'create view newer_view with (security_invoker = false) as select id, gym_id from members;', 'newer_view: view without security_invoker'],
+    ['a view with TRIGGER for the app', `${invokerView} grant trigger on newer_view to app;`, 'newer_view: unexpected view privileges'],
+    ['a materialized view the app can read', `${matview} grant select on newer_matview to app;`, 'newer_matview: materialized view without row-level security'],
+    ['a security definer function the app can run', `${definer} grant execute on function newer_fn() to app;`, 'newer_fn: security definer function'],
+    ['a materialized view the app can read through a column grant', `${matview} revoke all on newer_matview from app; grant select (id) on newer_matview to app;`, 'newer_matview: materialized view without row-level security'],
+    ['a security definer trigger function the app cannot run', `create function newer_trigger_fn() returns trigger language plpgsql security definer as 'begin return new; end';
+      revoke execute on function newer_trigger_fn() from public, app;
+      create trigger newer_trigger before insert on members for each row execute function newer_trigger_fn();`, 'newer_trigger_fn: security definer function'],
+  ])('is refused as %s', async (_name, statements, failure) => {
+    await maintenance.sql.unsafe(statements);
+    await expect(assertCatalog(database.app.sql)).rejects.toThrow(failure);
+  });
+  it('is refused under the wrong owner', async () => {
+    await maintenance.sql.unsafe(invokerView);
+    const admin = openConnection(databaseUrl(inject('testDatabase').adminUrl, database.name), 1);
+    try {
+      await admin.sql.unsafe('alter view newer_view owner to postgres');
+      await expect(assertCatalog(database.app.sql)).rejects.toThrow('newer_view: wrong owner');
+    } finally {
+      await admin.sql.unsafe('drop view newer_view');
+      await admin.close();
+    }
+  });
+});
+
 describe('a table this image declares', () => {
   it('fails when it is missing, even if a safe table stands in for it', async () => {
     await maintenance.sql.unsafe('alter table class_tags rename to newer');

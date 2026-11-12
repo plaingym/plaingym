@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 export * from './schema/index.js';
-export { forGym, forHousehold, forSystem } from './client.js';
+export { forGym, forHousehold, forSystem, isConnectionError } from './client.js';
 export type { Transaction } from './client.js';
 export { attendanceFilterPredicate, HouseholdAccessError } from './household.js';
 export type { AttendanceRowFilter, HouseholdAttendanceFilter, HouseholdDenialCode, HouseholdScope } from './household.js';

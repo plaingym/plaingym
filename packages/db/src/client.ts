@@ -14,6 +14,32 @@ export type Connection = ReturnType<typeof openConnection>;
 export class SchemaCompatibilityError extends Error {
   constructor(message: string) { super(message); this.name = 'SchemaCompatibilityError'; }
 }
+/**
+ * SQLSTATE codes and `postgres.js`/Node network codes that mean the database itself is unusable for every gym:
+ * the connection broke or was refused, the server is shutting down or full, the role's login is refused, or the
+ * server is a read-only replica. Class `08` (connection exceptions) and the driver's `CONNECTION_*` codes count too.
+ */
+const connectionErrorCodes = new Set([
+  '25006', // read_only_sql_transaction: failed over to, or pointed at, a read-only replica
+  '28000', '28P01', // invalid authorization or password: the role's login was revoked or its password rotated
+  '53300', // too_many_connections
+  '57P01', '57P02', '57P03', '57P04', // admin or crash shutdown, cannot connect now, database dropped
+  'CONNECT_TIMEOUT', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ENETUNREACH', 'EHOSTUNREACH', 'ENOTFOUND', 'EAI_AGAIN',
+]);
+/**
+ * Whether an error, or one of its causes (Drizzle wraps driver errors), means the database connection itself failed,
+ * so work for other gyms would fail the same way and should stop instead of logging one error per gym.
+ */
+export function isConnectionError(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  while (error && typeof error === 'object' && !seen.has(error)) {
+    seen.add(error);
+    const code = 'code' in error ? error.code : undefined;
+    if (typeof code === 'string' && (code.startsWith('08') || code.startsWith('CONNECTION_') || connectionErrorCodes.has(code))) return true;
+    error = 'cause' in error ? error.cause : undefined;
+  }
+  return false;
+}
 /** The updater passes the verified, highest rollback floor alongside this database's Compose configuration. */
 export function assertSchemaCompatibility(env: NodeJS.ProcessEnv = process.env): void {
   if (!env.SCHEMA_ROLLBACK_FLOOR) return;
@@ -24,7 +50,7 @@ export function assertSchemaCompatibility(env: NodeJS.ProcessEnv = process.env):
   if (comparison < 0) {
     const migratedBy = parse(env.SCHEMA_RELEASE)?.every(Number.isSafeInteger) ? env.SCHEMA_RELEASE : env.SCHEMA_ROLLBACK_FLOOR;
     const snapshot = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(env.SCHEMA_SNAPSHOT ?? '') ? env.SCHEMA_SNAPSHOT : '(see version-history.tsv)';
-    throw new SchemaCompatibilityError(`Cannot start ${env.APP_VERSION}: the database was upgraded by ${migratedBy} and requires at least ${env.SCHEMA_ROLLBACK_FLOOR}. Run update.sh --rollback within that floor, or restore pre-upgrade snapshot ${snapshot} using docs/restoring.md.`);
+    throw new SchemaCompatibilityError(`Cannot start ${env.APP_VERSION}: the database was upgraded by ${migratedBy} and requires at least ${env.SCHEMA_ROLLBACK_FLOOR}. Retry ${migratedBy} or update to a compatible release, or run update.sh --rollback within that floor. To go back below it, restore pre-upgrade snapshot ${snapshot} using docs/restoring.md; a restore loses changes made since the upgrade.`);
   }
 }
 /**

@@ -24,9 +24,10 @@ export const gyms = pgTable('gyms', {
   cancellationCutoffMinutes: integer('cancellation_cutoff_minutes').notNull().default(60),
   openMatCountsAsClass: boolean('open_mat_counts_as_class').notNull().default(false),
   /**
-   * The charge type whose current price the public drop-in page shows; null shows no price. A foreign key would make
-   * this module and billing.ts import each other, so settings checks it under the gym's row-level security instead,
-   * and the reader matches it on gym_id too.
+   * The charge type whose current price the public drop-in page shows; null shows no price. Its composite foreign key
+   * to one of the gym's own charge types, `gyms_drop_in_charge_type_fk` on (id, drop_in_charge_type_id), is declared in
+   * migration 0032's reviewed SQL, because declaring it here would make this module and billing.ts import each other.
+   * Settings also checks the charge type under the gym's row-level security, and the reader matches it on gym_id.
    */
   dropInChargeTypeId: uuid('drop_in_charge_type_id'),
   settings: jsonb('settings').notNull().default({}), revision: integer('revision').notNull().default(1),

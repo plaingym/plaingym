@@ -7,6 +7,9 @@ it('allows the previous minor within the checked floor and refuses older images 
   expect(() => assertSchemaCompatibility({ ...schema, APP_VERSION: '1.2.0' })).not.toThrow();
   expect(() => assertSchemaCompatibility({ ...schema, APP_VERSION: '1.3.0' })).not.toThrow();
   expect(() => assertSchemaCompatibility({ ...schema, APP_VERSION: '1.1.9' })).toThrow(/Cannot start 1.1.9.*v1.3.0.*v1.2.0.*00000000/);
+  // Forward recovery comes first, so an owner reading only the crash log doesn't restore and lose newer data.
+  expect(() => assertSchemaCompatibility({ ...schema, APP_VERSION: '1.1.9' }))
+    .toThrow(/Retry v1\.3\.0 or update to a compatible release, or run update\.sh --rollback within that floor\. To go back below it, restore/);
   expect(() => assertSchemaCompatibility({ ...schema, APP_VERSION: '1.3.0+3.gabc1234' })).not.toThrow();
   expect(() => assertSchemaCompatibility({ ...schema, APP_VERSION: 'dev' })).toThrow(/Invalid or missing/);
   expect(() => assertSchemaCompatibility({ APP_VERSION: '1.0.0', SCHEMA_ROLLBACK_FLOOR: 'garbage' })).toThrow(/Invalid or missing/);

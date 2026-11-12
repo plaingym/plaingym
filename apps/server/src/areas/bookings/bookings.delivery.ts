@@ -13,6 +13,11 @@ import { promoteWaitlist, type BookingOptions } from './bookings.js';
 
 export const promotionJob = 'bookings.promote';
 export const noticeJob = 'bookings.notice';
+/**
+ * A promotion notice's shelf life: the sweep and the notice job act only on promotions this recent. It matches the
+ * queue's retention of succeeded jobs, so the sweep stops before a finished notice job's key could have been pruned.
+ */
+export const promotionNoticeDays = 14;
 // Read from stored jobs: a newer release may add keys, which this one ignores after a rollback.
 export const promotionPayload = z.object({ sessionId: idSchema });
 export const noticePayload = z.object({ bookingId: idSchema });
@@ -46,6 +51,9 @@ export function createBookingDelivery(options: BookingDeliveryOptions) {
     await options.jobs.enqueue(promotionJob, { sessionId }, { gymId, timezone: gym.timezone,
       idempotencyKey: `booking-cancelled:${cancellationId}` });
   }
+  /** Promotions recent enough to notify: a notice that never went out is not sent weeks later. */
+  const recentPromotion = () => and(eq(auditEvents.action, 'booking.promoted'),
+    gt(auditEvents.occurredAt, new Date(clock.now().getTime() - promotionNoticeDays * 86_400_000)));
   /** Recovery for a crash after a booking commit, capacity edit or erasure, before enqueue. */
   async function sweep(gymId: string) {
     let cursor: string | undefined;
@@ -67,7 +75,9 @@ export function createBookingDelivery(options: BookingDeliveryOptions) {
           cursor ? gt(classBookings.id, cursor) : undefined,
           notExists(tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
             eq(auditEvents.targetId, classBookings.id), eq(auditEvents.action, 'booking.notice_sent')))),
-          inArray(classBookings.id, tx.select({ id: auditEvents.targetId }).from(auditEvents).where(eq(auditEvents.action, 'booking.promoted')))))
+          // Bounded, so a notice that finished without a sent audit (no SMTP, emails off, suppressed) is not
+          // enqueued again once retention prunes its job key.
+          inArray(classBookings.id, tx.select({ id: auditEvents.targetId }).from(auditEvents).where(recentPromotion()))))
         .orderBy(asc(classBookings.id)).limit(100));
       for (const booking of pending) await enqueueNotice(gymId, booking.id);
       if (pending.length < 100) break;
@@ -76,7 +86,7 @@ export function createBookingDelivery(options: BookingDeliveryOptions) {
   }
   async function send(gymId: string, bookingId: string) {
     const read = () => scope(gymId, async tx => {
-      const [promotion] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.targetId, bookingId), eq(auditEvents.action, 'booking.promoted')));
+      const [promotion] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.targetId, bookingId), recentPromotion()));
       const [sent] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.targetId, bookingId), eq(auditEvents.action, 'booking.notice_sent')));
       if (!promotion || sent) return;
       const [row] = await tx.select({ booking: classBookings, session: classSessions, email: members.email, memberId: members.id })
