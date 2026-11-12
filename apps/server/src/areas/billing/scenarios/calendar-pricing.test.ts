@@ -84,7 +84,7 @@ describe('billing scenarios: persisted catalog and lifecycle → invoice calcula
       expect(invoiceDetail(first.invoice, f.clock).invoice).toMatchObject({ kind: 'one_off', amountCents: 1440, dueOn: '2028-03-16' });
     } else expect(first.invoice).toBeNull();
     const fee = calculateOneOffInvoice({ householdId: f.home.id, currency: 'CAD', dueOn: '2028-03-16',
-      charges: [{ kind: 'signup_fee', membershipId: sibling.id, description: 'Registration',
+      charges: [{ kind: 'signup_fee', membershipId: sibling.id, planId: plan.id, description: 'Registration',
         amountCents: plan.signupFeeCents, currency: plan.currency, taxRates: [] }] });
     expect(invoiceDetail(fee, f.clock).invoice).toMatchObject({ kind: 'one_off', amountCents: 2500 });
     expect(fee.lineItems.some(line => line.kind === 'discount')).toBe(false);

@@ -19,7 +19,7 @@ describe('scheduled plan switch through the composed runner, synthetic Stripe an
     const membership = (await f.read()).memberships[0]!;
     const switched = await f.lifecycle.switchPlan(f.context, { membershipId: membership.id, revision: membership.revision,
       requestId: uuidv7(), planId: next.id, timing: 'next_billing_date' });
-    expect(switched).toMatchObject({ planId: f.plan.id, scheduledPlanId: next.id, scheduledOn: '2028-04-01' });
+    expect(switched).toMatchObject({ membership: { planId: f.plan.id, scheduledPlanId: next.id, scheduledOn: '2028-04-01' }, invoiceId: null });
     f.clock.set('2028-04-01T17:00:00Z');
     await f.runJob(dailyRunJob); await f.runJob(dailyRunJob);
     const state = await f.read();

@@ -15,7 +15,8 @@ import {
   createPlanRequestSchema, createRefundRequestSchema, createTaxRateRequestSchema,
   freezeMembershipRequestSchema, invoiceCheckoutResponseSchema, invoiceDetailResponseSchema,
   invoiceLineItemSchema, invoiceListQuerySchema, invoiceListResponseSchema, invoiceSchema,
-  maskedPaymentMethodSchema, membershipResponseSchema, membershipStatusSchema,
+  maskedPaymentMethodSchema, membershipResponseSchema, membershipStatusSchema, membershipSwitchPreviewQuerySchema,
+  membershipSwitchPreviewResponseSchema, membershipSwitchResponseSchema, switchMembershipPlanRequestSchema,
   paymentAttemptSchema, paymentMethodListResponseSchema, planResponseSchema,
   recordManualPaymentRequestSchema, refundResponseSchema, resumeMembershipRequestSchema,
   taxRateResponseSchema, updateChargeTypeRequestSchema,
@@ -162,6 +163,24 @@ describe('revisions and membership lifecycle requests', () => {
     expect(assignMembershipRequestSchema.safeParse({ ...request, commitmentEndsOn: '2027-10-21' }).success).toBe(false);
     expect(updateMembershipRequestSchema.safeParse({ revision: 1, price: { amountCents: 100 } }).success).toBe(false);
   });
+  it('changes a plan or interval only through the switch, whose request IDs and override reasons are bounded', () => {
+    expect(updateMembershipRequestSchema.safeParse({ revision: 1, planId: ids.plan }).success).toBe(false);
+    expect(updateMembershipRequestSchema.safeParse({ revision: 1, interval: 'annual' }).success).toBe(false);
+    expect(updateMembershipRequestSchema.safeParse({ revision: 1, price: { amountCents: 9000, currency: 'CAD' } }).success).toBe(true);
+    const request = { revision: 1, requestId: ids.other, planId: ids.plan };
+    expect(switchMembershipPlanRequestSchema.parse(request).timing).toBe('next_billing_date');
+    expect(switchMembershipPlanRequestSchema.parse({ ...request, timing: 'now', override: { reason: '  Hardship ' } }).override)
+      .toEqual({ reason: 'Hardship' });
+    for (const invalid of [{ timing: 'later' }, { requestId: '12' }, { override: { reason: ' ' } }, { override: { reason: 'x'.repeat(501) } },
+      { interval: 'annual' }, { amountCents: 100 }])
+      expect(switchMembershipPlanRequestSchema.safeParse({ ...request, ...invalid }).success).toBe(false);
+    expect(membershipSwitchPreviewQuerySchema.parse({ planId: ids.plan }).timing).toBe('next_billing_date');
+    expect(membershipSwitchResponseSchema.parse({ data: { membership, invoiceId: null } }).data.invoiceId).toBeNull();
+    const preview = { planId: ids.plan, timing: 'now', kind: 'upgrade', currency: 'CAD', priceStartsOn: '2026-11-21', commitmentBlocks: false,
+      proration: { periodStartsOn: '2026-11-01', periodEndsOn: '2026-12-01', billedDays: 10, periodDays: 30, totalCents: 667 } };
+    expect(membershipSwitchPreviewResponseSchema.parse({ data: preview }).data).toEqual(preview);
+    expect(membershipSwitchPreviewResponseSchema.safeParse({ data: { ...preview, kind: 'sidegrade' } }).success).toBe(false);
+  });
 });
 
 describe('invoices and tax snapshots', () => {
@@ -296,7 +315,7 @@ describe('billing endpoint permissions', () => {
     'createClassPack', 'updateClassPack',
     'createTaxRate', 'updateTaxRate', 'createPlan', 'updatePlan', 'createChargeType', 'updateChargeType',
     'assignMembership', 'updateMembership', 'activateMembership', 'freezeMembership', 'resumeMembership',
-    'cancelMembership', 'createRefund', 'releaseInvoiceHold',
+    'cancelMembership', 'switchMembershipPlan', 'cancelMembershipSwitch', 'previewMembershipSwitch', 'createRefund', 'releaseInvoiceHold',
   ]);
   it.each(Object.entries(billingContracts))('covers allowed and denied staff roles for %s', (name, endpoint) => {
     for (const role of staffRoles) {

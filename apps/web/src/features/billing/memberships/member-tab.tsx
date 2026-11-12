@@ -95,29 +95,23 @@ function MembershipCard({ row, plans, manage, busy, mutate }: {
   mutate: (operation: Action, input: unknown, membershipId: string) => Promise<boolean>;
 }) {
   const [confirm, setConfirm] = useState(false), [action, setAction] = useState<'freeze' | 'resume' | 'edit' | null>(null);
-  const [formError, setFormError] = useState(''), [editPlan, setEditPlan] = useState(row.planId);
+  const [formError, setFormError] = useState('');
   // The edit compares against, and sends the revision of, the membership as it was when the form opened,
   // so a change made elsewhere meanwhile is a conflict rather than silently undone.
   const [base, setBase] = useState(row);
-  const plan = plans.find(item => item.id === row.planId), basePlan = plans.find(item => item.id === base.planId);
+  const plan = plans.find(item => item.id === row.planId);
   const differentPlanPrice = !!plan && plan.currency === row.currency && plan.interval === row.interval && plan.amountCents !== row.amountCents;
-  const choices = plans.filter(item => item.currency === base.currency && (item.active || item.id === base.planId));
   async function edit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = new FormData(event.currentTarget);
     const entered = String(form.get('price') ?? '').trim();
-    const input: { revision: number; planId?: string; price?: { amountCents: number; currency: string } } = { revision: base.revision };
-    // A plan change without an entered price leaves `price` out, so it takes the new plan's price.
-    if (editPlan !== base.planId) input.planId = editPlan;
+    let amountCents: number | undefined;
     if (entered) {
-      try {
-        const amountCents = parseMinorUnits(entered, base.currency);
-        // The same price on the same plan is no change; with a plan change it keeps the current price.
-        if (input.planId || amountCents !== base.amountCents) input.price = { amountCents, currency: base.currency };
-      } catch { setFormError(text('invalidPrice')); return; }
+      try { amountCents = parseMinorUnits(entered, base.currency); } catch { setFormError(text('invalidPrice')); return; }
     }
-    if (!input.planId && !input.price) { setFormError(text('nothingToChange')); return; }
+    // A blank or unchanged price is no change.
+    if (amountCents === undefined || amountCents === base.amountCents) { setFormError(text('nothingToChange')); return; }
     setFormError('');
-    if (await mutate('updateMembership', input, row.id)) setAction(null);
+    if (await mutate('updateMembership', { revision: base.revision, price: { amountCents, currency: base.currency } }, row.id)) setAction(null);
   }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = new FormData(event.currentTarget);
@@ -136,7 +130,7 @@ function MembershipCard({ row, plans, manage, busy, mutate }: {
     {manage && row.status !== 'cancelled' && <fieldset disabled={busy} className="min-w-0 space-y-3">
       <div className="flex flex-col flex-wrap gap-2 sm:flex-row">
         {row.status === 'pending' && <Button onClick={() => void mutate('activateMembership', { revision: row.revision }, row.id)}>{text('activate')}</Button>}
-        <Button variant="outline" onClick={() => { setAction('edit'); setConfirm(false); setFormError(''); setBase(row); setEditPlan(row.planId); }}>{text('editPrice')}</Button>
+        <Button variant="outline" onClick={() => { setAction('edit'); setConfirm(false); setFormError(''); setBase(row); }}>{text('editPrice')}</Button>
         {['active', 'trial'].includes(row.status) && <Button variant="outline" onClick={() => { setAction('freeze'); setConfirm(false); }}>{text('freeze')}</Button>}
         {row.status === 'frozen' && <Button variant="outline" onClick={() => { setAction('resume'); setConfirm(false); }}>{text('resume')}</Button>}
         <Button variant="outline" onClick={() => { setConfirm(true); setAction(null); }}>{text('cancel')}</Button>
@@ -144,8 +138,6 @@ function MembershipCard({ row, plans, manage, busy, mutate }: {
       {confirm && <div className="space-y-2"><p>{text('confirmCancel')}</p><div className="flex flex-col gap-2 sm:flex-row"><Button onClick={async () => { if (await mutate('cancelMembership', { revision: row.revision }, row.id)) setConfirm(false); }}>{text('confirm')}</Button><Button variant="outline" onClick={() => setConfirm(false)}>{text('back')}</Button></div></div>}
       {action === 'edit' && <form noValidate onSubmit={event => void edit(event)} className="space-y-3">
         {formError && <Alert role="alert">{formError}</Alert>}
-        <Label className="block min-w-0">{text('plan')}<select className={selectClass} name="planId" value={editPlan} onChange={event => setEditPlan(event.target.value)}>
-          {!choices.some(item => item.id === base.planId) && <option value={base.planId}>{basePlan?.name ?? text('membership')}</option>}{choices.map(item => <option key={item.id} value={item.id}>{item.name} · {money(item.amountCents, item.currency)} / {text(item.interval)}</option>)}</select></Label>
         {/* A text field, so an entry the browser can't parse as a number is refused rather than read as blank. */}
         <Label className="block min-w-0">{text('price')} ({base.currency})<Input name="price" inputMode="decimal" autoComplete="off" placeholder={minorUnitsToInput(base.amountCents, base.currency)}/></Label>
         <p className="text-sm text-muted-foreground">{text('priceHelp')}</p>

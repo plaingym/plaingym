@@ -17,8 +17,8 @@ async function setup(options: FixtureOptions = {}) {
   const row = async (id = f.membership.id) => (await f.read()).memberships.find(m => m.id === id)!;
   const newPlan = (overrides: Record<string, unknown> = {}) => factory('plans', f.gymId, { name: 'Plan ' + uuidv7(), ...overrides });
   async function switchTo(planId: string, overrides: Partial<SwitchPlanRequest> = {}, id = f.membership.id) {
-    return service.switchPlan(staff, { membershipId: id, revision: (await row(id)).revision, requestId: uuidv7(), planId,
-      timing: 'next_billing_date', ...overrides });
+    return (await service.switchPlan(staff, { membershipId: id, revision: (await row(id)).revision, requestId: uuidv7(), planId,
+      timing: 'next_billing_date', ...overrides })).membership;
   }
   /** Runs the daily build and collection at 09:00 Vancouver time on `date`. */
   async function dailyOn(date: string) { f.clock.set(date + 'T17:00:00Z'); return f.runner.daily(f.gymId); }
@@ -202,12 +202,14 @@ describe('scheduled plan switch against PostgreSQL and the charge runner', () =>
     const request = { membershipId: f.membership.id, revision, requestId, planId: next.id, timing: 'next_billing_date' as const };
     const [first, second] = await Promise.all([f.service.switchPlan(f.staff, request), f.service.switchPlan(f.staff, request)]);
     expect(second).toEqual(first);
+    expect(first.invoiceId).toBeNull();
     // A retry after a lost response carries the old revision and still replays without writing.
     expect(await f.service.switchPlan(f.staff, request)).toEqual(first);
     expect(await f.audits(switchScheduledAction)).toHaveLength(1);
     expect((await f.row()).revision).toBe(revision + 1);
     await expect(f.service.switchPlan(f.staff, { ...request, planId: other.id })).rejects.toMatchObject({ code: 'conflict' });
     await expect(f.service.switchPlan(f.staff, { ...request, override: { reason: 'Different' } })).rejects.toMatchObject({ code: 'conflict' });
+    await expect(f.service.switchPlan(f.staff, { ...request, timing: 'now' })).rejects.toMatchObject({ code: 'conflict' });
     await expect(f.service.switchPlan(f.staff, { ...request, requestId: uuidv7(), planId: other.id })).rejects.toMatchObject({ code: 'conflict' });
     expect(await f.audits(switchScheduledAction)).toHaveLength(1);
     // A new switch replaces the scheduled one.
@@ -215,7 +217,7 @@ describe('scheduled plan switch against PostgreSQL and the charge runner', () =>
     await f.dailyOn('2028-03-01');
     expect(await f.billed()).toMatchObject([{ planId: other.id, amountCents: 13_000 }]);
   });
-  it('cancels a scheduled switch, and cancelling or changing the membership\'s plan drops it', async () => {
+  it('cancels a scheduled switch, cancelling the membership drops it, and a PATCH can\'t change the plan', async () => {
     const f = await setup({ now: '2028-02-20T17:00:00Z' }), next = await f.newPlan({ amountCents: 12_000 }), other = await f.newPlan({ amountCents: 9_000 });
     await expect(f.service.cancelScheduledSwitch(f.staff, { membershipId: f.membership.id, revision: (await f.row()).revision }))
       .rejects.toMatchObject(conflictReason('none_scheduled'));
@@ -227,8 +229,12 @@ describe('scheduled plan switch against PostgreSQL and the charge runner', () =>
       scheduledOn: null, revision: scheduled.revision + 1 });
     expect(await f.audits(switchCancelledAction)).toMatchObject([{ actorKind: 'user', before: { scheduledPlanId: next.id }, after: { scheduledPlanId: null } }]);
     await f.switchTo(next.id);
-    const changed = await f.service.update(f.staff, { membershipId: f.membership.id, revision: (await f.row()).revision, planId: other.id });
-    expect(changed).toMatchObject({ planId: other.id, scheduledPlanId: null });
+    for (const change of [{ planId: other.id }, { interval: 'annual' as const }])
+      await expect(f.service.update(f.staff, { membershipId: f.membership.id, revision: (await f.row()).revision, ...change }))
+        .rejects.toMatchObject({ code: 'invalid_request' });
+    // The lifecycle's plan change schedules a switch, replacing the scheduled one.
+    expect(await f.service.changePlan(f.staff, { membershipId: f.membership.id, revision: (await f.row()).revision, planId: other.id }))
+      .toMatchObject({ planId: f.plan.id, scheduledPlanId: other.id, scheduledAmountCents: 9_000, scheduledOn: '2028-03-01' });
     await f.switchTo(next.id);
     const repriced = await f.service.update(f.staff, { membershipId: f.membership.id, revision: (await f.row()).revision,
       price: { amountCents: 8_500, currency: 'CAD' } });
@@ -246,7 +252,7 @@ describe('scheduled plan switch against PostgreSQL and the charge runner', () =>
     await expect(f.switchTo(f.plan.id)).rejects.toMatchObject(conflictReason('same_plan'));
     await expect(f.switchTo(uuidv7())).rejects.toMatchObject({ code: 'not_found' });
     await expect(f.service.switchPlan(f.staff, { membershipId: f.membership.id, revision: 1, requestId: uuidv7(),
-      planId: f.plan.id, timing: 'now' as 'next_billing_date' })).rejects.toMatchObject({ code: 'invalid_request' });
+      planId: f.plan.id, timing: 'later' as 'now' })).rejects.toMatchObject({ code: 'invalid_request' });
     await db.forGym(f.gymId, tx => tx.update(members).set({ anonymizedAt: f.clock.now() }).where(eq(members.id, f.member.id)));
     await expect(f.switchTo((await f.newPlan({ amountCents: 12_000 })).id)).rejects.toMatchObject(conflictReason('erased'));
     expect(await f.audits(switchScheduledAction)).toEqual([]);

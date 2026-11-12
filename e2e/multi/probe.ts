@@ -119,9 +119,12 @@ export function valueOf(schema: Schema, name: string, aim: Aim): unknown {
       const out: Record<string, unknown> = {}, required = new Set(schema.required ?? []);
       for (const [key, property] of Object.entries(schema.properties ?? {}))
         if (required.has(key) || (aim.optionalIds && namesRecord(key, property))) out[key] = valueOf(property, key, aim);
-      // An update that changes nothing is refused for its shape, so one that carries only a revision changes the first plain field.
+      // An update that changes nothing is refused for its shape, so one that carries only a revision changes the first plain field,
+      // or else its first date (a membership update takes only a price or a due date).
       if (Object.keys(out).every((key) => key === 'revision') && 'revision' in out) {
-        const plain = Object.entries(schema.properties ?? {}).find(([key, property]) => key !== 'revision' && ['string', 'number'].includes(property.type ?? '') && !property.format);
+        const fields = Object.entries(schema.properties ?? {}).filter(([key]) => key !== 'revision');
+        const plain = fields.find(([, property]) => ['string', 'number'].includes(property.type ?? '') && !property.format)
+          ?? fields.find(([, property]) => property.type === 'string' && property.format === 'date');
         if (plain) out[plain[0]] = valueOf(plain[1], plain[0], aim);
       }
       // A class or window that ends after it starts.

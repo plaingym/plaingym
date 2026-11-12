@@ -52,8 +52,8 @@ it('does not fetch plan names without billing.read', async () => {
   expect(client.plans).not.toHaveBeenCalled();
 });
 async function openEdit() {
-  fireEvent.click(await screen.findByRole('button', { name: 'Change plan or price' }));
-  return { plan: await screen.findByLabelText('Plan', { selector: 'select[name="planId"]' }) as HTMLSelectElement, price: screen.getByLabelText(/^Price/) as HTMLInputElement };
+  fireEvent.click(await screen.findByRole('button', { name: 'Change price' }));
+  return { price: await screen.findByLabelText(/^Price/) as HTMLInputElement };
 }
 const save = () => fireEvent.click(screen.getAllByRole('button', { name: 'Save' }).at(-1)!);
 it('sends a custom price with the membership currency and revision', async () => {
@@ -85,27 +85,22 @@ it('does not compare prices across billing intervals or currencies', async () =>
   await screen.findByRole('heading', { name: plan.name });
   expect(screen.queryByText(/Plan price now/)).toBeNull();
 });
-it('sends no price when only the plan changes', async () => {
+it('offers no plan change in the edit form, which sends only the price', async () => {
   const client = start('admin', { plans: [plan, premium] });
   const form = await openEdit();
-  fireEvent.change(form.plan, { target: { value: premium.id } });
-  save();
-  await waitFor(() => expect(client.call).toHaveBeenCalledWith('updateMembership', { revision: 1, planId: premium.id }, { membershipId: membership.id }));
-  expect(Object.keys(vi.mocked(client.call).mock.calls[0]![1] as object)).not.toContain('price');
-});
-it('sends the entered price together with a plan change', async () => {
-  const client = start('admin', { plans: [plan, premium] });
-  const form = await openEdit();
-  fireEvent.change(form.plan, { target: { value: premium.id } });
+  // The assignment form's plan select (unnamed) is the only one on the tab.
+  expect(document.querySelectorAll('select[name="planId"]')).toHaveLength(0);
+  expect(await screen.findAllByLabelText('Plan')).toHaveLength(1);
   fireEvent.change(form.price, { target: { value: '120' } });
   save();
-  await waitFor(() => expect(client.call).toHaveBeenCalledWith('updateMembership', { revision: 1, planId: premium.id, price: { amountCents: 12000, currency: 'CAD' } }, { membershipId: membership.id }));
+  await waitFor(() => expect(client.call).toHaveBeenCalledWith('updateMembership', { revision: 1, price: { amountCents: 12000, currency: 'CAD' } }, { membershipId: membership.id }));
+  expect(Object.keys(vi.mocked(client.call).mock.calls[0]![1] as object).sort()).toEqual(['price', 'revision']);
 });
-it('sends nothing when neither the plan nor the price changed', async () => {
+it('sends nothing when the price is blank', async () => {
   const client = start('admin');
   await openEdit();
   save();
-  expect(await screen.findByText('Choose a different plan or enter a price.')).toBeDefined();
+  expect(await screen.findByText('Enter a price different from the current one.')).toBeDefined();
   expect(client.call).not.toHaveBeenCalled();
 });
 it('shows and takes a zero-decimal membership price in whole yen', async () => {
@@ -122,7 +117,7 @@ it('shows and takes a zero-decimal membership price in whole yen', async () => {
   save();
   await waitFor(() => expect(client.call).toHaveBeenCalledWith('updateMembership', { revision: 1, price: { amountCents: 9500, currency: 'JPY' } }, { membershipId: membership.id }));
 });
-it('refuses a price with too many decimals and the current price on the same plan', async () => {
+it('refuses a price with too many decimals and the current price', async () => {
   const client = start('admin');
   const form = await openEdit();
   fireEvent.change(form.price, { target: { value: '85.555' } });
@@ -130,13 +125,12 @@ it('refuses a price with too many decimals and the current price on the same pla
   expect(await screen.findByText('Enter a valid price, with no more decimal places than the currency uses.')).toBeDefined();
   fireEvent.change(form.price, { target: { value: '100' } });
   save();
-  expect(await screen.findByText('Choose a different plan or enter a price.')).toBeDefined();
+  expect(await screen.findByText('Enter a price different from the current one.')).toBeDefined();
   expect(client.call).not.toHaveBeenCalled();
 });
 it('refuses a price the browser could not read as a number instead of treating it as blank', async () => {
   const client = start('admin', { plans: [plan, premium] });
   const form = await openEdit();
-  fireEvent.change(form.plan, { target: { value: premium.id } });
   fireEvent.change(form.price, { target: { value: '120,00' } });
   save();
   expect(await screen.findByText('Enter a valid price, with no more decimal places than the currency uses.')).toBeDefined();
@@ -153,10 +147,9 @@ it('sends the revision the form opened with, so a plan change made meanwhile is 
   save();
   await waitFor(() => expect(client.call).toHaveBeenCalledWith('updateMembership', { revision: 1, price: { amountCents: 9000, currency: 'CAD' } }, { membershipId: membership.id }));
 });
-it('keeps the membership on its plan for a price-only edit when that plan is inactive', async () => {
+it('saves a price-only edit when the membership\'s plan is inactive', async () => {
   const client = start('admin', { plans: [{ ...plan, active: false }, premium] });
   const form = await openEdit();
-  expect(form.plan.value).toBe(plan.id);
   fireEvent.change(form.price, { target: { value: '90' } });
   save();
   await waitFor(() => expect(client.call).toHaveBeenCalledWith('updateMembership', { revision: 1, price: { amountCents: 9000, currency: 'CAD' } }, { membershipId: membership.id }));

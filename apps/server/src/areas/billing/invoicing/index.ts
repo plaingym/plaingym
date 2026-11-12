@@ -39,18 +39,18 @@ export interface FirstPeriodResult {
   readonly billedDays: number;
   readonly periodDays: number;
 }
-export interface OneOffCharge {
-  readonly kind: 'charge' | 'signup_fee';
+interface OneOffChargeFields {
   readonly description: string;
   readonly amountCents: number;
   readonly currency: Currency;
   readonly quantity?: number;
   readonly membershipId?: Id;
   readonly chargeTypeId?: Id;
-  /** The plan a signup fee belongs to, recorded on its line; a charge has none. */
-  readonly planId?: Id;
   readonly taxRates: readonly AppliedTaxRate[];
 }
+/** A signup fee records the plan it belongs to on its line, so reports keep it there; a charge has none. */
+export type OneOffCharge = OneOffChargeFields & ({ readonly kind: 'charge'; readonly planId?: undefined }
+  | { readonly kind: 'signup_fee'; readonly planId: Id });
 export interface OneOffInvoiceInput {
   readonly householdId: Id;
   readonly currency: Currency;
@@ -136,6 +136,7 @@ export function calculateOneOffInvoice(input: OneOffInvoiceInput): CalculatedInv
   const prices = input.charges.map((charge): Price => {
     if (charge.kind !== 'charge' && charge.kind !== 'signup_fee') throw new RangeError('Invalid one-off charge kind');
     if (charge.kind === 'charge' && charge.planId !== undefined) throw new RangeError('Only a signup fee records a plan');
+    if (charge.kind === 'signup_fee' && charge.planId === undefined) throw new RangeError('A signup fee records its plan');
     return { ...charge, quantity: charge.quantity ?? 1, membershipId: charge.membershipId ?? null,
       chargeTypeId: charge.chargeTypeId ?? null, planId: charge.planId ?? null };
   });

@@ -132,31 +132,16 @@ describe('persisted annual anniversaries', () => {
     expect(refrozen.nextDueOn).toBe(result.nextDueDates[0]?.nextDueOn);
   });
 
-  it.each([undefined, '2029-06-19'])('clears the anniversary on a switch to monthly and sets it when switching back (date: %s)', async nextDueOn => {
-    const f = await fixture();
-    await f.service.assign(f.context, f.request);
-    const monthly = await f.service.update(f.context, { membershipId: f.request.id, revision: 1,
-      interval: 'monthly', nextDueOn: '2028-06-15' });
-    expect(await f.read()).toMatchObject({ interval: 'monthly', anniversaryOn: null });
-    const annual = await f.service.update(f.context, { membershipId: monthly.id, revision: monthly.revision,
-      interval: 'annual', ...(nextDueOn === undefined ? {} : { nextDueOn }) });
-    const expected = nextDueOn ?? monthly.nextDueOn;
-    expect(await f.read()).toMatchObject({ interval: 'annual', nextDueOn: expected, anniversaryOn: expected });
-    const frozen = await f.service.freeze(f.context, { membershipId: annual.id, revision: annual.revision });
-    expect(frozen.nextDueOn).toBe(nextDueOn === undefined ? '2029-06-15' : '2030-06-19');
-  });
-
-  it('uses the final interval after plan defaults and explicit overrides when setting an anniversary', async () => {
+  // An interval changes only through a scheduled switch; the plan-change tests cover the anniversary when it applies.
+  it('keeps the interval and anniversary on a PATCH or a lifecycle plan change, which only schedules the switch', async () => {
     const f = await fixture();
     await f.service.assign(f.context, f.request);
     const monthlyPlan = await factory('plans', f.gymId);
-    const monthly = await f.service.changePlan(f.context, { membershipId: f.request.id, revision: 1, planId: monthlyPlan.id });
-    expect(await f.read()).toMatchObject({ interval: 'monthly', anniversaryOn: null });
-    const overridden = await f.service.update(f.context, { membershipId: monthly.id, revision: monthly.revision,
-      planId: f.plan.id, interval: 'monthly', nextDueOn: '2028-06-15' });
-    expect(await f.read()).toMatchObject({ interval: 'monthly', anniversaryOn: null });
-    await f.service.changePlan(f.context, { membershipId: overridden.id, revision: overridden.revision, planId: f.plan.id });
-    expect(await f.read()).toMatchObject({ interval: 'annual', anniversaryOn: '2028-06-15' });
+    for (const change of [{ interval: 'monthly' as const }, { planId: monthlyPlan.id }])
+      await expect(f.service.update(f.context, { membershipId: f.request.id, revision: 1, ...change })).rejects.toMatchObject({ code: 'invalid_request' });
+    expect(await f.service.changePlan(f.context, { membershipId: f.request.id, revision: 1, planId: monthlyPlan.id }))
+      .toMatchObject({ interval: 'annual', planId: f.plan.id, scheduledPlanId: monthlyPlan.id, scheduledInterval: 'monthly', scheduledOn: '2028-02-29' });
+    expect(await f.read()).toMatchObject({ interval: 'annual', anniversaryOn: '2028-02-29' });
   });
 
   it('uses the anniversary for every skipped cycle of a timed freeze', async () => {

@@ -2,7 +2,7 @@
 import { z } from 'zod';
 import { membershipStatusSchema } from '../states.js';
 import {
-  amountCentsSchema, dateSchema, idSchema, instantSchema, listResponseSchema,
+  amountCentsSchema, currencySchema, dateSchema, idSchema, instantSchema, listResponseSchema,
   moneySchema, paginationSchema, revisionSchema,
 } from '../common.js';
 import { billingIntervalSchema, refinePriceStep } from './catalog.js';
@@ -43,9 +43,10 @@ export const membershipListQuerySchema = paginationSchema.extend({
   dueOnOrBefore: dateSchema.optional(),
 });
 // The service checks member/household/plan ownership and snapshots the plan's
-// price, interval and commitment. PATCH maps to MembershipLifecycle.update;
-// explicit overrides win over changed-plan defaults. Resume maps to activate
-// with nextDueOn, while freeze accepts null resumesOn for an indefinite freeze.
+// price, interval and commitment. PATCH maps to MembershipLifecycle.update and
+// changes only the price or the next due date: a plan or interval changes only
+// through the plan switch. Resume maps to activate with nextDueOn, while freeze
+// accepts null resumesOn for an indefinite freeze.
 export const assignMembershipRequestSchema = z.strictObject({
   householdId: idSchema,
   memberId: idSchema,
@@ -56,12 +57,53 @@ export const assignMembershipRequestSchema = z.strictObject({
 });
 export const updateMembershipRequestSchema = z.strictObject({
   revision: revisionSchema,
-  planId: idSchema.optional(),
   nextDueOn: dateSchema.optional(),
-  interval: billingIntervalSchema.optional(),
   // A price override always includes its currency; the service checks the gym.
   price: moneySchema.extend({ amountCents: amountCentsSchema.nonnegative() }).superRefine(refinePriceStep(['amountCents'])).optional(),
 }).refine((value) => Object.keys(value).some((key) => key !== 'revision'), 'Supply a change.');
+/** `next_billing_date` schedules the switch for the next due date; `now` switches at once (active memberships only). */
+export const planSwitchTimingSchema = z.enum(['next_billing_date', 'now']);
+/** Compared per year (a monthly price × 12) against the membership's current price. */
+export const planSwitchKindSchema = z.enum(['upgrade', 'downgrade', 'equal']);
+// The client generates `requestId` once per submit: a retry with it replays the recorded result, even after the
+// revision moved on, and the same ID with another plan, timing or override flag is a conflict.
+export const switchMembershipPlanRequestSchema = z.strictObject({
+  revision: revisionSchema,
+  requestId: idSchema,
+  planId: idSchema,
+  timing: planSwitchTimingSchema.default('next_billing_date'),
+  // Needed only for a downgrade before the commitment ends; stored on the membership, never returned or audited.
+  override: z.strictObject({ reason: z.string().trim().min(1).max(500) }).optional(),
+});
+export const membershipSwitchResponseSchema = z.strictObject({
+  // The upgrade's proration invoice when one was issued (an upgrade now with days left), otherwise null.
+  data: z.strictObject({ membership: membershipSchema, invoiceId: idSchema.nullable() }),
+});
+export const cancelMembershipSwitchRequestSchema = z.strictObject({ revision: revisionSchema });
+export const membershipSwitchPreviewQuerySchema = z.strictObject({
+  planId: idSchema,
+  timing: planSwitchTimingSchema.default('next_billing_date'),
+});
+export const membershipSwitchPreviewSchema = z.strictObject({
+  planId: idSchema,
+  timing: planSwitchTimingSchema,
+  kind: planSwitchKindSchema,
+  currency: currencySchema,
+  // The day the membership starts paying the new plan's price: today for an upgrade now, otherwise the next due date.
+  priceStartsOn: dateSchema,
+  // A downgrade before the commitment ends; the switch then needs an override reason.
+  commitmentBlocks: z.boolean(),
+  // For an upgrade now with days left in the current period: the days charged, the period's length and the
+  // invoice total (0 when the rounded proration or the discounted total is zero, so no invoice is issued).
+  proration: z.strictObject({
+    periodStartsOn: dateSchema,
+    periodEndsOn: dateSchema,
+    billedDays: z.int().nonnegative(),
+    periodDays: z.int().positive(),
+    totalCents: amountCentsSchema.nonnegative(),
+  }).nullable(),
+});
+export const membershipSwitchPreviewResponseSchema = z.strictObject({ data: membershipSwitchPreviewSchema });
 export const activateMembershipRequestSchema = z.strictObject({ revision: revisionSchema });
 export const freezeMembershipRequestSchema = z.strictObject({
   revision: revisionSchema,
@@ -82,3 +124,10 @@ export type ActivateMembershipRequest = z.infer<typeof activateMembershipRequest
 export type FreezeMembershipRequest = z.infer<typeof freezeMembershipRequestSchema>;
 export type ResumeMembershipRequest = z.infer<typeof resumeMembershipRequestSchema>;
 export type CancelMembershipRequest = z.infer<typeof cancelMembershipRequestSchema>;
+export type PlanSwitchTiming = z.infer<typeof planSwitchTimingSchema>;
+export type PlanSwitchKind = z.infer<typeof planSwitchKindSchema>;
+export type SwitchMembershipPlanRequest = z.input<typeof switchMembershipPlanRequestSchema>;
+export type MembershipSwitchResult = z.infer<typeof membershipSwitchResponseSchema>['data'];
+export type CancelMembershipSwitchRequest = z.infer<typeof cancelMembershipSwitchRequestSchema>;
+export type MembershipSwitchPreviewQuery = z.input<typeof membershipSwitchPreviewQuerySchema>;
+export type MembershipSwitchPreview = z.infer<typeof membershipSwitchPreviewSchema>;

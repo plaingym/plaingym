@@ -47,7 +47,8 @@ export async function issue(tx: Transaction, context: MutationContext, clock: Cl
     { ...fields, needsReview });
   return id;
 }
-function pricing(home: typeof households.$inferSelect, currency: GymSettings['currency']) {
+/** The household's pricing terms for the invoice engine; the plan switch's proration uses them too. */
+export function pricing(home: typeof households.$inferSelect, currency: GymSettings['currency']) {
   return { householdId: home.id, currency, billingDay: home.billingDay,
     familyDiscountBasisPoints: home.familyDiscountBasisPoints, discountDescription: t('billing/runner:familyDiscount') };
 }

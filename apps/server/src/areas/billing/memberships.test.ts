@@ -37,10 +37,9 @@ describe('membership lifecycle against PostgreSQL', () => {
   it('snapshots price, interval, and clamped original commitment', async () => {
     const f = await fixture();
     expect(f.membership).toMatchObject({ amountCents: 10000, interval: 'monthly', commitmentEndsOn: '2028-02-29', status: 'pending', revision: 1 });
-    const nextPlan = await factory('plans', f.gymId, { interval: 'annual', amountCents: 120000, commitmentMonths: 12 });
-    const changed = await f.service.update(f.context, { membershipId: f.membership.id, revision: 1, planId: nextPlan.id,
-      price: { amountCents: 9000, currency: 'CAD' }, interval: 'monthly', nextDueOn: '2028-03-31' });
-    expect(changed).toMatchObject({ planId: nextPlan.id, commitmentEndsOn: '2028-02-29', amountCents: 9000, interval: 'monthly', nextDueOn: '2028-03-31', revision: 2 });
+    const changed = await f.service.update(f.context, { membershipId: f.membership.id, revision: 1,
+      price: { amountCents: 9000, currency: 'CAD' }, nextDueOn: '2028-03-31' });
+    expect(changed).toMatchObject({ planId: f.plan.id, commitmentEndsOn: '2028-02-29', amountCents: 9000, interval: 'monthly', nextDueOn: '2028-03-31', revision: 2 });
   });
   it('serializes repeated assignment IDs and rejects changed requests', async () => {
     const f = await fixture();
@@ -171,7 +170,8 @@ describe('membership lifecycle against PostgreSQL', () => {
     const cancelled = await f.service.cancel(f.context, { membershipId: f.membership.id, revision: 1 });
     expect(cancelled).toMatchObject({ commitmentEndsOn: '2028-02-29', cancelledAt: f.clock.now().toISOString() });
     await expect(f.service.activate(f.context, { membershipId: cancelled.id, revision: 2 })).rejects.toMatchObject({ code: 'conflict' });
-    await expect(f.service.update(f.context, { membershipId: cancelled.id, revision: 2, interval: 'annual' })).rejects.toMatchObject({ code: 'conflict' });
+    await expect(f.service.update(f.context, { membershipId: cancelled.id, revision: 2, price: { amountCents: 9000, currency: 'CAD' } }))
+      .rejects.toMatchObject({ code: 'conflict' });
   });
   it('registers a daily date processor with gym timezone and no payment calls', async () => {
     const f = await fixture('trial'); f.clock.set('2028-02-07T08:00:00Z');

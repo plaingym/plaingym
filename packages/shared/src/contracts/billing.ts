@@ -14,8 +14,10 @@ import {
 } from './billing/catalog.js';
 import {
   activateMembershipRequestSchema, assignMembershipRequestSchema, cancelMembershipRequestSchema,
-  freezeMembershipRequestSchema, membershipListQuerySchema, membershipListResponseSchema,
-  membershipResponseSchema, resumeMembershipRequestSchema, updateMembershipRequestSchema,
+  cancelMembershipSwitchRequestSchema, freezeMembershipRequestSchema, membershipListQuerySchema, membershipListResponseSchema,
+  membershipResponseSchema, membershipSwitchPreviewQuerySchema, membershipSwitchPreviewResponseSchema,
+  membershipSwitchResponseSchema, resumeMembershipRequestSchema, switchMembershipPlanRequestSchema,
+  updateMembershipRequestSchema,
 } from './billing/memberships.js';
 import {
   createOneOffInvoiceRequestSchema, invoiceDetailResponseSchema, invoiceListQuerySchema,
@@ -117,7 +119,21 @@ export const billingContracts = {
   assignMembership: { method: 'post', path: '/api/billing/memberships', permission: catalog,
     body: assignMembershipRequestSchema, response: membershipResponseSchema, successStatus: 201 },
   updateMembership: { method: 'patch', path: '/api/billing/memberships/{membershipId}', permission: catalog,
+    description: 'Changes a membership\'s price or next due date. A plan or billing interval changes only through the plan switch.',
     params: billingMembershipParamsSchema, body: updateMembershipRequestSchema, response: membershipResponseSchema, successStatus: 200 },
+  switchMembershipPlan: { method: 'post', path: '/api/billing/memberships/{membershipId}/switch', permission: catalog,
+    description: 'Switches a membership to another plan, on the next billing date (default) or `now`. Now is for active memberships '
+      + 'and keeps the billing interval: an upgrade charges the price difference for the days left in the current period as one '
+      + 'invoice, collected with the saved card, and a downgrade or equal switch keeps the current price until the next due date. '
+      + 'A retry with the same `requestId` replays the result. Conflicts carry a `reason`.',
+    params: billingMembershipParamsSchema, body: switchMembershipPlanRequestSchema, response: membershipSwitchResponseSchema, successStatus: 200 },
+  cancelMembershipSwitch: { method: 'post', path: '/api/billing/memberships/{membershipId}/switch/cancel', permission: catalog,
+    description: 'Cancels a scheduled plan switch or price change that hasn\'t applied yet.',
+    params: billingMembershipParamsSchema, body: cancelMembershipSwitchRequestSchema, response: membershipResponseSchema, successStatus: 200 },
+  previewMembershipSwitch: { method: 'get', path: '/api/billing/memberships/{membershipId}/switch/preview', permission: catalog,
+    description: 'Shows what a plan switch would do, with the same conflicts as the switch except the commitment, which it reports.',
+    params: billingMembershipParamsSchema, query: membershipSwitchPreviewQuerySchema, response: membershipSwitchPreviewResponseSchema,
+    successStatus: 200 },
   activateMembership: { method: 'post', path: '/api/billing/memberships/{membershipId}/activate', permission: catalog,
     params: billingMembershipParamsSchema, body: activateMembershipRequestSchema, response: membershipResponseSchema, successStatus: 200 },
   freezeMembership: { method: 'post', path: '/api/billing/memberships/{membershipId}/freeze', permission: catalog,

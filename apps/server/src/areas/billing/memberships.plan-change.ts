@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { auditEvents, memberships, plans, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
-import { z } from 'zod';
+import type { z } from 'zod';
 import * as c from '@plaingym/shared/contracts';
 import { catalogAudit } from './catalog.js';
 
@@ -11,25 +11,20 @@ type Plan = typeof plans.$inferSelect;
 
 export const switchScheduledAction = 'billing.membership.switch_scheduled';
 export const switchCancelledAction = 'billing.membership.switch_cancelled';
+/** Audited by a switch made now (with its request) and by the cycle build applying a scheduled switch (without one). */
 export const planSwitchedAction = 'billing.membership.plan_switched';
 
-/** Only the next-billing-date timing exists so far. */
-export const switchPlanRequestSchema = z.strictObject({
-  membershipId: c.idSchema,
-  revision: c.revisionSchema,
-  requestId: c.idSchema,
-  planId: c.idSchema,
-  timing: z.literal('next_billing_date'),
-  override: z.strictObject({ reason: z.string().trim().min(1).max(500) }).optional(),
-});
+export const switchPlanRequestSchema = c.switchMembershipPlanRequestSchema.extend({ membershipId: c.idSchema });
 export type SwitchPlanRequest = z.input<typeof switchPlanRequestSchema>;
-export const cancelScheduledSwitchRequestSchema = z.strictObject({ membershipId: c.idSchema, revision: c.revisionSchema });
+export const cancelScheduledSwitchRequestSchema = c.cancelMembershipSwitchRequestSchema.extend({ membershipId: c.idSchema });
 export type CancelScheduledSwitchRequest = z.input<typeof cancelScheduledSwitchRequestSchema>;
 /** What the audit records of a switch request: never the override reason, which stays on the membership. */
-export interface RecordedSwitchRequest { requestId: string; planId: string; timing: string; override: boolean }
+export interface RecordedSwitchRequest { requestId: string; planId: string; timing: c.PlanSwitchTiming; override: boolean }
 export interface SwitchScheduledAudit { request: RecordedSwitchRequest; overrideUsed: boolean; membership: c.Membership }
+/** A switch made now: its kind and the proration invoice it issued, if any. */
+export interface PlanSwitchedNowAudit extends SwitchScheduledAudit { kind: SwitchKind; invoiceId: string | null }
 
-export type SwitchKind = 'upgrade' | 'downgrade' | 'equal';
+export type SwitchKind = c.PlanSwitchKind;
 const perYear = (amountCents: number, interval: string) => amountCents * (interval === 'monthly' ? 12 : 1);
 /** Compares prices per year (a monthly price × 12), so a change of interval compares like for like. */
 export function switchKind(current: { amountCents: number; interval: string }, next: { amountCents: number; interval: string }): SwitchKind {
@@ -41,19 +36,27 @@ export function commitmentBlocks(kind: SwitchKind, commitmentEndsOn: string | nu
   return kind === 'downgrade' && commitmentEndsOn !== null && commitmentEndsOn > today;
 }
 
-function refuse(reason: string, message: string): never { throw new AppError('conflict', message, { reason: [reason] }); }
+export function refuse(reason: string, message: string): never { throw new AppError('conflict', message, { reason: [reason] }); }
 /**
- * The switch rules for a membership and its member, checked after the locks, replay and revision. `overrideUsed` is
- * true only when the commitment blocked the switch and the request's override let it through.
+ * The switch rules for a membership and its member that no override lifts, and whether the commitment blocks the
+ * switch. The preview reports the block; the switch refuses it without an override (`checkSwitch`).
  */
-export function checkSwitch(row: Row, member: { anonymizedAt: Date | null }, plan: Plan,
-  request: { override?: { reason: string } | undefined }, today: string): { kind: SwitchKind; overrideUsed: boolean } {
+export function switchTerms(row: Row, member: { anonymizedAt: Date | null }, plan: Plan, today: string) {
   if (row.status === 'cancelled') refuse('cancelled', 'A cancelled membership cannot switch plans');
   if (member.anonymizedAt) refuse('erased', 'An erased member cannot switch plans');
   if (!plan.active) refuse('plan_inactive', 'Plan is inactive');
   if (plan.currency !== row.currency) refuse('currency', 'Currency does not match');
   if (plan.id === row.planId) refuse('same_plan', 'The membership is already on this plan');
-  const kind = switchKind(row, plan), blocked = commitmentBlocks(kind, row.commitmentEndsOn, today);
+  const kind = switchKind(row, plan);
+  return { kind, commitmentBlocks: commitmentBlocks(kind, row.commitmentEndsOn, today) };
+}
+/**
+ * The switch rules, checked after the locks, replay and revision. `overrideUsed` is true only when the commitment
+ * blocked the switch and the request's override let it through.
+ */
+export function checkSwitch(row: Row, member: { anonymizedAt: Date | null }, plan: Plan,
+  request: { override?: { reason: string } | undefined }, today: string): { kind: SwitchKind; overrideUsed: boolean } {
+  const { kind, commitmentBlocks: blocked } = switchTerms(row, member, plan, today);
   if (blocked && !request.override) refuse('commitment', 'A downgrade before the commitment ends needs an override reason');
   return { kind, overrideUsed: blocked };
 }
@@ -62,19 +65,37 @@ export function scheduledSwitch(row: Row, plan: Plan, overrideReason: string | n
   return { scheduledPlanId: plan.id, scheduledAmountCents: plan.amountCents, scheduledInterval: plan.interval,
     scheduledOn: row.nextDueOn, switchOverrideReason: overrideReason };
 }
+const unscheduled = { scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null };
 /**
  * Clears a switch that hasn't applied yet, with its override reason. A reason left with no switch scheduled records
- * the last applied switch and stays until the next switch is scheduled (or the member is erased).
+ * the last applied switch and stays until the next switch is scheduled (or the member is erased). A price change left
+ * by a switch made now (scheduled on the current plan) belongs to a switch that has applied, so its reason stays.
  */
 export function clearedSwitch(row: Row) {
-  return row.scheduledPlanId === null ? {} : { scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null,
-    scheduledOn: null, switchOverrideReason: null };
+  if (row.scheduledPlanId === null) return {};
+  return row.scheduledPlanId === row.planId ? unscheduled : { ...unscheduled, switchOverrideReason: null };
 }
-/** The recorded result of a switch request on this membership, or undefined when the request ID is new. */
+/**
+ * The columns a switch made now sets. An upgrade takes the new plan's price at once (the proration invoice charges the
+ * days left). A downgrade or equal switch keeps the current price until the next due date, through a price change
+ * scheduled on the new plan, which the cycle build applies like any scheduled change. Either replaces a scheduled
+ * switch, and keeps only an override reason the commitment needed.
+ */
+export function switchedNow(row: Row, plan: Plan, kind: SwitchKind, overrideReason: string | null) {
+  const priceLater = kind !== 'upgrade' && plan.amountCents !== row.amountCents;
+  return { planId: plan.id, ...(kind === 'upgrade' ? { amountCents: plan.amountCents } : {}),
+    ...(priceLater ? scheduledSwitch(row, plan, overrideReason) : { ...unscheduled, switchOverrideReason: overrideReason }) };
+}
+/**
+ * The recorded result of a switch request on this membership, or undefined when the request ID is new: a scheduled
+ * switch's audit, or a switch made now's (the cycle build's applied switches carry no request).
+ */
 export async function recordedSwitch(tx: Transaction, membershipId: string, requestId: string) {
-  const events = await tx.select({ after: auditEvents.after }).from(auditEvents)
-    .where(and(eq(auditEvents.action, switchScheduledAction), eq(auditEvents.targetId, membershipId)));
-  return events.map(event => event.after as SwitchScheduledAudit).find(after => after.request.requestId === requestId);
+  const events = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
+    inArray(auditEvents.action, [switchScheduledAction, planSwitchedAction]), eq(auditEvents.targetId, membershipId)));
+  const found = events.map(event => event.after as Partial<PlanSwitchedNowAudit> | null)
+    .find(after => after?.request?.requestId === requestId);
+  return found && { request: found.request!, membership: found.membership!, invoiceId: found.invoiceId ?? null };
 }
 export function sameSwitchRequest(recorded: RecordedSwitchRequest, request: RecordedSwitchRequest): boolean {
   return recorded.planId === request.planId && recorded.timing === request.timing && recorded.override === request.override;

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, eq, gt, lte, ne, or } from 'drizzle-orm';
-import { forGym, memberships, households, members, plans, auditEvents, planTaxRates, taxRates,
+import { forGym, memberships, households, members, plans, auditEvents,
   revisionGuard, assertRevised, uuidv7, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { isCalendarDate, localDate } from '@plaingym/shared/time';
@@ -13,9 +13,11 @@ import { gymSettingsAccessor } from '../settings/settings.js';
 import { markLeadWon } from '../leads/stages.js';
 import { catalogAudit, catalogMissing } from './catalog.js';
 import { addCalendarMonths, advanceDue, householdNextDate, trialEnd } from './memberships.calendar.js';
-import { cancelScheduledSwitchRequestSchema, checkSwitch, clearedSwitch, recordedSwitch, sameSwitchRequest, scheduledSwitch,
-  switchCancelledAction, switchPlanRequestSchema, switchScheduledAction, type CancelScheduledSwitchRequest,
-  type RecordedSwitchRequest, type SwitchPlanRequest, type SwitchScheduledAudit } from './memberships.plan-change.js';
+import { cancelScheduledSwitchRequestSchema, checkSwitch, clearedSwitch, planSwitchedAction, recordedSwitch, sameSwitchRequest,
+  scheduledSwitch, switchCancelledAction, switchedNow, switchPlanRequestSchema, switchScheduledAction, type CancelScheduledSwitchRequest,
+  type PlanSwitchedNowAudit, type RecordedSwitchRequest, type SwitchPlanRequest, type SwitchScheduledAudit } from './memberships.plan-change.js';
+import { checkNow, issuable, planTaxes, prorateNow, switchPreview } from './memberships.plan-change.now.js';
+import { issue } from './runner/store.js';
 
 type Row = typeof memberships.$inferSelect;
 // The override reason stays out of the Membership contract (erasure clears it; no response or audit carries it).
@@ -24,9 +26,8 @@ const present = ({ gymId: _gymId, anniversaryOn: _anniversaryOn, switchOverrideR
   cancelledAt: row.cancelledAt?.toISOString() ?? null });
 const conflict = (message: string): never => { throw new AppError('conflict', message); };
 /** Explicit date changes set a new anniversary, except the normal short-year clamp. */
-function editedAnniversary(before: Row, interval: string, nextDueOn?: string): string | null {
-  if (interval !== 'annual') return null;
-  if (before.interval !== 'annual') return nextDueOn ?? before.nextDueOn;
+function editedAnniversary(before: Row, nextDueOn?: string): string | null {
+  if (before.interval !== 'annual') return null;
   if (nextDueOn === undefined) return before.anniversaryOn;
   const original = before.anniversaryOn;
   const sameAnniversary = original?.slice(5) === nextDueOn.slice(5);
@@ -116,8 +117,7 @@ export function createMembershipService(options: MembershipOptions = {}) {
         interval: plan.interval, status, startsOn: request.startsOn, nextDueOn, trialEndsOn,
         anniversaryOn: plan.interval === 'annual' ? nextDueOn : null,
         commitmentEndsOn: plan.commitmentMonths === null ? null : addCalendarMonths(request.startsOn, plan.commitmentMonths), createdAt: clock.now() }).returning())[0]);
-      const attached = await tx.select({ id: taxRates.id, name: taxRates.name, rateMillionths: taxRates.rateMillionths, inclusive: taxRates.inclusive })
-        .from(planTaxRates).innerJoin(taxRates, eq(taxRates.id, planTaxRates.taxRateId)).where(eq(planTaxRates.planId, plan.id)).orderBy(asc(taxRates.id));
+      const attached = await planTaxes(tx, plan.id);
       const billing: AssignmentBilling = { firstPeriod: request.firstPeriod, startsOn: request.startsOn, nextDueOn,
         ...(row.anniversaryOn === null ? {} : { annualAnchorOn: row.anniversaryOn }),
         amountCents: plan.amountCents, currency: plan.currency, signupFeeCents: plan.signupFeeCents, taxes: attached };
@@ -178,7 +178,7 @@ export function createMembershipService(options: MembershipOptions = {}) {
         let due = request.nextDueOn ?? before.nextDueOn;
         c.dateSchema.parse(due);
         if (due < before.startsOn) conflict('Billing cannot start before membership starts');
-        const anniversaryOn = editedAnniversary(before, before.interval, request.nextDueOn);
+        const anniversaryOn = editedAnniversary(before, request.nextDueOn);
         if (before.status === 'frozen') {
           const home = catalogMissing((await tx.select().from(households).where(eq(households.id, before.householdId)))[0]);
           const today = localDate(clock.now(), gym.timezone);
@@ -212,11 +212,14 @@ export function createMembershipService(options: MembershipOptions = {}) {
       });
     },
     /**
-     * Schedules a switch to another plan on the membership's next billing date; the cycle build applies it. A request ID
-     * already recorded for this membership replays its result (before the revision check, so a retry after a lost
-     * response replays), and with other parameters conflicts. A new switch replaces a scheduled one.
+     * Switches a membership to another plan. `next_billing_date` schedules the switch for the next due date, and the
+     * cycle build applies it. `now` switches at once: an upgrade takes the new price and issues the proration invoice for
+     * the days left in the current period (database work only: the route collects it after commit), and a downgrade or
+     * equal switch keeps the current price until the next due date. A request ID already recorded for this membership
+     * replays its result (before the revision check, so a retry after a lost response replays), and with other
+     * parameters conflicts. A new switch replaces a scheduled one.
      */
-    async switchPlan(context: MutationContext, input: SwitchPlanRequest): Promise<c.Membership> {
+    async switchPlan(context: MutationContext, input: SwitchPlanRequest): Promise<c.MembershipSwitchResult> {
       const parsed = switchPlanRequestSchema.safeParse(input);
       if (!parsed.success) throw new AppError('invalid_request', 'Invalid plan switch request');
       const request = parsed.data;
@@ -228,18 +231,42 @@ export function createMembershipService(options: MembershipOptions = {}) {
         const replay = await recordedSwitch(tx, before.id, request.requestId);
         if (replay) {
           if (!sameSwitchRequest(replay.request, recorded)) conflict('Request ID reused with different parameters');
-          return replay.membership;
+          return { membership: replay.membership, invoiceId: replay.invoiceId };
         }
         if (before.revision !== request.revision) conflict('The record changed; reload before saving');
         const plan = catalogMissing((await tx.select().from(plans).where(eq(plans.id, request.planId)).for('share'))[0]);
         const member = catalogMissing((await tx.select({ anonymizedAt: members.anonymizedAt }).from(members).where(eq(members.id, before.memberId)))[0]);
-        const { overrideUsed } = checkSwitch(before, member, plan, request, localDate(clock.now(), gym.timezone));
+        const today = localDate(clock.now(), gym.timezone);
+        const { kind, overrideUsed } = checkSwitch(before, member, plan, request, today);
         // Only a reason the commitment needed is kept.
         const reason = overrideUsed ? request.override?.reason ?? null : null;
-        const after = present(await saveSwitch(tx, before, scheduledSwitch(before, plan, reason)));
-        const audit: SwitchScheduledAudit = { request: recorded, overrideUsed, membership: after };
-        await catalogAudit(tx, context, clock, switchScheduledAction, 'membership', before.id, present(before), audit);
-        return after;
+        if (request.timing === 'next_billing_date') {
+          const after = present(await saveSwitch(tx, before, scheduledSwitch(before, plan, reason)));
+          const audit: SwitchScheduledAudit = { request: recorded, overrideUsed, membership: after };
+          await catalogAudit(tx, context, clock, switchScheduledAction, 'membership', before.id, present(before), audit);
+          return { membership: after, invoiceId: null };
+        }
+        checkNow(before, plan, today);
+        // Quoted from the membership before the switch: the difference against what the current period was billed at.
+        const invoice = kind === 'upgrade' ? issuable(await prorateNow(tx, before, present(before), plan, today)) : null;
+        const after = present(await saveSwitch(tx, before, switchedNow(before, plan, kind, reason)));
+        const invoiceId = invoice ? await issue(tx, context, clock, invoice) : null;
+        const audit: PlanSwitchedNowAudit = { request: recorded, overrideUsed, kind, invoiceId, membership: after };
+        await catalogAudit(tx, context, clock, planSwitchedAction, 'membership', before.id, present(before), audit);
+        return { membership: after, invoiceId };
+      });
+    },
+    /** What a switch would do, without a lock or a write; the same refusals as the switch, except the commitment. */
+    async previewSwitch(gymId: string, membershipId: string, input: c.MembershipSwitchPreviewQuery): Promise<c.MembershipSwitchPreview> {
+      const parsed = c.membershipSwitchPreviewQuerySchema.safeParse(input);
+      if (!parsed.success || !c.idSchema.safeParse(membershipId).success) throw new AppError('invalid_request', 'Invalid plan switch preview');
+      const query = parsed.data;
+      const gym = await settings.get(gymId);
+      return scope(gymId, async tx => {
+        const row = catalogMissing((await tx.select().from(memberships).where(eq(memberships.id, membershipId)))[0]);
+        const plan = catalogMissing((await tx.select().from(plans).where(eq(plans.id, query.planId)))[0]);
+        const member = catalogMissing((await tx.select({ anonymizedAt: members.anonymizedAt }).from(members).where(eq(members.id, row.memberId)))[0]);
+        return switchPreview(tx, row, present(row), member, plan, query.timing, localDate(clock.now(), gym.timezone));
       });
     },
     /** Cancels a switch that hasn't applied yet, with its override reason. */
@@ -256,23 +283,25 @@ export function createMembershipService(options: MembershipOptions = {}) {
         return after;
       });
     },
-    update(context: MutationContext, request: UpdateMembership): Promise<c.Membership> {
-      const { membershipId, ...input } = request;
+    /** Changes the price or the next due date. A plan or interval changes only through `switchPlan`, so its rules hold. */
+    async update(context: MutationContext, request: UpdateMembership): Promise<c.Membership> {
+      const { membershipId, planId, interval, ...input } = request;
+      if (planId !== undefined || interval !== undefined)
+        throw new AppError('invalid_request', 'Switch plans to change a membership\'s plan or billing interval');
       const changes = c.updateMembershipRequestSchema.parse(input);
-      return edit(context, { membershipId, revision: changes.revision }, 'updated', async (tx, before) => {
+      return edit(context, { membershipId, revision: changes.revision }, 'updated', async (_tx, before) => {
         if (before.status === 'cancelled') conflict('Cancelled membership cannot be edited');
-        const plan = changes.planId ? await getPlan(tx, changes.planId) : undefined;
-        if (plan && plan.currency !== before.currency || changes.price && changes.price.currency !== before.currency) conflict('Currency does not match');
+        if (changes.price && changes.price.currency !== before.currency) conflict('Currency does not match');
         if (changes.nextDueOn && changes.nextDueOn < before.startsOn) conflict('Billing cannot start before membership starts');
-        const interval = changes.interval ?? plan?.interval ?? before.interval;
-        const anniversaryOn = editedAnniversary(before, interval, changes.nextDueOn);
-        // Changing the plan or interval directly replaces a switch that hasn't applied yet.
-        return { ...(plan || changes.interval ? clearedSwitch(before) : {}), ...(plan ?{ planId: plan.id, amountCents: plan.amountCents, currency: plan.currency, interval: plan.interval } : {}),
-          ...(changes.price ?? {}), ...(changes.interval ? { interval: changes.interval } : {}),
-          ...(changes.nextDueOn ? { nextDueOn: changes.nextDueOn } : {}), anniversaryOn };
+        return { ...(changes.price ?? {}), ...(changes.nextDueOn ? { nextDueOn: changes.nextDueOn } : {}),
+          anniversaryOn: editedAnniversary(before, changes.nextDueOn) };
       });
     },
-    changePlan(context: MutationContext, request: MembershipEdit & { planId: string }): Promise<c.Membership> { return service.update(context, request); },
+    /** Kept for the lifecycle interface: schedules a switch to the plan on the next billing date, replacing a scheduled one. */
+    async changePlan(context: MutationContext, request: MembershipEdit & { planId: string }): Promise<c.Membership> {
+      return (await service.switchPlan(context, { membershipId: request.membershipId, revision: request.revision, requestId: uuidv7(),
+        planId: request.planId, timing: 'next_billing_date' })).membership;
+    },
     /** Durable dates are the schedule: process at most a bounded page, committing one membership at a time. */
     async processDates(gymId: string, timezone: string, limit = 100): Promise<number> {
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('Invalid page size');

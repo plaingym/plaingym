@@ -8,7 +8,7 @@ import {
   calculateCycleInvoice, calculateFirstPeriod, calculateOneOffInvoice, calendarDaysBetween,
   nextBillingDate, previousBillingDate,
 } from './index.js';
-import type { AppliedTaxRate, CalculatedInvoice, CycleInvoiceInput, FirstPeriodInput, PricedMembership } from './index.js';
+import type { AppliedTaxRate, CalculatedInvoice, CycleInvoiceInput, FirstPeriodInput, OneOffCharge, PricedMembership } from './index.js';
 
 const id = (n: number) => '00000000-0000-7000-8000-' + n.toString().padStart(12, '0');
 const householdId = id(1);
@@ -357,8 +357,12 @@ describe('the plan recorded on each line', () => {
     expect(plans(result)).toEqual([['signup_fee', id(30)], ['tax', null], ['charge', null]]);
     checkContract(result);
     expect(() => calculateOneOffInvoice({ householdId, currency: 'CAD', dueOn: '2026-03-16', charges: [
-      { kind: 'charge', description: 'Drop-in', amountCents: 1000, currency: 'CAD', planId: id(30), taxRates: [] },
+      { kind: 'charge', description: 'Drop-in', amountCents: 1000, currency: 'CAD', planId: id(30), taxRates: [] } as unknown as OneOffCharge,
     ] })).toThrow(RangeError);
+    // A caller that forgets the plan would put the fee under the membership's current plan: refused.
+    expect(() => calculateOneOffInvoice({ householdId, currency: 'CAD', dueOn: '2026-03-16', charges: [
+      { kind: 'signup_fee', description: 'Sign-up', amountCents: 1000, currency: 'CAD', taxRates: [] } as unknown as OneOffCharge,
+    ] })).toThrow('A signup fee records its plan');
     expect(() => calculateOneOffInvoice({ householdId, currency: 'CAD', dueOn: '2026-03-16', charges: [
       { kind: 'signup_fee', description: 'Sign-up', amountCents: 1000, currency: 'CAD', planId: 'not-an-id', taxRates: [] },
     ] })).toThrow();
@@ -367,8 +371,9 @@ describe('the plan recorded on each line', () => {
 
 describe('one-off charges', () => {
   it.each(['charge', 'signup_fee'] as const)('calculates a separate %s invoice', (kind) => {
+    const fields = { description: 'Sign-up or drop-in', amountCents: 2000, currency: 'CAD', taxRates: [tax(50_000)] };
     const result = calculateOneOffInvoice({ householdId, currency: 'CAD', dueOn: '2026-03-16', charges: [
-      { kind, description: 'Sign-up or drop-in', amountCents: 2000, currency: 'CAD', taxRates: [tax(50_000)] },
+      kind === 'charge' ? { kind, ...fields } : { kind, planId: id(30), ...fields },
     ] });
     expect(result).toMatchObject({ kind: 'one_off', amountCents: 2100, periodStartsOn: null, periodEndsOn: null });
     expect(result.lineItems[0]?.kind).toBe(kind);

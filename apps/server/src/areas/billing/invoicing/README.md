@@ -19,8 +19,8 @@ membership and charge currencies must match it. Lines are projections of the sha
 
 Each membership line records its membership's plan in `planId`: cycle lines, the
 off-day stub and the prorated first period; a plan change's proration line
-records the plan switched to. A signup-fee charge passes its plan as
-`planId` and its line records it; the runner's assignment invoices and the join
+records the plan switched to. A signup-fee charge must pass its plan as
+`planId` (one without it is refused) and its line records it; the runner's assignment invoices and the join
 flow do this. Charge, discount and tax lines always have a null `planId`, and a
 charge that passes one is refused. The revenue report groups a line by this plan,
 so a later plan change on the membership doesn't move revenue already billed.
@@ -74,7 +74,7 @@ membership is in a trial, frozen or cancelled. A plan with another billing
 interval is refused with a `RangeError` (an interval change is never prorated),
 as is a change dated before the current period. `changeOn` is the gym-local date
 from `localDate(clock.now(), timezone)`; days are calendar days, so DST never
-changes them. Nothing calls it yet.
+changes them. The membership service's switch made now calls it (`memberships.README.md`).
 
 `calculateOneOffInvoice` handles sign-up fees and other standalone charges without
 a family discount. Quantities are extended before tax rounding; output amounts
