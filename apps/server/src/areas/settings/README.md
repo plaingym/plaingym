@@ -4,7 +4,7 @@ Unreadable Google clients are reported as `source: 'none'` and `unreadable: true
 
 Both setup and Settings check a backup destination before generating a key using `backup-destination.ts`: list, write, read back and delete a unique probe under the gym's prefix. A refusal returns `destination: ['unreachable']` without saving anything. Backup status uses only complete snapshots at the current destination whose authenticated references name the current recipient; legacy reference lists without a recipient cannot establish that match.
 
-General settings and booking rules use the gym revision for compare-and-set updates. Currency changes lock the gym row and are rejected when plans, charge types, memberships, or invoices exist; currency foreign keys also protect concurrent inserts. Responses and audits use the same explicit safe projection and exclude credentials and opaque settings.
+General settings and booking rules use the gym revision for compare-and-set updates. Currency changes lock the gym row and are rejected when plans, charge types, class packs, discounts, memberships, or invoices exist; currency foreign keys also protect concurrent inserts. Responses and audits use the same explicit safe projection and exclude credentials and opaque settings.
 
 The module helpers take the existing server registry and inspect request context or job gym settings at execution time. The website definition remains a stub; core does not import it.
 
