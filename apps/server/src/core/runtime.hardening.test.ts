@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, expect, it, vi } from 'vitest';
 import '@hono/zod-openapi';
-import { uuidv7 } from '@plaingym/db';
+import { eq } from 'drizzle-orm';
+import { auditEvents, households, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { PostgresJobs } from '../infra/jobs/postgres.js';
@@ -13,6 +14,7 @@ import { ERASED_CUSTOMER_NAME, FakePayments } from '../infra/payments/index.js';
 import type { StripePayments } from '../infra/payments/stripe.js';
 import * as stripeStep from '../areas/setup/stripe-step.js';
 import { redactCustomerJob } from '../areas/members/members.routes.js';
+import { customerRedactedAction } from '../areas/members/erasure-redaction.js';
 import { clock } from './clock.js';
 import { setLogSink } from './log.js';
 import { startRuntime, type Runtime } from './runtime.js';
@@ -45,6 +47,16 @@ it('redacts an erased household\'s Stripe customer through the runtime\'s paymen
   await handlers.get(redactCustomerJob)!({ customerId: 'cus_erased' }, { gymId, clock, timezone: 'UTC', jobId: uuidv7(), attempt: 1 });
   expect(fake.customer('cus_erased')).toEqual({ name: ERASED_CUSTOMER_NAME, email: null, phone: null, address: null, shipping: null, description: null,
     individualName: null, businessName: null, customFields: null, taxIds: [] });
+  // The runtime wraps the callback in the redaction guard: the redaction is audited, and a customer a household of the
+  // gym links again is left alone.
+  const redactions = () => db.forGym(gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, customerRedactedAction)));
+  expect((await redactions()).map(row => (row.after as { stripeCustomerId: string }).stripeCustomerId)).toEqual(['cus_erased']);
+  const home = await factory('households', gymId);
+  await db.forGym(gymId, tx => tx.update(households).set({ stripeCustomerId: 'cus_reused' }).where(eq(households.id, home.id)));
+  fake.seedCustomer({ id: 'cus_reused', email: 'live@example.invalid', description: 'Live' });
+  await handlers.get(redactCustomerJob)!({ customerId: 'cus_reused' }, { gymId, clock, timezone: 'UTC', jobId: uuidv7(), attempt: 1 });
+  expect(fake.customer('cus_reused')?.name).not.toBe(ERASED_CUSTOMER_NAME);
+  expect(await redactions()).toHaveLength(1);
 });
 
 it('allows images from the uploads bucket\'s origin under the enforced policy', async () => {

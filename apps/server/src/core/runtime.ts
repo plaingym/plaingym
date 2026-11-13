@@ -33,6 +33,7 @@ import { createGymSettingsAccessor, createSettingsService } from '../areas/setti
 import { createGymKeyResolver } from '../areas/settings/gym-keys.js';
 import { createDropInFee } from '../areas/settings/drop-in-fee.js';
 import { configureMembers } from '../areas/members/members.routes.js';
+import { guardRedaction } from '../areas/members/erasure-redaction.js';
 import { createMembersService } from '../areas/members/members.js';
 import { configureStaffProfiles } from '../areas/staff/profiles.routes.js';
 import { createStaffInvitationService, smtpMailer } from '../areas/staff/profiles.invitations.js';
@@ -381,9 +382,10 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   const detachCard = async (gymId: string, id: string, options?: DetachOptions) => (await requirePayments(gymId)).detachPaymentMethod(id, options);
   // Household PINs use the gym's random key; member photos use the gym's file storage. Erasure
   // detaches a household's revoked cards through the same callback and durable job as card removal, and
-  // redacts the erased household's Stripe customer (name and email) with its own retrying job.
+  // redacts the erased household's Stripe customer (name and email) with its own retrying job. The guard skips a
+  // customer a household of the gym links again and audits each redaction.
   configureMembers({ pinSecret: gymKey, uploadsFor: uploads.forGym, clock, detachCard, jobs: queue,
-    redactCustomer: async (gymId, customerId) => (await requirePayments(gymId)).redactCustomer(customerId) });
+    redactCustomer: guardRedaction(async (gymId, customerId) => (await requirePayments(gymId)).redactCustomer(customerId), { clock }) });
   const payments = createPaymentService({ settings, clock, jobs: queue, paymentsFor,
     transitions: billing.transitions, runner, detachCard });
   configurePayments(payments);
