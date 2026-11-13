@@ -200,7 +200,9 @@ are read in one `forGym` transaction, with no billing writes.
 
 `integrations.manage` covers Stripe, SMTP and backups: the setup wizard, and
 **Settings → Email, payments and backups** after it, whose responses and audits
-never contain a password, key, signing secret or storage credential. It also
+never contain a password, key, signing secret or storage credential. The one
+exception is a new backup key pair: its private key is returned once, in a
+`Cache-Control: no-store` answer, and never stored or audited. It also
 covers **Settings → Updates**, the switch for automatic patch updates, and
 **Settings → Google sign-in** (with the wizard's Google page), whose client
 secret is never returned, logged or audited.
@@ -377,6 +379,8 @@ Details: `apps/server/src/infra/auth/README.md`.
   form submissions stay on the app's origin, server-rendered inline scripts need the
   response's nonce, images may also be `data:` URLs or come from the uploads bucket,
   and application pages may not be framed (`frame-ancestors 'none'`, plus `X-Frame-Options: DENY`).
+  Every response, errors included, sends `X-Content-Type-Options: nosniff`, so API
+  answers and stored images are read only as the type they declare.
   Validated waiver documents allow same-origin framing, with a sandboxed policy
   and `X-Frame-Options: SAMEORIGIN`; public signing pages allow these same-origin
   frames. An always-visible document link supports browsers without inline PDFs.

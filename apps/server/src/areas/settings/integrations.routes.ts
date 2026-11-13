@@ -32,7 +32,11 @@ export function createIntegrationsRoutes(service?: IntegrationsService): RouteRe
     route({ ...saveStripe, request: body(saveStripe.body), responses: response(saveStripe.response, 'The integrations with the new Stripe key') },
       async (c) => c.json({ data: await current().saveStripe(owner(c), c.req.valid('json')) }, 200)),
     route({ ...createBackupKey, request: body(createBackupKey.body), responses: response(createBackupKey.response, 'The new backup key, shown once') },
-      async (c) => c.json({ data: await current().createBackupKey(owner(c), c.req.valid('json')) }, 200)),
+      async (c) => {
+        // The answer holds the new backup private key, shown once: no cache may keep it.
+        c.header('Cache-Control', 'no-store');
+        return c.json({ data: await current().createBackupKey(owner(c), c.req.valid('json')) }, 200);
+      }),
     route({ ...confirmBackupKey, request: body(confirmBackupKey.body), responses: response(confirmBackupKey.response, 'The integrations with the confirmed backup key') },
       async (c) => c.json({ data: await current().confirmBackupKey(owner(c), c.req.valid('json')) }, 200)),
     route({ ...getGoogle, responses: response(getGoogle.response, 'Google sign-in for this gym, never the client secret') }, async (c) => {

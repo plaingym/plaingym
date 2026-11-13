@@ -202,6 +202,8 @@ describe('first-boot setup', () => {
     expect(await database.forSystem((tx) => tx.select({ recipient: gyms.backupPublicKey, destination: gyms.backupDestination, revision: gyms.revision }).from(gyms)))
       .toEqual([{ recipient: null, destination: null, revision }]);
     const backup = await call('/api/setup/backups', 'POST', { revision, destination }, cookie); expect(backup.status).toBe(200);
+    // The private key is shown once; no cache may keep the answer.
+    expect(backup.headers.get('cache-control')).toBe('no-store');
     const keys = (await backup.json() as { data: { privateKey: string; publicKey: string; revision: number } }).data;
     revision = keys.revision;
     expect(await identityToRecipient(keys.privateKey)).toBe(keys.publicKey);

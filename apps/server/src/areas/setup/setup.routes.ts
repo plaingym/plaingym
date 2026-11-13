@@ -62,7 +62,10 @@ export function createSetupRoutes(options: SetupRoutesOptions = {}) {
           case 'google': return c.json({ data: await service.google(context, setupContracts.google.body.parse(input)) }, 200);
           case 'decide': return c.json({ data: await service.decide(context, setupContracts.decide.body.parse(input)) }, 200);
           case 'stripe': return c.json({ data: await service.stripe(context, setupContracts.stripe.body.parse(input)) }, 200);
-          case 'backups': return c.json({ data: await service.backups(context, setupContracts.backups.body.parse(input)) }, 200);
+          case 'backups':
+            // The answer holds the new backup private key, shown once: no cache may keep it.
+            c.header('Cache-Control', 'no-store');
+            return c.json({ data: await service.backups(context, setupContracts.backups.body.parse(input)) }, 200);
           case 'confirmBackupKey': return c.json({ data: await service.confirmBackupKey(context, setupContracts.confirmBackupKey.body.parse(input)) }, 200);
           case 'finish': return c.json({ data: await getImportStep().finish(service, context, setupContracts.finish.body.parse(input)) }, 200);
         }

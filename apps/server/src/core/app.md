@@ -53,7 +53,9 @@ Responses that set no policy of their own enforce the policy in `csp.ts`
 server-rendered inline script needs the response's `cspNonce`, `img-src` adds
 `data:` and the uploads bucket's origin, `object-src` and `base-uri` are `'none'`,
 and `frame-ancestors 'none'` forbids framing (with `X-Frame-Options: DENY`, sent on
-every response). Routes that set their own policy (public pages, the website, signed
+every response). Every response, errors included, also sends
+`X-Content-Type-Options: nosniff`, so a browser reads it only as its declared
+type. Routes that set their own policy (public pages, the website, signed
 links, downloads, the demo outbox preview) keep it; they set it with `setPolicy`,
 which adds the same reporting directives and `Reporting-Endpoints` header as the
 default policy. An inline `<script>` or `<style>`, a `style` attribute in

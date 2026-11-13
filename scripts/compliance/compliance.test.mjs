@@ -187,7 +187,7 @@ function claFixture(options = {}) {
   let ledger = options.ledger;
   let branch = Boolean(ledger);
   const author = { id: 42, login: 'contributor', type: 'User', ...options.author };
-  const pr = { state: 'open', user: author, head: { sha: 'current-head' }, base: { repo: { full_name: 'plaingym/plaingym' } } };
+  const pr = { state: 'open', user: author, head: { sha: 'current-head' }, base: { repo: { full_name: 'plaingym/plaingym' } }, ...options.pr };
   const context = {
     repo: { owner: 'plaingym', repo: 'plaingym' }, eventName: options.eventName ?? 'pull_request_target',
     runId: 100, serverUrl: 'https://github.com',
@@ -252,6 +252,35 @@ test('privileged CLA workflow has one pinned action and no checkout or repositor
   for (const path of ['cla.yml', 'compliance.yml']) {
     const content = readFileSync(join(root, '.github/workflows', path), 'utf8');
     for (const action of content.matchAll(/- uses:\s+([^\s#]+)/g)) assert.match(action[1], /@[0-9a-f]{40}$/);
+  }
+});
+
+test('privileged CLA job holds only the permissions its script uses, and the workflow none', () => {
+  assert.match(workflow, /^permissions: \{\}$/m);
+  const job = /^ {4}permissions:\n((?: {6}[a-z-]+: (?:read|write)\n)+)/m.exec(workflow);
+  assert.ok(job, 'the job declares its permissions');
+  assert.deepEqual(job[1].trim().split('\n').map((line) => line.trim()).sort(),
+    ['contents: write', 'issues: write', 'pull-requests: read', 'statuses: write']);
+  // The workflow's empty grant and the job's own: no step widens them.
+  assert.equal([...workflow.matchAll(/^ *permissions:/gm)].length, 2);
+});
+
+test('a closed pull request, or one whose base is another repository, gets no status and no prompt', async () => {
+  for (const pr of [{ state: 'closed' }, { base: { repo: { full_name: 'someone/fork' } } }]) {
+    const fixture = claFixture({ pr });
+    await fixture.run();
+    assert.equal(fixture.statuses.length, 0);
+    assert.equal(fixture.comments.length, 0);
+    assert.equal(fixture.writes.length, 0);
+  }
+});
+
+test('an unlisted bot is not exempt, and a bot login only exempts a bot account', async () => {
+  for (const author of [{ login: 'helper[bot]', type: 'Bot' }, { login: 'dependabot[bot]', type: 'User' }]) {
+    const fixture = claFixture({ author });
+    await fixture.run();
+    assert.equal(fixture.statuses.at(-1).state, 'failure');
+    assert.equal(fixture.writes.length, 0);
   }
 });
 

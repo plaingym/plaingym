@@ -63,5 +63,7 @@ it('serves Settings → Email, Payments and Backups with the runtime’s key, au
   const created = await request('/api/settings/integrations/backups', 'POST', { revision: status.revision + 1,
     destination: { endpoint: storage.endpoint, region: 'auto', bucket: 'backups', accessKeyId: 'id', secretAccessKey: 'secret' } }, cookie);
   expect(created.status, await created.clone().text()).toBe(200);
+  // The answer holds the new private key, shown once; no cache may keep it.
+  expect(created.headers.get('cache-control')).toBe('no-store');
   expect(createBackupKeyResponseSchema.parse(await created.json()).data.integrations.backups?.pending?.destination.bucket).toBe('backups');
 });

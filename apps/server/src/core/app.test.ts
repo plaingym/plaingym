@@ -121,6 +121,14 @@ describe('server application composition', () => {
       "default-src 'none'"])
       expect((await framed(policy)).headers.get('x-frame-options')).toBe('DENY');
   });
+  it('forbids MIME sniffing on every response, errors and routes with their own headers included', async () => {
+    const app = createApp({ resolveGym, session, authorize: allow });
+    app.get('/api/plain', (context) => context.json({ ok: true }));
+    app.get('/api/fails', () => { throw new AppError('conflict', 'Fixture conflict.'); });
+    app.get('/api/image', (context) => context.body('file', 200, { 'Content-Type': 'image/png', 'Content-Security-Policy': "default-src 'none'; sandbox" }));
+    for (const path of ['/api/plain', '/api/fails', '/api/image', '/api/missing', '/healthz'])
+      expect((await app.request(path)).headers.get('x-content-type-options'), path).toBe('nosniff');
+  });
   it('sends HSTS only in production, for the canonical https: host', async () => {
     const paths = ['/api/plain', '/api/fails', '/api/own-policy', '/api/missing', '/healthz'];
     const hsts = async (options: Partial<Parameters<typeof createApp>[0]>, host = 'gym.example') => {

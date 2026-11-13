@@ -154,6 +154,19 @@ describe('Better Auth HTTP containment', () => {
     const response = await f.a.handler(new Request(f.delivered[0]!.url));
     expect(response.headers.get('location')).toContain('INVALID_TOKEN'); expect(cookies(response)).toBe('');
   });
+  it('answers an unknown address as it answers a wrong password, and a magic-link request alike either way', async () => {
+    const f = await fixture(), stranger = `stranger-${uuidv7()}@example.test`;
+    const answer = async (response: Response) => ({ status: response.status, body: await response.text(), cookie: cookies(response) });
+    const wrong = await answer(await f.a.handler(f.request('/sign-in/email', { email: f.user.email, password: 'not-the-password-123' })));
+    const unknown = await answer(await f.a.handler(f.request('/sign-in/email', { email: stranger, password: 'not-the-password-123' })));
+    expect(wrong.status).toBe(401); expect(wrong.cookie).toBe('');
+    expect(unknown).toEqual(wrong);
+    const known = await answer(await f.a.handler(f.request('/sign-in/magic-link', { email: f.user.email })));
+    const missing = await answer(await f.a.handler(f.request('/sign-in/magic-link', { email: stranger })));
+    expect(known.status).toBe(200); expect(missing).toEqual(known);
+    // Both addresses get a link (one an account can't use), so neither the answer nor its timing tells them apart.
+    expect(f.delivered.map((value) => value.email)).toEqual([f.user.email.toLowerCase(), stranger]);
+  });
   it('enforces origin and password/magic availability, never trusting forwarded origin or IP', async () => {
     const f = await fixture();
     const request = f.request('/sign-in/email', { email: f.user.email, password });

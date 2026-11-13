@@ -79,6 +79,9 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
     // says so (the demo outbox preview); a route's own CSP is kept as it is.
     const own = context.res.headers.get('Content-Security-Policy');
     context.res.headers.set('X-Frame-Options', own && /(?:^|;)\s*frame-ancestors 'self'\s*(?:;|$)/.test(own) ? 'SAMEORIGIN' : 'DENY');
+    // Every response is read as the type it declares: API JSON, errors and stored images are never sniffed into a page,
+    // a script or a stylesheet.
+    context.res.headers.set('X-Content-Type-Options', 'nosniff');
     if (options.strictTransportSecurity) {
       const gym = context.get('context').gym;
       const pinned = mode === 'multi' && gym ? gym.defaultHostname : installHost;
