@@ -183,6 +183,7 @@ describe('payment route permissions and tenant isolation', () => {
     const before = (await f.service.listInvoices(f.gymId, { limit: 100, offset: 0 })).pagination.total;
     for (const role of ['front_desk', 'coach'] as const) for (const body of bodies)
       expect((await post(app(f, staff(f, role)), body)).status, `${role} ${JSON.stringify(body)}`).toBe(403);
+    expect((await post(app(f, staff(f, 'front_desk')), '\uFEFF' + JSON.stringify(bodies[0]))).status).toBe(403);
     // Owners and admins hold the capability, so the same bodies reach validation.
     for (const role of ['owner', 'admin'] as const) for (const body of bodies)
       expect((await post(app(f, staff(f, role)), body)).status, `${role} ${JSON.stringify(body)}`).toBe(400);
@@ -224,6 +225,16 @@ describe('payment route permissions and tenant isolation', () => {
 });
 
 describe('one-off collection and payment durability', () => {
+  it('settles a zero-price charge type on issuance without a payment or processor attempt', async () => {
+    const f = await fixture(), charge = await factory('chargeTypes', f.gymId, { amountCents: 0, currency: 'USD' });
+    const created = await f.service.createOneOff(f.context, { source: 'charge_type', chargeTypeId: charge.id,
+      householdId: f.home.id, dueOn: '2026-10-25' });
+    expect(created).toMatchObject({ kind: 'one_off', amountCents: 0, status: 'paid', paidAt: f.clock.now().toISOString() });
+    const detail = await f.service.getInvoice(f.gymId, created.id);
+    expect(detail.invoice.status).toBe('paid');
+    expect(detail.payments).toEqual([]);
+    expect(await db.forGym(f.gymId, tx => tx.select().from(paymentAttempts).where(eq(paymentAttempts.invoiceId, created.id)))).toEqual([]);
+  });
   it.each(['billing_disabled', 'not_payable', 'needs_review', 'pending_attempt', 'no_saved_card', 'already_attempted',
     'outside_retry_window', 'not_auto_collectable', 'not_due', 'checkout_changed', 'reservation_lost', 'action_required', 'collection_changed',
     'below_minimum', 'off_step'] as const)(

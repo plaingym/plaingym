@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { z } from '@hono/zod-openapi';
 import { bodyLimit } from 'hono/body-limit';
+import type { MiddlewareHandler } from 'hono';
 import { AppError } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { route } from '../../core/registry.js';
-import type { RequestContext } from '../../core/context.js';
+import type { RequestContext, RequestEnvironment } from '../../core/context.js';
 import { createCatalogService, type CatalogService } from './catalog.js';
 
 export function billingMutation(context: RequestContext) {
@@ -12,11 +13,12 @@ export function billingMutation(context: RequestContext) {
   return { gymId: context.gym.gymId, actor: { kind: 'user' as const, userId: context.principal.userId } };
 }
 export function billingRoute(contract: c.EndpointContract,
-  handler: (ctx: RequestContext, params: Record<string, string>, query: unknown, body: unknown) => Promise<unknown>) {
+  handler: (ctx: RequestContext, params: Record<string, string>, query: unknown, body: unknown) => Promise<unknown>,
+  middleware: MiddlewareHandler<RequestEnvironment>[] = []) {
   const params = contract.params instanceof z.ZodObject ? contract.params : undefined;
   const query = contract.query instanceof z.ZodObject ? contract.query : undefined;
   const status = contract.successStatus ?? 200;
-  return route({ ...contract, middleware: bodyLimit({ maxSize: 64_000, onError: () => { throw new AppError('invalid_request', 'Request too large'); } }),
+  return route({ ...contract, middleware: [bodyLimit({ maxSize: 64_000, onError: () => { throw new AppError('invalid_request', 'Request too large'); } }), ...middleware],
     request: { ...(params ? { params } : {}), ...(query ? { query } : {}),
       ...(contract.body ? { body: { required: true, content: { 'application/json': { schema: contract.body } } } } : {}) },
     responses: { [status]: { description: 'Billing response', content: { 'application/json': { schema: contract.response } } } },

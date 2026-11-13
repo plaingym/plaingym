@@ -1,8 +1,5 @@
 {
   "title": "Class packs",
-  "archiveHelp": "These catalog items still carry this tax rate. Archiving it removes it from all of them.",
-  "detachHelp": "These catalog items still carry this inactive tax rate. Removing it clears it from all of them.",
-  "taxAttached": "Tax rate is still attached to {charges} charge type(s), {packs} class pack(s) and {plans} plan(s) with {memberships} membership(s); confirm the detach to archive it",
   "notFound": "Class pack not found",
   "inactive": "Class pack is inactive",
   "taxNotFound": "Tax rate not found",

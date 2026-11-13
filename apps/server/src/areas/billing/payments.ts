@@ -68,6 +68,27 @@ const presentAttempt = (r: typeof paymentAttempts.$inferSelect) => c.paymentAtte
   resolvedAt: r.resolvedAt?.toISOString() ?? null,
 });
 
+/** The caller holds its catalog item's share lock; re-read links after locking tax rates to honor a detach. */
+export async function issueOneOff(tx: Transaction, context: MutationContext, clock: Clock,
+  charge: { householdId: string; dueOn: string; description: string; amountCents: number; currency: c.Currency; chargeTypeId?: string },
+  ids: readonly string[], linkedTaxes?: () => Promise<readonly string[]>) {
+  let taxes = ids.length ? await tx.select().from(taxRates).where(inArray(taxRates.id, [...ids])).orderBy(asc(taxRates.id)).for('share') : [];
+  const taxIds = (linkedTaxes && taxes.length ? await linkedTaxes() : ids).map(id => id.toLowerCase());
+  taxes = taxes.filter(rate => taxIds.includes(rate.id));
+  if (taxes.length !== taxIds.length) notFound();
+  if (taxes.some(rate => !rate.active)) paymentConflict('tax_rate_inactive', 'Tax rate is inactive');
+  const { householdId, dueOn, ...item } = charge;
+  const { lineItems, ...invoice } = calculateOneOffInvoice({ householdId, currency: charge.currency, dueOn,
+    charges: [{ ...item, kind: 'charge', taxRates: taxes }] });
+  // Issuance is the initial state; only transitions change state after this transaction commits.
+  const row = (await tx.insert(invoices).values({ ...invoice, id: uuidv7(), gymId: context.gymId,
+    number: await allocateInvoiceNumber(tx, context.gymId), status: 'open', createdAt: clock.now() }).returning())[0]!;
+  await tx.insert(invoiceLineItems).values(lineItems.map(line => ({ ...line, id: uuidv7(), gymId: context.gymId,
+    householdId, invoiceId: row.id, createdAt: clock.now() })));
+  await catalogAudit(tx, context, clock, 'billing.invoice.issued', 'invoice', row.id, undefined, presentInvoice(row));
+  return presentInvoice(row);
+}
+
 export function createPaymentService(options: PaymentOptions = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const settings = options.settings ?? gymSettingsAccessor;
@@ -139,7 +160,7 @@ export function createPaymentService(options: PaymentOptions = {}) {
     },
     async createOneOff(context: MutationContext, input: c.CreateOneOffInvoiceRequest) {
       const request = c.createOneOffInvoiceRequestSchema.parse(input), gym = await settings.get(context.gymId);
-      return scope(context.gymId, async tx => {
+      const invoice = await scope(context.gymId, async tx => {
         await loadHousehold(tx, request.householdId);
         let description: string, amountCents: number, currency: c.Currency, taxIds: string[], chargeTypeId: string | undefined;
         if (request.source === 'charge_type') {
@@ -149,27 +170,13 @@ export function createPaymentService(options: PaymentOptions = {}) {
           taxIds = (await tx.select().from(chargeTypeTaxRates).where(eq(chargeTypeTaxRates.chargeTypeId, row.id))).map(t => t.taxRateId);
         } else { ({ description, amountCents, currency } = request); taxIds = request.taxRateIds; }
         if (currency !== gym.currency) paymentConflict('currency_mismatch', 'Currency does not match the gym');
-        let taxes = taxIds.length ? await tx.select().from(taxRates).where(inArray(taxRates.id, taxIds)).orderBy(asc(taxRates.id)).for('share') : [];
-        // A detach can commit while the rate locks wait. The charge type's share lock
-        // prevents new links, so the remaining links are a subset of the locked rates.
-        if (chargeTypeId && taxes.length) {
-          const remaining = (await tx.select().from(chargeTypeTaxRates)
-            .where(eq(chargeTypeTaxRates.chargeTypeId, chargeTypeId))).map(link => link.taxRateId);
-          taxIds = remaining; taxes = taxes.filter(rate => remaining.includes(rate.id));
-        }
-        if (taxes.length !== taxIds.length) notFound();
-        if (taxes.some(t => !t.active)) paymentConflict('tax_rate_inactive', 'Tax rate is inactive');
-        const calculated = calculateOneOffInvoice({ householdId: request.householdId, currency, dueOn: request.dueOn,
-          charges: [{ kind: 'charge', description, amountCents, currency, taxRates: taxes, ...(chargeTypeId ? { chargeTypeId } : {}) }] });
-        const { lineItems, ...invoice } = calculated;
-        // Issuing a new invoice is its initial state; all subsequent state writes belong to transitions.
-        const row = (await tx.insert(invoices).values({ ...invoice, id: uuidv7(), gymId: context.gymId,
-          number: await allocateInvoiceNumber(tx, context.gymId), status: 'open', createdAt: clock.now() }).returning())[0]!;
-        await tx.insert(invoiceLineItems).values(lineItems.map(line => ({ ...line, id: uuidv7(), gymId: context.gymId,
-          householdId: row.householdId, invoiceId: row.id, createdAt: clock.now() })));
-        await catalogAudit(tx, context, clock, 'billing.invoice.issued', 'invoice', row.id, undefined, presentInvoice(row));
-        return presentInvoice(row);
+        return issueOneOff(tx, context, clock, { householdId: request.householdId, dueOn: request.dueOn,
+          description, amountCents, currency, ...(chargeTypeId ? { chargeTypeId } : {}) }, taxIds,
+        chargeTypeId ? async () => (await tx.select().from(chargeTypeTaxRates)
+          .where(eq(chargeTypeTaxRates.chargeTypeId, chargeTypeId))).map(link => link.taxRateId) : undefined);
       });
+      if (invoice.amountCents === 0) return { ...invoice, ...(await transitions.settleZero(context, { invoiceId: invoice.id })).invoice };
+      return invoice;
     },
     async manualPayment(context: MutationContext, invoiceId: string, input: c.RecordManualPaymentRequest) {
       const request = c.recordManualPaymentRequestSchema.parse(input), paymentId = uuidv7();

@@ -8,5 +8,5 @@ export function configurePackSales(service: PackSalesService | undefined) { conf
 export function createPackSalesRoutes(service?: PackSalesService) {
   const fallback = createPackSalesService(), read = () => service ?? configured ?? fallback;
   return [billingRoute(c.billingContracts.sellClassPack, async (ctx, p, _q, body) =>
-    ({ data: await read().sell(billingMutation(ctx), p.packId!, c.sellClassPackRequestSchema.parse(body)) }))];
+    ({ data: await read().sell(billingMutation(ctx), p.packId!, body) }))];
 }

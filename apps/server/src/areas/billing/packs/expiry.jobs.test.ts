@@ -10,6 +10,7 @@ import { cronOccurrences } from '../../../infra/jobs/cron.js';
 import { jobs as billingJobs } from '../jobs.js';
 import { createCreditExpiryJobs, createCreditExpiryService } from './expiry.jobs.js';
 import { lockMemberCredits, usableLots } from './index.js';
+import { createCreditLedgerService } from './ledger.service.js';
 
 const db = useTestDatabase(), factory = createFactories(db), timezone = 'America/New_York';
 async function fixture(expiresAt: Date) {
@@ -23,6 +24,27 @@ async function fixture(expiresAt: Date) {
 }
 
 describe('daily credit expiry', () => {
+  it('does not revisit used-up or already-expired lots, including credits returned after expiry', async () => {
+    const clock = new TestClock('2028-03-13T04:07:00Z'), f = await fixture(new Date('2028-03-13T04:00:00Z'));
+    const used = await factory('members', f.gymId);
+    const opening = await factory('classCreditEntries', f.gymId, { memberId: used.id, credits: 2, expiresAt: f.lot.expiresAt });
+    await factory('classCreditEntries', f.gymId, { memberId: used.id, credits: -2, lotId: opening.id });
+    let transactions = 0;
+    const scope: typeof db.forGym = (gymId, work) => { transactions++; return db.forGym(gymId, work); };
+    const service = createCreditExpiryService({ scope, clock });
+    expect(await service.expire(f.gymId)).toBe(1);
+    transactions = 0;
+    expect(await service.expire(f.gymId)).toBe(0);
+    expect(transactions).toBe(1); // Candidates only: no member transaction or lock.
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, kind: 'reverse', credits: 1,
+      lotId: f.lot.id, attendanceId: uuidv7(), adjustmentId: null, reason: null });
+    transactions = 0;
+    expect(await service.expire(f.gymId)).toBe(0);
+    expect(transactions).toBe(1);
+    const read = await createCreditLedgerService({ scope: db.forGym, clock }).read(f.gymId, f.member.id, {});
+    expect(read.data.balance).toBe(0);
+    expect(read.data.lots).toEqual([]);
+  });
   it.each([['2028-03-12', 23], ['2028-11-05', 25]] as const)('expires at local midnight across %s DST (%s-hour day)', async (date, hours) => {
     const start = zonedInstant(date, '00:00', timezone, { gap: 'shift' })!;
     const expiresAt = zonedInstant(addDays(date, 1), '00:00', timezone, { gap: 'shift' })!;

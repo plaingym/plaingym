@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, or } from 'drizzle-orm';
-import { auditEvents, classCreditEntries, classPackSales, forGym, uuidv7 } from '@plaingym/db';
+import { classCreditEntries, classPackSales, forGym, uuidv7 } from '@plaingym/db';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
 import { clock as defaultClock } from '../../../core/clock.js';
 import { gymSettingsAccessor } from '../../settings/settings.js';
 import type { CatalogOptions } from '../catalog.js';
-import { audit, effect, lockInvoice, recorded } from '../transitions/store.js';
+import { audit, effect, hasCreditReversal, lockInvoice, recorded, systemContext as system } from '../transitions/store.js';
 import { markLeadWon } from '../../leads/stages.js';
 import { lockMemberCredits } from './ledger.js';
 
@@ -15,7 +15,6 @@ export const creditsNotGranted = 'billing.credits.not_granted';
 /** Invoice first, member second: every credit mutation serializes with the member's other ledger writes. */
 export function createPackCredits(options: CatalogOptions = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock, settings = options.settings ?? gymSettingsAccessor;
-  const system = (gymId: string) => ({ gymId, actor: { kind: 'system' as const } });
   return {
     async grant(gymId: string, invoiceId: string) {
       const gym = await settings.get(gymId);
@@ -26,9 +25,7 @@ export function createPackCredits(options: CatalogOptions = {}) {
         if (!sale) return;
         const member = await lockMemberCredits(tx, sale.memberId);
         // A failed full refund can reopen a paid invoice. It must not resurrect a skipped grant either.
-        const refundHistory = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
-          eq(auditEvents.targetId, invoice.id), eq(auditEvents.action, 'billing.invoice.refunded')));
-        if (refundHistory.some(row => (row.after as { status?: string } | null)?.status === 'refunded')) return;
+        if (await hasCreditReversal(tx, invoice.id)) return;
         if (!invoice.paidAt) throw new Error('Paid pack invoice has no payment time');
         // A member erased before the pack was paid can't use credits: staff are told, once, so they can refund the payer.
         if (member.anonymizedAt) {

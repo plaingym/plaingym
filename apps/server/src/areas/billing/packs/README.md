@@ -46,6 +46,10 @@ and expiry days in a sale. The one-off invoice uses the pack's name as its charg
 line and the existing pricing, tax snapshot and invoice numbering helpers. Invoice,
 lines, sale and their audits commit together. A zero-total invoice is then settled
 through `InvoiceTransitions.settleZero`, and the sale returns the paid invoice.
+The hourly transitions sweep recovers an interrupted settlement once the invoice
+is due. Sales and ordinary one-offs share `issueOneOff`, including tax locking,
+post-detach link checks, numbering and the issuance audit. Sale conflicts expose
+`pack_inactive`, `currency_mismatch` or `tax_rate_inactive` in `details.reason`.
 Staff collect positive-total invoices through existing saved-card, pay-link or
 manual-payment actions.
 
@@ -69,7 +73,7 @@ grants nothing: it audits `billing.credits.not_granted` once and queues a
 `credits_not_granted` staff notice naming the invoice and the credits, so staff can
 refund the payer.
 
-A transition to fully refunded records `reverse_credits` in the same transaction.
+A pack invoice's transition to fully refunded records `reverse_credits` in the same transaction.
 That effect locks invoice then member and reverses the lot's remaining balance
 (grant plus every entry on that lot). Used or expired credits stay consumed;
 zero remaining writes no ledger row. Partial refunds change no credits. A failed
@@ -81,15 +85,19 @@ still owed the pack. Credits follow the member after a household move;
 the invoice and sale keep the original payer. Unique grant/reversal indexes and
 transactional `billing.credits.granted` / `billing.credits.reversed` audits make
 effect replays and crashes before completion safe.
+The durable `reverse_credits` command suppresses late grants; refund audit
+snapshot fields are not used as billing state. Non-pack invoices skip credit grants
+and queue no credit reversal.
 
 ## Balance, draws and adjustments
 
 `packs/index.ts` exports the helpers used inside a caller's existing gym
 transaction. They never open a nested transaction or call external services:
 
-* `lockMemberCredits(tx, memberId)` locks the member row `FOR UPDATE` and returns
+* `lockMemberCredits(tx, memberId)` locks the member row `FOR NO KEY UPDATE` and returns
   it, or throws 404. Every credit writer takes this lock before reading the ledger.
   Callers that also lock an invoice or household take those locks before the member.
+  Foreign-key share locks for bookings and check-ins can proceed while it is held.
 * `usableLots(tx, memberId, now)` returns positive remainders in draw order:
   earliest expiry, then oldest creation time, then ID; never-expiring lots come
   last. A lot is unusable at its exact expiry instant, without waiting for a job.
@@ -120,7 +128,7 @@ members receive 404. These routes mount through the existing pack route export
 and use the default gym scope and clock, with injectable options for tests.
 
 Reads lock the member to return a consistent balance, positive lot remainders
-(including expired remainders, with their expiry), and a page of entries ordered
+(including expired remainders until their expiry entry is written), and a page of entries ordered
 by creation time and ID, newest first. `limit` defaults to 50 (maximum 100) and
 `offset` to zero; pagination includes the total entry count. The usable balance
 excludes expired lots. Grant, draw, refund and expiry entries carry the sale's
@@ -128,9 +136,12 @@ invoice number through their sale or lot; manual lots have no invoice number.
 
 Adjustment input is `{ memberId, credits, reason, adjustmentId }`: a nonzero
 integer from -100 to 100, a trimmed 1–500-character reason and a client-generated
-UUID. Reuse that UUID when retrying the same command. Under the member lock, a
+UUID. Reuse that UUID when retrying the same command. A transaction-scoped advisory
+lock on the gym and adjustment UUID comes before the member lock, so the same UUID
+cannot adjust two different members concurrently. Under these locks, a
 retry returns its existing entries without another write or audit. Entries in
-the adjustment response have stable ID order; its balance is the current balance.
+the adjustment response have stable ID order and the same invoice numbers as a
+ledger read; its balance is the current balance.
 Reusing a recorded UUID with a different member, count or reason returns 409
 with `error.details.reason: ['adjustment_id_reused']`. Positive adjustments open
 never-expiring lots; negative adjustments use `drawCredits` and return 409 with
@@ -149,7 +160,8 @@ jobs barrel. The existing per-gym scheduler runs it at 00:07 in each gym's
 timezone, including across DST changes, in the gym's batch lane so its other
 jobs don't wait behind it. It uses the job context's clock and
 needs no additional runtime configuration. `createCreditExpiryService().expire(gymId)`
-scans candidate members in bounded pages and takes a separate short transaction
+scans candidate members in bounded pages, selecting only past-expiry openings
+with a positive remainder and no expiry entry. It takes a separate short transaction
 and member lock for each. It inserts an `expire` row for each expired lot's
 remaining credits and a `billing.credits.expired` system audit. The unique
 one-expire-per-lot index makes replays safe. A returned credit retains its lot's

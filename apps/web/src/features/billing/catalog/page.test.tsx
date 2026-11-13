@@ -381,7 +381,7 @@ describe('catalog and member billing screens', () => {
     expect(screen.getByRole('note').textContent).toContain('Inactive. Charge types and plans still carrying it: 1.');
     fireEvent.click(screen.getByRole('button', { name: 'Remove Sales tax from them' }));
     const panel = await screen.findByRole('region', { name: 'Remove Sales tax from these items?' });
-    expect(panel.textContent).toContain('This tax rate is inactive. Remove it from the charge types and plans that still carry it.');
+    expect(panel.textContent).toContain('These catalog items still carry this inactive tax rate. Removing it clears it from all of them.');
     expect(panel.textContent).not.toContain('Archiving');
     expect(screen.queryByRole('region', { name: 'Archive Sales tax?' })).toBeNull();
     fireEvent.click(within(panel).getByRole('button', { name: 'Remove from items: 3' }));

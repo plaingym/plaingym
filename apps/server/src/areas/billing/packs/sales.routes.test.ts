@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 // eslint-disable-next-line database/system-tables -- Real lock probes make the concurrent move/erasure test deterministic.
 import { eq, sql } from 'drizzle-orm';
-import { auditEvents, classCreditEntries, classPackSales, classPacks, households, invoiceLineItems, invoices, members, payments, uuidv7 } from '@plaingym/db';
+import { auditEvents, classCreditEntries, classPackSales, classPacks, households, invoiceLineItems, invoices, members, payments, taxRates, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { billingContracts } from '@plaingym/shared/contracts';
@@ -75,13 +75,25 @@ describe('pack sale route and transaction', () => {
     for (const extra of [{ householdId: uuidv7() }, { invoiceId: uuidv7() }, { amountCents: 1 }, { credits: 100 }])
       expect((await request(app, f, { ...input(f), ...extra })).status).toBe(400);
     await db.forGym(f.gymId, tx => tx.update(classPacks).set({ active: false }).where(eq(classPacks.id, f.pack.id)));
-    expect((await request(app, f)).status).toBe(409);
+    const archived = await request(app, f);
+    expect(archived.status).toBe(409);
+    expect(await archived.json()).toMatchObject({ error: { details: { reason: ['pack_inactive'] } } });
     await db.forGym(f.gymId, async tx => {
       await tx.update(classPacks).set({ active: true }).where(eq(classPacks.id, f.pack.id));
       await tx.update(members).set({ anonymizedAt: clock.now() }).where(eq(members.id, f.member.id));
     });
     expect((await request(app, f)).status).toBe(404);
     expect(await db.forGym(f.gymId, tx => tx.select().from(invoices))).toHaveLength(0);
+  });
+  it('reports stable currency and inactive-tax conflicts without issuing an invoice', async () => {
+    const f = await fixture();
+    const mismatched = createPackSalesService({ scope: db.forGym, clock,
+      settings: { ...createGymSettingsAccessor({ scope: db.forGym }), get: async gymId =>
+        ({ ...await createGymSettingsAccessor({ scope: db.forGym }).get(gymId), currency: 'CAD' }) } });
+    await expect(mismatched.sell(f.context, f.pack.id, input(f))).rejects.toMatchObject({ details: { reason: ['currency_mismatch'] } });
+    await db.forGym(f.gymId, tx => tx.update(taxRates).set({ active: false }).where(eq(taxRates.id, f.tax.id)));
+    await expect(f.service.sell(f.context, f.pack.id, input(f))).rejects.toMatchObject({ details: { reason: ['tax_rate_inactive'] } });
+    expect(await db.forGym(f.gymId, tx => tx.select().from(invoices))).toEqual([]);
   });
   it('snapshots taxed invoice lines and sale terms together, audits them, and grants no credits at issuance', async () => {
     const f = await fixture(), invoice = await f.service.sell(f.context, f.pack.id, input(f));

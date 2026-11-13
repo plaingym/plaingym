@@ -180,7 +180,8 @@ source of truth; Stripe is the processor. In outline:
   `memberships.README.md`): plans, charge types, tax rates, memberships; the
   [class pack catalog](../apps/server/src/areas/billing/packs/README.md) manages
   revision-checked pack prices and tax links. Staff sell packs as one-off invoices;
-  zero-total sales settle immediately, payment grants credits and a full refund
+  zero-total sales settle immediately (the hourly sweep recovers interrupted
+  settlements when due), payment grants credits and a full refund
   reverses unused credits. Live check-ins spend one credit under the member lock
   unless an active or trial membership covers the visit; imports never spend.
   All staff may undo a live attendance through `attendance.manage`, deleting the

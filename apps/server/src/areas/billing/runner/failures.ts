@@ -46,6 +46,9 @@ export async function openChargeFailures(tx: Transaction, now: Date, only?: read
     only ? inArray(auditEvents.targetId, [...only]) : undefined,
     notInArray(auditEvents.targetId, tx.select({ id: auditEvents.targetId }).from(auditEvents).where(eq(auditEvents.action, dismissed)))))
     .orderBy(asc(auditEvents.occurredAt), asc(auditEvents.id));
+  return failuresFromReports(tx, reports);
+}
+async function failuresFromReports(tx: Transaction, reports: (typeof auditEvents.$inferSelect)[]): Promise<ChargeFailureReport[]> {
   if (!reports.length) return [];
   const ids = [...new Set(reports.flatMap(row => (row.after as { failures: ReportedFailure[] }).failures.map(failure => failure.invoiceId)))];
   const statuses = new Map((await tx.select({ id: invoices.id, status: invoices.status }).from(invoices)
@@ -74,10 +77,13 @@ export async function dismissChargeFailures(tx: Transaction, context: MutationCo
   if (!named.length) return { dismissed: [] };
   await lockGym(tx, 'chargeFailures', context.gymId);
   const now = clock.now();
-  const known = await tx.select({ id: auditEvents.targetId }).from(auditEvents).where(and(eq(auditEvents.action, reported),
-    gte(auditEvents.occurredAt, windowStart(now)), inArray(auditEvents.targetId, named)));
-  if (new Set(known.map(row => row.id)).size !== named.length) notFound();
-  const reports = await openChargeFailures(tx, now, named);
+  const known = await tx.select().from(auditEvents).where(and(eq(auditEvents.action, reported),
+    gte(auditEvents.occurredAt, windowStart(now)), inArray(auditEvents.targetId, named)))
+    .orderBy(asc(auditEvents.occurredAt), asc(auditEvents.id));
+  if (new Set(known.map(row => row.targetId)).size !== named.length) notFound();
+  const closed = new Set((await tx.select({ id: auditEvents.targetId }).from(auditEvents)
+    .where(and(eq(auditEvents.action, dismissed), inArray(auditEvents.targetId, named)))).map(row => row.id));
+  const reports = await failuresFromReports(tx, known.filter(row => !closed.has(row.targetId)));
   for (const report of reports) await audit(tx, context, clock, dismissed, 'charge_run', report.runId,
     { invoiceIds: report.failures.map(failure => failure.invoiceId) });
   return { dismissed: [...new Set(reports.flatMap(report => report.failures.map(failure => failure.invoiceId)))] };

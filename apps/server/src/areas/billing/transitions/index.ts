@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, desc, eq, or } from 'drizzle-orm';
-import { forGym, invoices, paymentAttempts, payments, refunds, uuidv7, type Transaction } from '@plaingym/db';
+import { classPackSales, forGym, invoices, paymentAttempts, payments, refunds, uuidv7, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { idSchema, moneySchema, refundReleased } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../../core/clock.js';
@@ -218,7 +218,9 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
           await tx.update(invoices).set({ status: next.status }).where(eq(invoices.id, invoice.id));
           await audit(tx, context, clock, reversed ? 'billing.invoice.refund_reversed' : 'billing.invoice.refunded', 'invoice',
             invoice.id, snapshot(next), snapshot(invoice));
-          if (next.status === 'refunded') await effect(tx, context, clock, { kind: 'reverse_credits', invoiceId: invoice.id });
+          if (next.status === 'refunded' && (await tx.select({ id: classPackSales.id }).from(classPackSales)
+            .where(eq(classPackSales.invoiceId, invoice.id)).limit(1)).length)
+            await effect(tx, context, clock, { kind: 'reverse_credits', invoiceId: invoice.id });
         }
         return result('applied', next);
       });

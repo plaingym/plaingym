@@ -154,6 +154,21 @@ describe('charge failure reports on the charge-run tile', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(healthCalls()).toBe(2);
   });
+  it('refreshes the captured reports on confirmation and retry when one ages out of the list', async () => {
+    let open = reports(); serve(() => open);
+    POST.mockResolvedValueOnce({ response: new Response(null, { status: 500 }), data: undefined } as never)
+      .mockImplementation(async () => { open = []; return dismissed(uuid(20)); });
+    start();
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss all' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Dismiss all' }));
+    await within(dialog).findByRole('alert');
+    open = reports().slice(1);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Dismiss all' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(POST.mock.calls.map(call => (call[1] as { body: { runIds: string[] } }).body.runIds))
+      .toEqual([[uuid(1), uuid(2)], [uuid(2)]]);
+  });
   describe('with more reports than one request may name', () => {
     const many = () => Array.from({ length: maxDismissedChargeRuns * 2 + 1 }, (_, index) => report(index + 1, '2026-10-24', [{ number: index + 1, cause: 'unexpected' }]));
     const runIdsOf = (call: unknown[]) => (call[1] as { body: { runIds: string[] } }).body.runIds;

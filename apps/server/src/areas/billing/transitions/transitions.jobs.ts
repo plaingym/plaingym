@@ -8,10 +8,12 @@ let configured: TransitionEffects | undefined;
 export function configureTransitionEffects(effects: TransitionEffects) { configured = effects; }
 export function createTransitionJobs(read: () => TransitionEffects | undefined = () => configured): readonly JobRegistration[] {
   return [
-    // Transitions publish their effects after commit; this sweep only recovers a publish lost to a crash or
-    // queue outage. Hourly, since every scheduled occurrence is a job row for every gym.
+    // Recover interrupted zero-value issuance and effect publication after a crash or queue outage.
     { id: 'billing.transitions.publish', cron: '11 * * * *', async handler(_payload, context) {
-      await read()?.publish(context.gymId);
+      const service = read();
+      // A failed settlement still fails the job, but never stops the effect recovery below.
+      try { await service?.settleZeroInvoices(context.gymId); }
+      finally { await service?.publish(context.gymId); }
     } },
     { id: effectJob, async handler(payload, context) {
       const service = read();

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, gt, isNull, lte } from 'drizzle-orm';
 import { classCreditEntries, forGym, uuidv7 } from '@plaingym/db';
 import { clock as defaultClock } from '../../../core/clock.js';
 import type { JobRegistration } from '../../../core/registry.js';
 import type { CatalogOptions } from '../catalog.js';
 import { audit } from '../transitions/store.js';
 import { lockMemberCredits, remainingLots } from './ledger.js';
+import { expiryCandidates } from './ledger.store.js';
 
 export function createCreditExpiryService(options: CatalogOptions = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
@@ -15,16 +15,13 @@ export function createCreditExpiryService(options: CatalogOptions = {}) {
       const cutoff = clock.now();
       let expired = 0;
       for (;;) {
-        const candidates = await scope(gymId, tx => tx.selectDistinct({ memberId: classCreditEntries.memberId })
-          .from(classCreditEntries).where(and(isNull(classCreditEntries.lotId), lte(classCreditEntries.expiresAt, cutoff),
-            cursor ? gt(classCreditEntries.memberId, cursor) : undefined))
-          .orderBy(asc(classCreditEntries.memberId)).limit(100));
+        const candidates = await scope(gymId, tx => expiryCandidates(tx, cutoff, cursor));
         if (!candidates.length) return expired;
         for (const { memberId } of candidates) {
           expired += await scope(gymId, async tx => {
             await lockMemberCredits(tx, memberId);
             const now = clock.now();
-            const lots = (await remainingLots(tx, memberId)).filter(lot => lot.expiresAt !== null && lot.expiresAt <= now);
+            const lots = (await remainingLots(tx, memberId)).filter(lot => lot.remaining > 0 && !lot.expired && lot.expiresAt !== null && lot.expiresAt <= now);
             let written = 0;
             for (const lot of lots) {
               const [entry] = await tx.insert(classCreditEntries).values({

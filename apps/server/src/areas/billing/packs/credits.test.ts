@@ -13,6 +13,7 @@ import { createInvoiceTransitions } from '../transitions/index.js';
 import { createTransitionEffects } from '../transitions/effects.js';
 import { applyChargeOutcome } from '../transitions/outcomes.js';
 import { effectCompleted, effectCreated, type TransitionEffect } from '../transitions/store.js';
+import { createTransitionJobs } from '../transitions/transitions.jobs.js';
 import { createPackCredits } from './credits.js';
 import { isPackHolder, returnCredit } from './ledger.js';
 import { createPackSalesService } from './sales.js';
@@ -45,6 +46,63 @@ async function fixture(amountCents = 10000, expiryDays: number | null = 3, paidA
 }
 
 describe('class pack invoice effects', () => {
+  it('suppresses a delayed grant from its durable reversal command without a refund audit snapshot', async () => {
+    const f = await fixture();
+    await f.transitions.manualPayment(f.context, f.manual);
+    await factory('auditEvents', f.gymId, { action: effectCreated,
+      after: { kind: 'reverse_credits', invoiceId: f.invoice.id } });
+    await f.run('activate_memberships');
+    expect(await f.ledger()).toEqual([]);
+  });
+
+  it('skips credit grant work and full-refund effects for an invoice without a pack sale', async () => {
+    const f = await fixture(), invoice = await factory('invoices', f.gymId,
+      { householdId: f.member.householdId, amountCents: f.manual.amountCents, currency: 'CAD', status: 'open', number: 2 });
+    const paymentId = uuidv7();
+    await f.transitions.manualPayment(f.context, { ...f.manual, invoiceId: invoice.id, paymentId });
+    const settings = vi.spyOn(f.options.settings, 'get');
+    settings.mockClear();
+    await f.run('activate_memberships');
+    expect(settings).not.toHaveBeenCalled();
+    await f.transitions.refund(f.context, { ...f.refund(), invoiceId: invoice.id, paymentId });
+    expect(await f.work('reverse_credits')).toEqual([]);
+    expect(await f.ledger()).toEqual([]);
+  });
+
+  it('recovers an interrupted zero-price sale through the hourly job and grants once', async () => {
+    const f = await fixture(0), settleZero = vi.fn(f.transitions.settleZero).mockRejectedValueOnce(new Error('lost connection'));
+    const sales = createPackSalesService({ ...f.options, transitions: { settleZero } });
+    await expect(sales.sell(f.context, f.pack.id, { memberId: f.member.id, dueOn: '2028-03-10' })).rejects.toThrow('lost connection');
+    const invoiceId = settleZero.mock.calls[0]![1].invoiceId;
+    expect((await db.forGym(f.gymId, tx => tx.select().from(invoices).where(eq(invoices.id, invoiceId))))[0]!.status).toBe('open');
+    const job = createTransitionJobs(() => f.effects).find(job => job.id === 'billing.transitions.publish')!;
+    await job.handler({}, f.job);
+    await f.run('activate_memberships');
+    await job.handler({}, f.job);
+    await f.run('activate_memberships');
+    expect((await db.forGym(f.gymId, tx => tx.select().from(invoices).where(eq(invoices.id, invoiceId))))[0]!.status).toBe('paid');
+    const [sale] = await db.forGym(f.gymId, tx => tx.select().from(classPackSales).where(eq(classPackSales.invoiceId, invoiceId)));
+    expect((await f.ledger()).filter(row => row.saleId === sale!.id)).toMatchObject([{ kind: 'grant', credits: f.pack.credits }]);
+  });
+  it('leaves held zero one-offs for staff and still settles and publishes past one that fails', async () => {
+    const f = await fixture(), zero = { householdId: f.member.householdId, amountCents: 0, currency: 'CAD', status: 'open', dueOn: '2028-03-10' };
+    const held = await factory('invoices', f.gymId, { ...zero, number: 2, needsReview: true });
+    const failing = await factory('invoices', f.gymId, { ...zero, number: 3 });
+    const due = await factory('invoices', f.gymId, { ...zero, number: 4 });
+    const settleZero = vi.fn(f.transitions.settleZero);
+    settleZero.mockImplementation(async (context, request) => {
+      if (request.invoiceId === failing.id) throw new Error('lost connection');
+      return f.transitions.settleZero(context, request);
+    });
+    const effects = createTransitionEffects({ ...f.effectOptions, transitions: { ...f.transitions, settleZero } });
+    const publish = vi.spyOn(effects, 'publish');
+    const job = createTransitionJobs(() => effects).find(job => job.id === 'billing.transitions.publish')!;
+    await expect(job.handler({}, f.job)).rejects.toThrow('lost connection');
+    expect(publish).toHaveBeenCalledWith(f.gymId);
+    const status = async (id: string) => (await db.forGym(f.gymId, tx => tx.select().from(invoices).where(eq(invoices.id, id))))[0]!.status;
+    expect([await status(held.id), await status(failing.id), await status(due.id)]).toEqual(['open', 'open', 'paid']);
+    expect(settleZero.mock.calls.map(call => call[1].invoiceId)).not.toContain(held.id);
+  });
   it.each(['same event', 'webhook after runner', 'runner after webhook'])('grants once for card success: %s', async replay => {
     const f = await fixture(), attemptId = uuidv7();
     const intent = await f.provider.createCharge({ amount: f.invoice.amountCents, currency: 'cad', customerId: 'cus_test',

@@ -9,8 +9,12 @@ contracts. The invoice navigation and member profile tab are registered by
 
 One-off charges use `calculateOneOffInvoice`, including immutable tax snapshots,
 and allocate a gym-local invoice number. They never join a household billing
-cycle. Only `manualPayment`, `refund`, and `applyChargeOutcome` change an issued
-invoice's state. A failed or action-required one-off stays open without dunning.
+cycle. Invoice transitions change an issued invoice's state. Zero-total one-offs
+settle through `settleZero` immediately after issuance. The hourly transitions
+sweep recovers a failed settlement once the invoice is due, including pack sales.
+A failed or action-required positive one-off stays open without dunning.
+`issueOneOff` shares tax locks, detach rechecks, invoice insertion and its audit
+between ordinary one-offs and pack sales.
 
 Card collection calls the injected runner with `{ mode: 'staff', context }`.
 The runner owns reservations, provider calls and reconciliation; a staff click

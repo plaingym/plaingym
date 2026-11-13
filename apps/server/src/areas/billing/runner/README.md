@@ -272,6 +272,8 @@ older than 90 days drops off, as the failed jobs that listed these before did. W
 report lists an invoice, the charge-run health tile is an error naming the invoices
 (`areas/health/charge-run.README.md`). Nothing fails on purpose, so the gym's
 `failed_jobs` check stays clear; the continuation still collects what is left.
+Dismiss all refreshes the list before each confirmation or retry and only sends
+captured runs that are still listed, so a report aging out cannot block the rest.
 
 The daily run is a batch job: its registration in `runner.jobs.ts` names the batch
 lane (`infra/jobs/README.md`), so the run holds only that lane: webhook dispatch

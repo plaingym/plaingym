@@ -16,7 +16,7 @@ export function ArchiveConfirmation({ rate, usage, busy, confirm, cancel }: {
   const status = (active: boolean) => active ? '' : ' (' + text('inactive') + ')';
   return <section aria-labelledby="archive-tax-title" className="min-w-0 space-y-3 rounded-lg border border-destructive p-4">
     <h2 id="archive-tax-title" className="text-lg font-semibold">{say(rate.active ? 'archiveTitle' : 'detachTitle', { name: rate.name })}</h2>
-    <p>{usage.packs.length ? t('billing/packs:' + (rate.active ? 'archiveHelp' : 'detachHelp')) : text(rate.active ? 'archiveHelp' : 'detachHelp')}</p>
+    <p>{text(rate.active ? 'archiveHelp' : 'detachHelp')}</p>
     {usage.packs.length > 0 && <div><h3 className="font-medium">{t('billing/packs:title')}</h3>
       <ul className="list-disc pl-5">{usage.packs.map(item => <li key={item.id}>{item.name}{status(item.active)}</li>)}</ul></div>}
     {usage.chargeTypes.length > 0 && <div><h3 className="font-medium">{text('charges')}</h3>

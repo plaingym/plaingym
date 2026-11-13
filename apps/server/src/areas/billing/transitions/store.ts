@@ -10,6 +10,7 @@ export const effectCreated = 'billing.transition.effect.created';
 export const effectPublished = 'billing.transition.effect.published';
 export const effectCompleted = 'billing.transition.effect.completed';
 export const paymentRecorded = 'billing.payment.recorded';
+export const systemContext = (gymId: string): MutationContext => ({ gymId, actor: { kind: 'system' } });
 export type InvoiceRow = typeof invoices.$inferSelect;
 export interface TransitionEffect {
   kind: 'receipt' | 'activate_memberships' | 'reverse_credits' | 'dunning' | 'retry' | 'refund_duplicate' | 'staff_notice';
@@ -60,4 +61,10 @@ export async function accepted(tx: Transaction, paymentId: string): Promise<bool
 export async function effect(tx: Transaction, context: MutationContext, clock: Clock, work: TransitionEffect) {
   // TODO: replace the append-only audit outbox with a dedicated effect table.
   await audit(tx, context, clock, effectCreated, 'invoice_effect', uuidv7(), work);
+}
+/** Durable reversal command, independent of the human-readable refund audit snapshot. */
+export async function hasCreditReversal(tx: Transaction, invoiceId: string) {
+  const work: TransitionEffect = { kind: 'reverse_credits', invoiceId };
+  return (await tx.select({ id: auditEvents.id }).from(auditEvents)
+    .where(and(eq(auditEvents.action, effectCreated), eq(auditEvents.after, work))).limit(1)).length > 0;
 }

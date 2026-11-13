@@ -881,6 +881,8 @@ describe('invoice transitions with real PostgreSQL', () => {
 
 invoiceTransitionsContract('invoice transitions with real PostgreSQL', async () => {
   const f = await fixture();
+  // The shared contract exercises credit reversal, so its invoice needs the sale prerequisite.
+  await factory('classPackSales', f.gymId, { memberId: f.member.id, householdId: f.household.id, invoiceId: f.invoice.id });
   return { transitions: f.transitions, context: f.context, success: f.success, manual: f.manual,
     async read() {
       const rows = await f.read(), attempt = rows.attempts.find(row => row.id === f.attempt.id)!;

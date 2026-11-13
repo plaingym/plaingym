@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, gte, notInArray } from 'drizzle-orm';
-import { auditEvents, classCreditEntries, classPackSales, forGym, invoiceLineItems, paymentAttempts, payments, refunds } from '@plaingym/db';
+import { and, asc, eq, gte, inArray, isNull, lte, notInArray } from 'drizzle-orm';
+import { auditEvents, classCreditEntries, classPackSales, forGym, invoiceLineItems, invoices, paymentAttempts, payments, refunds } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { localDate } from '@plaingym/shared/time';
 import { clock as defaultClock } from '../../../core/clock.js';
@@ -14,7 +14,7 @@ import type { TransitionNotifications } from './notifications.js';
 import { retryAt } from '../runner/eligibility.js';
 import { createPackCredits } from '../packs/credits.js';
 import { pastRefundWindow, sameRefund, settleLapsed } from './lapsed-refunds.js';
-import { abandonedAttempt, audit, effectCompleted, effectCreated, effectPublished, lockInvoice, recorded, snapshot, terminal,
+import { abandonedAttempt, audit, effectCompleted, effectCreated, effectPublished, lockInvoice, recorded, snapshot, systemContext as system, terminal,
   type TransitionEffect } from './store.js';
 
 export const effectJob = 'billing.transitions.effect';
@@ -40,7 +40,23 @@ export interface TransitionEffectOptions {
 export function createTransitionEffects(options: TransitionEffectOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const credits = createPackCredits({ scope, clock, settings: options.settings });
-  const system = (gymId: string) => ({ gymId, actor: { kind: 'system' as const } });
+  async function settleZeroInvoices(gymId: string) {
+    const gym = await options.settings.get(gymId);
+    const rows = await scope(gymId, tx => tx.select({ id: invoices.id }).from(invoices).where(and(
+      eq(invoices.kind, 'one_off'), eq(invoices.amountCents, 0), inArray(invoices.status, ['open', 'past_due']),
+      lte(invoices.dueOn, localDate(clock.now(), gym.timezone)), isNull(invoices.checkoutSessionId),
+      // A held invoice waits for staff, as it does in the charge runner.
+      eq(invoices.needsReview, false)))
+      .orderBy(asc(invoices.dueOn), asc(invoices.id)).limit(100));
+    // One invoice that can't settle (voided meanwhile, say) doesn't hold up the rest; the job still fails after them.
+    let failure: unknown;
+    for (const row of rows) {
+      try { await options.transitions.settleZero(system(gymId), { invoiceId: row.id }); }
+      catch (error) { failure ??= error; }
+    }
+    if (failure !== undefined) throw failure;
+    return rows.length;
+  }
   async function publish(gymId: string) {
     const gym = await options.settings.get(gymId);
     // Effects are published right after their transition commits, or by the hourly sweep. Searching a bounded
@@ -88,7 +104,7 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
       const lines = work.kind === 'activate_memberships' ? await tx.select({ membershipId: invoiceLineItems.membershipId })
         .from(invoiceLineItems).where(and(eq(invoiceLineItems.invoiceId, invoice.id), eq(invoiceLineItems.kind, 'membership'))) : [];
       // A class pack sale's credits: those not granted (an erased member), or those a full refund took back before it failed.
-      const [sale] = work.notice === 'credits_not_granted' || work.notice === 'refund_failed'
+      const [sale] = work.kind === 'activate_memberships' || work.notice === 'credits_not_granted' || work.notice === 'refund_failed'
         ? await tx.select().from(classPackSales).where(eq(classPackSales.invoiceId, invoice.id)) : [];
       const reversedCredits = sale && work.notice === 'refund_failed'
         ? (await tx.select({ credits: classCreditEntries.credits }).from(classCreditEntries).where(and(
@@ -107,7 +123,7 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
         if (membership.status === 'pending' || membership.status === 'trial')
           await options.memberships.activate(system(gymId), { membershipId, revision: membership.revision });
       }
-      await credits.grant(gymId, invoice.id);
+      if (sale) await credits.grant(gymId, invoice.id);
       await options.afterInvoicePaid?.(gymId, invoice.id);
     } else if (work.kind === 'reverse_credits') {
       await credits.reverse(gymId, invoice.id);
@@ -194,6 +210,6 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
         effectCompleted, 'invoice_effect', effectId, { invoiceId: invoice.id });
     });
   }
-  return { publish, run };
+  return { publish, run, settleZeroInvoices };
 }
 export type TransitionEffects = ReturnType<typeof createTransitionEffects>;

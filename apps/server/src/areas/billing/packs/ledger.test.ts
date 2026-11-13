@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { auditEvents, classCreditEntries, uuidv7 } from '@plaingym/db';
+import { auditEvents, classCreditEntries, members, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../../core/clock.js';
@@ -22,6 +22,48 @@ async function fixture() {
 }
 
 describe('member credit lock, lots and adjustments', () => {
+  it('allows member foreign-key share locks while credit readers or writers hold their lock', async () => {
+    const f = await fixture();
+    let unlock!: () => void, ready!: () => void;
+    const released = new Promise<void>(resolve => { unlock = resolve; });
+    const locked = new Promise<void>(resolve => { ready = resolve; });
+    const holder = db.forGym(f.gymId, async tx => { await lockMemberCredits(tx, f.member.id); ready(); await released; });
+    await locked;
+    try {
+      await expect(db.forGym(f.gymId, tx => tx.select({ id: members.id }).from(members)
+        .where(eq(members.id, f.member.id)).for('key share', { noWait: true }))).resolves.toEqual([{ id: f.member.id }]);
+    } finally { unlock(); await holder; }
+  });
+  it.each([2, -2])('serializes reuse of an adjustment ID across two members (%s credits)', async credits => {
+    const f = await fixture(), other = await factory('members', f.gymId), adjustmentId = uuidv7();
+    if (credits < 0) {
+      await f.adjust(3);
+      await f.service.adjust(f.context, { memberId: other.id, credits: 3, adjustmentId: uuidv7(), reason: 'Opening balance' });
+    }
+    const outcomes = await Promise.allSettled([f.member.id, other.id].map(memberId =>
+      f.service.adjust(f.context, { memberId, credits, adjustmentId, reason: 'Corrected class count' })));
+    expect(outcomes.filter(row => row.status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes.find(row => row.status === 'rejected')).toMatchObject({ status: 'rejected',
+      reason: { code: 'conflict', details: { reason: ['adjustment_id_reused'] } } });
+    const rows = await db.forGym(f.gymId, tx => tx.select().from(classCreditEntries).where(eq(classCreditEntries.adjustmentId, adjustmentId)));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.credits).toBe(credits);
+  });
+
+  it('returns the sale invoice number on adjustment draws and their replay, matching the ledger page', async () => {
+    const f = await fixture(), invoice = await factory('invoices', f.gymId,
+      { householdId: f.member.householdId, status: 'paid', number: 73, paidAt: f.clock.now() });
+    const sale = await factory('classPackSales', f.gymId,
+      { memberId: f.member.id, householdId: f.member.householdId, invoiceId: invoice.id });
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, kind: 'grant', credits: 3,
+      saleId: sale.id, adjustmentId: null, reason: null });
+    const id = uuidv7(), adjusted = await f.adjust(-1, id);
+    expect(await f.adjust(-1, id)).toEqual(adjusted);
+    const read = await f.service.read(f.gymId, f.member.id, {});
+    const draw = read.data.entries.find(row => row.id === adjusted.data.entries[0]!.id)!;
+    expect(draw.invoiceNumber).toBe(73);
+    expect(adjusted.data.entries).toEqual([draw]);
+  });
   it('opens a never-expiring lot and audits its redactable reason once on replay', async () => {
     const f = await fixture(), adjustmentId = uuidv7();
     const responses = await Promise.all([f.adjust(3, adjustmentId), f.adjust(3, adjustmentId)]);

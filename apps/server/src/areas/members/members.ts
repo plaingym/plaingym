@@ -10,7 +10,7 @@ import { forgetErasedAddressDigests } from '../announcements/erasure.js';
 import { clock as defaultClock } from '../../core/clock.js';
 import { hashHouseholdPin, type HouseholdPinSecret } from './pin.js';
 import { withJobTransaction, type Jobs } from '../../infra/jobs/index.js';
-import { redactCustomerJob, releaseErasedFilesJob } from './erasure-redaction.js';
+import { eraseCreditReasons, redactCustomerJob, releaseErasedFilesJob } from './erasure-redaction.js';
 import { detachJob } from '../billing/payments.mutations.js';
 
 /** The queue and gym timezone an erasure's cleanup jobs are inserted with. */
@@ -113,8 +113,7 @@ export function createMembersService(options: MembersOptions = {}) {
           checkinCodeHash: null, anonymizedAt: now, revision: guard.next })
           .where(and(eq(members.id, id), guard.matches, isNull(members.anonymizedAt))).returning(memberFields));
         await tx.delete(memberTagLinks).where(eq(memberTagLinks.memberId, id));
-        await tx.update(classCreditEntries).set({ reason: '' })
-          .where(and(eq(classCreditEntries.memberId, id), eq(classCreditEntries.kind, 'adjust')));
+        await eraseCreditReasons(tx, id);
         // Keep the funnel history, but remove free text that can identify the person.
         const erasedLeads = await tx.update(leads).set({ lostReason: null })
           .where(eq(leads.memberId, id)).returning({ id: leads.id });

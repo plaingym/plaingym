@@ -9,8 +9,8 @@ import type { MutationContext } from '../../core/interfaces/common.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import { clock as defaultClock } from '../../core/clock.js';
 import { gymSettingsAccessor } from '../settings/settings.js';
-import packMessages from '../../../../../locales/en/billing/packs.json' with { type: 'json' };
-const packText = createTranslator({ 'billing/packs': packMessages });
+import messages from '../../../../../locales/en/billing/catalog.json' with { type: 'json' };
+const text = createTranslator({ 'billing/catalog': messages });
 
 /**
  * An update's new amounts, and every amount when it changes the currency, must sit on the step of the currency they
@@ -28,8 +28,8 @@ function checkPriceStep(before: Prices, changes: { [K in keyof Prices]?: Prices[
   if (!result.success) throw new AppError('invalid_request', result.error.issues[0]!.message);
 }
 
-export function catalogMissing<T>(row: T | undefined): T {
-  if (!row) throw new AppError('not_found', 'Resource not found');
+export function catalogMissing<T>(row: T | undefined, message = 'Resource not found'): T {
+  if (!row) throw new AppError('not_found', message);
   return row;
 }
 export function catalogAudit(tx: Transaction, context: MutationContext, clock: Clock,
@@ -44,30 +44,36 @@ const presentTax = (row: typeof taxRates.$inferSelect) => c.taxRateSchema.parse(
 const presentPlan = (row: typeof plans.$inferSelect, taxRateIds: readonly string[]) => c.planSchema.parse({ ...fields(row), taxRateIds });
 const presentCharge = (row: typeof chargeTypes.$inferSelect, taxRateIds: readonly string[]) => c.chargeTypeSchema.parse({ ...fields(row), taxRateIds });
 export interface CatalogOptions { scope?: typeof forGym; clock?: Clock; settings?: GymSettingsAccessor }
+export function checkCatalogCurrency(value: string, gymCurrency: string, message = 'Currency does not match the gym') {
+  if (value !== gymCurrency) throw new AppError('conflict', message);
+}
+/** Lock rates before reading links, so a confirmed detach cannot be reattached by a waiting edit. */
+export async function validateTaxes(tx: Transaction, ids: readonly string[], existing: () => Promise<readonly string[]> = async () => [],
+  errors = { missing: 'Tax rate not found', inactive: 'Tax rate is inactive' }) {
+  const rows = ids.length ? await tx.select({ id: taxRates.id, active: taxRates.active }).from(taxRates)
+    .where(inArray(taxRates.id, [...ids])).orderBy(asc(taxRates.id)).for('share') : [];
+  if (rows.length !== ids.length) throw new AppError('not_found', errors.missing);
+  const linked = await existing();
+  if (rows.some(row => !row.active && !linked.includes(row.id))) throw new AppError('conflict', errors.inactive);
+  return linked;
+}
+/** A common projection for catalog pages and single-item reads. */
+export async function catalogTaxLinks(tx: Transaction, kind: 'plan' | 'charge_type' | 'pack', ids: readonly string[]) {
+  if (!ids.length) return [];
+  const table = kind === 'plan' ? planTaxRates : kind === 'charge_type' ? chargeTypeTaxRates : classPackTaxRates;
+  const itemId = kind === 'plan' ? planTaxRates.planId : kind === 'charge_type' ? chargeTypeTaxRates.chargeTypeId : classPackTaxRates.packId;
+  return tx.select({ itemId, taxRateId: table.taxRateId }).from(table)
+    .where(inArray(itemId, [...ids])).orderBy(asc(table.taxRateId));
+}
 /** Links and catalog edits commit with their audit, under the catalog row lock. */
 export function createCatalogService(options: CatalogOptions = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const settings = options.settings ?? gymSettingsAccessor;
   async function currency(gymId: string, value: string) {
-    if ((await settings.get(gymId)).currency !== value) throw new AppError('conflict', 'Currency does not match the gym');
+    checkCatalogCurrency(value, (await settings.get(gymId)).currency);
   }
-  /**
-   * Locks the rates, then reads the record's links: an inactive rate may stay only where it is still linked.
-   * Reading the links after the lock sees a detach that committed while this edit waited for it.
-   */
-  async function validateTaxes(tx: Transaction, ids: readonly string[], existing: () => Promise<readonly string[]> = async () => []) {
-    const rows = ids.length ? await tx.select({ id: taxRates.id, active: taxRates.active }).from(taxRates)
-      .where(inArray(taxRates.id, [...ids])).orderBy(asc(taxRates.id)).for('share') : [];
-    if (rows.length !== ids.length) throw new AppError('not_found', 'Tax rate not found');
-    const linked = await existing();
-    const inactive = rows.filter(row => !row.active);
-    if (inactive.some(row => !linked.includes(row.id))) throw new AppError('conflict', 'Tax rate is inactive');
-    return linked;
-  }
-  const planTaxIds = async (tx: Transaction, id: string) => (await tx.select({ id: planTaxRates.taxRateId }).from(planTaxRates)
-    .where(eq(planTaxRates.planId, id)).orderBy(asc(planTaxRates.taxRateId))).map(link => link.id);
-  const chargeTaxIds = async (tx: Transaction, id: string) => (await tx.select({ id: chargeTypeTaxRates.taxRateId }).from(chargeTypeTaxRates)
-    .where(eq(chargeTypeTaxRates.chargeTypeId, id)).orderBy(asc(chargeTypeTaxRates.taxRateId))).map(link => link.id);
+  const planTaxIds = async (tx: Transaction, id: string) => (await catalogTaxLinks(tx, 'plan', [id])).map(link => link.taxRateId);
+  const chargeTaxIds = async (tx: Transaction, id: string) => (await catalogTaxLinks(tx, 'charge_type', [id])).map(link => link.taxRateId);
   /** Every charge type, class pack and plan carrying the rate, and the memberships (not cancelled) on those plans. */
   async function taxUsage(tx: Transaction, id: string): Promise<c.TaxRateUsage> {
     const packs = await tx.select({ id: classPacks.id, name: classPacks.name, active: classPacks.active }).from(classPackTaxRates)
@@ -130,7 +136,7 @@ export function createCatalogService(options: CatalogOptions = {}) {
         if (attached && before.active && !detach) {
           // A stale revision stays a plain revision conflict, so the client reloads before deciding.
           if (before.revision !== revision) throw new RevisionConflictError();
-          throw new AppError('conflict', packText('billing/packs:taxAttached', { charges: attached.chargeTypes.length,
+          throw new AppError('conflict', text('billing/catalog:taxAttached', { charges: attached.chargeTypes.length,
             packs: attached.packs.length, plans: attached.plans.length, memberships: attached.memberships }),
           { reason: ['tax_rate_attached'], chargeTypes: attached.chargeTypes.map(item => item.name),
             plans: attached.plans.map(item => item.name), packs: attached.packs.map(item => item.name), memberships: [String(attached.memberships)] });
@@ -154,8 +160,8 @@ export function createCatalogService(options: CatalogOptions = {}) {
         const where = and(query.active === undefined ? undefined : eq(plans.active, query.active), query.currency === undefined ? undefined : eq(plans.currency, query.currency));
         const total = await tx.$count(plans, where);
         const rows = await tx.select().from(plans).where(where).orderBy(asc(plans.name), asc(plans.id)).limit(query.limit).offset(query.offset);
-        const attached = rows.length ? await tx.select().from(planTaxRates).where(inArray(planTaxRates.planId, rows.map(row => row.id))).orderBy(asc(planTaxRates.taxRateId)) : [];
-        return { data: rows.map(row => presentPlan(row, attached.filter(link => link.planId === row.id).map(link => link.taxRateId))),
+        const attached = await catalogTaxLinks(tx, 'plan', rows.map(row => row.id));
+        return { data: rows.map(row => presentPlan(row, attached.filter(link => link.itemId === row.id).map(link => link.taxRateId))),
           pagination: { limit: query.limit, offset: query.offset, total } };
       });
     },
@@ -198,8 +204,8 @@ export function createCatalogService(options: CatalogOptions = {}) {
         const where = and(query.active === undefined ? undefined : eq(chargeTypes.active, query.active), query.currency === undefined ? undefined : eq(chargeTypes.currency, query.currency));
         const total = await tx.$count(chargeTypes, where);
         const rows = await tx.select().from(chargeTypes).where(where).orderBy(asc(chargeTypes.name), asc(chargeTypes.id)).limit(query.limit).offset(query.offset);
-        const attached = rows.length ? await tx.select().from(chargeTypeTaxRates).where(inArray(chargeTypeTaxRates.chargeTypeId, rows.map(row => row.id))).orderBy(asc(chargeTypeTaxRates.taxRateId)) : [];
-        return { data: rows.map(row => presentCharge(row, attached.filter(link => link.chargeTypeId === row.id).map(link => link.taxRateId))),
+        const attached = await catalogTaxLinks(tx, 'charge_type', rows.map(row => row.id));
+        return { data: rows.map(row => presentCharge(row, attached.filter(link => link.itemId === row.id).map(link => link.taxRateId))),
           pagination: { limit: query.limit, offset: query.offset, total } };
       });
     },

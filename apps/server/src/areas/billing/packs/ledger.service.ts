@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, desc, eq, isNull } from 'drizzle-orm';
-import { classCreditEntries, classPackSales, forGym, invoices, uuidv7, type Transaction } from '@plaingym/db';
+import { and, asc, desc, eq, inArray } from 'drizzle-orm';
+import { classCreditEntries, classPackSales, databaseCode, forGym, invoices, uuidv7, type Transaction } from '@plaingym/db';
 import { AppError, createTranslator } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../../core/clock.js';
 import { notFound, type MutationContext } from '../../../core/interfaces/common.js';
 import type { CatalogOptions } from '../catalog.js';
 import { audit } from '../transitions/store.js';
-import { drawCredits, lockMemberCredits, remainingLots, type CreditEntry } from './ledger.js';
+import { creditBalance, drawCredits, lockMemberCredits, remainingLots, usableCreditLots, type CreditEntry } from './ledger.js';
+import { lockAdjustment } from './ledger.store.js';
 import messages from '../../../../../../locales/en/billing/packs.json' with { type: 'json' };
 
 const t = createTranslator({ 'billing/packs': messages });
@@ -18,16 +19,35 @@ const entry = (row: CreditEntry, invoiceNumber: number | null) => ({
   createdAt: row.createdAt.toISOString(), invoiceNumber,
 });
 
+/** Load only the entries' sale invoices, resolving draws through their openings. */
+async function invoiceNumbers(tx: Transaction, rows: readonly CreditEntry[], openings: readonly CreditEntry[] = []) {
+  const saleByLot = new Map(openings.map(row => [row.id, row.saleId]));
+  const missing = [...new Set(rows.flatMap(row => row.lotId && !saleByLot.has(row.lotId) ? [row.lotId] : []))];
+  if (missing.length) for (const row of await tx.select({ id: classCreditEntries.id, saleId: classCreditEntries.saleId })
+    .from(classCreditEntries).where(inArray(classCreditEntries.id, missing))) saleByLot.set(row.id, row.saleId);
+  const saleFor = (row: CreditEntry) => row.saleId ?? saleByLot.get(row.lotId ?? '') ?? null;
+  const ids = [...new Set(rows.flatMap(row => saleFor(row) ? [saleFor(row)!] : []))];
+  const sales = ids.length ? await tx.select({ id: classPackSales.id, number: invoices.number }).from(classPackSales)
+    .innerJoin(invoices, and(eq(invoices.gymId, classPackSales.gymId), eq(invoices.id, classPackSales.invoiceId)))
+    .where(inArray(classPackSales.id, ids)) : [];
+  const numbers = new Map(sales.map(row => [row.id, row.number]));
+  return (row: CreditEntry) => numbers.get(saleFor(row) ?? '') ?? null;
+}
+const reused = () => new AppError('conflict', t('billing/packs:adjustmentReused'), { reason: ['adjustment_id_reused'] });
+function adjustmentConstraint(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const row = error as { constraint_name?: string; cause?: unknown };
+  return ['class_credit_entries_adjust_open_key', 'class_credit_entries_adjust_lot_key'].includes(row.constraint_name ?? '')
+    || adjustmentConstraint(row.cause);
+}
+
 export function createCreditLedgerService(options: CatalogOptions = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
-  async function balance(tx: Transaction, memberId: string, now: Date) {
-    return (await remainingLots(tx, memberId)).reduce((total, lot) =>
-      total + (lot.expiresAt === null || lot.expiresAt > now ? lot.remaining : 0), 0);
-  }
   return {
     async adjust(context: MutationContext, input: unknown) {
       const request = c.adjustClassCreditsRequestSchema.parse(input);
       return scope(context.gymId, async tx => {
+        await lockAdjustment(tx, context.gymId, request.adjustmentId.toLowerCase());
         const member = await lockMemberCredits(tx, request.memberId);
         if (member.anonymizedAt) notFound();
         const now = clock.now();
@@ -36,7 +56,7 @@ export function createCreditLedgerService(options: CatalogOptions = {}) {
         if (entries.length) {
           if (entries.some(row => row.memberId !== request.memberId || row.reason !== request.reason)
             || entries.reduce((total, row) => total + row.credits, 0) !== request.credits)
-            throw new AppError('conflict', t('billing/packs:adjustmentReused'), { reason: ['adjustment_id_reused'] });
+            throw reused();
         } else {
           if (request.credits > 0) entries = await tx.insert(classCreditEntries).values({
             id: uuidv7(), gymId: context.gymId, memberId: request.memberId, kind: 'adjust',
@@ -57,8 +77,12 @@ export function createCreditLedgerService(options: CatalogOptions = {}) {
               entries: entries.map(row => ({ id: row.id, lotId: row.lotId, credits: row.credits, reasonEntryId: row.id })) });
         }
         entries.sort((a, b) => a.id.localeCompare(b.id));
-        return { data: { adjustmentId: request.adjustmentId, balance: await balance(tx, request.memberId, now),
-          entries: entries.map(row => entry(row, null)) } };
+        const numberFor = await invoiceNumbers(tx, entries);
+        return { data: { adjustmentId: request.adjustmentId, balance: creditBalance(usableCreditLots(await remainingLots(tx, request.memberId), now)),
+          entries: entries.map(row => entry(row, numberFor(row))) } };
+      }).catch(error => {
+        if (databaseCode(error) === '23505' && adjustmentConstraint(error)) throw reused();
+        throw error;
       });
     },
     async read(gymId: string, memberId: string, input: unknown) {
@@ -66,22 +90,14 @@ export function createCreditLedgerService(options: CatalogOptions = {}) {
       return scope(gymId, async tx => {
         // The same lock gives balance, lots and the page one consistent view of all credit writers.
         await lockMemberCredits(tx, memberId);
-        const now = clock.now(), lots = await remainingLots(tx, memberId);
-        const sales = await tx.select({ id: classPackSales.id, number: invoices.number }).from(classPackSales)
-          .innerJoin(invoices, and(eq(invoices.gymId, classPackSales.gymId), eq(invoices.id, classPackSales.invoiceId)))
-          .where(eq(classPackSales.memberId, memberId));
-        const numbers = new Map(sales.map(row => [row.id, row.number]));
+        const now = clock.now(), openings = await remainingLots(tx, memberId);
+        const lots = openings.filter(lot => lot.remaining > 0 && !lot.expired);
         const where = eq(classCreditEntries.memberId, memberId);
         const total = await tx.$count(classCreditEntries, where);
         const rows = await tx.select().from(classCreditEntries).where(where)
           .orderBy(desc(classCreditEntries.createdAt), desc(classCreditEntries.id)).limit(query.limit).offset(query.offset);
-        // Draws and expiry rows inherit the sale's invoice through the lot, even without their own saleId.
-        const openings = await tx.select({ id: classCreditEntries.id, saleId: classCreditEntries.saleId })
-          .from(classCreditEntries).where(and(where, isNull(classCreditEntries.lotId)));
-        const saleByEntry = new Map(openings.map(row => [row.id, row.saleId]));
-        const numberFor = (row: CreditEntry) => numbers.get(row.saleId ?? saleByEntry.get(row.lotId ?? '') ?? '') ?? null;
-        return { data: { memberId, balance: lots.reduce((total, lot) =>
-          total + (lot.expiresAt === null || lot.expiresAt > now ? lot.remaining : 0), 0),
+        const numberFor = await invoiceNumbers(tx, [...rows, ...lots], openings);
+        return { data: { memberId, balance: creditBalance(usableCreditLots(openings, now)),
         lots: lots.map(lot => ({ id: lot.id, remaining: lot.remaining, expiresAt: lot.expiresAt?.toISOString() ?? null,
           createdAt: lot.createdAt.toISOString(), saleId: lot.saleId, invoiceNumber: numberFor(lot) })),
         entries: rows.map(row => entry(row, numberFor(row))) }, pagination: { ...query, total } };

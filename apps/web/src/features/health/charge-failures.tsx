@@ -31,12 +31,14 @@ export function ChargeFailures({ gymId, reporting }: { gymId: string; reporting:
         return parseResponse(dismissChargeFailuresResponseSchema, result.data).data;
       };
       if (typeof named === 'string') return post({ runId: named });
+      const current = await query.refetch();
+      if (current.isError) throw new Error('Charge failures failed');
+      const available = new Set(current.data?.map(report => report.runId));
+      const ids = named.filter(id => available.has(id));
       // One request takes at most maxDismissedChargeRuns runs, so a longer list goes in order, one batch at a time.
       // A batch that fails stops the rest; the ones already sent stay dismissed, and the refetch below shows what is left.
-      const dismissed: string[] = [];
-      for (let start = 0; start < named.length; start += maxDismissedChargeRuns)
-        dismissed.push(...(await post({ runIds: named.slice(start, start + maxDismissedChargeRuns) })).dismissed);
-      return { dismissed };
+      for (let start = 0; start < ids.length; start += maxDismissedChargeRuns)
+        await post({ runIds: ids.slice(start, start + maxDismissedChargeRuns) });
     },
     // A report that is already gone (dismissed elsewhere) is also settled by reading the list again.
     onSettled: () => cache.invalidateQueries({ queryKey: ['health', gymId] }),

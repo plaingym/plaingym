@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, inArray, isNotNull, or } from 'drizzle-orm';
-import { auditEvents, forGym, households, writeAudit } from '@plaingym/db';
+import { auditEvents, classCreditEntries, forGym, households, writeAudit, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { z } from 'zod';
 import type { Jobs } from '../../infra/jobs/index.js';
 import type { Uploads } from '../../infra/storage/index.js';
+
+/** The sole ledger update: erase free text while preserving the append-only credit history. */
+export async function eraseCreditReasons(tx: Transaction, memberId: string) {
+  await tx.update(classCreditEntries).set({ reason: '' })
+    .where(and(eq(classCreditEntries.memberId, memberId), eq(classCreditEntries.kind, 'adjust')));
+}
 
 /** Queues the provider redaction of the customer an erased household had. */
 export const redactCustomerJob = 'members.erasure.redact_customer';

@@ -80,6 +80,12 @@ work is published as soon as its transition commits; a failed publish is logged
 and never fails the committed transition. `createTransitionJobs` supplies an
 hourly recovery sweep and the effect handler; both are already included through
 the existing billing job barrel.
+Before publishing, the hourly job settles up to 100 due, open or past-due
+zero-total one-off invoices without a Checkout session and not held for review.
+This recovers a crash or failed settlement after issuance, including a pack sale.
+It uses `settleZero` and its usual idempotent activation effect; it creates no
+payment or card attempt. An invoice that fails to settle doesn't stop the others
+or the effect recovery; the job then fails and runs again next hour.
 The production publisher is inert until `configureTransitionEffects(effects)` is
 called. No HTTP route is added by this service.
 
@@ -89,19 +95,22 @@ cancelled memberships; a sign-up fee alone does not end a trial. Revision checks
 protect concurrent membership edits. A trial activation also promotes a member
 whose status is `trial` and who has no other trial membership, in the same audited
 transaction. Replaying a partially completed activation
-does not activate a membership twice. The effect then calls the packs grant directly,
+does not activate a membership twice. When its loaded invoice has a pack sale,
+the effect then calls the packs grant directly,
 which grants a paid or partially refunded pack sale once, including zero settlements.
 The optional `afterInvoicePaid(gymId, invoiceId)`
 then runs for every paid or zero-settled invoice, however it was paid; it must be
 idempotent, since the effect runs it again until it completes, and a throw retries the
 effect job.
 
-A refund that changes the invoice to `refunded` queues `reverse_credits` in its
+A refund that changes a pack sale's invoice to `refunded` queues `reverse_credits` in its
 transaction. It reverses only unused credits from that sale's lot. Partial refunds
 queue no reversal. Both credit operations lock invoice then member and audit with
 the ledger write. A reversal still runs if the refund later fails and reopens the
 invoice; that failure never restores credits. A delayed grant after a full refund
-is suppressed. See [class packs](../packs/README.md) for expiry and replay rules.
+is suppressed by the durable reversal command, independently of the refund audit
+snapshot. Other invoices queue no credit reversal. See [class packs](../packs/README.md)
+for expiry and replay rules.
 
 Cycle failures enqueue dunning and one schedule per invoice. The first failure
 reads the gym's billing retry days (default `[3, 7]`) and saves them with

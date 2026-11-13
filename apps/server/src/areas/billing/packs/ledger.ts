@@ -4,30 +4,38 @@ import { classCreditEntries, classPackSales, invoices, members, memberships, uui
 import { notFound } from '../../../core/interfaces/common.js';
 
 export type CreditEntry = typeof classCreditEntries.$inferSelect;
-export type CreditLot = CreditEntry & { remaining: number };
+export type CreditLot = CreditEntry & { remaining: number; expired: boolean };
 
 /** Call inside the caller's gym transaction, before reading or changing its member's credits. */
 export async function lockMemberCredits(tx: Transaction, memberId: string) {
-  return (await tx.select().from(members).where(eq(members.id, memberId)).for('update'))[0] ?? notFound();
+  return (await tx.select().from(members).where(eq(members.id, memberId)).for('no key update'))[0] ?? notFound();
 }
 
 /** Includes expired remainders for history/expiry; the ledger is never rewritten. */
 export async function remainingLots(tx: Transaction, memberId: string): Promise<CreditLot[]> {
   const lots = await tx.select().from(classCreditEntries).where(and(
     eq(classCreditEntries.memberId, memberId), isNull(classCreditEntries.lotId)));
-  const movements = await tx.select({ lotId: classCreditEntries.lotId, credits: sum(classCreditEntries.credits) })
+  const movements = await tx.select({ lotId: classCreditEntries.lotId, kind: classCreditEntries.kind, credits: sum(classCreditEntries.credits) })
     .from(classCreditEntries).where(and(eq(classCreditEntries.memberId, memberId), isNotNull(classCreditEntries.lotId)))
-    .groupBy(classCreditEntries.lotId);
-  const totals = new Map(movements.map(row => [row.lotId, Number(row.credits)]));
-  return lots.map(lot => ({ ...lot, remaining: lot.credits + (totals.get(lot.id) ?? 0) }))
-    .filter(lot => lot.remaining > 0).sort((a, b) =>
+    .groupBy(classCreditEntries.lotId, classCreditEntries.kind);
+  const totals = new Map<string, number>(), expired = new Set<string>();
+  for (const row of movements) {
+    totals.set(row.lotId!, (totals.get(row.lotId!) ?? 0) + Number(row.credits));
+    if (row.kind === 'expire') expired.add(row.lotId!);
+  }
+  return lots.map(lot => ({ ...lot, remaining: lot.credits + (totals.get(lot.id) ?? 0), expired: expired.has(lot.id) }))
+    .sort((a, b) =>
       (a.expiresAt?.getTime() ?? Infinity) - (b.expiresAt?.getTime() ?? Infinity)
       || a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id));
 }
 
 /** Expiry is exclusive: at expiresAt a lot is already unusable, regardless of job progress. */
+export function usableCreditLots(lots: readonly CreditLot[], now: Date): CreditLot[] {
+  return lots.filter(lot => lot.remaining > 0 && (lot.expiresAt === null || lot.expiresAt > now));
+}
+export const creditBalance = (lots: readonly CreditLot[]) => lots.reduce((total, lot) => total + lot.remaining, 0);
 export async function usableLots(tx: Transaction, memberId: string, now: Date): Promise<CreditLot[]> {
-  return (await remainingLots(tx, memberId)).filter(lot => lot.expiresAt === null || lot.expiresAt > now);
+  return usableCreditLots(await remainingLots(tx, memberId), now);
 }
 
 export type CreditDraw = { gymId: string; memberId: string; credits: number; now: Date } & (
@@ -42,7 +50,7 @@ export async function drawCredits(tx: Transaction, input: CreditDraw): Promise<C
   if (!Number.isSafeInteger(input.credits) || input.credits < 1 || input.kind === 'use' && input.credits !== 1)
     throw new Error('Invalid credit draw');
   const lots = await usableLots(tx, input.memberId, input.now);
-  const balance = lots.reduce((total, lot) => total + lot.remaining, 0);
+  const balance = creditBalance(lots);
   if (balance < input.credits) return { outcome: 'insufficient_credits', balance };
   let needed = input.credits;
   const rows: (typeof classCreditEntries.$inferInsert)[] = [];

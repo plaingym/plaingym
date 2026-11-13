@@ -3,7 +3,7 @@ import { getTableName } from 'drizzle-orm';
 import type { Sql } from '../client.js';
 import * as schema from '../schema/index.js';
 import { systemTables } from '../../system-tables.mjs';
-import { appendOnlyTables, deletableAppendOnlyTables, mutableAttemptColumns, mutableCreditColumns } from './apply.js';
+import { appendOnlyTables, deletableAppendOnlyTables, mutableColumns } from './apply.js';
 const expectedTables = Object.values(schema).map(getTableName).sort();
 const normalize = (expression: string) => expression.toLowerCase().replaceAll('::text', '').replace(/[()\s]/g, '');
 const gymPredicate = (column: string) => `${column} = nullif(current_setting('app.gym_id', true), '')::uuid`;
@@ -136,20 +136,19 @@ export async function assertCatalog(sql: Sql) {
           normalize(policy.check_expression ?? '') !== expectedPolicy) failures.push(name + ': invalid forced gym policy');
     }
     const immutable = (appendOnlyTables as readonly string[]).includes(name);
-    const attempt = name === 'payment_attempts', deletable = (deletableAppendOnlyTables as readonly string[]).includes(name);
+    const restricted = immutable || Object.hasOwn(mutableColumns, name), deletable = (deletableAppendOnlyTables as readonly string[]).includes(name);
     // A newer release may hold its table to fewer privileges (an append-only one), never to more.
     if (table.can_truncate || table.can_reference || table.can_trigger || (declared && (!table.can_select || !table.can_insert ||
-        table.can_update !== !(immutable || attempt) || table.can_delete !== (deletable || !(immutable || attempt))))) {
+        table.can_update !== !restricted || table.can_delete !== (deletable || !restricted)))) {
       failures.push(name + ': unexpected table privileges');
     }
-    if (immutable || attempt) {
+    if (restricted) {
       const columns = await sql`
         select a.attname, has_column_privilege('app', a.attrelid, a.attname, 'UPDATE') as can_update
         from pg_attribute a where a.attrelid = ${table.oid} and a.attnum > 0 and not a.attisdropped
       `;
       for (const column of columns) {
-        const expected = (attempt && (mutableAttemptColumns as readonly string[]).includes(column.attname)) ||
-          (name === 'class_credit_entries' && (mutableCreditColumns as readonly string[]).includes(column.attname));
+        const expected = mutableColumns[name]?.includes(column.attname) ?? false;
         if (column.can_update !== expected) failures.push(name + '.' + column.attname + ': unexpected UPDATE');
       }
     }
