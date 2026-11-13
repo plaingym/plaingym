@@ -139,6 +139,7 @@ keeps these tables in step with it.
 | `refunds.create` | yes | yes | | |
 | `data.export` | yes | yes | | |
 | `members.anonymize` | yes | yes | | |
+| `members.delete` | yes | yes | | |
 | `members.read` | yes | yes | yes | yes |
 | `members.manage` | yes | yes | | yes |
 | `households.manage` | yes | yes | | yes |
@@ -497,6 +498,16 @@ Old versions and documents referenced by signatures remain retained after retire
   calls run after commit, and waitlist promotion for the freed places runs last.
   Customers erased before this was complete
   are redacted once from the erasure audits
+  (`apps/server/src/areas/members/README.md`).
+* **Deleting a member.** Staff with `members.delete` (owners and admins) can delete
+  a member added by mistake, with their attendance, bookings, ranks, signed waivers
+  and signature images, lead, logins and links, and their household with its last
+  member. A member with billing records (a pack purchase or credit ledger entry, an
+  invoiced or discounted membership, or, as the household's last member, any
+  household invoice, card or Stripe customer) can't be deleted: the gym cancels or
+  erases them instead, so the books never lose a record. The checks run under row
+  locks on the member, household and memberships, so a charge or sale at the same
+  moment either refuses the delete or fails. The audit event carries IDs only
   (`apps/server/src/areas/members/README.md`).
 * **Delivery records.** `email_deliveries`, the record that keeps each email from
   being sent twice, holds no plain hash of a member's address once the member is

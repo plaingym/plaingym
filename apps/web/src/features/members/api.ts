@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { parseResponse, type ResponseSchema } from '../../lib/response.js';
-import { ApiError } from '../../lib/api.js';
+import { ApiError, apiErrorReasons } from '../../lib/api.js';
 
 /** Fetches a members endpoint and validates its JSON response with the shared contract schema. */
 export async function memberRequest<T>(schema: ResponseSchema<T>, path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(path, { method, credentials: 'same-origin', redirect: 'error', cache: 'no-store',
     headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }), ...(signal ? { signal } : {}) });
-  if (!response.ok) throw new ApiError(response.status, response.status === 409 ? 'conflict' : 'request_failed');
+  // Reason codes (never server messages) let a screen explain a refusal, such as a member delete refused for billing records.
+  if (!response.ok) throw new ApiError(response.status, response.status === 409 ? 'conflict' : 'request_failed', await apiErrorReasons(response));
   return parseResponse(schema, await response.json());
 }
 

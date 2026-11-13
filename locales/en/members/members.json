@@ -29,5 +29,8 @@
   "tag": "Tag", "createTag": "Create tag", "showHouseholds": "Show households",
   "hideHouseholds": "Hide households", "backToMembers": "All members", "noContacts": "No emergency contacts.",
   "noPhoto": "No photo.", "noMedicalNotes": "No medical notes.", "noTags": "No tags yet.",
-  "removeTag": "Remove tag"
+  "removeTag": "Remove tag",
+  "deleteMember": "Delete member", "deleteMemberWarning": "Use this for a member added by mistake, such as a duplicate, a typo or a test. Deleting removes the member with their attendance, bookings, check-in code, promotions, signed waivers and portal login, and their household too when they are its last member. It can’t be undone. Once a member has billing records (invoices, payments, saved cards, invoiced memberships, discounts, class packs or credits), they can’t be deleted: set their status to Cancelled, or erase their personal data.",
+  "deleteMemberTitle": "Delete this member?", "deleteMemberConfirm": "Type the member’s name, {name}, to confirm.",
+  "deleteMemberBlocked": "This member has billing records, so they can’t be deleted. Set their status to Cancelled, or erase their personal data instead.", "cancel": "Cancel"
 }

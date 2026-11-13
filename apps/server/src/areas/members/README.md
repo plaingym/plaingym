@@ -63,6 +63,26 @@ erasure whose own job ran out of attempts. It skips a customer that a household 
 queues at most 200 customers per run; the next run continues. Redaction is idempotent, so a repeat is harmless.
 Unused households can be deleted; referenced households return a conflict.
 
+Deleting a member (`deleteMember`, `DELETE /api/members/{memberId}`, `members.delete`: owners and admins) is for a
+member added by mistake, such as a duplicate, a typo or a test. It is allowed until the member has billing records and
+refused after that with a conflict whose `details.reason` is `billing_records` (`memberDeleteBlockedReason`); Cancel
+(the `cancelled` status) or erasure applies then. The billing records are: a pack purchase or any class credit ledger
+entry for the member; a membership that has been invoiced (an invoice line references it) or has a discount applied;
+and, when the member is the household's last, any invoice of the household (so any payment, payment attempt or refund),
+any saved card on it (revoked ones too) or a Stripe customer ID. A household's card, customer and invoices don't block
+deleting a member while another member stays in the household, since they stay with it. Everything else goes with the
+member in one transaction: memberships that were never invoiced, attendance and bookings, the check-in code, rank
+history and promotion notes, signed waivers, tag links, the lead and its contacts, announcement recipients and opt-outs
+(the delivery records lose their address digests, as on erasure), member logins and member links; a staff profile
+linked to the member is unlinked. With the household's last member the household goes too, with its portal logins and
+signed links. The member row is locked first (`FOR UPDATE`), then the household and the member's memberships, before
+the checks, so a charge, sale or card that starts at the same moment either commits first and the delete is refused,
+or waits and then fails its own reference to the deleted rows; a delete that loses such a race answers with a conflict.
+Upcoming places are freed under each session's row lock and the route promotes their waitlists after commit. The
+release of the photo and signature images commits with the delete as a `members.erasure.release_files` job (key
+`release-deleted:<member ID>`), so the route needs the job queue like erasure does, and the route marks the files
+deleted after commit as a head start. The `member.deleted` and `household.deleted` audit events carry IDs only.
+
 `hashHouseholdPin` and `verifyHouseholdPin` take the per-gym secret, gym ID,
 household ID and the PIN. They preserve leading zeros, use a domain-separated
 HMAC, and compare hashes in constant time. The secret comes from the injected
@@ -99,7 +119,7 @@ storage), photo operations and setting a nonempty PIN fail closed. The web featu
 registration enables the Members nav entry; the profile renders every enabled,
 permitted `memberTabs` registration.
 
-Every JSON endpoint uses the shared `membersContracts`, including household and tag
+Every JSON endpoint uses the shared `membersContracts`, including member, household and tag
 deletion, a member's assigned tags, and photo upload. The photo read
 (`GET /api/members/{memberId}/photo`) returns the image bytes, so it is declared in
 `members.routes.ts` rather than as a JSON contract. The household login contracts
@@ -113,6 +133,10 @@ route for all staff roles, foreign-gym resource IDs, and non-staff principals
 (household payers/adults, signed links, kiosks and anonymous requests). It also
 covers revision races, tag filtering, PINs, anonymization with retained accounting
 and attendance rows, and photo storage/cleanup.
+
+`members.delete.test.ts` covers member deletion: what goes with the member, the household removed with its last
+member, a refusal for each kind of billing record, manager-only access, stale revisions, another gym's member (404),
+and a concurrent charge that either commits first (the delete is refused) or waits and fails.
 
 `erasure-transaction.test.ts` covers erasure/job commit and rollback, including
 failure after the writes and the no-customer case, with the fake and PostgreSQL queues.

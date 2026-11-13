@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, eq, gt, ilike, inArray, isNotNull, isNull, ne, or } from 'drizzle-orm';
 import { forGym, members, memberRanks, memberships, households, householdUsers, memberTags, memberTagLinks, signedLinks, waiverSignatures,
-  invoices, paymentMethods, classBookings, classSessions, classCreditEntries, staffProfiles, leads, leadContacts, databaseCode, revisionGuard, assertRevised, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
+  invoices, invoiceLineItems, membershipDiscounts, paymentMethods, classBookings, classSessions, classCreditEntries, classPackSales, attendances,
+  announcementRecipients, announcementOptOuts, staffProfiles, leads, leadContacts, databaseCode, revisionGuard, assertRevised, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import type { MutationContext } from '../../core/interfaces/common.js';
@@ -193,6 +194,81 @@ export function createMembersService(options: MembersOptions = {}) {
         }, transaction);
         return { member: member(row), freedSessionIds, revokedCards, erasedCustomerId: billing?.customerId ?? null, files };
       });
+    },
+    /**
+     * Deletes a member added by mistake, with everything that is theirs alone, and their household with its last member.
+     * Refused (`conflict`, reason `billing_records`) once the member has any billing record: Cancel or Erase stay for those.
+     * The member, household and membership rows are locked first, so a charge, sale or card that starts at the same moment
+     * either commits first and refuses the delete, or waits and then fails its own reference to the deleted rows.
+     * The released files are queued in the same transaction, like an erasure's.
+     */
+    async deleteMember(context: MutationContext, id: string, revision: number, cleanup: ErasureQueue) {
+      c.revisionSchema.parse(revision);
+      try {
+        return await withJobTransaction(scope, context.gymId, async (transaction) => {
+          const { tx } = transaction;
+          const before = missing((await tx.select({ householdId: members.householdId, photoKey: members.photoKey, revision: members.revision })
+            .from(members).where(eq(members.id, id)).for('update'))[0]);
+          if (before.revision !== revision) throw new AppError('conflict', 'The record changed since it was read.');
+          const home = await getHouseholdRow(tx, before.householdId), now = clock.now();
+          const owned = await tx.select({ id: memberships.id }).from(memberships).where(eq(memberships.memberId, id)).orderBy(asc(memberships.id)).for('update');
+          const membershipIds = owned.map((row) => row.id);
+          const last = !(await tx.select({ id: members.id }).from(members).where(and(eq(members.householdId, home.id), ne(members.id, id))).limit(1)).length;
+          const any = async (query: Promise<unknown[]>) => (await query).length > 0;
+          const billed = await any(tx.select({ id: classPackSales.id }).from(classPackSales).where(eq(classPackSales.memberId, id)).limit(1))
+            || await any(tx.select({ id: classCreditEntries.id }).from(classCreditEntries).where(eq(classCreditEntries.memberId, id)).limit(1))
+            || membershipIds.length > 0 && (await any(tx.select({ id: invoiceLineItems.id }).from(invoiceLineItems).where(inArray(invoiceLineItems.membershipId, membershipIds)).limit(1))
+              || await any(tx.select({ id: membershipDiscounts.id }).from(membershipDiscounts).where(inArray(membershipDiscounts.membershipId, membershipIds)).limit(1)))
+            || last && (await any(tx.select({ id: invoices.id }).from(invoices).where(eq(invoices.householdId, home.id)).limit(1))
+              || await any(tx.select({ id: paymentMethods.id }).from(paymentMethods).where(eq(paymentMethods.householdId, home.id)).limit(1))
+              || await any(tx.select({ id: households.id }).from(households).where(and(eq(households.id, home.id), isNotNull(households.stripeCustomerId)))));
+          if (billed) throw new AppError('conflict', 'Members with billing records cannot be deleted', { reason: [c.memberDeleteBlockedReason] });
+          // Each upcoming place is freed under its session's lock, in session order, like any other booking change.
+          const sessions = await tx.selectDistinct({ id: classBookings.sessionId }).from(classBookings)
+            .innerJoin(classSessions, and(eq(classSessions.gymId, classBookings.gymId), eq(classSessions.id, classBookings.sessionId)))
+            .where(and(eq(classBookings.memberId, id), inArray(classBookings.status, ['booked', 'waitlisted']), gt(classSessions.startsAt, now)))
+            .orderBy(asc(classBookings.sessionId));
+          const freedSessionIds: string[] = [];
+          for (const session of sessions) {
+            const [upcoming] = await tx.select({ id: classSessions.id }).from(classSessions)
+              .where(and(eq(classSessions.id, session.id), gt(classSessions.startsAt, now))).for('update');
+            if (upcoming) freedSessionIds.push(session.id);
+          }
+          await tx.delete(classBookings).where(eq(classBookings.memberId, id));
+          await tx.delete(attendances).where(eq(attendances.memberId, id));
+          await tx.delete(memberTagLinks).where(eq(memberTagLinks.memberId, id));
+          await tx.delete(memberRanks).where(eq(memberRanks.memberId, id));
+          const waivers = await tx.delete(waiverSignatures).where(eq(waiverSignatures.memberId, id)).returning({ key: waiverSignatures.signatureImageKey });
+          const lead = await tx.select({ id: leads.id }).from(leads).where(eq(leads.memberId, id));
+          if (lead.length) await tx.delete(leadContacts).where(inArray(leadContacts.leadId, lead.map((row) => row.id)));
+          await tx.delete(leads).where(eq(leads.memberId, id));
+          await tx.update(staffProfiles).set({ memberId: null }).where(eq(staffProfiles.memberId, id));
+          // Delivery records keep no value derived from the deleted member's address (`infra/email/README.md`).
+          await forgetErasedAddressDigests(tx, context.gymId, id);
+          await tx.delete(announcementRecipients).where(eq(announcementRecipients.memberId, id));
+          await tx.delete(announcementOptOuts).where(eq(announcementOptOuts.memberId, id));
+          await tx.delete(householdUsers).where(eq(householdUsers.memberId, id));
+          await tx.delete(signedLinks).where(eq(signedLinks.memberId, id));
+          await tx.delete(memberships).where(eq(memberships.memberId, id));
+          await tx.delete(members).where(eq(members.id, id));
+          await audit(tx, context, 'member.deleted', 'member', id);
+          if (last) {
+            await tx.delete(householdUsers).where(eq(householdUsers.householdId, home.id));
+            await tx.delete(signedLinks).where(eq(signedLinks.householdId, home.id));
+            await tx.delete(households).where(eq(households.id, home.id));
+            await audit(tx, context, 'household.deleted', 'household', home.id);
+          }
+          const files = [...(before.photoKey ? [before.photoKey] : []), ...waivers.map((waiver) => waiver.key)];
+          if (files.length) await cleanup.jobs.enqueue(releaseErasedFilesJob, { keys: files }, {
+            gymId: context.gymId, timezone: cleanup.timezone, maxAttempts: 12, idempotencyKey: `release-deleted:${id}`, runAt: new Date(now.getTime() + 60_000),
+          }, transaction);
+          return { householdDeleted: last, freedSessionIds, files };
+        });
+      } catch (error) {
+        // A booking, sale or charge that took its own lock first and then raced the delete: the caller can look again.
+        if (['23503', '40P01'].includes(databaseCode(error) ?? '')) throw new AppError('conflict', 'The member changed while being deleted');
+        throw error;
+      }
     },
     async listHouseholds(gymId: string, input: c.HouseholdListQuery) {
       const query = c.householdListQuerySchema.parse(input);

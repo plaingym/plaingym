@@ -142,8 +142,10 @@ export const memberTagResponseSchema = z.strictObject({ data: memberTagSchema })
 export const memberTagListResponseSchema = listResponseSchema(memberTagSchema);
 /** Every tag assigned to one member; members carry a handful, so the list is not paginated. */
 export const memberAssignedTagsResponseSchema = z.strictObject({ data: z.array(memberTagSchema) });
-/** Revision-guarded deletion of a household or member tag. */
+/** Revision-guarded deletion of a member, household or member tag. */
 export const deleteMemberRecordRequestSchema = z.strictObject({ revision: revisionSchema });
+/** The reason (`details.reason`) a member delete is refused with: they have billing records, so Cancel or Erase applies. */
+export const memberDeleteBlockedReason = 'billing_records';
 export const memberPhotoContentTypeSchema = z.enum(['image/jpeg', 'image/png', 'image/webp']);
 /** At most 512 KiB once decoded; the client resizes and re-encodes before uploading. */
 export const uploadMemberPhotoRequestSchema = z.strictObject({
@@ -184,6 +186,12 @@ export const membersContracts = {
     params: memberParamsSchema, body: updateMemberRequestSchema, response: memberResponseSchema },
   anonymizeMember: { method: 'post', path: '/api/members/{memberId}/anonymize', permission: { kind: 'staff', capability: 'members.anonymize' },
     params: memberParamsSchema, body: anonymizeMemberRequestSchema, response: memberResponseSchema },
+  /**
+   * Deletes a member added by mistake, and their household with its last member. Refused with a conflict (reason
+   * `billing_records`) once the member has billing records; Cancel or Erase applies then.
+   */
+  deleteMember: { method: 'delete', path: '/api/members/{memberId}', permission: { kind: 'staff', capability: 'members.delete' },
+    params: memberParamsSchema, body: deleteMemberRecordRequestSchema, response: z.strictObject({ data: z.null() }) },
   getMedicalNotes: { method: 'get', path: '/api/members/{memberId}/medical-notes', permission: { kind: 'staff', capability: 'medical.read' },
     params: memberParamsSchema, response: memberMedicalNotesResponseSchema },
   updateMedicalNotes: { method: 'patch', path: '/api/members/{memberId}/medical-notes', permission: { kind: 'staff', capability: 'members.manage' },

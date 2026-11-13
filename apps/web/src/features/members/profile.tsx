@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link } from '@tanstack/react-router';
+import { Link, useNavigate } from '@tanstack/react-router';
 import { canStaff, type StaffRole } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { useBootstrap } from '../../app/context.js';
@@ -14,6 +14,7 @@ import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { Page, PageHeader } from '../../components/ui/page.js';
 import { CheckboxField, Select, Textarea } from '../../components/ui/select.js';
+import { Dialog } from '../../components/ui/dialog.js';
 import { ErrorState, LoadingState } from '../../components/ui/states.js';
 import { memberRequest, resizeMemberPhoto } from './api.js';
 import { ErrorMessage, Panel, StatusBadge, text, useDraft, useMemberSave } from './common.js';
@@ -48,7 +49,7 @@ function Profile({ memberId, gymId, roles, enabledModules }: { memberId: string;
     {query.isPending ? <LoadingState label={text('loading')}/> : query.isError ? <ErrorState message={text('loadFailed')} onRetry={() => void query.refetch()}/> : member && <>
       <PageHeader title={`${member.firstName} ${member.lastName}`} description={member.anonymizedAt ? undefined : <StatusBadge status={member.status}/>}
         actions={<Button variant="outline" onClick={() => void client.invalidateQueries({ queryKey: ['members', gymId] })}>{text('refresh')}</Button>}/>
-      {member.anonymizedAt ? <Alert>{text('anonymized')}</Alert> : <div className="grid items-start gap-6 lg:grid-cols-2"><div className="min-w-0 space-y-6">
+      {member.anonymizedAt ? <><Alert>{text('anonymized')}</Alert>{canStaff(roles, 'members.delete') && <DeleteMember gymId={gymId} member={member}/>}</> : <div className="grid items-start gap-6 lg:grid-cols-2"><div className="min-w-0 space-y-6">
         <Panel title="profile">{manage ? <MemberForm member={member} householdId={member.householdId}/> : <>
           <dl className="grid gap-3 sm:grid-cols-2">{(['status', 'email', 'phone', 'dateOfBirth'] as const).map((field) => <div key={field} className="min-w-0"><dt className="text-sm text-muted-foreground">{text(field)}</dt>
             <dd>{field === 'status' ? text('status.' + member.status) : member[field] || '—'}</dd></div>)}</dl>
@@ -62,6 +63,7 @@ function Profile({ memberId, gymId, roles, enabledModules }: { memberId: string;
       </div><div className="min-w-0 space-y-6">{manage && <HouseholdDetails key={member.householdId} gymId={gymId} householdId={member.householdId}/>}
         {canStaff(roles, 'medical.read') && <MedicalNotes gymId={gymId} memberId={memberId} manage={manage}/>}
         {canStaff(roles, 'members.anonymize') && <Anonymize member={member}/>}
+        {canStaff(roles, 'members.delete') && <DeleteMember gymId={gymId} member={member}/>}
       </div></div>}
       <MemberTabs memberId={memberId} roles={roles} enabledModules={enabledModules}/>
     </>}
@@ -113,4 +115,33 @@ function Anonymize({ member }: { member: c.Member }) {
   const [confirmed, setConfirmed] = useState(false), state = useMemberSave();
   return <Panel title="anonymize"><p className="text-sm">{text('anonymizeWarning')}</p><CheckboxField label={text('confirmAnonymize')} checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)}/>
     <Button variant="outline" className="w-full border-destructive text-destructive sm:w-auto" disabled={!confirmed || state.busy} onClick={() => void state.save(() => memberRequest(c.memberResponseSchema, `/api/members/${member.id}/anonymize`, 'POST', { revision: member.revision }))}>{text('anonymize')}</Button><ErrorMessage error={state.error}/></Panel>;
+}
+/** Compares names the way a person types them: case, and spaces between or around words, don't matter. */
+const folded = (name: string) => name.trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+const sameName = (left: string, right: string) => folded(left) === folded(right);
+function DeleteMember({ gymId, member }: { gymId: string; member: c.Member }) {
+  const [open, setOpen] = useState(false);
+  return <Panel title="deleteMember"><p className="text-sm">{text('deleteMemberWarning')}</p>
+    <Button variant="outline" className="w-full border-destructive text-destructive sm:w-auto" onClick={() => setOpen(true)}>{text('deleteMember')}</Button>
+    {open && <DeleteMemberDialog gymId={gymId} member={member} onClose={() => setOpen(false)}/>}</Panel>;
+}
+function DeleteMemberDialog({ gymId, member, onClose }: { gymId: string; member: c.Member; onClose: () => void }) {
+  const name = `${member.firstName} ${member.lastName}`, [typed, setTyped] = useState(''), state = useMemberSave();
+  const navigate = useNavigate(), client = useQueryClient(), matches = sameName(typed, name);
+  return <Dialog title={text('deleteMemberTitle')} closeLabel={text('closeDialog')} onClose={onClose}>
+    <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); if (matches) void state.save(async () => {
+      await memberRequest(c.membersContracts.deleteMember.response, `/api/members/${member.id}`, 'DELETE', { revision: member.revision });
+      // The profile is gone: leave it first, so no mounted observer asks for it again, then drop it before the list reloads.
+      await navigate({ to: '/admin/members' });
+      client.removeQueries({ queryKey: ['members', gymId, member.id] });
+    }); }}>
+      <p className="text-sm">{text('deleteMemberWarning')}</p>
+      <Label className="grid gap-2">{t('members/members:deleteMemberConfirm', { name })}<Input value={typed} autoComplete="off" onChange={(event) => setTyped(event.target.value)}/></Label>
+      <ErrorMessage error={state.error}/>
+      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+        <Button variant="outline" disabled={state.busy} onClick={onClose}>{text('cancel')}</Button>
+        <Button type="submit" variant="destructive" disabled={!matches || state.busy}>{text('deleteMember')}</Button>
+      </div>
+    </form>
+  </Dialog>;
 }

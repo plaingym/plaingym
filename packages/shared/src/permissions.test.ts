@@ -27,6 +27,7 @@ const rows: readonly [StaffPermission, readonly StaffRole[]][] = [
       'refunds.create',
       'data.export',
       'members.anonymize',
+      'members.delete',
       'kiosk_devices.manage',
       'payments.custom',
       'announcements.send',

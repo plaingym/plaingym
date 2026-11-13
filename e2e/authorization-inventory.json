@@ -476,6 +476,14 @@
     }
   },
   {
+    "method": "DELETE",
+    "path": "/api/members/{memberId}",
+    "permission": {
+      "kind": "staff",
+      "capability": "members.delete"
+    }
+  },
+  {
     "method": "GET",
     "path": "/api/members/{memberId}",
     "permission": {

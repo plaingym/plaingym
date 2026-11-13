@@ -115,6 +115,20 @@ export function createMembersRoutes(service?: MembersService, uploadsFor?: Membe
       }
       return { data: member };
     }),
+    jsonRoute(contracts.deleteMember, async (ctx, p, _q, b) => {
+      const { revision } = c.deleteMemberRecordRequestSchema.parse(b), { service, uploadsFor, jobs, clock } = current();
+      // The release of the deleted photo and signature images commits with the delete, so it never runs without a queue.
+      if (!jobs) throw new AppError('unavailable', 'Member deletion is not configured');
+      const gymId = ctx.gym.gymId, memberId = p.memberId!;
+      const { files, freedSessionIds } = await service.deleteMember(mutation(ctx), memberId, revision, { jobs, timezone: ctx.gym.timezone });
+      // After commit: the file release is a head start on its job, and the freed places go to the waitlist.
+      if (uploadsFor) await releaseFiles(gymId, files, uploadsFor, 'members.delete.release_failed');
+      for (const sessionId of freedSessionIds) {
+        try { await promoteWaitlist(gymId, sessionId, clock ? { clock } : {}); }
+        catch (error) { logError('members.delete.promotion_failed', { gymId, memberId, sessionId }, error); }
+      }
+      return { data: null };
+    }),
     jsonRoute(contracts.getMedicalNotes, async (ctx, p) => ({ data: await current().service.getMedicalNotes(ctx.gym.gymId, p.memberId!) })),
     jsonRoute(contracts.updateMedicalNotes, async (ctx, p, _q, b) => ({ data: await current().service.updateMedicalNotes(mutation(ctx), p.memberId!, c.updateMemberMedicalNotesRequestSchema.parse(b)) })),
     jsonRoute(contracts.listHouseholds, async (ctx, _p, q) => current().service.listHouseholds(ctx.gym.gymId, c.householdListQuerySchema.parse(q))),

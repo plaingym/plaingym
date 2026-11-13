@@ -18,7 +18,7 @@ const matrix: Record<string, Role[]> = {
   'reports.read': coaches,
   'reports.revenue': managers,
   'leads.manage': desk,
-  'members.read': all, 'members.manage': desk, 'members.anonymize': managers,
+  'members.read': all, 'members.manage': desk, 'members.anonymize': managers, 'members.delete': managers,
   'medical.read': coaches, 'households.manage': desk, 'billing.read': desk, 'tags.manage': desk,
   'staff.manage': managers, 'settings.manage': managers, 'promotions.manage': coaches,
   'bookings.manage': all, 'schedule.manage': coaches, 'class_notes.manage': all,

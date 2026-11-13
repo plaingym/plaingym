@@ -18,6 +18,7 @@ export const staffPermissions = {
   'refunds.create': managers,
   'data.export': managers,
   'members.anonymize': managers,
+  'members.delete': managers,
   'members.read': staffRoles,
   'members.manage': desk,
   'households.manage': desk,

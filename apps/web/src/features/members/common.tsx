@@ -7,13 +7,15 @@ import { Alert } from '../../components/ui/alert.js';
 import { Badge } from '../../components/ui/table.js';
 import { t } from '../../lib/i18n.js';
 import { ApiError } from '../../lib/api.js';
+import { memberDeleteBlockedReason } from '@plaingym/shared/contracts';
 import { useDialogOperation } from '../../components/ui/dialog.js';
 export const text = (key: string) => t('members/members:' + key);
 export function Field({ name, value, onChange, type = 'text', required = false }: { name: string; value: string; onChange: (value: string) => void; type?: string; required?: boolean }) {
   return <Label className="grid gap-2">{text(name)}<Input type={type} value={value} required={required} onChange={(event) => onChange(event.target.value)}/></Label>;
 }
 export function ErrorMessage({ error }: { error: unknown }) {
-  return error ? <Alert role="alert">{text(error instanceof ApiError && error.status === 409 ? 'conflict' : 'failed')}</Alert> : null;
+  const key = !(error instanceof ApiError) ? 'failed' : error.reason.includes(memberDeleteBlockedReason) ? 'deleteMemberBlocked' : error.status === 409 ? 'conflict' : 'failed';
+  return error ? <Alert role="alert">{text(key)}</Alert> : null;
 }
 export function useMemberSave() {
   const client = useQueryClient(), [error, setError] = useState<unknown>(), [busy, setBusy] = useState(false);

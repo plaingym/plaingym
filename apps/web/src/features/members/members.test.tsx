@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import type { ShellBootstrap } from '../../app/services.js';
@@ -12,12 +12,15 @@ import { MemberProfile, MemberTabs } from './profile.js';
 import { MemberForm } from './member-form.js';
 import { HouseholdForm } from './households.js';
 import { memberRequest } from './api.js';
+import { ApiError } from '../../lib/api.js';
+import { memberDeleteBlockedReason } from '@plaingym/shared/contracts';
 import type { Member } from '@plaingym/shared/contracts';
 import type { StaffRole } from '@plaingym/shared';
 
 vi.mock('../../app/context.js', () => ({ useBootstrap: vi.fn() }));
 vi.mock('./api.js', () => ({ memberRequest: vi.fn(), resizeMemberPhoto: vi.fn() }));
-vi.mock('@tanstack/react-router', () => ({ Link: ({ children }: { children: ReactNode }) => <a>{children}</a> }));
+const { navigate } = vi.hoisted(() => ({ navigate: vi.fn(async () => undefined) }));
+vi.mock('@tanstack/react-router', () => ({ Link: ({ children }: { children: ReactNode }) => <a>{children}</a>, useNavigate: () => navigate }));
 const homeId = '019ab4f0-0000-7000-8000-000000000001', memberId = '019ab4f0-0000-7000-8000-000000000002';
 const member: Member = { id: memberId, householdId: homeId, firstName: 'Alex', lastName: 'Smith', email: null, phone: null, photoKey: null,
   dateOfBirth: null, status: 'active', emergencyContacts: [], emailOptOut: false, emailDeliverable: true, anonymizedAt: null, revision: 1, createdAt: '2026-10-22T12:00:00Z' };
@@ -33,6 +36,8 @@ beforeEach(() => {
   vi.mocked(memberRequest).mockImplementation(async (_schema, path) => {
     if (path.endsWith('/medical-notes')) return { data: { id: memberId, medicalNotes: 'Private medical note', revision: 1 } };
     if (path.endsWith('/billing-settings')) return { data: { id: homeId, billingDay: 1, familyDiscountBasisPoints: 0, revision: 1 } };
+    // The Portal access tab, shown to managers, lists the household's logins and invitations.
+    if (path.includes('/portal-logins') || path.endsWith('/portal-invitations')) return { data: [], pagination: { limit: 20, offset: 0, total: 0 } };
     if (path.includes('/households/')) return { data: { id: homeId, name: 'Smith family', email: null, phone: null, address: {}, revision: 1, createdAt: member.createdAt } };
     if (path.endsWith('/tags') || path.startsWith('/api/member-tags')) return { data: [], pagination: { limit: 100, offset: 0, total: 0 } };
     return { data: member };
@@ -119,5 +124,42 @@ describe('member admin UI', () => {
     fireEvent.change(screen.getByLabelText('Country code (two letters)'), { target: { value: '' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create household' }));
     await waitFor(() => expect(memberRequest).toHaveBeenCalledWith(expect.anything(), '/api/households', 'POST', expect.objectContaining({ name: 'New family', address: {} })));
+  });
+
+  it('lets managers delete a member only after typing their name, then returns to the member list', async () => {
+    bootstrap(['admin']); view(<MemberProfile memberId={memberId}/>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete member' }));
+    const dialog = screen.getByRole('dialog', { name: 'Delete this member?' });
+    const submit = within(dialog).getByRole('button', { name: 'Delete member' }) as HTMLButtonElement;
+    const name = within(dialog).getByLabelText('Type the member’s name, Alex Smith, to confirm.');
+    expect(submit.disabled).toBe(true);
+    fireEvent.change(name, { target: { value: 'Alex Smit' } }); expect(submit.disabled).toBe(true);
+    fireEvent.change(name, { target: { value: '  alex   SMITH ' } }); expect(submit.disabled).toBe(false);
+    fireEvent.click(submit);
+    await waitFor(() => expect(memberRequest).toHaveBeenCalledWith(expect.anything(), '/api/members/' + memberId, 'DELETE', { revision: 1 }));
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/admin/members' }));
+  });
+  it('explains a delete refused for billing records and points to Cancel or Erase', async () => {
+    bootstrap(['owner']);
+    const loaded = vi.mocked(memberRequest).getMockImplementation()!;
+    vi.mocked(memberRequest).mockImplementation(async (schema, path, method, ...rest) => {
+      if (method === 'DELETE') throw new ApiError(409, 'conflict', [memberDeleteBlockedReason]);
+      return loaded(schema, path, method, ...rest);
+    });
+    view(<MemberProfile memberId={memberId}/>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete member' }));
+    const dialog = screen.getByRole('dialog');
+    fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: 'Alex Smith' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete member' }));
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('This member has billing records');
+    expect(navigate).not.toHaveBeenCalled();
+  });
+  it('offers no delete to front desk or coaches', async () => {
+    for (const role of ['front_desk', 'coach'] as const) {
+      bootstrap([role]); view(<MemberProfile memberId={memberId}/>);
+      await screen.findByText('Alex Smith');
+      expect(screen.queryByRole('button', { name: 'Delete member' })).toBeNull();
+      cleanup();
+    }
   });
 });
