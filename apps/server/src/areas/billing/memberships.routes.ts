@@ -35,6 +35,10 @@ export function createMembershipRoutes(service?: MembershipService, hooks?: Memb
       return { data };
     }),
     billingRoute(c.billingContracts.updateMembership, async (ctx, p, _q, b) => ({ data: await read().update(billingMutation(ctx), { ...c.updateMembershipRequestSchema.parse(b), membershipId: p.membershipId! }) })),
+    billingRoute(c.billingContracts.setMembershipDiscount, async (ctx, p, _q, b) => ({ data: await read().setDiscount(billingMutation(ctx),
+      p.membershipId!, c.setMembershipDiscountRequestSchema.parse(b)) })),
+    billingRoute(c.billingContracts.removeMembershipDiscount, async (ctx, p, _q, b) => ({ data: await read().removeDiscount(billingMutation(ctx),
+      p.membershipId!, c.removeMembershipDiscountRequestSchema.parse(b)) })),
     billingRoute(c.billingContracts.switchMembershipPlan, async (ctx, p, _q, b) => {
       const data = await read().switchPlan(billingMutation(ctx), { ...c.switchMembershipPlanRequestSchema.parse(b), membershipId: p.membershipId! });
       // A replay collects again: an invoice whose charge was never attempted (a crash after commit) is charged once, and

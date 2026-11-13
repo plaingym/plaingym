@@ -44,8 +44,15 @@ export async function issue(tx: Transaction, context: MutationContext, clock: Cl
     createdAt: clock.now() });
   if (lineItems.length) await tx.insert(invoiceLineItems).values(lineItems.map(line => ({ ...line,
     id: uuidv7(), gymId: context.gymId, householdId: fields.householdId, invoiceId: id, createdAt: clock.now() })));
+  // Preserve the price and named discount actually billed, including a discount's final cycle.
+  // Later staff edits must not change the credit side of an immediate plan upgrade.
+  const ids = [...new Set(lineItems.filter(line => line.kind === 'membership').map(line => line.membershipId!))];
+  const applied = await liveDiscounts(tx, ids);
+  const billed = ids.length ? await tx.select().from(memberships).where(inArray(memberships.id, ids)) : [];
+  const membershipPricing = billed.map(row => ({ membershipId: row.id, amountCents: row.amountCents,
+    discount: presentDiscount(applied.get(row.id)) }));
   await audit(tx, context, clock, 'billing.invoice.issued', 'invoice', id,
-    { ...fields, needsReview });
+    { ...fields, needsReview, membershipPricing });
   return id;
 }
 /** The household's pricing terms for the invoice engine; the plan switch's proration uses them too. */

@@ -5,6 +5,7 @@ import { AppError, type Clock } from '@plaingym/shared';
 import type { z } from 'zod';
 import * as c from '@plaingym/shared/contracts';
 import { catalogAudit } from './catalog.js';
+import { switchAppliedDiscount } from './discounts/apply.js';
 
 type Row = typeof memberships.$inferSelect;
 type Plan = typeof plans.$inferSelect;
@@ -121,6 +122,7 @@ export async function applyScheduledSwitch(tx: Transaction, row: Row, clock: Clo
   if (row.status !== 'active' || row.scheduledPlanId === null || row.scheduledAmountCents === null ||
     row.scheduledInterval === null || row.scheduledOn === null || row.scheduledOn > row.nextDueOn) return row;
   const samePlan = row.scheduledPlanId === row.planId;
+  if (!samePlan) await switchAppliedDiscount(tx, { gymId: row.gymId, actor: { kind: 'system' } }, clock, row.id, row.scheduledPlanId);
   const interval = samePlan ? row.interval : row.scheduledInterval;
   // An annual membership keeps its anniversary (a February 29 one included); one that becomes annual starts it on this
   // due date; a monthly one has none.

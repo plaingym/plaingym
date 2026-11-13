@@ -34,6 +34,7 @@ const inScope = (path: string) => /^\/api\/(bookings(?:\/|$)|portal\/(?:bookings
   || path === '/api/billing/class-packs' || path.startsWith('/api/billing/class-packs/')
   || path.startsWith('/api/billing/packs/')
   || /^\/api\/billing\/memberships\/\{membershipId\}\/switch(?:\/|$)/.test(path)
+  || path === '/api/billing/memberships/{membershipId}/discount'
   || path === '/api/billing/credits/adjust' || /^\/api\/billing\/members\/[^/]+\/credits$/.test(path)
   || path === '/api/leads' || path.startsWith('/api/leads/')
   || ['/api/links/unsubscribe', '/api/waivers/template-documents', '/api/waivers/templates/{templateId}/document', '/api/waivers/template-document',

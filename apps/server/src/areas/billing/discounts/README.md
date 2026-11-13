@@ -40,6 +40,12 @@ scope, clock and gym settings accessor). `createDiscountCatalogRoutes` accepts
 an optional service. Its production contribution is mounted by the billing
 routes barrel. The catalog edits terms; `apply.ts` applies them during membership
 assignment and supplies the runner with their snapshots.
+It also ends applications atomically for staff replacement/removal, cancellation
+and plan switches. `switchDiscount` uses the application's snapshotted plan IDs;
+`switchAppliedDiscount` ends an ineligible application with reason `switch`.
+Replacement and removal routes are described in the
+[memberships README](../memberships.README.md); none of these operations returns
+a catalog use or consumes a cycle.
 
 Staff assignment accepts `discount: { discountId }` or `discount: { code }`.
 Codes match without regard to case. An inactive or unknown discount returns

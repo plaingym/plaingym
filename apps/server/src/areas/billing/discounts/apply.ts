@@ -90,6 +90,29 @@ export function priceDiscount(row: AppliedMembershipDiscount | Application | nul
   return undefined;
 }
 
+/** Eligibility is locked in with the application, never read from the catalog during a switch. */
+export function switchDiscount(row: AppliedMembershipDiscount | Application | null | undefined, planId: string): 'kept' | 'ended' | 'none' {
+  if (!row) return 'none';
+  return !row.planIds.length || row.planIds.includes(planId.toLowerCase()) ? 'kept' : 'ended';
+}
+
+/** Caller holds the household and membership locks. Never gives back a catalog use. */
+export async function endDiscount(tx: Transaction, context: MutationContext, clock: Clock, membershipId: string,
+  reason: 'replaced' | 'removed' | 'switch') {
+  const [before] = await tx.select().from(membershipDiscounts).where(and(eq(membershipDiscounts.membershipId, membershipId),
+    isNull(membershipDiscounts.endedAt))).for('update');
+  if (!before) return;
+  const guard = revisionGuard(membershipDiscounts.revision, before.revision);
+  const after = assertRevised(await tx.update(membershipDiscounts).set({ endedAt: clock.now(), endReason: reason, revision: guard.next })
+    .where(and(eq(membershipDiscounts.id, before.id), guard.matches)).returning());
+  await catalogAudit(tx, context, clock, 'billing.membership.discount_ended', 'membership', membershipId, before, after);
+}
+
+export async function switchAppliedDiscount(tx: Transaction, context: MutationContext, clock: Clock, membershipId: string, planId: string) {
+  const current = (await liveDiscounts(tx, [membershipId])).get(membershipId);
+  if (switchDiscount(current, planId) === 'ended') await endDiscount(tx, context, clock, membershipId, 'switch');
+}
+
 /** Called only for a billed full cycle, in the transaction advancing the membership's due date. */
 export async function takeDiscountCycle(tx: Transaction, context: MutationContext, clock: Clock, membershipId: string) {
   const [before] = await tx.select().from(membershipDiscounts).where(and(eq(membershipDiscounts.membershipId, membershipId),

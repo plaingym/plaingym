@@ -195,6 +195,13 @@ source of truth; Stripe is the processor. In outline:
   for a full cycle, in the transaction advancing the due date. Partial periods
   receive the discount without consuming an allowance, and waived signup fees
   produce no invoice.
+  Owners and admins can add, replace or remove a live membership's discount with
+  its revision, effective on the next invoice without proration. Plan switches
+  keep its remaining cycles only when the applied snapshot allows the new plan;
+  the preview reports whether it is kept or ended. Scheduled switches resolve
+  that eligibility before the cycle is priced. Issuance audits retain the billed
+  membership price and discount so an immediate upgrade credits the terms that
+  were billed, even after a later discount edit or its final cycle.
 * **Invoicing** (`areas/billing/invoicing/`): pure calculation of invoice lines and tax.
 * **Charge runner** (`areas/billing/runner/`): the daily run charges saved cards in
   two steps (create, then confirm) with idempotency keys, retries on the gym's

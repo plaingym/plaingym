@@ -77,6 +77,12 @@ export const updateMembershipRequestSchema = z.strictObject({
   // A price override always includes its currency; the service checks the gym.
   price: moneySchema.extend({ amountCents: amountCentsSchema.nonnegative() }).superRefine(refinePriceStep(['amountCents'])).optional(),
 }).refine((value) => Object.keys(value).some((key) => key !== 'revision'), 'Supply a change.');
+/** A replacement is a fresh application; already issued invoices never change. */
+export const setMembershipDiscountRequestSchema = z.strictObject({
+  revision: revisionSchema,
+  discount: membershipDiscountSelectionSchema,
+});
+export const removeMembershipDiscountRequestSchema = z.strictObject({ revision: revisionSchema });
 /** `next_billing_date` schedules the switch for the next due date; `now` switches at once (active memberships only). */
 export const planSwitchTimingSchema = z.enum(['next_billing_date', 'now']);
 /** Compared per year (a monthly price × 12) against the membership's current price. */
@@ -109,6 +115,8 @@ export const membershipSwitchPreviewSchema = z.strictObject({
   priceStartsOn: dateSchema,
   // A downgrade before the commitment ends; the switch then needs an override reason.
   commitmentBlocks: z.boolean(),
+  // Eligibility uses the applied snapshot's plan list, independent of catalog edits.
+  discount: z.enum(['kept', 'ended', 'none']),
   // For an upgrade now with days left in the current period: the days charged, the period's length and the
   // invoice total (0 when the rounded proration or the discounted total is zero, so no invoice is issued).
   proration: z.strictObject({
@@ -136,6 +144,8 @@ export type Membership = z.infer<typeof membershipSchema>;
 export type MembershipListQuery = z.infer<typeof membershipListQuerySchema>;
 export type AssignMembershipRequest = z.input<typeof assignMembershipRequestSchema>;
 export type UpdateMembershipRequest = z.input<typeof updateMembershipRequestSchema>;
+export type SetMembershipDiscountRequest = z.infer<typeof setMembershipDiscountRequestSchema>;
+export type RemoveMembershipDiscountRequest = z.infer<typeof removeMembershipDiscountRequestSchema>;
 export type ActivateMembershipRequest = z.infer<typeof activateMembershipRequestSchema>;
 export type FreezeMembershipRequest = z.infer<typeof freezeMembershipRequestSchema>;
 export type ResumeMembershipRequest = z.infer<typeof resumeMembershipRequestSchema>;

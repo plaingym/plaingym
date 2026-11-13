@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, gt, gte, lt, min, notInArray } from 'drizzle-orm';
-import { auditEvents, households, invoiceLineItems, invoices, memberships, planTaxRates, plans, taxRates, type Transaction } from '@plaingym/db';
+import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, notInArray, or } from 'drizzle-orm';
+import { auditEvents, households, invoiceLineItems, invoices, membershipDiscounts, memberships, planTaxRates, plans, taxRates, type Transaction } from '@plaingym/db';
 import type * as c from '@plaingym/shared/contracts';
-import { calculatePlanChange, type CalculatedInvoice, type PlanChangeResult } from './invoicing/index.js';
+import { calculatePlanChange, type CalculatedInvoice, type MembershipDiscount, type PlanChangeResult } from './invoicing/index.js';
 import { pricing } from './runner/store.js';
 import { refuse, switchTerms } from './memberships.plan-change.js';
+import { priceDiscount, switchDiscount } from './discounts/apply.js';
+import { validateDiscount } from './invoicing/pricing.js';
 
 type Row = typeof memberships.$inferSelect;
 type Plan = typeof plans.$inferSelect;
@@ -26,6 +28,7 @@ export function checkNow(row: Row, plan: Plan, today: string) {
 }
 const notBilled = () => refuse('period_not_billed', 'The current period wasn\'t billed at the membership\'s price');
 type PriceSnapshot = { amountCents?: unknown } | null;
+type BilledPricing = { membershipId: string; amountCents: number; discount: c.AppliedMembershipDiscount | null };
 /**
  * The upgrade's proration for the days left in the current period, or null when none are left (the switch falls on the
  * due date). The current period must have been billed to the membership at its current price: a membership line for
@@ -44,9 +47,13 @@ export async function prorateNow(tx: Transaction, row: Row, membership: c.Member
   const home = (await tx.select().from(households).where(eq(households.id, row.householdId)))[0]!;
   const newPlan = { id: plan.id, amountCents: plan.amountCents, currency: plan.currency, interval: plan.interval as c.BillingInterval,
     description: plan.name, taxRates: newTaxes };
-  const quote = () => {
+  const newDiscount = switchDiscount(membership.discount, plan.id) === 'kept' ? priceDiscount(membership.discount) : undefined;
+  const quote = (currentDiscount?: MembershipDiscount) => {
+    // Malformed terms are an invariant failure, not evidence that the period wasn't billed.
+    validateDiscount(currentDiscount); validateDiscount(newDiscount);
     try {
       return calculatePlanChange({ ...pricing(home, row.currency), membership, newPlan, changeOn: today,
+        ...(currentDiscount ? { currentDiscount } : {}), ...(newDiscount ? { newDiscount } : {}),
         ...(row.anniversaryOn === null ? {} : { annualAnchorOn: row.anniversaryOn }) });
     } catch (error) {
       // The engine refuses a change before the period it works out: after a freeze resumed early, that period is a later one.
@@ -55,16 +62,37 @@ export async function prorateNow(tx: Transaction, row: Row, membership: c.Member
     }
   };
   const result = quote();
-  const [billed] = await tx.select({ issuedAt: min(invoices.createdAt) }).from(invoiceLineItems)
+  const bills = await tx.select({ id: invoices.id, issuedAt: invoices.createdAt, planId: invoiceLineItems.planId }).from(invoiceLineItems)
     .innerJoin(invoices, and(eq(invoices.gymId, invoiceLineItems.gymId), eq(invoices.id, invoiceLineItems.invoiceId)))
     .where(and(eq(invoiceLineItems.membershipId, row.id), eq(invoiceLineItems.kind, 'membership'),
-      notInArray(invoices.status, ['draft', 'void', 'refunded']), gte(invoices.dueOn, result.periodStartsOn), lt(invoices.dueOn, result.periodEndsOn)));
-  if (!billed?.issuedAt) notBilled();
+      notInArray(invoices.status, ['draft', 'void', 'refunded']), gte(invoices.dueOn, result.periodStartsOn), lt(invoices.dueOn, result.periodEndsOn)))
+    .orderBy(desc(invoices.dueOn), desc(invoices.createdAt));
+  if (!bills.length) notBilled();
+  const issued = await tx.select({ id: auditEvents.targetId, after: auditEvents.after }).from(auditEvents)
+    .where(and(eq(auditEvents.action, 'billing.invoice.issued'), inArray(auditEvents.targetId, bills.map(bill => bill.id))));
+  const snapshots = new Map(issued.map(event => [event.id,
+    (event.after as { membershipPricing?: BilledPricing[] } | undefined)?.membershipPricing?.find(item => item.membershipId === row.id)]));
+  // A prior upgrade may be followed by a downgrade that keeps its billed price for this period.
+  // Match that price first, including when several switches share a clock instant.
+  const billed = bills.find(bill => snapshots.get(bill.id)?.amountCents === row.amountCents)
+    ?? bills.find(bill => bill.planId === row.planId) ?? bills[0]!;
+  const snapshot = snapshots.get(billed.id);
+  if (snapshot && snapshot.amountCents !== row.amountCents) notBilled();
+  let currentDiscount = priceDiscount(snapshot?.discount);
+  // Recover older invoices from ended/live applications only when the clock unambiguously
+  // places one application across issuance. Boundary ties without a snapshot are refused.
+  if (!snapshot) {
+    const history = await tx.select().from(membershipDiscounts).where(and(eq(membershipDiscounts.membershipId, row.id),
+      lte(membershipDiscounts.appliedAt, billed!.issuedAt), or(isNull(membershipDiscounts.endedAt), gte(membershipDiscounts.endedAt, billed!.issuedAt))));
+    if (history.length > 1 || history.some(item => item.appliedAt.getTime() === billed!.issuedAt.getTime()
+      || item.endedAt?.getTime() === billed!.issuedAt.getTime())) notBilled();
+    currentDiscount = priceDiscount(history[0]);
+  }
   // A staff price edit after the period was billed means the days left were paid at another price than the current one.
   const edits = await tx.select({ before: auditEvents.before, after: auditEvents.after }).from(auditEvents).where(and(
     eq(auditEvents.action, 'billing.membership.updated'), eq(auditEvents.targetId, row.id), gt(auditEvents.occurredAt, billed!.issuedAt!)));
   if (edits.some(edit => (edit.before as PriceSnapshot)?.amountCents !== (edit.after as PriceSnapshot)?.amountCents)) notBilled();
-  return result;
+  return quote(currentDiscount);
 }
 /**
  * The proration invoice to issue, or null. The engine returns none for a proration rounded to zero, and a zero total
@@ -80,7 +108,8 @@ export async function switchPreview(tx: Transaction, row: Row, membership: c.Mem
   const upgradeNow = timing === 'now' && kind === 'upgrade';
   if (timing === 'now') checkNow(row, plan, today);
   const result = upgradeNow ? await prorateNow(tx, row, membership, plan, today) : null;
-  return { planId: plan.id, timing, kind, currency: row.currency, commitmentBlocks, priceStartsOn: upgradeNow ? today : row.nextDueOn,
+  return { planId: plan.id, timing, kind, currency: row.currency, commitmentBlocks, discount: switchDiscount(membership.discount, plan.id),
+    priceStartsOn: upgradeNow ? today : row.nextDueOn,
     proration: result && { periodStartsOn: result.periodStartsOn, periodEndsOn: result.periodEndsOn, billedDays: result.billedDays,
       periodDays: result.periodDays, totalCents: issuable(result)?.amountCents ?? 0 } };
 }

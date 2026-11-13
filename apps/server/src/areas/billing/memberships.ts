@@ -2,7 +2,7 @@
 import { and, asc, desc, eq, gt, lte, ne, or } from 'drizzle-orm';
 import { forGym, memberships, households, members, plans, auditEvents,
   revisionGuard, assertRevised, uuidv7, type Transaction } from '@plaingym/db';
-import { AppError, type Clock } from '@plaingym/shared';
+import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { isCalendarDate, localDate } from '@plaingym/shared/time';
 import * as c from '@plaingym/shared/contracts';
 import type { MutationContext } from '../../core/interfaces/common.js';
@@ -18,9 +18,11 @@ import { cancelScheduledSwitchRequestSchema, checkSwitch, clearedSwitch, planSwi
   type PlanSwitchedNowAudit, type RecordedSwitchRequest, type SwitchPlanRequest, type SwitchScheduledAudit } from './memberships.plan-change.js';
 import { checkNow, issuable, planTaxes, prorateNow, switchPreview } from './memberships.plan-change.now.js';
 import { issue } from './runner/store.js';
-import { applyDiscount, liveDiscounts, presentDiscount, resolveDiscount } from './discounts/apply.js';
+import { applyDiscount, endDiscount, liveDiscounts, presentDiscount, resolveDiscount, switchAppliedDiscount } from './discounts/apply.js';
+import discountMessages from '../../../../../locales/en/billing/discounts.json' with { type: 'json' };
 
 type Row = typeof memberships.$inferSelect;
+const discountText = createTranslator({ 'billing/discounts': discountMessages });
 // The override reason stays out of the Membership contract (erasure clears it; no response or audit carries it).
 const serialize = ({ gymId: _gymId, anniversaryOn: _anniversaryOn, switchOverrideReason: _reason, ...row }: Row,
   discount: c.AppliedMembershipDiscount | null): c.Membership => c.membershipSchema.parse({ ...row, discount,
@@ -175,10 +177,11 @@ export function createMembershipService(options: MembershipOptions = {}) {
       // Serialize sibling activations and assignments before checking the member's remaining trials.
       const before = await lockForSwitch(tx, request.membershipId);
       if (before.revision !== request.revision) conflict('The record changed; reload before saving');
+      const previous = await present(tx, before);
       const changes = await change(tx, before), guard = revisionGuard(memberships.revision, request.revision);
       const after = assertRevised(await tx.update(memberships).set({ ...changes, revision: guard.next })
         .where(and(eq(memberships.id, before.id), guard.matches)).returning());
-      await catalogAudit(tx, context, clock, 'billing.membership.' + action, 'membership', before.id, await present(tx, before), await present(tx, after));
+      await catalogAudit(tx, context, clock, 'billing.membership.' + action, 'membership', before.id, previous, await present(tx, after));
       return present(tx, after);
     });
   }
@@ -186,6 +189,40 @@ export function createMembershipService(options: MembershipOptions = {}) {
     assign,
     assignFromCatalog(context: MutationContext, input: c.AssignMembershipRequest) {
       return assign(context, { ...c.assignMembershipRequestSchema.parse(input), id: uuidv7() }, true);
+    },
+    async setDiscount(context: MutationContext, membershipId: string, input: c.SetMembershipDiscountRequest) {
+      c.idSchema.parse(membershipId);
+      const request = c.setMembershipDiscountRequestSchema.parse(input), gym = await settings.get(context.gymId);
+      return scope(context.gymId, async tx => {
+        const before = await lockForSwitch(tx, membershipId);
+        if (before.revision !== request.revision) conflict(discountText('billing/discounts:membership_changed'));
+        if (before.status === 'cancelled') conflict(discountText('billing/discounts:membership_cancelled'));
+        const member = catalogMissing((await tx.select({ anonymizedAt: members.anonymizedAt }).from(members).where(eq(members.id, before.memberId)))[0]);
+        if (member.anonymizedAt) conflict(discountText('billing/discounts:membership_erased'));
+        const resolved = await resolveDiscount(tx, request.discount, { planIds: [before.planId], timezone: gym.timezone, clock });
+        // A signup-fee waiver alone applies only at assignment: it would end the live discount and take a use for nothing.
+        if (resolved.row.duration === null) conflict(discountText('billing/discounts:membership_fee_only'));
+        const previous = await present(tx, before);
+        await endDiscount(tx, context, clock, membershipId, 'replaced');
+        await applyDiscount(tx, context, clock, resolved, before);
+        const after = await present(tx, await saveSwitch(tx, before, {}));
+        await catalogAudit(tx, context, clock, 'billing.membership.discount_set', 'membership', membershipId, previous, after);
+        return after;
+      });
+    },
+    async removeDiscount(context: MutationContext, membershipId: string, input: c.RemoveMembershipDiscountRequest) {
+      c.idSchema.parse(membershipId);
+      const request = c.removeMembershipDiscountRequestSchema.parse(input);
+      return scope(context.gymId, async tx => {
+        const before = await lockForSwitch(tx, membershipId);
+        if (before.revision !== request.revision) conflict(discountText('billing/discounts:membership_changed'));
+        if (before.status === 'cancelled') conflict(discountText('billing/discounts:membership_cancelled'));
+        const previous = await present(tx, before);
+        await endDiscount(tx, context, clock, membershipId, 'removed');
+        const after = await present(tx, await saveSwitch(tx, before, {}));
+        await catalogAudit(tx, context, clock, 'billing.membership.discount_removed', 'membership', membershipId, previous, after);
+        return after;
+      });
     },
     async get(gymId: string, id: string) { return scope(gymId, async tx => present(tx, await getRow(tx, id))); },
     async list(gymId: string, input: unknown) {
@@ -249,8 +286,9 @@ export function createMembershipService(options: MembershipOptions = {}) {
       });
     },
     cancel(context: MutationContext, request: MembershipEdit) {
-      return edit(context, request, 'cancelled', async (_tx, before) => {
+      return edit(context, request, 'cancelled', async (tx, before) => {
         if (before.status === 'cancelled') conflict('Membership is already cancelled');
+        await endDiscount(tx, context, clock, before.id, 'removed');
         return { status: 'cancelled', cancelledAt: clock.now(), resumesOn: null, ...clearedSwitch(before) };
       });
     },
@@ -290,12 +328,14 @@ export function createMembershipService(options: MembershipOptions = {}) {
           return { membership: after, invoiceId: null };
         }
         checkNow(before, plan, today);
+        const previous = await present(tx, before);
         // Quoted from the membership before the switch: the difference against what the current period was billed at.
-        const invoice = kind === 'upgrade' ? issuable(await prorateNow(tx, before, await present(tx, before), plan, today)) : null;
+        const invoice = kind === 'upgrade' ? issuable(await prorateNow(tx, before, previous, plan, today)) : null;
+        await switchAppliedDiscount(tx, context, clock, before.id, plan.id);
         const after = await present(tx, await saveSwitch(tx, before, switchedNow(before, plan, kind, reason)));
         const invoiceId = invoice ? await issue(tx, context, clock, invoice) : null;
         const audit: PlanSwitchedNowAudit = { request: recorded, overrideUsed, kind, invoiceId, membership: after };
-        await catalogAudit(tx, context, clock, planSwitchedAction, 'membership', before.id, await present(tx, before), audit);
+        await catalogAudit(tx, context, clock, planSwitchedAction, 'membership', before.id, previous, audit);
         return { membership: after, invoiceId };
       });
     },

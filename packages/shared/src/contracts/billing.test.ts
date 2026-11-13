@@ -176,7 +176,7 @@ describe('revisions and membership lifecycle requests', () => {
       expect(switchMembershipPlanRequestSchema.safeParse({ ...request, ...invalid }).success).toBe(false);
     expect(membershipSwitchPreviewQuerySchema.parse({ planId: ids.plan }).timing).toBe('next_billing_date');
     expect(membershipSwitchResponseSchema.parse({ data: { membership, invoiceId: null } }).data.invoiceId).toBeNull();
-    const preview = { planId: ids.plan, timing: 'now', kind: 'upgrade', currency: 'CAD', priceStartsOn: '2026-11-21', commitmentBlocks: false,
+    const preview = { planId: ids.plan, timing: 'now', kind: 'upgrade', currency: 'CAD', priceStartsOn: '2026-11-21', commitmentBlocks: false, discount: 'none',
       proration: { periodStartsOn: '2026-11-01', periodEndsOn: '2026-12-01', billedDays: 10, periodDays: 30, totalCents: 667 } };
     expect(membershipSwitchPreviewResponseSchema.parse({ data: preview }).data).toEqual(preview);
     expect(membershipSwitchPreviewResponseSchema.safeParse({ data: { ...preview, kind: 'sidegrade' } }).success).toBe(false);
@@ -314,7 +314,7 @@ describe('billing endpoint permissions', () => {
   const managerOnly = new Set([
     'createClassPack', 'updateClassPack',
     'createTaxRate', 'updateTaxRate', 'createPlan', 'updatePlan', 'createChargeType', 'updateChargeType',
-    'assignMembership', 'updateMembership', 'activateMembership', 'freezeMembership', 'resumeMembership',
+    'assignMembership', 'updateMembership', 'activateMembership', 'freezeMembership', 'resumeMembership', 'setMembershipDiscount', 'removeMembershipDiscount',
     'cancelMembership', 'switchMembershipPlan', 'cancelMembershipSwitch', 'previewMembershipSwitch', 'createRefund', 'releaseInvoiceHold',
   ]);
   it.each(Object.entries(billingContracts))('covers allowed and denied staff roles for %s', (name, endpoint) => {

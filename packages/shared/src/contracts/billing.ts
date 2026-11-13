@@ -17,7 +17,7 @@ import {
   cancelMembershipSwitchRequestSchema, freezeMembershipRequestSchema, membershipListQuerySchema, membershipListResponseSchema,
   membershipResponseSchema, membershipSwitchPreviewQuerySchema, membershipSwitchPreviewResponseSchema,
   membershipSwitchResponseSchema, resumeMembershipRequestSchema, switchMembershipPlanRequestSchema,
-  updateMembershipRequestSchema,
+  updateMembershipRequestSchema, setMembershipDiscountRequestSchema, removeMembershipDiscountRequestSchema,
 } from './billing/memberships.js';
 import {
   createOneOffInvoiceRequestSchema, invoiceDetailResponseSchema, invoiceListQuerySchema,
@@ -123,6 +123,12 @@ export const billingContracts = {
       + 'A price replaces a scheduled price change and is refused while a plan switch is scheduled (`switch_scheduled`); a due '
       + 'date moved before a scheduled change\'s date moves that date with it.',
     params: billingMembershipParamsSchema, body: updateMembershipRequestSchema, response: membershipResponseSchema, successStatus: 200 },
+  setMembershipDiscount: { method: 'put', path: '/api/billing/memberships/{membershipId}/discount', permission: catalog,
+    description: 'Adds or replaces the discount from the next invoice, with no proration. A replacement takes a new use.',
+    params: billingMembershipParamsSchema, body: setMembershipDiscountRequestSchema, response: membershipResponseSchema, successStatus: 200 },
+  removeMembershipDiscount: { method: 'delete', path: '/api/billing/memberships/{membershipId}/discount', permission: catalog,
+    description: 'Ends the discount from the next invoice, without returning a use or changing issued invoices.',
+    params: billingMembershipParamsSchema, body: removeMembershipDiscountRequestSchema, response: membershipResponseSchema, successStatus: 200 },
   switchMembershipPlan: { method: 'post', path: '/api/billing/memberships/{membershipId}/switch', permission: catalog,
     description: 'Switches a membership to another plan, on the next billing date (default) or `now`. Now is for active memberships '
       + 'and keeps the billing interval: an upgrade charges the price difference for the days left in the current period as one '

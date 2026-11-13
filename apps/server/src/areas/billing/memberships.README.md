@@ -11,6 +11,28 @@ terms commit together; replaying the internal assignment ID consumes no second
 use, and reusing it with another discount is a conflict. The response's
 `discount` is the live snapshot (name, terms and cycles left) or null.
 
+Owners and admins can add or replace that application with
+`PUT /api/billing/memberships/{membershipId}/discount`, sending
+`{ revision, discount: { discountId } }` or `{ revision, discount: { code } }`.
+`DELETE` on the same path takes `{ revision }` and returns the membership with
+`discount: null`. Both check the membership's revision and audit the change in
+the same transaction. A replacement is a fresh application: it checks current
+catalog validity and takes another use, even for the same discount. The old
+application ends as `replaced` or `removed`; uses are never returned. These
+changes affect the next invoice, with no proration or changes to issued invoices.
+Cancelled memberships cannot be edited, and a discount that only waives the
+signup fee is refused (it applies only at assignment). The ended applications and audit events
+retain the history.
+Cancelling a membership ends its application as `removed`, without returning a
+use, and the cancelled membership's response has no live discount.
+
+A plan switch keeps the applied discount and remaining cycles when its
+snapshotted plan list is empty or includes the destination plan, and otherwise
+ends it as `switch`. Later catalog edits cannot change that eligibility. A switch
+uses no cycle. A scheduled switch checks this when the cycle build applies it,
+before pricing; an immediate switch checks it in the switching transaction.
+The preview's `discount` is `kept`, `ended` or `none`.
+
 First-period invoices receive the discount; a waived signup fee creates no fee
 invoice. Fee-only waivers complete at assignment. Full cycle invoices, including a
 first period that bills a whole period, consume a `once` or `cycles` allowance,
@@ -132,7 +154,8 @@ when both plans carry the same rates.
 - **Upgrade:** in the one transaction, the membership takes the new plan and its
   price, any scheduled switch is cleared, and the runner's `issue` writes the
   proration invoice from the invoice engine's `calculatePlanChange` (the new price
-  minus the current one for the days left, with the household discount and the new
+  less its kept discount, minus the current period's price less the named discount
+  billed on its invoice, for the days left, with the household discount and the new
   plan's taxes; due on the gym's local today; its membership line records the new
   plan). With no days left (the switch falls on the due date) or a proration that
   rounds to 0 there is no invoice, and a total of 0 (a full household discount) is
@@ -143,6 +166,12 @@ when both plans carry the same rates.
   an invoice no attempt has reached (the process stopped before collecting) and
   leaves one already attempted alone. Paying the invoice changes nothing on the
   active membership.
+  The invoice's issuance audit snapshots the membership price and discount before
+  any full-cycle allowance is consumed. Replacing, removing or completing that
+  discount later cannot alter the credit side of an upgrade. Older invoices can
+  recover those terms from application history when its timestamps unambiguously
+  identify the application at issuance; ambiguous history requires switching on
+  the next billing date (`period_not_billed`).
 - **Downgrade or equal:** the membership takes the new plan at once and keeps its
   current price until the next due date, through a price change scheduled on the
   new plan (the four `scheduled_*` columns, with the new plan as both the current

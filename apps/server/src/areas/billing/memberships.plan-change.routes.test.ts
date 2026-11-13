@@ -87,7 +87,7 @@ describe('switch a plan now through the routes', () => {
     // $30 more a month for 16 of March's 31 days.
     const quoted = await f.preview(premium.id);
     expect(quoted).toEqual({ status: 200, body: { data: { planId: premium.id, timing: 'now', kind: 'upgrade', currency: before.currency,
-      priceStartsOn: '2028-03-16', commitmentBlocks: false,
+      priceStartsOn: '2028-03-16', commitmentBlocks: false, discount: 'none',
       proration: { periodStartsOn: '2028-03-01', periodEndsOn: '2028-04-01', billedDays: 16, periodDays: 31, totalCents: 1_548 } } } });
     const body = await f.switchBody(premium.id);
     const first = await f.call('POST', f.path() + '/switch', body);
@@ -148,7 +148,7 @@ describe('switch a plan now through the routes', () => {
     const f = await setup(), basic = await f.newPlan({ amountCents: 8_000 }), charges = vi.spyOn(f.provider, 'createCharge');
     const before = await f.read();
     expect((await f.preview(basic.id)).body.data).toEqual({ planId: basic.id, timing: 'now', kind: 'downgrade', currency: 'CAD',
-      priceStartsOn: '2028-04-01', commitmentBlocks: false, proration: null });
+      priceStartsOn: '2028-04-01', commitmentBlocks: false, discount: 'none', proration: null });
     const switched = await f.switchNow(basic.id);
     expect(switched.status).toBe(200);
     expect(switched.body.data).toMatchObject({ invoiceId: null, membership: { planId: basic.id, amountCents: 10_000,
@@ -300,7 +300,7 @@ describe('switch routes', () => {
     const scheduled = await f.switchNow(premium.id, { timing: undefined });
     expect(scheduled.body.data).toMatchObject({ invoiceId: null, membership: { planId: f.plan.id, scheduledPlanId: premium.id, scheduledOn: '2028-04-01' } });
     expect((await f.preview(premium.id, 'next_billing_date')).body.data).toEqual({ planId: premium.id, timing: 'next_billing_date', kind: 'upgrade',
-      currency: 'CAD', priceStartsOn: '2028-04-01', commitmentBlocks: false, proration: null });
+      currency: 'CAD', priceStartsOn: '2028-04-01', commitmentBlocks: false, discount: 'none', proration: null });
     const revision = (await f.row()).revision;
     expect((await f.call('POST', f.path() + '/switch/cancel', { revision: revision - 1 })).status).toBe(409);
     const cancelled = await f.call('POST', f.path() + '/switch/cancel', { revision });
