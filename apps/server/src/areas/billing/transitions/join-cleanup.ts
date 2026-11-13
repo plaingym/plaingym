@@ -1,8 +1,87 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
-import { auditEvents, households, invoices, paymentAttempts, payments, signedLinks, type Transaction } from '@plaingym/db';
+import { auditEvents, households, invoices, paymentAttempts, paymentMethods, payments, signedLinks, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
-import { audit, snapshot } from './store.js';
+import { revokeSignedLinkIn } from '../../links/service.js';
+import { audit, snapshot, systemContext, type InvoiceRow } from './store.js';
+
+/** A submitted join's first invoice and the undisclosed link the join made for it (`public.join.received`). */
+export interface SubmittedJoin { readonly householdId: string; readonly invoiceId: string; readonly linkId: string }
+/**
+ * `ready`: nothing was paid or can still be paid, so the invoice may be voided. `wait`: a payment may still arrive or be
+ * recorded (a Checkout not confirmed closed, a paid invoice whose join is completing), so a later run checks again.
+ * `keep`: staff or the visitor did more than the join (another link or invoice, a used link, a payment, an attempt, a saved
+ * card, a review hold staff released), so the join is left as it is.
+ */
+export type SubmittedJoinCheck = { readonly outcome: 'wait' | 'keep' } | { readonly outcome: 'ready'; readonly invoice: InvoiceRow };
+const checkoutStarts = ['billing.checkout.started', 'billing.card_setup.started'];
+type LinkState = { readonly id: string; readonly revokedAt: Date | null; readonly usedAt: Date | null };
+/** Any link but a spare revoked before use (a concurrent submission's, or one whose delivery failed) is staff following
+ * up. A spare can start nothing, and a session it started before its revocation is still confirmed with the provider. */
+const followUp = (join: SubmittedJoin) => (link: LinkState) => link.id !== join.linkId && (!link.revokedAt || link.usedAt !== null);
+
+/** Whether the household has a link other than the join's that counts as staff following up. Read before asking the
+ * provider about any session, so the cleanup never expires the Checkout of a join it will keep. */
+export async function joinFollowedUp(tx: Transaction, join: SubmittedJoin) {
+  const links = await tx.select({ id: signedLinks.id, revokedAt: signedLinks.revokedAt, usedAt: signedLinks.usedAt }).from(signedLinks)
+    .where(eq(signedLinks.householdId, join.householdId));
+  return links.some(followUp(join));
+}
+
+/** Every Checkout session started through the household's links, and the one the invoice holds. Read before asking the
+ * provider to confirm each one closed; {@link checkSubmittedJoin} then refuses any session it didn't confirm. */
+export async function submittedJoinSessions(tx: Transaction, join: SubmittedJoin) {
+  const rows = await tx.select({ after: auditEvents.after }).from(auditEvents).innerJoin(signedLinks, eq(signedLinks.id, auditEvents.targetId))
+    .where(and(eq(auditEvents.targetType, 'signed_link'), eq(signedLinks.householdId, join.householdId), inArray(auditEvents.action, checkoutStarts)));
+  const [invoice] = await tx.select({ sessionId: invoices.checkoutSessionId }).from(invoices)
+    .where(and(eq(invoices.id, join.invoiceId), eq(invoices.householdId, join.householdId)));
+  const ids = new Set(rows.flatMap(({ after }) => after !== null && typeof after === 'object' && 'sessionId' in after
+    && typeof after.sessionId === 'string' ? [after.sessionId] : []));
+  if (invoice?.sessionId) ids.add(invoice.sessionId);
+  return [...ids].sort();
+}
+
+/**
+ * Caller holds the household lock. Locks the household's links, then its invoices (Checkout's order), and decides whether
+ * the join's invoice may be voided. `closed` holds the sessions the provider confirmed expired since they were read.
+ * Writes nothing.
+ */
+export async function checkSubmittedJoin(tx: Transaction, join: SubmittedJoin, closed: ReadonlySet<string>, clock: Clock): Promise<SubmittedJoinCheck> {
+  const now = clock.now(), wait = { outcome: 'wait' } as const, keep = { outcome: 'keep' } as const;
+  const links = await tx.select().from(signedLinks).where(eq(signedLinks.householdId, join.householdId)).for('update');
+  // The join's own link is the only one it keeps. Any other but a spare is staff following up; a used one finished its Checkout.
+  const link = links.find(l => l.id === join.linkId);
+  if (!link || links.some(followUp(join)) || link.usedAt) return keep;
+  // While the link can start a Checkout, a session could open after the provider's answer.
+  if (!link.revokedAt && link.expiresAt > now) return wait;
+  const bills = await tx.select().from(invoices).where(eq(invoices.householdId, join.householdId)).for('update');
+  const invoice = bills.length === 1 && bills[0]!.id === join.invoiceId ? bills[0]! : undefined;
+  if (!invoice) return keep;
+  // Paid: the join completes through the paid-invoice effect. Never void a paid invoice.
+  if (invoice.paidAt || ['paid', 'partially_refunded', 'refunded'].includes(invoice.status)) return wait;
+  if (invoice.status !== 'open') return keep;
+  const audited = async (action: string) => (await tx.select({ id: auditEvents.id }).from(auditEvents)
+    .where(and(eq(auditEvents.targetId, invoice.id), eq(auditEvents.action, action))).limit(1)).length > 0;
+  // The runner's overdue hold doesn't protect it; a hold from anything else, or staff releasing one to collect, does.
+  if (invoice.needsReview ? !await audited('billing.runner.overdue_held') : await audited('billing.invoice.review_released')) return keep;
+  // An unconfirmed reservation never disclosed a URL, but it must have ended.
+  if (invoice.checkoutExpiresAt && invoice.checkoutExpiresAt > now) return wait;
+  if ((await tx.select({ id: payments.id }).from(payments).where(eq(payments.invoiceId, invoice.id)).limit(1)).length
+    || (await tx.select({ id: paymentAttempts.id }).from(paymentAttempts).where(eq(paymentAttempts.invoiceId, invoice.id)).limit(1)).length
+    || (await tx.select({ id: paymentMethods.id }).from(paymentMethods).where(eq(paymentMethods.householdId, join.householdId)).limit(1)).length) return keep;
+  // Expiry alone never proves a Checkout unpaid: only a session the provider confirmed expired counts as closed.
+  if ((await submittedJoinSessions(tx, join)).some(id => !closed.has(id))) return wait;
+  return { outcome: 'ready', invoice };
+}
+
+/** Voids the invoice {@link checkSubmittedJoin} found ready, in the same transaction, and revokes the join's link.
+ * The invoice keeps its lines and number; a payment recorded later is refused as for any void invoice. */
+export async function voidSubmittedJoin(tx: Transaction, gymId: string, join: SubmittedJoin, invoice: InvoiceRow, clock: Clock) {
+  const context = systemContext(gymId);
+  await tx.update(invoices).set({ status: 'void' }).where(eq(invoices.id, invoice.id));
+  await audit(tx, context, clock, 'billing.invoice.voided', 'invoice', invoice.id, snapshot({ ...invoice, status: 'void' }), snapshot(invoice));
+  await revokeSignedLinkIn(tx, context, join.linkId, clock.now());
+}
 
 /** Join cleanup holds the household lock for this whole transaction. Keep accounting rows;
  * an unresolved Checkout reservation is unsafe even when its local expiry has passed. */

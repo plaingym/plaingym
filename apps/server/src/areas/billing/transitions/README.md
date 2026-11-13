@@ -39,6 +39,20 @@ resolving a payment provider, checking a saved card, reserving an attempt or
 touching Checkout. Thus free plans and full family discounts can activate pending
 memberships through the ordinary effect job.
 
+`join-cleanup.ts` is the only code that voids an invoice, for the public join's cleanup
+(`public/pages/join.md`). `voidAbandonedJoinInvoice` covers an admission that was never
+submitted. For a submitted join unpaid after seven days, `submittedJoinSessions` lists
+the Checkout sessions the household's links started for the caller to confirm expired
+with the provider, `checkSubmittedJoin` (under the caller's household lock) locks the
+household's links, then its invoices, and answers `ready`, `wait` (a paid invoice, a
+link that can still start Checkout, an unended reservation or a session not confirmed
+expired) or `keep` (another link but a spare revoked before use, which `joinFollowedUp`
+also reports before any provider call, or another invoice, a used link, a payment, attempt or saved
+card, or a review hold other than the runner's overdue hold or one staff released),
+and `voidSubmittedJoin` voids the open invoice (`billing.invoice.voided`, lines kept)
+and revokes the join's link in the caller's transaction. A payment recorded on a void
+invoice is refused as a conflict.
+
 Failures update attempt diagnostics, but cannot reopen paid, refunded or void
 invoices, or change the invoice for an older attempt. A cancellation is a decline
 only when the member could have acted on the payment. Cancelling a still-`pending`

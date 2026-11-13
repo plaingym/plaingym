@@ -27,6 +27,7 @@ import type { PortalInvitationService } from '../../areas/members/household-user
 import type { AccountService } from '../../infra/auth/accounts.js';
 import { createPortalInvitationStore } from '../../infra/auth/portal-invitations.js';
 import type { Uploads } from '../../infra/storage/index.js';
+import type { Payments } from '../../infra/payments/index.js';
 import { createJoinCleanup } from './join.cleanup.js';
 import { createInvoiceTransitions } from '../../areas/billing/transitions/index.js';
 import { joinAdmissionExpired } from './join.expiry.js';
@@ -72,6 +73,8 @@ export interface JoinOptions {
   memberships?: Pick<ReturnType<typeof createMembershipService>, 'assign' | 'get' | 'update' | 'activate'>;
   links?: Pick<ReturnType<typeof createSignedLinksService>, 'create' | 'revoke'>;
   uploadsFor?(gymId: string): Promise<Uploads>;
+  /** The runtime's payments resolver: the nightly cleanup confirms an unpaid join's Checkout sessions closed before voiding it. */
+  paymentsFor?(gymId: string): Promise<Payments | null>;
 }
 function missing(): never { throw new AppError('not_found', 'Join not found'); }
 function unavailable(): never { throw new AppError('unavailable', 'Online joining is not available'); }
@@ -116,7 +119,7 @@ export function createJoinService(options: JoinOptions) {
   const cleanup = createJoinCleanup({ scope, clock, uploadsFor: gymId => {
     if (!options.uploadsFor) unavailable();
     return options.uploadsFor(gymId);
-  } });
+  }, ...(options.paymentsFor ? { paymentsFor: options.paymentsFor } : {}) });
   const audit = (tx: Transaction, gymId: string, action: string, targetType: string, targetId: string, after?: unknown, before?: unknown) =>
     writeAudit(tx, { gymId, actorKind: 'system', action, targetType, targetId, occurredAt: clock.now(),
       ...(after === undefined ? {} : { after }), ...(before === undefined ? {} : { before }) });

@@ -41,7 +41,7 @@ export async function resolveDiscount(tx: Transaction, selection: MembershipDisc
   return { row, planIds, audience };
 }
 
-/** Reserve a whole operation's uses together; never return uses on cancellation or removal. */
+/** Reserve a whole operation's uses together; never return uses on cancellation or removal (only a voided join returns them). */
 export async function takeDiscountUses(tx: Transaction, context: MutationContext, clock: Clock, resolved: ResolvedDiscount, count = 1) {
   if (!Number.isSafeInteger(count) || count < 1) throw new RangeError('Invalid discount use count');
   // Re-read under the lock: a caller can reserve more than once within its transaction.
@@ -96,9 +96,10 @@ export function switchDiscount(row: AppliedMembershipDiscount | Application | nu
   return !row.planIds.length || row.planIds.includes(planId.toLowerCase()) ? 'kept' : 'ended';
 }
 
-/** Caller holds the household and membership locks. Never gives back a catalog use. */
+/** Caller holds the household and membership locks. Never gives back a catalog use: `released` marks a voided join's
+ * application, whose uses the join cleanup returns with {@link releaseDiscountUses}. */
 export async function endDiscount(tx: Transaction, context: MutationContext, clock: Clock, membershipId: string,
-  reason: 'replaced' | 'removed' | 'switch') {
+  reason: 'replaced' | 'removed' | 'switch' | 'released') {
   const [before] = await tx.select().from(membershipDiscounts).where(and(eq(membershipDiscounts.membershipId, membershipId),
     isNull(membershipDiscounts.endedAt))).for('update');
   if (!before) return;
@@ -106,6 +107,24 @@ export async function endDiscount(tx: Transaction, context: MutationContext, clo
   const after = assertRevised(await tx.update(membershipDiscounts).set({ endedAt: clock.now(), endReason: reason, revision: guard.next })
     .where(and(eq(membershipDiscounts.id, before.id), guard.matches)).returning());
   await catalogAudit(tx, context, clock, 'billing.membership.discount_ended', 'membership', membershipId, before, after);
+}
+
+/**
+ * Gives back uses a voided join took, the one case a use returns. Caller holds the household lock and writes, in the same
+ * transaction, the record that makes a replay release nothing. Takes the discount row lock, as reserving does.
+ */
+export async function releaseDiscountUses(tx: Transaction, context: MutationContext, clock: Clock, discountId: string, count: number) {
+  if (!Number.isSafeInteger(count) || count < 1) throw new RangeError('Invalid discount use count');
+  const [before] = await tx.select().from(discounts).where(eq(discounts.id, discountId)).for('update');
+  if (!before) return 0;
+  // Never below zero, whatever happened to the counter since the uses were taken.
+  const uses = Math.max(0, before.uses - count), guard = revisionGuard(discounts.revision, before.revision);
+  if (uses === before.uses) return 0;
+  assertRevised(await tx.update(discounts).set({ uses, revision: guard.next })
+    .where(and(eq(discounts.id, before.id), guard.matches)).returning({ id: discounts.id }));
+  await catalogAudit(tx, context, clock, 'billing.discount.uses_released', 'discount', before.id,
+    { uses: before.uses, revision: before.revision }, { uses, revision: before.revision + 1 });
+  return before.uses - uses;
 }
 
 export async function switchAppliedDiscount(tx: Transaction, context: MutationContext, clock: Clock, membershipId: string, planId: string) {

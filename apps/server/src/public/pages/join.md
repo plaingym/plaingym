@@ -61,9 +61,8 @@ contact on the Leads screen, or a check-in), a linked login or a saved card prot
 the admission.
 Cleanup locks the same household and its resources. Its join-specific billing
 transition can void an associated open unpaid invoice only for an unsubmitted
-admission. The current join flow issues invoices after submission has begun, so
-submitted joins with abandoned payments retain their invoices and memberships.
-Cleanup retains
+admission; a join issues its invoice only after submission has begun, so submitted
+joins are left to the unpaid-join void below. Cleanup retains
 any paid invoice, payment, unresolved attempt, Checkout reservation/session or
 card-setup link. Expiry alone never proves an unknown payment safe to discard.
 It removes the prospects and pending memberships, revokes unused links, and marks
@@ -75,6 +74,45 @@ candidates in pages of 100, so protected admissions cannot starve later ones.
 When eligibility checks find protected records or staff work, cleanup writes
 `public.join.retained` under the household lock. Later runs exclude that admission
 before taking its locks, and direct cleanup attempts honor the marker too.
+
+## Unpaid joins
+
+The same nightly job then voids a submitted join whose first invoice is still unpaid
+on the seventh calendar day after submission in the gym's timezone (submitted on
+March 1, it is payable through March 7 and voided from March 8), across daylight
+saving changes. It reads submissions in pages of 100, skipping completed, voided and
+retained joins. Before voiding, it asks the payment provider to confirm every Checkout
+session the household's links started, and the one the invoice holds, expired
+(`expireCheckout`, outside any transaction). It asks nothing for a join staff followed
+up with another link, which it keeps (below), so a payer's live session there stays open. A completed session may hold a payment
+not yet recorded, and an uncertain answer proves nothing: the join waits, and a later
+run asks again. A reserved session whose creation never returned exposed no URL, but
+its reservation must have ended. Without a payments resolver (`paymentsFor`), or with
+no provider configured, a join that started a Checkout waits.
+
+Then, in one transaction under the household lock, it locks the household's links,
+then its invoices, then its memberships, and checks again. A paid invoice is never
+voided: its join completes through the paid-invoice effect. The join is kept for good
+(`public.join.retained`, so later runs skip it) when staff or the visitor did more than
+the join: another link (other than a spare revoked before use, such as a concurrent
+submission's) or invoice, a used link, any payment, charge attempt or saved
+card, a review hold other than the runner's overdue hold (the runner holds an unpaid
+invoice more than seven days past due; that hold doesn't protect it), a hold staff
+released to collect, a membership added, started or changed in status, or a linked
+login. Otherwise it voids the invoice (`billing.invoice.voided`; its lines and
+number stay), revokes the join's link, cancels the pending memberships through the
+membership service, and, for a join that took a code's uses, ends those applications
+with reason `released` and gives the uses back under the discount's row lock
+(`billing.discount.uses_released`). It writes `public.join.voided` (invoice, link,
+memberships, and the discount and uses released) in the same transaction, so a
+replay, a second run or a concurrent one finds the record and releases nothing.
+
+The prospects, their signed waivers and leads, and the household stay for staff
+follow-up, as a retained admission's do. The join page then shows the closed page,
+Checkout can't start, and a replayed submission returns the same link without taking
+a use or starting anything. A payment recorded after the void is refused like any
+payment on a void invoice (`Void invoice cannot accept payment`, 409); staff take it
+on a new invoice.
 
 Outside a trial, the invoice is the household's first cycle: each membership's first full period,
 priced by the invoice engine as the runner prices an active membership on its due
@@ -111,7 +149,8 @@ other code is refused. It checks again before signing or recording leads. Then,
 in one transaction, it locks the household and the discount, takes one use per
 person (a join that would pass the limit takes none and is refused), assigns
 every membership with the discount and records `public.join.discounted`, so a
-replay or concurrent retry takes no second use. If the uses ran out after
+replay or concurrent retry takes no second use. The uses come back, once, only when
+the join is voided unpaid (**Unpaid joins**, above). If the uses ran out after
 admission, the visitor can clear the field and submit again: the submission
 without a code reuses the admission and continues without the discount.
 
@@ -168,10 +207,11 @@ the page every five seconds, and the link works as before. With JavaScript nothi
 reloads the page but the poll, so it runs to its limit; if JavaScript is on but the script
 doesn't load, nothing reloads the page and only **Check again** moves it on. A cancelled or expired Checkout
 leaves the people prospects and the memberships pending; the daily runner neither charges
-nor activates them and holds the invoice for review after seven days. A browser without
+nor activates them and holds the invoice for review after seven days, and the join cleanup
+voids the join on the seventh local day after submission (**Unpaid joins**, above). A browser without
 the cookie is told what happens next and can do nothing more.
 
-When staff void the unpaid invoice or revoke the join's link, it can no longer be paid
+When the join cleanup voids the unpaid invoice or staff revoke the join's link, it can no longer be paid
 online: `/join/checkout`, `/join/return` and `/join/cancelled` show a closed page that
 says to contact the gym, without starting Checkout. A paid invoice wins over a revoked
 link, and a Checkout that completed but is still being recorded continues to
@@ -197,11 +237,12 @@ member-email rules.
 
 ## Composition
 
-`configureJoin({ waivers, checkout, paymentsConfigured, invitations, accounts, uploadsFor, key })`
+`configureJoin({ waivers, checkout, paymentsConfigured, invitations, accounts, uploadsFor, paymentsFor, key })`
 supplies the configured waiver service, the same `createSignedLinkCheckout` instance the
 webhook completes, a payment readiness check, the runtime's portal invitation service,
 the account service, gym-scoped uploads for failed-admission compensation and
-scheduled cleanup, and a stable key of at least 32 bytes. It registers cleanup
+scheduled cleanup, the runtime's payments resolver for confirming an unpaid join's
+Checkout sessions closed, and a stable key of at least 32 bytes. It registers cleanup
 with the public jobs barrel and returns the service whose
 `afterCheckout(gymId, linkId)` must run in the webhook handlers' `afterCheckoutRecorded`
 after the signed-link completion, including when that completion reports the link gone,
@@ -224,4 +265,8 @@ axe WCAG A/AA with JavaScript), trial/free plan forms, a refused and an accepted
 code with the review step, drawn and file signatures,
 and native form layouts and submissions with JavaScript disabled at both widths.
 `areas/billing/transitions/join-cleanup.test.ts` covers
-invoice safety and cross-gym cleanup against real PostgreSQL.
+invoice safety and cross-gym cleanup against real PostgreSQL. `join.unpaid.test.ts` covers
+the unpaid-join void there with FakePayments: the sixth and seventh days across both
+clock changes, uses returned once over repeated and concurrent runs, a join paid on the
+sixth day, a payment after the void, a completed Checkout, staff follow-up, the runner's
+overdue hold, a cleanup without a payments resolver, and cross-gym runs.

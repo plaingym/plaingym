@@ -198,7 +198,12 @@ source of truth; Stripe is the processor. In outline:
   produce no invoice. On `/join` a visitor may enter a code (never a discount ID):
   every refused code gets one neutral answer behind the join rate limits, and a
   join takes one use per person, all or none, with its memberships in one
-  transaction, so a replay takes none (see the
+  transaction, so a replay takes none. A submitted join still unpaid on the
+  seventh local day after submission is voided by the nightly join cleanup, once
+  the payment provider confirms its Checkout sessions expired: its invoice voided
+  (lines kept), its link revoked and its pending memberships cancelled, and its
+  uses given back exactly once; the prospects, waivers, leads and household stay
+  for staff follow-up (see the
   [join README](../apps/server/src/public/pages/join.md)).
   Owners and admins can add, replace or remove a live membership's discount with
   its revision, effective on the next invoice without proration. Plan switches
