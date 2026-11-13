@@ -9,6 +9,7 @@ describe('runtime upload regions', () => {
     { label: 'AWS default', env: {}, region: 'us-east-1', origin: 'https://s3.us-east-1.amazonaws.com' },
     { label: 'AWS empty', env: { UPLOADS_S3_REGION: '' }, region: 'us-east-1', origin: 'https://s3.us-east-1.amazonaws.com' },
     { label: 'AWS explicit', env: { UPLOADS_S3_REGION: 'eu-west-1' }, region: 'eu-west-1', origin: 'https://s3.eu-west-1.amazonaws.com' },
+    { label: 'AWS China explicit endpoint', env: { UPLOADS_S3_ENDPOINT: 'https://s3.cn-north-1.amazonaws.com.cn', UPLOADS_S3_REGION: 'cn-north-1' }, region: 'cn-north-1', origin: 'https://s3.cn-north-1.amazonaws.com.cn' },
     { label: 'custom endpoint default', env: { UPLOADS_S3_ENDPOINT: 'https://objects.example.test/s3' }, region: 'auto', origin: 'https://objects.example.test' },
     { label: 'custom endpoint explicit', env: { UPLOADS_S3_ENDPOINT: 'https://objects.example.test/s3', UPLOADS_S3_REGION: 'eu-west-1' }, region: 'eu-west-1', origin: 'https://objects.example.test' },
   ])('uses the same region for signing and the CSP: $label', async ({ env, region, origin }) => {

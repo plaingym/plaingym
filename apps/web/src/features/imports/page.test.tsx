@@ -11,7 +11,7 @@ import { t } from '../../lib/i18n.js';
 import { ImportsPage } from './page.js';
 const { request } = vi.hoisted(() => ({ request: vi.fn() }));
 vi.mock('../../app/context.js', () => ({ useBootstrap: vi.fn() }));
-vi.mock('../../lib/api.js', () => ({ createJsonTransport: () => request }));
+vi.mock('../../lib/api.js', async importOriginal => ({ ...await importOriginal<typeof import('../../lib/api.js')>(), createJsonTransport: () => request }));
 const id = '00000000-0000-7000-8000-000000000001', runId = '00000000-0000-7000-8000-000000000002';
 const createdAt = '2026-10-22T12:00:00Z';
 const uploaded = { id, filename: 'people.csv', rowCount: 1, columns: ['Name'],
@@ -28,6 +28,45 @@ function start() {
 beforeEach(() => { bootstrap(); request.mockReset(); });
 afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear(); vi.unstubAllGlobals(); });
 describe('CSV admin workflow', () => {
+  it.each([
+    { status: 500, code: 'unavailable', message: 'Private server detail' },
+    { status: 503, code: 'unknown', message: 'Private server detail' },
+    { status: 503, code: 'unavailable', message: 'x'.repeat(2001) },
+    { status: 503, code: 'unavailable', message: '   ' },
+  ])('hides unapproved preview messages: $status $code', async ({ status, code, message }) => {
+    vi.stubGlobal('fetch', vi.fn(async (path: string) => path === '/api/imports/uploads'
+      ? Response.json({ data: uploaded }) : Response.json({ error: { code, message } }, { status })));
+    start();
+    fireEvent.change(screen.getByLabelText(/CSV file/), { target: { files: [new File(['Name\nTest'], 'people.csv')] } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview' }));
+    expect((await screen.findByRole('alert')).textContent).toBe('The request failed. Please try again.');
+  });
+  it.each([
+    { label: 'Import type', value: 'memberships' },
+    { label: 'Duplicates', value: 'skip' },
+    { label: 'Name', value: 'lastName' },
+  ])('clears preview errors when the plan changes: $label', async ({ label, value }) => {
+    vi.stubGlobal('fetch', vi.fn(async (path: string) => path === '/api/imports/uploads'
+      ? Response.json({ data: uploaded }) : Response.json({ error: { code: 'unavailable', message: 'Retry later' } }, { status: 503 })));
+    start();
+    fireEvent.change(screen.getByLabelText(/CSV file/), { target: { files: [new File(['Name\nTest'], 'people.csv')] } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview' }));
+    await screen.findByRole('alert');
+    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  });
+  it.each([
+    { status: 400, code: 'invalid_request', key: 'invalidMapping' },
+    { status: 404, code: 'not_found', key: 'notFound' },
+  ])('shows the API explanation for a preview $status', async ({ status, code, key }) => {
+    const message = t('imports/pipeline:' + key);
+    vi.stubGlobal('fetch', vi.fn(async (path: string) => path === '/api/imports/uploads'
+      ? Response.json({ data: uploaded }) : Response.json({ error: { code, message } }, { status })));
+    start();
+    fireEvent.change(screen.getByLabelText(/CSV file/), { target: { files: [new File(['Name\nTest'], 'people.csv')] } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview' }));
+    expect((await screen.findByRole('alert')).textContent).toBe(message);
+  });
   it.each([true, false])('shows a preview 503 message with a safe fallback (JSON: %s)', async (json) => {
     const message = t('imports/pipeline:previewTimedOut');
     expect(message).toContain('Split the file');

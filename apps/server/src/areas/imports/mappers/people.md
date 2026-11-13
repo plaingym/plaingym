@@ -1,6 +1,10 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # People CSV mapper
 
+The whole-file index retains shared families and compact per-row flags. A
+customer-keyed family of one is rebuilt from its source row during analysis,
+including when the member has an independent external ID.
+
 `peopleMapper` plugs into the existing import pipeline without additional runtime
 wiring. It analyzes with the supplied read-only handle and writes only inside
 the pipeline's transaction, in chunks of at most 100 rows. Preview and dry runs
@@ -43,9 +47,9 @@ case matching without treating wildcard characters as patterns. Identity and hou
 are unchanged; edits automatically update the generated value.
 The whole-file index keeps no mapped row: for each row only its family and the
 issues the file decides (a repeated identity, a family mismatch, a customer or
-payment method another family uses), and for each family of several rows, or
-of one row grouped by a shared customer, its shared values, last names and
-lookup keys; any other row is a family of one, read from the row itself. Each
+payment method another family uses), and for each family of several rows,
+its shared values, last names and lookup keys; a family of one is read from
+the row itself, preserving whether its household key or customer key won. Each
 chunk maps its own rows again, with the date order the file decided.
 
 Updates lock the current member or household and check its revision. Audit

@@ -52,11 +52,18 @@ export function CatalogEditor({ kind, record, currency, taxes, busy, locked = fa
 }) {
   const [invalid, setInvalid] = useState(false);
   const [source, setSource] = useState(record), [draft, setDraft] = useState(() => catalogDraft(record, currency));
+  const [clashes, setClashes] = useState<Partial<typeof draft>>({});
   if (source !== record) {
     const before = catalogDraft(source, currency), fresh = catalogDraft(record, currency);
+    const nextClashes: Partial<typeof draft> = {};
     // Reload untouched fields from the server; retain edits, including text not yet valid for saving.
     const merged = Object.fromEntries(Object.keys(fresh).map(key => {
       const field = key as keyof typeof draft;
+      if (field !== 'taxRateIds' && JSON.stringify(draft[field]) !== JSON.stringify(fresh[field])
+        && (field in clashes || (JSON.stringify(draft[field]) !== JSON.stringify(before[field])
+          && JSON.stringify(fresh[field]) !== JSON.stringify(before[field])))) {
+        Object.assign(nextClashes, { [field]: fresh[field] });
+      }
       return [field, JSON.stringify(draft[field]) === JSON.stringify(before[field]) ? fresh[field] : draft[field]];
     })) as typeof draft;
     const carried = record && 'taxRateIds' in record ? record.taxRateIds : [];
@@ -64,20 +71,27 @@ export function CatalogEditor({ kind, record, currency, taxes, busy, locked = fa
     const added = draft.taxRateIds.filter(id => !before.taxRateIds.includes(id));
     const selected = [...fresh.taxRateIds.filter(id => !added.includes(id) && (draft.taxRateIds.includes(id) || !before.taxRateIds.includes(id))), ...added];
     merged.taxRateIds = selected.filter(id => taxes.some(rate => rate.id === id && (rate.active || carried.includes(id))));
-    setSource(record); setDraft(merged);
+    setSource(record); setDraft(merged); setClashes(nextClashes);
   }
   const change = <K extends keyof typeof draft>(field: K, value: (typeof draft)[K]) => setDraft(current => ({ ...current, [field]: value }));
   const price = record && 'amountCents' in record ? record : undefined;
+  const latest = (field: keyof typeof draft) => {
+    const value = clashes[field];
+    if (value === undefined || JSON.stringify(value) === JSON.stringify(draft[field])) return null;
+    const display = typeof value === 'boolean' ? text(value ? 'yes' : 'no')
+      : field === 'interval' ? text(String(value)) : String(value) || text('emptyValue');
+    return <p role="note" className="break-words text-sm text-destructive">{say('latestValue', { value: display })}</p>;
+  };
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (stale || busy || locked) return;
-    const form = new FormData(event.currentTarget); setInvalid(false);
+    setInvalid(false);
     let data: Record<string, unknown>;
     try {
-      data = { name: String(form.get('name')).trim(), active: form.has('active') };
-      if (kind === 'taxes') Object.assign(data, { rateMillionths: decimalUnits(String(form.get('rate')), 4), inclusive: form.has('inclusive') });
-      else Object.assign(data, { amountCents: parseMinorUnits(String(form.get('amount')), currency), currency, taxRateIds: form.getAll('taxRateIds') });
-      if (kind === 'plans') Object.assign(data, { interval: form.get('interval'), signupFeeCents: parseMinorUnits(String(form.get('signupFee')), currency),
-        trialDays: Number(form.get('trialDays')), commitmentMonths: form.get('commitmentMonths') ? Number(form.get('commitmentMonths')) : null });
+      data = { name: draft.name.trim(), active: draft.active };
+      if (kind === 'taxes') Object.assign(data, { rateMillionths: decimalUnits(draft.rate, 4), inclusive: draft.inclusive });
+      else Object.assign(data, { amountCents: parseMinorUnits(draft.amount, currency), currency, taxRateIds: draft.taxRateIds });
+      if (kind === 'plans') Object.assign(data, { interval: draft.interval, signupFeeCents: parseMinorUnits(draft.signupFee, currency),
+        trialDays: Number(draft.trialDays), commitmentMonths: draft.commitmentMonths ? Number(draft.commitmentMonths) : null });
     } catch { setInvalid(true); return; }
     await save({ ...data, ...(record ? { revision: record.revision } : {}) });
   }
@@ -85,18 +99,18 @@ export function CatalogEditor({ kind, record, currency, taxes, busy, locked = fa
     <h2 className="text-lg font-semibold">{text(record ? 'edit' : 'create')} {text(kind)}</h2>
     {invalid && <Alert role="alert">{text('invalid')}</Alert>}
     <fieldset disabled={busy || locked} className="grid min-w-0 gap-4 sm:grid-cols-2">
-      <Label className="block min-w-0 sm:col-span-2">{text('name')}<Input name="name" required value={draft.name} onChange={event => change('name', event.target.value)}/></Label>
+      <div className="min-w-0 sm:col-span-2"><Label className="block min-w-0">{text('name')}<Input name="name" required value={draft.name} onChange={event => change('name', event.target.value)}/></Label>{latest('name')}</div>
       {kind === 'taxes' ? <>
-        <Label className="block min-w-0">{text('rate')}<Input name="rate" inputMode="decimal" type="number" min="0" max="100" step="0.0001" required value={draft.rate} onChange={event => change('rate', event.target.value)}/></Label>
-        <Label className="flex min-h-11 items-center gap-3"><input className="size-5" type="checkbox" name="inclusive" checked={draft.inclusive} onChange={event => change('inclusive', event.target.checked)}/>{text('inclusive')}</Label>
+        <div className="min-w-0"><Label className="block min-w-0">{text('rate')}<Input name="rate" inputMode="decimal" type="number" min="0" max="100" step="0.0001" required value={draft.rate} onChange={event => change('rate', event.target.value)}/></Label>{latest('rate')}</div>
+        <div className="min-w-0"><Label className="flex min-h-11 items-center gap-3"><input className="size-5" type="checkbox" name="inclusive" checked={draft.inclusive} onChange={event => change('inclusive', event.target.checked)}/>{text('inclusive')}</Label>{latest('inclusive')}</div>
       </> : <>
-        <Label className="block min-w-0">{text('amount')} ({currency})<Input name="amount" inputMode="decimal" type="number" min="0" step={amountInputStep(currency)} required value={draft.amount} onChange={event => change('amount', event.target.value)}/></Label>
+        <div className="min-w-0"><Label className="block min-w-0">{text('amount')} ({currency})<Input name="amount" inputMode="decimal" type="number" min="0" step={amountInputStep(currency)} required value={draft.amount} onChange={event => change('amount', event.target.value)}/></Label>{latest('amount')}</div>
         {kind === 'plans' && record && <p className="text-sm text-muted-foreground sm:col-span-2">{text('pcEditorHelp')}</p>}
         {kind === 'plans' && <>
-          <Label className="block min-w-0">{text('interval')}<select className={selectClass} name="interval" value={draft.interval} onChange={event => change('interval', event.target.value as typeof draft.interval)}><option value="monthly">{text('monthly')}</option><option value="annual">{text('annual')}</option></select></Label>
-          <Label className="block min-w-0">{text('signupFee')} ({currency})<Input name="signupFee" type="number" inputMode="decimal" min="0" step={amountInputStep(currency)} required value={draft.signupFee} onChange={event => change('signupFee', event.target.value)}/></Label>
-          <Label className="block min-w-0">{text('trialDays')}<Input name="trialDays" type="number" min="0" step="1" required value={draft.trialDays} onChange={event => change('trialDays', event.target.value)}/></Label>
-          <Label className="block min-w-0">{text('commitmentMonths')}<Input name="commitmentMonths" type="number" min="1" step="1" value={draft.commitmentMonths} onChange={event => change('commitmentMonths', event.target.value)}/></Label>
+          <div className="min-w-0"><Label className="block min-w-0">{text('interval')}<select className={selectClass} name="interval" value={draft.interval} onChange={event => change('interval', event.target.value as typeof draft.interval)}><option value="monthly">{text('monthly')}</option><option value="annual">{text('annual')}</option></select></Label>{latest('interval')}</div>
+          <div className="min-w-0"><Label className="block min-w-0">{text('signupFee')} ({currency})<Input name="signupFee" type="number" inputMode="decimal" min="0" step={amountInputStep(currency)} required value={draft.signupFee} onChange={event => change('signupFee', event.target.value)}/></Label>{latest('signupFee')}</div>
+          <div className="min-w-0"><Label className="block min-w-0">{text('trialDays')}<Input name="trialDays" type="number" min="0" step="1" required value={draft.trialDays} onChange={event => change('trialDays', event.target.value)}/></Label>{latest('trialDays')}</div>
+          <div className="min-w-0"><Label className="block min-w-0">{text('commitmentMonths')}<Input name="commitmentMonths" type="number" min="1" step="1" value={draft.commitmentMonths} onChange={event => change('commitmentMonths', event.target.value)}/></Label>{latest('commitmentMonths')}</div>
         </>}
         <fieldset className="min-w-0 sm:col-span-2"><legend className="font-medium">{text('taxes')}</legend>
           {!taxes.length && <p className="text-sm text-muted-foreground">{text('noTaxes')}</p>}
@@ -106,7 +120,7 @@ export function CatalogEditor({ kind, record, currency, taxes, busy, locked = fa
           </Label>)}
         </fieldset>
       </>}
-      <Label className="flex min-h-11 items-center gap-3"><input className="size-5" type="checkbox" name="active" checked={draft.active} onChange={event => change('active', event.target.checked)}/>{text('active')}</Label>
+      <div className="min-w-0"><Label className="flex min-h-11 items-center gap-3"><input className="size-5" type="checkbox" name="active" checked={draft.active} onChange={event => change('active', event.target.checked)}/>{text('active')}</Label>{latest('active')}</div>
       <div className="flex flex-col gap-2 sm:col-span-2 sm:flex-row"><Button type="submit" disabled={stale}>{text(busy ? 'saving' : 'save')}</Button><Button variant="outline" onClick={cancel}>{text('cancel')}</Button></div>
     </fieldset>
   </form>;

@@ -26,8 +26,8 @@ const fileIssues = [
 if (fileIssues.length > 8) throw new Error('File issues must fit in one byte');
 /**
  * What the whole file decides for each row, by its position in the source: no mapped row is kept, so a chunk maps its own rows
- * again. `families` holds families of several rows, and families of one whose key isn't the row's own household key; any
- * other row (`familyOf` -1) is a family of one, read from the row itself.
+ * again. `families` holds families of several rows. A family of one is read from the row itself:
+ * `familyOf` -1 uses its household key; -2 uses its customer key.
  */
 interface FileIndex {
   dateOrder: DateOrder; familyOf: Int32Array; families: Family[];
@@ -93,11 +93,13 @@ function fileIndex(source: readonly CsvRow[], plan: ImportPlanRequest, today: st
   const customers = new Map<string, string>(), methods = new Map<string, string>();
   for (const [key, positions] of groups) {
     const members = positions.map((position) => people[position]!);
-    // A row alone in its family agrees with it; analyze reads that family from the row unless its key is a shared one.
-    const shared = members.length > 1 || key !== householdKey(members[0]!) ? family(key, members) : undefined;
+    // A singleton needs only a flag when its customer key takes precedence over its member ID.
+    const shared = members.length > 1 ? family(key, members) : undefined;
     if (shared) {
       for (const position of positions) index.familyOf[position] = index.families.length;
       index.families.push(shared);
+    } else if (key !== householdKey(members[0]!)) {
+      index.familyOf[positions[0]!] = -2;
     }
     positions.forEach((position, i) => {
       const person = members[i]!, flag = (bit: number) => { index.issues[position]! |= 1 << bit; };
@@ -158,7 +160,8 @@ async function analyze(tx: Reader, rows: readonly CsvRow[], plan: ImportPlanRequ
       if (file.issues[position]! & 1 << bit) person.issues.push({ rowNumber: row.rowNumber, column: column(field), code, message: message(key) });
     });
     const index = file.familyOf[position]!;
-    return { person, family: index < 0 ? family(householdKey(person), [person]) : file.families[index]! };
+    return { person, family: index < 0 ? family(index === -2 ? JSON.stringify(['customer', person.stripeCustomerId])
+      : householdKey(person), [person]) : file.families[index]! };
   });
   const families = unique(chunk.map((entry) => entry.family));
   const found = await existingMembers(tx, unique(families.flatMap((family) => family.lastNames)));

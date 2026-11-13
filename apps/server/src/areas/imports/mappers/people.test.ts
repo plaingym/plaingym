@@ -57,6 +57,18 @@ const snapshot = (gymId = gymA) => database.forGym(gymId, async (tx) => ({
 }));
 
 describe('people mapper through the real import pipeline', () => {
+  it('rebuilds customer-keyed singleton families without merging their distinct member IDs', async () => {
+    const input = await services().load(csvLine(['Member ID', 'First Name', 'Last Name', 'Email', 'Stripe Customer ID'])
+      + Array.from({ length: 103 }, (_, i) => csvLine([`member${i}`, `Person${i}`, 'Family', `person${i}@example.test`, `cus_Solo${i}`])).join(''));
+    const preview = await input.preview();
+    expect(preview.summary).toMatchObject({ totalRows: 103, create: 103, errors: 0 });
+    expect(preview.data[0]!.values).toMatchObject({ familyKey: JSON.stringify(['customer', 'cus_Solo0']), householdName: 'Person0 Family' });
+    expect((await input.run()).job).toMatchObject({ status: 'succeeded', committedRows: 103 });
+    const saved = await snapshot();
+    expect(saved.households).toHaveLength(103);
+    expect(new Set(saved.members.map(person => person.householdId)).size).toBe(103);
+    expect(new Set(saved.households.map(home => home.stripeCustomerId)).size).toBe(103);
+  });
   it('imports family exports, frozen status, opt-outs, tags and stored Stripe IDs; reimporting skips duplicates', async () => {
     const { load } = services(), source = await load(familyExport);
     expect((await source.preview()).summary).toEqual({ totalRows: 4, create: 4, update: 0, skip: 0, errors: 0 });

@@ -208,9 +208,12 @@ describe('catalog and member billing screens', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Reload record' }));
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Reload record' })).toBeNull());
     expect([box('Sales tax').checked, box('Extra tax').checked, box('Third tax').checked, box('Fourth tax').checked]).toEqual([true, false, true, true]);
+    expect(screen.queryByRole('note')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(api.call).toHaveBeenLastCalledWith('updatePlan',
-      expect.objectContaining({ revision: 4, taxRateIds: [tax.id, third.id, fourth.id] }), { planId: plan.id }));
+      expect.objectContaining({ revision: 4, taxRateIds: expect.arrayContaining([tax.id, third.id, fourth.id]) }), { planId: plan.id }));
+    // The merged selection is exactly these three rates, in any order.
+    expect((vi.mocked(api.call).mock.lastCall?.[1] as { taxRateIds: string[] }).taxRateIds).toHaveLength(3);
   });
   it('creates an inclusive tax rate and shows an empty charge catalog', async () => {
     const api = client(); start(<CatalogWorkspace gymId={id(1)} client={api}/>);

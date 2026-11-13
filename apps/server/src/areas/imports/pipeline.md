@@ -95,6 +95,11 @@ are decoded on access. The compatibility `row.values` getter materializes one ro
 for inspection. A preview or run holds the parsed document and
 the mapper's whole-file index, never every planned row.
 
+The admin preview displays bounded explanations only for the API's own
+`invalid_request` 400, `not_found` 404 and `unavailable` 503 responses, using
+the shared web error reader. Other failures show the generic request error. Changing the mapper, duplicate policy or column mapping clears
+the previous preview and its error.
+
 An upload reads the file's bytes into a buffer only to decode them, so they are
 released before the text is parsed; it keeps only the header and row count, and
 streams the stored `source.csv` from the uploaded file itself.

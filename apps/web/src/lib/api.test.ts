@@ -1,10 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it, vi } from 'vitest';
-import { ApiError, apiErrorReasons, createApiClient, createJsonTransport } from './api.js';
+import { ApiError, apiErrorReasons, createApiClient, createJsonTransport, readApiError } from './api.js';
 import { createBootstrapLoader, createShellServices, sessionDestination } from '../app/services.js';
 import { createShellTranslator } from './i18n.js';
 
 describe('API transport', () => {
+  it('only exposes bounded messages allowed by status, code and optional exact text', async () => {
+    const body = { error: { code: 'forbidden', message: 'Uploads are disabled in the demo', details: { reason: ['demo'] } } };
+    const response = Response.json(body, { status: 403 });
+    expect(await readApiError(response)).toEqual({ reasons: ['demo'] });
+    expect(await readApiError(response, [{ status: 403, code: 'forbidden', message: body.error.message }]))
+      .toEqual({ reasons: ['demo'], message: body.error.message });
+    expect(await readApiError(response, [{ status: 403, code: 'forbidden', message: 'Different message' }])).toEqual({ reasons: ['demo'] });
+    expect(await readApiError(response, [{ status: 409, code: 'forbidden' }])).toEqual({ reasons: ['demo'] });
+    expect(await readApiError(response, [{ status: 403, code: 'conflict' }])).toEqual({ reasons: ['demo'] });
+    expect(await response.json()).toEqual(body);
+  });
+  it.each(['', '  ', 'x'.repeat(2001)])('rejects an empty or oversized error message (%#)', async message => {
+    expect(await readApiError(Response.json({ error: { code: 'unavailable', message } }, { status: 503 }),
+      [{ status: 503, code: 'unavailable' }])).toEqual({ reasons: [] });
+  });
   it('reads structured reason codes without consuming the response body', async () => {
     const body = { error: { message: 'Private server detail', details: { reason: ['tax_rate_attached', 'conflict'] } } };
     const response = Response.json(body, { status: 409 });

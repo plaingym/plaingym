@@ -35,7 +35,8 @@ export class DemoUploads implements Uploads {
     await this.source.markDeleted(key, options);
     // Member erasure already deletes signature images through this wrapper.
     const cached = pdfKey(key);
-    if (cached) await this.source.markDeleted(cached, options);
+    // Once the signature is marked, complete its paired erasure even if the caller disconnects.
+    if (cached) await this.source.markDeleted(cached);
   }
   async waiverPdf(signatureImageKey: string, render: () => Promise<Uint8Array>, freshKey: () => string): Promise<string> {
     assertNoTransaction('storage.put');

@@ -5,6 +5,12 @@ Import `LocalUploads`, `S3Uploads`, `S3BackupObjectStore`, or `createS3Client` f
 `infra/storage/index.ts`. The existing interfaces and in-memory fakes are unchanged.
 Every storage operation rejects calls inside application database transactions.
 
+For AWS China, configure `UPLOADS_S3_ENDPOINT` explicitly alongside the region
+(see `docs/configuration.md`), so the browser image allowlist matches signed URLs.
+The demo uploads wrapper completes deletion of a signature's cached waiver PDF
+without the caller's cancellation signal once the signature's deletion marker
+has been written.
+
 `releaseFiles` in `release.ts` marks released upload keys deleted without masking
 the save's outcome. It resolves the gym's store once per nonempty call, logs
 resolution or deletion failures, and continues with other keys after a deletion

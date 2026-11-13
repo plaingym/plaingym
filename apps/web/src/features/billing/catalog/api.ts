@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { billingContracts, settingsContracts, membersContracts, type ApplyPlanPriceChangeRequest, type EndpointContract, type ListResponse } from '@plaingym/shared/contracts';
-import { ApiError, apiErrorReasons } from '../../../lib/api.js';
+import { ApiError, readApiError } from '../../../lib/api.js';
 import { parseResponse } from '../../../lib/response.js';
 
 export async function billingRequest<C extends EndpointContract>(contract: C,
@@ -15,7 +15,7 @@ export async function billingRequest<C extends EndpointContract>(contract: C,
     ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   if (!response.ok) {
     throw new ApiError(response.status, response.status === 409 ? 'conflict' : 'request_failed',
-      await apiErrorReasons(response));
+      (await readApiError(response)).reasons);
   }
   return parseResponse(contract.response, await response.json()) as ReturnType<C['response']['parse']>;
 }

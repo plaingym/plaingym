@@ -32,9 +32,11 @@ function matches(person: Person, identity: Identity): boolean {
 }
 const planMatches = (plan: Plan, source: Source) => plan.id === source.plan || normalize(plan.name) === normalize(source.plan);
 const key = (memberId: string, planId: string) => JSON.stringify([memberId, planId]);
+/** Source identities are already normalized by parseMembership. */
+const primaryKey = (identity: Identity) => JSON.stringify(identity.email ? ['email', identity.email]
+  : ['name', identity.firstName, identity.lastName]);
 async function findPeople(tx: Reader, gymId: string, identities: Identity[]): Promise<Person[]> {
-  const unique = [...new Map(identities.map(identity => [JSON.stringify(identity.email ? ['email', identity.email]
-    : ['name', identity.firstName, identity.lastName]), identity])).values()], people = new Map<string, Person>();
+  const unique = [...new Map(identities.map(identity => [primaryKey(identity), identity])).values()], people = new Map<string, Person>();
   for (let offset = 0; offset < unique.length; offset += 100) {
     const found = await tx.select().from(members).where(and(eq(members.gymId, gymId), isNull(members.anonymizedAt), or(
       ...unique.slice(offset, offset + 100).map(identity => identity.email ? eq(members.emailFolded, identity.email)
@@ -48,18 +50,19 @@ async function findPeople(tx: Reader, gymId: string, identities: Identity[]): Pr
 interface SourceIndex { rows: Map<number, Source>; identities: Map<string, Source[]> }
 const files = new WeakMap<readonly CsvRow[], Map<string, SourceIndex>>();
 const identityKeys = (identity: Identity) => [
-  ...(identity.email ? [JSON.stringify(['email', normalize(identity.email)])] : []),
-  ...(identity.firstName && identity.lastName ? [JSON.stringify(['name', normalize(identity.firstName), normalize(identity.lastName)])] : []),
+  ...(identity.email ? [JSON.stringify(['email', identity.email])] : []),
+  ...(identity.firstName && identity.lastName ? [JSON.stringify(['name', identity.firstName, identity.lastName])] : []),
 ];
+const personKeys = (person: Person) => identityKeys({ email: normalize(person.email ?? ''), firstName: normalize(person.firstName),
+  lastName: normalize(person.lastName), dateOfBirth: person.dateOfBirth ?? '' });
 /** Index this transaction's candidates, never cached database state between chunks. */
 function peopleLookup(people: Person[]): (identity: Identity) => Person[] {
   const index = new Map<string, Person[]>();
-  for (const person of people) for (const identity of identityKeys({ ...person, email: person.email ?? '', dateOfBirth: person.dateOfBirth ?? '' })) {
+  for (const person of people) for (const identity of personKeys(person)) {
     const entries = index.get(identity) ?? []; entries.push(person); index.set(identity, entries);
   }
   return identity => {
-    const firstKey = identityKeys(identity)[0];
-    return (firstKey === undefined ? [] : index.get(firstKey) ?? []).filter(person => matches(person, identity));
+    return (index.get(primaryKey(identity)) ?? []).filter(person => matches(person, identity));
   };
 }
 function sourceFile(context: MapperContext, plan: ImportPlanRequest): SourceIndex {
@@ -99,7 +102,7 @@ async function analyze(tx: Reader, rows: readonly CsvRow[], plan: ImportPlanRequ
     inArray(members.householdId, homeIds), isNull(members.anonymizedAt))) : [];
   const catalog = await tx.select().from(plans).where(eq(plans.gymId, context.gymId));
   const existing = homeIds.length ? await tx.select().from(memberships).where(and(eq(memberships.gymId, context.gymId), inArray(memberships.householdId, homeIds))) : [];
-  const related = [...new Set(family.flatMap(person => identityKeys({ ...person, email: person.email ?? '', dateOfBirth: person.dateOfBirth ?? '' })
+  const related = [...new Set(family.flatMap(person => personKeys(person)
     .flatMap(identity => file.identities.get(identity) ?? [])))].sort((a, b) => a.rowNumber - b.rowNumber);
   // A later row's shared email can also match someone outside these households. Such an
   // ambiguous row must never choose this household's anchor or duplicate its valid row.

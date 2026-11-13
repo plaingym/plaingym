@@ -96,6 +96,16 @@ async function spanningFamily(status = 'active', startsOn = '2026-01-15') {
 }
 
 describe('membership renewals through the durable pipeline', () => {
+  it('uses the same normalized email and name keys for lookup and household-related rows', async () => {
+    const f = await fixture();
+    await database.forGym(gymId, tx => tx.update(members).set({ email: 'Mixed@Example.test', firstName: 'Jo', lastName: 'Family' }).where(eq(members.id, f.member.id)));
+    const { planned } = await analyzed([
+      { email: '  MIXED@example.test  ', firstName: '  JO  ', lastName: 'family', plan: f.plan.id, nextDueOn: '2026-11-20' },
+      { firstName: 'jo', lastName: '  FAMILY ', plan: f.plan.id, nextDueOn: '2026-11-20' },
+    ]);
+    expect(planned[0]).toMatchObject({ action: 'create', values: { memberId: f.member.id }, issues: [] });
+    expect(planned[1]!.issues.some(issue => issue.code === 'duplicate')).toBe(true);
+  });
   it('matches folded emails and names literally without widening identity matches', async () => {
     const f = await fixture();
     await database.forGym(gymId, tx => tx.update(members).set({ email: 'MiXeD_%@Example.test', firstName: 'Jo_%', lastName: 'MiXeD_%' }).where(eq(members.id, f.member.id)));

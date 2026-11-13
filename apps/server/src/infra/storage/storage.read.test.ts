@@ -13,7 +13,7 @@ import { FakeUploads, FakeBackupObjectStore, LocalUploads, S3BackupObjectStore, 
 
 const clock = new TestClock('2026-10-22T12:00:00Z');
 describe('cancellable storage reads', () => {
-  it('forwards cancellation to the cached demo PDF deletion too', async () => {
+  it('finishes the paired demo PDF deletion after the signature is marked, despite cancellation', async () => {
     const id = '00000000-0000-7000-8000-000000000001', source = new FakeUploads(id), uploads = new DemoUploads(source);
     const image = `${id}/waivers/${id}/signatures/${id}.png`, pdf = `${id}/waivers/${id}/pdf/${id}.pdf`;
     await source.put(image, new Uint8Array([1]), 'image/png');
@@ -23,8 +23,11 @@ describe('cancellable storage reads', () => {
       await original(key, options);
       if (key === image) controller.abort(failure);
     });
-    await expect(uploads.markDeleted(image, { signal: controller.signal })).rejects.toBe(failure);
-    expect((await source.head(pdf))?.deletedAt).toBeUndefined();
+    await uploads.markDeleted(image, { signal: controller.signal });
+    expect((await source.head(image))?.deletedAt).toBeDefined();
+    expect((await source.head(pdf))?.deletedAt).toBeDefined();
+    expect(source.markDeleted).toHaveBeenNthCalledWith(1, image, { signal: controller.signal });
+    expect(source.markDeleted).toHaveBeenNthCalledWith(2, pdf);
   });
   it.each(['get', 'head', 'markDeleted'] as const)('DemoUploads forwards cancellation for %s', async (method) => {
     const source = new FakeUploads('gym'), uploads = new DemoUploads(source);

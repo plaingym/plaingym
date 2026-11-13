@@ -16,13 +16,23 @@ export function checked<T>(result: { response: Response; data?: T }): T {
   if (!result.response.ok || result.data === undefined) throw new ApiError(result.response.status, 'request_failed');
   return result.data;
 }
-/** Read structured reason codes without consuming the response or exposing server messages. */
-export async function apiErrorReasons(response: Response): Promise<readonly string[]> {
+export interface ErrorMessageRule { status: number; code: string; message?: string }
+/** Read an error once, preserving the response and exposing only explicitly allowed, bounded messages. */
+export async function readApiError(response: Response, allowedMessages: readonly ErrorMessageRule[] = []): Promise<{ reasons: readonly string[]; message?: string }> {
   const body: unknown = await response.clone().json().catch(() => undefined);
   const error = body && typeof body === 'object' && 'error' in body ? body.error : undefined;
   const details = error && typeof error === 'object' && 'details' in error ? error.details : undefined;
   const reason = details && typeof details === 'object' && 'reason' in details ? details.reason : undefined;
-  return Array.isArray(reason) && reason.every((value: unknown) => typeof value === 'string') ? reason : [];
+  const reasons = Array.isArray(reason) && reason.every((value: unknown) => typeof value === 'string') ? reason : [];
+  const message = error && typeof error === 'object' && 'message' in error && 'code' in error
+    && typeof error.message === 'string' && error.message.trim().length > 0 && error.message.length <= 2000
+    && allowedMessages.some(rule => rule.status === response.status && rule.code === error.code
+      && (rule.message === undefined || rule.message === error.message)) ? error.message : undefined;
+  return { reasons, ...(message === undefined ? {} : { message }) };
+}
+/** Read structured reason codes without consuming the response or exposing server messages. */
+export async function apiErrorReasons(response: Response): Promise<readonly string[]> {
+  return (await readApiError(response)).reasons;
 }
 /** Restrict all API calls to this gym's origin, including injected auth transports. */
 export function createJsonTransport(fetcher: typeof fetch = fetch) {

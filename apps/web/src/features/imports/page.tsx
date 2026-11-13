@@ -7,7 +7,7 @@ import { importTargetFieldSchema, importUploadSchema, importPreviewResponseSchem
   exportJobSchema, listResponseSchema, type ImportUpload, type ImportColumnMapping, type ImportMapper,
   type ImportPlanRequest, type ImportPreviewResponse } from '@plaingym/shared/contracts';
 import { useBootstrap } from '../../app/context.js';
-import { createJsonTransport } from '../../lib/api.js';
+import { createJsonTransport, readApiError } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 import { Button } from '../../components/ui/button.js';
 import { Input } from '../../components/ui/input.js';
@@ -48,10 +48,10 @@ function ImportPanel({ gymId }: { gymId: string }) {
     const response = await fetch(`/api/imports/preview?offset=${page}&limit=50`, { method: 'POST', credentials: 'same-origin', redirect: 'error',
       headers: { 'content-type': 'application/json' }, body: JSON.stringify(plan) });
     if (!response.ok) {
-      const body: unknown = await response.json().catch(() => null);
-      if (body && typeof body === 'object' && 'error' in body && body.error && typeof body.error === 'object'
-        && 'message' in body.error && typeof body.error.message === 'string' && body.error.message.trim())
-        throw new PreviewError(body.error.message);
+      // The API's own explanations: an expired upload, an invalid file or mapping, or a preview past its deadline.
+      const { message } = await readApiError(response, [{ status: 400, code: 'invalid_request' }, { status: 404, code: 'not_found' },
+        { status: 503, code: 'unavailable' }]);
+      if (message) throw new PreviewError(message);
       throw new Error('Preview failed');
     }
     return parseResponse(importPreviewResponseSchema, await response.json());
@@ -73,10 +73,10 @@ function ImportPanel({ gymId }: { gymId: string }) {
     {upload && <>
       <p className="break-all text-sm"><span className="font-medium">{upload.filename}</span> · {label('rows')}: {upload.rowCount}</p>
       <div className="grid gap-4 sm:grid-cols-2">
-        <Label className="grid gap-2">{label('mapper')}<Select value={mapper} disabled={!!busy} onChange={(event) => { setMapper(event.target.value as ImportMapper); setPreview(undefined); }}>
+        <Label className="grid gap-2">{label('mapper')}<Select value={mapper} disabled={!!busy} onChange={(event) => { setMapper(event.target.value as ImportMapper); setPreview(undefined); previewRows.reset(); }}>
           {(['people', 'mat', 'memberships'] as const).map((id) => <option key={id} value={id}>{label('mapper.' + id)}</option>)}
         </Select></Label>
-        <Label className="grid gap-2">{label('duplicates')}<Select value={duplicatePolicy} disabled={!!busy} onChange={(event) => { setPolicy(event.target.value as ImportPlanRequest['duplicatePolicy']); setPreview(undefined); }}>
+        <Label className="grid gap-2">{label('duplicates')}<Select value={duplicatePolicy} disabled={!!busy} onChange={(event) => { setPolicy(event.target.value as ImportPlanRequest['duplicatePolicy']); setPreview(undefined); previewRows.reset(); }}>
           {(['error', 'skip', 'update'] as const).map((policy) => <option key={policy} value={policy}>{label('policy.' + policy)}</option>)}
         </Select></Label>
       </div>
@@ -86,7 +86,7 @@ function ImportPanel({ gymId }: { gymId: string }) {
             value={mapping.find((item) => item.sourceColumn === column)?.targetField ?? ''} onChange={(event) => {
               const target = importTargetFieldSchema.safeParse(event.target.value);
               setMapping((previous) => [...previous.filter((item) => item.sourceColumn !== column && item.targetField !== event.target.value),
-                ...(target.success ? [{ sourceColumn: column, targetField: target.data }] : [])]); setPreview(undefined);
+                ...(target.success ? [{ sourceColumn: column, targetField: target.data }] : [])]); setPreview(undefined); previewRows.reset();
             }}><option value="">{label('ignore')}</option>{importTargetFieldSchema.options.map((field) => <option key={field} value={field}>{label('field.' + field)}</option>)}</Select></Label>)}</div>
       </fieldset>
       <div className="grid gap-2 sm:flex">
