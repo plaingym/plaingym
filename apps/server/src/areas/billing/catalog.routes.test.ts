@@ -130,6 +130,18 @@ describe('all billing catalog and membership routes', () => {
       expect((await request(app, operation, f)).status).toBe(409);
     }
   });
+  it('answers a missing or non-JSON body with 400, not a server error', async () => {
+    const f = await fixture(), app = server(f, staff(f, 'owner'));
+    for (const operation of operations.filter((name) => billingContracts[name].method !== 'get')) {
+      const path = billingContracts[operation].path.replace('{taxRateId}', f.tax.id).replace('{planId}', f.plan.id)
+        .replace('{chargeTypeId}', f.charge.id).replace('{membershipId}', f.pending.id);
+      for (const init of [{}, { body: 'not json' }]) {
+        const response = await app.request(path, { method: billingContracts[operation].method.toUpperCase(), ...init });
+        expect(response.status, `${operation} ${JSON.stringify(init)}: ${await response.clone().text()}`).toBe(400);
+      }
+    }
+    expect((await db.forGym(f.gymId, (tx) => tx.select().from(plans).where(eq(plans.id, f.plan.id))))[0]!.revision).toBe(f.plan.revision);
+  });
 });
 
 describe('catalog prices on the currency step', () => {

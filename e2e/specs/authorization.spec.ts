@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { readFile } from 'node:fs/promises';
-import { test, expect, Client, gymOrigin, gymTimezone, showWeek, missingId, demoClient, type Operation, type Role } from '../support.js';
+import { test, expect, Client, gymOrigin, gymTimezone, showWeek, missingId, demoClient, type Document, type Operation, type Role } from '../support.js';
 import { claimPortal, outboxIds, outboxLink } from '../portal.js';
 import { accessibleLayout } from '../responsive.js';
 
+/**
+ * One operation and its class: who may call it (`permission.kind`: public, signed_link with its purpose, kiosk, member for a
+ * portal login, or staff with the capability whose roles `matrix` lists), and every further permission it requires.
+ */
 interface Entry { method: string; path: string; permission: Operation['permission']; additionalPermissions?: Operation['permission'][] }
 const inventory: Entry[] = JSON.parse(await readFile(new URL('../authorization-inventory.json', import.meta.url), 'utf8'));
 // Reviewed against the staff matrix, independently of the application's canStaff().
@@ -24,25 +28,9 @@ const matrix: Record<string, Role[]> = {
   'bookings.manage': all, 'schedule.manage': coaches, 'class_notes.manage': all,
   'attendance.manage': all, 'data.export': managers, 'kiosk_devices.manage': managers,
   'go_live.manage': managers, 'integrations.manage': ['owner'], 'portal_access.manage': desk,
+  'ownership.transfer': ['owner'], 'taxes.manage': managers, 'refunds.create': managers, 'links.send': desk,
+  'payments.custom': managers, 'emergency_contacts.read': all,
 };
-const inScope = (path: string) => /^\/api\/(bookings(?:\/|$)|portal\/(?:bookings(?:\/|$)|schedule(?:\/|$)|members(?:$|\/[^/]+$|\/[^/]+\/(?:bookings|memberships|checkin-code|progress|attendance)(?:\/|$))|invoices(?:\/|$)|payment-methods(?:\/|$)|waivers(?:\/|$)|household(?:\/|$)|context$|households(?:\/current)?$|claims\/complete$|invitations\/accept$)|links\/(?:pay-invoice|update-card|sign-waiver|onboarding)(?:\/|$)|members(?:\/|$)|households(?:\/|$)|member-tags(?:\/|$)|staff\/(profiles|roles|invitations|users)|programs(?:\/|$)|rank-systems(?:\/|$)|ranks(?:\/|$)|promotions(?:\/|$)|content-packs(?:\/|$)|schedule(?:\/|$)|attendance(?:\/|$)|imports(?:\/|$)|exports(?:\/|$)|kiosk(?:\/|$)|settings\/integrations(?:\/|$))/.test(path)
-  || path === '/api/portal/credits'
-  || path === '/api/announcements' || path.startsWith('/api/announcements/')
-  || path === '/api/health/auto-update'
-  || path.startsWith('/api/reports/')
-  || path === '/api/billing/discounts' || path.startsWith('/api/billing/discounts/')
-  || path === '/api/billing/class-packs' || path.startsWith('/api/billing/class-packs/')
-  || path.startsWith('/api/billing/packs/')
-  || /^\/api\/billing\/memberships\/\{membershipId\}\/switch(?:\/|$)/.test(path)
-  || path === '/api/billing/memberships/{membershipId}/discount'
-  || path === '/api/billing/plans/{planId}/price-change'
-  || path === '/api/billing/credits/adjust' || /^\/api\/billing\/members\/[^/]+\/credits$/.test(path)
-  || path === '/api/leads' || path.startsWith('/api/leads/')
-  || ['/api/links/unsubscribe', '/api/waivers/template-documents', '/api/waivers/templates/{templateId}/document', '/api/waivers/template-document',
-    '/api/portal/waiver-templates/{templateId}/document', '/api/public/waivers/{templateId}/document', '/l/{token}/documents/{templateId}',
-    '/api/dashboard', '/api/health/charge-failures', '/api/health/charge-failures/dismiss', '/api/settings/go-live', '/api/setup/finish', '/staff-invitation',
-    '/api/account', '/api/account/email', '/api/account/email/confirm', '/account-email'].includes(path)
-  || /^\/(?:csp-report|api\/public\/(?:config|waivers|trial|drop-in|plans|join)|drop-in\/signatures|public\/pages\/(?:client\.js|styles\.css|theme\.css|logo\/\{version\})|(?:trial|drop-in)(?:\/received)?|l\/(?:\{token\}|client\.js|styles\.css|cleared|return)|join(?:\/(?:signatures|checkout|review|return|cancelled|sign-in|portal-login|client\.js))?)$/.test(path);
 const key = (entry: Pick<Entry, 'method' | 'path'>) => `${entry.method} ${entry.path}`;
 // Each intake form and its API route share ten attempts per gym/IP per fifteen minutes, before validation.
 // The sweep deliberately exhausts that production budget across roles; only these public
@@ -54,29 +42,64 @@ const budgetedPublicIntake = new Set(['POST /api/public/trial', 'POST /api/publi
 
 // The signed-link Checkout return finds its link from the receipt cookie the link's page set; without one it is unavailable.
 const receiptReturn = 'GET /l/return';
-// This public capability requires a valid signed query token, not a session.
-const documentCapability = 'GET /api/waivers/template-document';
+// These public capabilities require a valid signed query token, not a session; every invalid one is not found.
+const documentCapability = new Set(['GET /api/waivers/template-document', 'GET /api/uploads/download']);
+// The first-run wizard closes once setup has finished: its public steps are gone, or refused without the setup token.
+const finishedSetup = new Set(['GET /api/setup', 'GET /api/setup/restore/{jobId}', 'POST /api/setup/start', 'POST /api/setup/owner', 'POST /api/setup/restore']);
+// The source link redirects to the running release's code, for every caller.
+const redirects = new Set(['GET /source']);
+// Demo routes work only in demo mode: on this install they answer 404 to everyone they admit (the mode itself is public).
+const demoOnly = /^\/api\/demo(\/|$)/;
+// The website module's routes don't exist while a gym has it turned off (404 for everyone) and its home page then redirects to
+// the portal; other specs may turn it on meanwhile, when they answer as the rest do.
+const websiteModule = (entry: Entry) => /^\/(api\/website|website)(\/|$)|^\/(coaches|contact|plans|programs|schedule|robots\.txt|sitemap\.xml)$/.test(entry.path);
+const websiteHome = 'GET /';
+// The Stripe webhook inbox is unavailable until the gym sets up payments, whoever calls it.
+const paymentsUnconfigured = new Set(['POST /webhooks/stripe']);
+// Staff link routes below /api/links/ read a bearer token as a signed link, so a device token is unauthenticated there (401)
+// rather than unknown (404). It is refused either way; when these routes answer 404 like the rest, drop this set.
+const linkBearer = new Set(['GET /api/links/{linkId}', 'POST /api/links/send', 'POST /api/links/{linkId}/revoke']);
 // Public portal routes that act for the signed-in user (choosing a household, completing a claim): anonymous callers get 401.
 // The account routes act for the signed-in login too: its own account and sign-in email change.
 const signedInPublic = new Set(['GET /api/portal/households', 'POST /api/portal/households/current', 'POST /api/portal/claims/complete',
   'GET /api/account', 'POST /api/account/email']);
 
-test('the running route inventory matches the reviewed authorization sweep', async ({ install }, info) => {
-  const actual = Object.entries(install.document.paths).flatMap(([path, methods]) =>
-    inScope(path) ? Object.entries(methods).filter(([method]) => ['get', 'post', 'put', 'patch', 'delete'].includes(method))
-      .map(([method, operation]) => ({ method: method.toUpperCase(), path, permission: operation.permission,
-        ...(operation.additionalPermissions ? { additionalPermissions: operation.additionalPermissions } : {}) })) : []);
-  await info.attach('running-routes', { body: JSON.stringify(actual, null, 2), contentType: 'application/json' });
-  expect(actual.map(key).sort()).toEqual(inventory.map(key).sort());
+/** Every operation of a running install's OpenAPI document, with the permissions it declares. */
+const operationsOf = (document: Document): Entry[] => Object.entries(document.paths).flatMap(([path, methods]) =>
+  Object.entries(methods).filter(([method]) => ['get', 'post', 'put', 'patch', 'delete'].includes(method))
+    .map(([method, operation]) => ({ method: method.toUpperCase(), path, permission: operation.permission,
+      ...(operation.additionalPermissions ? { additionalPermissions: operation.additionalPermissions } : {}) })));
+const sorted = (value: unknown): unknown => Array.isArray(value) ? value.map(sorted) : value && typeof value === 'object'
+  ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([name, item]) => [name, sorted(item)])) : value;
+/** How an operation differs from its inventory entry: missing from it, or declared with another class. */
+const differences = (actual: Entry[], expected: Entry[]) => {
+  const known = new Map(expected.map((entry) => [key(entry), entry]));
+  return actual.flatMap((entry) => {
+    const listed = known.get(key(entry));
+    if (!listed) return [`${key(entry)} is not in authorization-inventory.json: add it with its class ${JSON.stringify(entry.permission)}`];
+    return JSON.stringify(sorted(listed)) === JSON.stringify(sorted(entry)) ? [] : [`${key(entry)} runs as ${JSON.stringify(entry)}, not as listed`];
+  });
+};
+
+test('every running operation is in the reviewed inventory with its class', async ({ install, sandboxes }, info) => {
+  // The single-gym install serves exactly the inventory's operations, and the demo install (multi-gym, demo mode) none other.
+  const single = operationsOf(install.document);
+  const demo = operationsOf(await new Client(sandboxes[0]!.origin).json<Document>('/api/openapi.json'));
+  await info.attach('running-routes', { body: JSON.stringify({ single, demo }, null, 2), contentType: 'application/json' });
+  expect.soft(differences(single, inventory), 'single-gym operations missing from the inventory or classed differently').toEqual([]);
+  expect.soft(inventory.map(key).filter((name) => !single.some((entry) => key(entry) === name)), 'inventory operations the single-gym install does not serve').toEqual([]);
+  expect.soft(differences(demo, inventory), 'demo operations missing from the inventory or classed differently').toEqual([]);
+  expect(new Set(inventory.map(key)).size, 'inventory entries are unique').toBe(inventory.length);
   for (const entry of inventory) {
-    expect(actual.find((item) => key(item) === key(entry)), key(entry)).toEqual(entry);
+    expect(['public', 'signed_link', 'kiosk', 'member', 'staff'], `${key(entry)} has a class`).toContain(entry.permission.kind);
+    if (entry.permission.kind === 'signed_link') expect(entry.permission.purpose, `${key(entry)} names its link purpose`).toBeTruthy();
     for (const permission of [entry.permission, ...(entry.additionalPermissions ?? [])])
-      if (permission.kind === 'staff') expect(Object.hasOwn(matrix, permission.capability!), key(entry)).toBe(true);
+      if (permission.kind === 'staff') expect(Object.hasOwn(matrix, permission.capability!), `${key(entry)}: ${permission.capability} is in the reviewed role matrix`).toBe(true);
   }
 });
 
 test('every route enforces all staff roles, anonymous access and device boundaries', async ({ install }, info) => {
-  test.setTimeout(300_000);
+  test.setTimeout(480_000);
   const probes: { role: Role | 'anonymous' | 'device'; client: Client }[] = [
     ...all.map((role) => ({ role, client: install.clients[role] })),
     { role: 'anonymous', client: new Client(gymOrigin) }, { role: 'device', client: install.device },
@@ -98,20 +121,28 @@ test('every route enforces all staff roles, anonymous access and device boundari
       || (permission.kind === 'staff' && all.includes(role as Role) && matrix[permission.capability!].includes(role as Role))
       || (permission.kind === 'kiosk' && role === 'device'));
     if (response.status === 429 && entry.permission.kind === 'public' && budgetedPublicIntake.has(key(entry))) continue;
+    // Routes that are off on this install, whoever calls them; see each set above.
+    if (finishedSetup.has(key(entry))) expect.soft([403, 404], detail).toContain(response.status);
+    else if (demoOnly.test(entry.path) && key(entry) !== 'GET /api/demo' && allowed && role !== 'device') expect.soft(response.status, detail).toBe(404);
+    else if (key(entry) === websiteHome) expect.soft(role === 'device' ? [200, 302, 404] : [200, 302], detail).toContain(response.status);
+    else if (websiteModule(entry) && response.status === 404) continue;
+    else if (paymentsUnconfigured.has(key(entry)) && response.status === 503) continue;
+    else if (role === 'device' && linkBearer.has(key(entry))) expect.soft(response.status, detail).toBe(401);
+    else if (redirects.has(key(entry))) expect.soft(response.status, detail).toBe(302);
     // A device token is accepted on check-in endpoints only: tenant routes, public ones included, answer it with
     // 404. Public install routes (the content-pack catalog, setup, demo) run before tenancy and answer it like anyone.
-    if (role === 'device' && entry.permission.kind === 'public') expect([200, ...noContent.has(key(entry)) ? [204] : [], 400, 404, 409], detail).toContain(response.status);
+    else if (role === 'device' && entry.permission.kind === 'public') expect.soft([200, ...noContent.has(key(entry)) ? [204] : [], 400, 404, 409], detail).toContain(response.status);
     // Their handlers refuse anonymous callers, after validation rejects the sweep's invalid bodies.
-    else if (role === 'anonymous' && signedInPublic.has(key(entry))) expect(entry.method === 'GET' ? [401] : [400, 401], detail).toContain(response.status);
-    else if (role === 'device' && entry.permission.kind !== 'kiosk') expect(response.status, detail).toBe(404);
+    else if (role === 'anonymous' && signedInPublic.has(key(entry))) expect.soft(entry.method === 'GET' ? [401] : [400, 401], detail).toContain(response.status);
+    else if (role === 'device' && entry.permission.kind !== 'kiosk') expect.soft(response.status, detail).toBe(404);
     // A missing ID makes 404 the right answer only where the path has one; on a collection route a 404 is a
     // missing mount or a wrong denial, never an allowed response.
-    else if (allowed) expect(/\{[^}]+\}/.test(entry.path) || [receiptReturn, documentCapability].includes(key(entry)) ? [200, 400, 404, 409]
+    else if (allowed) expect.soft(/\{[^}]+\}/.test(entry.path) || (key(entry) === receiptReturn || documentCapability.has(key(entry))) ? [200, 400, 404, 409]
       : [200, ...noContent.has(key(entry)) ? [204] : [], 400, 409], detail).toContain(response.status);
-    else if (entry.permission.kind === 'member') expect(response.status, detail).toBe(404);
+    else if (entry.permission.kind === 'member') expect.soft(response.status, detail).toBe(404);
     // Only a link's own bearer token opens a signed-link route; sessions and missing tokens are unauthenticated.
-    else if (entry.permission.kind === 'signed_link') expect(response.status, detail).toBe(401);
-    else expect(response.status, detail).toBe(role === 'anonymous' ? 401 : 403);
+    else if (entry.permission.kind === 'signed_link') expect.soft(response.status, detail).toBe(401);
+    else expect.soft(response.status, detail).toBe(role === 'anonymous' ? 401 : 403);
   }
   await info.attach('authorization-results', { body: JSON.stringify(results, null, 2), contentType: 'application/json' });
 });
@@ -289,10 +320,16 @@ for (const width of [360, 1280]) test('report tabs retain their program and rece
 
 test('a household login cannot reach staff routes', async ({ sandboxes }) => {
   const member = await demoClient(sandboxes[0], 'student');
-  for (const entry of inventory.filter((item) => item.permission.kind === 'staff' && item.path !== '/api/setup/finish')) {
+  // Every staff operation the demo install serves (a single-gym install's setup wizard isn't one).
+  const document = await new Client(sandboxes[0]!.origin).json<Document>('/api/openapi.json');
+  const staff = inventory.filter((item) => item.permission.kind === 'staff' && item.path !== '/api/setup/finish'
+    && document.paths[item.path]?.[item.method.toLowerCase()]);
+  expect(staff.length).toBeGreaterThan(150);
+  for (const entry of staff) {
     const path = entry.path.replace(/\{[^}]+\}/g, missingId);
     const response = await member.request(path, entry.method, entry.method === 'GET' ? undefined : 'invalid');
-    expect([401, 403], `${key(entry)}: ${response.text}`).toContain(response.status);
+    // A module's routes don't exist for a gym that has it turned off (the sandbox's website), for anyone.
+    expect.soft(entry.path.startsWith('/api/website') ? [401, 403, 404] : [401, 403], `${key(entry)}: ${response.text}`).toContain(response.status);
   }
   const bootstrap = await member.json<{ data: { session: { roles: string[]; member: boolean } } }>('/api/auth/bootstrap');
   expect(bootstrap.data.session).toMatchObject({ roles: [], member: true });

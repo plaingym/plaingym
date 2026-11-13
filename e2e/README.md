@@ -78,10 +78,12 @@ The checks cover:
 * Logo versions after unrelated settings saves and replacement uploads, with
   rendered admin previews and core public pages at 360 px and desktop widths
   (`website-branding.spec.ts`).
-* A reviewed route inventory and the full staff-role/anonymous/device permission
-  sweep, including additional permissions. Each allowed role must reach request
+* A reviewed inventory of every operation with its class, and the full staff-role/anonymous/device permission
+  sweep over all of them, including additional permissions. Each allowed role must reach request
   validation or the handler; denied roles must fail before validation. Mutations
-  use invalid payloads or missing IDs so the sweep preserves the fixtures.
+  use invalid payloads or missing IDs so the sweep preserves the fixtures. Routes this
+  install has turned off answer as such: demo routes outside demo mode, the website
+  module while the gym has it off, and the Stripe webhook before payments are set up.
 * Household sessions denied staff access; foreign resource reads and writes,
   sessions, device tokens and forged family selections denied across two gyms.
 * People CSV preview, a dry run with no members written, commit and family links;
@@ -107,7 +109,12 @@ The checks cover:
   403/404; every portal read and each of household A's signed links (all four
   purposes) shows nothing of household B; household A's kiosk PIN finds and checks in
   only A's people; its QR code checks in only its own member and stops working once
-  replaced (`household-isolation.spec.ts`).
+  replaced (`household-isolation.spec.ts`). Household A's login can't choose household B,
+  and naming B in the portal's household header, or B's member in a portal read's query,
+  opens nothing of it. Staff requests that name records of both households at once
+  (a login, invitation, card, membership, signed link or link campaign) are refused and
+  change neither household; the spec finds every staff operation that takes two household
+  records in the running document, so one added later fails until it is covered.
   Current waiver templates belong to the gym and can be read by any authorized household;
   `waivers.spec.ts` checks that distinction with uploaded PDF templates and private signed copies.
 * Uploaded PDF waivers (`waivers.spec.ts`): staff upload permissions and demo refusal, byte-identical
@@ -236,15 +243,18 @@ Browser specs and their helpers import only e2e tooling and local test helpers.
 The End-to-end workflow installs this package independently of the application.
 
 `authorization-inventory.json` is a reviewed snapshot, not regenerated during
-tests. The running OpenAPI document must match it. It includes every portal route,
+tests. It lists every operation of the running OpenAPI document with its class: who may
+call it (`public`, `signed_link` with its purpose, `kiosk`, `member` for a portal login, or
+`staff` with the capability whose roles the spec's reviewed matrix lists) and any further
+permission. The single-gym install's document must match it exactly, and every operation of
+the demo install's must be in it with the same class, so a new route fails the check until it
+is listed. It includes every portal route,
 the signed-link API (`/api/links/<purpose>`, which answers 401 without the link's
 own token) and the signed-link pages under `/l/`. It includes the locally
 declared photo, invitation-page and schedule-options routes, and the account routes
 with the sign-in email change page (public in the registry: the account and change
-request answer anonymous callers with 401). Household-login
-management contracts are absent from the running application and are not in
-this inventory. The QR check-in contract is also absent until its implementation
-exists. Billing dashboard stubs are outside this mat suite.
+request answer anonymous callers with 401), the website module's pages and API, and the demo routes,
+which every install's document lists and which answer only in demo mode.
 
 The core public trial/drop-in pages and assets are included, with logo hashes
 as path parameters. Only the four explicitly listed public intake submissions

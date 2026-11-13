@@ -17,6 +17,8 @@ it.each([
   [new RevisionConflictError(), 409, 'conflict'],
   [z.string().safeParse(42).error!, 400, 'invalid_request'],
   ...([400, 401, 403, 404, 409, 422, 429, 503] as const).map((status) => [new HTTPException(status, { message: 'private SQL and credentials' }), status === 422 ? 400 : status, undefined] as const),
+  // A body too large, or of a type the route doesn't take, is the caller's mistake: an invalid request, not a server error.
+  ...([413, 415] as const).map((status) => [new HTTPException(status, { message: 'private SQL and credentials' }), 400, 'invalid_request'] as const),
   [new Error('select secret from private_table; password=hidden'), 500, 'internal'],
   [new HTTPException(500, { message: 'private SQL and credentials' }), 500, 'internal'],
 ] as const)('maps errors safely: %s', async (error, status, code) => {

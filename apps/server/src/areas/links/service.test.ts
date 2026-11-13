@@ -409,11 +409,13 @@ describe('email failure and suppression', () => {
     expect(result.revokedAt).toBe(clock.now().toISOString());
     expect((await service.list(gymId)).data.every(row => row.revokedAt !== null)).toBe(true);
   });
-  it('does not mint or send for a manual invoice outside the requested gym or household', async () => {
+  it('does not mint or send for a manual invoice or a waiver member outside the requested gym or household', async () => {
     const before = email.messages.length, total = (await service.list(gymA)).pagination.total;
     for (const input of [
       { ...request('pay_invoice'), householdId: householdA, invoiceId: invoiceOther },
       { ...request('pay_invoice'), householdId: householdB, invoiceId: invoiceB },
+      { ...request('sign_waiver'), householdId: householdA, memberId: memberOther },
+      { ...request('sign_waiver'), householdId: householdA, memberId: memberB },
     ]) await expect(sending.send(mutation, { ...input, sendGeneration: uuidv7() })).rejects.toMatchObject({ code: 'not_found' });
     expect(email.messages).toHaveLength(before);
     expect((await service.list(gymA)).pagination.total).toBe(total);

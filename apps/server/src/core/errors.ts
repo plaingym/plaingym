@@ -15,7 +15,8 @@ export function normalizeError(error: unknown): AppError {
   if (error instanceof z.ZodError) return new AppError('invalid_request', 'The request is invalid.');
   if (error instanceof HTTPException) {
     switch (error.status) {
-      case 400: case 422: return new AppError('invalid_request', 'The request is invalid.');
+      // A body too large or of a media type the route doesn't take is an invalid request too.
+      case 400: case 413: case 415: case 422: return new AppError('invalid_request', 'The request is invalid.');
       case 401: return new AppError('unauthenticated', 'Authentication is required.');
       case 403: return new AppError('forbidden', 'Access denied.');
       case 404: return new AppError('not_found', 'Not found.');

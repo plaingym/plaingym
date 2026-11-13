@@ -25,7 +25,10 @@ export function billingRoute(contract: c.EndpointContract,
     responses: { [status]: { description: 'Billing response', content: { 'application/json': { schema: contract.response } } } },
   }, async ctx => {
     const context = ctx.get('context'); billingMutation(context);
-    const result = await handler(context, ctx.req.param(), ctx.req.query(), contract.body ? await ctx.req.json() : undefined);
+    // The request validator checks a JSON body only when the request says it sends one: a body that is missing or isn't JSON is
+    // the caller's mistake, never a server error.
+    const body = contract.body ? await ctx.req.json().catch(() => { throw new AppError('invalid_request', 'Request body must be JSON'); }) : undefined;
+    const result = await handler(context, ctx.req.param(), ctx.req.query(), body);
     ctx.header('Cache-Control', 'no-store');
     return ctx.json(contract.response.parse(result) as { data: unknown }, status);
   });

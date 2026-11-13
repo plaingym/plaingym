@@ -107,7 +107,9 @@ pages.
 * **QR check-in codes** are per member, revocable, valid only in their own gym,
   and derived with the gym's own random key; only their hash is stored.
 * **Tests.** Every member-facing route has a cross-household test (household A's
-  login, link, PIN or QR code on household B's resource is a 403 or 404).
+  login, link, PIN or QR code on household B's resource is a 403 or 404), and every
+  staff route that takes records of two households refuses a request that names both
+  households' records at once.
 
 ## Roles and capabilities
 
