@@ -275,20 +275,20 @@ describe('an onboarding claim for an invited address', () => {
     await db.system.db.delete(authVerification).where(eq(authVerification.userId, invitation.userId));
     const cleanup = deleting(invitation.userId);
     await cleanup.held;
-    const completing = claims.completeClaim(a.gymId, invitation.userId, { claim: code }, clock);
+    const refused = expect(claims.completeClaim(a.gymId, invitation.userId, { claim: code }, clock)).rejects.toMatchObject({ code: 'not_found' });
     await lockWait();
     cleanup.release(); await cleanup.done;
-    await expect(completing).rejects.toMatchObject({ code: 'not_found' });
+    await refused;
   });
 
   it('a claim waiting on a cleanup that deletes its user answers conflict, and asking again succeeds', async () => {
     const a = await gym(), invitation = await invite(a), link = await onboarding(a);
     const cleanup = deleting(invitation.userId);
     await cleanup.held;
-    const claiming = claims.claimOnboarding(a.gymId, link.id, { email: invitation.email }, clock);
+    const refused = expect(claims.claimOnboarding(a.gymId, link.id, { email: invitation.email }, clock)).rejects.toMatchObject({ code: 'conflict' });
     await lockWait();
     cleanup.release(); await cleanup.done;
-    await expect(claiming).rejects.toMatchObject({ code: 'conflict' });
+    await refused;
     expect(await claims.claimOnboarding(a.gymId, link.id, { email: invitation.email }, clock)).toEqual({ data: { status: 'email_sent' } });
     const [user] = await db.system.db.select({ id: authUser.id }).from(authUser).where(eq(authUser.email, invitation.email));
     expect(await claims.completeClaim(a.gymId, user!.id, { claim: codes.at(-1)! }, clock)).toBe(a.other.id);
@@ -304,10 +304,11 @@ describe('an acceptance racing a revoke', () => {
     });
     await held.opened;
     const revoking = revoke(a, invitation);
+    const refused = expect(revoking).rejects.toMatchObject({ code: 'not_found' });
     await lockWait();
     release.open();
     await accepting;
-    await expect(revoking).rejects.toMatchObject({ code: 'not_found' });
+    await refused;
     expect(await exists(invitation.userId)).toBe(true);
     expect(await db.forGym(a.gymId, tx => tx.select().from(householdUsers).where(eq(householdUsers.userId, invitation.userId)))).toHaveLength(1);
   });
@@ -318,10 +319,11 @@ describe('an acceptance racing a revoke', () => {
     await held.opened;
     let consumed = false;
     const accepting = store.redeem({ gymId: a.gymId, invitationId: invitation.invitationId, userId: invitation.userId, clock }, async () => { consumed = true; });
+    const refused = expect(accepting).rejects.toMatchObject({ code: 'not_found' });
     await lockWait();
     release.open();
     await revoking;
-    await expect(accepting).rejects.toMatchObject({ code: 'not_found' });
+    await refused;
     expect(consumed).toBe(false);
     expect(await exists(invitation.userId)).toBe(false);
   });
