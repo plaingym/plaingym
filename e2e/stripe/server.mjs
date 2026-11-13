@@ -34,6 +34,8 @@ function parseForm(search) {
     const path = name.replace(/\]/g, '').split('[');
     let node = root;
     for (const [index, part] of path.entries()) {
+      // Stripe has no such field names; refusing them keeps a request from reaching Object.prototype.
+      if (part === '__proto__' || part === 'constructor' || part === 'prototype') throw invalid(`Invalid parameter: ${name}`);
       if (index === path.length - 1) node[part] = value;
       else node = node[part] ??= {};
     }

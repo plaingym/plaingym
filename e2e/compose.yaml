@@ -196,6 +196,12 @@ services:
     image: caddy:2.11.7-alpine@sha256:3095ad245c353e3bdb27a38f22a095c1cfa9e295ab21c0214c3e72b0e2960525
     ports: ['${E2E_LOOPBACK:-127.0.0.1}:443:443']
     volumes: ['./Caddyfile:/etc/caddy/Caddyfile:ro']
+    # Ready once its local CA exists: run.mjs exports the root so the specs' API helper verifies TLS.
+    healthcheck:
+      test: [CMD, test, -s, /data/caddy/pki/authorities/local/root.crt]
+      interval: 2s
+      timeout: 3s
+      retries: 30
     depends_on:
       app: {condition: service_healthy}
       demo: {condition: service_healthy}

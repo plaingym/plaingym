@@ -38,6 +38,7 @@ class Client:
 def main():
     port = int(os.environ["DEMO_TEST_HTTPS_PORT"])
     ca = ssl.create_default_context(cafile=os.environ["DEMO_TEST_CA"])
+    ca.minimum_version = ssl.TLSVersion.TLSv1_2
     install = Client("demo.localhost", port, ca)
     install.request("/", expected=302)
     install.request("/demo")

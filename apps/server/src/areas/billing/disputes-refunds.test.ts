@@ -75,6 +75,17 @@ async function charged(f: Fixture, options: { lost?: boolean } = {}) {
   return (await f.read()).attempt.paymentIntentId!;
 }
 
+describe('processorRefundId', () => {
+  it('derives one name-based UUIDv8 per gym and processor refund', () => {
+    const gym = '019a0000-0000-7000-8000-000000000001', other = '019a0000-0000-7000-8000-000000000002';
+    const id = processorRefundId(gym, 're_1');
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(processorRefundId(gym, 're_1')).toBe(id);
+    expect(processorRefundId(gym, 're_2')).not.toBe(id);
+    expect(processorRefundId(other, 're_1')).not.toBe(id);
+  });
+});
+
 describe('one dispute and refund writer for webhooks and restore', () => {
   it('raises the owner alert for a dispute found during restore once, under the webhook path key', async () => {
     const f = await fixture(), intentId = await charged(f);

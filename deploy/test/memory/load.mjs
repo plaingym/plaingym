@@ -4,7 +4,7 @@
 // stand-in bucket), `seed` adds members and a 20-page waiver, `load` drives concurrent API traffic and waiver PDFs.
 //
 // Environment: GYM_HOST (the gym's hostname, which Caddy serves), PROXY_HOST (where to connect), SETUP_TOKEN, S3_ENDPOINT,
-// S3_ACCESS_KEY, S3_SECRET_KEY, STATE_FILE, LOAD_SECONDS, LOAD_WORKERS.
+// S3_ACCESS_KEY, S3_SECRET_KEY, STATE_FILE, CA_FILE (Caddy's local root certificate), LOAD_SECONDS, LOAD_WORKERS.
 import { Agent, request as httpsRequest } from 'node:https';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { crc32, deflateSync } from 'node:zlib';
@@ -16,7 +16,8 @@ const gymHost = env('GYM_HOST', 'gym.localhost'), proxyHost = env('PROXY_HOST', 
 const stateFile = env('STATE_FILE', '/out/state.json');
 const password = 'memory-check-password-' + createHash('sha256').update(env('SETUP_TOKEN', 'x')).digest('hex').slice(0, 12);
 const email = 'owner@example.invalid';
-const agent = new Agent({ keepAlive: true, maxSockets: 64, rejectUnauthorized: false });
+// Caddy's local CA, which run.mjs copies out of the stack: the loaders verify its certificate like any client.
+const agent = new Agent({ keepAlive: true, maxSockets: 64, ca: readFileSync(env('CA_FILE')) });
 
 class Client {
   cookie = '';

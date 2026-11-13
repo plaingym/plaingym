@@ -2,7 +2,9 @@
 import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { buildInfo } from '../scripts/release/version.mjs';
 
 const directory = fileURLToPath(new URL('./', import.meta.url));
@@ -51,9 +53,13 @@ const compose = ['compose', '--project-name', env.E2E_COMPOSE_PROJECT, '--file',
 await mkdir(new URL('./coverage/', import.meta.url), { recursive: true });
 await rm(new URL('./coverage/fixtures.json', import.meta.url), { force: true });
 await rm(new URL('./coverage/containers.log', import.meta.url), { force: true });
+const caDirectory = await mkdtemp(join(tmpdir(), 'plaingym-e2e-ca-'));
 try {
   if (!process.env.E2E_IMAGE) await build();
   await command('docker', [...compose, 'up', '-d', '--wait', '--wait-timeout', '180']);
+  // The specs' API helper trusts only this run's Caddy CA.
+  env.E2E_CA_FILE = join(caDirectory, 'root.crt');
+  await command('docker', [...compose, 'cp', 'caddy:/data/caddy/pki/authorities/local/root.crt', env.E2E_CA_FILE]);
   await command(process.execPath, ['./node_modules/@playwright/test/cli.js', 'test', ...process.argv.slice(2)]);
 } catch (error) {
   // Container diagnostics are useful even when the browser never starts.
@@ -66,4 +72,5 @@ try {
 } finally {
   await command('docker', [...compose, 'down', '--volumes', '--remove-orphans']);
   await rm(new URL('./coverage/fixtures.json', import.meta.url), { force: true });
+  await rm(caDirectory, { recursive: true, force: true });
 }

@@ -150,7 +150,7 @@ async function oneRun(mode, image) {
   const token = () => randomBytes(24).toString('hex');
   const secrets = { setupToken: token(), s3Access: 'memory' + token().slice(0, 8), s3Secret: token() };
   const limit = mode === 'capped' ? {} : { APP_MEMORY_LIMIT: '16g', POSTGRES_MEMORY_LIMIT: '16g', CADDY_MEMORY_LIMIT: '16g', NODE_OPTIONS: '--no-deprecation' };
-  const envFile = join(work, '.env');
+  const envFile = join(work, '.env'), caFile = join(work, 'caddy-root.crt');
   await writeFile(envFile, Object.entries({
     APP_IMAGE: image, GYM_HOSTNAME: 'gym.localhost', ACME_EMAIL: 'memory@example.invalid',
     POSTGRES_PASSWORD: token(), APP_PASSWORD: token(), MAINTENANCE_PASSWORD: token(),
@@ -172,6 +172,7 @@ async function oneRun(mode, image) {
     const name = project + '-' + command;
     loaders.add(name);
     return ['run', '--rm', '--name', name, '--cpus', '1', '--network', project + '_web', '-v', `${out}:/out`, '-v', `${here}:/harness:ro`,
+    '-v', `${caFile}:/ca/root.crt:ro`, '-e', 'CA_FILE=/ca/root.crt',
     '-e', 'GYM_HOST=gym.localhost', '-e', 'PROXY_HOST=caddy', '-e', 'SETUP_TOKEN=' + secrets.setupToken, '-e', 'S3_ENDPOINT=http://s3:7070',
     '-e', 'S3_ACCESS_KEY=' + secrets.s3Access, '-e', 'S3_SECRET_KEY=' + secrets.s3Secret, '-e', 'STATE_FILE=/out/state.json', ...extra,
     nodeImage, 'nice', '-n', '10', 'timeout', '600', 'node', '/harness/load.mjs', command];
@@ -191,6 +192,12 @@ async function oneRun(mode, image) {
     for (let attempt = 0; ; attempt++) {
       if ((await run('docker', ['exec', sampler, 'test', '-s', '/out/samples.jsonl'], { allowFailure: true })).code === 0) break;
       if (attempt > 40) throw new Error('The sampler produced no samples: ' + (await docker('logs', sampler)).error.slice(-400));
+      await sleep(500);
+    }
+    // The loaders verify Caddy's certificate against its local CA, which it creates when it first issues one.
+    for (let attempt = 0; ; attempt++) {
+      if ((await run('docker', ['cp', short.caddy + ':/data/caddy/pki/authorities/local/root.crt', caFile], { allowFailure: true })).code === 0) break;
+      if (attempt > 40) throw new Error('Caddy did not create its local CA');
       await sleep(500);
     }
     const failures = [], bookkeepingFailures = [];

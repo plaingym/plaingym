@@ -4,7 +4,7 @@ import { execFile } from 'node:child_process';
 import { request as httpsRequest } from 'node:https';
 import { fileURLToPath } from 'node:url';
 import type { Page, TestInfo } from '@playwright/test';
-import { test, expect, Client, demoClient, gymOrigin, loopback, type Person, type RecordId } from '../support.js';
+import { test, expect, Client, demoClient, gymOrigin, localCa, loopback, type Person, type RecordId } from '../support.js';
 import { claimPortal, signaturePng } from '../portal.js';
 import { mailIds, mailLink, multiGyms } from '../multi/support.js';
 import { accessibleLayout } from '../responsive.js';
@@ -32,7 +32,7 @@ async function template(owner: Client, document: Document) {
 function download(href: string) {
   const url = new URL(href);
   return new Promise<{ status: number; bytes: Buffer; headers: import('node:http').IncomingHttpHeaders }>((resolve, reject) => {
-    const request = httpsRequest({ hostname: loopback, port: 443, servername: url.hostname, rejectUnauthorized: false,
+    const request = httpsRequest({ hostname: loopback, port: 443, servername: url.hostname, ca: localCa(),
       path: url.pathname + url.search, headers: { host: url.host }, timeout: 30_000 }, response => {
       const chunks: Buffer[] = [];
       response.on('error', reject); response.on('data', (chunk: Buffer) => chunks.push(chunk));

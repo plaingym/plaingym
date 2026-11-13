@@ -23,11 +23,12 @@ export const isTerminalDispute = (status: string | null) => status !== null && t
 export const hasOpenDispute = (invoice: { disputeId: string | null; disputeStatus: string | null }) =>
   Boolean(invoice.disputeId) && !isTerminalDispute(invoice.disputeStatus);
 
-/** RFC 9562 UUIDv5: stable across concurrent delivery, restore passes and process restarts. */
+/** A name-based RFC 9562 UUIDv8 over SHA-256 (its Appendix B.2 layout): stable across concurrent delivery, restore
+ * passes and process restarts. */
 export function processorRefundId(gymId: string, processorId: string): string {
-  const digest = createHash('sha1').update(Buffer.from(gymId.replaceAll('-', ''), 'hex'))
+  const digest = createHash('sha256').update(Buffer.from(gymId.replaceAll('-', ''), 'hex'))
     .update('billing.refund:' + processorId).digest().subarray(0, 16);
-  digest[6] = (digest[6]! & 0x0f) | 0x50;
+  digest[6] = (digest[6]! & 0x0f) | 0x80;
   digest[8] = (digest[8]! & 0x3f) | 0x80;
   const hex = digest.toString('hex');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;

@@ -177,7 +177,9 @@ export function release({ cwd = process.cwd(), version: explicit, notesFile, rol
       writeFileSync(path, template); edit(path, cwd); notes = readFileSync(path, 'utf8');
     }
   } finally { rmSync(temporary, { recursive: true, force: true }); }
-  notes = notes.replace(/<!--[\s\S]*?-->/g, '').trim();
+  // Repeat until nothing changes, so removing one comment can't join the pieces of another.
+  for (let previous; previous !== notes;) { previous = notes; notes = notes.replace(/<!--[\s\S]*?-->/g, ''); }
+  notes = notes.trim();
   if (!/### (?:Added|Changed|Fixed|Removed|Deprecated|Security)\s+\S/.test(notes.split('### Upgrade notes')[0])) throw new Error('Write a nonempty release summary before releasing');
   if (!notes.includes('### Upgrade notes') || !notes.includes(`Rollback floor: ${floor}`)) throw new Error('Keep Upgrade notes and the checked rollback floor in the release notes');
   if (!notes.includes(`Migrations: ${migrationNote}`) || !notes.includes('Manual steps:') || hostFiles.some((path) => !notes.includes(path)))

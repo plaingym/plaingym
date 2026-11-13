@@ -150,7 +150,7 @@ describe('the pages', () => {
       expect(headers.get('reporting-endpoints'), path).toBe('csp="/csp-report"');
       const nonce = /script-src 'nonce-([^']+)'/.exec(policy)?.[1];
       expect(nonce, path).toBeTruthy();
-      for (const [, attributes] of body.matchAll(/<script([^>]*)>/g)) {
+      for (const [, attributes] of body.matchAll(/<script\b([^>]*)>/gi)) {
         expect(attributes, path).toContain(`nonce="${nonce}"`);
         expect(attributes, path).toContain('type="application/ld+json"');
       }

@@ -52,7 +52,9 @@ deliver a signed `checkout.session.completed` to the install's `/webhooks/stripe
 with the run's random webhook secret (`portal.ts`). No Stripe account is needed. Chromium's resolver
 maps `*.localhost` to loopback; the API helper connects to loopback while keeping
 the hostname, TLS SNI, Origin and cookies. No public DNS or host-file edits are
-needed. Browser TLS verification is disabled only for the local Caddy certificate.
+needed. The runner exports the stack's local Caddy root (`E2E_CA_FILE`), and the API
+helper verifies every certificate against it; browser TLS verification is disabled only
+for the local Caddy certificate.
 The runner removes its containers, volumes and fixture cache after the tests,
 including on a test failure.
 

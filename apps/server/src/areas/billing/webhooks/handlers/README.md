@@ -25,11 +25,11 @@ writer in `../../disputes-refunds.ts`, which restore reconciliation also uses. A
 refund or dispute arriving before success first applies the current successful
 payment with its provider timestamp; one whose payment hasn't succeeded stays
 retryable. Refunds use the transition service, retaining an existing local
-refund/reservation ID or a deterministic UUIDv5 for a new processor refund.
+refund/reservation ID or a deterministic name-based UUIDv8 (SHA-256) for a new processor refund.
 A refund takes a tagged reservation only by the row ID in its own metadata, with
 the same amount, on the same payment (gym and payment ownership still come from
 the parent, never that ID). Any other refund, such as one made in Stripe's dashboard,
-is recorded as external under the UUIDv5, whether it ended succeeded, failed or
+is recorded as external under the UUIDv8, whether it ended succeeded, failed or
 canceled, and leaves tagged reservations to the app's own refund. If it leaves no room
 for them on the payment, Stripe can't have accepted those refunds, so the newest are
 released as `failed`, with no processor refund. A staff reservation inside its retry

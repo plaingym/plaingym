@@ -55,7 +55,7 @@ const server = createServer(async (req, res) => {
     const chunks = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
     const input = JSON.parse(Buffer.concat(chunks).toString()) as { templateId?: string; pngBase64?: string; optedOut?: boolean };
     if (url.pathname === '/api/links/unsubscribe') {
-      const name = req.headers.authorization?.slice(7) ?? '', fixture = fixtures[name];
+      const name = req.headers.authorization?.slice(7) ?? '', fixture = Object.hasOwn(fixtures, name) ? fixtures[name] : undefined;
       if (fixture?.purpose !== 'unsubscribe') throw new Error('Missing unsubscribe fixture');
       fixture.optedOut = input.optedOut!;
       res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ data: fixture })); return;

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { randomUUID } from 'node:crypto';
 import { request as httpsRequest } from 'node:https';
+import { readFileSync } from 'node:fs';
 import { readFile, rename, writeFile } from 'node:fs/promises';
 import { expect, test as base, type BrowserContext, type Page } from '@playwright/test';
 import { classStart, localDate, mondayOf, type ClassStartOptions } from './dates.js';
@@ -8,6 +9,13 @@ import { classStart, localDate, mondayOf, type ClassStartOptions } from './dates
 export const gymOrigin = 'https://gym.localhost';
 /** The stack's one published address; another loopback lets a run sit beside a local proxy on 127.0.0.1:443. */
 export const loopback = process.env.E2E_LOOPBACK ?? '127.0.0.1';
+let caddyCa: Buffer | undefined;
+/** The run's local Caddy root, exported by run.mjs: API requests verify the stack's certificates against it. */
+export function localCa() {
+  const file = process.env.E2E_CA_FILE;
+  if (!file) throw new Error('E2E_CA_FILE is not set; run the specs with e2e/run.mjs');
+  return caddyCa ??= readFileSync(file);
+}
 export const missingId = '019a0000-0000-7000-8000-000000000000';
 export const password = 'qa-password-for-local-tests';
 export type Role = 'owner' | 'admin' | 'coach' | 'front_desk';
@@ -60,7 +68,7 @@ export class Client {
     const payload = Buffer.isBuffer(body) ? body : body === undefined ? undefined : JSON.stringify(body);
     return new Promise<{ status: number; body: T; text: string; cookies: string[]; location?: string; retryAfter?: number }>((resolve, reject) => {
       const req = httpsRequest({ hostname: loopback, port: 443, servername: url.hostname,
-        rejectUnauthorized: false, path: url.pathname + url.search, method,
+        ca: localCa(), path: url.pathname + url.search, method,
         headers: { host: url.host, origin: this.origin, 'x-forwarded-for': this.address, ...(this.cookie ? { cookie: this.cookie } : {}),
           ...(payload === undefined ? {} : { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(payload)) }),
           ...this.headers, ...extra }, timeout: 75_000 }, (res) => {

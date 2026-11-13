@@ -350,6 +350,8 @@ describe('gym-app auto-update', () => {
     const args = ['--at', '2026-11-03T16:05:00Z', '--result', 'failed', '--reason', 'rollback_failed', '--from', 'v1.2.3', '--to', 'v1.2.4'];
     expect(await f.command({ notify }).run(['record', ...args, '--notice', 'deferred'], f.io().io)).toBe(0);
     expect(notices).toEqual([]);
+    // The later report arrives later: rows recorded in the same millisecond have no defined order.
+    f.clock.advance(60_000);
     expect(await f.command({ notify }).run(['record', '--at', '2026-11-04T16:05:00Z', '--result', 'up_to_date', '--from', 'v1.2.3'], f.io().io)).toBe(0);
     expect(await f.command({ notify }).run(['notice', ...args], f.io().io)).toBe(0);
     expect(notices.at(-1)).toMatchObject({ result: 'failed' });
