@@ -6,6 +6,7 @@ import type { PublicBranding, PublicPlan, WaiverTemplate } from '@plaingym/share
 import { formatMoney } from '../../core/money.js';
 import { button, publicLayout } from './page.js';
 import { maxJoinMembers } from '@plaingym/shared/contracts';
+import type { JoinInvoice } from './join.service.js';
 
 // The shared public stylesheet is built from the classes in every public page file, `page.ts` and `*.page.ts` (`links/styles.build.mjs`).
 const inputClass = 'block min-h-11 w-full rounded-md border border-border bg-background px-3 py-2 text-base';
@@ -82,19 +83,31 @@ export function joinFormPage(input: JoinPageInput & { plan: PublicPlan; count: n
       field('phone', text('phone'), 'tel', false, 'tel', 100)),
     h('div', { hidden: true, 'aria-hidden': 'true' }, h('label', null, text('honeypot'), h('input', { name: 'honeypot', tabindex: -1, autocomplete: 'off' }))),
     ...people,
+    // Checked when the form is sent; the review step shows the discounted amount before payment.
+    h('div', { class: panel }, h('label', { for: 'code', class: 'block space-y-1' }, text('code'),
+      h('input', { id: 'code', name: 'code', type: 'text', autocomplete: 'off', autocapitalize: 'characters', spellcheck: 'false', maxlength: 40,
+        'aria-describedby': 'code-help', class: inputClass })), h('p', { id: 'code-help', class: 'text-sm text-muted-foreground' }, text('codeHelp'))),
     h('p', { id: 'feedback', role: 'status', 'aria-live': 'polite', class: 'break-words' }),
     h('button', { type: 'submit', class: button }, plan.signupFeeCents === 0 && (plan.trialDays > 0 || plan.amountCents === 0)
       ? text(plan.amountCents > 0 ? 'submitCard' : 'submitFree') : text('submit')),
-    ...['failed', 'conflict', 'signatureRequired', 'busy', 'unavailable', 'tooLarge', 'retry', 'limited'].map(key => h('span', { hidden: true, 'data-message': key }, text(key))));
+    ...['failed', 'conflict', 'signatureRequired', 'busy', 'unavailable', 'tooLarge', 'retry', 'limited', 'codeRefused'].map(key => h('span', { hidden: true, 'data-message': key }, text(key))));
   const summary = h('section', { class: panel }, ...price(input, plan), h('p', null, text('formHelp')),
     h('p', { class: 'text-sm text-muted-foreground' }, text(plan.amountCents === 0 ? 'dueTodayFree' : plan.trialDays > 0 ? 'dueTodayTrial' : 'dueToday')));
   return layout(input, text('formTitle', { plan: plan.name }), h('div', { class: 'space-y-6' }, summary, counter, form), true);
 }
 export type JoinPageState = 'continue' | 'confirming' | 'welcomeEmail' | 'resent' | 'welcomePassword'
-  | 'cancelled' | 'closed' | 'missing' | 'unavailable' | 'failed' | 'tooLarge' | 'manual' | 'card' | 'confirmingCard' | 'cancelledCard';
+  | 'cancelled' | 'closed' | 'missing' | 'unavailable' | 'failed' | 'tooLarge' | 'manual' | 'card' | 'confirmingCard' | 'cancelledCard' | 'codeRefused';
+/** The first invoice's lines and total, as the review step shows them. */
+function invoiceSummary(input: JoinPageInput, invoice: JoinInvoice) {
+  const text = joinText(input.t), money = (cents: number) => formatMoney(cents, invoice.currency, input.locale);
+  return h('div', { class: 'space-y-2', 'data-join-invoice': true }, h('h2', { class: 'text-lg font-semibold' }, text('invoiceTitle')),
+    h('ul', { class: 'space-y-1' }, ...invoice.lines.map(line => h('li', { class: 'flex flex-wrap justify-between gap-x-4' },
+      h('span', { class: 'min-w-0 break-words' }, line.description), h('span', { class: 'ml-auto whitespace-nowrap' }, money(line.amountCents))))),
+    h('p', { class: 'font-semibold' }, text('invoiceTotal', { amount: money(invoice.amountCents) })));
+}
 /** Every step after the form. None of these pages grants anything; actions post back to fixed join routes.
  * In a demo sandbox, `testCardHint` names the test card on the steps that lead to payment. */
-export function joinStatusPage(input: JoinPageInput & { state: JoinPageState; testCardHint?: string | undefined }) {
+export function joinStatusPage(input: JoinPageInput & { state: JoinPageState; testCardHint?: string | undefined; invoice?: JoinInvoice | null }) {
   const text = joinText(input.t), state = input.state;
   const action = (path: string, label: string) => h('form', { method: 'post', action: path }, h('button', { type: 'submit', class: button }, text(label)));
   const start = h('a', { href: '/join', class: link }, text('startOver'));
@@ -119,11 +132,13 @@ export function joinStatusPage(input: JoinPageInput & { state: JoinPageState; te
     missing: ['missingTitle', 'missingBody', start],
     unavailable: ['title', 'unavailable', start],
     failed: ['title', 'failed', start],
+    // The page has no form to clear the code in: the visitor starts again.
+    codeRefused: ['title', 'codeRefusedPage', start],
     tooLarge: ['title', 'tooLarge', h('a', { href: '/join', class: link }, text('startOver'))],
   }[state] as [string, string, ...ReturnType<typeof h>[]];
   const waiting = state === 'confirming' || state === 'confirmingCard';
   const testCard = input.testCardHint && ['continue', 'cancelled', 'card', 'cancelledCard'].includes(state)
     ? h('p', { class: 'rounded-lg border border-border bg-muted p-3', 'data-demo-test-card': true }, input.testCardHint) : null;
   return layout(input, text(title), h('section', { class: panel, role: 'status', ...(waiting ? { 'aria-live': 'polite', 'data-join-confirming': true } : {}) },
-    h('p', null, text(body)), testCard, ...next), waiting, waiting);
+    h('p', null, text(body)), input.invoice ? invoiceSummary(input, input.invoice) : null, testCard, ...next), waiting, waiting);
 }

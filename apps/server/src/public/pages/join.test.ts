@@ -7,7 +7,7 @@ import '@hono/zod-openapi';
 import { asc, eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- The test turns a gym's billing switch off in real PostgreSQL.
 import { auditEvents, gyms, households, householdUsers, invoiceLineItems, invoices, leads, members, memberships, paymentMethods, plans, signedLinks,
-  waiverSignatures, waiverTemplates, uuidv7 } from '@plaingym/db';
+  waiverSignatures, waiverTemplates, uuidv7, discounts, membershipDiscounts } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError } from '@plaingym/shared';
@@ -1117,5 +1117,152 @@ describe('public join pages through the production registrations', () => {
       expect(state.logins.filter(l => l.userId === staff.id)).toEqual([]);
       expect(f.sent).toEqual([]);
     });
+  });
+});
+
+describe('promo codes on /join', () => {
+  type Discount = Partial<typeof discounts.$inferInsert>;
+  const withCode = async (f: Fixture, terms: Discount, gymId = f.gymId) => factory('discounts', gymId, { code: 'SPRING-20', ...terms });
+  const discountRow = async (f: Fixture, id: string) => (await db.forGym(f.gymId, tx => tx.select().from(discounts).where(eq(discounts.id, id))))[0]!;
+  const applications = (f: Fixture) => db.forGym(f.gymId, tx => tx.select().from(membershipDiscounts));
+  const signed = (f: Fixture, person: Person) => f.templates.map(t => ({ templateId: t.id, templateVersion: t.version, pngBase64,
+    signer: person.dateOfBirth > '2008-10-29' ? { kind: 'guardian' as const, name: 'Pat Payer', relationship: 'Parent' } : { kind: 'self' as const, name: person.firstName + ' Joiner' } }));
+  const admitWith = (f: Fixture, people: Person[], email: string, code?: string, planId = f.plan.id) => f.post('/join/signatures', {
+    planId, contact: { name: 'Pat Payer', email }, honeypot: '', ...(code === undefined ? {} : { code }),
+    members: people.map(member => ({ member, signatures: signed(f, member) })) });
+  /** Admits with the code and returns the submission body that repeats it. */
+  async function admitted(f: Fixture, people: Person[], email: string, code: string, planId = f.plan.id) {
+    const response = await admitWith(f, people, email, code, planId);
+    expect(response.status, await response.clone().text()).toBe(200);
+    return { ...f.body(people, joinAdmissionResponseSchema.parse(await response.json()).data, email, planId), code };
+  }
+  const household = async (f: Fixture, email: string) => (await f.joined()).find(h => h.email === email)!;
+  const invoiceOf = async (f: Fixture, email: string) => {
+    const home = await household(f, email), state = await f.rows(), bill = state.invoices.find(i => i.householdId === home.id)!;
+    return { home, bill, lines: state.lines.filter(l => l.invoiceId === bill.id), state };
+  };
+  // Everything but the request ID: unknown, malformed, without a code, off, ended, used up, another plan and another gym's look the same.
+  const neutral = async (response: Response) => ({ status: response.status, error: ((await response.json()) as { error: unknown }).error });
+
+  it('bills the discounted first cycle, takes one use per person once, and a replay takes none', async () => {
+    const f = await fixture(), discount = await withCode(f, { name: 'Spring', percentBasisPoints: 2000, duration: 'once', maxUses: 5 });
+    const email = 'spring@example.invalid', body = await admitted(f, [adult(), adult('Blake')], email, 'spring-20');
+    const first = await f.post('/api/public/join', body);
+    expect(first.status, await first.clone().text()).toBe(200);
+    expect((await f.post('/api/public/join', body)).status).toBe(200);
+    expect((await discountRow(f, discount.id)).uses).toBe(2);
+    const { bill, lines, state } = await invoiceOf(f, email);
+    // Two people: (150.00 - 20%) and the 50.00 sign-up fee each, plus 5% GST.
+    expect(lines.filter(l => l.kind === 'discount').map(l => [l.description, l.amountCents])).toEqual([['Spring', -3000], ['Spring', -3000]]);
+    expect(lines.filter(l => l.kind === 'signup_fee')).toHaveLength(2);
+    expect(bill.amountCents).toBe(35_700);
+    // A once discount uses its cycle on the first full period, and completes.
+    expect((await applications(f)).map(a => [a.cyclesLeft, a.endReason])).toEqual([[0, 'completed'], [0, 'completed']]);
+    expect(state.audits.filter(a => a.action === 'billing.discount.uses_taken')).toHaveLength(1);
+    expect(state.audits.filter(a => a.action === 'public.join.discounted')).toHaveLength(1);
+    expect(state.audits.filter(a => a.action === 'billing.membership.discount_cycle_taken')).toHaveLength(2);
+    // The review step shows the discounted first invoice before payment.
+    const review = await f.get('/join/review', first.headers.get('set-cookie')!.split(';')[0]!);
+    const page = await review.text();
+    expect(review.status).toBe(200);
+    expect(page).toContain('data-join-invoice'); expect(page).toContain('Spring'); expect(page).toContain('357.00');
+    expect(page).toContain('href="/join/checkout"');
+  });
+  it('waives the sign-up fee on the first invoice for a fee-only code', async () => {
+    const f = await fixture();
+    const discount = await withCode(f, { code: 'NO-FEE', percentBasisPoints: null, duration: null, waivesSignupFee: true });
+    const email = 'nofee@example.invalid', response = await f.post('/api/public/join', await admitted(f, [adult()], email, 'NO-FEE'));
+    expect(response.status, await response.clone().text()).toBe(200);
+    const { bill, lines } = await invoiceOf(f, email);
+    expect(lines.map(l => l.kind).sort()).toEqual(['membership', 'tax']);
+    expect(bill.amountCents).toBe(15_750);
+    expect((await discountRow(f, discount.id)).uses).toBe(1);
+    expect((await applications(f)).map(a => [a.waivesSignupFee, a.endReason])).toEqual([[true, 'completed']]);
+  });
+  it.each([['forever', 'pay_invoice', 'paid', 'active'], ['once', 'update_card', 'open', 'pending']] as const)(
+    'settles a 100%% %s code with the fee waived as free only when nothing is charged later', async (duration, purpose, status, membership) => {
+      const f = await fixture();
+      await withCode(f, { code: 'ALL-FREE', percentBasisPoints: 10_000, duration, waivesSignupFee: true });
+      const email = `free-${duration}@example.invalid`, response = await f.post('/api/public/join', await admitted(f, [adult()], email, 'ALL-FREE'));
+      expect(response.status, await response.clone().text()).toBe(200);
+      const { home, bill, state } = await invoiceOf(f, email);
+      expect(bill).toMatchObject({ amountCents: 0, status });
+      expect(state.links.find(l => l.householdId === home.id)?.purpose).toBe(purpose);
+      expect(state.memberships.find(m => m.householdId === home.id)?.status).toBe(membership);
+      expect(state.audits.some(a => a.action === 'public.join.completed' && a.targetId === home.id)).toBe(duration === 'forever');
+      expect(state.methods).toEqual([]);
+    });
+  it('refuses a join for three with two uses left, taking none, and continues without the code', async () => {
+    const f = await fixture(), discount = await withCode(f, { maxUses: 2 }), people = [adult(), adult('Blake'), child()];
+    // At admission: nothing is written.
+    expect((await admitWith(f, people, 'three@example.invalid', 'SPRING-20')).status).toBe(400);
+    expect(await f.joined()).toEqual([]);
+    // After admission, the uses run short: the submission is refused before anything is signed or taken.
+    await db.forGym(f.gymId, tx => tx.update(discounts).set({ maxUses: 5 }).where(eq(discounts.id, discount.id)));
+    const body = await admitted(f, people, 'three@example.invalid', 'SPRING-20');
+    await db.forGym(f.gymId, tx => tx.update(discounts).set({ uses: 3 }).where(eq(discounts.id, discount.id)));
+    const refused = await f.post('/api/public/join', body);
+    expect(await neutral(refused)).toMatchObject({ status: 400, error: { details: { reason: ['code_refused'] } } });
+    let state = await f.rows();
+    expect((await discountRow(f, discount.id)).uses).toBe(3);
+    expect(state.memberships).toEqual([]); expect(state.signatures).toEqual([]); expect(await applications(f)).toEqual([]);
+    // Continuing without the code (the field cleared) reuses the admission.
+    expect((await f.post('/api/public/join', { ...body, code: '' })).status).toBe(200);
+    state = await f.rows();
+    expect(state.memberships).toHaveLength(3); expect(await applications(f)).toEqual([]);
+    expect(state.lines.filter(l => l.kind === 'discount')).toEqual([]);
+    expect((await discountRow(f, discount.id)).uses).toBe(3);
+  });
+  it('gives every refused code the same answer, writes nothing, and never finds another gym\'s code', async () => {
+    const f = await fixture();
+    const named = await factory('discounts', f.gymId, { code: null, name: 'Staff-only' });
+    await withCode(f, { code: 'TURNED-OFF', active: false });
+    await withCode(f, { code: 'ENDED', endsOn: '2026-10-28' });
+    await withCode(f, { code: 'USED-UP', maxUses: 1, uses: 1 });
+    const annualOnly = await withCode(f, { code: 'ANNUAL-ONLY' });
+    await factory('discountPlans', f.gymId, { discountId: annualOnly.id, planId: f.annual.id });
+    await withCode(f, { code: 'OTHER-GYM' }, f.otherGym);
+    const reference = await neutral(await admitWith(f, [adult()], 'unknown@example.invalid', 'NOPE-123'));
+    expect(reference).toMatchObject({ status: 400, error: { code: 'invalid_request', details: { reason: ['code_refused'] } } });
+    for (const code of ['50% off', 'ab', named.id, 'Staff-only', 'TURNED-OFF', 'ENDED', 'USED-UP', 'ANNUAL-ONLY', 'OTHER-GYM'])
+      expect(await neutral(await admitWith(f, [adult()], `refused-${code.length}@example.invalid`, code)), code).toEqual(reference);
+    // Ten admissions: the join admission limit for one gym and address.
+    expect(await f.joined()).toEqual([]);
+  });
+  it('refuses at submission a code that was not admitted, or a different one, like an unknown code', async () => {
+    const f = await fixture();
+    await withCode(f, { code: 'OTHER-GYM' }, f.otherGym);
+    const reference = await neutral(await admitWith(f, [adult()], 'unknown@example.invalid', 'NOPE-123'));
+    await withCode(f, {});
+    const images = await f.admit([adult()], 'later@example.invalid', f.plan.id);
+    const late = await f.post('/api/public/join', { ...f.body([adult()], images, 'later@example.invalid', f.plan.id), code: 'SPRING-20' });
+    expect(await neutral(late)).toEqual(reference);
+    const other = await admitted(f, [adult()], 'swapped@example.invalid', 'SPRING-20');
+    expect(await neutral(await f.post('/api/public/join', { ...other, code: 'OTHER-GYM' }))).toEqual(reference);
+  });
+  it('lets exactly one of two concurrent joins take the last use', async () => {
+    const f = await fixture(), discount = await withCode(f, { maxUses: 1 });
+    const bodies = [await admitted(f, [adult()], 'race-a@example.invalid', 'SPRING-20'), await admitted(f, [adult()], 'race-b@example.invalid', 'SPRING-20')];
+    const statuses = (await Promise.all(bodies.map(body => f.post('/api/public/join', body)))).map(r => r.status);
+    expect(statuses.sort()).toEqual([200, 400]);
+    expect((await discountRow(f, discount.id)).uses).toBe(1);
+    expect(await applications(f)).toHaveLength(1);
+    expect((await f.rows()).memberships).toHaveLength(1);
+  });
+  it('takes a code on the native form, shows the discounted invoice, and refuses a bad code with the same page', async () => {
+    const f = await fixture();
+    await withCode(f, { name: 'Spring', percentBasisPoints: 2000, duration: 'forever' });
+    const send = async (code: string, email: string) => {
+      const form = nativeForm(f, f.plan.id, email);
+      form.set('code', code);
+      return f.server.request(await requestWithLength(origin + '/join', { method: 'POST', headers: { origin }, body: form }));
+    };
+    const accepted = await send('Spring-20', 'native-code@example.invalid'), page = await accepted.text();
+    expect(accepted.status).toBe(200);
+    expect(page).toContain('data-join-invoice'); expect(page).toContain('Spring');
+    for (const code of ['NOPE-123', '%%']) {
+      const refused = await send(code, 'native-refused@example.invalid');
+      expect(refused.status).toBe(400); expect(await refused.text()).toContain('This code can');
+    }
   });
 });

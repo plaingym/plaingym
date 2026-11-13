@@ -90,6 +90,11 @@ describe('join and drop-in refusals', () => {
     expect(await refusal(Response.json({ error: { code: 'conflict' } }, { status: 409 }))).toBe('conflict');
     expect(await refusal(Response.json({ error: { code: 'internal' } }, { status: 500 }))).toBe('failed');
   });
+  it('shows the code message for a refused promo code, reuses the admission without it, and reviews a join with a code', () => {
+    expect(joinBrowserScript).toContain("reason.includes('code_refused')) throw new Error('codeRefused')");
+    expect(joinBrowserScript).toContain('(code && cached.code !== code)');
+    expect(joinBrowserScript).toContain("window.location.assign(code ? '/join/review' : '/join/checkout')");
+  });
   it('is what both scripts use for a refused post', () => {
     for (const script of [joinBrowserScript, publicBrowserScript]) {
       expect(script).toContain(refusalScript);

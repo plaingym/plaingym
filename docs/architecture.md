@@ -195,7 +195,11 @@ source of truth; Stripe is the processor. In outline:
   row lock and retain their terms; recurring billing consumes an allowance only
   for a full cycle, in the transaction advancing the due date. Partial periods
   receive the discount without consuming an allowance, and waived signup fees
-  produce no invoice.
+  produce no invoice. On `/join` a visitor may enter a code (never a discount ID):
+  every refused code gets one neutral answer behind the join rate limits, and a
+  join takes one use per person, all or none, with its memberships in one
+  transaction, so a replay takes none (see the
+  [join README](../apps/server/src/public/pages/join.md)).
   Owners and admins can add, replace or remove a live membership's discount with
   its revision, effective on the next invoice without proration. Plan switches
   keep its remaining cycles only when the applied snapshot allows the new plan;

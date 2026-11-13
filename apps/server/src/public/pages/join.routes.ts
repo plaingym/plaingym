@@ -62,12 +62,15 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
     });
   } });
   const gymOf = (ctx: Context<RequestEnvironment>) => ctx.get('context').gym.gymId;
-  async function page(ctx: Context<RequestEnvironment>, state: JoinPageState, status: 200 | 400 | 413 | 503 = 200) {
+  async function page(ctx: Context<RequestEnvironment>, state: JoinPageState, status: 200 | 400 | 413 | 503 = 200, linkId?: string) {
     const config = options();
     // Only the steps that lead to payment show the hint, so the other pages skip the lookup.
     const testCardHint = config.testCardHint && ['continue', 'cancelled', 'card', 'cancelledCard'].includes(state) ? await config.testCardHint(gymOf(ctx)) : undefined;
-    return ctx.html(joinStatusPage({ gym: await config.service.branding(gymOf(ctx)), t: config.t ?? translator, state, testCardHint }), status);
+    // The review step: the first invoice, with any code's discount, before payment or card setup.
+    const invoice = linkId && ['continue', 'card', 'manual'].includes(state) ? await config.service.firstInvoice(gymOf(ctx), linkId) : null;
+    return ctx.html(joinStatusPage({ gym: await config.service.branding(gymOf(ctx)), t: config.t ?? translator, state, testCardHint, invoice }), status);
   }
+  const codeRefused = (error: unknown) => error instanceof AppError && error.details?.reason?.[0] === 'code_refused';
   /** HttpOnly, Secure, SameSite=Lax (it survives the return from Checkout), signed, short-lived and scoped to /join. */
   function remember(ctx: Context<RequestEnvironment>, linkId: string) {
     const expiresAt = new Date(ctx.get('context').clock.now().getTime() + joinCookieLifetimeMs);
@@ -120,7 +123,7 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
         const contact = { name: value('contactName'), email: value('email'), ...(value('phone') ? { phone: value('phone') } : {}) };
         const people = Array.from({ length: count }, (_, i) => ({ firstName: value(`member-${i}-firstName`), lastName: value(`member-${i}-lastName`),
           dateOfBirth: value(`member-${i}-dateOfBirth`) }));
-        const common = { planId: value('planId'), contact, honeypot: value('honeypot') };
+        const common = { planId: value('planId'), contact, honeypot: value('honeypot'), ...(value('code').trim() ? { code: value('code') } : {}) };
         // The documents the page rendered; the admission checks them against the current set.
         const documents = Array.from({ length: maxJoinDocuments }, (_, j) => j).filter(j => value(`waiver-0-${j}-template`));
         const signatures = await Promise.all(people.map((_, i) => Promise.all(documents.map(async j => {
@@ -136,9 +139,10 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
         remember(ctx, linkId);
         const state = await service.state(gymId, linkId), status = state.status;
         if (status === 'active') return ctx.redirect('/join/return', 303);
-        return page(ctx, status === 'manual' ? 'manual' : 'cardOnly' in state && state.cardOnly ? 'card' : 'continue');
+        return page(ctx, status === 'manual' ? 'manual' : 'cardOnly' in state && state.cardOnly ? 'card' : 'continue', 200, linkId);
       } catch (error) {
         if (error instanceof AppError && error.code === 'unavailable') return page(ctx, 'unavailable', 503);
+        if (codeRefused(error)) return page(ctx, 'codeRefused', 400);
         if (error instanceof z.ZodError || error instanceof AppError && ['invalid_request', 'not_found', 'conflict'].includes(error.code)) return page(ctx, 'failed', 400);
         throw error;
       }
@@ -158,6 +162,14 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
         if (error instanceof AppError && error.code === 'unavailable') return page(ctx, 'unavailable', 503);
         throw error;
       }
+    }),
+    // Read-only review step after a join with a code: the discounted first invoice, then payment or card setup.
+    route({ method: 'get', path: '/join/review', permission: { kind: 'public' }, responses: html }, async ctx => {
+      const linkId = pending(ctx), service = options().service;
+      const state = linkId ? await service.state(gymOf(ctx), linkId) : { status: 'missing' as const };
+      if (!linkId || state.status === 'missing' || state.status === 'closed') return page(ctx, state.status === 'closed' ? 'closed' : 'missing');
+      if (state.status === 'active') return ctx.redirect('/join/return', 303);
+      return page(ctx, state.status === 'manual' ? 'manual' : 'cardOnly' in state && state.cardOnly ? 'card' : 'continue', 200, linkId);
     }),
     // Read-only: it waits for the webhook, which alone records the payment and activates the membership.
     route({ method: 'get', path: '/join/return', permission: { kind: 'public' }, responses: html }, async ctx => {

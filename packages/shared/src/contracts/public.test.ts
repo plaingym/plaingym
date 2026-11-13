@@ -104,4 +104,17 @@ describe('public response validation', () => {
     expect(joinAdmissionSchema.safeParse({ ...input, householdId: id }).success).toBe(false);
     expect(joinAdmissionResponseSchema.parse({ data: [[image]] })).toEqual({ data: [[image]] });
   });
+  it('takes an optional promo code on the join admission and submission, leaving its check to the service', () => {
+    const admission = { contact, planId: id, honeypot: '', members: [{ member, signatures: [{ ...signature, signer: { kind: 'self', name: 'Visitor' } }] }] };
+    const submission = { planId: id, contact, members: [{ member, waivers: [waiver] }], honeypot: '' };
+    for (const schema of [joinAdmissionSchema, publicJoinRequestSchema]) {
+      const input = schema === joinAdmissionSchema ? admission : submission;
+      expect(schema.parse(input)).not.toHaveProperty('code');
+      expect(schema.parse({ ...input, code: ' Spring-25 ' }).code).toBe('Spring-25');
+      // A malformed code passes the contract so that the service refuses it with the same answer as any unknown code.
+      expect(schema.parse({ ...input, code: '50% off!' }).code).toBe('50% off!');
+      expect(schema.safeParse({ ...input, code: 'x'.repeat(101) }).success).toBe(false);
+      expect(schema.safeParse({ ...input, code: 25 }).success).toBe(false);
+    }
+  });
 });

@@ -50,10 +50,16 @@ export const joinBrowserScript = String.raw`// SPDX-License-Identifier: AGPL-3.0
   ${refusalScript}
   async function post(path, body) {
     const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!response.ok) throw new Error(response.status === 503 ? 'unavailable' : await refusal(response));
+    if (!response.ok) {
+      // Every refused promo code gets the same answer; the visitor can clear the code and continue without it.
+      const reason = response.status === 400 ? (await response.clone().json().catch(() => null))?.error?.details?.reason : null;
+      if (Array.isArray(reason) && reason.includes('code_refused')) throw new Error('codeRefused');
+      throw new Error(response.status === 503 ? 'unavailable' : await refusal(response));
+    }
     return response.json();
   }
-  // One admission per distinct set of details and signatures; a retry after a failed submission reuses it.
+  // One admission per distinct set of details and signatures; a retry after a failed submission reuses it. Clearing a
+  // refused code reuses it too, so the join continues without the code; a new code needs a new admission to check it.
   let cached;
   form.addEventListener('submit', async event => {
     event.preventDefault(); if (!form.reportValidity()) return;
@@ -76,18 +82,20 @@ export const joinBrowserScript = String.raw`// SPDX-License-Identifier: AGPL-3.0
           return { templateId: waiver.dataset.template, templateVersion: Number(waiver.dataset.version), pngBase64, signer };
         })),
       })));
+      const code = value('code').trim(), withCode = code ? { code } : {};
       const admission = { planId: value('planId'), contact, members, honeypot: value('honeypot') }, key = JSON.stringify(admission);
       // The admission is sent as UTF-8; leave room below the server's exact limit.
       if (new Blob([key]).size > ${joinBodyBytes - 64 * 1024}) throw new Error('tooLarge');
-      if (cached?.key !== key) cached = { key, data: (await post('/join/signatures', admission)).data };
-      await post('/api/public/join', { planId: value('planId'), contact, honeypot: value('honeypot'), members: members.map((person, i) => ({
+      if (cached?.key !== key || (code && cached.code !== code)) cached = { key, code, data: (await post('/join/signatures', { ...admission, ...withCode })).data };
+      await post('/api/public/join', { planId: value('planId'), contact, honeypot: value('honeypot'), ...withCode, members: members.map((person, i) => ({
         member: person.member, waivers: cached.data[i].map((image, j) => {
           const prefix = 'waiver-' + i + '-' + j;
           return { ...image, consent: true, signer: value(prefix + '-kind') === 'guardian'
             ? { kind: 'guardian', name: value(prefix + '-name'), relationship: value(prefix + '-relationship') } : { kind: 'self', name: value(prefix + '-name') } };
         }) })) });
-      // The submission set an HttpOnly cookie naming only this pending join; payment continues from it.
-      window.location.assign('/join/checkout');
+      // The submission set an HttpOnly cookie naming only this pending join; payment continues from it. With a code, the
+      // review step shows the discounted first invoice first.
+      window.location.assign(code ? '/join/review' : '/join/checkout');
     } catch (error) {
       feedback.textContent = message(error instanceof Error ? error.message : 'failed') || message('failed');
       if (error instanceof Error && error.message === 'conflict') cached = undefined;

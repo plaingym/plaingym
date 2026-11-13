@@ -45,8 +45,13 @@ export const publicWaiverAcceptanceSchema = z.strictObject({
 export const publicDropInRequestSchema = publicTrialRequestSchema.extend({
   waivers: z.array(publicWaiverAcceptanceSchema).min(1),
 });
+/**
+ * An optional promo code. Any short text is accepted here: the service gives every refused code, malformed ones
+ * included, the same neutral answer, so the response never tells codes apart.
+ */
+export const joinCodeSchema = z.string().trim().max(100);
 export const publicJoinRequestSchema = z.strictObject({
-  planId: idSchema, contact: publicContactSchema,
+  planId: idSchema, contact: publicContactSchema, code: joinCodeSchema.optional(),
   members: z.array(z.strictObject({
     member: publicApplicantSchema, waivers: z.array(publicWaiverAcceptanceSchema).min(1),
   })).min(1),
@@ -74,7 +79,7 @@ export const publicAdmittedSignatureSchema = z.strictObject({
 });
 export const publicAdmissionResponseSchema = z.strictObject({ data: z.array(publicAdmittedSignatureSchema) });
 export const joinAdmissionSchema = z.strictObject({
-  planId: idSchema, contact: publicContactSchema, honeypot: z.literal(''),
+  planId: idSchema, contact: publicContactSchema, honeypot: z.literal(''), code: joinCodeSchema.optional(),
   members: z.array(z.strictObject({ member: publicApplicantSchema,
     signatures: z.array(publicSignatureUploadSchema.extend({ signer: waiverSignerSchema })).min(1).max(maxJoinDocuments) })).min(1).max(maxJoinMembers),
 });

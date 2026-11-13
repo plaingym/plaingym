@@ -94,6 +94,37 @@ without Checkout. Zero settlement creates no payment or charge, then activates
 the memberships and completes the same join once. Positive sign-up fees use
 payment-mode Checkout, which saves the card as usual.
 
+## Promo codes
+
+The form has an optional promo code field; both join requests accept it as `code`.
+Only a code works on `/join`: a discount without one, or its ID, is never found.
+The lookup reads the gym's own discounts (`forGym`), so another gym's code is
+unknown. Every refusal (unknown, malformed, without a code, turned off, ended,
+used up, another plan, or fewer uses left than people joining) is the same 400
+with `details.reason` `code_refused` and one message, so the answer never tells
+codes apart; the admission and submission rate limits above bound the guesses.
+
+`POST /join/signatures` checks the code for the plan and the number of people,
+under the discount's row lock, before writing anything, and records the discount
+with the admission; it takes no use. The submission must repeat that code; any
+other code is refused. It checks again before signing or recording leads. Then,
+in one transaction, it locks the household and the discount, takes one use per
+person (a join that would pass the limit takes none and is refused), assigns
+every membership with the discount and records `public.join.discounted`, so a
+replay or concurrent retry takes no second use. If the uses ran out after
+admission, the visitor can clear the field and submit again: the submission
+without a code reuses the admission and continues without the discount.
+
+The first invoice prices each first cycle with the snapshot the assignment
+took, and a `once` or `cycles` discount uses one cycle there, as the runner does
+for a full cycle; a trial's invoice uses none. A fee waiver drops that
+membership's sign-up fee. A zero first invoice settles without Checkout when no
+later charge is due (a forever discount covering the whole price, or a free plan);
+otherwise card setup runs as for a trial. With a code, the script continues to
+`GET /join/review`, and the native form's next page, which both show the first
+invoice's lines (inclusive taxes left out) and total before payment or card setup.
+`/join/review` is read-only and reads only the visitor's own join cookie.
+
 ## Checkout and activation
 
 The submission sets an HttpOnly, Secure, SameSite=Lax cookie scoped to `/join` for
@@ -189,7 +220,8 @@ waiver, membership, signed-link Checkout, invoice-transition and webhook-handler
 and the runner, with FakePayments. With the separate `e2e` dependencies installed and
 the pinned Chromium installed, `pnpm --filter @plaingym/server exec tsx src/public/pages/join.mobile-check.mjs`
 checks every join page at 360 and 1280 px (no horizontal scroll, 44 px targets, and
-axe WCAG A/AA with JavaScript), trial/free plan forms, drawn and file signatures,
+axe WCAG A/AA with JavaScript), trial/free plan forms, a refused and an accepted promo
+code with the review step, drawn and file signatures,
 and native form layouts and submissions with JavaScript disabled at both widths.
 `areas/billing/transitions/join-cleanup.test.ts` covers
 invoice safety and cross-gym cleanup against real PostgreSQL.

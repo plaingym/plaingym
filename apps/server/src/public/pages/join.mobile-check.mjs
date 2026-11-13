@@ -12,6 +12,7 @@ import { createPublicRoutes } from './pages.routes.ts';
 import { authorize } from '../../areas/staff/auth.permissions.ts';
 import { buildLinkStyles } from '../links/styles.build.mjs';
 import { demoSignaturePng } from '../../demo/seed/waivers-image.ts';
+import { AppError } from '@plaingym/shared';
 
 const require = createRequire(new URL('../../../../../e2e/package.json', import.meta.url));
 const { chromium, expect } = require('@playwright/test');
@@ -37,12 +38,18 @@ const service = {
   async ready() { return templates; },
   async plans() { return { data: plans, pagination: { limit: 100, offset: 0, total: plans.length } }; },
   async joinablePlan(_gym, id) { const plan = plans.find(p => p.id === id); if (!plan) throw Object.assign(new Error('missing'), { code: 'not_found' }); return plan; },
-  async admit(_gym, body) { calls.push({ kind: 'admit', body }); return { data: body.members.map((member, i) => member.signatures.map(s => ({ templateId: s.templateId,
+  async admit(_gym, body) {
+    if (body.code !== undefined && body.code !== 'SPRING-20') throw new AppError('invalid_request', "This code can't be used.", { reason: ['code_refused'] });
+    calls.push({ kind: 'admit', body }); return { data: body.members.map((member, i) => member.signatures.map(s => ({ templateId: s.templateId,
     templateVersion: s.templateVersion, signatureImageKey: `${gymId}/waivers/01900000-0000-7000-8000-00000000001${i}/signatures/test.png`, signatureImageHash: 'a'.repeat(64) }))) }; },
   async join(_gym, body) { calls.push({ kind: 'join', body }); cardOnly = body.planId === plans[2].id; return { linkId }; },
   async checkout() { calls.push({ kind: 'checkout' }); return base + '/join/return'; },
   async state() { return { status: state, householdId: '01900000-0000-7000-8000-000000000020', cardOnly }; },
   async passwordMode() { return passwordMode; },
+  async firstInvoice() { return { amountCents: 33_600, currency: 'CAD', lines: [{ description: 'Adult unlimited monthly', amountCents: 15_000 },
+    { description: 'Adult unlimited monthly', amountCents: 15_000 }, { description: 'Spring promotion for new members', amountCents: -3_000 },
+    { description: 'Spring promotion for new members', amountCents: -3_000 }, { description: 'Sign-up fee: Adult unlimited monthly', amountCents: 5_000 },
+    { description: 'GST', amountCents: 1_600 }] }; },
   async resend() { calls.push({ kind: 'resend' }); },
 };
 const publicService = { async config() { return { data: { gym, dropInFee: null } }; } };
@@ -125,6 +132,15 @@ try {
     state = 'pending'; cardOnly = true;
     await page.goto(base + '/join/return'); await check(page, width + '-confirming-card');
     await page.goto(base + '/join/cancelled'); await check(page, width + '-cancelled-card');
+    // A promo code: a refused one shows the neutral message on the form; an accepted one goes to the review step.
+    state = 'pending'; cardOnly = false;
+    await page.goto(base + `/join?plan=${plans[0].id}&members=2`); await fill(page, true); await page.locator('#code').fill('NOPE-123');
+    await check(page, width + '-form-code');
+    await page.locator('button[type=submit]', { hasText: 'Continue to payment' }).click(); await expect(page.locator('#feedback')).toContainText("This code can't be used");
+    await page.locator('#code').fill('SPRING-20'); await page.locator('button[type=submit]', { hasText: 'Continue to payment' }).click();
+    await page.waitForURL('**/join/review'); await check(page, width + '-review-code');
+    await expect(page.locator('[data-join-invoice]')).toContainText('Spring promotion for new members');
+    await expect(page.locator('a', { hasText: 'Pay securely' })).toBeVisible();
     await context.close();
   }
   // Without JavaScript the native multipart form posts PNG files and offers a same-origin link onward.
@@ -136,9 +152,11 @@ try {
   state = 'pending'; cardOnly = false;
   await page.goto(base + '/join'); await check(page, width + '-plans-native', false);
   for (const plan of plans.slice(2)) { await page.goto(base + `/join?plan=${plan.id}`); await check(page, width + '-form-native-' + plan.trialDays, false); }
-  await page.goto(base + `/join?plan=${plans[0].id}&members=2`); await fill(page, false); await check(page, width + '-form-native', false);
+  await page.goto(base + `/join?plan=${plans[0].id}&members=2`); await fill(page, false); await page.locator('#code').fill('SPRING-20');
+  await check(page, width + '-form-native', false);
   await page.locator('button[type=submit]', { hasText: 'Continue to payment' }).click(); await page.waitForURL('**/join');
-  await check(page, width + '-continue-native', false); await page.locator('a', { hasText: 'Pay securely' }).click(); await page.waitForURL('**/join/return');
+  await check(page, width + '-continue-native', false); await expect(page.locator('[data-join-invoice]')).toContainText('Total due today');
+  await page.locator('a', { hasText: 'Pay securely' }).click(); await page.waitForURL('**/join/return');
   // With the script blocked the page still says what to do and promises no update.
   await expect(page.locator('main')).toContainText('If this page does not change, select Check again'); await expect(page.locator('main')).not.toContainText('updates automatically');
   // An oversized native form gets join's own page.
@@ -159,11 +177,12 @@ try {
   }
   expect(errors).toEqual([]);
   const joins = calls.filter(c => c.kind === 'join');
-  expect(joins).toHaveLength(process.argv.includes('--native') ? 4 : 6);
+  expect(joins).toHaveLength(process.argv.includes('--native') ? 4 : 8);
+  expect(joins.filter(c => c.body.code === 'SPRING-20')).toHaveLength(process.argv.includes('--native') ? 2 : 4);
   expect(joins.every(c => c.body.members.length === 2 && c.body.members[1].waivers.every(w => w.signer.kind === 'guardian' && w.signer.relationship === 'Parent'))).toBe(true);
   expect(calls.filter(c => c.kind === 'admit').every(c => c.body.members.every(m => m.signatures.every(s => s.pngBase64.startsWith('iVBOR'))))).toBe(true);
   expect(calls.filter(c => c.kind === 'admit').every(c => c.body.members[1].signatures.every(s => s.signer.kind === 'guardian'))).toBe(true);
   expect(calls.filter(c => c.kind === 'checkout')).toHaveLength(process.argv.includes('--native') ? 4 : 6);
   console.log(process.argv.includes('--native') ? '360/1280 px: native payment and card-setup forms, file signatures, layouts and touch targets passed.'
-    : '360/1280 px: plans, trial/free forms, drawn/file signatures, payment and card setup, confirming, cancelled, welcome, closed, resend, missing, native forms, touch targets and axe passed.');
+    : '360/1280 px: plans, trial/free forms, drawn/file signatures, promo codes and review, payment and card setup, confirming, cancelled, welcome, closed, resend, missing, native forms, touch targets and axe passed.');
 } finally { await browser.close(); await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }

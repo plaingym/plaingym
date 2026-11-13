@@ -1052,6 +1052,7 @@
   {"method":"GET","path":"/join","permission":{"kind":"public"}},
   {"method":"POST","path":"/join","permission":{"kind":"public"}},
   {"method":"GET","path":"/join/checkout","permission":{"kind":"public"}},
+  {"method":"GET","path":"/join/review","permission":{"kind":"public"}},
   {"method":"GET","path":"/join/return","permission":{"kind":"public"}},
   {"method":"GET","path":"/join/cancelled","permission":{"kind":"public"}},
   {"method":"POST","path":"/join/sign-in","permission":{"kind":"public"}},
