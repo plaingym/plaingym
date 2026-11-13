@@ -1,6 +1,21 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Billing catalog
 
+The **Discounts** section is available only to owners and admins, alongside class
+packs on the plans page. It uses cards at phone and desktop widths, shows price
+and signup-fee benefits, duration, uses, code, eligible plans and the end date,
+and optionally includes inactive discounts. Create or edit a discount to change
+its name, optional code, limits, eligible plans and active state. Clearing
+**Active** turns it off for new applications; existing memberships keep their
+applied terms. Monetary fields use the discount's currency and minor units.
+
+Price benefits can be a percentage or fixed amount, once, for a number of billing
+cycles, or every cycle. A discount can also waive the signup fee, alone or with a
+price benefit. Empty plan selection means every plan. Terms are disabled when
+the catalog reports `termsLocked`, including after all historical uses
+have been released. Any edit conflict blocks saving until staff close and reload,
+and explains that changing used terms requires a new discount.
+
 The **Class packs** section lists active packs, with an option to include archived
 packs. Its dialog creates and edits the name, price, tax rates, 1–100 credits and
 optional 1–3650 expiry days. Clearing **Active** archives a pack; checking it

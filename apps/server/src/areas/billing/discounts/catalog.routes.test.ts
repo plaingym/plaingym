@@ -87,8 +87,9 @@ describe('discount catalog routes', () => {
     const f = await fixture(), other = await fixture(), app = server(f, staff(f, 'owner'));
     expect((await request(app, 'updateDiscount', f, { revision: 1, amountCents: 500 })).status).toBe(400);
     expect((await request(app, 'updateDiscount', f, { revision: 1, uses: 1 })).status).toBe(400);
+    expect((await request(app, 'updateDiscount', f, { revision: 1, termsLocked: false })).status).toBe(400);
     expect((await request(app, 'updateDiscount', f, { revision: 1, planIds: [other.plan.id] })).status).toBe(404);
     const response = await request(app, 'getDiscount', f);
-    expect((await response.json()).data).toMatchObject({ revision: 1, uses: 0, planIds: [] });
+    expect((await response.json()).data).toMatchObject({ revision: 1, uses: 0, termsLocked: false, planIds: [] });
   });
 });

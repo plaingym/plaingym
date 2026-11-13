@@ -20,7 +20,7 @@ async function fixture(currency = 'USD') {
 describe('discount catalog service', () => {
   it('creates, reads, filters, paginates and archives without touching existing billing data or uses', async () => {
     const f = await fixture(), row = await f.service.create(f.context, f.input);
-    expect(row).toMatchObject({ ...f.input, uses: 0, revision: 1, createdAt: clock.now().toISOString(), active: true });
+    expect(row).toMatchObject({ ...f.input, uses: 0, termsLocked: false, revision: 1, createdAt: clock.now().toISOString(), active: true });
     expect(await f.service.get(f.gymId, row.id)).toEqual(row);
     await f.service.create(f.context, { name: 'Waiver', currency: 'USD', waivesSignupFee: true });
     const off = await f.service.update(f.context, row.id, { revision: 1, active: false, code: null });
@@ -65,6 +65,20 @@ describe('discount catalog service', () => {
     await expect(f.service.update(f.context, row.id, { revision: 1, maxUses: 1 })).rejects.toMatchObject({ code: 'conflict' });
     expect(await f.service.update(f.context, row.id, { revision: 1, maxUses: 2 })).toMatchObject({ maxUses: 2, uses: 2 });
     expect(await f.service.update(f.context, row.id, { revision: 2, maxUses: null })).toMatchObject({ maxUses: null, uses: 2 });
+  });
+  it('reports historical terms locks after all uses are released in reads and metadata updates', async () => {
+    const f = await fixture(), row = await f.service.create(f.context, f.input);
+    const unused = await f.service.create(f.context, { ...f.input, name: 'Unused', code: null });
+    await db.forGym(f.gymId, tx => tx.update(discounts).set({ uses: 1 }).where(eq(discounts.id, row.id)));
+    await factory('membershipDiscounts', f.gymId, { discountId: row.id, endedAt: clock.now(), endReason: 'released' });
+    await db.forGym(f.gymId, tx => tx.update(discounts).set({ uses: 0 }).where(eq(discounts.id, row.id)));
+    expect(await f.service.get(f.gymId, row.id)).toMatchObject({ uses: 0, termsLocked: true });
+    expect(await f.service.get(f.gymId, unused.id)).toMatchObject({ uses: 0, termsLocked: false });
+    expect((await f.service.list(f.gymId, {})).data).toEqual([
+      { ...row, termsLocked: true }, unused,
+    ]);
+    expect(await f.service.update(f.context, row.id, { revision: 1, name: 'Renamed' })).toMatchObject({ uses: 0, termsLocked: true });
+    await expect(f.service.update(f.context, row.id, { revision: 2, percentBasisPoints: 2000 })).rejects.toMatchObject({ code: 'conflict' });
   });
   it('maps name and code collisions, including concurrent creates, to conflicts and rolls back links and audits', async () => {
     const f = await fixture(), first = await f.service.create(f.context, f.input);

@@ -3,7 +3,7 @@ import { useState, type FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { canStaff } from '@plaingym/shared';
 import { localDate } from '@plaingym/shared/time';
-import type { Membership, MembershipSwitchResult, Plan } from '@plaingym/shared/contracts';
+import type { Membership, MembershipSwitchResult, MembershipDiscountSelection, Plan } from '@plaingym/shared/contracts';
 import { useBootstrap } from '../../../app/context.js';
 import type { ExtensionViewProps } from '../../../lib/registries.js';
 import { t } from '../../../lib/i18n.js';
@@ -16,11 +16,15 @@ import { billingClient, type BillingClient } from '../catalog/api.js';
 import { minorUnitsToInput, money, parseMinorUnits, saveError, selectClass } from '../catalog/format.js';
 import { householdBillingDate } from './calendar.js';
 import { ChangePlanDialog } from './change-plan.js';
+import type { DiscountClient } from '../discounts/api.js';
+import { DiscountSelection } from '../discounts/selection.js';
+import { failure as discountFailure } from '../discounts/messages.js';
+import { MembershipDiscount } from './discount.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('billing/memberships:' + key, values);
 type Action = 'activateMembership' | 'freezeMembership' | 'resumeMembership' | 'cancelMembership' | 'updateMembership' | 'cancelMembershipSwitch';
-export function MembershipPanel({ gymId, memberId, manage, client = billingClient, now }: {
-  gymId: string; memberId: string; manage: boolean; client?: BillingClient; now?: Date;
+export function MembershipPanel({ gymId, memberId, manage, client = billingClient, discounts, now }: {
+  gymId: string; memberId: string; manage: boolean; client?: BillingClient; discounts?: DiscountClient | undefined; now?: Date;
 }) {
   const bootstrap = useBootstrap();
   const cache = useQueryClient(), key = ['billing', gymId, 'memberships'];
@@ -40,7 +44,8 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
       await cache.invalidateQueries({ queryKey: key });
       setMessage(text('saved')); return true;
     } catch (error) {
-      setMessage(error instanceof ApiError && error.reason.includes('switch_scheduled') ? text('reason_switch_scheduled') : saveError(error));
+      setMessage(error instanceof ApiError && error.reason.includes('switch_scheduled') ? text('reason_switch_scheduled')
+        : error instanceof ApiError && error.reason.some(reason => reason.startsWith('discount_')) ? discountFailure(error) : saveError(error));
       return false;
     }
     finally { setBusy(false); }
@@ -54,37 +59,42 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
     {rows.data?.length === 0 && <p className="rounded-lg border p-4 text-muted-foreground">{text('empty')}</p>}
     {plans.isError && <Alert role="alert">{text('error')} <Button variant="outline" onClick={() => void plans.refetch()}>{text('retry')}</Button></Alert>}
     <ul className="space-y-3">{rows.data?.map(row => <MembershipCard key={row.id} row={row} plans={plans.data ?? []} plansReady={plans.isSuccess} manage={manage} busy={busy} mutate={mutate}
-      client={client} reload={reload} changed={result => { setReminder(true); setMessage(text(result.invoiceId ? 'planChangedInvoice' : 'planChanged')); void reload(); }}/>)}</ul>
+      gymId={gymId} discounts={discounts} client={client} reload={reload} changed={result => { setReminder(true); setMessage(text(result.invoiceId ? 'planChangedInvoice' : 'planChanged')); void reload(); }}/>)}</ul>
     {manage && <>
       {(setup.isPending || plans.isPending || bootstrap.isPending) && <p role="status">{text('loading')}</p>}
       {bootstrap.isError && <Alert role="alert">{text('error')} <Button variant="outline" onClick={() => void bootstrap.refetch()}>{text('retry')}</Button></Alert>}
       {setup.isError && <Alert role="alert">{text('error')} <Button variant="outline" onClick={() => void setup.refetch()}>{text('retry')}</Button></Alert>}
       {setup.data && plans.data && bootstrap.data && <AssignmentForm key={memberId} plans={plans.data.filter(plan => plan.active)}
-        householdId={setup.data.member.householdId} memberId={memberId} busy={busy} assign={data => mutate('assignMembership', data)}
+        gymId={gymId} discounts={discounts} householdId={setup.data.member.householdId} memberId={memberId} busy={busy} assign={data => mutate('assignMembership', data)}
         today={localDate(now ?? new Date(), bootstrap.data.gym.timezone)}
         billingDate={startsOn => householdBillingDate(startsOn, setup.data.household, setup.data.billingDay)}/>
       }
     </>}
   </section>;
 }
-function AssignmentForm({ plans, memberId, householdId, today, billingDate, busy, assign }: {
+function AssignmentForm({ plans, memberId, householdId, today, billingDate, busy, assign, gymId, discounts }: {
   plans: Plan[]; memberId: string; householdId: string; today: string; billingDate: (startsOn: string) => string; busy: boolean;
   assign: (data: unknown) => Promise<boolean>;
+  gymId: string; discounts?: DiscountClient | undefined;
 }) {
   const [chosen, setChosen] = useState(''), [formKey, setFormKey] = useState(0);
+  const [picked, setPicked] = useState<{ planId: string; value: MembershipDiscountSelection }>();
   // The billing date follows the start date until staff edit it.
   const [startsOn, setStartsOn] = useState(today), [nextDueOn, setNextDueOn] = useState<string | null>(null);
   const planId = chosen || plans[0]?.id || '', plan = plans.find(item => item.id === planId);
+  // A selection belongs to the plan it was made for, including when a reloaded plan list moves the default plan.
+  const discount = picked?.planId === planId ? picked.value : undefined;
+  const setDiscount = (value: MembershipDiscountSelection | undefined) => setPicked(value && { planId, value });
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = new FormData(event.currentTarget);
-    if (await assign({ memberId, householdId, planId, startsOn: form.get('startsOn'), nextDueOn: form.get('nextDueOn'), firstPeriod: form.get('firstPeriod') })) {
-      setFormKey(value => value + 1); setStartsOn(today); setNextDueOn(null);
+    if (await assign({ memberId, householdId, planId, startsOn: form.get('startsOn'), nextDueOn: form.get('nextDueOn'), firstPeriod: form.get('firstPeriod'), ...(discount ? { discount } : {}) })) {
+      setFormKey(value => value + 1); setStartsOn(today); setNextDueOn(null); setDiscount(undefined);
     }
   }
   return <form key={formKey} onSubmit={event => void submit(event)} className="min-w-0 space-y-4 rounded-lg border p-4">
     <h3 className="font-semibold">{text('assign')}</h3>
     {!plans.length ? <p>{text('noPlans')}</p> : <fieldset disabled={busy} className="grid min-w-0 gap-4 sm:grid-cols-2">
-      <Label className="block min-w-0 sm:col-span-2">{text('plan')}<select className={selectClass} value={planId} onChange={event => setChosen(event.target.value)}>{plans.map(item => <option key={item.id} value={item.id}>{item.name} · {money(item.amountCents, item.currency)}</option>)}</select></Label>
+      <Label className="block min-w-0 sm:col-span-2">{text('plan')}<select className={selectClass} value={planId} onChange={event => { setChosen(event.target.value); setDiscount(undefined); }}>{plans.map(item => <option key={item.id} value={item.id}>{item.name} · {money(item.amountCents, item.currency)}</option>)}</select></Label>
       {plan && <p className="text-sm text-muted-foreground sm:col-span-2">{text('signupFee')}: {money(plan.signupFeeCents, plan.currency)} · {text('trialDays')}: {plan.trialDays}</p>}
       <Label className="block min-w-0">{text('startsOn')}<Input name="startsOn" type="date" required value={startsOn}
         onChange={event => { setStartsOn(event.target.value); setNextDueOn(null); }}/></Label>
@@ -93,14 +103,16 @@ function AssignmentForm({ plans, memberId, householdId, today, billingDate, busy
       <p className="text-sm text-muted-foreground sm:col-span-2">{text('alignmentHelp')}</p>
       <Label className="block min-w-0 sm:col-span-2">{text('firstPeriod')}<select className={selectClass} name="firstPeriod" defaultValue="prorate_now"><option value="prorate_now">{text('prorateNow')}</option><option value="next_billing_date">{text('nextBillingDate')}</option></select></Label>
       <p className="text-sm text-muted-foreground sm:col-span-2">{text('assignmentHelp')}</p>
+      {plan && <DiscountSelection key={planId} gymId={gymId} planId={planId} currency={plan.currency} value={discount} onChange={setDiscount} client={discounts}/>}
       <Button className="sm:col-span-2" type="submit">{text(busy ? 'saving' : 'assign')}</Button>
     </fieldset>}
   </form>;
 }
-function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, reload, changed }: {
+function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, reload, changed, gymId, discounts }: {
   row: Membership; plans: Plan[]; plansReady: boolean; manage: boolean; busy: boolean;
   mutate: (operation: Action, input: unknown, membershipId: string) => Promise<boolean>;
   client: BillingClient; reload: () => Promise<void>; changed: (result: MembershipSwitchResult) => void;
+  gymId: string; discounts?: DiscountClient | undefined;
 }) {
   const [confirm, setConfirm] = useState(false), [action, setAction] = useState<'freeze' | 'resume' | 'edit' | null>(null);
   const [changing, setChanging] = useState(false), [confirmUndo, setConfirmUndo] = useState(false);
@@ -148,6 +160,7 @@ function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, 
       {row.trialEndsOn && <div><dt className="text-muted-foreground">{text('trialEndsOn')}</dt><dd>{row.trialEndsOn}</dd></div>}
       {row.status === 'frozen' && <div><dt className="text-muted-foreground">{text('resumesOn')}</dt><dd>{row.resumesOn ?? text('indefinite')}</dd></div>}
     </dl>
+    {manage && <MembershipDiscount row={row} gymId={gymId} client={client} discounts={discounts} reload={reload}/>}
     {manage && row.status !== 'cancelled' && <fieldset disabled={busy} className="min-w-0 space-y-3">
       <div className="flex flex-col flex-wrap gap-2 sm:flex-row">
         {row.status === 'pending' && <Button onClick={() => void mutate('activateMembership', { revision: row.revision }, row.id)}>{text('activate')}</Button>}

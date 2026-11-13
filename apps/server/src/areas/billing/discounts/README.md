@@ -4,7 +4,9 @@
 `GET` and `POST /api/billing/discounts`, and `GET` and `PATCH
 /api/billing/discounts/{discountId}` require `plans.manage` (owner or admin).
 The list supports `active=true|false`, `limit` and `offset`. Responses include
-the plan IDs, use count and revision. Updates require the revision read by the
+the plan IDs, use count, revision and read-only `termsLocked` flag. The flag is
+true after any application, even when all uses have been released and the count
+is zero. Updates require the revision read by the
 client; stale saves return 409. An update is merged with the stored terms and
 checked again, so a change that leaves an invalid combination (a percentage and
 an amount, say) returns 400 naming the rule. There is no delete route: use

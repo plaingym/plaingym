@@ -208,7 +208,7 @@ export const createDiscountRequestSchema = discountFieldsSchema.extend({
 export const updateDiscountRequestSchema = discountFieldsSchema.partial().extend({ revision: revisionSchema })
   .refine(value => Object.keys(value).some(key => key !== 'revision'), 'Supply a change.').superRefine(chargePrices);
 export const discountSchema = discountFieldsSchema.extend({
-  id: idSchema, createdAt: instantSchema, uses: z.int32().nonnegative(), revision: revisionSchema,
+  id: idSchema, createdAt: instantSchema, uses: z.int32().nonnegative(), termsLocked: z.boolean(), revision: revisionSchema,
 }).superRefine(discountTerms).refine(value => value.maxUses === null || value.uses <= value.maxUses, 'Uses exceed the limit.');
 export const discountResponseSchema = z.strictObject({ data: discountSchema });
 export const discountListResponseSchema = listResponseSchema(discountSchema);

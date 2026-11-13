@@ -39,6 +39,12 @@ function start(options: { plans?: Plan[]; row?: Membership; preview?: (query: Re
   return { client, call };
 }
 afterEach(cleanup);
+it.each(['kept', 'ended', 'none'] as const)('explains the preview discount outcome: %s', async discount => {
+  start({ preview: () => ({ ...upgrade, discount }) });
+  const dialog = await openDialog();
+  expect(await dialog.findByText(discount === 'kept' ? 'The discount is kept on the new plan.' : discount === 'ended'
+    ? 'The discount ends because it does not apply to the new plan.' : 'There is no discount to carry to the new plan.')).toBeDefined();
+});
 async function openDialog() {
   fireEvent.click(await screen.findByRole('button', { name: 'Change plan' }));
   return within(await screen.findByRole('dialog'));

@@ -11,6 +11,7 @@ import { Label } from '../../../components/ui/label.js';
 import { Textarea } from '../../../components/ui/select.js';
 import type { BillingClient } from '../catalog/api.js';
 import { money, selectClass } from '../catalog/format.js';
+import { text as discountText } from '../discounts/messages.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('billing/memberships:' + key, values);
 const knownReasons = new Set(['plan_inactive', 'currency', 'same_plan', 'cancelled', 'erased', 'commitment', 'not_active', 'interval_change', 'period_not_billed', 'tax_change']);
@@ -90,6 +91,7 @@ export function ChangePlanDialog({ row, plans, client, close, changed, reload }:
           onClick={() => void preview.refetch()}>{text('retry')}</Button></Alert>}
         {data && <div className="min-w-0 space-y-2 rounded-lg border p-4 text-sm" aria-label={text('preview')}>
           <p className="font-medium">{text('kind_' + data.kind)}</p>
+          <p>{discountText(data.discount === 'none' ? 'noDiscount' : data.discount)}</p>
           <p>{text(timing === 'now' && data.kind === 'upgrade' ? 'priceStartsToday' : 'priceStartsOn', { date: data.priceStartsOn, price: money(plan!.amountCents, data.currency) })}</p>
           {timing === 'now' && data.kind === 'downgrade' && <p>{text('keepsPrice', { date: row.nextDueOn })}</p>}
           {timing === 'now' && data.kind === 'upgrade' && (data.proration && data.proration.totalCents > 0
