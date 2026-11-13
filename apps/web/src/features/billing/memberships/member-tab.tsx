@@ -186,7 +186,7 @@ function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, 
         <div className="flex flex-col gap-2 sm:flex-row"><Button type="submit">{text('save')}</Button><Button variant="outline" onClick={() => setAction(null)}>{text('back')}</Button></div>
       </form>}
     </fieldset>}
-    {changing && <ChangePlanDialog row={row} plans={plans} client={client} close={() => setChanging(false)} reload={reload}
+    {changing && <ChangePlanDialog row={row} plans={plans} client={client} gymId={gymId} close={() => setChanging(false)} reload={reload}
       changed={result => { setChanging(false); changed(result); }}/>}
   </li>;
 }

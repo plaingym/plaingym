@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import type { Clock } from '@plaingym/shared';
+import { AppError, type Clock } from '@plaingym/shared';
 import type { Id, IsoDate, IsoInstant, Money, Revision, MembershipDiscountSelection } from '@plaingym/shared/contracts';
 import { dateSchema, moneySchema } from '@plaingym/shared/contracts';
 import { clock as systemClock } from '../clock.js';
@@ -39,9 +39,7 @@ export interface AssignMembership {
   readonly discountUseTaken?: boolean;
 }
 export interface UpdateMembership extends MembershipEdit {
-  readonly planId?: Id | undefined;
   readonly nextDueOn?: IsoDate | undefined;
-  readonly interval?: 'monthly' | 'annual' | undefined;
   readonly price?: Money | undefined;
 }
 export interface MembershipEdit { readonly membershipId: Id; readonly revision: Revision; }
@@ -52,7 +50,7 @@ export interface MembershipLifecycle {
   freeze(context: MutationContext, request: MembershipEdit & { resumesOn?: IsoDate | null }): Promise<MembershipSnapshot>;
   cancel(context: MutationContext, request: MembershipEdit): Promise<MembershipSnapshot>;
   update(context: MutationContext, request: UpdateMembership): Promise<MembershipSnapshot>;
-  /** Convenience for a plan-only update. Resume uses activate with nextDueOn. */
+  /** Schedules a switch at the next billing date, retaining current terms until billed as active. Resume uses activate. */
   changePlan(context: MutationContext, request: MembershipEdit & { planId: Id }): Promise<MembershipSnapshot>;
   get(gymId: Id, membershipId: Id): Promise<MembershipSnapshot>;
 }
@@ -78,8 +76,15 @@ function commitmentEnd(startsOn: IsoDate, months: number | null): IsoDate | null
   end.setUTCDate(Math.min(start.getUTCDate(), lastDay.getUTCDate()));
   return dateSchema.parse(end.toISOString().slice(0, 10));
 }
+interface FakeMembershipSnapshot extends MembershipSnapshot {
+  readonly scheduledPlanId: Id | null;
+  readonly scheduledAmountCents: number | null;
+  readonly scheduledInterval: 'monthly' | 'annual' | null;
+  readonly scheduledOn: IsoDate | null;
+}
+const unscheduled = { scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null };
 export class FakeMembershipLifecycle implements MembershipLifecycle {
-  readonly #memberships = new Map<string, MembershipSnapshot>();
+  readonly #memberships = new Map<string, FakeMembershipSnapshot>();
   readonly #assignments = new Map<string, string>();
   readonly #plans: readonly MembershipPlanFixture[];
   readonly #members: readonly MembershipMemberFixture[];
@@ -94,7 +99,7 @@ export class FakeMembershipLifecycle implements MembershipLifecycle {
     if (plan.amountCents < 0) conflict('Plan amount must not be negative');
     return plan;
   }
-  async assign(context: MutationContext, request: AssignMembership): Promise<MembershipSnapshot> {
+  async assign(context: MutationContext, request: AssignMembership): Promise<FakeMembershipSnapshot> {
     const key = scopedKey(context.gymId, request.id);
     const fingerprint = JSON.stringify(request);
     if (this.#assignments.has(key)) {
@@ -110,21 +115,21 @@ export class FakeMembershipLifecycle implements MembershipLifecycle {
     const status = request.initialStatus ?? (request.trialEndsOn ? 'trial' : 'pending');
     if (status === 'trial' && (!request.trialEndsOn || request.trialEndsOn <= request.startsOn))
       conflict('Trial must end after it starts');
-    const membership: MembershipSnapshot = {
+    const membership: FakeMembershipSnapshot = {
       id: request.id, householdId: request.householdId, memberId: request.memberId, planId: plan.id,
       ...planMoney(plan), interval: plan.interval, status, startsOn: request.startsOn, nextDueOn: request.nextDueOn,
       trialEndsOn: request.trialEndsOn ?? null, commitmentEndsOn: commitmentEnd(request.startsOn, plan.commitmentMonths),
-      frozenAt: null, resumesOn: null, cancelledAt: null, revision: 1,
+      frozenAt: null, resumesOn: null, cancelledAt: null, revision: 1, ...unscheduled,
     };
     this.#memberships.set(key, membership);
     this.#assignments.set(key, fingerprint);
     return structuredClone(membership);
   }
-  async get(gymId: Id, membershipId: Id): Promise<MembershipSnapshot> {
+  async get(gymId: Id, membershipId: Id): Promise<FakeMembershipSnapshot> {
     return structuredClone(this.#memberships.get(scopedKey(gymId, membershipId)) ?? notFound());
   }
   async #edit(context: MutationContext, request: MembershipEdit,
-    update: (current: MembershipSnapshot) => Partial<MembershipSnapshot>): Promise<MembershipSnapshot> {
+    update: (current: FakeMembershipSnapshot) => Partial<FakeMembershipSnapshot>): Promise<FakeMembershipSnapshot> {
     // No await between the revision check and write: concurrent fake calls serialize here.
     const key = scopedKey(context.gymId, request.membershipId);
     const current = this.#memberships.get(key) ?? notFound();
@@ -151,31 +156,41 @@ export class FakeMembershipLifecycle implements MembershipLifecycle {
   async cancel(context: MutationContext, request: MembershipEdit): Promise<MembershipSnapshot> {
     return this.#edit(context, request, (current) => {
       if (current.status === 'cancelled') conflict('Membership is already cancelled');
-      return { status: 'cancelled', cancelledAt: this.clock.now().toISOString(), resumesOn: null };
+      return { status: 'cancelled', cancelledAt: this.clock.now().toISOString(), resumesOn: null, ...unscheduled };
     });
   }
   async update(context: MutationContext, request: UpdateMembership): Promise<MembershipSnapshot> {
+    const obsolete = request as UpdateMembership & { planId?: unknown; interval?: unknown };
+    if (obsolete.planId !== undefined || obsolete.interval !== undefined)
+      throw new AppError('invalid_request', 'Switch plans to change the plan or interval');
     return this.#edit(context, request, (current) => {
       if (current.status === 'cancelled') conflict('Cancelled membership cannot be edited');
-      if ([request.planId, request.nextDueOn, request.interval, request.price].every(value => value === undefined))
+      if ([request.nextDueOn, request.price].every(value => value === undefined))
         conflict('Supply a membership change');
-      const plan = request.planId === undefined ? undefined : this.#plan(context.gymId, request.planId);
-      if (plan && plan.currency !== current.currency) conflict('Plan currency does not match');
       if (request.price !== undefined) {
         moneySchema.parse(request.price);
         if (request.price.currency !== current.currency || request.price.amountCents < 0) conflict('Invalid membership price');
+        if (current.scheduledPlanId !== null && current.scheduledPlanId !== current.planId) conflict('Cancel the scheduled plan switch before changing the price');
       }
       if (request.nextDueOn !== undefined) dateSchema.parse(request.nextDueOn);
-      if (request.interval !== undefined && !['monthly', 'annual'].includes(request.interval)) conflict('Invalid billing interval');
-      // Plan defaults apply first; explicit overrides win. Original commitment never changes.
-      return { ...(plan ? { planId: plan.id, ...planMoney(plan), interval: plan.interval } : {}),
-        ...(request.price === undefined ? {} : request.price),
-        ...(request.interval === undefined ? {} : { interval: request.interval }),
-        ...(request.nextDueOn === undefined ? {} : { nextDueOn: request.nextDueOn }) };
+      if (request.nextDueOn !== undefined && request.nextDueOn < current.startsOn) conflict('Billing cannot start before membership starts');
+      return { ...(request.price === undefined ? {} : { ...request.price,
+        ...(current.scheduledPlanId === current.planId ? unscheduled : {}) }),
+        ...(request.nextDueOn === undefined ? {} : { nextDueOn: request.nextDueOn,
+          ...(current.scheduledOn !== null && request.nextDueOn < current.scheduledOn ? { scheduledOn: request.nextDueOn } : {}) }) };
     });
   }
-  async changePlan(context: MutationContext, request: MembershipEdit & { planId: Id }): Promise<MembershipSnapshot> {
-    return this.update(context, request);
+  async changePlan(context: MutationContext, request: MembershipEdit & { planId: Id }): Promise<FakeMembershipSnapshot> {
+    return this.#edit(context, request, current => {
+      if (current.status === 'cancelled') conflict('Cancelled membership cannot switch plans');
+      const plan = this.#plan(context.gymId, request.planId);
+      if (plan.id === current.planId) conflict('The membership is already on this plan');
+      if (plan.currency !== current.currency) conflict('Plan currency does not match');
+      const perYear = (amount: number, interval: string) => amount * (interval === 'monthly' ? 12 : 1);
+      if (perYear(plan.amountCents, plan.interval) < perYear(current.amountCents, current.interval)
+        && current.commitmentEndsOn !== null && current.commitmentEndsOn > current.nextDueOn) conflict('Commitment has not ended');
+      return { scheduledPlanId: plan.id, scheduledAmountCents: plan.amountCents, scheduledInterval: plan.interval, scheduledOn: current.nextDueOn };
+    });
   }
 }
 function planMoney(plan: MembershipPlanFixture): Money { return { amountCents: plan.amountCents, currency: plan.currency }; }

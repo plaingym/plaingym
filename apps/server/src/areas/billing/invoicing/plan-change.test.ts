@@ -90,6 +90,15 @@ describe('the days a plan change prorates', () => {
       periodStartsOn: '2026-03-10', days: 16, period: 31, total: 1_600 },
     { name: 'an off-day monthly membership clamped into February', nextDueOn: '2026-03-30', changeOn: '2026-03-20',
       difference: 3_000, periodStartsOn: '2026-02-28', days: 10, period: 30, total: 1_000 },
+    { name: 'an off-day February month-end without a cycle bill', billingDay: 15,
+      nextDueOn: '2026-02-28', changeOn: '2026-02-14', difference: 3_100,
+      periodStartsOn: '2026-01-28', days: 14, period: 31, total: 1_400 },
+    { name: 'an off-day leap February month-end without a cycle bill', billingDay: 15, startsOn: '2027-01-01',
+      nextDueOn: '2028-02-29', changeOn: '2028-02-28', difference: 3_100,
+      periodStartsOn: '2028-01-29', days: 1, period: 31, total: 100 },
+    { name: 'an off-day April month-end without a cycle bill', billingDay: 15,
+      nextDueOn: '2026-04-30', changeOn: '2026-04-29', difference: 3_100,
+      periodStartsOn: '2026-03-30', days: 1, period: 31, total: 100 },
     { name: 'an annual February 29 anniversary renewed on February 28', interval: 'annual' as const, startsOn: '2024-02-29',
       nextDueOn: '2026-02-28', changeOn: '2026-01-29', difference: 36_500, periodStartsOn: '2025-02-28', days: 30, period: 365, total: 3_000 },
     { name: 'an annual February 29 anniversary in a leap year, its last day', interval: 'annual' as const, startsOn: '2024-02-29',
@@ -105,6 +114,37 @@ describe('the days a plan change prorates', () => {
       amountCents: total, currency: 'CAD' });
     checkContract(result.invoice!);
   });
+  it.each([
+    { billedPeriodStartsOn: '2026-01-28', nextDueOn: '2026-02-28', changeOn: '2026-02-14', period: 31, days: 14 },
+    { billedPeriodStartsOn: '2026-01-29', nextDueOn: '2026-02-28', changeOn: '2026-02-14', period: 30, days: 14 },
+    { billedPeriodStartsOn: '2026-01-30', nextDueOn: '2026-02-28', changeOn: '2026-02-14', period: 29, days: 14 },
+    { billedPeriodStartsOn: '2026-01-31', nextDueOn: '2026-02-28', changeOn: '2026-02-14', period: 28, days: 14 },
+    { billedPeriodStartsOn: '2026-03-30', nextDueOn: '2026-04-30', changeOn: '2026-04-29', period: 31, days: 1 },
+    { billedPeriodStartsOn: '2026-03-31', nextDueOn: '2026-04-30', changeOn: '2026-04-29', period: 30, days: 1 },
+    { billedPeriodStartsOn: '2028-01-31', nextDueOn: '2028-02-29', changeOn: '2028-02-28', period: 29, days: 1 },
+  ])('uses the cycle billed on $billedPeriodStartsOn for an off-day $nextDueOn', ({ billedPeriodStartsOn, nextDueOn, changeOn, period, days }) => {
+    const result = calculatePlanChange(change({ billingDay: 15, billedPeriodStartsOn, changeOn,
+      membership: { startsOn: '2025-01-01', nextDueOn }, plan: { amountCents: 10_000 + period * 100 } }));
+    expect(result).toMatchObject({ periodStartsOn: billedPeriodStartsOn, periodEndsOn: nextDueOn, periodDays: period, billedDays: days });
+    expect(result.invoice).toMatchObject({ dueOn: changeOn, amountCents: days * 100 });
+    checkContract(result.invoice!);
+  });
+  it.each(['2026-01-27', '2026-02-01', '2026-02-30'])('rejects an impossible billed period start %s', billedPeriodStartsOn => {
+    expect(() => calculatePlanChange(change({ billingDay: 15, billedPeriodStartsOn, changeOn: '2026-02-14',
+      membership: { nextDueOn: '2026-02-28' } }))).toThrow(RangeError);
+  });
+  it.each([
+    { membership: { nextDueOn: '2026-04-10' }, billedPeriodStartsOn: '2026-03-11' },
+    { membership: { nextDueOn: '2026-04-01' }, billedPeriodStartsOn: '2026-03-02' },
+    { membership: { interval: 'annual' as const, nextDueOn: '2026-04-01', startsOn: '2025-01-01' },
+      plan: { interval: 'annual' as const }, billedPeriodStartsOn: '2025-04-02' },
+  ])('rejects a billed start that changes an unambiguous interval %#', overrides => {
+    expect(() => calculatePlanChange(change(overrides))).toThrow(RangeError);
+  });
+  it('refuses a change before the recovered billed period starts', () => {
+    expect(() => calculatePlanChange(change({ billingDay: 15, changeOn: '2026-01-30', billedPeriodStartsOn: '2026-01-31',
+      membership: { nextDueOn: '2026-02-28' } }))).toThrow('Plan change starts before its billing interval');
+  });
   it('uses an imported annual anniversary when one is supplied', () => {
     // From 2024-02-29 the period before 2025-02-28 has 365 days; from 2024-02-28 it would have 366 (199 a day, not 200).
     const terms: ChangeOverrides = { changeOn: '2025-02-27',
@@ -119,7 +159,7 @@ describe('the days a plan change prorates', () => {
   it('counts the days from the start of a membership that starts after the change', () => {
     const result = calculatePlanChange(change({ changeOn: '2026-03-10', membership: { status: 'pending', startsOn: '2026-03-16' } }));
     expect(result).toMatchObject({ billedDays: 16, periodDays: 31 });
-    expect(result.invoice).toMatchObject({ dueOn: '2026-03-10', amountCents: 1_600 });
+    expect(result.invoice).toMatchObject({ dueOn: '2026-03-16', amountCents: 1_600 });
   });
   it('charges the difference from a custom current price, not from the current plan\'s price', () => {
     expect(charged(change({ changeOn: '2026-03-01', membership: { amountCents: 9_000 } })).amountCents).toBe(4_100);
@@ -269,6 +309,22 @@ describe('plan change amounts stay within integer cents', () => {
 });
 
 describe('invalid plan changes fail closed', () => {
+  it.each([
+    { name: 'an upgrade against a custom price', membership: { amountCents: 9_000 } },
+    { name: 'a free trial', membership: { status: 'trial' as const } },
+  ])('refuses the current plan for $name', ({ membership }) => {
+    expect(() => calculatePlanChange(change({ membership, plan: { id: currentPlanId } }))).toThrow(RangeError);
+  });
+  it.each([
+    { name: 'a lower price', overrides: { plan: { amountCents: 9_000 } } },
+    { name: 'a trial', overrides: { membership: { status: 'trial' as const } } },
+    { name: 'a past due date', overrides: { changeOn: '2026-04-15' } },
+  ])('validates tax rates even for $name', ({ overrides }) => {
+    for (const taxRates of [[tax(50_000), tax(50_000)], [{ ...tax(50_000), id: 'bad' }],
+      [{ ...tax(50_000), name: ' ' }], [tax(-1)], [tax(1_000_001)], [{ ...tax(50_000), inclusive: 'yes' as unknown as boolean }]]) {
+      expect(() => calculatePlanChange(change({ ...overrides, plan: { ...overrides.plan, taxRates } }))).toThrow();
+    }
+  });
   it.each([
     { name: 'a change of billing interval with a higher price', overrides: { plan: { interval: 'annual' as const, amountCents: 120_000 } } },
     { name: 'a change of billing interval with a lower price', overrides: { plan: { interval: 'annual' as const, amountCents: 1_000 } } },

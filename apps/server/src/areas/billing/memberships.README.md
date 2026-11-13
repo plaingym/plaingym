@@ -151,6 +151,13 @@ between plans that carry different tax rates is refused too (`tax_change`): the
 proration adds the new plan's taxes to the price difference, which is exact only
 when both plans carry the same rates.
 
+For an off-day monthly due date at month-end after a household billing-day change,
+the latest membership cycle bill supplies the period's original start. A period
+ending February 28 may have begun on January 28, 29, 30 or 31; an earlier switch's
+one-off invoice doesn't change that start, nor does a cycle bill after the previous
+month's last day (a due date edited mid-period). Without such a cycle bill the engine uses
+the due date's own day a month earlier, as described in `invoicing/README.md`.
+
 - **Upgrade:** in the one transaction, the membership takes the new plan and its
   price, any scheduled switch is cleared, and the runner's `issue` writes the
   proration invoice from the invoice engine's `calculatePlanChange` (the new price
@@ -197,6 +204,19 @@ membership's skipped cycles don't apply it. A switch to a plan archived after it
 scheduled still applies at its quoted price, as an archived plan keeps the members
 already on it.
 
+The preview's `priceStartsOn` is the scheduled date for a pending, trial or frozen
+membership, a lower bound rather than a promised billing date. The price applies
+only when a cycle bills it as active, on or after that date. The Change plan
+dialog shows that condition with the quoted price. An immediate upgrade refuses
+an unbilled period explicitly; other invoice-engine errors surface as server
+errors rather than a `period_not_billed` conflict.
+
+Membership imports clear a scheduled change when they replace the membership's
+price or interval. An import that retains both terms keeps the scheduled change.
+Erasure uses the same cleared schedule columns as membership switches, including
+their origin. Lifecycle `update` accepts price and due-date edits; `changePlan`
+schedules the quoted plan, price and interval for the next cycle billed as active.
+
 The nullable `scheduled_origin` column records where a scheduled change came from:
 `switch` (a switch scheduled for the next billing date), `downgrade` (the price a
 downgrade or equal switch now keeps until the next due date) or `price_change` (a plan
@@ -225,6 +245,11 @@ membership until the next switch is scheduled or the member is erased.
 A membership copies its plan's price when assigned and keeps it when the plan's price changes. Staff can give one member a custom price from the member's Memberships tab: it sends the `price` override (amount and the membership's currency) on `PATCH /api/billing/memberships/{membershipId}`, which also takes a new `nextDueOn`. The tab's edit form has no plan select: a plan changes through a plan switch.
 
 The same tab (owners and admins) has a **Change plan** dialog on each live membership. It lists the active plans in the membership's currency other than its current plan, with "on the next billing date" preselected and "now" disabled (with the reason) for a membership that isn't active or a plan with another interval. It shows the server's preview before confirming, asks for a reason only when the preview says the commitment blocks the switch, and generates one request ID per distinct submission while it is open, so a retry replays. A stale revision reloads the membership and says it changed. A scheduled switch or price change shows on the card ("Changes to <plan> on <date>" or "New price <price> from <date>"). A scheduled plan switch has a confirmed **Cancel change**, and the price form says to cancel it before changing the price; a scheduled price change has no Cancel change, and the price form says a price entered there replaces it.
+
+A refused switch refreshes the membership, its preview and the plan list, so an
+archived plan leaves the selection. Preview queries belong to the gym's membership
+cache; a membership refresh rechecks them. An unknown preview refusal says the
+change could not be checked and offers a retry.
 
 When the membership amount differs from the plan's current amount, the card
 shows "Plan price now" with that amount and billing interval. This covers both

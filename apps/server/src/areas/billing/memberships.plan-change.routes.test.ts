@@ -2,7 +2,7 @@
 import '@hono/zod-openapi';
 import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { households, invoices, memberships, uuidv7 } from '@plaingym/db';
+import { households, invoices, members, memberships, uuidv7 } from '@plaingym/db';
 import type { StaffRole } from '@plaingym/shared';
 import { createApp } from '../../app.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
@@ -81,6 +81,52 @@ async function expectOneCharge(f: Setup, invoiceId: string, amountCents: number,
 }
 
 describe('switch a plan now through the routes', () => {
+  it.each([
+    { cycleOn: '2026-01-28', day: 28, nextDueOn: '2026-02-28', changeOn: '2026-02-14', period: 31, days: 14 },
+    { cycleOn: '2026-01-29', day: 29, nextDueOn: '2026-02-28', changeOn: '2026-02-14', period: 30, days: 14 },
+    { cycleOn: '2026-01-30', day: 30, nextDueOn: '2026-02-28', changeOn: '2026-02-14', period: 29, days: 14 },
+    { cycleOn: '2026-01-31', day: 31, nextDueOn: '2026-02-28', changeOn: '2026-02-14', period: 28, days: 14 },
+    { cycleOn: '2026-03-30', day: 30, nextDueOn: '2026-04-30', changeOn: '2026-04-29', period: 31, days: 1 },
+    { cycleOn: '2026-03-31', day: 31, nextDueOn: '2026-04-30', changeOn: '2026-04-29', period: 30, days: 1 },
+    { cycleOn: '2028-01-31', day: 31, nextDueOn: '2028-02-29', changeOn: '2028-02-28', period: 29, days: 1 },
+  ])('quotes and charges the cycle billed on $cycleOn after the household changes to day 15', async ({ cycleOn, day, nextDueOn, changeOn, period, days }) => {
+    const f = await setup({ bill: false, now: cycleOn + 'T17:00:00Z', on: cycleOn + 'T17:00:00Z', dueOn: cycleOn, startsOn: '2025-01-01' });
+    await db.forGym(f.gymId, tx => tx.update(households).set({ billingDay: day }).where(eq(households.id, f.home.id)));
+    await f.dailyOn(cycleOn);
+    expect(await f.row()).toMatchObject({ nextDueOn });
+    await db.forGym(f.gymId, tx => tx.update(households).set({ billingDay: 15 }).where(eq(households.id, f.home.id)));
+    f.clock.set(changeOn + 'T17:00:00Z');
+    const premium = await f.newPlan({ amountCents: 10_000 + period * 100 }), charges = vi.spyOn(f.provider, 'createCharge');
+    expect((await f.preview(premium.id)).body.data).toMatchObject({ proration: {
+      periodStartsOn: cycleOn, periodEndsOn: nextDueOn, periodDays: period, billedDays: days, totalCents: days * 100 } });
+    const switched = await f.switchNow(premium.id);
+    expect(switched.status).toBe(200);
+    await expectOneCharge(f, switched.body.data!.invoiceId!, days * 100, charges);
+    expect(await f.row()).toMatchObject({ planId: premium.id, nextDueOn });
+    // A second upgrade's one-off bill is not the start of a new cycle.
+    const higher = await f.newPlan({ amountCents: 10_000 + period * 200 });
+    expect((await f.preview(higher.id)).body.data).toMatchObject({ proration: {
+      periodStartsOn: cycleOn, periodEndsOn: nextDueOn, periodDays: period, billedDays: days, totalCents: days * 100 } });
+    const second = await f.switchNow(higher.id);
+    expect(second.status).toBe(200);
+    expect((await f.read()).invoices.find(invoice => invoice.id === second.body.data!.invoiceId)).toMatchObject({ amountCents: days * 100, status: 'paid' });
+    expect(charges).toHaveBeenCalledTimes(2);
+  });
+  it('quotes an off-day month-end on its own day when the cycle bill falls inside the due month', async () => {
+    const f = await setup({ bill: false, now: '2026-04-10T17:00:00Z', on: '2026-04-10T17:00:00Z', dueOn: '2026-04-10', startsOn: '2025-01-01' });
+    await db.forGym(f.gymId, tx => tx.update(households).set({ billingDay: 10 }).where(eq(households.id, f.home.id)));
+    await f.dailyOn('2026-04-10');
+    expect(await f.row()).toMatchObject({ nextDueOn: '2026-05-10' });
+    await db.forGym(f.gymId, tx => tx.update(households).set({ billingDay: 15 }).where(eq(households.id, f.home.id)));
+    f.clock.set('2026-04-20T17:00:00Z');
+    await f.service.update(f.staff, { membershipId: f.membership.id, revision: (await f.row()).revision, nextDueOn: '2026-04-30' });
+    const premium = await f.newPlan({ amountCents: 10_000 + 3_100 }), charges = vi.spyOn(f.provider, 'createCharge');
+    expect((await f.preview(premium.id)).body.data).toMatchObject({ proration: {
+      periodStartsOn: '2026-03-30', periodEndsOn: '2026-04-30', periodDays: 31, billedDays: 10, totalCents: 1_000 } });
+    const switched = await f.switchNow(premium.id);
+    expect(switched.status).toBe(200);
+    await expectOneCharge(f, switched.body.data!.invoiceId!, 1_000, charges);
+  });
   it('charges an upgrade once for the quoted difference, retried in sequence, and the next cycle bills the new price', async () => {
     const f = await setup(), premium = await f.newPlan({ amountCents: 13_000 });
     const before = await f.row(), charges = vi.spyOn(f.provider, 'createCharge');
@@ -194,6 +240,31 @@ describe('switch a plan now through the routes', () => {
 });
 
 describe('switch now refusals', () => {
+  it.each(['cancelled', 'erased', 'active'] as const)('keeps preview and switch refusal order for an archived target and %s membership', async state => {
+    const f = await setup(), archived = await f.newPlan({ active: false, amountCents: 13_000 });
+    if (state === 'cancelled') await f.service.cancel(f.staff, { membershipId: f.membership.id, revision: (await f.row()).revision });
+    if (state === 'erased') await db.forGym(f.gymId, tx => tx.update(members).set({ anonymizedAt: f.clock.now() }).where(eq(members.id, f.member.id)));
+    const reason = state === 'active' ? 'plan_inactive' : state;
+    const before = await f.row(), auditCount = (await f.read()).audits.length;
+    for (const timing of ['now', 'next_billing_date']) {
+      refused(await f.preview(archived.id, timing), reason);
+      refused(await f.switchNow(archived.id, { timing }), reason);
+    }
+    expect(await f.row()).toEqual(before);
+    expect((await f.read()).audits).toHaveLength(auditCount);
+    expect(await f.switchInvoices()).toEqual([]);
+  });
+  it('surfaces an invoice engine invariant failure as 500 without changing or charging the membership', async () => {
+    const f = await setup({ on: '2028-03-02T17:00:00Z' }), premium = await f.newPlan({ amountCents: 2_147_483_647 });
+    const tax = await factory('taxRates', f.gymId, { rateMillionths: 1_000_000 });
+    for (const planId of [f.plan.id, premium.id]) await factory('planTaxRates', f.gymId, { planId, taxRateId: tax.id });
+    const before = await f.row(), audits = (await f.read()).audits.length;
+    expect((await f.preview(premium.id)).status).toBe(500);
+    expect((await f.switchNow(premium.id)).status).toBe(500);
+    expect(await f.row()).toEqual(before);
+    expect((await f.read()).audits).toHaveLength(audits);
+    expect(await f.switchInvoices()).toEqual([]);
+  });
   it('refuses an interval change, and pending, trial and frozen memberships, in the preview too', async () => {
     const f = await setup(), annual = await f.newPlan({ interval: 'annual', amountCents: 130_000 }), premium = await f.newPlan({ amountCents: 13_000 });
     refused(await f.switchNow(annual.id), 'interval_change');
@@ -206,6 +277,9 @@ describe('switch now refusals', () => {
         startsOn: '2028-03-01', nextDueOn: '2028-04-01', ...overrides });
       refused(await f.switchNow(premium.id, {}, other.id), 'not_active');
       refused(await f.preview(premium.id, 'now', other.id), 'not_active');
+      // This is the scheduled lower bound; billing waits until the membership is active.
+      expect((await f.preview(premium.id, 'next_billing_date', other.id)).body.data)
+        .toMatchObject({ priceStartsOn: other.nextDueOn, proration: null });
     }
     expect(await f.switchInvoices()).toEqual([]);
     expect(await f.row()).toMatchObject({ planId: f.plan.id, amountCents: 10_000 });

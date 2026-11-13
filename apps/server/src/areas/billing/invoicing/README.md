@@ -64,7 +64,16 @@ discount, or only `currentDiscount` when it ends. The current price is credited
 after its membership discount, before the new side's discount is applied. That
 period is the monthly or annual interval immediately before `nextDueOn`, as for
 a first period, except that a monthly due date off the household's billing day
-(left by a changed billing day) closes a full month on its own day. The days left
+(left by a changed billing day) closes a full month on its own day. If that date
+is the last day of a short month, the original billing day is ambiguous. The
+switch service uses the latest membership cycle bill's due date to supply
+`billedPeriodStartsOn`: February 28 can close a period beginning January 28, 29,
+30 or 31. The engine validates that date between the due date's own day a month
+earlier and the previous month's last day. One-off switch invoices don't reset
+that start, and neither does a cycle bill after the previous month's last day
+(a due date edited mid-period). Without such a cycle bill, the engine uses the due date's own day a month
+earlier; a clamped day-31 period is then approximated (January 28 to February 28
+instead of January 31 to February 28). The days left
 run from the later of `changeOn` and `startsOn` to `nextDueOn`. The difference is
 quoted like a first period of the new plan: `difference × days left / period
 days`, rounded once to the currency's step. The new discount comes off that
@@ -75,14 +84,16 @@ quotes 120 before the new 20 discount for a full period, leaving 100. No charge
 is quoted when the new effective price is no higher than the current one, even
 if the sticker price increased. Ending a discount can increase the effective
 price even when the sticker price falls. The result is a `one_off` invoice due on
-`changeOn`, with one
+the later of `changeOn` and `startsOn`, with one
 `membership` line that records the membership and the **new** plan, then its
 discount and tax lines, and the period with its billed and total days beside it.
 There is no invoice (and zero billed days) when the new effective price isn't
 higher, the change is on or after the due date, the rounded proration is zero, or the
 membership is in a trial, frozen or cancelled. A plan with another billing
 interval is refused with a `RangeError` (an interval change is never prorated),
-as is a change dated before the current period. `changeOn` is the gym-local date
+as is a change dated before the current period or to the membership's current
+plan. Target tax rates are validated even when no invoice is produced.
+`changeOn` is the gym-local date
 from `localDate(clock.now(), timezone)`; days are calendar days, so DST never
 changes them. The membership service's switch made now calls it (`memberships.README.md`).
 

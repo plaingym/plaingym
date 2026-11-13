@@ -84,6 +84,19 @@ export function validateMembership(input: HouseholdPricing, item: PricedMembersh
   description(item.description);
   validateDiscount(item.discount);
 }
+export function validateTaxRates(rates: readonly AppliedTaxRate[], snapshots = new Map<Id, string>()): void {
+  const ids = new Set<Id>();
+  for (const tax of rates) {
+    idSchema.parse(tax.id); description(tax.name);
+    nonnegativeInteger(tax.rateMillionths, 1_000_000, 'tax rate');
+    if (typeof tax.inclusive !== 'boolean') throw new RangeError('Invalid tax treatment');
+    if (ids.has(tax.id)) throw new RangeError('Duplicate tax rate on a charge');
+    ids.add(tax.id);
+    const snapshot = JSON.stringify([tax.name, tax.rateMillionths, tax.inclusive]);
+    if (snapshots.has(tax.id) && snapshots.get(tax.id) !== snapshot) throw new RangeError('Conflicting tax snapshots');
+    snapshots.set(tax.id, snapshot);
+  }
+}
 function annualAnchor(item: PricedMembership): IsoDate {
   const { startsOn, nextDueOn } = item.membership;
   const clampedLeapAnniversary = startsOn.slice(5) === '02-29' && nextDueOn.slice(5) === '02-28';
@@ -124,17 +137,7 @@ export function calculatePrices(currency: Currency, prices: readonly Price[], di
     if (price.membershipId !== null) idSchema.parse(price.membershipId);
     if (price.chargeTypeId !== null) idSchema.parse(price.chargeTypeId);
     if (price.planId !== null) idSchema.parse(price.planId);
-    const ids = new Set<Id>();
-    for (const tax of price.taxRates) {
-      idSchema.parse(tax.id); description(tax.name);
-      nonnegativeInteger(tax.rateMillionths, 1_000_000, 'tax rate');
-      if (typeof tax.inclusive !== 'boolean') throw new RangeError('Invalid tax treatment');
-      if (ids.has(tax.id)) throw new RangeError('Duplicate tax rate on a charge');
-      ids.add(tax.id);
-      const snapshot = JSON.stringify([tax.name, tax.rateMillionths, tax.inclusive]);
-      if (taxSnapshots.has(tax.id) && taxSnapshots.get(tax.id) !== snapshot) throw new RangeError('Conflicting tax snapshots');
-      taxSnapshots.set(tax.id, snapshot);
-    }
+    validateTaxRates(price.taxRates, taxSnapshots);
     const amount = BigInt(price.amountCents) * BigInt(price.quantity);
     checkedCents(amount);
     return amount;

@@ -14,7 +14,7 @@ import { markLeadWon } from '../leads/stages.js';
 import { catalogAudit, catalogMissing } from './catalog.js';
 import { addCalendarMonths, advanceDue, householdNextDate, trialEnd } from './memberships.calendar.js';
 import { cancelScheduledSwitchRequestSchema, checkSwitch, clearedSwitch, planSwitchedAction, recordedSwitch, refuse, sameSwitchRequest,
-  scheduledSwitch, switchCancelledAction, switchedNow, unscheduled, switchPlanRequestSchema, switchScheduledAction, type CancelScheduledSwitchRequest,
+  scheduledSwitch, switchedNow, unscheduled, switchPlanRequestSchema, switchScheduledAction, type CancelScheduledSwitchRequest,
   type PlanSwitchedNowAudit, type RecordedSwitchRequest, type SwitchPlanRequest, type SwitchScheduledAudit } from './memberships.plan-change.js';
 import { checkNow, issuable, planTaxes, prorateNow, switchPreview } from './memberships.plan-change.now.js';
 import { issue } from './runner/store.js';
@@ -76,9 +76,9 @@ export function createMembershipService(options: MembershipOptions = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const settings = options.settings ?? gymSettingsAccessor;
   const getRow = async (tx: Transaction, id: string) => catalogMissing((await tx.select().from(memberships).where(eq(memberships.id, id)).for('update'))[0]);
-  const getPlan = async (tx: Transaction, id: string) => {
+  const getPlan = async (tx: Transaction, id: string, { allowInactive = false }: { allowInactive?: boolean } = {}) => {
     const plan = catalogMissing((await tx.select().from(plans).where(eq(plans.id, id)).for('share'))[0]);
-    if (!plan.active) conflict('Plan is inactive');
+    if (!plan.active && !allowInactive) conflict('Plan is inactive');
     return plan;
   };
   async function assign(context: MutationContext, request: AssignMembership, alignHousehold = false): Promise<c.Membership> {
@@ -163,27 +163,30 @@ export function createMembershipService(options: MembershipOptions = {}) {
   /** Locks the household, then the membership: the order the cycle build takes them in. */
   async function lockForSwitch(tx: Transaction, membershipId: string) {
     const found = catalogMissing((await tx.select({ householdId: memberships.householdId }).from(memberships).where(eq(memberships.id, membershipId)))[0]);
-    catalogMissing((await tx.select({ id: households.id }).from(households).where(eq(households.id, found.householdId)).for('update'))[0]);
-    return getRow(tx, membershipId);
+    const home = catalogMissing((await tx.select().from(households).where(eq(households.id, found.householdId)).for('update'))[0]);
+    return { row: await getRow(tx, membershipId), home };
   }
-  async function saveSwitch(tx: Transaction, before: Row, changes: Partial<typeof memberships.$inferInsert>) {
+  async function saveChanges(tx: Transaction, before: Row, changes: Partial<typeof memberships.$inferInsert>) {
     const guard = revisionGuard(memberships.revision, before.revision);
-    return assertRevised(await tx.update(memberships).set({ ...changes, revision: guard.next })
+    const row = assertRevised(await tx.update(memberships).set({ ...changes, revision: guard.next })
       .where(and(eq(memberships.id, before.id), guard.matches)).returning());
+    return present(tx, row);
+  }
+  async function saveEdit(tx: Transaction, context: MutationContext, before: Row, previous: c.Membership,
+    changes: Partial<typeof memberships.$inferInsert>, action: string, describe: (after: c.Membership) => unknown = after => after) {
+    const after = await saveChanges(tx, before, changes);
+    await catalogAudit(tx, context, clock, action, 'membership', before.id, previous, describe(after));
+    return after;
   }
   async function edit(context: MutationContext, request: MembershipEdit, action: string,
     change: (tx: Transaction, before: Row) => Promise<Partial<typeof memberships.$inferInsert>>) {
     c.idSchema.parse(request.membershipId); c.revisionSchema.parse(request.revision);
     return scope(context.gymId, async tx => {
       // Serialize sibling activations and assignments before checking the member's remaining trials.
-      const before = await lockForSwitch(tx, request.membershipId);
+      const { row: before } = await lockForSwitch(tx, request.membershipId);
       if (before.revision !== request.revision) conflict('The record changed; reload before saving');
       const previous = await present(tx, before);
-      const changes = await change(tx, before), guard = revisionGuard(memberships.revision, request.revision);
-      const after = assertRevised(await tx.update(memberships).set({ ...changes, revision: guard.next })
-        .where(and(eq(memberships.id, before.id), guard.matches)).returning());
-      await catalogAudit(tx, context, clock, 'billing.membership.' + action, 'membership', before.id, previous, await present(tx, after));
-      return present(tx, after);
+      return saveEdit(tx, context, before, previous, await change(tx, before), 'billing.membership.' + action);
     });
   }
   const service = {
@@ -195,7 +198,7 @@ export function createMembershipService(options: MembershipOptions = {}) {
       c.idSchema.parse(membershipId);
       const request = c.setMembershipDiscountRequestSchema.parse(input), gym = await settings.get(context.gymId);
       return scope(context.gymId, async tx => {
-        const before = await lockForSwitch(tx, membershipId);
+        const { row: before } = await lockForSwitch(tx, membershipId);
         if (before.revision !== request.revision) conflict(discountText('billing/discounts:membership_changed'));
         if (before.status === 'cancelled') conflict(discountText('billing/discounts:membership_cancelled'));
         const member = catalogMissing((await tx.select({ anonymizedAt: members.anonymizedAt }).from(members).where(eq(members.id, before.memberId)))[0]);
@@ -206,23 +209,19 @@ export function createMembershipService(options: MembershipOptions = {}) {
         const previous = await present(tx, before);
         await endDiscount(tx, context, clock, membershipId, 'replaced');
         await applyDiscount(tx, context, clock, resolved, before);
-        const after = await present(tx, await saveSwitch(tx, before, {}));
-        await catalogAudit(tx, context, clock, 'billing.membership.discount_set', 'membership', membershipId, previous, after);
-        return after;
+        return saveEdit(tx, context, before, previous, {}, 'billing.membership.discount_set');
       });
     },
     async removeDiscount(context: MutationContext, membershipId: string, input: c.RemoveMembershipDiscountRequest) {
       c.idSchema.parse(membershipId);
       const request = c.removeMembershipDiscountRequestSchema.parse(input);
       return scope(context.gymId, async tx => {
-        const before = await lockForSwitch(tx, membershipId);
+        const { row: before } = await lockForSwitch(tx, membershipId);
         if (before.revision !== request.revision) conflict(discountText('billing/discounts:membership_changed'));
         if (before.status === 'cancelled') conflict(discountText('billing/discounts:membership_cancelled'));
         const previous = await present(tx, before);
         await endDiscount(tx, context, clock, membershipId, 'removed');
-        const after = await present(tx, await saveSwitch(tx, before, {}));
-        await catalogAudit(tx, context, clock, 'billing.membership.discount_removed', 'membership', membershipId, previous, after);
-        return after;
+        return saveEdit(tx, context, before, previous, {}, 'billing.membership.discount_removed');
       });
     },
     async get(gymId: string, id: string) { return scope(gymId, async tx => present(tx, await getRow(tx, id))); },
@@ -309,31 +308,32 @@ export function createMembershipService(options: MembershipOptions = {}) {
         override: request.override !== undefined };
       const gym = await settings.get(context.gymId);
       return scope(context.gymId, async tx => {
-        const before = await lockForSwitch(tx, request.membershipId);
+        const { row: before, home } = await lockForSwitch(tx, request.membershipId);
         const replay = await recordedSwitch(tx, before.id, request.requestId);
         if (replay) {
           if (!sameSwitchRequest(replay.request, recorded)) conflict('Request ID reused with different parameters');
           return { membership: replay.membership, invoiceId: replay.invoiceId };
         }
         if (before.revision !== request.revision) conflict('The record changed; reload before saving');
-        const plan = catalogMissing((await tx.select().from(plans).where(eq(plans.id, request.planId)).for('share'))[0]);
+        // switchTerms owns refusal precedence for both switch and preview.
+        const plan = await getPlan(tx, request.planId, { allowInactive: true });
         const member = catalogMissing((await tx.select({ anonymizedAt: members.anonymizedAt }).from(members).where(eq(members.id, before.memberId)))[0]);
         const today = localDate(clock.now(), gym.timezone);
         const { kind, overrideUsed } = checkSwitch(before, member, plan, request, today);
         // Only a reason the commitment needed is kept.
         const reason = overrideUsed ? request.override?.reason ?? null : null;
+        const previous = await present(tx, before);
         if (request.timing === 'next_billing_date') {
-          const after = await present(tx, await saveSwitch(tx, before, scheduledSwitch(before, plan, reason)));
-          const audit: SwitchScheduledAudit = { request: recorded, overrideUsed, membership: after };
-          await catalogAudit(tx, context, clock, switchScheduledAction, 'membership', before.id, await present(tx, before), audit);
+          const after = await saveEdit(tx, context, before, previous, scheduledSwitch(before, plan, reason), switchScheduledAction,
+            (membership): SwitchScheduledAudit => ({ request: recorded, overrideUsed, membership }));
           return { membership: after, invoiceId: null };
         }
         checkNow(before, plan, today);
-        const previous = await present(tx, before);
         // Quoted from the membership before the switch: the difference against what the current period was billed at.
-        const invoice = kind === 'upgrade' ? issuable(await prorateNow(tx, before, previous, plan, today)) : null;
+        const invoice = kind === 'upgrade' ? issuable(await prorateNow(tx, home, before, previous, plan, today)) : null;
         await switchAppliedDiscount(tx, context, clock, before.id, plan.id);
-        const after = await present(tx, await saveSwitch(tx, before, switchedNow(before, plan, kind, reason)));
+        // Issue after saving the new price so the invoice's immutable membership pricing snapshot matches it.
+        const after = await saveChanges(tx, before, switchedNow(before, plan, kind, reason));
         const invoiceId = invoice ? await issue(tx, context, clock, invoice) : null;
         const audit: PlanSwitchedNowAudit = { request: recorded, overrideUsed, kind, invoiceId, membership: after };
         await catalogAudit(tx, context, clock, planSwitchedAction, 'membership', before.id, previous, audit);
@@ -350,7 +350,8 @@ export function createMembershipService(options: MembershipOptions = {}) {
         const row = catalogMissing((await tx.select().from(memberships).where(eq(memberships.id, membershipId)))[0]);
         const plan = catalogMissing((await tx.select().from(plans).where(eq(plans.id, query.planId)))[0]);
         const member = catalogMissing((await tx.select({ anonymizedAt: members.anonymizedAt }).from(members).where(eq(members.id, row.memberId)))[0]);
-        return switchPreview(tx, row, await present(tx, row), member, plan, query.timing, localDate(clock.now(), gym.timezone));
+        const home = catalogMissing((await tx.select().from(households).where(eq(households.id, row.householdId)))[0]);
+        return switchPreview(tx, home, row, await present(tx, row), member, plan, query.timing, localDate(clock.now(), gym.timezone));
       });
     },
     /**
@@ -362,15 +363,11 @@ export function createMembershipService(options: MembershipOptions = {}) {
       const parsed = cancelScheduledSwitchRequestSchema.safeParse(input);
       if (!parsed.success) throw new AppError('invalid_request', 'Invalid request');
       const request = parsed.data;
-      return scope(context.gymId, async tx => {
-        const before = await lockForSwitch(tx, request.membershipId);
-        if (before.revision !== request.revision) conflict('The record changed; reload before saving');
+      return edit(context, request, 'switch_cancelled', async (_tx, before) => {
         if (before.scheduledPlanId === null) throw new AppError('conflict', 'No plan switch is scheduled', { reason: ['none_scheduled'] });
         if (before.scheduledPlanId === before.planId)
           refuse('price_change', 'A scheduled price change isn\'t cancelled here; change the price instead');
-        const after = await present(tx, await saveSwitch(tx, before, clearedSwitch(before)));
-        await catalogAudit(tx, context, clock, switchCancelledAction, 'membership', before.id, await present(tx, before), after);
-        return after;
+        return clearedSwitch(before);
       });
     },
     /**
@@ -382,7 +379,8 @@ export function createMembershipService(options: MembershipOptions = {}) {
      * origin was recorded follows the switch rule.
      */
     async update(context: MutationContext, request: UpdateMembership): Promise<c.Membership> {
-      const { membershipId, planId, interval, ...input } = request;
+      // Reject obsolete fields even from untyped/internal callers; the lifecycle interface no longer offers them.
+      const { membershipId, planId, interval, ...input } = request as UpdateMembership & { planId?: unknown; interval?: unknown };
       if (planId !== undefined || interval !== undefined)
         throw new AppError('invalid_request', 'Switch plans to change a membership\'s plan or billing interval');
       const changes = c.updateMembershipRequestSchema.parse(input);

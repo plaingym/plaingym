@@ -12,22 +12,22 @@ const request: AssignMembership = { id: id(20), householdId: household, memberId
   startsOn: '2028-01-31', nextDueOn: '2028-02-29', firstPeriod: 'prorate_now' };
 const build = () => new FakeMembershipLifecycle(plans, [{ gymId: gym, id: member, householdId: household }], clock());
 describe('MembershipLifecycle fake', () => {
-  it('updates plan, price, interval and due date atomically while preserving the original commitment', async () => {
+  it('updates price and due date while preserving the plan, interval and original commitment', async () => {
     const fake = build();
     await fake.assign(mutation, request);
-    const updated = await fake.update(mutation, { membershipId: request.id, revision: 1, planId: id(7),
-      price: { amountCents: 12000, currency: 'CAD' }, interval: 'monthly', nextDueOn: '2028-03-15' });
-    expect(updated).toMatchObject({ planId: id(7), amountCents: 12000, interval: 'monthly', nextDueOn: '2028-03-15',
+    const updated = await fake.update(mutation, { membershipId: request.id, revision: 1,
+      price: { amountCents: 12000, currency: 'CAD' }, nextDueOn: '2028-03-15' });
+    expect(updated).toMatchObject({ planId: plan, amountCents: 12000, interval: 'monthly', nextDueOn: '2028-03-15',
       commitmentEndsOn: '2028-02-29', revision: 2 });
     const dateOnly = await fake.update(mutation, { membershipId: request.id, revision: 2, nextDueOn: '2028-04-15' });
     expect(dateOnly).toMatchObject({ amountCents: 12000, interval: 'monthly', revision: 3 });
-    await expect(fake.update(mutation, { membershipId: request.id, revision: 2, interval: 'annual' })).rejects.toMatchObject({ code: 'conflict' });
+    await expect(fake.update(mutation, { membershipId: request.id, revision: 2, nextDueOn: '2028-05-15' })).rejects.toMatchObject({ code: 'conflict' });
   });
   it('rejects invalid overrides without changing the membership or its revision', async () => {
     const fake = build();
     const original = await fake.assign(mutation, request);
     for (const changes of [{}, { price: { amountCents: -1, currency: 'CAD' } },
-      { price: { amountCents: 100, currency: 'USD' } }, { nextDueOn: '2028-02-30' }, { planId: id(99) }]) {
+      { price: { amountCents: 100, currency: 'USD' } }, { nextDueOn: '2028-02-30' }, { planId: id(99) }, { interval: 'annual' }]) {
       await expect(fake.update(mutation, { membershipId: request.id, revision: 1, ...changes })).rejects.toThrow();
       expect(await fake.get(gym, request.id)).toEqual(original);
     }
@@ -46,8 +46,13 @@ describe('MembershipLifecycle fake', () => {
     const membership = await fake.assign(mutation, request);
     expect(membership).toMatchObject({ status: 'pending', amountCents: 10000, currency: 'CAD', commitmentEndsOn: '2028-02-29', revision: 1 });
     const updated = await fake.changePlan(mutation, { membershipId: request.id, revision: 1, planId: id(7) });
-    expect(updated).toMatchObject({ amountCents: 15000, interval: 'annual', commitmentEndsOn: '2028-02-29', revision: 2 });
+    expect(updated).toMatchObject({ planId: plan, amountCents: 10000, interval: 'monthly', commitmentEndsOn: '2028-02-29', revision: 2,
+      scheduledPlanId: id(7), scheduledAmountCents: 15000, scheduledInterval: 'annual', scheduledOn: '2028-02-29' });
+    expect(await fake.get(gym, request.id)).toEqual(updated);
     await expect(fake.changePlan(mutation, { membershipId: request.id, revision: 2, planId: id(8) })).rejects.toMatchObject({ code: 'conflict' });
+    await fake.cancel(mutation, { membershipId: request.id, revision: 2 });
+    expect(await fake.get(gym, request.id)).toMatchObject({ status: 'cancelled', planId: plan, amountCents: 10000,
+      scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null });
   });
   it('models activate, freeze, resume and cancel with revision checks', async () => {
     const fake = build();

@@ -247,6 +247,22 @@ describe('membership renewals through the durable pipeline', () => {
     expect((await read()).memberships).toEqual([expect.objectContaining({ amountCents: 7000, nextDueOn: '2029-02-28', anniversaryOn: '2028-02-29', revision: 2 })]);
     expect((await read()).invoices).toEqual([]);
   });
+  it.each(['price', 'interval', 'unchanged'] as const)('handles a scheduled switch when imported terms are %s', async change => {
+    const f = await fixture(), next = await factory('plans', gymId, { amountCents: 15000, interval: 'monthly' });
+    const original = await factory('memberships', gymId, { householdId: f.home.id, memberId: f.member.id, planId: f.plan.id,
+      status: 'active', startsOn: '2026-10-01', nextDueOn: '2026-11-01', amountCents: 10000, interval: 'monthly',
+      scheduledPlanId: next.id, scheduledAmountCents: 15000, scheduledInterval: 'monthly', scheduledOn: '2026-11-01',
+      scheduledOrigin: 'switch', switchOverrideReason: 'Approved change' });
+    const source = await services().load([{ email: f.member.email!, plan: f.plan.id, nextDueOn: '2026-11-01',
+      amountCents: change === 'price' ? '8000' : '10000', interval: change === 'interval' ? 'annual' : 'monthly' }], 'update');
+    expect((await source.run()).committedRows).toBe(1);
+    const after = (await read()).memberships.find(row => row.id === original.id)!;
+    expect(after).toMatchObject(change === 'unchanged'
+      ? { scheduledPlanId: next.id, scheduledAmountCents: 15000, scheduledInterval: 'monthly', scheduledOn: '2026-11-01', scheduledOrigin: 'switch' }
+      : { scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null, scheduledOrigin: null, switchOverrideReason: null });
+    expect(after).toMatchObject({ amountCents: change === 'price' ? 8000 : 10000, interval: change === 'interval' ? 'annual' : 'monthly' });
+    expect((await read()).invoices).toEqual([]);
+  });
   it.each(['member', 'household', 'plan', 'membership'] as const)('refuses stale %s revisions atomically', async changed => {
     const f = await fixture();
     await (await services().load([{ email: f.member.email!, plan: f.plan.name, nextDueOn: '2026-11-15' }])).run();

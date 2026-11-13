@@ -6,6 +6,7 @@ import type { z } from 'zod';
 import * as c from '@plaingym/shared/contracts';
 import { catalogAudit } from './catalog.js';
 import { switchAppliedDiscount } from './discounts/apply.js';
+import { switchRequestId } from './memberships.plan-change.query.js';
 
 type Row = typeof memberships.$inferSelect;
 type Plan = typeof plans.$inferSelect;
@@ -110,10 +111,10 @@ export function switchedNow(row: Row, plan: Plan, kind: SwitchKind, overrideReas
  * switch's audit, or a switch made now's (the cycle build's applied switches carry no request).
  */
 export async function recordedSwitch(tx: Transaction, membershipId: string, requestId: string) {
-  const events = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
-    inArray(auditEvents.action, [switchScheduledAction, planSwitchedAction]), eq(auditEvents.targetId, membershipId)));
-  const found = events.map(event => event.after as Partial<PlanSwitchedNowAudit> | null)
-    .find(after => after?.request?.requestId === requestId);
+  const [event] = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
+    inArray(auditEvents.action, [switchScheduledAction, planSwitchedAction]), eq(auditEvents.targetId, membershipId),
+    eq(switchRequestId(), requestId))).limit(1);
+  const found = event?.after as Partial<PlanSwitchedNowAudit> | undefined;
   return found && { request: found.request!, membership: found.membership!, invoiceId: found.invoiceId ?? null };
 }
 export function sameSwitchRequest(recorded: RecordedSwitchRequest, request: RecordedSwitchRequest): boolean {

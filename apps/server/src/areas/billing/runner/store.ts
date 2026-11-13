@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, desc, eq, inArray, lte } from 'drizzle-orm';
-import { allocateInvoiceNumber, households, invoiceLineItems, invoices, memberships, paymentAttempts, plans, planTaxRates,
-  taxRates, uuidv7, writeAudit, assertRevised, type Transaction } from '@plaingym/db';
+import { allocateInvoiceNumber, households, invoiceLineItems, invoices, memberships, paymentAttempts, plans,
+  uuidv7, writeAudit, assertRevised, type Transaction } from '@plaingym/db';
 import { createTranslator, type Clock } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import { membershipSchema } from '@plaingym/shared/contracts';
@@ -10,6 +10,7 @@ import type { MutationContext } from '../../../core/interfaces/common.js';
 import type { GymSettings } from '../../../core/interfaces/gym-settings.js';
 import type { MembershipOptions } from '../memberships.js';
 import { applyScheduledSwitch } from '../memberships.plan-change.js';
+import { planTaxes } from '../memberships.plan-change.taxes.js';
 import { calculateCycleInvoice, calculateFirstPeriod, calculateOneOffInvoice, previousBillingDate, type CalculatedInvoice,
   type PricedMembership } from '../invoicing/index.js';
 import { liveDiscounts, presentDiscount, priceDiscount, takeDiscountCycle } from '../discounts/apply.js';
@@ -54,9 +55,7 @@ export function pricing(home: typeof households.$inferSelect, currency: GymSetti
 }
 async function priced(tx: Transaction, row: typeof memberships.$inferSelect): Promise<PricedMembership> {
   const plan = (await tx.select().from(plans).where(eq(plans.id, row.planId)))[0]!;
-  const taxes = await tx.select({ id: taxRates.id, name: taxRates.name, rateMillionths: taxRates.rateMillionths,
-    inclusive: taxRates.inclusive }).from(planTaxRates).innerJoin(taxRates, eq(taxRates.id, planTaxRates.taxRateId))
-    .where(eq(planTaxRates.planId, row.planId));
+  const taxes = await planTaxes(tx, row.planId);
   const { gymId: _gymId, anniversaryOn, switchOverrideReason: _reason, scheduledOrigin: _origin, ...fields } = row;
   void [_gymId, _reason, _origin];
   const discount = presentDiscount((await liveDiscounts(tx, [row.id])).get(row.id)), price = priceDiscount(discount);

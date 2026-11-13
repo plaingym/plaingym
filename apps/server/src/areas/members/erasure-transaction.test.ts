@@ -28,7 +28,7 @@ async function fixture(customerId: string | null) {
   const plan = await factory('plans', gymId);
   const membership = await factory('memberships', gymId, { householdId: home.id, memberId: person.id, planId: plan.id,
     switchOverrideReason: 'Private override', scheduledPlanId: plan.id, scheduledAmountCents: 8000, scheduledInterval: 'monthly',
-    scheduledOn: '2026-12-01' });
+    scheduledOn: '2026-12-01', scheduledOrigin: 'downgrade' });
   // Two active cards, a photo and a signed waiver: each needs cleanup outside the database once the erasure commits.
   const cards = [await factory('paymentMethods', gymId, { householdId: home.id }), await factory('paymentMethods', gymId, { householdId: home.id })];
   const photoKey = `${gymId}/members/${person.id}/${uuidv7()}`, signatureKey = `${gymId}/waivers/${uuidv7()}/signatures/${uuidv7()}.png`;
@@ -141,7 +141,7 @@ describe.each(['fake', 'postgres'] as const)('%s atomic erasure', kind => {
     expect(await overrideReason(otherMembership.id)).toBe('Another member override');
     // The erasure's cancel drops the switch that hadn't applied yet.
     expect((await database.forGym(gymId, tx => tx.select().from(memberships).where(eq(memberships.id, membership.id))))[0]).toMatchObject({
-      status: 'cancelled', scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null });
+      status: 'cancelled', scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null, scheduledOrigin: null });
     if (q instanceof FakeJobs) expect(q.jobs[0]).toMatchObject({ name: redactCustomerJob, payload: { customerId },
       options: { idempotencyKey: `redact:${customerId}`, maxAttempts: 12, timezone: 'UTC' }, runAt: new Date(clock.now().getTime() + 60_000) });
     else expect((await redactions(customerId))[0]).toMatchObject({ name: redactCustomerJob, maxAttempts: 12,

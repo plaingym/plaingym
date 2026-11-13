@@ -31,12 +31,13 @@ function start(options: { plans?: Plan[]; row?: Membership; preview?: (query: Re
   });
   const client = { plans: vi.fn(async () => options.plans ?? [plan, premium]), memberships: vi.fn(async () => [row]), call,
     member: vi.fn(async () => ({ householdId: row.householdId })), householdBilling: vi.fn(async () => ({ billingDay: null })) } as unknown as BillingClient;
-  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+  const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={cache}>
     <ShellServicesContext.Provider value={createShellServices(async () => data)}>
       <MembershipPanel gymId={data.gym.id} memberId={row.memberId} manage client={client} now={new Date(createdAt)}/>
     </ShellServicesContext.Provider>
   </QueryClientProvider>);
-  return { client, call };
+  return { client, call, cache };
 }
 afterEach(cleanup);
 it.each(['kept', 'ended', 'none'] as const)('explains the preview discount outcome: %s', async discount => {
@@ -71,12 +72,13 @@ it('disables now for another billing interval and says why', async () => {
   expect((dialog.getByRole('radio', { name: 'Now' }) as HTMLInputElement).disabled).toBe(true);
   expect(dialog.getByText('A plan with another billing interval starts on a billing date.')).toBeDefined();
 });
-it('disables now for a frozen membership', async () => {
-  start({ row: { ...membership, status: 'frozen', frozenAt: createdAt } });
+it.each(['frozen', 'pending', 'trial'] as const)('explains the conditional price date for a %s membership', async status => {
+  start({ row: { ...membership, status, ...(status === 'frozen' ? { frozenAt: createdAt } : {}) } });
   const dialog = await openDialog();
   expect((dialog.getByRole('radio', { name: 'Now' }) as HTMLInputElement).disabled).toBe(true);
   expect(dialog.getByText('Only an active membership can change plan now.')).toBeDefined();
-  expect(await dialog.findByText('The change applies when the membership is next billed as active.')).toBeDefined();
+  expect(await dialog.findByText(/The new price, .* applies when the membership is next billed as active, on or after 2026-11-01\./)).toBeDefined();
+  expect(dialog.queryByText(/starts on 2026-11-01/)).toBeNull();
 });
 it('shows the amount charged now and the days it covers for an upgrade now', async () => {
   const proration = { periodStartsOn: '2026-10-01', periodEndsOn: '2026-11-01', billedDays: 6, periodDays: 31, totalCents: 4839 };
@@ -182,6 +184,36 @@ it('explains a refusal by its reason code', async () => {
   fireEvent.click(dialog.getByRole('button', { name: 'Change plan' }));
   expect(await dialog.findByText('That plan is no longer active.')).toBeDefined();
 });
+it('reports an unknown preview conflict without claiming anything was reloaded', async () => {
+  const { client } = start({ preview: () => { throw new ApiError(409, 'conflict', ['unknown_reason']); } });
+  const dialog = await openDialog();
+  expect(await dialog.findByText('Could not check the change. Please try again.')).toBeDefined();
+  expect(dialog.queryByText(/reloaded/)).toBeNull();
+  // The panel also loads the household's memberships for assignment; only this member's list would be reloaded.
+  expect(vi.mocked(client.memberships).mock.calls.filter(([query]) => query?.memberId === membership.memberId)).toHaveLength(1);
+  expect((dialog.getByRole('button', { name: 'Change plan' }) as HTMLButtonElement).disabled).toBe(true);
+});
+it('refreshes the plans after a refusal and removes the archived selection', async () => {
+  const { client, call } = start({ plans: [plan, premium, basic], switchPlan: async () => { throw new ApiError(409, 'conflict', ['plan_inactive']); } });
+  const dialog = await openDialog();
+  await dialog.findByText(/starts on/);
+  vi.mocked(client.plans).mockResolvedValue([plan, { ...premium, active: false }, basic]);
+  fireEvent.click(dialog.getByRole('button', { name: 'Change plan' }));
+  await waitFor(() => expect(vi.mocked(client.plans)).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(within(dialog.getByLabelText('New plan')).queryByRole('option', { name: /Premium/ })).toBeNull());
+  expect((dialog.getByLabelText('New plan') as HTMLSelectElement).value).toBe(basic.id);
+  await waitFor(() => expect(calls(call, 'previewMembershipSwitch').at(-1)![3]).toMatchObject({ planId: basic.id }));
+});
+it('rechecks the preview when this gym\'s memberships are invalidated', async () => {
+  const { cache, call } = start();
+  const dialog = await openDialog();
+  await dialog.findByText(/starts on/);
+  const count = calls(call, 'previewMembershipSwitch').length;
+  await cache.invalidateQueries({ queryKey: ['billing', id(1), 'memberships'] });
+  await waitFor(() => expect(calls(call, 'previewMembershipSwitch')).toHaveLength(count + 1));
+  await cache.invalidateQueries({ queryKey: ['billing', id(99), 'memberships'] });
+  expect(calls(call, 'previewMembershipSwitch')).toHaveLength(count + 1);
+});
 it('offers no submit when the preview is refused', async () => {
   const { call } = start();
   call.mockImplementation(async (name: string) => { if (name === 'previewMembershipSwitch') throw new ApiError(409, 'conflict', ['period_not_billed']); return { data: membership }; });
@@ -203,7 +235,7 @@ it('retries a preview that failed', async () => {
   let attempts = 0;
   start({ preview: () => { if (++attempts === 1) throw new ApiError(500, 'request_failed'); return upgrade; } });
   const dialog = await openDialog();
-  expect(await dialog.findByText('Could not change the plan. Please try again.')).toBeDefined();
+  expect(await dialog.findByText('Could not check the change. Please try again.')).toBeDefined();
   expect((dialog.getByRole('button', { name: 'Change plan' }) as HTMLButtonElement).disabled).toBe(true);
   fireEvent.click(dialog.getByRole('button', { name: 'Try again' }));
   expect(await dialog.findByText(/starts on 2026-11-01/)).toBeDefined();

@@ -27,6 +27,26 @@ export function householdDateOnOrAfter(date: IsoDate, day: number): IsoDate {
   return sameMonth >= date ? sameMonth : anchoredMonth(date, 1, day);
 }
 
+/** Whether a due date is off the household's billing day, including short-month clamps. */
+export function isOffDay(dueOn: IsoDate, day: number): boolean {
+  return householdDateOnOrAfter(dueOn, day) !== dueOn;
+}
+
+/** Use the due date's own day unless a cycle bill resolves a short month-end's original anchor. */
+export function offDayPeriodStart(dueOn: IsoDate, billedPeriodStartsOn?: IsoDate): IsoDate {
+  calendarDate(dueOn);
+  const day = Number(dueOn.slice(8));
+  const start = previousBillingDate({ dueOn, interval: 'monthly', billingDay: day });
+  if (billedPeriodStartsOn === undefined) return start;
+  calendarDate(billedPeriodStartsOn);
+  const monthEnd = addDays(nextMonth(monthStart(dueOn)), -1);
+  const previousEnd = addDays(monthStart(dueOn), -1);
+  const latest = dueOn === monthEnd && day < 31 ? previousEnd : start;
+  if (billedPeriodStartsOn < start || billedPeriodStartsOn > latest)
+    throw new RangeError('Billed period start does not match the billing interval');
+  return billedPeriodStartsOn;
+}
+
 export interface BillingCalendar {
   readonly dueOn: IsoDate;
   readonly interval: BillingInterval;

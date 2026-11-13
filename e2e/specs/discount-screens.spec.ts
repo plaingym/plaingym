@@ -59,7 +59,22 @@ for (const width of [360, 1280]) {
       await expect(page.getByText('Billing cycles left: 3', { exact: true })).toBeVisible(); await check(page, info, 'membership-' + width);
       await page.getByRole('button', { name: 'Change plan', exact: true }).click();
       let dialog = page.getByRole('dialog'); await dialog.getByRole('combobox', { name: /^New plan/ }).selectOption(nextPlan.id);
+      await expect(dialog.getByText(/The new price, .* applies when the membership is next billed as active, on or after/)).toBeVisible();
+      await expect(dialog.getByText(/The new price, .* starts on/)).toHaveCount(0);
       await expect(dialog.getByText('The discount is kept on the new plan.', { exact: true })).toBeVisible(); await check(page, info, 'switch-kept-' + width);
+      await dialog.getByRole('button', { name: 'Go back', exact: true }).click();
+      await page.route('**/switch/preview?*', route => route.fulfill({ status: 409, contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'conflict', message: 'Change unavailable', details: { reason: ['unknown_reason'] } } }) }));
+      // Reopening within the app's cache window reuses the quote; reload so this assertion exercises a refused request.
+      await page.reload();
+      await page.getByRole('button', { name: 'Change plan', exact: true }).click();
+      dialog = page.getByRole('dialog');
+      await expect(dialog.getByRole('alert')).toContainText('Could not check the change. Please try again.');
+      await expect(dialog.getByRole('button', { name: 'Change plan', exact: true })).toBeDisabled();
+      await check(page, info, 'switch-preview-refused-' + width);
+      await page.unroute('**/switch/preview?*');
+      await dialog.getByRole('button', { name: 'Try again', exact: true }).click();
+      await expect(dialog.getByText('The discount is kept on the new plan.', { exact: true })).toBeVisible();
       await dialog.getByRole('button', { name: 'Go back', exact: true }).click();
       await page.getByRole('button', { name: 'Change discount', exact: true }).click();
       const change = page.locator('form').filter({ has: page.getByRole('button', { name: 'Apply discount', exact: true }) });

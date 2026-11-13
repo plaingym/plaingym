@@ -8,6 +8,7 @@ import { dateSchema, idSchema, type ImportIssue, type ImportPlanRequest, type Im
 import { minorUnitStep, onMinorUnitStep } from '@plaingym/shared/money';
 import { isCalendarDate, localDate } from '@plaingym/shared/time';
 import { householdDateOnOrAfter } from '../../billing/invoicing/calendar.js';
+import { clearedSwitch } from '../../billing/memberships.plan-change.js';
 import type { CsvRow } from '../pipeline.csv.js';
 import type { CsvMapper, MapperContext, PlannedRow } from './registry.js';
 import { annualAnniversary, message, normalize, parseMembership, type Identity, type Source } from './memberships.parse.js';
@@ -266,7 +267,9 @@ async function commit(tx: Transaction, rows: readonly PlannedRow[], context: Map
     let id: string;
     if (before) {
       const guard = revisionGuard(memberships.revision, item.membershipRevision!);
-      const after = assertRevised(await tx.update(memberships).set({ ...changes, revision: guard.next })
+      const replacedTerms = before.amountCents !== changes.amountCents || before.interval !== changes.interval;
+      const after = assertRevised(await tx.update(memberships).set({ ...changes,
+        ...(replacedTerms ? clearedSwitch(before) : {}), revision: guard.next })
         .where(and(eq(memberships.gymId, gymId), eq(memberships.id, before.id), guard.matches)).returning());
       id = after.id;
     } else {

@@ -14,22 +14,22 @@ import { money, selectClass } from '../catalog/format.js';
 import { text as discountText } from '../discounts/messages.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('billing/memberships:' + key, values);
-const knownReasons = new Set(['plan_inactive', 'currency', 'same_plan', 'cancelled', 'erased', 'commitment', 'not_active', 'interval_change', 'period_not_billed', 'tax_change']);
-/** What the server refused, in words; a conflict with no reason code is a stale revision. */
-function refusal(error: unknown) {
-  if (!(error instanceof ApiError)) return text('switchFailed');
-  const reason = error.reason.find(code => knownReasons.has(code));
-  if (reason) return text('reason_' + reason);
-  return text(error.status === 409 ? 'switchStale' : 'switchFailed');
+/** A known refusal's translation, otherwise the fallback for the operation that failed. */
+function refusal(error: unknown, fallback = error instanceof ApiError && error.status === 409 ? 'switchStale' : 'switchFailed') {
+  if (error instanceof ApiError) for (const code of error.reason) {
+    const key = 'reason_' + code, message = text(key);
+    if (message !== 'billing/memberships:' + key) return message;
+  }
+  return text(fallback);
 }
 /** Why "now" can't be chosen for this membership and plan, or null when it can. */
 export function nowBlocked(row: Membership, plan: Plan | undefined) {
-  if (row.status !== 'active') return text('nowNotActive');
-  if (plan && plan.interval !== row.interval) return text('nowIntervalChange');
+  if (row.status !== 'active') return text('reason_not_active');
+  if (plan && plan.interval !== row.interval) return text('reason_interval_change');
   return null;
 }
-export function ChangePlanDialog({ row, plans, client, close, changed, reload }: {
-  row: Membership; plans: Plan[]; client: BillingClient; close: () => void;
+export function ChangePlanDialog({ row, plans, client, close, changed, reload, gymId }: {
+  row: Membership; plans: Plan[]; client: BillingClient; close: () => void; gymId: string;
   changed: (result: MembershipSwitchResult) => void; reload: () => Promise<void>;
 }) {
   const options = plans.filter(plan => plan.active && plan.currency === row.currency && plan.id !== row.planId);
@@ -42,7 +42,8 @@ export function ChangePlanDialog({ row, plans, client, close, changed, reload }:
   const plan = options.find(item => item.id === planId);
   const blocked = nowBlocked(row, plan), timing: PlanSwitchTiming = blocked ? 'next_billing_date' : wanted;
   const cache = useQueryClient();
-  const preview = useQuery({ enabled: !!planId, retry: false, queryKey: ['billing', 'switch-preview', row.id, row.revision, planId, timing],
+  const key = ['billing', gymId, 'memberships'];
+  const preview = useQuery({ enabled: !!planId, retry: false, queryKey: [...key, row.id, 'switch-preview', row.revision, planId, timing],
     queryFn: async () => (await client.call('previewMembershipSwitch', undefined, { membershipId: row.id }, { planId, timing })).data });
   // A refetch that failed keeps the last preview's data: never offer a submit on it.
   const data = preview.isError ? undefined : preview.data, needsReason = !!data?.commitmentBlocks;
@@ -66,9 +67,9 @@ export function ChangePlanDialog({ row, plans, client, close, changed, reload }:
     } catch (cause) {
       setError(refusal(cause));
       // A stale revision or a refusal means the membership changed: show it as it is now.
-      // A refusal can leave the revision unchanged (a plan archived meanwhile), so the preview is checked again too.
+      // Membership invalidation includes the preview; refresh plans in case one was archived meanwhile.
       if (cause instanceof ApiError && cause.status === 409) await Promise.all([reload(),
-        cache.invalidateQueries({ queryKey: ['billing', 'switch-preview', row.id] })]).catch(() => undefined);
+        cache.invalidateQueries({ queryKey: ['billing', gymId, 'plans'] })]).catch(() => undefined);
     } finally { inFlight.current = false; setBusy(false); }
   }
   return <Dialog title={text('changePlanTitle')} closeLabel={text('close')} onClose={close} dismissible={!busy}>
@@ -87,17 +88,17 @@ export function ChangePlanDialog({ row, plans, client, close, changed, reload }:
           {blocked && <p className="text-sm text-muted-foreground">{blocked}</p>}
         </div>
         {preview.isPending && <p role="status">{text('previewLoading')}</p>}
-        {preview.isError && <Alert role="alert">{refusal(preview.error)} <Button variant="outline" disabled={preview.isFetching}
+        {preview.isError && <Alert role="alert">{refusal(preview.error, 'previewFailed')} <Button variant="outline" disabled={preview.isFetching}
           onClick={() => void preview.refetch()}>{text('retry')}</Button></Alert>}
         {data && <div className="min-w-0 space-y-2 rounded-lg border p-4 text-sm" aria-label={text('preview')}>
           <p className="font-medium">{text('kind_' + data.kind)}</p>
           <p>{discountText(data.discount === 'none' ? 'noDiscount' : data.discount)}</p>
-          <p>{text(timing === 'now' && data.kind === 'upgrade' ? 'priceStartsToday' : 'priceStartsOn', { date: data.priceStartsOn, price: money(plan!.amountCents, data.currency) })}</p>
+          <p>{text(row.status !== 'active' ? 'priceWhenActive' : timing === 'now' && data.kind === 'upgrade' ? 'priceStartsToday' : 'priceStartsOn',
+            { date: data.priceStartsOn, price: money(plan!.amountCents, data.currency) })}</p>
           {timing === 'now' && data.kind === 'downgrade' && <p>{text('keepsPrice', { date: row.nextDueOn })}</p>}
           {timing === 'now' && data.kind === 'upgrade' && (data.proration && data.proration.totalCents > 0
             ? <p className="font-medium">{text('chargedNow', { total: money(data.proration.totalCents, data.currency), days: data.proration.billedDays, periodDays: data.proration.periodDays })}</p>
             : <p>{text('noCharge')}</p>)}
-          {timing === 'next_billing_date' && row.status !== 'active' && <p className="text-muted-foreground">{text('whenActive')}</p>}
           {data.commitmentBlocks && <p>{text('commitmentBlocks', { date: row.commitmentEndsOn ?? '' })}</p>}
         </div>}
         {needsReason && <Label className="block min-w-0">{text('overrideReason')}<Textarea value={reason} required maxLength={500}

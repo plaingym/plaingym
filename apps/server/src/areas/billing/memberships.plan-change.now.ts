@@ -1,22 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, notInArray, or } from 'drizzle-orm';
-import { auditEvents, households, invoiceLineItems, invoices, membershipDiscounts, memberships, planTaxRates, plans, taxRates, type Transaction } from '@plaingym/db';
+import { and, desc, eq, gt, gte, inArray, isNull, lt, lte, notInArray, or } from 'drizzle-orm';
+import { auditEvents, type households, invoiceLineItems, invoices, membershipDiscounts, memberships, plans, type Transaction } from '@plaingym/db';
 import type * as c from '@plaingym/shared/contracts';
-import { calculatePlanChange, type CalculatedInvoice, type MembershipDiscount, type PlanChangeResult } from './invoicing/index.js';
+import { addDays, monthStart, nextMonth } from '@plaingym/shared/time';
+import { calculatePlanChange, currentPeriodStart, type CalculatedInvoice, type PlanChangeResult } from './invoicing/index.js';
+import { isOffDay } from './invoicing/calendar.js';
 import { pricing } from './runner/store.js';
 import { refuse, switchTerms } from './memberships.plan-change.js';
 import { priceDiscount, switchDiscount } from './discounts/apply.js';
-import { validateDiscount } from './invoicing/pricing.js';
+import { planTaxes } from './memberships.plan-change.taxes.js';
+export { planTaxes } from './memberships.plan-change.taxes.js';
 
 type Row = typeof memberships.$inferSelect;
 type Plan = typeof plans.$inferSelect;
 
-/** A plan's tax rates as the invoice engine applies them. */
-export function planTaxes(tx: Transaction, planId: string) {
-  return tx.select({ id: taxRates.id, name: taxRates.name, rateMillionths: taxRates.rateMillionths, inclusive: taxRates.inclusive })
-    .from(planTaxRates).innerJoin(taxRates, eq(taxRates.id, planTaxRates.taxRateId)).where(eq(planTaxRates.planId, planId))
-    .orderBy(asc(taxRates.id));
-}
+type Household = typeof households.$inferSelect;
 /**
  * A switch made now is for an active membership whose last cycle has run, and keeps its billing interval (a new
  * interval starts on a due date). A pending or trial membership has no paid period, and a frozen one's is skipped.
@@ -39,35 +37,39 @@ type BilledPricing = { membershipId: string; amountCents: number; discount: c.Ap
  * a difference against them. The proration adds the new plan's taxes to the difference, which is exact only when both
  * plans carry the same tax rates, so an upgrade between plans taxed differently is refused too (`tax_change`).
  */
-export async function prorateNow(tx: Transaction, row: Row, membership: c.Membership, plan: Plan, today: string): Promise<PlanChangeResult | null> {
+export async function prorateNow(tx: Transaction, home: Household, row: Row, membership: c.Membership, plan: Plan, today: string): Promise<PlanChangeResult | null> {
   if (row.nextDueOn <= today) return null;
   const [currentTaxes, newTaxes] = [await planTaxes(tx, row.planId), await planTaxes(tx, plan.id)];
   if (currentTaxes.length !== newTaxes.length || currentTaxes.some((rate, index) => rate.id !== newTaxes[index]!.id))
     refuse('tax_change', 'The plans carry different tax rates, so the upgrade starts on the next billing date');
-  const home = (await tx.select().from(households).where(eq(households.id, row.householdId)))[0]!;
   const newPlan = { id: plan.id, amountCents: plan.amountCents, currency: plan.currency, interval: plan.interval as c.BillingInterval,
     description: plan.name, taxRates: newTaxes };
   const newDiscount = switchDiscount(membership.discount, plan.id) === 'kept' ? priceDiscount(membership.discount) : undefined;
-  const quote = (currentDiscount?: MembershipDiscount) => {
-    // Malformed terms are an invariant failure, not evidence that the period wasn't billed.
-    validateDiscount(currentDiscount); validateDiscount(newDiscount);
-    try {
-      return calculatePlanChange({ ...pricing(home, row.currency), membership, newPlan, changeOn: today,
-        ...(currentDiscount ? { currentDiscount } : {}), ...(newDiscount ? { newDiscount } : {}),
-        ...(row.anniversaryOn === null ? {} : { annualAnchorOn: row.anniversaryOn }) });
-    } catch (error) {
-      // The engine refuses a change before the period it works out: after a freeze resumed early, that period is a later one.
-      if (error instanceof RangeError) notBilled();
-      throw error;
-    }
-  };
-  const result = quote();
-  const bills = await tx.select({ id: invoices.id, issuedAt: invoices.createdAt, planId: invoiceLineItems.planId }).from(invoiceLineItems)
+  const terms = pricing(home, row.currency);
+  const item = { membership, description: newPlan.description, taxRates: newTaxes,
+    ...(row.anniversaryOn === null ? {} : { annualAnchorOn: row.anniversaryOn }) };
+  // The due date's own day is the earliest possible start: February 28 can follow January 28 through 31.
+  const earliestStart = currentPeriodStart(terms, item);
+  const candidates = await tx.select({ id: invoices.id, issuedAt: invoices.createdAt, kind: invoices.kind,
+    dueOn: invoices.dueOn, planId: invoiceLineItems.planId }).from(invoiceLineItems)
     .innerJoin(invoices, and(eq(invoices.gymId, invoiceLineItems.gymId), eq(invoices.id, invoiceLineItems.invoiceId)))
     .where(and(eq(invoiceLineItems.membershipId, row.id), eq(invoiceLineItems.kind, 'membership'),
-      notInArray(invoices.status, ['draft', 'void', 'refunded']), gte(invoices.dueOn, result.periodStartsOn), lt(invoices.dueOn, result.periodEndsOn)))
+      notInArray(invoices.status, ['draft', 'void', 'refunded']), gte(invoices.dueOn, earliestStart), lt(invoices.dueOn, row.nextDueOn)))
     .orderBy(desc(invoices.dueOn), desc(invoices.createdAt));
-  if (!bills.length) notBilled();
+  if (!candidates.length) notBilled();
+  // Only a cycle bill identifies the original anchor; an earlier switch's one-off invoice doesn't. A cycle bill
+  // after the previous month-end (a due date edited mid-period) names no anchor, so the own-day rule applies.
+  const ambiguous = row.interval === 'monthly' && isOffDay(row.nextDueOn, home.billingDay)
+    && addDays(row.nextDueOn, 1) === nextMonth(monthStart(row.nextDueOn));
+  const previousEnd = addDays(monthStart(row.nextDueOn), -1);
+  const billedPeriodStartsOn = ambiguous
+    ? candidates.find(bill => bill.kind === 'cycle' && bill.dueOn <= previousEnd)?.dueOn : undefined;
+  const periodStartsOn = currentPeriodStart(terms, item, billedPeriodStartsOn);
+  const bills = candidates.filter(bill => bill.dueOn >= periodStartsOn);
+  const from = today > membership.startsOn ? today : membership.startsOn;
+  // Only this precondition denotes an unbilled period (for example, a freeze resumed early).
+  // Other engine errors are invariant failures and must reach the error handler.
+  if (from < periodStartsOn) notBilled();
   const issued = await tx.select({ id: auditEvents.targetId, after: auditEvents.after }).from(auditEvents)
     .where(and(eq(auditEvents.action, 'billing.invoice.issued'), inArray(auditEvents.targetId, bills.map(bill => bill.id))));
   const snapshots = new Map(issued.map(event => [event.id,
@@ -92,7 +94,10 @@ export async function prorateNow(tx: Transaction, row: Row, membership: c.Member
   const edits = await tx.select({ before: auditEvents.before, after: auditEvents.after }).from(auditEvents).where(and(
     eq(auditEvents.action, 'billing.membership.updated'), eq(auditEvents.targetId, row.id), gt(auditEvents.occurredAt, billed!.issuedAt!)));
   if (edits.some(edit => (edit.before as PriceSnapshot)?.amountCents !== (edit.after as PriceSnapshot)?.amountCents)) notBilled();
-  return quote(currentDiscount);
+  return calculatePlanChange({ ...terms, membership, newPlan, changeOn: today,
+    ...(billedPeriodStartsOn === undefined ? {} : { billedPeriodStartsOn }),
+    ...(currentDiscount ? { currentDiscount } : {}), ...(newDiscount ? { newDiscount } : {}),
+    ...(row.anniversaryOn === null ? {} : { annualAnchorOn: row.anniversaryOn }) });
 }
 /**
  * The proration invoice to issue, or null. The engine returns none for a proration rounded to zero, and a zero total
@@ -101,13 +106,16 @@ export async function prorateNow(tx: Transaction, row: Row, membership: c.Member
 export function issuable(result: PlanChangeResult | null): CalculatedInvoice | null {
   return result?.invoice && result.invoice.amountCents > 0 ? result.invoice : null;
 }
-/** What a switch would do, with the switch's refusals except the commitment, which it reports. */
-export async function switchPreview(tx: Transaction, row: Row, membership: c.Membership, member: { anonymizedAt: Date | null },
+/**
+ * What a switch would do, with the switch's refusals except the commitment, which it reports.
+ * For a non-active membership, priceStartsOn is the scheduled lower bound: the price only applies when billed as active.
+ */
+export async function switchPreview(tx: Transaction, home: Household, row: Row, membership: c.Membership, member: { anonymizedAt: Date | null },
   plan: Plan, timing: c.PlanSwitchTiming, today: string): Promise<c.MembershipSwitchPreview> {
   const { kind, commitmentBlocks } = switchTerms(row, member, plan, timing, today);
   const upgradeNow = timing === 'now' && kind === 'upgrade';
   if (timing === 'now') checkNow(row, plan, today);
-  const result = upgradeNow ? await prorateNow(tx, row, membership, plan, today) : null;
+  const result = upgradeNow ? await prorateNow(tx, home, row, membership, plan, today) : null;
   return { planId: plan.id, timing, kind, currency: row.currency, commitmentBlocks, discount: switchDiscount(membership.discount, plan.id),
     priceStartsOn: upgradeNow ? today : row.nextDueOn,
     proration: result && { periodStartsOn: result.periodStartsOn, periodEndsOn: result.periodEndsOn, billedDays: result.billedDays,

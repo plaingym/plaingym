@@ -14,8 +14,10 @@ are implemented here.
   months and retains it across plan changes. Freeze/resume/cancel reject invalid
   transitions; edits compare the client's revision. Assignment only records the
   selected first-period policy; the caller coordinates invoicing and charging.
-  HTTP membership PATCH maps to update (plan defaults first, explicit price/interval/
-  due-date overrides second, one revision increment). Resume maps to activate with
+  HTTP membership PATCH maps to update (price and due-date edits, one revision
+  increment). Plan and interval changes use changePlan, which schedules the quoted
+  terms for the next cycle billed as active and retains current terms until then.
+  The fake retains those scheduled terms too. Resume maps to activate with
   nextDueOn. A null freeze resumesOn means no scheduled resume.
 - `InvoiceTransitions` owns payment state changes. Processor intent/charge IDs
   deduplicate card payments; local payment/refund UUIDs deduplicate commands.

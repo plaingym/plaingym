@@ -13,6 +13,7 @@ import { hashHouseholdPin, type HouseholdPinSecret } from './pin.js';
 import { withJobTransaction, type Jobs } from '../../infra/jobs/index.js';
 import { eraseCreditReasons, redactCustomerJob, releaseErasedFilesJob } from './erasure-redaction.js';
 import { detachJob } from '../billing/payments.mutations.js';
+import { unscheduled } from '../billing/memberships.plan-change.js';
 
 /** The queue and gym timezone an erasure's cleanup jobs are inserted with. */
 export interface ErasureQueue { jobs: Pick<Jobs, 'enqueue'>; timezone: string }
@@ -146,8 +147,8 @@ export function createMembersService(options: MembersOptions = {}) {
           .where(and(eq(memberships.memberId, id), ne(memberships.status, 'cancelled'))).for('update');
         for (const membership of open) {
           // Like a staff cancel, it drops any plan switch that hasn't applied yet.
-          await tx.update(memberships).set({ status: 'cancelled', cancelledAt: now, resumesOn: null, scheduledPlanId: null,
-            scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null, revision: membership.revision + 1 })
+          await tx.update(memberships).set({ status: 'cancelled', cancelledAt: now, resumesOn: null, ...unscheduled,
+            revision: membership.revision + 1 })
             .where(eq(memberships.id, membership.id));
           await audit(tx, context, 'billing.membership.cancelled', 'membership', membership.id);
         }

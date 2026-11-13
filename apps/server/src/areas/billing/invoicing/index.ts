@@ -2,7 +2,7 @@
 import { currencySchema, idSchema } from '@plaingym/shared/contracts';
 import type { Currency, Id, IsoDate } from '@plaingym/shared/contracts';
 import type { AssignMembership } from '../../../core/interfaces/membership-lifecycle.js';
-import { calendarDate, calendarDaysBetween, householdDateOnOrAfter, nextBillingDate, previousBillingDate } from './calendar.js';
+import { calendarDate, calendarDaysBetween, householdDateOnOrAfter, isOffDay, nextBillingDate, previousBillingDate } from './calendar.js';
 import {
   calculatePrices, calendar, compareIds, membershipPrice, prorate, validateHousehold, validateMembership,
 } from './pricing.js';
@@ -11,7 +11,7 @@ import type { AppliedTaxRate, CalculatedInvoice, HouseholdPricing, Price, Priced
 export { calendarDaysBetween, nextBillingDate, previousBillingDate } from './calendar.js';
 export type { BillingCalendar } from './calendar.js';
 export type { AppliedTaxRate, CalculatedInvoice, CalculatedLineItem, MembershipDiscount, PricedMembership } from './pricing.js';
-export { calculatePlanChange } from './plan-change.js';
+export { calculatePlanChange, currentPeriodStart } from './plan-change.js';
 export type { PlanChangeInput, PlanChangeResult, PlanChangeTarget } from './plan-change.js';
 
 export interface CycleInvoiceInput extends HouseholdPricing {
@@ -98,7 +98,7 @@ function cycleTerms(input: HouseholdPricing, item: PricedMembership): {
   const { membership } = item;
   if (membership.interval === 'monthly') {
     const householdDate = householdDateOnOrAfter(membership.nextDueOn, input.billingDay);
-    if (householdDate !== membership.nextDueOn) {
+    if (isOffDay(membership.nextDueOn, input.billingDay)) {
       const periodStartsOn = previousBillingDate({ dueOn: householdDate, interval: 'monthly', billingDay: input.billingDay });
       const billedDays = calendarDaysBetween(membership.nextDueOn, householdDate);
       const periodDays = calendarDaysBetween(periodStartsOn, householdDate);
