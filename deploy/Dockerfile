@@ -1,7 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 ARG NODE_IMAGE=node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
+FROM ${NODE_IMAGE} AS identity
+ARG VERSION
+ARG REVISION
+# Identity is mandatory for both labels and runtime schema compatibility. The helper also handles source archives.
+RUN { test -n "$VERSION" && test -n "$REVISION" || { echo 'Supply VERSION and REVISION build arguments, or use node scripts/release/build-image.mjs IMAGE.' >&2; exit 1; }; } && touch /identity-valid
+
 FROM ${NODE_IMAGE} AS build
 WORKDIR /build
+# The constant marker checks arguments first without putting the changing revision in dependency layers' cache keys.
+COPY --from=identity /identity-valid /identity-valid
 ENV CI=true
 RUN npm install --global pnpm@10.34.7
 # Dependencies install from the manifests alone, so a source-only change reuses this layer. The store is a

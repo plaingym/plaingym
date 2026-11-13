@@ -26,7 +26,7 @@ const env = {
 };
 writeFileSync(envFile, '', { mode: 0o600 });
 const docker = (args, options = {}) => execFileSync('docker', args, {
-  env, encoding: 'utf8', timeout: 180_000, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], ...options,
+  env, encoding: 'utf8', timeout: 180_000, killSignal: 'SIGKILL', windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], ...options,
 });
 const prefix = ['compose', '--project-directory', root, '--env-file', envFile, '-p', project, '-f', join(root, 'compose.yaml')];
 const compose = (args, options) => docker([...prefix, ...args], options);
@@ -115,7 +115,7 @@ try {
   const health = JSON.parse(response.body);
   assert.equal(health.status, 'ok');
   assert.match(health.version, /^\d+\.\d+\.\d+(?:\+[A-Za-z0-9.-]+)?$/);
-  assert.match(health.commit, /^[a-f0-9]{40}$/);
+  assert.match(health.commit, /^(?:[a-f0-9]{40}|unknown)$/);
   const catalog = await get(https, httpsPort, ca, '/api/content-packs/catalog');
   assert.equal(catalog.status, 200);
   const packs = JSON.parse(catalog.body).data;
@@ -137,9 +137,10 @@ try {
   assert.equal(source.status, 302);
   assert.equal(source.headers.location, process.env.SOURCE_URL ?? 'https://github.com/plaingym/plaingym');
   assert.ok(configuration.Config.Env.includes('APP_VERSION=' + health.version));
+  assert.ok(configuration.Config.Env.includes('APP_REVISION=' + health.commit));
   if (process.env.VERSION) assert.equal(health.version, process.env.VERSION);
   // gym-app dispatches CLI commands through the same bundle inside the container.
-  const cli = spawnSync('docker', [...prefix, 'exec', '-T', 'app', 'gym-app', 'unknown-command'], { encoding: 'utf8', env });
+  const cli = spawnSync('docker', [...prefix, 'exec', '-T', 'app', 'gym-app', 'unknown-command'], { encoding: 'utf8', env, timeout: 30_000, killSignal: 'SIGKILL' });
   assert.equal(cli.status, 2);
   assert.match(cli.stderr, /Unknown command/);
   // Signed-link routes require a gym; keep first-boot assertions above on the empty install.
@@ -158,6 +159,7 @@ try {
   catch { /* Preserve the original failure if diagnostics are unavailable. */ }
   throw error;
 } finally {
-  compose(['down', '--volumes', '--remove-orphans']);
+  try { compose(['down', '--volumes', '--remove-orphans'], { timeout: 120_000 }); }
+  catch (error) { console.warn(`::warning::Could not remove smoke stack ${project}: ${error.message}`); }
   rmSync(temporary, { recursive: true, force: true });
 }

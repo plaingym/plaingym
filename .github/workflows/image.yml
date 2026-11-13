@@ -11,6 +11,7 @@ on:
       - '*package*'
       - 'pnpm-workspace.yaml'
       - 'scripts/release/version*.mjs'
+      - 'scripts/release/shellcheck.mjs'
       - '.npmrc'
       - 'tsconfig*.json'
       - 'THIRD_PARTY_LICENSES'
@@ -69,11 +70,11 @@ jobs:
       - name: Check scripts and configuration
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y shellcheck age
-          shellcheck -x deploy/*.sh deploy/container/*.sh deploy/release/*.sh deploy/test/*.sh deploy/demo/*.sh
+          sudo apt-get install -y age
+          node scripts/release/shellcheck.mjs
           sudo env CI=true PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s deploy/demo -p 'test_*.py'
       - name: Test compatibility smoke selection and cleanup
-        run: node --test deploy/release/previous-smoke.test.mjs
+        run: node --test deploy/release/*.test.mjs
       - name: Test update orchestration
         run: sudo sh deploy/test/update.sh
       - name: Test automatic patch updates
@@ -90,11 +91,9 @@ jobs:
         run: sudo sh deploy/test/rollback.sh
       - name: Test install and bootstrap checks
         run: sudo sh deploy/test/install.sh
-      # The GitHub cache backend needs the docker-container driver. The cache holds the Dockerfile's layers
-      # (the dependency install above all), one scope per architecture. It is per branch, with the default
-      # branch's cache as the fallback: a branch's first run starts cold unless the weekly image scan has
-      # filled the amd64 scope on main, and later runs on the branch reuse the install layer. The pnpm store
-      # mount is not part of it. A cache failure never fails the build.
+      # Keep runtime layers, especially the pinned snapshot apt install, without exporting intermediate source
+      # and dependency layers on each push. The weekly scan retains mode=max on main; branches can fall back
+      # to that cache. The pnpm store mount is not exported. A cache failure never fails the build.
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - name: Build on the native CPU
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
@@ -108,11 +107,30 @@ jobs:
           tags: ${{ env.IMAGE }}
           load: true
           cache-from: type=gha,scope=image-${{ matrix.arch }}
-          cache-to: type=gha,scope=image-${{ matrix.arch }},mode=max,ignore-error=true
+          cache-to: type=gha,scope=image-${{ matrix.arch }},mode=min,ignore-error=true
       - name: Check the built architecture
         run: test "$(docker image inspect "$IMAGE" --format '{{.Architecture}}')" = "${{ matrix.arch }}"
       - name: Test the production stack
         run: node deploy/test/smoke.mjs "$IMAGE"
+      - name: Test compatibility harness with the current image
+        if: matrix.arch == 'amd64'
+        run: node --input-type=module -e 'import { smokePreviousImage } from "./deploy/release/previous-smoke.mjs"; smokePreviousImage(process.env.IMAGE, process.env.IMAGE, process.cwd(), "HEAD");'
+      - name: Test missing build arguments and archive image identity
+        if: matrix.arch == 'amd64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if docker build --target build -f deploy/Dockerfile . > "$RUNNER_TEMP/missing-identity.log" 2>&1; then
+            echo '::error::A direct image build without identity must fail.'; exit 1
+          fi
+          grep -q 'Supply VERSION and REVISION build arguments' "$RUNNER_TEMP/missing-identity.log"
+          archive_version=$(node -p 'JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).version + "+unknown"')
+          trap 'timeout -k 5 120 docker image rm -f "$IMAGE-archive" || echo "::warning::Archive image cleanup failed"' EXIT
+          docker build --load -f deploy/Dockerfile --build-arg "VERSION=$archive_version" --build-arg REVISION=unknown \
+            --build-arg "SOURCE_URL=$SOURCE_URL" -t "$IMAGE-archive" .
+          test "$(docker image inspect "$IMAGE-archive" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')" = "$archive_version"
+          test "$(docker image inspect "$IMAGE-archive" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = unknown
+          VERSION="$archive_version" node deploy/test/smoke.mjs "$IMAGE-archive"
       - name: Run the previous code on this schema
         if: matrix.arch == 'amd64'
         env:

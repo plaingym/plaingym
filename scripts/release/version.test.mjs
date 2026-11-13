@@ -2,11 +2,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildInfo, dryRunVersion, git } from './version.mjs';
+import { buildInfo, dryRunVersion, git, imageSourceUrl } from './version.mjs';
 
 test('source archives have an unknown development identity', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'r163-archive-'));
@@ -16,11 +16,31 @@ test('source archives have an unknown development identity', () => {
     assert.deepEqual(buildInfo(cwd, { APP_BUILD_VERSION: '', APP_BUILD_REVISION: '' }), { version: '1.2.0+unknown', commit: 'unknown' });
     const supplied = { APP_BUILD_VERSION: '1.2.0', APP_BUILD_REVISION: 'a'.repeat(40) };
     assert.deepEqual(buildInfo(cwd, supplied), { version: '1.2.0', commit: 'a'.repeat(40) });
+    assert.deepEqual(buildInfo(cwd, { APP_BUILD_VERSION: '1.2.0+unknown', APP_BUILD_REVISION: 'unknown' }), { version: '1.2.0+unknown', commit: 'unknown' });
     for (const env of [{ APP_BUILD_VERSION: '1.2.0' }, { APP_BUILD_REVISION: 'a'.repeat(40) },
       { ...supplied, APP_BUILD_VERSION: '' }, { ...supplied, APP_BUILD_REVISION: '' }])
       assert.throws(() => buildInfo(cwd, env), /Supply both/);
     git(['init', '-b', 'main'], cwd);
     assert.throws(() => buildInfo(cwd, {})); // A broken/empty repository must not masquerade as an archive.
+    rmSync(join(cwd, '.git'), { recursive: true, force: true });
+    writeFileSync(join(cwd, '.git'), 'gitdir: missing-git-directory\n');
+    assert.throws(() => buildInfo(cwd, {}));
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test('archive image source links never invent an unknown Git reference', () => {
+  assert.equal(imageSourceUrl({ commit: 'unknown' }, null), 'https://github.com/plaingym/plaingym');
+  assert.equal(imageSourceUrl({ commit: 'a'.repeat(40) }, null), 'https://github.com/plaingym/plaingym/tree/' + 'a'.repeat(40));
+  assert.equal(imageSourceUrl({ commit: 'unknown' }, 'https://example.org/exact-source'), 'https://example.org/exact-source');
+});
+
+test('an archive inside a different repository never takes its identity', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'nested-archive-'));
+  try {
+    git(['init', '-b', 'main'], cwd);
+    const archive = join(cwd, 'archive'); mkdirSync(archive);
+    writeFileSync(join(archive, 'package.json'), '{"version":"1.2.0"}\n');
+    assert.deepEqual(buildInfo(archive, {}), { version: '1.2.0+unknown', commit: 'unknown' });
   } finally { rmSync(cwd, { recursive: true, force: true }); }
 });
 

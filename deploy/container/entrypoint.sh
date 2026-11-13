@@ -4,7 +4,7 @@ set -eu
 umask 077
 # Give the command's node process the image's V8 flags (deploy/Dockerfile) wherever it comes from, including a
 # compose.yaml that predates them. PLAINGYM_NODE_FLAGS is a space-separated option list, so it stays unquoted.
-if [ "${1:-}" = node ]; then
+if [ "${1:-}" = 'node' ]; then
   shift
   # shellcheck disable=SC2086
   set -- node ${PLAINGYM_NODE_FLAGS:-} "$@"

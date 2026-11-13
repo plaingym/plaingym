@@ -70,7 +70,7 @@ jobs:
       - name: Test the release scripts
         run: sh deploy/test/release.sh
       - name: Test compatibility smoke selection and cleanup
-        run: node --test deploy/release/previous-smoke.test.mjs
+        run: node --test deploy/release/*.test.mjs
   build:
     needs: prepare
     strategy:
@@ -212,6 +212,7 @@ jobs:
             --archive "amd64=$RUNNER_TEMP/images/release-image-amd64.tar" --archive "arm64=$RUNNER_TEMP/images/release-image-arm64.tar" \
             --key "$RUNNER_TEMP/key.pem" --public-key deploy/release-signing.pem --repository "$GITHUB_REPOSITORY" --out "$RUNNER_TEMP/release"
           node scripts/release/notes.mjs "$VERSION" > "$RUNNER_TEMP/release/notes.md"
-          gh release create "$VERSION" -R "$GITHUB_REPOSITORY" --verify-tag --title "$VERSION" --notes-file "$RUNNER_TEMP/release/notes.md" \
+          latest=$(node scripts/release/latest.mjs "$VERSION")
+          gh release create "$VERSION" -R "$GITHUB_REPOSITORY" --verify-tag --latest="$latest" --title "$VERSION" --notes-file "$RUNNER_TEMP/release/notes.md" \
             "$RUNNER_TEMP/release/release-manifest.txt" "$RUNNER_TEMP/release/release-manifest.txt.sig" \
             "$RUNNER_TEMP/release/plaingym-deploy-$VERSION.tar.gz" "$RUNNER_TEMP/release/bootstrap.sh"

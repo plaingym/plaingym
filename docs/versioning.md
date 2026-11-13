@@ -53,7 +53,9 @@ previous release's minor. A minor can't exclude the previous release. Its defaul
 is that same `.0`, so 1.5.0 after 1.2.3 has the floor 1.2.0, and a floor never names a
 release that doesn't exist. A patch keeps its minor's floor. The release workflow starts
 the previous published minor's image on the database migrated by the new image and
-runs that previous release's own production smoke checks and deployment fixtures before publication. With no earlier release, it
+runs that previous release's own production smoke assertions under both its deployment files
+and the current deployment files before publication. Migration always uses the current files.
+With no earlier release, it
 prints a notice and skips that check. A declared major boundary also prints a notice.
 
 The same test doesn't wait for a release. When a commit changes the migrations, Image
@@ -64,8 +66,12 @@ floor declares a boundary above that release, or when that code predates this pr
 In compatibility runs, the smoke test accepts additional public tables from newer
 migrations; ordinary image smoke runs still require the exact expected count.
 Both checks identify the smoke script's source revision and the image being tested,
-including in failures. Image removal has a 120-second limit; failure or timeout warns
-without replacing the check's result, and temporary worktree cleanup still runs.
+including in failures. The previous tag's shallow fetch has a 120-second limit and
+is tested against a scratch repository during dry runs too. Each compatibility smoke
+has a 900-second hard limit. Its caller removes the unique project's containers,
+networks and volumes before removing the temporary worktree, even after a timeout.
+Resource removal has a 120-second limit; failure or timeout warns without replacing
+the check's result, and subsequent cleanup still runs.
 
 Older code starts on a newer schema because its startup catalog check accepts a table
 it doesn't declare when the table has the security shape every table has: owner
@@ -91,6 +97,11 @@ yields `<package version>+unknown` with the commit `unknown`; setting only one o
 this identity fetch full history and tags. Server and browser bundles embed the same
 version and full commit. An empty `APP_VERSION` or `APP_REVISION` at runtime falls
 back to the embedded value.
+
+Image builds use `node scripts/release/build-image.mjs IMAGE` to supply that same
+identity to Docker's `VERSION` and `REVISION` arguments, labels and runtime
+environment. This also supports archives with the paired `+unknown` version and
+`unknown` revision. A direct Docker build missing either argument fails early.
 
 `/healthz` returns `status`, `version`, and `commit` without caching. The health page
 and Settings → Updates show the version and short commit; OpenAPI's `info.version`
@@ -139,13 +150,18 @@ leaves that section empty. Notes become a dated section of `CHANGELOG.md` under
 The command bumps all five manifests in `chore(release): vX.Y.Z`, creates a signed
 annotated tag with `git tag -s`, and never pushes. The signer runs with the terminal
 attached, so it can ask for the signing key's passphrase. The command then reads the
-tag back: when it carries no SSH or PGP signature (Git can exit successfully with an
+tag back: when it carries no SSH, OpenPGP or X.509 signature (Git can exit successfully with an
 unsigned tag when the signer couldn't run), it deletes the tag and the release commit
 and stops, so fix the signing setup and run it again. A patch also adds the same section
 to `main` in `docs: changelog for vX.Y.Z`, without changing `main`'s package versions.
 Its main checkout must be clean and level with origin too. Review both branches and
 the tag, then push the refs printed by the command. The Release workflow takes its
 GitHub release notes from that exact changelog section.
+
+The Release workflow explicitly marks a backport below a newer stable release with
+`--latest=false`, keeping GitHub's latest release on the newest stable version.
+If signing and cleanup both fail, the original signing error is preserved with
+the cleanup errors attached.
 
 See [updating.md](updating.md) for owner updates and rollback, and
 [deploy/README.md](../deploy/README.md#releases) for manifests and release infrastructure.

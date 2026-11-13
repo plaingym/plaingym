@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const root = fileURLToPath(new URL('../../', import.meta.url));
 export const releasePattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 /** @param {string[]} args @param {string} cwd */
-export function git(args, cwd = root) {
-  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+export function git(args, cwd = root, { raw = false, timeout = 120_000 } = {}) {
+  const output = execFileSync('git', args, { cwd, encoding: 'utf8', timeout, killSignal: 'SIGKILL',
+    env: { ...process.env, LC_ALL: 'C', GIT_CEILING_DIRECTORIES: dirname(resolve(cwd)) },
+    stdio: ['ignore', 'pipe', 'pipe'] });
+  return raw ? output : output.trim();
 }
 
 /** Build identity is calculated before compilation, never from the deployed working directory.
@@ -17,19 +20,16 @@ export function git(args, cwd = root) {
  */
 export function buildInfo(cwd = root, env = process.env) {
   if (env.APP_BUILD_VERSION || env.APP_BUILD_REVISION) {
-    if (!/^\d+\.\d+\.\d+(?:\+[0-9A-Za-z.-]+)?$/.test(env.APP_BUILD_VERSION ?? '') || !/^[a-f0-9]{40}$/.test(env.APP_BUILD_REVISION ?? ''))
+    const archive = /^\d+\.\d+\.\d+\+unknown$/.test(env.APP_BUILD_VERSION ?? '') && env.APP_BUILD_REVISION === 'unknown';
+    if (!archive && (!/^\d+\.\d+\.\d+(?:\+[0-9A-Za-z.-]+)?$/.test(env.APP_BUILD_VERSION ?? '') || !/^[a-f0-9]{40}$/.test(env.APP_BUILD_REVISION ?? '')))
       throw new Error('Supply both APP_BUILD_VERSION and the full APP_BUILD_REVISION');
     return { version: env.APP_BUILD_VERSION ?? '', commit: env.APP_BUILD_REVISION ?? '' };
   }
   const product = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8')).version;
   if (!releasePattern.test(product)) throw new Error('package.json must contain a plain semantic version');
-  let commit;
-  try { commit = git(['rev-parse', 'HEAD'], cwd); }
-  catch (error) {
-    if (error.code === 'ENOENT' || /not a git repository/i.test(String(error.stderr)))
-      return { version: `${product}+unknown`, commit: 'unknown' };
-    throw error;
-  }
+  // Archives must not inherit an enclosing repository's identity. A .git file is a linked worktree.
+  if (!existsSync(join(cwd, '.git'))) return { version: `${product}+unknown`, commit: 'unknown' };
+  const commit = git(['rev-parse', 'HEAD'], cwd);
   const short = commit.slice(0, 7);
   const dirty = git(['status', '--porcelain', '--untracked-files=normal'], cwd) !== '';
   const tags = git(['tag', '--merged', 'HEAD', '--list', 'v*'], cwd).split('\n')
@@ -51,4 +51,9 @@ export function buildInfo(cwd = root, env = process.env) {
  */
 export function dryRunVersion(info) {
   return info.version.includes('+') ? info.version : `${info.version}+0.g${info.commit.slice(0, 7)}`;
+}
+
+/** Archives have no commit to link to; callers can supply their exact public source URL. */
+export function imageSourceUrl(info, source = process.env.SOURCE_URL) {
+  return source ?? `https://github.com/plaingym/plaingym${info.commit === 'unknown' ? '' : `/tree/${info.commit}`}`;
 }

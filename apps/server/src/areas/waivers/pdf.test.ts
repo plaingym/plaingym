@@ -113,12 +113,16 @@ describe('immutable waiver rendering', () => {
     expect(needsGuardian(null, now, 'UTC')).toBe(true);
   });
   it("passes the image's V8 flags to every node command its start scripts run", () => {
+    const unflaggedNode = /\bnode(?!\s+\$\{PLAINGYM_NODE_FLAGS)\s+/;
+    for (const command of ['node app.mjs', 'x=$(node app.mjs)', 'a && node app.mjs', 'if node app.mjs; then'])
+      expect(unflaggedNode.test(command), command).toBe(true);
+    expect(unflaggedNode.test('node  ${PLAINGYM_NODE_FLAGS:-} app.mjs')).toBe(false);
     const dir = new URL('../../../../../deploy/container/', import.meta.url);
     const scripts = readdirSync(dir).filter(name => name.endsWith('.sh'));
     expect(scripts.length).toBeGreaterThan(0);
     for (const name of scripts) for (const line of readFileSync(new URL(name, dir), 'utf8').split('\n')) {
-      if (line.trim().startsWith('#')) continue;
-      expect(/(?:^\s*|; |exec )node (?!\$\{PLAINGYM_NODE_FLAGS)/.test(line), `${name}: ${line.trim()}`).toBe(false);
+      if (/^\s*(?:#|echo\b)/.test(line)) continue;
+      expect(unflaggedNode.test(line.split(/\s+#/)[0] ?? ''), `${name}: ${line.trim()}`).toBe(false);
     }
   });
   it('bounds cold/repeated Latin and mixed source/bundle memory and loads only the required faces', () => {

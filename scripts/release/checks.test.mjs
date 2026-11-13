@@ -16,6 +16,26 @@ test('conventional subjects and session attribution', () => {
     assert.throws(() => checkMessage(value));
 });
 
+test('commit messages reject BOMs and CR even when a valid subject follows', () => {
+  for (const message of ['\uFEFFfix: health', 'fix: health\n\nbody\r\n', 'fix: health\r'])
+    assert.throws(() => checkMessage(message), /byte-order mark/);
+  const cwd = mkdtempSync(join(tmpdir(), 'commit-encoding-'));
+  try {
+    const run = (...args) => git(args, cwd);
+    run('init', '-b', 'main'); run('config', 'user.name', 'Release'); run('config', 'user.email', 'release@example.test');
+    run('config', 'commit.gpgsign', 'false');
+    run('commit', '--allow-empty', '-m', 'chore: base');
+    const base = run('rev-parse', 'HEAD');
+    for (const message of ['\uFEFFfix: health\n', 'fix: health\n\nbody\r\n']) {
+      const file = join(cwd, 'message');
+      writeFileSync(file, message);
+      run('commit', '--allow-empty', '--cleanup=verbatim', '-F', file);
+      assert.throws(() => checkCommits(base, 'HEAD', cwd), /byte-order mark/);
+      run('reset', '--hard', base);
+    }
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
+});
+
 test('only the requested commits are checked; migrations and old journal entries cannot change', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'r118-checks-'));
   const run = (...args) => git(args, cwd);

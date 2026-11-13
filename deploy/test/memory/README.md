@@ -3,7 +3,11 @@
 
 The **Memory** workflow (`.github/workflows/memory.yml`) runs a whole self-hosted deployment and
 fails when it uses more memory than the budget, or when anything is killed for memory. It runs on
-every integration branch and push to `main`, nightly, and on demand.
+every integration branch and push to `main`, nightly, and on demand. It also measures
+each push to a task branch whose changes against `main` touch `apps/server/src/infra/pdf/`,
+`areas/waivers/`, `core/rate-limit*` (under `apps/server/src/`), `deploy/`, or the Memory
+workflow, so the branch's latest head is measured even when its newest push changed other files.
+Other task pushes skip the measurement job. Markdown-only pushes skip the workflow.
 
 After setup and seeding, each run measures one `gym-app auto-update check` beside the running app.
 `summary.json` records the CLI's kernel peak RSS in `facts.autoUpdateCheckPeakRssBytes` and the cgroup

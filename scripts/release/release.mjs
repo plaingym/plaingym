@@ -202,17 +202,19 @@ export function release({ cwd = process.cwd(), version: explicit, notesFile, rol
   run('commit', '-m', `chore(release): v${version}`);
   // Git can exit 0 with an unsigned annotated tag when the signer couldn't run (a passphrase it couldn't ask for), so
   // read the tag back. On any failure, the tag and the release commit go: the tree was clean, so nothing else is lost.
-  let signed = false;
   try {
     tag(`v${version}`, cwd);
-    signed = /^-----BEGIN (?:SSH|PGP) SIGNATURE-----$/m.test(run('cat-file', '-p', `v${version}`));
-  } finally {
-    if (!signed) {
-      if (run('tag', '--list', `v${version}`)) run('tag', '-d', `v${version}`);
-      run('reset', '--hard', before);
-    }
+    const signed = hasTagSignature(run('cat-file', '-p', `v${version}`));
+    if (!signed) throw new Error(`v${version} came back unsigned, so it and the release commit must be removed. Check user.signingkey and that its key's passphrase can be entered, then run the release again.`);
+  } catch (error) {
+    const errors = [error];
+    try { if (run('tag', '--list', `v${version}`)) run('tag', '-d', `v${version}`); }
+    catch (cleanupError) { errors.push(cleanupError); }
+    try { run('reset', '--hard', before); }
+    catch (cleanupError) { errors.push(cleanupError); }
+    if (errors.length > 1) throw new AggregateError(errors, `${error.message}; release cleanup also failed`, { cause: error });
+    throw error;
   }
-  if (!signed) throw new Error(`v${version} came back unsigned, so it and the release commit were removed. Check user.signingkey and that its key's passphrase can be entered, then run the release again.`);
   let createdWorktree = false;
   try {
     if (isPatch) {
@@ -227,6 +229,11 @@ export function release({ cwd = process.cwd(), version: explicit, notesFile, rol
   } finally { if (createdWorktree) run('worktree', 'remove', mainPath); }
   log(`Created v${version}. Nothing was pushed. Review, then push main${isPatch ? `, ${branch}` : ''} and refs/tags/v${version}.`);
   return { version, floor, section };
+}
+
+/** Git's supported SSH, OpenPGP and X.509 tag signature envelopes. */
+export function hasTagSignature(text) {
+  return /^-----BEGIN (?:(?:SSH|PGP) SIGNATURE|SIGNED MESSAGE)-----$/m.test(text);
 }
 
 function editNotes(path, cwd) {

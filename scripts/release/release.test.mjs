@@ -259,3 +259,21 @@ test('a tag that comes back unsigned is deleted with its release commit', () => 
     f.run('verify-tag', 'v1.0.0');
   } finally { f.close(); }
 });
+
+test('a cleanup failure keeps the signer error as the cause and attaches cleanup errors', () => {
+  const f = fixture();
+  const signerError = new Error('original signer failure');
+  try {
+    assert.throws(() => release({ ...f.options, version: '1.0.0', tag: () => {
+      // An independent Git process holding the index lock prevents cleanup's reset.
+      writeFileSync(join(f.cwd, '.git/index.lock'), 'fixture lock');
+      throw signerError;
+    } }), error => {
+      assert.ok(error instanceof AggregateError);
+      assert.equal(error.cause, signerError);
+      assert.equal(error.errors[0], signerError);
+      assert.match(error.errors[1].message, /index.lock/);
+      return true;
+    });
+  } finally { f.close(); }
+});

@@ -30,13 +30,14 @@ Every new commit uses `type(scope)!: subject` (scope and `!` are optional), foll
 Allowed types are `feat`, `fix`, `refactor`, `docs`, `chore`, `build`, `ci`, `test`,
 `perf`, `style`, and `revert`. Use `!` or a `BREAKING CHANGE:` footer for an incompatible
 change. Repo compliance checks only new commits, including squash and integration
-commits, and rejects AI session trailers or attribution links. Existing migrations
+commits, and rejects a leading UTF-8 byte-order mark, carriage returns, AI session trailers or attribution links. Existing migrations
 are immutable; their journal may only append entries. See [versioning](docs/versioning.md)
 for how these commits determine release versions and upgrade notes.
 
 * Read [`AGENTS.md`](AGENTS.md). It holds the project's engineering rules (authorization, schema, billing safety, vendor modules, discipline-agnostic core) and applies to human and AI contributors alike.
 * Use conventional commit prefixes (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`) with a concise body, in commit messages and PR titles. Don't add AI session trailers or attribution links.
 * Make sure strict type checking, lint, tests, and compliance pass: `pnpm verify` runs all four, with the tests your changes affect (`pnpm verify --full` runs every test). CI runs the full suite on your pull request.
+* For deployment shell changes, run `node scripts/release/shellcheck.mjs` with Docker available. This uses the same digest-pinned ShellCheck 0.11.0 image as Image checks on both CPU architectures.
 * Start every new source file with an SPDX header: `// SPDX-License-Identifier: AGPL-3.0-only`.
 * New dependencies must use a license on the allowlist in `AGENTS.md`. The CI license check blocks anything else.
 * Workflows use only GitHub-owned actions and three others: `pnpm/action-setup`, `docker/setup-buildx-action` and `docker/build-push-action`. Pin each one to a full commit SHA, with its version in a comment. The repository's Actions settings enforce both, so a workflow that uses another action fails to start until a maintainer allows it.

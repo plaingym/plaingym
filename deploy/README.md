@@ -45,13 +45,13 @@ Without explicit build identity variables this embeds `<package version>+unknown
 identity; supplying only one is an error. Keep `SOURCE_URL` set when running
 the server too: the Source code link uses its `/source` redirect, which otherwise
 defaults to the project repository.
-Docker builds from an archive are also supported: run
-`docker build -f deploy/Dockerfile --build-arg SOURCE_URL=https://example.org/exact-source -t plaingym:archive .`
-in the extracted directory, replacing the example URL with the archive's public
-source URL. Omit both `VERSION` and `REVISION` build arguments to use the same
-`+unknown` identity. Empty runtime `APP_VERSION` and `APP_REVISION` values fall
-back to the embedded identity, so `/healthz` and the SPA agree. The image retains
-the supplied `SOURCE_URL` for its Source code link.
+Docker builds from an archive are also supported: set `SOURCE_URL` to the archive's
+exact public source URL and run `node scripts/release/build-image.mjs plaingym:archive`
+in the extracted directory. The helper supplies the package's `+unknown` version
+and `unknown` revision explicitly, including in the image labels and runtime
+environment. Direct `docker build` calls must pass both `VERSION` and `REVISION`;
+missing arguments fail before dependency installation with a message naming the helper.
+The image retains the supplied `SOURCE_URL` for its Source code link.
 Matching archive identities do not trigger a browser reload; a
 different version or commit does. Two archives with the same package version
 and unknown commit cannot be distinguished by the navigation check.
@@ -85,19 +85,21 @@ CI builds on runners that start with an empty cache. Image checks and the weekly
 image scan use the GitHub Actions cache backend (`type=gha`) for the Dockerfile's
 layers, through Docker's `setup-buildx-action` and `build-push-action`: the
 backend needs a BuildKit container builder and the cache service's token, which
-only an action receives. A rerun of a branch then skips the dependency install
-when the manifests and lockfile are unchanged. The scope is one per architecture (`image-amd64`,
+only an action receives. The scope is one per architecture (`image-amd64`,
 `image-arm64`); the scan shares `image-amd64`. A branch reads its own cache and
 the default branch's, and Image checks builds on `main` only when it finds no
 passing run for the same commit (it normally reuses the integration branch's
 result), so the scan's weekly run on `main` is what seeds the amd64 cache for
 new branches. The pnpm store mount is a cache mount, not a
 layer, so the GitHub cache does not hold it; a changed lockfile downloads its
-packages again, as on a fresh runner today. The cache keeps every build stage
-(`mode=max`), so each commit adds its source and build-output layers, about
-110 MB per architecture, to the repository's 10 GB Actions cache quota; the
-install layer (about 420 MB) is stored once per lockfile. Old entries are
-evicted least recently used first. `gh cache list` shows them by scope.
+packages again, as on a fresh runner today. Image checks export only runtime-stage
+layers (`mode=min`), retaining the pinned apt installation without exporting
+intermediate source and dependency layers on every push. The weekly scan retains
+all stages (`mode=max`), so a fallback to its cache can also reuse dependency
+installation with unchanged manifests and lockfile. Intermediate build layers
+are not retained by a branch's minimal cache. Entries share the repository's
+10 GB Actions cache quota and are evicted least recently used first.
+`gh cache list` shows them by scope.
 
 The image workflow builds and tests on native amd64 and arm64 runners, exports
 both tested images, and assembles their manifest in an ephemeral loopback

@@ -17,7 +17,7 @@ cleanup() {
   status=$?
   if [ "$status" -ne 0 ] && [ -f "$temporary/output" ]; then cat "$temporary/output" >&2; fi
   if [ -f "$ROOT/.env" ]; then
-    timeout 120 docker compose --project-directory "$ROOT" --env-file "$ROOT/.env" -f "$ROOT/compose.yaml" down --volumes --remove-orphans >/dev/null 2>&1 || true
+    timeout -k 5 120 docker compose --project-directory "$ROOT" --env-file "$ROOT/.env" -f "$ROOT/compose.yaml" down --volumes --remove-orphans >/dev/null 2>&1 || echo "WARNING: could not remove stack for $run_id" >&2
   fi
   [ -z "$registry_name" ] || timeout -k 5 120 docker rm -f -v "$registry_name" >/dev/null 2>&1 || echo "WARNING: could not remove $registry_name" >&2
   # By ID, with every name this run gave them (its tags, and the test registry's).

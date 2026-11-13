@@ -25,13 +25,13 @@ cleanup() {
     # shellcheck source=/dev/null
     . "$ROOT/lib.sh"
     compose logs --no-color > "$ROOT/containers.log" 2>&1 || true
-    compose down --volumes --remove-orphans >/dev/null 2>&1 || true
+    timeout -k 5 120 docker compose --project-directory "$ROOT" --env-file "$ROOT/.env" -f "$ROOT/compose.yaml" down --volumes --remove-orphans >/dev/null 2>&1 || echo "WARNING: could not remove stack $COMPOSE_PROJECT_NAME" >&2
   fi
-  docker rm -fv "$s3_name" >/dev/null 2>&1 || true
+  timeout -k 5 120 docker rm -fv "$s3_name" >/dev/null 2>&1 || echo "WARNING: could not remove $s3_name" >&2
   for version in 0.0.0 0.0.99 0.0.1 0.0.2 0.0.3; do
-    docker image rm "plaingym:v$version-demo-$test_id" >/dev/null 2>&1 || true
+    timeout -k 5 120 docker image rm "plaingym:v$version-demo-$test_id" >/dev/null 2>&1 || echo "WARNING: could not remove plaingym:v$version-demo-$test_id" >&2
   done
-  docker image rm "plaingym-caddy:v2.11.7-refresh-$test_id" >/dev/null 2>&1 || true
+  timeout -k 5 120 docker image rm "plaingym-caddy:v2.11.7-refresh-$test_id" >/dev/null 2>&1 || echo "WARNING: could not remove plaingym-caddy:v2.11.7-refresh-$test_id" >&2
   # Keep the install directory and container logs when the run fails.
   if [ "$result" -eq 0 ]; then
     rm -rf -- "$ROOT"
