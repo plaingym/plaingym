@@ -20,6 +20,8 @@
   {"method": "POST", "path": "/api/billing/memberships/{membershipId}/switch", "permission": {"kind": "staff", "capability": "plans.manage"}},
   {"method": "POST", "path": "/api/billing/memberships/{membershipId}/switch/cancel", "permission": {"kind": "staff", "capability": "plans.manage"}},
   {"method": "GET", "path": "/api/billing/memberships/{membershipId}/switch/preview", "permission": {"kind": "staff", "capability": "plans.manage"}},
+  {"method": "GET", "path": "/api/billing/plans/{planId}/price-change", "permission": {"kind": "staff", "capability": "plans.manage"}},
+  {"method": "POST", "path": "/api/billing/plans/{planId}/price-change", "permission": {"kind": "staff", "capability": "plans.manage"}},
   {"method": "GET", "path": "/api/leads/funnel", "permission": {"kind": "staff", "capability": "leads.manage"}},
   {"method": "GET", "path": "/api/leads", "permission": {"kind": "staff", "capability": "leads.manage"}},
   {"method": "GET", "path": "/api/leads/{memberId}", "permission": {"kind": "staff", "capability": "leads.manage"}},

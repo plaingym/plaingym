@@ -23,8 +23,9 @@ import discountMessages from '../../../../../locales/en/billing/discounts.json' 
 
 type Row = typeof memberships.$inferSelect;
 const discountText = createTranslator({ 'billing/discounts': discountMessages });
-// The override reason stays out of the Membership contract (erasure clears it; no response or audit carries it).
-const serialize = ({ gymId: _gymId, anniversaryOn: _anniversaryOn, switchOverrideReason: _reason, ...row }: Row,
+// The override reason stays out of the Membership contract (erasure clears it; no response or audit carries it), and so
+// does the scheduled change's origin, which only the due-date rule in `update` reads.
+const serialize = ({ gymId: _gymId, anniversaryOn: _anniversaryOn, switchOverrideReason: _reason, scheduledOrigin: _origin, ...row }: Row,
   discount: c.AppliedMembershipDiscount | null): c.Membership => c.membershipSchema.parse({ ...row, discount,
   createdAt: row.createdAt.toISOString(), frozenAt: row.frozenAt?.toISOString() ?? null,
   cancelledAt: row.cancelledAt?.toISOString() ?? null });
@@ -353,9 +354,9 @@ export function createMembershipService(options: MembershipOptions = {}) {
       });
     },
     /**
-     * Cancels a plan switch that hasn't applied yet, with its override reason. The price change a downgrade now leaves
-     * (scheduled on the current plan) isn't cancelled here: that would keep the new plan at the old price. A price edit
-     * replaces it instead.
+     * Cancels a plan switch that hasn't applied yet, with its override reason. A price change scheduled on the current
+     * plan (a downgrade now's, which cancelling would leave the new plan at the old price, or a plan price change) isn't
+     * cancelled here. A price edit replaces it instead.
      */
     async cancelScheduledSwitch(context: MutationContext, input: CancelScheduledSwitchRequest): Promise<c.Membership> {
       const parsed = cancelScheduledSwitchRequestSchema.safeParse(input);
@@ -366,7 +367,7 @@ export function createMembershipService(options: MembershipOptions = {}) {
         if (before.revision !== request.revision) conflict('The record changed; reload before saving');
         if (before.scheduledPlanId === null) throw new AppError('conflict', 'No plan switch is scheduled', { reason: ['none_scheduled'] });
         if (before.scheduledPlanId === before.planId)
-          refuse('price_change', 'A price change left by a switch made now isn\'t cancelled; change the price instead');
+          refuse('price_change', 'A scheduled price change isn\'t cancelled here; change the price instead');
         const after = await present(tx, await saveSwitch(tx, before, clearedSwitch(before)));
         await catalogAudit(tx, context, clock, switchCancelledAction, 'membership', before.id, await present(tx, before), after);
         return after;
@@ -376,7 +377,9 @@ export function createMembershipService(options: MembershipOptions = {}) {
      * Changes the price or the next due date. A plan or interval changes only through `switchPlan`, so its rules hold.
      * A price edit replaces a scheduled price change (keeping the reason of the switch that left it) and is refused while
      * a plan switch is scheduled, whose quoted price would overwrite it (`switch_scheduled`). A due date moved before a
-     * scheduled change's date takes the change with it, so it still applies at the next billing.
+     * scheduled change's date takes the change with it, so it still applies at the next billing, except a plan price change
+     * (`scheduled_origin` `price_change`): it keeps its date, the one its notice gave. A change scheduled before the
+     * origin was recorded follows the switch rule.
      */
     async update(context: MutationContext, request: UpdateMembership): Promise<c.Membership> {
       const { membershipId, planId, interval, ...input } = request;
@@ -391,7 +394,8 @@ export function createMembershipService(options: MembershipOptions = {}) {
         if (changes.price && before.scheduledPlanId !== null && !priceOnly)
           refuse('switch_scheduled', 'A plan switch is scheduled; cancel it before changing the price');
         const replaced = changes.price && priceOnly;
-        const follows = !replaced && changes.nextDueOn && before.scheduledOn !== null && changes.nextDueOn < before.scheduledOn;
+        const follows = !replaced && changes.nextDueOn && before.scheduledOn !== null && changes.nextDueOn < before.scheduledOn
+          && before.scheduledOrigin !== 'price_change';
         return { ...(changes.price ?? {}), ...(changes.nextDueOn ? { nextDueOn: changes.nextDueOn } : {}),
           ...(replaced ? unscheduled : {}), ...(follows ? { scheduledOn: changes.nextDueOn } : {}),
           anniversaryOn: editedAnniversary(before, changes.nextDueOn) };

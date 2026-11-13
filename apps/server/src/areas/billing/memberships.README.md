@@ -93,7 +93,7 @@ owners and admins (`plans.manage`), cover switching:
 | Route | What it does |
 | :--- | :--- |
 | `POST …/{membershipId}/switch` | `{ revision, requestId, planId, timing?, override? }`: switches on the next billing date (`timing` omitted or `next_billing_date`) or `now`. Returns `{ membership, invoiceId }`; `invoiceId` is the upgrade's proration invoice, or null. |
-| `POST …/{membershipId}/switch/cancel` | `{ revision }`: cancels a scheduled plan switch that hasn't applied yet. Returns the membership. A price change left by a downgrade now isn't cancelled (`price_change`); a price edit replaces it. |
+| `POST …/{membershipId}/switch/cancel` | `{ revision }`: cancels a scheduled plan switch that hasn't applied yet. Returns the membership. A price change on the current plan (left by a downgrade now, or a plan price change) isn't cancelled (`price_change`); a price edit replaces it. |
 | `GET …/{membershipId}/switch/preview?planId&timing` | What the switch would do, without writing: the kind (`upgrade`, `downgrade`, `equal`), the date the new price starts, whether the commitment blocks it, and for an upgrade now the period, the days charged, the period's days and the invoice total (0 when none would be issued). It refuses what the switch refuses, except the commitment, which it reports. |
 
 `switchPlan(context, { membershipId, revision, requestId, planId, timing, override? })`
@@ -197,16 +197,25 @@ membership's skipped cycles don't apply it. A switch to a plan archived after it
 scheduled still applies at its quoted price, as an archived plan keeps the members
 already on it.
 
+The nullable `scheduled_origin` column records where a scheduled change came from:
+`switch` (a switch scheduled for the next billing date), `downgrade` (the price a
+downgrade or equal switch now keeps until the next due date) or `price_change` (a plan
+price change). It is set with the four `scheduled_*` columns and read only while they are set; a
+change scheduled before the column existed has none and follows the switch rules. It
+isn't part of the Membership contract, and billing never reads audit rows for it.
+
 `cancelScheduledSwitch(context, { membershipId, revision })`, behind the cancel
 route, clears a plan switch that hasn't applied yet and audits
 `billing.membership.switch_cancelled`. A membership with no switch scheduled is a
-`none_scheduled` conflict, and a price change left by a downgrade now is a
-`price_change` conflict. Cancelling the membership, member erasure and a new
+`none_scheduled` conflict, and a price change (left by a downgrade now, or a plan
+price change) is a `price_change` conflict. Cancelling the membership, member erasure and a new
 switch also drop a scheduled switch. A `PATCH` with a price replaces a scheduled
 price change and is a `switch_scheduled` conflict while a plan switch is scheduled
 (its quoted price would overwrite the edit on the due date). A `PATCH` that moves
 the due date before a scheduled change's date moves that date with it, so the change
-still applies at the next billing; a later due date keeps it. Clearing a scheduled
+still applies at the next billing; a later due date keeps it. A plan price change
+(`catalog.README.md`) keeps its date instead, the one its notice gave, so a member
+never pays the new price before it. Clearing a scheduled
 switch also clears its override reason, except a price change left by a switch made
 now, whose switch has applied. After a switch applies, its reason stays on the
 membership until the next switch is scheduled or the member is erased.
@@ -226,7 +235,8 @@ appears only when the membership and plan share a currency and billing interval.
 
 `billing.memberships.price_notice` is a registered job for a household billing
 notice. It takes `requestKey`, `planId`, `householdId`, `membershipIds`,
-`amountCents`, `currency` and `effectiveOn`. No producer enqueues it yet.
+`amountCents`, `currency` and `effectiveOn`. The plan price change enqueues it, one per
+household, in the transaction that schedules the household's memberships (`catalog.README.md`).
 It reads only the listed, uncancelled memberships still carrying that plan,
 scheduled amount and date, and combines them in one email to the household's
 billing address. Each member's current amount is shown, including custom prices,

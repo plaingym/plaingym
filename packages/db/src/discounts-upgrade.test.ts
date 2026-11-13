@@ -28,7 +28,8 @@ it('adds three empty discount tables to a populated database without changing ex
     const after = await connection.sql`select row_to_json(g) as gym, row_to_json(h) as household, row_to_json(m) as member,
       row_to_json(p) as plan, row_to_json(ms) as membership, row_to_json(i) as invoice
       from gyms g, households h, members m, plans p, memberships ms, invoices i`;
-    expect(after).toEqual(before);
+    // A later migration (0033) adds the nullable memberships.scheduled_origin; nothing else changes.
+    expect(after).toEqual(before.map(row => ({ ...row, membership: { ...row.membership, scheduled_origin: null } })));
     expect(await database.forGym(gymId, tx => tx.select().from(discounts))).toEqual([]);
     expect(await database.forGym(gymId, tx => tx.select().from(discountPlans))).toEqual([]);
     expect(await database.forGym(gymId, tx => tx.select().from(membershipDiscounts))).toEqual([]);

@@ -30,10 +30,15 @@ import {
   paymentMethodListResponseSchema, paymentMethodResponseSchema, paymentResponseSchema,
   recordManualPaymentRequestSchema, refundListResponseSchema, refundResponseSchema, resendReceiptResponseSchema,
 } from './billing/payments.js';
+import {
+  applyPlanPriceChangeRequestSchema, planPriceChangePreviewQuerySchema, planPriceChangePreviewResponseSchema,
+  planPriceChangeResponseSchema,
+} from './billing/price-changes.js';
 
 export * from './billing/catalog.js';
 export * from './billing/packs.js';
 export * from './billing/memberships.js';
+export * from './billing/price-changes.js';
 export * from './billing/invoices.js';
 export * from './billing/payments.js';
 export * from './billing/overview.js';
@@ -104,6 +109,18 @@ export const billingContracts = {
     body: createPlanRequestSchema, response: planResponseSchema, successStatus: 201 },
   updatePlan: { method: 'patch', path: '/api/billing/plans/{planId}', permission: catalog,
     params: billingPlanParamsSchema, body: updatePlanRequestSchema, response: planResponseSchema, successStatus: 200 },
+  previewPlanPriceChange: { method: 'get', path: '/api/billing/plans/{planId}/price-change', permission: catalog,
+    description: 'Lists the plan\'s memberships that aren\'t cancelled (at most 2,000, by member name) for a new price from a date on '
+      + 'or after the gym-local today: which ones "Choose members" ticks and "All existing members" moves, and why any can\'t move.',
+    params: billingPlanParamsSchema, query: planPriceChangePreviewQuerySchema, response: planPriceChangePreviewResponseSchema,
+    successStatus: 200 },
+  applyPlanPriceChange: { method: 'post', path: '/api/billing/plans/{planId}/price-change', permission: catalog,
+    description: 'Changes the plan\'s price and schedules it on the listed memberships (1 to 2,000) from their first billing on or '
+      + 'after `effectiveOn`, with no proration; with `notify` it queues one notice email per household. Memberships that can\'t '
+      + 'move are skipped with a reason. A retry with the same `requestKey` resumes or replays the result, and the same key with '
+      + 'other parameters is a conflict (`request_reused`). A plan update with a new price changes no membership.',
+    params: billingPlanParamsSchema, body: applyPlanPriceChangeRequestSchema, response: planPriceChangeResponseSchema,
+    successStatus: 200 },
   listChargeTypes: { method: 'get', path: '/api/billing/charge-types', permission: read,
     query: billingCatalogListQuerySchema, response: chargeTypeListResponseSchema, successStatus: 200 },
   getChargeType: { method: 'get', path: '/api/billing/charge-types/{chargeTypeId}', permission: read,
@@ -121,7 +138,7 @@ export const billingContracts = {
   updateMembership: { method: 'patch', path: '/api/billing/memberships/{membershipId}', permission: catalog,
     description: 'Changes a membership\'s price or next due date. A plan or billing interval changes only through the plan switch. '
       + 'A price replaces a scheduled price change and is refused while a plan switch is scheduled (`switch_scheduled`); a due '
-      + 'date moved before a scheduled change\'s date moves that date with it.',
+      + 'date moved before a scheduled change\'s date moves that date with it, except a plan price change\'s, which keeps its date.',
     params: billingMembershipParamsSchema, body: updateMembershipRequestSchema, response: membershipResponseSchema, successStatus: 200 },
   setMembershipDiscount: { method: 'put', path: '/api/billing/memberships/{membershipId}/discount', permission: catalog,
     description: 'Adds or replaces the discount from the next invoice, with no proration. A replacement takes a new use.',

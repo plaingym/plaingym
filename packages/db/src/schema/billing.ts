@@ -51,6 +51,10 @@ export const memberships = pgTable('memberships', {
   // switch is scheduled, so a later price change on the plan doesn't alter it.
   scheduledPlanId: uuid('scheduled_plan_id'), scheduledAmountCents: integer('scheduled_amount_cents'),
   scheduledInterval: text('scheduled_interval'), scheduledOn: date('scheduled_on'),
+  // Where the scheduled change came from: a plan switch (`switch`), the price a downgrade now keeps until the next
+  // due date (`downgrade`) or a plan price change (`price_change`). Null on changes scheduled before the column,
+  // which follow the switch rules; read only while a change is scheduled.
+  scheduledOrigin: text('scheduled_origin'),
   // The reason given for the latest commitment override; member erasure clears it.
   switchOverrideReason: text('switch_override_reason'), ...revision(),
 }, (t) => [...scoped('memberships', t), ref('memberships_household_fk', t.gymId, t.householdId, households),
@@ -66,6 +70,7 @@ export const memberships = pgTable('memberships', {
   check('memberships_scheduled_check', sql`(${t.scheduledPlanId} is null and ${t.scheduledAmountCents} is null and ${t.scheduledInterval} is null and ${t.scheduledOn} is null)
     or (${t.scheduledPlanId} is not null and ${t.scheduledAmountCents} is not null and ${t.scheduledAmountCents} >= 0
       and ${t.scheduledInterval} in ('monthly', 'annual') and ${t.scheduledOn} is not null)`),
+  choice('memberships_scheduled_origin_check', t.scheduledOrigin, ['switch', 'downgrade', 'price_change']),
   check('memberships_switch_override_reason_check', sql`${t.switchOverrideReason} is null or char_length(${t.switchOverrideReason}) between 1 and 500`),
   revisionCheck('memberships_revision_check', t.revision)]).enableRLS();
 

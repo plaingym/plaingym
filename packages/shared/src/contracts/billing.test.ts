@@ -313,7 +313,7 @@ describe('billing endpoint permissions', () => {
   });
   const managerOnly = new Set([
     'createClassPack', 'updateClassPack',
-    'createTaxRate', 'updateTaxRate', 'createPlan', 'updatePlan', 'createChargeType', 'updateChargeType',
+    'createTaxRate', 'updateTaxRate', 'createPlan', 'updatePlan', 'previewPlanPriceChange', 'applyPlanPriceChange', 'createChargeType', 'updateChargeType',
     'assignMembership', 'updateMembership', 'activateMembership', 'freezeMembership', 'resumeMembership', 'setMembershipDiscount', 'removeMembershipDiscount',
     'cancelMembership', 'switchMembershipPlan', 'cancelMembershipSwitch', 'previewMembershipSwitch', 'createRefund', 'releaseInvoiceHold',
   ]);

@@ -151,6 +151,13 @@ doesn't carry it. It first clears an ID that names none of the gym's charge type
 showed no fee), then adds the key `NOT VALID` and validates it. An archived charge type still exists,
 so a gym that chose one keeps it. A chosen charge type can't be deleted; deleting the gym removes both.
 
+Migration `0033_membership_scheduled_origin.sql` adds one nullable column and no rows:
+`memberships.scheduled_origin` (`switch`, `downgrade` or `price_change`) records where a scheduled
+change came from. Existing rows, scheduled changes included, keep a null origin, which the app reads
+as the rules it applied before. The plan switch, a downgrade now and a plan price change set it
+(`apps/server/src/areas/billing/memberships.README.md`). It is exported with the other membership
+columns.
+
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver

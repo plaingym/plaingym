@@ -14,6 +14,47 @@ A price, sign-up fee or membership price override must be a whole step of its cu
 nothing finer. The request schemas refuse one that names its currency; an update that changes an
 amount alone is checked against the stored currency. Unchanged amounts are left alone.
 
+## Plan price changes for existing members
+
+A plan update with a new price (`PATCH /api/billing/plans/{planId}`) changes only the price new
+members get; it changes no membership. Two owner and admin routes (`plans.manage`) on
+`/api/billing/plans/{planId}/price-change` move existing members (`catalog.price-change.ts`):
+
+* `GET` with `amountCents` and `effectiveOn` (on or after the gym-local today) previews the plan's
+  memberships that aren't cancelled, at most 2,000 by member name. Each says whether "Choose members"
+  ticks it by default (not in a commitment ending after the date, not on a custom price, not frozen)
+  and whether "All existing members" moves it (frozen ones too), or why it can't move: a switch to
+  another plan scheduled (`switch_scheduled`), a price change already scheduled (`price_scheduled`:
+  a downgrade now's or an earlier price change), or a currency or interval other than the plan's
+  (`terms`). A custom price is an amount or interval other than the plan's current price. The
+  preview also counts the households, those whose payer has no address or was erased, the
+  switches to this plan (which keep the price they were quoted), and says whether the gym can send
+  member email now.
+* `POST` with `{ requestKey, planRevision, amountCents, effectiveOn, notify, memberships }` (1 to
+  2,000 distinct `{ id, revision }`, under its own 256 KB body limit) checks the price's currency
+  step and the date, and that every listed membership is the gym's (404 before any write). Under
+  the plan's row lock it looks for a `billing.plan.price_changed` audit with the key: the same
+  price, date, flag and list (a digest of the sorted IDs) resume, or return the recorded result;
+  anything else is a conflict (`request_reused`). A new request changes the plan's price
+  (revision-checked) with that audit. Then, a few households per short transaction, it locks each
+  household and then its memberships (the cycle build's order) and sets the price-only scheduled
+  change on each listed membership that can move (`scheduled_plan_id` the plan, the new price, the
+  membership's interval, `scheduled_on` the date, origin `price_change`), audited as
+  `billing.membership.price_change_scheduled` with the key. A membership the key already scheduled
+  is found by that audit before its revision is checked, so a retry, a concurrent request with the
+  key or a resume after a failed chunk schedules nothing twice. One that changed, was cancelled or
+  left the plan since the preview is skipped (`changed`). A household is never split. With
+  `notify`, each household with a membership scheduled gets the price notice job
+  (`billing.memberships.price_notice`, key `plan-price:<requestKey>:<householdId>`), enqueued in
+  that transaction, so it runs only after commit, once. The result lists the memberships scheduled
+  and skipped, the households notified (a notice queued) and, among them, those whose payer has no
+  address or was erased, which the notice job skips; the first run
+  to finish records it (`billing.plan.price_change_applied`) and a replay returns it.
+
+The cycle build applies the change at the first active cycle due on or after its date, with no
+proration (`memberships.README.md`, scheduled changes), so a frozen, trial or pending membership keeps it until it is billed as
+active. Discounts come off the new price. A later plan switch or a staff price edit replaces it.
+
 Class pack catalog services and routes are described in [packs/README.md](packs/README.md).
 
 A tax rate is never archived while charge types, class packs or plans carry it. Archiving
@@ -72,10 +113,13 @@ those amounts. Repeating an assignment ID never issues them twice. A callback
 failure rolls back the membership, audit, and invoice work together.
 
 Composition exports: createCatalogService, createCatalogRoutes, configureCatalog,
-createMembershipService, createMembershipRoutes, configureMemberships, and
-createMembershipJobs. Routes and daily jobs are already in their area barrels;
-configureMemberships(service) makes both share the runtime-injected service.
-No additional route mounting is needed.
+createPriceChangeService, configurePriceChanges, createMembershipService,
+createMembershipRoutes, configureMemberships, and createMembershipJobs. Routes and
+daily jobs are already in their area barrels; configureMemberships(service) makes both
+share the runtime-injected service. The price change routes need
+configurePriceChanges(createPriceChangeService({ jobs, smtp, clock })) at runtime;
+without it the preview says the gym can't email and an apply with `notify` is
+`unavailable` before any write. No additional route mounting is needed.
 
 The catalog UI lives at /admin/billing/plans and includes plans, tax rates, and
 charge types. Memberships register their own member-profile tab. Both use stacked

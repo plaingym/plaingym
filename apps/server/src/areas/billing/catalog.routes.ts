@@ -7,6 +7,7 @@ import * as c from '@plaingym/shared/contracts';
 import { route } from '../../core/registry.js';
 import type { RequestContext, RequestEnvironment } from '../../core/context.js';
 import { createCatalogService, type CatalogService } from './catalog.js';
+import { priceChanges, type PriceChangeService } from './catalog.price-change.js';
 
 export function billingMutation(context: RequestContext) {
   if (context.principal.kind !== 'staff' || context.principal.gymId !== context.gym.gymId) throw new AppError('not_found', 'Resource not found');
@@ -14,11 +15,11 @@ export function billingMutation(context: RequestContext) {
 }
 export function billingRoute(contract: c.EndpointContract,
   handler: (ctx: RequestContext, params: Record<string, string>, query: unknown, body: unknown) => Promise<unknown>,
-  middleware: MiddlewareHandler<RequestEnvironment>[] = []) {
+  middleware: MiddlewareHandler<RequestEnvironment>[] = [], maxBodyBytes = 64_000) {
   const params = contract.params instanceof z.ZodObject ? contract.params : undefined;
   const query = contract.query instanceof z.ZodObject ? contract.query : undefined;
   const status = contract.successStatus ?? 200;
-  return route({ ...contract, middleware: [bodyLimit({ maxSize: 64_000, onError: () => { throw new AppError('invalid_request', 'Request too large'); } }), ...middleware],
+  return route({ ...contract, middleware: [bodyLimit({ maxSize: maxBodyBytes, onError: () => { throw new AppError('invalid_request', 'Request too large'); } }), ...middleware],
     request: { ...(params ? { params } : {}), ...(query ? { query } : {}),
       ...(contract.body ? { body: { required: true, content: { 'application/json': { schema: contract.body } } } } : {}) },
     responses: { [status]: { description: 'Billing response', content: { 'application/json': { schema: contract.response } } } },
@@ -31,8 +32,11 @@ export function billingRoute(contract: c.EndpointContract,
 }
 let configured: CatalogService | undefined;
 export function configureCatalog(service: CatalogService) { configured = service; }
-export function createCatalogRoutes(service?: CatalogService) {
+// A price change lists up to 2,000 memberships ({ id, revision } each).
+const priceChangeBodyBytes = 256_000;
+export function createCatalogRoutes(service?: CatalogService, priceChangeService?: PriceChangeService) {
   const fallback = createCatalogService(), read = () => service ?? configured ?? fallback;
+  const changes = () => priceChangeService ?? priceChanges();
   return [
     billingRoute(c.billingContracts.listTaxRates, async (ctx, _p, q) => read().listTaxRates(ctx.gym.gymId, q)),
     billingRoute(c.billingContracts.getTaxRate, async (ctx, p) => ({ data: await read().getTaxRate(ctx.gym.gymId, p.taxRateId!) })),
@@ -43,6 +47,9 @@ export function createCatalogRoutes(service?: CatalogService) {
     billingRoute(c.billingContracts.getPlan, async (ctx, p) => ({ data: await read().getPlan(ctx.gym.gymId, p.planId!) })),
     billingRoute(c.billingContracts.createPlan, async (ctx, _p, _q, b) => ({ data: await read().createPlan(billingMutation(ctx), c.createPlanRequestSchema.parse(b)) })),
     billingRoute(c.billingContracts.updatePlan, async (ctx, p, _q, b) => ({ data: await read().updatePlan(billingMutation(ctx), p.planId!, c.updatePlanRequestSchema.parse(b)) })),
+    billingRoute(c.billingContracts.previewPlanPriceChange, async (ctx, p, q) => ({ data: await changes().preview(ctx.gym.gymId, p.planId!, q) })),
+    billingRoute(c.billingContracts.applyPlanPriceChange, async (ctx, p, _q, b) => ({ data: await changes().apply(billingMutation(ctx), p.planId!, b) }),
+      [], priceChangeBodyBytes),
     billingRoute(c.billingContracts.listChargeTypes, async (ctx, _p, q) => read().listChargeTypes(ctx.gym.gymId, q)),
     billingRoute(c.billingContracts.getChargeType, async (ctx, p) => ({ data: await read().getChargeType(ctx.gym.gymId, p.chargeTypeId!) })),
     billingRoute(c.billingContracts.createChargeType, async (ctx, _p, _q, b) => ({ data: await read().createChargeType(billingMutation(ctx), c.createChargeTypeRequestSchema.parse(b)) })),

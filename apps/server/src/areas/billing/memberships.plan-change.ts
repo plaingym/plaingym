@@ -69,13 +69,22 @@ export function checkSwitch(row: Row, member: { anonymizedAt: Date | null }, pla
   if (blocked && !request.override) refuse('commitment', 'A downgrade before the commitment ends needs an override reason');
   return { kind, overrideUsed: blocked };
 }
-/** The columns a scheduled switch sets: the plan, its price and interval now, and the membership's next due date. */
-export function scheduledSwitch(row: Row, plan: Plan, overrideReason: string | null) {
+/** Where a scheduled change came from (`memberships.scheduled_origin`); null on a change scheduled before it was recorded. */
+export type ScheduledOrigin = 'switch' | 'downgrade' | 'price_change';
+/**
+ * The columns a scheduled switch sets: the plan, its price and interval now, and the membership's next due date. A
+ * downgrade now schedules the same columns on the new plan, as the price it keeps until then (`downgrade`).
+ */
+export function scheduledSwitch(row: Row, plan: Plan, overrideReason: string | null, origin: ScheduledOrigin = 'switch') {
   return { scheduledPlanId: plan.id, scheduledAmountCents: plan.amountCents, scheduledInterval: plan.interval,
-    scheduledOn: row.nextDueOn, switchOverrideReason: overrideReason };
+    scheduledOn: row.nextDueOn, scheduledOrigin: origin, switchOverrideReason: overrideReason };
 }
-/** The four scheduled columns, cleared. Erasure's cancel and a price edit that replaces a price change use them too. */
-export const unscheduled = { scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null } as const;
+/**
+ * The four scheduled columns and their origin, cleared. Erasure's cancel and a price edit that replaces a price change
+ * use them too.
+ */
+export const unscheduled = { scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null,
+  scheduledOrigin: null } as const;
 /**
  * Clears a switch that hasn't applied yet, with its override reason. A reason left with no switch scheduled records
  * the last applied switch and stays until the next switch is scheduled (or the member is erased). A price change left
@@ -94,7 +103,7 @@ export function clearedSwitch(row: Row) {
 export function switchedNow(row: Row, plan: Plan, kind: SwitchKind, overrideReason: string | null) {
   const priceLater = kind !== 'upgrade' && plan.amountCents !== row.amountCents;
   return { planId: plan.id, ...(kind === 'upgrade' ? { amountCents: plan.amountCents } : {}),
-    ...(priceLater ? scheduledSwitch(row, plan, overrideReason) : { ...unscheduled, switchOverrideReason: overrideReason }) };
+    ...(priceLater ? scheduledSwitch(row, plan, overrideReason, 'downgrade') : { ...unscheduled, switchOverrideReason: overrideReason }) };
 }
 /**
  * The recorded result of a switch request on this membership, or undefined when the request ID is new: a scheduled
@@ -128,7 +137,7 @@ export async function applyScheduledSwitch(tx: Transaction, row: Row, clock: Clo
   // due date; a monthly one has none.
   const anniversaryOn = interval !== 'annual' ? null : row.interval === 'annual' ? row.anniversaryOn ?? row.nextDueOn : row.nextDueOn;
   const after = (await tx.update(memberships).set({ planId: row.scheduledPlanId, amountCents: row.scheduledAmountCents,
-    interval, anniversaryOn, scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null,
+    interval, anniversaryOn, ...unscheduled,
     revision: row.revision + 1 }).where(and(eq(memberships.id, row.id), eq(memberships.revision, row.revision))).returning())[0];
   if (!after) throw new Error('A locked membership changed during the cycle build');
   const terms = (value: Row) => ({ planId: value.planId, amountCents: value.amountCents, interval: value.interval,

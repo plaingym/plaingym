@@ -57,8 +57,8 @@ async function priced(tx: Transaction, row: typeof memberships.$inferSelect): Pr
   const taxes = await tx.select({ id: taxRates.id, name: taxRates.name, rateMillionths: taxRates.rateMillionths,
     inclusive: taxRates.inclusive }).from(planTaxRates).innerJoin(taxRates, eq(taxRates.id, planTaxRates.taxRateId))
     .where(eq(planTaxRates.planId, row.planId));
-  const { gymId: _gymId, anniversaryOn, switchOverrideReason: _reason, ...fields } = row;
-  void [_gymId, _reason];
+  const { gymId: _gymId, anniversaryOn, switchOverrideReason: _reason, scheduledOrigin: _origin, ...fields } = row;
+  void [_gymId, _reason, _origin];
   const discount = presentDiscount((await liveDiscounts(tx, [row.id])).get(row.id)), price = priceDiscount(discount);
   return { membership: membershipSchema.parse({ ...fields, discount, createdAt: row.createdAt.toISOString(),
     frozenAt: row.frozenAt?.toISOString() ?? null, cancelledAt: row.cancelledAt?.toISOString() ?? null }),

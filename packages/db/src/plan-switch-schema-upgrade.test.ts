@@ -8,7 +8,9 @@ import { invoiceLineItems, memberships } from './schema/index.js';
 import { useUpgradeTestDatabase } from './testing/database-upgrade.js';
 
 const database = useUpgradeTestDatabase('0028_report_time_indexes', { applySecurity: true });
-const newMembershipColumns = ['scheduled_plan_id', 'scheduled_amount_cents', 'scheduled_interval', 'scheduled_on', 'switch_override_reason'];
+const newMembershipColumns = ['scheduled_plan_id', 'scheduled_amount_cents', 'scheduled_interval', 'scheduled_on', 'switch_override_reason',
+  // Added by a later migration (0033), which migrateDatabase also applies.
+  'scheduled_origin'];
 
 it('adds the plan switch columns to a populated database, leaves existing rows unchanged and enforces their rules', async () => {
   const gymId = uuidv7(), otherGymId = uuidv7(), householdId = uuidv7(), memberId = uuidv7();
