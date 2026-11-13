@@ -31,7 +31,7 @@ past-due invoices for review. `eraseMember` takes the job queue and the gym's
 timezone as a required argument and inserts every cleanup job in the erasure
 transaction, so the erasure and its jobs commit or roll back together:
 `billing.payments.detach` for each card it revoked (key `detach:<card ID>`,
-12 attempts), `members.erasure.release_files` for the photo and signature images
+12 attempts, a one-minute delay), `members.erasure.release_files` for the photo and signature images
 it released (key `release:<member ID>`, 12 attempts, a one-minute delay), and,
 when it cleared a customer ID, `members.erasure.redact_customer` carrying that ID
 (key `redact:<customer ID>`, 12 attempts, a one-minute delay). It returns `files`,
@@ -41,9 +41,12 @@ the customer redaction callback (`Payments.redactCustomer`), file storage and th
 job queue (required) through `configureMembers`; without a queue the erasure route
 refuses with `unavailable` before changing anything. After commit the route
 detaches each card, redacts the customer and marks the files deleted, each attempt
-logged on failure (identifiers only) and left to its job; then it promotes the
+logged on failure (identifiers and safe error classifications, never message text)
+and left to its job; then it promotes the
 waitlist of each session the erasure freed a place in, logging a session whose
 promotion fails (`members.erasure.promotion_failed`) and going on with the rest.
+The existing `bookings.recover` sweep retries failed waitlist promotions every
+five minutes for upcoming scheduled sessions, subject to the cancellation cutoff.
 The request succeeds once the erasure commits. The release job checks that every
 key carries the job's gym prefix and retries a storage failure; marking a file
 deleted again is harmless. The

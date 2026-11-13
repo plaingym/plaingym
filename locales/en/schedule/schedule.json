@@ -57,6 +57,7 @@
   "templateHelp": "Weekly classes generate sessions nightly, eight weeks ahead. Edits apply to dates that have not been generated. Existing sessions keep their details and overrides.",
   "deleteTemplateConfirm": "Delete this weekly class? Existing sessions and attendance will be kept.",
   "day0": "Sunday",
+  "alreadyCancelled": "This session is already cancelled. No cancellation notice was queued.",
   "day1": "Monday",
   "day2": "Tuesday",
   "day3": "Wednesday",

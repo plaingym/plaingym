@@ -2,7 +2,7 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq, inArray } from 'drizzle-orm';
-import { classBookings, members, paymentMethods, uuidv7, type forGym } from '@plaingym/db';
+import { classBookings, households, members, paymentMethods, uuidv7, type forGym } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
@@ -16,6 +16,8 @@ import { authorize } from '../staff/auth.permissions.js';
 import { detachJob } from '../billing/payments.mutations.js';
 import { createMembersService } from './members.js';
 import { createErasureJobs, createMembersRoutes, releaseErasedFilesJob } from './members.routes.js';
+import { createBookingDelivery } from '../bookings/bookings.delivery.js';
+import { createBookingJobs } from '../bookings/bookings.jobs.js';
 
 // Promotion runs after the erasure commits; a throwing promotion (a lock timeout, or a session deleted meanwhile) is simulated here.
 const promotion = vi.hoisted(() => ({ fail: new Set<string>(), calls: [] as string[], scope: undefined as typeof forGym | undefined }));
@@ -50,9 +52,9 @@ async function fixture(uploads: FakeUploads) {
     await factory('classBookings', gymId, { sessionId: session.id, memberId: person.id, bookedBy: userId, status: 'booked' });
     waiting.push(await factory('classBookings', gymId, { sessionId: session.id, bookedBy: userId, status: 'waitlisted', waitlistPosition: 1 }));
   }
-  return { person, cards, files: [photoKey, signatureKey], sessions, waiting };
+  return { home, person, cards, files: [photoKey, signatureKey], sessions, waiting };
 }
-function app(options: { jobs?: Pick<Jobs, 'enqueue'>; uploads: FakeUploads; detachCard?: () => Promise<void> }) {
+function app(options: { jobs?: Pick<Jobs, 'enqueue'>; uploads: FakeUploads; detachCard?: () => Promise<void>; redactCustomer?: () => Promise<void> }) {
   const server = new OpenAPIHono<RequestEnvironment>();
   server.use('*', async (ctx, next) => {
     ctx.set('context', { gym: { gymId, timezone: 'UTC', enabledModules: new Set() },
@@ -62,20 +64,24 @@ function app(options: { jobs?: Pick<Jobs, 'enqueue'>; uploads: FakeUploads; deta
   server.onError(errorHandler);
   const service = createMembersService({ scope: database.forGym, clock });
   createServerRegistry({ routes: createMembersRoutes(service, async () => options.uploads, {
-    clock, ...(options.jobs ? { jobs: options.jobs } : {}), ...(options.detachCard ? { detachCard: options.detachCard } : {}) }) }).mount(server, authorize, new Set());
+    clock, ...(options.jobs ? { jobs: options.jobs } : {}), ...(options.detachCard ? { detachCard: options.detachCard } : {}),
+    ...(options.redactCustomer ? { redactCustomer: options.redactCustomer } : {}) }) }).mount(server, authorize, new Set());
   return (id: string) => server.request(`/api/members/${id}/anonymize`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: 1 }) });
 }
 
 describe('erasure cleanup after commit', () => {
   it('still queues every detach and the file release, and promotes the other sessions, when one promotion throws', async () => {
-    const uploads = new FakeUploads(gymId, clock), jobs = new FakeJobs(clock), { person, cards, files, sessions, waiting } = await fixture(uploads);
+    const uploads = new FakeUploads(gymId, clock), jobs = new FakeJobs(clock), { home, person, cards, files, sessions, waiting } = await fixture(uploads);
+    await database.forGym(gymId, tx => tx.update(households).set({ stripeCustomerId: 'cus_cleanup' }).where(eq(households.id, home.id)));
     promotion.fail.add(sessions[0]!.id);
     // The inline attempts fail too: the queued jobs are what keeps the detaches.
-    const detachCard = vi.fn(async () => { throw new Error('Provider unavailable'); });
-    const logs: { event?: string; sessionId?: string }[] = [], previous = setLogSink(entry => { logs.push(JSON.parse(entry)); });
+    const providerError = Object.assign(new Error('Provider unavailable'), { code: 'provider_refused' });
+    const detachCard = vi.fn(async () => { throw providerError; });
+    const redactCustomer = vi.fn(async () => { throw providerError; });
+    const logs: { event?: string; sessionId?: string; error?: { name: string; code?: string } }[] = [], previous = setLogSink(entry => { logs.push(JSON.parse(entry)); });
     let status: number;
-    try { status = (await app({ jobs, uploads, detachCard })(person.id)).status; } finally { setLogSink(previous); }
+    try { status = (await app({ jobs, uploads, detachCard, redactCustomer })(person.id)).status; } finally { setLogSink(previous); }
     expect(status).toBe(200);
     expect(jobs.jobs.filter(job => job.name === detachJob).map(job => job.payload)).toEqual(expect.arrayContaining(
       cards.map(card => ({ paymentMethodId: card.id, redactBillingDetails: true }))));
@@ -86,10 +92,19 @@ describe('erasure cleanup after commit', () => {
     expect(promotion.calls).toEqual(expect.arrayContaining(sessions.map(session => session.id)));
     expect(logs.filter(entry => entry.event === 'members.erasure.promotion_failed').map(entry => entry.sessionId)).toEqual([sessions[0]!.id]);
     expect(JSON.stringify(logs)).not.toMatch(/lock timeout|Provider unavailable/);
+    expect(logs.filter(entry => ['members.erasure.detach_failed', 'members.erasure.redact_failed'].includes(entry.event ?? ''))
+      .map(entry => entry.error)).toEqual(Array.from({ length: 3 }, () => expect.objectContaining({ name: 'Error', code: 'provider_refused' })));
     const rows = await database.forGym(gymId, tx => tx.select().from(classBookings).where(inArray(classBookings.id, waiting.map(row => row.id))));
     expect(rows.find(row => row.id === waiting[0]!.id)!.status).toBe('waitlisted');
     expect(rows.find(row => row.id === waiting[1]!.id)!.status).toBe('booked');
     promotion.fail.clear();
+    // The existing five-minute recovery registration retries the failed promotion without another booking event.
+    const delivery = createBookingDelivery({ scope: database.forGym, clock, jobs, mailer: async () => null });
+    const recover = createBookingJobs(() => delivery).find(job => job.id === 'bookings.recover')!;
+    expect(recover.cron).toBe('*/5 * * * *');
+    for (let attempt = 1; attempt <= 2; attempt++) await recover.handler({}, { gymId, clock, jobId: 'recover', timezone: 'UTC', attempt });
+    const recovered = await database.forGym(gymId, tx => tx.select().from(classBookings).where(eq(classBookings.id, waiting[0]!.id)));
+    expect(recovered[0]!.status).toBe('booked');
   });
   it('releases the erased files from the committed job when the inline attempt never ran, and a repeat is harmless', async () => {
     const uploads = new FakeUploads(gymId, clock), jobs = new FakeJobs(clock), { person, files } = await fixture(uploads);

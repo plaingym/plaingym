@@ -6,6 +6,15 @@ import type { AnnouncementAudience } from '@plaingym/shared/contracts';
 import { addressEquals } from './audience.sql.js';
 
 export type SkipReason = 'anonymized' | 'missing_email' | 'opt_out' | 'undeliverable' | 'ineligible';
+/** Shared indexed address-group read; cancellation notices ignore announcement-only preferences. */
+export function readAddressGroup(tx: Transaction, address?: string, memberId?: string) {
+  return tx.select({ id: members.id, email: members.emailAddress, firstName: members.firstName, lastName: members.lastName,
+    status: members.status, anonymizedAt: members.anonymizedAt, emailOptOut: members.emailOptOut,
+    emailDeliverable: members.emailDeliverable, announcementOptOut: announcementOptOuts.id }).from(members)
+    .leftJoin(announcementOptOuts, eq(announcementOptOuts.memberId, members.id))
+    .where(memberId ? or(eq(members.id, memberId), address ? addressEquals(address) : undefined)
+      : address === undefined ? undefined : addressEquals(address)).orderBy(asc(members.id));
+}
 /** Inspect every member at an address, including members outside the requested audience. */
 export async function readAudience(tx: Transaction, audience: AnnouncementAudience, currentMemberId?: string) {
   // Confirmation validates program ownership. During delivery a deleted program simply makes its former members ineligible.
@@ -16,12 +25,7 @@ export async function readAudience(tx: Transaction, audience: AnnouncementAudien
   // Addresses come from the stored column, so grouping and lookups share PostgreSQL's one normalization.
   const [current] = currentMemberId ? await tx.select({ email: members.emailAddress }).from(members).where(eq(members.id, currentMemberId)).for('update') : [];
   const address = current?.email || undefined;
-  const rows = await tx.select({ id: members.id, email: members.emailAddress, status: members.status,
-    anonymizedAt: members.anonymizedAt, emailOptOut: members.emailOptOut, emailDeliverable: members.emailDeliverable,
-    announcementOptOut: announcementOptOuts.id }).from(members)
-    .leftJoin(announcementOptOuts, eq(announcementOptOuts.memberId, members.id))
-    .where(currentMemberId ? or(eq(members.id, currentMemberId), address ? addressEquals(address) : undefined) : undefined)
-    .orderBy(asc(members.id));
+  const rows = await readAddressGroup(tx, address, currentMemberId);
   const ranked = audience.programIds.length ? new Set(rows.length ? (await tx.select({ id: memberRanks.memberId }).from(memberRanks)
     .where(and(inArray(memberRanks.programId, audience.programIds), inArray(memberRanks.memberId, rows.map(row => row.id)))))
     .map(row => row.id) : []) : undefined;

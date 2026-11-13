@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { afterAll, beforeAll, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { announcementOptOuts, auditEvents, classBookings, classSessions, emailDeliveries, emailOutbox, members, uuidv7 } from '@plaingym/db';
+import { announcementOptOuts, auditEvents, classBookings, classSessions, emailDeliveries, emailOutbox, members, uuidv7, writeAudit } from '@plaingym/db';
 // eslint-disable-next-line no-restricted-imports -- Exercise the default schedule routes in the real production registrations.
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
@@ -24,10 +24,14 @@ import { createScheduleRoutes } from '../schedule/schedule.routes.js';
 import { createGoLiveService } from '../settings/go-live.js';
 import { cancellationNoticeJob, configureCancellationNotice, createCancellationNotice } from './cancellation.js';
 import { createAnnouncementJobs } from './jobs.js';
+import * as audience from './audience.js';
+import * as template from '../../emails/announcements/cancellation.js';
+import { commandDigest } from '../../infra/email/deliveries.js';
 
 const db = useTestDatabase(), factory = createFactories(db), origin = 'https://gym.example.test';
 beforeAll(async () => { await initializeDatabase(db.appUrl); });
 afterAll(async () => { await closeDatabase(); });
+afterEach(() => { vi.restoreAllMocks(); });
 async function fixture(role: StaffRole = 'owner', assigned = true) {
   const gymId = uuidv7(), clock = new TestClock('2026-11-10T12:00:00Z');
   await factory('gyms', gymId, { name: 'Cedar Gym', timezone: 'America/New_York', memberEmailsEnabled: true });
@@ -164,11 +168,76 @@ it('rechecks address groups and the go-live switch after mailer preparation', as
 });
 it('never adds a job on a retried cancellation or duplicates a message on replay or concurrent jobs', async () => {
   const f = await fixture(); await f.booked(); const cancelled = await f.cancel();
-  await expect(f.cancel()).rejects.toMatchObject({ name: 'RevisionConflictError' });
-  await f.cancel(true, cancelled.revision); expect(f.jobs.jobs).toHaveLength(1);
+  await expect(f.cancel()).rejects.toMatchObject({ code: 'conflict' });
+  await expect(f.cancel(true, cancelled.revision)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['already_cancelled'] } });
+  expect(await f.service.getSession(f.gymId, f.session.id)).toMatchObject({ revision: cancelled.revision });
+  expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents))).toBe(1);
+  expect(f.jobs.jobs).toHaveLength(1);
   await Promise.allSettled([f.run(), f.run()]); await f.run();
   expect(f.email.messages).toHaveLength(1);
   expect(await db.forGym(f.gymId, tx => tx.$count(emailDeliveries))).toBe(1);
+});
+it('returns a conflict without queuing or changing a session already cancelled without notification', async () => {
+  const f = await fixture(); await f.booked(); const cancelled = await f.cancel(false);
+  await expect(f.cancel(true, cancelled.revision)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['already_cancelled'] } });
+  expect(f.jobs.jobs).toHaveLength(0);
+  expect(await f.service.getSession(f.gymId, f.session.id)).toMatchObject({ revision: cancelled.revision });
+});
+
+it('records a released reservation as failed once on replay without sending it', async () => {
+  const f = await fixture(), member = await f.booked(); await f.cancel();
+  await factory('emailDeliveries', f.gymId, { key: `schedule-cancel-notice:${f.session.id}:${member.id}`,
+    commandDigest: commandDigest([f.session.id, member.email]), state: 'not_accepted' });
+  await f.run(); await f.run();
+  const decisions = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'schedule.cancellation_notice_decided')));
+  expect(decisions).toHaveLength(1);
+  expect(decisions[0]!.after).toMatchObject({ memberId: member.id, status: 'failed', reason: 'not_accepted' });
+  expect(f.email.messages).toHaveLength(0);
+});
+
+it.each([false, true])('recovers the original reservation members after an address group changes, with existing decision %s', async alreadyDecided => {
+  const f = await fixture(), first = await f.booked({ email: 'shared@example.test' });
+  const second = await f.booked({ email: first.email }), third = await f.booked({ email: first.email });
+  await f.cancel();
+  for (const member of [first, third]) await factory('emailDeliveries', f.gymId, {
+    key: `schedule-cancel-notice:${f.session.id}:${member.id}`,
+    commandDigest: commandDigest([f.session.id, first.email]), state: 'not_accepted',
+  });
+  // Only the second member remains in the address group; neither failed reservation was keyed by them.
+  await db.forGym(f.gymId, async tx => {
+    for (const member of [first, third]) await tx.update(members).set({ email: null }).where(eq(members.id, member.id));
+    if (alreadyDecided) await writeAudit(tx, { gymId: f.gymId, actorKind: 'system', action: 'schedule.cancellation_notice_decided',
+      targetType: 'class_session', targetId: f.session.id, after: { memberId: first.id, status: 'failed', reason: 'not_accepted' }, occurredAt: f.clock.now() });
+  });
+  await f.run(); await f.run();
+  const decisions = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'schedule.cancellation_notice_decided')));
+  expect(decisions).toHaveLength(2);
+  expect(decisions.map(row => row.after)).toEqual(expect.arrayContaining([first, third].map(member => ({
+    memberId: member.id, status: 'failed', reason: 'not_accepted',
+  }))));
+  expect(decisions.some(row => (row.after as { memberId: string }).memberId === second.id)).toBe(false);
+  expect(f.email.messages).toHaveLength(0);
+});
+
+it.each(['reload', 'render'] as const)('records a guard %s failure as not accepted, continues and renders at most once per address', async failure => {
+  const f = await fixture(); await f.booked(); await f.booked(); await f.cancel();
+  const render = vi.spyOn(template, 'renderCancellationNotice');
+  if (failure === 'render') render.mockRejectedValueOnce(new Error('render failed'));
+  else {
+    const read = audience.readAddressGroup; let calls = 0;
+    vi.spyOn(audience, 'readAddressGroup').mockImplementation((...args) => {
+      if (++calls === 2) throw new Error('database unavailable');
+      return read(...args);
+    });
+  }
+  await f.run(); await f.run();
+  expect(f.email.messages).toHaveLength(1);
+  expect(render).toHaveBeenCalledTimes(failure === 'render' ? 2 : 1);
+  const rows = await db.forGym(f.gymId, tx => tx.select().from(emailDeliveries));
+  expect(rows.map(row => row.state).sort()).toEqual(['accepted', 'not_accepted']);
+  const decisions = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'schedule.cancellation_notice_decided')));
+  expect(decisions).toHaveLength(2);
+  expect(decisions.some(row => (row.after as { reason?: string }).reason === 'not_accepted')).toBe(true);
 });
 it('deduplicates destinations when addresses converge after a prior delivery', async () => {
   const f = await fixture(), first = await f.booked({ email: 'first@example.test' }), second = await f.booked({ email: 'second@example.test' });

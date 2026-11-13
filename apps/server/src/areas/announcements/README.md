@@ -55,6 +55,10 @@ is not a readable address. A member's erasure clears the digests of their
 announcement and cancellation notice rows in the same transaction
 (`forgetErasedAddressDigests`, `erasure.ts`), so another member still at that
 address could get a copy of an announcement that is still being sent.
+Announcement keys are cleared with one UPDATE subquery over the member's
+recipients. Cancellation keys are read in indexed batches of 500; matching
+address digests are also cleared when a shared address was keyed by another
+member, using the erased member's stored normalized address before it is removed.
 Reservation and `issueUnsubscribeLink` commit together.
 The worker renders before reserving, using a fresh random unsubscribe token that
 only becomes usable when the reservation commits. It reads eligibility once per
@@ -104,6 +108,8 @@ and carries no unsubscribe link. It honors the member-email go-live switch,
 `members.email_opt_out`, email deliverability and erasure. Any globally opted-out
 or undeliverable member at an address blocks that address, including members
 outside the cancellation snapshot.
+Requesting notification for an already cancelled session returns a conflict
+without changing its revision, auditing another cancellation or queuing mail.
 
 Delivery reloads the snapshot's current addresses, groups them after trimming and
 lower-casing, and sends one email per address naming all of its booked and
@@ -111,6 +117,9 @@ waitlisted members. It never adds members outside the snapshot. Each message
 identifies the gym and class, the date and time in the gym's timezone, the escaped
 plain text note, and the portal schedule link. The group is checked again at the
 send boundary and the transport is wrapped in `MemberEmail`.
+Both reads use the same indexed address-group reader as announcements. Content
+renders once inside the final guard; a reload or render failure before transport
+is definitely not accepted, and the remaining addresses are still processed.
 
 A short session-row lock serializes `email_deliveries` reservations. Keys contain
 the session ID and the address group's first member ID; a digest of session ID
@@ -119,6 +128,10 @@ or converge. No SMTP runs inside a transaction. Live reservations defer to a job
 retry. Accepted, unknown and definitely rejected attempts are not resent by this
 notice; a setup failure before reservation can be retried. A send outcome writes
 an audit without the address or message content.
+Replaying a released, definitely rejected reservation repairs its missing failure
+audit without resending it. Recovery uses the member ID in each original delivery
+key even if the address group's first member has since changed. It checks for an
+existing decision with a member-filtered SQL lookup limited to one row.
 
 `core/runtime.ts` calls
 `configureCancellationNotice(createCancellationNotice({ jobs, mailer, origin, ... }))`.

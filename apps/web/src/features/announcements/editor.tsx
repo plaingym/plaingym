@@ -9,22 +9,30 @@ import { Dialog } from '../../components/ui/dialog.js';
 import { Alert } from '../../components/ui/alert.js';
 import { t } from '../../lib/i18n.js';
 import type { Announcement, AnnouncementClient } from './api.js';
-import { Failure, text } from './messages.js';
+import { definiteRefusal, Failure, text } from './messages.js';
 
 const statuses = ['active', 'trial', 'frozen'] as const;
-export function AnnouncementEditor({ gymName, programs, client, close, sent }: {
+export interface AnnouncementAttempt { draft: AnnouncementDraft; count: number; generation: string; uncertain: boolean }
+export function AnnouncementEditor({ gymName, programs, client, close, sent, owner = false, attempt, rememberAttempt }: {
   gymName: string; programs: Program[]; client: AnnouncementClient; close(): void; sent(announcement: Announcement): void;
+  owner?: boolean; attempt?: AnnouncementAttempt | undefined; rememberAttempt?(attempt: AnnouncementAttempt | undefined): void;
 }) {
-  const [subject, setSubject] = useState(''), [body, setBody] = useState('');
-  const [selectedStatuses, setStatuses] = useState<AnnouncementDraft['audience']['statuses']>([...statuses]);
-  const [programIds, setPrograms] = useState<string[]>([]);
-  const [preview, setPreview] = useState<{ draft: AnnouncementDraft; count: number } | null>(null);
-  const [confirming, setConfirming] = useState(false), [attempted, setAttempted] = useState(false);
+  const [subject, setSubject] = useState(attempt?.draft.subject ?? ''), [body, setBody] = useState(attempt?.draft.body ?? '');
+  const [selectedStatuses, setStatuses] = useState<AnnouncementDraft['audience']['statuses']>(attempt?.draft.audience.statuses ?? [...statuses]);
+  const [programIds, setPrograms] = useState<string[]>(attempt?.draft.audience.programIds ?? []);
+  const [preview, setPreview] = useState<{ draft: AnnouncementDraft; count: number } | null>(attempt ?? null);
+  const [confirming, setConfirming] = useState(!!attempt), [attempted, setAttempted] = useState(!!attempt);
   const [pending, setPending] = useState<'previewError' | 'testError' | 'sendError' | null>(null);
   const [error, setError] = useState<{ cause: unknown; fallback: string } | null>(null);
   const busy = pending !== null;
   const [testSent, setTestSent] = useState(false);
-  const inFlight = useRef(false), generation = useRef<string | null>(null);
+  const inFlight = useRef(false), generation = useRef<string | null>(attempt?.generation ?? null);
+  const uncertain = useRef(attempt?.uncertain ?? false);
+  function draft() {
+    const parsed = announcementDraftSchema.safeParse({ subject, body, audience: { statuses: selectedStatuses, programIds } });
+    if (!parsed.success) { setError({ cause: null, fallback: 'invalid' }); return; }
+    return parsed.data;
+  }
   async function run(operation: () => Promise<void>, fallback: 'previewError' | 'testError' | 'sendError') {
     if (inFlight.current) return;
     inFlight.current = true; setPending(fallback); setError(null); setTestSent(false);
@@ -37,12 +45,12 @@ export function AnnouncementEditor({ gymName, programs, client, close, sent }: {
     <div className="min-w-0 space-y-4 wrap-anywhere">
       {!preview ? <form className="space-y-4" onSubmit={event => {
         event.preventDefault();
-        const parsed = announcementDraftSchema.safeParse({ subject, body, audience: { statuses: selectedStatuses, programIds } });
-        if (!parsed.success) { setError({ cause: null, fallback: 'invalid' }); return; }
+        const parsed = draft();
+        if (!parsed) return;
         void run(async () => {
-          const result = await client.preview(parsed.data);
+          const result = await client.preview(parsed);
           generation.current = crypto.randomUUID();
-          setPreview({ draft: parsed.data, count: result.recipientCount });
+          setPreview({ draft: parsed, count: result.recipientCount });
         }, 'previewError');
       }}>
         <fieldset disabled={busy} className="min-w-0 space-y-4">
@@ -61,7 +69,13 @@ export function AnnouncementEditor({ gymName, programs, client, close, sent }: {
             <div className="max-h-64 overflow-y-auto">{programs.map(program => <CheckboxField key={program.id}
               label={program.name} checked={programIds.includes(program.id)} disabled={programIds.length >= 100 && !programIds.includes(program.id)}
               onChange={event => setPrograms(toggle(programIds, program.id, event.target.checked))} />)}</div></fieldset>
-          <Button type="submit" className="w-full sm:w-auto">{text(busy ? 'working' : 'preview')}</Button>
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+            <Button type="submit" className="w-full sm:w-auto">{text(busy ? 'working' : 'preview')}</Button>
+            <Button type="button" variant="outline" onClick={() => {
+              const parsed = draft();
+              if (parsed) void run(async () => { await client.test(parsed); setTestSent(true); }, 'testError');
+            }}>{text('test')}</Button>
+          </div>
         </fieldset>
       </form> : <>
         <p className="font-medium">{text('recipients', { count: preview.count })}</p>
@@ -81,13 +95,27 @@ export function AnnouncementEditor({ gymName, programs, client, close, sent }: {
           {!confirming ? <Button disabled={busy || preview.count === 0} onClick={() => { setConfirming(true); setError(null); setTestSent(false); }}>{text('continue')}</Button>
             : <Button disabled={busy || preview.count === 0} onClick={() => void run(async () => {
               setAttempted(true);
-              const result = await client.send({ ...preview.draft, sendGeneration: generation.current!, confirm: true });
+              // Retain an in-flight request conservatively in case the dialog is remounted.
+              rememberAttempt?.({ ...preview, generation: generation.current!, uncertain: true });
+              let result: Announcement;
+              try { result = await client.send({ ...preview.draft, sendGeneration: generation.current!, confirm: true }); }
+              catch (cause) {
+                if (definiteRefusal(cause) && !uncertain.current) { setAttempted(false); rememberAttempt?.(undefined); }
+                else {
+                  // A refusal of this retry cannot settle an earlier request whose response was lost.
+                  uncertain.current = true;
+                  rememberAttempt?.({ ...preview, generation: generation.current!, uncertain: true });
+                }
+                throw cause;
+              }
+              rememberAttempt?.(undefined);
               sent(result);
             }, 'sendError')}>{text(pending === 'sendError' ? 'sending' : 'confirm', { count: preview.count })}</Button>}
         </div>
       </>}
       {testSent && <Alert role="status">{text('testSent')}</Alert>}
-      {error && <Failure error={error.cause} fallback={error.fallback} />}
+      {attempted && !busy && <Alert role="note">{text('retainedAttempt')}</Alert>}
+      {error && <Failure error={error.cause} fallback={error.fallback} owner={owner} retrySame={error.fallback === 'sendError' && uncertain.current} />}
     </div>
   </Dialog>;
 }

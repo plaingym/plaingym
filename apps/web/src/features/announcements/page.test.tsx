@@ -32,8 +32,8 @@ function provider(content: React.ReactNode) {
 function mount(service: AnnouncementClient) {
   return provider(<AnnouncementWorkspace gymId={id} gymName="Our Gym" timezone="America/Los_Angeles" client={service} />);
 }
-function editor(service: AnnouncementClient) {
-  return render(<AnnouncementEditor gymName="Our Gym" programs={[program]} client={service} close={vi.fn()} sent={vi.fn()} />);
+function editor(service: AnnouncementClient, owner = true) {
+  return render(<AnnouncementEditor gymName="Our Gym" programs={[program]} client={service} owner={owner} close={vi.fn()} sent={vi.fn()} />);
 }
 async function compose() {
   fireEvent.change(screen.getByLabelText('Subject'), { target: { value: ' Winter classes ' } });
@@ -102,7 +102,124 @@ describe('announcement screens', () => {
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain(reason === 'disabled' ? 'Member email is switched off' : 'Email is not set up for this gym');
     expect(within(alert).getByRole('link').getAttribute('href')).toBe('/admin/settings');
+    expect(within(alert).getByRole('link').getAttribute('target')).toBe('_blank');
     expect(service.send).not.toHaveBeenCalled();
+  });
+
+  it('sends a validated compose draft to the sender while member email is off', async () => {
+    const service = client(); service.preview = vi.fn(async () => { throw new ApiError(409, 'request_failed', ['disabled']); });
+    editor(service); await compose();
+    expect((await screen.findByRole('alert')).textContent).toContain('Member email is switched off');
+    await userEvent.click(screen.getByRole('button', { name: 'Send me a test' }));
+    expect(await screen.findByText('Test sent to your email address. No members received it.')).toBeDefined();
+    expect(service.test).toHaveBeenCalledWith(expect.objectContaining({ subject: 'Winter classes' }));
+    expect(service.send).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Continue to confirmation' })).toBeNull();
+  });
+
+  it('validates a compose test before calling the server', async () => {
+    const service = client(); editor(service);
+    await userEvent.click(screen.getByRole('button', { name: 'Send me a test' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Enter a subject');
+    expect(service.test).not.toHaveBeenCalled();
+  });
+
+  it.each([400, 401, 403, 404, 429, 503])('allows editing after a definite %s send refusal', async status => {
+    const service = client(); service.send = vi.fn(async () => { throw new ApiError(status, 'request_failed'); });
+    editor(service); await compose(); await userEvent.click(await confirm());
+    expect((await screen.findByRole('alert')).textContent).toContain('announcement was not accepted');
+    expect(screen.getByRole('button', { name: 'Edit message' })).toBeDefined();
+    await userEvent.click(screen.getByRole('button', { name: 'Edit message' }));
+    expect((screen.getByLabelText('Subject') as HTMLInputElement).value).toContain('Winter classes');
+  });
+
+  it.each([
+    [401, []], [403, []], [429, []], [503, []],
+    [409, ['disabled']], [409, ['no_smtp']], [409, ['no_origin']],
+  ] as const)('keeps an earlier uncertain send immutable after a %s retry refusal %s and reopening', async (status, reasons) => {
+    const service = client();
+    vi.mocked(service.send).mockRejectedValueOnce(new Error('Response lost'))
+      .mockRejectedValueOnce(new ApiError(status, 'request_failed', reasons));
+    mount(service);
+    await waitFor(() => expect((screen.getByRole('button', { name: 'New announcement' }) as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(screen.getByRole('button', { name: 'New announcement' }));
+    await compose(); await userEvent.click(await confirm());
+    expect((await screen.findByRole('alert')).textContent).toContain('Retry this same announcement');
+    for (let retry = 0; retry < 2; retry++) {
+      await userEvent.click(screen.getByRole('button', { name: 'Close announcement' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Discard changes' }));
+      await userEvent.click(screen.getByRole('button', { name: 'New announcement' }));
+      expect(screen.queryByRole('button', { name: 'Edit message' })).toBeNull();
+      await userEvent.click(screen.getByRole('button', { name: 'Send to 3 members' }));
+      if (retry === 0) {
+        expect((await screen.findByRole('alert')).textContent).toContain('Retry this same announcement');
+        expect(screen.getByRole('alert').textContent).not.toContain('announcement was not accepted');
+        expect(screen.queryByRole('button', { name: 'Edit message' })).toBeNull();
+      }
+    }
+    expect(await screen.findByText('Announcement accepted. Delivery progress appears in history.')).toBeDefined();
+    const calls = vi.mocked(service.send).mock.calls;
+    expect(calls).toHaveLength(3);
+    expect(calls[1]![0]).toEqual(calls[0]![0]); expect(calls[2]![0]).toEqual(calls[0]![0]);
+  });
+
+  it('allows editing after a first refusal, then retains a new attempt once its outcome is uncertain', async () => {
+    const service = client();
+    vi.mocked(service.send).mockRejectedValueOnce(new ApiError(503, 'request_failed'))
+      .mockRejectedValueOnce(new Error('Response lost')).mockRejectedValueOnce(new ApiError(403, 'request_failed'));
+    editor(service); await compose(); await userEvent.click(await confirm());
+    expect((await screen.findByRole('alert')).textContent).toContain('announcement was not accepted');
+    await userEvent.click(screen.getByRole('button', { name: 'Edit message' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Preview announcement' }));
+    await userEvent.click(await confirm());
+    expect((await screen.findByRole('alert')).textContent).toContain('Retry this same announcement');
+    await userEvent.click(screen.getByRole('button', { name: 'Send to 3 members' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Retry this same announcement');
+    expect(screen.queryByRole('button', { name: 'Edit message' })).toBeNull();
+    const calls = vi.mocked(service.send).mock.calls;
+    expect(calls[1]![0].sendGeneration).not.toBe(calls[0]![0].sendGeneration);
+    expect(calls[2]![0]).toEqual(calls[1]![0]);
+  });
+
+  it('keeps a replay conflict immutable', async () => {
+    const service = client(); service.send = vi.fn(async () => { throw new ApiError(409, 'request_failed'); });
+    editor(service); await compose(); await userEvent.click(await confirm());
+    expect((await screen.findByRole('alert')).textContent).toContain('Retry this same announcement');
+    expect(screen.queryByRole('button', { name: 'Edit message' })).toBeNull();
+  });
+
+  it('retains the attempted draft and generation when an uncertain send is closed and reopened', async () => {
+    const service = client(); service.send = vi.fn(async () => { throw new Error('Response lost'); });
+    mount(service);
+    await waitFor(() => expect((screen.getByRole('button', { name: 'New announcement' }) as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(screen.getByRole('button', { name: 'New announcement' }));
+    await compose(); await userEvent.click(await confirm());
+    expect((await screen.findByRole('alert')).textContent).toContain('Retry this same announcement');
+    await userEvent.click(screen.getByRole('button', { name: 'Close announcement' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Discard changes' }));
+    await userEvent.click(screen.getByRole('button', { name: 'New announcement' }));
+    expect(screen.getByRole('region', { name: 'Member message preview' }).textContent).toContain('Winter classes');
+    expect(screen.queryByRole('button', { name: 'Edit message' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Send to 3 members' }));
+    await waitFor(() => expect(service.send).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(service.send).mock.calls[1]![0]).toEqual(vi.mocked(service.send).mock.calls[0]![0]);
+  });
+
+  it('explains a missing canonical origin and opens address settings in a separate tab', async () => {
+    const service = client(); service.preview = vi.fn(async () => { throw new ApiError(409, 'request_failed', ['no_origin']); });
+    editor(service); await compose();
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('canonical HTTPS gym address');
+    expect(within(alert).getByRole('link').getAttribute('target')).toBe('_blank');
+    expect((screen.getByLabelText('Subject') as HTMLInputElement).value).toContain('Winter classes');
+  });
+
+  it('shows SMTP guidance without an owner-only settings link to admins', async () => {
+    const service = client(); service.preview = vi.fn(async () => { throw new ApiError(409, 'request_failed', ['no_smtp']); });
+    editor(service, false); await compose();
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('The owner sets up SMTP');
+    expect(within(alert).queryByRole('link')).toBeNull();
   });
 
   it('shows an SMTP test refusal and a member-email confirmation refusal inside the dialog', async () => {

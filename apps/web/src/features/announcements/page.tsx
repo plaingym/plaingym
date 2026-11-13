@@ -9,14 +9,15 @@ import { Button } from '../../components/ui/button.js';
 import { Card } from '../../components/ui/card.js';
 import { Alert } from '../../components/ui/alert.js';
 import { announcementClient, type AnnouncementClient } from './api.js';
-import { AnnouncementEditor } from './editor.js';
+import { AnnouncementEditor, type AnnouncementAttempt } from './editor.js';
 import { text } from './messages.js';
 
-export function AnnouncementWorkspace({ gymId, gymName, timezone, client = announcementClient }: {
-  gymId: string; gymName: string; timezone: string; client?: AnnouncementClient;
+export function AnnouncementWorkspace({ gymId, gymName, timezone, owner = false, client = announcementClient }: {
+  gymId: string; gymName: string; timezone: string; owner?: boolean; client?: AnnouncementClient;
 }) {
   const cache = useQueryClient(), key = ['announcements', gymId];
   const [editing, setEditing] = useState(false), [offset, setOffset] = useState(0), [sent, setSent] = useState(false);
+  const [attempt, setAttempt] = useState<AnnouncementAttempt>();
   // Poll only while a shown announcement is still being delivered.
   const history = useQuery({ queryKey: [...key, 'history', offset], queryFn: () => client.list(offset),
     refetchInterval: query => query.state.data?.data.some(item => item.status === 'sending') ? 5000 : false });
@@ -51,7 +52,8 @@ export function AnnouncementWorkspace({ gymId, gymName, timezone, client = annou
         </nav>
       </div>}
     </PageSection>
-    {editing && programs.data && <AnnouncementEditor gymName={gymName} programs={programs.data} client={client} close={() => setEditing(false)} sent={() => {
+    {editing && programs.data && <AnnouncementEditor gymName={gymName} programs={programs.data} client={client} owner={owner}
+      attempt={attempt} rememberAttempt={setAttempt} close={() => setEditing(false)} sent={() => {
       setEditing(false); setSent(true); setOffset(0); void cache.invalidateQueries({ queryKey: [...key, 'history'] });
     }} />}
   </Page>;
@@ -61,5 +63,6 @@ export function AnnouncementPage() {
   if (bootstrap.isPending) return <LoadingState />;
   if (bootstrap.isError) return <ErrorState onRetry={() => void bootstrap.refetch()} />;
   if (!bootstrap.data.session || !canStaff(bootstrap.data.session.roles, 'announcements.send')) return <Alert>{text('noAccess')}</Alert>;
-  return <AnnouncementWorkspace key={bootstrap.data.gym.id} gymId={bootstrap.data.gym.id} gymName={bootstrap.data.gym.name} timezone={bootstrap.data.gym.timezone} />;
+  return <AnnouncementWorkspace key={bootstrap.data.gym.id} gymId={bootstrap.data.gym.id} gymName={bootstrap.data.gym.name} timezone={bootstrap.data.gym.timezone}
+    owner={bootstrap.data.session.roles.includes('owner')} />;
 }

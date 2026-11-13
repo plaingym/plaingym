@@ -108,6 +108,7 @@ export function createMembersService(options: MembersOptions = {}) {
         const before = await getMemberRow(tx, id);
         const home = await getHouseholdRow(tx, before.householdId);
         editable(before); const guard = revisionGuard(members.revision, revision), now = clock.now();
+        const [erased] = await tx.select({ address: members.emailAddress }).from(members).where(eq(members.id, id)).for('update');
         const row = assertRevised(await tx.update(members).set({ firstName: 'Anonymized', lastName: 'Member', email: null, phone: null, dateOfBirth: null,
           photoKey: null, emergencyContacts: [], medicalNotes: null, emailOptOut: true, emailDeliverable: false, status: 'cancelled',
           checkinCodeHash: null, anonymizedAt: now, revision: guard.next })
@@ -154,7 +155,7 @@ export function createMembersService(options: MembersOptions = {}) {
         await tx.delete(householdUsers).where(eq(householdUsers.memberId, id));
         await tx.update(signedLinks).set({ revokedAt: now }).where(and(eq(signedLinks.memberId, id), isNull(signedLinks.revokedAt)));
         // No delivery record keeps a value derived from the member's address (`infra/email/README.md`).
-        await forgetErasedAddressDigests(tx, context.gymId, id);
+        await forgetErasedAddressDigests(tx, context.gymId, id, erased!.address);
         const remaining = await tx.select({ id: members.id }).from(members).where(and(eq(members.householdId, home.id), isNull(members.anonymizedAt))).limit(1);
         const last = remaining.length === 0;
         // The provider's copy of the payer is redacted after commit (erasure keeps the customer for the books).
@@ -186,7 +187,7 @@ export function createMembersService(options: MembersOptions = {}) {
         }, transaction);
         // Each card's billing details are cleared before it is detached (a staff card removal leaves them).
         for (const card of revokedCards) await cleanup.jobs.enqueue(detachJob, { paymentMethodId: card.id, redactBillingDetails: true },
-          { ...queued, idempotencyKey: `detach:${card.id}` }, transaction);
+          { ...queued, idempotencyKey: `detach:${card.id}`, runAt: new Date(now.getTime() + 60_000) }, transaction);
         const files = [...(before.photoKey ? [before.photoKey] : []), ...waivers.map((waiver) => waiver.key)];
         if (files.length) await cleanup.jobs.enqueue(releaseErasedFilesJob, { keys: files }, {
           ...queued, idempotencyKey: `release:${id}`, runAt: new Date(now.getTime() + 60_000),
@@ -206,7 +207,7 @@ export function createMembersService(options: MembersOptions = {}) {
       try {
         return await withJobTransaction(scope, context.gymId, async (transaction) => {
           const { tx } = transaction;
-          const before = missing((await tx.select({ householdId: members.householdId, photoKey: members.photoKey, revision: members.revision })
+          const before = missing((await tx.select({ householdId: members.householdId, email: members.emailAddress, photoKey: members.photoKey, revision: members.revision })
             .from(members).where(eq(members.id, id)).for('update'))[0]);
           if (before.revision !== revision) throw new AppError('conflict', 'The record changed since it was read.');
           const home = await getHouseholdRow(tx, before.householdId), now = clock.now();
@@ -243,7 +244,7 @@ export function createMembersService(options: MembersOptions = {}) {
           await tx.delete(leads).where(eq(leads.memberId, id));
           await tx.update(staffProfiles).set({ memberId: null }).where(eq(staffProfiles.memberId, id));
           // Delivery records keep no value derived from the deleted member's address (`infra/email/README.md`).
-          await forgetErasedAddressDigests(tx, context.gymId, id);
+          await forgetErasedAddressDigests(tx, context.gymId, id, before.email);
           await tx.delete(announcementRecipients).where(eq(announcementRecipients.memberId, id));
           await tx.delete(announcementOptOuts).where(eq(announcementOptOuts.memberId, id));
           await tx.delete(householdUsers).where(eq(householdUsers.memberId, id));

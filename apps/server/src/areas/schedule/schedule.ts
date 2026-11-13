@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, eq, gte, ilike, inArray, isNull, lt, or, type SQL } from 'drizzle-orm';
 import { forGym, classTags, classTemplates, classTemplatePrograms, classTemplateTags, classSessions, classSessionPrograms, classSessionTags, programs, staffProfiles, staffRoles, revisionGuard, assertRevised, writeAudit, RevisionConflictError, type Transaction } from '@plaingym/db';
-import { AppError, type Clock } from '@plaingym/shared';
+import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { classTagSchema, classTemplateSchema, classSessionSchema, createClassTagRequestSchema, updateClassTagRequestSchema, createClassTemplateRequestSchema, updateClassTemplateRequestSchema, createClassSessionRequestSchema, updateClassSessionRequestSchema, classTagListQuerySchema, classTemplateListQuerySchema, classSessionListQuerySchema, scheduleRevisionRequestSchema, swapSessionCoachRequestSchema, updateSessionNotesRequestSchema, updateSessionCapacityRequestSchema,
   type ClassTemplate, type ClassSession, type CreateClassTagRequest, type UpdateClassTagRequest, type CreateClassTemplateRequest, type UpdateClassTemplateRequest, type CreateClassSessionRequest, type UpdateClassSessionRequest, type ClassTagListQuery, type ClassTemplateListQuery, type ClassSessionListQuery, type ScheduleRevisionRequest, type SwapSessionCoachRequest, type UpdateSessionNotesRequest, type UpdateSessionCapacityRequest } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
@@ -14,6 +14,9 @@ import { cancelSessionRequestSchema, type CancelSessionRequest } from '@plaingym
 import { readCancellationRecipients } from '../bookings/bookings.recipients.js';
 import { cancellationNotice, type CancellationNotice } from '../announcements/cancellation.js';
 import { withJobTransaction } from '../../infra/jobs/index.js';
+import messages from '../../../../../locales/en/schedule/schedule.json' with { type: 'json' };
+
+const t = createTranslator({ 'schedule/schedule': messages });
 
 function missing(): never { throw new AppError('not_found', 'Schedule record not found'); }
 const conflict = (): never => { throw new AppError('conflict', 'The schedule record is in use'); };
@@ -258,11 +261,12 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
             const [profile] = context.actor.kind === 'user' && roles.some(({ role }) => role === 'coach') && row.coachId
               ? await tx.select({ id: staffProfiles.id }).from(staffProfiles).where(and(eq(staffProfiles.id, row.coachId), eq(staffProfiles.userId, context.actor.userId))) : [];
             if (!manager && !profile) throw new AppError('forbidden', 'Only the session coach, an admin or an owner may send a cancellation notice');
+            if (row.status === 'cancelled') throw new AppError('conflict', t('schedule/schedule:alreadyCancelled'), { reason: ['already_cancelled'] });
           }
           const before = await sessionView(tx, row), guard = revisionGuard(classSessions.revision, value.revision);
           const afterRow = assertRevised(await tx.update(classSessions).set({ status: 'cancelled', revision: guard.next })
             .where(and(eq(classSessions.id, id), guard.matches)).returning());
-          if (value.notify && row.status !== 'cancelled') {
+          if (value.notify) {
             const memberIds = await readCancellationRecipients(tx, id);
             await (options.cancellation ?? cancellationNotice()).enqueue(transaction, { sessionId: id, memberIds, note: value.note ?? '' }, gym!.timezone);
           }

@@ -44,7 +44,8 @@ that session's assigned coach may proceed. A refusal rolls back the entire
 cancellation. Without notification, the existing cancellation permission applies.
 The cancellation, audit and notice job commit together. The payload snapshots only
 that session's booked and waitlisted member IDs and the note; bookings themselves
-are unchanged. Repeated cancellation does not queue another notice.
+are unchanged. A repeated cancellation with notification returns a conflict
+without changing the revision or queuing another notice.
 
 The session dialog offers an unchecked email option with the booked-plus-waitlisted
 count when fresh panel counts are available and the actor may notify. Selecting it

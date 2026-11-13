@@ -100,11 +100,11 @@ export function createMembersRoutes(service?: MembersService, uploadsFor?: Membe
       await Promise.all([
         ...(detachCard ? revokedCards : []).map(async card => {
           try { await detachCard!(gymId, card.processorId, { redactBillingDetails: true }); }
-          catch { logError('members.erasure.detach_failed', { gymId, memberId, paymentMethodId: card.id }); }
+          catch (error) { logError('members.erasure.detach_failed', { gymId, memberId, paymentMethodId: card.id }, error); }
         }),
         ...(redactCustomer && erasedCustomerId ? [erasedCustomerId] : []).map(async customerId => {
           try { await redactCustomer!(gymId, customerId); }
-          catch { logError('members.erasure.redact_failed', { gymId, memberId }); }
+          catch (error) { logError('members.erasure.redact_failed', { gymId, memberId }, error); }
         }),
         ...(uploadsFor ? [releaseFiles(gymId, files, uploadsFor, 'members.erasure.release_failed')] : []),
       ]);
