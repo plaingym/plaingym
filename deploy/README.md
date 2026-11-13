@@ -18,8 +18,8 @@ when no swap is active. Use 2 GiB RAM for testing; whole-stack operation on a
 same file sets `AUTH_PASSWORD_LOGIN`, `RATE_LIMIT_PER_MINUTE`, `UPDATE_CHECK`, `RELEASE_REPOSITORY` and
 `DATABASE_POOL_MAX` (each uses the app's default when unset or empty; see
 `docs/configuration.md` for what the shipped Compose file passes and what it does
-not). `sh deploy/test/compose-env.sh` renders the Compose file with and without
-each to check this.
+not). `HardeningTests` in `demo/test_compose.py` renders the Compose file with and
+without each to check this, with the caller's interpolated variables removed.
 
 ## Build and check
 
@@ -160,13 +160,14 @@ The release workflow fills in the copy it publishes with the release's version,
 repository and the public key of `release-signing.pem` (**Releases**, below). It
 downloads `release-manifest.txt` and its signature from that release and verifies
 them with that key, as `update.sh` does; downloads `plaingym-deploy-vX.Y.Z.tar.gz`
-and checks it against the manifest's `deploy_archive_sha256`; checks that the
-archive's `release-signing.pem` is the same key and that the manifest has an image
-for the server's architecture; and then runs the archive's `install.sh` with
-`--image IMAGE:vX.Y.Z@DIGEST` from the manifest. Apart from the bundle mode's
+and checks it against the manifest's `deploy_archive_sha256`; runs the archive's
+`manifest_check`; checks that the manifest has an image for the server's
+architecture and that the archive's `release-signing.pem` is the same key; and then
+runs the archive's `install.sh` with `--image IMAGE:vX.Y.Z@DIGEST` from the manifest
+and its stamped `--repository`. Apart from the bundle mode's
 options (`--bundle-url` or `--bundle-file` with `--sha256`, below), it takes no
 options of its own: every other argument goes to `install.sh`, except
-`--image`, `--image-archive` and `--local-image`, which it refuses. Every refusal comes before `install.sh` runs, and
+`--image`, `--image-archive`, `--local-image` and `--repository`, which it refuses. Every refusal comes before `install.sh` runs, and
 the downloads live in a temporary directory that is removed either way. The script
 runs from a function called on its last line, so a download cut short runs nothing.
 The copy in this folder has no key filled in and refuses release mode.
@@ -204,7 +205,22 @@ Use HTTPS can stay on; Cloudflare doesn't redirect `/.well-known/acme-challenge/
 and add a Cloudflare rate-limiting rule, such as 50 requests in 10 seconds per IP
 ([../docs/install.md](../docs/install.md#behind-cloudflares-proxy-recommended)).
 When the published ranges change, `node scripts/cloudflare-ranges.mjs` rewrites
-both pinned copies; the app's copy ships in the image.
+the single canonical `cloudflare-ranges.txt`; the server build packages that same
+file beside `server.mjs`, where the app reads it. Use deployment files and an image
+from the same release so the installer checks the ranges that image trusts.
+
+DNS refusals list every bad address. When `dig` or `resolvectl` is available, the
+installer uses the hostname's DNS response code to distinguish missing records
+from resolver failures. Otherwise it probes the dual-stack `api64.ipify.org` name;
+that fallback cannot distinguish a failure confined to the gym's zone. Public
+address responses must be canonical public unicast addresses (checked with
+Ubuntu's Python standard library). A failed lookup identifies IPv4 or IPv6; without
+global IPv6, check both the AAAA record and outbound IPv6, including IPv6 NAT.
+
+`install.sh --repository OWNER/REPO` saves the updater repository in `.env` and
+refuses a re-run with another repository. A release bootstrap supplies its stamped
+repository automatically. The bootstrap caps manifests at 4096 bytes and runs the
+authenticated archive's full `manifest_check` before the installer changes the host.
 
 ### One command from a bundle
 
@@ -268,9 +284,9 @@ when updating their Compose file. Backups can be configured in the wizard or
 deferred with **Set up later**; the health page reports them as not configured
 until the owner adds them in **Settings → Email, payments and backups**.
 
-`cloud-init.yaml` automates the same installer from a reviewed public commit.
-Replace its commit, hostname, email, and image placeholders before supplying
-it as provider user-data. `cloud-init-local.yaml` runs the one bundle command
+`cloud-init.yaml` runs the versioned release bootstrap, including signed manifest
+and archive validation. Replace its version, hostname and email placeholders before
+supplying it as provider user-data. `cloud-init-local.yaml` runs the one bundle command
 above as user-data for unpublished builds.
 
 For manual Compose use, copy `.env.example` to `.env`, set real independent
@@ -682,6 +698,11 @@ ownership and plain modes, so rebuilding it from the tag gives the same bytes, a
 filled in. The manifest lists the archive's SHA-256. The public key is
 `deploy/release-signing.pem`, and the installer copies it into the install
 directory. No release has been published yet.
+
+`release/publish.sh` requires an explicit `--rollback-floor`; the workflow supplies
+the value recorded by `pnpm release` in `release/rollback-floor.txt`. The historical
+fallback for legacy format-1 manifests is retained only for reading old releases;
+publication no longer uses it to guess a previous minor.
 
 Every other run (a push that changes the workflow, `release/` or `bootstrap.sh`, or
 a manual run) is a dry run with a Git build-metadata version, also on a commit that

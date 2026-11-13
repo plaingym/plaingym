@@ -6,7 +6,7 @@
 #
 #   publish.sh --registry HOST[:PORT] --name OWNER/app --version vX.Y.Z --revision COMMIT --migrations DIR
 #              --archive amd64=FILE [--archive arm64=FILE] --key PRIVATE.pem --public-key PUBLIC.pem --repository OWNER/REPO
-#              --out DIR [--insecure]
+#              --out DIR --rollback-floor vX.Y.Z [--insecure]
 #
 # Each archive is a `docker save` of an image labelled with the version and revision. The output directory gets
 # the four assets of the GitHub release: release-manifest.txt, release-manifest.txt.sig, and from deploy-assets.sh the
@@ -37,7 +37,7 @@ while [ "$#" -gt 0 ]; do
         --registry) registry=$2 ;; --name) name=$2 ;; --version) version=$2 ;; --revision) revision=$2 ;;
         --migrations) migrations=$2 ;; --key) key=$2 ;; --public-key) public=$2 ;; --out) out=$2 ;;
         --archive) archives="$archives $2" ;;
-        --rollback-floor) rollback_floor="v${2#v}" ;;
+        --rollback-floor) rollback_floor=${2:+v${2#v}} ;;
         --repository) repository=$2 ;;
       esac
       shift 2 ;;
@@ -49,7 +49,7 @@ if ! valid_version "$version"; then
   printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\+[A-Za-z0-9.-]+$' || fail 'Use --version vX.Y.Z (or build metadata for a local dry run).'
 fi
 registry_tag=$(printf '%s' "$version" | tr '+' '_')
-[ -n "$rollback_floor" ] || rollback_floor=$(default_rollback_floor "$version")
+[ -n "$rollback_floor" ] || fail 'Give --rollback-floor explicitly (deploy/release/rollback-floor.txt records the release decision).'
 version_base=${version%%+*}
 version_at_least "v${version_base#v}" "$rollback_floor" || fail 'Invalid --rollback-floor.'
 printf '%s\n' "$revision" | grep -Eq '^[a-f0-9]{40}$' || fail 'Use --revision with a full commit SHA.'

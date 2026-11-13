@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Refreshes the pinned Cloudflare proxy ranges from Cloudflare's published lists, rewriting both copies:
-// deploy/cloudflare-ranges.txt (the installer's DNS check) and apps/server/src/core/cloudflare-ranges.ts
-// (the app's CF-Connecting-IP trust). Run by hand: `node scripts/cloudflare-ranges.mjs`, review the diff, and ship
-// it in a release; installs get the app's copy with the image, and the installer's copy only matters at install.
+// Refreshes the canonical deploy/cloudflare-ranges.txt used by the installer and packaged with the app.
+// Run by hand: `node scripts/cloudflare-ranges.mjs`, review the diff, and ship it in a release.
 import { writeFileSync } from 'node:fs';
 import { isIP } from 'node:net';
 
@@ -26,14 +24,7 @@ const ranges = [...await list('https://www.cloudflare.com/ips-v4', 4), ...await 
 writeFileSync(new URL('deploy/cloudflare-ranges.txt', root), [
   '# SPDX-License-Identifier: AGPL-3.0-only',
   `# Cloudflare's published proxy ranges (https://www.cloudflare.com/ips-v4 and ips-v6), pinned on ${today}.`,
-  '# Refresh with `node scripts/cloudflare-ranges.mjs`, which rewrites this file and',
-  '# apps/server/src/core/cloudflare-ranges.ts; a test keeps the two the same. A changed list ships in a release.',
+  '# Refresh with `node scripts/cloudflare-ranges.mjs`. This is the canonical list for the installer and app;',
+  '# the server build copies it into the image beside server.mjs. A changed list ships in a release.',
   ...ranges, ''].join('\n'));
-writeFileSync(new URL('apps/server/src/core/cloudflare-ranges.ts', root), [
-  '// SPDX-License-Identifier: AGPL-3.0-only',
-  '// Cloudflare\'s published proxy ranges, the same list as deploy/cloudflare-ranges.txt (a test checks they agree).',
-  '// Refresh both with `node scripts/cloudflare-ranges.mjs`; a changed list ships in a release.',
-  'export const cloudflareRanges: readonly string[] = [',
-  ...ranges.map((range) => `  '${range}',`),
-  '];', ''].join('\n'));
 console.log(`Wrote ${ranges.length} ranges. Review the diff before committing.`);

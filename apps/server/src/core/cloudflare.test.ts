@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { readFileSync } from 'node:fs';
+import { isIP } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
 import { Hono } from 'hono';
@@ -15,10 +16,16 @@ function resolver(options: ClientIpOptions) {
   return async (headers: Record<string, string>) => (await app.request('/', { headers })).text();
 }
 
-it('keeps the app list and the installer list the same', () => {
+it('reads every range of the installer list as a valid CIDR', () => {
   const file = fileURLToPath(new URL('../../../../deploy/cloudflare-ranges.txt', import.meta.url));
-  const listed = readFileSync(file, 'utf8').split('\n').map((line) => line.trim()).filter((line) => line && !line.startsWith('#'));
-  expect(listed).toEqual([...cloudflareRanges]);
+  expect(readFileSync(file, 'utf8')).toContain(cloudflareRanges.join('\n'));
+  expect(cloudflareRanges.length).toBeGreaterThan(10);
+  for (const range of cloudflareRanges) {
+    const [address = '', prefix = ''] = range.split('/');
+    const family = isIP(address);
+    expect(family, range).not.toBe(0);
+    expect(/^\d+$/.test(prefix) && Number(prefix) <= (family === 4 ? 32 : 128), range).toBe(true);
+  }
 });
 
 it('matches addresses inside Cloudflare ranges only, in both families', () => {

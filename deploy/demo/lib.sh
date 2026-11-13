@@ -3,12 +3,12 @@
 # Host-side only. No Docker socket is mounted into the app.
 # shellcheck source=deploy/lib.sh
 # Before the first install there is no base-lib.sh beside this file; install.sh has sourced the shared
-# helpers itself (it also repairs a lost copy), which is how this file knows: `read_env` is already
-# defined. Every other caller needs the copy beside this file, and a missing one is named. This checks
-# the shell's own functions, not an environment variable, so nothing an operator exports can skip it.
+# helpers itself (it also repairs a lost copy), which defines a dedicated marker function.
+# Every other caller needs the copy beside this file, and a missing one is named. This checks
+# the shell's own functions for that marker, not an environment variable or a `read_env` command.
 if [ -f "$ROOT/base-lib.sh" ]; then
   . "$ROOT/base-lib.sh"
-elif ! command -v read_env >/dev/null 2>&1; then
+elif ! type plaingym_shared_helpers_loaded 2>/dev/null | grep -q '^plaingym_shared_helpers_loaded is a .*function'; then
   printf '%s\n' "$ROOT/base-lib.sh is missing, so the demo cannot run. Run install.sh again from the demo bundle, which restores it." >&2
   exit 1
 fi

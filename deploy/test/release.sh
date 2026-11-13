@@ -133,13 +133,18 @@ openssl genpkey -algorithm ed25519 -out "$temporary/key.pem" 2>/dev/null
 openssl pkey -in "$temporary/key.pem" -pubout -out "$temporary/public.pem"
 openssl genpkey -algorithm ed25519 -out "$temporary/other.pem" 2>/dev/null
 openssl pkey -in "$temporary/other.pem" -pubout -out "$temporary/other-public.pem"
-publish() { sh "$source_dir/release/publish.sh" --registry "$registry" --name release-test/app --insecure --version v1.2.3 \
+if sh "$source_dir/release/publish.sh" --version v1.2.3 > "$temporary/output" 2>&1; then echo 'Published without an explicit floor.' >&2; exit 1; fi
+grep -q 'Give --rollback-floor explicitly' "$temporary/output"
+# An empty value (a missing rollback-floor.txt in the workflow) is the same omission.
+if sh "$source_dir/release/publish.sh" --version v1.2.3 --rollback-floor '' > "$temporary/output" 2>&1; then echo 'Published with an empty floor.' >&2; exit 1; fi
+grep -q 'Give --rollback-floor explicitly' "$temporary/output"
+publish() { sh "$source_dir/release/publish.sh" --rollback-floor v1.1.0 --registry "$registry" --name release-test/app --insecure --version v1.2.3 \
   --revision "$revision" --migrations "$source_dir/../packages/db/src/migrations" --archive "amd64=$temporary/amd64.tar" \
   --archive "arm64=$temporary/arm64.tar" --key "$temporary/key.pem" --repository release-test/plaingym "$@" > "$temporary/output" 2>&1; }
 # The wrong public key stops it before the manifest is published; a mislabelled image stops it before any push.
 if publish --public-key "$temporary/other-public.pem" --out "$temporary/wrong"; then echo 'Published with a mismatched key.' >&2; exit 1; fi
 grep -q 'does not verify' "$temporary/output"
-if sh "$source_dir/release/publish.sh" --registry "$registry" --name release-test/app --insecure --version v1.2.4 --revision "$revision" \
+if sh "$source_dir/release/publish.sh" --rollback-floor v1.1.0 --registry "$registry" --name release-test/app --insecure --version v1.2.4 --revision "$revision" \
   --migrations "$source_dir/../packages/db/src/migrations" --archive "amd64=$temporary/amd64.tar" --key "$temporary/key.pem" \
   --public-key "$temporary/public.pem" --repository release-test/plaingym --out "$temporary/mislabelled" > "$temporary/output" 2>&1; then echo 'Published a mislabelled image.' >&2; exit 1; fi
 grep -q 'is not labelled v1.2.4' "$temporary/output"
@@ -201,7 +206,7 @@ for arch in amd64 arm64; do
     --change "LABEL org.opencontainers.image.revision=$revision" "$temporary/rootfs.tar" "$run_id:dry-$arch" > /dev/null
   docker save "$run_id:dry-$arch" -o "$temporary/dry-$arch.tar"
 done
-sh "$source_dir/release/publish.sh" --registry "$registry" --name release-test/app --insecure --version "$dry_version" \
+sh "$source_dir/release/publish.sh" --rollback-floor v1.1.0 --registry "$registry" --name release-test/app --insecure --version "$dry_version" \
   --revision "$revision" --migrations "$source_dir/../packages/db/src/migrations" --archive "amd64=$temporary/dry-amd64.tar" \
   --archive "arm64=$temporary/dry-arm64.tar" --key "$temporary/key.pem" --public-key "$temporary/public.pem" \
   --repository release-test/plaingym --out "$temporary/dry" > "$temporary/output" 2>&1

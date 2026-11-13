@@ -47,6 +47,13 @@ const get = (protocol, port, ca, path = '/healthz', accept = 'application/json',
   request.end(payload ? JSON.stringify(payload) : undefined);
 });
 try {
+  for (const file of ['Caddyfile', 'demo/Caddyfile']) {
+    const content = readFileSync(join(root, file), 'utf8');
+    assert.equal(compose(['run', '--rm', '--no-deps', '-T', 'caddy', 'caddy', 'fmt', '-'], { input: content }), content,
+      `${file} must stay formatted with caddy fmt`);
+  }
+  assert.equal(docker(['run', '--rm', '--network', 'none', '--entrypoint', 'cat', image, '/app/cloudflare-ranges.txt']),
+    readFileSync(join(root, 'cloudflare-ranges.txt'), 'utf8'), 'the app image packages the canonical proxy list');
   if (process.env.SMOKE_MIGRATE_IMAGE) {
     compose(['up', '-d', '--wait', '--wait-timeout', '120'], { env: { ...env, APP_IMAGE: process.env.SMOKE_MIGRATE_IMAGE } });
     compose(['stop', 'app']);

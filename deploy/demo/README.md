@@ -36,6 +36,11 @@ With the proxy, the DNS check can't see which server is behind it; the HTTPS che
 that follows goes through the domain. The same limits as a proxied gym install
 apply.
 
+Saved and environment-supplied demo billing credentials are validated before DNS,
+Cloudflare and S3 preflight requests. Optional interactive billing setup follows
+those checks. The shared helper library must be present for installed commands;
+an executable or exported function named `read_env` cannot bypass that check.
+
 The maintainer supplies an HTTPS bundle URL, SHA256 and bootstrap URL. Paste this
 single command in an SSH terminal, substituting those three values:
 

@@ -25,7 +25,7 @@ export SYSTEMD_UNIT_DIR="$temporary/units"
 mkdir "$STATE" "$SYSTEMD_UNIT_DIR"
 # 203.0.113.5 is this fixture server; 192.0.2.10 is someone else's.
 printf '203.0.113.5 gym.localhost other.localhost\n192.0.2.10 elsewhere.localhost\n127.0.0.1 loopback.invalid\n203.0.113.6 nat.invalid\n2001:db8::6 nat6.invalid\n2001:db8::10 elsewhere6.invalid\n' > "$HOSTS"
-printf '203.0.113.20 api.ipify.org\n2a01:4f8::1 mixed.invalid\n49.12.0.9 mixed.invalid\n2001:db8::10 mixed-reverse.invalid\n192.0.2.10 mixed-reverse.invalid\n' >> "$HOSTS"
+printf '2001:db8::20 api64.ipify.org\n2a01:4f8::1 mixed.invalid\n49.12.0.9 mixed.invalid\n2001:db8::10 mixed-reverse.invalid\n192.0.2.10 mixed-reverse.invalid\n' >> "$HOSTS"
 printf '203.0.113.6 multi4.invalid\n192.0.2.10 multi4.invalid\n2001:db8::6 multi6.invalid\n2001:db8::10 multi6.invalid\n192.0.2.10 foreign4.invalid\n192.0.2.11 foreign4.invalid\n2001:db8::10 foreign6.invalid\n2001:db8::11 foreign6.invalid\n2001:db8:0:1:2:3:4:6 full6.invalid\n' >> "$HOSTS"
 stub() { printf '#!/bin/sh\n%s\n' "$2" > "$temporary/bin/$1"; chmod 0700 "$temporary/bin/$1"; }
 for command in apt-get systemctl ufw fallocate mkswap; do stub "$command" "printf '$command %s\n' \"\$*\" >> \"\$CALLS\""; done
@@ -42,6 +42,9 @@ stub ip 'echo "1: lo    inet 127.0.0.1/8 scope host lo"; echo "2: eth0    inet 2
 # The stub's own variables expand when it runs, not here.
 # shellcheck disable=SC2016
 stub getent '[ "$1" != -s ] || shift 2; status=0; awk -v name="$2" '"'"'{ for (i = 2; i <= NF; i++) if ($i == name) { print $1 "  STREAM " name; found=1 } } END { if (!found) exit 2 }'"'"' "$HOSTS" || status=$?; exit "${DNS_STATUS:-$status}"'
+# Keep the response-code cases independent of which DNS tools the host has installed.
+# shellcheck disable=SC2016
+stub dig 'code=${DNS_CODE:-NXDOMAIN}; for argument in "$@"; do [ "$argument" != AAAA ] || code=${DNS_CODE6:-$code}; done; [ "${DNS_STATUS:-0}" = 0 ] || code=SERVFAIL; printf ";; ->>HEADER<<- opcode: QUERY, status: %s, id: 1\n" "$code"'
 cat > "$temporary/bin/curl" <<'MOCK'
 #!/bin/sh
 for argument in "$@"; do last=$argument; done
@@ -96,6 +99,7 @@ expect_dns_refusal() {
 }
 expect_dns_refusal does-not-exist.invalid 'does not resolve yet'
 expect_dns_refusal missing.localhost 'does not resolve yet'
+DNS_CODE=NOERROR expect_dns_refusal does-not-exist.invalid 'does not resolve yet'
 expect_dns_refusal elsewhere.localhost 'which is not this server'
 expect_dns_refusal loopback.invalid 'resolves to a loopback address'
 expect_lookup_refusal() {
@@ -114,17 +118,23 @@ expect_lookup_refusal() {
 # Nonzero getent status must survive, even if it printed an address first.
 DNS_STATUS=2 expect_lookup_refusal does-not-exist.invalid 'This server could not query DNS'
 DNS_STATUS=2 expect_lookup_refusal gym.localhost 'This server could not query DNS'
+DNS_CODE=SERVFAIL expect_lookup_refusal does-not-exist.invalid 'This server could not query DNS'
+DNS_CODE=REFUSED expect_lookup_refusal does-not-exist.invalid 'This server could not query DNS'
+DNS_CODE=NOERROR DNS_CODE6=SERVFAIL expect_lookup_refusal does-not-exist.invalid 'This server could not query DNS'
+DNS_CODE=unreadable expect_lookup_refusal does-not-exist.invalid 'This server could not query DNS'
 PUBLIC4_STATUS=22 expect_lookup_refusal nat.invalid 'The public-address lookup failed'
 GLOBAL6=true PUBLIC6_STATUS=22 expect_lookup_refusal nat6.invalid 'The public-address lookup failed'
-PUBLIC6_STATUS=22 expect_dns_refusal elsewhere6.invalid 'Remove the AAAA record or configure working public IPv6'
+PUBLIC6_STATUS=22 expect_lookup_refusal elsewhere6.invalid 'Remove the AAAA record or configure working public IPv6'
+grep -qF 'AAAA record may be wrong, or outbound IPv6 may not be working' "$temporary/output"
+grep -qF 'lookup failed for IPv6' "$temporary/output"
 PUBLIC4='' expect_lookup_refusal nat.invalid 'The public-address lookup failed'
 # HTTP 200 pages from a proxy, malformed or repeated addresses, and the wrong family do not
 # confirm a public address or turn a lookup failure into a DNS mismatch.
 twice() { printf '%s\n%s' "$1" "$1"; }
-for body in '<html>proxy login</html>' '999.0.113.6' '2001:db8::6' "$(twice 203.0.113.6)"; do
+for body in '<html>proxy login</html>' '999.0.113.6' '2001:db8::6' '203.000.113.006' '0.0.0.0' '127.0.0.1' '10.0.0.1' '169.254.1.2' '172.16.1.2' '192.168.1.2' '100.64.0.1' '224.0.0.1' "$(twice 203.0.113.6)"; do
   PUBLIC4="$body" expect_lookup_refusal nat.invalid 'The public-address lookup failed'
 done
-for body in '<html>proxy login</html>' '2001::db8::6' '203.0.113.6' "$(twice 2001:db8::6)"; do
+for body in '<html>proxy login</html>' '2001::db8::6' '203.0.113.6' '2001:DB8::6' '2001:db8:0:0:0:0:0:6' '::' '::1' 'fe80::1' 'fd00::1' 'ff02::1' '2001:db8::6%eth0' "$(twice 2001:db8::6)"; do
   GLOBAL6=true PUBLIC6="$body" expect_lookup_refusal nat6.invalid 'The public-address lookup failed'
 done
 # Multiple nonlocal answers reuse the same family lookup, including a mismatch
@@ -136,12 +146,17 @@ expect_dns_refusal multi6.invalid 'which is not this server'
 # Two answers that both miss the lookup's result still make one request, and so
 # does a failed lookup: neither is retried for the family's next answer.
 expect_dns_refusal foreign4.invalid 'which is not this server'
+grep -qF '192.0.2.10' "$temporary/output"
+grep -qF '192.0.2.11' "$temporary/output"
 [ "$(cat "$CALLS")" = 'public lookup 4' ]
 PUBLIC4_STATUS=22 expect_lookup_refusal foreign4.invalid 'The public-address lookup failed'
 [ "$(cat "$CALLS")" = 'public lookup 4' ]
 expect_dns_refusal foreign6.invalid 'which is not this server'
+grep -qF '2001:db8::10' "$temporary/output"
+grep -qF '2001:db8::11' "$temporary/output"
 [ "$(cat "$CALLS")" = 'public lookup 6' ]
 GLOBAL6=true PUBLIC6_STATUS=22 expect_lookup_refusal foreign6.invalid 'The public-address lookup failed'
+grep -qF 'lookup failed for IPv6' "$temporary/output"
 [ "$(cat "$CALLS")" = 'public lookup 6' ]
 # Missing curl has the same diagnostic, without relying on the container's packages.
 mkdir "$temporary/no-curl"
@@ -150,6 +165,22 @@ if PATH="$temporary/no-curl" /bin/sh -c 'set -eu; . "$1"; check_dns nat.invalid'
 grep -qF 'The public-address lookup failed' "$temporary/output"
 grep -qF 'Check that curl is installed and outbound HTTPS works with no filtering proxy or captive portal in the way' "$temporary/output"
 grep -qF 'Nothing was changed' "$temporary/output"
+# With no response-code tool, the fallback can resolve its probe over IPv6 alone.
+if PATH="$temporary/no-curl" /bin/sh -c 'set -eu; . "$1"; check_dns missing.invalid' sh "$source_dir/lib.sh" > "$temporary/output" 2>&1; then exit 1; fi
+grep -qF 'does not resolve yet' "$temporary/output"
+# resolvectl is used when it is the only response-code tool.
+ln -s "$temporary/bin/resolvectl" "$temporary/no-curl/resolvectl"
+# A missing name or record is "not found" or "no RR" for the name itself; any other failure, including
+# systemd-resolved not running ("Unit ... not found"), is the resolver's.
+for response in "missing.invalid: resolve call failed: 'missing.invalid' not found=does not resolve yet" \
+  "missing.invalid: resolve call failed: 'missing.invalid' does not have any RR of the requested type=does not resolve yet" \
+  "missing.invalid: resolve call failed: Could not resolve 'missing.invalid', server or network returned error SERVFAIL=could not query DNS" \
+  "missing.invalid: resolve call failed: Unit dbus-org.freedesktop.resolve1.service not found.=could not query DNS"; do
+  stub resolvectl "echo \"${response%=*}\" >&2; exit 1"
+  if PATH="$temporary/no-curl" /bin/sh -c 'set -eu; . "$1"; check_dns missing.invalid' sh "$source_dir/lib.sh" > "$temporary/output" 2>&1; then exit 1; fi
+  grep -qF "${response##*=}" "$temporary/output"
+done
+rm "$temporary/no-curl/resolvectl"
 # A failed lookup in the other address family must not hide a confirmed mismatch.
 PUBLIC6_STATUS=22 expect_dns_refusal elsewhere.localhost 'which is not this server'
 PUBLIC4_STATUS=22 expect_dns_refusal elsewhere6.invalid 'which is not this server'
@@ -182,6 +213,7 @@ install_gym --hostname gym.localhost --email owner@example.org
 [ "$(stat -c %a "$root/.env")" = 600 ]
 [ "$(stat -c %a "$root/rotate-key.sh")" = 700 ]
 grep -qx GYM_HOSTNAME=gym.localhost "$root/.env"
+grep -qx RELEASE_REPOSITORY=plaingym/plaingym "$root/.env"
 # Backups use the setup wizard's key pair; nothing reads a BACKUP_RECIPIENT line.
 if grep -q BACKUP_RECIPIENT "$root/.env"; then echo 'A fresh .env names BACKUP_RECIPIENT.' >&2; exit 1; fi
 grep -q '^apt-get install' "$CALLS"
@@ -199,6 +231,10 @@ grep -q 'Patch releases install automatically each night' "$temporary/output"
 cmp "$source_dir/release-signing.pem" "$root/release-signing.pem"
 [ "$(stat -c %a "$root/release-signing.pem")" = 644 ]
 hashes() { sha256sum "$root/.env" "$root/compose.yaml" "$root/Caddyfile" "$root/update.sh" "$root/release-signing.pem"; }
+expect_refusal --hostname gym.localhost --email owner@example.org --repository another/repo
+grep -qF 'different release repository' "$temporary/output"
+expect_refusal --hostname gym.localhost --email owner@example.org --repository ../repo
+grep -qF 'Use --repository OWNER/REPO' "$temporary/output"
 before=$(hashes)
 
 : > "$CALLS"
@@ -361,6 +397,7 @@ expect_bootstrap_refusal() { # MESSAGE BOOTSTRAP [ARGS]
 # A copy that isn't a release's has no key to check with; a release's copy refuses an image of the owner's choosing.
 expect_bootstrap_refusal 'is not a release' "$source_dir/bootstrap.sh"
 expect_bootstrap_refusal 'leave out --image' "$release/bootstrap.sh" --image plaingym:v0.0.0-local
+expect_bootstrap_refusal 'leave out --repository' "$release/bootstrap.sh" --repository another/repo
 # Another key than the one that signed the release.
 expect_bootstrap_refusal 'does not verify' "$temporary/other-assets/bootstrap.sh"
 # A tampered manifest.
@@ -368,6 +405,24 @@ cp "$release/release-manifest.txt" "$temporary/manifest.good"
 sed 's#^image=.*#image=ghcr.io/attacker/app#' "$temporary/manifest.good" > "$release/release-manifest.txt"
 expect_bootstrap_refusal 'does not verify' "$release/bootstrap.sh"
 cp "$temporary/manifest.good" "$release/release-manifest.txt"
+# Correctly signed manifests must pass the archive's full updater validation, including fields the bootstrap
+# doesn't need to locate the archive. Repeated unknown keys and malformed lines are invalid too.
+for mutation in floor revision migrations duplicate line; do
+  case "$mutation" in
+    floor) sed 's/^rollback_floor=.*/rollback_floor=v2.0.0/' "$temporary/manifest.good" > "$release/release-manifest.txt" ;;
+    revision) sed 's/^revision=.*/revision=bad/' "$temporary/manifest.good" > "$release/release-manifest.txt" ;;
+    migrations) sed 's/^migrations=.*/migrations=bad/' "$temporary/manifest.good" > "$release/release-manifest.txt" ;;
+    duplicate) cp "$temporary/manifest.good" "$release/release-manifest.txt"; printf 'extra=a\nextra=b\n' >> "$release/release-manifest.txt" ;;
+    line) cp "$temporary/manifest.good" "$release/release-manifest.txt"; printf 'not a field\n' >> "$release/release-manifest.txt" ;;
+  esac
+  "$real_openssl" pkeyutl -sign -inkey "$temporary/release-key.pem" -rawin -in "$release/release-manifest.txt" -out "$release/release-manifest.txt.sig"
+  expect_bootstrap_refusal 'signed release manifest is malformed' "$release/bootstrap.sh"
+done
+cp "$temporary/manifest.good" "$release/release-manifest.txt"
+printf 'padding=%05000d\n' 0 >> "$release/release-manifest.txt"
+"$real_openssl" pkeyutl -sign -inkey "$temporary/release-key.pem" -rawin -in "$release/release-manifest.txt" -out "$release/release-manifest.txt.sig"
+expect_bootstrap_refusal 'manifest is too large' "$release/bootstrap.sh"
+sign_release "$archive_sum"
 # A tampered archive.
 cp "$archive" "$temporary/archive.good"
 printf 'x' >> "$archive"
@@ -388,7 +443,21 @@ mv "$temporary/signature.good" "$release/release-manifest.txt.sig"
 for _ in 1 2; do
   sh -s -- --hostname gym.localhost --email owner@example.org --directory "$temporary/released" < "$release/bootstrap.sh" > "$temporary/output" 2>&1
   grep -qx "APP_IMAGE=ghcr.io/release-test/app:v1.2.3@$digest" "$temporary/released/.env"
+  grep -qx 'RELEASE_REPOSITORY=release-test/plaingym' "$temporary/released/.env"
   grep -q 'setup#token=fixture' "$temporary/output"
 done
 cmp -s "$temporary/release-public.pem" "$temporary/released/release-signing.pem"
+# Execute the cloud-init script's content, replacing only the documented inputs and a disposable install path.
+# Its bootstrap must take the same release path and preserve the fork's repository, without an image input.
+awk '/^      #!\/bin\/sh/ { body=1 } /^runcmd:/ { body=0 } body { sub(/^      /, ""); print }' "$source_dir/cloud-init.yaml" > "$temporary/cloud-init-placeholder.sh"
+: > "$CALLS"
+if sh "$temporary/cloud-init-placeholder.sh" > "$temporary/output" 2>&1; then echo 'Cloud-init accepted an unset version.' >&2; exit 1; fi
+grep -qF 'Set a release version' "$temporary/output"
+[ ! -s "$CALLS" ]
+sed -e 's/version=VERSION/version=v1.2.3/' -e 's/HOSTNAME/gym.localhost/g' \
+    -e "s|--email EMAIL|--email owner@example.org --directory $temporary/cloud-init|" \
+    -e 's#https://github.com/plaingym/plaingym/#https://github.com/release-test/plaingym/#' "$temporary/cloud-init-placeholder.sh" > "$temporary/cloud-init.sh"
+sh "$temporary/cloud-init.sh" > "$temporary/output" 2>&1
+grep -qx "APP_IMAGE=ghcr.io/release-test/app:v1.2.3@$digest" "$temporary/cloud-init/.env"
+grep -qx 'RELEASE_REPOSITORY=release-test/plaingym' "$temporary/cloud-init/.env"
 echo 'PASS: input and DNS checks before host changes, convergent re-runs, refused mismatches, Cloudflare proxy detection and the origin check, verified bundles, and verified releases.'

@@ -126,9 +126,10 @@ installs anything, it:
    checks the signature with that key;
 2. downloads the deployment files (`plaingym-deploy-vX.Y.Z.tar.gz`, the release's
    `deploy/` folder) and checks them against the SHA-256 the signed manifest lists;
-3. checks that the archive carries the same signing key, and that the release has
-   an image for this server's CPU;
-4. runs the archive's `install.sh` with the image digest from the signed manifest.
+3. runs the archive's full manifest validator, and checks that the release has an
+   image for this server's CPU and that the archive carries the same signing key;
+4. runs the archive's `install.sh` with the image digest and release repository
+   (so a fork's updates keep using that fork).
 
 If any check fails it stops with "Nothing was changed", and it leaves no downloaded
 files behind either way. The files must come from the release you install: the
@@ -174,15 +175,14 @@ to retry.
 ## Route 2: cloud-init
 
 Many providers accept a cloud-init file as "user-data" when you create the server.
-[`deploy/cloud-init.yaml`](../deploy/cloud-init.yaml) runs the same installer from a
-reviewed commit of the public repository.
+[`deploy/cloud-init.yaml`](../deploy/cloud-init.yaml) downloads and runs the same
+release bootstrap as Route 1, including the signed manifest and archive checks.
 
 1. Copy the file and edit the placeholders in its script:
-   * `commit=COMMIT`: a full 40-character commit SHA you have reviewed (the script
-     refuses anything else);
-   * `--hostname HOSTNAME` and `--email EMAIL`;
-   * the image after `--image` (the file ships `ghcr.io/plaingym/app:v0.0.0`; use a
-     real version tag or digest).
+   * `version=VERSION`: the release tag to install (`vX.Y.Z`);
+   * `--hostname HOSTNAME` and `--email EMAIL`.
+   For a fork, change the download URL's repository too; its release bootstrap
+   carries the fork's signing key and updater repository.
 2. Create an Ubuntu 24.04 or 26.04 server with the file as user-data, and point the
    hostname's DNS at the server's address.
 3. The script runs once at first boot. Create the DNS record **before** boot, or

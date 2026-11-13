@@ -210,6 +210,13 @@ class ComposeVersionTests(unittest.TestCase):
                 self.assertNotEqual(update.returncode, 0)
                 self.assertIn(f"{self.install_root}/base-lib.sh is missing", update.stderr)
                 self.assertNotIn("not found", update.stderr)
+        # Neither an executable on PATH nor an exported Bash function supplies the shared helper library.
+        stub(self.bin / "read_env", "echo spoofed")
+        for script in ('exec bash "$1"', 'read_env() { echo spoofed; }; export -f read_env; exec bash "$1"'):
+            result = subprocess.run(["bash", "-c", script, "sh", str(self.install_root / "update.sh")],
+                                    capture_output=True, text=True, env=self.env())
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("base-lib.sh is missing", result.stderr)
         # A caller that does not say it is the installer gets the same message for a directory with no .env.
         shutil.rmtree(self.install_root)
         self.install_root.mkdir()
@@ -346,7 +353,8 @@ class ReinstallRestoreTests(unittest.TestCase):
         # An install made before the helper check has a lib.sh that looks for DEMO_FIRST_INSTALL instead. The
         # rollback restores that copy, removes the restored base-lib.sh and loads it, then starts the stack again.
         current = (HERE / "lib.sh").read_text()
-        older = current.replace("elif ! command -v read_env >/dev/null 2>&1; then", 'elif [ "${DEMO_FIRST_INSTALL:-}" != true ]; then')
+        older = current.replace("elif ! type plaingym_shared_helpers_loaded 2>/dev/null | grep -q '^plaingym_shared_helpers_loaded is a .*function'; then",
+                                'elif [ "${DEMO_FIRST_INSTALL:-}" != true ]; then')
         self.assertNotEqual(older, current)
         (self.root / "lib.sh").write_text(older)
         self.flag.write_text("")
@@ -520,6 +528,28 @@ class ComposeAvailabilityTests(unittest.TestCase):
 class HardeningTests(unittest.TestCase):
     interpolated_names = staticmethod(interpolated_names)
     clean_environment = staticmethod(clean_environment)
+
+    def test_operator_environment_defaults_and_overrides(self):
+        defaults = dict(TRUST_CLOUDFLARE="", AUTH_PASSWORD_LOGIN="auto", RATE_LIMIT_PER_MINUTE="300",
+                        DATABASE_POOL_MAX="8", UPDATE_CHECK="on", RELEASE_REPOSITORY="plaingym/plaingym")
+        values = dict(TRUST_CLOUDFLARE="true", AUTH_PASSWORD_LOGIN="off", RATE_LIMIT_PER_MINUTE="1200",
+                      DATABASE_POOL_MAX="12", UPDATE_CHECK="off", RELEASE_REPOSITORY="example/app")
+        base = {key: value for key, value in DEMO_ENV.items() if key not in defaults}
+        for extra, expected in (({}, defaults), ({key: "" for key in defaults}, defaults), (values, values)):
+            with self.subTest(extra=extra):
+                rendered = self.render([DEPLOY / "compose.yaml"], {**base, **extra})["app"]["environment"]
+                for key, value in expected.items():
+                    self.assertEqual(str(rendered[key] or ""), value)
+        self.assertEqual(self.render([DEPLOY / "compose.yaml"], {**base, "AUTH_PASSWORD_LOGIN": "on"})
+                         ["app"]["environment"]["AUTH_PASSWORD_LOGIN"], "on")
+
+    def test_single_install_does_not_forward_unsupported_environment(self):
+        names = ("PUBLIC_ORIGIN", "PACKS_DIR", "UPLOADS_S3_BUCKET", "UPLOADS_S3_ENDPOINT", "UPLOADS_S3_REGION",
+                 "UPLOADS_S3_ACCESS_KEY_ID", "UPLOADS_S3_SECRET_ACCESS_KEY", "BACKUP_RECIPIENT")
+        env = {**DEMO_ENV, **dict.fromkeys(names, "https://example.org"), "TENANCY": "multi"}
+        rendered = self.render([DEPLOY / "compose.yaml"], env)["app"]["environment"]
+        self.assertEqual(rendered["TENANCY"], "single")
+        self.assertFalse(set(names) & set(rendered))
 
     def render(self, files, env, caller=None, extra=None):
         """Render the files; `extra` is the text of one more Compose file merged over them."""

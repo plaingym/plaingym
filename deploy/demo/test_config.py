@@ -460,6 +460,24 @@ class BillingInputTests(unittest.TestCase):
                     config.main()
                 self.assertEqual(asked, [])
 
+    def test_invalid_saved_or_environment_billing_refuses_before_network_calls(self):
+        for saved in (False, True):
+            with self.subTest(saved=saved), tempfile.TemporaryDirectory() as directory:
+                existing = Path(directory) / ".env"
+                bad = {"DEMO_STRIPE_TEST_KEY": "invalid", "DEMO_STRIPE_WEBHOOK_SECRET": SECRET}
+                if saved:
+                    existing.write_text("DEMO_INSTALL=1\nDEMO_LOCAL_TEST=false\n" + "".join(f"{k}={v}\n" for k, v in {**inputs(), **bad}.items()
+                                                                         if k != "DEMO_LOCAL_TEST"))
+                args = ["config.py", "--existing", str(existing), "--check-only"]
+                with patch.dict(os.environ, {**inputs(), **({} if saved else bad)}, clear=True), \
+                        patch.object(config.sys, "argv", args), patch.object(config, "dns_check") as dns, \
+                        patch.object(config, "cloudflare_check") as cloudflare, patch.object(config, "s3_check") as s3, \
+                        self.assertRaises(ValueError):
+                    config.main()
+                dns.assert_not_called()
+                cloudflare.assert_not_called()
+                s3.assert_not_called()
+
     def test_a_saved_key_without_its_secret_is_completed_from_the_environment_or_the_prompt(self):
         for env, answers, terminal in (({"DEMO_STRIPE_WEBHOOK_SECRET": SECRET}, [], False), ({}, [SECRET], True)):
             with self.subTest(env=bool(env)), tempfile.TemporaryDirectory() as directory:

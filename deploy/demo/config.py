@@ -309,6 +309,14 @@ def main():
     # The required inputs are validated and checked before the optional billing question, so a mistake in
     # them is reported before the operator types a key.
     validate(config)
+    # Validate supplied values before any network calls; keep optional interactive setup after the checks.
+    billing_inputs(config, ask=False)
+    if config.get(BILLING_KEY) and not config.get(BILLING_SECRET) and not args.check_only \
+            and not any(name in os.environ for name in (BILLING_KEY, BILLING_SECRET)) and has_terminal():
+        # A saved key can still be completed at the later hidden prompt; validate the supplied key now.
+        validate_billing({**config, BILLING_SECRET: "whsec_validation"})
+    else:
+        validate_billing(config)
     proxied = False
     if config["DEMO_LOCAL_TEST"] != "true":
         proxied = dns_check(config) is True

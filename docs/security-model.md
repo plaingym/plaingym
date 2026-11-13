@@ -342,8 +342,8 @@ Details: `apps/server/src/infra/auth/README.md`.
   forwarded headers, except that with `TRUST_CLOUDFLARE=true` (set by the installer
   when the hostname is proxied by Cloudflare) the app takes the client from
   `CF-Connecting-IP` when, and only when, the address Caddy forwarded is in
-  Cloudflare's published ranges (pinned in `deploy/cloudflare-ranges.txt` and
-  `core/cloudflare-ranges.ts`, kept identical by a test). From any other address the
+  Cloudflare's published ranges (the canonical `deploy/cloudflare-ranges.txt`,
+  packaged with the app and read by `core/cloudflare-ranges.ts`). From any other address the
   header is ignored, so it changes nothing for a server that isn't behind
   Cloudflare. **Limit:** those ranges are shared by every Cloudflare customer, and
   the server also accepts connections that don't come through the proxy, so

@@ -1,8 +1,7 @@
 #cloud-config
 # SPDX-License-Identifier: AGPL-3.0-only
-# Replace COMMIT (a full reviewed commit SHA), HOSTNAME and EMAIL before use.
-# For task validation, load the image and extracted deploy bundle first, then run
-# install.sh --local-image; no task-branch image is published.
+# Replace VERSION (vX.Y.Z), HOSTNAME and EMAIL before use.
+# Downloads the same release bootstrap as the one-command install route.
 package_update: true
 packages: [ca-certificates, curl]
 write_files:
@@ -13,13 +12,13 @@ write_files:
       # SPDX-License-Identifier: AGPL-3.0-only
       set -eu
       umask 077
-      commit=COMMIT
-      case "$commit" in *[!a-f0-9]*|'') echo 'Set a reviewed commit SHA' >&2; exit 1 ;; esac
-      [ "${#commit}" -eq 40 ]
+      version=VERSION
+      printf '%s\n' "$version" | grep -Eq '^v(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$' \
+        || { echo 'Set a release version (vX.Y.Z)' >&2; exit 1; }
       staging=$(mktemp -d /root/plaingym-install.XXXXXXXX)
       trap 'rm -rf -- "$staging"' EXIT
-      curl --fail --silent --show-error --location --proto '=https' "https://github.com/plaingym/plaingym/archive/$commit.tar.gz" -o "$staging/source.tar.gz"
-      tar -xzf "$staging/source.tar.gz" --strip-components=1 -C "$staging"
-      sh "$staging/deploy/install.sh" --hostname HOSTNAME --email EMAIL --image ghcr.io/plaingym/app:v0.0.0
+      curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 300 \
+        -o "$staging/bootstrap.sh" "https://github.com/plaingym/plaingym/releases/download/$version/bootstrap.sh"
+      sh "$staging/bootstrap.sh" --hostname HOSTNAME --email EMAIL
 runcmd:
   - [sh, /root/install-plaingym.sh]

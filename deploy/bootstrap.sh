@@ -92,7 +92,7 @@ printf '%s\n' "$version" | grep -Eq '^v(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\
   || fail "This bootstrap.sh is from a dry run ($version), not a release. Nothing was changed."
 for argument in "$@"; do
   case "$argument" in
-    --image|--image-archive|--local-image) fail "The release sets the image; leave out $argument. Nothing was changed." ;;
+    --image|--image-archive|--local-image|--repository) fail "The release sets the image and repository; leave out $argument. Nothing was changed." ;;
   esac
 done
 architecture=$(dpkg --print-architecture)
@@ -105,7 +105,8 @@ fetch() {
     || fail "Could not download $1. Nothing was changed."
 }
 printf -- '-----BEGIN PUBLIC KEY-----\n%s\n-----END PUBLIC KEY-----\n' "$release_key" > "$work/release-signing.pem"
-fetch "$base/release-manifest.txt" "$work/release-manifest.txt" 65536
+fetch "$base/release-manifest.txt" "$work/release-manifest.txt" 4096
+[ "$(wc -c < "$work/release-manifest.txt")" -le 4096 ] || fail 'The release manifest is too large. Nothing was changed.'
 fetch "$base/release-manifest.txt.sig" "$work/release-manifest.txt.sig" 4096
 # The same check update.sh makes (manifest_verify in lib.sh): a 64-byte Ed25519 signature of the manifest's bytes.
 if [ "$(wc -c < "$work/release-manifest.txt.sig")" -ne 64 ] \
@@ -118,14 +119,6 @@ value() { awk -v key="$1" 'index($0, key "=") == 1 { n++; sub(/^[^=]*=/, ""); fo
 if [ "$(value format)" != plaingym-release-manifest/2 ] || [ "$(value version)" != "$version" ]; then
   fail "The signed manifest is not the $version release's. Nothing was changed."
 fi
-image=$(value image)
-digest=$(value digest)
-if ! printf '%s\n' "$image" | grep -Eq '^[a-z0-9][a-z0-9.-]*(:[0-9]{1,5})?(/[a-z0-9][a-z0-9._-]*)+$' \
-  || ! printf '%s\n' "$digest" | grep -Eq '^sha256:[a-f0-9]{64}$'; then
-  fail "The $version manifest names no valid image. Nothing was changed."
-fi
-value "digest.linux/$architecture" | grep -Eq '^sha256:[a-f0-9]{64}$' \
-  || fail "The $version release has no $architecture image. Nothing was changed."
 archive=plaingym-deploy-$version.tar.gz
 archive_sha256=$(value deploy_archive_sha256)
 if [ "$(value deploy_archive)" != "$archive" ] || ! printf '%s\n' "$archive_sha256" | grep -Eq '^sha256:[a-f0-9]{64}$'; then
@@ -136,10 +129,18 @@ printf '%s  %s\n' "${archive_sha256#sha256:}" "$work/$archive" | sha256sum -c - 
   || fail "$archive does not match the SHA-256 in the signed manifest. Nothing was changed."
 tar -xzf "$work/$archive" -C "$work" --no-same-owner
 [ -f "$work/deploy/install.sh" ] || fail "$archive has no deploy/install.sh. Nothing was changed."
+# After authenticating the archive, use the same validator as its updater. No downloaded code runs before its hash
+# has been checked against the signed manifest; a malformed manifest never reaches the installer.
+sh -c '. "$1/deploy/lib.sh" && manifest_check "$2" "$3"' sh "$work" "$work/release-manifest.txt" "$version" \
+  || fail 'The signed release manifest is malformed. Nothing was changed.'
+value "digest.linux/$architecture" | grep -Eq '^sha256:[a-f0-9]{64}$' \
+  || fail "The $version release has no $architecture image. Nothing was changed."
+image=$(value image)
+digest=$(value digest)
 # The installer copies this key for update.sh, so later releases are checked with the key that checked this one.
 if [ ! -f "$work/deploy/release-signing.pem" ] || [ "$(sed '/^-----/d' "$work/deploy/release-signing.pem" | tr -d '\r\n')" != "$release_key" ]; then
   fail "$archive carries another release signing key than this bootstrap's. Nothing was changed."
 fi
-sh "$work/deploy/install.sh" --image "$image:$version@$digest" "$@"
+sh "$work/deploy/install.sh" --image "$image:$version@$digest" --repository "$release_repository" "$@"
 }
 main "$@"

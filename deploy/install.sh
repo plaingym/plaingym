@@ -8,21 +8,23 @@ SOURCE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 hostname=
 image=
 email=
+repository=plaingym/plaingym
 local_image=false
 image_archive=
 ROOT=/opt/plaingym
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --hostname|--image|--email|--directory|--image-archive)
+    --hostname|--image|--email|--directory|--image-archive|--repository)
       [ "$#" -ge 2 ] || fail "Missing value for $1"
       case "$1" in
         --hostname) hostname=$2 ;; --image) image=$2 ;;
         --email) email=$2 ;; --directory) ROOT=$2 ;;
+        --repository) repository=$2 ;;
         --image-archive) image_archive=$2; local_image=true ;;
       esac
       shift 2 ;;
     --local-image) local_image=true; shift ;;
-    *) fail 'Usage: install.sh --hostname DNS_NAME --email EMAIL --image IMAGE [--local-image | --image-archive FILE] [--directory /opt/plaingym]' ;;
+    *) fail 'Usage: install.sh --hostname DNS_NAME --email EMAIL --image IMAGE [--repository OWNER/REPO] [--local-image | --image-archive FILE] [--directory /opt/plaingym]' ;;
   esac
 done
 [ "$(id -u)" -eq 0 ] || fail 'Run install.sh as root.'
@@ -30,6 +32,7 @@ if [ -z "$hostname" ] || [ "${#hostname}" -gt 253 ]; then fail 'A DNS hostname i
 printf '%s\n' "$hostname" | grep -Eq '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$' || fail 'Use a lowercase public DNS hostname, without a URL or port.'
 printf '%s\n' "$email" | grep -Eq '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$' || fail 'An ACME contact email is required.'
 valid_image "$image" || fail 'Use an explicit semver image tag or sha256 digest.'
+valid_repository "$repository" || fail 'Use --repository OWNER/REPO. Nothing was changed.'
 case "$ROOT" in /*) ;; *) fail 'Installation directory must be absolute.' ;; esac
 # The update timer's unit names the directory, so keep it to plain path characters.
 case "$ROOT" in *[!A-Za-z0-9/._-]*) fail 'Use an installation directory of letters, digits, and / . _ - only. Nothing was changed.' ;; esac
@@ -52,6 +55,9 @@ if [ -e "$ROOT/.env" ]; then
   [ "$(read_env GYM_HOSTNAME)" = "$hostname" ] || fail "This server is installed for $(read_env GYM_HOSTNAME). Nothing was changed."
   [ "$(read_env ACME_EMAIL)" = "$email" ] || fail 'This installation uses a different ACME email. Nothing was changed.'
   [ "$(read_env APP_IMAGE)" = "$image" ] || fail "This installation runs $(read_env APP_IMAGE); use update.sh to change the image. Nothing was changed."
+  saved_repository=$(read_env RELEASE_REPOSITORY)
+  [ "${saved_repository:-plaingym/plaingym}" = "$repository" ] \
+    || fail "This installation uses a different release repository (${saved_repository:-plaingym/plaingym}); re-run with --repository ${saved_repository:-plaingym/plaingym}. Nothing was changed."
 fi
 check_dns "$hostname"
 # A proxied re-run needs this install's own files to carry the Cloudflare support: the app reads TRUST_CLOUDFLARE
@@ -89,6 +95,7 @@ if [ "$existing" = false ]; then
   # Generate independent passwords; nothing is written to stdout.
   {
     printf 'COMPOSE_PROJECT_NAME=plaingym\nAPP_IMAGE=%s\nGYM_HOSTNAME=%s\nACME_EMAIL=%s\nPOSTGRES_DB=plaingym\n' "$image" "$hostname" "$email"
+    printf 'RELEASE_REPOSITORY=%s\n' "$repository"
     printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 32)"
     printf 'APP_PASSWORD=%s\n' "$(openssl rand -hex 32)"
     printf 'MAINTENANCE_PASSWORD=%s\n' "$(openssl rand -hex 32)"

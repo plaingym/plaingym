@@ -1,6 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Shared host-side helpers. Do not enable shell tracing: .env contains secrets.
+plaingym_shared_helpers_loaded() { :; }
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 valid_image() {
   printf '%s\n' "$1" | grep -Eq '^([a-zA-Z0-9][a-zA-Z0-9._:/-]*)(:v?[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?|@sha256:[a-f0-9]{64})$'
@@ -32,7 +33,7 @@ version_at_least() { # VERSION FLOOR (release versions only)
   valid_version "$1" && valid_version "$2" || return 1
   awk -v version="${1#v}" -v floor="${2#v}" 'BEGIN { split(version, v, "."); split(floor, f, "."); for (i=1;i<=3;i++) { if (v[i]+0 > f[i]+0) exit 0; if (v[i]+0 < f[i]+0) exit 1 } exit 0 }'
 }
-default_rollback_floor() { # VERSION: previous minor, or itself at a major boundary
+default_rollback_floor() { # Legacy format-1 manifests only; publishers must supply an explicit floor.
   base=${1#v}; base=${base%%+*}
   major=${base%%.*}; minor=${base#*.}; minor=${minor%%.*}
   if [ "$minor" -gt 0 ]; then printf 'v%s.%s.0\n' "$major" "$((minor - 1))"; else printf 'v%s.0.0\n' "$major"; fi
@@ -356,6 +357,46 @@ in_cloudflare_ranges() {
 # server: they pass, and dns_proxied=true tells the installer to trust the proxy. The
 # installer then proves the name reaches this server through it before printing the
 # setup link (install.sh, the origin check).
+valid_public_address() { # ADDRESS FAMILY: canonical public unicast, without trusting a proxy's response body.
+  python3 -c '
+import ipaddress, sys
+try:
+    text, family = sys.argv[1], int(sys.argv[2])
+    address = ipaddress.ip_address(text)
+    if address.version != family or str(address) != text or "%" in text:
+        sys.exit(1)
+    # Documentation ranges are valid spellings (and useful in offline host tests).
+    blocked = ("0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
+               "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16", "224.0.0.0/3")
+    if family == 4:
+        sys.exit(any(address in ipaddress.ip_network(net) for net in blocked))
+    sys.exit(address not in ipaddress.ip_network("2000::/3"))
+except ValueError:
+    sys.exit(1)
+' "$1" "$2"
+}
+
+# Prefer the zone's own DNS response code to an unrelated name's availability.
+dns_response_code() { # HOSTNAME
+  if command -v dig >/dev/null 2>&1; then
+    for record_type in A AAAA; do
+      code=$(dig +time=5 +tries=1 "$1" "$record_type" 2>/dev/null | sed -n 's/.*status: \([A-Z]*\),.*/\1/p')
+      case "$code" in NOERROR|NXDOMAIN) ;; *) echo FAILED; return ;; esac
+    done
+    echo "$code"
+  elif command -v resolvectl >/dev/null 2>&1; then
+    if response=$(LC_ALL=C resolvectl query "$1" 2>&1); then echo NOERROR
+    else
+      # Match the name itself: "Unit dbus-org.freedesktop.resolve1.service not found" is a resolver failure.
+      case "$response" in
+        *"'$1' not found"*) echo NXDOMAIN ;;
+        *"'$1' does not have any RR"*) echo NOERROR ;;
+        *) echo FAILED ;;
+      esac
+    fi
+  fi
+}
+
 check_dns() {
   # Read by install.sh after the call.
   # shellcheck disable=SC2034
@@ -370,27 +411,34 @@ check_dns() {
   esac
   resolved=$(printf '%s\n' "$resolved" | awk '{print $1}' | sort -u)
   if [ "$dns_status" -ne 0 ] || [ -z "$resolved" ]; then
-    # getent returns 2 both for a missing record and for a resolver failure.
-    # Probe the existing public-address service's name before suggesting a wait.
-    if getent -s dns ahosts api.ipify.org >/dev/null 2>&1; then
+    response_code=$(dns_response_code "$1")
+    case "$response_code" in
+      NXDOMAIN|NOERROR) missing=true ;;
+      '')
+        # getent alone cannot distinguish a missing record from a resolver failure.
+        # This fallback name has both A and AAAA records, including on IPv6-only hosts.
+        missing=false
+        if getent -s dns ahosts api64.ipify.org >/dev/null 2>&1; then missing=true; fi ;;
+      *) missing=false ;;
+    esac
+    if [ "$missing" = true ]; then
       fail "$1 does not resolve yet. Check that its A record (and AAAA, if used) points at this server. $dns_retry"
     fi
-    fail "This server could not query DNS for $1 or api.ipify.org. Check the server's DNS resolver and network connectivity, then retry the installer. Nothing was changed."
+    fail "This server could not query DNS for $1. Check the server's DNS resolver and network connectivity, then retry the installer. Nothing was changed."
   fi
   own=$(ip -o address show | awk '{sub(/\/.*/, "", $4); print $4}')
   # Global unicast IPv6 uses 2000::/3; link-local and private addresses do not
   # establish that this server can have a public IPv6 address behind NAT.
   global6=$(printf '%s\n' "$own" | grep -E '^[23][[:xdigit:]]{3}:' || true)
-  public4_failed=true
-  public6_failed=true
-  public4_checked=false
-  public6_checked=false
-  dns_mismatch=''
-  dns_unconfirmed=''
+  public4_state=unchecked
+  public6_state=unchecked
+  dns_problems=''
   for address in $resolved; do
     case "$address" in
       127.*|::1) case "$1" in *.localhost) continue ;; esac
-        fail "$1 resolves to a loopback address. Point it at this server's public IP. $dns_retry" ;;
+        dns_problems="$dns_problems
+$1 resolves to a loopback address ($address). Point it at this server's public IP. $dns_retry"
+        continue ;;
     esac
     if [ -n "${CLOUDFLARE_RANGES:-}" ] && in_cloudflare_ranges "$address" "$CLOUDFLARE_RANGES"; then
       # shellcheck disable=SC2034
@@ -401,53 +449,33 @@ check_dns() {
       # Only consult the matching public-address service after a local miss,
       # once per family. This also covers providers that NAT the public address.
       case "$address" in
-        *:*) checked=$public6_checked; public6_checked=true; family=6; url=https://api6.ipify.org ;;
-        *) checked=$public4_checked; public4_checked=true; family=4; url=https://api.ipify.org ;;
+        *:*) state=$public6_state; family=6; url=https://api6.ipify.org ;;
+        *) state=$public4_state; family=4; url=https://api.ipify.org ;;
       esac
-      if [ "$checked" = false ] && command -v curl >/dev/null 2>&1; then
-        if public=$(curl --fail --silent --max-time 5 --proto '=https' "$url") &&
-          printf '%s\n' "$public" | awk -v family="$family" '
-            NR != 1 { exit 1 }
-            family == 4 {
-              if ($0 !~ /^[0-9.]+$/ || split($0, parts, "[.]") != 4) exit 1
-              for (i = 1; i <= 4; i++) if (parts[i] == "" || length(parts[i]) > 3 || parts[i] + 0 > 255) exit 1
-              next
-            }
-            {
-              if ($0 !~ /^[[:xdigit:]:]+$/ || $0 ~ /:::/ || $0 ~ /^:[^:]/ || $0 ~ /[^:]:$/) exit 1
-              count = split($0, parts, ":"); groups = 0
-              for (i = 1; i <= count; i++) {
-                if (length(parts[i]) > 4) exit 1
-                if (parts[i] != "") groups++
-              }
-              compressed = gsub(/::/, "::")
-              if (compressed == 1 && groups < 8) next
-              if (compressed == 0 && groups == 8 && count == 8) next
-              exit 1
-            }'; then
+      if [ "$state" = unchecked ]; then
+        state=failed
+        if command -v curl >/dev/null 2>&1 &&
+          public=$(curl --fail --silent --max-time 5 --proto '=https' "$url") &&
+          valid_public_address "$public" "$family"; then
           own="$own
 $public"
-          case "$family" in 4) public4_failed=false ;; 6) public6_failed=false ;; esac
+          state=confirmed
         fi
+        case "$family" in 4) public4_state=$state ;; 6) public6_state=$state ;; esac
       fi
       if printf '%s\n' "$own" | grep -qxF "$address"; then continue; fi
-      case "$address" in
-        *:*)
-          lookup_failed=$public6_failed
-          if [ "$lookup_failed" = true ] && [ -z "$global6" ]; then
-            dns_mismatch="$1 resolves to $address, but this server has no global IPv6 address. Remove the AAAA record or configure working public IPv6. $dns_retry"
-            continue
-          fi ;;
-        *) lookup_failed=$public4_failed ;;
-      esac
-      if [ "$lookup_failed" = true ]; then
-        dns_unconfirmed="$1 resolves to $address, which is not assigned to this server's network interfaces. The public-address lookup failed, so the installer could not confirm this server's public address. Check that curl is installed and outbound HTTPS works with no filtering proxy or captive portal in the way, then retry the installer. Nothing was changed."
+      if [ "$state" = failed ]; then
+        extra=''
+        if [ "$family" = 6 ] && [ -z "$global6" ]; then
+          extra=' This server has no global IPv6 address: the AAAA record may be wrong, or outbound IPv6 may not be working (including behind IPv6 NAT). Remove the AAAA record or configure working public IPv6.'
+        fi
+        dns_problems="$dns_problems
+$1 resolves to $address, which is not assigned to this server's network interfaces. The public-address lookup failed for IPv$family, so the installer could not confirm this server's public address.$extra Check that curl is installed and outbound HTTPS works with no filtering proxy or captive portal in the way, then retry the installer. Nothing was changed."
       else
-        dns_mismatch="$1 resolves to $address, which is not this server. Point the record here, DNS only or through Cloudflare's proxy; other proxies aren't supported. $dns_retry"
+        dns_problems="$dns_problems
+$1 resolves to $address, which is not this server. Point the record here, DNS only or through Cloudflare's proxy; other proxies aren't supported. $dns_retry"
       fi
     fi
   done
-  # Inspect every answer: an unconfirmed address must not hide a known mismatch.
-  [ -z "$dns_mismatch" ] || fail "$dns_mismatch"
-  [ -z "$dns_unconfirmed" ] || fail "$dns_unconfirmed"
+  [ -z "$dns_problems" ] || fail "$dns_problems"
 }
