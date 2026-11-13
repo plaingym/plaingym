@@ -8,7 +8,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { runInTransaction } from '@plaingym/shared/transaction';
 import { TestClock } from '../../core/clock.js';
-import { CustomerCreationInProgress, FakePayments } from '../../infra/payments/index.js';
+import { CustomerCreationInProgress, CustomerDeleted, FakePayments } from '../../infra/payments/index.js';
 import { createCustomersService, customerUnlinkedAction, CustomerUnavailable, stripeTestClearedAction } from './customers.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
@@ -239,10 +239,17 @@ describe('household Stripe customer reservations with PostgreSQL', () => {
     const saved = await f.read();
     expect(saved.household.stripeCustomerId).toBe(replaced);
     expect(saved.audits.find(a => a.action === customerUnlinkedAction)).toMatchObject({ targetId: f.household.id, before: { customerId: 'cus_unreadable' }, after: { customerId: null, reason: 'unreadable' } });
-    // The service's own customer needs no Stripe call.
+    // The service's own customer is read too (one read, nothing written, since it is tagged), and kept.
     adopt.mockClear();
     expect(await f.service.readableCustomer(f.gymId, f.household.id, replaced, f.provider)).toBe(replaced);
-    expect(adopt).not.toHaveBeenCalled();
+    expect(adopt).toHaveBeenCalledTimes(1);
+    // Deleted in the Stripe dashboard: replaced before Checkout with a live key, rather than failing every Checkout at Stripe.
+    adopt.mockRejectedValueOnce(new CustomerDeleted());
+    const renewed = await f.service.readableCustomer(f.gymId, f.household.id, replaced, f.provider);
+    expect(renewed).not.toBe(replaced);
+    expect((await f.read()).household.stripeCustomerId).toBe(renewed);
+    expect((await f.read()).audits.filter(a => a.action === customerUnlinkedAction).at(-1))
+      .toMatchObject({ before: { customerId: replaced }, after: { customerId: null, reason: 'deleted' } });
     // A readable imported customer is adopted (tagged for the gym) and kept; any other failure is raised, never replaced.
     f.provider.seedCustomer({ id: 'cus_imported', email: 'payer@example.invalid' });
     await db.forGym(f.gymId, tx => tx.update(households).set({ stripeCustomerId: 'cus_imported' }).where(eq(households.id, f.household.id)));

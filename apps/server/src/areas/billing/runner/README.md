@@ -101,7 +101,11 @@ lock, in the switch's order), so it waits for a switch in progress, and compares
 gym's latest `integrations.stripe_test_cleared` audit with the one read before the
 provider was resolved. If a switch committed in between, the provider may hold the
 old test key: nothing is reserved, and the charge starts again once with the
-provider resolved again (a second change skips with `collection_changed`).
+provider resolved again (a second change skips with `collection_changed`). Before
+releasing an invoice's Checkout session or action-needed PaymentIntent, the charge
+reads the latest switch again once the provider is resolved: a switch that committed
+since the invoice was read cleared those test objects, and the live key can't release
+them, so the charge starts again the same way.
 
 Each charge commits immutable amount, currency, customer and saved-method fields
 before adopting the stored customer or creating an unconfirmed PaymentIntent.
@@ -205,8 +209,10 @@ of acknowledging the callback without its continuation.
 
 Restore refreshes stored unresolved intents, payment Checkout sessions on open or
 past-due invoices, pending refunds, and open disputes on any invoice by ID, except
-a dispute on an invoice paid only by payments marked `Stripe test mode` (that
-dispute is in the test account, which the live key can't read). It reads
+a dispute in Stripe's test mode, which the live key can't read: one whose own payment
+is marked `Stripe test mode` (the dispute writer records the disputed payment as
+`paymentId` in its `billing.invoice.disputed` audit), or, for one recorded without
+it, one on an invoice paid only by marked payments. It reads
 only reference columns and does not sweep historical paid-invoice Checkouts.
 `Payments.listChangesSince` still discovers sessions changed since the snapshot,
 including sessions on paid invoices. It supplies all pages of events and

@@ -7,7 +7,7 @@ import { auditEvents, emailDeliveries, gyms, invoices, jobs, members, membership
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError, staffRoles, type StaffRole } from '@plaingym/shared';
-import { matDashboardResponseSchema } from '@plaingym/shared/contracts';
+import { matDashboardResponseSchema, stripeTestPaymentReference } from '@plaingym/shared/contracts';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
 import { TestClock } from '../../../core/clock.js';
 import type { Principal } from '../../../core/context.js';
@@ -269,6 +269,36 @@ describe('billing alerts with the real PostgreSQL queue and RLS', () => {
     await db.forGym(f.gymId, tx => tx.update(invoices).set({ disputeId: 'dp_next' }).where(eq(invoices.id, invoice.id)));
     await f.alerts.disputes(f.gymId); await drain(f.queue);
     expect(enqueue).toHaveBeenCalledTimes(1); expect(f.email.messages).toHaveLength(2);
+  });
+  it('never sends or scans a test-mode dispute a switch to live closed, even with its alert already queued', async () => {
+    const f = await fixture();
+    const invoice = await factory('invoices', f.gymId, { disputeId: 'dp_switch', disputeStatus: 'needs_response' });
+    const enqueue = vi.spyOn(f.queue, 'enqueue');
+    await f.alerts.disputes(f.gymId);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    // The switch commits before the queued alert runs: it closes the dispute, audited with its reason.
+    await db.forGym(f.gymId, async tx => {
+      await tx.update(invoices).set({ disputeStatus: 'closed' }).where(eq(invoices.id, invoice.id));
+      await tx.insert(auditEvents).values({ gymId: f.gymId, actorKind: 'system', action: 'billing.invoice.disputed', targetType: 'invoice',
+        targetId: invoice.id, before: { disputeId: 'dp_switch', disputeStatus: 'needs_response' },
+        after: { disputeId: 'dp_switch', disputeStatus: 'closed', reason: 'stripe_test_cleared' }, occurredAt: f.clock.now() });
+    });
+    await drain(f.queue);
+    expect(f.email.messages).toHaveLength(0);
+    enqueue.mockClear();
+    await f.alerts.disputes(f.gymId);
+    expect(enqueue).not.toHaveBeenCalled();
+    // A final dispute on an invoice paid only by a card payment a switch marked as test isn't scanned either; one beside a
+    // live payment is.
+    const testOnly = await factory('invoices', f.gymId, { disputeId: 'dp_test_won', disputeStatus: 'won' });
+    await factory('payments', f.gymId, { invoiceId: testOnly.id, method: 'card', paymentIntentId: 'pi_test_won', reference: stripeTestPaymentReference });
+    const mixed = await factory('invoices', f.gymId, { disputeId: 'dp_live_won', disputeStatus: 'won' });
+    await factory('payments', f.gymId, { invoiceId: mixed.id, method: 'card', paymentIntentId: 'pi_test_mixed', reference: stripeTestPaymentReference });
+    await factory('payments', f.gymId, { invoiceId: mixed.id, method: 'card', paymentIntentId: 'pi_live_mixed' });
+    await f.alerts.disputes(f.gymId); await drain(f.queue);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(enqueue).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ disputeId: 'dp_live_won' }), expect.anything());
+    expect(f.email.messages).toHaveLength(1);
   });
   it('schedules dispute scans hourly at minute 41', () => {
     expect(createBillingAlertJobs().find(job => job.id === 'billing.alerts.disputes')?.cron).toBe('41 * * * *');

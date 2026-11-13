@@ -44,6 +44,11 @@ The dispute query excludes invoices with a matching `billing.alert.dispute.sent`
 audit event (gym, invoice target type/ID and JSON dispute ID); the permanent queue
 key remains the final guard against concurrent scans. Resolved but unreported
 disputes remain eligible. A different dispute on the same invoice is eligible too.
+A Stripe test-mode dispute is never alerted (`testModeDispute` in `disputes.query.ts`):
+one a switch from test to live closed (its `billing.invoice.disputed` audit has
+`reason: 'stripe_test_cleared'`), or one on an invoice paid only by card payments a
+switch marked `Stripe test mode`. The scan leaves it out, and a send job queued
+or retrying before the switch finds it and sends nothing.
 
 Send jobs explicitly allow **48 attempts for cards** and **18 for disputes**.
 With the queue's default one-second exponential backoff capped at 24 hours,

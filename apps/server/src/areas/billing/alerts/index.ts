@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, count, eq, gt, inArray, isNotNull, isNull, notInArray, or } from 'drizzle-orm';
+import { and, asc, count, eq, gt, inArray, isNotNull, isNull, not, notInArray, or } from 'drizzle-orm';
 import { auditEvents, forGym, invoices, memberships, paymentMethods, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, canStaff, type Clock, type Translator } from '@plaingym/shared';
 import { dateSchema, extensionDashboardWidgetSchema, idSchema, terminalDisputeStatuses } from '@plaingym/shared/contracts';
@@ -14,7 +14,7 @@ import type { JobContext, Jobs } from '../../../infra/jobs/index.js';
 import { renderBillingAlert } from '../../../emails/billing/alerts.js';
 import { createSignedLinksService } from '../../links/service.js';
 import { householdRecipient } from '../../members/household-recipient.js';
-import { unalertedDisputes } from './disputes.query.js';
+import { testModeDispute, unalertedDisputes } from './disputes.query.js';
 
 export const sendAlertJob = 'billing.alerts.send';
 // Default queue backoff: 1s doubling to a 24h cap. These budgets cover >31 days and >36 hours.
@@ -191,7 +191,9 @@ export function createBillingAlerts(options: BillingAlertsOptions) {
       }
       await audit(gymId, work.kind, work.paymentMethodId, { cycle: work.cycle, linkId: created.link.id });
     } else {
-      const [invoice] = await scope(gymId, tx => tx.select().from(invoices).where(eq(invoices.id, work.invoiceId)));
+      // A test-mode dispute (one a switch to live closed, say, while its alert was queued or retrying) is never sent.
+      const [invoice] = await scope(gymId, tx => tx.select().from(invoices)
+        .where(and(eq(invoices.id, work.invoiceId), not(testModeDispute(tx, gymId)))));
       if (!invoice || invoice.disputeId !== work.disputeId) return;
       const owners = [...new Set((await options.accounts.staffEmails(gymId, ['owner'])).map(recipient))];
       if (!owners.length) throw new Error('No owner email configured for dispute alerts');

@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 // eslint-disable-next-line database/system-tables -- One test reads backend PIDs to see a reservation wait on the gym row lock.
 import { eq, sql } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- One test holds the gym row the way a settings save does.
-import { auditEvents, gyms } from '@plaingym/db';
+import { auditEvents, gyms, invoices, type Transaction } from '@plaingym/db';
 import { FakePayments } from '../../../infra/payments/index.js';
 import { stripeTestClearedAction } from '../customers.js';
 import { createChargeRunner } from './index.js';
@@ -79,6 +79,36 @@ describe('a charge run across a switch from Stripe test mode to live', () => {
     expect(await charging).toEqual({ status: 'succeeded' });
     for (const call of oldCalls) expect(call).not.toHaveBeenCalled();
     expect(create).toHaveBeenCalledTimes(1);
+    expect((await f.read()).attempts).toMatchObject([{ attemptNumber: 1, status: 'succeeded' }]);
+  });
+  /**
+   * A runner whose first provider resolution sees a switch that committed after the charge read the invoice: the switch
+   * (`clear`, then its audit) commits first, so that resolution already returns the live provider.
+   */
+  function switchedOnResolve(f: Fixture, clear: (tx: Transaction) => Promise<unknown>) {
+    let resolved = 0;
+    const runner = createChargeRunner({ ...f.serviceOptions, transitions: f.transitions, async payments() {
+      if (resolved++ === 0) await db.forGym(f.gymId, async tx => { await clear(tx); await tx.insert(auditEvents).values(switchAudit(f)); });
+      return f.provider;
+    } });
+    return { runner, resolutions: () => resolved };
+  }
+  it('makes no release call with the live provider for a test Checkout session the switch cleared after it was read', async () => {
+    const f = await fixture(), bill = await invoice(f);
+    const old = new FakePayments(f.gymId, f.clock);
+    old.keyMode = 'test';
+    old.seedCustomer({ id: 'cus_test', email: 'payer@example.invalid' });
+    const session = await old.createCheckout({ mode: 'payment', customerId: 'cus_test', amount: 10000, currency: 'cad', invoiceId: bill.id,
+      successUrl: 'https://gym.example.invalid/success', cancelUrl: 'https://gym.example.invalid/cancel', saveForOffSession: true,
+      idempotencyKey: bill.id + ':checkout' });
+    await db.forGym(f.gymId, tx => tx.update(invoices).set({ checkoutSessionId: session.id }).where(eq(invoices.id, bill.id)));
+    const expire = vi.spyOn(f.provider, 'expireCheckout'), read = vi.spyOn(f.provider, 'readPaymentObject');
+    const { runner, resolutions } = switchedOnResolve(f, tx =>
+      tx.update(invoices).set({ checkoutSessionId: null, checkoutExpiresAt: null }).where(eq(invoices.id, bill.id)));
+    expect(await runner.charge(f.gymId, bill.id)).toEqual({ status: 'succeeded' });
+    expect(resolutions()).toBe(2);
+    expect(expire).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalledWith(expect.objectContaining({ id: session.id }));
     expect((await f.read()).attempts).toMatchObject([{ attemptNumber: 1, status: 'succeeded' }]);
   });
   it('charges as before when no switch commits during the run', async () => {

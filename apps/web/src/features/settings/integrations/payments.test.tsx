@@ -10,7 +10,7 @@ const client = vi.hoisted(() => ({ GET: vi.fn(), PUT: vi.fn(), POST: vi.fn(), DE
 vi.mock('../../../lib/api.js', () => ({ api: client, createApiClient: () => client }));
 
 const connected: Integrations = { ...integrations, revision: 4, payments: { configured: true, mode: 'test', webhookRegistered: true, accountLocked: true,
-  testData: { customers: 3, cards: 2, checkouts: 1, payments: 4, importedCustomers: 5, importedCards: 6 }, importedCustomersOnly: false } };
+  testData: { customers: 3, cards: 2, checkouts: 1, payments: 4, importedCustomers: 5, importedCards: 6, disputes: 7 }, importedCustomersOnly: false } };
 const live: Integrations = { ...connected, revision: 5, payments: { ...connected.payments, mode: 'live', accountLocked: false, testData: null } };
 let current: Integrations;
 beforeEach(() => { for (const fn of Object.values(client)) fn.mockReset(); current = integrations; serve(client.GET, () => current, health('2026-11-02T11:00:00Z', null)); });
@@ -91,7 +91,7 @@ describe('Settings → Payments', () => {
     await submit(user, 'rk_live_abc123');
     const confirm = await screen.findByRole('form', { name: 'Switch to live mode' });
     expect(screen.queryByRole('form', { name: 'Payments' })).toBeNull();
-    for (const line of ['Households’ test Stripe customers: 3.', 'Saved test cards: 2.', 'Open Stripe payment and card pages: 1.', 'Test card payments: 4.'])
+    for (const line of ['Households’ test Stripe customers: 3.', 'Saved test cards: 2.', 'Open Stripe payment and card pages: 1.', 'Open test disputes: 7.', 'Test card payments: 4.'])
       expect(within(confirm).getByText(new RegExp(line.replace('.', '\\.')))).toBeDefined();
     expect(within(confirm).getByText(/marked “Stripe test mode”/)).toBeDefined();
     // Imported references are listed as kept: they may be the gym's live customers and cards.

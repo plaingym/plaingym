@@ -27,13 +27,14 @@ export const emailIntegrationSchema = z.strictObject({
 });
 /**
  * What a switch from test to live clears (`clearTestData`): households holding a Stripe customer the test key made,
- * the cards saved through Stripe, and open Checkout or card-setup sessions. `payments` counts the card payments that stay
+ * the cards saved through Stripe, and open Checkout or card-setup sessions. `disputes` counts the invoices whose open dispute it closes:
+ * one on a card payment it marks as test, which the live key can't read or answer. `payments` counts the card payments that stay
  * in the books, marked as test. `importedCustomers` and `importedCards` stay too: an import writes Stripe IDs without
  * asking Stripe, so they may be the gym's live ones.
  */
 export const stripeTestDataSchema = z.strictObject({
   customers: z.int().nonnegative(), cards: z.int().nonnegative(), checkouts: z.int().nonnegative(), payments: z.int().nonnegative(),
-  importedCustomers: z.int().nonnegative(), importedCards: z.int().nonnegative(),
+  importedCustomers: z.int().nonnegative(), importedCards: z.int().nonnegative(), disputes: z.int().nonnegative(),
 });
 /**
  * The gym's Stripe settings, never the key or the webhook signing secret. `accountLocked` is true once a household has a

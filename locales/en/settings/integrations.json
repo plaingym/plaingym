@@ -77,6 +77,7 @@
   "payments.switchCustomers": "Households’ test Stripe customers: {count}. Each gets a live customer the first time they pay or save a card.",
   "payments.switchCards": "Saved test cards: {count}. Members save a card again.",
   "payments.switchCheckouts": "Open Stripe payment and card pages: {count}. Their links still work and open a live page.",
+  "payments.switchDisputes": "Open test disputes: {count}. They close, since the live account can’t read or answer them.",
   "payments.switchKept": "Kept:",
   "payments.switchPayments": "Test card payments: {count}. They stay on their invoices, marked “Stripe test mode”.",
   "payments.switchImported": "Imported Stripe customers: {customers}, and imported cards: {cards}. An import may hold the gym’s live ones. A customer the live account can’t read gets a new one the first time that member pays or saves a card.",

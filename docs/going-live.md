@@ -59,8 +59,8 @@ billing back on once the check is clear. The Payments section also explains this
 Then:
 
 1. **Switch to the live Stripe key.** Paste the live key (`rk_live_…`). The page lists what
-   switching clears (test customers, saved test cards, open payment pages) and what
-   stays; confirm it. Test payments stay on their invoices, marked "Stripe test mode", and
+   switching clears (test customers, saved test cards, open payment pages, open test
+   disputes) and what stays; confirm it. Test payments stay on their invoices, marked "Stripe test mode", and
    any open disputes on them are closed (they stay in Stripe's test mode).
 2. **Check backups.** The **System health** page should show a recent successful backup
    under the current key at the current destination. After changing either, wait

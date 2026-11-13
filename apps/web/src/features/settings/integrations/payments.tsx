@@ -91,6 +91,7 @@ export function PaymentsIntegrationSection({ payments, editable, lastEventAt, st
             <li>{text('payments.switchCustomers', { count: counts?.customers ?? '–' })}</li>
             <li>{text('payments.switchCards', { count: counts?.cards ?? '–' })}</li>
             <li>{text('payments.switchCheckouts', { count: counts?.checkouts ?? '–' })}</li>
+            <li>{text('payments.switchDisputes', { count: counts?.disputes ?? '–' })}</li>
           </ul>
         </div>
         <div className="grid gap-1">

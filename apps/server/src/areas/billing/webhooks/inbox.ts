@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, count, desc, eq, gte, isNotNull, isNull, max } from 'drizzle-orm';
-import { auditEvents, forGym, forSystem, stripeEvents, uuidv7, writeAudit } from '@plaingym/db';
+import { and, count, eq, gte, isNotNull, isNull, max } from 'drizzle-orm';
+import { forGym, forSystem, stripeEvents, uuidv7, writeAudit } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { z } from 'zod';
 import { clock as systemClock } from '../../../core/clock.js';
@@ -8,7 +8,7 @@ import { recentWebhookFailureMs, type WebhookHealthQuery } from '../../../core/i
 import type { JobContext, Jobs } from '../../../infra/jobs/index.js';
 import type { PaymentEvent, Payments } from '../../../infra/payments/index.js';
 import { PaymentWebhookError } from '../../../infra/payments/webhook-error.js';
-import { stripeTestClearedAction } from '../customers.js';
+import { latestTestSwitch } from '../customers.js';
 
 export const webhookDispatchJob = 'billing.webhooks.dispatch';
 export type PaymentsResolver = (gymId: string) => Promise<Payments | null>;
@@ -53,10 +53,8 @@ export function createWebhookInbox(options: {
   async function testMode(gymId: string, row: typeof stripeEvents.$inferSelect, event: z.infer<typeof eventSchema>) {
     if (event.livemode !== undefined) return !event.livemode;
     return scope(gymId, async (tx) => {
-      const [latest] = await tx.select({ at: auditEvents.occurredAt }).from(auditEvents)
-        .where(and(eq(auditEvents.action, stripeTestClearedAction), eq(auditEvents.targetId, gymId)))
-        .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1);
-      return latest !== undefined && row.receivedAt < latest.at;
+      const latest = await latestTestSwitch(tx, gymId);
+      return latest !== null && row.receivedAt < latest.occurredAt;
     });
   }
   async function stored(gymId: string, eventId: string) {

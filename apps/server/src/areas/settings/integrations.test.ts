@@ -208,7 +208,7 @@ describe('Settings → Payments', () => {
     expect((await read(server({ gymId: gymB }))).payments).toEqual({ configured: false, mode: null, webhookRegistered: false, accountLocked: false,
       testData: null, importedCustomersOnly: false });
     // Written straight to the household, as an import does: kept by a switch, since it may be a live customer.
-    expect((await read()).payments.testData).toEqual({ customers: 0, cards: 0, checkouts: 0, payments: 0, importedCustomers: 1, importedCards: 0 });
+    expect((await read()).payments.testData).toEqual({ customers: 0, cards: 0, checkouts: 0, payments: 0, importedCustomers: 1, importedCards: 0, disputes: 0 });
     const before = await row();
     const foreign = await save('rk_test_foreign');
     expect(foreign.status).toBe(409);
@@ -279,7 +279,12 @@ describe('Settings → Payments: test to live', () => {
     const link = await factory('signedLinks', gymC, { householdId: payer.id, purpose: 'update_card', expiresAt: new Date('2026-12-01T00:00:00Z') });
     const setup = await provider.createCheckout({ mode: 'setup', customerId: customer.id, linkId: link.id, successUrl: origin + '/l/return',
       cancelUrl: origin + '/l/return', saveForOffSession: true, idempotencyKey: 'setup:' + link.id });
-    await factory('auditEvents', gymC, { action: 'billing.card_setup.started', targetType: 'signed_link', targetId: link.id, after: { sessionId: setup.id } });
+    await factory('auditEvents', gymC, { action: 'billing.card_setup.started', targetType: 'signed_link', targetId: link.id, after: { sessionId: setup.id },
+      occurredAt: new Date(clock.now().getTime() - 3600_000) });
+    // A card setup started more than 24 hours ago from a link that can still be used: Stripe expired its session already.
+    const stale = await factory('signedLinks', gymC, { householdId: payer.id, purpose: 'update_card', expiresAt: new Date('2026-12-01T00:00:00Z') });
+    await factory('auditEvents', gymC, { action: 'billing.card_setup.started', targetType: 'signed_link', targetId: stale.id,
+      after: { sessionId: 'cs_test_expired_by_stripe' }, occurredAt: new Date(clock.now().getTime() - 25 * 3600_000) });
     // A paid invoice with its test card payment, a cash payment, and an action-needed attempt on a past-due invoice.
     // A paid invoice keeps its completed session's ID as history. Its open dispute is in the test account.
     const paid = await factory('invoices', gymC, { householdId: payer.id, status: 'paid', number: 2, checkoutSessionId: 'cs_completed',
@@ -304,7 +309,7 @@ describe('Settings → Payments: test to live', () => {
     await factory('auditEvents', gymC, { action: 'billing.customer.creation_reserved', targetType: 'household', targetId: creating.id, after: { requestHash: 'x' } });
 
     expect((await read(appC())).payments).toEqual({ configured: true, mode: 'test', webhookRegistered: true, accountLocked: true,
-      testData: { customers: 2, cards: 2, checkouts: 2, payments: 1, importedCustomers: 1, importedCards: 1 }, importedCustomersOnly: false });
+      testData: { customers: 2, cards: 2, checkouts: 2, payments: 1, importedCustomers: 1, importedCards: 1, disputes: 1 }, importedCustomersOnly: false });
     const before = await snapshot(gymC), gym = await row(gymC);
 
     // Without the confirmation, a live key stays refused, and nothing changes.
@@ -409,6 +414,58 @@ describe('Settings → Payments: test to live', () => {
     // No account check: the new key was never asked for the imported customer.
     expect(fresh.requests.some((request) => request.path.includes('cus_FromAnotherProcessor'))).toBe(false);
     expect(integrationsResponseSchema.parse(saved.json).data.payments).toMatchObject({ configured: true, mode: 'test', importedCustomersOnly: false });
+  });
+  it('checks a new key against the customers the app linked, not newer imported IDs the account can’t read', async () => {
+    const gymE = uuidv7();
+    await factory('gyms', gymE, { name: 'Gym E' });
+    const ownerE = (await factory('authUser', gymE)).id, appE = () => server({ gymId: gymE, userId: ownerE });
+    expect((await saveTo(appE(), 'rk_test_gyme')).status).toBe(200);
+    const provider = new StripePayments(gymE, { transport: account('rk_test_gyme'), webhookSecret: 'whsec_fixture', mode: 'test' });
+    const customer = await provider.createCustomer({ email: 'linked@example.test', name: 'Linked', householdId: uuidv7(), idempotencyKey: 'e1' });
+    const linked = await factory('households', gymE, { stripeCustomerId: customer.id });
+    await factory('auditEvents', gymE, { action: 'billing.customer.linked', targetType: 'household', targetId: linked.id, after: { customerId: customer.id } });
+    // Three newer households with imported IDs that no account has.
+    for (const id of ['cus_ImportedOne', 'cus_ImportedTwo', 'cus_ImportedThree']) await factory('households', gymE, { stripeCustomerId: id });
+    const foreign = account('rk_test_foreigne');
+    const refused = await saveTo(appE(), 'rk_test_foreigne');
+    expect(refused.json?.error?.details).toEqual({ restrictedKey: ['account_locked'] });
+    // The app's own customer exists, so the imported IDs are never asked for.
+    expect(foreign.requests.some((request) => request.path.includes('cus_Imported'))).toBe(false);
+    accounts.set('rk_test_gymerotated', account('rk_test_gyme'));
+    const rotated = await saveTo(appE(), 'rk_test_gymerotated');
+    expect(rotated.status, JSON.stringify(rotated.json)).toBe(200);
+  });
+  it('after a switch, counts a live card payment and a kept imported card whatever their IDs sort as', async () => {
+    const gymF = uuidv7();
+    await factory('gyms', gymF, { name: 'Gym F' });
+    const ownerF = (await factory('authUser', gymF)).id, appF = () => server({ gymId: gymF, userId: ownerF });
+    expect((await saveTo(appF(), 'rk_test_gymf')).status).toBe(200);
+    const provider = new StripePayments(gymF, { transport: account('rk_test_gymf'), webhookSecret: 'whsec_fixture', mode: 'test' });
+    const customer = await provider.createCustomer({ email: 'payer@example.test', name: 'Payer', householdId: uuidv7(), idempotencyKey: 'f1' });
+    const payer = await factory('households', gymF, { stripeCustomerId: customer.id });
+    await factory('auditEvents', gymF, { action: 'billing.customer.linked', targetType: 'household', targetId: payer.id, after: { customerId: customer.id } });
+    // An imported customer no account has, with an imported card: both stay through the switch.
+    const imported = await factory('households', gymF, { stripeCustomerId: 'cus_ImportedGone' });
+    const importedCard = await factory('paymentMethods', gymF, { householdId: imported.id, processorId: 'pm_ImportedKept' });
+    await factory('auditEvents', gymF, { action: 'payment_method.created', targetType: 'payment_method', targetId: importedCard.id, after: { importId: uuidv7() } });
+    // An ID made before the switch, as a process whose clock runs behind would make one just after it.
+    const early = uuidv7();
+    expect((await saveTo(appF(), 'rk_live_gymf', { clearTestData: true })).status).toBe(200);
+    const foreign = account('rk_live_foreignf');
+    expect((await saveTo(appF(), 'rk_live_foreignf')).json?.error?.details).toEqual({ restrictedKey: ['account_locked'] });
+    // With nothing of the app's own since the switch, the kept imported card counts.
+    expect(foreign.requests.some((request) => request.path === '/v1/payment_methods/pm_ImportedKept')).toBe(true);
+    // A live card payment recorded after the switch, with an ID that sorts before its audit.
+    const live = account('rk_live_gymf');
+    const liveCustomer = await live.request({ method: 'POST', path: '/v1/customers', params: { email: 'live@example.test' } });
+    const intent = await live.request({ method: 'POST', path: '/v1/payment_intents', params: { amount: 1000, currency: 'usd',
+      customer: String(liveCustomer.id), metadata: { gym_id: gymF } } });
+    const invoice = await factory('invoices', gymF, { householdId: payer.id, status: 'paid', number: 1 });
+    await factory('payments', gymF, { id: early, invoiceId: invoice.id, method: 'card', paymentIntentId: String(intent.id) });
+    // It is the app's own reference: a rotated key for the same account reads it, though the imported customer is unreadable.
+    accounts.set('rk_live_gymfrotated', live);
+    const rotated = await saveTo(appF(), 'rk_live_gymfrotated');
+    expect(rotated.status, JSON.stringify(rotated.json)).toBe(200);
   });
 });
 

@@ -12,7 +12,7 @@ const integrations = {
   email: { source: 'gym', host: 'smtp.example.test', port: 587, security: 'starttls', from: 'desk@example.test',
     signIn, signInAfterSave: signIn, signInAfterRemove: { password: true, magicLink: false }, removeBlocked: true },
   payments: { configured: true, mode: 'test', webhookRegistered: true, accountLocked: true,
-    testData: { customers: 2, cards: 1, checkouts: 0, payments: 3, importedCustomers: 1, importedCards: 0 }, importedCustomersOnly: false },
+    testData: { customers: 2, cards: 1, checkouts: 0, payments: 3, importedCustomers: 1, importedCards: 0, disputes: 0 }, importedCustomersOnly: false },
   backups: { configured: true, destination: { endpoint: 'https://s3.example.test', region: 'auto', bucket: 'backups' },
     publicKey: 'age1example', pending: null, retentionBudgetBytes: 8_000_000_000 },
   sandbox: false, integrationsEditable: true, revision: 3,

@@ -47,13 +47,7 @@ export function createCustomersService(options: CustomersOptions) {
     before: null, after, occurredAt: clock.now(),
   });
 
-  /** The gym's latest switch from test to live (its audit's ID), or null. */
-  async function lastSwitch(tx: Transaction, gymId: string): Promise<string | null> {
-    const [row] = await tx.select({ id: auditEvents.id }).from(auditEvents)
-      .where(and(eq(auditEvents.action, stripeTestClearedAction), eq(auditEvents.targetId, gymId)))
-      .orderBy(desc(auditEvents.createdAt), desc(auditEvents.id)).limit(1);
-    return row?.id ?? null;
-  }
+  const lastSwitch = latestTestSwitchId;
 
   async function ensureCustomer(gymId: string, householdId: string, retried = false): Promise<string> {
     // Resolve local configuration before reserving an operation that might reach Stripe.
@@ -137,16 +131,14 @@ export function createCustomersService(options: CustomersOptions) {
    * The household's stored customer, checked with the gym's Stripe account (and tagged for the gym, as a charge does)
    * before a Checkout uses it. A customer the account can't read (404: an imported ID from another account, or a typo) is
    * cleared with an audit and replaced by a new one, as is one the account has deleted (`CustomerDeleted`); any other failure is
-   * raised. A customer this service created and linked is the account's own (a key for another account is refused while it is linked), so it needs no Stripe call.
+   * raised. Every stored customer is read, including one this service created and linked or a link campaign matched: the
+   * gym can delete it in the Stripe dashboard, and a Checkout for a deleted customer fails at Stripe. One read per Checkout
+   * (a customer already tagged for the gym needs no write).
    * With a test key the ID is kept and the Checkout refused instead: a live customer of the gym's own account (one
    * imported, say) looks missing to a test key, and replacing it would lose the member's live customer. A deleted customer is kept
    * the same way: a test key reads only test mode, and the deleted customer may be the live one the gym later restores.
    */
   async function readableCustomer(gymId: string, householdId: string, customerId: string, provider: Payments): Promise<string> {
-    const created = await scope(gymId, async tx => (await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
-      eq(auditEvents.targetType, 'household'), eq(auditEvents.targetId, householdId), eq(auditEvents.action, 'billing.customer.linked'))))
-      .some(({ after }) => (after as { customerId?: unknown } | null)?.customerId === customerId));
-    if (created) return customerId;
     let reason = 'unreadable';
     try { await provider.adoptCustomer(customerId); return customerId; }
     catch (error) {
@@ -207,6 +199,18 @@ function householdAudits(tx: Transaction, householdId: string, action: string) {
  * that started before it and wasn't cleared by it is abandoned when it comes to link (`ensureCustomer`).
  */
 export const stripeTestClearedAction = 'integrations.stripe_test_cleared';
+/**
+ * The gym's latest switch from test to live: its audit's ID and time, or null when the gym never switched. Every reader
+ * (customer creation, the charge runner, the webhook inbox and the integrations settings) uses this one query and order.
+ */
+export async function latestTestSwitch(tx: Transaction, gymId: string): Promise<{ id: string; occurredAt: Date } | null> {
+  const [row] = await tx.select({ id: auditEvents.id, occurredAt: auditEvents.occurredAt }).from(auditEvents)
+    .where(and(eq(auditEvents.action, stripeTestClearedAction), eq(auditEvents.targetType, 'gym'), eq(auditEvents.targetId, gymId)))
+    .orderBy(desc(auditEvents.createdAt), desc(auditEvents.id)).limit(1);
+  return row ?? null;
+}
+/** The latest switch's audit ID (`latestTestSwitch`), or null: what a reader compares to see whether a switch committed since it last read. */
+export const latestTestSwitchId = async (tx: Transaction, gymId: string): Promise<string | null> => (await latestTestSwitch(tx, gymId))?.id ?? null;
 /** Stripe's answer for an object this account doesn't have (`resource_missing`, 404 or 400), as the payments module raises it. */
 function unreadable(error: unknown): boolean {
   const value = error as { code?: unknown; statusCode?: unknown } | null;

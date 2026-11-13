@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, desc, eq, inArray, lte } from 'drizzle-orm';
-import { allocateInvoiceNumber, auditEvents, households, invoiceLineItems, invoices, memberships, paymentAttempts, plans, planTaxRates,
+import { allocateInvoiceNumber, households, invoiceLineItems, invoices, memberships, paymentAttempts, plans, planTaxRates,
   taxRates, uuidv7, writeAudit, assertRevised, type Transaction } from '@plaingym/db';
 import { createTranslator, type Clock } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
@@ -10,7 +10,6 @@ import type { MutationContext } from '../../../core/interfaces/common.js';
 import type { GymSettings } from '../../../core/interfaces/gym-settings.js';
 import type { MembershipOptions } from '../memberships.js';
 import { applyScheduledSwitch } from '../memberships.plan-change.js';
-import { stripeTestClearedAction } from '../customers.js';
 import { calculateCycleInvoice, calculateFirstPeriod, calculateOneOffInvoice, previousBillingDate, type CalculatedInvoice,
   type PricedMembership } from '../invoicing/index.js';
 import { liveDiscounts, presentDiscount, priceDiscount, takeDiscountCycle } from '../discounts/apply.js';
@@ -22,13 +21,6 @@ export async function audit(tx: Transaction, context: MutationContext, clock: Cl
   await writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
     ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
     action, targetType, targetId, after, ...(before === undefined ? {} : { before }), occurredAt: clock.now(), createdAt: clock.now() });
-}
-/** The gym's latest switch from Stripe test mode to live (its audit's ID), or null when it never switched. */
-export async function latestTestSwitch(tx: Transaction, gymId: string): Promise<string | null> {
-  const [row] = await tx.select({ id: auditEvents.id }).from(auditEvents)
-    .where(and(eq(auditEvents.action, stripeTestClearedAction), eq(auditEvents.targetId, gymId)))
-    .orderBy(desc(auditEvents.createdAt), desc(auditEvents.id)).limit(1);
-  return row?.id ?? null;
 }
 /** The invoice's newest payment attempt, if any. */
 export async function latestAttempt(tx: Transaction, invoiceId: string) {

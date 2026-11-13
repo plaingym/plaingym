@@ -280,6 +280,29 @@ describe('one dispute and refund writer for webhooks and restore', () => {
     expect(checked.issues).not.toContainEqual(expect.objectContaining({ id: 'dp_test_account' }));
     expect((await f.read()).invoice).toMatchObject({ disputeId: 'dp_test_account', disputeStatus: 'open' });
   });
+  it('records a dispute’s payment, and restore skips one whose payment is marked as test though a live payment shares its invoice', async () => {
+    const f = await fixture(), intentId = await charged(f);
+    f.provider.recordDispute({ id: 'dp_on_test', chargeId: intentId, amount: 10000, status: 'open' });
+    await f.webhook('charge.dispute.created', { kind: 'dispute', id: 'dp_on_test' });
+    const [paid] = await db.forGym(f.gymId, tx => tx.select().from(payments).where(eq(payments.paymentIntentId, intentId)));
+    expect((await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.invoice.disputed'))))
+      .map(row => row.after)).toEqual([{ disputeId: 'dp_on_test', disputeStatus: 'open', paymentId: paid!.id }]);
+    // A dispute recorded the same way on that payment, which then is marked as test, beside a live card payment on the
+    // invoice: the invoice-level rule alone would read it with the live key. (Not one the provider lists as changed,
+    // which restore re-reads whatever the invoice holds.)
+    await db.forGym(f.gymId, async tx => {
+      await tx.update(invoices).set({ disputeId: 'dp_test_account', disputeStatus: 'open' }).where(eq(invoices.id, paid!.invoiceId));
+      await tx.insert(auditEvents).values({ gymId: f.gymId, actorKind: 'system', action: 'billing.invoice.disputed', targetType: 'invoice',
+        targetId: paid!.invoiceId, before: { disputeId: null, disputeStatus: null },
+        after: { disputeId: 'dp_test_account', disputeStatus: 'open', paymentId: paid!.id }, occurredAt: new Date('2028-03-01T17:00:00Z') });
+      await tx.update(payments).set({ reference: stripeTestPaymentReference }).where(eq(payments.id, paid!.id));
+    });
+    await factory('payments', f.gymId, { invoiceId: paid!.invoiceId, method: 'card', paymentIntentId: 'pi_live_beside', amountCents: 100 });
+    const reads = vi.spyOn(f.provider, 'readPaymentObject');
+    const checked = await f.restore();
+    expect(reads.mock.calls.some(([reference]) => reference.id === 'dp_test_account')).toBe(false);
+    expect(checked.issues).not.toContainEqual(expect.objectContaining({ id: 'dp_test_account' }));
+  });
   it('waits for a switch to live that holds the gym row before recording a dispute, then leaves the marked payment’s dispute out', async () => {
     const f = await fixture(), intentId = await charged(f);
     f.provider.recordDispute({ id: 'dp_racing', chargeId: intentId, amount: 10000, status: 'open' });

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, count, desc, eq, gt, inArray, isNotNull, isNull, notInArray, or } from 'drizzle-orm';
+import { and, count, desc, eq, exists, gt, inArray, isNotNull, isNull, ne, notExists, notInArray, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { auditEvents, forGym, gyms, households, invoices, paymentAttempts, paymentMethods, payments, refunds, revisionGuard, assertRevised,
   signedLinks, writeAudit, type Transaction } from '@plaingym/db';
@@ -21,7 +21,8 @@ import { setupTestMessage } from '../../emails/setup/setup.js';
 import { createStripeConnection, readStripeConfig, restrictedKeyMode, type StripeConfig, type StripeProvisioner } from '../setup/stripe-step.js';
 import { pauseRestoredBillingForStripe } from './go-live.restore.js';
 import { backupColumns, backupKeyPair, newBlobKey, recipientOf } from '../setup/backup-key.js';
-import { customerUnlinkedAction, stripeTestClearedAction as testClearedAction } from '../billing/customers.js';
+import { customerUnlinkedAction, latestTestSwitchId, stripeTestClearedAction as testClearedAction } from '../billing/customers.js';
+import { cardImportAudits, customerLinkAudits, testCards } from './integrations.query.js';
 import { encryptSmtpConfig, readSmtpSchema, sendSmtpTest, smtpFromEnvironment, storedSmtpFromRequest, type SendSmtpTest } from './smtp.js';
 import { createGoogleClientResolver, encryptGoogleConfig, readGoogleConfig, requireGoogleClient, type CheckGoogle } from './google-login.js';
 import { readStoredSecret } from './unreadable-secret.js';
@@ -46,6 +47,8 @@ const payableStatuses = ['open', 'past_due'];
 const retireBudgetMs = 10_000;
 /** The final status a switch from test to live gives the open disputes of the payments it marks as test. */
 const closedTestDispute = 'closed';
+/** Stripe expires a Checkout session at most 24 hours after it is created. */
+const checkoutLifetimeMs = 24 * 60 * 60 * 1000;
 
 export interface IntegrationsOptions {
   /** `APP_ENCRYPTION_KEY`: stored credentials are encrypted with it. */
@@ -122,51 +125,57 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     return { source: source as EmailIntegration['source'], host, port, security, from, signIn: now, signInAfterSave: signIn(true),
       signInAfterRemove: afterRemove, removeBlocked };
   }
-  /**
-   * The latest switch from test to live (its audit's UUIDv7 ID): attempts, card payments and cards recorded before it are
-   * test-mode, kept for the books, and no longer tie the gym to a Stripe account. Null when the gym never switched.
-   */
-  async function testBoundary(tx: Transaction, gymId: string): Promise<string | null> {
-    const [row] = await tx.select({ id: auditEvents.id }).from(auditEvents)
-      .where(and(eq(auditEvents.action, testClearedAction), eq(auditEvents.targetId, gymId)))
-      .orderBy(desc(auditEvents.createdAt), desc(auditEvents.id)).limit(1);
-    return row?.id ?? null;
-  }
+  /** The latest switch from test to live (its audit's ID): the action-needed attempts and card payments it covered came before it. */
+  const testBoundary = latestTestSwitchId;
+  /** Card payments recorded through Stripe that no switch marked as test mode. */
+  const liveCardPayments = and(or(isNotNull(payments.paymentIntentId), isNotNull(payments.chargeId)),
+    or(isNull(payments.reference), ne(payments.reference, stripeTestPaymentReference)));
   /**
    * Customers, cards and card payments belong to the Stripe account that created them. Returns null when the gym has none,
    * otherwise the Stripe paths of a few of them (newest first), which a restricted key with the setup permissions can read
-   * (customers, PaymentIntents, charges and payment methods are all readable). Several, so that one stale or imported ID
-   * the account doesn't have can't block a key change on its own. `customersOnly` is true when only households hold them
-   * (no attempts, card payments or cards): with no Stripe settings, those are imported IDs. Test-mode records from before
-   * a switch to live don't count (`testBoundary`); the switch cleared every household's customer ID.
+   * (customers, PaymentIntents, charges and payment methods are all readable). Several, so that one stale ID the account
+   * doesn't have can't block a key change on its own. The app's own references come first and, when there are any, alone:
+   * customers it linked, attempts, card payments and cards saved through Stripe. Imported customer IDs and cards (written
+   * without asking Stripe, so possibly from another account, or mistyped) are used only when nothing else exists.
+   * `customersOnly` is true when only households hold them (no attempts, card payments or cards): with no Stripe settings,
+   * those are imported IDs. What a switch to live cleared is marked, not compared by time: its card payments carry the
+   * test-mode reference, the cards it saved through Stripe are revoked (the imported cards it kept aren't), and its
+   * attempts aren't sampled after a switch (a live attempt's customer is a household's, and its payment is sampled).
    */
   async function stripeReference(tx: Transaction, gymId: string): Promise<{ paths: string[]; customersOnly: boolean } | null> {
-    const boundary = await testBoundary(tx, gymId);
-    const since = (id: typeof payments.id | typeof paymentAttempts.id | typeof paymentMethods.id) => boundary ? gt(id, boundary) : undefined;
-    const customers = await tx.select({ id: households.stripeCustomerId }).from(households)
-      .where(isNotNull(households.stripeCustomerId)).orderBy(desc(households.id)).limit(3);
-    const attempts = await tx.select({ id: paymentAttempts.stripeCustomerId }).from(paymentAttempts)
-      .where(since(paymentAttempts.id)).orderBy(desc(paymentAttempts.id)).limit(1);
+    const switched = await testBoundary(tx, gymId) !== null;
+    const customers = (linked: boolean) => tx.select({ id: households.stripeCustomerId }).from(households)
+      .where(and(isNotNull(households.stripeCustomerId), (linked ? exists : notExists)(customerLinkAudits(tx, gymId))))
+      .orderBy(desc(households.id)).limit(3);
+    const cards = (imported: boolean) => tx.select({ id: paymentMethods.processorId }).from(paymentMethods)
+      .where(and(switched ? isNull(paymentMethods.revokedAt) : undefined, (imported ? exists : notExists)(cardImportAudits(tx, gymId))))
+      .orderBy(desc(paymentMethods.id)).limit(1);
+    const linked = await customers(true), imported = await customers(false);
+    const attempts = switched ? [] : await tx.select({ id: paymentAttempts.stripeCustomerId }).from(paymentAttempts)
+      .orderBy(desc(paymentAttempts.id)).limit(1);
     const paid = await tx.select({ intent: payments.paymentIntentId, charge: payments.chargeId }).from(payments)
-      .where(and(or(isNotNull(payments.paymentIntentId), isNotNull(payments.chargeId)), since(payments.id))).orderBy(desc(payments.id)).limit(2);
-    const cards = await tx.select({ id: paymentMethods.processorId }).from(paymentMethods)
-      .where(since(paymentMethods.id)).orderBy(desc(paymentMethods.id)).limit(1);
-    const paths = [...customers.map((row) => '/v1/customers/' + row.id), ...attempts.map((row) => '/v1/customers/' + row.id),
+      .where(liveCardPayments).orderBy(desc(payments.id)).limit(2);
+    const saved = await cards(false), importedCards = await cards(true);
+    const own = [...linked.map((row) => '/v1/customers/' + row.id), ...attempts.map((row) => '/v1/customers/' + row.id),
       ...paid.map((row) => row.intent ? '/v1/payment_intents/' + row.intent : '/v1/charges/' + row.charge),
-      ...cards.map((row) => '/v1/payment_methods/' + row.id)];
-    return paths.length ? { paths: [...new Set(paths)], customersOnly: !attempts.length && !paid.length && !cards.length } : null;
+      ...saved.map((row) => '/v1/payment_methods/' + row.id)];
+    const paths = own.length ? own : [...imported.map((row) => '/v1/customers/' + row.id), ...importedCards.map((row) => '/v1/payment_methods/' + row.id)];
+    return paths.length ? { paths: [...new Set(paths)],
+      customersOnly: !attempts.length && !paid.length && !saved.length && !importedCards.length } : null;
   }
   /** Imported customer IDs alone, with no Stripe settings yet, tie the gym to no account (any key is accepted). */
   const importedOnly = (config: StripeConfig | null, reference: { customersOnly: boolean } | null) => config === null && reference?.customersOnly === true;
   /**
-   * Open card-setup Checkout sessions: the latest one started from each card or onboarding link that can still be used.
-   * (A session from before an earlier switch was expired then; expiring it again changes nothing.)
+   * Open card-setup Checkout sessions: the latest one started from each card or onboarding link that can still be used,
+   * within the last 24 hours (Stripe expires a Checkout session by then). A session from before an earlier switch was
+   * expired then; expiring it again changes nothing.
    */
   async function openSetups(tx: Transaction): Promise<string[]> {
+    const now = clock.now();
     const starts = await tx.select({ linkId: auditEvents.targetId, after: auditEvents.after }).from(auditEvents)
       .innerJoin(signedLinks, eq(signedLinks.id, auditEvents.targetId)).where(and(eq(auditEvents.targetType, 'signed_link'),
-        eq(auditEvents.action, 'billing.card_setup.started'), inArray(signedLinks.purpose, ['update_card', 'onboarding']),
-        isNull(signedLinks.usedAt), isNull(signedLinks.revokedAt), gt(signedLinks.expiresAt, clock.now())))
+        eq(auditEvents.action, 'billing.card_setup.started'), gt(auditEvents.occurredAt, new Date(now.getTime() - checkoutLifetimeMs)),
+        inArray(signedLinks.purpose, ['update_card', 'onboarding']), isNull(signedLinks.usedAt), isNull(signedLinks.revokedAt), gt(signedLinks.expiresAt, now)))
       .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id));
     const latest = new Map<string, string>();
     for (const { linkId, after } of starts) {
@@ -175,44 +184,38 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     }
     return [...latest.values()];
   }
-  /**
-   * The Stripe references the gym's test key made, which are the ones a switch to live clears: household customers the
-   * app linked (created by the customers service, or matched by email for a link campaign, each audit naming the
-   * customer) and cards saved through Stripe. An import writes Stripe IDs without asking Stripe, so they may be live
-   * ones from the gym's own account: they stay, with the cards imported for them, and a customer the live account can't
-   * read is replaced the first time it is needed (`readableCustomer`). A card on a household whose customer is cleared
-   * is revoked whatever its source, since it belongs to that customer.
-   */
-  async function testReferences(tx: Transaction, linked: { id: string; customerId: string | null }[]) {
-    const links = await tx.select({ householdId: auditEvents.targetId, after: auditEvents.after }).from(auditEvents)
-      .where(and(eq(auditEvents.targetType, 'household'), inArray(auditEvents.action, ['billing.customer.linked', 'link_campaign.customer_matched'])));
-    const made = new Set(links.flatMap(({ householdId, after }) => {
-      const customerId = (after as { customerId?: unknown } | null)?.customerId;
-      return typeof customerId === 'string' ? [householdId + ':' + customerId] : [];
-    }));
-    const customers = linked.filter((household) => made.has(household.id + ':' + household.customerId));
-    const cleared = new Set(customers.map((household) => household.id));
-    const imported = new Set((await tx.select({ id: auditEvents.targetId }).from(auditEvents)
-      .where(and(eq(auditEvents.targetType, 'payment_method'), eq(auditEvents.action, 'payment_method.created')))).map((row) => row.id));
-    const cards = await tx.select({ id: paymentMethods.id, householdId: paymentMethods.householdId }).from(paymentMethods)
-      .where(isNull(paymentMethods.revokedAt));
-    const revoked = cards.filter((card) => !imported.has(card.id) || cleared.has(card.householdId)).map((card) => card.id);
-    return { customers, keptCustomers: linked.length - customers.length, cards: revoked, keptCards: cards.length - revoked.length };
-  }
   /** Card payments a switch would mark as test: recorded through Stripe since the last switch, never marked. */
   const unmarkedCardPayments = (boundary: string | null) => and(eq(payments.method, 'card'), isNull(payments.reference),
     or(isNotNull(payments.paymentIntentId), isNotNull(payments.chargeId)), boundary ? gt(payments.id, boundary) : undefined);
-  /** What a switch from test to live would clear now, the imported references it keeps, and the card payments it would mark as test. */
+  /**
+   * The invoices whose dispute a switch would close: an open dispute (any status that isn't final) on an invoice with a
+   * card payment the switch marks as test. The live key can't read or answer them.
+   */
+  const testDisputes = (tx: Transaction, boundary: string | null) => and(
+    inArray(invoices.id, tx.select({ id: payments.invoiceId }).from(payments).where(unmarkedCardPayments(boundary))),
+    isNotNull(invoices.disputeId), or(isNull(invoices.disputeStatus), notInArray(invoices.disputeStatus, [...terminalDisputeStatuses])));
+  /**
+   * What a switch from test to live would clear now, the imported references it keeps, the card payments it would mark
+   * as test and the disputes it would close: counted in SQL with the switch's own conditions (`clearTestData`).
+   * The Stripe references the gym's test key made are the ones a switch clears: household customers the app linked
+   * (`customerLinkAudits`) and cards saved through Stripe. Imported customer IDs stay, with the cards imported for them,
+   * and a customer the live account can't read is replaced the first time it is needed (`readableCustomer`). A card on
+   * a household whose customer is cleared is revoked whatever its source, since it belongs to that customer (`testCards`).
+   */
   async function testData(tx: Transaction, gymId: string): Promise<StripeTestData> {
     const boundary = await testBoundary(tx, gymId);
-    const references = await testReferences(tx, await tx.select({ id: households.id, customerId: households.stripeCustomerId })
-      .from(households).where(isNotNull(households.stripeCustomerId)));
-    const [[checkouts], [paid], setups] = [
-      await tx.select({ n: count() }).from(invoices).where(and(isNotNull(invoices.checkoutSessionId), inArray(invoices.status, payableStatuses))),
-      await tx.select({ n: count() }).from(payments).where(unmarkedCardPayments(boundary)),
-      await openSetups(tx)];
-    return { customers: references.customers.length, cards: references.cards.length, checkouts: checkouts!.n + setups.length, payments: paid!.n,
-      importedCustomers: references.keptCustomers, importedCards: references.keptCards };
+    const total = async (query: Promise<{ n: number }[]>) => (await query)[0]?.n ?? 0;
+    const withCustomer = (linked: boolean) => and(isNotNull(households.stripeCustomerId), (linked ? exists : notExists)(customerLinkAudits(tx, gymId)));
+    const customers = await total(tx.select({ n: count() }).from(households).where(withCustomer(true)));
+    const importedCustomers = await total(tx.select({ n: count() }).from(households).where(withCustomer(false)));
+    const cards = await total(tx.select({ n: count() }).from(paymentMethods).where(testCards(tx, gymId)));
+    const unrevoked = await total(tx.select({ n: count() }).from(paymentMethods).where(isNull(paymentMethods.revokedAt)));
+    const checkouts = await total(tx.select({ n: count() }).from(invoices)
+      .where(and(isNotNull(invoices.checkoutSessionId), inArray(invoices.status, payableStatuses))));
+    const paid = await total(tx.select({ n: count() }).from(payments).where(unmarkedCardPayments(boundary)));
+    const disputes = await total(tx.select({ n: count() }).from(invoices).where(testDisputes(tx, boundary)));
+    return { customers, cards, checkouts: checkouts + (await openSetups(tx)).length, payments: paid, disputes,
+      importedCustomers, importedCards: unrevoked - cards };
   }
   /** The switch waits while a charge or refund is in flight: its outcome would be recorded against the cleared references. */
   async function assertSettled(tx: Transaction) {
@@ -223,7 +226,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
   }
   /**
    * The switch from test to live, inside the save's transaction once the live key has connected: clears the Stripe
-   * customer IDs the test key made (`testReferences`; each audited as unlinked, so a customer creation or card setup
+   * customer IDs the test key made (`testData`; each audited as unlinked, so a customer creation or card setup
    * reserved for the old ID no longer counts), revokes the cards it saved, drops the invoices' Checkout sessions and
    * reservations, closes action-needed attempts (their PaymentIntents can't be cancelled with a live key) and marks the
    * card payments as test. Imported customer IDs and cards, test payments, refunds, attempts and invoices stay. Returns
@@ -237,9 +240,14 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     await assertSettled(tx);
     const boundary = await testBoundary(tx, gymId), now = clock.now();
     const setups = await openSetups(tx);
-    const references = await testReferences(tx, await tx.select({ id: households.id, customerId: households.stripeCustomerId })
-      .from(households).where(isNotNull(households.stripeCustomerId)).for('update'));
-    const linked = references.customers;
+    // The preview's conditions (`testData`), read before anything changes: a card on a household whose customer is
+    // cleared is revoked with it.
+    const testCardIds = (await tx.select({ id: paymentMethods.id }).from(paymentMethods).where(testCards(tx, gymId))).map((row) => row.id);
+    const linked = await tx.select({ id: households.id, customerId: households.stripeCustomerId }).from(households)
+      .where(and(isNotNull(households.stripeCustomerId), exists(customerLinkAudits(tx, gymId)))).for('update');
+    const [kept] = await tx.select({ n: count() }).from(households)
+      .where(and(isNotNull(households.stripeCustomerId), notExists(customerLinkAudits(tx, gymId))));
+    const [unrevoked] = await tx.select({ n: count() }).from(paymentMethods).where(isNull(paymentMethods.revokedAt));
     // A household without a customer may have a creation in flight with the test key: a new generation keeps it unlinked.
     const reserved = (await tx.selectDistinct({ id: auditEvents.targetId }).from(auditEvents)
       .where(and(eq(auditEvents.action, 'billing.customer.creation_reserved'), eq(auditEvents.targetType, 'household')))).map((row) => row.id);
@@ -256,9 +264,9 @@ export function createIntegrationsService(options: IntegrationsOptions) {
         after: { customerId: null, reason: 'stripe_test_cleared' }, occurredAt: now })));
     }
     const cards: { id: string }[] = [];
-    for (let index = 0; index < references.cards.length; index += 500)
+    for (let index = 0; index < testCardIds.length; index += 500)
       cards.push(...await tx.update(paymentMethods).set({ revokedAt: now, isDefault: false })
-        .where(and(inArray(paymentMethods.id, references.cards.slice(index, index + 500)), isNull(paymentMethods.revokedAt)))
+        .where(and(inArray(paymentMethods.id, testCardIds.slice(index, index + 500)), isNull(paymentMethods.revokedAt)))
         .returning({ id: paymentMethods.id }));
     // Paid and void invoices keep their completed session's ID as history; nothing reads it with the new key.
     const sessions = payable.filter((row) => row.sessionId || row.reservedUntil);
@@ -272,9 +280,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     // them, so they close here (a dispute's final status never reopens). The dispute writer waits for the gym row, so
     // none is attached to these invoices while the switch runs.
     const disputed = await tx.select({ id: invoices.id, disputeId: invoices.disputeId, disputeStatus: invoices.disputeStatus }).from(invoices)
-      .where(and(inArray(invoices.id, tx.select({ id: payments.invoiceId }).from(payments).where(unmarkedCardPayments(boundary))),
-        isNotNull(invoices.disputeId), or(isNull(invoices.disputeStatus), notInArray(invoices.disputeStatus, [...terminalDisputeStatuses]))))
-      .for('update');
+      .where(testDisputes(tx, boundary)).for('update');
     if (disputed.length) {
       await tx.update(invoices).set({ disputeStatus: closedTestDispute }).where(inArray(invoices.id, disputed.map((row) => row.id)));
       await tx.insert(auditEvents).values(disputed.map((row) => ({ gymId, actorKind: 'user', actorUserId: userId,
@@ -288,7 +294,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     const cleared = { customers: linked.length, cards: cards.length, checkouts: checkouts.length, actionNeeded: actionNeeded.length,
       payments: marked.length, disputes: disputed.length };
     await writeAudit(tx, { gymId, actorKind: 'user', actorUserId: userId, action: testClearedAction, targetType: 'gym', targetId: gymId,
-      before: null, after: { ...cleared, keptImportedCustomers: references.keptCustomers, keptImportedCards: references.keptCards,
+      before: null, after: { ...cleared, keptImportedCustomers: kept?.n ?? 0, keptImportedCards: (unrevoked?.n ?? 0) - testCardIds.length,
         reservations: sessions.length, abandonedCreations: pending.length, paymentIds: marked.map((row) => row.id),
         disputedInvoiceIds: disputed.map((row) => row.id) }, occurredAt: now });
     return { checkouts, intents: actionNeeded.flatMap((row) => row.intentId ? [row.intentId] : []) };

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { auditEvents, households, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { createMembersService } from './members.js';
 import { createErasureJobs, redactCustomerJob } from './members.routes.js';
-import { queueEarlierRedactions, redactEarlierJob, redactionQueuedAction } from './erasure-redaction.js';
+import { customerRedactedAction, guardRedaction, queueEarlierRedactions, redactEarlierJob, redactionQueuedAction } from './erasure-redaction.js';
 import { FakePayments } from '../../infra/payments/index.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
 import { TestClock } from '../../core/clock.js';
@@ -33,12 +33,18 @@ describe('redaction of customers erased earlier', () => {
     const jobs = new FakeJobs(clock);
     expect(await queue(gymA, jobs)).toBe(2);
     expect(jobs.jobs.map(job => ({ name: job.name, payload: job.payload, gymId: job.options.gymId, key: job.options.idempotencyKey })))
-      .toEqual(expect.arrayContaining([one, two].map(customerId => ({ name: redactCustomerJob, payload: { customerId }, gymId: gymA, key: `redact-earlier:${customerId}` }))));
+      .toEqual(expect.arrayContaining([one, two].map(customerId => ({ name: redactCustomerJob, payload: { customerId }, gymId: gymA,
+        key: expect.stringMatching(/^redact-earlier:[0-9a-f-]{36}$/) }))));
     expect(jobs.jobs).toHaveLength(2);
     // Each queued customer is marked on its household's audit trail, so the check survives the queue pruning its finished jobs.
     const markers = await database.forGym(gymA, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, redactionQueuedAction)));
     expect(markers.map(marker => (marker.after as { stripeCustomerId: string }).stripeCustomerId).sort()).toEqual([one, two].sort());
     expect(markers.every(marker => marker.actorKind === 'system' && marker.targetType === 'household')).toBe(true);
+    // Each marker and job key names its erasure (the household.anonymized audit), not the customer alone.
+    const erasures = await database.forGym(gymA, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'household.anonymized')));
+    expect(markers.map(marker => (marker.after as { erasure: string }).erasure).sort())
+      .toEqual(erasures.filter(row => [one, two].includes((row.before as { stripeCustomerId?: string } | null)?.stripeCustomerId ?? '')).map(row => row.id).sort());
+    expect(jobs.jobs.map(job => job.options.idempotencyKey).sort()).toEqual(markers.map(marker => 'redact-earlier:' + (marker.after as { erasure: string }).erasure).sort());
     expect(await queue(gymA, jobs)).toBe(0);
     const pruned = new FakeJobs(clock);
     expect(await queue(gymA, pruned)).toBe(0);
@@ -98,6 +104,60 @@ describe('redaction of customers erased earlier', () => {
     await database.forGym(gymB, tx => tx.update(households).set({ stripeCustomerId: null }).where(eq(households.id, live.id)));
     expect(await queue(gymB, jobs)).toBe(1);
     expect(pendingFor(reused)).toHaveLength(1);
+  });
+  it('queues a customer erased, reused for another household and erased again, for its second erasure', async () => {
+    const reused = customer('again');
+    await erased(gymA, reused);
+    const jobs = new FakeJobs(clock), pendingFor = () => jobs.jobs.filter(job => (job.payload as { customerId: string }).customerId === reused);
+    await queue(gymA, jobs);
+    expect(pendingFor()).toHaveLength(1);
+    // Re-imported for another household, which is erased in turn.
+    await erased(gymA, reused);
+    await queue(gymA, jobs);
+    expect(pendingFor()).toHaveLength(2);
+    expect(new Set(pendingFor().map(job => job.options.idempotencyKey)).size).toBe(2);
+    expect(await queue(gymA, jobs)).toBe(0);
+  });
+  it('reads a marker from before markers named the erasure as covering only the erasures before it', async () => {
+    const legacy = customer('legacy');
+    const home = await erased(gymA, legacy);
+    clock.advance(1000);
+    await database.forGym(gymA, tx => tx.insert(auditEvents).values({ gymId: gymA, actorKind: 'system', action: redactionQueuedAction,
+      targetType: 'household', targetId: home.id, after: { stripeCustomerId: legacy }, occurredAt: clock.now() }));
+    const jobs = new FakeJobs(clock), pendingFor = () => jobs.jobs.filter(job => (job.payload as { customerId: string }).customerId === legacy);
+    await queue(gymA, jobs);
+    expect(pendingFor()).toHaveLength(0);
+    clock.advance(1000);
+    await erased(gymA, legacy);
+    await queue(gymA, jobs);
+    expect(pendingFor()).toHaveLength(1);
+  });
+  it('skips the redaction of a customer the gym linked after it was queued, and needs no check run for one it redacted', async () => {
+    const relinked = customer('relinked'), redacted = customer('redacted');
+    await erased(gymB, relinked); await erased(gymB, redacted);
+    const redact = vi.fn(async (_gymId: string, _customerId: string) => undefined);
+    const guarded = guardRedaction(redact, { clock, scope: database.forGym });
+    const registrations = createErasureJobs({ redactCustomer: guarded, scope: database.forGym });
+    const handler = registrations.find(registration => registration.id === redactCustomerJob)!.handler;
+    const context = { jobId: 'redact', gymId: gymB, timezone: 'UTC', attempt: 1, clock };
+    // Linked to a household between the queue and a retried run: never renamed or cleared at the provider.
+    const live = await factory('households', gymB);
+    await database.forGym(gymB, tx => tx.update(households).set({ stripeCustomerId: relinked }).where(eq(households.id, live.id)));
+    await handler({ customerId: relinked }, context);
+    expect(redact).not.toHaveBeenCalled();
+    // Another gym linking the same ID changes nothing for this gym.
+    await guardRedaction(redact, { clock, scope: database.forGym })(gymA, relinked);
+    expect(redact).toHaveBeenCalledWith(gymA, relinked);
+    redact.mockClear();
+    await handler({ customerId: redacted }, context);
+    expect(redact).toHaveBeenCalledWith(gymB, redacted);
+    expect((await database.forGym(gymB, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, customerRedactedAction))))
+      .map(row => row.after)).toEqual([{ stripeCustomerId: redacted }]);
+    // The redacted erasure needs no queued redaction; the relinked one stays out while the household holds it.
+    const jobs = new FakeJobs(clock);
+    await queue(gymB, jobs);
+    expect(jobs.jobs.map(job => (job.payload as { customerId: string }).customerId)).not.toContain(redacted);
+    expect(jobs.jobs.map(job => (job.payload as { customerId: string }).customerId)).not.toContain(relinked);
   });
   it('ignores audits whose recorded customer ID is not a Stripe customer ID', async () => {
     const home = await erased(gymA, null);

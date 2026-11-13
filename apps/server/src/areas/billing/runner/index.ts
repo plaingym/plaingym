@@ -11,7 +11,8 @@ import type { Payments } from '../../../infra/payments/index.js';
 import type { MutationContext } from '../../../core/interfaces/common.js';
 import { logError, logInfo } from '../../../core/log.js';
 import { holdGymSettings } from '../../settings/settings.js';
-import { assignmentInvoices, audit, generateCycle, latestAttempt, latestTestSwitch, system } from './store.js';
+import { assignmentInvoices, audit, generateCycle, latestAttempt, system } from './store.js';
+import { latestTestSwitchId } from '../customers.js';
 import { createReconciliation } from './reconciliation.js';
 import type { DisputeRefundOptions } from '../disputes-refunds.js';
 import { assignmentInvoiceCondition, eligibility, isAssignmentInvoice, retryAt, retryDeadlines, skipped, type ChargeMode,
@@ -63,7 +64,7 @@ export function createChargeRunner(options: RunnerOptions) {
     return scope(gymId, async tx => {
       // Before the invoice lock: the switch locks the gym row first, then the payable invoices.
       await holdGymSettings(tx, gymId);
-      if (await latestTestSwitch(tx, gymId) !== switched) return { status: 'switched' as const };
+      if (await latestTestSwitchId(tx, gymId) !== switched) return { status: 'switched' as const };
       const check = await eligibility(tx, gym, clock, invoiceId, mode, true);
       if (check.status === 'skipped') return check;
       const { invoice, latest, payment } = check;
@@ -92,7 +93,7 @@ export function createChargeRunner(options: RunnerOptions) {
       throw new Error('Staff charge requires this gym and a user actor');
     const gym = await options.settings.get(gymId);
     const { check, switched } = await scope(gymId, async tx => ({
-      check: await eligibility(tx, gym, clock, invoiceId, mode), switched: await latestTestSwitch(tx, gymId) }));
+      check: await eligibility(tx, gym, clock, invoiceId, mode), switched: await latestTestSwitchId(tx, gymId) }));
     if (check.status === 'skipped') return check;
     const { invoice, latest } = check;
     if (invoice.amountCents === 0) {
@@ -100,6 +101,11 @@ export function createChargeRunner(options: RunnerOptions) {
       return result.outcome === 'applied' ? { status: 'settled_zero' } : skipped('not_payable');
     }
     const provider = await options.payments(gymId);
+    // A switch that committed between the reads above and resolving the provider cleared the test session or action-needed
+    // intent read above, and the provider may hold the live key, which can't release them: start again, as `reserve` does.
+    if ((latest?.status === 'requires_action' || invoice.checkoutSessionId)
+      && await scope(gymId, tx => latestTestSwitchId(tx, gymId)) !== switched)
+      return resolvedAgain ? skipped('collection_changed') : charge(gymId, invoiceId, request, true);
     if (latest?.status === 'requires_action') {
       if (!latest.paymentIntentId) throw new Error('Action-needed attempt has no PaymentIntent ID');
       if (await releaseActionNeeded(gymId, latest.paymentIntentId, provider, reconciliation, context) === 'paid') return skipped('not_payable');

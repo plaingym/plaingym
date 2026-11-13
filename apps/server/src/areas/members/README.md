@@ -55,12 +55,17 @@ name, email, phone and address are cleared before the card is detached (Stripe u
 is logged with identifiers only and the erasure still succeeds, since its committed job retries it.
 
 Customers erased before the redaction covered every field are handled by `members.erasure.redact_earlier`, a daily job
-(`erasure-redaction.ts`): per gym it reads the `household.anonymized` audits' `before.stripeCustomerId`, queues one
-`members.erasure.redact_customer` job per customer under the stable key `redact-earlier:<customer>`, and writes a
-`members.erasure.redaction_queued` audit for it, so a rerun queues nothing new even after the queue prunes finished jobs. It
-reads only the gym's own audits (row-level security), needs no start-up wiring, and also re-queues the redaction of a later
-erasure whose own job ran out of attempts. It skips a customer that a household of the gym links today (the gym reused it), and
-queues at most 200 customers per run; the next run continues. Redaction is idempotent, so a repeat is harmless.
+(`erasure-redaction.ts`): per gym it reads the `household.anonymized` audits' `before.stripeCustomerId` and queues one
+`members.erasure.redact_customer` job per erasure under the stable key `redact-earlier:<erasure audit ID>`, with a
+`members.erasure.redaction_queued` audit naming the erasure, so a rerun queues nothing new even after the queue prunes
+finished jobs, and a customer erased, reused for another household and erased again is queued again. An erasure whose
+customer a redaction succeeded for afterwards (`members.erasure.customer_redacted`, written by `guardRedaction`) needs
+none, so the check queues an erasure whose own job ran out of attempts or never redacted. It reads only the gym's own
+audits (row-level security), selects and limits in SQL (`erasure-redaction.query.ts`, at most 200 erasures per run; the
+next run continues), and needs no start-up wiring. It skips a customer that a household of the gym links today (the gym
+reused it). `guardRedaction(redact, { clock, scope })` wraps the provider redaction: it checks again when the
+redaction runs, skipping and logging (`members.erasure.redaction_skipped_linked`) a customer a household links by
+then, and audits a redaction that succeeds. Redaction is idempotent, so a repeat is harmless.
 Unused households can be deleted; referenced households return a conflict.
 
 Deleting a member (`deleteMember`, `DELETE /api/members/{memberId}`, `members.delete`: owners and admins) is for a

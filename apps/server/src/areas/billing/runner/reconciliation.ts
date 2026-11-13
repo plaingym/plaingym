@@ -2,7 +2,7 @@
 import { and, desc, eq, exists, inArray, isNull, lte, ne, notExists, or } from 'drizzle-orm';
 import { stripeTestPaymentReference } from '@plaingym/shared/contracts';
 import { AppError } from '@plaingym/shared';
-import { auditEvents, households, invoices, paymentAttempts, payments, refunds, uuidv7, writeAudit } from '@plaingym/db';
+import { auditEvents, households, invoices, paymentAttempts, payments, refunds, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import type { ChargeOutcome, PaymentObject, PaymentObjectReference, Payments } from '../../../infra/payments/index.js';
 import { applyChargeOutcome } from '../transitions/outcomes.js';
 import { createAbandoned } from '../transitions/store.js';
@@ -17,6 +17,36 @@ export interface RestoreCheck { inspected: number; readyForOwnerReview: boolean;
 /** A stored Stripe reference on a gym with no payments provider: connecting Stripe and checking again resolves it. */
 export const notConfigured = 'stripe_not_configured';
 type Options = Omit<RunnerOptions, 'jobs'> & Required<Pick<RunnerOptions, 'scope' | 'clock'>>;
+/**
+ * The open disputes restore reads with the gym's key. One on a Stripe test-mode payment (marked by a switch to live) is in
+ * the test account, which the live key can't read; the switch closed those it found. A dispute's own payment is recorded
+ * with it (`paymentId` in its `billing.invoice.disputed` audit), so it is skipped when that payment is marked, whatever
+ * else paid the invoice. One recorded without it is skipped only when every payment on its invoice is marked.
+ */
+async function restorableDisputes(tx: Transaction) {
+  const open = await tx.select({ id: invoices.id, disputeId: invoices.disputeId }).from(invoices).where(eq(invoices.disputeStatus, 'open'));
+  if (!open.length) return [];
+  const fallback = new Set((await tx.select({ id: invoices.id }).from(invoices).where(and(eq(invoices.disputeStatus, 'open'),
+    or(notExists(tx.select({ id: payments.id }).from(payments).where(and(eq(payments.invoiceId, invoices.id),
+      eq(payments.reference, stripeTestPaymentReference)))),
+    exists(tx.select({ id: payments.id }).from(payments).where(and(eq(payments.invoiceId, invoices.id),
+      or(isNull(payments.reference), ne(payments.reference, stripeTestPaymentReference))))))))).map(row => row.id));
+  const recorded = new Map<string, string>();
+  const ids = open.map(row => row.id), byInvoice = new Map(open.map(row => [row.id, row]));
+  for (let index = 0; index < ids.length; index += 500)
+    for (const row of await tx.select({ invoiceId: auditEvents.targetId, after: auditEvents.after }).from(auditEvents).where(and(
+      eq(auditEvents.action, 'billing.invoice.disputed'), eq(auditEvents.targetType, 'invoice'), inArray(auditEvents.targetId, ids.slice(index, index + 500))))) {
+      const after = row.after as { disputeId?: unknown; paymentId?: unknown } | null;
+      const invoice = byInvoice.get(row.invoiceId);
+      if (invoice && after?.disputeId === invoice.disputeId && typeof after.paymentId === 'string') recorded.set(invoice.id, after.paymentId);
+    }
+  const paymentIds = [...new Set(recorded.values())];
+  const marked = new Set<string>();
+  for (let index = 0; index < paymentIds.length; index += 500)
+    for (const row of await tx.select({ id: payments.id }).from(payments).where(and(inArray(payments.id, paymentIds.slice(index, index + 500)),
+      eq(payments.reference, stripeTestPaymentReference)))) marked.add(row.id);
+  return open.filter(row => recorded.has(row.id) ? !marked.has(recorded.get(row.id)!) : fallback.has(row.id));
+}
 export function createReconciliation(options: Options) {
   const { scope, clock } = options;
   const staleAfterMs = options.staleAfterMs ?? 15 * 60_000;
@@ -175,13 +205,7 @@ export function createReconciliation(options: Options) {
           .where(inArray(paymentAttempts.status, ['pending', 'requires_action']));
         const checkouts = await tx.select({ checkoutSessionId: invoices.checkoutSessionId }).from(invoices)
           .where(inArray(invoices.status, ['open', 'past_due']));
-        // A dispute on an invoice paid only by Stripe test-mode payments (marked by a switch to live) is in the test
-        // account, which the gym's live key can't read; the switch closed those it found.
-        const disputes = await tx.select({ disputeId: invoices.disputeId }).from(invoices).where(and(eq(invoices.disputeStatus, 'open'),
-          or(notExists(tx.select({ id: payments.id }).from(payments).where(and(eq(payments.invoiceId, invoices.id),
-            eq(payments.reference, stripeTestPaymentReference)))),
-          exists(tx.select({ id: payments.id }).from(payments).where(and(eq(payments.invoiceId, invoices.id),
-            or(isNull(payments.reference), ne(payments.reference, stripeTestPaymentReference))))))));
+        const disputes = await restorableDisputes(tx);
         const returns = await tx.select({ processorId: refunds.processorId }).from(refunds).where(eq(refunds.status, 'pending'));
         return [
           ...attempts.flatMap(row => row.paymentIntentId ? [{ kind: 'charge' as const, id: row.paymentIntentId }] : []),

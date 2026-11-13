@@ -7,10 +7,12 @@ Signed-link Checkout calls it for payment, card updates and onboarding. Existing
 and imported IDs stay unchanged; email matching is not part of this service.
 
 Before Checkout uses a stored ID, signed-link Checkout calls
-`readableCustomer(gymId, householdId, customerId, provider)`. A customer this
-service created and linked (its `billing.customer.linked` audit names the ID) is
-the account's own and needs no Stripe call. Any other ID is adopted (an untagged
-imported customer is tagged with the gym, as a charge does). When the account
+`readableCustomer(gymId, householdId, customerId, provider)`. Every stored ID is
+adopted, one read per Checkout, including a customer this service created and linked
+or a link campaign matched: the gym can delete it in the Stripe dashboard, and a
+Checkout for a deleted customer fails at Stripe. Adoption writes nothing for a
+customer already tagged with the gym; an untagged imported customer is tagged, as a
+charge does. When the account
 answers 404 `resource_missing` (an imported ID from another account, or a typo), or
 reports the customer deleted (`CustomerDeleted`),
 it clears the ID only while it is still the stored one, writes a

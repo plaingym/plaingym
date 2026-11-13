@@ -142,7 +142,8 @@ export function createDisputeRefundWriter(options: DisputeRefundOptions) {
         return 'unchanged' as const;
       const after = { disputeId: value.id, disputeStatus: value.status };
       await tx.update(invoices).set(after).where(eq(invoices.id, invoice.id));
-      await audit(tx, system(gymId), clock, 'billing.invoice.disputed', 'invoice', invoice.id, after,
+      // The disputed payment is recorded with the dispute: restore skips one on a payment a switch to live marked as test.
+      await audit(tx, system(gymId), clock, 'billing.invoice.disputed', 'invoice', invoice.id, { ...after, paymentId: payment.id },
         { disputeId: invoice.disputeId, disputeStatus: invoice.disputeStatus });
       attached = invoice.disputeId === null;
       return 'recorded' as const;

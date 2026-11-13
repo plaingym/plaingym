@@ -152,8 +152,8 @@ describe('runner review regression cases with PostgreSQL', () => {
     const audits = rows.audits.filter(row => row.action === 'billing.invoice.disputed');
     expect(audits).toHaveLength(2);
     expect(audits).toEqual(expect.arrayContaining([
-      expect.objectContaining({ before: { disputeId: null, disputeStatus: null }, after: { disputeId: 'dp_original', disputeStatus: 'open' } }),
-      expect.objectContaining({ before: { disputeId: 'dp_original', disputeStatus: 'open' }, after: { disputeId: 'dp_original', disputeStatus: terminal } }),
+      expect.objectContaining({ before: { disputeId: null, disputeStatus: null }, after: { disputeId: 'dp_original', disputeStatus: 'open', paymentId: rows.payments[0]!.id } }),
+      expect.objectContaining({ before: { disputeId: 'dp_original', disputeStatus: 'open' }, after: { disputeId: 'dp_original', disputeStatus: terminal, paymentId: rows.payments[0]!.id } }),
     ]));
   });
 });
