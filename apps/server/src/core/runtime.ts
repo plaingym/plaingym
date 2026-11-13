@@ -75,6 +75,7 @@ import { configureSignedLinkDelivery } from '../areas/links/service.js';
 import { configureCampaigns, createCampaignsService } from '../areas/links/campaigns.js';
 import { configureCancellationNotice, createCancellationNotice } from '../areas/announcements/cancellation.js';
 import { configurePriceNotice, createPriceNotice } from '../areas/billing/memberships.price-notice.js';
+import { configurePriceChanges, createPriceChangeService } from '../areas/billing/catalog.price-change.js';
 import { configureAnnouncements, createAnnouncementsService } from '../areas/announcements/send.js';
 import { registerBackupJobs } from '../areas/health/backups.jobs.js';
 import { PostgresMaintenance } from '../areas/health/backups.database.js';
@@ -352,6 +353,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   configurePriceNotice(createPriceNotice({ clock, demoMode: Boolean(demo),
     mailer: async gymId => demo ? demo.emailFor(gymId) : smtpMailer(smtp!)(gymId),
     ...(demo ? { demoEmailFor: demo.emailFor } : {}) }));
+  // The plan price change routes schedule each membership's new price and enqueue that notice job per household.
+  configurePriceChanges(createPriceChangeService({ jobs: queue, clock, smtp: { configured: smtpConfigured } }));
   const inbox = webhookInbox(paymentsFor, queue);
   configureWebhookInboxRoutes(inbox);
   configureWebhookInboxJobs(inbox);
@@ -360,7 +363,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   const checkout = createSignedLinkCheckout({ paymentsFor: requirePayments, originFor: gymOrigin, clock });
   // Join keeps its own membership service: the runtime's assignment callback would invoice sign-up fees separately.
   const join = configureJoin({ clock, waivers, checkout, uploadsFor: uploads.forGym, paymentsConfigured: async gymId => Boolean(await paymentsFor(gymId)),
-    invitations: portalInvitations, accounts, ...(demo ? { testCardHint: demo.joinTestCardHint } : {}),
+    paymentsFor, invitations: portalInvitations, accounts, ...(demo ? { testCardHint: demo.joinTestCardHint } : {}),
     key: new Uint8Array(hkdfSync('sha256', key, new Uint8Array(0), 'plaingym public join v1', 32)) });
   demo?.service.setJoinReadiness(join);
   const billing = composeBillingWebhooks({ inbox, jobs: queue, settings, paymentsFor, clock, prepare: gymMail, disputeAlerts: alerts,

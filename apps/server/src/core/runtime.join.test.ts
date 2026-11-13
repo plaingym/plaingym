@@ -129,6 +129,20 @@ it('joins, pays through Checkout and activates only from the webhook, then sends
   expect(welcome.status).toBe(200);
   expect(welcome.headers.get('refresh')).toBeNull();
 
+  // A third family submits a join, opens Checkout and never pays; the nightly cleanup voids it after seven days, which
+  // needs the payments resolver the runtime passes to the join service (a join that opened Checkout is confirmed with the provider).
+  const slow = { name: 'Eli Slow', email: 'eli@example.invalid' }, lingerer = { firstName: 'Eli', lastName: 'Slow', dateOfBirth: '1991-07-08' };
+  const slowSigned = await post('/join/signatures', { planId: plan.id, contact: slow, honeypot: '', members: [{ member: lingerer,
+    signatures: [{ templateId: template.id, templateVersion: template.version, pngBase64: demoSignaturePng().toString('base64'), signer: { kind: 'self', name: 'Eli Slow' } }] }] });
+  expect(slowSigned.status, await slowSigned.clone().text()).toBe(200);
+  const slowImages = (await slowSigned.json()).data as Record<string, unknown>[][];
+  const slowJoin = await post('/api/public/join', { planId: plan.id, contact: slow, honeypot: '', members: [{ member: lingerer,
+    waivers: slowImages[0]!.map(image => ({ ...image, consent: true, signer: { kind: 'self', name: 'Eli Slow' } })) }] });
+  expect(slowJoin.status, await slowJoin.clone().text()).toBe(200);
+  const slowCookie = slowJoin.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
+  expect((await app.request(origin + '/join/checkout', { headers: { host: 'gym.example.test', cookie: slowCookie } })).status).toBe(303);
+  expect((await joined(slow.email)).bills.map(b => b.status)).toEqual(['open']);
+
   // An abandoned admission is removed by the runtime's nightly cleanup job, with its uploaded signature image: the
   // runtime passes its uploads to the join service, so the cleanup can reach the store.
   const idle = { name: 'Drew Idle', email: 'drew@example.invalid' }, drifter = { firstName: 'Drew', lastName: 'Idle', dateOfBirth: '1985-05-06' };
@@ -138,11 +152,12 @@ it('joins, pays through Checkout and activates only from the webhook, then sends
   const imageKey = ((await unfinished.json()).data as Record<string, string>[][])[0]![0]!.signatureImageKey!;
   const uploads = await runtime.uploadsFor(gymId);
   expect((await uploads.head(imageKey))?.deletedAt).toBeUndefined();
-  const later = new Date(clock.now().getTime() + 3 * 86_400_000);
+  const later = new Date(clock.now().getTime() + 8 * 86_400_000);
   vi.spyOn(clock, 'now').mockReturnValue(later);
   await handlers.get('public.join.cleanup')!({}, { gymId, clock, timezone: 'UTC', jobId: uuidv7(), attempt: 1 });
   expect((await uploads.head(imageKey))?.deletedAt).toBeDefined();
   expect(await db.forGym(gymId, tx => tx.select().from(households).where(eq(households.email, idle.email)))).toEqual([]);
-  // The members who finished their joins are untouched.
+  // The unpaid join is voided, and the members who finished their joins are untouched.
+  expect((await joined(slow.email)).bills.map(b => b.status)).toEqual(['void']);
   expect((await joined(cash.email)).people.map(p => p.status)).toEqual(['active']);
 });
