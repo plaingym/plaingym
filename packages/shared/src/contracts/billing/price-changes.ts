@@ -18,8 +18,8 @@ const queryAmountSchema = z.union([z.number(), z.string().regex(/^(0|[1-9][0-9]*
  * preview (`changed`).
  */
 export const planPriceChangeSkipReasonSchema = z.enum(['switch_scheduled', 'price_scheduled', 'terms', 'changed']);
-/** Whether the household's notice can reach its payer: `no_address`, or `payer_erased` when the payer was erased. */
-export const planPriceChangeReachSchema = z.enum(['ok', 'no_address', 'payer_erased']);
+/** Whether the notice can reach its payer; suppressed means opted out of email or undeliverable. */
+export const planPriceChangeReachSchema = z.enum(['ok', 'no_address', 'payer_erased', 'suppressed']);
 
 /** The new price (in the plan's currency, on its charge step) and the date, on or after the gym-local today. */
 export const planPriceChangePreviewQuerySchema = z.strictObject({
@@ -65,6 +65,7 @@ export const planPriceChangePreviewSchema = z.strictObject({
   households: countSchema,
   householdsWithoutAddress: countSchema,
   householdsPayerErased: countSchema,
+  householdsSuppressed: countSchema,
   // Memberships on other plans with a switch to this plan scheduled: they keep the price quoted when it was scheduled.
   switchesToPlan: countSchema,
   // Member email is turned on and the gym can send it now.
@@ -94,11 +95,12 @@ export const planPriceChangeResultSchema = z.strictObject({
   effectiveOn: dateSchema,
   scheduled: z.array(idSchema),
   skipped: z.array(z.strictObject({ id: idSchema, reason: planPriceChangeSkipReasonSchema })),
-  // Households given a notice job (with `notify`), and the households with a membership scheduled whose notice can't reach
+  // Reachable households given a notice job (with `notify`), and households with a membership scheduled whose notice can't reach
   // the payer (the job sends them nothing).
   householdsNotified: countSchema,
   householdsWithoutAddress: countSchema,
   householdsPayerErased: countSchema,
+  householdsSuppressed: countSchema,
 });
 export const planPriceChangeResponseSchema = z.strictObject({ data: planPriceChangeResultSchema });
 

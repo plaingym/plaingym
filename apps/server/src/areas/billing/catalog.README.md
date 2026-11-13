@@ -27,7 +27,7 @@ members get; it changes no membership. Two owner and admin routes (`plans.manage
   another plan scheduled (`switch_scheduled`), a price change already scheduled (`price_scheduled`:
   a downgrade now's or an earlier price change), or a currency or interval other than the plan's
   (`terms`). A custom price is an amount or interval other than the plan's current price. The
-  preview also counts the households, those whose payer has no address or was erased, the
+  preview also counts the households, those whose payer has no address, was erased or is suppressed, the
   switches to this plan (which keep the price they were quoted), and says whether the gym can send
   member email now.
 * `POST` with `{ requestKey, planRevision, amountCents, effectiveOn, notify, memberships }` (1 to
@@ -47,8 +47,10 @@ members get; it changes no membership. Two owner and admin routes (`plans.manage
   `notify`, each household with a membership scheduled gets the price notice job
   (`billing.memberships.price_notice`, key `plan-price:<requestKey>:<householdId>`), enqueued in
   that transaction, so it runs only after commit, once. The result lists the memberships scheduled
-  and skipped, the households notified (a notice queued) and, among them, those whose payer has no
-  address or was erased, which the notice job skips; the first run
+  and skipped, the reachable households with a notice queued, and separate counts for households
+  whose payer has no valid address, was erased or is suppressed (opted out of email or undeliverable).
+  Reach uses `householdRecipient`, in the notice job's order: no address, erased payer, then suppression.
+  Unreachable households still get a job, which skips them; they never count as notified. The first run
   to finish records it (`billing.plan.price_change_applied`) and a replay returns it.
 
 The cycle build applies the change at the first active cycle due on or after its date, with no

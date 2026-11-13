@@ -24,8 +24,10 @@ const membership: Membership = { id: id(6), createdAt, memberId: member.id, hous
   interval: 'monthly', startsOn: '2026-10-01', nextDueOn: '2026-10-31', trialEndsOn: null, frozenAt: null, resumesOn: null, cancelledAt: null, commitmentEndsOn: '2027-04-01',
   scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null, discount: null, revision: 2 };
 function client() {
-  return { plans: vi.fn(async () => [plan]), taxes: vi.fn(async () => [tax]), charges: vi.fn(async (): Promise<ChargeType[]> => []), settings: vi.fn(async () => settings), member: vi.fn(async () => member), householdBilling: vi.fn(async () => ({ id: member.householdId, billingDay: 31, familyDiscountBasisPoints: 0, revision: 1 })),
-    memberships: vi.fn(async () => [membership]), call: vi.fn(async () => ({ data: plan })) as unknown as BillingClient['call'] } satisfies BillingClient;
+  const plans = vi.fn(async () => [plan]);
+  return { plans, taxes: vi.fn(async () => [tax]), charges: vi.fn(async (): Promise<ChargeType[]> => []), settings: vi.fn(async () => settings), member: vi.fn(async () => member), householdBilling: vi.fn(async () => ({ id: member.householdId, billingDay: 31, familyDiscountBasisPoints: 0, revision: 1 })),
+    memberships: vi.fn(async () => [membership]), call: vi.fn(async (name: string) => ({ data: name === 'previewPlanPriceChange'
+      ? { plan: (await plans())[0], total: 0 } : plan })) as unknown as BillingClient['call'] } satisfies BillingClient;
 }
 function start(view: React.ReactNode) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });

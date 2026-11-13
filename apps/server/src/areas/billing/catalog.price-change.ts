@@ -12,6 +12,7 @@ import { clock as defaultClock } from '../../core/clock.js';
 import { commandDigest } from '../../infra/email/deliveries.js';
 import { withJobTransaction, type Jobs, type JobTransaction } from '../../infra/jobs/index.js';
 import { gymSettingsAccessor } from '../settings/settings.js';
+import { householdRecipient } from '../members/household-recipient.js';
 import type { SmtpResolver } from '../settings/smtp.js';
 import { catalogAudit, catalogMissing } from './catalog.js';
 import { refuse } from './memberships.plan-change.js';
@@ -68,24 +69,25 @@ const live = and(ne(memberships.status, 'cancelled'), isNull(memberships.cancell
 
 /**
  * Whether each household's notice can reach its payer, as the notice job decides it: no valid billing address
- * (`no_address`), or an erased member at that address or linked as its payer (`payer_erased`).
+ * (`no_address`), an erased payer (`payer_erased`), then an opted-out or undeliverable address (`suppressed`).
  */
-async function householdReach(tx: Transaction, householdIds: readonly string[]): Promise<Map<string, Reach>> {
+async function householdReach(tx: Transaction, gymId: string, householdIds: readonly string[]): Promise<Map<string, Reach>> {
   const reach = new Map<string, Reach>();
   if (!householdIds.length) return reach;
   const ids = [...householdIds];
-  const homes = await tx.select({ id: households.id, email: households.email }).from(households).where(inArray(households.id, ids));
+  const homes = await tx.select({ id: households.id }).from(households).where(inArray(households.id, ids));
   const family = await tx.select({ id: members.id, householdId: members.householdId, email: members.email, anonymizedAt: members.anonymizedAt })
     .from(members).where(inArray(members.householdId, ids));
   const payers = await tx.select({ householdId: householdUsers.householdId, memberId: householdUsers.memberId }).from(householdUsers)
     .where(and(inArray(householdUsers.householdId, ids), eq(householdUsers.scope, 'payer')));
   for (const home of homes) {
-    const email = home.email?.trim();
+    const recipient = await householdRecipient(tx, gymId, home.id);
+    const email = recipient?.email;
     if (!email || !z.email().safeParse(email).success) { reach.set(home.id, 'no_address'); continue; }
     const erased = family.some(member => member.householdId === home.id && member.anonymizedAt && (
       member.email?.trim().toLowerCase() === email.toLowerCase()
       || payers.some(payer => payer.householdId === home.id && payer.memberId === member.id)));
-    reach.set(home.id, erased ? 'payer_erased' : 'ok');
+    reach.set(home.id, erased ? 'payer_erased' : recipient?.suppressed ? 'suppressed' : 'ok');
   }
   return reach;
 }
@@ -167,10 +169,10 @@ export function createPriceChangeService(options: PriceChangeOptions) {
         await jobs!.enqueue(priceNoticeJob, payload, { gymId: transaction.gymId, timezone,
           idempotencyKey: `plan-price:${request.requestKey}:${householdId}`, maxAttempts: 12 }, transaction);
       }
-      outcome.notified = moved.size;
     }
-    const reach = await householdReach(tx, [...moved]);
+    const reach = await householdReach(tx, context.gymId, [...moved]);
     outcome.reach = [...moved].map(id => reach.get(id) ?? 'no_address');
+    outcome.notified = request.notify ? outcome.reach.filter(value => value === 'ok').length : 0;
     return outcome;
   }
 
@@ -193,7 +195,7 @@ export function createPriceChangeService(options: PriceChangeOptions) {
         const rows = await tx.select({ membership: memberships, firstName: members.firstName, lastName: members.lastName })
           .from(memberships).innerJoin(members, member).where(where)
           .orderBy(asc(members.lastName), asc(members.firstName), asc(memberships.id)).limit(c.planPriceChangeLimit);
-        const reach = await householdReach(tx, [...new Set(rows.map(row => row.membership.householdId))]);
+        const reach = await householdReach(tx, gymId, [...new Set(rows.map(row => row.membership.householdId))]);
         const items = rows.map(({ membership: row, firstName, lastName }): c.PlanPriceChangeMembership => {
           const skipReason = blocked(row, plan);
           const inCommitment = row.commitmentEndsOn !== null && row.commitmentEndsOn > query.effectiveOn;
@@ -217,6 +219,7 @@ export function createPriceChangeService(options: PriceChangeOptions) {
           memberships: items, total, households: movable.length,
           householdsWithoutAddress: movable.filter(id => reach.get(id) === 'no_address').length,
           householdsPayerErased: movable.filter(id => reach.get(id) === 'payer_erased').length,
+          householdsSuppressed: movable.filter(id => reach.get(id) === 'suppressed').length,
           switchesToPlan, canEmail });
       });
     },
@@ -276,7 +279,8 @@ export function createPriceChangeService(options: PriceChangeOptions) {
         skipped: outcomes.flatMap(outcome => outcome.skipped).sort((a, b) => a.id.localeCompare(b.id)),
         householdsNotified: outcomes.reduce((sum, outcome) => sum + outcome.notified, 0),
         householdsWithoutAddress: reach.filter(value => value === 'no_address').length,
-        householdsPayerErased: reach.filter(value => value === 'payer_erased').length });
+        householdsPayerErased: reach.filter(value => value === 'payer_erased').length,
+        householdsSuppressed: reach.filter(value => value === 'suppressed').length });
       // The first run to finish records the result; a concurrent or later one with the key returns it.
       return scope(context.gymId, async tx => {
         await lockPlan(tx, planId);

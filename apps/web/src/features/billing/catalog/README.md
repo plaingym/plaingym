@@ -1,6 +1,31 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Billing catalog
 
+Changing a plan's price with current memberships opens **Change plan price**.
+**New members only** saves only the plan; **All existing members** also moves
+frozen memberships, leaving commitments and custom prices out until **Include
+commitments and custom prices too** is checked. **Choose members** starts with
+the preview's default ticks; exceptional memberships can be selected explicitly,
+while memberships with a scheduled change or incompatible terms show why they
+cannot move. Search and status, commitment and custom-price filters affect only
+the visible list, never the selection. Phones show cards; desktop tables scroll
+inside their own container. A truncated preview disables All.
+
+The effective date starts 30 days ahead in the gym's timezone. A changed date
+requires a fresh preview. Email is checked by default and disabled with its
+reason when member email cannot be sent. Review counts selected memberships and
+distinct households, separating reachable payers, missing addresses, erased
+payers and suppressed addresses (opted out or undeliverable). Staff must tell
+unreachable households another way. An increase with fewer than 30 days' notice
+or no email requires explicit confirmation; a decrease does not.
+
+Other plan edits save first while keeping the old price; the price-change apply
+uses the revision returned by that save. A failed apply keeps the exact request,
+including its key and membership revisions, for retry, and offers reloading the
+plan as the way out. Conflicts require reloading and reviewing the plan. The result names scheduled and skipped memberships and
+their reasons, and reports reachable households with a notice queued separately
+from those that cannot be emailed. Delivery is rechecked by the notice job.
+
 The **Discounts** section is available only to owners and admins, alongside class
 packs on the plans page. It uses cards at phone and desktop widths, shows price
 and signup-fee benefits, duration, uses, code, eligible plans and the end date,

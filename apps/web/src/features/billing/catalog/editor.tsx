@@ -91,6 +91,7 @@ export function CatalogEditor({ kind, record, currency, taxes, busy, locked = fa
         <Label className="flex min-h-11 items-center gap-3"><input className="size-5" type="checkbox" name="inclusive" checked={draft.inclusive} onChange={event => change('inclusive', event.target.checked)}/>{text('inclusive')}</Label>
       </> : <>
         <Label className="block min-w-0">{text('amount')} ({currency})<Input name="amount" inputMode="decimal" type="number" min="0" step={amountInputStep(currency)} required value={draft.amount} onChange={event => change('amount', event.target.value)}/></Label>
+        {kind === 'plans' && record && <p className="text-sm text-muted-foreground sm:col-span-2">{text('pcEditorHelp')}</p>}
         {kind === 'plans' && <>
           <Label className="block min-w-0">{text('interval')}<select className={selectClass} name="interval" value={draft.interval} onChange={event => change('interval', event.target.value as typeof draft.interval)}><option value="monthly">{text('monthly')}</option><option value="annual">{text('annual')}</option></select></Label>
           <Label className="block min-w-0">{text('signupFee')} ({currency})<Input name="signupFee" type="number" inputMode="decimal" min="0" step={amountInputStep(currency)} required value={draft.signupFee} onChange={event => change('signupFee', event.target.value)}/></Label>

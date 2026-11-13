@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { billingContracts, settingsContracts, membersContracts, type EndpointContract, type ListResponse } from '@plaingym/shared/contracts';
+import { billingContracts, settingsContracts, membersContracts, type ApplyPlanPriceChangeRequest, type EndpointContract, type ListResponse } from '@plaingym/shared/contracts';
 import { ApiError, apiErrorReasons } from '../../../lib/api.js';
 import { parseResponse } from '../../../lib/response.js';
 
@@ -42,3 +42,9 @@ export function createBillingClient(fetcher: typeof fetch = fetch) {
 }
 export const billingClient = createBillingClient();
 export type BillingClient = ReturnType<typeof createBillingClient>;
+export async function previewPriceChange(client: BillingClient, planId: string, amountCents: number, effectiveOn: string) {
+  return (await client.call('previewPlanPriceChange', undefined, { planId }, { amountCents, effectiveOn })).data;
+}
+export async function applyPriceChange(client: BillingClient, planId: string, request: ApplyPlanPriceChangeRequest) {
+  return (await client.call('applyPlanPriceChange', request, { planId })).data;
+}

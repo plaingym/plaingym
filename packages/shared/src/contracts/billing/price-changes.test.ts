@@ -36,7 +36,7 @@ describe('plan price change contracts', () => {
   it('reports scheduled and skipped memberships with their reasons', () => {
     const result = { planId: id(1), amountCents: 12_000, effectiveOn: '2028-04-15', scheduled: [id(2)],
       skipped: [{ id: id(3), reason: 'switch_scheduled' }, { id: id(4), reason: 'changed' }], householdsNotified: 1,
-      householdsWithoutAddress: 0, householdsPayerErased: 0 };
+      householdsWithoutAddress: 0, householdsPayerErased: 0, householdsSuppressed: 0 };
     expect(planPriceChangeResultSchema.parse(result)).toEqual(result);
     expect(planPriceChangeResultSchema.safeParse({ ...result, skipped: [{ id: id(3), reason: 'commitment' }] }).success).toBe(false);
   });

@@ -2,7 +2,8 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { canStaff } from '@plaingym/shared';
-import type { ChargeType, Plan, TaxRate, TaxRateUsage } from '@plaingym/shared/contracts';
+import type { ChargeType, Plan, PlanPriceChangePreview, TaxRate, TaxRateUsage } from '@plaingym/shared/contracts';
+import { addDays, localDate } from '@plaingym/shared/time';
 import { useBootstrap } from '../../../app/context.js';
 import { Alert } from '../../../components/ui/alert.js';
 import { Button } from '../../../components/ui/button.js';
@@ -10,7 +11,8 @@ import { Card } from '../../../components/ui/card.js';
 import { userNames } from '../../../components/ui/page.js';
 import { ApiError } from '../../../lib/api.js';
 import { cn } from '../../../lib/utils.js';
-import { billingClient, type BillingClient } from './api.js';
+import { billingClient, previewPriceChange, type BillingClient } from './api.js';
+import { PriceChange } from './price-change.js';
 import { ArchiveConfirmation, CatalogEditor, type CatalogKind, type CatalogRecord } from './editor.js';
 import { money, saveError, say, text } from './format.js';
 import { PackCatalog } from '../packs/catalog.js';
@@ -18,6 +20,7 @@ import { DiscountCatalog } from '../discounts/catalog.js';
 
 type Archive = { rate: TaxRate; input: Record<string, unknown>; usage: TaxRateUsage };
 const carries = (record: Plan | ChargeType, rate: string) => record.taxRateIds.includes(rate);
+const isPlan = (record: CatalogRecord): record is Plan => 'interval' in record;
 
 export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: string; client?: BillingClient }) {
   const cache = useQueryClient(), key = ['billing', gymId, 'catalog'];
@@ -25,6 +28,7 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
   const [busy, setBusy] = useState(false), [message, setMessage] = useState('');
   const [archive, setArchive] = useState<Archive | null>(null);
   const [stale, setStale] = useState(false);
+  const [priceChange, setPriceChange] = useState<{ plan: Plan; input: Record<string, unknown>; initial: PlanPriceChangePreview } | null>(null);
   const data = useQuery({ queryKey: key, queryFn: async () => {
     const [plans, taxes, charges, settings] = await Promise.all([client.plans(), client.taxes(), client.charges(), client.settings()]);
     return { plans, taxes, charges, settings };
@@ -42,6 +46,19 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
   const save = (input: Record<string, unknown>) => run(async () => {
     if (stale) return;
     const record = editor === 'new' ? undefined : editor;
+    if (kind === 'plans' && record && isPlan(record) && input.amountCents !== record.amountCents && data.data) {
+      const effectiveOn = addDays(localDate(new Date(), data.data.settings.timezone), 30);
+      let initial: PlanPriceChangePreview;
+      try { initial = await previewPriceChange(client, record.id, Number(input.amountCents), effectiveOn); }
+      catch (error) {
+        if (error instanceof ApiError && error.status === 409) { setStale(true); await cache.invalidateQueries({ queryKey: key }); }
+        throw error;
+      }
+      if (initial.plan.revision !== record.revision) {
+        setStale(true); setMessage(text('pcConflict')); await cache.invalidateQueries({ queryKey: key }); return;
+      }
+      if (initial.total > 0) { setPriceChange({ plan: record, input, initial }); return; }
+    }
     // Only archiving an active rate needs the detach; a rate archived before that rule stays editable as it is.
     const archiving = kind === 'taxes' && record && 'rateMillionths' in record && record.active && input.active === false ? record : undefined;
     if (archiving && await needsDetach(archiving, input)) return;
@@ -90,6 +107,14 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
     {data.isPending && <p role="status">{text('loading')}</p>}
     {data.isError && <Alert role="alert">{text('error')} <Button variant="outline" onClick={() => void data.refetch()}>{text('retry')}</Button></Alert>}
     {data.data && <>
+      {priceChange && <PriceChange {...priceChange} client={client} cancel={() => setPriceChange(null)}
+        done={async () => { await cache.invalidateQueries({ queryKey: key }); setPriceChange(null); setEditor(null); }}
+        reload={async () => {
+          const refreshed = await data.refetch({ throwOnError: true });
+          const plan = refreshed.data?.plans.find(plan => plan.id === priceChange.plan.id);
+          if (!plan) throw new Error('Plan missing');
+          setEditor(plan); setPriceChange(null); setStale(false); setMessage(text('reloaded'));
+        }}/>}
       <nav className="flex flex-wrap gap-2" aria-label={text('sections')}>{(['plans', 'taxes', 'charges'] as const).map(value => <Button key={value} aria-pressed={value === kind} variant={value === kind ? 'default' : 'outline'} disabled={busy} onClick={() => switchTo(value)}>{text(value)}</Button>)}</nav>
       {(message || stale) && <Alert role="alert" className="space-y-3"><p>{message || text('conflict')}</p>{stale && <Button className="w-full sm:w-auto" variant="outline" disabled={busy} onClick={() => void reloadEditor()}>{text('reloadRecord')}</Button>}</Alert>}
       {archive && <ArchiveConfirmation rate={archive.rate} usage={archive.usage} busy={busy} confirm={confirmArchive} cancel={() => { setArchive(null); setMessage(''); }}/>}

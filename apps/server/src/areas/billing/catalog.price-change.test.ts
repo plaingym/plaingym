@@ -2,14 +2,17 @@
 import { describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
-import { households, memberships, plans, RevisionConflictError, uuidv7 } from '@plaingym/db';
+import { households, members, memberships, plans, RevisionConflictError, uuidv7 } from '@plaingym/db';
 import type { ApplyPlanPriceChangeRequest } from '@plaingym/shared/contracts';
 import { billingContracts } from '@plaingym/shared/contracts';
 import type { Principal, RequestEnvironment } from '../../core/context.js';
 import { errorHandler } from '../../core/errors.js';
+import { setLogSink } from '../../core/log.js';
+import { FakeEmail } from '../../infra/email/index.js';
 import { createServerRegistry } from '../../core/registry.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
+import { createGoLiveService } from '../settings/go-live.js';
 import { createCatalogService } from './catalog.js';
 import { createPriceChangeService, priceChanges, planPriceChangeAppliedAction, planPriceChangedAction, priceChangeScheduledAction,
   type PriceChangeOptions } from './catalog.price-change.js';
@@ -17,7 +20,7 @@ import { createCatalogRoutes } from './catalog.routes.js';
 import { createDiscountCatalogService } from './discounts/catalog.js';
 import { createMembershipService } from './memberships.js';
 import { planSwitchedAction, switchedNow } from './memberships.plan-change.js';
-import { priceNoticeJob, priceNoticePayload } from './memberships.price-notice.js';
+import { createPriceNotice, priceNoticeJob, priceNoticePayload } from './memberships.price-notice.js';
 import { useRunnerFixture, type FixtureOptions } from './runner/runner.fixture.test-helper.js';
 
 const { db, factory, fixture } = useRunnerFixture();
@@ -75,6 +78,30 @@ async function erasedHousehold(f: Setup) {
 }
 
 describe('plan price change preview', () => {
+  it.each(['opt_out', 'undeliverable', 'erased'] as const)('counts %s households consistently with the notice job in preview and result', async kind => {
+    const f = await setup();
+    const goLive = createGoLiveService({ scope: db.forGym, clock: f.clock, smtpConfigured: async () => true });
+    await goLive.update(f.staff, { revision: (await goLive.checklist(f.gymId)).revision, memberEmailsEnabled: true });
+    const home = kind === 'erased' ? await erasedHousehold(f) : await factory('households', f.gymId, { email: 'payer@example.test' });
+    if (kind !== 'erased') await factory('members', f.gymId, { householdId: home.id, email: ' PAYER@example.test ',
+      emailOptOut: kind === 'opt_out', emailDeliverable: kind !== 'undeliverable' });
+    // Erasure takes precedence over suppression, just as it does in the job.
+    if (kind === 'erased') await db.forGym(f.gymId, tx => tx.update(members).set({ emailOptOut: true }).where(eq(members.householdId, home.id)));
+    const membership = await f.join({}, home), reach = kind === 'erased' ? 'payer_erased' : 'suppressed';
+    const preview = await f.preview();
+    expect(preview.memberships.find(row => row.id === membership.id)?.householdReach).toBe(reach);
+    expect(preview).toMatchObject({ households: 2, householdsSuppressed: kind === 'erased' ? 0 : 1, householdsPayerErased: kind === 'erased' ? 1 : 0 });
+    const applied = await f.apply(await f.request([membership.id]));
+    expect(applied).toMatchObject({ scheduled: [membership.id], householdsNotified: 0,
+      householdsSuppressed: kind === 'erased' ? 0 : 1, householdsPayerErased: kind === 'erased' ? 1 : 0 });
+    const email = new FakeEmail(), logs: string[] = [], previous = setLogSink(line => logs.push(line));
+    try {
+      const job = f.notices()[0]!;
+      await createPriceNotice({ scope: db.forGym, clock: f.clock, demoMode: false, mailer: async () => email }).run(job.payload, f.gymId);
+    } finally { setLogSink(previous); }
+    expect(email.messages).toHaveLength(0);
+    expect(logs.map(line => JSON.parse(line))).toContainEqual(expect.objectContaining({ reason: kind === 'erased' ? 'payer_erased' : 'recipient_suppressed' }));
+  });
   it('ticks only plain memberships, has "All" leave out commitments and custom prices, and names the skip reasons', async () => {
     const f = await setup();
     const other = await factory('plans', f.gymId, { name: 'Other', amountCents: 15_000 });
@@ -151,7 +178,7 @@ describe('plan price change apply', () => {
     const input = await f.request([f.membership.id, second.id, sibling.id]);
     const result = await f.apply(input);
     expect(result).toEqual({ planId: f.plan.id, amountCents: 12_000, effectiveOn: '2028-04-15',
-      scheduled: [f.membership.id, second.id, sibling.id].sort(), skipped: [], householdsNotified: 2, householdsWithoutAddress: 0, householdsPayerErased: 0 });
+      scheduled: [f.membership.id, second.id, sibling.id].sort(), skipped: [], householdsNotified: 2, householdsWithoutAddress: 0, householdsPayerErased: 0, householdsSuppressed: 0 });
     expect(await f.planRow()).toMatchObject({ amountCents: 12_000, revision: plan.revision + 1 });
     for (const id of [f.membership.id, second.id, sibling.id]) {
       expect(await f.row(id)).toMatchObject({ planId: f.plan.id, amountCents: 10_000, scheduledPlanId: f.plan.id, ...scheduled(),
@@ -182,7 +209,7 @@ describe('plan price change apply', () => {
     const noAddress = await f.join({}, await factory('households', f.gymId, { billingDay: 1, email: '  ' }));
     const erased = await f.join({}, await erasedHousehold(f));
     const result = await f.apply(await f.request([f.membership.id, noAddress.id, erased.id]));
-    expect(result).toMatchObject({ householdsNotified: 3, householdsWithoutAddress: 1, householdsPayerErased: 1 });
+    expect(result).toMatchObject({ householdsNotified: 1, householdsWithoutAddress: 1, householdsPayerErased: 1, householdsSuppressed: 0 });
     expect(f.notices()).toHaveLength(3);
   });
   it('skips what can\'t move and what changed after the preview, leaving those memberships as they were', async () => {

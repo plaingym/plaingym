@@ -1,12 +1,36 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { createBillingClient } from './api.js';
+import { applyPriceChange, createBillingClient, previewPriceChange } from './api.js';
 import { decimalUnits } from './format.js';
 
 const id = '019a0af0-9c00-7000-8000-000000000001';
 const plan = { id, createdAt: '2026-10-23T12:00:00Z', name: 'Plan', currency: 'CAD', amountCents: 9999,
   interval: 'monthly', signupFeeCents: 0, trialDays: 0, commitmentMonths: null, active: true, revision: 1, taxRateIds: [] };
 describe('billing contract transport', () => {
+  it('validates a price preview including suppressed reach and counts', async () => {
+    const preview = { plan, amountCents: 12000, effectiveOn: '2026-12-13', today: '2026-11-13', change: 'increase', memberships: [],
+      total: 0, households: 0, householdsWithoutAddress: 0, householdsPayerErased: 0, householdsSuppressed: 0, switchesToPlan: 0, canEmail: true };
+    const paths: string[] = [];
+    const client = createBillingClient(async path => { paths.push(String(path)); return Response.json({ data: { ...preview, householdsSuppressed: -1 } }); });
+    // The preview's plan is a strict subset of the catalog record.
+    const { id: planId, name, amountCents, currency, interval, active, revision } = plan;
+    const data = { ...preview, plan: { id: planId, name, amountCents, currency, interval, active, revision } };
+    const valid = createBillingClient(async path => { paths.push(String(path)); return Response.json({ data }); });
+    expect(await previewPriceChange(valid, id, 12000, preview.effectiveOn)).toEqual(data);
+    expect(paths[0]).toBe('/api/billing/plans/' + id + '/price-change?amountCents=12000&effectiveOn=2026-12-13');
+    await expect(previewPriceChange(client, id, 12000, preview.effectiveOn)).rejects.toThrow();
+  });
+  it('sends a stable price-change key and validates result counts and conflict reasons', async () => {
+    const request = { requestKey: id, planRevision: 2, amountCents: 12000, effectiveOn: '2026-12-13', notify: true, memberships: [{ id, revision: 1 }] };
+    const result = { planId: id, amountCents: 12000, effectiveOn: request.effectiveOn, scheduled: [id], skipped: [],
+      householdsNotified: 0, householdsWithoutAddress: 0, householdsPayerErased: 0, householdsSuppressed: 1 };
+    const bodies: unknown[] = [];
+    const client = createBillingClient(async (_path, options) => { bodies.push(JSON.parse(String(options?.body))); return Response.json({ data: result }); });
+    expect(await applyPriceChange(client, id, request)).toEqual(result); await applyPriceChange(client, id, request);
+    expect(bodies).toEqual([request, request]);
+    const conflict = createBillingClient(async () => Response.json({ error: { details: { reason: ['request_reused'] } } }, { status: 409 }));
+    await expect(applyPriceChange(conflict, id, request)).rejects.toMatchObject({ status: 409, reason: ['request_reused'] });
+  });
   it('validates writes, carries revisions and restricts transport to the same origin', async () => {
     const requests: { path: string; options: RequestInit | undefined }[] = [];
     const client = createBillingClient(async (path, options) => {
