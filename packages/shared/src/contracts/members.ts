@@ -24,6 +24,9 @@ export const emergencyContactSchema = z.strictObject({
   phone: z.string().trim().min(1),
   email: z.email().nullable(),
 });
+/** Stored JSON may carry fields added by a newer minor; requests stay strict. */
+export const householdAddressReadSchema = householdAddressSchema.strip();
+export const emergencyContactReadSchema = emergencyContactSchema.strip();
 
 /** Safe for household grants; never add medical notes or check-in credentials. */
 export const householdMemberSchema = z.strictObject({

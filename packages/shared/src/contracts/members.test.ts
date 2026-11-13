@@ -9,7 +9,7 @@ import {
   householdUserSchema, memberListQuerySchema, memberListResponseSchema, memberMedicalNotesSchema,
   memberSchema, membersContracts, setHouseholdPinRequestSchema, updateHouseholdBillingSettingsRequestSchema,
   updateHouseholdRequestSchema, updateMemberMedicalNotesRequestSchema, updateMemberRequestSchema,
-  updateMemberTagRequestSchema,
+  updateMemberTagRequestSchema, householdAddressReadSchema, emergencyContactReadSchema,
   type Household, type HouseholdBillingSettings, type HouseholdMember, type HouseholdUser,
   type Member, type MemberMedicalNotes, type MemberTag, type MemberTagLink,
 } from '@plaingym/shared/contracts';
@@ -30,6 +30,20 @@ const household = {
 type Wire<T> = { [K in keyof T]: T[K] extends Date ? string : T[K] extends Date | null ? string | null : T[K] };
 
 describe('member contracts', () => {
+  it('strips address extensions on stored reads but rejects them in create and update requests', () => {
+    const address = { city: 'Example', future: true };
+    expect(householdAddressReadSchema.parse(address)).toEqual({ city: 'Example' });
+    expect(createHouseholdRequestSchema.safeParse({ name: 'Family', address }).success).toBe(false);
+    expect(updateHouseholdRequestSchema.safeParse({ revision: 1, address }).success).toBe(false);
+    expect(householdAddressReadSchema.safeParse({ countryCode: 'invalid', future: true }).success).toBe(false);
+  });
+  it('strips emergency contact extensions on stored reads but rejects them in create and update requests', () => {
+    const contact = { ...member.emergencyContacts[0]!, future: true };
+    expect(emergencyContactReadSchema.parse(contact)).toEqual(member.emergencyContacts[0]);
+    expect(createMemberRequestSchema.safeParse({ householdId, firstName: 'A', lastName: 'B', emergencyContacts: [contact] }).success).toBe(false);
+    expect(updateMemberRequestSchema.safeParse({ revision: 1, emergencyContacts: [contact] }).success).toBe(false);
+    expect(emergencyContactReadSchema.safeParse({ ...contact, phone: '' }).success).toBe(false);
+  });
   it('accepts household-visible emergency contacts and names in any script', () => {
     expect(householdMemberSchema.parse(member)).toEqual(member);
     expect(memberSchema.parse({ ...member, emailDeliverable: true }).emergencyContacts).toEqual(member.emergencyContacts);

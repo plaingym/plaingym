@@ -31,8 +31,10 @@ const tagFields = { id: memberTags.id, name: memberTags.name, color: memberTags.
 const linkFields = { id: memberTagLinks.id, memberId: memberTagLinks.memberId, tagId: memberTagLinks.tagId, createdAt: memberTagLinks.createdAt };
 const member = (row: Record<string, unknown>) => c.memberSchema.parse({
   ...row, createdAt: (row.createdAt as Date).toISOString(), anonymizedAt: (row.anonymizedAt as Date | null)?.toISOString() ?? null,
+  emergencyContacts: c.emergencyContactReadSchema.array().parse(row.emergencyContacts),
 });
-const household = (row: Record<string, unknown>) => c.householdSchema.parse({ ...row, createdAt: (row.createdAt as Date).toISOString() });
+const household = (row: Record<string, unknown>) => c.householdSchema.parse({ ...row, createdAt: (row.createdAt as Date).toISOString(),
+  address: c.householdAddressReadSchema.parse(row.address) });
 const tag = (row: Record<string, unknown>) => c.memberTagSchema.parse({ ...row, createdAt: (row.createdAt as Date).toISOString() });
 const link = (row: Record<string, unknown>) => c.memberTagLinkSchema.parse({ ...row, createdAt: (row.createdAt as Date).toISOString() });
 function missing<T>(row: T | undefined): T { if (!row) throw new AppError('not_found', 'Resource not found'); return row; }

@@ -56,9 +56,13 @@ The final reference list authenticates the snapshot ID, timestamp, kind, public
 recipient, dump, manifest, and every blob. The recipient is optional when reading
 older snapshots; those remain valid for restore and retention but cannot establish
 the latest restorable snapshot under the current key. Health checks match the
-current recipient in the currently configured destination. Older releases whose
-reference parser does not accept this field cannot read these new snapshots;
-restore them with this release or a newer compatible one.
+current recipient in the currently configured destination. Readers verify the MAC
+over the complete original payload before stripping unknown payload fields,
+including nested object metadata and upload references. Writers reject unknown
+fields. Retention and restore act only on the fields the reader knows, so a new
+field must never name objects a snapshot needs or change what retention keeps;
+every blob a snapshot needs stays in `uploads`. The encrypted manifest remains strict; minor releases cannot extend it
+with keys the previous minor does not know (see `docs/versioning.md`).
 The list contains only opaque upload identifiers and encrypted
 checksums: paths and plaintext content hashes stay inside the encrypted manifest.
 Publishing this list commits a snapshot. Multipart failures abort and retry from

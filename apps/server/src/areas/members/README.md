@@ -134,6 +134,12 @@ deletion, a member's assigned tags, and photo upload. The photo read
 (`listHouseholdUsers`, `createHouseholdUser`, `revokeHouseholdUser`) are not
 implemented here.
 
+Stored household addresses and member emergency contacts strip unknown keys on
+read, so a rollback can read extensions a newer minor stored. Create and update
+requests still reject those keys. An update that leaves the address or contacts
+out keeps the stored JSON intact; one that sends them replaces that field in full,
+and the portal's household and member forms send them with every save.
+
 ## Verification
 
 `members.test.ts` uses a real PostgreSQL database and exercises every implemented

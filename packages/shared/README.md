@@ -43,6 +43,12 @@ response media types, headers and status codes in `responses`. Both check method
 and permissions at compile time. Rank JSON configuration and CSV upload fields
 carry OpenAPI metadata on their shared Zod schemas, retaining their runtime validation.
 
+Household addresses, emergency contacts, rank sub-ranks and criterion entries have
+stripping read schemas beside their strict write schemas. Server readers use those
+schemas for stored JSON; request and response contracts stay strict. Provider-owned
+criterion configuration keeps its provider's validation. See
+[`docs/versioning.md`](../../docs/versioning.md) for the compatibility limits.
+
 New CSV exports always save the complete current dataset catalog. Reads accept
 unique, nonempty subsets of that catalog so runs from older releases remain
 readable. A pending export streams the manifest saved when it was created, even

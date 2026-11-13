@@ -5,6 +5,8 @@ import { auditEvents, discounts, households, invoiceLineItems, invoices, leads, 
   uuidv7, waiverSignatures } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
+// eslint-disable-next-line no-restricted-imports, database/system-tables -- Test-only newer-release fixtures in immutable audit history.
+import { openConnection } from '@plaingym/db/client';
 import { AppError } from '@plaingym/shared';
 import { TestClock } from '../../core/clock.js';
 import { createGymSettingsAccessor } from '../../areas/settings/settings.js';
@@ -17,7 +19,7 @@ import { FakePayments } from '../../infra/payments/index.js';
 import { FakeUploads } from '../../infra/storage/index.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
 import { demoSignaturePng } from '../../demo/seed/waivers-image.js';
-import { createJoinService } from './join.service.js';
+import { createJoinService, joinRecordWriteSchemas } from './join.service.js';
 import { createJoinCleanup } from './join.cleanup.js';
 import { configureJoinCleanup, jobs as joinJobs } from './join.jobs.js';
 
@@ -78,6 +80,33 @@ const count = (audits: { action: string; targetId: string }[], action: string, t
   audits.filter(a => a.action === action && (targetId === undefined || a.targetId === targetId)).length;
 
 describe('unpaid submitted joins', () => {
+  it.each(['admitted', 'discounted', 'invoiced', 'received'] as const)('replays an extended public.join.%s record without duplicating writes', async (action) => {
+    const f = await fixture(), code = await factory('discounts', f.gymId, { name: 'Spring', code: 'SPRING-20', percentBasisPoints: 2000,
+      duration: 'forever', maxUses: 2 });
+    const submitted = await f.submit('extended-' + action + '@example.invalid', 1, code.code!), before = await f.state(submitted.householdId);
+    const row = before.audits.find(row => row.action === 'public.join.' + action)!;
+    expect(row).toBeDefined();
+    const after: Record<string, unknown> = { ...row.after as Record<string, unknown>, future: true };
+    if (action === 'invoiced') after.next = (after.next as Record<string, unknown>[]).map(next => ({ ...next, future: true }));
+    expect(joinRecordWriteSchemas[action].safeParse(after).success).toBe(false);
+    const maintenance = openConnection(db.maintenanceUrl, 1);
+    try {
+      await maintenance.db.update(auditEvents).set({ after }).where(eq(auditEvents.id, row.id));
+      if (action === 'discounted' || action === 'invoiced') {
+        // Simulate interruption after the earlier stage committed but before the final receipt.
+        const receipt = before.audits.find(row => row.action === 'public.join.received')!;
+        await maintenance.db.update(auditEvents).set({ action: 'fixture.interrupted' }).where(eq(auditEvents.id, receipt.id));
+      }
+    } finally { await maintenance.close(); }
+    await expect(f.join.join(f.gymId, { ...submitted.body, future: true }, timezone, '127.0.0.1')).rejects.toThrow();
+    await expect(f.join.join(f.gymId, submitted.body, timezone, '127.0.0.1')).resolves.toEqual({ linkId: submitted.linkId });
+    const replayed = await f.state(submitted.householdId);
+    expect(replayed.invoices).toEqual(before.invoices);
+    expect(replayed.memberships).toEqual(before.memberships);
+    expect(replayed.applications).toEqual(before.applications);
+    expect((await f.discount(code.id)).uses).toBe(1);
+    expect(replayed.audits.filter(row => row.action === 'public.join.' + action)).toHaveLength(1);
+  });
   it.each([
     ['the fall clock change', submittedAt, sixthDayEnds, seventhDay],
     // Submitted 2026-03-05 (EST); the seventh local day, 2026-03-12, starts at 04:00Z after the spring change.

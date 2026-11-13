@@ -2,7 +2,7 @@
 import '@hono/zod-openapi';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
-import { auditEvents, householdUsers, memberships } from '@plaingym/db';
+import { auditEvents, householdUsers, memberships, members as memberRows } from '@plaingym/db';
 // eslint-disable-next-line no-restricted-imports -- Initialize the default app-role pools for the production registrations; no raw queries.
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
@@ -34,6 +34,14 @@ function memberRoutes(memberId: string, revision = 1) {
 }
 
 describe('portal household routes', () => {
+  it('projects extended stored emergency contacts and still refuses extensions on portal writes', async () => {
+    const f = await portalFixture(factory), server = app(f, payerPrincipal(f));
+    const contact = { name: 'Grandparent', relationship: null, phone: '555-0100', email: null, future: true };
+    await db.forGym(f.gymId, tx => tx.update(memberRows).set({ emergencyContacts: [contact] }).where(eq(memberRows.id, f.child.id)));
+    const child = await json(await server.request(`/api/portal/members/${f.child.id}`), contracts.profile.response);
+    expect(child.data.emergencyContacts).toEqual([{ name: 'Grandparent', relationship: null, phone: '555-0100' }]);
+    expect(contracts.updateMember.body.safeParse({ revision: 1, emergencyContacts: [{ ...contact, email: 'contact@example.test' }] }).success).toBe(false);
+  });
   it('registers every portal contract through the household answer helper', () => {
     for (const contract of Object.values(contracts)) {
       const registration = areaContributions.routes?.find(route => route.id === `${contract.method.toUpperCase()} ${contract.path}`);

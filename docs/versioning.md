@@ -43,8 +43,27 @@ replaces a value that only partly came from the form, it keeps the unknown keys
 with what the owner typed. A job with a name the running version doesn't know stays
 queued until a version that knows it starts.
 
-Other JSON columns are still read strictly: household addresses, emergency contacts,
-and rank sub-ranks and criteria. A minor can't add a key to those.
+Household addresses, member emergency contacts, rank sub-ranks and criterion entries
+strip unknown keys on read, while their request schemas still reject them. Portal
+contacts project only the fields that release knows. A save that sends one of these
+fields replaces it in full, dropping keys the running release doesn't know; a save
+that leaves it out keeps the stored JSON intact. The rank editor and the portal's
+household and member forms send these fields with every save, so a minor may add a
+key there only for data an older release may drop this way. Provider-owned
+criterion `config` is validated by the registered provider, so a minor must not add
+a configuration key or a provider ID that the previous minor cannot evaluate.
+
+The join flow's stored `public.join.admitted`, `public.join.received`,
+`public.join.discounted` and `public.join.invoiced` audit rows strip unknown keys
+on replay, including entries in `invoiced.next`; writes remain strict. Signed
+backup reference lists also strip unknown payload keys, including object metadata
+and upload references, only after verifying the MAC over the complete original
+payload. Signing a reference list remains strict. Retention and restore act only
+on the fields the running release knows, so a minor must not add a payload field
+that names objects a snapshot needs or changes what retention keeps: every blob a
+snapshot needs stays in `uploads`. The reference envelope (`payload` and `mac`),
+encrypted backup manifest and its nested records remain strict: a minor must not
+add keys there.
 
 A major release that cannot preserve this promise declares that in its upgrade
 notes and sets its rollback floor to itself, which is what `pnpm release` proposes for

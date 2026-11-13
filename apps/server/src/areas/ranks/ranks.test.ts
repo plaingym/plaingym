@@ -76,6 +76,29 @@ function request(app: ReturnType<typeof server>, operation: Operation, f: Fixtur
 }
 
 describe('rank routes with real permissions and Postgres RLS', () => {
+  it.each(['subRanks', 'criteria'] as const)('reads extended stored %s in lists, eligibility and member progress, keeping writes strict', async (field) => {
+    const f = await fixture(), entry = field === 'subRanks' ? { id: 'tip', name: 'Tip' } : { providerId: 'minimum-age', config: { target: 16 } };
+    const stored = [{ ...entry, future: true }];
+    await database.forGym(f.gymId, tx => tx.update(ranks).set({ [field]: stored }).where(eq(ranks.id, f.rank.id)));
+    expect((await f.service.listRanks(f.gymId, { rankSystemId: f.system.id })).data[0]?.[field]).toEqual([entry]);
+    expect((await f.service.eligibility(f.gymId, { programId: f.program.id, rankId: f.rank.id })).data).toHaveLength(1);
+    const progress = await f.service.memberProgress(f.gymId, { memberId: f.member.id, dateOfBirth: f.member.dateOfBirth,
+      createdAt: f.member.createdAt, history: [], attendedProgramIds: [f.program.id], attendanceScope: { kind: 'gym', gymId: f.gymId } });
+    expect(progress.ranks[0]?.subRanks).toEqual(field === 'subRanks' ? [entry] : f.rank.subRanks);
+    expect(progress.criteria).toHaveLength(field === 'criteria' ? 1 : 0);
+    await expect(f.service.dashboardEligibility(f.gymId)).resolves.toBeDefined();
+    await expect(f.service.updateRank(f.context, f.rank.id, { revision: 1, [field]: stored })).rejects.toThrow();
+    await expect(f.service.createRank(f.context, { rankSystemId: f.system.id, name: 'New', position: 1, subRanks: [], criteria: [], [field]: stored })).rejects.toThrow();
+    expect((await f.service.updateRank(f.context, f.rank.id, { revision: 1, name: 'Renamed' }))[field]).toEqual([entry]);
+    await expect(f.service.promote(f.context, f.promotion)).resolves.toMatchObject({ rankId: f.rank.id });
+  });
+  it('keeps provider configuration validation strict on writes and evaluation', async () => {
+    const f = await fixture(), criteria = [{ providerId: 'minimum-age', config: { target: 16, future: true } }];
+    await expect(f.service.createRank(f.context, { rankSystemId: f.system.id, name: 'New', position: 1, subRanks: [], criteria })).rejects.toMatchObject({ code: 'conflict' });
+    await expect(f.service.updateRank(f.context, f.rank.id, { revision: 1, criteria })).rejects.toMatchObject({ code: 'conflict' });
+    await database.forGym(f.gymId, tx => tx.update(ranks).set({ criteria }).where(eq(ranks.id, f.rank.id)));
+    await expect(f.service.eligibility(f.gymId, { programId: f.program.id, rankId: f.rank.id })).rejects.toMatchObject({ code: 'conflict' });
+  });
   it('evaluates only the requested eligibility page while ready-only pagination still filters first', async () => {
     const f = await fixture();
     for (let i = 0; i < 4; i++) await factory('members', f.gymId, { status: 'active' });

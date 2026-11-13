@@ -54,6 +54,13 @@ const joinText = createTranslator({ 'public/join': joinMessages });
 function codeRefused(): never { throw new AppError('invalid_request', joinText('public/join:codeRefused'), { reason: ['code_refused'] }); }
 const isRefusal = (error: unknown) => error instanceof AppError && error.details?.reason?.[0] === 'discount_unknown';
 const invoiced = z.strictObject({ invoiceId: c.idSchema, next: z.array(z.strictObject({ membershipId: c.idSchema, nextDueOn: c.dateSchema })) });
+// Audit records outlive the code that wrote them; writes below still use the strict schemas.
+const admittedRead = admitted.strip();
+const receivedRead = received.strip();
+const discountedRead = discounted.strip();
+const invoicedRead = invoiced.strip().extend({ next: z.array(invoiced.shape.next.element.strip()) });
+/** Strict producer schemas for the replayable audit records. */
+export const joinRecordWriteSchemas = { admitted, received, discounted, invoiced };
 /** `closed`: unpaid, and staff voided the invoice or revoked the join's link, so it can no longer be paid here. */
 export interface JoinInvoice { amountCents: number; currency: string; lines: { description: string; amountCents: number }[] }
 export type JoinState ={ status: 'missing' | 'closed' } | { status: 'pending' | 'active' | 'manual'; householdId: string; cardOnly?: boolean };
@@ -175,7 +182,7 @@ export function createJoinService(options: JoinOptions) {
       const householdId = people[0]?.householdId;
       if (people.length !== ids.length || !householdId || people.some(p => p.householdId !== householdId)) missing();
       const [home] = await tx.select().from(households).where(eq(households.id, householdId));
-      const record = await recorded(tx, 'public.join.admitted', householdId, admitted);
+      const record = await recorded(tx, 'public.join.admitted', householdId, admittedRead);
       // A leaked staff image key cannot enroll, edit, or sign for an existing member.
       if (!home || !record || record.planId !== input.planId || record.memberIds.length !== ids.length || home.email !== input.contact.email
         || home.name !== input.contact.name || home.phone !== (input.contact.phone ?? null) || !isDeepStrictEqual(home.address, input.contact.address ?? {})) missing();
@@ -206,7 +213,7 @@ export function createJoinService(options: JoinOptions) {
     await scope(gymId, async tx => {
       const [home] = await tx.select({ id: households.id }).from(households).where(eq(households.id, found.householdId)).for('update');
       if (!home || await marked(tx, 'public.join.cleanup.started', home.id)) missing();
-      if (await recorded(tx, 'public.join.discounted', home.id, discounted)) return;
+      if (await recorded(tx, 'public.join.discounted', home.id, discountedRead)) return;
       if (!code || !found.discountId) codeRefused();
       const gym = await readGymSettings(tx, gymId), count = found.memberIds.length;
       const resolved = await checkCode(tx, code, planId, count, gym.timezone);
@@ -230,7 +237,7 @@ export function createJoinService(options: JoinOptions) {
     return scope(gymId, async tx => {
       const [home] = await tx.select().from(households).where(eq(households.id, householdId)).for('update');
       if (!home) missing();
-      const previous = await recorded(tx, 'public.join.invoiced', householdId, invoiced);
+      const previous = await recorded(tx, 'public.join.invoiced', householdId, invoicedRead);
       if (previous) return previous;
       const rows = await tx.select().from(memberships).where(inArray(memberships.id, [...membershipIds])).for('update');
       if (rows.length !== membershipIds.length
@@ -311,7 +318,7 @@ export function createJoinService(options: JoinOptions) {
   async function complete(gymId: string, find: (tx: Transaction) => Promise<{ householdId: string; invoiceId?: string } | undefined>) {
     // Every paid invoice and link-tagged Checkout reaches this: one short read, and only an unfinished join goes on.
     const householdId = await scope(gymId, async tx => {
-      const found = await find(tx), record = found ? await recorded(tx, 'public.join.received', found.householdId, received) : null;
+      const found = await find(tx), record = found ? await recorded(tx, 'public.join.received', found.householdId, receivedRead) : null;
       return found && record && (!found.invoiceId || record.invoiceId === found.invoiceId) && !await marked(tx, 'public.join.completed', found.householdId)
         ? found.householdId : null;
     });
@@ -319,7 +326,7 @@ export function createJoinService(options: JoinOptions) {
     const passwordMode = await options.invitations.passwordRequired(gymId);
     const completed = await scope(gymId, async tx => {
       await tx.select({ id: households.id }).from(households).where(eq(households.id, householdId)).for('update');
-      const record = await recorded(tx, 'public.join.received', householdId, received);
+      const record = await recorded(tx, 'public.join.received', householdId, receivedRead);
       if (!record) return false;
       const [bill] = await tx.select({ status: invoices.status }).from(invoices).where(eq(invoices.id, record.invoiceId));
       if (!bill || !settled.includes(bill.status) || await marked(tx, 'public.join.completed', householdId)) return false;
@@ -353,7 +360,7 @@ export function createJoinService(options: JoinOptions) {
   }
   async function settleFree(gymId: string, householdId: string) {
     const saved = await scope(gymId, async tx => {
-      const record = await recorded(tx, 'public.join.received', householdId, received);
+      const record = await recorded(tx, 'public.join.received', householdId, receivedRead);
       if (!record) return null;
       const [bill] = await tx.select().from(invoices).where(eq(invoices.id, record.invoiceId));
       if (!bill || bill.amountCents !== 0 || bill.status === 'void') return null;
@@ -458,7 +465,7 @@ export function createJoinService(options: JoinOptions) {
       const templates = await ready(gymId);
       input.members.forEach(m => current(templates, m.waivers));
       const found = await admission(gymId, input), today = found.joinedOn;
-      const done = await scope(gymId, tx => recorded(tx, 'public.join.received', found.householdId, received));
+      const done = await scope(gymId, tx => recorded(tx, 'public.join.received', found.householdId, receivedRead));
       if (done) { await settleFree(gymId, found.householdId); return { linkId: done.linkId }; }
       // A day's grace for midnight; an older admission would start memberships, and bill periods, in the past.
       if (joinAdmissionExpired(today, clock.now(), timezone)) changed();
@@ -468,7 +475,7 @@ export function createJoinService(options: JoinOptions) {
       // uses, it keeps them, with or without the code. A refusal here comes before anything is signed or taken.
       const code = input.code || undefined;
       const discountTaken = await scope(gymId, async tx => {
-        if (await recorded(tx, 'public.join.discounted', found.householdId, discounted)) return true;
+        if (await recorded(tx, 'public.join.discounted', found.householdId, discountedRead)) return true;
         if (code === undefined) return false;
         if (!found.discountId || (await checkCode(tx, code, input.planId, found.memberIds.length, timezone)).row.id !== found.discountId) codeRefused();
         return false;
@@ -516,7 +523,7 @@ export function createJoinService(options: JoinOptions) {
         expiresAt: new Date(clock.now().getTime() + linkLifetimeMs).toISOString() })).link.id;
       const kept = await scope(gymId, async tx => {
         await tx.select({ id: households.id }).from(households).where(eq(households.id, found.householdId)).for('update');
-        const winner = await recorded(tx, 'public.join.received', found.householdId, received);
+        const winner = await recorded(tx, 'public.join.received', found.householdId, receivedRead);
         if (winner) return winner.linkId;
         await audit(tx, gymId, 'public.join.received', 'household', found.householdId,
           received.parse({ planId: input.planId, joinedOn: today, memberIds: found.memberIds, membershipIds: found.membershipIds, invoiceId: first.invoiceId, linkId }));
@@ -534,7 +541,7 @@ export function createJoinService(options: JoinOptions) {
     async state(gymId: string, linkId: string): Promise<JoinState> {
       return scope(gymId, async tx => {
         const [link] = await tx.select({ householdId: signedLinks.householdId, revokedAt: signedLinks.revokedAt, purpose: signedLinks.purpose }).from(signedLinks).where(eq(signedLinks.id, linkId));
-        const record = link ? await recorded(tx, 'public.join.received', link.householdId, received) : null;
+        const record = link ? await recorded(tx, 'public.join.received', link.householdId, receivedRead) : null;
         if (!link || !record || record.linkId !== linkId) return { status: 'missing' };
         const [bill] = await tx.select({ status: invoices.status, amountCents: invoices.amountCents, currency: invoices.currency }).from(invoices).where(eq(invoices.id, record.invoiceId));
         // A paid invoice wins over a revoked link: staff may have collected it another way.
@@ -551,7 +558,7 @@ export function createJoinService(options: JoinOptions) {
     async firstInvoice(gymId: string, linkId: string): Promise<JoinInvoice | null> {
       return scope(gymId, async tx => {
         const [link] = await tx.select({ householdId: signedLinks.householdId }).from(signedLinks).where(eq(signedLinks.id, linkId));
-        const record = link ? await recorded(tx, 'public.join.received', link.householdId, received) : null;
+        const record = link ? await recorded(tx, 'public.join.received', link.householdId, receivedRead) : null;
         if (!link || !record || record.linkId !== linkId) return null;
         const [bill] = await tx.select({ amountCents: invoices.amountCents, currency: invoices.currency }).from(invoices).where(eq(invoices.id, record.invoiceId));
         if (!bill) return null;

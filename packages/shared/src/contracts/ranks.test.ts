@@ -5,7 +5,7 @@ import {
   ranksContracts, promotionCriterionSchema, programSchema, rankSchema, rankSystemSchema, promotionSchema,
   createRankRequestSchema, updateProgramRequestSchema, updateRankRequestSchema, updateRankSystemRequestSchema,
   bulkPromoteRequestSchema, promotionEligibilitySchema, applyContentPackRequestSchema,
-  programListQuerySchema, type Program, type Rank, type RankSystem, type Promotion, type InstalledPack,
+  programListQuerySchema, rankReadSchema, type Program, type Rank, type RankSystem, type Promotion, type InstalledPack,
 } from './index.js';
 import { canStaff, staffRoles } from '../permissions.js';
 
@@ -23,6 +23,17 @@ const promotion = { ...appendOnlyPromotion, revision: 1 };
 type WireRow<T extends { createdAt: Date }> = Omit<T, 'createdAt'> & { createdAt: string };
 
 describe('rank and promotion contracts', () => {
+  it.each(['subRanks', 'criteria'] as const)('strips stored %s extensions without relaxing writes', (field) => {
+    const entry = field === 'subRanks' ? { id: 'one', name: 'One' } : { providerId: 'minimum-age', config: { target: 16 } };
+    const extended = { ...rank, [field]: [{ ...entry, future: true }] };
+    expect(rankReadSchema.parse(extended)[field]).toEqual([entry]);
+    const { rankSystemId, name, position, color, subRanks, criteria } = extended;
+    expect(createRankRequestSchema.safeParse({ rankSystemId, name, position, color, subRanks, criteria }).success).toBe(false);
+    expect(updateRankRequestSchema.safeParse({ revision: 1, [field]: extended[field] }).success).toBe(false);
+  });
+  it('still rejects duplicate sub-rank IDs in stored records', () => {
+    expect(rankReadSchema.safeParse({ ...rank, subRanks: [{ id: 'one', name: 'One', future: true }, { id: 'one', name: 'Again' }] }).success).toBe(false);
+  });
   it('supports nullable six-digit rank colors in reads, creation and revision-guarded updates', () => {
     for (const color of [null, '#000000', '#aBcDeF']) {
       expect(rankSchema.parse({ ...rank, color }).color).toBe(color);

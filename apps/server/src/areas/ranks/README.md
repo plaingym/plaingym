@@ -16,6 +16,12 @@ Providers with a `moduleId` participate only when that module is enabled for the
 gym. Missing or disabled providers fail closed. Evaluation happens after the
 database snapshot transaction closes, so a provider can safely call other services.
 
+Stored sub-ranks and criterion entries strip unknown keys before projection or
+evaluation; create and update requests remain strict. An update that sends them
+replaces them in full, and the rank editor sends both with every save. Provider configuration is
+still validated by its provider: a compatible minor cannot add configuration keys
+or provider IDs that the previous minor cannot evaluate (`docs/versioning.md`).
+
 Eligibility uses active, non-anonymized members. Attendance and elapsed time start
 at the most recent promotion in the selected program, or the member's creation
 time before their first promotion. Each sub-rank promotion resets those counters.

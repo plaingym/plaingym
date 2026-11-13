@@ -22,6 +22,9 @@ export const rankSubRankSchema = z.strictObject({
 export const promotionCriterionSchema = z.strictObject({
   providerId: nameSchema, config: z.record(z.string(), z.json()).meta({ type: 'object', additionalProperties: {} }),
 });
+/** Strip extensions to stored entries; provider configuration keeps its own validation. */
+export const rankSubRankReadSchema = rankSubRankSchema.strip();
+export const promotionCriterionReadSchema = promotionCriterionSchema.strip();
 export const rankSystemSchema = z.strictObject({
   ...recordFields, name: nameSchema, installedPackId: idSchema.nullable(), revision: revisionSchema,
 });
@@ -36,6 +39,14 @@ export const rankSchema = z.strictObject({
     'Sub-rank IDs must be unique',
   ),
   criteria: z.array(promotionCriterionSchema), revision: revisionSchema,
+});
+/** Only the stored JSON entries are extensible; public responses and requests stay strict. */
+export const rankReadSchema = rankSchema.extend({
+  subRanks: z.array(rankSubRankReadSchema).refine(
+    (items) => new Set(items.map((item) => item.id)).size === items.length,
+    'Sub-rank IDs must be unique',
+  ),
+  criteria: z.array(promotionCriterionReadSchema),
 });
 export const promotionSchema = z.strictObject({
   ...recordFields, memberId: idSchema, programId: idSchema, rankId: idSchema, rankSystemId: idSchema,

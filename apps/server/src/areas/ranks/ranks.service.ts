@@ -9,7 +9,7 @@ import {
 import type { Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import {
-  programSchema, rankSystemSchema, rankSchema, promotionSchema, paginationSchema,
+  programSchema, rankSystemSchema, rankReadSchema, promotionSchema, paginationSchema,
   createProgramRequestSchema, updateProgramRequestSchema, createRankSystemRequestSchema,
   updateRankSystemRequestSchema, createRankRequestSchema, updateRankRequestSchema,
   createPromotionRequestSchema, bulkPromoteRequestSchema, eligibilityListQuerySchema,
@@ -71,7 +71,7 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
     if (!rank) notFound();
     if (!program.rankSystemId || program.rankSystemId !== rank.rankSystemId
       || (systemId && program.rankSystemId !== systemId)) conflict('The program and rank must share a rank system');
-    return { program, rank: rankSchema.parse(present(rank)) };
+    return { program, rank: rankReadSchema.parse(present(rank)) };
   }
   async function promoteInTransaction(tx: Transaction, context: MutationContext, input: CreatePromotionRequest) {
     // Serializing on the member prevents simultaneous promotions from both passing the history check.
@@ -119,7 +119,7 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
             inArray(memberRanks.programId, programRows.map(program => program.id)), inArray(memberRanks.memberId, roster.map(member => member.id))))
           .orderBy(asc(memberRanks.programId), asc(memberRanks.memberId), desc(memberRanks.promotedAt), desc(ranks.position),
             desc(memberRanks.subRank), desc(memberRanks.createdAt), desc(memberRanks.id));
-        return { programRows, rankRows: rankRows.map(row => rankSchema.parse(present(row))), roster,
+        return { programRows, rankRows: rankRows.map(row => rankReadSchema.parse(present(row))), roster,
           history: history.map(row => ({ ...ranked(row), programId: row.promotion.programId })).sort(promotionOrder) };
       });
       const latest = new Map<string, (typeof snapshot.history)[number]>();
@@ -195,7 +195,7 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
       return scope(gymId, async (tx) => {
         await systemExists(tx, query.rankSystemId);
         return page((await tx.select().from(ranks).where(eq(ranks.rankSystemId, query.rankSystemId))
-          .orderBy(asc(ranks.position), asc(ranks.id))).map((row) => rankSchema.parse(present(row))), query);
+          .orderBy(asc(ranks.position), asc(ranks.id))).map((row) => rankReadSchema.parse(present(row))), query);
       });
     },
     async createProgram(context: MutationContext, input: unknown) {
@@ -247,7 +247,7 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
       return safe(() => scope(context.gymId, async (tx) => {
         await systemExists(tx, body.rankSystemId);
         const [row] = await tx.insert(ranks).values({ ...base(context.gymId), ...body }).returning();
-        const result = rankSchema.parse(present(row!));
+        const result = rankReadSchema.parse(present(row!));
         await audit(tx, context, 'rank.created', result.id, null, result); return result;
       }));
     },
@@ -265,7 +265,7 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
         const guard = revisionGuard(ranks.revision, revision);
         const row = assertRevised(await tx.update(ranks).set({ ...body, revision: guard.next })
           .where(and(eq(ranks.id, id), guard.matches)).returning());
-        const result = rankSchema.parse(present(row));
+        const result = rankReadSchema.parse(present(row));
         await audit(tx, context, 'rank.updated', id, present(before), result); return result;
       }));
     },
@@ -366,7 +366,7 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
         // One read covers every shown system's ranks, the first ranks of unranked programs included.
         const rankRows = await tx.select().from(ranks).where(or(inArray(ranks.id, [...new Set(all.map((row) => row.rankId))]),
           systemIds.length ? inArray(ranks.rankSystemId, systemIds) : undefined));
-        return { programRows, rankRows: rankRows.map((row) => rankSchema.parse(present(row))) };
+        return { programRows, rankRows: rankRows.map((row) => rankReadSchema.parse(present(row))) };
       });
       const rankById = new Map(snapshot.rankRows.map((rank) => [rank.id, rank]));
       const order = (row: PromotionHistoryEntry) => ranked({ promotion: row, position: rankById.get(row.rankId)!.position });

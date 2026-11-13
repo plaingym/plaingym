@@ -33,6 +33,12 @@ export const snapshotSchema = z.strictObject({
   database: objectSchema, manifest: objectSchema, uploads: z.array(publicReferenceSchema),
 });
 export type Snapshot = z.infer<typeof snapshotSchema>;
+// Authenticate the original payload before stripping extensions, including nested metadata.
+const objectReadSchema = objectSchema.strip();
+const snapshotReadSchema = snapshotSchema.strip().extend({
+  database: objectReadSchema, manifest: objectReadSchema,
+  uploads: z.array(publicReferenceSchema.strip().extend({ encrypted: objectReadSchema })),
+});
 export const manifestSchema = z.strictObject({
   version: z.literal(1), id, kind: backupKindSchema, startedAt: z.iso.datetime(),
   database: z.strictObject({ encrypted: objectSchema, plaintext: objectSchema }),
@@ -56,7 +62,7 @@ export function signReferences(snapshot: Snapshot, key: Buffer): string {
 export function verifyReferences(value: unknown, key: Buffer, expectedId: string): Snapshot {
   const envelope = z.strictObject({ payload: z.string(), mac: hash }).parse(value);
   if (!timingSafeEqual(mac(key, envelope.payload), Buffer.from(envelope.mac, 'hex'))) throw new Error('Invalid reference authentication');
-  const snapshot = snapshotSchema.parse(JSON.parse(envelope.payload));
+  const snapshot = snapshotReadSchema.parse(JSON.parse(envelope.payload));
   if (snapshot.id !== expectedId) throw new Error('Reference list belongs to another snapshot');
   if (new Set(snapshot.uploads.map((u) => u.blob)).size !== snapshot.uploads.length ||
       new Set(snapshot.uploads.map((u) => u.protectedHash)).size !== snapshot.uploads.length)

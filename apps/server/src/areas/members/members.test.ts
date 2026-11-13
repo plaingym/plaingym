@@ -82,6 +82,27 @@ async function requestFor(definition: ReturnType<typeof createMembersRoutes>[num
   return { path, method: definition.method.toUpperCase(), body, foreignIds: [person.id, householdId, tag.id] };
 }
 describe('member route access boundaries', () => {
+  it('reads extended household addresses while refusing the same extension on writes', async () => {
+    const address = { city: 'Example', future: true }, home = await factory('households', gymA, { address });
+    expect((await service.getHousehold(gymA, home.id)).address).toEqual({ city: 'Example' });
+    expect((await service.listHouseholds(gymA, { limit: 100, offset: 0 })).data.find(row => row.id === home.id)?.address).toEqual({ city: 'Example' });
+    await expect(service.updateHousehold(context(), home.id, { revision: 1, address })).rejects.toThrow();
+    await expect(service.createHousehold(context(), { name: 'Family', address })).rejects.toThrow();
+    await service.updateHousehold(context(), home.id, { revision: 1, name: 'Renamed' });
+    expect(await database.forGym(gymA, tx => tx.select({ address: households.address }).from(households).where(eq(households.id, home.id))))
+      .toEqual([{ address }]);
+  });
+  it('reads extended emergency contacts while refusing the same extension on writes', async () => {
+    const contact = { name: 'Parent', relationship: null, phone: '555-0100', email: null }, emergencyContacts = [{ ...contact, future: true }];
+    const person = await factory('members', gymA, { emergencyContacts });
+    expect((await service.getMember(gymA, person.id)).emergencyContacts).toEqual([contact]);
+    expect((await service.listMembers(gymA, { limit: 100, offset: 0 })).data.find(row => row.id === person.id)?.emergencyContacts).toEqual([contact]);
+    await expect(service.updateMember(context(), person.id, { revision: 1, emergencyContacts })).rejects.toThrow();
+    await expect(service.createMember(context(), { householdId: person.householdId, firstName: 'A', lastName: 'B', emergencyContacts })).rejects.toThrow();
+    await service.updateMember(context(), person.id, { revision: 1, firstName: 'Renamed' });
+    expect(await database.forGym(gymA, tx => tx.select({ emergencyContacts: members.emergencyContacts }).from(members).where(eq(members.id, person.id))))
+      .toEqual([{ emergencyContacts }]);
+  });
   it.each(staffRoles)('checks every route, including additional medical permission, for %s', async (role) => {
     for (const entry of createMembersRoutes(service, uploadsFor)) {
       const request = await requestFor(entry.definition, gymA);
