@@ -4,7 +4,7 @@ import { forGym, uuidv7, RevisionConflictError, classSessionPrograms, classSessi
   planTaxRates, plans, programs, staffProfiles, taxRates, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import type { GymAddress, GymBranding } from '@plaingym/shared/contracts';
-import { addDays, localDate, weekday, zonedInstant } from '@plaingym/shared/time';
+import { addDays, localDate, startOfWeek, weekday, zonedInstant } from '@plaingym/shared/time';
 import { clock as defaultClock } from '../../core/clock.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import type { Uploads } from '../../infra/storage/index.js';
@@ -109,7 +109,7 @@ const wallClock = (instant: Date, timezone: string) =>
  * whose occurrence falls in this week but which was moved into another week is listed too, at its new date.
  */
 async function readSessions(tx: Transaction, now: Date, timezone: string, active: ReadonlySet<string>): Promise<SiteSession[]> {
-  const today = localDate(now, timezone), monday = addDays(today, -((weekday(today) + 6) % 7));
+  const today = localDate(now, timezone), monday = startOfWeek(today);
   const from = zonedInstant(monday, '00:00', timezone, { gap: 'shift' })!, to = zonedInstant(addDays(monday, 7), '00:00', timezone, { gap: 'shift' })!;
   const rows = await tx.select({ id: classSessions.id, name: classSessions.name, startsAt: classSessions.startsAt, endsAt: classSessions.endsAt,
     kind: classSessions.kind, status: classSessions.status, templateWeekday: classTemplates.weekday, templateStartTime: classTemplates.localStartTime,

@@ -75,7 +75,7 @@ try {
     await page.getByRole('checkbox', { name: 'Show lost' }).check();
     await page.getByRole('heading', { name: 'Lost (1)' }).waitFor();
     await check('lost');
-    await page.getByRole('button', { name: /^Mark Lead No2 lost$/ }).click();
+    await page.getByRole('button', { name: /^Mark lost: Lead No2$/ }).click();
     await page.getByRole('dialog').getByLabel('Reason').waitFor();
     await check('lost-dialog');
     await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click();
@@ -83,7 +83,7 @@ try {
     await page.getByRole('dialog').getByText('No upcoming bookable classes on this date.').waitFor();
     await check('book-dialog');
     await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click();
-    await page.getByRole('button', { name: /^Log a contact with Lead No2$/ }).click();
+    await page.getByRole('button', { name: /^Log contact with Lead No2$/ }).click();
     await page.getByRole('dialog').getByLabel('How you reached them').waitFor();
     await check('contact-dialog');
     await page.goto(url + '?view=lead&memberId=' + id(1));

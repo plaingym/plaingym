@@ -25,6 +25,8 @@ describe('lead contracts', () => {
       expect(updateLeadRequestSchema.safeParse(input).success).toBe(false);
     for (const reason of ['', '  ', 'x'.repeat(501)]) expect(loseLeadRequestSchema.safeParse({ revision: 1, reason }).success).toBe(false);
     expect(loseLeadRequestSchema.parse({ revision: 0, reason: ' x ' }).reason).toBe('x');
+    expect(loseLeadRequestSchema.safeParse({ revision: 1, reason: '\u{1F600}'.repeat(500) }).success).toBe(true);
+    expect(loseLeadRequestSchema.safeParse({ revision: 1, reason: '\u{1F600}'.repeat(501) }).success).toBe(false);
   });
   it('declares the funnel permission and the complete source and stage sets', () => {
     expect(leadsContracts.funnel).toMatchObject({ method: 'get', path: '/api/leads/funnel',
@@ -34,13 +36,14 @@ describe('lead contracts', () => {
   });
   it.each([
     { from: '2026-03-01', to: '2026-03-01' }, { from: '2026-03-01', to: '2028-02-29' },
-    { from: '2024-02-29', to: '2026-02-27' },
+    { from: '2024-02-29', to: '2026-02-27' }, { from: '2024-02-29', to: '2026-02-28' },
+    { from: '2024-03-01', to: '2026-02-28' },
   ])('accepts inclusive calendar ranges: %j', range => { expect(leadFunnelQuerySchema.safeParse(range).success).toBe(true); });
   it.each([
     {}, { from: '2026-02-30', to: '2026-03-01' }, { from: 'invalid', to: 'invalid' },
     { from: '0000-01-01', to: '0000-12-31' },
     { from: '2026-03-02', to: '2026-03-01' }, { from: '2026-03-01', to: '2028-03-01' },
-    { from: '2024-02-29', to: '2026-02-28' }, { from: '2026-01-01', to: '2026-01-01', extra: 'bad' },
+    { from: '2024-02-29', to: '2026-03-01' }, { from: '2026-01-01', to: '2026-01-01', extra: 'bad' },
   ])('rejects invalid, reversed or excessive ranges without throwing: %j', range => {
     expect(leadFunnelQuerySchema.safeParse(range).success).toBe(false);
   });

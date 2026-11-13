@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useMemo, type ReactNode } from 'react';
+import { useEffect, useMemo, type ReactNode } from 'react';
 import { useQuery, type UseQueryResult } from '@tanstack/react-query';
 import { minorUnitsToInput } from '@plaingym/shared/money';
 import type { AttendanceReportQuery, ReportRangeQuery } from '@plaingym/shared/contracts';
@@ -31,16 +31,18 @@ export function AttendanceReport({ gymId, userId, range, client, granularity, se
     const data = query.data;
     if (!data) return undefined;
     const programs = new Map(data.buckets.flatMap(bucket => bucket.programs.map(program => [programKey(program.programId), program.programName ?? text('unassigned')] as const)));
-    const table = attendanceTable(data, selected);
-    const values = data.buckets.map(bucket => selected === allPrograms ? bucket.totals.checkIns
-      : bucket.programs.find(program => programKey(program.programId) === selected)?.checkIns ?? 0);
-    return { programs, table, values, periods: data.buckets.map(bucket => bucket.startDate), series: [{ label: text('checkIns'), values }] };
+    const selection = selected === allPrograms || programs.has(selected) ? selected : allPrograms;
+    const table = attendanceTable(data, selection);
+    const values = data.buckets.map(bucket => selection === allPrograms ? bucket.totals.checkIns
+      : bucket.programs.find(program => programKey(program.programId) === selection)?.checkIns ?? 0);
+    return { programs, selection, table, values, periods: data.buckets.map(bucket => bucket.startDate), series: [{ label: text('checkIns'), values }] };
   }, [query.data, selected]);
+  useEffect(() => { if (model && model.selection !== selected) onSelect(model.selection); }, [model, selected, onSelect]);
   return <Result query={query}>{() => {
     const { programs, table, values, periods, series } = model!;
     return <PageSection title={text('attendance')}>
       <div className="max-w-full space-y-2 sm:max-w-sm"><Label htmlFor="report-program">{text('program')}</Label>
-        <Select id="report-program" value={selected} onChange={event => onSelect(event.target.value)}>
+        <Select id="report-program" value={model!.selection} onChange={event => onSelect(event.target.value)}>
           <option value={allPrograms}>{text('allPrograms')}</option>
           {[...programs].map(([id, name]) => <option key={id} value={id}>{name}</option>)}
         </Select>
@@ -71,7 +73,7 @@ export function MembersReport({ gymId, userId, range, client }: ReportViewProps)
 export function RevenueReport({ gymId, userId, range, client }: ReportViewProps) {
   const query = useQuery({ queryKey: ['reports', gymId, userId, 'revenue', range], staleTime, queryFn: ({ signal }) => client.revenue(range, signal) });
   const currencies = useMemo(() => query.data?.currencies.map(currency => ({ ...currency,
-    table: revenueTable(currency, query.data!.timezone), periods: currency.buckets.map(bucket => bucket.startDate),
+    table: revenueTable(currency), periods: currency.buckets.map(bucket => bucket.startDate),
     series: [{ label: text('net'), values: currency.buckets.map(bucket => bucket.totals.net) }],
   })), [query.data]);
   return <Result query={query}>{data => <div className="min-w-0 space-y-6">

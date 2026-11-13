@@ -2,7 +2,7 @@
 import { and, asc, count, desc, eq, gte, inArray, isNull, lt, or } from 'drizzle-orm';
 import {
   attendances, classSessions, classSessionPrograms, classSessionTags, classTags,
-  attendanceFilterPredicate, forGym, forHousehold, HouseholdAccessError, members, programs, uuidv7, writeAudit,
+  attendanceFilterPredicate, forGym, forHousehold, HouseholdAccessError, leads, members, programs, uuidv7, writeAudit,
   type AttendanceRowFilter, type HouseholdAttendanceFilter, type Transaction,
 } from '@plaingym/db';
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
@@ -18,6 +18,7 @@ import type { AttendanceFilter, AttendanceQueries, AttendanceScope } from '../..
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { advanceLeadOnCheckIn } from '../leads/stages.js';
+import { isLeadMember } from '../leads/eligibility.js';
 import { drawCredits, hasActiveMembership, isPackHolder, lockMemberCredits, returnCredit } from '../billing/packs/ledger.js';
 import messages from '../../../../../locales/en/attendance/attendance.json' with { type: 'json' };
 
@@ -164,8 +165,9 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
       const timezone = openMat ? (await settings.get(context.gymId)).timezone : undefined;
       return scope(context.gymId, async (tx) => {
         const gymId = context.gymId, now = clock.now();
-        const [member] = await tx.select({ anonymizedAt: members.anonymizedAt }).from(members)
-          .where(and(eq(members.gymId, gymId), eq(members.id, value.memberId))).for('update');
+        const [member] = await tx.select({ anonymizedAt: members.anonymizedAt, status: members.status, leadId: leads.id }).from(members)
+          .leftJoin(leads, and(eq(leads.gymId, members.gymId), eq(leads.memberId, members.id)))
+          .where(and(eq(members.gymId, gymId), eq(members.id, value.memberId))).for('update', { of: members });
         if (!member) missing();
         if (member.anonymizedAt !== null) throw new AppError('conflict', 'Member personal data has been erased');
         if (timezone) {
@@ -222,7 +224,9 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
           ...(context.actor.kind === 'device' ? { actorDeviceId: context.actor.deviceId } : {}),
           action: 'attendance.recorded', targetType: 'attendance', targetId: inserted.id,
           after: origin.source === 'import' ? data : { ...data, creditSpent } });
-        if (origin.source !== 'import') await advanceLeadOnCheckIn(tx, { gymId, memberId: value.memberId, actor: context.actor, now });
+        if (origin.source !== 'import' && (member.leadId || isLeadMember(member.status)))
+          await advanceLeadOnCheckIn(tx, { gymId, memberId: value.memberId, actor: context.actor, now,
+            occurredAt: inserted.occurredAt, memberStatus: member.status });
         return data;
       });
     },

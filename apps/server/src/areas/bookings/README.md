@@ -1,6 +1,11 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Bookings
 
+Booking-rule conflicts include the translated message and a stable
+`error.details.reason` list containing the rule key (for example `full`,
+`sessionClosed`, `windowClosed` or `noReservation`). Existing bookings remain
+idempotent successful responses.
+
 `createBookingService` supplies staff booking, cancellation, history and the
 booked-versus-checked-in roster. The portal adapter uses `MemberHouseholdContext`
 and reads members/bookings through `forHousehold`. Mutations recheck the login

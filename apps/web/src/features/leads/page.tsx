@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { canStaff, type StaffRole } from '@plaingym/shared';
-import { leadSourceSchema } from '@plaingym/shared/contracts';
+import { leadSourceSchema, type LeadStage } from '@plaingym/shared/contracts';
 import { useBootstrap } from '../../app/context.js';
 import { Page, PageHeader } from '../../components/ui/page.js';
 import { Alert } from '../../components/ui/alert.js';
@@ -20,9 +20,18 @@ export function LeadsWorkspace({ timezone, roles, client = leadClient }: Workspa
 }
 function LeadsBoard({ timezone, client }: { timezone: string; client: LeadClient }) {
   const [filters, setFilters] = useState<Filters>({ source: '', due: false }), [showLost, setShowLost] = useState(false);
-  const [version, setVersion] = useState(0), [outcome, setOutcome] = useState<Outcome | null>(null);
+  const [versions, setVersions] = useState<Partial<Record<LeadStage, number>>>({}), [outcome, setOutcome] = useState<Outcome | null>(null);
+  const notice = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (outcome) notice.current?.focus(); }, [outcome]);
   const stages = showLost ? [...openStages, 'lost' as const] : openStages;
-  function done(result: Outcome) { setOutcome(result); if (result.reload) setVersion(value => value + 1); }
+  function done(result: Outcome) {
+    setOutcome(result);
+    if (result.reload) setVersions(current => {
+      const next = { ...current };
+      for (const stage of new Set(result.stages ?? stages)) next[stage] = (next[stage] ?? 0) + 1;
+      return next;
+    });
+  }
   return <Page>
     <PageHeader title={text('title')} description={text('help')} />
     <div className="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-3 lg:items-end">
@@ -35,9 +44,9 @@ function LeadsBoard({ timezone, client }: { timezone: string; client: LeadClient
       <CheckboxField label={text('showLost')} checked={showLost} onChange={event => setShowLost(event.target.checked)} />
     </div>
     <p className="text-sm text-muted-foreground">{text('dueHelp', { timezone })}</p>
-    {outcome && (outcome.error ? <Alert role="alert">{outcome.message}</Alert> : <p role="status" className="text-sm">{outcome.message}</p>)}
+    {outcome && <div ref={notice} tabIndex={-1}>{outcome.error ? <Alert role="alert">{outcome.message}</Alert> : <p role="status" className="text-sm">{outcome.message}</p>}</div>}
     <div className="grid min-w-0 grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-      {stages.map(stage => <StageColumn key={stage} stage={stage} filters={filters} version={version} client={client} timezone={timezone} onDone={done} />)}
+      {stages.map(stage => <StageColumn key={stage} stage={stage} filters={filters} version={versions[stage] ?? 0} client={client} timezone={timezone} onDone={done} />)}
     </div>
   </Page>;
 }

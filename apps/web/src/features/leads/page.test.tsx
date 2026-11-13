@@ -25,7 +25,8 @@ function fixture(leads: Lead[]) {
       const rows = leads.filter(row => row.stage === query.stage && (!query.source || (row.source ?? 'unknown') === query.source));
       return { data: rows, pagination: { limit: 25, offset: 0, total: rows.length }, counts: { new: 0, contacted: 0, trial_booked: 0, trial_attended: 0, won: 0, lost: 0 } };
     }),
-    edit: vi.fn(async (row: Lead) => row), lost: vi.fn(async (row: Lead) => row), reopen: vi.fn(async (row: Lead) => row),
+    edit: vi.fn(async (row: Lead, patch: Partial<Lead> = {}) => ({ ...row, ...patch })),
+    lost: vi.fn(async (row: Lead) => ({ ...row, stage: 'lost' as const })), reopen: vi.fn(async (row: Lead) => ({ ...row, stage: 'contacted' as const })),
     sessions: vi.fn(async () => [started, session]), book: vi.fn(async () => ({})),
   };
   return client as unknown as LeadClient & typeof client;
@@ -40,6 +41,70 @@ const card = (name: string) => screen.getByRole('heading', { name }).closest('ar
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
 describe('leads board', () => {
+  it('includes every visible action label in its accessible name, including lost leads', async () => {
+    const client = fixture(sample()); const { container } = mount(client);
+    await screen.findByText('Lead No1');
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Show lost' }));
+    await screen.findByText('Lead No6');
+    const actions = container.querySelectorAll('article button[aria-label], article a[aria-label]');
+    expect(actions.length).toBeGreaterThan(0);
+    for (const action of actions) expect(action.getAttribute('aria-label')!.toLowerCase())
+      .toContain(action.textContent!.trim().toLowerCase());
+  });
+  it('refreshes only the old and new columns, keeps loaded pages and focuses the outcome', async () => {
+    const rows = Array.from({ length: 30 }, (_, index) => lead(index + 1, 'new'));
+    const client = fixture(rows);
+    client.list.mockImplementation(async (query: { stage?: LeadStage | LeadStage[]; limit?: number; offset?: number }) => {
+      const matches = rows.filter(row => row.stage === query.stage), limit = query.limit ?? 25, offset = query.offset ?? 0;
+      return { data: matches.slice(offset, offset + limit), pagination: { limit, offset, total: matches.length },
+        counts: { new: matches.length, contacted: 0, trial_booked: 0, trial_attended: 0, won: 0, lost: 0 } };
+    });
+    client.edit.mockImplementation(async (row, patch) => {
+      const updated = { ...row, ...patch, revision: row.revision + 1 };
+      rows.splice(rows.findIndex(item => item.memberId === row.memberId), 1, updated); return updated;
+    });
+    mount(client); await screen.findByText('Lead No1');
+    await userEvent.click(within(column('New')).getByRole('button', { name: 'Show more' }));
+    await screen.findByText('Lead No30'); client.list.mockClear();
+    await userEvent.selectOptions(within(card('Lead No1')).getByLabelText('Stage for Lead No1'), 'contacted');
+    await waitFor(() => expect(within(column('Contacted')).getByText('Lead No1')).toBeDefined());
+    expect(within(column('New')).getByText('Lead No30')).toBeDefined();
+    expect(client.list.mock.calls.map(([query]) => query.stage).sort()).toEqual(['contacted', 'new', 'new']);
+    expect(document.activeElement?.textContent).toBe('Lead saved.');
+  });
+  it('shows a lead once when rows move between the pages of a column reload', async () => {
+    const rows = Array.from({ length: 30 }, (_, index) => lead(index + 1, 'new'));
+    const client = fixture(rows);
+    let shift = 0;
+    client.list.mockImplementation(async (query: { stage?: LeadStage | LeadStage[]; limit?: number; offset?: number }) => {
+      const matches = rows.filter(row => row.stage === query.stage), limit = query.limit ?? 25;
+      const offset = Math.max(0, (query.offset ?? 0) - (query.offset ? shift : 0));
+      return { data: matches.slice(offset, offset + limit), pagination: { limit, offset: query.offset ?? 0, total: matches.length },
+        counts: { new: matches.length, contacted: 0, trial_booked: 0, trial_attended: 0, won: 0, lost: 0 } };
+    });
+    mount(client); await screen.findByText('Lead No1');
+    await userEvent.click(within(column('New')).getByRole('button', { name: 'Show more' }));
+    await screen.findByText('Lead No30');
+    client.edit.mockImplementation(async (row, patch) => {
+      const updated = { ...row, ...patch, revision: row.revision + 1 };
+      rows.splice(rows.findIndex(item => item.memberId === row.memberId), 1, updated); return updated;
+    });
+    // The second page starts one row early, as if a lead joined the column between the two requests.
+    shift = 1;
+    await userEvent.selectOptions(within(card('Lead No1')).getByLabelText('Stage for Lead No1'), 'contacted');
+    await waitFor(() => expect(within(column('Contacted')).getByText('Lead No1')).toBeDefined());
+    await waitFor(() => expect(within(column('New')).queryByText('Lead No1')).toBeNull());
+    expect(within(column('New')).getAllByText('Lead No26')).toHaveLength(1);
+    expect(within(column('New')).getAllByRole('article')).toHaveLength(29);
+  });
+  it('clears rows when a reload fails so stale revisions cannot be edited', async () => {
+    const client = fixture(sample()); mount(client); await screen.findByText('Lead No1');
+    client.list.mockRejectedValue(new ApiError(500, 'request_failed'));
+    await userEvent.selectOptions(within(card('Lead No1')).getByLabelText('Stage for Lead No1'), 'contacted');
+    await within(column('New')).findByRole('alert');
+    expect(screen.queryByText('Lead No1')).toBeNull(); expect(screen.queryByText('Lead No2')).toBeNull();
+    expect(screen.getByText('Lead No4')).toBeDefined();
+  });
   it('shows a column per open stage with its total, and keeps lost leads hidden until the toggle', async () => {
     const client = fixture(sample()); mount(client);
     expect(await screen.findByRole('heading', { name: 'New (2)' })).toBeDefined();
@@ -94,8 +159,8 @@ describe('leads board', () => {
     fireEvent.blur(followUp);
     await waitFor(() => expect(client.edit).toHaveBeenCalledWith(expect.objectContaining({ memberId: id(1) }), { nextFollowUpOn: '2026-12-01' }));
     expect(client.edit).toHaveBeenCalledOnce();
-    // The save reloads the four columns; wait until only the outcome message is a status.
-    await waitFor(() => expect(client.list.mock.calls.length).toBeGreaterThanOrEqual(8));
+    // Stage changes refresh two columns, and a date edit refreshes its current column.
+    await waitFor(() => expect(client.list.mock.calls.length).toBeGreaterThanOrEqual(3));
     await waitFor(() => expect(screen.getAllByRole('status')).toHaveLength(1));
     const cleared = within(card('Lead No3')).getByLabelText('Next follow-up for Lead No3');
     fireEvent.change(cleared, { target: { value: '' } });
@@ -156,11 +221,23 @@ describe('leads board', () => {
   it('links convert to the membership tab of the member profile', async () => {
     mount(fixture(sample()));
     await screen.findByText('Lead No1');
-    expect(within(card('Lead No1')).getByRole('link', { name: 'Convert Lead No1 to a member' }).getAttribute('href')).toBe(`/admin/members/${id(1)}#memberTabs.membership`);
+    expect(within(card('Lead No1')).getByRole('link', { name: 'Convert to member: Lead No1' }).getAttribute('href')).toBe(`/admin/members/${id(1)}#memberTabs.membership`);
   });
 });
 
 describe('book a trial class', () => {
+  it.each([
+    ['full', 'This class is full. Choose another class.'],
+    ['alreadyBooked', 'This lead already has a booking for this class.'],
+    ['sessionClosed', 'This class has started or was cancelled. Choose another class.'],
+    ['windowClosed', 'Bookings for this class are not open yet.'],
+    ['noReservation', 'This class does not take bookings.'],
+  ])('explains the booking conflict %s and leaves the lead stage alone', async (reason, message) => {
+    const client = fixture(sample()); client.book.mockRejectedValueOnce(new ApiError(409, 'conflict', [reason]));
+    const dialog = await openBooking(client);
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Book a trial class' }));
+    expect(await within(dialog).findByText(message)).toBeDefined(); expect(client.edit).not.toHaveBeenCalled();
+  });
   async function openBooking(client: LeadClient, name = 'Lead No1') {
     mount(client); await screen.findByText(name);
     await userEvent.click(within(card(name)).getByRole('button', { name: `Book a trial class for ${name}` }));
@@ -225,10 +302,23 @@ describe('book a trial class', () => {
 });
 
 describe('mark lost and reopen', () => {
+  it('counts a lost reason in code points and allows 500 emoji', async () => {
+    const client = fixture(sample()); mount(client); await screen.findByText('Lead No2');
+    await userEvent.click(within(card('Lead No2')).getByRole('button', { name: 'Mark lost: Lead No2' }));
+    const dialog = await screen.findByRole('dialog'), reason = within(dialog).getByLabelText('Reason');
+    expect(reason.hasAttribute('maxlength')).toBe(false);
+    fireEvent.change(reason, { target: { value: '\u{1F600}'.repeat(501) } });
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Mark lost' }));
+    expect(await within(dialog).findByText('Enter a reason of at most 500 characters.')).toBeDefined();
+    expect(client.lost).not.toHaveBeenCalled();
+    fireEvent.change(reason, { target: { value: '  ' + '\u{1F600}'.repeat(500) + '  ' } });
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Mark lost' }));
+    await waitFor(() => expect(client.lost).toHaveBeenCalledWith(expect.anything(), '\u{1F600}'.repeat(500)));
+  });
   it('requires a reason and sends it with the revision', async () => {
     const client = fixture(sample()); mount(client);
     await screen.findByText('Lead No2');
-    await userEvent.click(within(card('Lead No2')).getByRole('button', { name: 'Mark Lead No2 lost' }));
+    await userEvent.click(within(card('Lead No2')).getByRole('button', { name: 'Mark lost: Lead No2' }));
     const dialog = await screen.findByRole('dialog');
     const submit = within(dialog).getByRole('button', { name: 'Mark lost' }) as HTMLButtonElement;
     expect(submit.disabled).toBe(true);
@@ -242,7 +332,7 @@ describe('mark lost and reopen', () => {
   it('keeps the dialog open on an error and reloads on a 409', async () => {
     const client = fixture(sample()); client.lost.mockRejectedValueOnce(new ApiError(500, 'request_failed')); mount(client);
     await screen.findByText('Lead No2');
-    await userEvent.click(within(card('Lead No2')).getByRole('button', { name: 'Mark Lead No2 lost' }));
+    await userEvent.click(within(card('Lead No2')).getByRole('button', { name: 'Mark lost: Lead No2' }));
     const dialog = await screen.findByRole('dialog');
     await userEvent.type(within(dialog).getByLabelText('Reason'), 'No answer');
     await userEvent.click(within(dialog).getByRole('button', { name: 'Mark lost' }));
@@ -260,11 +350,11 @@ describe('mark lost and reopen', () => {
     const lost = card('Lead No6');
     expect(within(lost).queryByRole('button', { name: /Mark/ })).toBeNull();
     expect(within(lost).getByText('Unknown · Prospect')).toBeDefined();
-    await userEvent.click(within(lost).getByRole('button', { name: 'Reopen Lead No6' }));
+    await userEvent.click(within(lost).getByRole('button', { name: 'Reopen lead: Lead No6' }));
     await waitFor(() => expect(client.reopen).toHaveBeenCalledWith(expect.objectContaining({ memberId: id(6), revision: 6 })));
     expect(await screen.findByText('Lead reopened as contacted.')).toBeDefined();
     client.reopen.mockRejectedValueOnce(new ApiError(409, 'conflict'));
-    await userEvent.click(within(card('Lead No6')).getByRole('button', { name: 'Reopen Lead No6' }));
+    await userEvent.click(within(card('Lead No6')).getByRole('button', { name: 'Reopen lead: Lead No6' }));
     expect((await screen.findByRole('alert')).textContent).toContain('This lead changed');
   });
 });

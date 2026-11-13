@@ -6,26 +6,31 @@ import * as c from '@plaingym/shared/contracts';
 import { localDate } from '@plaingym/shared/time';
 import { clock as defaultClock } from '../../core/clock.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
+import { escapeLike } from '../../lib/escape-like.js';
+import { isLeadMember, leadMemberStatuses, openLeadStages } from './eligibility.js';
 
 export const memberFields = { memberId: members.id, householdId: members.householdId, firstName: members.firstName,
   lastName: members.lastName, email: members.email, phone: members.phone, status: members.status, createdAt: members.createdAt };
 export type Person = { [K in keyof typeof memberFields]: (typeof members.$inferSelect)[K extends 'memberId' ? 'id' : K] };
 export type Lead = typeof leads.$inferSelect;
-export const eligible = and(isNull(members.anonymizedAt), or(isNotNull(leads.id), inArray(members.status, ['prospect', 'trial'])));
+export const eligible = and(isNull(members.anonymizedAt), or(isNotNull(leads.id), inArray(members.status, leadMemberStatuses)));
 export const join = and(eq(leads.gymId, members.gymId), eq(leads.memberId, members.id));
-export function detail(person: Person, lead: Lead | null | undefined) {
-  return c.leadDetailSchema.parse({ ...person, source: lead?.source ?? null, stage: lead?.stage ?? 'new',
+function item(person: Person, lead: Lead | null | undefined) {
+  return { ...person, source: lead?.source ?? null, stage: lead?.stage ?? 'new',
     revision: lead?.revision ?? 0, nextFollowUpOn: lead?.nextFollowUpOn ?? null,
-    lastContactedAt: lead?.lastContactedAt?.toISOString() ?? null, createdAt: person.createdAt.toISOString(),
-    lostReason: lead?.lostReason ?? null });
+    lastContactedAt: lead?.lastContactedAt?.toISOString() ?? null, createdAt: person.createdAt.toISOString() };
 }
-function missing(): never { throw new AppError('not_found', 'Lead not found'); }
+export function detail(person: Person, lead: Lead | null | undefined) {
+  return c.leadDetailSchema.parse({ ...item(person, lead), lostReason: lead?.lostReason ?? null });
+}
+export function missing(): never { throw new AppError('not_found', 'Lead not found'); }
 function conflict(): never { throw new AppError('conflict', 'This lead stage cannot be changed this way'); }
 
-export function createLeadsService(options: { scope?: typeof forGym; clock?: Clock } = {}) {
+export function createLeadMutation(options: { scope?: typeof forGym; clock?: Clock } = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
-  async function mutate(context: MutationContext, memberId: string, revision: number,
-    action: string, changes: (before: Lead | undefined, now: Date, tx: Transaction) => Partial<Lead> | Promise<Partial<Lead>>) {
+  return async function mutate<T = undefined>(context: MutationContext, memberId: string, revision: number,
+    action: string, changes: (before: Lead | undefined, now: Date, tx: Transaction) => Partial<Lead> | Promise<Partial<Lead>>,
+    afterWrite?: (tx: Transaction, before: Lead | undefined, after: Lead, now: Date) => Promise<{ value: T; audit: Record<string, unknown> }>) {
     return scope(context.gymId, async tx => {
       // Block erasure until this edit commits. Lock the member before a lead key,
       // matching erasure and the automatic-stage path's first insert.
@@ -33,7 +38,7 @@ export function createLeadsService(options: { scope?: typeof forGym; clock?: Clo
         .where(and(eq(members.id, memberId), isNull(members.anonymizedAt))).for('share');
       if (!person) missing();
       const [before] = await tx.select().from(leads).where(eq(leads.memberId, memberId)).for('update');
-      if (!before && !['prospect', 'trial'].includes(person.status)) missing();
+      if (!before && !isLeadMember(person.status)) missing();
       if ((before?.revision ?? 0) !== revision) throw new RevisionConflictError();
       const now = clock.now(), patch = await changes(before, now, tx);
       let row: Lead;
@@ -45,20 +50,24 @@ export function createLeadsService(options: { scope?: typeof forGym; clock?: Clo
         row = assertRevised(await tx.insert(leads).values({ ...patch, id: uuidv7(now.getTime()), gymId: context.gymId,
           memberId, createdAt: now, revision: 1 }).onConflictDoNothing({ target: [leads.gymId, leads.memberId] }).returning());
       }
-      await audit(tx, context, action, before, row, now);
-      return { data: detail(person, row) };
+      const extra = await afterWrite?.(tx, before, row, now);
+      await audit(tx, context, action, before, row, now, extra?.audit);
+      return { data: detail(person, row), ...(extra ? { value: extra.value } : {}) };
     });
-  }
+  };
+}
+export function createLeadsService(options: { scope?: typeof forGym; clock?: Clock } = {}) {
+  const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock, mutate = createLeadMutation(options);
   return {
     async list(gym: { gymId: string; timezone: string }, input: c.LeadListQuery = {}) {
       const query = c.leadListQuerySchema.parse(input);
       const stages = query.stage ? (Array.isArray(query.stage) ? query.stage : [query.stage])
         : c.leadStageSchema.options.filter(stage => query.includeLost || stage !== 'lost');
-      const pattern = query.search ? '%' + query.search.replace(/[\\%_]/g, '\\$&') + '%' : undefined;
+      const pattern = query.search ? '%' + escapeLike(query.search) + '%' : undefined;
       const where = and(eligible,
         or(inArray(leads.stage, stages), stages.includes('new') ? isNull(leads.id) : undefined),
         query.source === 'unknown' ? isNull(leads.source) : query.source ? eq(leads.source, query.source) : undefined,
-        query.due ? and(inArray(leads.stage, ['new', 'contacted', 'trial_booked', 'trial_attended']),
+        query.due ? and(inArray(leads.stage, openLeadStages),
           lte(leads.nextFollowUpOn, localDate(clock.now(), gym.timezone))) : undefined,
         pattern ? or(ilike(members.firstName, pattern), ilike(members.lastName, pattern)) : undefined);
       return scope(gym.gymId, async tx => {
@@ -68,7 +77,7 @@ export function createLeadsService(options: { scope?: typeof forGym; clock?: Clo
         for (const group of groups) counts[c.leadStageSchema.parse(group.stage ?? 'new')] += group.count;
         const rows = await tx.select({ person: memberFields, lead: leads }).from(members).leftJoin(leads, join)
           .where(where).orderBy(asc(members.lastName), asc(members.firstName), asc(members.id)).limit(query.limit).offset(query.offset);
-        return { data: rows.map(row => c.leadSchema.strip().parse(detail(row.person, row.lead))), counts,
+        return { data: rows.map(row => c.leadSchema.parse(item(row.person, row.lead))), counts,
           pagination: { limit: query.limit, offset: query.offset, total: Object.values(counts).reduce((a, b) => a + b, 0) } };
       });
     },
@@ -112,10 +121,11 @@ export function createLeadsService(options: { scope?: typeof forGym; clock?: Clo
     },
   };
 }
-async function audit(tx: Transaction, context: MutationContext, action: string, before: Lead | undefined, after: Lead, now: Date) {
+async function audit(tx: Transaction, context: MutationContext, action: string, before: Lead | undefined, after: Lead, now: Date,
+  extra: Record<string, unknown> = {}) {
   const fields = (lead: Lead | undefined) => ({ stage: lead?.stage ?? 'new', source: lead?.source ?? null,
     nextFollowUpOn: lead?.nextFollowUpOn ?? null, revision: lead?.revision ?? 0 });
   await writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
     ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}), action,
-    targetType: 'lead', targetId: after.id, before: fields(before), after: fields(after), occurredAt: now, createdAt: now });
+    targetType: 'lead', targetId: after.id, before: fields(before), after: { ...fields(after), ...extra }, occurredAt: now, createdAt: now });
 }

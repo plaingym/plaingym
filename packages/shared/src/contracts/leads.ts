@@ -5,10 +5,12 @@ import { dateSchema, idSchema, instantSchema, paginationSchema, paginationMetaSc
 import { memberStatusSchema } from './states.js';
 import type { EndpointContract } from './definition.js';
 
-export const leadSourceSchema = z.enum(['trial_form', 'join', 'drop_in', 'walk_in', 'referral', 'phone', 'other']);
-export const leadStageSchema = z.enum(['new', 'contacted', 'trial_booked', 'trial_attended', 'won', 'lost']);
+export const leadSources = ['trial_form', 'join', 'drop_in', 'walk_in', 'referral', 'phone', 'other'] as const;
+export const leadStages = ['new', 'contacted', 'trial_booked', 'trial_attended', 'won', 'lost'] as const;
+export const leadSourceSchema = z.enum(leadSources);
+export const leadStageSchema = z.enum(leadStages);
 const leadRevisionSchema = z.int32().nonnegative();
-const followUpDateSchema = dateSchema.regex(/^(?!0000)/, 'Year must be positive');
+const positiveYearDateSchema = dateSchema.regex(/^(?!0000)/, 'Year must be positive');
 const queryBoolean = z.union([z.boolean(), z.enum(['true', 'false']).transform(value => value === 'true')]);
 export const leadListQuerySchema = paginationSchema.extend({
   stage: z.union([leadStageSchema, z.array(leadStageSchema).min(1).max(6)]).optional(),
@@ -18,7 +20,7 @@ export const leadListQuerySchema = paginationSchema.extend({
 export const leadSchema = z.strictObject({
   memberId: idSchema, householdId: idSchema, firstName: z.string(), lastName: z.string(),
   email: z.string().nullable(), phone: z.string().nullable(), status: memberStatusSchema,
-  source: leadSourceSchema.nullable(), stage: leadStageSchema, nextFollowUpOn: followUpDateSchema.nullable(),
+  source: leadSourceSchema.nullable(), stage: leadStageSchema, nextFollowUpOn: positiveYearDateSchema.nullable(),
   lastContactedAt: instantSchema.nullable(), createdAt: instantSchema, revision: leadRevisionSchema,
 });
 export const leadDetailSchema = leadSchema.extend({ lostReason: z.string().nullable() });
@@ -30,22 +32,22 @@ export const leadListResponseSchema = z.strictObject({ data: z.array(leadSchema)
 });
 export const updateLeadRequestSchema = z.strictObject({ revision: leadRevisionSchema,
   source: leadSourceSchema.nullable().optional(), stage: leadStageSchema.optional(),
-  nextFollowUpOn: followUpDateSchema.nullable().optional(),
+  nextFollowUpOn: positiveYearDateSchema.nullable().optional(),
 }).refine(value => value.source !== undefined || value.stage !== undefined || value.nextFollowUpOn !== undefined, 'No changes supplied');
-export const loseLeadRequestSchema = z.strictObject({ revision: leadRevisionSchema, reason: z.string().trim().min(1).max(500) });
+export const loseLeadRequestSchema = z.strictObject({ revision: leadRevisionSchema,
+  reason: z.string().trim().min(1).refine(value => [...value].length <= 500, 'Reason is too long') });
 export const reopenLeadRequestSchema = z.strictObject({ revision: leadRevisionSchema });
 const leadParamsSchema = z.strictObject({ memberId: idSchema });
 const manage = { kind: 'staff', capability: 'leads.manage' } as const;
 /** Inclusive gym-local dates, covering at most 24 calendar months. */
-const funnelDateSchema = dateSchema.regex(/^(?!0000)/, 'Year must be positive');
-export const leadFunnelQuerySchema = z.strictObject({ from: funnelDateSchema, to: funnelDateSchema })
+export const leadFunnelQuerySchema = z.strictObject({ from: positiveYearDateSchema, to: positiveYearDateSchema })
   .refine(value => value.from <= value.to, 'Range ends before it starts')
   .refine(value => {
     if (!isCalendarDate(value.from) || !isCalendarDate(value.to)) return true; // The date schemas report these errors.
     if (Number(value.from.slice(0, 4)) > 9997) return true;
-    // Clamp the anniversary of February 29 in a non-leap year.
+    // A leap-day cohort includes February 28 two years later.
     const anniversary = String(Number(value.from.slice(0, 4)) + 2).padStart(4, '0') + value.from.slice(4);
-    const end = isCalendarDate(anniversary) ? anniversary : anniversary.slice(0, 8) + '28';
+    const end = isCalendarDate(anniversary) ? anniversary : anniversary.slice(0, 5) + '03-01';
     return value.to < end;
   }, 'Range exceeds 24 months');
 export const leadFunnelSourceSchema = z.strictObject({
@@ -66,7 +68,7 @@ export const leadContactSchema = z.strictObject({
 export const leadContactListQuerySchema = paginationSchema;
 export const leadContactListResponseSchema = z.strictObject({ data: z.array(leadContactSchema), pagination: paginationMetaSchema });
 export const createLeadContactRequestSchema = z.strictObject({ revision: leadRevisionSchema, channel: leadContactChannelSchema,
-  note: contactNoteSchema.nullable().optional(), nextFollowUpOn: followUpDateSchema.nullable().optional() });
+  note: contactNoteSchema.nullable().optional(), nextFollowUpOn: positiveYearDateSchema.nullable().optional() });
 export const leadContactResponseSchema = z.strictObject({ data: z.strictObject({ lead: leadDetailSchema, contact: leadContactSchema }) });
 export const leadsContracts = {
   funnel: { method: 'get', path: '/api/leads/funnel', permission: { kind: 'staff', capability: 'leads.manage' },

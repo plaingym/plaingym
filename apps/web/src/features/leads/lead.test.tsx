@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { LeadContact, LeadStage } from '@plaingym/shared/contracts';
 import type { StaffRole } from '@plaingym/shared';
@@ -54,6 +54,46 @@ const stage = () => screen.getByRole('heading', { level: 1 }).parentElement?.que
 const form = () => screen.getByRole('form', { name: 'Log a contact with Lena Lead' });
 
 describe('lead page', () => {
+  it('prevents a second edit while the quick-action refresh is pending', async () => {
+    const client = fixture(); mount(client); await screen.findByRole('heading', { level: 1, name: 'Lena Lead' });
+    const updated = lead('contacted', { revision: 4 });
+    let finish!: (value: Detail) => void;
+    client.read.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    client.edit.mockResolvedValueOnce(updated);
+    await userEvent.selectOptions(screen.getByLabelText('Stage for Lena Lead'), 'contacted');
+    await screen.findByText('Lead saved.');
+    expect((screen.getByLabelText('Stage for Lena Lead').closest('fieldset') as HTMLFieldSetElement).disabled).toBe(true);
+    expect((form().closest('fieldset') as HTMLFieldSetElement).disabled).toBe(true);
+    finish(updated);
+    await waitFor(() => expect((screen.getByLabelText('Stage for Lena Lead').closest('fieldset') as HTMLFieldSetElement).disabled).toBe(false));
+    await userEvent.selectOptions(screen.getByLabelText('Stage for Lena Lead'), 'trial_booked');
+    await waitFor(() => expect(client.edit).toHaveBeenLastCalledWith(expect.objectContaining({ revision: 4 }), { stage: 'trial_booked' }));
+  });
+  it('offers a retry when the refresh after a quick action fails, and enables the actions once it loads', async () => {
+    const client = fixture(); mount(client); await screen.findByRole('heading', { level: 1, name: 'Lena Lead' });
+    const updated = lead('contacted', { revision: 4 });
+    client.read.mockRejectedValueOnce(new ApiError(500, 'request_failed'));
+    client.edit.mockResolvedValueOnce(updated);
+    await userEvent.selectOptions(screen.getByLabelText('Stage for Lena Lead'), 'contacted');
+    await screen.findByText('We could not load this lead.');
+    expect((screen.getByLabelText('Stage for Lena Lead').closest('fieldset') as HTMLFieldSetElement).disabled).toBe(true);
+    client.read.mockResolvedValueOnce(updated);
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect((screen.getByLabelText('Stage for Lena Lead').closest('fieldset') as HTMLFieldSetElement).disabled).toBe(false));
+    expect(screen.queryByText('We could not load this lead.')).toBeNull();
+  });
+  it('validates contact notes by trimmed code points and accepts 2,000 emoji', async () => {
+    const client = fixture(); mount(client); await screen.findByRole('heading', { level: 1, name: 'Lena Lead' });
+    const note = within(form()).getByLabelText('Note (optional)');
+    expect(note.hasAttribute('maxlength')).toBe(false);
+    fireEvent.change(note, { target: { value: '\u{1F600}'.repeat(2001) } });
+    await userEvent.click(within(form()).getByRole('button', { name: 'Log contact' }));
+    expect(await within(form()).findByText('Enter a note of at most 2,000 characters.')).toBeDefined();
+    expect(client.logContact).not.toHaveBeenCalled();
+    fireEvent.change(note, { target: { value: '  ' + '\u{1F600}'.repeat(2000) + '  ' } });
+    await userEvent.click(within(form()).getByRole('button', { name: 'Log contact' }));
+    await waitFor(() => expect(client.logContact).toHaveBeenCalledWith(expect.anything(), { channel: 'call', note: '\u{1F600}'.repeat(2000) }));
+  });
   it('shows the lead\'s details, its quick actions and the contact log newest first, times in the gym\'s zone', async () => {
     const client = fixture(lead('lost', { lostReason: 'Moved away', lastContactedAt: '2026-11-03T15:00:00.000Z' })); mount(client);
     expect(await screen.findByRole('heading', { level: 1, name: 'Lena Lead' })).toBeDefined();
@@ -62,7 +102,7 @@ describe('lead page', () => {
     expect(within(details).getByText('Walk-in')).toBeDefined();
     expect(within(details).getByText('Moved away')).toBeDefined();
     expect(within(details).getByText('Nov 3, 2026, 10:00 AM')).toBeDefined();
-    expect(within(screen.getByRole('region', { name: 'Quick actions' })).getByRole('button', { name: 'Reopen Lena Lead' })).toBeDefined();
+    expect(within(screen.getByRole('region', { name: 'Quick actions' })).getByRole('button', { name: 'Reopen lead: Lena Lead' })).toBeDefined();
     const log = await screen.findAllByRole('listitem');
     expect(log.map(item => within(item).getByText(/^Note /).textContent)).toEqual(['Note 3', 'Note 2']);
     expect(within(log[0]!).getByText('Logged by Dana Desk')).toBeDefined();
@@ -133,7 +173,7 @@ describe('lead page', () => {
     await screen.findByRole('heading', { level: 1, name: 'Lena Lead' });
     const actions = screen.getByRole('region', { name: 'Quick actions' });
     expect(within(actions).queryByRole('combobox')).toBeNull();
-    expect(within(actions).queryByRole('button', { name: 'Mark Lena Lead lost' })).toBeNull();
+    expect(within(actions).queryByRole('button', { name: 'Mark lost: Lena Lead' })).toBeNull();
     expect(within(actions).getByLabelText('Next follow-up for Lena Lead')).toBeDefined();
     expect(form()).toBeDefined();
   });
@@ -145,7 +185,7 @@ describe('log-a-contact action on the leads list', () => {
     render(<LeadsWorkspace timezone="America/New_York" roles={['front_desk']} client={client} />);
     const link = await screen.findByRole('link', { name: 'Lena Lead' });
     expect(link.getAttribute('href')).toBe('/admin/leads/' + id(1));
-    await userEvent.click(screen.getByRole('button', { name: 'Log a contact with Lena Lead' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Log contact with Lena Lead' }));
     const dialog = await screen.findByRole('dialog', { name: 'Log a contact with Lena Lead' });
     await userEvent.selectOptions(within(dialog).getByLabelText('How you reached them'), 'text');
     client.list.mockClear();

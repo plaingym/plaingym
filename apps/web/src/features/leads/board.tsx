@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { LeadSource, LeadStage } from '@plaingym/shared/contracts';
 import { ApiError } from '../../lib/api.js';
 import { Alert } from '../../components/ui/alert.js';
@@ -23,35 +23,52 @@ interface ColumnProps { stage: LeadStage; filters: Filters; version: number; cli
 export function StageColumn({ stage, filters, version, client, timezone, onDone }: ColumnProps) {
   const [rows, setRows] = useState<Lead[]>([]), [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true), [more, setMore] = useState(false), [failed, setFailed] = useState(false);
-  const query = { stage, ...(filters.source ? { source: filters.source } : {}), ...(filters.due ? { due: true } : {}) };
-  const key = JSON.stringify(query);
+  const query = useMemo(() => ({ stage, ...(filters.source ? { source: filters.source } : {}), ...(filters.due ? { due: true } : {}) }), [stage, filters.source, filters.due]);
+  const loaded = useRef(pageSize), previousQuery = useRef(query);
   // Bumped by every first-page load, so a "Show more" page from an earlier filter or reload is dropped.
   const generation = useRef(0);
   useEffect(() => {
     generation.current += 1;
     const controller = new AbortController();
+    if (previousQuery.current !== query) { loaded.current = pageSize; previousQuery.current = query; }
+    const target = loaded.current;
     setLoading(true); setFailed(false);
-    client.list({ ...JSON.parse(key), limit: pageSize, offset: 0 }, controller.signal)
-      .then(page => { if (controller.signal.aborted) return; setRows(page.data); setTotal(page.pagination.total); })
-      .catch(() => { if (!controller.signal.aborted) setFailed(true); })
+    async function reload() {
+      const rows: Lead[] = [];
+      let total = 0;
+      for (let offset = 0; offset < target; offset += pageSize) {
+        const page = await client.list({ ...query, limit: pageSize, offset }, controller.signal);
+        if (controller.signal.aborted) return;
+        // Rows can move between pages while they load; keep each lead once.
+        for (const row of page.data) if (!rows.some(have => have.memberId === row.memberId)) rows.push(row);
+        total = page.pagination.total;
+        if (offset + pageSize >= total) break;
+      }
+      setRows(rows); setTotal(total);
+    }
+    void reload()
+      .catch(() => { if (!controller.signal.aborted) { setRows([]); setTotal(0); setFailed(true); } })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [client, key, version]);
+  }, [client, query, version]);
   async function loadMore() {
     const started = generation.current;
     setMore(true); setFailed(false);
     try {
       const page = await client.list({ ...query, limit: pageSize, offset: rows.length });
       if (started !== generation.current) return;
+      loaded.current += pageSize;
       setRows(current => [...current, ...page.data.filter(row => !current.some(have => have.memberId === row.memberId))]); setTotal(page.pagination.total);
     } catch { if (started === generation.current) setFailed(true); } finally { setMore(false); }
   }
   return <section aria-label={text('stage.' + stage)} className="min-w-0 space-y-3 rounded-xl border border-border bg-muted/30 p-3">
     <h2 className="text-base font-semibold">{loading ? text('stage.' + stage) : text('count', { stage: text('stage.' + stage), count: total })}</h2>
     {failed && <Alert role="alert">{text('loadError')}</Alert>}
-    {loading ? <LoadingState /> : rows.length === 0 && !failed ? <p className="text-sm text-muted-foreground">{text('empty')}</p>
-      : <ul className="space-y-3">{rows.map(lead => <li key={lead.memberId} className="min-w-0">
-        <LeadCard lead={lead} client={client} timezone={timezone} onDone={onDone} /></li>)}</ul>}
+    {loading && <LoadingState />}
+    {!loading && rows.length === 0 && !failed && <p className="text-sm text-muted-foreground">{text('empty')}</p>}
+    <fieldset disabled={loading} className="min-w-0"><ul className="space-y-3">{rows.map(lead => <li key={lead.memberId} className="min-w-0">
+      <LeadCard lead={lead} client={client} timezone={timezone} onDone={result => onDone({ ...result,
+        stages: result.lead ? [lead.stage, result.lead.stage] : result.error ? undefined : [lead.stage] })} /></li>)}</ul></fieldset>
     {!loading && rows.length < total && <Button variant="outline" className="w-full" disabled={more} onClick={() => void loadMore()}>{text('more')}</Button>}
   </section>;
 }
@@ -76,9 +93,9 @@ export const leadHref = (memberId: string) => '/admin/leads/' + encodeURICompone
 export function LeadActions({ lead, client, timezone, onDone, logContact = true }: ActionProps & { logContact?: boolean }) {
   const [busy, setBusy] = useState(false), [dialog, setDialog] = useState<'book' | 'lost' | 'contact' | null>(null);
   const name = leadName(lead), lost = lead.stage === 'lost';
-  async function run(action: () => Promise<unknown>, message: string) {
+  async function run(action: () => Promise<Lead>, message: string) {
     setBusy(true);
-    try { await action(); onDone({ message, reload: true }); }
+    try { const lead = await action(); onDone({ message, reload: true, lead }); }
     catch (error) { onDone(error instanceof ApiError && error.status === 409 ? changedOutcome() : { message: text('error'), error: true, reload: false }); }
     finally { setBusy(false); }
   }

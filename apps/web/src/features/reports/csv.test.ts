@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { reportCsv } from './csv.js';
 import { defaultRange, attendanceTable, membersTable, revenueTable } from './data.js';
 import { attendanceFixture, membersFixture, revenueFixture, fixtureId } from './fixtures.js';
@@ -16,7 +16,7 @@ describe('report CSV', () => {
     expect(reportCsv({ columns: ['Amount'], rows: [[cell]] })).toBe('\uFEFF"Amount"\r\n"' + cell + '"\r\n');
   });
   it('keeps negative discount and refund nets numeric in exported revenue rows', () => {
-    const value = reportCsv(revenueTable(revenueFixture.currencies[0]!, revenueFixture.timezone));
+    const value = reportCsv(revenueTable(revenueFixture.currencies[0]!));
     expect(value).toContain('"-10.00"');
     expect(value).toContain('"-1.00"');
     expect(value).not.toContain('"\'-');
@@ -36,21 +36,28 @@ it('keeps zero periods in a filtered attendance table', () => {
   expect(table.rows[1]!.slice(-2)).toEqual(['0', '0']);
 });
 it('marks full calendar periods using the server snapshot across all reports', () => {
-  const now = new Date('2026-10-01T00:30:00Z'); // still September in the gym
-  expect(membersTable(membersFixture, now).rows[0]![2]).toBe('Upcoming');
-  const november = new Date('2026-11-30T12:00:00Z');
-  expect(membersTable(membersFixture, november).rows[1]![2]).toBe('In progress');
-  expect(attendanceTable(attendanceFixture, 'all', november).rows.at(-1)![2]).toBe('In progress');
-  expect(revenueTable(revenueFixture.currencies[0]!, revenueFixture.timezone, november).rows.at(-1)![2]).toBe('In progress');
+  vi.useFakeTimers();
+  try {
+    for (const date of ['2026-09-01', '2027-01-01']) {
+      vi.setSystemTime(new Date(date));
+      expect(membersTable(membersFixture).rows[0]![2]).toBe('Complete');
+      expect(membersTable(membersFixture).rows[1]![2]).toBe('In progress');
+      expect(attendanceTable(attendanceFixture).rows.at(-1)![2]).toBe('In progress');
+      expect(revenueTable(revenueFixture.currencies[0]!).rows.at(-1)![2]).toBe('In progress');
+    }
+  } finally { vi.useRealTimers(); }
 });
 it('shows both in-progress and partial markers for a clipped current week, including CSV', () => {
   const data = { ...attendanceFixture, granularity: 'week' as const, buckets: [{ ...attendanceFixture.buckets[0]!,
     startDate: '2026-11-01', endDate: '2026-11-02', startsAt: '2026-11-01T07:00:00Z', endsAt: '2026-11-02T08:00:00Z',
     inProgress: true, partial: true,
   }] };
-  const table = attendanceTable(data, 'all', new Date('2026-11-01T12:00:00Z'));
+  const table = attendanceTable(data);
   expect(table.rows[0]![2]).toBe('In progress, partial');
   expect(reportCsv(table)).toContain('"In progress, partial"');
-  const upcoming = attendanceTable({ ...data, buckets: data.buckets.map(bucket => ({ ...bucket, inProgress: false })) }, 'all', new Date('2026-10-31T12:00:00Z'));
-  expect(upcoming.rows[0]![2]).toBe('Upcoming, partial');
+  const upcoming = attendanceTable({ ...data, buckets: [...data.buckets, { ...data.buckets[0]!,
+    startDate: '2026-11-02', endDate: '2026-11-09', inProgress: false }] });
+  expect(upcoming.rows.at(-1)![2]).toBe('Upcoming, partial');
+  const ended = attendanceTable({ ...data, buckets: data.buckets.map(bucket => ({ ...bucket, inProgress: false })) });
+  expect(ended.rows[0]![2]).toBe('Partial');
 });

@@ -61,7 +61,7 @@ export function createPublicPagesService(options: PublicPagesOptions) {
     await writeAudit(tx, { gymId, actorKind: 'system', action, targetType: 'member', targetId: id, occurredAt: clock.now() });
   }
   /** Public callers never select an existing household, even when the address matches. */
-  async function intake(gymId: string, input: c.PublicTrialRequest, action: string, source: 'trial_form' | 'drop_in') {
+  async function intake(gymId: string, input: c.PublicTrialRequest, action: string, source: c.LeadSource) {
     return scope(gymId, async tx => {
       const now = clock.now(), householdId = uuidv7(now.getTime()), id = uuidv7(now.getTime());
       await tx.insert(households).values({ id: householdId, gymId, name: input.contact.name, email: input.contact.email,

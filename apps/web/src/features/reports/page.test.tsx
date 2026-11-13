@@ -41,6 +41,17 @@ function csvCells(value: string, columns: number) {
 }
 
 describe('report tables and CSV downloads', () => {
+  it('resets a program removed from a refetched report and immediately displays all programs', async () => {
+    const service = client(), cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={cache}><ReportsWorkspace gymId={fixtureId} userId={fixtureId} timezone="America/Los_Angeles" roles={['owner']} client={service} /></QueryClientProvider>);
+    await screen.findByRole('table');
+    await userEvent.selectOptions(screen.getByLabelText('Program', { exact: true }), fixtureId);
+    vi.mocked(service.attendance).mockResolvedValue({ ...attendanceFixture,
+      buckets: attendanceFixture.buckets.map(bucket => ({ ...bucket, programs: bucket.programs.filter(program => program.programId !== fixtureId) })) });
+    await cache.invalidateQueries({ queryKey: ['reports', fixtureId, fixtureId, 'attendance'] });
+    await waitFor(() => expect(screen.getByLabelText('Program', { exact: true })).toHaveProperty('value', 'all'));
+    expect(renderedCells(screen.getByRole('table'))[1]!.slice(-3)).toEqual(['All programs', '9', '4']);
+  });
   it.each(['attendance', 'members', 'revenue'] as const)('%s downloads exactly the displayed rows and columns, with formula neutralization only', async name => {
     const downloads: { value: string; filename: string }[] = [];
     vi.spyOn(csv, 'downloadCsv').mockImplementation((table, filename) => { downloads.push({ value: csv.reportCsv(table), filename }); });

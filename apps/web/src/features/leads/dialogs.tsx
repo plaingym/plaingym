@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useEffect, useId, useState } from 'react';
-import type { ClassSession } from '@plaingym/shared/contracts';
+import type { ClassSession, LeadStage } from '@plaingym/shared/contracts';
 import { localDate } from '@plaingym/shared/time';
 import { ApiError } from '../../lib/api.js';
 import { Alert } from '../../components/ui/alert.js';
@@ -14,7 +14,7 @@ import type { Lead, LeadClient } from './api.js';
 import { text } from './text.js';
 
 /** What a finished action tells the screen: a message and whether the lists must reload. */
-export interface Outcome { message: string; error?: boolean; reload: boolean }
+export interface Outcome { message: string; error?: boolean; reload: boolean; lead?: Lead; stages?: readonly LeadStage[] | undefined }
 export const leadName = (lead: Lead) => `${lead.firstName} ${lead.lastName}`.trim();
 const conflict = (error: unknown) => error instanceof ApiError && error.status === 409;
 export const changedOutcome = (): Outcome => ({ message: text('changed'), error: true, reload: true });
@@ -39,10 +39,15 @@ export function BookDialog({ lead, client, timezone, onClose, onDone }: DialogPr
     if (saving || !session) return;
     setSaving(true); setError('');
     try { await client.book({ memberId: lead.memberId, sessionId: session, allowWaitlist: false }); }
-    catch { setError(text('bookingFailed')); setSaving(false); return; }
+    catch (error) {
+      const reason = error instanceof ApiError && error.status === 409 ? error.reason[0] : undefined;
+      const messages: Record<string, string> = { full: 'bookingFull', alreadyBooked: 'bookingExists', sessionClosed: 'bookingClosed',
+        noReservation: 'bookingNoReservation', windowClosed: 'bookingWindowClosed' };
+      setError(text(reason && messages[reason] || 'bookingFailed')); setSaving(false); return;
+    }
     // The class is booked; from here the dialog closes whatever happens to the stage.
-    if (lead.stage !== 'new' && lead.stage !== 'contacted') { onDone({ message: text('booked'), reload: true }); return; }
-    try { await client.edit(lead, { stage: 'trial_booked' }); onDone({ message: text('booked'), reload: true }); }
+    if (lead.stage !== 'new' && lead.stage !== 'contacted') { onDone({ message: text('booked'), reload: true, lead }); return; }
+    try { const updated = await client.edit(lead, { stage: 'trial_booked' }); onDone({ message: text('booked'), reload: true, lead: updated }); }
     catch (stageError) {
       onDone({ message: text(conflict(stageError) ? 'bookedStageChanged' : 'bookedStageFailed'), error: true, reload: true });
     }
@@ -71,8 +76,9 @@ export function LostDialog({ lead, client, onClose, onDone }: DialogProps) {
   const id = useId(), [reason, setReason] = useState(''), [saving, setSaving] = useState(false), [error, setError] = useState('');
   async function submit() {
     if (saving || !reason.trim()) return;
+    if ([...reason.trim()].length > 500) { setError(text('reasonTooLong')); return; }
     setSaving(true); setError('');
-    try { await client.lost(lead, reason.trim()); onDone({ message: text('lostSaved'), reload: true }); }
+    try { const updated = await client.lost(lead, reason.trim()); onDone({ message: text('lostSaved'), reload: true, lead: updated }); }
     catch (lostError) {
       if (conflict(lostError)) { onDone(changedOutcome()); return; }
       setError(text('error')); setSaving(false);
@@ -82,7 +88,7 @@ export function LostDialog({ lead, client, onClose, onDone }: DialogProps) {
     <form className="min-w-0 space-y-4" onSubmit={event => { event.preventDefault(); void submit(); }}>
       {error && <Alert role="alert">{error}</Alert>}
       <div className="space-y-2"><Label htmlFor={id + '-reason'}>{text('reason')}</Label>
-        <Textarea id={id + '-reason'} required maxLength={500} value={reason} disabled={saving} onChange={event => setReason(event.target.value)} /></div>
+        <Textarea id={id + '-reason'} required value={reason} disabled={saving} onChange={event => setReason(event.target.value)} /></div>
       <div className="flex flex-wrap gap-2">
         <Button type="submit" variant="destructive" className="w-full sm:w-auto" disabled={saving || !reason.trim()}>{text('lost')}</Button>
         <Button type="button" variant="outline" className="w-full sm:w-auto" disabled={saving} onClick={onClose}>{text('cancel')}</Button>

@@ -30,6 +30,25 @@ export function localDate(instant: Date, timezone: string): string {
 export function addDays(date: string, days: number): string {
   return Temporal.PlainDate.from(date, { overflow: 'reject' }).add({ days }).toString();
 }
+/** First day of the containing month, or of the next/previous month. */
+export function monthStart(date: string): string {
+  return Temporal.PlainDate.from(date, { overflow: 'reject' }).with({ day: 1 }).toString();
+}
+export function nextMonth(date: string, direction: 1 | -1 = 1): string {
+  return Temporal.PlainDate.from(monthStart(date)).add({ months: direction }).toString();
+}
+/** Monday of the containing gym-local week. */
+export function startOfWeek(date: string): string {
+  return addDays(date, -((weekday(date) + 6) % 7));
+}
+/** Midnight shifted through a timezone gap, consistently with local calendar buckets. */
+export function localMidnight(date: string, timezone: string): Date {
+  return zonedInstant(date, '00:00', timezone, { gap: 'shift' })!;
+}
+/** PostgreSQL accepts expanded positive years without ISO's leading plus and padding. */
+export function sqlInstant(instant: Date): string {
+  return instant.toISOString().replace(/^\+0*/, '');
+}
 /** Day of the week, 0 (Sunday) to 6 (Saturday), as `Date#getUTCDay` numbers them. */
 export function weekday(date: string): number {
   return Temporal.PlainDate.from(date, { overflow: 'reject' }).dayOfWeek % 7;

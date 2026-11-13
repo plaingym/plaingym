@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { AppError } from '@plaingym/shared';
 import type { EndpointContract } from '@plaingym/shared/contracts';
-import type { MiddlewareHandler } from 'hono';
 import type { z } from 'zod';
-import type { RequestEnvironment } from '../../core/context.js';
 import { route } from '../../core/registry.js';
 import type { ReportContext } from './range.js';
 
@@ -11,9 +9,8 @@ import type { ReportContext } from './range.js';
 export function reportRoute<Q extends z.ZodObject>(
   contract: EndpointContract & { method: 'get'; query: Q }, description: string,
   service: { get(context: ReportContext, query: z.output<Q>): Promise<{ data: unknown }> },
-  middleware?: MiddlewareHandler<RequestEnvironment>,
 ) {
-  return route({ ...contract, ...(middleware ? { middleware } : {}), request: { query: contract.query },
+  return route({ ...contract, request: { query: contract.query },
     responses: { 200: { description, content: { 'application/json': { schema: contract.response } } } },
   }, async c => {
     const context = c.get('context'), principal = context.principal;

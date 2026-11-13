@@ -8,6 +8,7 @@ import { isCalendarDate, zonedInstant } from '@plaingym/shared/time';
 import { t } from '../pipeline.messages.js';
 import { csvValue, DuplicateIndex, duplicateKey, type CsvRow } from '../pipeline.csv.js';
 import type { CsvMapper, MapperContext, PlannedRow } from './registry.js';
+import { escapeLike } from '../../../lib/escape-like.js';
 
 type Reader = Pick<Transaction, 'select'>;
 type Values = PlannedRow['values'];
@@ -21,7 +22,6 @@ interface Rung { id: string | null; rowNumber: number | null; position: number; 
 /** Matches names, emails and pick lists the same way `duplicateKey` normalizes identities. */
 const normalize = (value: string) => value.normalize('NFKC').trim().toLowerCase();
 const compact = (value: string) => normalize(value).replace(/[^\p{L}\p{N}]/gu, '');
-const escapeLike = (value: string) => value.replace(/[\\%_]/g, '\\$&');
 const committedSchema = z.discriminatedUnion('record', [
   z.object({ record: z.literal('promotion'), memberId: idSchema, programId: idSchema, rankId: idSchema, rankSystemId: idSchema,
     subRank: z.int().nonnegative(), promotedAt: instantSchema, memberRevision: z.int().positive(), programRevision: z.int().positive(), rankRevision: z.int().positive() }),

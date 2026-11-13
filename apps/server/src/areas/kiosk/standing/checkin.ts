@@ -7,6 +7,7 @@ import {
   type KioskCheckinResult, type KioskLookupResponse, type KioskStanding,
 } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../../core/clock.js';
+import { escapeLike } from '../../../lib/escape-like.js';
 import type { Uploads } from '../../../infra/storage/index.js';
 import { createKioskCheckinHelpers, type KioskMemberRow } from '../checkin.js';
 import type { KioskPinCheck } from '../pin-check.js';
@@ -22,7 +23,6 @@ export { checkinOpensBeforeMs } from '../checkin.js';
 export const maxCandidateHouseholds = 3;
 /** Hears what one PIN guess came to; the kiosk limiter spends budget only on wrong PINs (`devices.auth.ts`). */
 export type PinChecked = (check: KioskPinCheck) => void;
-const escapeLike = (value: string) => value.replace(/[\\%_]/g, '\\$&');
 
 export interface KioskCheckinOptions {
   scope?: typeof forGym; clock?: Clock; standing?: StandingChecks;

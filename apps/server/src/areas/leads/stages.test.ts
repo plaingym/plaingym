@@ -17,6 +17,7 @@ import { createTransitionNotifications } from '../billing/transitions/notificati
 import { effectCreated, type TransitionEffect } from '../billing/transitions/store.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { advanceLeadOnCheckIn, markLeadWon } from './stages.js';
+import { measureReportStatements } from '../reports/statements.test-helper.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 const clock = new TestClock('2026-11-10T12:00:00Z');
@@ -43,6 +44,23 @@ const checkIn = (f: Fixture, sessionId: string | null = null) => f.attendance.re
   { memberId: f.member.id, sessionId, programId: null });
 
 describe('automatic lead stages in real PostgreSQL transactions', () => {
+  it('uses the visit time for a backdated trial attendance and record time for both creation audits', async () => {
+    const f = await fixture('trial'), occurredAt = new Date('2026-10-21T17:00:00Z');
+    await f.attendance.record(f.context, { memberId: f.member.id, sessionId: null, programId: null, occurredAt: occurredAt.toISOString() });
+    const rows = await f.rows();
+    expect(rows.leads[0]).toMatchObject({ trialAttendedAt: occurredAt, createdAt: clock.now(), stage: 'trial_attended' });
+    expect(rows.audits[0]).toMatchObject({ before: null, occurredAt: clock.now(), after: { stage: 'trial_attended', revision: 2 } });
+    const created = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'lead.created')));
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({ actorKind: 'user', actorUserId: f.context.actor.userId,
+      targetId: rows.leads[0]!.id, after: { source: null }, occurredAt: clock.now() });
+  });
+  it('still advances an existing lead for an active member', async () => {
+    const f = await fixture('active');
+    await factory('leads', f.gymId, { memberId: f.member.id, stage: 'contacted' });
+    await checkIn(f);
+    expect((await f.rows()).leads[0]!.stage).toBe('trial_attended');
+  });
   it.each(['new', 'contacted', 'trial_booked'])('advances %s on the first staff visit, with one audit and a new revision', async stage => {
     const f = await fixture();
     const before = await factory('leads', f.gymId, { memberId: f.member.id, source: 'phone', stage, revision: 4 });
@@ -72,6 +90,14 @@ describe('automatic lead stages in real PostgreSQL transactions', () => {
   });
   it.each(['active', 'cancelled'])('does not create a lead or break a visit for a row-less %s member', async status => {
     const f = await fixture(status); await checkIn(f);
+    expect(await f.rows()).toEqual({ leads: [], audits: [] });
+  });
+  it('does not issue separate lead or member-status reads for an ordinary member visit', async () => {
+    const f = await fixture('active'), session = await factory('classSessions', f.gymId);
+    const measured = await measureReportStatements(db.appUrl, scope => createAttendanceService({ ...f.options, scope })
+      .record(f.context, { memberId: f.member.id, sessionId: session.id, programId: null }));
+    expect(measured.reportStatements.filter(query => /from "leads"/i.test(query))).toEqual([]);
+    expect(measured.reportStatements.filter(query => /from "members"/i.test(query))).toHaveLength(1);
     expect(await f.rows()).toEqual({ leads: [], audits: [] });
   });
   it('covers session check-ins and deduplicates the replay', async () => {

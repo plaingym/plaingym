@@ -3,10 +3,10 @@
 import { sql } from 'drizzle-orm';
 import { leads, members, type Transaction } from '@plaingym/db';
 import type { LeadFunnelResponse } from '@plaingym/shared/contracts';
+import { sqlInstant } from '@plaingym/shared/time';
+import { leadMemberStatuses } from './eligibility.js';
 
 type FunnelAggregate = LeadFunnelResponse['data']['sources'][number] & Record<string, unknown>;
-// PostgreSQL accepts expanded years without ISO's leading plus and zero padding.
-const sqlInstant = (instant: Date) => instant.toISOString().replace(/^\+0*/, '');
 /** One aggregate statement for any range or cohort size. Erased members remain in the counts. */
 export function funnelAggregate(tx: Transaction, gymId: string, startsAt: Date, endsAt: Date) {
   // eslint-disable-next-line database/system-tables -- Reviewed SQL; explicit gym predicates also scope the composite join.
@@ -20,7 +20,7 @@ export function funnelAggregate(tx: Transaction, gymId: string, startsAt: Date, 
     left join ${leads} l on l.gym_id = ${gymId}::uuid and l.gym_id = m.gym_id and l.member_id = m.id
     where m.gym_id = ${gymId}::uuid and m.created_at >= ${sqlInstant(startsAt)}::timestamptz
       and m.created_at < ${sqlInstant(endsAt)}::timestamptz
-      and (l.id is not null or m.status in ('prospect', 'trial'))
+      and (l.id is not null or m.status in (${sql.join(leadMemberStatuses.map(status => sql`${status}`), sql`, `)}))
     group by coalesce(l.source, 'unknown') order by source
   `);
 }

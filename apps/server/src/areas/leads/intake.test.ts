@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- Inspect existing table constraints for contract parity; no table construction or SQL execution.
+import { getTableConfig, PgDialect } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 import { auditEvents, leads, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { recordLeadIntake } from './intake.js';
+import { leadSources, leadStages } from '@plaingym/shared/contracts';
 
 const database = useTestDatabase(), factory = createFactories(database), now = new Date('2026-11-10T12:00:00Z');
 async function fixture() {
@@ -15,6 +18,13 @@ async function fixture() {
   return { gymId, memberId: member.id, rows };
 }
 describe('lead intake', () => {
+  it('keeps the database source and stage checks equal to the contract enums', () => {
+    const checks = getTableConfig(leads).checks, dialect = new PgDialect();
+    for (const [name, expected] of [['leads_source_check', leadSources], ['leads_stage_check', leadStages]] as const) {
+      const query = dialect.sqlToQuery(checks.find(check => check.name === name)!.value).sql;
+      expect([...query.matchAll(/'([^']+)'/g)].map(match => match[1])).toEqual([...expected]);
+    }
+  });
   it('keeps the first source and writes one source-only audit on concurrent or later replay', async () => {
     const f = await fixture();
     const input = { gymId: f.gymId, memberId: f.memberId, source: 'trial_form' as const, now };

@@ -33,18 +33,20 @@ function LeadView({ memberId, timezone, client }: { memberId: string; timezone: 
   }, [client, memberId, version]);
   function done(result: Outcome) {
     setOutcome(result);
-    if (result.reload) { setVersion(value => value + 1); setContactsVersion(value => value + 1); }
+    if (result.lead) setLead(result.lead);
+    if (result.reload) { setState('loading'); setVersion(value => value + 1); setContactsVersion(value => value + 1); }
   }
   const back = <a className="inline-flex min-h-11 items-center text-sm font-medium underline underline-offset-4" href="/admin/leads">{text('lead.back')}</a>;
   if (state === 'missing') return <Page>{back}<Alert>{text('lead.missing')}</Alert></Page>;
-  if (state === 'failed' && !lead) return <Page>{back}<ErrorState message={text('lead.loadError')} onRetry={() => { setState('loading'); setVersion(value => value + 1); }} /></Page>;
+  const retry = () => { setState('loading'); setVersion(value => value + 1); };
+  if (state === 'failed' && !lead) return <Page>{back}<ErrorState message={text('lead.loadError')} onRetry={retry} /></Page>;
   if (!lead) return <Page><LoadingState /></Page>;
   const name = leadName(lead);
   return <Page>
     {back}
     <PageHeader title={name} description={text('stage.' + lead.stage)} />
     {outcome && (outcome.error ? <Alert role="alert">{outcome.message}</Alert> : <p role="status" className="text-sm">{outcome.message}</p>)}
-    {state === 'failed' && <Alert role="alert">{text('lead.loadError')}</Alert>}
+    {state === 'failed' && <ErrorState message={text('lead.loadError')} onRetry={retry} />}
     <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] lg:items-start">
       <div className="min-w-0 space-y-6">
         <Card aria-labelledby="lead-details" className="min-w-0 space-y-4 p-4 sm:p-6">
@@ -63,15 +65,15 @@ function LeadView({ memberId, timezone, client }: { memberId: string; timezone: 
         </Card>
         <Card aria-labelledby="lead-actions" className="min-w-0 space-y-4 p-4 sm:p-6">
           <h2 id="lead-actions" className="text-lg font-semibold">{text('lead.actions')}</h2>
-          <LeadActions lead={lead} client={client} timezone={timezone} onDone={done} logContact={false} />
+          <fieldset disabled={state !== 'ready'} className="min-w-0"><LeadActions lead={lead} client={client} timezone={timezone} onDone={done} logContact={false} /></fieldset>
         </Card>
       </div>
       <PageSection title={text('contacts.heading')} description={text('contacts.help', { timezone })}>
         <Card className="min-w-0 p-4 sm:p-6">
-          <ContactForm lead={lead} client={client} onDone={done} onSaved={result => {
+          <fieldset disabled={state !== 'ready'} className="min-w-0"><ContactForm lead={lead} client={client} onDone={done} onSaved={result => {
             setLead(result.lead); setContactsVersion(value => value + 1);
             setOutcome({ message: text('contacts.saved'), reload: false });
-          }} />
+          }} /></fieldset>
         </Card>
         <ContactLog memberId={lead.memberId} client={client} timezone={timezone} version={contactsVersion} />
       </PageSection>

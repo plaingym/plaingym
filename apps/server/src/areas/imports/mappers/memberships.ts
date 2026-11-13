@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { escapeLike } from '../../../lib/escape-like.js';
 import { and, asc, eq, ilike, inArray, isNull, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { households, members, memberships, plans, RevisionConflictError, assertRevised, revisionGuard,
@@ -22,7 +23,6 @@ function updateIssue(row: Membership, nextDueOn: string) {
   if (!['active', 'pending'].includes(row.status)) return 'immutableMembership';
   return nextDueOn < row.startsOn ? 'beforeStartsOn' : null;
 }
-const escapeLike = (value: string) => value.replace(/[\\%_]/g, '\\$&');
 function matches(person: Person, identity: Identity): boolean {
   return (!identity.email || normalize(person.email ?? '') === identity.email)
     && (!identity.firstName || normalize(person.firstName) === identity.firstName)

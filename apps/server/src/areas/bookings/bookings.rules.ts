@@ -12,7 +12,7 @@ import { hasActiveMembership, isPackHolder, usableLots } from '../billing/packs/
 export type BookingRow = typeof classBookings.$inferSelect;
 export type SessionRow = typeof classSessions.$inferSelect;
 const t = createTranslator(locales.en ?? {});
-export function bookingConflict(key: string): never { throw new AppError('conflict', t('bookings/bookings:' + key)); }
+export function bookingConflict(key: string): never { throw new AppError('conflict', t('bookings/bookings:' + key), { reason: [key] }); }
 
 /** Days are gym-local calendar days; the opening instant is local midnight. Cutoffs are elapsed minutes. */
 export function bookingOpensAt(startsAt: Date, settings: Pick<GymSettings, 'bookingWindowDays' | 'timezone'>): Date {

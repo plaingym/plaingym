@@ -11,15 +11,17 @@ gym, user, range and granularity in its query key and cancellation on navigation
 Queries stay fresh for one minute, so switching tabs reuses recent answers. The
 attendance program and granularity survive tab switches; applying a range or
 changing granularity resets the program filter to All programs.
+A refreshed answer that no longer contains the selected program also resets it
+to All programs, using the same selection for the control, table, chart and CSV.
 
 The default range is twelve inclusive months through the gym's current month.
 Apply a range of at most 24 months. Attendance supports month or week and a
 program filter. Zero-activity periods stay in filtered tables; unique members
 must not be added across program rows. Boundary periods retain the
 API's partial marker, including alongside In progress or Upcoming. Current periods
-show In progress from the server clock's `inProgress` snapshot, and
-future weeks within the requested current month show Upcoming, using the gym's
-timezone even when the API supplies a full calendar-period boundary.
+show In progress from the server clock's `inProgress` snapshot; later buckets
+in that same answer show Upcoming. Labels use only the snapshot, so browser
+clock differences and time spent viewing an answer cannot change its statuses.
 
 Small SVG bar and line charts have descriptions, legends and their data tables
 immediately below. Tables scroll within labelled, keyboard-focusable containers

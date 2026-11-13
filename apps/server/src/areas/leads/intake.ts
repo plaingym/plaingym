@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { leads, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
-
-type LeadSource = 'trial_form' | 'join' | 'drop_in' | 'walk_in' | 'referral' | 'phone' | 'other';
+import type { LeadSource } from '@plaingym/shared/contracts';
 
 /** Records the first intake only, with its audit in the caller's gym transaction. */
 export async function recordLeadIntake(tx: Transaction, input: {

@@ -32,7 +32,7 @@ All five routes below require `leads.manage` and return `Cache-Control: no-store
 * `PATCH /api/leads/{memberId}` accepts `revision` and one or more of `source`
   (nullable), `stage` and `nextFollowUpOn` (nullable gym-local date).
 * `POST /api/leads/{memberId}/lost` accepts `revision` and a trimmed reason of
-  1–500 characters. It keeps the lead and records its lost time.
+  1–500 Unicode code points. It keeps the lead and records its lost time.
 * `POST /api/leads/{memberId}/reopen` accepts `revision`, moves a lost lead to
   `contacted`, and clears the reason and lost time.
 
@@ -85,8 +85,9 @@ and reach the same leads as `GET /api/leads/{memberId}` (others are 404):
   note, the staff user's ID and their staff profile's display name (null without
   a profile). A lead without a row has none.
 
-The contact, the lead change and a `lead.contacted` audit commit together. The
-audit holds the stage, follow-up and revision before and after, the channel and
+The contact, the lead change and a `lead.contacted` audit commit together through
+the same mutation helper as lead edits. The audit holds the stage, source,
+follow-up and revision before and after, the channel and
 the contact ID, never the note. The member is locked before the lead, as edits
 do, so erasure waits; erasure then deletes the contacts and both routes return 404.
 
@@ -106,6 +107,9 @@ from the settings, it counts and lists in one statement.
 inserted. It advances `new`, `contacted` and `trial_booked` to `trial_attended`,
 preserving the first `trial_attended_at`. Won and lost leads keep their stage.
 Staff, session and kiosk check-ins share this path.
+The trial timestamp uses the visit's occurrence time, including backdated staff
+visits; audits use the record time. Attendance passes its locked member status
+and skips lead staging for ordinary members without a lead row.
 
 `markLeadWon` runs when a pending or trial membership activates (including a
 paid invoice's activation effect), an assignment starts active, a frozen
@@ -120,8 +124,10 @@ lead is created with a null source only for a prospect or trial member; other
 members with no lead are harmless no-ops. They lock the lead before changing it,
 bump its revision and write a `lead.stage_changed` audit with the caller's actor,
 without copying contact details or lost reasons. Repeats change and audit nothing.
-Creation acquires a member key-share lock before inserting the unique lead key
-to preserve the lock order of a racing check-in.
+Creation also writes `lead.created` with null source and the caller's actor;
+its stage-change audit has `before: null`. Creation acquires a member key-share
+lock before inserting the unique lead key when the caller has not already locked
+and supplied the member status, preserving the order of a racing check-in.
 
 ## Funnel counts
 
@@ -129,6 +135,9 @@ to preserve the lock order of a racing check-in.
 and returns `Cache-Control: no-store`. Dates are inclusive in the gym's timezone,
 ordered and limited to 24 calendar months. Instants come only from shared time
 helpers, so midnight and daylight-saving boundaries follow the gym's zone.
+A February 29 start includes February 28 two years later, but excludes March 1.
+Sources and stages come from the shared lead contract, with a test checking that
+the database constraints match those lists.
 
 The cohort uses the member's creation date. Persisted leads are counted even
 after member erasure; prospects and trial members without lead rows count as

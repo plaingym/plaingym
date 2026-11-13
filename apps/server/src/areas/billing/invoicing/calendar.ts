@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { addDays, isCalendarDate } from '@plaingym/shared/time';
+import { addDays, isCalendarDate, monthStart, nextMonth } from '@plaingym/shared/time';
 import type { BillingInterval, IsoDate } from '@plaingym/shared/contracts';
 
 export function calendarDate(value: IsoDate): IsoDate {
@@ -12,18 +12,10 @@ export function billingDay(value: number): number {
   return value;
 }
 
-// TODO: move anchored calendar stepping and day differences into shared/time.
-// All calendar operations use its addDays; no instant or elapsed-hour arithmetic.
-function monthStart(date: IsoDate): IsoDate {
-  return addDays(date, 1 - Number(date.slice(8)));
-}
-function stepMonth(first: IsoDate, direction: 1 | -1): IsoDate {
-  return monthStart(addDays(first, direction === 1 ? 32 : -1));
-}
 function anchoredMonth(date: IsoDate, months: number, anchor: number): IsoDate {
   let first = monthStart(date);
-  for (let index = 0; index < Math.abs(months); index++) first = stepMonth(first, months > 0 ? 1 : -1);
-  const last = addDays(stepMonth(first, 1), -1);
+  for (let index = 0; index < Math.abs(months); index++) first = nextMonth(first, months > 0 ? 1 : -1);
+  const last = addDays(nextMonth(first), -1);
   const candidate = addDays(first, anchor - 1);
   return calendarDate(candidate > last ? last : candidate);
 }

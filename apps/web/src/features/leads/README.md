@@ -33,8 +33,17 @@ next follow-up, with:
 * **Convert to member**: opens the member's profile at its membership tab, where
   the existing assign flow lives.
 
-Every write sends the lead's revision. A 409 reloads the lists and says the lead
-changed; any other failure shows a message and reloads nothing.
+Every lead write sends its revision. A successful action refreshes its old and
+new stage columns, preserving the pages already loaded, and focuses the outcome
+message. A failed column refresh clears its cards so old revisions cannot be
+edited. A lead-write 409 reloads the lists and says the lead changed; other
+lead-write failures reload nothing. Booking conflicts explain a full class,
+a closed class, a closed booking window, or a class that takes no reservations;
+booking failures leave the lead stage unchanged. Existing bookings are returned
+successfully by the booking API.
+
+Contact notes (2,000 characters) and lost reasons (500) count trimmed Unicode
+code points on submit, including emoji; overlong text shows a field-specific error.
 
 ## Lead page
 
@@ -47,6 +56,9 @@ one (as the dialog, then the log reloads and the page shows the new stage) and
 the contacts newest first, 20 at a time with "Show more", each with its channel,
 time, who logged it and the note. A missing, erased or non-lead member shows a
 "not found" notice with a link back to the list.
+After a quick action, the returned lead is shown immediately and actions stay
+disabled until the detail refresh completes. A failed refresh keeps them disabled
+and shows a Try again button.
 
 ## Follow-ups due tile
 
@@ -54,6 +66,7 @@ time, who logged it and the note. A missing, erased or non-lead member shows a
 `leads.follow-ups-due` widget for staff with `leads.manage`: the count, up to 20
 due leads linking to their lead pages, "Showing N of M" when there are more, and
 a link to the leads list. With nothing due the dashboard shows no tile.
+Its count and list use the dashboard's shared count renderer.
 
 `api.ts` validates requests and responses with the shared lead contracts and
 reuses the booking client. Strings live in `locales/en/leads/screens.json`.

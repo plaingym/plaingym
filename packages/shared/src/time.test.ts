@@ -1,8 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { addDays, isCalendarDate, localDate, timeZoneId, weekday, zonedInstant } from '@plaingym/shared/time';
+import { addDays, isCalendarDate, localDate, localMidnight, monthStart, nextMonth, sqlInstant, startOfWeek, timeZoneId, weekday, zonedInstant } from '@plaingym/shared/time';
 
 describe('shared time conversions', () => {
+  it.each([
+    ['2024-01-31', '2024-01-01', '2024-02-01', '2023-12-01'],
+    ['2024-02-29', '2024-02-01', '2024-03-01', '2024-01-01'],
+    ['2026-12-31', '2026-12-01', '2027-01-01', '2026-11-01'],
+  ])('steps whole months from %s', (date, first, next, previous) => {
+    expect(monthStart(date)).toBe(first); expect(nextMonth(date)).toBe(next); expect(nextMonth(date, -1)).toBe(previous);
+  });
+  it.each([['2026-01-01', '2025-12-29'], ['2026-11-01', '2026-10-26'], ['2026-11-02', '2026-11-02']])('starts the Monday week containing %s', (date, monday) => {
+    expect(startOfWeek(date)).toBe(monday);
+  });
+  it('uses local midnight across DST and a skipped midnight', () => {
+    expect(localMidnight('2026-03-09', 'America/New_York').toISOString()).toBe('2026-03-09T04:00:00.000Z');
+    expect(localMidnight('2018-11-04', 'America/Sao_Paulo').toISOString()).toBe('2018-11-04T03:00:00.000Z');
+  });
+  it('serializes ordinary and expanded years for SQL without changing their instants', () => {
+    expect(sqlInstant(new Date('2026-11-01T00:00:00Z'))).toBe('2026-11-01T00:00:00.000Z');
+    expect(sqlInstant(new Date('+010000-01-01T00:00:00Z'))).toBe('10000-01-01T00:00:00.000Z');
+  });
   it('names a zone in its canonical case without resolving links', () => {
     for (const [zone, id] of [['asia/kolkata', 'Asia/Kolkata'], ['EUROPE/KYIV', 'Europe/Kyiv'], ['us/pacific', 'US/Pacific'], ['utc', 'UTC']] as const)
       expect(timeZoneId(zone)).toBe(id);

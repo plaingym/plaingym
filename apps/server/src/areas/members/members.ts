@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { escapeLike } from '../../lib/escape-like.js';
 import { and, asc, eq, gt, ilike, inArray, isNotNull, isNull, ne, or } from 'drizzle-orm';
 import { forGym, members, memberRanks, memberships, households, householdUsers, memberTags, memberTagLinks, signedLinks, waiverSignatures,
   invoices, invoiceLineItems, membershipDiscounts, paymentMethods, classBookings, classSessions, classCreditEntries, classPackSales, attendances,
@@ -38,7 +39,7 @@ function missing<T>(row: T | undefined): T { if (!row) throw new AppError('not_f
 function editable(row: { anonymizedAt: Date | null }) {
   if (row.anonymizedAt) throw new AppError('conflict', 'Anonymized profiles cannot be edited');
 }
-const search = (value: string) => '%' + value.replace(/[\\%_]/g, '\\$&') + '%';
+const search = (value: string) => '%' + escapeLike(value) + '%';
 /** `pinSecret` resolves the gym's random key (`areas/settings/gym-keys.ts`); without it, setting a PIN fails closed. */
 export interface MembersOptions { scope?: typeof forGym; clock?: Clock; pinSecret?: HouseholdPinSecret }
 export function createMembersService(options: MembersOptions = {}) {
@@ -116,9 +117,9 @@ export function createMembersService(options: MembersOptions = {}) {
         await tx.delete(memberTagLinks).where(eq(memberTagLinks.memberId, id));
         await eraseCreditReasons(tx, id);
         // Keep the funnel history, but remove free text that can identify the person.
-        const erasedLeads = await tx.update(leads).set({ lostReason: null })
-          .where(eq(leads.memberId, id)).returning({ id: leads.id });
-        for (const lead of erasedLeads) await tx.delete(leadContacts).where(eq(leadContacts.leadId, lead.id));
+        await tx.update(leads).set({ lostReason: null }).where(eq(leads.memberId, id));
+        await tx.delete(leadContacts).where(inArray(leadContacts.leadId,
+          tx.select({ id: leads.id }).from(leads).where(eq(leads.memberId, id))));
         await tx.update(memberships).set({ switchOverrideReason: null })
           .where(and(eq(memberships.memberId, id), isNotNull(memberships.switchOverrideReason)));
         // Only upcoming places are freed; bookings for sessions that have started stay as history.

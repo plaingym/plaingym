@@ -21,6 +21,8 @@ All boundaries are local midnights converted by `@plaingym/shared/time` with
 `gap: 'shift'`. Weeks across daylight-saving changes can have 167 or 169 hours.
 SQL assigns each visit to the sorted bucket starts with `width_bucket`, then
 joins on the bucket number, retaining empty buckets. It performs no timezone conversion.
+Month stepping, Monday week starts, local midnights and SQL instant serialization
+use the shared time helpers, also used by lead funnel ranges and billing calendars.
 
 `createAttendanceReportService` takes `forGym` (overridable in tests) and receives
 gym ID, timezone and clock on each call. The route gets these from request context;

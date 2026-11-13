@@ -7,10 +7,10 @@ import { extensionDashboardWidgetSchema } from '@plaingym/shared/contracts';
 import { localDate } from '@plaingym/shared/time';
 import type { DashboardWidgetProvider } from '../../core/interfaces/extensions.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
+import { openLeadStages } from '../leads/eligibility.js';
 
 export const followUpsDueWidgetId = 'leads.follow-ups-due';
 const shown = 20;
-const open = ['new', 'contacted', 'trial_booked', 'trial_attended'];
 
 /** Open leads (not won, lost or erased) whose next follow-up falls on or before the gym's local today, soonest first,
  * each linking to its lead page. Only staff with `leads.manage` run its reads; with nothing due it returns null.
@@ -25,7 +25,7 @@ DashboardWidgetProvider<z.infer<typeof extensionDashboardWidgetSchema>> {
       const today = localDate(context.clock.now(), (await options.settings.get(context.gymId)).timezone);
       const person = and(eq(members.gymId, leads.gymId), eq(members.id, leads.memberId));
       const rows = await scope(context.gymId, tx => {
-        const due = and(inArray(leads.stage, open), lte(leads.nextFollowUpOn, today),
+        const due = and(inArray(leads.stage, openLeadStages), lte(leads.nextFollowUpOn, today),
           exists(tx.select({ id: members.id }).from(members).where(and(person, isNull(members.anonymizedAt)))));
         // In the count's subquery, `leads` names that subquery's own row, so the member check follows each counted lead.
         const total = tx.$count(leads, due);

@@ -42,7 +42,7 @@ describe('booking transactions', () => {
   });
   it('rejects a full class when waitlisting is not allowed', async () => {
     const f = await fixture(); await f.book();
-    await expect(f.book(f.other.id, false)).rejects.toMatchObject({ code: 'conflict' });
+    await expect(f.book(f.other.id, false)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['full'] } });
     expect((await f.service.list(f.gymId, page)).data).toHaveLength(1);
   });
   it('keeps allocation gaps, ranks the live queue, and never lets a newcomer jump the waitlist', async () => {

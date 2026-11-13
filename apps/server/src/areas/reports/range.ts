@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { AppError, type Clock } from '@plaingym/shared';
 import { reportRangeQuerySchema, type ReportBucket, type ReportRangeQuery } from '@plaingym/shared/contracts';
-import { addDays, localDate, weekday, zonedInstant } from '@plaingym/shared/time';
+import { addDays, localDate, localMidnight, nextMonth, startOfWeek } from '@plaingym/shared/time';
 
 export interface ReportContext { readonly gymId: string; readonly timezone: string; readonly clock: Clock }
-function nextMonth(first: string): string {
-  return addDays(first, 32).slice(0, 7) + '-01';
-}
-const midnight = (date: string, timezone: string) => zonedInstant(date, '00:00', timezone, { gap: 'shift' })!.toISOString();
+const midnight = (date: string, timezone: string) => localMidnight(date, timezone).toISOString();
 
 /** Local calendar buckets converted to instants once; SQL compares instants only. */
 export function reportBuckets(input: ReportRangeQuery, context: ReportContext, granularity: 'week' | 'month' = 'month'): ReportBucket[] {
@@ -20,7 +17,7 @@ export function reportBuckets(input: ReportRangeQuery, context: ReportContext, g
   const buckets: ReportBucket[] = [];
   let cursor = from;
   while (cursor < end) {
-    const naturalStart = granularity === 'week' ? addDays(cursor, -((weekday(cursor) + 6) % 7)) : cursor;
+    const naturalStart = granularity === 'week' ? startOfWeek(cursor) : cursor;
     const naturalEnd = granularity === 'week' ? addDays(naturalStart, 7) : nextMonth(cursor);
     const finish = naturalEnd < end ? naturalEnd : end;
     const startsAt = midnight(cursor, context.timezone), endsAt = midnight(finish, context.timezone);

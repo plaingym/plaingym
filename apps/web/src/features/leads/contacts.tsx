@@ -25,6 +25,7 @@ export function ContactForm({ lead, client, onSaved, onDone, onCancel, onBusy }:
   function busy(value: boolean) { setSaving(value); onBusy?.(value); }
   async function submit(form: HTMLFormElement) {
     if (saving) return;
+    if ([...note.trim()].length > 2000) { setError(contactText('noteTooLong')); return; }
     const date = form.elements.namedItem('nextFollowUpOn') as HTMLInputElement;
     if (date.validity.badInput) { setError(contactText('badDate')); return; }
     busy(true); setError('');
@@ -51,7 +52,7 @@ export function ContactForm({ lead, client, onSaved, onDone, onCancel, onBusy }:
         <p id={id + '-follow-up-help'} className="text-sm text-muted-foreground">{contactText('nextFollowUpHelp')}</p></div>
     </div>
     <div className="min-w-0 space-y-2"><Label htmlFor={id + '-note'}>{contactText('note')}</Label>
-      <Textarea id={id + '-note'} maxLength={2000} value={note} disabled={saving} onChange={event => setNote(event.target.value)} /></div>
+      <Textarea id={id + '-note'} value={note} disabled={saving} onChange={event => setNote(event.target.value)} /></div>
     <div className="flex flex-wrap gap-2">
       <Button type="submit" className="w-full sm:w-auto" disabled={saving}>{contactText('save')}</Button>
       {onCancel && <Button type="button" variant="outline" className="w-full sm:w-auto" disabled={saving} onClick={onCancel}>{text('cancel')}</Button>}
@@ -64,7 +65,7 @@ export function ContactDialog({ lead, client, onClose, onDone }: { lead: Lead; c
   const [saving, setSaving] = useState(false);
   return <Dialog title={<span className={userNames}>{contactText('title', { name: leadName(lead) })}</span>} closeLabel={text('close')} onClose={onClose} dismissible={!saving}>
     <ContactForm lead={lead} client={client} onBusy={setSaving} onCancel={onClose} onDone={onDone}
-      onSaved={() => onDone({ message: contactText('saved'), reload: true })} />
+      onSaved={result => onDone({ message: contactText('saved'), reload: true, lead: result.lead })} />
   </Dialog>;
 }
 

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { sqlInstant } from '@plaingym/shared/time';
 import { and, eq, gte, isNull, lt, or } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- Reviewed reversal JSON projection and UUID-array predicates; values are bound and all reads remain gym-scoped.
 import { sql } from 'drizzle-orm';
@@ -20,8 +21,8 @@ export async function readRevenue(tx: Transaction, gymId: string, startsAt: Date
       gte(refunds.resolvedAt, startsAt), lt(refunds.resolvedAt, endsAt)))
     .union(tx.select({ id: refunds.paymentId }).from(auditEvents).innerJoin(refunds, reversalJoin)
       .where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.targetType, 'refund'), eq(auditEvents.action, 'billing.refund.reversed'),
-        or(and(gte(sql`(${originalResolvedAt})::timestamptz`, startsAt.toISOString()),
-          lt(sql`(${originalResolvedAt})::timestamptz`, endsAt.toISOString())),
+        or(and(gte(sql`(${originalResolvedAt})::timestamptz`, sqlInstant(startsAt)),
+          lt(sql`(${originalResolvedAt})::timestamptz`, sqlInstant(endsAt))),
         and(gte(auditEvents.occurredAt, startsAt), lt(auditEvents.occurredAt, endsAt))))));
   const received = await tx.select({ payment: payments, invoiceAmount: invoices.amountCents }).from(payments)
     .innerJoin(invoices, and(eq(invoices.gymId, payments.gymId), eq(invoices.id, payments.invoiceId)))
@@ -33,7 +34,7 @@ export async function readRevenue(tx: Transaction, gymId: string, startsAt: Date
     .leftJoin(auditEvents, reversalJoin)
     // Earlier successes/reversals establish cumulative rounding for payments with activity in this range.
     // ARRAY runs the candidate query once as an InitPlan and permits indexed payment-ID lookups.
-    .where(and(eq(refunds.gymId, gymId), sql`${refunds.paymentId} = any(array(${refundPaymentsInRange.getSQL()}))`, lt(succeededAt, endsAt.toISOString()),
+    .where(and(eq(refunds.gymId, gymId), sql`${refunds.paymentId} = any(array(${refundPaymentsInRange.getSQL()}))`, lt(succeededAt, sqlInstant(endsAt)),
       or(eq(refunds.status, 'succeeded'), eq(auditEvents.action, 'billing.refund.reversed'))));
   // Reuse IDs already read instead of scanning payments again. One bound UUID-array literal per
   // statement keeps both the bind count and indexed lookups independent of the number of IDs.

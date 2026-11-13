@@ -20,7 +20,7 @@ describe('follow-ups due tile', () => {
     const card = screen.getByRole('region', { name: 'Follow-ups due' });
     expect(within(card).getByText('21')).toBeDefined();
     expect(within(card).getByRole('link', { name: 'Ada Alpha' }).getAttribute('href')).toBe('/admin/leads/' + id(1));
-    expect(within(card).getByText('Showing 2 of 21')).toBeDefined();
+    expect(within(card).getByText('Showing 2 of 21.')).toBeDefined();
     expect(within(card).getByRole('link', { name: 'Open the leads list' }).getAttribute('href')).toBe('/admin/leads');
   });
   it.each(['owner', 'admin', 'front_desk'] as const)('shows for %s', role => {

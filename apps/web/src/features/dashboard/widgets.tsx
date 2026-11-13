@@ -15,6 +15,20 @@ const knownPermissions: Partial<Record<DashboardWidget['id'], StaffPermission>> 
   active_members: 'members.read', not_seen: 'members.read', promotion_ready: 'promotions.manage',
   mrr: 'billing.read', past_due: 'billing.read', upcoming_charges: 'billing.read', disputes: 'billing.read',
 };
+/** Shared count and shortlist presentation, with optional explanatory content. */
+export function CountWidget({ widget, help, footer }: { widget: DashboardWidget; help?: ReactNode; footer?: ReactNode }) {
+  if (!('count' in widget)) return null;
+  const items = 'items' in widget ? widget.items : undefined;
+  return <>
+    <p className="mt-3 text-4xl font-semibold tabular-nums">{widget.count.toLocaleString()}</p>
+    {help && <div className="mt-3 text-sm text-muted-foreground">{help}</div>}
+    {items && items.length > 0 && <ul className="mt-3 divide-y divide-border">{items.map(item => <li key={item.href}>
+      <a className="flex min-h-11 items-center font-medium underline underline-offset-4" href={item.href}>{item.label}</a>
+    </li>)}</ul>}
+    {items && widget.count > items.length && <p className="mt-4 text-sm text-muted-foreground">{t('dashboard/dashboard:showingItems', { shown: items.length, total: widget.count })}</p>}
+    {footer && <div className="mt-3">{footer}</div>}
+  </>;
+}
 /** Data and renderer extensions are independent of the page framework. */
 export function DashboardWidgets({ widgets, roles, views = [] }: {
   widgets: readonly DashboardWidget[]; roles: readonly StaffRole[]; views?: readonly DashboardView[];
@@ -28,13 +42,7 @@ export function DashboardWidgets({ widgets, roles, views = [] }: {
       <h2 id={'dashboard-' + widget.id} className="text-lg font-semibold">{t(widget.titleKey)}</h2>
       {widget.status !== 'ready' ? <p className="mt-3 text-muted-foreground">{label('status.' + widget.status)}</p>
         : view ? view.render(widget) : <>
-          {'count' in widget && <p className="mt-3 text-4xl font-semibold tabular-nums">{widget.count.toLocaleString()}</p>}
-          {'items' in widget && widget.items && widget.items.length > 0 && <>
-            <ul className="mt-3 divide-y divide-border">{widget.items.map((item) => <li key={item.href}>
-              <a className="flex min-h-11 items-center font-medium underline underline-offset-4" href={item.href}>{item.label}</a>
-            </li>)}</ul>
-            {widget.count > widget.items.length && <p className="mt-4 text-sm text-muted-foreground">{t('dashboard/dashboard:showingItems', { shown: widget.items.length, total: widget.count })}</p>}
-          </>}
+          <CountWidget widget={widget} />
           {'members' in widget && <>
             <p className="mt-3 text-sm text-muted-foreground">{label('description.' + widget.id)}</p>
             {widget.members.length === 0 ? <p className="mt-4 rounded-lg border border-dashed border-border p-4 text-sm">{label('empty.' + widget.id)}</p>
