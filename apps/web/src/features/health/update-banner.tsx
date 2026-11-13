@@ -7,6 +7,16 @@ import { t } from '../../lib/i18n.js';
 
 const label = (key: string, values?: Record<string, string | number>) => t('health/updates:banner.' + key, values);
 /**
+ * The heading says what the banner is about. A release the check couldn't read has no changelog link (an invalid
+ * `RELEASE_REPOSITORY`); a newer patch that shows at all is one that didn't install by itself; anything else is a newer
+ * minor or major release.
+ */
+export function bannerTitle(details: { currentVersion: string; latestVersion: string; releaseUrl: string | null }) {
+  if (details.releaseUrl === null) return label('titleBlocked');
+  const series = (version: string) => version.split('.').slice(0, 2).join('.');
+  return label(series(details.currentVersion) === series(details.latestVersion) ? 'titlePatchHeld' : 'title');
+}
+/**
  * "Update available — changelog" for staff who manage settings, when the latest release is a newer minor or major, or a
  * patch that won't install by itself. The server's message says which and what to do about it.
  * The server reads the release list at most once a day; any failure here (offline, a refused request) shows nothing.
@@ -26,7 +36,7 @@ export function UpdateBanner({ gymId }: { gymId: string }) {
   return <div role="status" data-testid="update-banner"
     className="flex flex-col gap-2 border-b border-border bg-muted px-4 py-3 text-sm sm:flex-row sm:items-center sm:gap-4 sm:px-6">
     <p className="min-w-0 flex-1">
-      <span className="font-semibold">{label('title')}</span>
+      <span className="font-semibold">{bannerTitle(details)}</span>
       <span aria-hidden="true"> — </span>
       {query.data.message}
     </p>

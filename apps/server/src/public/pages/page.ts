@@ -17,8 +17,9 @@ export function waiverDocumentView(template: WaiverTemplate, t: Translator, href
 export const publicPageDirectives = ["default-src 'none'", "script-src 'self'", "style-src 'self'", "connect-src 'self'", "img-src 'self'", "base-uri 'none'",
   "form-action 'self'", "frame-src 'self'", "frame-ancestors 'none'"];
 export const button = 'inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg bg-primary px-4 py-3 text-center font-semibold text-primary-foreground disabled:opacity-50';
-const inputClass = 'block min-h-11 w-full rounded-md border border-border bg-background px-3 py-2 text-base';
-const panel = 'min-w-0 space-y-4 rounded-xl border border-border bg-card p-4 sm:p-6';
+/** Shared with other server-rendered pages (the staff invitation): this file's classes are the ones the public stylesheet holds. */
+export const inputClass = 'block min-h-11 w-full rounded-md border border-border bg-background px-3 py-2 text-base';
+export const panel = 'min-w-0 space-y-4 rounded-xl border border-border bg-card p-4 sm:p-6';
 export const pageText = (t: Translator) => (key: string, values?: Record<string, string | number>) => t('public/pages:' + key, values);
 /** Shared server-rendered shell for the gym's core public pages. */
 export function publicLayout(input: { gym: PublicBranding; title: string; t: Translator; content: ReturnType<typeof h>; locale?: string; script?: boolean; noscriptRefreshSeconds?: number }) {

@@ -115,7 +115,8 @@ export function PortalLayout({ name, person, scope, entries, children, onSignOut
   return <div className="flex min-h-dvh min-w-0 flex-col">
     <header className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
       <Button variant="outline" className="md:hidden" aria-expanded={open} aria-controls="portal-navigation" onClick={() => setOpen(!open)}>{text('menu')}</Button>
-      <div className="min-w-0 flex-1">
+      {/* At least 10rem for the gym and the person: on a phone the account actions move to their own row instead. */}
+      <div className="min-w-0 flex-1 basis-40">
         <p className="truncate font-semibold" title={name}>{name}</p>
         {/* A long name gives way to its ellipsis; the scope stays. */}
         {person && <p className="flex min-w-0 text-xs text-muted-foreground" data-testid="signed-in-identity">
@@ -123,8 +124,10 @@ export function PortalLayout({ name, person, scope, entries, children, onSignOut
         </p>}
       </div>
       {switcher && <div className="order-last flex w-full min-w-0 sm:order-none sm:w-auto">{switcher}</div>}
-      {account && <Button asChild variant="ghost"><Link to="/portal/account" activeProps={{ 'aria-current': 'page' }}>{t('auth/account:menuLink')}</Link></Button>}
-      <Button variant="ghost" onClick={onSignOut} disabled={signingOut}>{text('signOut')}</Button>
+      <div className="ml-auto flex gap-2">
+        {account && <Button asChild variant="ghost"><Link to="/portal/account" activeProps={{ 'aria-current': 'page' }}>{t('auth/account:menuLink')}</Link></Button>}
+        <Button variant="ghost" onClick={onSignOut} disabled={signingOut}>{text('signOut')}</Button>
+      </div>
     </header>
     <div className="flex min-w-0 flex-1 flex-col md:flex-row">
       <nav id="portal-navigation" aria-label={text('navigation')} className={`${open ? 'block' : 'hidden'} border-b border-border p-3 md:block md:w-56 md:shrink-0 md:border-b-0 md:border-r`}>

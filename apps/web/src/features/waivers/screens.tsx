@@ -27,13 +27,13 @@ export function Templates({ gymId, manage, client = waiversClient }: { gymId: st
   const query = useQuery({ queryKey: [...key, 'templates', offset], queryFn: () => client.call('listTemplates', undefined, {}, { includeRetired: 'true', offset, limit: 20 }) });
   return <Page><PageHeader title={text('title')} actions={manage && <Button onClick={() => setEditor('new')}>{text('create')}</Button>} />
     {query.isPending && <LoadingState />}{query.isError && <ErrorState onRetry={() => void query.refetch()} />}
-    {query.data?.data.length === 0 && <EmptyState title={text('empty')} />}
+    {query.data?.data.length === 0 && <EmptyState title={text('empty')} description={text('emptyHelp')} />}
     <ul className="space-y-3">{query.data?.data.map(row => <li key={row.id} className="min-w-0 space-y-3 rounded-xl border border-border p-4">
       <h2 className="break-words text-lg font-semibold">{row.name}</h2><p>{text(row.kind)} · {text('version')} {row.version} {row.retiredAt && text('retired')}</p>
       <p className="whitespace-pre-wrap break-words text-sm text-muted-foreground">{row.document ? text('pdfDocument') : row.body.slice(0, 240)}</p>
       {manage && <Button variant="outline" onClick={() => setEditor(row)}>{text('edit')}</Button>}
     </li>)}</ul>
-    {query.data && <div className="flex flex-wrap gap-3"><Button variant="outline" disabled={!offset} onClick={() => setOffset(offset - 20)}>{text('previous')}</Button>
+    {query.data && (offset > 0 || query.data.pagination.total > 20) && <div className="flex flex-wrap gap-3"><Button variant="outline" disabled={!offset} onClick={() => setOffset(offset - 20)}>{text('previous')}</Button>
       <Button variant="outline" disabled={offset + 20 >= query.data.pagination.total} onClick={() => setOffset(offset + 20)}>{text('next')}</Button></div>}
     {editor && <TemplateEditor row={editor} client={client} close={() => setEditor(null)} saved={async () => { await cache.invalidateQueries({ queryKey: key }); setEditor(null); }} />}
   </Page>;
@@ -132,7 +132,9 @@ export function MemberWaivers({ gymId, memberId, manage, timezone = 'UTC', local
     {signing && <Signing key={signing.id} template={signing} memberId={memberId} client={client} close={() => setSigning(null)} saved={async () => { await cache.invalidateQueries({ queryKey: key }); setSigning(null); }} />}
   </section>;
 }
+/** Previous and next, only when the list is more than one page. */
 function Pager({ offset, total, setOffset }: { offset: number; total: number; setOffset: (value: number) => void }) {
+  if (offset === 0 && total <= 20) return null;
   return <div className="flex flex-wrap gap-3"><Button variant="outline" disabled={!offset} onClick={() => setOffset(offset - 20)}>{text('previous')}</Button>
     <Button variant="outline" disabled={offset + 20 >= total} onClick={() => setOffset(offset + 20)}>{text('next')}</Button></div>;
 }

@@ -19,7 +19,9 @@ function Progress({ detail }: { detail: LinkCampaignDetail }) {
   return <dl className="grid grid-cols-2 gap-2 sm:grid-cols-5">{(['pending', 'completed', 'expired', 'revoked', 'total'] as const).map(key =>
     <div key={key}><dt className="text-sm text-muted-foreground">{text(key)}</dt><dd className="font-semibold">{detail.progress[key]}</dd></div>)}</dl>;
 }
+/** Previous and next, only when the list is more than one page. */
 function Pager({ offset, total, change }: { offset: number; total: number; change(value: number): void }) {
+  if (offset === 0 && total <= 20) return null;
   return <nav className="flex flex-wrap gap-2" aria-label={text('pages')}>
     <Button variant="outline" disabled={offset === 0} onClick={() => change(Math.max(0, offset - 20))}>{text('previous')}</Button>
     <Button variant="outline" disabled={offset + 20 >= total} onClick={() => change(offset + 20)}>{text('next')}</Button>

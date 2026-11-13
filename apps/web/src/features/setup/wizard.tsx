@@ -102,6 +102,10 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   const errorBox = useRevealed<HTMLDivElement>(error);
   const [restore, setRestore] = useState(false), [jobId, setJobId] = useState<string | null>(() => sessionStorage.getItem('setup.restore'));
   const [restoreState, setRestoreState] = useState<'running' | 'failed' | 'restored' | null>(null);
+  // The website step's choice once the owner picks one; until then the draft's.
+  const [siteChoice, setSiteChoice] = useState<'builtin' | 'existing' | null>(null);
+  // Reopened, the step's radios start again from the draft, so the address follows the draft too.
+  useEffect(() => setSiteChoice(null), [step]);
   const [sent, setSent] = useState(false);
   const [hostZone] = useState(hostTimezone), [zoneEdited, setZoneEdited] = useState(false);
   // The new key pair lives only in this component's state until the owner confirms it.
@@ -110,6 +114,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   // Saved in this visit: the page stays gone even before the refreshed bootstrap says Google sign-in is on.
   const [googleSaved, setGoogleSaved] = useState(false);
   const draft = useDraft(step >= 2 ? session.data?.gym?.id : undefined, step);
+  const ownSite = (siteChoice ?? (draft.values.existingSiteUrl ? 'existing' : 'builtin')) === 'existing';
   // The optional Google page after the email step: shown until saved or skipped (recorded on the server), and never when
   // Google sign-in is already on (the install's configuration sets it) or payments are done.
   const googlePage = held?.kind === 'google' || (step === 6 && !held && !googleSaved && session.data !== undefined && session.data.login.google !== true
@@ -203,9 +208,13 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
           await client.call('website', text(data, 'website') === 'builtin' ? { websiteEnabled: true, existingSiteUrl: null, revision }
             : { websiteEnabled: false, existingSiteUrl: text(data, 'existingSiteUrl') || null, revision }); await refresh();
         }}>{/* A draft that kept a site address reopens on "I already have a website", so saving doesn't drop the address. */}
-          <Label className="flex min-h-11 items-center gap-3"><input type="radio" name="website" value="builtin" defaultChecked={!draft.values.existingSiteUrl} />{t('setup/setup:builtin')}</Label>
-          <Label className="flex min-h-11 items-center gap-3"><input type="radio" name="website" value="existing" defaultChecked={Boolean(draft.values.existingSiteUrl)} />{t('setup/setup:existing')}</Label><Field name="existingSiteUrl" type="url" required={false} />
-          <p>{t('setup/setup:websiteHint')}</p><p className="font-mono text-sm">/portal · /join · /trial · /drop-in</p></Form>}
+          <Label className="flex min-h-11 items-center gap-3"><input type="radio" name="website" value="builtin" defaultChecked={!draft.values.existingSiteUrl} onChange={() => setSiteChoice('builtin')} />{t('setup/setup:builtin')}</Label>
+          <Label className="flex min-h-11 items-center gap-3"><input type="radio" name="website" value="existing" defaultChecked={Boolean(draft.values.existingSiteUrl)} onChange={() => setSiteChoice('existing')} />{t('setup/setup:existing')}</Label>
+          {/* The address and the paths to link matter only for a site of the gym's own. Hidden, the fieldset is also disabled, so a
+              leftover address the browser would reject can't block saving the built-in website. */}
+          <fieldset className="min-w-0 space-y-4" hidden={!ownSite} disabled={!ownSite}>
+            <Field name="existingSiteUrl" type="url" required={false} />
+            <p>{t('setup/setup:websiteHint')}</p><p className="font-mono text-sm">/portal · /join · /trial · /drop-in</p></fieldset></Form>}
         {step === 5 && (held?.kind === 'email' ? <><p role="status">{t('setup/setup:emailSent', { address: held.to })}</p>{continueHeld}</>
           : <><p>{t('setup/setup:smtpHint')}</p><p>{t('setup/setup:dnsHint')}</p><p>{t('setup/setup:loginHint')}</p>
           <Form draft={draft} submit="testAndSave" secondary={<Button type="button" disabled={busy} variant="outline" onClick={() => void run(async () => { await client.call('smtp', { choice: 'skip', revision }); draft.clear(); await refresh(); })}>{t('setup/setup:skipEmail')}</Button>} action={async (data) => {

@@ -3,6 +3,7 @@ import { useState, type FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { canStaff } from '@plaingym/shared';
 import { localDate } from '@plaingym/shared/time';
+import { calendarDateLabel } from '../../../lib/instant.js';
 import type { Membership, MembershipSwitchResult, MembershipDiscountSelection, Plan } from '@plaingym/shared/contracts';
 import { useBootstrap } from '../../../app/context.js';
 import type { ExtensionViewProps } from '../../../lib/registries.js';
@@ -155,10 +156,10 @@ function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, 
         <Button variant="outline" onClick={() => setConfirmUndo(false)}>{text('back')}</Button></div></div>}
     </div>}
     <dl className="grid min-w-0 grid-cols-1 gap-2 text-sm sm:grid-cols-2">
-      <div><dt className="text-muted-foreground">{text('nextDueOn')}</dt><dd>{row.nextDueOn}</dd></div>
-      {row.commitmentEndsOn && <div><dt className="text-muted-foreground">{text('commitmentEndsOn')}</dt><dd>{row.commitmentEndsOn}</dd></div>}
-      {row.trialEndsOn && <div><dt className="text-muted-foreground">{text('trialEndsOn')}</dt><dd>{row.trialEndsOn}</dd></div>}
-      {row.status === 'frozen' && <div><dt className="text-muted-foreground">{text('resumesOn')}</dt><dd>{row.resumesOn ?? text('indefinite')}</dd></div>}
+      <div><dt className="text-muted-foreground">{text('nextDueOn')}</dt><dd>{calendarDateLabel(row.nextDueOn)}</dd></div>
+      {row.commitmentEndsOn && <div><dt className="text-muted-foreground">{text('commitmentEndsOn')}</dt><dd>{calendarDateLabel(row.commitmentEndsOn)}</dd></div>}
+      {row.trialEndsOn && <div><dt className="text-muted-foreground">{text('trialEndsOn')}</dt><dd>{calendarDateLabel(row.trialEndsOn)}</dd></div>}
+      {row.status === 'frozen' && <div><dt className="text-muted-foreground">{text('resumesOn')}</dt><dd>{row.resumesOn ? calendarDateLabel(row.resumesOn) : text('indefinite')}</dd></div>}
     </dl>
     {manage && <MembershipDiscount row={row} gymId={gymId} client={client} discounts={discounts} reload={reload}/>}
     {manage && row.status !== 'cancelled' && <fieldset disabled={busy} className="min-w-0 space-y-3">

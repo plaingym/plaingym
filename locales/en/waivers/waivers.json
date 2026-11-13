@@ -2,6 +2,7 @@
   "title": "Waivers and agreements",
   "create": "New template",
   "empty": "No waiver templates yet",
+  "emptyHelp": "Add the waiver or agreement members sign when they join. Use New template to write it or upload a PDF.",
   "waiver": "Waiver",
   "agreement": "Agreement",
   "version": "Version",

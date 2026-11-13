@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { instantLabel } from '../../lib/instant.js';
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { backupControlContracts, backupControlResponseSchema } from '@plaingym/shared/contracts';
@@ -51,7 +52,7 @@ export function BackupActions({ gymId, owner, onConfirmed }: { gymId: string; ow
         : <p className="mt-2">{label('ownerOnly')}</p>}
     </Alert>}
     {state.manual && <p role="status" className="text-sm [overflow-wrap:anywhere]">{state.manual.status === 'succeeded'
-      ? label('succeeded', { time: new Date(state.manual.completedAt!).toLocaleString(), id: state.manual.snapshotId! })
+      ? label('succeeded', { time: instantLabel(state.manual.completedAt!), id: state.manual.snapshotId! })
       : label(state.manual.status)}</p>}
     {now.isError && <Alert>{label('requestFailed')}</Alert>}
     <Button type="button" variant="outline" disabled={busy || !state.configured} onClick={() => now.mutate()}>{label(busy ? 'busy' : 'now')}</Button>

@@ -12,5 +12,5 @@
   "membership_changed": "The membership changed; reload before saving.",
   "membership_cancelled": "Cancelled memberships cannot be edited.",
   "membership_erased": "Erased members cannot receive a discount.",
-  "membership_fee_only": "A discount that only waives the signup fee cannot be added to an existing membership."
+  "membership_fee_only": "A discount that only waives the sign-up fee cannot be added to an existing membership."
 }

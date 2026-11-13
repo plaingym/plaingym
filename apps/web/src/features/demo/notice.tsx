@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { instantLabel } from '../../lib/instant.js';
 import { parseResponse } from '../../lib/response.js';
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
@@ -182,7 +183,7 @@ function DemoMenu({ expires, onClose }: { expires: string; onClose: () => void }
           <DemoMenuLink href={href} current={current}>{t(`demo/demo:${key}`)}</DemoMenuLink></li>)}</ul>
       </nav>
       <section className={section} aria-labelledby="demo-menu-about"><h3 id="demo-menu-about" className={heading}>{t('demo/demo:about')}</h3>
-        <p className="text-sm">{t('demo/demo:expires', { time: new Date(expires).toLocaleString() })}</p>
+        <p className="text-sm">{t('demo/demo:expires', { time: instantLabel(expires) })}</p>
         <p className="text-sm">{t('demo/demo:banner')}</p><p className="text-sm">{t('demo/demo:roleHelp')}</p>
       </section>
     </div>

@@ -108,6 +108,8 @@ describe('invoice and household payment UI', () => {
     const f = transport(); start(<InvoiceList gymId={gymId} householdId={home} access={desk} custom={false} catalog={false} client={f.client}/>);
     await screen.findByRole('button', { name: 'View invoice 42' });
     expect(f.fetcher.mock.calls[0]?.[0]).toContain('householdId=' + home);
+    // The due date reads as a date, not as YYYY-MM-DD.
+    expect(screen.getByText(/Oct 25, 2026/)).toBeDefined();
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
     await waitFor(() => expect(f.fetcher.mock.calls.some(([path]) => String(path).includes('offset=25'))).toBe(true));
     fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'paid' } });
@@ -294,12 +296,24 @@ describe('invoice and household payment UI', () => {
     const charge = await screen.findByRole('button', { name: 'Charge saved card' }); expect((charge as HTMLButtonElement).disabled).toBe(true);
     const release = screen.queryByRole('button', { name: 'Release review hold' });
     if (!access.refund) { expect(release).toBeNull(); return; }
+    await waitFor(() => expect(f.fetcher.mock.calls.filter(([path]) => String(path).includes('/payment-methods')).length).toBe(2));
     fireEvent.click(release!);
     expect(screen.getByText('Confirm collection of this overdue invoice. The next billing run will charge the saved card unless you charge it now or record a payment first.')).toBeDefined();
     fireEvent.click(within(screen.getByRole('region')).getByRole('button', { name: 'Confirm' }));
     await screen.findByText('Review hold released. The next billing run will charge the saved card unless you charge it now or record a payment first.');
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Release review hold' })).toBeNull());
     expect(f.fetcher.mock.calls.some(([path]) => String(path).endsWith('/charge'))).toBe(false);
+  });
+  it('says the billing run will not charge a household with no saved card when the hold is released', async () => {
+    const f = transport({ invoice: { ...invoice, needsReview: true } }), original = f.fetcher.getMockImplementation()!;
+    f.fetcher.mockImplementation(async (path, options) => String(path).includes('/payment-methods')
+      ? Response.json({ data: [], pagination: { offset: 0, limit: 25, total: 0 } }) : original(path, options));
+    start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={admin} client={f.client}/>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Release review hold' }));
+    await screen.findByText(/This household has no saved card, so the billing run won’t charge it/);
+    expect(screen.queryByText(/will charge the saved card/)).toBeNull();
+    fireEvent.click(within(screen.getByRole('region')).getByRole('button', { name: 'Confirm' }));
+    await screen.findByText('Review hold released. This household has no saved card, so the billing run won’t charge it: send a pay link or record a payment.');
   });
   it.each(['missing', 'revoked', 'not_default'])('disables card charging for a %s default card', async state => {
     const f = transport(), original = f.fetcher.getMockImplementation()!;

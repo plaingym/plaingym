@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { instantLabel } from '../../lib/instant.js';
 import { parseResponse } from '../../lib/response.js';
 import { useEffect, useState } from 'react';
 import { Button } from '../../components/ui/button.js';
@@ -37,7 +38,7 @@ export function OutboxPage() {
       <h2 className="text-lg font-semibold">{message.subject}</h2>
       <div className="space-y-3">
         <p>{t('demo/demo:recipient')}: {message.recipient}</p>
-        <p>{t('demo/demo:sent')}: <time dateTime={message.sentAt}>{new Date(message.sentAt).toLocaleString()}</time></p>
+        <p>{t('demo/demo:sent')}: <time dateTime={message.sentAt}>{instantLabel(message.sentAt)}</time></p>
         <pre className="whitespace-pre-wrap font-sans">{message.text}</pre>
         <Button type="button" variant="outline" onClick={() => setPreview(message.id)}>{t('demo/demo:html')}</Button>
       </div>

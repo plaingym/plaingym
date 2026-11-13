@@ -28,3 +28,7 @@
   /* Header height; sticky panels below the header offset by it. */
   --spacing-header: 3.5rem;
 }
+/* Native checkboxes, radios, range inputs and progress bars take the theme color, not the browser's own blue or green. */
+@layer base {
+  :root { accent-color: var(--color-primary); }
+}

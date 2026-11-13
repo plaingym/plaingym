@@ -6,6 +6,7 @@ import { dashboardContracts, matDashboardResponseSchema } from '@plaingym/shared
 import { useBootstrap } from '../../app/context.js';
 import { api } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
+import { instantLabel } from '../../lib/instant.js';
 import { Alert } from '../../components/ui/alert.js';
 import { Button } from '../../components/ui/button.js';
 import { Page, PageHeader } from '../../components/ui/page.js';
@@ -16,13 +17,14 @@ import { leadsWidgetViews } from './leads.widgets.js';
 
 const label = (key: string) => t('dashboard/dashboard:' + key);
 function DashboardPanel({ gymId, roles }: { gymId: string; roles: readonly StaffRole[] }) {
+  const timezone = useBootstrap().data?.gym.timezone;
   const query = useQuery({ queryKey: ['dashboard', gymId, [...roles].sort()], queryFn: async ({ signal }) => {
     const result = await api.GET(dashboardContracts.mat.path, { signal, cache: 'no-store' });
     if (!result.response.ok) throw new Error('Dashboard request failed');
     return parseResponse(matDashboardResponseSchema, result.data).data;
   }, refetchInterval: 60_000 });
   return <Page>
-    <PageHeader title={label('title')} description={query.data && <>{label('updated')}: <time dateTime={query.data.generatedAt}>{new Date(query.data.generatedAt).toLocaleString()}</time></>}
+    <PageHeader title={label('title')} description={query.data && <>{label('updated')}: <time dateTime={query.data.generatedAt}>{instantLabel(query.data.generatedAt, timezone)}</time></>}
       actions={<Button variant="outline" disabled={query.isFetching} onClick={() => void query.refetch()}>{label('refresh')}</Button>}/>
     {query.isPending ? <LoadingState label={label('loading')}/> : query.isError ? <ErrorState message={label('loadFailed')} onRetry={() => void query.refetch()}/>
       : query.data.widgets.length === 0 ? <EmptyState title={label('empty')} description={label('emptyHelp')}/>

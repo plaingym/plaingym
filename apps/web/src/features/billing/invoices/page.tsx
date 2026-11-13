@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { calendarDateLabel } from '../../../lib/instant.js';
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { canStaff } from '@plaingym/shared';
@@ -37,10 +38,11 @@ export function InvoiceList({ gymId, householdId, access, custom, catalog, clien
     <StackedList>{rows.data?.data.map(invoice => <StackedItem key={invoice.id}>
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-2"><span className="font-semibold">{text('number')} {invoice.number ?? text('draft')}</span><Badge>{text(invoice.status)}</Badge></div>
       {!householdId && <HouseholdName gymId={gymId} householdId={invoice.householdId} client={client}/>}
-      <p>{money(invoice.amountCents, invoice.currency)} · {invoice.dueOn}</p>
+      <p>{money(invoice.amountCents, invoice.currency)} · {calendarDateLabel(invoice.dueOn)}</p>
       <Button variant="outline" onClick={() => setSelected(invoice.id)}>{text('viewInvoice')} {invoice.number ?? text('draft')}</Button>
     </StackedItem>)}</StackedList>
-    {rows.data && <div className="flex flex-wrap items-center gap-3">
+    {/* Paging only when the invoices are more than one page. */}
+    {rows.data && (offset > 0 || rows.data.pagination.total > 25) && <div className="flex flex-wrap items-center gap-3">
       <Button variant="outline" disabled={!offset} onClick={() => setOffset(v => v - 25)}>{text('previous')}</Button>
       <span>{Math.min(offset + 1, rows.data.pagination.total)}–{Math.min(offset + 25, rows.data.pagination.total)} / {rows.data.pagination.total}</span>
       <Button variant="outline" disabled={offset + 25 >= rows.data.pagination.total} onClick={() => setOffset(v => v + 25)}>{text('next')}</Button>

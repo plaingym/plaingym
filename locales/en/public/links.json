@@ -23,7 +23,7 @@
   "clear": "Finish and clear screen",
   "cleared": "Screen cleared",
   "clearedBody": "Return the tablet to the front desk for the next person.",
-  "invoice": "Invoice {number}",
+  "invoice": "Invoice #{number}",
   "due": "Due {date}",
   "total": "Total",
   "pay": "Pay securely with Stripe",

@@ -201,6 +201,8 @@ describe('portal billing page', () => {
     await user.click(screen.getByRole('button', { name: 'Download receipt' }));
     expect((await screen.findByRole('link', { name: 'Open receipt' })).getAttribute('href')).toBe('https://files.example.test/receipt.pdf');
     expect(await screen.findByText(/•••• 4242/)).toBeDefined();
+    // The provider's lowercase network reads as people write it.
+    expect(screen.getByText(/^Visa •••• 4242/)).toBeDefined();
   });
   it('explains when card setup is unavailable', async () => {
     const navigate = vi.fn(), user = userEvent.setup();

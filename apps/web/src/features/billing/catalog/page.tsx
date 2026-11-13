@@ -7,7 +7,7 @@ import { addDays, localDate } from '@plaingym/shared/time';
 import { useBootstrap } from '../../../app/context.js';
 import { Alert } from '../../../components/ui/alert.js';
 import { Button } from '../../../components/ui/button.js';
-import { Card } from '../../../components/ui/card.js';
+import { EmptyState } from '../../../components/ui/states.js';
 import { userNames } from '../../../components/ui/page.js';
 import { ApiError } from '../../../lib/api.js';
 import { cn } from '../../../lib/utils.js';
@@ -119,8 +119,8 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
       {(message || stale) && <Alert role="alert" className="space-y-3"><p>{message || text('conflict')}</p>{stale && <Button className="w-full sm:w-auto" variant="outline" disabled={busy} onClick={() => void reloadEditor()}>{text('reloadRecord')}</Button>}</Alert>}
       {archive && <ArchiveConfirmation rate={archive.rate} usage={archive.usage} busy={busy} confirm={confirmArchive} cancel={() => { setArchive(null); setMessage(''); }}/>}
       {editor ? <CatalogEditor key={kind + (editor === 'new' ? 'new' : editor.id)} kind={kind} {...(editor === 'new' ? {} : { record: editor })} currency={data.data.settings.currency} taxes={data.data.taxes} busy={busy} locked={archive !== null} stale={stale} save={save} cancel={() => { setEditor(null); setArchive(null); setMessage(''); setStale(false); }}/>
-        : !archive && <Button onClick={() => { setEditor('new'); setStale(false); }}>{text('create')} {text(kind)}</Button>}
-      {!data.data[kind].length && <Card><h2 className="font-semibold">{text('empty')}</h2><p className="mt-1 text-muted-foreground">{text('emptyHelp')}</p></Card>}
+        : !archive && <Button onClick={() => { setEditor('new'); setStale(false); }}>{text('create.' + kind)}</Button>}
+      {!data.data[kind].length && <EmptyState title={text('empty.' + kind)} description={text('emptyHelp.' + kind)}/>}
       <ul className="grid min-w-0 gap-3 lg:grid-cols-2">{data.data[kind].map(record => {
         const priced = 'taxRateIds' in record ? record : undefined;
         const archived = priced ? data.data.taxes.filter(rate => !rate.active && carries(priced, rate.id)) : [];

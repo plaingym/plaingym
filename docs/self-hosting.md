@@ -338,7 +338,8 @@ off, no nightly check has run for two days since the last one (the timer stopped
 that has never reported a check counts from the day the app first saw it), or the last check
 for that release was refused, rolled back or failed. A skip for a passing cause, such as GitHub
 or the registry being unreachable, raises the banner only when two checks in a row skipped. The banner and the tile say
-why. With automatic updates off or the timer stopped, turn them on or fix the timer, or
+why; this banner is headed "Patch release not installed", and one raised by an invalid `RELEASE_REPOSITORY`
+"Updates can't install". With automatic updates off or the timer stopped, turn them on or fix the timer, or
 install the release by hand, as below. When the updater refused the release on purpose
 (its signature, image or database changes), don't install it by hand: wait for a fixed
 release ([updating.md](updating.md#patch-releases-automatic)). A fresh start shows

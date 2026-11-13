@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { instantLabel } from '../../../lib/instant.js';
 import { parseResponse } from '../../../lib/response.js';
 import { useState, type FormEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
@@ -75,7 +76,7 @@ export function BackupsIntegrationSection({ backups, lastSnapshot, state }: { ba
     {backups.publicKey && <p className="text-sm text-muted-foreground [overflow-wrap:anywhere]">{text('backups.publicKey', { key: backups.publicKey })}</p>}
     {backups.configured && lastSnapshot !== undefined && <p className="text-sm text-muted-foreground">{lastSnapshot === 'unknown' ? label('snapshotUnknown')
       : lastSnapshot.noneUnderCurrentKey || lastSnapshot.at === null ? label('noneUnderKey')
-      : text('backups.lastSnapshot', { time: new Date(lastSnapshot.at).toLocaleString() })}</p>}
+      : text('backups.lastSnapshot', { time: instantLabel(lastSnapshot.at) })}</p>}
     <p className="text-sm text-muted-foreground">{text('backups.retention', { size: gigabytes(backups.retentionBudgetBytes) })}</p>
     {state.gymId && <BackupActions gymId={state.gymId} owner onConfirmed={state.reload}/>}
     {backups.configured && <p className="text-sm">{label('changeWarning')}</p>}

@@ -66,7 +66,7 @@ describe('rank management', () => {
     const client = makeClient(); start(<RanksWorkspace gymId={gymId} configure={false} promote={false} client={client}/>);
     await screen.findByText('0. Foundation');
     expect(screen.queryByRole('heading', { name: 'Configure ranks' })).toBeNull();
-    expect(screen.queryByRole('heading', { name: 'Ready for Promotion' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Ready for promotion' })).toBeNull();
     expect(client.eligibility).not.toHaveBeenCalled(); expect(client.members).not.toHaveBeenCalled();
   });
   it('sends the read revision and keeps the editor open on a conflict', async () => {

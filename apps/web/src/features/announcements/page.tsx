@@ -46,10 +46,10 @@ export function AnnouncementWorkspace({ gymId, gymName, timezone, owner = false,
           </dl>
           <p className="text-sm text-muted-foreground">{text(item.status + 'Status')}</p>
         </Card></li>)}</ul>
-        <nav aria-label={text('pages')} className="flex flex-wrap gap-3">
+        {(offset > 0 || history.data.pagination.total > 20) && <nav aria-label={text('pages')} className="flex flex-wrap gap-3">
           <Button variant="outline" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 20))}>{text('previous')}</Button>
           <Button variant="outline" disabled={offset + 20 >= history.data.pagination.total} onClick={() => setOffset(offset + 20)}>{text('next')}</Button>
-        </nav>
+        </nav>}
       </div>}
     </PageSection>
     {editing && programs.data && <AnnouncementEditor gymName={gymName} programs={programs.data} client={client} owner={owner}

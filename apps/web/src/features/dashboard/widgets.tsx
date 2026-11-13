@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { dateLabel } from '../../lib/instant.js';
 import type { ReactNode } from 'react';
 import { canStaff, type StaffPermission, type StaffRole } from '@plaingym/shared';
 import type { DashboardWidget } from '@plaingym/shared/contracts';
@@ -49,7 +50,7 @@ export function DashboardWidgets({ widgets, roles, views = [] }: {
               : <ul className="mt-3 divide-y divide-border">{widget.members.map((member) => <li key={member.memberId} className="py-2">
                 <a className="flex min-h-11 items-center font-medium underline underline-offset-4" href={'/admin/members/' + encodeURIComponent(member.memberId)}>{member.firstName} {member.lastName}</a>
                 <p className="text-sm text-muted-foreground">{label('lastSeen')}: {member.lastSeenAt
-                  ? <time dateTime={member.lastSeenAt}>{new Date(member.lastSeenAt).toLocaleDateString()}</time> : label('neverSeen')}</p>
+                  ? <time dateTime={member.lastSeenAt}>{dateLabel(member.lastSeenAt)}</time> : label('neverSeen')}</p>
               </li>)}</ul>}
             {widget.count > widget.members.length && <p className="mt-4 text-sm text-muted-foreground">{t('dashboard/dashboard:showing', { shown: widget.members.length, total: widget.count })}</p>}
           </>}

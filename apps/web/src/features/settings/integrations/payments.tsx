@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { instantLabel } from '../../../lib/instant.js';
 import { goLiveChecklistResponseSchema, restrictedKeyPattern } from '@plaingym/shared/contracts';
 import { useQuery } from '@tanstack/react-query';
 import { useState, type FormEvent } from 'react';
@@ -75,7 +76,7 @@ export function PaymentsIntegrationSection({ payments, editable, lastEventAt, st
     <p className="text-sm">{payments.configured ? text('payments.configured', { mode: label('mode_' + payments.mode) }) : label('notConfigured')}</p>
     {payments.configured && <p className="text-sm text-muted-foreground">{label(payments.webhookRegistered ? 'webhookRegistered' : 'webhookMissing')}</p>}
     {payments.configured && lastEventAt !== undefined && <p className="text-sm text-muted-foreground">
-      {lastEventAt ? text('payments.lastEvent', { time: new Date(lastEventAt).toLocaleString() }) : label('noEvent')}</p>}
+      {lastEventAt ? text('payments.lastEvent', { time: instantLabel(lastEventAt) }) : label('noEvent')}</p>}
     {editable && payments.accountLocked && <p className="text-sm text-muted-foreground">{label(payments.mode === 'test' ? 'lockedTest' : 'locked')}</p>}
     {editable && payments.importedCustomersOnly && <p className="text-sm text-muted-foreground">{label('importedOnly')}</p>}
     {restore.data?.stripeConfigured === false && <p className="break-words text-sm" role="note">

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { PortalRecovery } from '../household/recovery.js';
+import { cardBrand } from '../../../lib/card-brand.js';
 import { useState } from 'react';
 import { cardChargeIssue } from '@plaingym/shared/money';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -97,7 +98,7 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
       {cards.isError && <ErrorState onRetry={() => void cards.refetch()} />}
       {cards.data?.length === 0 && <EmptyState title={text('noCards')} />}
       {!!cards.data?.length && <StackedList>{cards.data.map(card => <StackedItem key={card.id} className="flex-row flex-wrap items-center justify-between gap-2">
-        <span className="min-w-0 break-words">{card.brand ?? text('card')} •••• {card.last4 ?? '????'}
+        <span className="min-w-0 break-words">{card.brand ? cardBrand(card.brand) : text('card')} •••• {card.last4 ?? '????'}
           {card.expiryMonth && card.expiryYear && <span className="block text-sm text-muted-foreground">{text('expires', { month: String(card.expiryMonth).padStart(2, '0'), year: card.expiryYear })}</span>}</span>
         {card.isDefault && <Badge tone="success">{text('default')}</Badge>}
       </StackedItem>)}</StackedList>}

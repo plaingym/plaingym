@@ -7,18 +7,29 @@ import { healthContracts, healthResponseSchema, healthTileIds, type HealthTile }
 import { useBootstrap } from '../../app/context.js';
 import { api } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
+import { instantLabel } from '../../lib/instant.js';
 import { Alert } from '../../components/ui/alert.js';
 import { Button } from '../../components/ui/button.js';
 import { Card } from '../../components/ui/card.js';
+import { Page, PageHeader } from '../../components/ui/page.js';
 import { ChargeFailures } from './charge-failures.js';
 import { BackupActions } from './backups.js';
 
 const label = (key: string) => t('health/status:' + key);
-function detailValue(key: string, value: unknown) {
+/** A size in bytes in the largest unit that keeps it at 1 or more (decimal units, as disks are sold). */
+export function bytesLabel(bytes: number) {
+  const units = ['B', 'kB', 'MB', 'GB', 'TB'];
+  let value = bytes, unit = 0;
+  // 999.5 and up would round to "1,000" in this unit, so it moves to the next one.
+  while (value >= 999.5 && unit < units.length - 1) { value /= 1000; unit++; }
+  return value.toLocaleString('en', { maximumFractionDigits: unit && value < 100 ? 1 : 0 }) + ' ' + units[unit];
+}
+function detailValue(key: string, value: unknown, timezone?: string) {
   if (value === null) return label('unknown');
   if (typeof value === 'boolean') return label(value ? 'yes' : 'no');
-  if (typeof value === 'number') return value.toLocaleString();
+  if (typeof value === 'number') return key.endsWith('Bytes') ? bytesLabel(value) : value.toLocaleString();
   if (key === 'result') return label('result.' + String(value));
+  if (key.endsWith('At') && typeof value === 'string') return <time dateTime={value}>{instantLabel(value, timezone)}</time>;
   if (key.endsWith('Url') && typeof value === 'string') return <a href={value} className="underline" target="_blank" rel="noreferrer">{label('field.' + key)}</a>;
   return String(value);
 }
@@ -35,7 +46,7 @@ function detailRows(tile: HealthTile): [key: string, label: string, value: unkno
       tile.id === 'last_backup' && key === 'pruningStopped' ? tile.details!.pruningStopped || tile.details!.pruningHeld : value]);
 }
 /** Every tile uses the same presentation, including tiles supplied by other providers. */
-export function HealthTiles({ tiles, extras = {} }: { tiles: readonly HealthTile[]; extras?: Partial<Record<HealthTile['id'], ReactNode>> }) {
+export function HealthTiles({ tiles, extras = {}, timezone }: { tiles: readonly HealthTile[]; extras?: Partial<Record<HealthTile['id'], ReactNode>>; timezone?: string }) {
   const byId = new Map(tiles.map((tile) => [tile.id, tile]));
   return <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{healthTileIds.map((id) => {
     const tile = byId.get(id);
@@ -45,14 +56,14 @@ export function HealthTiles({ tiles, extras = {} }: { tiles: readonly HealthTile
       <p className="mt-2 font-medium">{label('status.' + tile.status)}</p>
       <p className="mt-2 text-sm">{tile.message}</p>
       {tile.details && <dl className="mt-4 space-y-2 text-sm">{detailRows(tile).map(([key, name, value]) =>
-        <div key={key} className="flex flex-wrap justify-between gap-2"><dt className="text-muted-foreground">{name}</dt><dd className="break-all">{detailValue(key, value)}</dd></div>)}</dl>}
+        <div key={key} className="flex flex-wrap justify-between gap-2"><dt className="text-muted-foreground">{name}</dt><dd className="break-all">{detailValue(key, value, timezone)}</dd></div>)}</dl>}
       {tile.details && 'keyReminder' in tile.details && tile.details.keyReminder && <p className="mt-4 text-sm font-medium">{label('keyReminder')}</p>}
       {extras[id]}
-      {tile.checkedAt && <p className="mt-4 text-xs text-muted-foreground">{label('checkedAt')}: <time dateTime={tile.checkedAt}>{new Date(tile.checkedAt).toLocaleString()}</time></p>}
+      {tile.checkedAt && <p className="mt-4 text-xs text-muted-foreground">{label('checkedAt')}: <time dateTime={tile.checkedAt}>{instantLabel(tile.checkedAt, timezone)}</time></p>}
     </Card>;
   })}</div>;
 }
-function HealthPanel({ gymId, owner }: { gymId: string; owner: boolean }) {
+function HealthPanel({ gymId, owner, timezone }: { gymId: string; owner: boolean; timezone: string }) {
   // Refresh reads the tiles and the charge failure list together: both sit under this key.
   const cache = useQueryClient();
   const query = useQuery({ queryKey: ['health', gymId], queryFn: async ({ signal }) => {
@@ -60,17 +71,19 @@ function HealthPanel({ gymId, owner }: { gymId: string; owner: boolean }) {
     if (!result.response.ok) throw new Error('Health check failed');
     return parseResponse(healthResponseSchema, result.data).data;
   }, refetchInterval: 60_000 });
-  return <main className="mx-auto max-w-7xl space-y-6 p-6">
-    <div className="flex items-center justify-between gap-4"><h1 className="text-2xl font-semibold">{label('title')}</h1><Button variant="outline" disabled={query.isFetching} onClick={() => void cache.invalidateQueries({ queryKey: ['health', gymId] })}>{label('refresh')}</Button></div>
-    {query.isPending ? <p role="status">{label('loading')}</p> : query.isError ? <Alert>{label('loadFailed')}</Alert> : <HealthTiles tiles={query.data.tiles} extras={{
+  // Inside the admin shell's main, like every other admin page: one main landmark and the same header.
+  return <Page>
+    <PageHeader title={label('title')} actions={<Button variant="outline" disabled={query.isFetching} onClick={() => void cache.invalidateQueries({ queryKey: ['health', gymId] })}>{label('refresh')}</Button>}/>
+    {query.isPending ? <p role="status">{label('loading')}</p> : query.isError ? <Alert>{label('loadFailed')}</Alert> : <HealthTiles tiles={query.data.tiles} timezone={timezone} extras={{
       last_backup: <BackupActions gymId={gymId} owner={owner}/>,
       last_charge_run: <ChargeFailures gymId={gymId} reporting={query.data.tiles.some((tile) => tile.id === 'last_charge_run' && tile.status === 'error')}/> }}/>}
-  </main>;
+  </Page>;
 }
 export function HealthPage() {
   const bootstrap = useBootstrap();
   if (bootstrap.isPending) return <p role="status">{label('loading')}</p>;
   if (bootstrap.isError) return <Alert>{label('loadFailed')}</Alert>;
   if (!bootstrap.data.session || !canStaff(bootstrap.data.session.roles, 'settings.manage')) return <Alert>{label('noAccess')}</Alert>;
-  return <HealthPanel gymId={bootstrap.data.gym.id} owner={canStaff(bootstrap.data.session.roles, 'integrations.manage')}/>;
+  return <HealthPanel gymId={bootstrap.data.gym.id} owner={canStaff(bootstrap.data.session.roles, 'integrations.manage')}
+    timezone={bootstrap.data.gym.timezone}/>;
 }

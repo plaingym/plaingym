@@ -1,7 +1,7 @@
 {
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
   "title": "Import or start fresh",
-  "help": "Bring your members, ranks, and attendance over from your old system, or start with an empty gym. You can import later from Settings too.",
+  "help": "Bring your members, ranks, and attendance over from your old system, or start with an empty gym. You can import later from Import and export too.",
   "offNotice": "Billing and member emails stay off after setup. Turn them on from Settings → Go-live once you are ready to switch over.",
   "fresh": "Start fresh",
   "import": "Import a CSV",

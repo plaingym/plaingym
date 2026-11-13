@@ -51,11 +51,11 @@ export function PackPanel({ gymId, memberId, timezone, access, client = packClie
           <div className="flex flex-col gap-2 sm:flex-row sm:justify-between"><p className="font-medium">{text('kind.' + entry.kind)} · {text('creditCount', { count: entry.credits })}</p><p className="text-sm text-muted-foreground">{date(entry.createdAt)}</p></div>
           {entry.reason && <p className="whitespace-pre-wrap">{entry.reason}</p>}{invoice(entry.invoiceId, entry.invoiceNumber)}
         </li>)}</ul>
-        <div className="flex flex-wrap items-center gap-3">
+        {(offset > 0 || ledger.data.pagination.total > 25) && <div className="flex flex-wrap items-center gap-3">
           <Button variant="outline" disabled={!offset || ledger.isPlaceholderData} onClick={() => setOffset(value => value - 25)}>{text('previous')}</Button>
           <span>{text('page', { start: Math.min(offset + 1, ledger.data.pagination.total), end: Math.min(offset + 25, ledger.data.pagination.total), total: ledger.data.pagination.total })}</span>
           <Button variant="outline" disabled={offset + 25 >= ledger.data.pagination.total || ledger.isPlaceholderData} onClick={() => setOffset(value => value + 25)}>{text('next')}</Button>
-        </div>
+        </div>}
       </div>
     </>}
     {access.record && <div className="flex flex-col gap-3 sm:flex-row">

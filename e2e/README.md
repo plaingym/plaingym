@@ -4,7 +4,9 @@
 Fresh-host installation, browser backups/restore, memory and password QA live in
 [`vm/README.md`](vm/README.md). Use `node e2e/run.mjs --vm PRIVATE_CONFIG_JSON`
 from the repository root to select that suite; the default runner below keeps
-its isolated members/mat Compose workflow.
+its isolated members/mat Compose workflow. The screenshot walk of every surface
+for a UX review (`UX_PASS=1`, its own projects, never in CI) is in
+[`ux-pass/README.md`](ux-pass/README.md).
 
 Run from the repository root with the pinned Node and pnpm versions, Docker, and
 TCP port 443 available on loopback (`127.0.0.1`, or another loopback address in

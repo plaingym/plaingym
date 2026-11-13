@@ -7,15 +7,19 @@ export const userNames = 'wrap-anywhere [&_table]:wrap-normal';
 export function Page({ className, ...props }: ComponentProps<'div'>) {
   return <div className={cn('mx-auto w-full max-w-6xl space-y-6', userNames, className)} {...props} />;
 }
-/** Page title, optional description, and actions. Actions sit below the title on phones and to its right from `sm`. */
+/**
+ * Page title, optional description, and actions. Actions sit below the title until `lg` and to its right from there: beside
+ * the admin menu a tablet's content column is too narrow for both, and the title (which wraps anywhere, like user names)
+ * would break mid-word.
+ */
 export function PageHeader({ title, description, actions, className }:
   { title: ReactNode; description?: ReactNode; actions?: ReactNode; className?: string }) {
-  return <div className={cn('flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between', userNames, className)}>
+  return <div className={cn('flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between', userNames, className)}>
     <div className="min-w-0 space-y-1">
       <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
       {description && <p className="text-sm text-muted-foreground">{description}</p>}
     </div>
-    {actions && <div className="flex flex-wrap gap-2 sm:shrink-0">{actions}</div>}
+    {actions && <div className="flex flex-wrap gap-2 lg:shrink-0">{actions}</div>}
   </div>;
 }
 /** A titled section inside a page. */

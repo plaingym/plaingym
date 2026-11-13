@@ -582,6 +582,25 @@ describe('setup wizard resume', () => {
     await screen.findByText('Step 4 / 9');
     expect(localStorage.getItem('setup.draft.gym.2')).toBeNull();
   });
+  it('asks for a site address only for a website of the gym\'s own', async () => {
+    start(4);
+    const address = await screen.findByLabelText('Existing website URL');
+    expect(address.closest('[hidden]')).not.toBeNull();
+    await userEvent.click(screen.getByLabelText('I already have a website'));
+    expect(address.closest('[hidden]')).toBeNull();
+    await userEvent.click(screen.getByLabelText('Use the built-in website'));
+    expect(address.closest('[hidden]')).not.toBeNull();
+  });
+  it('doesn\'t let a hidden address the browser would reject block the built-in website', async () => {
+    start(4);
+    await userEvent.click(await screen.findByLabelText('I already have a website'));
+    const address = screen.getByLabelText('Existing website URL') as HTMLInputElement;
+    await userEvent.type(address, 'mygym');
+    expect(address.form!.checkValidity()).toBe(false);
+    await userEvent.click(screen.getByLabelText('Use the built-in website'));
+    expect(address.closest('fieldset[disabled]')).not.toBeNull();
+    expect(address.form!.checkValidity()).toBe(true);
+  });
   it('reopens a website draft with an address on "I already have a website"', async () => {
     start(4);
     await userEvent.click(await screen.findByLabelText('I already have a website'));

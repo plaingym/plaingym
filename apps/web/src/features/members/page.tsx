@@ -68,10 +68,10 @@ function Roster({ gymId, manage }: { gymId: string; manage: boolean }) {
             <td className="p-1"><Link to="/admin/members/$memberId" params={{ memberId: member.id }} className="flex min-h-11 items-center rounded-md px-2 font-medium underline underline-offset-4 hover:bg-muted">{member.firstName} {member.lastName}</Link></td>
             <td className="p-3"><StatusBadge status={member.status}/></td><td className="break-all p-3">{member.email}</td></tr>)}</tbody>
         </table></TableContainer>
-        <div className="flex items-center justify-between gap-3">
+        {(offset > 0 || total > pageSize) && <div className="flex items-center justify-between gap-3">
           <Button variant="outline" disabled={!offset} onClick={() => setOffset(Math.max(0, offset - pageSize))}>{text('previous')}</Button>
           <Button variant="outline" disabled={offset + pageSize >= total} onClick={() => setOffset(offset + pageSize)}>{text('next')}</Button>
-        </div>
+        </div>}
       </div>}
     {manage && <TagManager tags={tags.data?.data ?? []}/>}
     {manage && <PageSection title={text('manageHouseholds')} actions={<Button variant="outline" aria-expanded={showHouseholds} aria-controls="households-manager"

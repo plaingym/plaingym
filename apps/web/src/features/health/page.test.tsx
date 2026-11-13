@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react
 import type { StaffRole } from '@plaingym/shared';
 import type { ShellBootstrap } from '../../app/services.js';
 import { healthTileIds, healthTileSchema, maxDismissedChargeRuns, type HealthTile } from '@plaingym/shared/contracts';
-import { HealthPage, HealthTiles } from './page.js';
+import { HealthPage, HealthTiles, bytesLabel } from './page.js';
 import { useBootstrap } from '../../app/context.js';
 import { api } from '../../lib/api.js';
 vi.mock('../../app/context.js', () => ({ useBootstrap: vi.fn() }));
@@ -83,6 +83,14 @@ const report = (n: number, day: string, failures: { number: number | null; cause
   ({ runId: uuid(n), day, reportedAt: day + 'T12:00:00.000Z', failures: failures.map((failure, index) => ({ invoiceId: uuid(n * 10 + index), ...failure })) });
 const failuresRegion = () => screen.findByRole('region', { name: 'Failed charges' });
 const dismissed = (...ids: string[]) => ok({ data: { dismissed: ids } });
+describe('disk sizes', () => {
+  it('moves to the next unit instead of showing 1,000 of one', () => {
+    expect(bytesLabel(999)).toBe('999 B');
+    expect(bytesLabel(999_950)).toBe('1 MB');
+    expect(bytesLabel(999_600_000)).toBe('1 GB');
+    expect(bytesLabel(12_345_678_901)).toBe('12.3 GB');
+  });
+});
 describe('charge failure reports on the charge-run tile', () => {
   const reports = () => [report(1, '2026-10-24', [{ number: 41, cause: 'needs_reconciliation' }, { number: null, cause: 'unexpected' }]),
     report(2, '2026-10-26', [{ number: 52, cause: 'unexpected' }])];

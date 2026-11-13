@@ -1,7 +1,7 @@
 {
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
   "title": "Import and export", "import": "Import CSV", "file": "CSV file (UTF-8, up to 20 MB)",
-  "mapperNotice": "Import mappings are being prepared. You can upload and preview files; unavailable mappings appear in the error report.",
+  "mapperNotice": "Bring people, ranks and attendance, or memberships over from another system's CSV export: upload it, match its columns, check a dry run, then commit.",
   "mapper": "Import type", "mapper.people": "People", "mapper.mat": "Ranks and attendance", "mapper.memberships": "Memberships",
   "duplicates": "Duplicates", "policy.error": "Report an error", "policy.skip": "Skip", "policy.update": "Update one match",
   "mapping": "Match columns", "ignore": "Ignore column", "preview": "Preview", "dryRun": "Dry run", "commit": "Commit import",

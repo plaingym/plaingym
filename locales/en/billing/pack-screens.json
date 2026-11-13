@@ -18,6 +18,7 @@
   "active": "Active",
   "archived": "Archived",
   "noPacks": "No class packs to show.",
+  "noPacksHelp": "Use Create class pack to sell a set number of classes, such as a 10-class card.",
   "noActivePacks": "Create or restore an active class pack in the billing catalog first.",
   "neverExpires": "No expiry",
   "expiresDays": "Expires {days} days after payment",

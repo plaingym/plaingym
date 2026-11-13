@@ -29,7 +29,7 @@ export function PackCatalog({ gymId, client = packClient }: { gymId: string; cli
         <CheckboxField label={text('showArchived')} checked={archived} onChange={event => setArchived(event.target.checked)}/>
         <Button onClick={() => setEditor('new')}>{text('createPack')}</Button>
       </div>
-      {!rows?.length && <EmptyState title={text('noPacks')}/>}
+      {!rows?.length && <EmptyState title={text('noPacks')} description={text('noPacksHelp')}/>}
       <ul className="grid min-w-0 gap-3 lg:grid-cols-2">{rows?.map(pack => <li key={pack.id} className="min-w-0 space-y-2 rounded-lg border p-4">
         <h3 className="font-semibold">{pack.name}</h3><p className="text-sm text-muted-foreground">{text(pack.active ? 'active' : 'archived')}</p>
         <p>{formatMinorUnits(pack.amountCents, pack.currency)} · {text('creditCount', { count: pack.credits })}</p>

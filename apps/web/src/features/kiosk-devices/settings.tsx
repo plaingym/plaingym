@@ -6,6 +6,7 @@ import { kioskDeviceListResponseSchema, kioskDeviceResponseSchema, registerKiosk
   type KioskDeviceListResponse } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
+import { instantLabel } from '../../lib/instant.js';
 import { Button } from '../../components/ui/button.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
@@ -108,18 +109,18 @@ export function KioskDevicesSettings() {
         <th key={key} scope="col" className="p-2">{t('kiosk/devices:' + key)}</th>)}</tr></thead>
       <tbody>{page.data.map((device) => <tr key={device.id}>
         <td className="p-2">{device.name}</td>
-        <td className="p-2"><time dateTime={device.createdAt}>{new Date(device.createdAt).toLocaleString()}</time></td>
+        <td className="p-2"><time dateTime={device.createdAt}>{instantLabel(device.createdAt)}</time></td>
         <td className="p-2">{device.lastSeenAt
-          ? <time dateTime={device.lastSeenAt}>{new Date(device.lastSeenAt).toLocaleString()}</time> : t('kiosk/devices:never')}</td>
+          ? <time dateTime={device.lastSeenAt}>{instantLabel(device.lastSeenAt)}</time> : t('kiosk/devices:never')}</td>
         <td className="p-2">{t(device.revokedAt ? 'kiosk/devices:revoked' : 'kiosk/devices:active')}</td>
         <td className="p-2"><Button variant="outline" disabled={busy || device.revokedAt !== null}
           aria-label={t('kiosk/devices:revokeNamed', { name: device.name })} onClick={() => void revoke(device.id)}>
           {t('kiosk/devices:revoke')}</Button></td>
       </tr>)}</tbody>
     </table>{page.data.length === 0 && <p className="p-2">{t('kiosk/devices:empty')}</p>}</TableContainer>}
-    <div className="flex gap-2">
+    {(offset > 0 || (page?.pagination.total ?? 0) > pageSize) && <div className="flex gap-2">
       <Button variant="outline" disabled={busy || offset === 0} onClick={() => setOffset(Math.max(0, offset - pageSize))}>{t('kiosk/devices:previous')}</Button>
       <Button variant="outline" disabled={busy || !page || offset + pageSize >= page.pagination.total} onClick={() => setOffset(offset + pageSize)}>{t('kiosk/devices:next')}</Button>
-    </div>
+    </div>}
   </section>;
 }

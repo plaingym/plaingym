@@ -85,6 +85,8 @@
   "releaseHold": "Release review hold",
   "releaseHoldHelp": "Confirm collection of this overdue invoice. The next billing run will charge the saved card unless you charge it now or record a payment first.",
   "holdReleased": "Review hold released. The next billing run will charge the saved card unless you charge it now or record a payment first.",
+  "releaseHoldHelpNoCard": "Confirm collection of this overdue invoice. This household has no saved card, so the billing run won’t charge it: send a pay link or record a payment.",
+  "holdReleasedNoCard": "Review hold released. This household has no saved card, so the billing run won’t charge it: send a pay link or record a payment.",
   "remainingRefundable": "Remaining refundable amount",
   "errors.billing_disabled": "Billing is disabled. Enable billing before charging a card.",
   "errors.not_payable": "This invoice is no longer available for collection. Reload it to see its status.",

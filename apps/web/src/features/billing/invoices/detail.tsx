@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { calendarDateLabel, instantLabel } from '../../../lib/instant.js';
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
+import { cardBrand } from '../../../lib/card-brand.js';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { refundReleased, type InvoiceDetail, type MaskedPaymentMethod, type Payment } from '@plaingym/shared/contracts';
 import { AmountInputError } from '@plaingym/shared/money';
@@ -46,7 +48,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
     try {
       if (action.kind === 'cash') await client.call('recordManualPayment', { amountCents: invoice.amountCents, currency: invoice.currency,
         method: form.get('method'), reference: form.get('reference') || null, paidAt: new Date().toISOString() }, { invoiceId });
-      if (action.kind === 'releaseHold') { await client.releaseHold(invoiceId); setMessage(text('holdReleased')); }
+      if (action.kind === 'releaseHold') { await client.releaseHold(invoiceId); setMessage(text(allCards.data === false ? 'holdReleasedNoCard' : 'holdReleased')); }
       if (action.kind === 'charge') {
         const result = await client.call('chargeInvoice', {}, { invoiceId });
         setMessage(text(result.data.status === 'succeeded' ? 'paid' : result.data.status === 'failed' ? 'chargeFailed'
@@ -90,7 +92,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
         <div><dt>{text('number')}</dt><dd>{invoice.number ?? text('draft')}</dd></div>
         <div><dt>{text('status')}</dt><dd><Badge>{text(invoice.status)}</Badge></dd></div>
         <div><dt>{text('amount')}</dt><dd>{money(invoice.amountCents, invoice.currency)}</dd></div>
-        <div><dt>{text('dueOn')}</dt><dd>{invoice.dueOn}</dd></div>
+        <div><dt>{text('dueOn')}</dt><dd>{calendarDateLabel(invoice.dueOn)}</dd></div>
       </dl>
       {invoice.needsReview && <Alert>{text('needsReview')}</Alert>}
       <div className="flex flex-col flex-wrap gap-2 sm:flex-row">
@@ -107,7 +109,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
       <StackedList>{data.payments.map(payment => {
         const reserved = data.refunds.filter(r => r.paymentId === payment.id && !refundReleased(r)).reduce((sum, r) => sum + r.amountCents, 0);
         return <StackedItem key={payment.id}><span>{text(payment.method)} · {money(payment.amountCents, payment.currency)}</span>
-          <span className="text-sm text-muted-foreground">{new Date(payment.paidAt).toLocaleString()}</span>
+          <span className="text-sm text-muted-foreground">{instantLabel(payment.paidAt)}</span>
           {payment.reference && <p>{payment.reference}</p>}
           {access.refund && reserved < payment.amountCents && <Button variant="outline" onClick={() => open({ kind: 'refund', payment })}>{text('refund')}</Button>}
         </StackedItem>;
@@ -118,8 +120,8 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
       {cards.isPending && <LoadingState/>}{cards.isError && <ErrorState onRetry={() => void cards.refetch()}/>}
       {cards.data?.data.length === 0 && <EmptyState title={text('noCards')}/>}
       <StackedList>{cards.data?.data.map(card => <StackedItem key={card.id}>
-        <span>{card.brand ?? text('card')} · {card.last4 ?? text('unknownCard')} · {card.expiryMonth}/{card.expiryYear}</span>
-        {card.isDefault && <Badge>{text('default')}</Badge>}{card.revokedAt && <Badge>{text('removed')}</Badge>}
+        <span>{card.brand ? cardBrand(card.brand) : text('card')} · {card.last4 ?? text('unknownCard')} · {card.expiryMonth}/{card.expiryYear}</span>
+        {/* In the stacked column a badge would stretch to the card's width. */}{card.isDefault && <Badge className="self-start">{text('default')}</Badge>}{card.revokedAt && <Badge className="self-start">{text('removed')}</Badge>}
         {access.record && <div className="flex flex-col gap-2 sm:flex-row">
           {!card.revokedAt && !card.isDefault && <Button variant="outline" onClick={() => open({ kind: 'default', card })}>{text('makeDefault')}</Button>}
           <Button variant="outline" onClick={() => open({ kind: 'revoke', card })}>{text(card.revokedAt ? 'retryRemoval' : 'removeCard')}</Button>
@@ -139,7 +141,8 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
         {error && <Alert role="alert">{error}</Alert>}
         <fieldset disabled={busy} className="space-y-4">
           {action.kind !== 'releaseHold' && <p>{action.kind === 'refund' && text('remainingRefundable') + ': '}{money(action.kind === 'refund' ? refundable(data, action.payment) : invoice.amountCents, invoice.currency)}</p>}
-          {action.kind === 'releaseHold' && <p>{text('releaseHoldHelp')}</p>}
+          {/* The billing run charges only a saved default card; when the check says there is none, say what will collect it instead. */}
+          {action.kind === 'releaseHold' && <p>{text(allCards.data === false ? 'releaseHoldHelpNoCard' : 'releaseHoldHelp')}</p>}
           {action.kind === 'cash' && <>
             <Label className="block">{text('method')}<Select name="method"><option value="cash">{text('cash')}</option><option value="check">{text('check')}</option></Select></Label>
             <Label className="block">{text('reference')}<Input name="reference"/></Label>

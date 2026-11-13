@@ -44,7 +44,7 @@ for (const width of [360, 1280]) {
       await page.getByLabel('Discount name').fill(name); await page.getByLabel('Discount code').fill(code);
       await page.getByLabel('Discount type').selectOption('percent'); await page.getByLabel('Percentage (up to 100)').fill('25');
       await page.getByRole('combobox', { name: /^Duration/ }).selectOption('cycles'); await page.getByLabel('Number of cycles').fill('3');
-      await page.getByLabel('Also waive the signup fee').check(); await check(page, info, 'editor-' + width);
+      await page.getByLabel('Also waive the sign-up fee').check(); await check(page, info, 'editor-' + width);
       await page.getByRole('button', { name: 'Save discount', exact: true }).click(); await expect(page.getByRole('dialog')).toHaveCount(0);
       await expect(page.getByRole('heading', { name, exact: true })).toBeVisible(); await check(page, info, 'catalog-' + width);
       const discounts = (await owner.json<{ data: (RecordId & { name: string })[] }>('/api/billing/discounts?limit=100')).data;

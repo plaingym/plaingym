@@ -1,0 +1,47 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+# UX pass capture
+
+A screenshot walk of every surface, for a person (or an agent with an image reader) to review screen by screen. It
+asserts nothing about layout: the End-to-end suite does that. It runs only when `UX_PASS=1` is set, so CI's End-to-end
+run doesn't get longer, and then it is the only thing the runner runs:
+
+```sh
+UX_PASS=1 node e2e/run.mjs
+```
+
+(PowerShell: `$env:UX_PASS = "1"; node e2e/run.mjs`.) Set `E2E_IMAGE` to reuse an image built from the commit you
+want to see, and `E2E_LOOPBACK` as for the rest of the suite. The run needs Playwright's Firefox and WebKit as well as
+Chromium: `pnpm --dir e2e exec playwright install chromium firefox webkit`.
+
+## What it captures
+
+Everything goes to the git-ignored `e2e/coverage/ux-pass/`; never commit the images or videos.
+
+* `<surface>/<screen>-<size>-<theme>.png`: each screen full-page at 360×740 (a touch device), 768×1024 and 1280×800
+  (`responsive.ts`), in light and dark (`prefers-color-scheme`). The app has no dark theme, so a dark image that matches
+  its light one pixel for pixel says so in the manifest (`sameAs`).
+* `manifest.json`: every image, with its surface, screen, state (`populated` from the demo sandbox's seed, `empty` from
+  a fresh gym), size and theme; the **gaps**, screens the walk couldn't reach and why; and the videos.
+* `buttons.json`: the buttons each admin screen shows, so a reviewer can see what the walk didn't open.
+* `videos/demo-walk-phone.webm` and `videos/demo-walk-desktop.webm`: the demo played through at phone and desktop size
+  with Playwright's `recordVideo`.
+* `browsers/<firefox|webkit>/`: the join form (with a signed waiver) and a CSV upload submitted in Firefox and WebKit,
+  each with a screenshot and the `Content-Length` each bounded request carried and the status it got (WebKit doesn't report
+  the header to Playwright; an accepted request is the evidence), and the join form again with scripts off, which posts it
+  to `/join` itself. Playwright's WebKit is not Safari. Playwright's Firefox refuses the stack's Caddy-issued certificates
+  (`SEC_ERROR_UNKNOWN`, with or without the proxy), so its steps are marked as expected failures until that is solved.
+
+The surfaces: the setup wizard (each step, on the fresh install before anything else touches it), the admin screens
+with their tabs and main dialogs (fresh and populated), a coach's view, the update banner in each state it can show (the
+release check's answer is supplied by the browser), the member portal, the kiosk, the signed-link pages, `/join`,
+`/trial`, `/drop-in`, the public website, sign-in, the staff invitation page and the demo's own pages.
+
+## Projects
+
+With `UX_PASS=1`, `playwright.config.ts` replaces the usual projects with `ux-pass` (Chromium, `specs/ux-pass.spec.ts`)
+and `ux-firefox` and `ux-webkit` (`ux-pass/browsers.spec.ts`). Firefox and WebKit can't map `*.localhost` to the
+stack's loopback address as Chromium does, so they reach Caddy through a small local forward proxy (`proxy.ts`) that
+tunnels every `CONNECT <host>:443` to it; TLS and the request bytes stay the browser's own.
+
+A screen the walk can't reach is recorded as a gap and the walk goes on, so one changed label doesn't lose the rest of
+the capture. Read the gaps before the images.

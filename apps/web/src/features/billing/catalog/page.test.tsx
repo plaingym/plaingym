@@ -218,14 +218,14 @@ describe('catalog and member billing screens', () => {
   it('creates an inclusive tax rate and shows an empty charge catalog', async () => {
     const api = client(); start(<CatalogWorkspace gymId={id(1)} client={api}/>);
     fireEvent.click(await screen.findByRole('button', { name: 'Tax rates' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Add Tax rates' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add tax rate' }));
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'QST' } });
     fireEvent.change(screen.getByLabelText('Tax rate (%)'), { target: { value: '9.975' } });
     fireEvent.click(screen.getByLabelText('Tax included'));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(api.call).toHaveBeenCalledWith('createTaxRate', expect.objectContaining({ rateMillionths: 99750, inclusive: true }), {}));
     fireEvent.click(screen.getByRole('button', { name: 'Charge types' }));
-    expect(await screen.findByText('Nothing here yet')).toBeTruthy();
+    expect(await screen.findByText('No charge types yet')).toBeTruthy();
   });
   const usage: TaxRateUsage = { packs: [], chargeTypes: [{ id: id(7), name: 'Drop-in', active: true }],
     plans: [{ id: plan.id, name: 'Unlimited', active: true, memberships: 3 }, { id: id(8), name: 'Retired plan', active: false, memberships: 0 }], memberships: 3 };
@@ -400,7 +400,7 @@ describe('catalog and member billing screens', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Tax rates' }));
     fireEvent.click(screen.getByRole('button', { name: 'Remove Sales tax from them' }));
     // The Add button stays open while the usage check is in flight.
-    fireEvent.click(await screen.findByRole('button', { name: 'Add Tax rates' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Add tax rate' }));
     answer({ data: usage });
     const panel = await screen.findByRole('region', { name: 'Remove Sales tax from these items?' });
     vi.mocked(api.call).mockRejectedValueOnce(new ApiError(409, 'conflict'));
@@ -439,7 +439,7 @@ describe('catalog and member billing screens', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm cancellation' }));
     await waitFor(() => expect(api.call).toHaveBeenCalledWith('cancelMembership', { revision: 2 }, { membershipId: membership.id }));
     view.unmount(); const desk = client(); start(<MembershipPanel gymId={id(1)} memberId={member.id} manage={false} client={desk}/>);
-    await screen.findByText('2026-10-31');
+    await screen.findByText('Oct 31, 2026');
     expect(screen.queryByRole('button', { name: 'Freeze' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Assign a plan' })).toBeNull();
     expect(desk.settings).not.toHaveBeenCalled();

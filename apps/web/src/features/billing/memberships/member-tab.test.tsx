@@ -48,7 +48,8 @@ it('uses the bootstrap timezone for the assignment date without fetching setting
 });
 it('does not fetch plan names without billing.read', async () => {
   const client = start('coach');
-  await screen.findByText('2026-11-01');
+  // The next billing date reads as a date, like the rest of the admin.
+  await screen.findByText('Nov 1, 2026');
   expect(client.plans).not.toHaveBeenCalled();
 });
 async function openEdit() {

@@ -11,5 +11,7 @@
   "unreadable": "The latest release could not be read from GitHub. The check tries again each hour; turn it off with UPDATE_CHECK=off on an install without internet access.",
   "badRepository": "RELEASE_REPOSITORY is not in the form owner/name, so releases cannot be read.",
   "banner.title": "Update available",
+  "banner.titlePatchHeld": "Patch release not installed",
+  "banner.titleBlocked": "Updates can't install",
   "banner.changelog": "Changelog"
 }

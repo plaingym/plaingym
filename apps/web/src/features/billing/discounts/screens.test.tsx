@@ -52,7 +52,7 @@ it('lists benefits, uses, eligibility, locked terms and optional inactive cards'
   const api = clients(); vi.mocked(api.discounts.list).mockResolvedValue([discount, { ...discount, id: id(9), name: 'Old offer', active: false }]);
   start(<DiscountCatalog gymId={id(1)} client={api.discounts} billing={api.billing}/>);
   expect(await screen.findByText('Uses: 2 / 10')).toBeDefined();
-  expect(screen.getByText('12.5% off · Signup fee waived')).toBeDefined();
+  expect(screen.getByText('12.5% off · Sign-up fee waived')).toBeDefined();
   expect(screen.getByText('Plans: Unlimited')).toBeDefined(); expect(screen.getByText(/Terms are locked/)).toBeDefined();
   expect(screen.queryByText('Old offer')).toBeNull(); fireEvent.click(screen.getByLabelText('Include inactive discounts'));
   expect(screen.getByText('Old offer')).toBeDefined();
@@ -139,7 +139,7 @@ it.each(['discount_used_up', 'discount_ended', 'discount_plan'])('shows a clear 
   await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/no uses left|has ended|does not apply/));
 });
 it.each(['coach', 'front_desk'] as const)('hides discount details and controls from %s', async role => {
-  const api = panel(role); await screen.findByText('2026-12-01');
+  const api = panel(role); await screen.findByText('Dec 1, 2026');
   expect(screen.queryByText('Discount: Family offer')).toBeNull(); expect(screen.queryByRole('button', { name: 'Change discount' })).toBeNull();
   expect(screen.queryByLabelText('Discount')).toBeNull(); expect(api.discounts.list).not.toHaveBeenCalled();
   cleanup(); start(<CatalogPage/>, role); expect(await screen.findByRole('alert')).toBeDefined();

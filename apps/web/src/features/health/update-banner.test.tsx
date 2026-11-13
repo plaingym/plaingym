@@ -56,8 +56,19 @@ describe('update banner', () => {
     serve(tile({ message, details: { currentVersion: '1.2.0', latestVersion: '1.2.5', available: true, releaseUrl: 'https://github.com/plaingym/plaingym/releases/tag/v1.2.5' } }));
     start();
     const banner = await screen.findByTestId('update-banner');
+    expect(banner.textContent).toContain('Patch release not installed');
+    expect(banner.textContent).not.toContain('Update available');
     expect(banner.textContent).toContain('Do not install this release by hand');
     expect(banner.textContent).not.toContain('Run the updater');
+  });
+  it("heads an invalid release repository for what it says, not as an available update", async () => {
+    const message = 'Patch releases cannot install because RELEASE_REPOSITORY is invalid. Set it to a GitHub owner/name, with neither segment made only of dots, and restart the app.';
+    serve(tile({ message, details: { currentVersion: '1.2.0', latestVersion: 'unknown', available: true, releaseUrl: null } }));
+    start();
+    const banner = await screen.findByTestId('update-banner');
+    expect(banner.textContent).toContain("Updates can't install");
+    expect(banner.textContent).not.toContain('Update available');
+    expect(screen.queryByRole('link', { name: 'Changelog' })).toBeNull();
   });
   it('does not keep asking once the server says its read of the release list failed', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });

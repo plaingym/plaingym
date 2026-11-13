@@ -27,7 +27,7 @@ export function DiscountCatalog({ gymId, client = discountClient, billing = bill
         <CheckboxField label={text('showInactive')} checked={inactive} onChange={event => setInactive(event.target.checked)}/>
         <Button onClick={() => setEditor('new')}>{text('create')}</Button>
       </div>
-      {!rows?.length && <EmptyState title={text('empty')}/>}
+      {!rows?.length && <EmptyState title={text('empty')} description={text('emptyHelp')}/>}
       <ul className="grid min-w-0 gap-3 lg:grid-cols-2">{rows?.map(row => <li key={row.id} className="min-w-0 space-y-2 rounded-lg border p-4">
         <h3 className="font-semibold">{row.name}</h3><p>{text(row.active ? 'active' : 'inactive')}</p>
         <p>{benefit(row)}</p><p>{row.duration === 'cycles' ? text('forCycles', { count: row.cycles! }) : row.duration ? text(row.duration) : text('feeOnly')}</p>

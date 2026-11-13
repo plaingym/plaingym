@@ -83,6 +83,25 @@ describe('Settings → Updates', () => {
     expect(screen.getByText('Version not installed')).toBeDefined();
     expect(screen.getByText('Running version')).toBeDefined();
   });
+  it("shows the tile's times as a date and time in the gym's timezone, not as ISO strings", () => {
+    const tile = healthTileSchema.parse({ id: 'automatic_updates', status: 'healthy', checkedAt: '2026-11-12T00:30:00Z',
+      message: 'Version v1.2.4 is the newest patch release.',
+      details: { enabled: true, lastAttemptAt: '2026-11-12T00:20:31Z', result: 'up_to_date', fromVersion: 'v1.2.4', toVersion: null } });
+    render(<HealthTiles tiles={[tile]} timezone="America/New_York"/>);
+    expect(document.body.textContent).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
+    const attempt = screen.getByText(/^Nov 11, 2026, 7:20\sPM$/);
+    expect(attempt.closest('time')?.getAttribute('dateTime')).toBe('2026-11-12T00:20:31Z');
+    expect(screen.getByText(/7:30\sPM$/)).toBeDefined();
+  });
+  it('shows disk sizes with units, not byte counts', () => {
+    const tile = healthTileSchema.parse({ id: 'disk', status: 'healthy', checkedAt: '2026-11-12T00:30:00Z', message: 'Free space.',
+      details: { totalBytes: 269_427_478_528, availableBytes: 999 } });
+    render(<HealthTiles tiles={[tile]}/>);
+    expect(screen.getByText('Disk capacity')).toBeDefined();
+    expect(screen.getByText('269 GB')).toBeDefined();
+    expect(screen.getByText('999 B')).toBeDefined();
+    expect(document.body.textContent).not.toContain('269,427,478,528');
+  });
   it('labels the versions for what the attempt did and leaves out a version it has none of', () => {
     const tile = (result: 'up_to_date' | 'updated' | 'rolled_back', toVersion: string | null) => healthTileSchema.parse({ id: 'automatic_updates',
       status: 'healthy', checkedAt: '2026-11-04T16:30:00Z', message: 'Version v1.2.4 is the newest patch release.',

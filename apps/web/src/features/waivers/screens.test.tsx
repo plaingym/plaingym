@@ -84,7 +84,7 @@ it('uses snapshot details and gym-local dates, and checks current status outside
   expect(time.textContent).toContain('23'); // Previous calendar day in the gym, not the UTC date.
   expect(await screen.findByText('Signed — current version')).toBeTruthy();
   expect(await screen.findByText('Needs a signature')).toBeTruthy();
-  await user.click(screen.getAllByRole('button', { name: 'Next' })[1]!);
+  await user.click(screen.getByRole('button', { name: 'Next' }));
   expect(await screen.findByRole('heading', { name: 'Participation · Version 2' })).toBeTruthy();
   expect(screen.getByText('Signed — current version')).toBeTruthy();
   expect(screen.getByText('Needs a signature')).toBeTruthy();
