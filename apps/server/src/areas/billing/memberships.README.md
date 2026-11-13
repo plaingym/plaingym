@@ -221,3 +221,25 @@ When the membership amount differs from the plan's current amount, the card
 shows "Plan price now" with that amount and billing interval. This covers both
 a price entered by staff and a price retained after a plan change. The comparison
 appears only when the membership and plan share a currency and billing interval.
+
+## Price change notices
+
+`billing.memberships.price_notice` is a registered job for a household billing
+notice. It takes `requestKey`, `planId`, `householdId`, `membershipIds`,
+`amountCents`, `currency` and `effectiveOn`. No producer enqueues it yet.
+It reads only the listed, uncancelled memberships still carrying that plan,
+scheduled amount and date, and combines them in one email to the household's
+billing address. Each member's current amount is shown, including custom prices,
+beside the scheduled amount and billing interval. The effective date is formatted
+in the gym's timezone, as the first payment on or after that date.
+
+Missing or invalid addresses, erased payers, suppressed recipients, disabled
+member mail and replaced changes complete without sending and log a reason with
+identifiers only. An explicitly linked erased payer also blocks a send after its
+address is cleared. The service rechecks recipients and changes after preparing
+SMTP. Missing SMTP fails for retry; demo mode uses only its outbox. Delivery is
+reserved before sending, outside every transaction, under
+`plan-price:<requestKey>:<householdId>`: accepted or uncertain attempts never send
+again, and only a proven non-send can retry. This service notice has no unsubscribe
+link. Runtime composition supplies `configurePriceNotice(createPriceNotice(...))`
+with the gym SMTP resolver, clock and demo outbox when applicable.

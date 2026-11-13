@@ -1,0 +1,10 @@
+{
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "subject": "Membership price change",
+  "effective": "Your membership price changes from the first payment on or after {date}.",
+  "membership": "{name} — {plan}",
+  "prices": "Current price: {oldPrice} {oldInterval}. New price: {newPrice} {newInterval}.",
+  "monthly": "per month",
+  "annual": "per year",
+  "footer": "This is a service notice about your membership billing. Contact your gym if you have questions."
+}
