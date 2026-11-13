@@ -6,7 +6,7 @@ import { createBillingDashboardService, type BillingDashboardServices } from './
 
 type Service = ReturnType<typeof createBillingDashboardService>;
 let configured: Service | undefined;
-export function configureBillingDashboard(services: BillingDashboardServices) {
+export function configureBillingDashboard<T extends BillingDashboardServices>(services: T) {
   configured = createBillingDashboardService(services);
   return configured;
 }

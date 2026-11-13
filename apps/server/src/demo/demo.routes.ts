@@ -12,6 +12,7 @@ import { createOutboxQuery } from './outbox.js';
 import type { DemoService } from './service.js';
 import { demoLoginRateLimit, demoLoginRedirect, joinedMembers } from './identities.js';
 import type { forGym } from '@plaingym/db';
+import { clock as defaultClock, type Clock } from '../core/clock.js';
 
 /** A captured email's own policy: inline styles and data: images only, no script (sandbox), framed only by the app. */
 export const outboxPreviewDirectives = ["default-src 'none'", "style-src 'unsafe-inline'", 'img-src data:', "base-uri 'none'",
@@ -110,10 +111,26 @@ export function createDemoRoutes(service: DemoService, options: { installOrigin:
   ];
 }
 /** For the join page's payment steps (`joinStatusPage`'s `testCardHint`): the test card to pay with, only in a sandbox that takes joins. */
-export function joinTestCardHint(service: Pick<DemoService, 'status'>, t: Translator) {
+export function joinTestCardHint(service: Pick<DemoService, 'status'>, t: Translator, clock: Clock = defaultClock) {
+  const cache = new Map<string, { until: number; status: ReturnType<DemoService['status']> }>();
   return async (gymId: string): Promise<string | undefined> => {
-    const sandbox = await service.status(gymId).catch(() => undefined);
-    return sandbox?.join ? t('demo/demo:joinTestCard', { number: demoTestCard }) : undefined;
+    const now = clock.now().getTime();
+    let entry = cache.get(gymId);
+    if (!entry || entry.until <= now) {
+      for (const [id, cached] of cache) if (cached.until <= now) cache.delete(id);
+      if (cache.size >= 256) cache.delete(cache.keys().next().value!);
+      entry = { until: now + 5_000, status: service.status(gymId) };
+      cache.set(gymId, entry);
+    }
+    try {
+      const sandbox = await entry.status;
+      return sandbox.join && Date.parse(sandbox.expiresAt) > clock.now().getTime()
+        ? t('demo/demo:joinTestCard', { number: demoTestCard }) : undefined;
+    } catch {
+      // The note is cosmetic: a failed read evicts the entry so the next render retries, and never fails the join page.
+      if (cache.get(gymId) === entry) cache.delete(gymId);
+      return undefined;
+    }
   };
 }
 let configured: ReturnType<typeof createDemoRoutes> | undefined;

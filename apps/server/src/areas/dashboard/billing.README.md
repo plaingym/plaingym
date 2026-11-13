@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Billing dashboard
 
-`createSkippedCollectionsProvider({ settings, payments })` supplies the admin dashboard's
+`createSkippedCollectionsProvider({ settings })` supplies the admin dashboard's
 `billing.skipped-collections` shortlist through the existing count/items extension.
 Register it with `configureDashboard` alongside the other alert providers. It requires
 `billing.read`, lists up to 20 due open/past-due cycle or membership-assignment invoices below the card minimum
@@ -9,8 +9,8 @@ or off the currency step, and links each to its invoice for a manual payment. It
 all matches in SQL with a capped row query, excludes zero and review-required invoices, hides when empty or billing
 is disabled, and sends no email.
 
-`configureBillingDashboard({ settings, memberships, payments })` supplies the
-settings accessor and the billing services. Metrics use an aggregate read through
+`configureBillingDashboard({ settings })` supplies the
+settings accessor. Metrics use an aggregate read through
 `forGym`; tests can supply `scope` for their isolated database. The runtime configures
 it with the same settings accessor used by staff billing routes.
 The area barrel registers `/api/dashboard/billing`, and the dashboard page mounts

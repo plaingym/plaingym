@@ -66,11 +66,11 @@ it('uses one control style: navigation is a full-width menu link, signing in is 
   }
   for (const name of ['Sign in as owner', 'Open the demo outbox']) expect(screen.getByRole('button', { name }).className).toContain('w-full');
 });
-it('replaces the join steps and student billing copy when joining is unavailable, keeping roles and kiosk', () => {
+it('replaces the join steps when joining is unavailable, keeping student invoices, roles and kiosk', () => {
   context.mode = 'sandbox'; context.join = false;
   render(<DemoPage />);
   expect(screen.getByText("Joining online isn't available in this demo gym right now.")).toBeDefined();
-  expect(screen.queryByText(/paid invoices/)).toBeNull();
+  expect(screen.getByText(/paid invoices/)).toBeDefined();
   expect(screen.queryByText(/join as a new member with a test card/)).toBeNull();
   expect(screen.queryByRole('link', { name: 'Open the join page' })).toBeNull();
   expect(screen.queryByText('4242 4242 4242 4242')).toBeNull();

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { AppError, canStaff } from '@plaingym/shared';
 import { matDashboardWidgetSchema, type MatDashboardWidget } from '@plaingym/shared/contracts';
-import type { AttendanceQueries } from '../../core/interfaces/attendance.js';
 import type { DashboardWidgetProvider } from '../../core/interfaces/extensions.js';
 import type { createMembersService } from '../members/members.js';
 import type { createRanksService } from '../ranks/ranks.service.js';
@@ -12,7 +11,6 @@ export interface MatWidgetServices {
   readonly notSeen: ReturnType<typeof createNotSeenRead>;
   readonly members: Pick<ReturnType<typeof createMembersService>, 'listMembers'>;
   readonly ranks: Pick<ReturnType<typeof createRanksService>, 'dashboardEligibility'>;
-  readonly attendance: AttendanceQueries;
 }
 const titleKey = (id: MatDashboardWidget['id']) => 'dashboard/dashboard:widget.' + id;
 function provider(id: MatDashboardWidget['id'], order: number,

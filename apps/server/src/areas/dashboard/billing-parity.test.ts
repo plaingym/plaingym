@@ -62,7 +62,7 @@ it('matches the former six billing reads across statuses, annual rounding, date 
     if (row.kind === 'cycle') upcoming.delete(key);
     if (row.status === 'open') upcoming.set(key, row.amountCents);
   }
-  const { data } = await createBillingDashboardService({ scope, settings, memberships, payments }).get({ gymId, clock, roles: ['owner'] });
+  const { data } = await createBillingDashboardService({ scope, settings }).get({ gymId, clock, roles: ['owner'] });
   expect(data.widgets.find(row => row.id === 'mrr')).toHaveProperty('money.amountCents', Number((twelfths + 6n) / 12n));
   expect(data.widgets.find(row => row.id === 'past_due')).toMatchObject({ invoiceCount: overdue.length,
     money: { amountCents: overdue.reduce((sum, row) => sum + row.amountCents, 0) } });

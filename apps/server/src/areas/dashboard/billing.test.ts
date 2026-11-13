@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { staffRoles } from '@plaingym/shared';
+import { cardChargeIssue, minimumChargeAmount, minorUnitStep } from '@plaingym/shared/money';
+import { eligibility } from '../billing/runner/eligibility.js';
 import type { StaffRole } from '@plaingym/shared';
 import { billingDashboardResponseSchema } from '@plaingym/shared/contracts';
 import { createApp } from '../../core/app.js';
@@ -11,8 +13,6 @@ import { TestClock } from '../../core/clock.js';
 import type { Principal } from '../../core/context.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
-import { createMembershipService } from '../billing/memberships.js';
-import { createPaymentService } from '../billing/payments.js';
 import { createBillingDashboardService, createSkippedCollectionsProvider } from './billing.js';
 import { createBillingDashboardRoutes } from './billing.routes.js';
 
@@ -21,8 +21,6 @@ const clock = new TestClock('2026-11-01T00:30:00Z'); // Still October 31 in Vanc
 const settings = createGymSettingsAccessor({ scope: database.forGym, clock });
 const services = { settings,
   scope: database.forGym,
-  memberships: createMembershipService({ scope: database.forGym, settings, clock }),
-  payments: createPaymentService({ scope: database.forGym, settings, clock }),
 };
 const service = createBillingDashboardService(services);
 async function fixture(currency = 'CAD') {
@@ -49,7 +47,26 @@ async function read(f: Awaited<ReturnType<typeof fixture>>) {
   expect(response.status).toBe(200); expect(response.headers.get('cache-control')).toBe('no-store');
   return billingDashboardResponseSchema.parse(await response.json()).data;
 }
-describe('billing dashboard through production route composition and real billing services', () => {
+describe('billing dashboard through production route composition and PostgreSQL', () => {
+  it.each(['USD', 'GBP', 'JPY', 'KWD', 'ISK', 'UGX'])('pins the skipped shortlist to card and runner rules for %s', async currency => {
+    const f = await fixture(currency), gym = await settings.get(f.gymId);
+    const minimum = minimumChargeAmount(currency) ?? 0, step = minorUnitStep(currency);
+    const expected: string[] = [];
+    for (const amountCents of new Set([0, 1, Math.max(0, minimum - 1), minimum, minimum + 1, step, step + 1, step * 100])) {
+      const household = await factory('households', f.gymId);
+      const invoice = await f.invoice({ householdId: household.id, kind: 'cycle', currency, amountCents, dueOn: '2026-10-31',
+        periodStartsOn: '2026-10-01', periodEndsOn: '2026-11-01' });
+      const issue = cardChargeIssue(amountCents, currency);
+      const decision = await database.forGym(f.gymId, tx => eligibility(tx, gym, clock, invoice.id, 'automatic'));
+      if (amountCents > 0 && issue) {
+        expected.push(`/admin/billing/invoices/${invoice.id}`);
+        expect(decision).toEqual({ status: 'skipped', reason: issue });
+      } else expect(decision).toHaveProperty('status', amountCents === 0 ? 'eligible' : 'skipped');
+    }
+    const widget = await createSkippedCollectionsProvider(services).read({ gymId: f.gymId, roles: ['owner'], clock });
+    expect(widget?.items?.map(item => item.href).sort() ?? []).toEqual(expected.sort());
+    expect(widget?.count ?? 0).toBe(expected.length);
+  });
   it('includes a staff-assigned thirty-cent first invoice, excludes charges, and caps the SQL shortlist while counting every match', async () => {
     const f = await fixture('USD'), other = await fixture('USD');
     const membership = await f.membership();
@@ -65,15 +82,11 @@ describe('billing dashboard through production route composition and real billin
     await assigned(f, ['membership', 'charge']);
     const foreign = await assigned(other, ['membership']);
     await f.invoice({ amountCents: 30, dueOn: '2026-10-30' }); // No lines is not an assignment.
-    const reads = vi.spyOn(services.payments, 'listInvoices');
-    try {
-      const widget = await createSkippedCollectionsProvider(services).read({ gymId: f.gymId, roles: ['owner'], clock });
-      expect(widget?.count).toBe(22);
-      expect(widget?.items).toHaveLength(20);
-      expect(widget?.items?.[0]?.href).toBe(`/admin/billing/invoices/${first.id}`);
-      expect(widget?.items?.map(item => item.href)).not.toContain(`/admin/billing/invoices/${foreign.id}`);
-      expect(reads).not.toHaveBeenCalled();
-    } finally { reads.mockRestore(); }
+    const widget = await createSkippedCollectionsProvider(services).read({ gymId: f.gymId, roles: ['owner'], clock });
+    expect(widget?.count).toBe(22);
+    expect(widget?.items).toHaveLength(20);
+    expect(widget?.items?.[0]?.href).toBe(`/admin/billing/invoices/${first.id}`);
+    expect(widget?.items?.map(item => item.href)).not.toContain(`/admin/billing/invoices/${foreign.id}`);
   });
   it.each([[32, 'CAD', 'below the card minimum'], [1255, 'KWD', 'amount is off the currency step']] as const)(
     'lists due cycle collections of %s %s, isolates gyms, and denies coaches', async (amountCents, currency, reason) => {
@@ -141,14 +154,8 @@ describe('billing dashboard through production route composition and real billin
   it('uses an aggregate instead of service pagination and ignores unrelated paid history', async () => {
     const f = await fixture(); await f.membership();
     await f.invoice({ status: 'paid', dueOn: '2020-01-01', amountCents: 99999 });
-    const paymentReads = vi.spyOn(services.payments, 'listInvoices');
-    const membershipReads = vi.spyOn(services.memberships, 'list');
-    try {
-      const data = await read(f);
-      expect(data.widgets.find(w => w.id === 'mrr')).toMatchObject({ money: { amountCents: 10000 } });
-      expect(paymentReads).not.toHaveBeenCalled();
-      expect(membershipReads).not.toHaveBeenCalled();
-    } finally { paymentReads.mockRestore(); membershipReads.mockRestore(); }
+    const data = await read(f);
+    expect(data.widgets.find(w => w.id === 'mrr')).toMatchObject({ money: { amountCents: 10000 } });
   });
   it('fails closed on a relevant currency mismatch but does not inspect unrelated settled history', async () => {
     const f = await fixture('CAD');

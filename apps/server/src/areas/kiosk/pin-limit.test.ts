@@ -74,7 +74,7 @@ describe('kiosk PIN limit widget', () => {
     const provider = createPinLimitWidgetProvider({ scope: database.forGym }), read = vi.spyOn(provider, 'read');
     const attendance = createAttendanceQueries({ scope: database.forGym, clock: f.clock });
     configureDashboard({ notSeen: createNotSeenRead(database.forGym), members: createMembersService({ scope: database.forGym, clock: f.clock }),
-      ranks: createRanksService({ scope: database.forGym, clock: f.clock, criteria: createPromotionCriteria(attendance) }), attendance }, [provider]);
+      ranks: createRanksService({ scope: database.forGym, clock: f.clock, criteria: createPromotionCriteria(attendance) }) }, [provider]);
     const owner = await factory('authUser', f.gymId), foreignOwner = await factory('authUser', foreign.gymId);
     let principal: Principal = { kind: 'anonymous' };
     const app = createApp({ contributions: areaContributions, clock: f.clock, authorize, setupToken: 'test-setup-token',

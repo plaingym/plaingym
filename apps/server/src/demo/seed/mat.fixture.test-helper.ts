@@ -56,7 +56,7 @@ export function matHarness(db: TestDatabase) {
   }
   function dashboard(time: TestClock) {
     const scope = db.forGym, attendance = createAttendanceQueries({ scope });
-    return createDashboardService({ members: createMembersService({ scope }), attendance, notSeen: createNotSeenRead(scope),
+    return createDashboardService({ members: createMembersService({ scope }), notSeen: createNotSeenRead(scope),
       ranks: createRanksService({ scope, clock: time, criteria: createPromotionCriteria(attendance) }) });
   }
   return { fixture, counts, dashboard };

@@ -23,7 +23,7 @@ const clock = new TestClock('2026-10-22T12:00:00Z');
 const attendance = createAttendanceQueries({ scope: database.forGym, clock });
 const members = createMembersService({ scope: database.forGym, clock });
 const ranks = createRanksService({ scope: database.forGym, clock, criteria: createPromotionCriteria(attendance) });
-const service = createDashboardService({ members, ranks, attendance, notSeen: createNotSeenRead(database.forGym) });
+const service = createDashboardService({ members, ranks, notSeen: createNotSeenRead(database.forGym) });
 async function fixture() {
   const gymId = uuidv7(); await factory('gyms', gymId);
   const user = await factory('authUser', gymId);
@@ -69,7 +69,7 @@ describe('dashboard routes with PostgreSQL RLS and real area services', () => {
       countSince: async (...args: Parameters<typeof attendance.countSince>) => { counts++; return attendance.countSince(...args); },
       history: async (...args: Parameters<typeof attendance.history>) => { histories++; return attendance.history(...args); },
     };
-    const dashboard = createDashboardService({ members, attendance: measured, notSeen: createNotSeenRead(database.forGym),
+    const dashboard = createDashboardService({ members, notSeen: createNotSeenRead(database.forGym),
       ranks: createRanksService({ scope: database.forGym, clock, criteria: createPromotionCriteria(measured) }) });
     const { data } = await dashboard.get({ gymId, clock, roles: ['owner'] });
     expect(data.widgets.find((widget) => widget.id === 'active_members')).toHaveProperty('count', 500);

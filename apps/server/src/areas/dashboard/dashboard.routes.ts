@@ -3,12 +3,13 @@ import { AppError } from '@plaingym/shared';
 import { dashboardContracts } from '@plaingym/shared/contracts';
 import { route } from '../../core/registry.js';
 import { createDashboardService } from './dashboard.js';
+import type { MatWidgetServices } from './mat.js';
 
 type DashboardService = ReturnType<typeof createDashboardService>;
 let configured: DashboardService | undefined;
 /** Runtime supplies area services; unconfigured requests fail closed. */
-export function configureDashboard(...options: Parameters<typeof createDashboardService>) {
-  configured = createDashboardService(...options);
+export function configureDashboard<T extends MatWidgetServices>(services: T, providers?: Parameters<typeof createDashboardService>[1]) {
+  configured = createDashboardService(services, providers);
   return configured;
 }
 function runtimeService(): DashboardService {

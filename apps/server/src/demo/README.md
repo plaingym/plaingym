@@ -205,7 +205,10 @@ Runtime and shared composition use these exports:
   entry only after the sandbox status check succeeds.
 - `joinTestCardHint(service, t)` from `demo.routes.ts` returns, for a gym, the
   test-card note for the join page's payment steps (`joinStatusPage`'s
-  `testCardHint`) in a sandbox that takes joins, and nothing elsewhere. The demo
+  `testCardHint`) in a sandbox that takes joins, and nothing elsewhere. Readiness
+  results (including concurrent reads) are cached per gym for five seconds, with
+  at most 256 entries; expired sandboxes never show a hint. A failed read is evicted
+  and gives no hint, so a cosmetic note never fails the join page. The demo
   runtime exposes it and the server runtime passes it to `configureJoin`, so the
   join page shows the note on its `continue` and `cancelled` steps.
 - `createSeedCommand()` for the CLI registry and a root `pnpm seed <gym-uuid>` script.

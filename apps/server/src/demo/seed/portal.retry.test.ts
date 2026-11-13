@@ -64,14 +64,16 @@ it('leaves retry windows available after two abandoned creates and consumes them
   for (const [index, date] of deadlines.entries()) await factory('paymentAttempts', gymId, { invoiceId: invoice.id,
     currency: invoice.currency, amountCents: invoice.amountCents, attemptNumber: index + 2, status: 'failed',
     declineCode: 'create_abandoned', createdAt: date, resolvedAt: date });
-  expect(await db.forGym(gymId, tx => nextRetryDeadline(tx, gym, invoice.id))).toEqual(deadlines[0]);
+  const next = () => db.forGym(gymId, async tx => nextRetryDeadline(tx, gym, invoice.id,
+    await tx.select().from(paymentAttempts).where(eq(paymentAttempts.invoiceId, invoice.id))));
+  expect(await next()).toEqual(deadlines[0]);
   const before = creates.mock.calls.length;
   expect(await command.run([gymId], io)).toBe(0);
   expect(creates).toHaveBeenCalledTimes(before + 1);
   const rows = await db.forGym(gymId, tx => tx.select().from(paymentAttempts).where(eq(paymentAttempts.invoiceId, invoice.id)));
   expect(rows).toHaveLength(4);
   expect(rows.find(row => row.attemptNumber === 4)).toMatchObject({ status: 'succeeded', createdAt: f.clock.now() });
-  expect(await db.forGym(gymId, tx => nextRetryDeadline(tx, gym, invoice.id))).toBeUndefined();
+  expect(await next()).toBeUndefined();
 }, 90_000);
 
 it('requires reconciliation after the retry schedule is exhausted', async () => {

@@ -16,6 +16,7 @@ import { createKioskCheckin } from '../kiosk/standing/checkin.js';
 import { createKioskCheckinRoutes } from '../kiosk/standing/standing.routes.js';
 import { createBillingStanding } from './kiosk-standing.js';
 import { isOverdueInvoice, overdueInvoiceCondition } from './kiosk-standing.rules.js';
+import { readBillingTotals } from '../dashboard/billing.query.js';
 import { createInvoiceTransitions } from './transitions/index.js';
 
 const database = useTestDatabase(), factory = createFactories(database), clock = new TestClock('2026-10-26T12:00:00Z');
@@ -98,7 +99,7 @@ describe('past-due kiosk standing', () => {
     expect((await (await checkin(other.id, 'Other Family')).json()).data[0].status).toBe('checked_in');
     for (const memberId of [other.id, b.member.id]) expect(await (await checkin(memberId)).json()).toEqual({ data: [{ status: 'see_front_desk' }] });
   });
-  it('keeps the SQL and in-memory overdue rules identical for every status, date and balance', async () => {
+  it('keeps kiosk SQL, in-memory and dashboard overdue rules identical for every status, date and balance', async () => {
     const f = await fixture();
     let number = 1;
     for (const status of ['draft', 'open', 'processing', 'past_due', 'paid', 'void', 'partially_refunded', 'refunded'])
@@ -107,6 +108,9 @@ describe('past-due kiosk standing', () => {
     const [all, overdue] = await database.forGym(f.gymId, async tx => [await tx.select().from(invoices),
       await tx.select().from(invoices).where(overdueInvoiceCondition('2026-10-26'))]);
     expect(overdue.map(row => row.id).sort()).toEqual(all.filter(row => isOverdueInvoice(row, '2026-10-26')).map(row => row.id).sort());
+    const totals = await readBillingTotals(database.forGym, f.gymId, f.invoice.currency, '2026-10-26', '2026-11-01');
+    expect(Number(totals.past_due_count)).toBe(overdue.length);
+    expect(Number(totals.past_due)).toBe(overdue.reduce((sum, row) => sum + row.amountCents, 0));
   });
   it('ignores zero balances, void and paid invoices', async () => {
     const f = await fixture();

@@ -12,8 +12,6 @@ import { createAttendanceQueries } from '../attendance/attendance.js';
 import { createRanksService } from '../ranks/ranks.service.js';
 import { createPromotionCriteria } from '../ranks/criteria.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
-import { createMembershipService } from '../billing/memberships.js';
-import { createPaymentService } from '../billing/payments.js';
 import { createDashboardService } from './dashboard.js';
 import { createBillingDashboardService } from './billing.js';
 import { createNotSeenRead } from './not-seen.js';
@@ -59,9 +57,8 @@ it.each([300, 1000])('measures an owner page load and three years of weekly visi
     const settings = createGymSettingsAccessor({ scope, clock });
     const attendance = createAttendanceQueries({ scope, clock, settings });
     const ranks = createRanksService({ scope, clock, settings, criteria: createPromotionCriteria(attendance) });
-    const dashboard = createDashboardService({ members: createMembersService({ scope, clock }), ranks, attendance, notSeen: createNotSeenRead(scope) });
-    const billing = createBillingDashboardService({ settings, scope,
-      memberships: createMembershipService({ scope, clock, settings }), payments: createPaymentService({ scope, clock, settings }) });
+    const dashboard = createDashboardService({ members: createMembersService({ scope, clock }), ranks, notSeen: createNotSeenRead(scope) });
+    const billing = createBillingDashboardService({ settings, scope });
     const context = { gymId, clock, roles: ['owner'] as const };
     await createNotSeenRead(scope)(context);
     const unseen = await measure('not_seen', () => createNotSeenRead(scope)(context));

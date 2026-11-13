@@ -427,7 +427,7 @@ describe('billing alerts with the real PostgreSQL queue and RLS', () => {
     const provider = createDisputeAlertProvider({ scope: db.forGym }), read = vi.spyOn(provider, 'read');
     const attendance = createAttendanceQueries({ scope: db.forGym, clock: f.clock });
     configureDashboard({ notSeen: createNotSeenRead(db.forGym), members: createMembersService({ scope: db.forGym, clock: f.clock }),
-      ranks: createRanksService({ scope: db.forGym, clock: f.clock, criteria: createPromotionCriteria(attendance) }), attendance }, [provider]);
+      ranks: createRanksService({ scope: db.forGym, clock: f.clock, criteria: createPromotionCriteria(attendance) }) }, [provider]);
     let principal: Principal = { kind: 'anonymous' };
     const app = createApp({ contributions: areaContributions, clock: f.clock, authorize, setupToken: 'test-setup-token',
       resolveGym: async (c, next) => { c.set('context', { ...c.get('context'),

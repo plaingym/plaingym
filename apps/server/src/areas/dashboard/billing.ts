@@ -9,8 +9,6 @@ import { and, asc, count, eq, gt, inArray, lte, or } from 'drizzle-orm';
 import type { BillingDashboardWidget } from '@plaingym/shared/contracts';
 import type { DashboardWidgetProvider } from '../../core/interfaces/extensions.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
-import type { MembershipService } from '../billing/memberships.js';
-import type { PaymentService } from '../billing/payments.js';
 import { assignmentInvoiceCondition } from '../billing/assignment-invoices.js';
 import { skippedAmountCondition, readBillingTotals } from './billing.query.js';
 import { createWidgetRegistry } from './widgets.js';
@@ -21,12 +19,10 @@ export const createBillingWidgetRegistry = () => createWidgetRegistry(billingDas
 export interface BillingDashboardServices {
   scope?: typeof forGym;
   settings: GymSettingsAccessor;
-  memberships: Pick<MembershipService, 'list'>;
-  payments: Pick<PaymentService, 'listInvoices'>;
 }
 
 /** Uses the dashboard's existing shortlist extension; collection and email behavior stay with billing. */
-export function createSkippedCollectionsProvider(services: Pick<BillingDashboardServices, 'settings' | 'payments'> & { scope?: typeof forGym }):
+export function createSkippedCollectionsProvider<T extends BillingDashboardServices>(services: T):
 DashboardWidgetProvider<ReturnType<typeof extensionDashboardWidgetSchema.parse>> {
   const t = createTranslator(locales.en ?? {});
   return { id: 'billing.skipped-collections', permission: 'billing.read', order: 45, schema: extensionDashboardWidgetSchema,

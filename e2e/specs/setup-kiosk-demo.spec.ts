@@ -136,7 +136,23 @@ test('demo entry creates a gym, the slim bar and demo menu work at every size, f
     await expect(start.getByText('4242 4242 4242 4242')).toBeVisible();
     await expect(start.getByRole('link', { name: 'Open the join page', exact: true })).toHaveAttribute('href', '/join');
     await accessibleLayout(page, info, 'sandbox-demo-page-' + size.width);
+    await page.screenshot({ path: info.outputPath('sandbox-demo-page-' + size.width + '.png'), fullPage: true });
   }
+  // A readiness flag can change while the student's seeded paid invoices remain available.
+  await page.route('**/api/demo', async route => {
+    const response = await route.fetch(), body = await response.json();
+    await route.fulfill({ response, json: { ...body, data: { ...body.data, join: false } } });
+  });
+  await page.reload();
+  for (const size of sizes) {
+    await page.setViewportSize(size);
+    await expect(start.getByText("Joining online isn't available in this demo gym right now.")).toBeVisible();
+    await expect(start.getByText(/check-in QR code and paid invoices/)).toBeVisible();
+    await expect(start.getByRole('link', { name: 'Open the join page', exact: true })).toHaveCount(0);
+    await accessibleLayout(page, info, 'sandbox-demo-join-unavailable-' + size.width);
+    await page.screenshot({ path: info.outputPath('sandbox-demo-join-unavailable-' + size.width + '.png'), fullPage: true });
+  }
+  await page.unroute('**/api/demo');
   await page.goto(sandbox.origin + '/admin');
   await menuButton.click();
   // A bottom sheet on a phone and a side panel on wider screens, with its three labelled groups and no hints.

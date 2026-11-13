@@ -39,7 +39,7 @@ export async function eligibility(tx: Transaction, gym: GymSettings, clock: Cloc
   if (mode === 'retry') {
     if (invoice.kind !== 'cycle') return skipped('not_auto_collectable');
     const deadline = (await retryDeadlines(tx, gym, invoiceId)).filter(date => date <= clock.now()).at(-1);
-    if (!deadline || attempts.some(row => row.createdAt >= deadline && !abandonedAttempt(row)))
+    if (!deadline || retryWindowUsed(attempts, deadline))
       return skipped('outside_retry_window');
   } else if (mode === 'automatic' && attempts.some(row => !abandonedAttempt(row))) return skipped('already_attempted');
   const latest = attempts.at(-1);
@@ -64,11 +64,14 @@ export async function retryDeadlines(tx: Transaction, gym: GymSettings, invoiceI
   return retryDays.map(day => retryAt(firstDate, day, gym.timezone));
 }
 /** The first unused retry window; an abandoned create never consumes a window. Pending outcomes need reconciliation. */
-export async function nextRetryDeadline(tx: Transaction, gym: GymSettings, invoiceId: string) {
-  const attempts = await tx.select().from(paymentAttempts).where(eq(paymentAttempts.invoiceId, invoiceId));
+export async function nextRetryDeadline(tx: Transaction, gym: GymSettings, invoiceId: string,
+  attempts: readonly (typeof paymentAttempts.$inferSelect)[]) {
   if (attempts.some(row => row.status === 'pending')) return undefined;
   return (await retryDeadlines(tx, gym, invoiceId)).find(date =>
-    !attempts.some(row => row.createdAt >= date && !abandonedAttempt(row)));
+    !retryWindowUsed(attempts, date));
+}
+function retryWindowUsed(attempts: readonly (typeof paymentAttempts.$inferSelect)[], deadline: Date) {
+  return attempts.some(row => row.createdAt >= deadline && !abandonedAttempt(row));
 }
 /** Retries run at 09:00 gym time, `days` after the local `date`; a 09:00 lost to a DST gap moves to the next valid time. */
 export function retryAt(date: string, days: number, timezone: string) {

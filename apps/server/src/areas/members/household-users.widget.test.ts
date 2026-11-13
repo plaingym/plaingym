@@ -174,7 +174,7 @@ describe('portal confirmation widget', () => {
     const widget = provider(), spy = vi.spyOn(widget, 'read');
     const attendance = createAttendanceQueries({ scope: database.forGym, clock });
     configureDashboard({ notSeen: createNotSeenRead(database.forGym), members: createMembersService({ scope: database.forGym, clock }),
-      ranks: createRanksService({ scope: database.forGym, clock, criteria: createPromotionCriteria(attendance) }), attendance }, [widget]);
+      ranks: createRanksService({ scope: database.forGym, clock, criteria: createPromotionCriteria(attendance) }) }, [widget]);
     const user = await factory('authUser', gymId);
     let principal: Principal = { kind: 'anonymous' };
     const app = createApp({ contributions: areaContributions, clock, authorize, setupToken: 'test-setup-token',

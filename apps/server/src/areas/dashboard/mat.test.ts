@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it, vi } from 'vitest';
 import { memberSchema, type ListResponse, type MatDashboardWidget } from '@plaingym/shared/contracts';
-import { FakeAttendanceQueries } from '../../core/interfaces/attendance.js';
 import { TestClock } from '../../core/clock.js';
 import { createDashboardService } from './dashboard.js';
 import type { MatWidgetServices } from './mat.js';
@@ -25,7 +24,6 @@ function fixtures(roster = [member(10)]) {
     // Canned dependency; visit boundaries are tested against the real PostgreSQL read.
     notSeen: Object.assign(vi.fn(async () => widget), { lastSeen: vi.fn(async () => new Map<string, string | null>()) }),
     members: { listMembers: vi.fn(async (_gymId, input) => page(roster, input)) },
-    attendance: new FakeAttendanceQueries(),
     ranks: { dashboardEligibility: vi.fn(async () => []) },
   };
   return services;

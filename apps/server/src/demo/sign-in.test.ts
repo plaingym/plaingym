@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
 import { households, householdUsers, staffRoles, uuidv7, writeAudit } from '@plaingym/db';
@@ -181,13 +181,29 @@ describe('the visitor’s own sign-in link', () => {
 describe('the test card on the join page', () => {
   const t = createTranslator(locales.en ?? {}), gym = { name: 'Demo academy', revision: 1, logoKey: null, primaryColor: null };
   const hint = 'Demo payment: use the test card 4242 4242 4242 4242, any future expiry date and any CVC. No real money moves.';
+  it('shares a short per-gym readiness cache, refreshes it and retries a failed read without failing the page', async () => {
+    const time = new TestClock('2026-11-01T12:00:00Z');
+    const status = vi.fn(async () => ({ join: true, expiresAt: '2026-11-02T12:00:00Z' }));
+    const read = joinTestCardHint({ status }, t, time);
+    expect(await Promise.all([read(a.gymId), read(a.gymId)])).toEqual([hint, hint]);
+    expect(status).toHaveBeenCalledTimes(1);
+    expect(await read(b.gymId)).toBe(hint);
+    expect(status).toHaveBeenCalledTimes(2);
+    time.advance(5_000);
+    status.mockRejectedValueOnce(new Error('Read failed'));
+    expect(await read(a.gymId)).toBeUndefined();
+    expect(await read(a.gymId)).toBe(hint);
+    expect(status).toHaveBeenCalledTimes(4);
+    time.set('2026-11-02T12:00:00Z');
+    expect(await read(a.gymId)).toBeUndefined();
+  });
   it('names the test card in a sandbox that takes joins, and nowhere else', async () => {
     const paid = fixture({ stripe: { testKey: 'sk_test_demo', webhookSecret: 'whsec_demo' } });
     paid.service.setJoinReadiness({ ready: async () => [] });
-    expect(await joinTestCardHint(paid.service, t)(a.gymId)).toBe(hint);
-    expect(await joinTestCardHint(f.service, t)(a.gymId)).toBeUndefined();
-    expect(await joinTestCardHint(paid.service, t)(uuidv7())).toBeUndefined();
-    expect(await joinTestCardHint(fixture({ enabled: false, stripe: { testKey: 'sk_test_demo', webhookSecret: 'whsec_demo' } }).service, t)(a.gymId)).toBeUndefined();
+    expect(await joinTestCardHint(paid.service, t, clock)(a.gymId)).toBe(hint);
+    expect(await joinTestCardHint(f.service, t, clock)(a.gymId)).toBeUndefined();
+    expect(await joinTestCardHint(paid.service, t, clock)(uuidv7())).toBeUndefined();
+    expect(await joinTestCardHint(fixture({ enabled: false, stripe: { testKey: 'sk_test_demo', webhookSecret: 'whsec_demo' } }).service, t, clock)(a.gymId)).toBeUndefined();
   });
   it.each(['continue', 'cancelled', 'confirming', 'welcomeEmail', 'closed', 'failed'] satisfies JoinPageState[])('shows it only on the steps that lead to payment (%s)', async (state) => {
     const page = String(await joinStatusPage({ gym, t, state, testCardHint: hint }));

@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Dashboard
 
-`createDashboardService({ members, ranks, attendance, notSeen })` requires an
+`createDashboardService({ members, ranks, notSeen })` requires an
 explicit scoped `notSeen` read from `createNotSeenRead(scope)`. This read also
 supplies `lastSeen(context, memberIds)` for promotion details. Providers have no
 global database fallback. The runtime passes `createNotSeenRead()`; tests inject

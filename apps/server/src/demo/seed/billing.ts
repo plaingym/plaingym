@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, eq } from 'drizzle-orm';
-import { auditEvents, forGym, households, invoices, paymentMethods, staffRoles, uuidv7, type Transaction } from '@plaingym/db';
+import { auditEvents, forGym, households, invoices, paymentAttempts, paymentMethods, staffRoles, uuidv7, type Transaction } from '@plaingym/db';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
 import { clock as defaultClock, type Clock } from '../../core/clock.js';
 import { createCatalogService } from '../../areas/billing/catalog.js';
@@ -9,7 +9,7 @@ import { createMembershipService } from '../../areas/billing/memberships.js';
 import { previousBillingDate } from '../../areas/billing/invoicing/index.js';
 import { createChargeRunner } from '../../areas/billing/runner/index.js';
 import { nextRetryDeadline } from '../../areas/billing/runner/eligibility.js';
-import { audit, generateCycle, latestAttempt, system } from '../../areas/billing/runner/store.js';
+import { audit, generateCycle, system } from '../../areas/billing/runner/store.js';
 import { createInvoiceTransitions } from '../../areas/billing/transitions/index.js';
 import { createCardHandlers } from '../../areas/billing/webhooks/handlers/methods.js';
 import { createMembersService } from '../../areas/members/members.js';
@@ -167,8 +167,10 @@ gym: GymSettings, householdId: string, calendar: ReturnType<typeof seedCalendar>
   for (const invoice of history) {
     if (invoice.status === 'past_due' && options.retryFailed && invoice.dueOn === calendar.dueOn) {
       const next = await scope(gymId, async tx => {
-        if ((await latestAttempt(tx, invoice.id))?.status !== 'failed') return undefined;
-        return nextRetryDeadline(tx, gym, invoice.id);
+        const attempts = await tx.select().from(paymentAttempts).where(eq(paymentAttempts.invoiceId, invoice.id))
+          .orderBy(asc(paymentAttempts.attemptNumber));
+        if (attempts.at(-1)?.status !== 'failed') return undefined;
+        return nextRetryDeadline(tx, gym, invoice.id, attempts);
       });
       if (!next) throw new Error('Demo charge needs reconciliation before the seed can finish');
       // A sandbox need not wait days to finish seeding. An explicit charge keeps the runner's reservation and
