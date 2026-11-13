@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, count, desc, eq, gte, inArray, isNull, lt, or } from 'drizzle-orm';
 import {
-  attendances, classSessions, classSessionPrograms, classSessionTags, classTags,
-  attendanceFilterPredicate, forGym, forHousehold, HouseholdAccessError, leads, members, programs, uuidv7, writeAudit,
+  attendances, auditEvents, classSessions, classSessionPrograms, classSessionTags, classTags,
+  attendanceFilterPredicate, forGym, forHousehold, HouseholdAccessError, leads, members, programs, uuidv7, auditActor, writeAudit,
   type AttendanceRowFilter, type HouseholdAttendanceFilter, type Transaction,
 } from '@plaingym/db';
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
@@ -165,6 +165,14 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
       const timezone = openMat ? (await settings.get(context.gymId)).timezone : undefined;
       return scope(context.gymId, async (tx) => {
         const gymId = context.gymId, now = clock.now();
+        const replay = async (row: typeof attendances.$inferSelect) => {
+          const data = present(row);
+          if (origin.source !== 'coach') return data;
+          const [audit] = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(eq(auditEvents.gymId, gymId),
+            eq(auditEvents.action, 'attendance.recorded'), eq(auditEvents.targetId, row.id))).limit(1);
+          const after = audit?.after;
+          return { ...data, ...(after && typeof after === 'object' && 'needsCredits' in after && after.needsCredits === true ? { needsCredits: true } : {}) };
+        };
         const [member] = await tx.select({ anonymizedAt: members.anonymizedAt, status: members.status, leadId: leads.id }).from(members)
           .leftJoin(leads, and(eq(leads.gymId, members.gymId), eq(leads.memberId, members.id)))
           .where(and(eq(members.gymId, gymId), eq(members.id, value.memberId))).for('update', { of: members });
@@ -178,7 +186,7 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
             inArray(attendances.source, ['kiosk', 'coach']),
             gte(attendances.occurredAt, zonedInstant(day, '00:00', timezone, { gap: 'shift' })!),
             lt(attendances.occurredAt, zonedInstant(addDays(day, 1), '00:00', timezone, { gap: 'shift' })!))).limit(1);
-          if (existing) return present(existing);
+          if (existing) return replay(existing);
         }
         await requireReferences(tx, gymId, { ...(value.programId ? { programId: value.programId } : {}) });
         if (value.sessionId) {
@@ -190,7 +198,7 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
           const [existing] = await tx.select().from(attendances).where(and(
             eq(attendances.gymId, gymId), eq(attendances.memberId, value.memberId), eq(attendances.sessionId, value.sessionId),
           ));
-          if (existing) return present(existing);
+          if (existing) return replay(existing);
           if (session.status === 'cancelled') throw new AppError('conflict', 'Session is cancelled');
           kind = classKindSchema.parse(session.kind);
         }
@@ -207,21 +215,20 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
           )));
           if (!existing || existing.memberId !== value.memberId || existing.sessionId !== value.sessionId)
             throw new AppError('conflict', 'Attendance source key already used');
-          return present(existing);
+          return replay(existing);
         }
-        let creditSpent = false;
+        let creditSpent = false, needsCredits = false;
         // A member who has never held credits has nothing to draw: one indexed probe skips the rest.
         if (origin.source !== 'import' && await isPackHolder(tx, value.memberId) && !await hasActiveMembership(tx, value.memberId)) {
           const draw = await drawCredits(tx, { gymId, memberId: value.memberId, credits: 1, now,
             kind: 'use', attendanceId: inserted.id });
           creditSpent = draw.outcome === 'drawn';
+          needsCredits = !creditSpent;
           if (!creditSpent && origin.source === 'kiosk')
             throw new AppError('conflict', t('attendance/attendance:creditAssistance'));
         }
-        const data = present(inserted);
-        await writeAudit(tx, { gymId, createdAt: now, occurredAt: now, actorKind: context.actor.kind,
-          ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
-          ...(context.actor.kind === 'device' ? { actorDeviceId: context.actor.deviceId } : {}),
+        const data = { ...present(inserted), ...(origin.source === 'coach' && needsCredits ? { needsCredits: true } : {}) };
+        await writeAudit(tx, { gymId, createdAt: now, occurredAt: now, ...auditActor(context.actor),
           action: 'attendance.recorded', targetType: 'attendance', targetId: inserted.id,
           after: origin.source === 'import' ? data : { ...data, creditSpent } });
         if (origin.source !== 'import' && (member.leadId || isLeadMember(member.status)))
@@ -245,9 +252,7 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
         await tx.delete(attendances).where(where);
         // A credit the visit spent goes back to its lot, unless the pack was refunded in full since.
         const creditReturned = await returnCredit(tx, { gymId, memberId: row.memberId, attendanceId: id, now });
-        await writeAudit(tx, { gymId, createdAt: now, occurredAt: now, actorKind: context.actor.kind,
-          ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
-          ...(context.actor.kind === 'device' ? { actorDeviceId: context.actor.deviceId } : {}),
+        await writeAudit(tx, { gymId, createdAt: now, occurredAt: now, ...auditActor(context.actor),
           action: 'attendance.undone', targetType: 'attendance', targetId: id, before: row,
           ...(creditReturned === null ? {} : { after: { creditReturned } }) });
         return present(row);

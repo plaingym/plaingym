@@ -1,6 +1,8 @@
 {
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
   "catalogTitle": "Class packs",
+  "currencyMismatch": "This pack's currency must match the gym's currency.",
+  "taxInactive": "A selected tax rate is inactive. Remove it or choose an active rate.",
   "tabTitle": "Packs",
   "createPack": "Create class pack",
   "editPack": "Edit class pack",

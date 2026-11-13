@@ -480,9 +480,9 @@ for (const width of [360, 1280]) test('portal class credits respect payer and ad
   await expect(page.getByText('12 classes left', { exact: true })).toBeVisible();
   await expect(page.getByText('3 classes left', { exact: true })).toBeVisible();
   const bootstrap = await payer.json<{ data: { gym: { timezone: string } } }>('/api/auth/bootstrap');
-  const date = await page.evaluate(({ expiry, timezone }) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: timezone }).format(new Date(expiry)),
+  const date = await page.evaluate(({ expiry, timezone }) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: timezone }).format(new Date(Date.parse(expiry) - 1)),
     { expiry: own.data[0]!.soonestExpiry!, timezone: bootstrap.data.gym.timezone });
-  await expect(page.getByText('Expires on ' + date, { exact: true })).toBeVisible();
+  await expect(page.getByText('Next credits expire: use by ' + date, { exact: true })).toBeVisible();
   await accessibleLayout(page, info, 'payer-credits-' + width);
   await page.screenshot({ path: info.outputPath('payer-credits-' + width + '.png'), fullPage: true });
   await context.clearCookies(); await member.browser(context);

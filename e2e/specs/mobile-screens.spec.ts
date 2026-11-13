@@ -74,6 +74,10 @@ for (const { name: size, viewport, hasTouch } of viewports) {
     try {
       const home = (await owner.json<{ data: RecordId }>('/api/households', 'POST', { name: `Mobile ${last} family` })).data;
       const member = (await owner.json<{ data: Person }>('/api/members', 'POST', { householdId: home.id, firstName: 'Casey', lastName: last, status: 'active' })).data;
+      // An exhausted pack holder may still be checked in by staff, with an explicit notice.
+      for (const credits of [1, -1]) await owner.json('/api/billing/credits/adjust', 'POST', {
+        memberId: member.id, credits, reason: 'Opening credit correction', adjustmentId: crypto.randomUUID(),
+      });
       const today = new Date(), classDay = (weekday(localDate(today, zone)) + 2) % 7;
       const template = (await owner.json<{ data: RecordId }>('/api/schedule/templates', 'POST', { name: `QA ${size} class`, weekday: classDay, localStartTime: '18:00',
         durationMinutes: 60, coachId: null, capacity: null, notes: null, kind: 'class', programIds: [install.program.id], tagIds: [] })).data;
@@ -182,6 +186,7 @@ for (const { name: size, viewport, hasTouch } of viewports) {
         await roster.getByRole('button', { name: 'Search members', exact: true }).click();
         await roster.getByRole('button', { name: `Check in Casey ${last}`, exact: true }).click();
         await expect(roster.getByRole('button', { name: `Casey ${last} is checked in`, exact: true })).toBeDisabled();
+        await expect(roster.getByText('Checked in without spending a credit. This member needs more credits.')).toBeVisible();
         await check(coachPage, info, `${size}-coach-roster`);
         await coachPage.getByRole('button', { name: 'Close dialog', exact: true }).click();
         await coachPage.goto(gymOrigin + '/admin/settings');

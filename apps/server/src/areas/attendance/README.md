@@ -18,10 +18,16 @@ before drawing one class credit, earliest expiry first. An `active` or `trial`
 membership covers the visit without spending credits; a frozen membership does
 not. Imports never spend. Session replays return before drawing, and a partial
 unique ledger index allows one use per attendance. Staff can record a visit with
-no usable credits; `attendance.recorded.after.creditSpent` states whether a live
+no usable credits; a new staff record response then includes `needsCredits: true`,
+and the roster or open-mat form displays a notice. Staff retries preserve the
+notice from the recording audit. This flag is absent from kiosk responses.
+`attendance.recorded.after.creditSpent` states whether a live
 visit spent a credit. A kiosk pack holder with no usable credits and no active
 membership is refused atomically, with only `see_front_desk` reaching the shared
 screen. A member who has never held credits checks in as before.
+
+Backdated staff visits are corrections made today: membership cover and credit
+usability use the recording clock, even when `occurredAt` is earlier.
 
 A live open-mat visit (no session, from the kiosk, QR or staff) counts once per
 member per gym-local day of its `occurredAt`: under the member lock, a second one
@@ -53,9 +59,8 @@ session check-in copies the session's kind, and a kiosk or coach visit without a
 session is open mat. Imports without a session default to `class` and may pass
 `open_mat`. Later session edits never reclassify recorded attendance.
 
-Open mat is a visit, not a class. Unscheduled open-mat visits have no session, and
-each submission creates a separate visit, even at the same instant. Clients must not
-automatically retry these writes. Imported visits can be retried safely using a
+Open mat is a visit, not a class. Unscheduled live open-mat visits have no session
+and deduplicate within the gym-local day as described above. Imported visits can be retried safely using a
 source key. The `classesOnly` filter (used by the classes-since-promotion criterion)
 and the `classes` total leave open mat out unless the gym's
 `openMatCountsAsClass` setting is on (it is off by default). `total` and the

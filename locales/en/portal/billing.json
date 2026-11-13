@@ -8,7 +8,7 @@
   "noCredits": "No class credits",
   "classLeft": "{count} class left",
   "classesLeft": "{count} classes left",
-  "creditsExpiry": "Expires on {date}",
+  "creditsExpiry": "Next credits expire: use by {date}",
   "description": "Invoices, receipts and the card your gym charges.",
   "invoices": "Invoices",
   "noInvoices": "No invoices yet",

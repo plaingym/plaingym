@@ -29,8 +29,8 @@ are not an authorization grant: the server rechecks every submission. Late
 responses cannot repopulate a screen that was reset.
 
 `createStandingChecks` accepts providers implementing `KioskStandingCheck`.
-Inactive and missing-waiver checks are enabled, along with the billing extension
-point. Each waiver family's latest version is required unless retired;
+Inactive and missing-waiver checks are enabled, along with the billing and
+class-credit checks from the billing area. Each waiver family's latest version is required unless retired;
 membership agreements are excluded. Provider failures fail closed. Only the
 staff standing route exposes reason codes; device responses contain no reason
 text or billing fields.

@@ -24,6 +24,7 @@ function Roster({ sessionId }: { sessionId: string }) {
   const [offset, setOffset] = useState(0), [reload, setReload] = useState(0);
   const [roster, setRoster] = useState<{ data: Member[]; total: number } | null>(null);
   const [checked, setChecked] = useState<Map<string, Attendance>>(new Map());
+  const [needsCredits, setNeedsCredits] = useState<Set<string>>(new Set());
   const [undoing, setUndoing] = useState<{ attendance: Attendance; name: string } | null>(null);
   const [loading, setLoading] = useState(true), [saving, setSaving] = useState(false), [error, setError] = useState(false);
   useDialogOperation(saving);
@@ -43,6 +44,7 @@ function Roster({ sessionId }: { sessionId: string }) {
     try {
       const attendance = await attendanceClient.record({ memberId, sessionId, programId: null });
       setChecked((previous) => new Map(previous).set(memberId, attendance));
+      setNeedsCredits(previous => { const next = new Set(previous); if (attendance.needsCredits) next.add(memberId); else next.delete(memberId); return next; });
       notifyChanged();
     } catch { setError(true); }
     finally { setSaving(false); }
@@ -55,6 +57,7 @@ function Roster({ sessionId }: { sessionId: string }) {
     try {
       await attendanceClient.undo(undoing.attendance.id);
       setChecked(previous => { const next = new Map(previous); next.delete(undoing.attendance.memberId); return next; });
+      setNeedsCredits(previous => { const next = new Set(previous); next.delete(undoing.attendance.memberId); return next; });
       setUndoing(null); notifyChanged();
     } catch { setError(true); }
     finally { setSaving(false); }
@@ -78,7 +81,8 @@ function Roster({ sessionId }: { sessionId: string }) {
     {roster && roster.data.length > 0 && <ul className="divide-y divide-border rounded-xl border border-border">{roster.data.map((member) => {
       const name = `${member.firstName} ${member.lastName}`, attendance = checked.get(member.id), done = !!attendance;
       return <li key={member.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-2">
-        <span className="min-w-0 break-words font-medium">{name}</span>
+        <div className="min-w-0 break-words"><span className="font-medium">{name}</span>
+          {done && needsCredits.has(member.id) && <p role="status" className="text-sm text-warning">{text('needsCredits')}</p>}</div>
         <div className="flex flex-wrap items-center gap-2">
         <Button variant={done ? 'secondary' : 'default'} className={done ? 'shrink-0 bg-success/10 text-success disabled:opacity-100' : 'shrink-0'} disabled={busy || done} onClick={() => void checkIn(member.id)}
           aria-label={text(done ? 'checkedNamed' : 'checkInNamed', { name })}>
@@ -121,6 +125,7 @@ function MemberAttendance({ memberId }: { memberId: string }) {
   const [programId, setProgramId] = useState(''), [reload, setReload] = useState(0);
   const [loading, setLoading] = useState(true), [saving, setSaving] = useState(false);
   const [error, setError] = useState(false), [recorded, setRecorded] = useState(false);
+  const [needsCredits, setNeedsCredits] = useState(false);
   useEffect(() => {
     let active = true;
     setLoading(true); setError(false);
@@ -135,7 +140,8 @@ function MemberAttendance({ memberId }: { memberId: string }) {
     if (saving) return;
     setSaving(true); setError(false); setRecorded(false);
     try {
-      await attendanceClient.record({ memberId, sessionId: null, programId: programId || null });
+      const visit = await attendanceClient.record({ memberId, sessionId: null, programId: programId || null });
+      setNeedsCredits(visit.needsCredits === true);
       setRecorded(true); setReload((value) => value + 1);
     } catch { setError(true); }
     finally { setSaving(false); }
@@ -168,6 +174,7 @@ function MemberAttendance({ memberId }: { memberId: string }) {
           </Select></div>
         <Button type="submit" className="w-full sm:w-auto" disabled={loading || saving || !labels}>{text('recordOpenMat')}</Button>
         {recorded && <p role="status" className="text-sm">{text('recorded')}</p>}
+        {recorded && needsCredits && <p role="status" className="text-sm text-warning">{text('needsCredits')}</p>}
       </form>
     </div>
   </section>;

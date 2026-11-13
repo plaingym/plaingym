@@ -5,7 +5,8 @@
   "frontDesk": "The kiosk sends this member to the front desk:",
   "reason.missing_waiver": "A current waiver isn't signed.",
   "reason.inactive": "The member's status doesn't allow check-in (only active, trial and visitor members can check in).",
-  "reason.billing": "Billing needs attention.",
+  "reason.past_due": "The household has a past-due invoice.",
+  "reason.no_credits": "The member needs an unexpired class credit or an active or trial membership.",
   "reason.unknown": "Another check needs attention ({code}).",
   "loading": "Checking…",
   "error": "Kiosk standing couldn't be loaded."

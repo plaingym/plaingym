@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq } from 'drizzle-orm';
-import { leads, members, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
+import { leads, members, uuidv7, auditActor, writeAudit, type Transaction } from '@plaingym/db';
 import type { AttendanceMutation } from '../attendance/attendance.js';
 import { isLeadMember } from './eligibility.js';
 
@@ -27,9 +27,7 @@ async function advance(tx: Transaction, input: StageInput, stage: 'trial_attende
     const inserted = await tx.insert(leads).values({ id: uuidv7(now.getTime()), gymId, memberId, createdAt: now })
       .onConflictDoNothing({ target: [leads.gymId, leads.memberId] }).returning({ id: leads.id });
     created = inserted.length > 0;
-    if (created) await writeAudit(tx, { gymId, actorKind: actor.kind,
-      ...(actor.kind === 'user' ? { actorUserId: actor.userId } : {}),
-      ...(actor.kind === 'device' ? { actorDeviceId: actor.deviceId } : {}),
+    if (created) await writeAudit(tx, { gymId, ...auditActor(actor),
       action: 'lead.created', targetType: 'lead', targetId: inserted[0]!.id,
       after: { source: null }, occurredAt: now, createdAt: now });
     [before] = await tx.select().from(leads).where(where).for('update');
@@ -40,9 +38,7 @@ async function advance(tx: Transaction, input: StageInput, stage: 'trial_attende
   const changes = stage === 'trial_attended'
     ? { trialAttendedAt: before.trialAttendedAt ?? input.occurredAt ?? now } : { wonAt: before.wonAt ?? now, lostReason: null, lostAt: null };
   await tx.update(leads).set({ stage, ...changes, revision: before.revision + 1 }).where(where);
-  await writeAudit(tx, { gymId, actorKind: actor.kind,
-    ...(actor.kind === 'user' ? { actorUserId: actor.userId } : {}),
-    ...(actor.kind === 'device' ? { actorDeviceId: actor.deviceId } : {}),
+  await writeAudit(tx, { gymId, ...auditActor(actor),
     action: 'lead.stage_changed', targetType: 'lead', targetId: before.id,
     before: created ? null : { stage: before.stage, revision: before.revision }, after: { stage, revision: before.revision + 1 },
     occurredAt: now, createdAt: now });

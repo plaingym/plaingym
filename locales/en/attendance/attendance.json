@@ -1,6 +1,7 @@
 {
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
   "title": "Attendance",
+  "needsCredits": "Checked in without spending a credit. This member needs more credits.",
   "roster": "Coach check-in roster",
   "search": "Member name",
   "searchButton": "Search members",

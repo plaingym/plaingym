@@ -56,6 +56,15 @@ function start(view: React.ReactNode) {
   return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}><ShellServicesContext.Provider value={createShellServices(async () => bootstrap)}>{view}</ShellServicesContext.Provider></QueryClientProvider>);
 }
 afterEach(cleanup);
+it('reports credit-affecting collection, while viewing an invoice reports no change', async () => {
+  const f = transport(), changed = vi.fn();
+  start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={admin} client={f.client} onCreditChange={changed}/>);
+  fireEvent.click(await screen.findByRole('button', { name: 'Record cash or check' }));
+  expect(changed).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+  await waitFor(() => expect(changed).toHaveBeenCalledOnce());
+  expect(await screen.findByText('Paid')).toBeDefined();
+});
 describe('invoice and household payment UI', () => {
   it('selects the household in one searchable control and submits that household on a one-off invoice', async () => {
     const f = transport(); start(<InvoiceList gymId={gymId} access={admin} custom={true} catalog={true} client={f.client} />);

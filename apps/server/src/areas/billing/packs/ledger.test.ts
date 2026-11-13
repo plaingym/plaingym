@@ -62,6 +62,8 @@ describe('member credit lock, lots and adjustments', () => {
     const read = await f.service.read(f.gymId, f.member.id, {});
     const draw = read.data.entries.find(row => row.id === adjusted.data.entries[0]!.id)!;
     expect(draw.invoiceNumber).toBe(73);
+    expect(draw.invoiceId).toBe(invoice.id);
+    expect(read.data.lots[0]!.invoiceId).toBe(invoice.id);
     expect(adjusted.data.entries).toEqual([draw]);
   });
   it('opens a never-expiring lot and audits its redactable reason once on replay', async () => {
@@ -157,4 +159,26 @@ describe('member credit lock, lots and adjustments', () => {
     expect(await db.forGym(b.gymId, tx => hasActiveMembership(tx, a.member.id))).toBe(false);
     await expect(db.forGym(b.gymId, tx => lockMemberCredits(tx, a.member.id))).rejects.toMatchObject({ code: 'not_found' });
   });
+});
+
+it.each([
+  { name: 'expired', expiry: -1, used: 0, returned: 0, expected: 0 },
+  { name: 'exactly expiring', expiry: 0, used: 0, returned: 0, expected: 0 },
+  { name: 'used up', expiry: 1000, used: 3, returned: 0, expected: 0 },
+  { name: 'returned', expiry: 1000, used: 3, returned: 1, expected: 1 },
+  { name: 'permanent', expiry: null, used: 1, returned: 0, expected: 2 },
+])('agrees with the household projection for $name lots', async scenario => {
+  const f = await fixture(), now = f.clock.now();
+  await factory('householdUsers', f.gymId, { userId: f.user.id, householdId: f.member.householdId, scope: 'payer' });
+  const lot = await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 3,
+    expiresAt: scenario.expiry === null ? null : new Date(now.getTime() + scenario.expiry) });
+  if (scenario.used) await factory('classCreditEntries', f.gymId, { memberId: f.member.id, lotId: lot.id, credits: -scenario.used });
+  if (scenario.returned) await factory('classCreditEntries', f.gymId, { memberId: f.member.id, lotId: lot.id, kind: 'reverse', credits: scenario.returned, attendanceId: uuidv7(), adjustmentId: null, reason: null });
+  const household = await db.forHousehold({ kind: 'user', gymId: f.gymId, householdId: f.member.householdId, userId: f.user.id }, queries => queries.classCredits(now));
+  const lots = await db.forGym(f.gymId, tx => usableLots(tx, f.member.id, now));
+  const read = await f.service.read(f.gymId, f.member.id, {});
+  expect(lots.reduce((total, row) => total + row.remaining, 0)).toBe(scenario.expected);
+  expect(read.data.balance).toBe(scenario.expected);
+  expect(household[0]?.balance ?? 0).toBe(scenario.expected);
+  expect(household[0]?.soonestExpiry?.toISOString() ?? null).toBe(scenario.expected && scenario.expiry !== null ? lot.expiresAt!.toISOString() : null);
 });

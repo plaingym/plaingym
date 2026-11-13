@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { canStaff } from '@plaingym/shared';
 import { localDate } from '@plaingym/shared/time';
@@ -11,38 +11,28 @@ import { Dialog } from '../../../components/ui/dialog.js';
 import { userNames } from '../../../components/ui/page.js';
 import { LoadingState, ErrorState } from '../../../components/ui/states.js';
 import { InvoiceDetails, type InvoiceAccess } from '../invoices/detail.js';
-import { packClient, type PackClient } from './api.js';
+import { packCatalogKey, packClient, type PackClient } from './api.js';
 import { AdjustmentForm, SaleForm } from './forms.js';
-import { failure, text } from './messages.js';
+import { text } from './messages.js';
 
 export function PackPanel({ gymId, memberId, timezone, access, client = packClient }: {
   gymId: string; memberId: string; timezone: string; access: InvoiceAccess; client?: PackClient;
 }) {
   const cache = useQueryClient(), key = ['billing', gymId, 'credits', memberId];
   const [offset, setOffset] = useState(0), [action, setAction] = useState<'sale' | 'adjust' | null>(null);
-  const [invoiceId, setInvoiceId] = useState<string | null>(null), [error, setError] = useState(''), [resolving, setResolving] = useState(false);
+  const [invoiceId, setInvoiceId] = useState<string | null>(null);
   const [refreshUntil, setRefreshUntil] = useState(0);
-  const inFlight = useRef(false);
   // Keep the current page on screen while the next one loads, so the pager keeps its place and focus.
   const ledger = useQuery({ queryKey: [...key, offset], queryFn: () => client.ledger(memberId, offset), placeholderData: keepPreviousData,
     // Invoice settlement publishes credit effects asynchronously; briefly follow their completion after collection.
     refetchInterval: () => Date.now() < refreshUntil ? 2000 : false });
-  const packs = useQuery({ queryKey: ['billing', gymId, 'packs'], queryFn: () => client.packs(), enabled: access.record && action === 'sale' });
+  const packs = useQuery({ queryKey: packCatalogKey(gymId), queryFn: () => client.packs(), enabled: access.record && action === 'sale' });
   function changed() { setAction(null); setOffset(0); void cache.invalidateQueries({ queryKey: ['billing', gymId] }); }
-  async function openInvoice(number: number) {
-    if (inFlight.current) return;
-    inFlight.current = true; setResolving(true); setError('');
-    try { setInvoiceId(await client.invoiceId(memberId, number)); }
-    catch (cause) { setError(failure(cause)); }
-    finally { inFlight.current = false; setResolving(false); }
-  }
   const date = (value: string) => new Intl.DateTimeFormat(undefined, { timeZone: timezone, dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
-  const invoice = (number: number | null) => number === null ? null : <Button variant="link" disabled={resolving} className="w-full sm:w-auto" onClick={() => void openInvoice(number)}>{text('invoiceNumber', { number })}</Button>;
+  const invoice = (id: string | null, number: number | null) => id === null || number === null ? null : <Button variant="link" className="w-full sm:w-auto" onClick={() => setInvoiceId(id)}>{text('invoiceNumber', { number })}</Button>;
   return <section aria-label={text('tabTitle')} className={'min-w-0 space-y-5 ' + userNames}>
     <h2 className="text-lg font-semibold">{text('tabTitle')}</h2>
     {ledger.isPending && <LoadingState/>}{ledger.isError && <ErrorState onRetry={() => void ledger.refetch()}/>}
-    {error && <Alert role="alert">{error}</Alert>}
-    {resolving && <LoadingState/>}
     {ledger.data && <>
       <div className="space-y-3"><p className="text-xl font-semibold">{text('balance', { count: ledger.data.data.balance })}</p>
         <p className="text-sm text-muted-foreground">{text('refreshHelp')}</p>
@@ -52,14 +42,14 @@ export function PackPanel({ gymId, memberId, timezone, access, client = packClie
         {!ledger.data.data.lots.length && <p className="text-muted-foreground">{text('noLots')}</p>}
         <ul className="grid min-w-0 gap-3 lg:grid-cols-2">{ledger.data.data.lots.map(lot => <li key={lot.id} className="min-w-0 space-y-2 rounded-lg border p-4">
           <p className="font-medium">{text('remaining', { count: lot.remaining })}</p>
-          <p>{lot.expiresAt ? text('expiresAt', { date: date(lot.expiresAt) }) : text('neverExpires')}</p>{invoice(lot.invoiceNumber)}
+          <p>{lot.expiresAt ? text('expiresAt', { date: date(lot.expiresAt) }) : text('neverExpires')}</p>{invoice(lot.invoiceId, lot.invoiceNumber)}
         </li>)}</ul>
       </div>
       <div className="space-y-3"><h3 className="font-semibold">{text('ledger')}</h3>
         {!ledger.data.data.entries.length && <p className="text-muted-foreground">{text('noEntries')}</p>}
         <ul className="space-y-3">{ledger.data.data.entries.map(entry => <li key={entry.id} className="min-w-0 space-y-2 rounded-lg border p-4">
           <div className="flex flex-col gap-2 sm:flex-row sm:justify-between"><p className="font-medium">{text('kind.' + entry.kind)} · {text('creditCount', { count: entry.credits })}</p><p className="text-sm text-muted-foreground">{date(entry.createdAt)}</p></div>
-          {entry.reason && <p className="whitespace-pre-wrap">{entry.reason}</p>}{invoice(entry.invoiceNumber)}
+          {entry.reason && <p className="whitespace-pre-wrap">{entry.reason}</p>}{invoice(entry.invoiceId, entry.invoiceNumber)}
         </li>)}</ul>
         <div className="flex flex-wrap items-center gap-3">
           <Button variant="outline" disabled={!offset || ledger.isPlaceholderData} onClick={() => setOffset(value => value - 25)}>{text('previous')}</Button>
@@ -69,16 +59,16 @@ export function PackPanel({ gymId, memberId, timezone, access, client = packClie
       </div>
     </>}
     {access.record && <div className="flex flex-col gap-3 sm:flex-row">
-      <Button disabled={resolving} onClick={() => setAction('sale')}>{text('sell')}</Button>
-      <Button variant="outline" disabled={resolving} onClick={() => setAction('adjust')}>{text('adjust')}</Button>
+      <Button onClick={() => setAction('sale')}>{text('sell')}</Button>
+      <Button variant="outline" onClick={() => setAction('adjust')}>{text('adjust')}</Button>
     </div>}
     {action === 'sale' && access.record && <>
       {packs.isPending && <LoadingState/>}{packs.isError && <ErrorState onRetry={() => void packs.refetch()}/>}
-      {packs.data && <SaleForm memberId={memberId} packs={packs.data} today={localDate(new Date(), timezone)} client={client} close={() => setAction(null)} sold={id => { changed(); setInvoiceId(id); }}/>}
+      {packs.data && <SaleForm memberId={memberId} packs={packs.data} today={localDate(new Date(), timezone)} client={client} close={() => setAction(null)} sold={id => { changed(); setRefreshUntil(Date.now() + 60_000); setInvoiceId(id); }}/>}
     </>}
     {action === 'adjust' && access.record && <AdjustmentForm memberId={memberId} client={client} close={() => setAction(null)} adjusted={changed}/>}
-    {invoiceId && <Dialog size="wide" title={text('invoice')} closeLabel={text('close')} onClose={() => { setInvoiceId(null); setRefreshUntil(Date.now() + 60_000); void cache.invalidateQueries({ queryKey: key }); }}>
-      <InvoiceDetails key={invoiceId} gymId={gymId} invoiceId={invoiceId} access={access}/>
+    {invoiceId && <Dialog size="wide" title={text('invoice')} closeLabel={text('close')} onClose={() => setInvoiceId(null)}>
+      <InvoiceDetails key={invoiceId} gymId={gymId} invoiceId={invoiceId} access={access} onCreditChange={() => { setRefreshUntil(Date.now() + 60_000); void cache.invalidateQueries({ queryKey: key }); }}/>
     </Dialog>}
   </section>;
 }

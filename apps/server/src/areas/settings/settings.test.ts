@@ -142,7 +142,7 @@ describe('settings service and routes', () => {
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
     expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
   });
-  it.each(['plans', 'chargeTypes', 'memberships', 'invoices'] as const)('locks currency when %s exist', async (table) => {
+  it.each(['plans', 'chargeTypes', 'memberships', 'invoices', 'classPacks'] as const)('locks currency when %s exist', async (table) => {
     const gymId = uuidv7(); await factory('gyms', gymId);
     await service.update({ ...mutation, gymId }, 'currency', { revision: 1, currency: 'CAD' });
     await factory(table, gymId);

@@ -12,7 +12,7 @@ import { Button } from '../../../components/ui/button.js';
 import { Badge } from '../../../components/ui/table.js';
 import { EmptyState, ErrorState, LoadingState } from '../../../components/ui/states.js';
 import { Page, PageHeader, PageSection } from '../../../components/ui/page.js';
-import { portalClient, type PortalClient } from './client.js';
+import { BookingConflictError, portalClient, type PortalClient } from './client.js';
 import { MemberPicker, usePortalMembers } from './members.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('portal/schedule:' + key, values);
@@ -50,7 +50,7 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
     onMutate: () => setMessage(undefined),
     onSuccess: (row, input) => setMessage({ tone: 'success', text: row.status === 'cancelled' ? text('cancelledSaved', { name: input.member.name })
       : row.status === 'waitlisted' ? text('waitlistSaved', { name: input.member.name, rank: row.queueRank }) : text('bookedSaved', { name: input.member.name }) }),
-    onError: error => setMessage({ tone: 'error', text: text(error instanceof ApiError && error.status === 409 ? 'conflict' : 'error') }),
+    onError: error => setMessage({ tone: 'error', text: error instanceof BookingConflictError ? error.message : text(error instanceof ApiError && error.status === 409 ? 'conflict' : 'error') }),
     onSettled: () => cache.invalidateQueries({ queryKey: [...scope.key, 'schedule'] }),
   });
   const dateLabel = new Intl.DateTimeFormat(undefined, { timeZone: timezone, weekday: 'long', month: 'long', day: 'numeric' });

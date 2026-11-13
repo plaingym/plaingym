@@ -1,11 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { bookingsContracts, portalContracts, portalScheduleContracts, type PortalContext, type PortalScheduleSession } from '@plaingym/shared/contracts';
-import { ApiError, createJsonTransport } from '../../../lib/api.js';
+import { ApiError, apiErrorReasons, createJsonTransport } from '../../../lib/api.js';
 import { parseResponse } from '../../../lib/response.js';
 import { householdTransport } from '../household/api.js';
 
-/** Created per call, so importing this module (through the registry) has no side effects. */
-const request = <T>(path: string, body?: unknown, householdId?: string) => createJsonTransport(householdId ? householdTransport(householdId) : fetch)<T>(path, body);
+/** A translated booking refusal safe to show to the member. */
+export class BookingConflictError extends Error { readonly status = 409; }
+const request = <T>(path: string, body?: unknown, householdId?: string) => {
+  const fetcher = householdId ? householdTransport(householdId) : fetch;
+  return createJsonTransport(async (input, init) => {
+    const response = await fetcher(input, init);
+    // Only the booking service's coded refusals are translated for members; a generic conflict keeps the generic text.
+    if (response.status === 409 && path.includes('/bookings') && (await apiErrorReasons(response)).length) {
+      const answer: unknown = await response.clone().json().catch(() => null);
+      const error = (answer as { error?: { message?: unknown } } | null)?.error;
+      if (typeof error?.message === 'string' && error.message.trim()) throw new BookingConflictError(error.message);
+    }
+    return response;
+  })<T>(path, body);
+};
 const query = (path: string, values: Record<string, string | number | undefined>) => {
   const params = new URLSearchParams(Object.entries(values).flatMap(([key, value]) => value === undefined ? [] : [[key, String(value)]]));
   return params.size ? `${path}?${params}` : path;

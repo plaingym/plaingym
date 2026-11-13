@@ -46,7 +46,7 @@ describe('pack catalog', () => {
     await expect(f.service.get(f.gymId, pack.id)).rejects.toMatchObject({ code: 'not_found' });
     await expect(f.service.update(f.context, pack.id, { revision: 1, name: 'Foreign' })).rejects.toMatchObject({ code: 'not_found' });
     await expect(f.service.create(f.context, { ...f.input, taxRateIds: [other.tax.id] })).rejects.toMatchObject({ code: 'not_found' });
-    await expect(f.service.create(f.context, { ...f.input, currency: 'EUR' })).rejects.toMatchObject({ code: 'conflict' });
+    await expect(f.service.create(f.context, { ...f.input, currency: 'EUR' })).rejects.toMatchObject({ code: 'conflict', details: { reason: ['currency_mismatch'] } });
     expect((await f.service.list(f.gymId, {})).data).toEqual([]);
     expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents))).toEqual([]);
   });
@@ -82,8 +82,8 @@ describe('tax archive integration', () => {
     expect(await db.forGym(other.gymId, tx => tx.select().from(classPackTaxRates))).toHaveLength(1);
     const audit = (await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.tax_rate.archived'))))[0]!;
     expect(audit.after).toMatchObject({ detachedFrom: { packs: [{ id: archived.id }, { id: active.id }] } });
-    await expect(f.service.create(f.context, f.input)).rejects.toMatchObject({ code: 'conflict' });
-    await expect(f.service.update(f.context, active.id, { revision: 1, taxRateIds: [f.tax.id] })).rejects.toMatchObject({ code: 'conflict' });
+    await expect(f.service.create(f.context, f.input)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['tax_inactive'] } });
+    await expect(f.service.update(f.context, active.id, { revision: 1, taxRateIds: [f.tax.id] })).rejects.toMatchObject({ code: 'conflict', details: { reason: ['tax_inactive'] } });
   });
   it('cannot reattach a rate while a confirmed detach races a pack edit', async () => {
     const f = await fixture(), pack = await f.service.create(f.context, f.input);

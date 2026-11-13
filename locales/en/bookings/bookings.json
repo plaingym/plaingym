@@ -43,7 +43,7 @@
   "noReservation": "This class does not require a reservation.",
   "full": "This class is full.",
   "erasedMember": "An erased member cannot be booked.",
-  "noCredits": "You need an unexpired class credit or an active membership to book or join the waitlist. Please contact the front desk.",
+  "noCredits": "You need an unexpired class credit or an active or trial membership to book or join the waitlist. Please contact the front desk.",
   "capacityBelowBooked": "Capacity cannot be lower than the number already booked.",
   "gym": "Your gym",
   "promotionSubject": "Your place in {name} is confirmed",

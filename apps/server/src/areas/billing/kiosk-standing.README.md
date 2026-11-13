@@ -9,15 +9,16 @@ manual charges, which remain open, and invoices held for staff review. Open
 invoices due today and zero balances do not trigger this check. A missing member fails closed. Members in
 another household or gym never affect the result. Settling or voiding the invoice
 clears this check. It does not change attendance or invoice state.
-After the overdue-invoice check, a member with any class-credit ledger entry
-needs a usable, unexpired credit or an active membership (`active` or `trial`).
-Otherwise the provider returns `front_desk` with the staff-only `no_credits`
-reason. It uses the pack ledger's `isPackHolder`, `usableLots` and
-`hasActiveMembership` helpers; an expired lot stops counting at its expiry
-instant even before the expiry job runs. Members who have never held credits
-keep their existing standing. A household member's credits do not cover siblings.
-The kiosk's default standing composition passes its own database scope to this
-factory, alongside the inactive-member and waiver checks.
+`createCreditsStanding(scope)` is a separate provider (id `credits`), so staff see a
+credit problem and an overdue invoice together. A member with any class-credit
+ledger entry needs a usable, unexpired credit or an active membership (`active` or
+`trial`); otherwise it returns `front_desk` with the staff-only `no_credits` reason.
+It uses the pack ledger's `lacksClassEligibility`, the rule portal booking and
+waitlist promotion also use; an expired lot stops counting at its expiry instant even
+before the expiry job runs. Members who have never held credits keep their existing
+standing. A household member's credits do not cover siblings.
+The kiosk's default standing compositions (name and PIN, and QR) pass their own
+database scope to both factories, alongside the inactive-member and waiver checks.
 
 `kiosk-standing.rules.ts` exports `isOverdueInvoice` for the dashboard and the
 matching `overdueInvoiceCondition` for SQL. A PostgreSQL parity test checks every

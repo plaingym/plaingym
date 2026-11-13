@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import AxeBuilder from '@axe-core/playwright';
-import { mkdir, writeFile } from 'node:fs/promises';
 import { test, expect, gymOrigin, type Person, type RecordId } from '../support.js';
 import type { Page, TestInfo } from '@playwright/test';
 
@@ -13,11 +12,9 @@ async function check(page: Page, info: TestInfo, name: string) {
   expect(sizes.scroll).toBeLessThanOrEqual(sizes.width); expect(sizes.small).toEqual([]);
   const axe = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
   expect(axe.violations.map(row => row.id)).toEqual([]);
-  await mkdir('coverage/packs', { recursive: true });
   const dialog = page.getByRole('dialog');
   const screenshot = await (await dialog.count() ? dialog.screenshot() : name.startsWith('member-')
     ? page.getByRole('tabpanel', { name: 'Packs', exact: true }).screenshot() : page.screenshot({ fullPage: true }));
-  await writeFile('coverage/packs/' + name + '.png', screenshot);
   await info.attach(name, { body: screenshot, contentType: 'image/png' });
 }
 
@@ -70,6 +67,20 @@ for (const width of [360, 1280]) {
       await check(page, info, 'member-' + width);
       await page.getByRole('button', { name: /^Invoice #/ }).first().click();
       await expect(page.getByRole('dialog', { name: 'Invoice', exact: true }).getByText('Paid', { exact: true }).first()).toBeVisible();
+      await page.getByRole('dialog', { name: 'Invoice', exact: true }).getByRole('button', { name: 'Close', exact: true }).click();
+      await owner.json('/api/billing/credits/adjust', 'POST', { memberId: member.id, credits: -8,
+        reason: 'Remaining credits used', adjustmentId: crypto.randomUUID() });
+      await page.goto(gymOrigin + '/admin/members/' + member.id + '#memberTabs.kiosk-standing');
+      // The profile reads its initial tab from the hash on mount; a hash-only navigation keeps the mounted tab.
+      await page.reload();
+      await expect(page.getByRole('tab', { name: 'Kiosk check-in', exact: true })).toHaveAttribute('aria-selected', 'true');
+      await expect(page.getByText('The member needs an unexpired class credit or an active or trial membership.')).toBeVisible();
+      await check(page, info, 'standing-' + width);
+      await page.getByRole('tab', { name: 'Attendance', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'Record open-mat visit' })).toBeEnabled();
+      await page.getByRole('button', { name: 'Record open-mat visit' }).click();
+      await expect(page.getByText('Checked in without spending a credit. This member needs more credits.')).toBeVisible();
+      await check(page, info, 'open-mat-' + width);
     } finally { await context.close(); }
   });
 }

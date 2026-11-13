@@ -54,7 +54,7 @@ function mount(element: ReactNode, handle: Handler, { context, answeredFor, hous
     }
     if (path === '/api/portal/credits') return Response.json({ data: [], householdId: answeredFor ?? current });
     // The role comes from the open household; the page's own reads are what a test may answer for another one.
-    if (path === '/api/portal/context' && context) return Response.json({ data: context, householdId: current });
+    if (path === '/api/portal/context' && (context || (element as { type?: unknown }).type === PortalBillingPage)) return Response.json({ data: context ?? payer, householdId: current });
     const result = handle(path, init);
     return result instanceof Response ? result : result === undefined ? new Response(null, { status: 404 }) : Response.json({ ...result as object, householdId: answeredFor ?? current });
   });
@@ -234,7 +234,7 @@ describe('portal billing page', () => {
     await waitFor(() => expect(screen.getAllByRole('button', { name: 'Try again' })).toHaveLength(3));
     expect(screen.queryByText('Invoice #7')).toBeNull();
     expect(screen.queryByText(/•••• 4242/)).toBeNull();
-    expect(view.stored()).toEqual([]);
+    expect(view.stored().map(query => query.queryKey.at(-1))).toEqual(['context']);
   });
 });
 

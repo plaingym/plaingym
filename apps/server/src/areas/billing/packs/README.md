@@ -115,6 +115,9 @@ transaction. They never open a nested transaction or call external services:
   balances and credits staff added. A pack refunded in full (a sale `reverse` row,
   or its invoice `refunded`) doesn't count, so a sale undone that way leaves the
   member as before it.
+* `lacksClassEligibility(tx, memberId, now)` shares the pack-holder, membership and
+  usable-credit rule between portal booking, waitlist promotion of a member-made
+  booking, and the independent `credits` standing check. Billing and credit standing can both report a problem to staff.
 * `returnCredit(tx, { gymId, memberId, attendanceId, now })` requires the member
   lock. It returns the credit an undone visit spent to its lot (a `reverse` +1 row)
   and answers `true`; `false` when that lot's pack was refunded in full, so the
@@ -132,7 +135,7 @@ Reads lock the member to return a consistent balance, positive lot remainders
 by creation time and ID, newest first. `limit` defaults to 50 (maximum 100) and
 `offset` to zero; pagination includes the total entry count. The usable balance
 excludes expired lots. Grant, draw, refund and expiry entries carry the sale's
-invoice number through their sale or lot; manual lots have no invoice number.
+invoice ID and display number through their sale or lot; manual lots have neither.
 
 Adjustment input is `{ memberId, credits, reason, adjustmentId }`: a nonzero
 integer from -100 to 100, a trimmed 1–500-character reason and a client-generated

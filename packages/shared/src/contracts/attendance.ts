@@ -12,6 +12,8 @@ export const attendanceSchema = z.strictObject({
   occurredAt: instantSchema, source: attendanceSourceSchema, kind: classKindSchema, createdAt: instantSchema,
 });
 export const attendanceResponseSchema = z.strictObject({ data: attendanceSchema });
+/** A staff override may record a visit even when the member needs more credits. */
+export const recordAttendanceResponseSchema = z.strictObject({ data: attendanceSchema.extend({ needsCredits: z.boolean().optional() }) });
 export const attendanceListResponseSchema = listResponseSchema(attendanceSchema);
 /** Source and import deduplication keys are assigned by the service, never by the coach form. The kind comes
  * from the session; a visit without a session is open mat. */
@@ -41,7 +43,7 @@ export const attendanceTotalsSchema = z.strictObject({
 export const attendanceTotalsResponseSchema = z.strictObject({ data: attendanceTotalsSchema });
 /** Duplicate member/session or import-source keys return the original record. Staff may undo live visits. */
 export const attendanceContracts = {
-  record: { method: 'post', path: '/api/attendance', permission: manageAttendance, body: recordAttendanceRequestSchema, response: attendanceResponseSchema },
+  record: { method: 'post', path: '/api/attendance', permission: manageAttendance, body: recordAttendanceRequestSchema, response: recordAttendanceResponseSchema },
   undo: { method: 'post', path: '/api/attendance/{id}/undo', permission: manageAttendance, params: z.strictObject({ id: idSchema }), response: attendanceResponseSchema },
   list: { method: 'get', path: '/api/attendance', permission: manageAttendance, query: attendanceListQuerySchema, response: attendanceListResponseSchema },
   totals: { method: 'get', path: '/api/attendance/totals', permission: manageAttendance, query: attendanceTotalsQuerySchema, response: attendanceTotalsResponseSchema },

@@ -132,3 +132,23 @@ describe('registered attendance panels', () => {
     expect(screen.queryByText('Open-mat visit recorded.')).toBeNull();
   });
 });
+
+it('warns the roster when staff checked in a pack holder without spending a credit', async () => {
+  client.record.mockResolvedValue({ id: 'visit', memberId, source: 'coach', needsCredits: true });
+  const user = userEvent.setup(); render(<AttendanceRosterPanel sessionId={sessionId}/>);
+  await user.click(await screen.findByRole('button', { name: 'Check in River Lee' }));
+  expect(await screen.findByText('Checked in without spending a credit. This member needs more credits.')).toBeDefined();
+  expect(screen.getByRole('button', { name: 'River Lee is checked in' })).toBeDefined();
+  await user.click(screen.getByRole('button', { name: 'Undo check-in for River Lee' }));
+  await user.click(screen.getByRole('button', { name: 'Undo check-in' }));
+  await screen.findByRole('button', { name: 'Check in River Lee' });
+  expect(screen.queryByText(/needs more credits/)).toBeNull();
+});
+
+it('also warns for an open-mat credit override in the member tab', async () => {
+  client.record.mockResolvedValue({ id: 'visit', memberId, source: 'coach', needsCredits: true });
+  const user = userEvent.setup(); render(<MemberAttendancePanel memberId={memberId}/>);
+  await screen.findByRole('option', { name: 'Fundamentals' });
+  await user.click(screen.getByRole('button', { name: 'Record open-mat visit' }));
+  expect(await screen.findByText('Checked in without spending a credit. This member needs more credits.')).toBeDefined();
+});

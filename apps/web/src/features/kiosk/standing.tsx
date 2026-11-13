@@ -6,7 +6,7 @@ import type { ExtensionViewProps } from '../../lib/registries.js';
 import { t } from '../../lib/i18n.js';
 import { Alert } from '../../components/ui/alert.js';
 
-const known = new Set(['missing_waiver', 'inactive', 'billing']);
+const known = new Set(['missing_waiver', 'inactive', 'past_due', 'no_credits']);
 /** Staff see why the kiosk sends a member to the front desk; the kiosk itself never shows a reason. */
 export function KioskStandingTab({ memberId }: ExtensionViewProps) {
   const query = useQuery({ queryKey: ['kiosk-standing', memberId], enabled: !!memberId, queryFn: async ({ signal }) => {

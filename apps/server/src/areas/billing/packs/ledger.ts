@@ -71,6 +71,12 @@ export async function hasActiveMembership(tx: Transaction, memberId: string): Pr
     eq(memberships.memberId, memberId), inArray(memberships.status, ['active', 'trial']))).limit(1)).length > 0;
 }
 
+/** Shared by booking and kiosk standing; refunded packs alone do not impose a credit requirement. */
+export async function lacksClassEligibility(tx: Transaction, memberId: string, now: Date): Promise<boolean> {
+  if (!await isPackHolder(tx, memberId) || await hasActiveMembership(tx, memberId)) return false;
+  return (await usableLots(tx, memberId, now)).length === 0;
+}
+
 /** The sales whose credits a full refund reversed: a `reverse` row on the sale, or its invoice refunded in full. */
 async function refundedSales(tx: Transaction, memberId: string): Promise<Set<string>> {
   const reversed = await tx.select({ saleId: classCreditEntries.saleId }).from(classCreditEntries).where(and(

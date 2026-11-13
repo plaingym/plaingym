@@ -76,7 +76,7 @@ describe('portal class-credit eligibility', () => {
     const denied = await post(server, path, { sessionId: f.session.id });
     expect(denied.status).toBe(409);
     expect(await denied.json()).toMatchObject({ error: { code: 'conflict',
-      message: 'You need an unexpired class credit or an active membership to book or join the waitlist. Please contact the front desk.' } });
+      message: 'You need an unexpired class credit or an active or trial membership to book or join the waitlist. Please contact the front desk.' } });
     expect(await db.forGym(f.gymId, tx => tx.select().from(classBookings))).toHaveLength(0);
     expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents))).toHaveLength(0);
     expect(await db.forGym(f.gymId, tx => tx.select().from(classCreditEntries))).toEqual(before);

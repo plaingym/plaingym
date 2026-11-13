@@ -12,7 +12,7 @@ import { registration } from './registrations.js';
 
 const id = (n: number) => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
 const gymId = id(1), userId = id(2), householdId = id(3);
-const row = { memberId: id(4), firstName: 'Alex', lastName: 'Rivera', balance: 7, soonestExpiry: '2026-11-12T01:00:00Z' };
+const row = { memberId: id(4), firstName: 'Alex', lastName: 'Rivera', balance: 7, soonestExpiry: '2026-11-12T08:00:00Z' };
 function mount({ data = [row], role = 'payer', answeredFor = householdId, fail = false }: {
   data?: (typeof row | Omit<typeof row, 'soonestExpiry'> & { soonestExpiry: null })[];
   role?: 'payer' | 'member'; answeredFor?: string; fail?: boolean;
@@ -21,6 +21,7 @@ function mount({ data = [row], role = 'payer', answeredFor = householdId, fail =
   cache.setQueryData(portalHouseholdsKey(portalLoginKey(gymId, userId)), { current: householdId, households: [{ householdId, name: 'Rivera', role }] });
   const fetcher = vi.fn(async (input: string | URL | Request) => {
     const path = String(input);
+    if (path === '/api/portal/context') return Response.json({ data: { role, memberId: role === 'member' ? row.memberId : null }, householdId });
     if (path === '/api/portal/credits') return fail ? new Response(null, { status: 503 }) : Response.json({ data, householdId: answeredFor });
     if (path.startsWith('/api/portal/invoices?')) return Response.json({ data: [], pagination: { limit: 20, offset: 0, total: 0 }, householdId });
     if (path === '/api/portal/payment-methods') return Response.json({ data: [], householdId });
@@ -41,16 +42,16 @@ it('shows each balance and the soonest expiry in the gym timezone beside payer b
   expect(screen.getByText('Alex Rivera')).toBeTruthy();
   expect(screen.getByText('Kim Rivera')).toBeTruthy();
   expect(screen.getByText('1 class left')).toBeTruthy();
-  const date = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: 'America/Los_Angeles' }).format(new Date(row.soonestExpiry));
-  expect(screen.getByText('Expires on ' + date)).toBeTruthy();
-  expect(screen.getAllByText(/^Expires on/)).toHaveLength(1);
+  const date = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: 'America/Los_Angeles' }).format(new Date(Date.parse(row.soonestExpiry) - 1));
+  expect(screen.getByText('Next credits expire: use by ' + date)).toBeTruthy();
+  expect(screen.getAllByText(/^Next credits expire:/)).toHaveLength(1);
   expect(screen.getByRole('heading', { name: 'Invoices' })).toBeTruthy();
 });
 
 it('lets adult members read credits without fetching or showing invoices, cards or payment actions', async () => {
   const f = mount({ role: 'member' });
   expect(await screen.findByText('7 classes left')).toBeTruthy();
-  expect(f.fetcher.mock.calls.map(([path]) => String(path))).toEqual(['/api/portal/credits']);
+  expect(f.fetcher.mock.calls.map(([path]) => String(path))).toEqual(expect.arrayContaining(['/api/portal/credits', '/api/portal/context']));
   expect(screen.queryByRole('heading', { name: 'Invoices' })).toBeNull();
   expect(screen.queryByRole('heading', { name: 'Saved cards' })).toBeNull();
   expect(screen.queryByRole('button', { name: /Pay|card/ })).toBeNull();
@@ -83,4 +84,18 @@ it('never displays or caches a balance answered for another household', async ()
   await waitFor(() => expect(f.fetcher.mock.calls.some(([path]) => path === '/api/portal/households')).toBe(true));
   expect(screen.queryByText('7 classes left')).toBeNull();
   expect(f.cache.getQueryData(['portal', gymId, userId, 'household', householdId, 'billing', 'credits'])).toBeUndefined();
+});
+
+it.each(['2026-03-09T07:00:00Z', '2026-11-02T08:00:00Z'])('names the last usable gym-local day across DST for %s', async soonestExpiry => {
+  mount({ data: [{ ...row, soonestExpiry }] });
+  const date = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: 'America/Los_Angeles' }).format(new Date(Date.parse(soonestExpiry) - 1));
+  expect(await screen.findByText('Next credits expire: use by ' + date)).toBeDefined();
+});
+it('uses the current context role while the household list still caches a payer role', async () => {
+  const f = mount({ role: 'member' });
+  f.cache.setQueryData(portalHouseholdsKey(portalLoginKey(gymId, userId)), { current: householdId, households: [{ householdId, name: 'Rivera', role: 'payer' }] });
+  await screen.findByText('7 classes left');
+  await waitFor(() => expect(f.cache.getQueryData(['portal', gymId, userId, 'household', householdId, 'context'])).toMatchObject({ role: 'member' }));
+  expect(screen.queryByRole('heading', { name: 'Invoices' })).toBeNull();
+  expect(f.fetcher.mock.calls.some(([path]) => String(path).startsWith('/api/portal/invoices'))).toBe(false);
 });

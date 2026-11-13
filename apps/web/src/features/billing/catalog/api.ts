@@ -19,7 +19,7 @@ export async function billingRequest<C extends EndpointContract>(contract: C,
   }
   return parseResponse(contract.response, await response.json()) as ReturnType<C['response']['parse']>;
 }
-async function all<T>(load: (offset: number) => Promise<ListResponse<T>>) {
+export async function all<T>(load: (offset: number) => Promise<ListResponse<T>>) {
   const result: T[] = [];
   for (let offset = 0; ; ) {
     const page = await load(offset); result.push(...page.data); offset += page.data.length;

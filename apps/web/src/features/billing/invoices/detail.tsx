@@ -19,8 +19,8 @@ import { LoadingState, ErrorState, EmptyState } from '../../../components/ui/sta
 
 export interface InvoiceAccess { record: boolean; refund: boolean; links: boolean }
 type Action = { kind: 'cash' | 'charge' | 'link' | 'receipt' | 'viewReceipt' | 'releaseHold' } | { kind: 'refund'; payment: Payment } | { kind: 'revoke' | 'default'; card: MaskedPaymentMethod };
-export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClient }: {
-  gymId: string; invoiceId: string; access: InvoiceAccess; client?: InvoiceClient;
+export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClient, onCreditChange }: {
+  gymId: string; invoiceId: string; access: InvoiceAccess; client?: InvoiceClient; onCreditChange?: () => void;
 }) {
   const cache = useQueryClient(), key = ['billing', gymId, 'invoice', invoiceId];
   const [action, setAction] = useState<Action | null>(null), [busy, setBusy] = useState(false), [error, setError] = useState('');
@@ -70,6 +70,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
         if ('token' in result.data) { setUrl(new URL('/l/' + result.data.token, location.origin).href); }
         else setMessage(text(unknown ? 'sendUncertain' : result.data.revokedAt ? 'manualNoticeSent' : 'linkSent'));
       }
+      if (['cash', 'charge', 'refund'].includes(action.kind)) onCreditChange?.();
       await cache.invalidateQueries({ queryKey: ['billing', gymId] });
       markSaved(); setDraft(false);
       if (action.kind !== 'link') setAction(null);

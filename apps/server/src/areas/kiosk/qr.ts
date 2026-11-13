@@ -5,7 +5,7 @@ import { type Clock } from '@plaingym/shared';
 import { kioskQrCheckinRequestSchema, type KioskCheckinResult } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
 import { createCheckinCodeService, type CheckinCodeService } from '../members/checkin-code.js';
-import { createBillingStanding } from '../billing/kiosk-standing.js';
+import { createBillingStanding, createCreditsStanding } from '../billing/kiosk-standing.js';
 import type { Uploads } from '../../infra/storage/index.js';
 import { createKioskCheckinHelpers } from './checkin.js';
 import { createStandingChecks, inactiveStanding, waiverStanding, type StandingChecks } from './standing/standing.js';
@@ -18,7 +18,7 @@ export function createQrCheckin(options: QrCheckinOptions = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const codes = options.codes ?? createCheckinCodeService({ scope, clock });
   const { identities, currentSessions, bookedSessions, record } = createKioskCheckinHelpers({ ...options, scope, clock });
-  const standing = options.standing ?? createStandingChecks([inactiveStanding(scope), waiverStanding(scope), createBillingStanding(scope)]);
+  const standing = options.standing ?? createStandingChecks([inactiveStanding(scope), waiverStanding(scope), createBillingStanding(scope), createCreditsStanding(scope)]);
   return {
     async checkin(gymId: string, deviceId: string, input: unknown): Promise<KioskCheckinResult> {
       const { code, sessionId } = kioskQrCheckinRequestSchema.parse(input);

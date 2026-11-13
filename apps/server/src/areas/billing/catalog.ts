@@ -45,7 +45,7 @@ const presentPlan = (row: typeof plans.$inferSelect, taxRateIds: readonly string
 const presentCharge = (row: typeof chargeTypes.$inferSelect, taxRateIds: readonly string[]) => c.chargeTypeSchema.parse({ ...fields(row), taxRateIds });
 export interface CatalogOptions { scope?: typeof forGym; clock?: Clock; settings?: GymSettingsAccessor }
 export function checkCatalogCurrency(value: string, gymCurrency: string, message = 'Currency does not match the gym') {
-  if (value !== gymCurrency) throw new AppError('conflict', message);
+  if (value !== gymCurrency) throw new AppError('conflict', message, { reason: ['currency_mismatch'] });
 }
 /** Lock rates before reading links, so a confirmed detach cannot be reattached by a waiting edit. */
 export async function validateTaxes(tx: Transaction, ids: readonly string[], existing: () => Promise<readonly string[]> = async () => [],
@@ -54,7 +54,7 @@ export async function validateTaxes(tx: Transaction, ids: readonly string[], exi
     .where(inArray(taxRates.id, [...ids])).orderBy(asc(taxRates.id)).for('share') : [];
   if (rows.length !== ids.length) throw new AppError('not_found', errors.missing);
   const linked = await existing();
-  if (rows.some(row => !row.active && !linked.includes(row.id))) throw new AppError('conflict', errors.inactive);
+  if (rows.some(row => !row.active && !linked.includes(row.id))) throw new AppError('conflict', errors.inactive, { reason: ['tax_inactive'] });
   return linked;
 }
 /** A common projection for catalog pages and single-item reads. */

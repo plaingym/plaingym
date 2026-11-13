@@ -7,7 +7,7 @@ export type { AttendanceRowFilter, HouseholdAttendanceFilter, HouseholdDenialCod
 export { uuidv7 } from './id.js';
 export { advisoryLockNamespace, advisoryLocks, gymAdvisoryLocks, gymAdvisoryLockKey, lockGym } from './locks.js';
 export type { GymAdvisoryLock } from './locks.js';
-export { writeAudit } from './audit.js';
+export { auditActor, writeAudit } from './audit.js';
 export { databaseCode } from './errors.js';
 export { allocateInvoiceNumber } from './invoice-numbers.js';
 export { assertRevised, revisionGuard, RevisionConflictError } from './revision.js';

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { databaseCode, forGym, gyms, plans, chargeTypes, memberships, invoices, revisionGuard, assertRevised, writeAudit, type Transaction } from '@plaingym/db';
+import { databaseCode, forGym, gyms, plans, classPacks, chargeTypes, memberships, invoices, revisionGuard, assertRevised, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { billingRulesSchema, gymAddressSchema, gymBrandingSchema, gymSettingsSchema, updateGymSettingsRequestSchema, updateBookingRulesRequestSchema, updateBillingRulesRequestSchema, updateGymCurrencyRequestSchema,
   updateDropInSettingsRequestSchema, type UpdateGymSettingsRequest, type UpdateBookingRulesRequest, type UpdateBillingRulesRequest, type UpdateGymCurrencyRequest,
@@ -71,7 +71,7 @@ export function createSettingsService(options: { scope?: typeof forGym; clock?: 
           const [before] = await tx.select(projection).from(gyms).where(eq(gyms.id, context.gymId)).for('update');
           if (!before) throw new AppError('not_found', 'Gym not found');
           if (kind === 'currency' && 'currency' in changes && changes.currency !== before.currency) {
-            for (const table of [plans, chargeTypes, memberships, invoices]) {
+            for (const table of [plans, classPacks, chargeTypes, memberships, invoices]) {
               const existing = await tx.select({ id: table.id }).from(table).where(eq(table.gymId, context.gymId)).limit(1);
               if (existing.length) throw new AppError('conflict', 'Currency cannot change after billing records exist');
             }

@@ -19,11 +19,11 @@ export const classCreditEntrySchema = z.strictObject({
   credits: z.int(), lotId: idSchema.nullable(), saleId: idSchema.nullable(),
   attendanceId: idSchema.nullable(), expiresAt: instantSchema.nullable(), reason: z.string().nullable(),
   adjustmentId: idSchema.nullable(), createdBy: idSchema.nullable(), createdAt: instantSchema,
-  invoiceNumber: z.int().positive().nullable(),
+  invoiceId: idSchema.nullable(), invoiceNumber: z.int().positive().nullable(),
 });
 export const classCreditLotSchema = z.strictObject({
   id: idSchema, remaining: z.int().positive(), expiresAt: instantSchema.nullable(),
-  createdAt: instantSchema, saleId: idSchema.nullable(), invoiceNumber: z.int().positive().nullable(),
+  createdAt: instantSchema, saleId: idSchema.nullable(), invoiceId: idSchema.nullable(), invoiceNumber: z.int().positive().nullable(),
 });
 export const classCreditLedgerResponseSchema = z.strictObject({
   data: z.strictObject({ memberId: idSchema, balance: z.int().nonnegative(),

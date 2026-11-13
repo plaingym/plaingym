@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PortalScheduleSession } from '@plaingym/shared/contracts';
-import { portalClient } from './client.js';
+import { ApiError } from '../../../lib/api.js';
+import { BookingConflictError, portalClient } from './client.js';
 
 const id = (n: number) => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
 const home = id(1), other = id(2);
@@ -26,4 +27,17 @@ describe('portal schedule client', () => {
     expect(answer).toEqual({ householdId: '', data: [] });
     expect([home, other]).not.toContain(answer.householdId);
   });
+});
+
+it('preserves a booking conflict message through the household transport', async () => {
+  const message = 'You need an unexpired class credit or an active or trial membership.';
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ error: { code: 'conflict', message, details: { reason: ['noCredits'] } } }, { status: 409 })));
+  await expect(portalClient.book({ role: 'member', memberId: id(3) }, id(3), id(4), home)).rejects.toMatchObject({ status: 409, message });
+});
+
+it('keeps a booking conflict without a reason code generic, so server text never reaches the member', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ error: { code: 'conflict', message: 'The record changed since it was read.' } }, { status: 409 })));
+  const refused = portalClient.book({ role: 'member', memberId: id(3) }, id(3), id(4), home);
+  await expect(refused).rejects.toBeInstanceOf(ApiError);
+  await expect(refused).rejects.not.toBeInstanceOf(BookingConflictError);
 });

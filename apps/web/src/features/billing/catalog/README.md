@@ -20,7 +20,9 @@ The **Class packs** section lists active packs, with an option to include archiv
 packs. Its dialog creates and edits the name, price, tax rates, 1–100 credits and
 optional 1–3650 expiry days. Clearing **Active** archives a pack; checking it
 restores it. A stale revision blocks saving until staff close, reload and reopen
-the editor. It uses the pack's existing currency when editing.
+the editor. Currency and inactive-tax refusals show their own messages and leave
+Save available. It uses the pack's existing currency when editing. The gym's currency
+cannot change once any class pack exists, including an archived pack.
 
 The member profile's **Packs** tab requires `billing.read`. It shows the available
 balance, remaining lots with expiry in the gym's timezone, and paged credit history
@@ -28,13 +30,14 @@ newest first. **Sell a pack** and **Adjust credits** require `payments.record`.
 Selling opens the existing invoice dialog, whose collection and refund actions
 keep their existing permissions. A sale adds credits only once paid. Adjustments
 require a reason; unchanged retries reuse the adjustment ID and server refusals
-stay inside the form. Closing an invoice refreshes the credit balance, then checks
-every two seconds for one minute so delayed payment/refund effects appear. The
+stay inside the form. A sale, collection or refund refreshes the credit
+balance, then checks every two seconds for one minute so delayed effects appear.
+Viewing and closing an unchanged invoice starts no follow-up reads. The
 **Refresh credits** action also reloads the balance and current history page.
 
-Credit history supplies invoice numbers rather than IDs. Clicking an invoice
-resolves its number through the member's household invoice pages, then opens the
-existing invoice dialog. No other household's invoices are requested.
+Credit history supplies invoice IDs beside their display numbers. Clicking an
+invoice opens the existing dialog directly, without searching household invoices.
+The catalog and sale form share one cached pack list.
 
 The catalog edits plans, charge types and tax rates with the revision read when
 the editor opened, and only a reload moves an open editor to a newer revision. A

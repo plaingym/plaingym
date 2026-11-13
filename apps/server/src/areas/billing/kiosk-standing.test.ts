@@ -14,7 +14,7 @@ import { createQrCheckin } from '../kiosk/qr.js';
 import { createQrCheckinRoutes } from '../kiosk/qr.routes.js';
 import { createKioskCheckin } from '../kiosk/standing/checkin.js';
 import { createKioskCheckinRoutes } from '../kiosk/standing/standing.routes.js';
-import { createBillingStanding } from './kiosk-standing.js';
+import { createBillingStanding, createCreditsStanding } from './kiosk-standing.js';
 import { isOverdueInvoice, overdueInvoiceCondition } from './kiosk-standing.rules.js';
 import { readBillingTotals } from '../dashboard/billing.query.js';
 import { createInvoiceTransitions } from './transitions/index.js';
@@ -145,6 +145,13 @@ describe('class-credit kiosk standing', () => {
     };
   }
 
+  it('lists past-due billing and missing credits together for staff', async () => {
+    const f = await fixture();
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, expiresAt: clock.now() });
+    const server = await routes(f, 'name-pin');
+    expect(await (await server.standing()).json()).toEqual({ data: { memberId: f.member.id, status: 'front_desk', reasons: ['past_due', 'no_credits'] } });
+    expect(await (await server.checkin()).json()).toEqual({ data: [{ status: 'see_front_desk' }] });
+  });
   for (const mode of ['qr', 'name-pin'] as const) {
     it.each(['expired', 'exhausted'] as const)(`${mode} gives a neutral refusal for an %s pack, with a staff-only reason`, async kind => {
       const f = await fixture({ invoice: { status: 'paid' } });
@@ -188,6 +195,6 @@ describe('class-credit kiosk standing', () => {
     const f = await fixture({ invoice: { status: 'paid' } });
     await factory('classCreditEntries', f.gymId, { memberId: f.member.id, expiresAt: clock.now() });
     await factory('memberships', f.gymId, { memberId: f.member.id, householdId: f.member.householdId, status });
-    expect(await standing.check({ gymId: f.gymId, memberId: f.member.id, clock })).toEqual({ status: 'front_desk', reasonCode: 'no_credits' });
+    expect(await createCreditsStanding(database.forGym).check({ gymId: f.gymId, memberId: f.member.id, clock })).toEqual({ status: 'front_desk', reasonCode: 'no_credits' });
   });
 });

@@ -15,20 +15,20 @@ import { PackEditor } from './editor.js';
 import { AdjustmentForm } from './forms.js';
 import { PackPanel, PacksTab } from './member-tab.js';
 
-vi.mock('../invoices/detail.js', () => ({ InvoiceDetails: ({ invoiceId }: { invoiceId: string }) => <p>Opened invoice {invoiceId}</p> }));
+vi.mock('../invoices/detail.js', () => ({ InvoiceDetails: ({ invoiceId, onCreditChange }: { invoiceId: string; onCreditChange?: () => void }) => <><p>Opened invoice {invoiceId}</p><button onClick={onCreditChange}>Change invoice</button></> }));
 const id = (n: number) => '019a0af0-9c00-7000-8000-' + String(n).padStart(12, '0');
 const createdAt = '2026-11-10T00:00:00Z';
 const pack: ClassPack = { id: id(2), name: 'Ten classes', currency: 'CAD', amountCents: 12050, credits: 10,
   expiryDays: 90, active: true, taxRateIds: [], revision: 4, createdAt };
 const ledger = { data: { memberId: id(3), balance: 8,
-  lots: [{ id: id(5), remaining: 8, createdAt, expiresAt: '2027-02-08T08:00:00Z', saleId: id(6), invoiceNumber: 42 }],
+  lots: [{ id: id(5), remaining: 8, createdAt, expiresAt: '2027-02-08T08:00:00Z', saleId: id(6), invoiceId: id(9), invoiceNumber: 42 }],
   entries: [{ id: id(7), memberId: id(3), kind: 'adjust' as const, credits: -2, lotId: id(5), saleId: null,
-    attendanceId: null, expiresAt: null, reason: 'Correction', adjustmentId: id(8), createdBy: id(4), createdAt, invoiceNumber: 42 }] },
+    attendanceId: null, expiresAt: null, reason: 'Correction', adjustmentId: id(8), createdBy: id(4), createdAt, invoiceId: id(9), invoiceNumber: 42 }] },
   pagination: { limit: 25, offset: 0, total: 1 } };
 function client() {
   return { ...packClient, packs: vi.fn(async () => [pack]), taxes: vi.fn(async () => []),
     settings: vi.fn(async () => ({ currency: 'CAD' })),
-    ledger: vi.fn(async () => ledger), invoiceId: vi.fn(async () => id(9)),
+    ledger: vi.fn(async () => ledger),
     call: vi.fn(async () => ({ data: { id: id(9) } })),
   } as unknown as PackClient;
 }
@@ -141,7 +141,6 @@ it('renders balance, lot expiry, history reason and an invoice action', async ()
   expect(screen.queryByRole('button', { name: 'Sell a pack' })).toBeNull(); expect(screen.queryByRole('button', { name: 'Adjust credits' })).toBeNull();
   expect(api.packs).not.toHaveBeenCalled();
   fireEvent.click(screen.getAllByRole('button', { name: 'Invoice #42' })[0]!);
-  await waitFor(() => expect(api.invoiceId).toHaveBeenCalledWith(id(3), 42));
   expect(await screen.findByText('Opened invoice ' + id(9))).toBeDefined();
 });
 it('requests the next page of history without changing member scope', async () => {
@@ -163,7 +162,7 @@ it('keeps the balance and pager on screen while the next history page loads', as
   finish({ ...first, pagination: { limit: 25, offset: 25, total: 26 } });
   await waitFor(() => expect(screen.getByRole('button', { name: 'Previous' })).toHaveProperty('disabled', false));
 });
-it('follows a delayed credit effect after closing the invoice', async () => {
+it('follows a delayed credit effect after collection and closing the invoice', async () => {
   const api = client();
   const empty = { ...ledger, data: { ...ledger.data, balance: 0 } };
   vi.mocked(api.ledger).mockResolvedValue(empty);
@@ -171,6 +170,7 @@ it('follows a delayed credit effect after closing the invoice', async () => {
   fireEvent.click((await screen.findAllByRole('button', { name: 'Invoice #42' }))[0]!);
   await screen.findByText('Opened invoice ' + id(9));
   vi.mocked(api.ledger).mockResolvedValueOnce(empty).mockResolvedValue({ ...ledger, data: { ...ledger.data, balance: 10 } });
+  fireEvent.click(screen.getByRole('button', { name: 'Change invoice' }));
   fireEvent.click(screen.getByRole('button', { name: 'Close' }));
   expect(await screen.findByText('Available credits: 10', {}, { timeout: 5000 })).toBeDefined();
 });
@@ -185,4 +185,22 @@ it.each(['owner', 'admin', 'front_desk', 'coach'] as const)('registers and rende
     expect(screen.queryByRole('button', { name: 'Sell a pack' }) !== null).toBe(canStaff([role], 'payments.record'));
     expect(screen.queryByRole('button', { name: 'Adjust credits' }) !== null).toBe(canStaff([role], 'payments.record'));
   } else { await screen.findByText('You do not have access to class packs.'); expect(load).not.toHaveBeenCalled(); }
+});
+
+it.each(['currency_mismatch', 'tax_inactive'])('keeps Save available for the specific %s refusal', async reason => {
+  const api = client(); vi.mocked(api.call).mockRejectedValue(new ApiError(409, 'conflict', [reason])); editor(api, pack); submit();
+  expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining(reason === 'currency_mismatch' ? 'currency' : 'tax'));
+  expect(screen.getByRole('button', { name: 'Save' })).toHaveProperty('disabled', false);
+  expect(screen.queryByText(/changed elsewhere/)).toBeNull();
+});
+it.each([false, true])('follows credit effects only after an invoice changes: %s', async changed => {
+  const api = client(), cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const invalidate = vi.spyOn(cache, 'invalidateQueries');
+  start(<PackPanel gymId={id(1)} memberId={id(3)} timezone="UTC" access={{ record: false, links: false, refund: false }} client={api}/>, 'owner', cache);
+  fireEvent.click((await screen.findAllByRole('button', { name: 'Invoice #42' }))[0]!);
+  await screen.findByText('Opened invoice ' + id(9));
+  if (changed) fireEvent.click(screen.getByRole('button', { name: 'Change invoice' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+  expect(invalidate).toHaveBeenCalledTimes(changed ? 1 : 0);
+  expect(api.call).not.toHaveBeenCalled();
 });

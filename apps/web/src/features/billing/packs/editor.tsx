@@ -35,7 +35,7 @@ export function PackEditor({ record, currency, taxes, client, close, saved }: {
       else await client.call('createClassPack', input);
       saved();
     } catch (cause) {
-      if (record && cause instanceof ApiError && cause.status === 409) { setStale(true); setError(text('stale')); }
+      if (record && cause instanceof ApiError && cause.status === 409 && cause.reason.length === 0) { setStale(true); setError(text('stale')); }
       else setError(failure(cause));
     } finally { inFlight.current = false; setBusy(false); }
   }

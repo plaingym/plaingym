@@ -12,7 +12,7 @@ import type { Uploads } from '../../../infra/storage/index.js';
 import { createKioskCheckinHelpers, type KioskMemberRow } from '../checkin.js';
 import type { KioskPinCheck } from '../pin-check.js';
 import { verifyHouseholdPin, type HouseholdPinSecret } from '../../members/pin.js';
-import { createBillingStanding } from '../../billing/kiosk-standing.js';
+import { createBillingStanding, createCreditsStanding } from '../../billing/kiosk-standing.js';
 import { createStandingChecks, inactiveStanding, waiverStanding, type StandingChecks } from './standing.js';
 
 export { checkinOpensBeforeMs } from '../checkin.js';
@@ -33,7 +33,7 @@ export interface KioskCheckinOptions {
 }
 export function createKioskCheckin(options: KioskCheckinOptions = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
-  const standing = options.standing ?? createStandingChecks([inactiveStanding(scope), waiverStanding(scope), createBillingStanding(scope)]);
+  const standing = options.standing ?? createStandingChecks([inactiveStanding(scope), waiverStanding(scope), createBillingStanding(scope), createCreditsStanding(scope)]);
   const { identities, currentSessions, bookedSessions, record } = createKioskCheckinHelpers({ ...options, scope, clock });
 
   /**

@@ -12,26 +12,26 @@ import { lockAdjustment } from './ledger.store.js';
 import messages from '../../../../../../locales/en/billing/packs.json' with { type: 'json' };
 
 const t = createTranslator({ 'billing/packs': messages });
-const entry = (row: CreditEntry, invoiceNumber: number | null) => ({
+const entry = (row: CreditEntry, invoice: { invoiceId: string; invoiceNumber: number | null } | null) => ({
   id: row.id, memberId: row.memberId, kind: row.kind, credits: row.credits, lotId: row.lotId,
   saleId: row.saleId, attendanceId: row.attendanceId, expiresAt: row.expiresAt?.toISOString() ?? null,
   reason: row.reason, adjustmentId: row.adjustmentId, createdBy: row.createdBy,
-  createdAt: row.createdAt.toISOString(), invoiceNumber,
+  createdAt: row.createdAt.toISOString(), invoiceId: invoice?.invoiceId ?? null, invoiceNumber: invoice?.invoiceNumber ?? null,
 });
 
 /** Load only the entries' sale invoices, resolving draws through their openings. */
-async function invoiceNumbers(tx: Transaction, rows: readonly CreditEntry[], openings: readonly CreditEntry[] = []) {
+async function saleInvoices(tx: Transaction, rows: readonly CreditEntry[], openings: readonly CreditEntry[] = []) {
   const saleByLot = new Map(openings.map(row => [row.id, row.saleId]));
   const missing = [...new Set(rows.flatMap(row => row.lotId && !saleByLot.has(row.lotId) ? [row.lotId] : []))];
   if (missing.length) for (const row of await tx.select({ id: classCreditEntries.id, saleId: classCreditEntries.saleId })
     .from(classCreditEntries).where(inArray(classCreditEntries.id, missing))) saleByLot.set(row.id, row.saleId);
   const saleFor = (row: CreditEntry) => row.saleId ?? saleByLot.get(row.lotId ?? '') ?? null;
   const ids = [...new Set(rows.flatMap(row => saleFor(row) ? [saleFor(row)!] : []))];
-  const sales = ids.length ? await tx.select({ id: classPackSales.id, number: invoices.number }).from(classPackSales)
+  const sales = ids.length ? await tx.select({ id: classPackSales.id, invoiceId: invoices.id, invoiceNumber: invoices.number }).from(classPackSales)
     .innerJoin(invoices, and(eq(invoices.gymId, classPackSales.gymId), eq(invoices.id, classPackSales.invoiceId)))
     .where(inArray(classPackSales.id, ids)) : [];
-  const numbers = new Map(sales.map(row => [row.id, row.number]));
-  return (row: CreditEntry) => numbers.get(saleFor(row) ?? '') ?? null;
+  const invoicesBySale = new Map(sales.map(row => [row.id, row]));
+  return (row: CreditEntry) => invoicesBySale.get(saleFor(row) ?? '') ?? null;
 }
 const reused = () => new AppError('conflict', t('billing/packs:adjustmentReused'), { reason: ['adjustment_id_reused'] });
 function adjustmentConstraint(error: unknown): boolean {
@@ -77,9 +77,9 @@ export function createCreditLedgerService(options: CatalogOptions = {}) {
               entries: entries.map(row => ({ id: row.id, lotId: row.lotId, credits: row.credits, reasonEntryId: row.id })) });
         }
         entries.sort((a, b) => a.id.localeCompare(b.id));
-        const numberFor = await invoiceNumbers(tx, entries);
+        const invoiceFor = await saleInvoices(tx, entries);
         return { data: { adjustmentId: request.adjustmentId, balance: creditBalance(usableCreditLots(await remainingLots(tx, request.memberId), now)),
-          entries: entries.map(row => entry(row, numberFor(row))) } };
+          entries: entries.map(row => entry(row, invoiceFor(row))) } };
       }).catch(error => {
         if (databaseCode(error) === '23505' && adjustmentConstraint(error)) throw reused();
         throw error;
@@ -96,11 +96,11 @@ export function createCreditLedgerService(options: CatalogOptions = {}) {
         const total = await tx.$count(classCreditEntries, where);
         const rows = await tx.select().from(classCreditEntries).where(where)
           .orderBy(desc(classCreditEntries.createdAt), desc(classCreditEntries.id)).limit(query.limit).offset(query.offset);
-        const numberFor = await invoiceNumbers(tx, [...rows, ...lots], openings);
+        const invoiceFor = await saleInvoices(tx, [...rows, ...lots], openings);
         return { data: { memberId, balance: creditBalance(usableCreditLots(openings, now)),
         lots: lots.map(lot => ({ id: lot.id, remaining: lot.remaining, expiresAt: lot.expiresAt?.toISOString() ?? null,
-          createdAt: lot.createdAt.toISOString(), saleId: lot.saleId, invoiceNumber: numberFor(lot) })),
-        entries: rows.map(row => entry(row, numberFor(row))) }, pagination: { ...query, total } };
+          createdAt: lot.createdAt.toISOString(), saleId: lot.saleId, invoiceId: invoiceFor(lot)?.invoiceId ?? null, invoiceNumber: invoiceFor(lot)?.invoiceNumber ?? null })),
+        entries: rows.map(row => entry(row, invoiceFor(row))) }, pagination: { ...query, total } };
       });
     },
   };

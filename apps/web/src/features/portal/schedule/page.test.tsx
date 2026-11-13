@@ -9,7 +9,7 @@ import { answer, portalTestCache, storedFor, stubHouseholdLists } from '../house
 import type { PortalScheduleSession } from '@plaingym/shared/contracts';
 import { ApiError } from '../../../lib/api.js';
 import { breaksAnywhere } from '../../../components/ui/wrap.test-helper.js';
-import type { PortalClient } from './client.js';
+import { BookingConflictError, type PortalClient } from './client.js';
 import { PortalSchedulePage, PortalScheduleView, sessionAction } from './page.js';
 import { registration } from './registrations.js';
 import { registration as checkin } from '../checkin/registrations.js';
@@ -118,4 +118,13 @@ describe('portal schedule page', () => {
     expect(screen.queryByText('Fundamentals')).toBeNull();
     expect(storedFor(cache, 'gym', 'user', 'household')).toEqual(['act-for', 'context']);
   });
+});
+
+it('shows the translated credit refusal instead of the generic booking conflict', async () => {
+  const message = 'You need an unexpired class credit or an active or trial membership to book or join the waitlist. Please contact the front desk.';
+  client.book.mockRejectedValue(new BookingConflictError(message));
+  const user = userEvent.setup(); page();
+  await user.click(await screen.findByRole('button', { name: 'Book Fundamentals for Pat Parent' }));
+  expect(await screen.findByText(message)).toBeDefined();
+  expect(screen.queryByText(/This change isn't available/)).toBeNull();
 });

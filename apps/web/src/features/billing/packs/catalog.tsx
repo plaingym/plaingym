@@ -6,24 +6,25 @@ import { formatMinorUnits } from '@plaingym/shared/money';
 import { Button } from '../../../components/ui/button.js';
 import { CheckboxField } from '../../../components/ui/select.js';
 import { LoadingState, ErrorState, EmptyState } from '../../../components/ui/states.js';
-import { packClient, type PackClient } from './api.js';
+import { packCatalogKey, packClient, type PackClient } from './api.js';
 import { PackEditor } from './editor.js';
 import { text } from './messages.js';
 
 export function PackCatalog({ gymId, client = packClient }: { gymId: string; client?: PackClient }) {
   // Under the catalog key, so the tax section's refreshes (an archive that detaches a rate, a new rate) reload packs too.
-  const cache = useQueryClient(), key = ['billing', gymId, 'catalog', 'packs'];
+  const cache = useQueryClient(), key = ['billing', gymId, 'catalog', 'pack-settings'];
   const [archived, setArchived] = useState(false), [editor, setEditor] = useState<ClassPack | 'new' | null>(null);
   const data = useQuery({ queryKey: key, queryFn: async () => {
-    const [packs, taxes, settings] = await Promise.all([client.packs(), client.taxes(), client.settings()]);
-    return { packs, taxes, currency: settings.currency };
+    const [taxes, settings] = await Promise.all([client.taxes(), client.settings()]);
+    return { taxes, currency: settings.currency };
   } });
   const refresh = () => { setEditor(null); void cache.invalidateQueries({ queryKey: ['billing', gymId] }); };
-  const rows = data.data?.packs.filter(pack => archived || pack.active);
-  return <section aria-label={text('catalogTitle')} className="min-w-0 space-y-4 border-t pt-5">
+  const packs = useQuery({ queryKey: packCatalogKey(gymId), queryFn: () => client.packs() });
+  const rows = packs.data?.filter(pack => archived || pack.active);
+  return <section aria-label={text('catalogTitle')} className="min-w-0 space-y-4 wrap-anywhere border-t pt-5">
     <h2 className="text-lg font-semibold">{text('catalogTitle')}</h2>
-    {data.isPending && <LoadingState/>}{data.isError && <ErrorState onRetry={() => void data.refetch()}/>}
-    {data.data && <>
+    {(data.isPending || packs.isPending) && <LoadingState/>}{(data.isError || packs.isError) && <ErrorState onRetry={() => { void data.refetch(); void packs.refetch(); }}/> }
+    {data.data && packs.data && <>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <CheckboxField label={text('showArchived')} checked={archived} onChange={event => setArchived(event.target.checked)}/>
         <Button onClick={() => setEditor('new')}>{text('createPack')}</Button>

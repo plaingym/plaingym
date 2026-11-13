@@ -187,7 +187,8 @@ source of truth; Stripe is the processor. In outline:
   All staff may undo a live attendance through `attendance.manage`, deleting the
   visit and returning any spent credit to its original lot in one audited
   transaction. The kiosk refuses an exhausted pack holder with a neutral
-  front-desk message; staff may still record the visit without a credit.
+  front-desk message; staff may still record the visit without a credit and see a
+  notice that more credits are needed.
   The [discount catalog](../apps/server/src/areas/billing/discounts/README.md)
   lets owners and admins manage named percentage, fixed-amount and signup-fee
   waiver terms, with plan eligibility and optional codes. Staff can select one

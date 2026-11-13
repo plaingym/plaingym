@@ -10,7 +10,9 @@ or manual instructions, and Checkout is refused before minting a link.
 `/portal/billing` shows read-only class credit balances for members with usable
 credits. Payers see each member of their household; an adult non-payer sees only
 their own balance. Each card shows the total classes left and the soonest expiry
-in the gym's timezone. Expired and used-up lots do not count. A payer's page
+in the gym's timezone. The expiry says **Next credits expire: use by** the last
+usable local day (one millisecond before exclusive expiry), so it does not suggest
+that the whole balance expires together. Expired and used-up lots do not count. A payer's page
 leaves the card out when nobody visible has credits; an adult non-payer's page
 says they have none. The portal sells no class packs.
 

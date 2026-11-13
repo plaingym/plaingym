@@ -121,11 +121,16 @@ describe('attendance credits and undo with PostgreSQL', () => {
     const f = await fixture();
     await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1, expiresAt: clock.now() });
     await expect(service.record(f.context, f.input, { source: 'kiosk' })).rejects.toMatchObject({ code: 'conflict' });
-    const row = await service.record(f.context, f.input);
+    const response = await post(app(f), f.input);
+    expect(response.status).toBe(200);
+    const { data: row } = attendanceContracts.record.response.parse(await response.json());
+    expect(row.needsCredits).toBe(true);
+    expect(attendanceContracts.record.response.parse(await (await post(app(f), f.input)).json()).data).toEqual(row);
     expect((await snapshot(f.gymId)).audits.find(row => row.action === 'attendance.recorded')?.after).toMatchObject({ id: row.id, creditSpent: false });
     expect((await ledger(f.gymId)).filter(row => row.kind === 'use')).toHaveLength(0);
     const visitor = await service.record(f.context, { ...f.input, memberId: f.sibling.id }, { source: 'kiosk' });
     expect(visitor.memberId).toBe(f.sibling.id);
+    expect(visitor).not.toHaveProperty('needsCredits');
   });
   it('undo restores the same lot, audits the full deleted row, and permits a new visit with a different ID', async () => {
     const f = await fixture();
