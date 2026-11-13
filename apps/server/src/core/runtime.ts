@@ -396,11 +396,10 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   configurePayments(payments);
   // A zero-total pack sale settles at once through the publishing transitions, so its credits are granted without waiting for the hourly sweep.
   configurePackSales(createPackSalesService({ clock, settings, transitions: billing.transitions }));
-  configureBillingDashboard({ settings, memberships, payments });
-  // The dashboard reads the same services as portal progress, with the ranks criteria registry and clock; its
-  // skipped-collections entry needs the payment service, so it is configured here.
-  configureDashboard({ members: createMembersService({ clock }), ranks, attendance, notSeen: createNotSeenRead() }, [createDisputeAlertProvider(), createPinLimitWidgetProvider(),
-    createPortalConfirmationWidgetProvider(), createSkippedCollectionsProvider({ settings, payments }),
+  configureBillingDashboard({ settings });
+  // The dashboard reads the same services as portal progress, with the ranks criteria registry and clock.
+  configureDashboard({ members: createMembersService({ clock }), ranks, notSeen: createNotSeenRead() }, [createDisputeAlertProvider(), createPinLimitWidgetProvider(),
+    createPortalConfirmationWidgetProvider(), createSkippedCollectionsProvider({ settings }),
     createFollowUpsDueProvider({ settings })]);
   configurePaymentDelivery({ notifications: billing.notifications, detachCard });
   // Portal billing seals its Checkout return into the signed-link receipt cookie, so both share one key.
