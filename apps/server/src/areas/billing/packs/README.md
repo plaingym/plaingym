@@ -26,6 +26,10 @@ Migration `0027_class_packs.sql` adds the catalog, tax links, sale snapshots and
 credit ledger with forced gym RLS and composite references. Sales keep their
 invoice household, while credits reference the member independently of household.
 Ledger lot and sale references also include the recipient member. Ledger rows
+that draw, expire or reverse credits pass through `insertCreditMovements`, which
+refuses any `lotId` that does not name an opening (`lotId: null`) in that same gym
+and member ledger. This is an application check; the database reference alone
+does not distinguish openings from movements. Ledger rows
 are append-only for app except `reason`, which may be redacted to an empty string
 on adjustment entries. Attendance IDs intentionally have no FK because undo
 deletes attendance. Partial unique indexes deduplicate every ledger command;

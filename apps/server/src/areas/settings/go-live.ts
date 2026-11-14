@@ -12,7 +12,7 @@ import type { WebhookHealthQuery } from '../../core/interfaces/webhook-health.js
 import { createWebhookHealthQuery } from '../billing/webhooks/inbox.js';
 import { signedLinkWaiversComplete } from '../waivers/waivers.js';
 import { rerunRestoreReconciliation } from '../billing/runner/runner.jobs.js';
-import { readRestoreCheck } from './go-live.restore.js';
+import { readRestoreCheck, readSavedStripeMode, restoreCheckCoversStripe } from './go-live.restore.js';
 
 const t = createTranslator(locales.en ?? {});
 type WireChecklist = ReturnType<typeof goLiveChecklistResponseSchema.parse>['data'];
@@ -42,15 +42,15 @@ async function pastDue(tx: Transaction, today: string, lock = false) {
 }
 
 /**
- * `stripe` is whether the gym has a payments provider now. A restore check that ran without one read only the database,
- * so once Stripe is connected it no longer clears the restore: a check with Stripe must read what Stripe holds.
+ * A restore check clears billing only for the Stripe mode it read. Both credential save paths record the mode
+ * atomically in their audit, so this gate checks it under the same gym lock as enabling billing.
  */
 async function reconciliation(tx: Transaction, stripe: boolean) {
   const [pending] = await tx.select({ id: paymentAttempts.id }).from(paymentAttempts).where(eq(paymentAttempts.status, 'pending')).limit(1);
   const [pendingRefund] = await tx.select({ id: refunds.id }).from(refunds).where(eq(refunds.status, 'pending')).limit(1);
   const { restore, request, checked, report } = await readRestoreCheck(tx);
   const snapshotAt = (request?.after as { snapshotAt?: string } | undefined)?.snapshotAt ?? null;
-  const clear = report?.unresolved === 0 && (report.stripeConfigured !== false || !stripe);
+  const clear = report?.unresolved === 0 && restoreCheckCoversStripe(report, stripe, await readSavedStripeMode(tx));
   return { applicable: !!restore || !!pending || !!pendingRefund, restored: !!restore,
     detail: restore ? { restoreId: restore.id, snapshotAt, checkedAt: checked?.occurredAt.toISOString() ?? null,
       inspected: report?.inspected ?? null, unresolved: report?.unresolved ?? null, stripeConfigured: report?.stripeConfigured ?? null } : null,

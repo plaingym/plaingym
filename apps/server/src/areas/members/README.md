@@ -1,6 +1,11 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Members and households
 
+Erasure clears the household billing email when it matches the erased member's
+address, ignoring case and surrounding spaces, even if another member remains. A different household
+address is preserved. Receipts and notices stop for a cleared address until staff
+enter a new billing email.
+
 `createMembersService` implements staff member, household, tag, medical-note and
 anonymization operations. Mutations compare revisions and audit their action and
 target in the same gym transaction. Audits deliberately omit personal details,

@@ -7,6 +7,7 @@ import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../../core/clock.js';
 import { drawCredits, hasActiveMembership, isPackHolder, lockMemberCredits, usableLots } from './index.js';
 import { createCreditLedgerService } from './ledger.service.js';
+import { insertCreditMovements, returnCredit } from './ledger.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 async function fixture() {
@@ -22,6 +23,30 @@ async function fixture() {
 }
 
 describe('member credit lock, lots and adjustments', () => {
+  it.each(['use', 'expire', 'reverse', 'adjust'] as const)('refuses a %s write naming a movement as its lot', async kind => {
+    const f = await fixture(); await f.adjust(3); await f.adjust(-1);
+    const movement = (await f.entries()).find(row => row.lotId !== null)!;
+    const before = await f.entries();
+    await expect(db.forGym(f.gymId, async tx => {
+      await lockMemberCredits(tx, f.member.id);
+      await insertCreditMovements(tx, [{ id: uuidv7(), gymId: f.gymId, memberId: f.member.id, lotId: movement.id,
+        kind, credits: -1, createdAt: f.clock.now() }]);
+    })).rejects.toMatchObject({ code: 'conflict' });
+    expect(await f.entries()).toEqual(before);
+  });
+  it('refuses to return a credit whose stored use names another movement', async () => {
+    const f = await fixture(); await f.adjust(3); await f.adjust(-1);
+    const movement = (await f.entries()).find(row => row.lotId !== null)!;
+    const attendanceId = uuidv7();
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, kind: 'use', credits: -1,
+      lotId: movement.id, attendanceId, adjustmentId: null, reason: null });
+    const before = await f.entries();
+    await expect(db.forGym(f.gymId, async tx => {
+      await lockMemberCredits(tx, f.member.id);
+      await returnCredit(tx, { gymId: f.gymId, memberId: f.member.id, attendanceId, now: f.clock.now() });
+    })).rejects.toMatchObject({ code: 'conflict' });
+    expect(await f.entries()).toEqual(before);
+  });
   it('allows member foreign-key share locks while credit readers or writers hold their lock', async () => {
     const f = await fixture();
     let unlock!: () => void, ready!: () => void;

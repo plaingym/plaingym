@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, eq, or } from 'drizzle-orm';
+import { and, eq, isNull, or } from 'drizzle-orm';
 import { classCreditEntries, classPackSales, forGym, uuidv7 } from '@plaingym/db';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
 import { clock as defaultClock } from '../../../core/clock.js';
@@ -7,7 +7,7 @@ import { gymSettingsAccessor } from '../../settings/settings.js';
 import type { CatalogOptions } from '../catalog.js';
 import { audit, effect, hasCreditReversal, lockInvoice, recorded, systemContext as system } from '../transitions/store.js';
 import { markLeadWon } from '../../leads/stages.js';
-import { lockMemberCredits } from './ledger.js';
+import { insertCreditMovements, lockMemberCredits } from './ledger.js';
 
 /** Audited once per sale whose credits weren't granted because its member was erased before it was paid. */
 export const creditsNotGranted = 'billing.credits.not_granted';
@@ -56,14 +56,14 @@ export function createPackCredits(options: CatalogOptions = {}) {
         if (!sale) return;
         await lockMemberCredits(tx, sale.memberId);
         const grant = (await tx.select().from(classCreditEntries).where(and(eq(classCreditEntries.memberId, sale.memberId),
-          eq(classCreditEntries.saleId, sale.id), eq(classCreditEntries.kind, 'grant'))))[0];
+          eq(classCreditEntries.saleId, sale.id), eq(classCreditEntries.kind, 'grant'), isNull(classCreditEntries.lotId))))[0];
         if (!grant) return;
         const entries = await tx.select({ credits: classCreditEntries.credits }).from(classCreditEntries).where(and(
           eq(classCreditEntries.memberId, sale.memberId), or(eq(classCreditEntries.id, grant.id), eq(classCreditEntries.lotId, grant.id))));
         const remaining = entries.reduce((total, row) => total + row.credits, 0);
         if (remaining <= 0) return;
-        const [entry] = await tx.insert(classCreditEntries).values({ id: uuidv7(), gymId, memberId: sale.memberId,
-          kind: 'reverse', credits: -remaining, saleId: sale.id, lotId: grant.id, createdAt: clock.now() }).onConflictDoNothing().returning();
+        const [entry] = await insertCreditMovements(tx, [{ id: uuidv7(), gymId, memberId: sale.memberId,
+          kind: 'reverse', credits: -remaining, saleId: sale.id, lotId: grant.id, createdAt: clock.now() }], true);
         if (entry) await audit(tx, system(gymId), clock, 'billing.credits.reversed', 'class_credit_entry', entry.id, entry);
       });
     },

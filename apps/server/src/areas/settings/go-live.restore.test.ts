@@ -13,6 +13,9 @@ import type { RequestEnvironment } from '../../core/context.js';
 import { TestClock } from '../../core/clock.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
 import { FakePayments } from '../../infra/payments/index.js';
+import { StripeFixtures } from '../../infra/payments/stripe-fixtures.js';
+import { stripeProvisioner } from '../../infra/payments/setup.js';
+import { authConfig } from '../../infra/auth/config.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { createChargeRunner } from '../billing/runner/index.js';
 import { createRunnerJobs } from '../billing/runner/runner.jobs.js';
@@ -20,6 +23,7 @@ import { createInvoiceTransitions } from '../billing/transitions/index.js';
 import { createGymSettingsAccessor } from './settings.js';
 import { createGoLiveService } from './go-live.js';
 import { createGoLiveRoutes } from './go-live.routes.js';
+import { createIntegrationsService } from './integrations.js';
 
 const database = useTestDatabase(), factory = createFactories(database), clock = new TestClock('2026-10-22T12:00:00Z');
 const snapshotAt = '2026-10-20T12:00:00.000Z';
@@ -78,6 +82,24 @@ const item = async (gymId: string) => (await service.checklist(gymId)).items.fin
 const reports = (gymId: string) => scope(gymId, (tx) => tx.select().from(auditEvents)
   .where(eq(auditEvents.action, 'billing.runner.restore_checked')));
 
+/** Provision independent test/live accounts while exercising the real credential save transaction. */
+function stripeSettings(gymId: string, userId: string) {
+  class LiveFixtures extends StripeFixtures {
+    override async request(input: Parameters<StripeFixtures['request']>[0]) {
+      const result = await super.request(input), stored = typeof result.id === 'string' ? this.objects.get(result.id) : undefined;
+      if (stored) stored.livemode = true;
+      return 'livemode' in result ? { ...result, livemode: true } : result;
+    }
+  }
+  const test = new StripeFixtures(gymId), live = new LiveFixtures(gymId);
+  const env = { TENANCY: 'single', AUTH_SECRET: 'restore-settings-secret-with-32-characters' };
+  const integrations = createIntegrationsService({ scope, clock, key: Buffer.alloc(32, 7), env, config: authConfig(env, false),
+    origin: async () => 'https://gym.invalid', hasPassword: async () => true,
+    provisioner: apiKey => stripeProvisioner(apiKey.startsWith('rk_live_') ? live : test, apiKey.startsWith('rk_live_') ? 'live' : 'test') });
+  return async (mode: 'test' | 'live') => integrations.saveStripe({ gymId, actor: { kind: 'user', userId } },
+    { revision: (await service.checklist(gymId)).revision, restrictedKey: 'rk_' + mode + '_RESTORED', clearTestData: mode === 'live' });
+}
+
 describe('restore check without Stripe', () => {
   it('is clear with no payment records, so the job succeeds and billing can be turned on', async () => {
     const { gymId, userId, job } = await restoredGym();
@@ -109,6 +131,8 @@ describe('restore check without Stripe', () => {
     const { gymId, userId, restoreId, job } = await restoredGym(), app = server('owner', gymId, userId);
     await job();
     const provider = new FakePayments(gymId, clock), list = vi.spyOn(provider, 'listChangesSince');
+    provider.keyMode = 'test';
+    await stripeSettings(gymId, userId)('test');
     connected.set(gymId, provider);
     try {
       expect(await item(gymId)).toBe('needs_attention');
@@ -139,6 +163,70 @@ describe('restore check without Stripe', () => {
     // Settings that can't be read are an error too, not a gym without Stripe.
     payments.mockRejectedValueOnce(new Error('Invalid Stripe configuration'));
     await expect(job()).rejects.toThrow('Invalid Stripe configuration');
+  });
+});
+
+describe('restore checks belong to the Stripe mode they read', () => {
+  it('requires a new check when a legacy report does not record its Stripe mode', async () => {
+    const { gymId, userId, restoreId } = await restoredGym(), app = server('owner', gymId, userId);
+    await stripeSettings(gymId, userId)('test');
+    const test = new FakePayments(gymId, clock); test.keyMode = 'test'; connected.set(gymId, test);
+    try {
+      const started = await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system',
+        action: 'billing.runner.restore_check_started', targetType: 'restore', targetId: restoreId, occurredAt: clock.now() }));
+      await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'billing.runner.restore_checked',
+        targetType: 'restore_check', targetId: started.id, occurredAt: clock.now(),
+        after: { inspected: 0, unresolved: 0, stripeConfigured: true } }));
+      expect(await item(gymId)).toBe('needs_attention');
+      expect((await enable(app, gymId)).status).toBe(409);
+      expect((await rerun(app, gymId, restoreId)).status).toBe(200);
+      expect((await enable(app, gymId)).status).toBe(200);
+    } finally { connected.delete(gymId); }
+  });
+  it('pauses enabled billing on a test-to-live save and lists the live account before enabling again', async () => {
+    const { gymId, userId, restoreId, job } = await restoredGym(), app = server('owner', gymId, userId);
+    const saveStripe = stripeSettings(gymId, userId);
+    const test = new FakePayments(gymId, clock), live = new FakePayments(gymId, clock);
+    test.keyMode = 'test'; live.keyMode = 'live';
+    const testList = vi.spyOn(test, 'listChangesSince'), liveList = vi.spyOn(live, 'listChangesSince');
+    await job();
+    try {
+      await saveStripe('test'); connected.set(gymId, test);
+      expect((await rerun(app, gymId, restoreId)).status).toBe(200);
+      expect((await enable(app, gymId)).status).toBe(200);
+      await saveStripe('test');
+      expect((await service.checklist(gymId)).billingEnabled).toBe(true);
+      await saveStripe('live'); connected.set(gymId, live);
+      expect((await service.checklist(gymId)).billingEnabled).toBe(false);
+      expect(await item(gymId)).toBe('needs_attention');
+      expect((await enable(app, gymId)).status).toBe(409);
+      expect((await rerun(app, gymId, restoreId)).status).toBe(200);
+      expect(liveList).toHaveBeenCalledWith(new Date(new Date(snapshotAt).getTime() - 300_000), {});
+      expect(testList).toHaveBeenCalledTimes(1);
+      expect((await reports(gymId)).map(row => row.after)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ stripeConfigured: true, stripeMode: 'test', unresolved: 0 }),
+        expect.objectContaining({ stripeConfigured: true, stripeMode: 'live', unresolved: 0 }),
+      ]));
+      expect((await enable(app, gymId)).status).toBe(200);
+    } finally { connected.delete(gymId); }
+  });
+
+  it('rejects a test-mode result that finishes after live credentials are saved while billing is off', async () => {
+    const { gymId, userId, restoreId } = await restoredGym(), app = server('owner', gymId, userId);
+    const saveStripe = stripeSettings(gymId, userId), test = new FakePayments(gymId, clock);
+    test.keyMode = 'test';
+    let release!: () => void, entered!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });
+    vi.spyOn(test, 'listChangesSince').mockImplementation(async () => { entered(); await held; return { changes: [], nextCursor: null }; });
+    await saveStripe('test'); connected.set(gymId, test);
+    const checking = rerun(app, gymId, restoreId);
+    try {
+      await started;
+      await saveStripe('live');
+      release(); expect((await checking).status).toBe(200);
+      expect(await item(gymId)).toBe('needs_attention');
+      expect((await enable(app, gymId)).status).toBe(409);
+    } finally { release(); await checking; connected.delete(gymId); }
   });
 });
 

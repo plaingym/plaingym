@@ -492,7 +492,10 @@ Old versions and documents referenced by signatures remain retained after retire
   logins and links, the reasons on class credit adjustments, and the commitment
   override reason on their memberships. The lead row
   and the credit ledger rows remain for aggregate counts and the books. Invoices and
-  attendance keep their IDs for the books. Erasing a household's last member also
+  attendance keep their IDs for the books. Erasure clears the household's billing
+  email when it matches the member's address, ignoring case and surrounding spaces, even when other
+  members remain. Household mail stops until staff enter a new billing address.
+  Erasing a household's last member also
   revokes its cards, clears each card's billing name, email, phone and address at
   Stripe before detaching it, and clears the Stripe Customer's name, email, phone,
   address, shipping details, description, individual and business names and invoice

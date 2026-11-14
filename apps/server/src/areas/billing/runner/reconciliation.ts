@@ -13,7 +13,7 @@ import type { MutationContext } from '../../../core/interfaces/common.js';
 
 export interface ReconciliationIssue { kind: string; id: string; reason: string; }
 /** `stripeConfigured` is absent when the check didn't run (a delayed job for an earlier restore). */
-export interface RestoreCheck { inspected: number; readyForOwnerReview: boolean; issues: ReconciliationIssue[]; stripeConfigured?: boolean; }
+export interface RestoreCheck { inspected: number; readyForOwnerReview: boolean; issues: ReconciliationIssue[]; stripeConfigured?: boolean; stripeMode?: 'test' | 'live' | null; }
 /** A stored Stripe reference on a gym with no payments provider: connecting Stripe and checking again resolves it. */
 export const notConfigured = 'stripe_not_configured';
 type Options = Omit<RunnerOptions, 'jobs'> & Required<Pick<RunnerOptions, 'scope' | 'clock'>>;
@@ -199,6 +199,7 @@ export function createReconciliation(options: Options) {
       after: { snapshotAt: snapshotAt.toISOString() }, occurredAt: clock.now() }));
     try {
       const provider = await configuredProvider(gymId);
+      const stripeMode = provider?.keyMode ?? null;
       const issues: ReconciliationIssue[] = [];
       const references = await scope(gymId, async tx => {
         const attempts = await tx.select({ paymentIntentId: paymentAttempts.paymentIntentId }).from(paymentAttempts)
@@ -259,8 +260,8 @@ export function createReconciliation(options: Options) {
       await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'billing.runner.restore_checked',
         targetType: 'restore_check', targetId: check.id, occurredAt: clock.now(),
         after: { snapshotAt: snapshotAt.toISOString(), inspected, unresolved: unique.length, issues: unique,
-          stripeConfigured: !!provider } }));
-      return { inspected, readyForOwnerReview: unique.length === 0, issues: unique, stripeConfigured: !!provider };
+          stripeConfigured: !!provider, stripeMode } }));
+      return { inspected, readyForOwnerReview: unique.length === 0, issues: unique, stripeConfigured: !!provider, stripeMode };
     } catch (error) {
       await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'billing.runner.restore_checked',
         targetType: 'restore_check', targetId: check.id, occurredAt: clock.now(),

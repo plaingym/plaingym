@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it, vi } from 'vitest';
 import { asc, eq } from 'drizzle-orm';
-import { auditEvents, emailDeliveries, emailOutbox, households, members, memberships, uuidv7 } from '@plaingym/db';
+import { auditEvents, emailDeliveries, emailOutbox, households, householdUsers, members, memberships, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { isInTransaction } from '@plaingym/shared/transaction';
@@ -13,6 +13,7 @@ import { DeliveryError, FakeEmail } from '../../infra/email/index.js';
 import { OutboxEmail } from '../../infra/email/outbox.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
 import { createGoLiveService } from '../settings/go-live.js';
+import { createMembersService } from '../members/members.js';
 import { createMembershipJobs } from './memberships.jobs.js';
 import { configurePriceNotice, createPriceNotice, priceNoticeJob, priceNoticePayload } from './memberships.price-notice.js';
 
@@ -35,6 +36,12 @@ async function fixture() {
   createServerRegistry({ jobs: createMembershipJobs(undefined, () => notice) }).registerJobs(jobs, new Set());
   const run = () => notice.run(payload, gymId);
   return { gymId, clock, household, payer, plan, membership, payload, email, jobs, options, notice, run };
+}
+
+async function erasePayer(f: Awaited<ReturnType<typeof fixture>>) {
+  return createMembersService({ scope: db.forGym, clock: f.clock }).eraseMember(
+    { gymId: f.gymId, actor: { kind: 'system' } }, f.payer.id, { revision: f.payer.revision },
+    { jobs: f.jobs, timezone: 'America/Los_Angeles' });
 }
 
 it('runs the registered job, sends once outside a transaction and retains the stable household key on replay', async () => {
@@ -77,9 +84,10 @@ it.each(['no_address', 'invalid_address', 'erased', 'opt_out', 'undeliverable', 
   const f = await fixture();
   if (reason === 'no_address' || reason === 'invalid_address')
     await db.forGym(f.gymId, tx => tx.update(households).set({ email: reason === 'no_address' ? null : 'not-an-address' }).where(eq(households.id, f.household.id)));
-  else if (reason === 'erased' || reason === 'opt_out' || reason === 'undeliverable')
-    await db.forGym(f.gymId, tx => tx.update(members).set(reason === 'erased' ? { anonymizedAt: f.clock.now() }
-      : reason === 'opt_out' ? { emailOptOut: true } : { emailDeliverable: false }).where(eq(members.id, f.payer.id)));
+  else if (reason === 'erased') await erasePayer(f);
+  else if (reason === 'opt_out' || reason === 'undeliverable')
+    await db.forGym(f.gymId, tx => tx.update(members).set(reason === 'opt_out' ? { emailOptOut: true }
+      : { emailDeliverable: false }).where(eq(members.id, f.payer.id)));
   else {
     const anotherPlan = await factory('plans', f.gymId);
     await db.forGym(f.gymId, tx => tx.update(memberships).set(reason === 'cancelled' ? { status: 'cancelled' }
@@ -94,16 +102,37 @@ it.each(['no_address', 'invalid_address', 'erased', 'opt_out', 'undeliverable', 
     await f.jobs.runNext();
   } finally { setLogSink(previous); }
   expect(f.jobs.jobs[0]!.status).toBe('completed'); expect(f.email.messages).toHaveLength(0);
-  const expected = reason === 'no_address' || reason === 'invalid_address' ? 'no_address' : reason === 'erased' ? 'payer_erased'
+  const expected = reason === 'no_address' || reason === 'invalid_address' || reason === 'erased' ? 'no_address'
     : reason === 'opt_out' || reason === 'undeliverable' ? 'recipient_suppressed' : 'change_replaced';
   expect(lines.map(line => JSON.parse(line))).toContainEqual(expect.objectContaining({ event: priceNoticeJob, reason: expected }));
   expect(lines.join('')).not.toContain('payer@example.test');
 });
-it('rejects an erased explicitly linked payer even after its email is cleared', async () => {
+it('clears the erased payer billing address, ignoring case and spaces, with a child remaining and logs no_address', async () => {
   const f = await fixture();
   await factory('householdUsers', f.gymId, { householdId: f.household.id, memberId: f.payer.id, scope: 'payer' });
-  await db.forGym(f.gymId, tx => tx.update(members).set({ anonymizedAt: f.clock.now(), email: null }).where(eq(members.id, f.payer.id)));
-  await f.run(); expect(f.email.messages).toHaveLength(0);
+  const child = await factory('members', f.gymId, { householdId: f.household.id, email: null });
+  const membership = await factory('memberships', f.gymId, { ...f.membership, id: uuidv7(), memberId: child.id });
+  f.payload.membershipIds = [membership.id];
+  await db.forGym(f.gymId, tx => tx.update(households).set({ email: ' PAYER@EXAMPLE.TEST ' }).where(eq(households.id, f.household.id)));
+  await erasePayer(f);
+  expect(await db.forGym(f.gymId, tx => tx.select().from(households).where(eq(households.id, f.household.id))))
+    .toMatchObject([{ email: null, name: f.household.name, revision: f.household.revision + 1 }]);
+  expect(await db.forGym(f.gymId, tx => tx.select().from(members).where(eq(members.id, child.id))))
+    .toMatchObject([{ anonymizedAt: null }]);
+  expect(await db.forGym(f.gymId, tx => tx.select().from(householdUsers).where(eq(householdUsers.memberId, f.payer.id)))).toEqual([]);
+  const lines: string[] = [], previous = setLogSink(line => lines.push(line));
+  try { await f.run(); } finally { setLogSink(previous); }
+  expect(f.email.messages).toHaveLength(0);
+  expect(lines.map(line => JSON.parse(line))).toContainEqual(expect.objectContaining({ event: priceNoticeJob, reason: 'no_address' }));
+});
+it('preserves a different household billing address when erasing a member', async () => {
+  const f = await fixture(), child = await factory('members', f.gymId, { householdId: f.household.id });
+  const membership = await factory('memberships', f.gymId, { ...f.membership, id: uuidv7(), memberId: child.id });
+  f.payload.membershipIds = [membership.id];
+  await db.forGym(f.gymId, tx => tx.update(households).set({ email: 'other@example.test' }).where(eq(households.id, f.household.id)));
+  await erasePayer(f);
+  await f.run();
+  expect(f.email.messages).toMatchObject([{ to: 'other@example.test' }]);
 });
 it('sends nothing for another gym’s household or membership, or another household in the same gym', async () => {
   const a = await fixture(), b = await fixture();
@@ -151,7 +180,7 @@ it('rechecks erasure and a replaced change after SMTP preparation', async () => 
   for (const erase of [true, false]) {
     const f = await fixture();
     f.options.mailer.mockImplementation(async () => {
-      if (erase) await db.forGym(f.gymId, tx => tx.update(members).set({ anonymizedAt: f.clock.now() }).where(eq(members.id, f.payer.id)));
+      if (erase) await erasePayer(f);
       else await db.forGym(f.gymId, tx => tx.update(memberships).set({ scheduledAmountCents: 13000 }).where(eq(memberships.id, f.membership.id)));
       return f.email;
     });

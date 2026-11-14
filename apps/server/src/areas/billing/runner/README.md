@@ -2,6 +2,11 @@
 
 # Charge runner
 
+Each completed restore report records `stripeMode` from the provider's `keyMode`
+(or null without a known mode). Go live accepts a Stripe report only for the mode
+currently saved, so checking a test account does not clear live billing. Account
+IDs are not exposed by the payments interface.
+
 `createChargeRunner({ scope?, clock?, settings, transitions, payments, jobs, staleAfterMs? })`
 exposes the same controllable entry points used by the jobs and PostgreSQL scenarios:
 

@@ -1,10 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, inArray, isNotNull, isNull, sum } from 'drizzle-orm';
 import { classCreditEntries, classPackSales, invoices, members, memberships, uuidv7, type Transaction } from '@plaingym/db';
+import { AppError } from '@plaingym/shared';
 import { notFound } from '../../../core/interfaces/common.js';
 
 export type CreditEntry = typeof classCreditEntries.$inferSelect;
 export type CreditLot = CreditEntry & { remaining: number; expired: boolean };
+
+/** Requires the member credit lock. Every movement must name an opening in the same gym and member ledger. */
+export async function insertCreditMovements(tx: Transaction,
+  rows: readonly (typeof classCreditEntries.$inferInsert & { lotId: string })[], ignoreConflict = false) {
+  if (!rows.length) return [];
+  const lots = await tx.select({ id: classCreditEntries.id, gymId: classCreditEntries.gymId, memberId: classCreditEntries.memberId })
+    .from(classCreditEntries).where(and(inArray(classCreditEntries.id, [...new Set(rows.map(row => row.lotId))]), isNull(classCreditEntries.lotId)));
+  if (rows.some(row => !lots.some(lot => lot.id === row.lotId && lot.gymId === row.gymId && lot.memberId === row.memberId)))
+    throw new AppError('conflict', 'Class credit movements must reference a lot');
+  const insert = tx.insert(classCreditEntries).values([...rows]);
+  return ignoreConflict ? insert.onConflictDoNothing().returning() : insert.returning();
+}
 
 /** Call inside the caller's gym transaction, before reading or changing its member's credits. */
 export async function lockMemberCredits(tx: Transaction, memberId: string) {
@@ -53,7 +66,7 @@ export async function drawCredits(tx: Transaction, input: CreditDraw): Promise<C
   const balance = creditBalance(lots);
   if (balance < input.credits) return { outcome: 'insufficient_credits', balance };
   let needed = input.credits;
-  const rows: (typeof classCreditEntries.$inferInsert)[] = [];
+  const rows: (typeof classCreditEntries.$inferInsert & { lotId: string })[] = [];
   for (const lot of lots) {
     const taken = Math.min(needed, lot.remaining);
     rows.push({ id: uuidv7(), gymId: input.gymId, memberId: input.memberId, kind: input.kind,
@@ -63,7 +76,7 @@ export async function drawCredits(tx: Transaction, input: CreditDraw): Promise<C
     needed -= taken;
     if (needed === 0) break;
   }
-  return { outcome: 'drawn', entries: await tx.insert(classCreditEntries).values(rows).returning() };
+  return { outcome: 'drawn', entries: await insertCreditMovements(tx, rows) };
 }
 
 export async function hasActiveMembership(tx: Transaction, memberId: string): Promise<boolean> {
@@ -109,9 +122,10 @@ export async function returnCredit(tx: Transaction, input: { gymId: string; memb
   const [use] = await tx.select().from(classCreditEntries).where(and(eq(classCreditEntries.memberId, input.memberId),
     eq(classCreditEntries.attendanceId, input.attendanceId), eq(classCreditEntries.kind, 'use')));
   if (!use) return null;
-  const [lot] = await tx.select({ saleId: classCreditEntries.saleId }).from(classCreditEntries).where(eq(classCreditEntries.id, use.lotId!));
+  const [lot] = await tx.select({ saleId: classCreditEntries.saleId }).from(classCreditEntries).where(and(
+    eq(classCreditEntries.id, use.lotId!), eq(classCreditEntries.memberId, input.memberId), isNull(classCreditEntries.lotId)));
   if (lot?.saleId && (await refundedSales(tx, input.memberId)).has(lot.saleId)) return false;
-  await tx.insert(classCreditEntries).values({ id: uuidv7(input.now.getTime()), gymId: input.gymId, memberId: input.memberId,
-    kind: 'reverse', credits: 1, lotId: use.lotId, attendanceId: input.attendanceId, createdAt: input.now });
+  await insertCreditMovements(tx, [{ id: uuidv7(input.now.getTime()), gymId: input.gymId, memberId: input.memberId,
+    kind: 'reverse', credits: 1, lotId: use.lotId!, attendanceId: input.attendanceId, createdAt: input.now }]);
   return true;
 }

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { classCreditEntries, forGym, uuidv7 } from '@plaingym/db';
+import { forGym, uuidv7 } from '@plaingym/db';
 import { clock as defaultClock } from '../../../core/clock.js';
 import type { JobRegistration } from '../../../core/registry.js';
 import type { CatalogOptions } from '../catalog.js';
 import { audit } from '../transitions/store.js';
-import { lockMemberCredits, remainingLots } from './ledger.js';
+import { insertCreditMovements, lockMemberCredits, remainingLots } from './ledger.js';
 import { expiryCandidates } from './ledger.store.js';
 
 export function createCreditExpiryService(options: CatalogOptions = {}) {
@@ -24,9 +24,9 @@ export function createCreditExpiryService(options: CatalogOptions = {}) {
             const lots = (await remainingLots(tx, memberId)).filter(lot => lot.remaining > 0 && !lot.expired && lot.expiresAt !== null && lot.expiresAt <= now);
             let written = 0;
             for (const lot of lots) {
-              const [entry] = await tx.insert(classCreditEntries).values({
+              const [entry] = await insertCreditMovements(tx, [{
                 id: uuidv7(), gymId, memberId, kind: 'expire', lotId: lot.id, credits: -lot.remaining, createdAt: now,
-              }).onConflictDoNothing().returning();
+              }], true);
               if (!entry) continue;
               await audit(tx, { gymId, actor: { kind: 'system' } }, clock,
                 'billing.credits.expired', 'class_credit_entry', entry.id, entry);

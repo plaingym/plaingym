@@ -43,7 +43,7 @@ Work down the **Readiness checklist** on **Settings → Go live**. Each line say
 | Email delivery | Email is set up and a test message arrived. |
 | Backups | Backups are set up and the key is stored safely. |
 | Payment notifications | At least one Stripe notification was processed, and none are waiting or failed. |
-| Payment reconciliation | No unresolved payment attempts; after a [restore](restoring.md), the restored payments have been checked. Without a Stripe key it is not applicable when there is nothing to check; a check made before Stripe was connected must be run again once it is. |
+| Payment reconciliation | No unresolved payment attempts; after a [restore](restoring.md), the restored payments have been checked in the current Stripe mode. Without a Stripe key it is not applicable when there is nothing to check; a check made before Stripe was connected or in another mode must be run again. |
 | Past billing dates | No active membership has a next billing date before today. The memberships that do are listed below the checklist. |
 
 Only *Payment reconciliation* after a restore blocks billing, and past billing dates
@@ -52,9 +52,13 @@ required for a real launch.
 
 After a restore, Go live says whether the last payment check ran without Stripe;
 its count then means stored references, not objects read from Stripe. Connecting
-Stripe after that check pauses billing, even if you already turned it on. In
+Stripe after that check, or switching to a mode the check did not read, pauses
+billing, even if you already turned it on. A test-mode check does not clear live
+payments. Re-saving the same checked mode keeps billing on. In
 **Go live**, choose **Check restored payments again**, resolve any issues, and turn
-billing back on once the check is clear. The Payments section also explains this pause.
+billing back on once the check is clear. After a check without Stripe, the Payments
+section also explains this pause. After a mode switch, Go live still shows the
+earlier check's result, but *Payment reconciliation* needs attention until you check again.
 
 Then:
 
@@ -62,6 +66,8 @@ Then:
    switching clears (test customers, saved test cards, open payment pages, open test
    disputes) and what stays; confirm it. Test payments stay on their invoices, marked "Stripe test mode", and
    any open disputes on them are closed (they stay in Stripe's test mode).
+   After a restore, run **Check restored payments again** with the live key before
+   turning billing back on, even if the test-mode check was clear.
 2. **Check backups.** The **System health** page should show a recent successful backup
    under the current key at the current destination. After changing either, wait
    for the first matching snapshot. Setup and Settings check that the destination

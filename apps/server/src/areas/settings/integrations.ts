@@ -547,7 +547,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
           throw new AppError('conflict', 'Stripe customers were recorded while the key was checked; try again');
         if (switching) retire = await clearTestData(tx, gymId, userId);
         const was = readStripeConfig(options.key, before.stripeConfig, gymId);
-        const paused = await pauseRestoredBillingForStripe(tx, context, before.billingEnabled, clock.now());
+        const paused = await pauseRestoredBillingForStripe(tx, context, before.billingEnabled, clock.now(), config.mode);
         return { set: { stripeConfig: encryptSecret(options.key, { secretClass: 'stripe_config', owner: gymId }, JSON.stringify(config)),
           ...(paused ? { billingEnabled: false } : {}) }, action: 'integrations.stripe_saved',
           before: { mode: was?.mode ?? null, endpointId: was?.endpointId ?? null },

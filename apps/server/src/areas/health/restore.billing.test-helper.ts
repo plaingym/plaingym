@@ -16,6 +16,10 @@ import type { RestoreFixture } from './restore.fixture.test-helper.js';
 /** The production billing runner, go-live service and routes on top of a restored install (the fixture's target database). */
 export async function restoredBilling({ target, clock, gymId }: Pick<RestoreFixture, 'target' | 'clock' | 'gymId'>) {
   const provider = new FakePayments(gymId, clock), queue = new PostgresJobs({ database: target, clock });
+  provider.keyMode = 'test';
+  // The restore fixture stores opaque test credentials; represent their saved mode for the billing gate too.
+  await createFactories(target)('auditEvents', gymId, { action: 'setup.stripe_configured', targetType: 'gym', targetId: gymId,
+    after: { configured: true, mode: 'test' } });
   const settings = createGymSettingsAccessor({ scope: target.forGym, clock });
   const runner = createChargeRunner({ scope: target.forGym, clock, settings, jobs: queue,
     transitions: createInvoiceTransitions({ scope: target.forGym, clock }),

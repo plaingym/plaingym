@@ -1,5 +1,13 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 
+After a restore, a payment check counts only for the Stripe mode it read. The
+report records `stripeMode` from the payments adapter; older reports without a
+mode need a rerun before billing can be enabled with Stripe. Both credential save
+paths audit their mode in the save transaction, which the billing gate reads
+under the gym lock. Saving a mode the last clear report did not read also pauses
+enabled billing in that transaction. Re-saving the checked mode keeps it on.
+The adapter does not expose an account ID, so the report identifies only its mode.
+
 Malformed install Google variables are returned as `installProblem` only in single
 mode. A stored gym client remains in use and Health warns about the ignored
 variables. Multi mode keeps the startup log only.

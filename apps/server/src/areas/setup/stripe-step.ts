@@ -104,7 +104,7 @@ export function createStripeStep(options: { key: Buffer; origin: string; clock?:
           throw new AppError('not_found', 'Setup not found');
         const guard = revisionGuard(gyms.revision, input.revision);
         assertRevised(gym.revision === input.revision ? [gym] : []);
-        const paused = config && await pauseRestoredBillingForStripe(tx, context, gym.billingEnabled, clock.now());
+        const paused = config && await pauseRestoredBillingForStripe(tx, context, gym.billingEnabled, clock.now(), config.mode);
         const updated = assertRevised(await tx.update(gyms).set({
           ...(paused ? { billingEnabled: false } : {}),
           stripeConfig: config ? encryptSecret(options.key, { secretClass: 'stripe_config', owner: context.gymId }, JSON.stringify(config)) : null,

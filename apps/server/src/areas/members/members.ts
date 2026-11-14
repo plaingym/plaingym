@@ -165,7 +165,10 @@ export function createMembersService(options: MembersOptions = {}) {
         // The provider's copy of the payer is redacted after commit (erasure keeps the customer for the books).
         const [billing] = last ? await tx.select({ customerId: households.stripeCustomerId }).from(households).where(eq(households.id, home.id)) : [];
         const homeGuard = revisionGuard(households.revision, home.revision);
+        // `email_address` is stored trimmed and lowercased; the household email is compared the same way.
+        const erasedBillingAddress = !!erased?.address && home.email?.trim().toLowerCase() === erased.address;
         await tx.update(households).set({ pinHash: null, revision: homeGuard.next,
+          ...(erasedBillingAddress ? { email: null } : {}),
           ...(last ? { name: 'Anonymized household', email: null, phone: null, address: {}, stripeCustomerId: null } : {}) }).where(eq(households.id, home.id));
         const revokedCards: { id: string; processorId: string }[] = [];
         if (last) {

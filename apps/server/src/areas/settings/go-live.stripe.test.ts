@@ -29,6 +29,7 @@ async function fixture(restored = true) {
   const userId = (await factory('authUser', gymId)).id, context = { gymId, actor: { kind: 'user', userId } } as const;
   await scope(gymId, tx => tx.update(gyms).set({ settings: { setup: { ownerId: userId, completed: false, completedSteps: [5] } } }));
   const provider = new FakePayments(gymId, clock), transport = new StripeFixtures(gymId);
+  provider.keyMode = 'test';
   let connected = false;
   const settings = createGymSettingsAccessor({ scope, clock });
   const runner = createChargeRunner({ scope, clock, settings, jobs: new FakeJobs(clock),
