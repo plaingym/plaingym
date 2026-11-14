@@ -50,7 +50,7 @@ export function DemoShell({ children }: { children: ReactNode }) {
     refetchInterval: 300_000,
   });
   const mode = discovery.data?.data;
-  const expires = mode?.mode === 'sandbox' || mode?.mode === 'showcase' ? mode.expiresAt : undefined;
+  const expires = mode?.mode === 'sandbox' ? mode.expiresAt : undefined;
   const [expiredAt, setExpiredAt] = useState<string>();
   const login = useLoginState();
   const { refetch } = discovery;
@@ -172,16 +172,16 @@ export function DemoNotice() {
   return <aside className="border-b border-border bg-secondary px-4" aria-label={t('demo/demo:controls')}>
     <div className="mx-auto flex min-h-11 max-w-6xl items-center justify-between gap-3">
       <p className="min-w-0 text-sm leading-tight"><span className="font-semibold">{t(mode?.mode === 'showcase' ? 'demo/demo:sharedTitle' : 'demo/demo:sandbox')}</span>
-        {' · '}<span className="text-muted-foreground">{t('demo/demo:barExpires', { time: shortTime(expires) })}</span></p>
+        {mode?.mode === 'sandbox' && <>{' · '}<span className="text-muted-foreground">{t('demo/demo:barExpires', { time: shortTime(expires) })}</span></>}</p>
       <Button type="button" variant="outline" size="sm" className="shrink-0 whitespace-nowrap" aria-haspopup="dialog" onClick={() => setOpen(true)}>{t('demo/demo:menu')}</Button>
     </div>
     {error && !open && <div className="mx-auto max-w-6xl pb-2"><Alert variant="error" focusOnReveal>{t('demo/demo:error')}</Alert></div>}
     {mode?.mode === 'showcase' && <div className="mx-auto flex max-w-6xl flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between"><p className="text-sm">{t('demo/demo:copyHelp')}</p><CreateCopyButton /></div>}
-    {open && <DemoMenu expires={expires} onClose={() => setOpen(false)} />}
+    {open && <DemoMenu expires={mode?.mode === 'showcase' ? undefined : expires} onClose={() => setOpen(false)} />}
   </aside>;
 }
 /** The demo's navigation: a bottom sheet on phones and a side panel on wider screens, on the shared dialog. */
-function DemoMenu({ expires, onClose }: { expires: string; onClose: () => void }) {
+function DemoMenu({ expires, onClose }: { expires: string | undefined; onClose: () => void }) {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const menu = useDemoMenu(), join = useDemoJoin(), { error } = useDemoLogin();
   const within = (path: string) => pathname === path || pathname.startsWith(path + '/');
@@ -204,8 +204,9 @@ function DemoMenu({ expires, onClose }: { expires: string; onClose: () => void }
           <DemoMenuLink href={href} current={current}>{t(`demo/demo:${key}`)}</DemoMenuLink></li>)}</ul>
       </nav>
       <section className={section} aria-labelledby="demo-menu-about"><h3 id="demo-menu-about" className={heading}>{t('demo/demo:about')}</h3>
-        <p className="text-sm">{t('demo/demo:expires', { time: instantLabel(expires) })}</p>
-        <p className="text-sm">{t('demo/demo:banner')}</p><p className="text-sm">{t('demo/demo:roleHelp')}</p>
+        {expires ? <><p className="text-sm">{t('demo/demo:expires', { time: instantLabel(expires) })}</p>
+          <p className="text-sm">{t('demo/demo:banner')}</p></> : <p className="text-sm">{t('demo/demo:copyHelp')}</p>}
+        <p className="text-sm">{t('demo/demo:roleHelp')}</p>
       </section>
     </div>
   </Dialog>;
