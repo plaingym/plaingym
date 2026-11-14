@@ -9,6 +9,10 @@ and backups in the setup wizard (and changes them later in the admin's
 billing rules in the admin's **Settings**. They are stored in the database, encrypted where
 secret.
 
+Settings opens with Gym details and a section menu. Gym details contains the
+single brand-color control; Website links back to it. The advanced logo setting
+is a storage reference for an existing upload. Use Website to upload a logo.
+
 `deploy/compose.yaml` has no `env_file`: the app container gets only the variables
 its `environment:` block names. From `.env` it passes `GYM_HOSTNAME`, the `SMTP_*`
 settings, `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, `SOURCE_URL`, `APP_ENCRYPTION_KEY`, `AUTH_SECRET`, `SETUP_TOKEN`,

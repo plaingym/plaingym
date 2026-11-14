@@ -76,7 +76,7 @@ export function PacksTab({ memberId }: ExtensionViewProps) {
   const bootstrap = useBootstrap(), roles = bootstrap.data?.session?.roles ?? [];
   if (bootstrap.isPending) return <LoadingState/>;
   if (bootstrap.isError) return <ErrorState onRetry={() => void bootstrap.refetch()}/>;
-  if (!memberId || !bootstrap.data || !canStaff(roles, 'billing.read')) return <Alert>{text('denied')}</Alert>;
+  if (!memberId || !bootstrap.data || !canStaff(roles, 'billing.read')) return <Alert variant="error">{text('denied')}</Alert>;
   return <PackPanel key={bootstrap.data.gym.id + memberId} gymId={bootstrap.data.gym.id} memberId={memberId} timezone={bootstrap.data.gym.timezone}
     access={{ record: canStaff(roles, 'payments.record'), refund: canStaff(roles, 'refunds.create'), links: canStaff(roles, 'links.send') }}/>;
 }

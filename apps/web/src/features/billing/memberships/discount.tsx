@@ -40,7 +40,7 @@ export function MembershipDiscount({ row, gymId, client, discounts, reload }: {
       {row.discount && <Button variant="outline" onClick={() => open('remove')}>{text('remove')}</Button>}
     </div>}
     {action && <form onSubmit={event => void submit(event)} className="min-w-0 space-y-3">
-      {error && <Alert role="alert">{error}</Alert>}
+      {error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
       <fieldset disabled={busy} className="min-w-0 space-y-3">
         {action === 'remove' ? <p>{text('confirmRemove')}</p> : <>
           <p className="text-sm text-muted-foreground">{text('nextInvoice')}</p>

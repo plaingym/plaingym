@@ -65,7 +65,7 @@ export function StaffManagement({ roles: actorRoles, passwordEnabled, services =
     void action(async () => { try { await work(data, form); } finally { form.querySelectorAll<HTMLInputElement>('input[type="password"]').forEach((input) => { input.value = ''; }); } });
   }
   const closeEditor = () => { setEditing(null); setCreating(false); };
-  if (!allowed) return <Page><Alert>{label('forbidden')}</Alert></Page>;
+  if (!allowed) return <Page><Alert variant="error">{label('forbidden')}</Alert></Page>;
   const nameFor = (role: StaffRoleRecord) => profiles?.data.find((profile) => profile.userId === role.userId)?.displayName;
   return <Page>
     <PageHeader className="print:hidden" title={label('title')} actions={<Button variant="outline" disabled={busy}

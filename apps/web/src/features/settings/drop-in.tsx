@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useEffect, useId, useState, type FormEvent } from 'react';
+import { useEffect, useId, useMemo, useState, type FormEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { ChargeType } from '@plaingym/shared/contracts';
 import { bootstrapKey } from '../../app/context.js';
@@ -8,6 +8,7 @@ import { SaveTimeoutError, useGymSettings } from './gym-settings.js';
 import { t } from '../../lib/i18n.js';
 import { billingClient } from '../billing/catalog/api.js';
 import { money } from '../billing/catalog/format.js';
+import { FormMessage } from '../../components/ui/alert.js';
 import { Button } from '../../components/ui/button.js';
 import { Label } from '../../components/ui/label.js';
 import { Select } from '../../components/ui/select.js';
@@ -20,6 +21,7 @@ export function DropInSettings() {
   const [charges, setCharges] = useState<ChargeType[] | null>(null), [chargesFailed, setChargesFailed] = useState(false);
   const [choice, setChoice] = useState(''), [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  const shown = useMemo(() => message ? { kind: message === text('saved') ? 'status' as const : 'alert' as const, text: message } : null, [message]);
   const failed = gym.failed || chargesFailed;
   async function loadCharges() {
     setChargesFailed(false);
@@ -61,7 +63,7 @@ export function DropInSettings() {
   const options = charges.filter((charge) => charge.active || charge.id === settings.dropInChargeTypeId);
   return <div className="min-w-0 space-y-4">
     <h2 className="text-lg font-semibold">{text('title')}</h2>
-    {message && <p role={message === text('saved') ? 'status' : 'alert'} className="rounded-md border border-border p-3 text-sm">{message}</p>}
+    <FormMessage message={shown}/>
     {failed && <ErrorState message={text('error')} onRetry={reload}/>}
     <form onSubmit={(event) => void save(event)} aria-label={text('title')}>
       <fieldset disabled={busy} className="grid min-w-0 gap-4">

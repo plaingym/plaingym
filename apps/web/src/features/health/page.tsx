@@ -74,7 +74,7 @@ function HealthPanel({ gymId, owner, timezone }: { gymId: string; owner: boolean
   // Inside the admin shell's main, like every other admin page: one main landmark and the same header.
   return <Page>
     <PageHeader title={label('title')} actions={<Button variant="outline" disabled={query.isFetching} onClick={() => void cache.invalidateQueries({ queryKey: ['health', gymId] })}>{label('refresh')}</Button>}/>
-    {query.isPending ? <p role="status">{label('loading')}</p> : query.isError ? <Alert>{label('loadFailed')}</Alert> : <HealthTiles tiles={query.data.tiles} timezone={timezone} extras={{
+    {query.isPending ? <p role="status">{label('loading')}</p> : query.isError ? <Alert variant="error">{label('loadFailed')}</Alert> : <HealthTiles tiles={query.data.tiles} timezone={timezone} extras={{
       last_backup: <BackupActions gymId={gymId} owner={owner}/>,
       last_charge_run: <ChargeFailures gymId={gymId} reporting={query.data.tiles.some((tile) => tile.id === 'last_charge_run' && tile.status === 'error')}/> }}/>}
   </Page>;
@@ -82,8 +82,8 @@ function HealthPanel({ gymId, owner, timezone }: { gymId: string; owner: boolean
 export function HealthPage() {
   const bootstrap = useBootstrap();
   if (bootstrap.isPending) return <p role="status">{label('loading')}</p>;
-  if (bootstrap.isError) return <Alert>{label('loadFailed')}</Alert>;
-  if (!bootstrap.data.session || !canStaff(bootstrap.data.session.roles, 'settings.manage')) return <Alert>{label('noAccess')}</Alert>;
+  if (bootstrap.isError) return <Alert variant="error">{label('loadFailed')}</Alert>;
+  if (!bootstrap.data.session || !canStaff(bootstrap.data.session.roles, 'settings.manage')) return <Alert variant="error">{label('noAccess')}</Alert>;
   return <HealthPanel gymId={bootstrap.data.gym.id} owner={canStaff(bootstrap.data.session.roles, 'integrations.manage')}
     timezone={bootstrap.data.gym.timezone}/>;
 }

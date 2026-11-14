@@ -23,7 +23,7 @@ export function DiscountSelection({ gymId, planId, currency, value, onChange, cl
     </Select></Label>
     {mode === 'named' && <>
       {rows.isPending && <p role="status">{text('loading')}</p>}
-      {rows.isError && <Alert role="alert">{text('loadFailed')} <Button variant="outline" onClick={() => void rows.refetch()}>{text('retry')}</Button></Alert>}
+      {rows.isError && <Alert variant="error" role="alert">{text('loadFailed')} <Button variant="outline" onClick={() => void rows.refetch()}>{text('retry')}</Button></Alert>}
       <Label className="block min-w-0">{text('named')}<Select required value={value && 'discountId' in value ? value.discountId : ''} onChange={event => onChange(event.target.value ? { discountId: event.target.value } : undefined)}>
         <option value="">{text('select')}</option>{eligible?.map(row => <option key={row.id} value={row.id}>{row.name} · {benefit(row)}</option>)}
       </Select></Label>

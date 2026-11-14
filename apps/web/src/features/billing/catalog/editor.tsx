@@ -106,7 +106,7 @@ export function CatalogEditor({ kind, record, currency, taxes, busy, locked = fa
   }
   return <form onSubmit={event => void submit(event)} className="min-w-0 space-y-4 rounded-lg border p-4">
     <h2 className="text-lg font-semibold">{text((record ? 'edit.' : 'create.') + kind)}</h2>
-    {invalid && <Alert role="alert">{text('invalid')}</Alert>}
+    {invalid && <Alert variant="error" focusOnReveal role="alert">{text('invalid')}</Alert>}
     <fieldset disabled={busy || locked} className="grid min-w-0 gap-4 sm:grid-cols-2">
       <div className="min-w-0 sm:col-span-2"><Label className="block min-w-0">{text('name')}<Input name="name" required value={draft.name} onChange={event => change('name', event.target.value)}/></Label>{latest('name')}</div>
       {kind === 'taxes' ? <>

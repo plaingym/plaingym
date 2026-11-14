@@ -63,7 +63,7 @@ export function QrCheckin({ token, onUnauthorized, onClose, onNamePin, onProgres
     <h2 tabIndex={-1} data-kiosk-focus className="text-xl font-semibold sm:text-2xl">{text('scan')}</h2>
     {scanning && <><p>{text('cameraHelp')}</p><video ref={video} aria-label={text('camera')} muted playsInline className="aspect-[4/3] w-full rounded-lg bg-muted object-cover"/></>}
     {!scanning && !result && !message && <p role="status">{text('checking')}</p>}
-    {message && <><Alert role="status">{text(message)}</Alert>
+    {message && <><Alert variant={message === 'noCamera' ? 'info' : 'error'} focusOnReveal={message !== 'noCamera'} role={message === 'noCamera' ? 'status' : 'alert'}>{text(message)}</Alert>
       {(message === 'requestError' || message === 'cameraError') && <Button className={big + ' w-full'} onClick={() => { reset(); setScanning(true); }}>{text('retry')}</Button>}
       {(message === 'cameraError' || message === 'noCamera' || message === 'requestError') && <Button className={big + ' w-full'} onClick={() => { reset(); onNamePin(); }}>{text('usePin')}</Button>}</>}
     {result && <div aria-live="polite" className="space-y-4">

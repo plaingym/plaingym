@@ -115,7 +115,7 @@ export function RanksWorkspace({ gymId, configure, promote, client = ranksClient
       </div>
       <CheckboxField label={text('readyOnly')} checked={readyOnly} onChange={(event) => { setReadyOnly(event.target.checked); setSelected([]); }}/>
       {eligibility.isFetching && <LoadingState label={text('loading')}/>}{eligibility.isError && <ErrorState message={text('loadFailed')} onRetry={refresh}/>}
-      {roster.isError && <Alert>{text('namesUnavailable')}</Alert>}
+      {roster.isError && <Alert variant="error">{text('namesUnavailable')}</Alert>}
       {eligibility.data?.length === 0 && <EmptyState title={text('noEligible')} description={text(readyOnly ? 'noEligibleReady' : 'noEligibleAll')}/>}
       <form onSubmit={(event) => void promoteSelected(event)} className="space-y-4"><fieldset disabled={busy || eligibility.isFetching} className="min-w-0 space-y-4">
         {!!eligibility.data?.length && <>
@@ -181,7 +181,7 @@ function ProgramForm({ program, systems, busy, save }: {
 export function RanksPage() {
   const bootstrap = useBootstrap();
   if (bootstrap.isPending) return <Page><LoadingState label={text('loading')}/></Page>;
-  if (!bootstrap.data?.session || !canStaff(bootstrap.data.session.roles, 'members.read')) return <Page><Alert>{text('noAccess')}</Alert></Page>;
+  if (!bootstrap.data?.session || !canStaff(bootstrap.data.session.roles, 'members.read')) return <Page><Alert variant="error">{text('noAccess')}</Alert></Page>;
   const { gym, session } = bootstrap.data;
   return <RanksWorkspace key={gym.id} gymId={gym.id} configure={canStaff(session.roles, 'settings.manage')} promote={canStaff(session.roles, 'promotions.manage')}/>;
 }

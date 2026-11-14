@@ -15,7 +15,7 @@ export function Field({ name, value, onChange, type = 'text', required = false }
 }
 export function ErrorMessage({ error }: { error: unknown }) {
   const key = !(error instanceof ApiError) ? 'failed' : error.reason.includes(memberDeleteBlockedReason) ? 'deleteMemberBlocked' : error.status === 409 ? 'conflict' : 'failed';
-  return error ? <Alert role="alert">{text(key)}</Alert> : null;
+  return error ? <Alert variant="error" focusOnReveal role="alert">{text(key)}</Alert> : null;
 }
 export function useMemberSave() {
   const client = useQueryClient(), [error, setError] = useState<unknown>(), [busy, setBusy] = useState(false);

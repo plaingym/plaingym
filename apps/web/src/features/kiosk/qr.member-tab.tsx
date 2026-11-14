@@ -43,16 +43,16 @@ export function CheckinCodePanel({ gymId, memberId }: { gymId: string; memberId:
   return <section className="min-w-0 space-y-4" aria-label={text('title')}>
     <h2 className="text-lg font-semibold">{text('title')}</h2><p>{text('staffHelp')}</p>
     {data.isPending && <p role="status">{text('loading')}</p>}
-    {data.isError && <Alert role="alert">{text('requestError')} <Button variant="outline" onClick={() => void data.refetch()}>{text('retry')}</Button></Alert>}
+    {data.isError && <Alert variant="error" role="alert">{text('requestError')} <Button variant="outline" onClick={() => void data.refetch()}>{text('retry')}</Button></Alert>}
     {data.data && <>
       {code ? image?.code === code && (image.url
         ? <img src={image.url} width="256" height="256" alt={text('codeImage')} className="mx-auto h-auto w-full max-w-64"/>
-        : <Alert role="alert">{text('drawError')}</Alert>) : <p>{text('inactiveCode')}</p>}
+        : <Alert variant="error" role="alert">{text('drawError')}</Alert>) : <p>{text('inactiveCode')}</p>}
       <div className="flex flex-col gap-3 sm:flex-row"><Button disabled={busy} onClick={() => { setError(''); setAction('regenerate'); }}>{text(code ? 'regenerate' : 'create')}</Button>
         {code && <Button variant="outline" disabled={busy} onClick={() => { setError(''); setAction('revoke'); }}>{text('revoke')}</Button>}</div>
     </>}
     {action && <Dialog title={text(action === 'regenerate' ? 'confirmRegenerate' : 'confirmRevoke')} closeLabel={text('cancel')} onClose={() => setAction(undefined)} dismissible={!busy}>
-      <div className="space-y-4"><p>{text('revokeWarning')}</p>{error && <Alert role="alert">{text(error)}</Alert>}
+      <div className="space-y-4"><p>{text('revokeWarning')}</p>{error && <Alert variant="error" focusOnReveal role="alert">{text(error)}</Alert>}
         <div className="flex flex-col gap-3 sm:flex-row"><Button disabled={busy} onClick={() => void mutate()}>{text(busy ? 'saving' : 'confirm')}</Button>
           <Button variant="outline" disabled={busy} onClick={() => setAction(undefined)}>{text('cancel')}</Button></div></div>
     </Dialog>}

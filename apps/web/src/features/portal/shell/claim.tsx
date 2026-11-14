@@ -23,7 +23,7 @@ function CompleteClaim({ code }: { code: string }) {
   } });
   const { mutate } = complete;
   useEffect(() => { mutate(); }, [mutate]);
-  return complete.isError ? <><Alert>{text('completeFailed')}</Alert><a className="inline-flex min-h-11 items-center underline" href="/login">{text('signIn')}</a></> : <LoadingState />;
+  return complete.isError ? <><Alert variant="error" focusOnReveal>{text('completeFailed')}</Alert><a className="inline-flex min-h-11 items-center underline" href="/login">{text('signIn')}</a></> : <LoadingState />;
 }
 export function PortalClaim() {
   const bootstrap = useBootstrap(), cache = useQueryClient(), [token] = useState(() => location.hash.slice(1)), [password, setPassword] = useState('');
@@ -40,6 +40,6 @@ export function PortalClaim() {
     {code ? <CompleteClaim code={code} /> : bootstrap.isPending ? <LoadingState /> : bootstrap.isError ? <ErrorState onRetry={() => void bootstrap.refetch()} />
       : claim.isSuccess ? claim.data.status === 'email_sent' ? <p role="status">{text('claimEmailSent')}</p> : <><p role="status">{text('claimed')}</p>{signIn}</> :
       <form className="space-y-4" onSubmit={submit}>{bootstrap.data.login.password && <div className="space-y-2"><Label htmlFor="claim-password">{text('password')}</Label><Input id="claim-password" type="password" autoComplete="new-password" required minLength={12} maxLength={128} value={password} onChange={event => setPassword(event.target.value)} /></div>}
-        {claim.isError && <Alert>{text('claimFailed')}</Alert>}<Button type="submit" className="w-full" disabled={claim.isPending || !token}>{text('claim')}</Button></form>}
+        {claim.isError && <Alert variant="error" focusOnReveal>{text('claimFailed')}</Alert>}<Button type="submit" className="w-full" disabled={claim.isPending || !token}>{text('claim')}</Button></form>}
   </main>;
 }

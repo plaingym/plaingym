@@ -73,7 +73,7 @@ export function CampaignEditor({ households, timezone, save, close, loadNeedsCar
             label={<span className="min-w-0 break-all">{h.name}<span className="block text-sm text-muted-foreground">{h.email ?? text('noEmail')}</span></span>} />)}</div>
         </fieldset>
         <p className="text-sm text-muted-foreground">{text('sendHelp')}</p>
-        {error && <Alert role="alert">{error}</Alert>}
+        {error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
         <Button type="submit" className="w-full sm:w-auto" disabled={!selected.size || loadingCards}>{text(busy ? 'saving' : 'send')}</Button>
       </fieldset>
     </form>

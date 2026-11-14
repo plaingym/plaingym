@@ -17,7 +17,7 @@ const text = (key: string, values?: Record<string, string>) => t('portal/checkin
 /** The code is derived on the server and only ever shown, never stored by the browser or service worker. */
 function CodeImage({ code, name }: { code: string; name: string }) {
   const url = useMemo(() => { try { return qrDataUrl(code); } catch { return null; } }, [code]);
-  if (!url) return <Alert role="alert">{text('drawError')}</Alert>;
+  if (!url) return <Alert variant="error" role="alert">{text('drawError')}</Alert>;
   return <img src={url} width="288" height="288" alt={text('codeImage', { name })} className="mx-auto h-auto w-full max-w-72 rounded-lg bg-white p-2" />;
 }
 export function PortalCheckinPage({ client = portalClient }: { client?: PortalClient }) {
@@ -49,12 +49,12 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
           {member && members.data.length > 1 && <h2 className="break-words text-lg font-semibold">{member.name}</h2>}
           {active ? <><CodeImage code={active} name={member?.name ?? ''} /><p className="text-center text-sm text-muted-foreground">{text('help')}</p></>
             : <Alert>{text('inactive')}</Alert>}
-          {error && !confirming && <Alert role="alert">{text(error)}</Alert>}
+          {error && !confirming && <Alert variant="error" focusOnReveal role="alert">{text(error)}</Alert>}
           <Button variant={active ? 'outline' : 'default'} className="w-full sm:w-auto" disabled={busy} onClick={() => { setError(''); if (active) setConfirming(true); else void regenerate(); }}>
             {text(active ? 'regenerate' : 'create')}</Button>
         </section>}
     {confirming && <Dialog title={text('confirmTitle')} closeLabel={text('keep')} onClose={() => setConfirming(false)} dismissible={!busy}>
-      <div className="space-y-4"><p>{text('confirmBody')}</p>{error && <Alert role="alert">{text(error)}</Alert>}
+      <div className="space-y-4"><p>{text('confirmBody')}</p>{error && <Alert variant="error" focusOnReveal role="alert">{text(error)}</Alert>}
         <div className="flex flex-col gap-3 sm:flex-row"><Button disabled={busy} onClick={() => void regenerate()}>{text(busy ? 'saving' : 'confirm')}</Button>
           <Button variant="outline" disabled={busy} onClick={() => setConfirming(false)}>{text('keep')}</Button></div></div>
     </Dialog>}

@@ -24,7 +24,7 @@ export function allowedReports(roles: readonly StaffRole[]): ReportName[] {
 interface WorkspaceProps { gymId: string; userId: string; timezone: string; roles: readonly StaffRole[]; client?: ReportClient }
 export function ReportsWorkspace(props: WorkspaceProps) {
   const reports = allowedReports(props.roles);
-  if (!reports.length) return <Alert>{text('noAccess')}</Alert>;
+  if (!reports.length) return <Alert variant="error">{text('noAccess')}</Alert>;
   return <ReportsContent key={reports.join(',')} {...props} reports={reports} />;
 }
 function ReportsContent({ gymId, userId, timezone, client = reportClient, reports }: WorkspaceProps & { reports: ReportName[] }) {
@@ -60,7 +60,7 @@ function ReportsContent({ gymId, userId, timezone, client = reportClient, report
         <Button type="submit">{text('apply')}</Button>
       </div>
       <p id="report-range-help" className="text-sm text-muted-foreground">{text('rangeHelp', { timezone })}</p>
-      {invalid && <Alert role="alert">{text('rangeError')}</Alert>}
+      {invalid && <Alert variant="error" focusOnReveal role="alert">{text('rangeError')}</Alert>}
     </form>
     <div role="tablist" aria-label={text('reportTabs')} className="flex flex-wrap gap-2">
       {reports.map((report, index) => <Button key={report} className="transition-none" role="tab" id={'report-tab-' + report} aria-controls="report-panel"
@@ -87,6 +87,6 @@ export function ReportsPage() {
   if (bootstrap.isPending) return <LoadingState />;
   if (bootstrap.isError) return <ErrorState onRetry={() => void bootstrap.refetch()} />;
   const { gym, session } = bootstrap.data;
-  if (!session) return <Alert>{text('noAccess')}</Alert>;
+  if (!session) return <Alert variant="error">{text('noAccess')}</Alert>;
   return <ReportsWorkspace key={gym.id + session.userId} gymId={gym.id} userId={session.userId} timezone={gym.timezone} roles={session.roles} />;
 }

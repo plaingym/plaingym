@@ -97,11 +97,11 @@ function LoginPage() {
   return <main id="main-content" className="flex flex-1 items-start justify-center px-4 py-6 sm:items-center sm:p-6">
     <Card className="w-full min-w-0 max-w-md space-y-6 p-4 sm:p-6">
       <PageHeader title={t('shell/shell:title')} description={bootstrap.data.gym.name} />
-      {returnedError && !sent && <Alert>{t(returnedError)}</Alert>}
+      {returnedError && !sent && <Alert variant="error" focusOnReveal>{t(returnedError)}</Alert>}
       {googleOn && !sent && <div className="space-y-4">
         <Button type="button" variant="outline" className="w-full" disabled={googleBusy || login.isPending} onClick={() => { google.mutate(); }}>
           {t(googleBusy ? 'auth/google:pending' : 'auth/google:signIn')}</Button>
-        {google.isError && <Alert>{t('auth/google:startFailed')}</Alert>}
+        {google.isError && <Alert variant="error" focusOnReveal>{t('auth/google:startFailed')}</Alert>}
         {(methods.password || methods.magicLink) && <p className="text-center text-sm text-muted-foreground">{t('auth/google:or')}</p>}
       </div>}
       {sent ? <div className="space-y-4"><p role="status">{t('shell/shell:sent')}</p><DemoSignInLink email={email} />
@@ -111,7 +111,7 @@ function LoginPage() {
           <Input id="login-email" type="email" autoComplete="username" autoCapitalize="none" spellCheck={false} required value={email} onChange={(e) => setEmail(e.target.value)} disabled={login.isPending || google.isPending} /></div>
         {methods.password && <div className="space-y-2"><Label htmlFor="login-password">{t('shell/shell:password')}</Label>
           <Input id="login-password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} disabled={login.isPending || google.isPending} /></div>}
-        {login.isError && <Alert>{t(login.error instanceof ApiError && login.error.status === 429 ? 'shell/shell:rateLimited' : 'shell/shell:failed')}</Alert>}
+        {login.isError && <Alert variant="error" focusOnReveal>{t(login.error instanceof ApiError && login.error.status === 429 ? 'shell/shell:rateLimited' : 'shell/shell:failed')}</Alert>}
         {methods.password && <Button type="submit" value="password" className="w-full" disabled={login.isPending || google.isPending || !password}>{t(login.isPending ? 'shell/shell:pending' : 'shell/shell:passwordSubmit')}</Button>}
         {methods.magicLink && <><p className="text-sm text-muted-foreground">{t('shell/shell:magicHint')}</p>
           <Button type="submit" value="magic" variant="outline" className="w-full" disabled={login.isPending || google.isPending}>{t('shell/shell:magicSubmit')}</Button></>}

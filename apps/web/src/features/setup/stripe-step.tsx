@@ -40,7 +40,7 @@ export function StripeStep({ fetcher = fetch, onComplete }: { fetcher?: typeof f
           <dt className="break-words">{label(resource)}</dt><dd className="font-medium">{label(['setupIntents', 'events', 'disputes'].includes(resource) ? 'read' : 'write')}</dd>
         </div>)}
       </dl><p className="text-sm">{label('other')}</p>
-      {failure && <Alert>{label(failure)}</Alert>}
+      {failure && <Alert variant="error" focusOnReveal>{label(failure)}</Alert>}
       <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void save('configure'); }}>
         <Label htmlFor="stripe-restricted-key">{label('key')}</Label>
         <Input id="stripe-restricted-key" name="restrictedKey" type="password" autoComplete="off" spellCheck={false}

@@ -74,7 +74,7 @@ export function ChangePlanDialog({ row, plans, client, close, changed, reload, g
   }
   return <Dialog title={text('changePlanTitle')} closeLabel={text('close')} onClose={close} dismissible={!busy}>
     <form className="min-w-0 space-y-4 wrap-anywhere" onSubmit={event => void submit(event)}>
-      {error && <Alert role="alert">{error}</Alert>}
+      {error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
       {!options.length ? <p>{text('noOtherPlans')}</p> : <fieldset disabled={busy} className="min-w-0 space-y-4">
         <p className="text-sm text-muted-foreground">{text('changePlanCurrent', { plan: plans.find(item => item.id === row.planId)?.name ?? text('membership'), price: money(row.amountCents, row.currency), interval: text(row.interval) })}</p>
         <Label className="block min-w-0">{text('newPlan')}<select className={selectClass} value={planId} onChange={event => choose(event.target.value)}>
@@ -88,7 +88,7 @@ export function ChangePlanDialog({ row, plans, client, close, changed, reload, g
           {blocked && <p className="text-sm text-muted-foreground">{blocked}</p>}
         </div>
         {preview.isPending && <p role="status">{text('previewLoading')}</p>}
-        {preview.isError && <Alert role="alert">{refusal(preview.error, 'previewFailed')} <Button variant="outline" disabled={preview.isFetching}
+        {preview.isError && <Alert variant="error" role="alert">{refusal(preview.error, 'previewFailed')} <Button variant="outline" disabled={preview.isFetching}
           onClick={() => void preview.refetch()}>{text('retry')}</Button></Alert>}
         {data && <div className="min-w-0 space-y-2 rounded-lg border p-4 text-sm" aria-label={text('preview')}>
           <p className="font-medium">{text('kind_' + data.kind)}</p>

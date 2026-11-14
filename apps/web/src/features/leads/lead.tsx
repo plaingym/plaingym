@@ -16,7 +16,7 @@ import { text } from './text.js';
 type Detail = Lead & { lostReason?: string | null };
 interface WorkspaceProps { memberId: string; timezone: string; roles: readonly StaffRole[]; client?: LeadClient }
 export function LeadWorkspace({ memberId, timezone, roles, client = leadClient }: WorkspaceProps) {
-  if (!canStaff(roles, 'leads.manage')) return <Page><Alert>{text('noAccess')}</Alert></Page>;
+  if (!canStaff(roles, 'leads.manage')) return <Page><Alert variant="error">{text('noAccess')}</Alert></Page>;
   return <LeadView memberId={memberId} timezone={timezone} client={client} />;
 }
 
@@ -37,7 +37,7 @@ function LeadView({ memberId, timezone, client }: { memberId: string; timezone: 
     if (result.reload) { setState('loading'); setVersion(value => value + 1); setContactsVersion(value => value + 1); }
   }
   const back = <a className="inline-flex min-h-11 items-center text-sm font-medium underline underline-offset-4" href="/admin/leads">{text('lead.back')}</a>;
-  if (state === 'missing') return <Page>{back}<Alert>{text('lead.missing')}</Alert></Page>;
+  if (state === 'missing') return <Page>{back}<Alert variant="error">{text('lead.missing')}</Alert></Page>;
   const retry = () => { setState('loading'); setVersion(value => value + 1); };
   if (state === 'failed' && !lead) return <Page>{back}<ErrorState message={text('lead.loadError')} onRetry={retry} /></Page>;
   if (!lead) return <Page><LoadingState /></Page>;
@@ -45,7 +45,7 @@ function LeadView({ memberId, timezone, client }: { memberId: string; timezone: 
   return <Page>
     {back}
     <PageHeader title={name} description={text('stage.' + lead.stage)} />
-    {outcome && (outcome.error ? <Alert role="alert">{outcome.message}</Alert> : <p role="status" className="text-sm">{outcome.message}</p>)}
+    {outcome && (outcome.error ? <Alert variant="error" focusOnReveal role="alert">{outcome.message}</Alert> : <p role="status" className="text-sm">{outcome.message}</p>)}
     {state === 'failed' && <ErrorState message={text('lead.loadError')} onRetry={retry} />}
     <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] lg:items-start">
       <div className="min-w-0 space-y-6">
@@ -92,6 +92,6 @@ export function LeadPage({ memberId }: { memberId: string }) {
   if (bootstrap.isPending) return <LoadingState />;
   if (bootstrap.isError) return <ErrorState onRetry={() => void bootstrap.refetch()} />;
   const { gym, session } = bootstrap.data;
-  if (!session) return <Alert>{text('noAccess')}</Alert>;
+  if (!session) return <Alert variant="error">{text('noAccess')}</Alert>;
   return <LeadWorkspace key={gym.id + session.userId + memberId} memberId={memberId} timezone={gym.timezone} roles={session.roles} />;
 }

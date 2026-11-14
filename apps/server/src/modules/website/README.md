@@ -70,6 +70,10 @@ share one helper, `serveGymImage`: the gym's own key, a PNG, JPEG or WebP, at mo
 
 ## Storage
 
+The admin edits the brand color in Settings → Gym details. Website links there
+and keeps any saved accent color when saving its text and photos; the admin has
+one brand-color control. Logo uploads remain in the Website section.
+
 The text, accent color and photo list live in the gym's settings under
 `modules.website`, through `areas/settings/module-settings.ts`. Each save takes the
 gym revision (a stale one answers 409) and writes a `settings.module.updated` audit

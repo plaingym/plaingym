@@ -76,7 +76,7 @@ function Roster({ sessionId }: { sessionId: string }) {
       <Button type="submit" disabled={busy}>{text('searchButton')}</Button>
       <Button type="button" variant="outline" disabled={busy} onClick={() => setReload((value) => value + 1)}>{text('refresh')}</Button>
     </form>
-    {error && !undoing && <Alert>{text('error')}</Alert>}
+    {error && !undoing && <Alert variant="error" focusOnReveal>{text('error')}</Alert>}
     {loading && <LoadingState label={text('loading')}/>}
     {roster && roster.data.length > 0 && <ul className="divide-y divide-border rounded-xl border border-border">{roster.data.map((member) => {
       const name = `${member.firstName} ${member.lastName}`, attendance = checked.get(member.id), done = !!attendance;
@@ -99,7 +99,7 @@ function Roster({ sessionId }: { sessionId: string }) {
     </div>}
     {undoing && <Dialog title={text('undoTitle')} description={text('undoHelp', { name: undoing.name })}
       closeLabel={text('closeUndo')} onClose={closeUndo} dismissible={!saving}>
-      {error && <Alert>{text('error')}</Alert>}
+      {error && <Alert variant="error" focusOnReveal>{text('error')}</Alert>}
       <div className="flex flex-wrap justify-end gap-2">
         <Button variant="outline" disabled={saving} onClick={closeUndo}>{text('cancelUndo')}</Button>
         <Button disabled={saving} onClick={() => void undo()}>{text('confirmUndo')}</Button>
@@ -151,7 +151,7 @@ function MemberAttendance({ memberId }: { memberId: string }) {
       <h3 className="text-lg font-semibold">{text('title')}</h3>
       <Button variant="outline" disabled={loading || saving} onClick={() => setReload((value) => value + 1)}>{text('refresh')}</Button>
     </div>
-    {error && <Alert>{text('error')}</Alert>}
+    {error && <Alert variant="error" focusOnReveal>{text('error')}</Alert>}
     {loading && <LoadingState label={text('loading')}/>}
     <div className="grid items-start gap-6 lg:grid-cols-2">
       {totals && <div className="min-w-0 space-y-4">

@@ -49,7 +49,7 @@ export function CampaignWorkspace({ gymId, timezone, client = campaignClient }: 
     <PageHeader title={detail.data?.campaign.name ?? text('title')} description={text('help')}
       actions={<>{selected && <Button variant="outline" onClick={() => { setSelected(null); setMessage(''); }}>{text('back')}</Button>}
         <Button disabled={!households.data} onClick={() => setEditing(true)}>{text('create')}</Button></>} />
-    {message && <Alert role="status">{message}</Alert>}
+    {message && <Alert variant={message === text('saveError') ? 'error' : 'info'} focusOnReveal={message === text('saveError')} role={message === text('saveError') ? 'alert' : 'status'}>{message}</Alert>}
     {households.isError && <ErrorState message={text('householdsError')} onRetry={() => void households.refetch()} />}
     {!selected ? <>
       {list.isPending && <LoadingState />}
@@ -98,7 +98,7 @@ export function CampaignPage() {
       return response.data.data;
     } });
   if (bootstrap.isPending) return <LoadingState />;
-  if (!allowed || !bootstrap.data) return <Alert>{text('noAccess')}</Alert>;
+  if (!allowed || !bootstrap.data) return <Alert variant="error">{text('noAccess')}</Alert>;
   if (options.isPending) return <LoadingState />;
   if (options.isError) return <ErrorState onRetry={() => void options.refetch()} />;
   return <CampaignWorkspace key={bootstrap.data.gym.id} gymId={bootstrap.data.gym.id} timezone={options.data.timezone} />;

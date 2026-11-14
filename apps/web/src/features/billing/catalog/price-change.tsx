@@ -130,7 +130,7 @@ export function PriceChange({ plan, input, initial, client, cancel, reload, done
     <div className="min-w-0 space-y-4 wrap-anywhere">
       <p>{say('pcPrice', { name: plan.name, amount: money(Number(input.amountCents ?? initial.amountCents), String(input.currency ?? plan.currency)) })}</p>
       {newOnly && !result && <p role="note">{text('pcTermsNewOnly')}</p>}
-      {error && <Alert role="alert" className="space-y-3"><p>{error}</p>{(conflict || attempted) && <Button disabled={busy} onClick={() => void reloadPlan()}>{text('pcReload')}</Button>}</Alert>}
+      {error && <Alert variant="error" focusOnReveal role="alert" className="space-y-3"><p>{error}</p>{(conflict || attempted) && <Button disabled={busy} onClick={() => void reloadPlan()}>{text('pcReload')}</Button>}</Alert>}
       {result ? <>
         <p role="status">{say('pcScheduled', { count: result.scheduled.length, date: result.effectiveOn })}</p>
         <p>{text('pcCycles')}</p>
@@ -153,7 +153,7 @@ export function PriceChange({ plan, input, initial, client, cancel, reload, done
             </Label>)}
           </fieldset>
           {choice !== 'new' && <>
-            {tooMany && <Alert role="alert">{text('pcLimit')}</Alert>}
+            {tooMany && <Alert variant="error" focusOnReveal role="alert">{text('pcLimit')}</Alert>}
             <fieldset disabled={locked || conflict} className="space-y-3">
               <Label className="block">{text('pcDate')}<Input type="date" min={preview.today} value={date} onChange={event => { setDate(event.target.value); setConfirmed(false); }}/></Label>
               {date !== preview.effectiveOn && <Button variant="outline" disabled={!isCalendarDate(date) || date < preview.today} onClick={() => void refreshDate()}>{text('pcRefresh')}</Button>}

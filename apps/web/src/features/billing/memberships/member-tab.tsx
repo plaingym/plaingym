@@ -54,17 +54,17 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
   const reload = () => cache.invalidateQueries({ queryKey: key });
   return <section className="min-w-0 space-y-4" aria-label={text('title')}>
     <h2 className="text-lg font-semibold">{text('title')}</h2>
-    {message && <Alert role="status">{message}{reminder && <span className="mt-1 block">{text('agreementReminder')}</span>}</Alert>}
+    {message && <Alert variant={message === text('saved') || reminder ? 'info' : 'error'} focusOnReveal={message !== text('saved') && !reminder} role={message === text('saved') || reminder ? 'status' : 'alert'}>{message}{reminder && <span className="mt-1 block">{text('agreementReminder')}</span>}</Alert>}
     {rows.isPending && <p role="status">{text('loading')}</p>}
-    {rows.isError && <Alert role="alert">{text('error')} <Button variant="outline" onClick={() => void rows.refetch()}>{text('retry')}</Button></Alert>}
+    {rows.isError && <Alert variant="error" role="alert">{text('error')} <Button variant="outline" onClick={() => void rows.refetch()}>{text('retry')}</Button></Alert>}
     {rows.data?.length === 0 && <p className="rounded-lg border p-4 text-muted-foreground">{text('empty')}</p>}
-    {plans.isError && <Alert role="alert">{text('error')} <Button variant="outline" onClick={() => void plans.refetch()}>{text('retry')}</Button></Alert>}
+    {plans.isError && <Alert variant="error" role="alert">{text('error')} <Button variant="outline" onClick={() => void plans.refetch()}>{text('retry')}</Button></Alert>}
     <ul className="space-y-3">{rows.data?.map(row => <MembershipCard key={row.id} row={row} plans={plans.data ?? []} plansReady={plans.isSuccess} manage={manage} busy={busy} mutate={mutate}
       gymId={gymId} discounts={discounts} client={client} reload={reload} changed={result => { setReminder(true); setMessage(text(result.invoiceId ? 'planChangedInvoice' : 'planChanged')); void reload(); }}/>)}</ul>
     {manage && <>
       {(setup.isPending || plans.isPending || bootstrap.isPending) && <p role="status">{text('loading')}</p>}
-      {bootstrap.isError && <Alert role="alert">{text('error')} <Button variant="outline" onClick={() => void bootstrap.refetch()}>{text('retry')}</Button></Alert>}
-      {setup.isError && <Alert role="alert">{text('error')} <Button variant="outline" onClick={() => void setup.refetch()}>{text('retry')}</Button></Alert>}
+      {bootstrap.isError && <Alert variant="error" role="alert">{text('error')} <Button variant="outline" onClick={() => void bootstrap.refetch()}>{text('retry')}</Button></Alert>}
+      {setup.isError && <Alert variant="error" role="alert">{text('error')} <Button variant="outline" onClick={() => void setup.refetch()}>{text('retry')}</Button></Alert>}
       {setup.data && plans.data && bootstrap.data && <AssignmentForm key={memberId} plans={plans.data.filter(plan => plan.active)}
         gymId={gymId} discounts={discounts} householdId={setup.data.member.householdId} memberId={memberId} busy={busy} assign={data => mutate('assignMembership', data)}
         today={localDate(now ?? new Date(), bootstrap.data.gym.timezone)}
@@ -174,7 +174,7 @@ function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, 
       </div>
       {confirm && <div className="space-y-2"><p>{text('confirmCancel')}</p><div className="flex flex-col gap-2 sm:flex-row"><Button onClick={async () => { if (await mutate('cancelMembership', { revision: row.revision }, row.id)) setConfirm(false); }}>{text('confirm')}</Button><Button variant="outline" onClick={() => setConfirm(false)}>{text('back')}</Button></div></div>}
       {action === 'edit' && <form noValidate onSubmit={event => void edit(event)} className="space-y-3">
-        {formError && <Alert role="alert">{formError}</Alert>}
+        {formError && <Alert variant="error" focusOnReveal role="alert">{formError}</Alert>}
         {/* A text field, so an entry the browser can't parse as a number is refused rather than read as blank. */}
         <Label className="block min-w-0">{text('price')} ({base.currency})<Input name="price" inputMode="decimal" autoComplete="off" placeholder={minorUnitsToInput(base.amountCents, base.currency)}/></Label>
         <p className="text-sm text-muted-foreground">{text('priceHelp')}</p>

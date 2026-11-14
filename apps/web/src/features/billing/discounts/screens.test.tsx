@@ -136,7 +136,9 @@ it.each(['discount_used_up', 'discount_ended', 'discount_plan'])('shows a clear 
   fireEvent.change(form.getByLabelText('Discount'), { target: { value: 'code' } });
   fireEvent.change(form.getByLabelText('Discount code'), { target: { value: 'FAMILY' } });
   fireEvent.submit(form.getByRole('button', { name: 'Assign a plan' }).closest('form')!);
-  await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/no uses left|has ended|does not apply/));
+  await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/no uses left|has ended|does not apply/));
+  expect(screen.getByRole('alert').dataset.variant).toBe('error');
+  expect(document.activeElement).toBe(screen.getByRole('alert'));
 });
 it.each(['coach', 'front_desk'] as const)('hides discount details and controls from %s', async role => {
   const api = panel(role); await screen.findByText('Dec 1, 2026');

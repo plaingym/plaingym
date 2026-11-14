@@ -49,7 +49,7 @@ export function DiscountEditor({ record, currency, plans, client, close, saved }
   }
   return <Dialog title={text(record ? 'edit' : 'create')} closeLabel={text('close')} onClose={close} dismissible={!busy}>
     <form onSubmit={event => void submit(event)} className="min-w-0 space-y-4 wrap-anywhere">
-      {error && <Alert role="alert">{error}</Alert>}
+      {error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
       <fieldset disabled={busy} className="grid min-w-0 gap-4 sm:grid-cols-2">
         <Label className="block min-w-0 sm:col-span-2">{text('name')}<Input name="name" required maxLength={100} defaultValue={record?.name}/></Label>
         <Label className="block min-w-0 sm:col-span-2">{text('code')}<Input name="code" pattern="[A-Za-z0-9\-]{3,40}" maxLength={40} defaultValue={record?.code ?? ''}/></Label>

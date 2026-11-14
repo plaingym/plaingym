@@ -15,7 +15,7 @@ import { text } from './text.js';
 
 interface WorkspaceProps { timezone: string; roles: readonly StaffRole[]; client?: LeadClient }
 export function LeadsWorkspace({ timezone, roles, client = leadClient }: WorkspaceProps) {
-  if (!canStaff(roles, 'leads.manage')) return <Alert>{text('noAccess')}</Alert>;
+  if (!canStaff(roles, 'leads.manage')) return <Alert variant="error">{text('noAccess')}</Alert>;
   return <LeadsBoard timezone={timezone} client={client} />;
 }
 function LeadsBoard({ timezone, client }: { timezone: string; client: LeadClient }) {
@@ -44,7 +44,7 @@ function LeadsBoard({ timezone, client }: { timezone: string; client: LeadClient
       <CheckboxField label={text('showLost')} checked={showLost} onChange={event => setShowLost(event.target.checked)} />
     </div>
     <p className="text-sm text-muted-foreground">{text('dueHelp', { timezone })}</p>
-    {outcome && <div ref={notice} tabIndex={-1}>{outcome.error ? <Alert role="alert">{outcome.message}</Alert> : <p role="status" className="text-sm">{outcome.message}</p>}</div>}
+    {outcome && <div ref={notice} tabIndex={-1}>{outcome.error ? <Alert variant="error" focusOnReveal role="alert">{outcome.message}</Alert> : <p role="status" className="text-sm">{outcome.message}</p>}</div>}
     <div className="grid min-w-0 grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
       {stages.map(stage => <StageColumn key={stage} stage={stage} filters={filters} version={versions[stage] ?? 0} client={client} timezone={timezone} onDone={done} />)}
     </div>
@@ -55,6 +55,6 @@ export function LeadsPage() {
   if (bootstrap.isPending) return <LoadingState />;
   if (bootstrap.isError) return <ErrorState onRetry={() => void bootstrap.refetch()} />;
   const { gym, session } = bootstrap.data;
-  if (!session) return <Alert>{text('noAccess')}</Alert>;
+  if (!session) return <Alert variant="error">{text('noAccess')}</Alert>;
   return <LeadsWorkspace key={gym.id + session.userId} timezone={gym.timezone} roles={session.roles} />;
 }

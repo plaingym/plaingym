@@ -51,13 +51,15 @@ describe('website settings', () => {
     const tagline = await screen.findByRole('textbox', { name: 'Tagline' });
     await user.clear(tagline); await user.type(tagline, '  Strong together ');
     await user.type(screen.getByRole('textbox', { name: 'Public phone number' }), '604 555 0100');
-    await user.click(screen.getByRole('checkbox', { name: 'Use an accent color for the website footer' }));
+    expect(screen.queryByLabelText('Primary color')).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: 'Use an accent color for the website footer' })).toBeNull();
+    expect(screen.getByRole('link', { name: 'Change your brand color in Gym details' }).getAttribute('href')).toBe('#settingsSections.settings.general');
     const second = screen.getAllByRole('listitem')[1]!;
     await user.click(within(second).getByRole('button', { name: 'Move up' }));
     await user.click(screen.getByRole('button', { name: 'Save website' }));
     await screen.findByText('Website saved.');
     expect(client.PUT).toHaveBeenCalledWith('/api/website', expect.objectContaining({ body: { revision: 4, tagline: 'Strong together', about: 'Since 2010',
-      phone: '604 555 0100', email: null, accentColor: '#e3eeec', primaryColor: '#123456', photos: [{ id: id(11), alt: 'Class' }, { id: id(10), alt: 'Mats' }] } }));
+      phone: '604 555 0100', email: null, accentColor: null, primaryColor: '#123456', photos: [{ id: id(11), alt: 'Class' }, { id: id(10), alt: 'Mats' }] } }));
   });
 
   it('removes a photo on save and explains a conflict', async () => {
@@ -87,7 +89,7 @@ describe('website settings', () => {
     await user.click(screen.getByRole('button', { name: 'Save website' }));
     expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'These settings changed elsewhere. They have been reloaded; check them and save again.');
     expect(client.PUT).not.toHaveBeenCalled();
-    await waitFor(() => expect((screen.getByLabelText('Primary color') as HTMLInputElement).value).toBe('#ff0000'));
+    await screen.findByDisplayValue('Mats on the floor');
     expect((screen.getByRole('textbox', { name: 'Tagline' }) as HTMLInputElement).value).toBe('Unsaved line');
     await user.click(screen.getByRole('button', { name: 'Save website' }));
     await screen.findByText('Website saved.');

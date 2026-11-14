@@ -66,7 +66,7 @@ function TemplateEditor({ row, client, close, saved }: { row: WaiverTemplate | '
   }
   return <Dialog title={text(row === 'new' ? 'create' : 'edit')} closeLabel={text('close')} dismissible={!busy} onClose={close} size="wide">
     <form className="space-y-4" onSubmit={event => void save(event)}>
-      <p>{text('versionNote')}</p>{error && <Alert role="alert">{error}</Alert>}
+      <p>{text('versionNote')}</p>{error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
       <div><Label htmlFor="waiver-name">{text('name')}</Label><Input id="waiver-name" name="name" required maxLength={200} readOnly={row !== 'new'} defaultValue={row === 'new' ? '' : row.name} /></div>
       <div><Label htmlFor="waiver-kind">{text('kind')}</Label><Select id="waiver-kind" name="kind" defaultValue={row === 'new' ? 'waiver' : row.kind}>
         {(row === 'new' ? ['waiver', 'agreement'] : [row.kind]).map(kind => <option key={kind} value={kind}>{text(kind)}</option>)}
@@ -109,7 +109,7 @@ export function MemberWaivers({ gymId, memberId, manage, timezone = 'UTC', local
     <h2 className="text-lg font-semibold">{text('title')}</h2>
     {(templates.isPending || signed.isPending) && <LoadingState />}
     {(templates.isError || signed.isError || statuses.some(status => status.isError)) && <ErrorState onRetry={() => { void templates.refetch(); void signed.refetch(); statuses.forEach(status => { void status.refetch(); }); }} />}
-    {error && <Alert role="alert">{error}</Alert>}
+    {error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
     {download && <a className="inline-flex min-h-11 items-center break-all underline" href={download}>{text('download')}</a>}
     <h3 className="font-semibold">{text('available')}</h3>
     <ul className="space-y-3">{templates.data?.data.map((row, index) => <li key={row.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border p-4">
@@ -161,7 +161,7 @@ function Signing({ template, memberId, client, close, saved }: { template: Waive
     <form className="space-y-4" onSubmit={event => void submit(event)}>
       <h3 className="break-words font-semibold">{template.name} · {text('version')} {template.version}</h3>
       <WaiverDocument template={template} query={document} />
-      {error && <Alert role="alert">{error}</Alert>}
+      {error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
       <p>{text('guardianNote')}</p>
       <CheckboxField checked={guardian} onChange={e => setGuardian(e.target.checked)} label={text('guardian')} />
       <div><Label htmlFor="signer">{text('signer')}</Label><Input id="signer" name="signer" required maxLength={200} onChange={() => { uploaded.current = null; }} /></div>

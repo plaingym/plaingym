@@ -89,8 +89,8 @@ function Bookings({ memberId, sessionId }: ExtensionViewProps) {
       <h3 className="text-lg font-semibold">{text(sessionId ? 'roster' : 'title')}</h3>
       {sessionId && counts && <p className="text-sm text-muted-foreground" data-testid="roster-counts">{text('counts', counts)}</p>}</div>
       <Button variant="outline" disabled={busy || refreshing} onClick={() => { fullLoad.current = rows.length === 0 && counts === null; setActionError(''); setRefreshing(true); setReload(value => value + 1); }}>{text('refresh')}</Button></div>
-    {actionError && <Alert>{actionError}</Alert>}
-    {(loadError || bootstrap.isError) && <Alert>{loadError || text('error')}</Alert>}
+    {actionError && <Alert variant="error" focusOnReveal>{actionError}</Alert>}
+    {(loadError || bootstrap.isError) && <Alert variant="error">{loadError || text('error')}</Alert>}
     {stale && <p role="status" className="text-sm text-muted-foreground">{text('stale')}</p>}
     {notice && <p role="status">{notice}</p>}
     {(loading || bootstrap.isPending) && <LoadingState label={text('loading')}/>}
@@ -133,7 +133,7 @@ function BookingForm({ memberId, sessionId, timezone, disabled, onSaved }: Exten
       .catch(error => setError(errorText(error))).finally(() => setSaving(false));
   }}>
     <h4 className="font-semibold">{text(memberId ? 'book' : 'addMember')}</h4>
-    {error && <Alert>{error}</Alert>}
+    {error && <Alert variant="error" focusOnReveal>{error}</Alert>}
     {!memberId && <>
       <div className="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end"><div className="min-w-0 space-y-2"><Label htmlFor={id + '-search'}>{text('search')}</Label>
         <Input id={id + '-search'} type="search" value={search} disabled={busy} onChange={event => setSearch(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); void searchMembers(); } }}/></div>

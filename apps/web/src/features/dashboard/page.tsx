@@ -14,6 +14,7 @@ import { EmptyState, ErrorState, LoadingState } from '../../components/ui/states
 import { DashboardWidgets } from './widgets.js';
 import { BillingDashboardPanel, billingWidgetViews } from './billing.widgets.js';
 import { leadsWidgetViews } from './leads.widgets.js';
+import { GettingStarted } from './getting-started.js';
 
 const label = (key: string) => t('dashboard/dashboard:' + key);
 function DashboardPanel({ gymId, roles }: { gymId: string; roles: readonly StaffRole[] }) {
@@ -26,6 +27,7 @@ function DashboardPanel({ gymId, roles }: { gymId: string; roles: readonly Staff
   return <Page>
     <PageHeader title={label('title')} description={query.data && <>{label('updated')}: <time dateTime={query.data.generatedAt}>{instantLabel(query.data.generatedAt, timezone)}</time></>}
       actions={<Button variant="outline" disabled={query.isFetching} onClick={() => void query.refetch()}>{label('refresh')}</Button>}/>
+    {query.data && !query.isError && (query.data.widgets.length === 0 || query.data.widgets.some(widget => widget.id === 'active_members' && widget.status === 'ready' && 'count' in widget && widget.count === 0)) && <GettingStarted gymId={gymId} roles={roles}/>}
     {query.isPending ? <LoadingState label={label('loading')}/> : query.isError ? <ErrorState message={label('loadFailed')} onRetry={() => void query.refetch()}/>
       : query.data.widgets.length === 0 ? <EmptyState title={label('empty')} description={label('emptyHelp')}/>
       : <DashboardWidgets widgets={query.data.widgets} roles={roles} views={[...billingWidgetViews, ...leadsWidgetViews]}/>}
@@ -36,6 +38,6 @@ export function DashboardPage() {
   const bootstrap = useBootstrap();
   if (bootstrap.isPending) return <Page><LoadingState label={label('loading')}/></Page>;
   if (bootstrap.isError) return <Page><ErrorState message={label('loadFailed')} onRetry={() => void bootstrap.refetch()}/></Page>;
-  if (!bootstrap.data.session || !canStaff(bootstrap.data.session.roles, 'members.read')) return <Page><Alert>{label('noAccess')}</Alert></Page>;
+  if (!bootstrap.data.session || !canStaff(bootstrap.data.session.roles, 'members.read')) return <Page><Alert variant="error">{label('noAccess')}</Alert></Page>;
   return <DashboardPanel key={bootstrap.data.gym.id} gymId={bootstrap.data.gym.id} roles={bootstrap.data.session.roles}/>;
 }

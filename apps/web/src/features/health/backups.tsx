@@ -54,14 +54,14 @@ export function BackupActions({ gymId, owner, onConfirmed }: { gymId: string; ow
     {state.manual && <p role="status" className="text-sm [overflow-wrap:anywhere]">{state.manual.status === 'succeeded'
       ? label('succeeded', { time: instantLabel(state.manual.completedAt!), id: state.manual.snapshotId! })
       : label(state.manual.status)}</p>}
-    {now.isError && <Alert>{label('requestFailed')}</Alert>}
+    {now.isError && <Alert variant="error" focusOnReveal>{label('requestFailed')}</Alert>}
     <Button type="button" variant="outline" disabled={busy || !state.configured} onClick={() => now.mutate()}>{label(busy ? 'busy' : 'now')}</Button>
     {!state.configured && <p className="text-sm text-muted-foreground">{label('notConfigured')}</p>}
     {confirming !== null && <Dialog title={label('review')} description={label('confirmDescription')} closeLabel={label('cancel')}
       dismissible={!confirm.isPending} onClose={() => setConfirming(null)}>
       <div className="space-y-4 p-4 sm:p-6">
         <CheckboxField label={label('confirmCheck')} checked={checked} onChange={event => setChecked(event.target.checked)}/>
-        {confirm.isError && <Alert>{label('confirmFailed')}</Alert>}
+        {confirm.isError && <Alert variant="error" focusOnReveal>{label('confirmFailed')}</Alert>}
         <Button type="button" className="w-full sm:w-auto" disabled={!checked || confirm.isPending} onClick={() => confirm.mutate()}>{label('confirm')}</Button>
       </div>
     </Dialog>}

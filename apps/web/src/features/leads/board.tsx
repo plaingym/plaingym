@@ -63,7 +63,7 @@ export function StageColumn({ stage, filters, version, client, timezone, onDone 
   }
   return <section aria-label={text('stage.' + stage)} className="min-w-0 space-y-3 rounded-xl border border-border bg-muted/30 p-3">
     <h2 className="text-base font-semibold">{loading ? text('stage.' + stage) : text('count', { stage: text('stage.' + stage), count: total })}</h2>
-    {failed && <Alert role="alert">{text('loadError')}</Alert>}
+    {failed && <Alert variant="error" role="alert">{text('loadError')}</Alert>}
     {loading && <LoadingState />}
     {!loading && rows.length === 0 && !failed && <p className="text-sm text-muted-foreground">{text('empty')}</p>}
     <fieldset disabled={loading} className="min-w-0"><ul className="space-y-3">{rows.map(lead => <li key={lead.memberId} className="min-w-0">

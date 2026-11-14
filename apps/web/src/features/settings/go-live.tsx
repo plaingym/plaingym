@@ -119,9 +119,9 @@ export function GoLiveSettings() {
   return <section className="space-y-4" aria-label={label('title')}>
     <h2 className="text-lg font-semibold">{label('title')}</h2>
     <p className="text-sm text-muted-foreground">{label('help')}</p>
-    {readFailed ? <Alert>{refusedUnread && label(refusedUnread + 'Unread') + ' '}{label('error')}
+    {readFailed ? <Alert variant="error">{refusedUnread && label(refusedUnread + 'Unread') + ' '}{label('error')}
       <Button variant="outline" className="mt-3 sm:ml-3 sm:mt-0" onClick={retry}>{label('retry')}</Button></Alert>
-      : message && <Alert>{label(message)}</Alert>}
+      : message && <Alert variant="error" focusOnReveal={!confirmBilling}>{label(message)}</Alert>}
     {!checklist || !settings ? (busy || gym.loading) && <LoadingState label={label('loading')}/> : <>
       <ul className="space-y-3">{(['billingEnabled', 'memberEmailsEnabled'] as const).map((name) => {
         const on = checklist[name], action = label(on ? 'turnOff' : 'turnOn');
@@ -147,7 +147,7 @@ export function GoLiveSettings() {
           : label('reconcilePending')}</p>
         {checklist.restoreReconciliation.stripeConfigured === false && <p className="break-words text-sm">
           {label(checklist.items.find(item => item.id === 'stripe_ready')?.status === 'ready' ? 'reconcileStripeConnected' : 'reconcileWithoutStripe')}</p>}
-        {checkError && <Alert>{label(checkError)}</Alert>}
+        {checkError && <Alert variant="error" focusOnReveal>{label(checkError)}</Alert>}
         {checklist.billingEnabled && <p className="text-sm text-muted-foreground">{label('reconcilePause')}</p>}
         <Button variant="outline" disabled={locked || checklist.billingEnabled || !checklist.restoreReconciliation.snapshotAt}
           onClick={() => void rerunReconciliation()}>{label('reconcileRerun')}</Button>
@@ -165,7 +165,7 @@ export function GoLiveSettings() {
           <CheckboxField label={label('confirmDates')} checked={confirmed} disabled={busy}
             onChange={(event) => setConfirmed(event.target.checked)}/>
           {/* The dialog is modal: the page's alert behind it can't be seen, so a failed save shows here too. */}
-          {message === 'error' && <Alert>{label('error')}</Alert>}
+          {message === 'error' && <Alert variant="error" focusOnReveal>{label('error')}</Alert>}
           <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
             <Button variant="outline" disabled={busy} onClick={() => setConfirmBilling(false)}>{label('cancel')}</Button>
             <Button disabled={locked || !confirmed} onClick={() => void toggle('billingEnabled', true)}>{label('confirmEnable')}</Button>

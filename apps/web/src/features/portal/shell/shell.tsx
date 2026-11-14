@@ -93,7 +93,7 @@ export function HouseholdSwitcher({ households, current, onChoose, disabled = fa
 }
 export function HouseholdPicker({ households, onChoose, pending = false, failed = false }: { households: readonly HouseholdChoice[]; onChoose(householdId: string): void; pending?: boolean; failed?: boolean }) {
   return <Page className="max-w-md"><PageHeader title={text('chooseTitle')} description={text('chooseDescription')} />
-    {failed && <Alert>{text('chooseFailed')}</Alert>}
+    {failed && <Alert variant="error" focusOnReveal>{text('chooseFailed')}</Alert>}
     <ul className="space-y-3">{households.map(choice => <li key={choice.householdId}>
       <Button variant="outline" className="h-auto min-h-11 w-full justify-start whitespace-normal py-3 text-left" disabled={pending} onClick={() => onChoose(choice.householdId)}>
         <span className="min-w-0 break-words"><span className="block font-medium">{choice.name}</span><span className="block text-sm text-muted-foreground">{scopeLabel(choice.role)}</span></span>
@@ -241,7 +241,7 @@ function AuthenticatedPortal() {
     ? <HouseholdSwitcher households={households.data.households} current={current} onChoose={id => { if (id !== current) choose.mutate(id); }} disabled={choose.isPending} /> : undefined;
   return <PortalLayout name={bootstrap.data.gym.name} person={person} scope={context.data.role} entries={portalNavigation(createRegistries().portalNav.all(), context.data.role, bootstrap.data.gym.enabledModules)} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending} switcher={switcher} account>
     {context.isError && !households.isFetching && <ErrorState message={text('failed')} onRetry={() => { void households.refetch(); void context.refetch(); }} />}
-    <PortalRecoveryNotice />{(signOut.isError || choose.isError) && <Alert>{text(choose.isError ? 'chooseFailed' : 'failed')}</Alert>}<Outlet key={current} />
+    <PortalRecoveryNotice />{(signOut.isError || choose.isError) && <Alert variant="error">{text(choose.isError ? 'chooseFailed' : 'failed')}</Alert>}<Outlet key={current} />
   </PortalLayout>;
 }
 export function PortalShell() {

@@ -55,7 +55,7 @@ export function AutoUpdateSettings() {
           <p role="status" aria-live="polite" className="text-sm text-muted-foreground">
             {notice === 'saving' ? text('section.saving') : notice === 'saved' ? text('section.saved') : notice === 'changed' ? text('section.changed') : ''}
           </p>
-          {notice === 'failed' && <Alert>{text('section.saveFailed')}</Alert>}
+          {notice === 'failed' && <Alert variant="error" focusOnReveal>{text('section.saveFailed')}</Alert>}
         </>}
   </div>;
 }

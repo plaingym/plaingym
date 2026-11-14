@@ -15,7 +15,7 @@ export function KioskStandingTab({ memberId }: ExtensionViewProps) {
     return parseResponse(kioskStandingResponseSchema, await response.json()).data;
   } });
   if (query.isPending) return <p role="status">{t('kiosk/standing:loading')}</p>;
-  if (query.isError) return <Alert role="alert">{t('kiosk/standing:error')}</Alert>;
+  if (query.isError) return <Alert variant="error" role="alert">{t('kiosk/standing:error')}</Alert>;
   const standing = query.data;
   if (standing.status === 'ok') return <p>{t('kiosk/standing:ok')}</p>;
   return <div className="space-y-2"><p>{t('kiosk/standing:frontDesk')}</p><ul className="list-disc pl-6">{standing.reasons.map((code) =>

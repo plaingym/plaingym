@@ -41,7 +41,7 @@ export function PackEditor({ record, currency, taxes, client, close, saved }: {
   }
   return <Dialog title={text(record ? 'editPack' : 'createPack')} closeLabel={text('close')} onClose={close} dismissible={!busy}>
     <form onSubmit={event => void submit(event)} className="min-w-0 space-y-4 wrap-anywhere">
-      {error && <Alert role="alert">{error}</Alert>}
+      {error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
       <fieldset disabled={busy} className="grid min-w-0 gap-4 sm:grid-cols-2">
         <Label className="block min-w-0 sm:col-span-2">{text('name')}<Input name="name" required defaultValue={record?.name}/></Label>
         <Label className="block min-w-0">{text('price', { currency: denomination })}<Input name="amount" type="number" inputMode="decimal" min="0" step={amountInputStep(denomination)} required defaultValue={minorUnitsToInput(record?.amountCents ?? 0, denomination)}/></Label>

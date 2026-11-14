@@ -68,7 +68,7 @@ function ImportPanel({ gymId }: { gymId: string }) {
       {(['stepUpload', 'stepMatch', 'stepCheck', 'stepCommit'] as const).map((step, index) => <li key={step}>{index + 1}. {label(step)}</li>)}</ol>
     <div className="grid gap-2"><Label htmlFor="csv-file">{label('file')}</Label>
       <Input id="csv-file" type="file" accept=".csv,text/csv" className="py-2" disabled={!!busy} onChange={(event) => { const file = event.target.files?.[0]; if (file) uploadFile.mutate(file); }}/></div>
-    {(otherFailure || previewRows.isError) && <Alert>{!otherFailure && previewRows.error instanceof PreviewError
+    {(otherFailure || previewRows.isError) && <Alert variant="error" focusOnReveal>{!otherFailure && previewRows.error instanceof PreviewError
       ? previewRows.error.message : label('requestFailed')}</Alert>}
     {upload && <>
       <p className="break-all text-sm"><span className="font-medium">{upload.filename}</span> · {label('rows')}: {upload.rowCount}</p>
@@ -133,7 +133,7 @@ function ExportPanel({ gymId }: { gymId: string }) {
     refetchInterval: (query) => query.state.data && ['succeeded', 'failed'].includes(query.state.data.status) ? false : 1500 });
   return <PageSection title={t('imports/export:title')} description={t('imports/export:description')}><div className={card}>
     <Button className="w-full sm:w-auto" disabled={create.isPending || progress.data?.status === 'pending' || progress.data?.status === 'running'} onClick={() => create.mutate()}>{t('imports/export:create')}</Button>
-    {(create.isError || progress.isError) && <Alert>{label('requestFailed')}</Alert>}
+    {(create.isError || progress.isError) && <Alert variant="error" focusOnReveal>{label('requestFailed')}</Alert>}
     {progress.data && <p role="status" className="text-sm">{label('status.' + progress.data.status)}</p>}
     {progress.data?.downloadUrl && <a className="inline-flex min-h-11 items-center font-medium underline underline-offset-4" href={progress.data.downloadUrl} rel="noreferrer">{t('imports/export:download')}</a>}
   </div></PageSection>;
@@ -143,7 +143,7 @@ export function ImportsPage() {
   if (bootstrap.isPending) return <Page><LoadingState label={label('loading')}/></Page>;
   if (bootstrap.isError) return <Page><ErrorState message={label('requestFailed')} onRetry={() => void bootstrap.refetch()}/></Page>;
   const roles = bootstrap.data.session?.roles ?? [], gymId = bootstrap.data.gym.id;
-  if (!canStaff(roles, 'data.export') && !canStaff(roles, 'settings.manage')) return <Page><Alert>{label('noAccess')}</Alert></Page>;
+  if (!canStaff(roles, 'data.export') && !canStaff(roles, 'settings.manage')) return <Page><Alert variant="error">{label('noAccess')}</Alert></Page>;
   return <Page className="max-w-4xl"><PageHeader title={label('title')}/>
     {canStaff(roles, 'settings.manage') && <ImportPanel key={gymId} gymId={gymId}/>}
     {canStaff(roles, 'data.export') && <ExportPanel key={'export-' + gymId} gymId={gymId}/>}

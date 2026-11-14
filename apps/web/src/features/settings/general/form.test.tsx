@@ -30,6 +30,17 @@ const renderForm = (stored: GymSettings) => {
 const refusedZone = { response: { ok: false, status: 400 }, error: { error: { code: 'invalid_request', message: 'The request is invalid.', details: { timezone: ['invalid_timezone'] } }, requestId: 'r' } };
 
 describe('general settings timezone', () => {
+  it('opens an invalid advanced logo reference and keeps it open while the owner corrects it', async () => {
+    client.PATCH.mockReset();
+    client.PATCH.mockResolvedValue({ ...refusedZone, error: { error: { code: 'invalid_request', message: 'The request is invalid.', details: { logoKey: ['invalid'] } }, requestId: 'r' } });
+    const form = await renderForm(settings);
+    fireEvent.click(within(form).getByRole('button', { name: 'Save changes' }));
+    const logo = within(form).getByLabelText('Logo storage key');
+    await vi.waitFor(() => expect(logo.closest('details')?.open).toBe(true));
+    fireEvent.change(logo, { target: { value: 'existing-upload-reference' } });
+    expect(logo.getAttribute('aria-invalid')).toBe('false');
+    expect(logo.closest('details')?.open).toBe(true);
+  });
   it('does not send a timezone that is unchanged, so a stored zone the rule refuses still saves', async () => {
     client.PATCH.mockReset();
     client.PATCH.mockImplementation(async (path: string, { body }: { body: Partial<GymSettings> }) => reply(200, { data: { ...settings, timezone: 'CET', ...body, revision: 4 } }));

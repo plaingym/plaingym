@@ -36,7 +36,7 @@ export function MemberProfile({ memberId }: { memberId: string }) {
   const bootstrap = useBootstrap();
   if (bootstrap.isPending) return <Page><LoadingState label={text('loading')}/></Page>;
   if (bootstrap.isError) return <Page><ErrorState message={text('loadFailed')} onRetry={() => void bootstrap.refetch()}/></Page>;
-  if (!bootstrap.data.session || !canStaff(bootstrap.data.session.roles, 'members.read')) return <Page><Alert>{text('noAccess')}</Alert></Page>;
+  if (!bootstrap.data.session || !canStaff(bootstrap.data.session.roles, 'members.read')) return <Page><Alert variant="error">{text('noAccess')}</Alert></Page>;
   // Keyed by member, so switching profiles never carries one member's drafts to another.
   return <Profile key={memberId} memberId={memberId} gymId={bootstrap.data.gym.id} roles={bootstrap.data.session.roles} enabledModules={new Set(bootstrap.data.gym.enabledModules)}/>;
 }

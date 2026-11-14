@@ -81,8 +81,8 @@ export function KioskDevicesSettings() {
   return <section className="space-y-4" aria-label={t('kiosk/devices:title')}>
     <h2 className="text-lg font-semibold">{t('kiosk/devices:title')}</h2>
     <p>{t('kiosk/devices:help')}</p>
-    {message && <Alert>{message}</Alert>}
-    {copyFailed && <Alert>{t('kiosk/devices:copyFailed')}</Alert>}
+    {message && <Alert variant="error" focusOnReveal>{message}</Alert>}
+    {copyFailed && <Alert variant="error" focusOnReveal>{t('kiosk/devices:copyFailed')}</Alert>}
     {token && <Alert>
       <p>{t('kiosk/devices:setupOnce')}</p>
       {qr && <img src={qr} alt={t('kiosk/devices:qrAlt')} className="my-2 h-auto w-full max-w-64 bg-white"/>}

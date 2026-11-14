@@ -41,7 +41,7 @@ export function OneOffEditor({ gymId, householdId, custom, catalog, client, clos
   return <Dialog title={text('create')} closeLabel={text('close')} dismissible={!busy} onClose={close}>
     {(setup.isPending || bootstrap.isPending) && <LoadingState/>}{setup.isError && <ErrorState onRetry={() => void setup.refetch()}/>}
     {bootstrap.isError && <ErrorState onRetry={() => void bootstrap.refetch()}/>}
-    {error && <Alert role="alert">{error}</Alert>}
+    {error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
     {setup.data && gym && <form className="space-y-4" onSubmit={event => void submit(event)}>
       <fieldset disabled={busy} className="min-w-0 space-y-4">
         {!householdId && <>

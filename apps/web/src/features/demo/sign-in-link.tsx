@@ -29,6 +29,6 @@ export function DemoSignInLink({ email, navigate = (href: string) => window.loca
   return <div className="space-y-3">
     <p className="text-sm">{t('demo/demo:outboxHint')}</p>
     <Button type="button" className="w-full" disabled={pending} onClick={() => { void open(); }}>{t(pending ? 'demo/demo:openingLink' : 'demo/demo:openLink')}</Button>
-    {error && <Alert>{t(error === 'missing' ? 'demo/demo:linkMissing' : error === 'limited' ? 'shell/shell:rateLimited' : 'demo/demo:linkFailed')}</Alert>}
+    {error && <Alert variant="error" focusOnReveal>{t(error === 'missing' ? 'demo/demo:linkMissing' : error === 'limited' ? 'shell/shell:rateLimited' : 'demo/demo:linkFailed')}</Alert>}
   </div>;
 }

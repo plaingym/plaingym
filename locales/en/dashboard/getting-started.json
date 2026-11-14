@@ -1,0 +1,14 @@
+{
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "title": "Get your gym ready",
+  "help": "Start with these steps to welcome your first members.",
+  "classes": "Add classes",
+  "classesHelp": "Build your class schedule so members know when to train.",
+  "plans": "Add membership plans",
+  "plansHelp": "Set up the memberships you offer.",
+  "members": "Add members",
+  "import": "Import members",
+  "membersHelp": "Add your first member or bring your roster from a CSV file.",
+  "live": "Review go-live checklist",
+  "liveHelp": "Check your setup before turning on billing and member emails."
+}

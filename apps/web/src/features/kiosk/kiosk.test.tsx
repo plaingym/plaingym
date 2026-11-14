@@ -326,7 +326,8 @@ describe('kiosk check-in screen', () => {
     vi.mocked(kioskApi.checkin).mockRejectedValueOnce(new Error('connection lost after commit'));
     await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: 'Open mat' })[0]!); });
     expect(kioskApi.checkin).toHaveBeenCalledTimes(2);
-    expect(screen.getByRole('status').textContent).toContain('Please see the front desk before trying again');
+    expect(screen.getByRole('alert').textContent).toContain('Please see the front desk before trying again');
+    expect(screen.getByRole('alert').dataset.variant).toBe('error');
     expect(screen.queryByText('Dana R.')).toBeNull();
   });
   it('blocks double taps and ignores responses that arrive after Start over', async () => {

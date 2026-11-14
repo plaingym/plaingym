@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useEffect, useId, useState, type FormEvent } from 'react';
+import { useEffect, useId, useMemo, useState, type FormEvent } from 'react';
 import { billingRulesSchema } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
+import { FormMessage } from '../../components/ui/alert.js';
 import { Button } from '../../components/ui/button.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
@@ -14,6 +15,7 @@ export function BillingSettings() {
   const id = useId(), gym = useGymSettings(), settings = gym.settings;
   const [days, setDays] = useState(''), [fieldError, setFieldError] = useState(false);
   const [busy, setBusy] = useState(false), [message, setMessage] = useState('');
+  const shown = useMemo(() => message ? { kind: message === text('saved') ? 'status' as const : 'alert' as const, text: message } : null, [message]);
   const rules = billingRulesSchema.safeParse({ retryDays: days.trim() === '' ? [] : days.split(',').map((day) => day.trim() === '' ? NaN : Number(day)) });
   // Show the saved schedule whenever the settings come from the server; a save in another section keeps this input.
   useEffect(() => { if (settings) { setDays(settings.retryDays.join(', ')); setFieldError(false); } }, [gym.epoch]);
@@ -35,7 +37,7 @@ export function BillingSettings() {
     : <LoadingState label={text('loading')}/>;
   return <div className="min-w-0 space-y-4">
     <h2 className="text-lg font-semibold">{text('title')}</h2>
-    {message && <p role={message === text('saved') ? 'status' : 'alert'} className="rounded-md border border-border p-3 text-sm">{message}</p>}
+    <FormMessage message={shown}/>
     {gym.failed && <ErrorState message={text('error')} onRetry={gym.reload}/>}
     <form onSubmit={(event) => void save(event)} aria-label={text('title')}>
       <fieldset disabled={busy} className="grid min-w-0 gap-4">

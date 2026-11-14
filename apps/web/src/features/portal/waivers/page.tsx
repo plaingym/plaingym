@@ -48,7 +48,7 @@ function PortalWaiversPage({ context, scope }: { context: PortalContext; scope: 
     <PageHeader title={text('title')} description={text(payer ? 'descriptionPayer' : 'description')} />
     {(people.isPending || pending.isPending || signed.isPending) && <LoadingState />}
     {failed && <ErrorState onRetry={() => { void people.refetch(); void pending.refetch(); void signed.refetch(); }} />}
-    {pdf.isError && <Alert role="alert">{text('pdfFailed')}</Alert>}
+    {pdf.isError && <Alert variant="error" focusOnReveal role="alert">{text('pdfFailed')}</Alert>}
     {pdf.data && <Alert role="status"><a className="inline-flex min-h-11 items-center font-medium underline" href={pdf.data} target="_blank" rel="noreferrer">{text('openPdf')}</a></Alert>}
     {people.data && pending.data && signed.data && <>
       <PageSection title={text('pending')}>
@@ -109,7 +109,7 @@ export function SignWaiver({ template, member, minor, endpoints, scope, close, s
       <h3 className="break-words font-semibold">{template.name} · {text('version', { version: template.version })}</h3>
       <p className="text-sm text-muted-foreground">{text('for', { name: `${member.firstName} ${member.lastName}` })}</p>
       <WaiverDocument template={template} query={document} />
-      {error && <Alert role="alert">{error}</Alert>}
+      {error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
       {minor && <p>{text('guardianNote')}</p>}
       <div><Label htmlFor="signer">{text(minor ? 'guardianName' : 'signer')}</Label><Input id="signer" name="signer" required maxLength={200} autoComplete="name" onChange={reset} /></div>
       {minor && <div><Label htmlFor="relationship">{text('relationship')}</Label><Input id="relationship" name="relationship" required maxLength={100} onChange={reset} /></div>}

@@ -30,7 +30,7 @@ export function SaleForm({ memberId, packs, today, client, close, sold }: {
   }
   return <Dialog title={text('sell')} closeLabel={text('close')} onClose={close} dismissible={!busy}>
     <form className="min-w-0 space-y-4 wrap-anywhere" onSubmit={event => void submit(event)}>
-      <p>{text('saleHelp')}</p>{error && <Alert role="alert">{error}</Alert>}
+      <p>{text('saleHelp')}</p>{error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
       {!active.length ? <p>{text('noActivePacks')}</p> : <fieldset disabled={busy} className="min-w-0 space-y-4">
         <div className="min-w-0"><Label htmlFor={packField}>{text('pack')}</Label><Select id={packField} name="packId" required>{active.map(pack => <option key={pack.id} value={pack.id}>{pack.name} · {formatMinorUnits(pack.amountCents, pack.currency)} · {text('creditCount', { count: pack.credits })}</option>)}</Select></div>
         <Label className="block min-w-0">{text('dueOn')}<Input name="dueOn" type="date" required defaultValue={today}/></Label>
@@ -63,7 +63,7 @@ export function AdjustmentForm({ memberId, client, close, adjusted }: {
   }
   return <Dialog title={text('adjust')} closeLabel={text('close')} onClose={close} dismissible={!busy}>
     <form className="min-w-0 space-y-4 wrap-anywhere" onSubmit={event => void submit(event)}>
-      <p>{text('adjustHelp')}</p>{error && <Alert role="alert">{error}</Alert>}
+      <p>{text('adjustHelp')}</p>{error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
       <fieldset disabled={busy} className="min-w-0 space-y-4">
         <Label className="block min-w-0">{text('adjustCredits')}<Input name="credits" type="number" min="-100" max="100" step="1" required/></Label>
         <Label className="block min-w-0">{text('reason')}<Textarea name="reason" required maxLength={500}/></Label>

@@ -101,7 +101,7 @@ function HouseholdForm({ household, scope, saved, setSaved }: { household: Porta
   function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setSaved(false); save.mutate(new FormData(event.currentTarget)); }
   return <Card className="p-4 sm:p-6"><form className="space-y-4" onSubmit={submit} aria-labelledby="household-contact">
     <h2 id="household-contact" className="text-lg font-semibold">{text('contactTitle')}</h2>
-    {save.isError && <Alert role="alert">{text(conflict(save.error) ? 'changed' : 'failed')}</Alert>}
+    {save.isError && <Alert variant="error" focusOnReveal role="alert">{text(conflict(save.error) ? 'changed' : 'failed')}</Alert>}
     {saved && <Alert role="status">{text('saved')}</Alert>}
     <div className="grid gap-4 sm:grid-cols-2">
       <Field name="name" label={text('householdName')} value={household.name} required />
@@ -140,7 +140,7 @@ function EditMember({ member, scope, close }: { member: PortalMember; scope: Por
   };
   return <Dialog title={text('editTitle', { name: member.firstName })} closeLabel={text('close')} onClose={close} dismissible={!save.isPending} unsavedChanges={changed} size="wide">
     <form className="space-y-4" onChange={() => setChanged(true)} onSubmit={event => { event.preventDefault(); save.mutate(new FormData(event.currentTarget)); }}>
-      {save.isError && <Alert role="alert">{text(conflict(save.error) ? 'changed' : 'failed')}</Alert>}
+      {save.isError && <Alert variant="error" focusOnReveal role="alert">{text(conflict(save.error) ? 'changed' : 'failed')}</Alert>}
       <div className="grid gap-4 sm:grid-cols-2">
         <Field prefix="member" name="firstName" label={text('firstName')} value={member.firstName} required autoComplete="off" />
         <Field prefix="member" name="lastName" label={text('lastName')} value={member.lastName} required autoComplete="off" />

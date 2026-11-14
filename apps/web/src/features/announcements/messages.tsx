@@ -13,7 +13,7 @@ export function definiteRefusal(error: unknown) {
 export function Failure({ error, fallback, owner = false, retrySame = false }: { error: unknown; fallback: string; owner?: boolean; retrySame?: boolean }) {
   const reason = error instanceof ApiError && error.status === 409
     ? error.reason.find(value => value === 'disabled' || value === 'no_smtp' || value === 'no_origin') : undefined;
-  return <Alert role="alert" className="space-y-3">
+  return <Alert variant="error" focusOnReveal role="alert" className="space-y-3">
     <p>{text(retrySame ? 'sendError' : reason ?? (fallback === 'sendError' && definiteRefusal(error) ? 'sendRefused' : fallback))}</p>
     {(reason === 'disabled' || (owner && (reason === 'no_smtp' || reason === 'no_origin'))) &&
       <Button asChild variant="outline"><a href="/admin/settings" target="_blank" rel="noopener noreferrer">{text(reason === 'disabled' ? 'goLiveSettings' : reason === 'no_origin' ? 'addressSettings' : 'emailSettings')}</a></Button>}

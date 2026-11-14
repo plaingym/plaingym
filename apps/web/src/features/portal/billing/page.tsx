@@ -60,7 +60,7 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
       </StackedItem>)}</StackedList>}
     </PageSection>}
     {payer && <>
-    {failure && <Alert role="alert">{text(unavailable(failure) ? unavailableKey : 'failed')}</Alert>}
+    {failure && <Alert variant="error" focusOnReveal role="alert">{text(unavailable(failure) ? unavailableKey : 'failed')}</Alert>}
     {checkout.isPending && <Alert role="status">{text('redirecting')}</Alert>}
     {receipt && <Alert role="status">{text('receiptReady')} <a className="inline-flex min-h-11 items-center font-medium underline" href={receipt} target="_blank" rel="noreferrer">{text('openReceipt')}</a></Alert>}
     <PageSection title={text('invoices')}>

@@ -27,7 +27,7 @@ export function MembersPage() {
   if (bootstrap.isPending) return <Page><LoadingState label={text('loading')}/></Page>;
   if (bootstrap.isError) return <Page><ErrorState message={text('loadFailed')} onRetry={() => void bootstrap.refetch()}/></Page>;
   const session = bootstrap.data.session;
-  if (!session || !canStaff(session.roles, 'members.read')) return <Page><Alert>{text('noAccess')}</Alert></Page>;
+  if (!session || !canStaff(session.roles, 'members.read')) return <Page><Alert variant="error">{text('noAccess')}</Alert></Page>;
   return <Roster gymId={bootstrap.data.gym.id} manage={canStaff(session.roles, 'members.manage')}/>;
 }
 function Roster({ gymId, manage }: { gymId: string; manage: boolean }) {

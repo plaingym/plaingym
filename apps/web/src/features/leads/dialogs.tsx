@@ -54,7 +54,7 @@ export function BookDialog({ lead, client, timezone, onClose, onDone }: DialogPr
   }
   return <Dialog title={<span className={userNames}>{text('bookTitle', { name: leadName(lead) })}</span>} closeLabel={text('close')} onClose={onClose} dismissible={!saving}>
     <form className="min-w-0 space-y-4" onSubmit={event => { event.preventDefault(); void submit(); }}>
-      {error && <Alert role="alert">{error}</Alert>}
+      {error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
       <p className="text-sm text-muted-foreground">{text('bookHelp', { timezone })}</p>
       <div className="space-y-2"><Label htmlFor={id + '-date'}>{text('date')}</Label>
         <Input id={id + '-date'} type="date" min={today} value={date} disabled={saving} onChange={event => setDate(event.target.value)} /></div>
@@ -86,7 +86,7 @@ export function LostDialog({ lead, client, onClose, onDone }: DialogProps) {
   }
   return <Dialog title={<span className={userNames}>{text('lostTitle', { name: leadName(lead) })}</span>} closeLabel={text('close')} onClose={onClose} dismissible={!saving} unsavedChanges={reason !== ''}>
     <form className="min-w-0 space-y-4" onSubmit={event => { event.preventDefault(); void submit(); }}>
-      {error && <Alert role="alert">{error}</Alert>}
+      {error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
       <div className="space-y-2"><Label htmlFor={id + '-reason'}>{text('reason')}</Label>
         <Textarea id={id + '-reason'} required value={reason} disabled={saving} onChange={event => setReason(event.target.value)} /></div>
       <div className="flex flex-wrap gap-2">

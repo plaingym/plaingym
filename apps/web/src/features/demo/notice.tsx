@@ -71,7 +71,7 @@ export function DemoShell({ children }: { children: ReactNode }) {
     setKioskToken(null);
   }, [activeSandbox, kioskToken]);
   return <DemoContext.Provider value={discovery.isError || expired ? undefined : mode}><LoginContext.Provider value={login}>
-    {tokenSaveFailed && <div className="p-4"><Alert role="alert">{t('kiosk/kiosk:setupSaveError')}</Alert></div>}
+    {tokenSaveFailed && <div className="p-4"><Alert variant="error" focusOnReveal role="alert">{t('kiosk/kiosk:setupSaveError')}</Alert></div>}
     {(discovery.isError || expired) && <div className="p-4" role="alert">
       <p>{t('demo/demo:error')}</p><Button type="button" onClick={() => { void refetch(); }}>{t('shell/shell:retry')}</Button>
     </div>}
@@ -155,7 +155,7 @@ export function DemoNotice() {
         {' · '}<span className="text-muted-foreground">{t('demo/demo:barExpires', { time: shortTime(expires) })}</span></p>
       <Button type="button" variant="outline" size="sm" className="shrink-0 whitespace-nowrap" aria-haspopup="dialog" onClick={() => setOpen(true)}>{t('demo/demo:menu')}</Button>
     </div>
-    {error && !open && <div className="mx-auto max-w-6xl pb-2"><Alert>{t('demo/demo:error')}</Alert></div>}
+    {error && !open && <div className="mx-auto max-w-6xl pb-2"><Alert variant="error" focusOnReveal>{t('demo/demo:error')}</Alert></div>}
     {open && <DemoMenu expires={expires} onClose={() => setOpen(false)} />}
   </aside>;
 }
@@ -175,7 +175,7 @@ function DemoMenu({ expires, onClose }: { expires: string; onClose: () => void }
       'sm:m-0 sm:ml-auto sm:h-dvh sm:max-h-none sm:w-96 sm:max-w-[calc(100%-2rem)] sm:rounded-none sm:rounded-l-xl sm:border-0 sm:border-l')}>
     <div className="space-y-6">
       <section className={section} aria-labelledby="demo-menu-sign-in"><h3 id="demo-menu-sign-in" className={heading}>{t('demo/demo:signInAs')}</h3>
-        {error && <Alert>{t('demo/demo:error')}</Alert>}
+        {error && <Alert variant="error" focusOnReveal>{t('demo/demo:error')}</Alert>}
         <DemoSignInButtons members={menu.data?.members ?? []} />
       </section>
       <nav className={section} aria-labelledby="demo-menu-go-to"><h3 id="demo-menu-go-to" className={heading}>{t('demo/demo:goTo')}</h3>
@@ -212,5 +212,5 @@ export function TryDemoButton({ navigate = (url: string) => window.location.assi
     <div role="status" aria-live="polite" aria-atomic="true">{pending && <div className="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-sm">
       <span aria-hidden="true" className="mt-0.5 size-5 shrink-0 animate-spin rounded-full border-2 border-current border-r-transparent motion-reduce:animate-none" />
       <p>{t('demo/demo:creationProgress')}</p>
-    </div>}</div>{error && <Alert>{error}</Alert>}</div>;
+    </div>}</div>{error && <Alert variant="error">{error}</Alert>}</div>;
 }

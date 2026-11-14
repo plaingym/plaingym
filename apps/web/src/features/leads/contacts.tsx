@@ -40,7 +40,7 @@ export function ContactForm({ lead, client, onSaved, onDone, onCancel, onBusy }:
     }
   }
   return <form className="min-w-0 space-y-4" aria-label={contactText('formLabel', { name: leadName(lead) })} onSubmit={event => { event.preventDefault(); void submit(event.currentTarget); }}>
-    {error && <Alert role="alert">{error}</Alert>}
+    {error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
     <div className="grid min-w-0 gap-4 sm:grid-cols-2">
       <div className="min-w-0 space-y-2"><Label htmlFor={id + '-channel'}>{contactText('channel')}</Label>
         <Select id={id + '-channel'} value={channel} disabled={saving} onChange={event => setChannel(event.target.value as LeadContactChannel)}>
@@ -98,7 +98,7 @@ export function ContactLog({ memberId, client, timezone, version }: { memberId: 
   const when = new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short', timeZone: timezone });
   if (loading) return <LoadingState />;
   return <div className="min-w-0 space-y-3">
-    {failed && <Alert role="alert">{contactText('loadError')}</Alert>}
+    {failed && <Alert variant="error" role="alert">{contactText('loadError')}</Alert>}
     {rows.length === 0 && !failed ? <p className="text-sm text-muted-foreground">{contactText('empty')}</p>
       : <ol className="divide-y divide-border rounded-lg border border-border">{rows.map(row => <li key={row.id} className="min-w-0 space-y-1 p-3">
         <p className="text-sm font-medium">{contactText('channel.' + row.channel)} · <time dateTime={row.occurredAt}>{when.format(new Date(row.occurredAt))}</time></p>

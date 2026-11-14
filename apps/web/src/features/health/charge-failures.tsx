@@ -59,7 +59,7 @@ export function ChargeFailures({ gymId, reporting }: { gymId: string; reporting:
       <h3 className="font-medium">{label('title')}</h3>
       <Button variant="outline" className="w-full sm:w-auto" disabled={dismiss.isPending} onClick={() => { dismiss.reset(); setConfirming(reports.map((report) => report.runId)); }}>{label('dismissAll')}</Button>
     </div>
-    {dismiss.isError && !confirming && <Alert>{label('dismissFailed')}</Alert>}
+    {dismiss.isError && !confirming && <Alert variant="error" focusOnReveal>{label('dismissFailed')}</Alert>}
     <ul className="space-y-3">{reports.map((report) => <li key={report.runId} className="space-y-2 rounded-md border border-border p-3">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-sm font-medium">{label('run', { day: report.day })}</p>
@@ -73,7 +73,7 @@ export function ChargeFailures({ gymId, reporting }: { gymId: string; reporting:
     </li>)}</ul>
     {confirming && <Dialog title={label('confirmTitle')} closeLabel={label('close')} onClose={closeConfirm} dismissible={!dismiss.isPending}>
       <div className="space-y-4"><p>{label('confirmHelp')}</p>
-        {dismiss.isError && <Alert>{label('dismissFailed')}</Alert>}
+        {dismiss.isError && <Alert variant="error" focusOnReveal>{label('dismissFailed')}</Alert>}
         <div className="flex flex-col gap-3 sm:flex-row">
           <Button disabled={dismiss.isPending} onClick={() => dismiss.mutate(confirming)}>{label(dismiss.isPending ? 'working' : 'confirm')}</Button>
           <Button variant="outline" disabled={dismiss.isPending} onClick={closeConfirm}>{label('cancel')}</Button></div></div>

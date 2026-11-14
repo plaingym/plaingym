@@ -85,7 +85,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
   if (detail.isError) return <ErrorState onRetry={() => void detail.refetch()}/>;
   const data = detail.data, invoice = data.invoice, collectible = ['open', 'past_due'].includes(invoice.status);
   return <div className="min-w-0 space-y-6">
-    {message && <Alert role="status">{message}</Alert>}
+    {message && <Alert variant={message === text('chargeFailed') ? 'error' : 'info'} focusOnReveal={message === text('chargeFailed')} role={message === text('chargeFailed') ? 'alert' : 'status'}>{message}</Alert>}
     <div hidden={!!action} className="space-y-6">
     <PageSection title={household.data?.name ?? text('household')}>
       <dl className="grid min-w-0 gap-3 sm:grid-cols-2">
@@ -138,7 +138,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
         <Button variant="destructive" disabled={busy} onClick={() => { markSaved(); setDiscard(false); setDraft(false); setAction(null); }}>{t('shell/shell:discard')}</Button>
       </div></Alert>}
       {action.kind === 'viewReceipt' ? <Receipt data={data}/> : <form onSubmit={event => void submit(event)} onChangeCapture={() => setDraft(true)} className="space-y-4">
-        {error && <Alert role="alert">{error}</Alert>}
+        {error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
         <fieldset disabled={busy} className="space-y-4">
           {action.kind !== 'releaseHold' && <p>{action.kind === 'refund' && text('remainingRefundable') + ': '}{money(action.kind === 'refund' ? refundable(data, action.payment) : invoice.amountCents, invoice.currency)}</p>}
           {/* The billing run charges only a saved default card; when the check says there is none, say what will collect it instead. */}

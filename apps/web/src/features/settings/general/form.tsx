@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useId, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { bootstrapKey } from '../../../app/context.js';
 import { api } from '../../../lib/api.js';
 import { SaveTimeoutError, useGymSettings } from '../gym-settings.js';
 import { t } from '../../../lib/i18n.js';
+import { FormMessage } from '../../../components/ui/alert.js';
 import { Button } from '../../../components/ui/button.js';
 import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
@@ -44,6 +45,7 @@ function Field({ label, className, help, error, errorId, children }: {
 export function GeneralSettingsForm() {
   const cache = useQueryClient(), gym = useGymSettings(), settings = gym.settings;
   const [message, setMessage] = useState('');
+  const shown = useMemo(() => message ? { kind: message === text('saved') ? 'status' as const : 'alert' as const, text: message } : null, [message]);
   const [busy, setBusy] = useState(false), fieldId = useId();
   // Each form starts over when the settings come from the server (epoch) or after its own save, never after another
   // section's save, so unsaved input in one form survives a save in another.
@@ -52,6 +54,8 @@ export function GeneralSettingsForm() {
   // Refused fields belong to the general form they were typed in: a reload starts a new form, without them.
   const [refused, setRefused] = useState<{ form: string; fields: Partial<Record<GeneralField, true>> } | null>(null);
   const fieldError = (name: GeneralField) => refused?.form === generalKey && !!refused.fields[name];
+  const logoDetails = useRef<HTMLDetailsElement>(null), logoInvalid = fieldError('logoKey');
+  useEffect(() => { if (logoInvalid && logoDetails.current) logoDetails.current.open = true; }, [logoInvalid]);
   const clearField = (name: GeneralField) => setRefused((current) => current?.fields[name] ? { ...current, fields: { ...current.fields, [name]: undefined } } : current);
   /** Marks a refused input and points it at its error (and at `help`, when it has one). */
   const invalid = (name: GeneralField, help?: string) => ({ 'aria-invalid': fieldError(name), onChange: () => clearField(name),
@@ -101,7 +105,7 @@ export function GeneralSettingsForm() {
       <h2 className="text-lg font-semibold">{text('general')}</h2>
       <Button variant="outline" onClick={() => { setMessage(''); gym.reload(); }} disabled={busy}>{text('reload')}</Button>
     </div>
-    {message && <p role="status" className="rounded-md border border-border bg-muted p-3 text-sm">{message}</p>}
+    <FormMessage message={shown}/>
     {gym.failed && <ErrorState message={text('error')} onRetry={gym.reload}/>}
     <form key={generalKey} onSubmit={(event) => void save(event, 'general')} aria-label={text('general')}>
       <fieldset disabled={busy} className="grid gap-4 sm:grid-cols-2">
@@ -113,7 +117,12 @@ export function GeneralSettingsForm() {
           <Field key={key} label={text(key === 'line1' ? 'address' : key === 'line2' ? 'addressLine2' : key)} className={key === 'line1' || key === 'line2' ? 'sm:col-span-2' : ''} {...errorOf(key)}>
             <Input name={key} defaultValue={settings.address[key] ?? ''} {...(key === 'country' ? { maxLength: 2, autoCapitalize: 'characters' } : {})} {...invalid(key)}/></Field>)}
         <Field label={text('primaryColor')} {...errorOf('primaryColor')}><Input type="color" name="primaryColor" defaultValue={settings.branding.primaryColor ?? '#2563eb'} className="w-24 p-1" {...invalid('primaryColor')}/></Field>
-        <Field label={text('logoKey')} {...errorOf('logoKey')}><Input name="logoKey" defaultValue={settings.branding.logoKey ?? ''} {...invalid('logoKey')}/></Field>
+        <details ref={logoDetails} className="min-w-0 sm:col-span-2">
+          <summary className="flex min-h-11 cursor-pointer items-center underline">{text('logoAdvanced')}</summary>
+          <Field label={text('logoKey')} help={<p id={fieldId + '-logoHelp'} className="text-sm text-muted-foreground">{text('logoHelp')}</p>} {...errorOf('logoKey')}>
+            <Input name="logoKey" defaultValue={settings.branding.logoKey ?? ''} {...invalid('logoKey', fieldId + '-logoHelp')}/>
+          </Field>
+        </details>
         <Field className="sm:col-span-2" {...errorOf('websiteEnabled')}>
           <CheckboxField name="websiteEnabled" defaultChecked={settings.websiteEnabled} label={text('website')} {...invalid('websiteEnabled')}/></Field>
         <Field label={text('existingSite')} className="sm:col-span-2" {...errorOf('existingSiteUrl')}><Input type="url" name="existingSiteUrl" defaultValue={settings.existingSiteUrl ?? ''} {...invalid('existingSiteUrl')}/></Field>

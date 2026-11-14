@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { parseResponse } from '../../lib/response.js';
-import { useEffect, useId, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { maxWebsitePhotos, websiteSettingsResponseSchema, type GymSettings, type WebsiteSettings as WebsiteSettingsData } from '@plaingym/shared/contracts';
 import { bootstrapKey } from '../../app/context.js';
@@ -10,7 +10,8 @@ import { useGymSettings } from '../settings/gym-settings.js';
 import { Button } from '../../components/ui/button.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
-import { CheckboxField, Textarea } from '../../components/ui/select.js';
+import { Textarea } from '../../components/ui/select.js';
+import { FormMessage } from '../../components/ui/alert.js';
 import { ErrorState, LoadingState } from '../../components/ui/states.js';
 import { prepareImage } from './images.js';
 
@@ -19,7 +20,6 @@ const maxPhotos = maxWebsitePhotos;
 type Draft = Omit<WebsiteSettingsData, 'revision' | 'logo' | 'logoVersion'>;
 const draftOf = ({ revision: _revision, logo: _logo, logoVersion: _logoVersion, ...draft }: WebsiteSettingsData): Draft => draft;
 type Sent = { response: { ok: boolean; status: number }; data?: unknown };
-const defaultPrimary = '#155e55', defaultAccent = '#e3eeec';
 
 function Field({ label, help, children }: { label: string; help?: string; children: (describedBy: string | undefined) => ReactNode }) {
   const id = useId();
@@ -30,7 +30,7 @@ function Field({ label, help, children }: { label: string; help?: string; childr
 }
 
 /**
- * The website's customization: logo, colors, text and photos. Saves share the gym settings revision with the other
+ * The website's customization: logo, text and photos (the brand color is edited in General). Saves share the gym settings revision with the other
  * sections (`useGymSettings`), and each save reloads the gym settings afterwards, so a section showing the logo or the
  * primary color (General) can't save back what it showed before.
  */
@@ -38,6 +38,7 @@ export function WebsiteSettings() {
   const cache = useQueryClient(), gym = useGymSettings();
   const [state, setState] = useState<{ data: WebsiteSettingsData; draft: Draft; dirty: boolean } | null>(null);
   const [failed, setFailed] = useState(false), [busy, setBusy] = useState(false), [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
+  const shown = useMemo(() => message && { kind: message.error ? 'alert' as const : 'status' as const, text: message.text }, [message]);
   /**
    * Shows settings from the server. With `keepEdits`, unsaved edits survive a reload, an upload or a logo change: the draft keeps
    * its text and colors, drops photos the server no longer has and adds the ones it didn't know about. A value the server
@@ -69,7 +70,7 @@ export function WebsiteSettings() {
   // Read again whenever the gym settings come from the server: a reload, a conflict, or this section's own save.
   useEffect(() => { void load(); }, [gym.epoch]);
   const adopt = (body: unknown, current: GymSettings): GymSettings => ({ ...current, revision: parseResponse(websiteSettingsResponseSchema, body).data.revision });
-  /** `kind` says what the save changed: the text and colors, a photo, or the logo. */
+  /** `kind` says what the save changed: the text (which resends the colors it read), a photo, or the logo. */
   async function run(send: (revision: number, signal: AbortSignal) => Promise<Sent>, done: string, kind: 'content' | 'photo' | 'logo') {
     setBusy(true); setMessage(null);
     try {
@@ -118,7 +119,7 @@ export function WebsiteSettings() {
       <a href="/" target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center underline">{text('view')}</a>
     </div>
     <p className="text-sm text-muted-foreground">{text('help')}</p>
-    {message && <p role={message.error ? 'alert' : 'status'} className="rounded-md border border-border bg-muted p-3 text-sm">{message.text}</p>}
+    <FormMessage message={shown}/>
     {failed && <ErrorState message={text('error')} onRetry={() => void load()} retryLabel={text('reload')}/>}
     <section className="space-y-3" aria-label={text('logo')}>
       <h3 className="text-base font-semibold">{text('logo')}</h3>
@@ -141,18 +142,7 @@ export function WebsiteSettings() {
           <Textarea value={draft.about ?? ''} maxLength={5000} rows={6} aria-describedby={describedBy} onChange={(event) => set({ about: event.target.value })}/>}</Field></div>
         <Field label={text('phone')}>{() => <Input type="tel" autoComplete="tel" value={draft.phone ?? ''} maxLength={40} onChange={(event) => set({ phone: event.target.value })}/>}</Field>
         <Field label={text('email')}>{() => <Input type="email" autoComplete="email" value={draft.email ?? ''} maxLength={254} onChange={(event) => set({ email: event.target.value })}/>}</Field>
-        <div className="grid min-w-0 gap-2">
-          <Field label={text('primaryColor')} help={text('primaryColorHelp')}>{(describedBy) =>
-            <Input type="color" value={draft.primaryColor ?? defaultPrimary} aria-describedby={describedBy} className="w-24 p-1"
-              onChange={(event) => set({ primaryColor: event.target.value })}/>}</Field>
-        </div>
-        <div className="grid min-w-0 gap-2">
-          <CheckboxField label={text('useAccent')} checked={draft.accentColor !== null}
-            onChange={(event) => set({ accentColor: event.target.checked ? defaultAccent : null })}/>
-          {draft.accentColor !== null && <Field label={text('accentColor')} help={text('accentColorHelp')}>{(describedBy) =>
-            <Input type="color" value={draft.accentColor ?? defaultAccent} aria-describedby={describedBy} className="w-24 p-1"
-              onChange={(event) => set({ accentColor: event.target.value })}/>}</Field>}
-        </div>
+        <p className="text-sm sm:col-span-2"><a className="inline-flex min-h-11 items-center underline" href="#settingsSections.settings.general">{text('brandInGymDetails')}</a></p>
       </fieldset>
       <fieldset disabled={busy} className="min-w-0 space-y-4">
         <legend className="mb-2 text-base font-semibold">{text('photos')}</legend>

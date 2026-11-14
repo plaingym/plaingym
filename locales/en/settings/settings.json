@@ -1,6 +1,9 @@
 {
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
   "title": "Settings",
+  "sections": "Settings sections",
+  "logoAdvanced": "Advanced logo settings",
+  "logoHelp": "This is the storage reference for an existing uploaded logo, not a file or web address. To upload a logo, use the Website section when the gym website is enabled. Leave this unchanged to keep your current logo.",
   "noSections": "No settings available for your role",
   "noSectionsHelp": "Ask a gym owner or administrator if you need to change a setting.",
   "general": "Gym details",

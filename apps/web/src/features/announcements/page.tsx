@@ -62,7 +62,7 @@ export function AnnouncementPage() {
   const bootstrap = useBootstrap();
   if (bootstrap.isPending) return <LoadingState />;
   if (bootstrap.isError) return <ErrorState onRetry={() => void bootstrap.refetch()} />;
-  if (!bootstrap.data.session || !canStaff(bootstrap.data.session.roles, 'announcements.send')) return <Alert>{text('noAccess')}</Alert>;
+  if (!bootstrap.data.session || !canStaff(bootstrap.data.session.roles, 'announcements.send')) return <Alert variant="error">{text('noAccess')}</Alert>;
   return <AnnouncementWorkspace key={bootstrap.data.gym.id} gymId={bootstrap.data.gym.id} gymName={bootstrap.data.gym.name} timezone={bootstrap.data.gym.timezone}
     owner={bootstrap.data.session.roles.includes('owner')} />;
 }

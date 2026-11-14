@@ -76,7 +76,7 @@ export function ImportStep({ fetcher = fetch, pollMs = 1500 }: { fetcher?: typeo
   return <div className="space-y-4">
     <p>{label('help')}</p>
     <Alert>{label('offNotice')}</Alert>
-    {failure && <Alert>{label(failure)}</Alert>}
+    {failure && <Alert variant="error" focusOnReveal>{label(failure)}</Alert>}
     {pollFailed && <Button variant="outline" onClick={() => {
       setFailure(null); setPollFailed(false); setPollRetry((value) => value + 1);
     }}>{label('retryProgress')}</Button>}
@@ -108,7 +108,7 @@ export function ImportStep({ fetcher = fetch, pollMs = 1500 }: { fetcher?: typeo
       {job && <div role="status"><p>{label('status', { status: label('status.' + job.status) })}</p>
         <p>{pipeline('processed')}: {job.processedRows}/{job.totalRows} · {label('committed', { count: job.committedRows })} · {pipeline('errors')}: {job.errorCount}</p>
         {job.dryRun && job.status === 'succeeded' && <p>{label('dryRunOnly')}</p>}</div>}
-      {job?.status === 'failed' && job.committedRows > 0 && <Alert>{label('partialImport')}</Alert>}
+      {job?.status === 'failed' && job.committedRows > 0 && <Alert variant="error" focusOnReveal>{label('partialImport')}</Alert>}
       {job && finished && job.errorCount > 0 && <ImportIssues key={job.id} id={job.id} fetcher={fetcher}/>}
       <SetupActions>
         {upload && !committed && <>
@@ -138,7 +138,7 @@ function ImportIssues({ id, fetcher }: { id: string; fetcher: typeof fetch }) {
     return () => { active = false; };
   }, [id, fetcher, offset, retry]);
   return <section aria-label={pipeline('errors')} className="space-y-2">
-    {failed ? <Alert>{pipeline('requestFailed')} <Button variant="outline" onClick={() => setRetry((value) => value + 1)}>{label('retryErrors')}</Button></Alert>
+    {failed ? <Alert variant="error" focusOnReveal>{pipeline('requestFailed')} <Button variant="outline" onClick={() => setRetry((value) => value + 1)}>{label('retryErrors')}</Button></Alert>
       : !data ? <p>{pipeline('loading')}</p> : <>
         <ul>{data.data.map((issue, index) => <li key={index}>{pipeline('row')} {issue.rowNumber}: {issue.message}</li>)}</ul>
         <div className="flex gap-3"><Button variant="outline" disabled={offset === 0} onClick={() => setOffset(offset - 50)}>{pipeline('previous')}</Button>

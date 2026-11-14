@@ -84,7 +84,7 @@ function ScheduleContent({ gymId, roles, enabledModules }: { gymId: string | und
     event.preventDefault(); const name = String(new FormData(event.currentTarget).get('name') ?? '').trim();
     void run(() => tag ? api.PUT('/api/schedule/tags/{id}', { params: { path: { id: tag.id } }, body: { revision: tag.revision, name } }) : api.POST('/api/schedule/tags', { body: { name } }));
   }
-  if (!allowed) return <Page><Alert>{text('forbidden')}</Alert></Page>;
+  if (!allowed) return <Page><Alert variant="error">{text('forbidden')}</Alert></Page>;
   const today = options ? calendarDate(new Date(), options.timezone) : '';
   const filtered = !!(programId || tagId || coachId);
   const actions = <>{manage && options && <><Button onClick={() => setEditor('new')}>{text('newTemplate')}</Button>

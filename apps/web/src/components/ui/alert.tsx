@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useEffect, useRef, type ComponentProps } from 'react';
+import { useEffect, useRef, useImperativeHandle, type ComponentProps } from 'react';
 import { cn } from '../../lib/utils.js';
 import { AlertIcon } from './icons.js';
 
@@ -7,13 +7,21 @@ import { AlertIcon } from './icons.js';
  * A message announced to screen readers (`role="alert"`). `info` (the default) is a neutral note; `error` says
  * something failed, with the destructive colours `ErrorState` uses and an icon, so it never reads as a hint.
  */
-export function Alert({ className, variant = 'info', children, ...props }: ComponentProps<'div'> & { variant?: 'info' | 'error' }) {
-  if (variant === 'error') return <div role="alert" data-variant="error"
+export function Alert({ className, variant = 'info', focusOnReveal = false, children, ref: forwardedRef, ...props }: ComponentProps<'div'> & { variant?: 'info' | 'error'; focusOnReveal?: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useImperativeHandle(forwardedRef, () => ref.current!);
+  useEffect(() => {
+    const element = ref.current;
+    if (variant !== 'error' || !element || !(focusOnReveal || element.closest('form'))) return;
+    element.scrollIntoView?.({ block: 'center' });
+    element.focus({ preventScroll: true });
+  }, [variant, focusOnReveal]);
+  if (variant === 'error') return <div ref={ref} tabIndex={-1} role="alert" data-variant="error"
     className={cn('flex min-w-0 gap-3 rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-ring', className)} {...props}>
     <AlertIcon className="mt-0.5 size-4 shrink-0 text-destructive" />
     <div className="min-w-0 flex-1 space-y-2 [overflow-wrap:anywhere]">{children}</div>
   </div>;
-  return <div role="alert" data-variant="info" className={cn('rounded-md border border-border bg-muted p-4 text-sm', className)} {...props}>{children}</div>;
+  return <div ref={ref} role="alert" data-variant="info" className={cn('rounded-md border border-border bg-muted p-4 text-sm', className)} {...props}>{children}</div>;
 }
 
 /**
@@ -31,7 +39,11 @@ export function useRevealed<T extends HTMLElement>(shown: unknown) {
   return ref;
 }
 
-/** A form's result: a failure as the `error` alert, scrolled to and focused when it appears, or a status line. */
+/**
+ * A form's result: a failure as the `error` alert, scrolled to and focused when it appears, or a status line. Each new
+ * `message` object reveals again, so a repeated failure with the same text still takes focus: keep the object stable
+ * between renders (state, or `useMemo`) rather than building it inline.
+ */
 export function FormMessage({ message, className }: { message: { kind: 'status' | 'alert'; text: string } | null; className?: string }) {
   const ref = useRevealed<HTMLDivElement>(message?.kind === 'alert' ? message : null);
   if (!message) return null;

@@ -106,7 +106,7 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
   return <div className={cn('min-w-0 space-y-5', userNames)}>
     <div><h1 className="text-2xl font-semibold">{text('title')}</h1><p className="mt-1 text-muted-foreground">{text('help')}</p></div>
     {data.isPending && <p role="status">{text('loading')}</p>}
-    {data.isError && <Alert role="alert">{text('error')} <Button variant="outline" onClick={() => void data.refetch()}>{text('retry')}</Button></Alert>}
+    {data.isError && <Alert variant="error" role="alert">{text('error')} <Button variant="outline" onClick={() => void data.refetch()}>{text('retry')}</Button></Alert>}
     {data.data && <>
       {priceChange && <PriceChange {...priceChange} client={client} cancel={() => setPriceChange(null)}
         done={async () => { await cache.invalidateQueries({ queryKey: key }); setPriceChange(null); setEditor(null); }}
@@ -117,7 +117,7 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
           setEditor(plan); setPriceChange(null); setStale(false); setMessage(text('reloaded'));
         }}/>}
       <nav className="flex flex-wrap gap-2" aria-label={text('sections')}>{(['plans', 'taxes', 'charges'] as const).map(value => <Button key={value} aria-pressed={value === kind} variant={value === kind ? 'default' : 'outline'} disabled={busy} onClick={() => switchTo(value)}>{text(value)}</Button>)}</nav>
-      {(message || stale) && <Alert role="alert" className="space-y-3"><p>{message || text('conflict')}</p>{stale && <Button className="w-full sm:w-auto" variant="outline" disabled={busy} onClick={() => void reloadEditor()}>{text('reloadRecord')}</Button>}</Alert>}
+      {(message || stale) && <Alert variant={!stale && message === text('reloaded') ? 'info' : 'error'} focusOnReveal={stale || message !== text('reloaded')} role={!stale && message === text('reloaded') ? 'status' : 'alert'} className="space-y-3"><p>{message || text('conflict')}</p>{stale && <Button className="w-full sm:w-auto" variant="outline" disabled={busy} onClick={() => void reloadEditor()}>{text('reloadRecord')}</Button>}</Alert>}
       {archive && <ArchiveConfirmation rate={archive.rate} usage={archive.usage} busy={busy} confirm={confirmArchive} cancel={() => { setArchive(null); setMessage(''); }}/>}
       {editor ? <CatalogEditor key={kind + (editor === 'new' ? 'new' : editor.id)} kind={kind} {...(editor === 'new' ? {} : { record: editor })} currency={data.data.settings.currency} taxes={data.data.taxes} busy={busy} locked={archive !== null} stale={stale} save={save} cancel={() => { setEditor(null); setArchive(null); setMessage(''); setStale(false); }}/>
         : !archive && <Button onClick={() => { setEditor('new'); setStale(false); }}>{text('create.' + kind)}</Button>}
@@ -147,6 +147,6 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
 export function CatalogPage() {
   const bootstrap = useBootstrap();
   if (bootstrap.isPending) return <p role="status">{text('loading')}</p>;
-  if (!bootstrap.data?.session || !canStaff(bootstrap.data.session.roles, 'plans.manage')) return <Alert>{text('noAccess')}</Alert>;
+  if (!bootstrap.data?.session || !canStaff(bootstrap.data.session.roles, 'plans.manage')) return <Alert variant="error">{text('noAccess')}</Alert>;
   return <div className="space-y-5" key={bootstrap.data.gym.id}><CatalogWorkspace gymId={bootstrap.data.gym.id}/><PackCatalog gymId={bootstrap.data.gym.id}/><DiscountCatalog gymId={bootstrap.data.gym.id}/></div>;
 }

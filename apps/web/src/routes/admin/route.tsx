@@ -21,10 +21,10 @@ function AdminLayout() {
   if (bootstrap.isError) return <main id="main-content" className="px-4 py-6 sm:px-6"><ErrorState title={t('shell/shell:loadFailed')} onRetry={() => void bootstrap.refetch()} /></main>;
   const { session } = bootstrap.data;
   if (!session) return <Navigate to="/login" replace />;
-  if (session.roles.length === 0) return session.member ? <Navigate to="/portal" replace /> : <main id="main-content" className="px-4 py-6 sm:px-6"><Alert>{t('shell/shell:noAccess')}</Alert></main>;
+  if (session.roles.length === 0) return session.member ? <Navigate to="/portal" replace /> : <main id="main-content" className="px-4 py-6 sm:px-6"><Alert variant="error">{t('shell/shell:noAccess')}</Alert></main>;
   const banner = canStaff(session.roles, 'settings.manage') ? <UpdateBanner gymId={bootstrap.data.gym.id} /> : null;
   return <AdminShell state={{ ...bootstrap.data, session }} banner={banner} onSignOut={() => logout.mutate()} signingOut={logout.isPending}>
-    {logout.isError && <Alert>{t('shell/shell:error')}</Alert>}<Outlet />
+    {logout.isError && <Alert variant="error" focusOnReveal>{t('shell/shell:error')}</Alert>}<Outlet />
   </AdminShell>;
 }
 export const Route = createFileRoute('/admin')({ component: AdminLayout });
