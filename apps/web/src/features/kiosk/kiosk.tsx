@@ -72,11 +72,17 @@ function DeviceSetup({ saveFailed, onSaved }: { saveFailed: boolean; onSaved: (t
 }
 
 function CheckIn({ token, onUnauthorized }: { token: string; onUnauthorized: () => void }) {
+  const root = useRef<HTMLElement>(null);
   const [screen, setScreen] = useState<Screen>({ kind: 'search' });
   const [flow, setFlow] = useState<'choose' | 'qr' | 'pin'>('choose');
   const [busy, setBusy] = useState(false);
   const [activity, setActivity] = useState(0);
   const [qrDone, setQrDone] = useState(false);
+  // Replacing a step or a session choice can remove the focused control.
+  // Keep focus in the current step, but preserve focus on controls still present.
+  useEffect(() => {
+    if (document.activeElement === document.body) root.current?.querySelector<HTMLElement>('[data-kiosk-focus]')?.focus();
+  }, [flow, screen, activity]);
   const qrProgress = useCallback((result?: KioskCheckinResult) => {
     setQrDone(!!result && result.status !== 'select_session');
     setActivity((value) => value + 1);
@@ -130,7 +136,7 @@ function CheckIn({ token, onUnauthorized }: { token: string; onUnauthorized: () 
     setScreen({ ...screen, rows: screen.rows.map((row) => row.member.id === memberId ? { ...row, result } : row) });
   });
 
-  return <main id="main-content" className="mx-auto flex w-full max-w-3xl min-w-0 flex-1 flex-col gap-4 p-4 sm:gap-6 sm:p-6" aria-busy={busy}
+  return <main ref={root} id="main-content" className="mx-auto flex w-full max-w-3xl min-w-0 flex-1 flex-col gap-4 p-4 sm:gap-6 sm:p-6" aria-busy={busy}
     onPointerDown={() => setActivity((value) => value + 1)} onKeyDown={() => setActivity((value) => value + 1)}>
     <div className="flex flex-wrap items-center justify-between gap-3"><h1 className="text-2xl font-semibold sm:text-3xl">{text('title')}</h1>
       <Button variant="outline" onClick={() => void document.documentElement.requestFullscreen?.().catch(() => undefined)}>{text('fullscreen')}</Button></div>
@@ -147,7 +153,7 @@ function CheckIn({ token, onUnauthorized }: { token: string; onUnauthorized: () 
 }
 
 function Choose({ onQr, onPin }: { onQr: () => void; onPin: () => void }) {
-  return <section className="grid gap-4 sm:grid-cols-2 sm:gap-6" aria-labelledby="kiosk-choose"><h2 id="kiosk-choose" className="text-2xl sm:col-span-2">{text('howCheckIn')}</h2>
+  return <section className="grid gap-4 sm:grid-cols-2 sm:gap-6" aria-labelledby="kiosk-choose"><h2 id="kiosk-choose" tabIndex={-1} data-kiosk-focus className="text-2xl sm:col-span-2">{text('howCheckIn')}</h2>
     <Button className={big + ' min-h-24 sm:min-h-32'} onClick={onQr}>{text('scanQr')}</Button>
     <Button className={big + ' min-h-24 sm:min-h-32'} onClick={onPin}>{text('namePin')}</Button>
   </section>;
@@ -159,7 +165,7 @@ function Search({ busy, message, onSearch }: { busy: boolean; message?: 'not_fou
   function submit(event: FormEvent) { event.preventDefault(); if (name.trim() && pin.length >= 4 && !busy) { onSearch(name.trim(), pin); setPin(''); } }
   return <form className="space-y-4 sm:space-y-6" onSubmit={submit}>
     {message && <Alert role="status">{text(message === 'error' ? 'error' : 'notFound')}</Alert>}
-    <Label className="grid gap-2 text-lg sm:text-xl">{text('name')}<Input className="h-12 text-lg sm:h-16 sm:text-2xl" value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" autoCapitalize="words" required/></Label>
+    <Label className="grid gap-2 text-lg sm:text-xl">{text('name')}<Input data-kiosk-focus className="h-12 text-lg sm:h-16 sm:text-2xl" value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" autoCapitalize="words" required/></Label>
     <div className="space-y-3"><Label className="grid gap-2 text-lg sm:text-xl">{text('pin')}
       <Input type="password" inputMode="numeric" autoComplete="off" maxLength={8} pattern="[0-9]{4,8}" required
         className="h-14 text-center text-3xl tracking-[0.5em]" value={pin} onChange={(event) => setPin(event.target.value.replace(/[^0-9]/g, '').slice(0, 8))}/></Label>
@@ -184,7 +190,7 @@ function Select({ screen, busy, onChange, onSubmit, onCancel }: { screen: Extrac
     const chosen = new Set(screen.chosen); if (!chosen.delete(id)) chosen.add(id);
     onChange({ ...screen, chosen });
   };
-  return <section className="space-y-4" aria-labelledby="kiosk-select"><h2 id="kiosk-select" className="text-2xl">{text('whoIsHere')}</h2>
+  return <section className="space-y-4" aria-labelledby="kiosk-select"><h2 id="kiosk-select" tabIndex={-1} data-kiosk-focus className="text-2xl">{text('whoIsHere')}</h2>
     <ul className="space-y-3">{screen.members.map((member) => <li key={member.id}>
       <button type="button" role="checkbox" aria-checked={screen.chosen.has(member.id)} disabled={busy} onClick={() => toggle(member.id)}
         className={'flex w-full items-center justify-between rounded-xl border-2 p-4 text-left ' + (screen.chosen.has(member.id) ? 'border-primary bg-primary/10' : 'border-border')}>
@@ -198,6 +204,7 @@ function Results({ screen, busy, onChoose, onDone, onMembers }: { screen: Extrac
   onChoose: (memberId: string, sessionId: string | null) => void; onDone: () => void; onMembers: () => void }) {
   const time = (session: KioskSessionChoice) => new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(new Date(session.startsAt));
   return <section className="space-y-4" aria-live="polite">
+    <h2 tabIndex={-1} data-kiosk-focus className="text-2xl">{text('resultsTitle')}</h2>
     <ul className="space-y-3">{screen.rows.map(({ member, result }) => <li key={member.id} className={'space-y-3 rounded-xl border-2 p-4 '
       + (result?.status === 'checked_in' || result?.status === 'already_checked_in' ? 'border-success bg-success/10' : 'border-border')}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4"><Person member={member}/>

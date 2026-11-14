@@ -53,7 +53,7 @@ export function useDraft<T extends Record<string, unknown>>(server: T) {
   };
 }
 export function Panel({ title, children }: { title: string; children: ReactNode }) {
-  return <section className="min-w-0 space-y-4 rounded-xl border border-border bg-card p-4 sm:p-6"><h2 className="text-lg font-semibold">{text(title)}</h2>{children}</section>;
+  return <section className="min-w-0 space-y-4 rounded-xl border border-border bg-card p-4 sm:p-6"><h2 className="text-lg font-semibold">{title}</h2>{children}</section>;
 }
 const statusTones = { active: 'success', trial: 'default', prospect: 'default', frozen: 'warning', cancelled: 'muted', visitor: 'muted' } as const;
 export function StatusBadge({ status }: { status: keyof typeof statusTones }) {

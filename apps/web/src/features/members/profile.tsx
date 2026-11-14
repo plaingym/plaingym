@@ -50,7 +50,7 @@ function Profile({ memberId, gymId, roles, enabledModules }: { memberId: string;
       <PageHeader title={`${member.firstName} ${member.lastName}`} description={member.anonymizedAt ? undefined : <StatusBadge status={member.status}/>}
         actions={<Button variant="outline" onClick={() => void client.invalidateQueries({ queryKey: ['members', gymId] })}>{text('refresh')}</Button>}/>
       {member.anonymizedAt ? <><Alert>{text('anonymized')}</Alert>{canStaff(roles, 'members.delete') && <DeleteMember gymId={gymId} member={member}/>}</> : <div className="grid items-start gap-6 lg:grid-cols-2"><div className="min-w-0 space-y-6">
-        <Panel title="profile">{manage ? <MemberForm member={member} householdId={member.householdId}/> : <>
+        <Panel title={text('profile')}>{manage ? <MemberForm member={member} householdId={member.householdId}/> : <>
           <dl className="grid gap-3 sm:grid-cols-2">{(['status', 'email', 'phone', 'dateOfBirth'] as const).map((field) => <div key={field} className="min-w-0"><dt className="text-sm text-muted-foreground">{text(field)}</dt>
             <dd>{field === 'status' ? text('status.' + member.status) : member[field] || '—'}</dd></div>)}</dl>
           <h3 className="font-medium">{text('emergencyContacts')}</h3>
@@ -71,7 +71,7 @@ function Profile({ memberId, gymId, roles, enabledModules }: { memberId: string;
 }
 function Photo({ member, manage }: { member: c.Member; manage: boolean }) {
   const state = useMemberSave();
-  return <Panel title="photo">{member.photoKey ? <img className="size-40 rounded-lg object-cover" src={`/api/members/${member.id}/photo?revision=${member.revision}`} alt={text('photo')}/>
+  return <Panel title={text('photo')}>{member.photoKey ? <img className="size-40 rounded-lg object-cover" src={`/api/members/${member.id}/photo?revision=${member.revision}`} alt={text('photo')}/>
     : <p className="text-sm text-muted-foreground">{text('noPhoto')}</p>}
     {manage && <div className="space-y-3"><Label className="grid gap-2">{text('uploadPhoto')}<Input type="file" accept="image/jpeg,image/png,image/webp" className="py-2" disabled={state.busy} onChange={(event) => {
       const file = event.target.files?.[0]; if (file) void state.save(async () => memberRequest(c.memberResponseSchema, `/api/members/${member.id}/photo`, 'POST', { revision: member.revision, contentType: 'image/jpeg', base64: await resizeMemberPhoto(file) }));
@@ -82,7 +82,7 @@ function Photo({ member, manage }: { member: c.Member; manage: boolean }) {
 }
 function MedicalNotes({ gymId, memberId, manage }: { gymId: string; memberId: string; manage: boolean }) {
   const query = useQuery({ queryKey: ['members', gymId, memberId, 'medical'], queryFn: ({ signal }) => memberRequest(c.memberMedicalNotesResponseSchema, `/api/members/${memberId}/medical-notes`, 'GET', undefined, signal) });
-  return <Panel title="medicalNotes"><ErrorMessage error={query.error}/>{query.isPending && <LoadingState label={text('loading')}/>}{query.data && <MedicalForm notes={query.data.data} manage={manage}/>}</Panel>;
+  return <Panel title={text('medicalNotes')}><ErrorMessage error={query.error}/>{query.isPending && <LoadingState label={text('loading')}/>}{query.data && <MedicalForm notes={query.data.data} manage={manage}/>}</Panel>;
 }
 function MedicalForm({ notes, manage }: { notes: c.MemberMedicalNotes; manage: boolean }) {
   const draft = useDraft({ medicalNotes: notes.medicalNotes ?? '' }), state = useMemberSave(), value = draft.values.medicalNotes;
@@ -100,7 +100,7 @@ function MemberTags({ gymId, memberId, manage }: { gymId: string; memberId: stri
   const available = useQuery({ queryKey: ['members', gymId, 'tags'], enabled: manage, queryFn: ({ signal }) => memberRequest(c.memberTagListResponseSchema, '/api/member-tags?limit=100', 'GET', undefined, signal) });
   const state = useMemberSave(), [tagId, setTag] = useState('');
   const choices = available.data?.data.filter((tag) => !assigned.data?.data.some((entry) => entry.id === tag.id)) ?? [];
-  return <Panel title="tags"><ErrorMessage error={assigned.error || state.error}/>
+  return <Panel title={text('tags')}><ErrorMessage error={assigned.error || state.error}/>
     {assigned.data?.data.length === 0 && <p className="text-sm text-muted-foreground">{text('noTags')}</p>}
     <ul className="flex flex-wrap gap-2">{assigned.data?.data.map((tag) => <li key={tag.id} className={cn('flex min-h-11 items-center gap-2 rounded-full border border-border pl-3', !manage && 'pr-3')}>
       <span aria-hidden="true" className="size-3 rounded-full border border-border" style={{ backgroundColor: tag.color ?? undefined }}/>{tag.name}
@@ -113,7 +113,7 @@ function MemberTags({ gymId, memberId, manage }: { gymId: string; memberId: stri
 }
 function Anonymize({ member }: { member: c.Member }) {
   const [confirmed, setConfirmed] = useState(false), state = useMemberSave();
-  return <Panel title="anonymize"><p className="text-sm">{text('anonymizeWarning')}</p><CheckboxField label={text('confirmAnonymize')} checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)}/>
+  return <Panel title={text('anonymize')}><p className="text-sm">{text('anonymizeWarning')}</p><CheckboxField label={text('confirmAnonymize')} checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)}/>
     <Button variant="outline" className="w-full border-destructive text-destructive sm:w-auto" disabled={!confirmed || state.busy} onClick={() => void state.save(() => memberRequest(c.memberResponseSchema, `/api/members/${member.id}/anonymize`, 'POST', { revision: member.revision }))}>{text('anonymize')}</Button><ErrorMessage error={state.error}/></Panel>;
 }
 /** Compares names the way a person types them: case, and spaces between or around words, don't matter. */
@@ -121,7 +121,7 @@ const folded = (name: string) => name.trim().replace(/\s+/g, ' ').toLocaleLowerC
 const sameName = (left: string, right: string) => folded(left) === folded(right);
 function DeleteMember({ gymId, member }: { gymId: string; member: c.Member }) {
   const [open, setOpen] = useState(false);
-  return <Panel title="deleteMember"><p className="text-sm">{text('deleteMemberWarning')}</p>
+  return <Panel title={text('deleteMember')}><p className="text-sm">{text('deleteMemberWarning')}</p>
     <Button variant="outline" className="w-full border-destructive text-destructive sm:w-auto" onClick={() => setOpen(true)}>{text('deleteMember')}</Button>
     {open && <DeleteMemberDialog gymId={gymId} member={member} onClose={() => setOpen(false)}/>}</Panel>;
 }

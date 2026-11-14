@@ -2,6 +2,7 @@
 import { waiverContracts, waiverDocumentResponseSchema } from '@plaingym/shared/contracts';
 import { billingRequest } from '../billing/catalog/api.js';
 import { readApiError } from '../../lib/api.js';
+import { t } from '../../lib/i18n.js';
 export class WaiverRequestError extends Error {}
 export function createWaiversClient(fetcher: typeof fetch = fetch) {
   const transport: typeof fetch = async (url, init) => {
@@ -9,7 +10,7 @@ export function createWaiversClient(fetcher: typeof fetch = fetch) {
     if (response.status === 409 || response.status === 403 || response.status === 429 || (response.status === 400 && String(url).startsWith('/api/waivers/template'))) {
       const { message } = await readApiError(response, [
         { status: 400, code: 'invalid_request' }, { status: 409, code: 'conflict' }, { status: 429, code: 'rate_limited' },
-        { status: 403, code: 'forbidden', message: 'Uploads are disabled in the demo' },
+        { status: 403, code: 'forbidden', message: t('demo/demo:uploadsDisabled') },
       ]);
       if (message) throw new WaiverRequestError(message);
     }

@@ -88,6 +88,8 @@ type Held = { kind: 'email'; to: string } | { kind: 'google'; check: GoogleClien
 const heldStep = { email: 5, google: 6, backups: 7 } as const;
 /** Step 6 is the registered Stripe step; step 8 is the registered import step, which finishes setup itself. */
 const stripeStep = 'setupSteps.setup.stripe', finalStep = 'setupSteps.setup.import';
+/** Routes an existing website links to: paths, not translatable text. */
+const appPaths = ['/portal', '/join', '/trial', '/drop-in'].join(' · ');
 export function SetupWizard({ client = setupClient, registries = createRegistries() }: { client?: Client; registries?: ReturnType<typeof createRegistries> }) {
   const services = useShellServices(), queries = useQueryClient();
   const status = useQuery({ queryKey: key, queryFn: () => client.call('status'), retry: false });
@@ -214,7 +216,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
               leftover address the browser would reject can't block saving the built-in website. */}
           <fieldset className="min-w-0 space-y-4" hidden={!ownSite} disabled={!ownSite}>
             <Field name="existingSiteUrl" type="url" required={false} />
-            <p>{t('setup/setup:websiteHint')}</p><p className="font-mono text-sm">/portal · /join · /trial · /drop-in</p></fieldset></Form>}
+            <p>{t('setup/setup:websiteHint')}</p><p className="font-mono text-sm">{appPaths}</p></fieldset></Form>}
         {step === 5 && (held?.kind === 'email' ? <><p role="status">{t('setup/setup:emailSent', { address: held.to })}</p>{continueHeld}</>
           : <><p>{t('setup/setup:smtpHint')}</p><p>{t('setup/setup:dnsHint')}</p><p>{t('setup/setup:loginHint')}</p>
           <Form draft={draft} submit="testAndSave" secondary={<Button type="button" disabled={busy} variant="outline" onClick={() => void run(async () => { await client.call('smtp', { choice: 'skip', revision }); draft.clear(); await refresh(); })}>{t('setup/setup:skipEmail')}</Button>} action={async (data) => {

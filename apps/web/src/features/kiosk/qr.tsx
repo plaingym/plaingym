@@ -60,7 +60,7 @@ export function QrCheckin({ token, onUnauthorized, onClose, onNamePin, onProgres
   }, [scanning, submit]);
   useEffect(() => () => { generation.current++; camera.current?.stop(); code.current = undefined; }, []);
   return <section className="min-w-0 space-y-4 rounded-xl border p-4 sm:p-6" aria-label={text('scan')} aria-busy={busy}>
-    <h2 className="text-xl font-semibold sm:text-2xl">{text('scan')}</h2>
+    <h2 tabIndex={-1} data-kiosk-focus className="text-xl font-semibold sm:text-2xl">{text('scan')}</h2>
     {scanning && <><p>{text('cameraHelp')}</p><video ref={video} aria-label={text('camera')} muted playsInline className="aspect-[4/3] w-full rounded-lg bg-muted object-cover"/></>}
     {!scanning && !result && !message && <p role="status">{text('checking')}</p>}
     {message && <><Alert role="status">{text(message)}</Alert>

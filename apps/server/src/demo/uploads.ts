@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { AppError } from '@plaingym/shared';
+import { AppError, createTranslator } from '@plaingym/shared';
+import { locales } from '@plaingym/shared/locales';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import type { ReadOptions, Uploads } from '../infra/storage/index.js';
 import { validateSignatureImage } from '../areas/waivers/snapshot.js';
+
+const t = createTranslator(locales.en ?? {});
 
 const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
 const imageKey = new RegExp(`^(${uuid}/waivers/${uuid})/signatures/(${uuid})\\.png$`);
@@ -17,7 +20,7 @@ export class DemoUploads implements Uploads {
   constructor(private readonly source: Uploads) {}
   async put(): ReturnType<Uploads['put']> {
     assertNoTransaction('storage.put');
-    throw new AppError('forbidden', 'Uploads are disabled in the demo');
+    throw new AppError('forbidden', t('demo/demo:uploadsDisabled'));
   }
   /** The waiver service authorizes the member and reserves a persistent demo admission first. */
   async waiverSignature(key: string, bytes: Uint8Array): ReturnType<Uploads['put']> {

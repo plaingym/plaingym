@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import AxeBuilder from '@axe-core/playwright';
 import type { BrowserContext, Page, TestInfo } from '@playwright/test';
-import { expect, gymOrigin, localDate, showWeek, test, wall, weekday, type Install, type Person, type RecordId } from '../support.js';
+import { expect, gymOrigin, localDate, showWeek, test, wall, weekday, createClass, demoClient, type Install, type Person, type RecordId } from '../support.js';
+import { accessibleThemes, keyboardActivate, tabTo } from '../responsive.js';
+import { stripeOrigin, outboxIds, outboxLink } from '../portal.js';
+
+// Device and signed-link tokens are bearer credentials: never record browser traces.
+test.use({ trace: 'off', screenshot: 'off' });
 
 const screens = ['/admin', '/admin/members', '/admin/schedule', '/admin/ranks', '/admin/staff', '/admin/imports', '/admin/settings'];
 const browserZone = 'Pacific/Honolulu';
@@ -11,11 +15,6 @@ const viewports = [
 ] as const;
 interface Session extends RecordId { templateId: string | null; startsAt: string; endsAt: string }
 
-async function noHorizontalScroll(page: Page) {
-  const { scrollWidth, clientWidth } = await page.evaluate(() => ({
-    scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth }));
-  expect(scrollWidth, 'page scrolls horizontally').toBeLessThanOrEqual(clientWidth);
-}
 /** Controls in the page content (and an open dialog) must be at least 44 px tall, and buttons and selects 44 px wide.
  * Checkboxes are covered by their 44 px label rows; inline links may be narrower. */
 async function contentTargets(page: Page) {
@@ -25,17 +24,11 @@ async function contentTargets(page: Page) {
     .map((element) => (element.getAttribute('aria-label') || element.textContent || element.getAttribute('name') || element.tagName).trim().slice(0, 60)));
   expect(small, 'content touch targets under 44 px').toEqual([]);
 }
-async function axe(page: Page, info: TestInfo, name: string) {
-  const result = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
-  await info.attach(name + '-accessibility', { body: JSON.stringify(result.violations, null, 2), contentType: 'application/json' });
-  expect(result.violations.map((violation) => `${violation.id}: ${violation.nodes.map((node) => node.target.join(' ')).join(', ')}`)).toEqual([]);
-}
 async function check(page: Page, info: TestInfo, name: string) {
   await expect(page.locator('[role=status]').filter({ hasText: /Loading/ })).toHaveCount(0);
-  await info.attach(name, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
-  await noHorizontalScroll(page);
   await contentTargets(page);
-  await axe(page, info, name);
+  // Checks page width, touch targets, language and axe, and attaches a screenshot, per color preference.
+  await accessibleThemes(page, info, name);
 }
 async function open(browser: import('@playwright/test').Browser, install: Install, role: 'owner' | 'coach', options: { viewport: { width: number; height: number }; hasTouch: boolean }): Promise<[BrowserContext, Page]> {
   const context = await browser.newContext({ ...options, timezoneId: browserZone, ignoreHTTPSErrors: true });
@@ -201,3 +194,167 @@ for (const { name: size, viewport, hasTouch } of viewports) {
     }
   });
 }
+
+test.describe('member and public accessibility', () => {
+  for (const { name: size, viewport } of viewports) {
+    test(`every portal page at ${size} width in light and dark`, async ({ page, context, sandboxes }, info) => {
+      const sandbox = sandboxes[0]!, student = await demoClient(sandbox, 'student');
+      await student.browser(context);
+      await page.setViewportSize(viewport);
+      for (const part of ['', '/schedule', '/checkin', '/progress', '/billing', '/waivers', '/household', '/account']) {
+        await page.goto(sandbox.origin + '/portal' + part);
+        await expect(page.locator('main h1')).toBeVisible();
+        await expect(page.getByRole('status').filter({ hasText: /^Loading/ })).toHaveCount(0);
+        await accessibleThemes(page, info, `${size}-portal${part.replace('/', '-') || '-home'}`);
+      }
+    });
+
+    test(`signed links and core public pages at ${size} width in light and dark`, async ({ page, sandboxes }, info) => {
+      const sandbox = sandboxes[0]!, owner = await demoClient(sandbox, 'owner');
+      const household = (await owner.json<{ data: RecordId }>('/api/households', 'POST', { name: 'Accessibility ' + size })).data;
+      const member = (await owner.json<{ data: RecordId }>('/api/members', 'POST', { householdId: household.id,
+        firstName: 'Accessibility', lastName: size, dateOfBirth: '1990-01-01' })).data;
+      const invoice = (await owner.json<{ data: RecordId }>('/api/billing/invoices/one-off', 'POST', { householdId: household.id,
+        dueOn: localDate(new Date(), 'UTC'), source: 'custom', description: 'Accessibility review', currency: 'USD', amountCents: 1000, taxRateIds: [] })).data;
+      await page.setViewportSize(viewport);
+      for (const [purpose, extra] of [['pay_invoice', { invoiceId: invoice.id }], ['update_card', {}], ['onboarding', {}], ['sign_waiver', { memberId: member.id }]] as const) {
+        const link = (await owner.json<{ data: { link: RecordId; token: string } }>('/api/links', 'POST', {
+          purpose, householdId: household.id, expiresAt: new Date(Date.now() + 3_600_000).toISOString(), ...extra,
+        })).data;
+        await page.goto(sandbox.origin + '/l/' + link.token);
+        await expect(page.locator('main h1')).toBeVisible();
+        await accessibleThemes(page, info, `${size}-link-${purpose}`);
+        await owner.json('/api/links/' + link.link.id + '/revoke', 'POST', {});
+      }
+      await page.reload();
+      await expect(page.getByRole('heading', { name: 'This link is unavailable', exact: true })).toBeVisible();
+      await accessibleThemes(page, info, size + '-link-unavailable');
+      for (const path of ['/join', '/trial', '/drop-in']) {
+        await page.goto(sandbox.origin + path);
+        await expect(page.locator('main h1')).toBeVisible();
+        await accessibleThemes(page, info, size + path.replace('/', '-'));
+        if (path === '/join') {
+          await page.locator('a[href^="/join?plan="]').first().click();
+          await expect(page.locator('form[data-join-form]')).toBeVisible();
+          await accessibleThemes(page, info, size + '-join-form');
+        }
+      }
+      // Unsubscribe links are issued only by an announcement, never by the staff link endpoint.
+      const initial = (await owner.json<{ data: RecordId & { memberEmailsEnabled: boolean } }>('/api/settings/go-live')).data;
+      try {
+        if (!initial.memberEmailsEnabled) await owner.json('/api/settings/go-live', 'PATCH', { revision: initial.revision, memberEmailsEnabled: true });
+        const people = (await owner.json<{ data: (RecordId & { status: string; email: string | null })[] }>('/api/members?limit=100')).data;
+        const recipient = people.find(person => person.status === 'active' && person.email)!;
+        const before = await outboxIds(owner);
+        await owner.json('/api/announcements/send', 'POST', { subject: 'Accessibility review ' + size, body: 'Class notice.', sendGeneration: crypto.randomUUID(), confirm: true });
+        const unsubscribe = await outboxLink(owner, recipient.email!, /^\/l\//, before);
+        await page.goto(unsubscribe.href);
+        await expect(page.getByRole('button', { name: 'Unsubscribe', exact: true })).toBeVisible();
+        await accessibleThemes(page, info, size + '-link-unsubscribe');
+      } finally {
+        if (!initial.memberEmailsEnabled) {
+          const current = (await owner.json<{ data: RecordId }>('/api/settings/go-live')).data;
+          await owner.json('/api/settings/go-live', 'PATCH', { revision: current.revision, memberEmailsEnabled: false });
+        }
+      }
+    });
+
+    test(`kiosk check-in by keyboard alone at ${size} width`, async ({ page, sandboxes }, info) => {
+      const sandbox = sandboxes[0]!;
+      const owner = await demoClient(sandbox, 'owner');
+      const memberRow = (await owner.json<{ data: Person[] }>('/api/members?search=Marcus')).data.find(person => person.firstName === 'Marcus' && person.lastName === 'Rivera')!;
+      const current = (await owner.json<{ data: RecordId }>('/api/households/' + memberRow.householdId)).data;
+      // The isolation sweep deliberately changes this household's PIN. Own this flow's credentials.
+      await owner.json('/api/households/' + memberRow.householdId + '/pin', 'PUT', { revision: current.revision, pin: '2468' });
+      await page.setViewportSize(viewport);
+      await page.goto(sandbox.origin + '/kiosk');
+      const skip = page.getByRole('link', { name: 'Skip to content', exact: true });
+      await tabTo(page, skip);
+      const skipBox = (await skip.boundingBox())!;
+      expect(skipBox.height).toBeGreaterThanOrEqual(44);
+      expect(skipBox.width).toBeGreaterThanOrEqual(44);
+      await page.keyboard.press('Enter');
+      await tabTo(page, page.getByLabel('Device token', { exact: true }));
+      await page.keyboard.insertText(sandbox.kioskToken);
+      await keyboardActivate(page, page.getByRole('button', { name: 'Save and start check-in', exact: true }));
+      await expect(page.getByRole('heading', { name: 'How would you like to check in?', exact: true })).toBeFocused();
+      await accessibleThemes(page, info, size + '-keyboard-kiosk-choice');
+      await keyboardActivate(page, page.getByRole('button', { name: 'Scan a QR code', exact: true }));
+      await expect(page.locator('[data-kiosk-focus]')).toBeFocused();
+      await accessibleThemes(page, info, size + '-keyboard-kiosk-camera');
+      await keyboardActivate(page, page.getByRole('button', { name: 'Start over', exact: true }));
+      await keyboardActivate(page, page.getByRole('button', { name: 'Name and PIN', exact: true }));
+      await expect(page.getByLabel('Your name', { exact: true })).toBeFocused();
+      await page.keyboard.insertText('Marcus Rivera');
+      await tabTo(page, page.getByLabel('Household PIN', { exact: true }));
+      await page.keyboard.insertText('2468');
+      await accessibleThemes(page, info, size + '-keyboard-kiosk-search');
+      await keyboardActivate(page, page.getByRole('button', { name: 'Find me', exact: true }));
+      await expect(page.locator('#kiosk-select')).toBeFocused();
+      const member = page.getByRole('checkbox', { name: /Marcus/ });
+      await tabTo(page, member);
+      await page.keyboard.press('Space');
+      await expect(member).toHaveAttribute('aria-checked', 'false');
+      await page.keyboard.press('Space');
+      await expect(member).toHaveAttribute('aria-checked', 'true');
+      await accessibleThemes(page, info, size + '-keyboard-kiosk-members');
+      await keyboardActivate(page, page.getByRole('button', { name: 'Check in', exact: true }));
+      await expect(page.getByRole('heading', { name: 'Check-in results', exact: true })).toBeFocused();
+      // A first visit offers open mat; a later viewport can already be checked in.
+      const openMat = page.getByRole('button', { name: 'Open mat', exact: true });
+      const choices = await openMat.count();
+      for (let i = 0; i < choices; i++) await keyboardActivate(page, openMat.first());
+      await expect(openMat).toHaveCount(0);
+      await expect(page.getByText(/^(Checked in|Already checked in)$/).first()).toBeVisible();
+      await accessibleThemes(page, info, size + '-keyboard-kiosk-results');
+      await keyboardActivate(page, page.getByRole('button', { name: 'Done', exact: true }));
+      await expect(page.locator('#kiosk-choose')).toBeFocused();
+    });
+
+    test(`portal booking, payment and dialog focus by keyboard alone at ${size} width`, async ({ page, context, sandboxes }, info) => {
+      const sandbox = sandboxes[0]!, owner = await demoClient(sandbox, 'owner'), student = await demoClient(sandbox, 'student');
+      const session = await createClass(owner, 'Keyboard class ' + size);
+      const household = (await student.json<{ data: RecordId }>('/api/portal/household')).data;
+      const invoice = (await owner.json<{ data: RecordId & { number: string } }>('/api/billing/invoices/one-off', 'POST', { householdId: household.id,
+        dueOn: localDate(new Date(), 'UTC'), source: 'custom', description: 'Keyboard payment', currency: 'USD', amountCents: 1000, taxRateIds: [] })).data;
+      await student.browser(context);
+      await page.setViewportSize(viewport);
+      await page.goto(sandbox.origin + '/portal/schedule');
+      await keyboardActivate(page, page.getByRole('button', { name: new RegExp('^Book ' + session.name + ' for ') }));
+      const cancel = page.getByRole('button', { name: new RegExp('^Cancel booking: ' + session.name + ' for ') });
+      await expect(cancel).toBeVisible();
+      await expect(page.getByRole('status').filter({ hasText: /is booked/ })).toBeVisible();
+      await keyboardActivate(page, cancel);
+      await expect(page.getByRole('status').filter({ hasText: /is cancelled/ })).toBeVisible();
+      await accessibleThemes(page, info, size + '-keyboard-booking');
+
+      await page.goto(sandbox.origin + '/portal/household');
+      const edit = page.getByRole('button', { name: 'Edit details', exact: true }).first();
+      await keyboardActivate(page, edit);
+      const dialog = page.getByRole('dialog');
+      await expect(dialog).toBeVisible();
+      for (let i = 0; i < 40; i++) {
+        await page.keyboard.press(i < 20 ? 'Tab' : 'Shift+Tab');
+        expect(await dialog.evaluate(element => element.contains(document.activeElement)), 'dialog contains keyboard focus').toBe(true);
+      }
+      await accessibleThemes(page, info, size + '-keyboard-profile-dialog');
+      await page.keyboard.press('Escape');
+      await expect(dialog).toBeHidden();
+      await expect(edit).toBeFocused();
+
+      await page.goto(sandbox.origin + '/portal/billing');
+      const bill = page.getByRole('listitem').filter({ hasText: 'Invoice #' + invoice.number });
+      await keyboardActivate(page, bill.getByRole('button', { name: 'Pay now', exact: true }));
+      await page.waitForURL(url => url.origin === stripeOrigin);
+      await tabTo(page, page.getByLabel('Card number', { exact: true }));
+      await page.keyboard.insertText('4242 4242 4242 4242');
+      await keyboardActivate(page, page.getByRole('button', { name: 'Pay', exact: true }));
+      await page.waitForURL(url => url.origin === sandbox.origin && url.pathname.startsWith('/l/'));
+      await expect(page.locator('main h1')).toBeVisible();
+      await accessibleThemes(page, info, size + '-keyboard-payment-return');
+      await page.goto(sandbox.origin + '/portal/billing');
+      await keyboardActivate(page, page.getByRole('button', { name: /^(Add a card|Update card)$/ }));
+      await page.waitForURL(url => url.origin === stripeOrigin);
+    });
+  }
+});

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { waiverValidation } from './messages.js';
 import { completeCampaignIn } from '../links/campaigns.model.js';
 import { and, asc, desc, eq, count, inArray, isNull } from 'drizzle-orm';
 import { databaseCode, forGym, members, signedLinks, waiverTemplates, waiverSignatures, uuidv7, writeAudit } from '@plaingym/db';
@@ -43,7 +44,7 @@ const signature = (r: typeof waiverSignatures.$inferSelect): c.WaiverSignature =
   snapshot: r.snapshot, snapshotHash: r.snapshotHash, signatureImageKey: r.signatureImageKey, signatureImageHash: r.signatureImageHash, signedAt: r.signedAt.toISOString() });
 function boundedTemplate(input: c.WaiverCreateTemplateRequest) {
   const parsed = c.waiverCreateTemplateRequestSchema.parse(input);
-  if (parsed.name.length > 200 || parsed.body.length > 80_000 || !parsed.name.trim()) invalid('Template too large or empty');
+  if (parsed.name.length > 200 || parsed.body.length > 80_000 || !parsed.name.trim()) invalid(waiverValidation('templateBounds'));
   return parsed;
 }
 export function createWaiversService(options: WaiverOptions) {
@@ -74,7 +75,7 @@ export function createWaiversService(options: WaiverOptions) {
     const stream = await uploads.get(key); if (!stream) notFound();
     const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
     validateSignatureImage(bytes);
-    if (digest(bytes) !== hash) invalid('Signature image digest mismatch');
+    if (digest(bytes) !== hash) invalid(waiverValidation('imageDigest'));
     return bytes;
   }
   async function documentBytes(gymId: string, document: c.WaiverDocument) {
@@ -84,7 +85,7 @@ export function createWaiversService(options: WaiverOptions) {
     if (!input.document) return validateTemplatePdf(input);
     service.documentDelivery();
     const result = await validateDocumentPdf(() => documentBytes(gymId, input.document!), gymId);
-    if (result.pages !== input.document.pages) invalid('Waiver document page count mismatch');
+    if (result.pages !== input.document.pages) invalid(waiverValidation('documentPageCount'));
     await validateTemplatePdf({ name: input.name, body: '' });
   }
   const service = {
@@ -119,7 +120,7 @@ export function createWaiversService(options: WaiverOptions) {
           body: parsed.body, ...documentColumns(parsed.document), version: 1 }).returning();
         await audit(tx, ctx, 'waiver.template.created', row!.id); return template(row!);
       }); } catch (error) {
-        if (databaseCode(error) === '23505') conflict('Template family already exists');
+        if (databaseCode(error) === '23505') conflict(waiverValidation('familyExists'));
         throw error;
       }
     },
@@ -130,8 +131,8 @@ export function createWaiversService(options: WaiverOptions) {
       await validateTemplate(ctx.gymId, body);
       return scope(ctx.gymId, async tx => {
         const current = await family(tx, id);
-        if (current.version !== parsed.expectedVersion) conflict('Template changed; reload before saving');
-        if (body.name !== current.name || body.kind !== current.kind) invalid('Template family name and kind cannot change');
+        if (current.version !== parsed.expectedVersion) conflict(waiverValidation('templateSave'));
+        if (body.name !== current.name || body.kind !== current.kind) invalid(waiverValidation('templateFamily'));
         const [row] = await tx.insert(waiverTemplates).values({ ...base(ctx.gymId), name: body.name, kind: body.kind,
           body: body.body, ...documentColumns(body.document), version: current.version + 1 }).returning();
         await audit(tx, ctx, 'waiver.template.published', row!.id); return template(row!);
@@ -141,7 +142,7 @@ export function createWaiversService(options: WaiverOptions) {
       const parsed = c.waiverRetireTemplateRequestSchema.parse(input);
       return scope(ctx.gymId, async tx => {
         const current = await family(tx, id);
-        if (current.version !== parsed.expectedVersion) conflict('Template changed; reload before retiring');
+        if (current.version !== parsed.expectedVersion) conflict(waiverValidation('templateRetire'));
         if (current.retiredAt) return template(current);
         const [row] = await tx.update(waiverTemplates).set({ retiredAt: clock.now() }).where(eq(waiverTemplates.id, current.id)).returning();
         await audit(tx, ctx, 'waiver.template.retired', row!.id); return template(row!);
@@ -201,14 +202,14 @@ export function createWaiversService(options: WaiverOptions) {
         if (existing) {
           const saved = readSnapshot(existing.snapshot, existing.snapshotHash);
           if (existing.templateId !== p.templateId || saved.template.version !== p.templateVersion || JSON.stringify(saved.signer) !== JSON.stringify(p.signer)
-            || (saved.commitmentEndsOn ?? null) !== (p.commitmentEndsOn ?? null) || existing.signatureImageHash !== p.signatureImageHash) conflict('Signature image already used');
+            || (saved.commitmentEndsOn ?? null) !== (p.commitmentEndsOn ?? null) || existing.signatureImageHash !== p.signatureImageHash) conflict(waiverValidation('imageUsed'));
           return { kind: 'existing' as const, value: signature(existing) };
         }
         const current = await family(tx, p.templateId);
-        if (current.id !== p.templateId || current.version !== p.templateVersion || current.retiredAt) conflict('Template changed; review the current version');
-        if (needsGuardian(m.dateOfBirth, now, signing.timezone) && p.signer.kind !== 'guardian') invalid('A guardian must sign for this member');
-        if (p.signer.name.length > 200 || (p.signer.kind === 'guardian' && p.signer.relationship.length > 100)) invalid('Signer details too long');
-        if (p.commitmentEndsOn && (current.kind !== 'agreement' || p.commitmentEndsOn < localDate(now, signing.timezone))) invalid('Invalid commitment end date');
+        if (current.id !== p.templateId || current.version !== p.templateVersion || current.retiredAt) conflict(waiverValidation('templateReview'));
+        if (needsGuardian(m.dateOfBirth, now, signing.timezone) && p.signer.kind !== 'guardian') invalid(waiverValidation('guardian'));
+        if (p.signer.name.length > 200 || (p.signer.kind === 'guardian' && p.signer.relationship.length > 100)) invalid(waiverValidation('signerLength'));
+        if (p.commitmentEndsOn && (current.kind !== 'agreement' || p.commitmentEndsOn < localDate(now, signing.timezone))) invalid(waiverValidation('commitment'));
         const snapshot = serializeSnapshot({ template: { id: current.id, name: current.name, kind: c.waiverKindSchema.parse(current.kind), version: current.version, body: current.body, ...templateDocument(current) },
           member: { id: m.id, firstName: m.firstName, lastName: m.lastName, dateOfBirth: m.dateOfBirth }, signer: p.signer,
           signedAt: now.toISOString(), signatureImage: { key: p.signatureImageKey, hash: p.signatureImageHash }, commitmentEndsOn: p.commitmentEndsOn ?? null });
@@ -224,7 +225,7 @@ export function createWaiversService(options: WaiverOptions) {
       return scope(ctx.gymId, async tx => {
         const checked = await prepare(tx);
         if (checked.kind === 'existing') return checked.value;
-        if (checked.snapshot.snapshot !== prepared.snapshot.snapshot) conflict('Member or template changed; review before signing');
+        if (checked.snapshot.snapshot !== prepared.snapshot.snapshot) conflict(waiverValidation('memberReview'));
         const [row] = await tx.insert(waiverSignatures).values({ ...base(ctx.gymId), memberId: p.memberId, templateId: p.templateId, ...prepared.snapshot,
           signatureImageKey: p.signatureImageKey, signatureImageHash: p.signatureImageHash, signedAt: now, ipAddress: signing.ipAddress }).returning();
         await audit(tx, ctx, 'waiver.signed', row!.id); return signature(row!);

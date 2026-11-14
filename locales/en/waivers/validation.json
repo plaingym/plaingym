@@ -1,0 +1,22 @@
+{
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "templateBounds": "Template too large or empty",
+  "imageDigest": "Signature image digest mismatch",
+  "documentPageCount": "Waiver document page count mismatch",
+  "templateFamily": "Template family name and kind cannot change",
+  "guardian": "A guardian must sign for this member",
+  "signerLength": "Signer details too long",
+  "commitment": "Invalid commitment end date",
+  "invalidPng": "Invalid signature PNG",
+  "unsupportedPng": "Unsupported signature PNG",
+  "familyExists": "Template family already exists",
+  "templateSave": "Template changed; reload before saving",
+  "templateRetire": "Template changed; reload before retiring",
+  "imageUsed": "Signature image already used",
+  "templateReview": "Template changed; review the current version",
+  "memberReview": "Member or template changed; review before signing",
+  "pdfType": "Upload an application/pdf document",
+  "requestSize": "Request too large",
+  "waiverSize": "Waiver is too large",
+  "unsupportedCharacters": "Unsupported template characters: {characters}"
+}

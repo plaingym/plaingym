@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Waivers and agreements
 
+User-facing validation and conflict messages use `locales/en/waivers/validation.json` through `messages.ts`.
+
 `createWaiversService({ uploadsFor, documentDelivery?, clock?, scope? })` manages versioned templates,
 signature uploads, signing, signed-copy reads and PDF downloads. All changes are
 audited without copying names, document text, IP addresses or signature bytes into

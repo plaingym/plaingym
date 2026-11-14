@@ -55,7 +55,7 @@ export function HouseholdForm({ household, onSaved }: { household?: c.Household;
 export function HouseholdDetails({ householdId, gymId, onDeleted }: { householdId: string; gymId: string; onDeleted?: () => void }) {
   const query = useQuery({ queryKey: ['members', gymId, 'household', householdId], queryFn: ({ signal }) => memberRequest(c.householdResponseSchema, `/api/households/${householdId}`, 'GET', undefined, signal) });
   const billing = useQuery({ queryKey: ['members', gymId, 'billing', householdId], queryFn: ({ signal }) => memberRequest(c.householdBillingSettingsResponseSchema, `/api/households/${householdId}/billing-settings`, 'GET', undefined, signal) });
-  return <Panel title="household"><ErrorMessage error={query.error}/>{query.isPending && <LoadingState label={text('loading')}/>}{query.data && <>
+  return <Panel title={text('household')}><ErrorMessage error={query.error}/>{query.isPending && <LoadingState label={text('loading')}/>}{query.data && <>
     <HouseholdForm household={query.data.data}/>
     <PinForm household={query.data.data}/>
     {billing.data && <BillingForm billing={billing.data.data}/>}

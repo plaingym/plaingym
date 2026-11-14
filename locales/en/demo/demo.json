@@ -1,4 +1,5 @@
 {
+  "uploadsDisabled": "Uploads are disabled in the demo",
   "_spdx": "SPDX-License-Identifier: AGPL-3.0-only",
   "title": "Demo outbox",
   "banner": "This is a demo gym. It is deleted after 24 hours. Email stays in the demo outbox and uploads are disabled.",

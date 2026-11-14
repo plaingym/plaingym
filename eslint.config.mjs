@@ -4,6 +4,7 @@ import { defineConfig } from 'eslint/config';
 import globals from 'globals';
 import tseslint from 'typescript-eslint';
 import { systemTableRule } from './packages/db/system-table-lint.mjs';
+import { userFacingStringsRule } from './scripts/user-facing-strings-lint.mjs';
 
 const vendor = {
   group: [
@@ -61,6 +62,12 @@ const staticImports = [
 ];
 
 export default defineConfig(
+  {
+    files: ['apps/web/src/**/*.{jsx,tsx}', 'apps/server/src/**/*.{ts,tsx}'],
+    ignores: ['**/*.{test,spec}.*', '**/{test,tests,__tests__}/**'],
+    plugins: { i18n: { rules: { 'user-facing-strings': userFacingStringsRule } } },
+    rules: { 'i18n/user-facing-strings': 'error' },
+  },
   {
     files: ['apps/server/src/**'],
     plugins: { database: { rules: { 'system-tables': systemTableRule } } },

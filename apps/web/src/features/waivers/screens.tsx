@@ -18,7 +18,7 @@ import { Alert } from '../../components/ui/alert.js';
 import { waiversClient, WaiverRequestError, type WaiversClient } from './api.js';
 import { WaiverDocument, useWaiverDocument } from './document.js';
 
-const text = (key: string) => t('waivers/waivers:' + key);
+const text = (key: string, values?: Record<string, string | number>) => t('waivers/waivers:' + key, values);
 const errorText = (error: unknown, fallback: string) => error instanceof WaiverRequestError ? error.message : text(fallback);
 const snapshotDetails = (snapshot: string) => waiverSigningSnapshotSchema.parse(JSON.parse(snapshot));
 export function Templates({ gymId, manage, client = waiversClient }: { gymId: string; manage: boolean; client?: WaiversClient }) {
@@ -77,7 +77,7 @@ function TemplateEditor({ row, client, close, saved }: { row: WaiverTemplate | '
       {format === 'text' ? <div><Label htmlFor="waiver-body">{text('body')}</Label><Textarea id="waiver-body" name="body" required maxLength={80_000} rows={14} defaultValue={row === 'new' ? '' : row.body} /></div>
         : <div className="min-w-0 space-y-2"><Label htmlFor="waiver-document">{text('uploadDocument')}</Label>
           <Input id="waiver-document" type="file" accept="application/pdf,.pdf" disabled={busy} onChange={event => void upload(event.target.files?.[0])} />
-          <p>{text('documentLimits')}</p>{document && <p role="status">{text('documentSelected')} · {document.pages} · {document.bytes} B</p>}
+          <p>{text('documentLimits')}</p>{document && <p role="status">{text('documentUploaded', { pages: new Intl.NumberFormat().format(document.pages), bytes: new Intl.NumberFormat().format(document.bytes) })}</p>}
         </div>}
       <div className="flex flex-wrap gap-3"><Button type="submit" disabled={busy}>{text('publish')}</Button>
         {row !== 'new' && !row.retiredAt && <Button type="button" variant="destructive" disabled={busy} onClick={() => void retire()}>{text('retire')}</Button>}

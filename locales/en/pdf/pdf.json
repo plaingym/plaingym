@@ -1,0 +1,22 @@
+{
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "malformed": "The PDF is truncated or malformed. Save a new PDF from the original document and upload it again",
+  "active": "The PDF contains active content, forms, attachments, hidden content or external references. Remove these features or save a flattened static copy",
+  "revisions": "This PDF has conflicting document revisions. Save a flattened copy as a new PDF and upload it",
+  "notPdf": "This file is not a PDF",
+  "complex": "The PDF is too complex",
+  "flate": "Save this PDF with standard Flate compression and upload it again",
+  "prediction": "Save this PDF without cross-reference prediction and upload it again",
+  "encrypted": "Encrypted or password-protected PDFs are not supported",
+  "byteLimit": "The PDF must be no larger than 10 MiB",
+  "malformedComplex": "The PDF is malformed or too complex",
+  "unreadable": "The PDF cannot be read; it may be malformed or password-protected",
+  "chained": "The PDF uses chained object references. Save a flattened copy and upload it again",
+  "pageTree": "The PDF page tree is malformed",
+  "pageCount": "The PDF must contain between 1 and 20 pages",
+  "busy": "PDF processing is busy; please retry shortly",
+  "rendererBusy": "PDF renderer busy; retry shortly",
+  "inputLimit": "PDF is too large",
+  "outputLimit": "PDF too large",
+  "renderPageLimit": "PDF exceeds page limit"
+}

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { waiverValidation } from './messages.js';
 import { createHash } from 'node:crypto';
 import { crc32, inflateSync } from 'node:zlib';
 import { AppError } from '@plaingym/shared';
@@ -27,31 +28,31 @@ export function validateSignatureImage(bytes: Uint8Array) {
   const b = Buffer.from(bytes);
   if (b.length < 33 || b.length > 256 * 1024 || !b.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))
     || b.toString('ascii', 12, 16) !== 'IHDR' || b.readUInt32BE(16) < 1 || b.readUInt32BE(20) < 1
-    || b.readUInt32BE(16) > 1200 || b.readUInt32BE(20) > 600) invalid('Invalid signature PNG');
+    || b.readUInt32BE(16) > 1200 || b.readUInt32BE(20) > 600) invalid(waiverValidation('invalidPng'));
   // Accept the bounded, non-interlaced RGB/RGBA PNGs produced by canvas. Validate
   // the compressed stream before committing a signature, including a hard inflate cap.
-  if (b[24] !== 8 || ![2, 6].includes(b[25]!) || b[26] !== 0 || b[27] !== 0 || b[28] !== 0) invalid('Unsupported signature PNG');
+  if (b[24] !== 8 || ![2, 6].includes(b[25]!) || b[26] !== 0 || b[27] !== 0 || b[28] !== 0) invalid(waiverValidation('unsupportedPng'));
   const compressed: Buffer[] = []; let offset = 8, ended = false;
   while (offset + 12 <= b.length) {
     const length = b.readUInt32BE(offset), end = offset + 12 + length;
-    if (end > b.length || crc32(b.subarray(offset + 4, end - 4)) !== b.readUInt32BE(end - 4)) invalid('Invalid signature PNG');
+    if (end > b.length || crc32(b.subarray(offset + 4, end - 4)) !== b.readUInt32BE(end - 4)) invalid(waiverValidation('invalidPng'));
     const type = b.toString('ascii', offset + 4, offset + 8);
-    if (type === 'IHDR' && (offset !== 8 || length !== 13)) invalid('Invalid signature PNG');
-    if (!/^[A-Za-z]{4}$/.test(type)) invalid('Invalid signature PNG');
-    if (!['IHDR', 'IDAT', 'IEND'].includes(type) && !/^[a-z]/.test(type)) invalid('Unsupported signature PNG');
+    if (type === 'IHDR' && (offset !== 8 || length !== 13)) invalid(waiverValidation('invalidPng'));
+    if (!/^[A-Za-z]{4}$/.test(type)) invalid(waiverValidation('invalidPng'));
+    if (!['IHDR', 'IDAT', 'IEND'].includes(type) && !/^[a-z]/.test(type)) invalid(waiverValidation('unsupportedPng'));
     // The PDF renderer's PNG reader passes a text chunk's bytes as one call's arguments (a large one overflows the
     // stack) and plays animation frames, so text stays small and animated PNGs are refused.
     if (['acTL', 'fcTL', 'fdAT'].includes(type) || (['tEXt', 'zTXt', 'iTXt'].includes(type) && length > 8 * 1024))
-      invalid('Unsupported signature PNG');
+      invalid(waiverValidation('unsupportedPng'));
     if (type === 'IDAT') compressed.push(b.subarray(offset + 8, end - 4));
     if (type === 'IEND') { ended = length === 0 && end === b.length; break; }
     offset = end;
   }
-  if (!ended || !compressed.length) invalid('Invalid signature PNG');
+  if (!ended || !compressed.length) invalid(waiverValidation('invalidPng'));
   const stride = 1 + b.readUInt32BE(16) * (b[25] === 6 ? 4 : 3), expected = stride * b.readUInt32BE(20);
   try {
     const raw = inflateSync(Buffer.concat(compressed), { maxOutputLength: expected });
-    if (raw.length !== expected) invalid('Invalid signature PNG');
-    for (let row = 0; row < raw.length; row += stride) if (raw[row]! > 4) invalid('Invalid signature PNG');
-  } catch { invalid('Invalid signature PNG'); }
+    if (raw.length !== expected) invalid(waiverValidation('invalidPng'));
+    for (let row = 0; row < raw.length; row += stride) if (raw[row]! > 4) invalid(waiverValidation('invalidPng'));
+  } catch { invalid(waiverValidation('invalidPng')); }
 }

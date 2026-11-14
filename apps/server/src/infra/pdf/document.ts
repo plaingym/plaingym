@@ -3,11 +3,12 @@
 import { inflateSync } from 'node:zlib';
 import { PDFDocument, PDFArray, PDFDict, PDFName, PDFNumber, PDFString, PDFHexString, PDFRawStream, PDFRef, PDFInvalidObject, PDFContext, PDFObjectParser, type PDFObject } from '@cantoo/pdf-lib';
 import { AppError } from '@plaingym/shared';
+import { pdfText } from './messages.js';
 import { scanPdfObject } from './document-syntax.js';
 
 export const documentByteLimit = 10 * 1024 * 1024;
-function invalid(message = 'The PDF is truncated or malformed. Save a new PDF from the original document and upload it again'): never { throw new AppError('invalid_request', message); }
-const activeMessage = 'The PDF contains active content, forms, attachments, hidden content or external references. Remove these features or save a flattened static copy';
+function invalid(message = pdfText('malformed')): never { throw new AppError('invalid_request', message); }
+const activeMessage = pdfText('active');
 const forbidden = new Set(['JavaScript', 'JS', 'AA', 'Launch', 'EmbeddedFiles', 'EmbeddedFile', 'Filespec',
   // A file specification's /Type is optional in practice, so its file entries are refused by name.
   'AF', 'EF', 'RF',
@@ -20,13 +21,13 @@ const forbidden = new Set(['JavaScript', 'JS', 'AA', 'Launch', 'EmbeddedFiles', 
 interface EnvelopeObject { start: number; object: PDFObject; stream?: { start: number; size: number; eol: number } }
 type Xrefs = Map<number, readonly [number, number, number]>;
 interface XrefSection { dict: PDFDict; xrefs: Xrefs }
-const revisionsMessage = 'This PDF has conflicting document revisions. Save a flattened copy as a new PDF and upload it';
+const revisionsMessage = pdfText('revisions');
 
 /** A lexical envelope check supplements the repair-oriented vendor parser. It does not decode streams.
  * Static documents only: ambiguous revisions, duplicate objects and unaccounted bytes are refused. */
 function envelope(bytes: Uint8Array) {
   const text = Buffer.from(bytes).toString('latin1');
-  if (!/^%PDF-(?:1\.[0-7]|2\.0)[\r\n]/.test(text)) invalid('This file is not a PDF');
+  if (!/^%PDF-(?:1\.[0-7]|2\.0)[\r\n]/.test(text)) invalid(pdfText('notPdf'));
   if (!/%%EOF[\x00\t\n\f\r ]*$/.test(text)) invalid();
   let at = /^%PDF-(?:1\.[0-7]|2\.0)(?:\r\n|\r|\n)/.exec(text)![0].length;
   const budget = { nodes: 0 };
@@ -49,7 +50,7 @@ function envelope(bytes: Uint8Array) {
       const xref = at, xrefs: Xrefs = new Map(); at += 4; skip();
       while (/\d/.test(text[at] ?? '!')) {
         const section = match(/^(\d+)\s+(\d+)\s+/), first = Number(section[1]), count = Number(section[2]);
-        if (!Number.isSafeInteger(first) || first < 0 || first + count > 100_000) invalid('The PDF is too complex');
+        if (!Number.isSafeInteger(first) || first < 0 || first + count > 100_000) invalid(pdfText('complex'));
         for (let i = 0; i < count; i++) {
           const row = match(/^(\d{10}) (\d{5}) ([nf])[ \r\n]+/);
           if (xrefs.has(first + i)) invalid();
@@ -100,12 +101,12 @@ function envelope(bytes: Uint8Array) {
 function unPredict(data: Buffer, dict: PDFDict, columns: number): Buffer {
   const params = dict.lookup(PDFName.of('DecodeParms'));
   if (!params) return data;
-  if (!(params instanceof PDFDict)) invalid('Save this PDF with standard Flate compression and upload it again');
+  if (!(params instanceof PDFDict)) invalid(pdfText('flate'));
   const number = (key: string, fallback: number) => params.has(PDFName.of(key)) ? params.lookup(PDFName.of(key), PDFNumber).asNumber() : fallback;
   const predictor = number('Predictor', 1);
   if (predictor === 1) return data;
   if (predictor < 10 || predictor > 15 || number('Colors', 1) !== 1 || number('BitsPerComponent', 8) !== 8 || number('Columns', 1) !== columns)
-    invalid('Save this PDF without cross-reference prediction and upload it again');
+    invalid(pdfText('prediction'));
   if (columns < 1 || data.length % (columns + 1)) invalid();
   const output = Buffer.alloc(data.length / (columns + 1) * columns);
   let from = 0, to = 0;
@@ -146,7 +147,7 @@ function resolveSections(entries: Map<string, EnvelopeObject>, sections: Map<num
     visited.add(offset);
     const section = sections.get(offset); if (!section) invalid();
     const { dict } = section;
-    if (dict.has(PDFName.of('Encrypt'))) invalid('Encrypted or password-protected PDFs are not supported');
+    if (dict.has(PDFName.of('Encrypt'))) invalid(pdfText('encrypted'));
     const catalog = dict.get(PDFName.of('Root'));
     if (catalog) {
       if (!(catalog instanceof PDFRef) || root && root !== catalog) invalid(revisionsMessage);
@@ -170,7 +171,7 @@ function resolveSections(entries: Map<string, EnvelopeObject>, sections: Map<num
 /** Structural parsing and resource bounds are shared by uploads and immutable records.
  * Upload acceptance policy lives separately, so later policy changes cannot invalidate a signed record. */
 async function load(bytes: Uint8Array) {
-  if (bytes.length > documentByteLimit) invalid('The PDF must be no larger than 10 MiB');
+  if (bytes.length > documentByteLimit) invalid(pdfText('byteLimit'));
   const { objects: entries, sections, tails } = envelope(bytes);
   // Bound object-stream expansion before PDFDocument.load inflates it. A parser accepting a
   // compressed bomb cannot be protected by a Promise timeout on the same event loop.
@@ -188,20 +189,20 @@ async function load(bytes: Uint8Array) {
     if (type !== PDFName.of('ObjStm') && type !== PDFName.of('XRef')) continue;
     const filter = dict.lookup(PDFName.of('Filter'));
     if (filter && filter !== PDFName.of('FlateDecode') || type === PDFName.of('ObjStm') && dict.has(PDFName.of('DecodeParms')))
-      invalid('Save this PDF with standard Flate compression and upload it again');
+      invalid(pdfText('flate'));
     const begin = entry.stream.start;
     let decoded: Buffer;
     try {
       decoded = filter ? inflateSync(bytes.subarray(begin, begin + entry.stream.size), { maxOutputLength: 8 * 1024 * 1024 - expanded }) : Buffer.from(bytes.subarray(begin, begin + entry.stream.size));
       expanded += decoded.length;
-      if (expanded > 8 * 1024 * 1024) invalid('The PDF is malformed or too complex');
+      if (expanded > 8 * 1024 * 1024) invalid(pdfText('malformedComplex'));
     }
-    catch { invalid('The PDF is malformed or too complex'); }
+    catch { invalid(pdfText('malformedComplex')); }
     if (type === PDFName.of('ObjStm')) {
       const count = dict.lookup(PDFName.of('N'), PDFNumber).asNumber(), first = dict.lookup(PDFName.of('First'), PDFNumber).asNumber();
       compressedCount += count;
       if (!Number.isSafeInteger(count) || count < 1 || compressedCount > 10_000 || !Number.isSafeInteger(first) || first < 0 || first > decoded.length)
-        invalid('The PDF is malformed or too complex');
+        invalid(pdfText('malformedComplex'));
       const text = decoded.toString('latin1'), header = text.slice(0, first).trim().split(/\s+/);
       if (header.length !== count * 2 || header.some(item => !/^\d+$/.test(item))) invalid();
       for (let i = 0; i < count; i++) {
@@ -258,19 +259,19 @@ async function load(bytes: Uint8Array) {
   }
   let document: PDFDocument;
   try { document = await PDFDocument.load(bytes, { throwOnInvalidObject: true, warnOnInvalidObjects: false, updateMetadata: false }); }
-  catch { invalid('The PDF cannot be read; it may be malformed or password-protected'); }
-  if (document.isEncrypted || document.context.trailerInfo.Encrypt) invalid('Encrypted or password-protected PDFs are not supported');
+  catch { invalid(pdfText('unreadable')); }
+  if (document.isEncrypted || document.context.trailerInfo.Encrypt) invalid(pdfText('encrypted'));
   for (const id of compressedIds.keys()) if (!document.context.lookup(PDFRef.of(id, 0))) invalid();
   if (!(root instanceof PDFRef) || document.context.lookup(root) !== document.catalog) invalid();
   const seen = new Set<PDFObject>(); let nodes = 0;
   const visit = (object: PDFObject, depth = 0): void => {
-    if (depth > 40 || ++nodes > 100_000) invalid('The PDF is too complex');
+    if (depth > 40 || ++nodes > 100_000) invalid(pdfText('complex'));
     if (object instanceof PDFRef) {
       const target = document.context.lookup(object);
       if (!target) invalid();
       // The copying parser resolves one reference at a time. A chain could hide
       // an action subtype from it while a viewer follows the chain.
-      if (target instanceof PDFRef) invalid('The PDF uses chained object references. Save a flattened copy and upload it again');
+      if (target instanceof PDFRef) invalid(pdfText('chained'));
       return;
     }
     if (seen.has(object)) return; seen.add(object);
@@ -297,25 +298,25 @@ async function load(bytes: Uint8Array) {
   const pageNodes = new Set<PDFObject>(); let pageCount = 0;
   const pagesName = PDFName.of('Pages'), pageName = PDFName.of('Page');
   const pageTree = (raw: PDFObject | undefined, depth = 0): number => {
-    if (!raw || depth > 20) invalid('The PDF page tree is malformed');
+    if (!raw || depth > 20) invalid(pdfText('pageTree'));
     const node = raw instanceof PDFRef ? document.context.lookup(raw) : raw;
-    if (!(node instanceof PDFDict) || pageNodes.has(node)) invalid('The PDF page tree is malformed');
+    if (!(node instanceof PDFDict) || pageNodes.has(node)) invalid(pdfText('pageTree'));
     pageNodes.add(node);
     if (node.get(PDFName.of('Type')) === pageName) {
-      if (++pageCount > 20) invalid('The PDF must contain between 1 and 20 pages');
+      if (++pageCount > 20) invalid(pdfText('pageCount'));
       return 1;
     }
-    if (node.get(PDFName.of('Type')) !== pagesName) invalid('The PDF page tree is malformed');
+    if (node.get(PDFName.of('Type')) !== pagesName) invalid(pdfText('pageTree'));
     const kids = node.lookup(PDFName.of('Kids'), PDFArray);
-    if (kids.size() > 20) invalid('The PDF must contain between 1 and 20 pages');
+    if (kids.size() > 20) invalid(pdfText('pageCount'));
     let count = 0;
     for (const kid of kids.asArray()) count += pageTree(kid, depth + 1);
-    if (node.lookup(PDFName.of('Count'), PDFNumber).asNumber() !== count) invalid('The PDF page tree is malformed');
+    if (node.lookup(PDFName.of('Count'), PDFNumber).asNumber() !== count) invalid(pdfText('pageTree'));
     return count;
   };
   const pages = pageTree(document.catalog.get(pagesName));
-  if (pages < 1 || pages > 20) invalid('The PDF must contain between 1 and 20 pages');
-  if (document.getPageCount() !== pages) invalid('The PDF page tree is malformed');
+  if (pages < 1 || pages > 20) invalid(pdfText('pageCount'));
+  if (document.getPageCount() !== pages) invalid(pdfText('pageTree'));
   return document;
 }
 
@@ -387,7 +388,7 @@ async function bounded<T>(gymId: string, work: () => Promise<T>) {
   if (active) {
     if (queue.length >= 8 || queue.filter(entry => entry.gymId === gymId).length >= 2)
       // A full queue is momentary: the busy reason gets a one-second Retry-After and clients' retry text (core/errors.ts).
-      throw new AppError('rate_limited', 'PDF processing is busy; please retry shortly', { reason: ['busy'] });
+      throw new AppError('rate_limited', pdfText('busy'), { reason: ['busy'] });
     await new Promise<void>(resolve => queue.push({ gymId, run: resolve }));
   } else active = true;
   try { return await work(); }

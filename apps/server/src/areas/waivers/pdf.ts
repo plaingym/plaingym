@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { waiverValidation } from './messages.js';
 import { AppError, createTranslator } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import { renderPdf, missingGlyphs, type PdfBlock } from '../../infra/pdf/index.js';
@@ -17,8 +18,8 @@ function templateBlocks(template: { name: string; version: number; body: string 
 /** Publication is rare: exercise the actual bounded layout before saving terms. */
 export async function validateTemplatePdf(template: { name: string; body: string }) {
   const missing = missingGlyphs(template.name + template.body);
-  if (missing.length) throw new AppError('invalid_request', 'Unsupported template characters: ' + missing.slice(0, 30)
-    .map(cp => `${String.fromCodePoint(cp)} (U+${cp.toString(16).toUpperCase().padStart(4, '0')})`).join(', ') + (missing.length > 30 ? ' …' : ''));
+  if (missing.length) throw new AppError('invalid_request', waiverValidation('unsupportedCharacters', { characters: missing.slice(0, 30)
+    .map(cp => `${String.fromCodePoint(cp)} (U+${cp.toString(16).toUpperCase().padStart(4, '0')})`).join(', ') + (missing.length > 30 ? ' …' : '') }));
   const blocks = templateBlocks({ ...template, version: 1 });
   // Reserve two pages for signing details. Signing also preflights the complete
   // snapshot outside its transaction, including unusually long member names.
@@ -28,7 +29,7 @@ export async function validateTemplatePdf(template: { name: string; body: string
 
 /** Waiver-specific content and layout. Only the persisted text determines the footer. */
 export async function renderWaiver(snapshotText: string, snapshotHash: string, png: Uint8Array, document: Uint8Array | (() => Promise<Uint8Array>) | undefined, gymId: string): Promise<Uint8Array> {
-  if (snapshotText.length > 600_000) throw new AppError('invalid_request', 'Waiver is too large');
+  if (snapshotText.length > 600_000) throw new AppError('invalid_request', waiverValidation('waiverSize'));
   const snapshot = readSnapshot(snapshotText, snapshotHash);
   validateSignatureImage(png);
   if (digest(png) !== snapshot.signatureImage.hash) throw new Error('Waiver image integrity failure');

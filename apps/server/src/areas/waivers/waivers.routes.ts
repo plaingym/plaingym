@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { waiverValidation } from './messages.js';
 import { z } from '@hono/zod-openapi';
 import { bodyLimit } from 'hono/body-limit';
 import type { MiddlewareHandler } from 'hono';
 import { AppError } from '@plaingym/shared';
+import { pdfText } from '../../infra/pdf/messages.js';
 import * as c from '@plaingym/shared/contracts';
 import { route } from '../../core/registry.js';
 import { rateLimit } from '../../core/rate-limit.js';
@@ -45,7 +47,7 @@ export function createWaiverRoutes(service?: WaiversService) {
   return [createWaiverDocumentDownloadRoute(() => get().documentDelivery()), ...Object.entries(c.waiverContracts).map(([key, value]) => {
     const contract: c.EndpointContract = value;
     return route({ ...contract,
-      middleware: [bodyLimit({ maxSize: key === 'uploadDocument' ? documentByteLimit : 400_000, onError: () => { throw new AppError('invalid_request', key === 'uploadDocument' ? 'The PDF must be no larger than 10 MiB' : 'Request too large'); } }),
+      middleware: [bodyLimit({ maxSize: key === 'uploadDocument' ? documentByteLimit : 400_000, onError: () => { throw new AppError('invalid_request', key === 'uploadDocument' ? pdfText('byteLimit') : waiverValidation('requestSize')); } }),
         ...(key === 'pdf' ? [limitDemoPdf] : key === 'document' ? [documentLimit] : key === 'uploadDocument' ? [uploadLimit] : [])],
       request: { ...(contract.params instanceof z.ZodObject ? { params: contract.params } : {}), ...(contract.query instanceof z.ZodObject ? { query: contract.query } : {}),
         ...(key === 'uploadDocument' ? { body: { required: true, content: { 'application/pdf': { schema: z.string().openapi({ format: 'binary' }) } } } }
@@ -54,7 +56,7 @@ export function createWaiverRoutes(service?: WaiversService) {
     }, async ctx => {
       const context = ctx.get('context'); mutation(context);
       if (key === 'uploadDocument' && ctx.req.header('content-type')?.split(';')[0]?.trim().toLowerCase() !== 'application/pdf')
-        throw new AppError('invalid_request', 'Upload an application/pdf document');
+        throw new AppError('invalid_request', waiverValidation('pdfType'));
       const result = await handlers[key as keyof typeof handlers](context, ctx.req.param(), ctx.req.query(),
         key === 'uploadDocument' ? new Uint8Array(await ctx.req.arrayBuffer()) : contract.body ? await ctx.req.json() : undefined);
       ctx.header('Cache-Control', 'no-store'); return ctx.json(contract.response.parse(result) as { data: unknown }, 200);

@@ -105,6 +105,10 @@ test('the outbox preview shows an email with its inline styles, under the previe
     const frame = page.getByRole('dialog').locator('iframe');
     await expect(frame).toHaveAttribute('src', `/api/demo/outbox/${message.id}/preview`);
     await expect(frame).toHaveAttribute('sandbox', '');
+    // The dialog's Tab wrap still lets a keyboard reach (and scroll) the preview.
+    await page.getByRole('button', { name: 'Close message preview' }).focus();
+    await page.keyboard.press('Tab');
+    await expect(frame).toBeFocused();
     // The layout's inline styles apply.
     const body = frame.contentFrame().locator('body');
     await expect(body).toHaveCSS('background-color', 'rgb(243, 244, 246)');

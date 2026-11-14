@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { Page } from '@playwright/test';
 import { test, expect, demoClient, type Client, type Sandbox } from '../support.js';
-import { accessibleLayout } from '../responsive.js';
+import { accessibleThemes as accessibleLayout } from '../responsive.js';
 
 // The public website in a seeded sandbox: every page under the enforced policy (the automatic CSP guard fails the test
 // on any violation), at phone and desktop widths, and the switch that takes it away again.

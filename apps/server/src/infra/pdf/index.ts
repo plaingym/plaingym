@@ -6,6 +6,7 @@ import type { Font } from 'fontkit';
 import PDFDocument from 'pdfkit';
 import bidiFactory from 'bidi-js';
 import { AppError } from '@plaingym/shared';
+import { pdfText } from './messages.js';
 import provenance from './fonts/provenance.json' with { type: 'json' };
 import coverage from './coverage.json' with { type: 'json' };
 
@@ -129,7 +130,7 @@ const waiters: (() => void)[] = [];
 async function acquire() {
   if (!active) { active = true; return; }
   // A full queue is momentary: the busy reason gets a one-second Retry-After and clients' retry text (core/errors.ts).
-  if (waiters.length >= 8) throw new AppError('rate_limited', 'PDF renderer busy; retry shortly', { reason: ['busy'] });
+  if (waiters.length >= 8) throw new AppError('rate_limited', pdfText('rendererBusy'), { reason: ['busy'] });
   await new Promise<void>(resolve => waiters.push(resolve));
 }
 function release() { const next = waiters.shift(); if (next) next(); else active = false; }
@@ -144,19 +145,19 @@ export function missingGlyphs(text: string): number[] {
 export async function renderPdf(input: PdfInput): Promise<Uint8Array> {
   await acquire();
   try {
-    if (input.blocks.length > 1000 || input.blocks.reduce((size, block) => size + (block.kind === 'text' ? block.text.length : 0), 0) > 100_000) throw new AppError('invalid_request', 'PDF is too large');
+    if (input.blocks.length > 1000 || input.blocks.reduce((size, block) => size + (block.kind === 'text' ? block.text.length : 0), 0) > 100_000) throw new AppError('invalid_request', pdfText('inputLimit'));
     const doc = new PDFDocument({ size: 'LETTER', margin: 48, font: pdfFont(font(0)) as unknown as string, autoFirstPage: false,
       info: { Title: input.title, CreationDate: input.createdAt, ModDate: input.createdAt } });
     const chunks: Buffer[] = []; let bytes = 0;
     const finished = new Promise<Uint8Array>((resolve, reject) => {
-      doc.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > 8 * 1024 * 1024) doc.destroy(new AppError('invalid_request', 'PDF too large')); else chunks.push(chunk); });
+      doc.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > 8 * 1024 * 1024) doc.destroy(new AppError('invalid_request', pdfText('outputLimit'))); else chunks.push(chunk); });
       doc.on('end', () => resolve(Buffer.concat(chunks))); doc.on('error', reject);
     });
     // Attach a handler before synchronous layout can fail.
     void finished.catch(() => undefined);
     let y = 48, pages = 0;
     function page() {
-      if (++pages > 100) throw new AppError('invalid_request', 'PDF exceeds page limit');
+      if (++pages > 100) throw new AppError('invalid_request', pdfText('renderPageLimit'));
       doc.addPage(); y = 48;
       drawLine(doc, replacements(input.footer), 744, 7);
     }

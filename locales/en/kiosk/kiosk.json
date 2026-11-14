@@ -28,5 +28,6 @@
   "chooseClass": "Choose your class",
   "session": "{name} · {time}",
   "openMat": "Open mat",
-  "done": "Done"
+  "done": "Done",
+  "resultsTitle": "Check-in results"
 }

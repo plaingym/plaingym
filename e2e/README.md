@@ -100,6 +100,15 @@ The checks cover:
   exact start), a coach's roster check-in, and stacked dashboard widgets. Session moves use New York
   and Tokyo gym time with a Honolulu browser, verify stored instants and local display, and reject
   the New York spring daylight-saving gap. A coach's direct Settings URL has an explanatory empty state.
+  Whole-page checks run with both light and dark OS color preferences. The same spec
+  audits every signed-in portal page, all five signed-link purposes and unavailable-link
+  feedback, `/join` (plans and form), `/trial` and `/drop-in` at both widths.
+  Keyboard-only flows cover kiosk check-in, portal booking/cancellation, invoice Checkout
+  and card updates, visible focus, and trapping/restoring focus in a profile dialog.
+  The website's six pages also run axe with both color preferences. Screenshots and
+  axe results are attached for each audited preference; the app currently shares its
+  palette between preferences. The only frame exclusion is the script-blocked email
+  preview in `responsive.ts`, whose surrounding dialog is still audited.
 * Restored-payment notices before and after connecting Stripe at 360 px and 1280 px
   (`restore-payments.spec.ts`), with fixture reports, screenshots and layout checks.
 * Every portal and signed-link route in the inventory, both ways between two

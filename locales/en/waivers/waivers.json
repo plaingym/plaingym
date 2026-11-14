@@ -55,5 +55,5 @@
   "documentUnavailableBody": "Return to the signing page and open the document again. Read it before signing; if it still will not open, contact the gym.",
   "documentSource": "Source code",
   "documentRequired": "Choose a PDF before saving.",
-  "documentSelected": "PDF uploaded and validated."
+  "documentUploaded": "PDF uploaded and validated. Pages: {pages}. Bytes: {bytes}."
 }

@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # PDF rendering
 
+Validation and rendering diagnostics use the `pdf/pdf` locale namespace through `messages.ts`.
+
 `document.ts` validates uploaded static waiver PDFs and appends generated signing
 pages without painting or reflowing the original pages. It uses
 `@cantoo/pdf-lib` 2.11.1 (MIT) for parsing and page copying; PDFKit still generates

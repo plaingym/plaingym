@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 /* eslint-disable no-control-regex -- PDF whitespace includes the NUL byte. */
 import { AppError } from '@plaingym/shared';
+import { pdfText } from './messages.js';
 
 export interface PdfSyntaxBudget { nodes: number }
-function malformed(): never { throw new AppError('invalid_request', 'The PDF is malformed or too complex'); }
+function malformed(): never { throw new AppError('invalid_request', pdfText('malformedComplex')); }
 
 /** Bound syntax before the vendor recursively constructs untrusted PDF objects. */
 export function scanPdfObject(text: string, start: number, budget: PdfSyntaxBudget): number {

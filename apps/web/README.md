@@ -22,6 +22,15 @@ the larger layouts. No screen may scroll sideways, every control is at least
 44 px tall (and wide enough to tap), and text stays readable without zooming.
 Check each screen you build or change at 360 px and on desktop.
 
+**Text.** Put application text in `locales/en/<area>/<part>.json` and render it
+through `t()`. ESLint rejects literal JSX text, text attributes (including
+component text props such as `closeLabel` or `message`), and literal
+branches, concatenations or template text rendered in JSX, plus text and text
+attributes passed to server `h()` / `jsx()` / `createElement()` templates. Translation keys belong in calls to
+`t()`, rather than text props. User-entered names, punctuation, numeric keypad
+digits, and decorative symbols are allowed. Emails and PDF builders also use
+the catalog and require review when changed.
+
 Settings-section registrations may supply a `listed` React hook returning a boolean.
 The settings page calls it in a separate component for each permitted, enabled section,
 so hooks can fetch feature-specific availability without coupling the page to a section ID.
@@ -56,6 +65,7 @@ its action), and `ErrorState` (with `onRetry`; never show server error details).
 scrolls sideways.
 
 **Dialogs.** Editors and confirmations open in a `Dialog` rather than inline below the page, so on a phone they take the whole screen and keep their actions in reach. Show a save error inside the dialog, not only on the page behind it. A `Dialog` has one scroll container, its body: the dialog element clips (`overflow-hidden`) and its header stays put, so don't add a second max height around the whole content; give only a bounded list inside it a `max-h-*` with `overflow-y-auto`.
+Tab and Shift+Tab wrap between its visible, enabled controls; closing restores the opener's focus.
 
 **Forms.** `Input`, `Select` and `Textarea` are 44 px tall with 16 px text, so
 phones don't zoom into fields. Wrap checkboxes in `CheckboxField` so the whole

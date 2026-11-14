@@ -17,6 +17,9 @@ export function useDialogOperation(busy: boolean) {
   const setBusy = useContext(OperationContext);
   useEffect(() => { if (!busy || !setBusy) return; setBusy(count => count + 1); return () => setBusy(count => count - 1); }, [busy, setBusy]);
 }
+/** Tab skips an unchecked radio whose named group has a checked one, so it can't be a wrap boundary. */
+const skippedRadio = (element: HTMLElement) => element instanceof HTMLInputElement && element.type === 'radio' && !element.checked && !!element.name
+  && [...(element.form ?? element.ownerDocument).querySelectorAll<HTMLInputElement>('input[type="radio"]')].some(other => other.name === element.name && other.checked);
 /** Native focus containment, restored opener focus and guarded Escape/backdrop/close dismissal. */
 export function Dialog({ title, description, closeLabel, onClose, size = 'default', className, children, dismissible = true, unsavedChanges = false }:
   { title: ReactNode; description?: ReactNode; closeLabel: string; onClose: () => void; size?: 'default' | 'wide'; className?: string; children: ReactNode; dismissible?: boolean; unsavedChanges?: boolean }) {
@@ -71,6 +74,19 @@ export function Dialog({ title, description, closeLabel, onClose, size = 'defaul
     }
   }, [suspended]);
   return <dialog ref={ref} aria-labelledby={titleId} {...(description ? { 'aria-describedby': descriptionId } : {})}
+    onKeyDown={event => {
+      if (event.key !== 'Tab' || event.defaultPrevented) return;
+      const dialog = event.currentTarget;
+      const controls = [...dialog.querySelectorAll<HTMLElement>('a[href], button, input, select, textarea, summary, iframe, audio[controls], video[controls], [tabindex], [contenteditable="true"]')]
+        .filter(element => element.tabIndex >= 0 && !element.matches(':disabled') && !element.closest('[inert]') && !skippedRadio(element)
+          && element.getClientRects().length > 0 && getComputedStyle(element).visibility === 'visible');
+      // A native modal makes the page inert, but Chromium can still tab from its
+      // last control into browser chrome. Wrap explicitly in both directions.
+      const first = controls[0], last = controls.at(-1), focused = document.activeElement;
+      if (!first) { event.preventDefault(); dialog.focus(); }
+      else if (event.shiftKey && (focused === first || focused === dialog)) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && (focused === last || focused === dialog)) { event.preventDefault(); first.focus(); }
+    }}
     onFocusCapture={event => { lastFocused.current = event.target; }}
     onCancel={(event) => { event.preventDefault(); if (confirm) { setConfirm(false); dismissOrigin.current?.focus(); } else requestClose(); }}
     onPointerDown={event => { startedOutside.current = event.target === event.currentTarget && outside(event.clientX, event.clientY); }}
