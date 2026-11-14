@@ -31,6 +31,8 @@ interface Store {
   entries(gymId?: string): Promise<string[]>;
   /** Removes what the index layout adds, leaving the store as the release before it wrote it. */
   removeIndex(): Promise<void>;
+  /** Removes only this key's entry to model a record published by an old-layout writer. */
+  removeEntry(key: string): Promise<void>;
   /** A copy without the index layout in a new place, which this process has never listed. */
   withoutIndex(): Promise<Store>;
   /** Writes an index entry without anything else, as a crash right after it leaves. */
@@ -48,6 +50,7 @@ function localStore(root: string): Store {
     open: (gymId = 'gym') => new LocalUploads({ gymId, root, signingKey, downloadUrl: 'https://gym.test/uploads/download', clock }),
     entries: async (gymId) => (await readdir(join(gymRoot(gymId), 'index')).catch(() => [])).sort(),
     async removeIndex() { for (const directory of ['index', 'swept']) await rm(join(gymRoot(), directory), { recursive: true, force: true }); },
+    removeEntry: (key) => rm(join(gymRoot(), 'index', indexName('gym', key))),
     async withoutIndex() {
       const copy = await temporaryRoot();
       await cp(root, copy, { recursive: true, filter: (path) => !added(path) });
@@ -78,6 +81,7 @@ function s3Store(bucket = 'index-' + sequence++): Store & { readonly bucket: str
     entries: async (gymId) => [...server.objects.keys()].filter((key) => key.startsWith(prefix(gymId) + 'index/'))
       .map((key) => key.slice((prefix(gymId) + 'index/').length)).sort(),
     async removeIndex() { for (const key of server.objects.keys()) if (key.startsWith(prefix() + 'index/')) server.objects.delete(key); },
+    async removeEntry(key) { server.objects.delete(prefix() + 'index/' + indexName('gym', key)); },
     async withoutIndex() {
       const copy = s3Store();
       for (const [key, value] of server.objects)
@@ -113,7 +117,7 @@ for (const implementation of ['local', 's3'] as const) {
       await expect(uploads.put('gym/a/4', broken(), 'text/plain')).rejects.toThrow('Power loss');
       const old = await store.withoutIndex();
       expect(await old.entries()).toEqual([]);
-      // The first listing in the process backfills the index and answers from the records it read.
+      // Every listing waits for backfill before reading the index.
       const listed = await old.open().list();
       expect(keys(listed)).toEqual(['gym/a/1', 'gym/a/2', 'gym/b/1']);
       expect(listed[1]!.deletedAt).toEqual(clock.now());
@@ -196,7 +200,22 @@ for (const implementation of ['local', 's3'] as const) {
       expect(await store.open().list()).toEqual([]);
       expect(await store.entries()).toEqual([]);
     });
-    it('repairs on sweep what a release before the index writes after it', async () => {
+    it('includes an old-layout writer\'s new key in the next backup listing without a sweep or restart', async () => {
+      const store = await create(), uploads = store.open();
+      await uploads.put('gym/backup/current', stream([1]), 'text/plain');
+      expect(keys(await uploads.list())).toEqual(['gym/backup/current']);
+      // The other process publishes a complete record and blob without an index entry.
+      const older = store.open();
+      await older.put('gym/backup/older', stream([2]), 'text/plain');
+      await store.removeEntry('gym/backup/older');
+      expect(await store.entries()).toEqual([indexName('gym', 'gym/backup/current')]);
+      expect(keys(await uploads.list())).toEqual(['gym/backup/current', 'gym/backup/older']);
+      await older.put('gym/export/older', stream([3]), 'text/plain');
+      await store.removeEntry('gym/export/older');
+      expect(keys(await uploads.list('gym/export/'))).toEqual(['gym/export/older']);
+      expect(await store.entries()).toHaveLength(3);
+    });
+    it('repairs what a release before the index writes after it', async () => {
       const store = await create(); const uploads = store.open();
       await uploads.put('gym/o/1', stream([1]), 'text/plain');
       expect(keys(await uploads.list())).toEqual(['gym/o/1']);
@@ -294,8 +313,9 @@ describe('S3 key index requests', () => {
     server.state.log = [];
     expect(keys(await store.open().list('gym/p/'))).toEqual(['gym/p/1', 'gym/p/2']);
     const listing = server.state.log;
-    // One listing of the prefix's entries, then each key's record, deletion marker and sweep marker.
-    expect(listing).toHaveLength(1 + 2 * 3);
+    // Four reconciliation listings, then the prefix's entries and each matching record's three objects.
+    expect(listing.filter((line) => line.startsWith('LIST '))).toHaveLength(5);
+    expect(listing).toHaveLength(5 + 2 * 3);
     for (const key of ['gym/p/3', 'gym/q/1', 'gym/q/2', 'gym/q/3']) expect(touched(listing, key)).toBe(false);
     server.state.log = [];
     expect(await store.open().sweep({ before: new Date(0) })).toEqual([]);

@@ -172,12 +172,10 @@ export class S3BackupObjectStore implements BackupObjectStore {
 class S3UploadBackend implements UploadBackend {
   readonly store: S3BackupObjectStore;
   readonly prefix: string;
-  readonly identity: readonly [object, string];
   constructor(readonly options: S3StoreOptions & { gymId: string }) {
     validGym(options.gymId);
     this.store = new S3BackupObjectStore(options);
     this.prefix = options.gymId + '/.storage/';
-    this.identity = [options.client, options.bucket + '/' + options.gymId];
   }
   recordKey(key: string): string { return this.prefix + 'records/' + digest(key); }
   blobKey(key: string): string { return this.prefix + 'blobs/' + digest(key); }

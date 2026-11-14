@@ -2,11 +2,12 @@
 import { readFileSync } from 'node:fs';
 import { isIP } from 'node:net';
 import { fileURLToPath } from 'node:url';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { cloudflareRanges } from './cloudflare-ranges.js';
 import { clientIp, isCloudflareAddress, type ClientIpOptions } from './rate-limit.js';
 import type { RequestEnvironment } from './context.js';
+import { setLogSink } from './log.js';
 
 const cloudflareEdge = '172.70.1.2', cloudflareEdge6 = '2606:4700:10::ac43:1', visitor = '198.51.100.7';
 
@@ -49,4 +50,32 @@ it('takes CF-Connecting-IP only behind a trusted proxy, with the switch on, from
   // Switch off, or no trusted proxy: the header is never read.
   expect(await resolver({ trustedProxy: () => true })({ 'x-forwarded-for': cloudflareEdge, 'cf-connecting-ip': visitor })).toBe(cloudflareEdge);
   expect(await resolver({ cloudflare: true })({ 'x-forwarded-for': cloudflareEdge, 'cf-connecting-ip': visitor })).toBe('172.18.0.4');
+});
+
+it('takes the first valid joined address and logs malformed headers at most once a minute across resolvers', async () => {
+  vi.useFakeTimers({ now: Date.now() + 120_000 });
+  const lines: string[] = [], previous = setLogSink((line) => lines.push(line));
+  try {
+    const options = { trustedProxy: () => true, cloudflare: true };
+    const first = resolver(options), second = resolver(options);
+    const headers = (value: string) => ({ 'x-forwarded-for': cloudflareEdge, 'cf-connecting-ip': value });
+    // A caller outside the trusted Cloudflare path cannot produce this diagnostic.
+    expect(await first({ ...headers('junk'), 'x-forwarded-for': '192.0.2.50' })).toBe('192.0.2.50');
+    expect(lines).toHaveLength(0);
+    expect(await first(headers(`junk, ${visitor}, 2001:db8::7`))).toBe(visitor);
+    expect(await second(headers(` , 2001:db8::7, ${visitor}`))).toBe('2001:db8::7');
+    expect(await first(headers('junk, also-junk'))).toBe(cloudflareEdge);
+    expect(lines).toHaveLength(1);
+    vi.advanceTimersByTime(59_999);
+    expect(await second(headers('junk'))).toBe(cloudflareEdge);
+    expect(lines).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(await second(headers('junk'))).toBe(cloudflareEdge);
+    expect(lines).toHaveLength(2);
+    expect(lines.map((line) => JSON.parse(line))).toEqual([
+      expect.objectContaining({ event: 'client_ip.cloudflare_header_invalid', reason: 'multiple' }),
+      expect.objectContaining({ event: 'client_ip.cloudflare_header_invalid', reason: 'invalid' }),
+    ]);
+    expect(lines.join('\n')).not.toMatch(/junk|198\.51\.100|2001:db8/);
+  } finally { setLogSink(previous); vi.useRealTimers(); }
 });

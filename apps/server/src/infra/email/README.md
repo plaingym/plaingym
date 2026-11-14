@@ -5,6 +5,13 @@
 
 With `publicHostOnly`, for a server a tenant named, each session resolves the host once (`smtp-host.ts`), refuses it unless every address is public, and connects to the addresses it checked in turn (IPv4 first, leaving out a family the machine has no interface for, unless that leaves none), moving on only when a connection fails before login, within the one session deadline; Nodemailer gets each address, so it can't resolve the name again, and the name as the TLS server name, so the certificate is still checked against it. IPv4-mapped IPv6 addresses and anything else outside global unicast are refused.
 
+This check is used for gym-supplied servers in `multi` mode. It queries A and AAAA
+with a per-session `dns.promises.Resolver`, outside the shared worker pool, and
+cancels outstanding queries at the ten-second deadline or when either query fails.
+An absent address family is allowed; other DNS errors fail the check. Address
+literals are checked directly without DNS. Single-gym installs retain Nodemailer's
+existing lookup behavior, including system lookup support for hosts-file names.
+
 `EmailMessage.listUnsubscribe` optionally carries one absolute HTTPS URL of at most 2,048
 characters as sent (after percent-encoding), with no user name or password. Whitespace
 (including CR/LF), controls and angle brackets are refused with

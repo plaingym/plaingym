@@ -53,19 +53,22 @@ ill-formed key gets the hex of its first 80 bytes and its digest). `put()` write
 entry before the reservation, so every reserved key has one, and removes it again
 when the reservation fails with nothing reserved or the key is swept; `sweep()`
 removes it after the sweep marker and the blob, and `restore()` writes it again. `list(prefix)`
-reads only the entries under the prefix and their records, so it costs in proportion
-to the keys under the prefix, and swept keys cost nothing. Entries without a
+reconciles the index, then reads only the entries under the prefix and their
+records. Once a store is indexed, its record reads cost in proportion to the keys
+under the prefix and swept keys need none, but the reconciliation's listings grow
+with the gym's whole store, swept keys included, whatever the prefix. Entries without a
 published, unswept record of the gym (a crash before or after the reservation) are
-skipped. The first `list()` of a store in each process, and every `sweep()`,
-reconciles the index: it lists the entries, the records and the listable
+skipped. Every `list()` and `sweep()` reconciles the index: it lists the entries,
+the records and the listable
 sweep markers, and indexes every record that has no entry and isn't swept, reading
 only those; it also removes the blob a sweep by an older release left behind. A
 store written before the index existed, or by an older release after it, lists
-correctly with no owner step; its first listing waits for this backfill. A key a
-sweep's own reconciliation indexes is not removed until the next sweep, because the
+correctly with no owner step; each listing waits for this backfill, so backups and
+other callers include keys an older-layout writer published before the listing.
+A key a sweep's own reconciliation indexes is not removed until the next sweep, because the
 caller's protected keys came from a listing that could not include it. Another
-process running a release from before the index can write keys that this process
-lists only after its next sweep or restart, so don't run both releases side by side.
+process can keep writing the older layout alongside a process using the index;
+the next listing reconciles those keys without a sweep or restart.
 On S3, the reconciliation lists without reading objects (1,000 names a request), a
 sweep reads only records with a deletion marker, a record and its markers are read
 together, and up to 16 keys are read at a time.

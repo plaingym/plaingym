@@ -90,8 +90,6 @@ function indexSearch(gymId: string, prefix: string): string {
 }
 
 export interface UploadBackend {
-  /** Identifies the store across adapter instances, so the index is reconciled once per store and process. */
-  readonly identity: readonly [object, string];
   reserve(key: string): Promise<void>;
   record(key: string, options?: ReadOptions): Promise<UploadRecord | null>;
   /** Reads a record by its digest. */
@@ -117,9 +115,6 @@ export interface UploadBackend {
   /** Digests of stored blobs, or undefined when only reading each record tells. */
   blobIds(): Promise<ReadonlySet<string> | undefined>;
 }
-
-/** Stores reconciled by this process, keyed by backend identity: the 10,000 used most recently. */
-const reconciled = new WeakMap<object, Map<string, Promise<void>>>();
 
 /** Durable reservations outlive blobs, so deleting a blob never releases its key. */
 export class DurableUploads implements Uploads {
@@ -156,12 +151,13 @@ export class DurableUploads implements Uploads {
     options.signal?.throwIfAborted();
     return record?.info && !record.swept ? record.info : null;
   }
-  /** Reads only the records of keys under the prefix; swept keys have no index entry and cost nothing. */
+  /** Reconciles first, then reads only the indexed records under the prefix. */
   async list(prefix = this.gymId + '/'): Promise<readonly UploadInfo[]> {
     assertNoTransaction('storage.list');
     validKey(prefix);
     if (!prefix.startsWith(this.gymId + '/')) throw new Error('Prefix belongs to another gym');
-    await this.#reconciled();
+    // A process running an older layout can publish an unindexed key after any previous listing.
+    await this.#reconcile();
     const search = indexSearch(this.gymId, prefix);
     const candidates = (await this.#entries(search.slice(0, indexBytes * 2)))
       .filter((entry) => entry.hex.startsWith(search) || (entry.truncated && search.startsWith(entry.hex)));
@@ -205,7 +201,6 @@ export class DurableUploads implements Uploads {
     assertNoTransaction('storage.sweep'); cutoff(options.before);
     // Sweeps always reconcile first, so they also catch keys an older release wrote without an index entry.
     const reconciliation = this.#reconcile();
-    this.#remember(reconciliation.then(() => undefined));
     const [{ entries, added }, deleted] = await Promise.all([reconciliation, this.backend.deletedIds()]);
     const removed: string[] = [];
     await pool(entries.filter((entry) => !deleted || deleted.has(entry.id)), async (entry) => {
@@ -264,20 +259,5 @@ export class DurableUploads implements Uploads {
     });
     const added = found.flat();
     return { entries: entries.concat(added), added: new Set(added.map((entry) => entry.id)) };
-  }
-  #reconciled(): Promise<void> {
-    const [owner, id] = this.backend.identity;
-    const known = reconciled.get(owner)?.get(id);
-    return this.#remember(known ?? this.#reconcile().then(() => undefined));
-  }
-  #remember(reconciliation: Promise<void>): Promise<void> {
-    const [owner, id] = this.backend.identity;
-    let stores = reconciled.get(owner);
-    if (!stores) reconciled.set(owner, stores = new Map());
-    stores.delete(id); stores.set(id, reconciliation);
-    if (stores.size > 10_000) stores.delete(stores.keys().next().value!);
-    // A failed pass is forgotten, so the next call retries it.
-    reconciliation.catch(() => { if (stores.get(id) === reconciliation) stores.delete(id); });
-    return reconciliation;
   }
 }

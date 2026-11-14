@@ -5,6 +5,9 @@ import { AppError } from '@plaingym/shared';
 import type { Context, MiddlewareHandler } from 'hono';
 import type { RequestEnvironment } from './context.js';
 import { cloudflareRanges } from './cloudflare-ranges.js';
+import { logInfo } from './log.js';
+
+let lastCloudflareHeaderWarning: number | undefined;
 
 export interface ClientIpOptions {
   /** Immediate socket peer, supplied by the server adapter, never request headers. */
@@ -33,8 +36,16 @@ export function clientIp(context: Context<RequestEnvironment>, options: ClientIp
     const forwarded = context.req.header('x-forwarded-for')?.split(',').at(-1)?.trim();
     if (forwarded && isIP(forwarded)) {
       if (options.cloudflare && isCloudflareAddress(forwarded)) {
-        const visitor = context.req.header('cf-connecting-ip')?.trim();
-        if (visitor && isIP(visitor)) return visitor;
+        const header = context.req.header('cf-connecting-ip')?.trim();
+        if (!header || !isIP(header)) {
+          const now = Date.now();
+          if (lastCloudflareHeaderWarning === undefined || now - lastCloudflareHeaderWarning >= 60_000) {
+            lastCloudflareHeaderWarning = now;
+            logInfo('client_ip.cloudflare_header_invalid', { reason: !header ? 'missing' : header.includes(',') ? 'multiple' : 'invalid' });
+          }
+        }
+        const visitor = header?.split(',').map((entry) => entry.trim()).find((entry) => isIP(entry));
+        if (visitor) return visitor;
       }
       return forwarded;
     }

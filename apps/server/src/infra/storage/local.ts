@@ -30,16 +30,13 @@ async function mark(directory: string, name: string): Promise<void> {
   await mkdir(directory, { recursive: true, mode: 0o700 });
   try { await writeFile(join(directory, name), '', { flag: 'wx', mode: 0o600 }); } catch (error) { if (!exists(error)) throw error; }
 }
-const localStores = {};
 class LocalBackend implements UploadBackend {
   readonly root: string;
   readonly signingKey: Buffer;
   readonly downloadUrl: URL;
-  readonly identity: readonly [object, string];
   constructor(readonly options: LocalUploadsOptions, readonly clock: Clock) {
     validGym(options.gymId);
     this.root = join(resolve(options.root), digest(options.gymId));
-    this.identity = [localStores, this.root];
     this.signingKey = Buffer.from(options.signingKey);
     if (this.signingKey.length < 32) throw new Error('Storage signing key must have at least 32 bytes');
     this.downloadUrl = new URL(options.downloadUrl);

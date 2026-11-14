@@ -223,6 +223,9 @@ app resolves the name once, refuses it if any address is private, loopback,
 link-local, reserved or IPv4-mapped, and connects only to the addresses it checked
 (trying the next one when a connection fails before login), so a name that changes
 its answer can't reach a private one. TLS still verifies the name.
+The public-address check queries A and AAAA outside the shared worker pool and
+cancels unfinished DNS queries after ten seconds; address literals need no lookup.
+Single-gym installs retain system lookup support for hosts-file names.
 This holds for the test message and every real send, under either setting. A
 refused host answers like any other failed test, so an owner can't tell it from a
 name that doesn't resolve. The install's own `SMTP_*` server is the operator's and
@@ -349,7 +352,10 @@ Details: `apps/server/src/infra/auth/README.md`.
   Cloudflare's published ranges (the canonical `deploy/cloudflare-ranges.txt`,
   packaged with the app and read by `core/cloudflare-ranges.ts`). From any other address the
   header is ignored, so it changes nothing for a server that isn't behind
-  Cloudflare. **Limit:** those ranges are shared by every Cloudflare customer, and
+  Cloudflare. A comma-joined `CF-Connecting-IP` uses its first valid address. A
+  malformed or missing header logs a diagnostic at most once a minute per process,
+  without logging its value; if no entry is valid, the forwarded edge address is used.
+  **Limit:** those ranges are shared by every Cloudflare customer, and
   the server also accepts connections that don't come through the proxy, so
   traffic sent from inside Cloudflare's network (for example a Worker opening its
   own connection to the server's address) can choose `CF-Connecting-IP`. That
