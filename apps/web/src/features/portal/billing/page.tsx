@@ -46,13 +46,12 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
   const instant = (value: string) => dateLabel(value, gym.timezone);
   const failure = checkout.error ?? download.error, unavailableKey = checkout.error ? 'unavailable' : 'receiptUnavailable';
   return <Page className="max-w-3xl"><PortalRecovery moving={scope.moving}>
-    <PageHeader title={text('title')} description={text(payer ? 'description' : 'creditsDescription')} />
-    {context.isPending && <LoadingState />}
-    {context.isError && <ErrorState onRetry={() => void context.refetch()} />}
+    <PageHeader title={text('title')} description={context.data ? text(payer ? 'description' : 'creditsDescription') : undefined} />
+    {!context.data && (context.isPending || scope.settling ? <LoadingState /> : <ErrorState onRetry={() => void context.refetch()} />)}
+    {context.data && <>
     {/* Payers see the card only when someone holds credits; for adult members it is the whole page. */}
     {(!payer || credits.isError || !!credits.data?.length) && <PageSection title={text('credits')}>
-      {credits.isPending && <LoadingState />}
-      {credits.isError && <ErrorState onRetry={() => void credits.refetch()} />}
+      {(credits.isPending || (!credits.data && scope.settling)) ? <LoadingState /> : credits.isError && <ErrorState onRetry={() => void credits.refetch()} />}
       {credits.data?.length === 0 && <EmptyState title={text('noCredits')} />}
       {!!credits.data?.length && <StackedList>{credits.data.map(row => <StackedItem key={row.memberId} className="gap-1">
         <p className="min-w-0 break-words font-semibold">{row.firstName} {row.lastName}</p>
@@ -65,8 +64,7 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
     {checkout.isPending && <Alert role="status">{text('redirecting')}</Alert>}
     {receipt && <Alert role="status">{text('receiptReady')} <a className="inline-flex min-h-11 items-center font-medium underline" href={receipt} target="_blank" rel="noreferrer">{text('openReceipt')}</a></Alert>}
     <PageSection title={text('invoices')}>
-      {invoices.isPending && <LoadingState />}
-      {invoices.isError && <ErrorState onRetry={() => void invoices.refetch()} />}
+      {(invoices.isPending || (!invoices.data && scope.settling)) ? <LoadingState /> : invoices.isError && <ErrorState onRetry={() => void invoices.refetch()} />}
       {invoices.data?.data.length === 0 && <EmptyState title={text('noInvoices')} />}
       {!!invoices.data?.data.length && <StackedList>{invoices.data.data.map(row => <StackedItem key={row.id} className="gap-3">
         <div className="flex flex-wrap items-start justify-between gap-2">
@@ -92,8 +90,7 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
     </PageSection>
     <PageSection title={text('cards')} description={text('checkoutNote')}
       actions={<Button variant="outline" disabled={checkout.isPending || !cards.isSuccess} onClick={() => checkout.mutate(null)}>{text(cards.data?.length ? 'updateCard' : 'addCard')}</Button>}>
-      {cards.isPending && <LoadingState />}
-      {cards.isError && <ErrorState onRetry={() => void cards.refetch()} />}
+      {(cards.isPending || (!cards.data && scope.settling)) ? <LoadingState /> : cards.isError && <ErrorState onRetry={() => void cards.refetch()} />}
       {cards.data?.length === 0 && <EmptyState title={text('noCards')} />}
       {!!cards.data?.length && <StackedList>{cards.data.map(card => <StackedItem key={card.id} className="flex-row flex-wrap items-center justify-between gap-2">
         <span className="min-w-0 break-words">{card.brand ? cardBrand(card.brand) : text('card')} •••• {card.last4 ?? '????'}
@@ -102,6 +99,7 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
       </StackedItem>)}</StackedList>}
     </PageSection>
     </>}
+    </>}
   </PortalRecovery></Page>;
 }
 /** The routed page and portal registration. */
@@ -109,7 +107,7 @@ export function PortalBilling() { return <PortalBillingPage />; }
 function InvoiceLines({ invoiceId, scope }: { invoiceId: string; scope: PortalScope }) {
   const detail = useQuery({ queryKey: [...scope.key, 'billing', 'invoice', invoiceId], retryOnMount: false,
     queryFn: async () => scope.own(await scope.call(contracts.invoice, undefined, { invoiceId })).data });
-  if (detail.isPending) return <LoadingState />;
+  if (detail.isPending || (!detail.data && scope.settling)) return <LoadingState />;
   if (detail.isError) return <ErrorState onRetry={() => void detail.refetch()} />;
   return <dl className="space-y-1 rounded-lg bg-muted/50 p-3 text-sm">
     {detail.data.lines.map(line => <div key={line.id} className="flex flex-wrap justify-between gap-2">

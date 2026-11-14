@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useIsFetching, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
-import { useRef, useState } from 'react';
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { useMemo, useRef, useState } from 'react';
 import { portalAccessContracts, portalContracts, portalHouseholdHeader, type EndpointContract } from '@plaingym/shared/contracts';
 import { localDate } from '@plaingym/shared/time';
 import { useBootstrap } from '../../../app/context.js';
@@ -108,7 +108,7 @@ export function ownAnswer<T extends { householdId: string }>(cache: QueryClient,
 }
 /** The open household as a page sees it: the key its queries are built from, and the check every answer passes. */
 export interface PortalScope {
-  readonly key: PortalKey; readonly ready: boolean; readonly moving: boolean; readonly refreshing: boolean;
+  readonly key: PortalKey; readonly ready: boolean; readonly moving: boolean; readonly refreshing: boolean; readonly settling: boolean;
   own<T extends { householdId: string }>(answer: T): T;
   run<T>(operation: () => Promise<T>): Promise<T>;
   call<C extends EndpointContract>(contract: C, input?: unknown, params?: Record<string, string>, query?: Record<string, string | number | undefined>): Promise<ReturnType<C['response']['parse']>>;
@@ -117,7 +117,8 @@ export interface PortalScope {
 export function usePortalHouseholdKey(): PortalKey {
   const login = usePortalLogin();
   const households = useQuery({ ...portalHouseholdsOptions(login, false) });
-  return portalHouseholdKey(login, households.data?.current);
+  const [area, gymId, userId] = login, householdId = households.data?.current;
+  return useMemo(() => portalHouseholdKey([area, gymId, userId], householdId), [area, gymId, userId, householdId]);
 }
 /**
  * The one key every portal query is built from: the login plus the open household, read from the household lists. When the open
@@ -126,12 +127,15 @@ export function usePortalHouseholdKey(): PortalKey {
  */
 export function usePortalScope(): PortalScope {
   const cache = useQueryClient(), key = usePortalHouseholdKey();
-  const refreshing = useIsFetching({ queryKey: portalHouseholdsKey([key[0], key[1], key[2]]), exact: true }) > 0;
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshingCount = useRef(0);
   const [moving, setMoving] = useState(false);
   const pending = useRef(0);
   const recover = (version: number, expected?: string) => {
     if (expected === undefined) {
-      void refreshHouseholds(cache, key, version).catch(() => undefined);
+      refreshingCount.current++;
+      setRefreshing(true);
+      void refreshHouseholds(cache, key, version).catch(() => undefined).finally(() => { if (--refreshingCount.current === 0) setRefreshing(false); });
       return;
     }
     pending.current++;
@@ -142,7 +146,7 @@ export function usePortalScope(): PortalScope {
     const version = householdListsVersion(cache, key);
     return runPortalOperation(operation, expected => recover(version, expected));
   };
-  return { key, ready: portalReady(key), moving, refreshing,
+  return { key, ready: portalReady(key), moving, refreshing, settling: moving || refreshing,
     own: answer => { if (answer.householdId === key[4]) return answer; recover(householdListsVersion(cache, key), answer.householdId); throw new HouseholdMoved(answer.householdId); }, run,
     call: (contract, input, params, query) => run(() => portalCall(contract, input, params, query, householdTransport(key[4] ?? ''))),
   };

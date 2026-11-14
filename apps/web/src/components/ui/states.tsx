@@ -12,10 +12,10 @@ export function LoadingState({ label = t('shell/shell:loading'), className }: { 
   </div>;
 }
 /** Shown when a list or page has nothing yet; offer the next step as `action`. */
-export function EmptyState({ title, description, action, className }:
-  { title: ReactNode; description?: ReactNode; action?: ReactNode; className?: string }) {
+export function EmptyState({ title, description, action, className, icon }:
+  { title: ReactNode; description?: ReactNode; action?: ReactNode; className?: string; icon?: ReactNode }) {
   return <div className={cn('flex flex-col items-center gap-3 rounded-xl border border-dashed border-border px-4 py-10 text-center', className)}>
-    <InboxIcon className="size-8 text-muted-foreground" />
+    {icon ?? <InboxIcon className="size-8 text-muted-foreground" />}
     <div className="space-y-1">
       <p className="font-semibold">{title}</p>
       {description && <p className="text-sm text-muted-foreground">{description}</p>}

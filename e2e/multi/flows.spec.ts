@@ -134,7 +134,7 @@ for (const index of [0, 1] as const) {
     const last = 'Visitor' + randomBytes(3).toString('hex'), email = `join-${randomBytes(6).toString('hex')}@example.invalid`, full = 'Riley ' + last;
     await page.setViewportSize(phone);
     await page.goto(own.origin + '/join');
-    await expect(page.getByRole('heading', { name: 'Join', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Join online', exact: true })).toBeVisible();
     await expect(page.getByRole('heading', { name: own.name + ' monthly', exact: true })).toBeVisible();
     await expectOnlyOwn(page, own, other, 'the join page');
     await page.getByRole('link', { name: /^Choose / }).first().click();

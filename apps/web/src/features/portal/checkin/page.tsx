@@ -38,12 +38,12 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
       await code.refetch();
     } finally { locked.current = false; setBusy(false); }
   }
-  if (!members.data) return members.isPending || scope.moving || scope.refreshing ? <LoadingState /> : <ErrorState message={text('error')} onRetry={() => void members.refetch()} />;
+  if (!members.data) return members.isPending || scope.settling ? <LoadingState /> : <ErrorState message={text('error')} onRetry={() => void members.refetch()} />;
   const active = code.data?.code;
-  return <Page className="max-w-xl"><PortalRecovery moving={scope.moving}>
+  return <Page className="max-w-3xl"><PortalRecovery moving={scope.moving}>
     <PageHeader title={text('title')} description={text('description')} />
     <MemberPicker label={text('member')} members={members.data} value={memberId} onChange={id => { setError(''); setConfirming(false); choose(id); }} />
-    {code.isPending ? <LoadingState label={text('loading')} />
+    {code.isPending || (!code.data && scope.settling) ? <LoadingState label={text('loading')} />
       : code.isError ? <ErrorState message={text(code.error instanceof ApiError && code.error.status === 503 ? 'unavailable' : 'error')} onRetry={() => void code.refetch()} />
         : <section className="space-y-4" aria-label={text('codeFor', { name: member?.name ?? '' })}>
           {member && members.data.length > 1 && <h2 className="break-words text-lg font-semibold">{member.name}</h2>}

@@ -17,6 +17,7 @@ export function waiverDocumentView(template: WaiverTemplate, t: Translator, href
 export const publicPageDirectives = ["default-src 'none'", "script-src 'self'", "style-src 'self'", "connect-src 'self'", "img-src 'self'", "base-uri 'none'",
   "form-action 'self'", "frame-src 'self'", "frame-ancestors 'none'"];
 export const button = 'inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg bg-primary px-4 py-3 text-center font-semibold text-primary-foreground disabled:opacity-50';
+export const secondaryButton = 'inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg border border-border bg-background px-4 py-3 text-center font-semibold text-foreground disabled:opacity-50';
 /** Shared with other server-rendered pages (the staff invitation): this file's classes are the ones the public stylesheet holds. */
 export const inputClass = 'block min-h-11 w-full rounded-md border border-border bg-background px-3 py-2 text-base';
 export const panel = 'min-w-0 space-y-4 rounded-xl border border-border bg-card p-4 sm:p-6';
@@ -94,7 +95,7 @@ function waiverForm(template: WaiverTemplate, i: number, t: Translator) {
     h('label', { for: prefix + '-relationship', class: 'block space-y-1' }, text('relationship'), h('input', { id: prefix + '-relationship', name: prefix + '-relationship', maxlength: 100, class: inputClass })),
     h('p', { id: prefix + '-signature' }, text('signature')), h('p', { id: prefix + '-help' }, text('signatureHelp')),
     h('canvas', { width: 900, height: 300, class: 'block h-40 w-full touch-none rounded-lg border border-border bg-white', 'aria-labelledby': prefix + '-signature', 'aria-describedby': prefix + '-help' }),
-    h('button', { type: 'button', class: button, 'data-clear-signature': true }, text('clear')),
+    h('button', { type: 'button', class: secondaryButton, 'data-clear-signature': true }, text('clear')),
     h('label', { for: prefix + '-image', class: 'block space-y-1' }, text('signatureFile'), h('input', { id: prefix + '-image', name: prefix + '-image', type: 'file', accept: 'image/png', class: inputClass })),
     h('label', { class: 'flex min-h-11 items-center gap-3' }, h('input', { type: 'checkbox', name: prefix + '-consent', required: true, class: 'h-6 w-6 shrink-0' }), h('span', null, text('consent'))));
 }

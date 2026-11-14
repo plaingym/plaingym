@@ -40,11 +40,12 @@ export function PortalHome({ client = portalClient }: { client?: PortalClient })
     && session.bookings.some(booking => booking.status === 'booked'))
     .sort((a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt))[0];
   const date = dateFormatter('instant', bootstrap.data?.gym.timezone ?? 'UTC');
-  return <Page className="max-w-4xl"><PortalRecovery moving={scope.moving}>
+  const waiting = (query: { isPending: boolean; data: unknown }) => query.isPending || (query.data === undefined && scope.settling);
+  return <Page className="max-w-3xl"><PortalRecovery moving={scope.moving}>
     <PageHeader title={text('welcome')} description={text('homeDescription')} />
     <div className="grid gap-4 sm:grid-cols-2">
       <PageSection className={card} title={text('nextClass')}>
-        {schedule.isPending ? <LoadingState /> : schedule.isError ? <ErrorState onRetry={() => void schedule.refetch()} />
+        {waiting(schedule) ? <LoadingState /> : schedule.isError ? <ErrorState onRetry={() => void schedule.refetch()} />
           : next ? <><p className="break-words font-semibold">{next.name}</p><p>{date.format(new Date(next.startsAt))}</p>
             <ul className="text-sm text-muted-foreground">{next.bookings.filter(booking => booking.status === 'booked').flatMap(booking => {
               const name = members.data?.find(member => member.id === booking.memberId)?.name;
@@ -58,20 +59,20 @@ export function PortalHome({ client = portalClient }: { client?: PortalClient })
         <Button asChild><Link to="/portal/checkin">{text('showCode')}</Link></Button>
       </PageSection>
       <PageSection className={card} title={text('waiting')}>
-        {context.isError && <ErrorState onRetry={() => void context.refetch()} />}
-        {(context.isPending || (!!context.data && pending.isPending)) && <LoadingState />}
-        {pending.isError ? <ErrorState onRetry={() => void pending.refetch()} /> : pending.data !== undefined && <p>{text(pending.data ? 'pendingWaivers' : 'noPendingWaivers', { count: pending.data })}</p>}
+        {context.isError && !waiting(context) && <ErrorState onRetry={() => void context.refetch()} />}
+        {(waiting(context) || (!!context.data && waiting(pending))) && <LoadingState />}
+        {pending.isError && !waiting(pending) ? <ErrorState onRetry={() => void pending.refetch()} /> : pending.data !== undefined && <p>{text(pending.data ? 'pendingWaivers' : 'noPendingWaivers', { count: pending.data })}</p>}
         <Button asChild variant="outline"><Link to="/portal/waivers">{text('viewWaivers')}</Link></Button>
         {payer && <>
-          {invoices.isPending ? <LoadingState /> : invoices.isError ? <ErrorState onRetry={() => void invoices.refetch()} />
-            : <p>{text(invoices.data ? 'unpaidInvoices' : 'noUnpaidInvoices', { count: invoices.data })}</p>}
+          {waiting(invoices) ? <LoadingState /> : invoices.isError ? <ErrorState onRetry={() => void invoices.refetch()} />
+            : <p>{text(invoices.data ? 'unpaidInvoices' : 'noUnpaidInvoices', { count: invoices.data ?? 0 })}</p>}
           <Button asChild variant="outline"><Link to="/portal/billing">{text('viewInvoices')}</Link></Button>
         </>}
       </PageSection>
       <PageSection className={card} title={text('rankProgress')}>
-        {members.isError ? <ErrorState onRetry={() => void members.refetch()} /> : members.isPending ? <LoadingState /> : <>
-          <MemberPicker label={text('progressFor')} members={members.data} value={memberId} onChange={choose} />
-          {memberId && progress.isPending ? <LoadingState /> : progress.isError ? <ErrorState onRetry={() => void progress.refetch()} />
+        {waiting(members) ? <LoadingState /> : members.isError ? <ErrorState onRetry={() => void members.refetch()} /> : <>
+          <MemberPicker label={text('progressFor')} members={members.data ?? []} value={memberId} onChange={choose} />
+          {memberId && waiting(progress) ? <LoadingState /> : progress.isError ? <ErrorState onRetry={() => void progress.refetch()} />
             : !progress.data?.programs.length ? <p>{text('noRankProgress')}</p>
               : <ul className="space-y-4">{progress.data.programs.map(program => <li key={program.id} className="space-y-2">
                 <h3 className="break-words font-semibold">{program.name}</h3>

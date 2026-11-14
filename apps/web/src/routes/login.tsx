@@ -110,7 +110,8 @@ function LoginPage() {
         <div className="space-y-2"><Label htmlFor="login-email">{t('shell/shell:email')}</Label>
           <Input id="login-email" type="email" autoComplete="username" autoCapitalize="none" spellCheck={false} required value={email} onChange={(e) => setEmail(e.target.value)} disabled={login.isPending || google.isPending} /></div>
         {methods.password && <div className="space-y-2"><Label htmlFor="login-password">{t('shell/shell:password')}</Label>
-          <Input id="login-password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} disabled={login.isPending || google.isPending} /></div>}
+          <Input id="login-password" type="password" autoComplete="current-password" aria-describedby="password-help" value={password} onChange={(e) => setPassword(e.target.value)} disabled={login.isPending || google.isPending} />
+          <p id="password-help" className="text-sm text-muted-foreground">{t('shell/shell:forgotPassword')}</p></div>}
         {login.isError && <Alert variant="error" focusOnReveal>{t(login.error instanceof ApiError && login.error.status === 429 ? 'shell/shell:rateLimited' : 'shell/shell:failed')}</Alert>}
         {methods.password && <Button type="submit" value="password" className="w-full" disabled={login.isPending || google.isPending || !password}>{t(login.isPending ? 'shell/shell:pending' : 'shell/shell:passwordSubmit')}</Button>}
         {methods.magicLink && <><p className="text-sm text-muted-foreground">{t('shell/shell:magicHint')}</p>

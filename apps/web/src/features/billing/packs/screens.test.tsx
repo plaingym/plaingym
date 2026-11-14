@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ClassPack, ShellBootstrap } from '@plaingym/shared/contracts';
 import { canStaff, type StaffRole } from '@plaingym/shared';
@@ -42,7 +42,7 @@ function editor(api: PackClient, record?: ClassPack) {
 }
 const field = (label: string | RegExp, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
 const submit = () => fireEvent.submit(screen.getByRole('button', { name: 'Save' }).closest('form')!);
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
 it.each(['0', '101', '1.5'])('rejects invalid catalog credit count %s before calling the API', async value => {
   const api = client(); editor(api);
@@ -199,8 +199,13 @@ it.each([false, true])('follows credit effects only after an invoice changes: %s
   start(<PackPanel gymId={id(1)} memberId={id(3)} timezone="UTC" access={{ record: false, links: false, refund: false }} client={api}/>, 'owner', cache);
   fireEvent.click((await screen.findAllByRole('button', { name: 'Invoice #42' }))[0]!);
   await screen.findByText('Opened invoice ' + id(9));
+  vi.useFakeTimers();
+  const before = vi.mocked(api.ledger).mock.calls.length;
   if (changed) fireEvent.click(screen.getByRole('button', { name: 'Change invoice' }));
   fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-  expect(invalidate).toHaveBeenCalledTimes(changed ? 1 : 0);
+  // The real invoice action invalidates billing once; the callback only starts follow-up reads.
+  expect(invalidate).not.toHaveBeenCalled();
+  await act(async () => { await vi.advanceTimersByTimeAsync(2001); });
+  expect(api.ledger).toHaveBeenCalledTimes(before + (changed ? 1 : 0));
   expect(api.call).not.toHaveBeenCalled();
 });

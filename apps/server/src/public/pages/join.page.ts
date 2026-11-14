@@ -4,7 +4,7 @@ import { waiverDocumentView } from './page.js';
 import type { Translator } from '@plaingym/shared';
 import type { PublicBranding, PublicPlan, WaiverTemplate } from '@plaingym/shared/contracts';
 import { formatMoney } from '../../core/money.js';
-import { button, publicLayout } from './page.js';
+import { button, secondaryButton, publicLayout } from './page.js';
 import { maxJoinMembers } from '@plaingym/shared/contracts';
 import type { JoinInvoice } from './join.service.js';
 
@@ -42,11 +42,12 @@ export function joinPlansPage(input: JoinPageInput & { plans: readonly PublicPla
     : h('section', { class: panel, role: 'status' }, h('p', null, text('noPlans')), h('a', { href: '/portal', class: link }, text('portal')));
   return layout(input, text('title'), content);
 }
-function field(name: string, label: string, type = 'text', required = true, autocomplete = 'off', max = 200) {
-  return h('label', { for: name, class: 'block space-y-1' }, label, h('input', { id: name, name, type, required, autocomplete, maxlength: max, class: inputClass }));
+function field(name: string, label: string, type = 'text', required = true, autocomplete = 'off', max = 200, value = '') {
+  return h('label', { for: name, class: 'block space-y-1' }, label, h('input', { id: name, name, type, required, autocomplete, maxlength: max, value, class: inputClass }));
 }
-function waiver(template: WaiverTemplate, member: number, index: number, t: Translator) {
+function waiver(template: WaiverTemplate, member: number, index: number, t: Translator, values: Readonly<Record<string, string>>) {
   const text = joinText(t), prefix = `waiver-${member}-${index}`;
+  const same = values[prefix + '-template'] === template.id && values[prefix + '-version'] === String(template.version);
   return h('fieldset', { class: panel, 'data-waiver': true, 'data-template': template.id, 'data-version': template.version },
     h('legend', { class: 'text-lg font-semibold' }, template.name),
     h('input', { type: 'hidden', name: prefix + '-template', value: template.id }),
@@ -54,46 +55,49 @@ function waiver(template: WaiverTemplate, member: number, index: number, t: Tran
     h('p', null, text('version', { version: template.version })),
     waiverDocumentView(template, t, undefined, member === 0),
     h('label', { for: prefix + '-kind', class: 'block space-y-1' }, text('signerKind'),
-      h('select', { id: prefix + '-kind', name: prefix + '-kind', class: inputClass }, h('option', { value: 'self' }, text('self')), h('option', { value: 'guardian' }, text('guardian')))),
-    field(prefix + '-name', text('signerName'), 'text', true, 'name'),
-    field(prefix + '-relationship', text('relationship'), 'text', false, 'off', 100),
+      h('select', { id: prefix + '-kind', name: prefix + '-kind', class: inputClass }, h('option', { value: 'self' }, text('self')), h('option', { value: 'guardian', selected: same && values[prefix + '-kind'] === 'guardian' }, text('guardian')))),
+    field(prefix + '-name', text('signerName'), 'text', true, 'name', 200, same ? values[prefix + '-name'] : ''),
+    field(prefix + '-relationship', text('relationship'), 'text', false, 'off', 100, same ? values[prefix + '-relationship'] : ''),
     h('p', { id: prefix + '-signature' }, text('signature')), h('p', { id: prefix + '-help' }, text('signatureHelp')),
     h('canvas', { width: 900, height: 300, class: 'block h-40 w-full touch-none rounded-lg border border-border bg-white', 'aria-labelledby': prefix + '-signature', 'aria-describedby': prefix + '-help' }),
-    h('button', { type: 'button', class: button, 'data-clear-signature': true }, text('clear')),
+    h('button', { type: 'button', class: secondaryButton, 'data-clear-signature': true }, text('clear')),
     h('label', { for: prefix + '-image', class: 'block space-y-1' }, text('signatureFile'), h('input', { id: prefix + '-image', name: prefix + '-image', type: 'file', accept: 'image/png', class: inputClass })),
-    h('label', { class: 'flex min-h-11 items-center gap-3' }, h('input', { type: 'checkbox', name: prefix + '-consent', required: true, class: 'h-6 w-6 shrink-0' }), h('span', null, text('consent'))));
+    h('label', { class: 'flex min-h-11 items-center gap-3' }, h('input', { type: 'checkbox', name: prefix + '-consent', required: true, checked: same && values[prefix + '-consent'] === 'on', class: 'h-6 w-6 shrink-0' }), h('span', null, text('consent'))));
 }
 /** The household, each person joining and every current document they sign. Works as a native multipart form. */
-export function joinFormPage(input: JoinPageInput & { plan: PublicPlan; count: number; templates: readonly WaiverTemplate[] }) {
+export function joinFormPage(input: JoinPageInput & { plan: PublicPlan; count: number; templates: readonly WaiverTemplate[]; values?: Readonly<Record<string, string>>; errors?: readonly string[] }) {
   const text = joinText(input.t), plan = input.plan;
+  const values = input.values ?? {};
   const counter = h('form', { method: 'get', action: '/join', class: panel },
     h('input', { type: 'hidden', name: 'plan', value: plan.id }),
     h('label', { for: 'members', class: 'block space-y-1' }, text('count'), h('select', { id: 'members', name: 'members', class: inputClass },
       ...Array.from({ length: maxJoinMembers }, (_, i) => h('option', { value: i + 1, selected: i + 1 === input.count }, i ? text('people', { count: i + 1 }) : text('person'))))),
-    h('button', { type: 'submit', class: button }, text('update')));
+    h('button', { type: 'submit', class: secondaryButton }, text('update')));
   const people = Array.from({ length: input.count }, (_, i) => h('fieldset', { class: panel, 'data-member': i },
     h('legend', { class: 'text-lg font-semibold' }, text('member', { number: i + 1 })),
-    field(`member-${i}-firstName`, text('firstName')), field(`member-${i}-lastName`, text('lastName')),
-    field(`member-${i}-dateOfBirth`, text('dateOfBirth'), 'date', true, 'off', 10),
-    ...input.templates.map((template, j) => waiver(template, i, j, input.t))));
+    field(`member-${i}-firstName`, text('firstName'), 'text', true, 'off', 200, values[`member-${i}-firstName`]), field(`member-${i}-lastName`, text('lastName'), 'text', true, 'off', 200, values[`member-${i}-lastName`]),
+    field(`member-${i}-dateOfBirth`, text('dateOfBirth'), 'date', true, 'off', 10, values[`member-${i}-dateOfBirth`]),
+    ...input.templates.map((template, j) => waiver(template, i, j, input.t, values))));
   const form = h('form', { method: 'post', action: '/join', enctype: 'multipart/form-data', 'data-join-form': true, class: 'space-y-6' },
     h('input', { type: 'hidden', name: 'planId', value: plan.id }), h('input', { type: 'hidden', name: 'members', value: input.count }),
     h('fieldset', { class: panel }, h('legend', { class: 'text-lg font-semibold' }, text('contact')),
-      field('contactName', text('contactName'), 'text', true, 'name'), field('email', text('email'), 'email', true, 'email', 254),
-      field('phone', text('phone'), 'tel', false, 'tel', 100)),
+      field('contactName', text('contactName'), 'text', true, 'name', 200, values.contactName), field('email', text('email'), 'email', true, 'email', 254, values.email),
+      field('phone', text('phone'), 'tel', false, 'tel', 100, values.phone)),
     h('div', { hidden: true, 'aria-hidden': 'true' }, h('label', null, text('honeypot'), h('input', { name: 'honeypot', tabindex: -1, autocomplete: 'off' }))),
     ...people,
     // Checked when the form is sent; the review step shows the discounted amount before payment.
     h('div', { class: panel }, h('label', { for: 'code', class: 'block space-y-1' }, text('code'),
       h('input', { id: 'code', name: 'code', type: 'text', autocomplete: 'off', autocapitalize: 'characters', spellcheck: 'false', maxlength: 40,
-        'aria-describedby': 'code-help', class: inputClass })), h('p', { id: 'code-help', class: 'text-sm text-muted-foreground' }, text('codeHelp'))),
+        value: values.code ?? '', 'aria-describedby': 'code-help', class: inputClass })), h('p', { id: 'code-help', class: 'text-sm text-muted-foreground' }, text('codeHelp'))),
     h('p', { id: 'feedback', role: 'status', 'aria-live': 'polite', class: 'break-words' }),
     h('button', { type: 'submit', class: button }, plan.signupFeeCents === 0 && (plan.trialDays > 0 || plan.amountCents === 0)
       ? text(plan.amountCents > 0 ? 'submitCard' : 'submitFree') : text('submit')),
     ...['failed', 'conflict', 'signatureRequired', 'busy', 'unavailable', 'tooLarge', 'retry', 'limited', 'codeRefused'].map(key => h('span', { hidden: true, 'data-message': key }, text(key))));
   const summary = h('section', { class: panel }, ...price(input, plan), h('p', null, text('formHelp')),
     h('p', { class: 'text-sm text-muted-foreground' }, text(plan.amountCents === 0 ? 'dueTodayFree' : plan.trialDays > 0 ? 'dueTodayTrial' : 'dueToday')));
-  return layout(input, text('formTitle', { plan: plan.name }), h('div', { class: 'space-y-6' }, summary, counter, form), true);
+  const feedback = input.errors?.length ? h('section', { role: 'alert', class: panel }, h('p', null, text('checkDetails')),
+    h('ul', { class: 'list-disc space-y-2 pl-5' }, ...input.errors.map(message => h('li', null, message))), h('p', null, text('selectSignaturesAgain'))) : null;
+  return layout(input, text('formTitle', { plan: plan.name }), h('div', { class: 'space-y-6' }, feedback, summary, counter, form), true);
 }
 export type JoinPageState = 'continue' | 'confirming' | 'welcomeEmail' | 'resent' | 'welcomePassword'
   | 'cancelled' | 'closed' | 'missing' | 'unavailable' | 'failed' | 'tooLarge' | 'manual' | 'card' | 'confirmingCard' | 'cancelledCard' | 'codeRefused';

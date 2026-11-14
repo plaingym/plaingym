@@ -60,6 +60,8 @@ for (const width of [360, 1280]) {
     await expect(dialog).toBeVisible();
     await expect(dialog.getByLabel('First name')).toHaveValue('Draft');
     await expect(dialog.getByRole('button', { name: 'Try again' })).toBeVisible();
+    await expect(page.getByRole('alert')).toHaveCount(1);
+    await expect(page.getByRole('button', { name: 'Try again' })).toHaveCount(1);
     await accessibleLayout(page, info, 'recovery-editor');
     await info.attach('recovery-editor-' + width, { body: await page.screenshot(), contentType: 'image/png' });
     await dialog.getByRole('button', { name: 'Close', exact: true }).first().click();

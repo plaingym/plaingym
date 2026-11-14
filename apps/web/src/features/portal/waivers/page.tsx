@@ -16,6 +16,7 @@ import { CheckboxField } from '../../../components/ui/select.js';
 import { Page, PageHeader, PageSection } from '../../../components/ui/page.js';
 import { StackedItem, StackedList } from '../../../components/ui/table.js';
 import { EmptyState, ErrorState, LoadingState } from '../../../components/ui/states.js';
+import { CheckIcon } from '../../../components/ui/icons.js';
 import { conflict, gymToday, knownMinor, needsGuardian, usePortalContext, usePortalScope, type PortalScope } from '../household/api.js';
 import { portalWaiverEndpoints, type PortalWaiverEndpoints } from './endpoints.js';
 import { WaiverDocument, useWaiverDocument } from '../../waivers/document.js';
@@ -27,7 +28,7 @@ type Person = { id: string; firstName: string; lastName: string; dateOfBirth: st
 export function PortalWaivers() {
   // The open household is read once; everything below is keyed by it and checks each answer was for it.
   const scope = usePortalScope(), context = usePortalContext(scope);
-  if (!context.data) return context.isPending || scope.moving || scope.refreshing ? <LoadingState /> : <ErrorState onRetry={() => void context.refetch()} />;
+  if (!context.data) return context.isPending || scope.settling ? <LoadingState /> : <ErrorState onRetry={() => void context.refetch()} />;
   return <PortalWaiversPage context={context.data} scope={scope} />;
 }
 function PortalWaiversPage({ context, scope }: { context: PortalContext; scope: PortalScope }) {
@@ -45,15 +46,16 @@ function PortalWaiversPage({ context, scope }: { context: PortalContext; scope: 
   const name = (memberId: string) => { const person = people.data?.find(row => row.id === memberId); return person ? `${person.firstName} ${person.lastName}` : ''; };
   const date = dateFormatter('date', gym.timezone), today = gymToday(gym.timezone);
   const failed = people.isError || pending.isError || signed.isError;
+  const settling = scope.settling && (!people.data || !pending.data || !signed.data);
   return <Page className="max-w-3xl"><PortalRecovery moving={scope.moving}>
     <PageHeader title={text('title')} description={text(payer ? 'descriptionPayer' : 'description')} />
-    {(people.isPending || pending.isPending || signed.isPending) && <LoadingState />}
-    {failed && <ErrorState onRetry={() => { void people.refetch(); void pending.refetch(); void signed.refetch(); }} />}
+    {(people.isPending || pending.isPending || signed.isPending || settling) && <LoadingState />}
+    {failed && !settling && <ErrorState onRetry={() => { void people.refetch(); void pending.refetch(); void signed.refetch(); }} />}
     {pdf.isError && <Alert variant="error" focusOnReveal role="alert">{text('pdfFailed')}</Alert>}
     {pdf.data && <Alert role="status"><a className="inline-flex min-h-11 items-center font-medium underline" href={pdf.data} target="_blank" rel="noreferrer">{text('openPdf')}</a></Alert>}
     {people.data && pending.data && signed.data && <>
       <PageSection title={text('pending')}>
-        {pending.data.data.length === 0 ? <EmptyState title={text('allSigned')} /> : <StackedList>{pending.data.data.map(row => {
+        {pending.data.data.length === 0 ? <EmptyState title={text('allSigned')} icon={<CheckIcon className="size-8 text-success" />} /> : <StackedList>{pending.data.data.map(row => {
           const member = people.data.find(person => person.id === row.memberId);
           return <StackedItem key={row.memberId + row.template.id} className="flex-row flex-wrap items-center justify-between gap-3">
             <div className="min-w-0 break-words"><p className="font-semibold">{row.template.name}</p>

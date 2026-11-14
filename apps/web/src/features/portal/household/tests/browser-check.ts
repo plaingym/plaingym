@@ -146,7 +146,7 @@ try {
       await page.getByRole('button', { name: 'Menu' }).click();
       await expect(page.getByRole('link', { name: 'Billing' })).toBeVisible();
     } else {
-      await page.getByRole('link', { name: 'Household & profile', exact: true }).click();
+      await page.getByRole('link', { name: 'Household', exact: true }).click();
     }
     await page.screenshot({ path: resolve(output, `recovery-loading-${width}.png`), fullPage: true });
     await expect.poll(() => !!release).toBe(true); release!();

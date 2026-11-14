@@ -9,7 +9,7 @@ import { portalWaiverEndpoints } from '../portal/waivers/endpoints.js';
 import { portalCall, type PortalScope } from '../portal/household/api.js';
 const id = '01900000-0000-7000-8000-000000000001';
 const portal = new URLSearchParams(location.search).has('portal');
-const scope: PortalScope = { key: ['portal', id, id, 'household', id], ready: true, moving: false, refreshing: false,
+const scope: PortalScope = { key: ['portal', id, id, 'household', id], ready: true, moving: false, refreshing: false, settling: false,
   own: answer => answer, run: operation => operation(), call: portalCall };
 const template = { id, name: 'Participation agreement', kind: 'agreement' as const, version: 2, body: '', retiredAt: null, createdAt: '2026-10-24T12:00:00Z',
   document: { key: id + '/waivers/templates/' + id + '.pdf', hash: 'c'.repeat(64), pages: 1, bytes: 1024 } };

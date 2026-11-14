@@ -69,7 +69,7 @@ for (const [name, viewport] of [['phone', { width: 360, height: 740 }], ['deskto
     try {
       const origin = sandboxes[1]!.origin, lastName = 'Browser' + randomBytes(3).toString('hex');
       await page.goto(origin + '/join');
-      await expect(page.getByRole('heading', { name: 'Join', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Join online', exact: true })).toBeVisible();
       await page.getByRole('link', { name: /^Choose / }).first().click();
       await expect(page.getByRole('heading', { name: /^Join: / })).toBeVisible();
       await page.getByLabel('Contact or parent/guardian name', { exact: true }).fill('Riley ' + lastName);
