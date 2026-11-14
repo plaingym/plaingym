@@ -63,9 +63,12 @@ describe('verification discovery', () => {
   it('runs the discovered docs on the same instance exactly once', async () => {
     const docs = { moduleId: '/repo/e2e/example.docs.test.ts', project: { name: 'unit' } };
     const vitest = { globTestSpecifications: vi.fn(async () => [docs, { moduleId: '/repo/other.test.ts', project: { name: 'integration' } }]),
+      standalone: vi.fn(async () => {}),
       runTestSpecifications: vi.fn(async (_specifications: typeof docs[]) => ({ unhandledErrors: [], testModules: [{ state: () => 'passed' }] })) };
     expect(await runDocumentationTests(vitest)).toBe(true);
     expect(vitest.globTestSpecifications).toHaveBeenCalledTimes(1);
+    expect(vitest.standalone).toHaveBeenCalledTimes(1);
+    expect(vitest.standalone.mock.invocationCallOrder[0]).toBeLessThan(vitest.runTestSpecifications.mock.invocationCallOrder[0]!);
     expect(vitest.runTestSpecifications).toHaveBeenCalledExactlyOnceWith([docs]);
     expect(vitest.runTestSpecifications.mock.calls[0]![0]![0]).toBe(docs);
   });
@@ -74,12 +77,14 @@ describe('verification discovery', () => {
   ])('reports failure for a $state module and $unhandledErrors', async ({ state, unhandledErrors }) => {
     expect(await runDocumentationTests({
       globTestSpecifications: async () => [{ moduleId: '/repo/example.docs.test.ts', project: { name: 'unit' } }],
+      standalone: async () => {},
       runTestSpecifications: async () => ({ unhandledErrors, testModules: [{ state: () => state }] }),
     })).toBe(false);
   });
   it('refuses an empty run instead of treating missing modules as passing', async () => {
     await expect(runDocumentationTests({
       globTestSpecifications: async () => [{ moduleId: '/repo/example.docs.test.ts', project: { name: 'unit' } }],
+      standalone: async () => {},
       runTestSpecifications: async () => ({ unhandledErrors: [], testModules: [] }),
     })).rejects.toThrow('Not every documentation test module ran');
   });

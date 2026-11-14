@@ -17,6 +17,7 @@ export function documentationTests(specifications) {
  * @template {{ moduleId: string, project: { name: string } }} T
  * @param {{
  *   globTestSpecifications(): Promise<T[]>,
+ *   standalone(): Promise<void>,
  *   runTestSpecifications(specifications: T[]): Promise<{
  *     unhandledErrors: unknown[], testModules: { state(): string }[]
  *   }>
@@ -24,6 +25,8 @@ export function documentationTests(specifications) {
  */
 export async function runDocumentationTests(vitest) {
   const docs = documentationTests(await vitest.globTestSpecifications());
+  // createVitest prepares discovery; standalone initializes reporters/coverage before execution.
+  await vitest.standalone();
   const result = await vitest.runTestSpecifications(docs);
   if (result.testModules.length !== docs.length) throw new Error('Not every documentation test module ran');
   return result.unhandledErrors.length === 0 && result.testModules.every(module => ['passed', 'skipped'].includes(module.state()));
