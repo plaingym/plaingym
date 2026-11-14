@@ -219,6 +219,8 @@ test('a fresh gym: empty admin screens, kiosk, public pages and sign-in', async 
     await install.clients.owner.browser(context);
     await page.goto(gymOrigin + '/admin');
     await walkAdmin(page, admin, gymOrigin, adminScreens({ populated: false }));
+    // Demo uploads are intentionally refused. Capture a real CSV preview on the ordinary install instead (so its state is empty).
+    await walkAdmin(page, new Capture('admin', 'empty'), gymOrigin, adminScreens({ populated: false }).filter(screen => screen.name === 'imports'));
     await captureUpdateBanner(page, new Capture('update-banner', 'empty'), gymOrigin);
     await context.clearCookies();
     await walkPublic(page, new Capture('public-empty', 'empty'), gymOrigin);
@@ -244,9 +246,28 @@ test('a fresh gym: empty admin screens, kiosk, public pages and sign-in', async 
     await kiosk.getByRole('button', { name: 'Save and start check-in', exact: true }).click();
     await walkKiosk(kiosk, capture, gymOrigin);
   } finally { await kioskContext.close(); }
-  await new Capture('portal-empty', 'empty').gap('all',
-    'A fresh single-gym install has no member with a portal sign-in; the portal is captured populated from the demo sandbox');
+  // A login with no memberships, invoices, attendance or bookings: create it only after the empty admin walk.
+  const owner = install.clients.owner, email = `ux-portal-${Date.now()}@example.invalid`;
+  const home = (await owner.json<{ data: RecordId }>('/api/households', 'POST', { name: 'UX household', email })).data;
+  const member = (await owner.json<{ data: RecordId }>('/api/members', 'POST',
+    { householdId: home.id, firstName: 'Sam', lastName: 'Empty', dateOfBirth: '1990-01-01', email })).data;
+  const invitation = (await owner.json<{ data: { invitationUrl: string } }>(`/api/households/${home.id}/portal-invitations`, 'POST',
+    { email, scope: 'payer', memberId: member.id, delivery: 'print' })).data;
+  const client = new Client(gymOrigin);
+  await client.json('/api/portal/invitations/accept', 'POST', { token: new URL(invitation.invitationUrl).hash.slice(1), password });
+  await client.login(email);
+  const [portalContext, portal] = await signedIn(browser, client);
+  try {
+    const capture = new Capture('portal-empty', 'empty');
+    for (const [name, path] of portalScreens) await capture.step(portal, name, async () => {
+      await visit(portal, gymOrigin + path);
+      await expect(portal.locator('h1').first()).toBeVisible();
+    });
+  } finally { await portalContext.close(); }
 });
+
+const portalScreens = [['home', '/portal'], ['schedule', '/portal/schedule'], ['checkin', '/portal/checkin'], ['progress', '/portal/progress'],
+  ['billing', '/portal/billing'], ['waivers', '/portal/waivers'], ['household', '/portal/household'], ['account', '/portal/account']] as const;
 
 async function signedIn(browser: Browser, client: Client, viewport = sizes[0]): Promise<[BrowserContext, Page]> {
   const [context, page] = await openContext(browser, { viewport });
@@ -261,8 +282,10 @@ async function linkFixtures(sandbox: Sandbox) {
   const dueOn = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
   const invoice = (await owner.json<{ data: RecordId }>('/api/billing/invoices/one-off', 'POST', { householdId: household.id, dueOn,
     source: 'custom', description: 'Seminar fee', currency: 'USD', amountCents: 4500, taxRateIds: [] })).data;
-  const members = (await owner.json<{ data: { id: string; householdId: string }[] }>('/api/members?limit=100')).data;
-  return { owner, householdId: household.id, invoiceId: invoice.id, memberId: members.find((member) => member.householdId === household.id)?.id };
+  // A fresh member has not signed the seeded templates; minting another link to an existing signer still says Already done.
+  const member = (await owner.json<{ data: RecordId }>('/api/members', 'POST',
+    { householdId: household.id, firstName: 'Sam', lastName: 'Unsigned', dateOfBirth: '1990-01-01' })).data;
+  return { owner, householdId: household.id, invoiceId: invoice.id, memberId: member.id };
 }
 
 test('the demo sandbox: populated admin, portal, kiosk, signed links, public pages and the demo itself', async ({ browser, sandboxes }) => {
@@ -294,7 +317,7 @@ test('the demo sandbox: populated admin, portal, kiosk, signed links, public pag
   const [ownerContext, page] = await signedIn(browser, owner);
   try {
     await page.goto(origin + '/admin');
-    await walkAdmin(page, new Capture('admin'), origin, adminScreens({ populated: true, owner }));
+    await walkAdmin(page, new Capture('admin'), origin, adminScreens({ populated: true, owner }).filter(screen => screen.name !== 'imports'));
   } finally { await ownerContext.close(); }
   const [coachContext, coachPage] = await signedIn(browser, await demoClient(sandbox, 'coach'));
   try {
@@ -311,8 +334,7 @@ test('the demo sandbox: populated admin, portal, kiosk, signed links, public pag
   const [studentContext, portal] = await signedIn(browser, await demoClient(sandbox, 'student'));
   try {
     const capture = new Capture('portal');
-    for (const [name, path] of [['home', '/portal'], ['schedule', '/portal/schedule'], ['checkin', '/portal/checkin'], ['progress', '/portal/progress'],
-      ['billing', '/portal/billing'], ['waivers', '/portal/waivers'], ['household', '/portal/household'], ['account', '/portal/account']] as const) {
+    for (const [name, path] of portalScreens) {
       await capture.step(portal, name, async () => { await visit(portal, origin + path); await expect(portal.locator('h1').first()).toBeVisible(); });
     }
     await capture.step(portal, 'schedule-class', async () => {
@@ -349,6 +371,7 @@ test('the demo sandbox: populated admin, portal, kiosk, signed links, public pag
         revoke ??= link.data.id;
         await visit(linkPage, origin + '/l/' + link.data.token);
         await expect(linkPage.locator('h1').first()).toBeVisible();
+        if (purpose === 'sign_waiver') await expect(linkPage.locator('canvas').first()).toBeVisible();
       });
     }
     await capture.step(linkPage, 'unavailable', async () => {

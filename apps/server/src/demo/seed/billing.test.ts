@@ -52,7 +52,12 @@ describe('demo billing seed', { timeout: 90_000 }, () => {
     expect(rows.invoices.filter(row => row.status === 'paid').length).toBeGreaterThan(15);
     expect(rows.payments.some(row => row.method === 'card')).toBe(true);
     expect(rows.payments.some(row => row.method === 'cash')).toBe(true);
-    expect(rows.invoices.every(row => row.number && row.currency === 'CAD' && !row.needsReview)).toBe(true);
+    expect(rows.invoices.every(row => row.number && row.currency === 'CAD')).toBe(true);
+    const held = rows.invoices.filter(row => row.needsReview);
+    expect(held).toHaveLength(1);
+    expect(held[0]).toMatchObject({ kind: 'one_off', status: 'open', amountCents: 4500, dueOn: '2026-11-24' });
+    await f.seed.run(f.context);
+    expect((await snapshot(f.gymId)).invoices.filter(row => row.needsReview).map(row => row.id)).toEqual(held.map(row => row.id));
     expect(new Set(rows.invoices.map(row => row.number)).size).toBe(rows.invoices.length);
     const rivera = rows.households.find(row => row.email === 'rivera@example.invalid')!;
     const family = rows.invoices.filter(row => row.householdId === rivera.id);

@@ -31,4 +31,9 @@
 /* Native checkboxes, radios, range inputs and progress bars take the theme color, not the browser's own blue or green. */
 @layer base {
   :root { accent-color: var(--color-primary); }
+  /* Native progress rendering ignores accent-color in some browser/platform combinations. */
+  progress { appearance: none; border: 0; background: var(--color-muted); color: var(--color-primary); }
+  progress::-webkit-progress-bar { background: var(--color-muted); }
+  progress::-webkit-progress-value { background: var(--color-primary); }
+  progress::-moz-progress-bar { background: var(--color-primary); }
 }

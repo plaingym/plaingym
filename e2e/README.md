@@ -5,10 +5,10 @@ Fresh-host installation, browser backups/restore, memory and password QA live in
 [`vm/README.md`](vm/README.md). Use `node e2e/run.mjs --vm PRIVATE_CONFIG_JSON`
 from the repository root to select that suite; the default runner below keeps
 its isolated members/mat Compose workflow. The screenshot walk of every surface
-for a UX review (`UX_PASS=1`, its own projects, never in CI) is in
+for a UX review (`UX_PASS=1`, its own projects, or the workflow's optional `ux_pass` input) is in
 [`ux-pass/README.md`](ux-pass/README.md).
 
-Run from the repository root with the pinned Node and pnpm versions, Docker, and
+Run from the repository root with the pinned Node and pnpm versions, Docker, OpenSSL, and
 TCP port 443 available on loopback (`127.0.0.1`, or another loopback address in
 `E2E_LOOPBACK`, such as `127.0.0.2` beside a local proxy that holds `127.0.0.1:443`):
 
@@ -54,9 +54,11 @@ deliver a signed `checkout.session.completed` to the install's `/webhooks/stripe
 with the run's random webhook secret (`portal.ts`). No Stripe account is needed. Chromium's resolver
 maps `*.localhost` to loopback; the API helper connects to loopback while keeping
 the hostname, TLS SNI, Origin and cookies. No public DNS or host-file edits are
-needed. The runner exports the stack's local Caddy root (`E2E_CA_FILE`), and the API
-helper verifies every certificate against it; browser TLS verification is disabled only
-for the local Caddy certificate.
+needed. The runner generates a fresh self-signed certificate and key with OpenSSL for each run,
+including a Common Name and the stack's hostnames as Subject Alternative Names, so Firefox can
+open it too. Caddy mounts them read-only; the API helper trusts only that certificate
+(`E2E_CA_FILE`). Browser TLS verification is disabled only for the local certificate.
+The separate internal Stripe proxy continues to use its own Caddy CA.
 The runner removes its containers, volumes and fixture cache after the tests,
 including on a test failure.
 

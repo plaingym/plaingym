@@ -10,7 +10,7 @@ export const gymOrigin = 'https://gym.localhost';
 /** The stack's one published address; another loopback lets a run sit beside a local proxy on 127.0.0.1:443. */
 export const loopback = process.env.E2E_LOOPBACK ?? '127.0.0.1';
 let caddyCa: Buffer | undefined;
-/** The run's local Caddy root, exported by run.mjs: API requests verify the stack's certificates against it. */
+/** The run's self-signed proxy certificate, exported by run.mjs: API requests verify TLS against it. */
 export function localCa() {
   const file = process.env.E2E_CA_FILE;
   if (!file) throw new Error('E2E_CA_FILE is not set; run the specs with e2e/run.mjs');

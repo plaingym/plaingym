@@ -216,3 +216,5 @@ Runtime and shared composition use these exports:
   Both sandbox creation and the seed CLI use this composition. Billing receives
   the same scope and clock as the other seeds and a shared test-account provider.
   Each step owns its short transactions and must support retries.
+  Billing also seeds one open equipment invoice on review hold, separate from the settled cycle history,
+  so the invoice review and release screens can be inspected. Issuance and its seed checkpoint commit together.

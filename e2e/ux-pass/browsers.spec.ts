@@ -2,7 +2,7 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import type { BrowserContext, Locator, Page, Request } from '@playwright/test';
-import { test, expect, gymOrigin } from '../support.js';
+import { test, expect, gymOrigin, demoClient } from '../support.js';
 import { stripeOrigin } from '../portal.js';
 import { outputRoot, uxPass } from './capture.js';
 import { startProxy } from './proxy.js';
@@ -11,10 +11,6 @@ import { startProxy } from './proxy.js';
 // routes require Content-Length, which until now only Chromium had been seen to send. Playwright's WebKit is not Safari.
 test.skip(!uxPass, 'The UX pass runs only with UX_PASS=1');
 test.use({ trace: 'off', screenshot: 'off', video: 'off' });
-// Playwright's Firefox refuses the stack's Caddy-issued certificates (a leaf with an empty Subject, SAN only) with
-// SEC_ERROR_UNKNOWN, ignoreHTTPSErrors or not, through the proxy or straight to the address. Until that is solved its steps are
-// expected to fail; an unexpected pass means Firefox now reaches the stack and its results count.
-test.beforeEach(({ browserName }) => { test.fail(browserName === 'firefox', 'Firefox refuses the local Caddy certificates (SEC_ERROR_UNKNOWN)'); });
 
 /** The routes that refuse a body without Content-Length, and what each request of theirs carried and got back. */
 // With scripts the join form sends `/join/signatures` then `/api/public/join`; without them the browser posts the form to `/join`.
@@ -56,6 +52,16 @@ test.beforeAll(async () => { proxy = await startProxy(); });
 test.afterAll(async () => { await proxy?.close(); });
 
 for (const [name, viewport] of [['phone', { width: 360, height: 740 }], ['desktop', { width: 1280, height: 800 }]] as const) {
+  test(`progress bars at ${name} size`, async ({ browser, browserName, sandboxes, cspViolations }) => {
+    const context = await browser.newContext({ viewport, ignoreHTTPSErrors: true });
+    try {
+      await (await demoClient(sandboxes[1]!, 'student')).browser(context);
+      const page = await context.newPage();
+      await page.goto(sandboxes[1]!.origin + '/portal/progress');
+      await expect(page.locator('progress').first()).toBeVisible();
+      await report(browserName, `progress-${name}`, page, [], cspViolations);
+    } finally { await context.close(); }
+  });
   test(`join with a signed waiver at ${name} size`, async ({ browser, browserName, sandboxes, cspViolations }) => {
     test.setTimeout(180_000);
     const context = await browser.newContext({ viewport, ignoreHTTPSErrors: true });

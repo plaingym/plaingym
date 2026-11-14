@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { defineConfig } from '@playwright/test';
+import { isIPv4 } from 'node:net';
 
 const loopback = process.env.E2E_LOOPBACK ?? '127.0.0.1';
 // The UX pass (`ux-pass/README.md`) runs alone on a fresh stack: it walks the setup wizard itself, then the other browsers
 // reach the stack through a local proxy (`ux-pass/proxy.ts`), since only Chromium takes the host-resolver flag. The proxy is
 // the browser's own, not a context's, so Firefox can't send *.localhost around it; its port follows the loopback address.
-const uxProxyPort = process.env.E2E_UX_PROXY_PORT ??= String(30000 + Number(loopback.split('.').pop()));
+const uxProxyPort = process.env.E2E_UX_PROXY_PORT ??= String(30000 + (isIPv4(loopback) ? Number(loopback.split('.').pop()) : 1));
 const uxBrowser = (browserName: 'firefox' | 'webkit') => ({ name: 'ux-' + browserName, testDir: './ux-pass', testMatch: '**/browsers.spec.ts',
   dependencies: ['ux-pass'], use: { browserName, channel: undefined, launchOptions: { proxy: { server: 'http://127.0.0.1:' + uxProxyPort },
     // Firefox never proxies *.localhost unless told to, and would resolve it to 127.0.0.1 itself.

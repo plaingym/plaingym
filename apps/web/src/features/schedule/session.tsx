@@ -82,7 +82,7 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
   if (editing) return <SessionForm session={session} options={options} tags={tags} siblings={siblings}
     onCancel={() => setEditing(false)} onSaved={(next) => { setEditing(false); setNotice(text(Date.parse(next.startsAt) === Date.parse(session.startsAt) ? 'saved' : 'moved')); onSaved(next); }}/>;
   return <div className="space-y-6">
-    <dl className="grid gap-4 sm:grid-cols-2">
+    <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <div><dt className="text-sm text-muted-foreground">{text('when')}</dt><dd className="font-medium">{when}</dd>
         <dd>{sessionTimes(session, options.timezone)} · {options.timezone}</dd></div>
       <div><dt className="text-sm text-muted-foreground">{text('status')}</dt><dd className="flex flex-wrap gap-2 pt-1">

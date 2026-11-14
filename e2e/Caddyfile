@@ -11,7 +11,7 @@
 }
 # An app behind this proxy: it receives the client's address as the only X-Forwarded-For entry.
 (app) {
-  tls internal
+  tls /certs/leaf.crt /certs/leaf.key
   reverse_proxy {args[0]} {
     header_up X-Forwarded-For {client_ip}
   }
@@ -27,11 +27,15 @@ https://alpha.multi.localhost, https://beta.multi.localhost {
   import app multi:3000
 }
 https://mail.localhost {
-  tls internal
+  tls /certs/leaf.crt /certs/leaf.key
   reverse_proxy mailpit:8025
 }
 # The fake Stripe's hosted Checkout page and API, for the browser and the specs.
 https://stripe.localhost {
-  tls internal
+  tls /certs/leaf.crt /certs/leaf.key
   reverse_proxy stripe:12111
+}
+https://localhost {
+  tls /certs/leaf.crt /certs/leaf.key
+  respond /health 200
 }

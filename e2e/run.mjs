@@ -54,12 +54,15 @@ await mkdir(new URL('./coverage/', import.meta.url), { recursive: true });
 await rm(new URL('./coverage/fixtures.json', import.meta.url), { force: true });
 await rm(new URL('./coverage/containers.log', import.meta.url), { force: true });
 const caDirectory = await mkdtemp(join(tmpdir(), 'plaingym-e2e-ca-'));
+env.E2E_TLS_DIRECTORY = caDirectory;
+env.E2E_CA_FILE = join(caDirectory, 'leaf.crt');
 try {
+  // A Subject-bearing leaf works in Firefox too. Generate a new key per run; only this run's API clients trust it.
+  await command('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '2',
+    '-keyout', join(caDirectory, 'leaf.key'), '-out', join(caDirectory, 'leaf.crt'), '-subj', '/CN=gym.localhost',
+    '-addext', 'subjectAltName=DNS:localhost,DNS:gym.localhost,DNS:demo.localhost,DNS:*.demo.localhost,DNS:alpha.multi.localhost,DNS:beta.multi.localhost,DNS:mail.localhost,DNS:stripe.localhost']);
   if (!process.env.E2E_IMAGE) await build();
   await command('docker', [...compose, 'up', '-d', '--wait', '--wait-timeout', '180']);
-  // The specs' API helper trusts only this run's Caddy CA.
-  env.E2E_CA_FILE = join(caDirectory, 'root.crt');
-  await command('docker', [...compose, 'cp', 'caddy:/data/caddy/pki/authorities/local/root.crt', env.E2E_CA_FILE]);
   await command(process.execPath, ['./node_modules/@playwright/test/cli.js', 'test', ...process.argv.slice(2)]);
 } catch (error) {
   // Container diagnostics are useful even when the browser never starts.

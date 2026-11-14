@@ -90,6 +90,18 @@ export class Capture {
         await page.emulateMedia({ colorScheme: theme });
         await settle(page);
         if (options.scrollTop !== false) await page.evaluate(() => scrollTo(0, 0));
+        const dialog = page.getByRole('dialog').last();
+        const scrollDialog = async (reset: boolean) => dialog.evaluate((root, reset) => {
+          let changed = false;
+          for (const element of [root, ...root.querySelectorAll<HTMLElement>('*')]) {
+            if (element.clientHeight === 0 || !['auto', 'scroll'].includes(getComputedStyle(element).overflowY)) continue;
+            const before = element.scrollTop;
+            element.scrollTop = reset ? 0 : before + Math.max(1, Math.floor(element.clientHeight * 0.8));
+            changed ||= element.scrollTop !== before;
+          }
+          return changed;
+        }, reset);
+        if (await dialog.count()) await scrollDialog(true);
         const file = `${this.surface}/${screen}-${sizeName(size.width)}-${theme}.png`;
         // An open dialog is fixed to the screen: by default, capture what the screen shows rather than the page behind it.
         const fullPage = options.fullPage ?? !await page.getByRole('dialog').count();
@@ -100,12 +112,25 @@ export class Capture {
         if (theme === 'light') Object.assign(light, { buffer, file });
         else if (light.buffer?.equals(buffer)) shot.sameAs = light.file;
         shots.push(shot);
+        // A full-page screenshot cannot see inside a fixed dialog's scrolling body. Keep overlapping views to its end.
+        if (await dialog.count()) {
+          for (let index = 1; await scrollDialog(false); index++) {
+            if (index > 50) throw new Error('Dialog capture exceeded 50 scrolling views');
+            const scrolledScreen = `${screen}-scroll-${index}`;
+            const scrolledFile = `${this.surface}/${scrolledScreen}-${sizeName(size.width)}-${theme}.png`;
+            const scrolled = await page.screenshot({ fullPage: false, animations: 'disabled', caret: 'hide' });
+            await writeFile(new URL(scrolledFile, outputRoot), scrolled);
+            shots.push({ surface: this.surface, screen: scrolledScreen, state: this.state, size: sizeName(size.width),
+              width: size.width, height: size.height, theme, file: scrolledFile, bytes: scrolled.length });
+          }
+        }
       }
     }
     await page.emulateMedia({ colorScheme: 'light' });
     if (original) await page.setViewportSize(original);
     await updateManifest((manifest) => {
-      manifest.shots = [...manifest.shots.filter((shot) => !(shot.surface === this.surface && shot.screen === screen)), ...shots];
+      manifest.shots = [...manifest.shots.filter((shot) => !(shot.surface === this.surface
+        && (shot.screen === screen || shot.screen.startsWith(screen + '-scroll-')))), ...shots];
       manifest.gaps = manifest.gaps.filter((gap) => !(gap.surface === this.surface && gap.screen === screen));
     });
   }

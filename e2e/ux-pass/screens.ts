@@ -54,7 +54,12 @@ export function adminScreens({ populated, owner }: { populated: boolean; owner?:
       await expect(page.getByRole('cell', { name: /Ana/ })).toBeVisible();
     } }] },
     { name: 'reports', path: '/admin/reports', tabs: true },
-    { name: 'settings', path: '/admin/settings', dialogs: [{ name: 'register-device', button: 'Register device' }] },
+    { name: 'settings', path: '/admin/settings', dialogs: [{ name: 'register-device', button: 'Register device', then: async (_dialog, page) => {
+      await page.getByLabel('Device name', { exact: true }).fill('UX pass tablet');
+      await page.getByRole('button', { name: 'Register device', exact: true }).click();
+      await page.getByRole('button', { name: 'Show token', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'Hide token', exact: true })).toBeVisible();
+    } }] },
     { name: 'health', path: '/admin/health' },
     { name: 'account', path: '/admin/account' },
   ];
@@ -63,10 +68,10 @@ export function adminScreens({ populated, owner }: { populated: boolean; owner?:
     { name: 'outbox', path: '/admin/outbox' },
     { name: 'member-profile', path: '', open: firstLink('/admin/members', '/admin/members/'), tabs: true },
     { name: 'lead-detail', path: '', open: firstLink('/admin/leads', '/admin/leads/') },
-    // An unpaid invoice (open or past due), so its payment actions show.
+    // An unpaid invoice (open or past due) not on review hold, so its payment actions show; the held one has its own screen.
     { name: 'invoice-detail', path: '', open: async (page, origin) => {
-      const invoices = (await owner!.json<{ data: { id: string; status: string }[] }>('/api/billing/invoices?limit=100')).data;
-      const unpaid = invoices.find((invoice) => ['open', 'past_due'].includes(invoice.status));
+      const invoices = (await owner!.json<{ data: { id: string; needsReview: boolean; status: string }[] }>('/api/billing/invoices?limit=100')).data;
+      const unpaid = invoices.find((invoice) => !invoice.needsReview && ['open', 'past_due'].includes(invoice.status));
       if (!unpaid) throw new Error('The demo seed has no unpaid invoice');
       await page.goto(origin + '/admin/billing/invoices/' + unpaid.id);
       await settle(page);

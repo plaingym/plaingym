@@ -16,7 +16,14 @@ interface Visitor { firstName: string; lastName: string; email: string; fullName
 async function bothWidths(page: Page, info: TestInfo, name: string) {
   for (const size of [desktop, phone]) {
     await page.setViewportSize(size);
-    await accessibleLayout(page, info, `${name}-${size.width}`);
+    try { await accessibleLayout(page, info, `${name}-${size.width}`); }
+    catch (error) {
+      // This flow turns automatic screenshots off because it visits bearer links. Keep only the roster dialog on failure.
+      // A screenshot that fails too (a closed page) must not replace the layout error.
+      const body = name === 'coach-roster' ? await page.screenshot({ fullPage: true }).catch(() => undefined) : undefined;
+      if (body) await info.attach(`${name}-${size.width}-failure`, { body, contentType: 'image/png' });
+      throw error;
+    }
   }
 }
 /** Draws one stroke on a waiver's signature canvas, as a finger would. */

@@ -11,6 +11,7 @@ import { createChargeRunner } from '../../areas/billing/runner/index.js';
 import { nextRetryDeadline } from '../../areas/billing/runner/eligibility.js';
 import { audit, generateCycle, system } from '../../areas/billing/runner/store.js';
 import { createInvoiceTransitions } from '../../areas/billing/transitions/index.js';
+import { issueOneOff } from '../../areas/billing/payments.js';
 import { createCardHandlers } from '../../areas/billing/webhooks/handlers/methods.js';
 import { createMembersService } from '../../areas/members/members.js';
 import { createGoLiveService } from '../../areas/settings/go-live.js';
@@ -114,6 +115,16 @@ export function billingSeed(options: {
     }
     // An error thrown by the seed has already propagated through finally; only a restore-only failure reaches here.
     if (restoreFailure) throw restoreFailure.error;
+    await scope(gymId, async tx => {
+      if ((await recorded(tx, 'billing.seed.review_hold', gymId)).length) return;
+      // A separate equipment charge keeps the family's settled cycle history intact.
+      const [home] = await tx.select().from(households).where(eq(households.email, 'murphy@example.invalid'));
+      if (!home) throw new Error('Run the members seed before the billing seed');
+      const invoice = await issueOneOff(tx, actor, clock, { householdId: home.id, dueOn: addDays(today, 30),
+        description: 'Equipment charge awaiting review', amountCents: 4500, currency: gym.currency }, []);
+      await tx.update(invoices).set({ needsReview: true }).where(eq(invoices.id, invoice.id));
+      await audit(tx, actor, clock, 'billing.seed.review_hold', 'gym', gymId, { invoiceId: invoice.id });
+    });
     await scope(gymId, tx => audit(tx, actor, clock, 'billing.seed.completed', 'gym', gymId, {}));
   } };
 }
