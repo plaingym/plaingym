@@ -7,7 +7,13 @@ export type DemoRole = z.infer<typeof demoRoleSchema>;
 export const demoTestCard = '4242 4242 4242 4242';
 export const sandboxResponse = z.strictObject({ data: z.strictObject({ gymId: z.uuid(), origin: z.url(), expiresAt: z.iso.datetime(), kioskToken: z.string(), handoffToken: z.string().optional() }) });
 /** Only static local pages exist in both seeds; resource-detail URLs fall back to the role's home. */
-export const demoCopyPage = z.enum(['/demo', '/', '/admin', '/admin/members', '/admin/households', '/admin/schedule', '/admin/attendance', '/admin/billing', '/admin/ranks', '/admin/settings', '/admin/outbox', '/portal', '/portal/bookings', '/portal/billing', '/portal/progress', '/kiosk', '/join', '/trial', '/drop-in']);
+export const demoCopyPage = z.enum([
+  '/demo', '/', '/admin', '/admin/account', '/admin/announcements', '/admin/billing/invoices', '/admin/billing/plans',
+  '/admin/campaigns', '/admin/health', '/admin/imports', '/admin/leads', '/admin/members', '/admin/outbox',
+  '/admin/ranks', '/admin/reports', '/admin/schedule', '/admin/settings', '/admin/staff', '/admin/waivers',
+  '/portal', '/portal/account', '/portal/billing', '/portal/checkin', '/portal/household', '/portal/progress',
+  '/portal/schedule', '/portal/waivers', '/kiosk', '/join', '/trial', '/drop-in',
+]);
 export const demoCopyRequest = z.strictObject({ role: demoRoleSchema.default('owner'), page: demoCopyPage.default('/demo') });
 export const demoTicket = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 export const demoCreationResponse = z.strictObject({ data: z.union([sandboxResponse.shape.data, z.strictObject({ pending: z.literal(true), ticket: demoTicket, position: z.number().int().min(1).max(1000), retryAfterSeconds: z.literal(2) })]) });

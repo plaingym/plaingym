@@ -13,8 +13,10 @@ import type { DemoPool } from './pool.js';
 const db = useTestDatabase(), factory = createFactories(db);
 const writes = [
   ['POST', '/api/members'], ['PATCH', '/api/members/any'], ['DELETE', '/api/settings/gym'],
-  ['POST', '/api/kiosk/check-in'], ['POST', '/api/portal/bookings'], ['POST', '/api/billing/charges'],
+  ['POST', '/api/kiosk/lookup'], ['POST', '/api/kiosk/checkin'], ['POST', '/api/kiosk/checkin/qr'],
+  ['POST', '/api/portal/bookings'], ['POST', '/api/billing/charges'],
   ['POST', '/join'], ['POST', '/trial'], ['POST', '/drop-in'], ['POST', '/api/public/join'],
+  ['POST', '/join/signatures'], ['POST', '/drop-in/signatures'], ['POST', '/api/public/trial'], ['POST', '/api/public/drop-in'],
   ['POST', '/api/links/pay-invoice/token/complete'], ['GET', '/l/token'], ['GET', '/api/links/unsubscribe/token'],
 ];
 it('refuses every write route family before its handler on a showcase, and preserves private and ordinary gym behavior', async () => {

@@ -15,7 +15,7 @@ function copyTarget() {
   let saved: string | null = null;
   try { saved = sessionStorage.getItem('demo-role'); } catch { /* Storage is optional. */ }
   const role = demoRoleSchema.safeParse(saved).data ?? 'owner';
-  return { role, page: demoCopyPage.safeParse(location.pathname).data ?? (role === 'student' ? '/portal' : '/admin') };
+  return { role, page: demoCopyPage.safeParse(location.pathname.replace(/\/$/, '') || '/').data ?? (role === 'student' ? '/portal' : '/admin') };
 }
 /** All browser API clients use the current fetch; observe only this specific refusal and leave their response intact. */
 export function CopyPrompt({ showcase }: { showcase: boolean }) {

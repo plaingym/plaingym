@@ -65,8 +65,10 @@ export function useSandboxRuntime(db: TestDatabase, count: number) {
       const deadline = Date.now() + 90_000;
       while ('pending' in data) {
         if (Date.now() >= deadline) throw new Error('Sandbox preparation timed out');
-        if (!await queues[0]!.runNext()) await new Promise(resolve => setTimeout(resolve, 10));
-        data = demoCreationResponse.parse(await (await send(install, '/api/demo/creations/' + data.ticket)).json()).data;
+        if (!await queues[0]!.runNext()) await new Promise(resolve => setTimeout(resolve, 2000));
+        const progress = await send(install, '/api/demo/creations/' + data.ticket);
+        if (progress.status !== 200) throw new Error(`Sandbox progress answered ${progress.status}: ${await progress.text()}`);
+        data = demoCreationResponse.parse(await progress.json()).data;
       }
       return data;
     };

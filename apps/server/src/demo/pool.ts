@@ -71,17 +71,22 @@ export function createDemoPool(options: {
     async request(body: unknown) {
       requireDemo(options.config);
       const input = demoCopyRequest.parse(body), ticket = randomBytes(32).toString('base64url'), now = options.clock.now();
-      // Lock eligible rows in a stable order; two processes cannot hand out the same gym.
-      const id = await system(async tx => {
-        const rows = await tx.select().from(gyms).orderBy(asc(gyms.createdAt), asc(gyms.id)).for('update');
-        const row = rows.find(gym => { const demo = sandboxSettings(gym.settings);
-          return gym.status === 'active' && demo?.kind === 'pool' && demo.ready && Date.parse(demo.expiresAt) > now.getTime(); });
-        if (!row) return undefined;
-        const demo = assigned(sandboxSettings(row.settings)!, hash(ticket), input, now);
-        demo.handoffHash = hash(copyToken(ticket));
-        await tx.update(gyms).set({ settings: { ...settingsOf(row), demo }, revision: row.revision + 1, updatedAt: now }).where(eq(gyms.id, row.id));
-        return row.id;
-      });
+      let id: string | undefined;
+      const ready = (row: Gym) => { const demo = sandboxSettings(row.settings);
+        return row.status === 'active' && demo?.kind === 'pool' && demo.ready && Date.parse(demo.expiresAt) > now.getTime(); };
+      // Recheck eligibility under the gym's row lock; two processes cannot claim one copy.
+      for (const candidate of (await all()).filter(ready)) {
+        id = await scope(candidate.id, async tx => {
+          const [row] = await tx.select().from(gyms).where(eq(gyms.id, candidate.id)).for('update');
+          if (!row || !ready(row)) return undefined;
+          const demo = assigned(sandboxSettings(row.settings)!, hash(ticket), input, now);
+          demo.handoffHash = hash(copyToken(ticket));
+          await tx.update(gyms).set({ settings: { ...settingsOf(row), demo }, revision: row.revision + 1, updatedAt: now }).where(eq(gyms.id, row.id));
+          await writeAudit(tx, { gymId: row.id, actorKind: 'system', action: 'demo.allocated', targetType: 'gym', targetId: row.id, occurredAt: now });
+          return row.id;
+        });
+        if (id) break;
+      }
       if (id) { await wake(); return completed(id, ticket); }
       const reservation = await options.service.reserve('queued');
       await update(reservation.gymId, demo => ({ ...demo, kind: 'queued', ticketHash: hash(ticket), copy: input,

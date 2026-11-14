@@ -51,11 +51,11 @@ it('keeps one showcase and a ready pool inside the cap; two processes cannot cla
 
 it('a copy handoff is single-use, gym-bound and preserves its seeded role and allowlisted page', async () => {
   const f = fixture(); await f.pool.refill();
-  const first = await create(f, 'student', '/portal/bookings');
+  const first = await create(f, 'student', '/portal/schedule');
   await f.pool.refill(); const second = await create(f);
   await expect(f.pool.handoff(second.gymId, first.handoffToken, '192.0.2.1')).rejects.toMatchObject({ code: 'not_found' });
   const result = await f.pool.handoff(first.gymId, first.handoffToken, '192.0.2.1');
-  expect(result.redirect).toBe('/portal/bookings');
+  expect(result.redirect).toBe('/portal/schedule');
   expect(result.response.headers.get('set-cookie')).toContain('HttpOnly');
   expect(f.identities.login).toHaveBeenLastCalledWith(first.gymId, { role: 'student' }, first.origin, '192.0.2.1');
   await expect(f.makePool().handoff(first.gymId, first.handoffToken, '192.0.2.1')).rejects.toMatchObject({ code: 'not_found' });

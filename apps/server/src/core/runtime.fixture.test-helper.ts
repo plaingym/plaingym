@@ -72,8 +72,9 @@ export function useDemoRuntime(options: { sandbox?: boolean } = {}) {
     const deadline = Date.now() + 90_000;
     while ('pending' in data) {
       if (Date.now() >= deadline) throw new Error('Sandbox preparation timed out');
-      if (!await workers.at(-1)!.runNext()) await new Promise(resolve => setTimeout(resolve, 10));
+      if (!await workers.at(-1)!.runNext()) await new Promise(resolve => setTimeout(resolve, 2000));
       const progress = await runtime.app.request(origin + '/api/demo/creations/' + data.ticket, { headers: { host: new URL(origin).host } });
+      expect(progress.status, await progress.clone().text()).toBe(200);
       data = demoCreationResponse.parse(await progress.json()).data;
     }
     return data;
