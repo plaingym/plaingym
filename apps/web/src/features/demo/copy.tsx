@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useEffect, useRef, useState } from 'react';
-import { demoCopyPage, demoCreationResponse, demoRoleSchema } from '@plaingym/shared/contracts';
+import { demoCopyPage, demoCreationResponse, demoRoleSchema, shellBootstrapResponseSchema } from '@plaingym/shared/contracts';
 import { Button } from '../../components/ui/button.js';
 import { Alert } from '../../components/ui/alert.js';
 import { Dialog } from '../../components/ui/dialog.js';
@@ -11,10 +11,16 @@ const request = createJsonTransport();
 export function rememberDemoRole(role: string) {
   try { sessionStorage.setItem('demo-role', role); } catch { /* A copy can still open as the owner. */ }
 }
-function copyTarget() {
+async function copyTarget(signal: AbortSignal) {
   let saved: string | null = null;
   try { saved = sessionStorage.getItem('demo-role'); } catch { /* Storage is optional. */ }
-  const role = demoRoleSchema.safeParse(saved).data ?? 'owner';
+  let role = demoRoleSchema.safeParse(saved).data ?? 'owner';
+  try {
+    const { session } = shellBootstrapResponseSchema.parse(await request('/api/auth/bootstrap', undefined, signal)).data;
+    if (session?.roles.includes('owner') || session?.roles.includes('admin')) role = 'owner';
+    else if (session?.roles.includes('coach')) role = 'coach';
+    else if (session?.member) role = 'student';
+  } catch { if (signal.aborted) throw new DOMException('Aborted', 'AbortError'); }
   return { role, page: demoCopyPage.safeParse(location.pathname.replace(/\/$/, '') || '/').data ?? (role === 'student' ? '/portal' : '/admin') };
 }
 /** All browser API clients use the current fetch; observe only this specific refusal and leave their response intact. */
@@ -47,7 +53,8 @@ export function CreateCopyButton({ navigate = (url: string) => window.location.a
     const abort = new AbortController(); controller.current = abort;
     setPending(true); setError(false);
     try {
-      let data = demoCreationResponse.parse(await request('/api/demo/sandboxes', copyTarget(), abort.signal)).data;
+      const target = await copyTarget(abort.signal);
+      let data = demoCreationResponse.parse(await request('/api/demo/sandboxes', target, abort.signal)).data;
       // A queue ticket remains on this origin. Polling never consumes the client creation budget.
       const deadline = Date.now() + 3_600_000;
       while ('pending' in data) {

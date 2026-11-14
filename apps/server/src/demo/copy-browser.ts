@@ -27,6 +27,12 @@ export const publicCopyScript = String.raw`async function demoCopyPrompt(respons
       };
       let role = 'student';
       try { const saved = sessionStorage.getItem('demo-role'); if (['owner', 'coach', 'student'].includes(saved)) role = saved; } catch {}
+      try {
+        const current = (await request('/api/auth/bootstrap')).session;
+        if (current?.roles?.includes('owner') || current?.roles?.includes('admin')) role = 'owner';
+        else if (current?.roles?.includes('coach')) role = 'coach';
+        else if (current?.member) role = 'student';
+      } catch {}
       let data = await request('/api/demo/sandboxes', { role, page });
       const deadline = Date.now() + 3600000;
       while (data.pending) {
