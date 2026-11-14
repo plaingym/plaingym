@@ -12,3 +12,19 @@ export function documentationTests(specifications) {
   if (misplaced.length) throw new Error(`Documentation tests must belong to unit: ${misplaced.map(spec => spec.moduleId).join(', ')}`);
   return docs;
 }
+
+/**
+ * @template {{ moduleId: string, project: { name: string } }} T
+ * @param {{
+ *   globTestSpecifications(): Promise<T[]>,
+ *   runTestSpecifications(specifications: T[]): Promise<{
+ *     unhandledErrors: unknown[], testModules: { state(): string }[]
+ *   }>
+ * }} vitest
+ */
+export async function runDocumentationTests(vitest) {
+  const docs = documentationTests(await vitest.globTestSpecifications());
+  const result = await vitest.runTestSpecifications(docs);
+  if (result.testModules.length !== docs.length) throw new Error('Not every documentation test module ran');
+  return result.unhandledErrors.length === 0 && result.testModules.every(module => ['passed', 'skipped'].includes(module.state()));
+}

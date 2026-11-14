@@ -295,7 +295,8 @@ describe('membership renewals through the durable pipeline', () => {
       scheduledInterval: 'monthly', scheduledOn: '2026-11-15', scheduledOrigin: origin }).where(eq(memberships.id, family.later.id)));
     const batch = await analyzed(family.records, 'update');
     expect(batch.planned.every(row => !row.issues.length)).toBe(true);
-    expect(await batch.commit(batch.planned.slice(0, 100))).toBe(100);
+    // The pipeline resolves duplicate policy after mapper analysis; mirror that step for this chunk.
+    expect(await batch.commit(batch.planned.slice(0, 100).map(row => row.duplicateIds.length ? { ...row, action: 'update' } : row))).toBe(100);
     expect((await read()).memberships.find(row => row.id === family.later.id)).toMatchObject({ nextDueOn: '2026-11-01',
       scheduledPlanId: next.id, scheduledOn: origin === 'price_change' ? '2026-11-15' : '2026-11-01', amountCents: 10000, revision: 2 });
   });

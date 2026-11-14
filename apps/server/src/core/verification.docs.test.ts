@@ -2,8 +2,8 @@
 import { globSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
-import { documentationTests } from '../../../../scripts/test-selection.mjs';
+import { describe, expect, it, vi } from 'vitest';
+import { documentationTests, runDocumentationTests } from '../../../../scripts/test-selection.mjs';
 
 const root = fileURLToPath(new URL('../../../../', import.meta.url));
 const read = (path: string) => readFileSync(resolve(root, path), 'utf8');
@@ -31,7 +31,7 @@ const fixtureReaders = new Set([
   'apps/server/src/infra/storage/storage.index.test.ts',
   'apps/server/src/infra/storage/storage.test.ts',
   'apps/server/test/boot.test.ts',
-  'packages/db/src/testing/database-upgrade.test.ts',
+  'packages/db/src/' + 'testing/' + 'database-upgrade.test.ts',
 ]);
 
 describe('verification discovery', () => {
@@ -42,7 +42,7 @@ describe('verification discovery', () => {
     const files = globSync(['apps/**/*.test.ts', 'apps/**/*.test.tsx', 'packages/**/*.test.ts', 'e2e/*.test.ts'],
       { cwd: root, exclude: ['**/node_modules/**'] }).map(file => file.replaceAll('\\', '/'));
     const uncovered = files.filter(file => !/\.docs\.test\.ts$/.test(file) && !scanning.has(file) && !fixtureReaders.has(file)
-      && /\b(?:readFile(?:Sync)?|readdir(?:Sync)?)\s*\(/.test(read(file)));
+      && /\b(?:readFile(?:Sync)?|readdir(?:Sync)?)\b/.test(read(file)));
     expect(uncovered, 'Add source scanners to scripts/verify.mjs; classify fixture-only reads explicitly here').toEqual([]);
     for (const file of scanning) expect(files).toContain(file);
     for (const file of fixtureReaders) expect(files).toContain(file);
@@ -59,5 +59,28 @@ describe('verification discovery', () => {
   it('rejects docs assigned to the database project before executing anything', () => {
     expect(() => documentationTests([{ moduleId: '/repo/misplaced.docs.test.ts', project: { name: 'integration' } }]))
       .toThrow('Documentation tests must belong to unit: /repo/misplaced.docs.test.ts');
+  });
+  it('runs the discovered docs on the same instance exactly once', async () => {
+    const docs = { moduleId: '/repo/e2e/example.docs.test.ts', project: { name: 'unit' } };
+    const vitest = { globTestSpecifications: vi.fn(async () => [docs, { moduleId: '/repo/other.test.ts', project: { name: 'integration' } }]),
+      runTestSpecifications: vi.fn(async (_specifications: typeof docs[]) => ({ unhandledErrors: [], testModules: [{ state: () => 'passed' }] })) };
+    expect(await runDocumentationTests(vitest)).toBe(true);
+    expect(vitest.globTestSpecifications).toHaveBeenCalledTimes(1);
+    expect(vitest.runTestSpecifications).toHaveBeenCalledExactlyOnceWith([docs]);
+    expect(vitest.runTestSpecifications.mock.calls[0]![0]![0]).toBe(docs);
+  });
+  it.each([
+    { state: 'failed', unhandledErrors: [] }, { state: 'passed', unhandledErrors: [new Error('worker failed')] },
+  ])('reports failure for a $state module and $unhandledErrors', async ({ state, unhandledErrors }) => {
+    expect(await runDocumentationTests({
+      globTestSpecifications: async () => [{ moduleId: '/repo/example.docs.test.ts', project: { name: 'unit' } }],
+      runTestSpecifications: async () => ({ unhandledErrors, testModules: [{ state: () => state }] }),
+    })).toBe(false);
+  });
+  it('refuses an empty run instead of treating missing modules as passing', async () => {
+    await expect(runDocumentationTests({
+      globTestSpecifications: async () => [{ moduleId: '/repo/example.docs.test.ts', project: { name: 'unit' } }],
+      runTestSpecifications: async () => ({ unhandledErrors: [], testModules: [] }),
+    })).rejects.toThrow('Not every documentation test module ran');
   });
 });

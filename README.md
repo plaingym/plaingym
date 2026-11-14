@@ -203,6 +203,11 @@ in the same test run as the selected tests (or the full suite).
 End-to-end skips Markdown-only pushes too, and still runs nightly, as does the **Memory** workflow, which measures the whole
 stack against its memory budget (`deploy/test/memory/README.md`). On a push to `main`, CI reuses a passing run of the same
 commit (from its integration branch) instead of repeating it.
+The people mapper compatibility test runs two small fixtures and a 3,000-row export by default,
+under five mapping variants each. Set `PEOPLE_COMPAT_LARGE=1` when running
+`pnpm test apps/server/src/areas/imports/mappers/people.compat.test.ts` to include the two
+100,000-row exports. Its reference hashes cover issue codes and locations, and failures
+identify the first differing 1,000-row chunk.
 Dependency lifecycle scripts are allowlisted for esbuild only.
 
 The server build copies Noto Sans and the PDF renderer's CJK, Arabic, Hebrew,
