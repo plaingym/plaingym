@@ -9,6 +9,17 @@ work (hourly snapshots; 24 hourly, 7 nightly and 4 weekly are kept; encrypted) i
 
 Plan on about an hour, mostly the install.
 
+**Use a trusted snapshot and backup bucket.** A restore executes the snapshot's SQL
+as `maintenance`; successful decryption and integrity checks do not make that SQL
+safe. After loading and migrating the database, the catalog check refuses extra
+schemas usable by `app` or `maintenance` (only `public`, `drizzle`, `pg_catalog`,
+`information_schema` and `pg_toast*` are allowed), any persistent settings for the
+current database, and global role settings for `app`, `maintenance` or all roles.
+Bootstrap sets none of these defaults. Every database pool the server opens uses
+`search_path=public`, including maintenance and authentication connections. A failed check keeps the restore gated
+before secrets or uploads are activated. These checks limit known isolation risks;
+they do not sandbox arbitrary snapshot SQL or replace trust in the backup source.
+
 ## Before you start
 
 You need four things. If you are moving on purpose, capture the latest changes first (below).

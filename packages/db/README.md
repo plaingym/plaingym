@@ -227,6 +227,16 @@ foreign table the app can use, and a `SECURITY DEFINER` function the app can run
 (the schema declares none, so any of these comes from a newer release or outside the app). Restore uses
 the same migration/security entry point. A failed check prevents successful startup.
 
+Every pool opened by `openConnection` (app, auth system and maintenance) pins
+`search_path=public` in the startup parameters, overriding role, database and URL
+defaults. The catalog check rejects extra schemas usable by either role outside
+`public`, `drizzle`, `pg_catalog`, `information_schema` and `pg_toast*`. It also
+rejects any persistent setting for the current database (including per-role
+settings) or global settings for `app`, `maintenance` or all roles: bootstrap sets none.
+Restoring trusts the snapshot's SQL, which runs as maintenance; the catalog check
+is an isolation guard, not a sandbox for arbitrary SQL. Restore runs it before
+rekeying secrets or switching uploads and keeps the restore gated on failure.
+
 Advisory locks are registered in `src/locks.ts`. `advisoryLocks` holds the
 (namespace, key) pairs for work shared by every gym (migrations, backups, job claims).
 `gymAdvisoryLocks` holds the locks that take a gym ID, so one gym's work never waits

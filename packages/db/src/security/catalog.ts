@@ -64,6 +64,28 @@ async function viewFailures(sql: Sql): Promise<string[]> {
  */
 export async function assertCatalog(sql: Sql) {
   const failures: string[] = [];
+  // Bootstrap installs no persistent settings. Inspect stored defaults, not just
+  // this session: connection startup parameters deliberately override search_path.
+  const settings = await sql`
+    select s.setdatabase, s.setrole from pg_catalog.pg_db_role_setting s
+    where cardinality(s.setconfig) > 0 and (
+      s.setdatabase = (select oid from pg_catalog.pg_database where datname = current_database())
+      or (s.setdatabase = 0 and (s.setrole = 0 or s.setrole in
+        (select oid from pg_catalog.pg_roles where rolname in ('app', 'maintenance')))))
+  `;
+  if (settings.length) failures.push('Unexpected database or role settings');
+  const schemas = await sql`
+    select nspname from pg_catalog.pg_namespace
+    where nspname not in ('public', 'drizzle', 'pg_catalog', 'information_schema')
+      -- The pg_ prefix is reserved, so no dump can create these. A session's own
+      -- temporary schema counts as usable by every role with TEMP.
+      and nspname !~ '^pg_(toast|temp_)'
+      and (has_schema_privilege('app', oid, 'USAGE') or has_schema_privilege('maintenance', oid, 'USAGE'))
+    order by nspname
+  `;
+  for (const schema of schemas) failures.push(String(schema.nspname) + ': unexpected usable schema');
+  // Fail before inspecting any application objects in an untrusted catalog.
+  if (failures.length) throw new Error('Database catalog check failed:\n' + failures.join('\n'));
   const roles = await sql`
     select rolname, rolsuper, rolbypassrls, rolcreatedb, rolcreaterole, rolreplication, rolcanlogin
     from pg_roles where rolname in ('app', 'maintenance')

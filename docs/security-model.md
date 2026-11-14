@@ -32,6 +32,8 @@ Isolation is enforced in the database, not only in application code.
   `BYPASSRLS`, never a superuser. The `maintenance` role (`BYPASSRLS`) runs only
   migrations, backups and restore. In multi-gym mode the running app never holds
   the maintenance credentials and refuses to start if they are set.
+  Every app, authentication and maintenance pool pins `search_path=public` at
+  connection startup, overriding database, role and connection URL defaults.
 * **Composite foreign keys.** References between gym-owned tables include
   `gym_id`, so a row can't point at another gym's row even through a bug.
 * **Checked on every start.** After migrations, a catalog check compares every
@@ -45,6 +47,14 @@ Isolation is enforced in the database, not only in application code.
   security: a view not owned by `maintenance` or without `security_invoker`, a
   materialized view or foreign table the `app` role can use, and a
   `SECURITY DEFINER` function it can run or a trigger uses. CI runs the same check.
+  The check also refuses schemas usable by `app` or `maintenance` outside `public`,
+  `drizzle`, `pg_catalog`, `information_schema` and `pg_toast*`, all persistent
+  settings for the current database (including per-role settings), and global
+  defaults for `app`, `maintenance` or all roles. Bootstrap creates no persistent settings.
+  A restore trusts its snapshot: its SQL runs as `maintenance`. These catalog
+  checks run before restore activates secrets or uploads and keep a failed restore
+  gated, but they do not sandbox arbitrary SQL. Authentication and integrity checks
+  do not substitute for a trusted backup source; see [restoring](restoring.md).
 * **Tests.** Every gym-owned route has a cross-gym test (gym A's session on gym
   B's resource is a 404).
 

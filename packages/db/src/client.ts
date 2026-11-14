@@ -58,8 +58,12 @@ export function assertSchemaCompatibility(env: NodeJS.ProcessEnv = process.env):
  * context 'system' sets app.system for every connection in the pool (the authentication adapter's pool).
  */
 export function openConnection(url: string, max = 20, context?: 'system') {
-  const client = postgres(url, { max, connect_timeout: 10, onnotice: () => undefined,
-    ...(context === 'system' ? { connection: { 'app.system': 'on' } } : {}) });
+  // postgres.js URL parameters override connection options. Never inherit a role,
+  // database or URL search path that could resolve names to objects outside public.
+  const connectionUrl = new URL(url);
+  connectionUrl.searchParams.set('search_path', 'public');
+  const client = postgres(connectionUrl.toString(), { max, connect_timeout: 10, onnotice: () => undefined,
+    connection: { search_path: 'public', ...(context === 'system' ? { 'app.system': 'on' } : {}) } });
   // No schema here: the relational tx.query API would reach every table, system tables included, without an import the lint can check.
   const db = drizzle(client);
   return { sql: client, db, close: () => client.end({ timeout: 5 }) };
