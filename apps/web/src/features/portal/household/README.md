@@ -49,7 +49,7 @@ Only a recovery-triggered refresh delays those failures; ordinary focus and reco
 Recovery shares in-flight reads for the request's list version, sampled when the request starts. A later 404 always reads again after recovery settles. If
 a joined read predates the move or does not name the household returned by the
 conflict, recovery reads again. A second mismatch fails rather than looping.
-During a confirmed mismatch, the six portal pages hide their content without collapsing the page or unmounting forms
+During a confirmed mismatch, portal pages hide their content without collapsing the page or unmounting forms
 or dialogs. Dialogs close themselves during recovery (including ones mounted while it is running), then reopen with their own focus and scroll restored if recovery fails. Recovery never rewinds window or page scrolling.
 Typed drafts and drawn signatures remain. Every read shows its own failure, except those a page keeps showing from its cache (the context, the act-for members and the household details): when a refetch of one fails, `PortalRecovery` shows a sticky failure inside an open dialog, or inside the page's width when no dialog is open. Its retry reads only those again. After
 a move the shell resets the page and asks the person to review the household and

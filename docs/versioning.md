@@ -131,7 +131,7 @@ contains the same version. The shared browser navigation guard covers admin, por
 and kiosk: a successful check holds for a minute, a check waits at most a second, and on a changed
 version or commit loads the destination of the navigation instead of the page being
 left. Preloads and the development server don't check, and a failed or timed-out check leaves
-navigation alone and runs again on the next navigation.
+navigation alone and waits ten seconds before another navigation can check again.
 The portal service worker does not cache application pages or API responses.
 
 Versions with `+` build metadata are development builds. The release checker and
