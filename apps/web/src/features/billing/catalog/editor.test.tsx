@@ -12,6 +12,31 @@ const plan: Plan = { id: '01900000-0000-7000-8000-000000000001', createdAt: '202
 const tax: TaxRate = { id: plan.id, createdAt: plan.createdAt, revision: 1, name: 'Sales tax', active: true, rateMillionths: 50000, inclusive: false };
 
 describe('catalog draft reloads', () => {
+  it('compares amounts and sign-up fees by parsed value when reloading and clearing clashes', () => {
+    const props = { kind: 'plans' as const, currency: 'USD', taxes: [], busy: false, save: vi.fn(), cancel: vi.fn() };
+    const { rerender } = render(<CatalogEditor {...props} record={plan}/>);
+    fireEvent.change(screen.getByLabelText('Amount (USD)'), { target: { value: '50' } });
+    fireEvent.change(screen.getByLabelText('Sign-up fee (USD)'), { target: { value: '10.0' } });
+    rerender(<CatalogEditor {...props} record={{ ...plan, revision: 2, amountCents: 5000, signupFeeCents: 1000 }}/>);
+    expect(screen.queryByRole('note')).toBeNull();
+    fireEvent.change(screen.getByLabelText('Amount (USD)'), { target: { value: '55' } });
+    fireEvent.change(screen.getByLabelText('Sign-up fee (USD)'), { target: { value: '15' } });
+    rerender(<CatalogEditor {...props} record={{ ...plan, revision: 3, amountCents: 6000, signupFeeCents: 2000 }}/>);
+    expect(screen.getAllByRole('note')).toHaveLength(2);
+    fireEvent.change(screen.getByLabelText('Amount (USD)'), { target: { value: '60' } });
+    fireEvent.change(screen.getByLabelText('Sign-up fee (USD)'), { target: { value: '20.000' } });
+    // Invalid precision stays a text difference, rather than being rounded into agreement.
+    expect(screen.getAllByRole('note')).toHaveLength(1);
+    fireEvent.change(screen.getByLabelText('Sign-up fee (USD)'), { target: { value: '20' } });
+    expect(screen.queryByRole('note')).toBeNull();
+  });
+  it('compares tax rates by decimal units rather than the number of written decimals', () => {
+    const props = { kind: 'taxes' as const, currency: 'USD', taxes: [], busy: false, save: vi.fn(), cancel: vi.fn() };
+    const { rerender } = render(<CatalogEditor {...props} record={tax}/>);
+    fireEvent.change(screen.getByLabelText('Tax rate (%)'), { target: { value: '8.250' } });
+    rerender(<CatalogEditor {...props} record={{ ...tax, revision: 2, rateMillionths: 82500 }}/>);
+    expect(screen.queryByRole('note')).toBeNull();
+  });
   it('shows the latest same-field value next to the retained draft, keeps it across reloads and clears it on agreement', () => {
     const props = { kind: 'plans' as const, currency: 'USD', taxes: [], busy: false, save: vi.fn(), cancel: vi.fn() };
     const { rerender } = render(<CatalogEditor {...props} record={plan}/>);

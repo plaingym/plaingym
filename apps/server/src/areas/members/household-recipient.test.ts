@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
-import { householdRecipient } from './household-recipient.js';
+import { householdRecipient, householdRecipients } from './household-recipient.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 async function household(email: string | null) {
@@ -15,6 +15,26 @@ async function household(email: string | null) {
 }
 
 describe('household email recipient with PostgreSQL', () => {
+  it('reads many households with two queries, keeping suppression household-local and foreign households hidden', async () => {
+    const h = await household(' shared@example.invalid '), foreign = await household('foreign@example.invalid');
+    const homes = await Promise.all(Array.from({ length: 40 }, () => factory('households', h.gymId, { email: 'shared@example.invalid' })));
+    await factory('members', h.gymId, { householdId: homes[0]!.id, email: 'SHARED@example.invalid', emailOptOut: true });
+    const empty = await factory('households', h.gymId, { email: '   ' });
+    await db.forGym(h.gymId, async tx => {
+      const select = vi.spyOn(tx, 'select');
+      try {
+        const found = await householdRecipients(tx, h.gymId, [h.home.id, ...homes.map(home => home.id), empty.id, foreign.home.id, h.home.id]);
+        expect(select).toHaveBeenCalledTimes(2);
+        expect(found.size).toBe(42);
+        expect(found.get(h.home.id)).toEqual({ email: 'shared@example.invalid', suppressed: false });
+        expect(found.get(homes[0]!.id)?.suppressed).toBe(true);
+        expect(homes.slice(1).every(home => found.get(home.id)?.suppressed === false)).toBe(true);
+        expect(found.get(empty.id)).toBeNull(); expect(found.has(foreign.home.id)).toBe(false);
+        select.mockClear(); expect(await householdRecipients(tx, h.gymId, [])).toEqual(new Map());
+        expect(select).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); }
+    });
+  });
   it('returns the trimmed household address, matching members case-insensitively', async () => {
     const h = await household('  Payer@Example.invalid ');
     await factory('members', h.gymId, { householdId: h.home.id, email: 'payer@example.INVALID ' });

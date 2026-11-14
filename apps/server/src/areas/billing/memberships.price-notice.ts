@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, inArray, isNull, ne } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNotNull, isNull, ne } from 'drizzle-orm';
 import { forGym, householdUsers, members, memberships, plans, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
-import { currencySchema, dateSchema, idSchema } from '@plaingym/shared/contracts';
+import { currencySchema, dateSchema, idSchema, type PlanPriceChangeReach } from '@plaingym/shared/contracts';
 import { z } from 'zod';
 import { clock as systemClock } from '../../core/clock.js';
 import { logInfo } from '../../core/log.js';
 import { commandDigest } from '../../infra/email/deliveries.js';
 import { createEmailDeliveries, deliveryAcceptance, type Email } from '../../infra/email/index.js';
 import { renderPriceChangeNotice } from '../../emails/billing/price-change.js';
-import { householdRecipient } from '../members/household-recipient.js';
+import { householdRecipients } from '../members/household-recipient.js';
 import { createGymSettingsAccessor, createSettingsService } from '../settings/settings.js';
 
 export const priceNoticeJob = 'billing.memberships.price_notice';
@@ -27,6 +27,26 @@ export interface PriceNoticeOptions {
   demoEmailFor?(gymId: string): Email;
 }
 
+/** Shared by the preview, apply counts and both send boundaries. All reads stay batched inside forGym. */
+export async function priceNoticeReach(tx: Transaction, gymId: string, householdIds: readonly string[]) {
+  const ids = [...new Set(householdIds)];
+  const recipients = await householdRecipients(tx, gymId, ids);
+  const reach = new Map<string, PlanPriceChangeReach>();
+  if (!ids.length) return { recipients, reach };
+  const erased = await tx.select({ householdId: members.householdId, email: members.email, payer: householdUsers.memberId })
+    .from(members).leftJoin(householdUsers, and(eq(householdUsers.gymId, members.gymId),
+      eq(householdUsers.householdId, members.householdId), eq(householdUsers.memberId, members.id), eq(householdUsers.scope, 'payer')))
+    .where(and(eq(members.gymId, gymId), inArray(members.householdId, ids), isNotNull(members.anonymizedAt)));
+  const erasedPayers = new Set(erased.filter(member => member.payer !== null
+    || member.email?.trim().toLowerCase() === recipients.get(member.householdId)?.email.toLowerCase()).map(member => member.householdId));
+  for (const id of ids) {
+    const recipient = recipients.get(id);
+    reach.set(id, !recipient || !z.email().safeParse(recipient.email).success ? 'no_address'
+      : erasedPayers.has(id) ? 'payer_erased' : recipient.suppressed ? 'suppressed' : 'ok');
+  }
+  return { recipients, reach };
+}
+
 export function createPriceNotice(options: PriceNoticeOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? systemClock;
   const settings = createGymSettingsAccessor({ scope }), details = createSettingsService({ scope });
@@ -39,17 +59,10 @@ export function createPriceNotice(options: PriceNoticeOptions) {
     const [plan] = await tx.select({ name: plans.name }).from(plans)
       .where(and(eq(plans.id, notice.planId), eq(plans.currency, notice.currency)));
     if (!plan) return { ok: false, reason: 'plan_missing' } as const;
-    const recipient = await householdRecipient(tx, gymId, notice.householdId);
-    if (!recipient || !z.email().safeParse(recipient.email).success) return { ok: false, reason: 'no_address' } as const;
-    // The household billing address is the payer, including payers without a portal account.
-    // Check both address matches and explicitly linked payers, so clearing an erased payer's email cannot bypass this.
-    const family = await tx.select({ id: members.id, email: members.email, anonymizedAt: members.anonymizedAt })
-      .from(members).where(eq(members.householdId, notice.householdId));
-    const payers = await tx.select({ memberId: householdUsers.memberId }).from(householdUsers)
-      .where(and(eq(householdUsers.householdId, notice.householdId), eq(householdUsers.scope, 'payer')));
-    if (family.some(member => member.anonymizedAt && (member.email?.trim().toLowerCase() === recipient.email.toLowerCase()
-      || payers.some(payer => payer.memberId === member.id)))) return { ok: false, reason: 'payer_erased' } as const;
-    if (recipient.suppressed) return { ok: false, reason: 'recipient_suppressed' } as const;
+    const { recipients, reach } = await priceNoticeReach(tx, gymId, [notice.householdId]);
+    const status = reach.get(notice.householdId)!;
+    if (status !== 'ok') return { ok: false, reason: status === 'suppressed' ? 'recipient_suppressed' : status } as const;
+    const recipient = recipients.get(notice.householdId)!;
     const current = await tx.select({ id: memberships.id, firstName: members.firstName, lastName: members.lastName,
       amountCents: memberships.amountCents, interval: memberships.interval, newInterval: memberships.scheduledInterval })
       .from(memberships).innerJoin(members, and(eq(members.id, memberships.memberId), eq(members.gymId, memberships.gymId)))

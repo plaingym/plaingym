@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, count, eq, inArray, isNull, ne } from 'drizzle-orm';
-import { assertRevised, auditEvents, forGym, householdUsers, households, members, memberships, plans, revisionGuard,
+import { assertRevised, auditEvents, forGym, households, members, memberships, plans, revisionGuard,
   type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { localDate } from '@plaingym/shared/time';
@@ -12,11 +12,11 @@ import { clock as defaultClock } from '../../core/clock.js';
 import { commandDigest } from '../../infra/email/deliveries.js';
 import { withJobTransaction, type Jobs, type JobTransaction } from '../../infra/jobs/index.js';
 import { gymSettingsAccessor } from '../settings/settings.js';
-import { householdRecipient } from '../members/household-recipient.js';
 import type { SmtpResolver } from '../settings/smtp.js';
 import { catalogAudit, catalogMissing } from './catalog.js';
 import { refuse } from './memberships.plan-change.js';
-import { priceNoticeJob, priceNoticePayload } from './memberships.price-notice.js';
+import { priceNoticeJob, priceNoticePayload, priceNoticeReach } from './memberships.price-notice.js';
+import { lockPriceRequest, priceRequestKey, priceResultKey } from './catalog.price-change.query.js';
 
 type Row = typeof memberships.$inferSelect;
 type Plan = typeof plans.$inferSelect;
@@ -72,24 +72,7 @@ const live = and(ne(memberships.status, 'cancelled'), isNull(memberships.cancell
  * (`no_address`), an erased payer (`payer_erased`), then an opted-out or undeliverable address (`suppressed`).
  */
 async function householdReach(tx: Transaction, gymId: string, householdIds: readonly string[]): Promise<Map<string, Reach>> {
-  const reach = new Map<string, Reach>();
-  if (!householdIds.length) return reach;
-  const ids = [...householdIds];
-  const homes = await tx.select({ id: households.id }).from(households).where(inArray(households.id, ids));
-  const family = await tx.select({ id: members.id, householdId: members.householdId, email: members.email, anonymizedAt: members.anonymizedAt })
-    .from(members).where(inArray(members.householdId, ids));
-  const payers = await tx.select({ householdId: householdUsers.householdId, memberId: householdUsers.memberId }).from(householdUsers)
-    .where(and(inArray(householdUsers.householdId, ids), eq(householdUsers.scope, 'payer')));
-  for (const home of homes) {
-    const recipient = await householdRecipient(tx, gymId, home.id);
-    const email = recipient?.email;
-    if (!email || !z.email().safeParse(email).success) { reach.set(home.id, 'no_address'); continue; }
-    const erased = family.some(member => member.householdId === home.id && member.anonymizedAt && (
-      member.email?.trim().toLowerCase() === email.toLowerCase()
-      || payers.some(payer => payer.householdId === home.id && payer.memberId === member.id)));
-    reach.set(home.id, erased ? 'payer_erased' : recipient?.suppressed ? 'suppressed' : 'ok');
-  }
-  return reach;
+  return (await priceNoticeReach(tx, gymId, householdIds)).reach;
 }
 type Terms = Pick<Row, 'amountCents' | 'interval' | 'scheduledPlanId' | 'scheduledAmountCents' | 'scheduledInterval' | 'scheduledOn' | 'revision'>;
 const terms = (row: Terms): Terms => ({ amountCents: row.amountCents, interval: row.interval, scheduledPlanId: row.scheduledPlanId,
@@ -109,16 +92,14 @@ export function createPriceChangeService(options: PriceChangeOptions) {
   const { households: chunkHouseholds, memberships: chunkMemberships } = options.chunk ?? { households: 25, memberships: 100 };
 
   async function recordedRequest(tx: Transaction, requestKey: string) {
-    const events = await tx.select({ after: auditEvents.after }).from(auditEvents).where(eq(auditEvents.action, planPriceChangedAction));
-    return events.map(event => (event.after as { request?: RecordedPriceChange } | null)?.request)
-      .find(request => request?.requestKey === requestKey);
+    const [event] = await tx.select({ after: auditEvents.after }).from(auditEvents)
+      .where(and(eq(auditEvents.action, planPriceChangedAction), eq(priceRequestKey(), requestKey))).limit(1);
+    return (event?.after as { request?: RecordedPriceChange } | undefined)?.request;
   }
   async function recordedResult(tx: Transaction, planId: string, requestKey: string) {
-    const events = await tx.select({ after: auditEvents.after }).from(auditEvents)
-      .where(and(eq(auditEvents.action, planPriceChangeAppliedAction), eq(auditEvents.targetId, planId)));
-    const found = events.map(event => event.after as { requestKey?: string; result?: c.PlanPriceChangeResult } | null)
-      .find(after => after?.requestKey === requestKey);
-    return found?.result;
+    const [event] = await tx.select({ after: auditEvents.after }).from(auditEvents)
+      .where(and(eq(auditEvents.action, planPriceChangeAppliedAction), eq(auditEvents.targetId, planId), eq(priceResultKey(), requestKey))).limit(1);
+    return (event?.after as { result?: c.PlanPriceChangeResult } | undefined)?.result;
   }
   const lockPlan = async (tx: Transaction, planId: string) =>
     catalogMissing((await tx.select().from(plans).where(eq(plans.id, planId)).for('update'))[0], 'Plan not found');
@@ -137,17 +118,25 @@ export function createPriceChangeService(options: PriceChangeOptions) {
     const erased = new Set((await tx.select({ id: members.id, anonymizedAt: members.anonymizedAt }).from(members)
       .where(inArray(members.id, rows.map(row => row.memberId)))).filter(member => member.anonymizedAt).map(member => member.id));
     // Checked before the revision: a membership this request already scheduled has moved on since its listed revision.
-    const keyed = new Set((await tx.select({ targetId: auditEvents.targetId, after: auditEvents.after }).from(auditEvents)
+    const keyed = new Map((await tx.select({ targetId: auditEvents.targetId, after: auditEvents.after }).from(auditEvents)
       .where(and(eq(auditEvents.action, priceChangeScheduledAction), inArray(auditEvents.targetId, chunk.membershipIds))))
       .filter(event => {
         const after = event.after as { requestKey?: string; planId?: string } | null;
         return after?.requestKey === request.requestKey && after.planId === planId;
-      }).map(event => event.targetId));
+      }).map(event => [event.targetId, event.after as Terms]));
     const outcome: Outcome = { scheduled: [], skipped: [], notified: 0, reach: [] };
     const fresh = new Map<string, string[]>(), moved = new Set<string>();
     const lockedHouseholds = new Set(chunk.householdIds);
     for (const row of rows) {
-      if (keyed.has(row.id)) { outcome.scheduled.push(row.id); moved.add(row.householdId); continue; }
+      if (keyed.has(row.id)) {
+        if (row.planId === planId && row.status !== 'cancelled' && row.cancelledAt === null && !erased.has(row.memberId)
+          && row.scheduledPlanId === planId && row.scheduledAmountCents === request.amountCents
+          && row.scheduledInterval === keyed.get(row.id)!.scheduledInterval
+          && row.scheduledOn === request.effectiveOn && row.scheduledOrigin === 'price_change' && lockedHouseholds.has(row.householdId)) {
+          outcome.scheduled.push(row.id); moved.add(row.householdId);
+        } else outcome.skipped.push({ id: row.id, reason: 'changed' });
+        continue;
+      }
       const changed = row.planId !== planId || row.status === 'cancelled' || row.cancelledAt !== null || erased.has(row.memberId)
         || row.revision !== revisions.get(row.id) || !lockedHouseholds.has(row.householdId);
       const reason: Reason | null = changed ? 'changed' : blocked(row, plan);
@@ -239,6 +228,7 @@ export function createPriceChangeService(options: PriceChangeOptions) {
       const recorded: RecordedPriceChange = { requestKey: request.requestKey, planId, amountCents: request.amountCents,
         effectiveOn: request.effectiveOn, notify: request.notify, memberships: commandDigest(ids), count: ids.length };
       const start = await scope(context.gymId, async tx => {
+        await lockPriceRequest(tx, context.gymId, request.requestKey);
         const plan = await lockPlan(tx, planId);
         const listed = await tx.select({ id: memberships.id, householdId: memberships.householdId }).from(memberships)
           .where(inArray(memberships.id, ids));
@@ -248,6 +238,7 @@ export function createPriceChangeService(options: PriceChangeOptions) {
         if (prior) {
           if (!sameRequest(prior, recorded)) refuse('request_reused', 'Request key reused with different parameters');
           const result = await recordedResult(tx, planId, request.requestKey);
+          if (!result) checkDate(request.effectiveOn, localDate(clock.now(), gym.timezone));
           return result ? { result } : { listed };
         }
         checkPrice(plan, request.amountCents);

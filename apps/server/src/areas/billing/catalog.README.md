@@ -33,25 +33,32 @@ members get; it changes no membership. Two owner and admin routes (`plans.manage
 * `POST` with `{ requestKey, planRevision, amountCents, effectiveOn, notify, memberships }` (1 to
   2,000 distinct `{ id, revision }`, under its own 256 KB body limit) checks the price's currency
   step and the date, and that every listed membership is the gym's (404 before any write). Under
-  the plan's row lock it looks for a `billing.plan.price_changed` audit with the key: the same
+  a gym-and-key advisory lock, then the plan's row lock, it looks for a `billing.plan.price_changed` audit with the key: the same
   price, date, flag and list (a digest of the sorted IDs) resume, or return the recorded result;
-  anything else is a conflict (`request_reused`). A new request changes the plan's price
+  anything else is a conflict (`request_reused`). An unfinished resume rechecks the gym-local date;
+  a completed request replays its recorded result even after that date. Audit lookups filter the
+  request key in SQL and return at most one row. A new request changes the plan's price
   (revision-checked) with that audit. Then, a few households per short transaction, it locks each
   household and then its memberships (the cycle build's order) and sets the price-only scheduled
   change on each listed membership that can move (`scheduled_plan_id` the plan, the new price, the
   membership's interval, `scheduled_on` the date, origin `price_change`), audited as
   `billing.membership.price_change_scheduled` with the key. A membership the key already scheduled
   is found by that audit before its revision is checked, so a retry, a concurrent request with the
-  key or a resume after a failed chunk schedules nothing twice. One that changed, was cancelled or
+  key or a resume after a failed chunk schedules nothing twice. It counts as scheduled on a resume
+  only while its pending price, plan, interval, date and origin still match. One that changed, was cancelled or
   left the plan since the preview is skipped (`changed`). A household is never split. With
   `notify`, each household with a membership scheduled gets the price notice job
   (`billing.memberships.price_notice`, key `plan-price:<requestKey>:<householdId>`), enqueued in
   that transaction, so it runs only after commit, once. The result lists the memberships scheduled
   and skipped, the reachable households with a notice queued, and separate counts for households
   whose payer has no valid address, was erased or is suppressed (opted out of email or undeliverable).
-  Reach uses `householdRecipient`, in the notice job's order: no address, erased payer, then suppression.
   Unreachable households still get a job, which skips them; they never count as notified. The first run
-  to finish records it (`billing.plan.price_change_applied`) and a replay returns it.
+  to finish records the full result (`billing.plan.price_change_applied`); concurrent and later runs return it.
+
+The preview, apply counts and notice job share the payer reach helper. It reads household recipients
+in two batched queries and erased payers in one additional query, regardless of the household count.
+Invalid addresses take precedence over erasure, then email suppression; a linked erased payer is
+recognized even when their own email has been cleared.
 
 The cycle build applies the change at the first active cycle due on or after its date, with no
 proration (`memberships.README.md`, scheduled changes), so a frozen, trial or pending membership keeps it until it is billed as

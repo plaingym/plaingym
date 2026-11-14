@@ -8,7 +8,7 @@ import type { GymSettings } from '@plaingym/shared/contracts';
 import { BillingSettings } from './billing.js';
 import { createRegistries } from '../../lib/registries.js';
 const client = vi.hoisted(() => ({ GET: vi.fn(), PATCH: vi.fn() }));
-vi.mock('../../lib/api.js', () => ({ api: client, createApiClient: () => client }));
+vi.mock('../../lib/api.js', async original => ({ ...await original<typeof import('../../lib/api.js')>(), api: client, createApiClient: () => client }));
 const settings: GymSettings = { id: '01900000-0000-7000-8000-000000000001', name: 'Gym', slug: 'gym',
   timezone: 'America/Vancouver', currency: 'CAD', address: {}, branding: {}, websiteEnabled: false, existingSiteUrl: null,
   bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false, billingEnabled: false,

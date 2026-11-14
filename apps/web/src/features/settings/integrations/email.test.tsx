@@ -9,7 +9,7 @@ import { IntegrationsSettings } from './section.js';
 import { integrations, refusal, renderSection, reply, serve, settings } from './fixtures.test-helper.js';
 import { holdTimeouts, stalledRequests } from '../save-timeout.test-helper.js';
 const client = vi.hoisted(() => ({ GET: vi.fn(), PUT: vi.fn(), POST: vi.fn(), DELETE: vi.fn() }));
-vi.mock('../../../lib/api.js', () => ({ api: client, createApiClient: () => client }));
+vi.mock('../../../lib/api.js', async original => ({ ...await original<typeof import('../../../lib/api.js')>(), api: client, createApiClient: () => client }));
 
 const gymEmail: Integrations = { ...integrations, revision: 4, email: { source: 'gym', host: 'smtp.gym.test', port: 465, security: 'tls', from: 'desk@gym.test',
   signIn: { password: false, magicLink: true }, signInAfterSave: { password: false, magicLink: true },

@@ -20,7 +20,7 @@ import { createCatalogRoutes } from './catalog.routes.js';
 import { createDiscountCatalogService } from './discounts/catalog.js';
 import { createMembershipService } from './memberships.js';
 import { planSwitchedAction, switchedNow } from './memberships.plan-change.js';
-import { createPriceNotice, priceNoticeJob, priceNoticePayload } from './memberships.price-notice.js';
+import { createPriceNotice, priceNoticeJob, priceNoticePayload, priceNoticeReach } from './memberships.price-notice.js';
 import { useRunnerFixture, type FixtureOptions } from './runner/runner.fixture.test-helper.js';
 
 const { db, factory, fixture } = useRunnerFixture();
@@ -78,6 +78,22 @@ async function erasedHousehold(f: Setup) {
 }
 
 describe('plan price change preview', () => {
+  it('keeps many households reachable with a fixed three-query reach read shared with notices', async () => {
+    const f = await setup();
+    const joined = await Promise.all(Array.from({ length: 40 }, () => f.join()));
+    await db.forGym(f.gymId, async tx => {
+      const select = vi.spyOn(tx, 'select');
+      try {
+        const { reach } = await priceNoticeReach(tx, f.gymId, joined.map(row => row.householdId));
+        expect(select).toHaveBeenCalledTimes(3);
+        expect(reach.size).toBe(40); expect([...reach.values()].every(value => value === 'ok')).toBe(true);
+      } finally { select.mockRestore(); }
+    });
+    expect(await f.preview()).toMatchObject({ total: 41, households: 41, householdsSuppressed: 0,
+      householdsPayerErased: 0, householdsWithoutAddress: 0 });
+    const result = await f.apply(await f.request(joined.map(row => row.id)));
+    expect(result).toMatchObject({ scheduled: joined.map(row => row.id).sort(), householdsNotified: 40, skipped: [] });
+  });
   it.each(['opt_out', 'undeliverable', 'erased'] as const)('counts %s households consistently with the notice job in preview and result', async kind => {
     const f = await setup();
     const goLive = createGoLiveService({ scope: db.forGym, clock: f.clock, smtpConfigured: async () => true });
@@ -286,6 +302,54 @@ describe('plan price change apply', () => {
     expect(new Set(f.notices().map(job => job.options.idempotencyKey)).size).toBe(3);
     expect(f.notices()).toHaveLength(3);
     expect(await f.apply(input)).toEqual(result);
+  });
+  it('refuses an unfinished resume after its date, but replays a finished result after the date', async () => {
+    const f = await setup();
+    const input = await f.request([f.membership.id]);
+    let calls = 0;
+    const scope: typeof db.forGym = (gymId, fn) => db.forGym(gymId, async tx => {
+      const result = await fn(tx); if (++calls === 2) throw new Error('Chunk rolled back'); return result;
+    });
+    await expect(f.apply(input, f.make({ scope }))).rejects.toThrow('Chunk rolled back');
+    f.clock.set('2028-04-16T17:00:00Z');
+    await expect(f.apply(input)).rejects.toEqual(failure('invalid_request'));
+    expect(await f.row(f.membership.id)).toMatchObject({ scheduledPlanId: null });
+    expect(await f.audits(priceChangeScheduledAction)).toHaveLength(0); expect(f.notices()).toHaveLength(0);
+    f.clock.set('2028-04-15T17:00:00Z');
+    const result = await f.apply(input);
+    f.clock.set('2028-04-16T17:00:00Z'); expect(await f.apply(input)).toEqual(result);
+  });
+  it.each(['price', 'switch', 'cancel', 'interval', 'date', 'origin'] as const)('does not count a keyed schedule replaced by a %s edit on resume', async kind => {
+    const f = await setup();
+    const input = await f.request([f.membership.id]);
+    let calls = 0;
+    const scope: typeof db.forGym = (gymId, fn) => db.forGym(gymId, async tx => {
+      const result = await fn(tx); if (++calls === 3) throw new Error('Result rolled back'); return result;
+    });
+    await expect(f.apply(input, f.make({ scope }))).rejects.toThrow('Result rolled back');
+    const other = await factory('plans', f.gymId, { name: 'Replacement' });
+    await db.forGym(f.gymId, tx => tx.update(memberships).set({ revision: 3,
+      ...(kind === 'price' ? { scheduledAmountCents: 11_000 }
+        : kind === 'switch' ? { scheduledPlanId: other.id, scheduledOrigin: 'switch' }
+          : kind === 'interval' ? { interval: 'annual', scheduledInterval: 'annual' }
+            : kind === 'date' ? { scheduledOn: '2028-04-16' }
+              : kind === 'origin' ? { scheduledOrigin: 'downgrade' }
+                : { status: 'cancelled', cancelledAt: f.clock.now() }) }).where(eq(memberships.id, f.membership.id)));
+    const result = await f.apply(input);
+    expect(result).toMatchObject({ scheduled: [], skipped: [{ id: f.membership.id, reason: 'changed' }], householdsNotified: 0 });
+    expect(await f.audits(priceChangeScheduledAction)).toHaveLength(1); expect(f.notices()).toHaveLength(1);
+  });
+  it('serializes a key shared by concurrent requests on different plans before either plan changes', async () => {
+    const f = await setup(), other = await factory('plans', f.gymId, { name: 'Other', currency: 'CAD', amountCents: 8000 });
+    const second = await f.join({ planId: other.id }), input = await f.request([f.membership.id]);
+    const outcomes = await Promise.allSettled([f.apply(input), f.apply({ ...input, planRevision: other.revision,
+      memberships: [{ id: second.id, revision: second.revision }] }, f.service, other.id)]);
+    expect(outcomes.filter(outcome => outcome.status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes.find(outcome => outcome.status === 'rejected')).toMatchObject({ reason: failure('conflict', 'request_reused') });
+    expect(await f.audits(planPriceChangedAction)).toHaveLength(1);
+    expect(await f.audits(priceChangeScheduledAction)).toHaveLength(1);
+    const prices = [(await f.planRow()).amountCents, (await f.planRow(other.id)).amountCents];
+    expect(prices.filter(price => price === 12000)).toHaveLength(1);
   });
   it('refuses a reused key with other parameters, also on another plan', async () => {
     const f = await setup();

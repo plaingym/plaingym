@@ -68,6 +68,7 @@
   "pcPrice": "{name}: new price {amount}",
   "pcWho": "Who moves to the new price?",
   "pcChoice_new": "New members only",
+  "pcTermsNewOnly": "Changing the billing interval or currency applies only to new members. Existing memberships keep their current terms and price.",
   "pcChoice_all": "All existing members",
   "pcChoice_chosen": "Choose members",
   "pcDate": "Effective from",

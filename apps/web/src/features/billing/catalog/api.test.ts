@@ -7,6 +7,15 @@ const id = '019a0af0-9c00-7000-8000-000000000001';
 const plan = { id, createdAt: '2026-10-23T12:00:00Z', name: 'Plan', currency: 'CAD', amountCents: 9999,
   interval: 'monthly', signupFeeCents: 0, trialDays: 0, commitmentMonths: null, active: true, revision: 1, taxRateIds: [] };
 describe('billing contract transport', () => {
+  it('preserves bounded client refusal messages for price apply, without exposing server errors', async () => {
+    const request = { requestKey: id, planRevision: 2, amountCents: 12000, effectiveOn: '2026-12-13', notify: true, memberships: [{ id, revision: 1 }] };
+    for (const status of [400, 404, 409, 500]) {
+      const client = createBillingClient(async () => Response.json({ error: { code: 'invalid_request',
+        message: 'The price change must start on or after today' } }, { status }));
+      await expect(applyPriceChange(client, id, request)).rejects.toMatchObject({ status,
+        message: status === 400 || status === 404 ? 'The price change must start on or after today' : 'Request failed' });
+    }
+  });
   it('validates a price preview including suppressed reach and counts', async () => {
     const preview = { plan, amountCents: 12000, effectiveOn: '2026-12-13', today: '2026-11-13', change: 'increase', memberships: [],
       total: 0, households: 0, householdsWithoutAddress: 0, householdsPayerErased: 0, householdsSuppressed: 0, switchesToPlan: 0, canEmail: true };

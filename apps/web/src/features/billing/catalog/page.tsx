@@ -12,7 +12,7 @@ import { userNames } from '../../../components/ui/page.js';
 import { ApiError } from '../../../lib/api.js';
 import { cn } from '../../../lib/utils.js';
 import { billingClient, previewPriceChange, type BillingClient } from './api.js';
-import { PriceChange } from './price-change.js';
+import { planTermsChanged, PriceChange } from './price-change.js';
 import { ArchiveConfirmation, CatalogEditor, type CatalogKind, type CatalogRecord } from './editor.js';
 import { money, saveError, say, text } from './format.js';
 import { PackCatalog } from '../packs/catalog.js';
@@ -49,7 +49,8 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
     if (kind === 'plans' && record && isPlan(record) && input.amountCents !== record.amountCents && data.data) {
       const effectiveOn = addDays(localDate(new Date(), data.data.settings.timezone), 30);
       let initial: PlanPriceChangePreview;
-      try { initial = await previewPriceChange(client, record.id, Number(input.amountCents), effectiveOn); }
+      try { initial = await previewPriceChange(client, record.id,
+        planTermsChanged(record, input) ? record.amountCents : Number(input.amountCents), effectiveOn); }
       catch (error) {
         if (error instanceof ApiError && error.status === 409) { setStale(true); await cache.invalidateQueries({ queryKey: key }); }
         throw error;

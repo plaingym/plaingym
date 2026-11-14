@@ -72,5 +72,21 @@ for (const width of [360, 1280]) test('plan price selection, summary, warning an
     const preview = (await owner.json<{ data: { memberships: (RecordId & { scheduled: { amountCents: number } | null })[] } }>(
       '/api/billing/plans/' + plan.id + '/price-change?amountCents=12000&effectiveOn=' + today)).data;
     for (const id of membershipIds) expect(preview.memberships.find(row => row.id === id)?.scheduled?.amountCents).toBe(12000);
+    await page.getByRole('button', { name: 'Edit ' + name, exact: true }).click();
+    await page.getByLabel('Amount (' + settings.currency + ')').fill('130.00');
+    await page.getByLabel('Billing interval').selectOption('annual');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(dialog.getByRole('radio')).toHaveCount(1);
+    await expect(dialog.getByRole('note')).toContainText('Changing the billing interval or currency applies only to new members');
+    await capture(page, info, 'terms-new-only-' + width);
+    await dialog.getByRole('button', { name: 'Review change' }).click();
+    await capture(page, info, 'terms-summary-' + width);
+    await dialog.getByRole('button', { name: 'Apply price change', exact: true }).click();
+    await expect(dialog).not.toBeVisible();
+    const updated = (await owner.json<{ data: { amountCents: number; interval: string } }>('/api/billing/plans/' + plan.id)).data;
+    expect(updated).toMatchObject({ amountCents: 13000, interval: 'annual' });
+    const afterTerms = (await owner.json<{ data: { memberships: { id: string; scheduled: { amountCents: number; interval: string } | null }[] } }>(
+      '/api/billing/plans/' + plan.id + '/price-change?amountCents=13000&effectiveOn=' + today)).data;
+    for (const id of membershipIds) expect(afterTerms.memberships.find(row => row.id === id)?.scheduled).toMatchObject({ amountCents: 12000, interval: 'monthly' });
   } finally { await context.close(); }
 });

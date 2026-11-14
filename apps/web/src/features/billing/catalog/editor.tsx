@@ -43,6 +43,15 @@ function catalogDraft(record: CatalogRecord | undefined, currency: string) {
     trialDays: String(plan?.trialDays ?? 0), commitmentMonths: String(plan?.commitmentMonths ?? ''),
     rate: String(tax ? tax.rateMillionths / 10_000 : 0), inclusive: tax?.inclusive ?? false };
 }
+function sameDraftValue(field: keyof ReturnType<typeof catalogDraft>, left: unknown, right: unknown, currency: string) {
+  if (typeof left === 'string' && typeof right === 'string') {
+    try {
+      if (field === 'amount' || field === 'signupFee') return parseMinorUnits(left, currency) === parseMinorUnits(right, currency);
+      if (field === 'rate') return decimalUnits(left, 4) === decimalUnits(right, 4);
+    } catch { /* Keep invalid drafts comparable by their text. */ }
+  }
+  return JSON.stringify(left) === JSON.stringify(right);
+}
 export function CatalogEditor({ kind, record, currency, taxes, busy, locked = false, stale = false, save, cancel }: {
   kind: CatalogKind; record?: CatalogRecord; currency: string; taxes: TaxRate[]; busy: boolean;
   /** Holds the draft while a confirmation for it is open, so the confirmed values are the ones on screen. */
@@ -59,12 +68,12 @@ export function CatalogEditor({ kind, record, currency, taxes, busy, locked = fa
     // Reload untouched fields from the server; retain edits, including text not yet valid for saving.
     const merged = Object.fromEntries(Object.keys(fresh).map(key => {
       const field = key as keyof typeof draft;
-      if (field !== 'taxRateIds' && JSON.stringify(draft[field]) !== JSON.stringify(fresh[field])
-        && (field in clashes || (JSON.stringify(draft[field]) !== JSON.stringify(before[field])
-          && JSON.stringify(fresh[field]) !== JSON.stringify(before[field])))) {
+      if (field !== 'taxRateIds' && !sameDraftValue(field, draft[field], fresh[field], currency)
+        && (field in clashes || (!sameDraftValue(field, draft[field], before[field], currency)
+          && !sameDraftValue(field, fresh[field], before[field], currency)))) {
         Object.assign(nextClashes, { [field]: fresh[field] });
       }
-      return [field, JSON.stringify(draft[field]) === JSON.stringify(before[field]) ? fresh[field] : draft[field]];
+      return [field, sameDraftValue(field, draft[field], before[field], currency) ? fresh[field] : draft[field]];
     })) as typeof draft;
     const carried = record && 'taxRateIds' in record ? record.taxRateIds : [];
     // Apply this draft's own ticks and unticks to the fresh list, so a rate someone else added or removed stands.
@@ -77,7 +86,7 @@ export function CatalogEditor({ kind, record, currency, taxes, busy, locked = fa
   const price = record && 'amountCents' in record ? record : undefined;
   const latest = (field: keyof typeof draft) => {
     const value = clashes[field];
-    if (value === undefined || JSON.stringify(value) === JSON.stringify(draft[field])) return null;
+    if (value === undefined || sameDraftValue(field, value, draft[field], currency)) return null;
     const display = typeof value === 'boolean' ? text(value ? 'yes' : 'no')
       : field === 'interval' ? text(String(value)) : String(value) || text('emptyValue');
     return <p role="note" className="break-words text-sm text-destructive">{say('latestValue', { value: display })}</p>;

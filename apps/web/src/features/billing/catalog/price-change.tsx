@@ -9,12 +9,36 @@ import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
 import { StackedItem, StackedList, TableContainer } from '../../../components/ui/table.js';
 import { ApiError } from '../../../lib/api.js';
-import { applyPriceChange, previewPriceChange, type BillingClient } from './api.js';
+import { applyPriceChange, PriceChangeError, previewPriceChange, type BillingClient } from './api.js';
 import { money, say, selectClass, text } from './format.js';
 
 type Choice = 'new' | 'all' | 'chosen';
 type Props = { plan: Plan; input: Record<string, unknown>; initial: PlanPriceChangePreview; client: BillingClient;
   cancel: () => void; reload: () => Promise<void>; done: () => Promise<void> };
+
+export const planTermsChanged = (plan: Plan, input: Record<string, unknown>) =>
+  (input.currency !== undefined && input.currency !== plan.currency) || (input.interval !== undefined && input.interval !== plan.interval);
+
+/** Compare only intended edits; the price is applied separately and the revision is an optimistic lock. */
+function otherEditsMatch(plan: Plan, input: Record<string, unknown>) {
+  return Object.entries(input).every(([field, value]) => field === 'revision' || field === 'amountCents'
+    || (field === 'taxRateIds' && Array.isArray(value)
+      ? JSON.stringify([...value].sort()) === JSON.stringify([...plan.taxRateIds].sort())
+      : value === plan[field as keyof Plan]));
+}
+
+async function savePlan(client: BillingClient, plan: Plan, input: Record<string, unknown>) {
+  const matches = (fresh: Plan) => fresh.amountCents === input.amountCents && otherEditsMatch(fresh, input);
+  if (matches(plan)) return plan;
+  try { return (await client.call('updatePlan', input, { planId: plan.id })).data; }
+  catch (failure) {
+    // Recover a committed save only when every intended value, including the price, agrees.
+    let fresh: Plan;
+    try { fresh = (await client.call('getPlan', undefined, { planId: plan.id })).data; } catch { throw failure; }
+    if (!matches(fresh)) throw failure;
+    return fresh;
+  }
+}
 
 /** A selection is independent of the visible filters; households are counted once, even with several memberships. */
 export function priceChangeCounts(rows: readonly PlanPriceChangeMembership[]) {
@@ -24,6 +48,7 @@ export function priceChangeCounts(rows: readonly PlanPriceChangeMembership[]) {
 }
 
 export function PriceChange({ plan, input, initial, client, cancel, reload, done }: Props) {
+  const newOnly = planTermsChanged(plan, input);
   const [preview, setPreview] = useState(initial), [date, setDate] = useState(initial.effectiveOn);
   const [choice, setChoice] = useState<Choice>('new'), [include, setInclude] = useState(false);
   const [ticks, setTicks] = useState(() => new Set(initial.memberships.filter(row => row.tickedByDefault).map(row => row.id)));
@@ -76,14 +101,14 @@ export function PriceChange({ plan, input, initial, client, cancel, reload, done
     setBusy(true); setError('');
     try {
       if (choice === 'new') {
-        await client.call('updatePlan', input, { planId: plan.id });
+        await savePlan(client, plan, input);
         await done(); return;
       }
       setAttempted(true);
       requestKey.current ??= crypto.randomUUID();
       if (!command.current) {
         // Save other edits first, keeping the current price until the apply endpoint changes it.
-        const updated = (await client.call('updatePlan', { ...input, amountCents: plan.amountCents }, { planId: plan.id })).data;
+        const updated = await savePlan(client, plan, { ...input, amountCents: plan.amountCents });
         command.current = { requestKey: requestKey.current, planRevision: updated.revision, amountCents: initial.amountCents,
           effectiveOn: date, notify: sendNotice, memberships: selected.map(row => ({ id: row.id, revision: row.revision })) };
       }
@@ -92,7 +117,7 @@ export function PriceChange({ plan, input, initial, client, cancel, reload, done
       // Cancel is gone once the attempt started, so every error also offers the reload (a lasting failure must not trap staff).
       if (failure instanceof ApiError && failure.status === 409) {
         setConflict(true); setError(text(failure.reason.includes('request_reused') ? 'pcReused' : 'pcConflict'));
-      } else setError(text('error'));
+      } else setError(failure instanceof PriceChangeError ? failure.message : text('error'));
     } finally { setBusy(false); }
   }
   async function reloadPlan() {
@@ -103,7 +128,8 @@ export function PriceChange({ plan, input, initial, client, cancel, reload, done
   return <Dialog title={text(result ? 'pcResult' : 'pcTitle')} closeLabel={text('cancel')} size="wide" dismissible={!busy && !attempted}
     onClose={cancel}>
     <div className="min-w-0 space-y-4 wrap-anywhere">
-      <p>{say('pcPrice', { name: plan.name, amount: money(initial.amountCents, plan.currency) })}</p>
+      <p>{say('pcPrice', { name: plan.name, amount: money(Number(input.amountCents ?? initial.amountCents), String(input.currency ?? plan.currency)) })}</p>
+      {newOnly && !result && <p role="note">{text('pcTermsNewOnly')}</p>}
       {error && <Alert role="alert" className="space-y-3"><p>{error}</p>{(conflict || attempted) && <Button disabled={busy} onClick={() => void reloadPlan()}>{text('pcReload')}</Button>}</Alert>}
       {result ? <>
         <p role="status">{say('pcScheduled', { count: result.scheduled.length, date: result.effectiveOn })}</p>
@@ -122,7 +148,7 @@ export function PriceChange({ plan, input, initial, client, cancel, reload, done
       </> : <>
         {!review && <>
           <fieldset disabled={locked || conflict} className="space-y-2"><legend className="font-semibold">{text('pcWho')}</legend>
-            {(['new', 'all', 'chosen'] as const).map(value => <Label key={value} className="flex min-h-11 items-center gap-3">
+            {(['new', 'all', 'chosen'] as const).filter(value => !newOnly || value === 'new').map(value => <Label key={value} className="flex min-h-11 items-center gap-3">
               <input type="radio" name="price-choice" className="size-5 shrink-0" value={value} checked={choice === value} onChange={() => { setChoice(value); setConfirmed(false); }}/>{text('pcChoice_' + value)}
             </Label>)}
           </fieldset>

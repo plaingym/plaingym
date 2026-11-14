@@ -11,6 +11,9 @@ cannot move. Search and status, commitment and custom-price filters affect only
 the visible list, never the selection. Phones show cards; desktop tables scroll
 inside their own container. A truncated preview disables All.
 
+Changing the price together with the billing interval or currency offers only **New members only**,
+with an explanation that existing memberships retain their current terms and price.
+
 The effective date starts 30 days ahead in the gym's timezone. A changed date
 requires a fresh preview. Email is checked by default and disabled with its
 reason when member email cannot be sent. Review counts selected memberships and
@@ -19,8 +22,10 @@ payers and suppressed addresses (opted out or undeliverable). Staff must tell
 unreachable households another way. An increase with fewer than 30 days' notice
 or no email requires explicit confirmation; a decrease does not.
 
-Other plan edits save first while keeping the old price; the price-change apply
-uses the revision returned by that save. A failed apply keeps the exact request,
+Other plan edits save first while keeping the old price; price-only moves skip that save.
+The price-change apply uses the current revision or the revision returned by a needed save.
+When a failed save already committed, re-reading matching intended fields recovers its revision.
+A failed apply keeps the exact request,
 including its key and membership revisions, for retry, and offers reloading the
 plan as the way out. Conflicts require reloading and reviewing the plan. The result names scheduled and skipped memberships and
 their reasons, and reports reachable households with a notice queued separately
@@ -70,7 +75,8 @@ save conflict on an existing record refreshes the catalog and offers **Reload
 record**. Save stays disabled until that reload succeeds. Reload keeps edited
 fields, fills untouched fields from the latest record and uses its revision for
 the next save. When staff and the latest record both changed a field, its latest
-value appears beside the retained draft for review. Saves use that controlled
+value appears beside the retained draft for review. Equivalent parsed amounts, sign-up fees and
+tax rates do not show a clash just because their decimal formatting differs. Saves use that controlled
 draft. Tax selections merge rate by rate: the draft's own ticks and
 unticks apply to the latest list, and rates that no longer apply are removed.
 Staff can keep editing the draft while deciding to reload, and review it before
@@ -90,4 +96,5 @@ the editor is still open.
 
 The catalog and invoice transports use `readApiError` from `lib/api.ts` to
 read structured reason codes. User messages come from locale keys; arbitrary
-server messages are never displayed.
+server messages are never displayed. Price-change apply also displays bounded messages for
+expected client refusals, such as an effective date that has passed; server errors stay generic.
