@@ -14,6 +14,7 @@ import { createServerRegistry } from '../../core/registry.js';
 import { errorHandler } from '../../core/errors.js';
 import { TestClock } from '../../core/clock.js';
 import { authorize } from './auth.permissions.js';
+import { assertCanResetPassword } from './auth.reset.js';
 import type { Principal, RequestEnvironment } from '../../core/context.js';
 
 const db = useTestDatabase(), factory = createFactories(db), clock = new TestClock('2026-10-22T12:00:00Z');
@@ -101,6 +102,22 @@ it('rechecks manager access inside mutations and rolls back a rejected change', 
   const stale = { gymId: gymA, actorUserId: user.userId, clock };
   await db.forGym(gymA, (tx) => tx.delete(staffRoles).where(eq(staffRoles.id, user.id)));
   await expect(service.createProfile(stale, { displayName: 'Denied stale session' })).rejects.toMatchObject({ code: 'forbidden' });
+});
+
+it.each(['admin', 'coach', 'front_desk', 'revoke'] as const)('only an owner can change an admin role: %s', async change => {
+  const target = await factory('staffRoles', gymA, { role: 'admin' });
+  const method = change === 'revoke' ? 'DELETE' : 'PATCH', path = '/api/staff/roles/' + target.id;
+  const body = { revision: target.revision, ...(change === 'revoke' ? {} : { role: change }) };
+  // Refuse both a peer and the caller's own admin role before a reset could target a demoted login.
+  for (const id of [target.id, (await service.listRoles(gymA, { limit: 100, offset: 0 })).data.find(row => row.userId === users.get('admin'))!.id])
+    expect((await request(server('admin'), method, '/api/staff/roles/' + id, body)).status).toBe(403);
+  expect((await service.listRoles(gymA, { limit: 100, offset: 0 })).data.find(row => row.id === target.id)).toMatchObject({ role: 'admin', revision: target.revision });
+  await expect(db.forGym(gymA, tx => assertCanResetPassword(tx, { gymId: gymA, actorUserId: users.get('admin')!, targetUserId: target.userId })))
+    .rejects.toMatchObject({ code: 'forbidden' });
+  expect(await db.forGym(gymA, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, target.id)))).toEqual([]);
+  expect((await request(server('owner'), method, path, body)).status).toBe(200);
+  const events = await db.forGym(gymA, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, target.id)));
+  expect(events.map(row => row.action)).toEqual([change === 'revoke' ? 'staff.role_revoked' : 'staff.role_changed']);
 });
 
 it('names the owner without a profile and searches only linked gym accounts, with literal words and pagination', async () => {

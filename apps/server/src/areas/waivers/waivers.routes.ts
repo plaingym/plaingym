@@ -61,7 +61,8 @@ export function createWaiverRoutes(service?: WaiversService) {
       if (key === 'uploadDocument' && ctx.req.header('content-type')?.split(';')[0]?.trim().toLowerCase() !== 'application/pdf')
         throw new AppError('invalid_request', waiverValidation('pdfType'));
       const result = await handlers[key as keyof typeof handlers](context, ctx.req.param(), ctx.req.query(),
-        key === 'uploadDocument' ? new Uint8Array(await ctx.req.arrayBuffer()) : contract.body ? await ctx.req.json() : undefined);
+        key === 'uploadDocument' ? new Uint8Array(await ctx.req.arrayBuffer()) : contract.body
+          ? await ctx.req.json().catch(() => { throw new AppError('invalid_request', 'Request body must be JSON'); }) : undefined);
       ctx.header('Cache-Control', 'no-store'); return ctx.json(contract.response.parse(result) as { data: unknown }, 200);
     });
   })];

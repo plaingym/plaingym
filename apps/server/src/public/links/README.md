@@ -65,9 +65,11 @@ The two-minute reset runs only on these pages: it cannot run while the tablet is
 on Stripe's hosted Checkout page. Staff must clear an abandoned Stripe screen.
 
 Every API request resolves the bearer token into the existing signed-link
-principal. The runtime sends `/api/links/*` through normal session loading;
-the link routes resolve their own bearer, and kiosk device tokens grant no link
-access. Cookie-bearing browser requests keep the normal same-origin CSRF checks.
+principal. The runtime sends the purpose routes (`/api/links/onboarding`,
+`pay-invoice`, `update-card`, `sign-waiver`, `unsubscribe` and their subpaths)
+through normal session loading; they resolve their own bearer, and kiosk device
+tokens grant no link access. The staff link routes keep the kiosk wrapper, so a
+device token there answers 404 like other staff routes. Cookie-bearing browser requests keep the normal same-origin CSRF checks.
 Its declared purpose permission runs before validation. Reads use
 `forHousehold` with the verified link ID and the request clock. The narrow shared
 projections exclude contacts, medical data and unrelated invoices or members;

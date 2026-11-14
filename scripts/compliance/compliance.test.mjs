@@ -186,6 +186,7 @@ function claFixture(options = {}) {
   const comments = options.comments ?? [];
   let ledger = options.ledger;
   let branch = Boolean(ledger);
+  let revision = 1, conflicts = options.writeConflicts ?? 0;
   const author = { id: 42, login: 'contributor', type: 'User', ...options.author };
   const pr = { state: 'open', user: author, head: { sha: 'current-head' }, base: { repo: { full_name: 'plaingym/plaingym' } }, ...options.pr };
   const context = {
@@ -206,19 +207,30 @@ function claFixture(options = {}) {
         assert.equal(value.path, 'signatures/cla.json');
         assert.equal(value.ref, 'cla-signatures');
         if (!ledger) return notFound();
-        return { data: file(JSON.stringify(ledger)) };
+        return { data: { ...file(JSON.stringify(ledger)), sha: 'ledger-' + revision } };
       },
       createOrUpdateFileContents: async (value) => {
         if (options.writeError) throw new Error('Write unavailable');
         assert.equal(value.branch, 'cla-signatures');
+        assert.equal(value.sha, ledger ? 'ledger-' + revision : undefined);
+        if (conflicts-- > 0) {
+          ledger = { schemaVersion: 1, signatures: [...(ledger?.signatures ?? []), ...(options.concurrentSignatures ?? [{ userId: 98 + revision, claSha256: hash }])] };
+          revision++;
+          // GitHub refuses a stale sha with 409 and a sha-less write over an existing file with 422.
+          throw Object.assign(new Error('Ledger changed'), { status: value.sha ? 409 : 422 });
+        }
         writes.push(value);
         ledger = JSON.parse(Buffer.from(value.content, 'base64').toString('utf8'));
+        revision++;
       },
     },
     git: {
       getRef: async (value) => value.ref === 'heads/main' ? { data: { object: { sha: 'default-sha' } } }
         : branch ? { data: {} } : notFound(),
-      createRef: async (value) => { assert.equal(value.ref, 'refs/heads/cla-signatures'); branch = true; },
+      createRef: async (value) => {
+        assert.equal(value.ref, 'refs/heads/cla-signatures'); branch = true;
+        if (options.branchConflict) throw Object.assign(new Error('Reference already exists'), { status: 422 });
+      },
     },
     issues: {
       listComments: async () => {},
@@ -244,8 +256,7 @@ function claFixture(options = {}) {
 test('privileged CLA workflow has one pinned action and no checkout or repository-code execution', () => {
   assert.match(workflow, /pull_request_target:/);
   assert.match(workflow, /issue_comment:/);
-  assert.match(workflow, /cancel-in-progress: false/);
-  assert.match(workflow, /group: cla-signatures-/);
+  assert.doesNotMatch(workflow, /^concurrency:/m);
   assert.equal([...workflow.matchAll(/- uses:/g)].length, 1);
   assert.match(workflow, /uses: actions\/github-script@[0-9a-f]{40}/);
   assert.doesNotMatch(workflow, /uses:.*checkout|^\s+run:|require\(['"]\.\/|\$\{\{\s*github\.event/m);
@@ -305,6 +316,40 @@ test('author signs once; record includes identity, comment, timestamp and agreem
   });
   await fixture.run();
   assert.equal(fixture.writes.length, 1);
+});
+
+test('concurrent CLA writes merge the latest ledger and preserve both signers', async () => {
+  const fixture = claFixture({ writeConflicts: 2, branchConflict: true });
+  await fixture.run();
+  fixture.context.eventName = 'issue_comment';
+  await fixture.run();
+  assert.equal(fixture.statuses.at(-1).state, 'success');
+  assert.equal(fixture.writes.length, 1);
+  assert.deepEqual(fixture.ledger().signatures.map(entry => entry.userId), [99, 100, 42]);
+  await fixture.run();
+  assert.equal(fixture.writes.length, 1);
+});
+
+test('a concurrent signature for the same author is reused without another write', async () => {
+  const text = 'Version 1.0\nPublic fixture contributor agreement.\n';
+  const fixture = claFixture({ writeConflicts: 1, concurrentSignatures: [{ userId: 42, claSha256: sha256(text) }] });
+  await fixture.run();
+  fixture.context.eventName = 'issue_comment';
+  await fixture.run();
+  assert.equal(fixture.statuses.at(-1).state, 'success');
+  assert.equal(fixture.writes.length, 0);
+  assert.equal(fixture.ledger().signatures.length, 1);
+});
+
+test('repeated ledger conflicts stop after a bounded retry and fail closed', async () => {
+  const fixture = claFixture({ writeConflicts: 5 });
+  await fixture.run();
+  fixture.context.eventName = 'issue_comment';
+  await fixture.run();
+  assert.equal(fixture.statuses.at(-1).state, 'failure');
+  assert.equal(fixture.writes.length, 0);
+  assert.equal(fixture.ledger().signatures.length, 5);
+  assert.match(fixture.failures.at(-1), /Ledger changed/);
 });
 
 test('signature identity is user ID, never a recycled login', async () => {

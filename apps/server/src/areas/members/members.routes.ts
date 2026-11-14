@@ -28,7 +28,8 @@ function jsonRoute(contract: c.EndpointContract, handler: (context: RequestConte
     ...(contract.body ? { body: { required: true, content: { 'application/json': { schema: contract.body } } } } : {}),
   }, responses: { 200: { description: 'Member management response', content: { 'application/json': { schema: contract.response } } } } }, async (ctx) => {
     const context = ctx.get('context'); mutation(context);
-    const result = await handler(context, ctx.req.param(), ctx.req.query(), contract.body ? await ctx.req.json() : undefined);
+    const body = contract.body ? await ctx.req.json().catch(() => { throw new AppError('invalid_request', 'Request body must be JSON'); }) : undefined;
+    const result = await handler(context, ctx.req.param(), ctx.req.query(), body);
     ctx.header('Cache-Control', 'no-store');
     return ctx.json(contract.response.parse(result) as { data: unknown }, 200);
   });

@@ -53,6 +53,13 @@ function server(f: Fixture, principal: Principal) {
   return app;
 }
 const staff = (f: Fixture, role: StaffRole): Principal => ({ kind: 'staff', gymId: f.gymId, userId: f.user.id, roles: [role] });
+it.each([undefined, 'not json'])('rejects a missing or non-JSON waiver body: %s', async (body) => {
+  const f = await fixture();
+  const response = await server(f, staff(f, 'owner')).request('/api/waivers/templates', { method: 'POST', ...(body === undefined ? {} : { body }) });
+  expect(response.status).toBe(400);
+  // A bodyless request can be refused by OpenAPI validation before the JSON reader.
+  if (body !== undefined) expect(await response.json()).toMatchObject({ error: { code: 'invalid_request' } });
+});
 async function request(app: ReturnType<typeof server>, operation: Operation, f: Fixture) {
   const contract = waiverContracts[operation];
   if (operation === 'uploadDocument') return app.request(contract.path, { method: 'POST', headers: { 'content-type': 'application/pdf' }, body: Uint8Array.from(await waiverDocumentFixture()) });

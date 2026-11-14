@@ -53,6 +53,12 @@ const send = (app: ReturnType<typeof server>, path: string, method = 'GET', body
   ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) });
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
 
+it.each([undefined, 'not json'])('rejects a missing or non-JSON member body: %s', async (body) => {
+  const response = await staff('owner').request('/api/members', { method: 'POST', ...(body === undefined ? {} : { body }) });
+  expect(response.status).toBe(400);
+  expect(await response.json()).toMatchObject({ error: { code: 'invalid_request' } });
+});
+
 async function routeFixture(gymId: string) {
   const home = await factory('households', gymId), person = await factory('members', gymId, { householdId: home.id, medicalNotes: 'private health detail' });
   const tag = await factory('memberTags', gymId);

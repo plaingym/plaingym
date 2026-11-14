@@ -94,6 +94,23 @@ async function toggle(gymId: string, on: boolean) {
 }
 const websitePaths = [...sitePages.map(pagePath), '/sitemap.xml', '/robots.txt', '/website/theme.css', '/api/website'];
 
+it.each(staffRoles)('checks staff permissions on all five website settings routes while enabled: %s', async role => {
+  await toggle(gymA, true);
+  const before = editable(await service.settings(gymA));
+  const target = app(gymA, { kind: 'staff', gymId: gymA, userId: users.get(role)!, roles: [role] });
+  const allowed = role === 'owner' || role === 'admin';
+  const cases = [['GET', '/api/website'], ['PUT', '/api/website'], ['POST', '/api/website/logo'],
+    ['DELETE', '/api/website/logo'], ['POST', '/api/website/photos']] as const;
+  for (const [method, path] of cases) {
+    const body = method === 'PUT' ? editable(await service.settings(gymA))
+      : method === 'DELETE' ? { revision: await revision() }
+      : { revision: await revision(), contentType: 'image/jpeg', base64: jpeg.toString('base64'), ...(path.endsWith('/photos') ? { alt: 'Role check' } : {}) };
+    const response = method === 'GET' ? await get(path, target) : await send(method, path, body, target);
+    expect(response.status, method + ' ' + path).toBe(allowed ? 200 : 403);
+  }
+  await service.update({ gymId: gymA, actor: { kind: 'system' } }, { ...before, revision: await revision() });
+});
+
 describe('the module toggle', () => {
   it('removes every website route when off, sends / to the portal, and leaves the core pages and the portal alone', async () => {
     const photo = await service.uploadPhoto({ gymId: gymA, actor: { kind: 'system' } }, { revision: await revision(), contentType: 'image/jpeg', base64: jpeg.toString('base64'), alt: 'Mats' });

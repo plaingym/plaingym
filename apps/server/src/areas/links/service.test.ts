@@ -132,6 +132,21 @@ describe('signed link creation and metadata', () => {
   it.each(['2026-10-22T12:00:00Z', '2026-10-21T12:00:00Z'])('rejects non-future expiry %s', async (expiresAt) => {
     await expect(service.create(mutation, { ...request(), expiresAt })).rejects.toMatchObject({ code: 'invalid_request' });
   });
+  it.each(['onboarding', 'update_card', 'pay_invoice', 'sign_waiver'] as const)('bounds %s creation and sending to 90 days', async purpose => {
+    const before = await database.forGym(gymA, async tx => ({ links: await tx.select().from(signedLinks), audits: await tx.select().from(auditEvents) }));
+    const limit = clock.now().getTime() + 90 * 86400000;
+    const input = { ...request(purpose), expiresAt: new Date(limit + 1).toISOString() };
+    for (const path of ['/api/links', '/api/links/send']) {
+      const response = await post(server(), path, { ...input, ...(path.endsWith('/send') ? { sendGeneration: uuidv7() } : {}) });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { code: 'invalid_request', details: { expiresAt: expect.any(Array) } } });
+    }
+    await expect(service.createMany(mutation, [request(), input])).rejects.toMatchObject({ code: 'invalid_request' });
+    expect(await database.forGym(gymA, async tx => ({ links: await tx.select().from(signedLinks), audits: await tx.select().from(auditEvents) }))).toEqual(before);
+    const created = await service.create(mutation, { ...input, expiresAt: new Date(limit).toISOString() });
+    expect(created.link.expiresAt).toBe(new Date(limit).toISOString());
+    expect((await sending.send(mutation, { ...input, expiresAt: new Date(limit).toISOString(), sendGeneration: uuidv7() })).expiresAt).toBe(created.link.expiresAt);
+  });
   it('rejects every invalid purpose/resource pairing even for direct service calls', async () => {
     const invalid = [
       { ...request(), invoiceId: invoiceA }, { ...request(), memberId: memberA },

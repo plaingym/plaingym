@@ -361,11 +361,29 @@ test('staff requests that join two households\' records are refused and change n
     && scopedNames(entry.path, entry.method, document).length > 1).map(key).sort();
   expect(joining, 'staff operations that take two household records').toEqual([...new Set([...cases.map(item => item.key), filters])].sort());
 
-  const state = async () => Object.fromEntries(await Promise.all([
+  type ResourceRow = { memberId?: string | null; invoiceId?: string | null; householdId?: string };
+  const namesB = (row: ResourceRow) => row.memberId === memberB || row.invoiceId === invoiceB;
+  async function list<T>(path: string): Promise<T[]> {
+    const rows: T[] = [];
+    for (let offset = 0; ; offset += 100) {
+      const page = (await owner.json<{ data: T[] }>(path + (path.includes('?') ? '&' : '?') + `limit=100&offset=${offset}`)).data;
+      rows.push(...page);
+      if (page.length < 100) return rows;
+    }
+  }
+  const state = async () => ({ ...Object.fromEntries(await Promise.all([
     `/api/households/${family.id}/portal-invitations`, `/api/households/${family.id}/users?limit=100`, `/api/households/${own}/users?limit=100`,
     `/api/billing/households/${card!.householdId}/payment-methods?limit=100`, `/api/billing/memberships?householdId=${family.id}&limit=100`,
     `/api/links?householdId=${family.id}&limit=100`,
-  ].map(async path => [path, (await owner.json<{ data: unknown }>(path)).data] as const)));
+  ].map(async path => [path, (await owner.json<{ data: unknown }>(path)).data] as const))),
+    // Only A's rows naming B belong to this check: other specs also use A's seeded household.
+    crossLinks: (await list<ResourceRow>(`/api/links?householdId=${own}`)).filter(namesB),
+    crossMemberships: (await list<ResourceRow>(`/api/billing/memberships?householdId=${own}`)).filter(namesB),
+    crossInvitations: (await owner.json<{ data: ResourceRow[] }>(`/api/households/${own}/portal-invitations`)).data.filter(namesB),
+    crossRecipients: (await Promise.all((await list<{ campaign: RecordId }>('/api/link-campaigns')).map(async row =>
+      (await list<{ link: ResourceRow }>(`/api/link-campaigns/${row.campaign.id}/recipients`))
+        .filter(recipient => recipient.link.householdId === own && namesB(recipient.link))))).flat(),
+  });
   const before = await state(), results: string[] = [];
   for (const item of cases) {
     const response = await owner.request(item.path, item.method, item.body);

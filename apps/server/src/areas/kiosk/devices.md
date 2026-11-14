@@ -13,7 +13,7 @@ When settled wrong PINs use up a device's budget or its client address's budget 
 
 The check-in handlers themselves are supplied by their own kiosk parts. Middleware tests use contract-shaped handlers until those implementations are available.
 
-The production runtime delegates `/api/links/*` to normal session loading so signed-link routes resolve their own bearer; every other path keeps this wrapper's device-token restrictions.
+The production runtime delegates the signed-link purpose routes (`/api/links/onboarding`, `pay-invoice`, `update-card`, `sign-waiver` and `unsubscribe`, with their subpaths) to normal session loading so they resolve their own bearer; every other path, the staff link routes included, keeps this wrapper's device-token restrictions.
 
 The production runtime mounts this wrapper ahead of session loading. Activity
 updates `last_seen_at` at most once per minute using a conditional write; routine

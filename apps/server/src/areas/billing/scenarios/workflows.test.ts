@@ -21,7 +21,8 @@ describe('billing workflows through services, signed webhooks and PostgreSQL job
     const bill = (await f.read()).invoices[0]!, pay = await f.payLink(bill.id);
     await f.drain();
     expect((await f.lifecycle.get(f.gymId, assigned.id)).status).toBe('pending'); // Abandoned Checkout cannot activate.
-    const setup = await f.links.create(f.context, { purpose: 'update_card', householdId: f.home.id, expiresAt: '2029-01-01T00:00:00Z' });
+    const setup = await f.links.create(f.context, { purpose: 'update_card', householdId: f.home.id,
+      expiresAt: new Date(f.clock.now().getTime() + 90 * 86400000).toISOString() });
     const setupSession = await f.checkout.start(f.gymId, setup.link.id);
     f.transport.completeCheckout(setupSession.session.id);
     await f.deliver('checkout.session.completed', setupSession.session.id); await f.drain();

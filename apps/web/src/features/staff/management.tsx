@@ -145,7 +145,7 @@ export function StaffManagement({ roles: actorRoles, passwordEnabled, services =
         <PersonPicker key={grantPicker} name="userId" kind="account" services={services} onChange={setGrantUserId}/><RoleSelect/><Button type="submit" disabled={!grantUserId}>{label('grantRole')}</Button></fieldset></form>
       {roles.length > 0 && <StackedList>{roles.map((role) => <StackedItem key={role.id} className="gap-3">
         <h3 className="flex flex-wrap items-center gap-2 font-semibold"><span className="break-words">{nameFor(role)}</span><Badge>{label(role.role)}</Badge></h3>
-        {role.role !== 'owner' && <><form key={role.revision} onSubmit={(event) => submit(event, (data) => services.changeRole(role.id, value(data, 'role') as AssignableStaffRole, role.revision))}>
+        {role.role !== 'owner' && (role.role !== 'admin' || actorRoles.includes('owner')) && <><form key={role.revision} onSubmit={(event) => submit(event, (data) => services.changeRole(role.id, value(data, 'role') as AssignableStaffRole, role.revision))}>
           <fieldset disabled={busy} className="flex flex-col gap-2 sm:flex-row sm:items-end"><div className="sm:w-56"><RoleSelect initial={role.role}/></div><Button type="submit" variant="outline">{label('changeRole')}</Button></fieldset></form>
           {revoking !== role.id ? <Button variant="outline" className="self-start" disabled={busy} onClick={() => setRevoking(role.id)}>{label('revoke')}</Button>
             : <div role="group" aria-label={label('revoke')} className="space-y-2 rounded-lg border border-destructive/40 bg-destructive/5 p-3"><p className="text-sm">{label('revokeConfirm')}</p>

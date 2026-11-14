@@ -78,7 +78,8 @@ pages.
   update the household's card, sign one member's waivers, onboarding, or change
   one member's announcement subscription. The
   token is 256 random bits; only its SHA-256 digest is stored. Each request
-  reloads the link and refuses it once revoked, used or expired. A link can't
+  reloads the link and refuses it once revoked, used or expired. Staff-created
+  links, including emailed links, expire within 90 days of creation. A link can't
   read bookings, attendance, ranks, memberships or emergency contacts.
   Announcement unsubscribe links last 90 days and remain reusable until expiry.
   Their GET page never changes preferences; a button or a cookie-less one-click
@@ -294,7 +295,9 @@ by setup, the gym CLI, staff and portal invitations, and the join flow.
     use up an account's window, which then refuses that account until it ends;
     Google sign-in and an already-sent link still work.
 * **Resets.** Staff may reset the password only of users whose roles are all below
-  their own (a member who is also staff counts as staff). An owner resets their
+  their own (a member who is also staff counts as staff). Only an owner may change
+  or revoke an existing admin role, so an admin cannot demote a peer to reset
+  that login's password. An owner resets their
   own password with `gym-app auth reset-password <email>` on the server. A reset
   deletes all of the user's sessions.
 * **Sign-in email changes.** Every staff and portal login has an account page

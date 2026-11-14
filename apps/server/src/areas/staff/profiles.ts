@@ -109,6 +109,8 @@ export function createStaffProfileService(scope = forGym) {
         const roles = await assertStaffManager(tx, actor.actorUserId), existing = roles.find((row) => row.id === id);
         if (!existing) throw new AppError('not_found', 'Staff role not found');
         if (existing.role === 'owner' || ('role' in input && !['admin', 'coach', 'front_desk'].includes(input.role))) throw new AppError('forbidden', 'Owner changes are not permitted');
+        if (existing.role === 'admin' && !roles.some(row => row.userId === actor.actorUserId && row.role === 'owner'))
+          throw new AppError('forbidden', 'Only an owner may change or revoke an admin role');
         const guard = revisionGuard(staffRoles.revision, input.revision), where = and(eq(staffRoles.id, id), guard.matches);
         if (revoke) {
           assertRevised(await tx.delete(staffRoles).where(where).returning());

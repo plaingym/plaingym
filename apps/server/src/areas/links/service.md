@@ -9,6 +9,8 @@ completion and revocation lock the same link row; a second completion fails.
 Creation returns a fresh 256-bit URL-safe token once. Only its SHA-256 digest is
 stored. Get, list, revoke, and send return metadata without the token or digest.
 The HTTP creation result and metadata responses use `Cache-Control: no-store`.
+Creation and sending refuse expiries more than 90 days ahead, with an `expiresAt`
+field error. Exactly 90 days is allowed; a past or present expiry is refused.
 
 Announcement unsubscribe links use the same resolver and principal with one
 member resource. They are created only by `issueUnsubscribeLink` in

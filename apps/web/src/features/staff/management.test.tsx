@@ -20,6 +20,15 @@ function services(): StaffClient {
     grantRole: vi.fn().mockResolvedValue(undefined), changeRole: vi.fn().mockResolvedValue(undefined), revokeRole: vi.fn().mockResolvedValue(undefined), resetPassword: vi.fn().mockResolvedValue(undefined), uploadPhoto: vi.fn().mockResolvedValue(profile) };
 }
 afterEach(cleanup);
+it.each(['owner', 'admin'] as const)('shows admin role changes and revocation only to an owner: %s', async actorRole => {
+  const service = services();
+  vi.mocked(service.roles).mockResolvedValue({ data: [{ id: 'peer-admin', userId: profile.userId!, displayName: 'Peer Admin',
+    role: 'admin', revision: 1, createdAt: profile.createdAt }], pagination: { limit: 25, offset: 0, total: 1 } });
+  render(<StaffManagement roles={[actorRole]} passwordEnabled services={service}/>);
+  await screen.findByText('Peer Admin');
+  expect(Boolean(screen.queryByRole('button', { name: 'Change role' }))).toBe(actorRole === 'owner');
+  expect(Boolean(screen.queryByRole('button', { name: 'Revoke access' }))).toBe(actorRole === 'owner');
+});
 it('names the owner independently of profile search and grants access by an explicit person selection at 360 px', async () => {
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 360 });
   const service = services(), user = userEvent.setup();

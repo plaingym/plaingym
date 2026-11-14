@@ -6,10 +6,6 @@ on:
   issue_comment:
     types: [created, edited]
 permissions: {}
-# One writer for the shared ledger. Do not cancel an in-flight signature write.
-concurrency:
-  group: cla-signatures-${{ github.repository }}
-  cancel-in-progress: false
 jobs:
   cla:
     if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
@@ -76,15 +72,19 @@ jobs:
                 && comment.user?.type === 'Bot' && comment.body?.startsWith('<!-- plaingym-cla:');
               let prompt = comments.find(isOurPrompt);
 
-              let stored;
-              try {
-                stored = (await api.repos.getContent({ owner, repo, path: signaturePath, ref: signatureBranch })).data;
-              } catch (error) {
-                if (error.status !== 404) throw error;
+              async function readLedger() {
+                let stored;
+                try {
+                  stored = (await api.repos.getContent({ owner, repo, path: signaturePath, ref: signatureBranch })).data;
+                } catch (error) {
+                  if (error.status !== 404) throw error;
+                }
+                if (stored && (Array.isArray(stored) || stored.type !== 'file' || stored.encoding !== 'base64')) throw new Error('Invalid CLA signature store');
+                const ledger = stored ? JSON.parse(Buffer.from(stored.content, 'base64').toString('utf8')) : { schemaVersion: 1, signatures: [] };
+                if (ledger.schemaVersion !== 1 || !Array.isArray(ledger.signatures)) throw new Error('Unsupported CLA signature store');
+                return { stored, ledger };
               }
-              if (stored && (Array.isArray(stored) || stored.type !== 'file' || stored.encoding !== 'base64')) throw new Error('Invalid CLA signature store');
-              const ledger = stored ? JSON.parse(Buffer.from(stored.content, 'base64').toString('utf8')) : { schemaVersion: 1, signatures: [] };
-              if (ledger.schemaVersion !== 1 || !Array.isArray(ledger.signatures)) throw new Error('Unsupported CLA signature store');
+              const { ledger } = await readLedger();
               let signed = ledger.signatures.some((entry) => entry.userId === pr.user.id && entry.claSha256 === hash);
               if (!signed && context.eventName === 'issue_comment') {
                 // Refetch the comment: payload strings are data and are never evaluated as code.
@@ -93,26 +93,47 @@ jobs:
                     && comment.issue_url === `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`
                     && prompt?.body.startsWith(marker)
                     && Date.parse(comment.updated_at) >= Date.parse(prompt.updated_at)) {
-                  ledger.signatures.push({
+                  const signature = {
                     userId: pr.user.id, login: pr.user.login, commentId: comment.id,
                     signedAt: comment.updated_at, claVersion: version, claSha256: hash, claBlobSha: agreement.sha,
-                  });
-                  if (!stored) {
-                    // Bootstrap only our fixed signature branch; never use a PR-controlled ref.
+                  };
+                  // Bootstrap only our fixed signature branch; never use a PR-controlled ref.
+                  try {
+                    await api.git.getRef({ owner, repo, ref: `heads/${signatureBranch}` });
+                  } catch (error) {
+                    if (error.status !== 404) throw error;
                     try {
-                      await api.git.getRef({ owner, repo, ref: `heads/${signatureBranch}` });
-                    } catch (error) {
-                      if (error.status !== 404) throw error;
                       await api.git.createRef({ owner, repo, ref: `refs/heads/${signatureBranch}`, sha: defaultSha });
+                    } catch (error) {
+                      if (error.status !== 422) throw error;
+                      // Another run may have created the branch after our read.
+                      await api.git.getRef({ owner, repo, ref: `heads/${signatureBranch}` });
                     }
                   }
-                  await api.repos.createOrUpdateFileContents({
-                    owner, repo, path: signaturePath, branch: signatureBranch,
-                    message: `docs: record CLA signature for user ${pr.user.id}`,
-                    content: Buffer.from(JSON.stringify(ledger, null, 2) + '\n').toString('base64'),
-                    ...(stored ? { sha: stored.sha } : {}),
-                  });
-                  signed = true;
+                  // GitHub retains only one pending run per concurrency group. Let every
+                  // event run, and merge signatures against the latest blob on conflict.
+                  for (let attempt = 0; attempt < 5; attempt++) {
+                    const { stored, ledger } = await readLedger();
+                    if (ledger.signatures.some(entry => entry.userId === pr.user.id && entry.claSha256 === hash)) {
+                      signed = true;
+                      break;
+                    }
+                    ledger.signatures.push(signature);
+                    try {
+                      await api.repos.createOrUpdateFileContents({
+                        owner, repo, path: signaturePath, branch: signatureBranch,
+                        message: `docs: record CLA signature for user ${pr.user.id}`,
+                        content: Buffer.from(JSON.stringify(ledger, null, 2) + '\n').toString('base64'),
+                        ...(stored ? { sha: stored.sha } : {}),
+                      });
+                      signed = true;
+                      break;
+                    } catch (error) {
+                      // A stale sha answers 409; a sha-less write to a file another run just created answers 422.
+                      const conflict = error.status === 409 || (!stored && error.status === 422);
+                      if (!conflict || attempt === 4) throw error;
+                    }
+                  }
                 }
               }
               if (!signed) {

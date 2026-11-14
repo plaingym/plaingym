@@ -2,7 +2,7 @@
 
 # Staff profiles and management
 
-Profiles are presentation records; they can exist without a login and do not grant access. Owner/admin management routes use the shared staff contracts. All writes recheck the caller's stored role, use the request clock, and audit in the same transaction. Profile edits and role changes/revocations require the current revision. Owners cannot be granted, changed, or revoked here. Admins can manage other admins, as allowed by `staff.manage`; password resets retain the stricter protected-account rules in the existing auth service.
+Profiles are presentation records; they can exist without a login and do not grant access. Owner/admin management routes use the shared staff contracts. All writes recheck the caller's stored role, use the request clock, and audit in the same transaction. Profile edits and role changes/revocations require the current revision. Owners cannot be granted, changed, or revoked here. Only an owner may change or revoke an existing admin role; admins may still grant admin access and manage profiles. The staff screen offers role changes and revocation accordingly. Password resets retain the stricter protected-account rules in the existing auth service.
 
 Account IDs supplied to role grants must already belong to this gym through a household, profile, or role. Profile account links require an existing staff role. Member links are checked through gym-scoped queries. Lists are paginated and never contain invitation secrets.
 

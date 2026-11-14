@@ -447,7 +447,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
     bodyLimits: { ...defaultBodyLimits, routes: { ...defaultBodyLimits.routes, '/api/waivers/template-documents': documentByteLimit } },
     ...(mode === 'multi' ? { cspReportHostnames: reportHostnames } : {}),
     // Signed-link routes resolve their own bearer after normal session loading.
-    session: (context, next) => context.req.path.startsWith('/api/links/') ? session(context, next) : kioskSession(context, next),
+    session: (context, next) => /^\/api\/links\/(onboarding|pay-invoice|update-card|sign-waiver|unsubscribe)(\/|$)/.test(context.req.path)
+      ? session(context, next) : kioskSession(context, next),
     origin: originFor, ...(install ? { installOrigin: install } : {}), strictTransportSecurity: env.NODE_ENV === 'production',
     rateLimit: { ...proxyTrust, ...(limit ? { limit } : {}) },
     ...(demo ? { restoreGate: demoWebhookMiddleware({ configured: Boolean(env.DEMO_STRIPE_TEST_KEY), inbox, demoGyms: demo.payments.demoGyms,

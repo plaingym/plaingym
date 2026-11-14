@@ -56,9 +56,6 @@ const websiteModule = (entry: Entry) => /^\/(api\/website|website)(\/|$)|^\/(coa
 const websiteHome = 'GET /';
 // The Stripe webhook inbox is unavailable until the gym sets up payments, whoever calls it.
 const paymentsUnconfigured = new Set(['POST /webhooks/stripe']);
-// Staff link routes below /api/links/ read a bearer token as a signed link, so a device token is unauthenticated there (401)
-// rather than unknown (404). It is refused either way; when these routes answer 404 like the rest, drop this set.
-const linkBearer = new Set(['GET /api/links/{linkId}', 'POST /api/links/send', 'POST /api/links/{linkId}/revoke']);
 // Public portal routes that act for the signed-in user (choosing a household, completing a claim): anonymous callers get 401.
 // The account routes act for the signed-in login too: its own account and sign-in email change.
 const signedInPublic = new Set(['GET /api/portal/households', 'POST /api/portal/households/current', 'POST /api/portal/claims/complete',
@@ -127,7 +124,6 @@ test('every route enforces all staff roles, anonymous access and device boundari
     else if (key(entry) === websiteHome) expect.soft(role === 'device' ? [200, 302, 404] : [200, 302], detail).toContain(response.status);
     else if (websiteModule(entry) && response.status === 404) continue;
     else if (paymentsUnconfigured.has(key(entry)) && response.status === 503) continue;
-    else if (role === 'device' && linkBearer.has(key(entry))) expect.soft(response.status, detail).toBe(401);
     else if (redirects.has(key(entry))) expect.soft(response.status, detail).toBe(302);
     // A device token is accepted on check-in endpoints only: tenant routes, public ones included, answer it with
     // 404. Public install routes (the content-pack catalog, setup, demo) run before tenancy and answer it like anyone.

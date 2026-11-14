@@ -131,6 +131,8 @@ async function checkResources(tx: Transaction, gymId: string, all: CreateSignedL
 export async function createSignedLinksIn(tx: Transaction, context: MutationContext, inputs: CreateSignedLinkRequest[], now: Date,
   { allowZeroInvoices = false }: { allowZeroInvoices?: boolean } = {}) {
   const requests = inputs.map(input => lowercaseIds(createSignedLinkRequestSchema.parse(input)));
+  if (requests.some(request => new Date(request.expiresAt).getTime() > now.getTime() + 90 * 86400000))
+    throw new AppError('invalid_request', 'Signed links may last at most 90 days', { expiresAt: ['Choose an expiry within 90 days'] });
   const seen = new Set<string>();
   for (const request of requests) {
     const kind = request.purpose === 'pay_invoice' ? 'invoice' : request.purpose === 'sign_waiver' ? 'member' : 'household';

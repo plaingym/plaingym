@@ -104,7 +104,8 @@ export async function workflowFixture(db: ReturnType<typeof useTestDatabase>, op
   }
   const enable = (billingEnabled: boolean) => db.forGym(gymId, tx => tx.update(gyms).set({ billingEnabled }).where(eq(gyms.id, gymId)));
   async function payLink(invoiceId: string) {
-    const created = await links.create(context, { purpose: 'pay_invoice', invoiceId, householdId: home.id, expiresAt: '2035-01-01T00:00:00Z' });
+    const created = await links.create(context, { purpose: 'pay_invoice', invoiceId, householdId: home.id,
+      expiresAt: new Date(clock.now().getTime() + 90 * 86400000).toISOString() });
     return { ...await checkout.start(gymId, created.link.id), link: created.link };
   }
   return { db, factory, gymId, timezone, clock, home, user, member, plan, transport, provider, queue, email, settings, common,
