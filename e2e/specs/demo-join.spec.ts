@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import AxeBuilder from '@axe-core/playwright';
 import type { Browser, Locator, Page, TestInfo } from '@playwright/test';
 import { test, expect, Client, demoClient, clientAddress, localDate, showWeek, wall, type Person, type Program, type RecordId } from '../support.js';
-import { accessibleLayout } from '../responsive.js';
+import { accessibleLayout, horizontalOverflow } from '../responsive.js';
 import { deliverStripeEvent, fakeStripe, outboxIds, outboxLink, stripeOrigin } from '../portal.js';
 
 // Join cookies, outbox sign-in links and the check-in code are bearer credentials. Keep them out of traces and screenshots.
@@ -139,7 +139,8 @@ test('a refused native join keeps typed details and names missing signature file
       await expect(page.getByLabel('First name', { exact: true })).toHaveValue(visitor.firstName);
       await expect(page.getByLabel('Last name', { exact: true })).toHaveValue(visitor.lastName);
       await expect(page.getByLabel('Date of birth', { exact: true })).toHaveValue('1994-05-06');
-      await accessibleLayout(page, info, 'native-join-refusal-' + viewport.width);
+      // Axe injects a script; this context must keep scripts disabled to exercise the native form.
+      expect(await horizontalOverflow(page), 'native join refusal fits at ' + viewport.width).toBeUndefined();
       await info.attach('native-join-refusal-' + viewport.width, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
     } finally { await context.close(); }
   }

@@ -53,7 +53,8 @@ for (const width of [360, 1280]) {
       const content = page.locator('main .max-w-3xl');
       await expect(content.getByRole('heading', { level: 1 })).toBeVisible();
       await expect(content.getByText(/Loading/)).toHaveCount(0);
-      await expect(content.getByRole('alert')).toHaveCount(0);
+      if (path === '/checkin') await expect(content.getByRole('alert')).toContainText('There is no active check-in code');
+      else await expect(content.getByRole('alert')).toHaveCount(0);
       const measured = (await content.boundingBox())!.width;
       contentWidth ??= measured;
       expect(measured).toBe(contentWidth);
