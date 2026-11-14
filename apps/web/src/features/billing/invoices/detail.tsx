@@ -47,19 +47,27 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
     event.preventDefault(); if (!detail.data || !action || busy) return;
     const form = new FormData(event.currentTarget), invoice = detail.data.invoice;
     setBusy(true); setError(''); setMessage('');
+    let creditChanged = false;
     try {
-      if (action.kind === 'cash') await client.call('recordManualPayment', { amountCents: invoice.amountCents, currency: invoice.currency,
-        method: form.get('method'), reference: form.get('reference') || null, paidAt: new Date().toISOString() }, { invoiceId });
+      if (action.kind === 'cash') {
+        await client.call('recordManualPayment', { amountCents: invoice.amountCents, currency: invoice.currency,
+          method: form.get('method'), reference: form.get('reference') || null, paidAt: new Date().toISOString() }, { invoiceId });
+        creditChanged = true;
+      }
       if (action.kind === 'releaseHold') { await client.releaseHold(invoiceId); setMessage(text(allCards.data === false ? 'holdReleasedNoCard' : 'holdReleased')); }
       if (action.kind === 'charge') {
         const result = await client.call('chargeInvoice', {}, { invoiceId });
+        creditChanged = result.data.status === 'succeeded';
         setMessage(text(result.data.status === 'succeeded' ? 'paid' : result.data.status === 'failed' ? 'chargeFailed'
           : result.data.status === 'requires_action' ? 'requiresAction' : 'pendingCharge'));
       }
       // A card refund goes to Stripe, which takes only whole steps of the currency; a manual refund may take any minor unit.
-      if (action.kind === 'refund') await client.call('createRefund', { amountCents: parseMinorUnits(String(form.get('amount')), action.payment.currency,
-        { anyMinorUnit: action.payment.method !== 'card' }),
-        currency: action.payment.currency, reason: form.get('reason') || null }, { paymentId: action.payment.id });
+      if (action.kind === 'refund') {
+        const result = await client.call('createRefund', { amountCents: parseMinorUnits(String(form.get('amount')), action.payment.currency,
+          { anyMinorUnit: action.payment.method !== 'card' }),
+          currency: action.payment.currency, reason: form.get('reason') || null }, { paymentId: action.payment.id });
+        creditChanged = result.data.status === 'succeeded';
+      }
       if (action.kind === 'revoke' || action.kind === 'default') await client.call(action.kind === 'revoke' ? 'revokePaymentMethod' : 'setDefaultPaymentMethod', {},
         { householdId: invoice.householdId, paymentMethodId: action.card.id });
       if (action.kind === 'receipt') { await client.call('resendReceipt', {}, { invoiceId }); setMessage(text('receiptQueued')); }
@@ -74,7 +82,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
         if ('token' in result.data) { setUrl(new URL('/l/' + result.data.token, location.origin).href); }
         else setMessage(text(unknown ? 'sendUncertain' : result.data.revokedAt ? 'manualNoticeSent' : 'linkSent'));
       }
-      if (['cash', 'charge', 'refund'].includes(action.kind)) onCreditChange?.();
+      if (creditChanged) onCreditChange?.();
       await cache.invalidateQueries({ queryKey: ['billing', gymId] });
       markSaved(); setDraft(false);
       if (action.kind !== 'link') setAction(null);

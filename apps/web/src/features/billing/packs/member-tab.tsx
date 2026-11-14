@@ -68,7 +68,7 @@ export function PackPanel({ gymId, memberId, timezone, access, client = packClie
     </>}
     {action === 'adjust' && access.record && <AdjustmentForm memberId={memberId} client={client} close={() => setAction(null)} adjusted={changed}/>}
     {invoiceId && <Dialog size="wide" title={text('invoice')} closeLabel={text('close')} onClose={() => setInvoiceId(null)}>
-      <InvoiceDetails key={invoiceId} gymId={gymId} invoiceId={invoiceId} access={access} onCreditChange={() => { setRefreshUntil(Date.now() + 60_000); void cache.invalidateQueries({ queryKey: key }); }}/>
+      <InvoiceDetails key={invoiceId} gymId={gymId} invoiceId={invoiceId} access={access} onCreditChange={() => setRefreshUntil(Date.now() + 60_000)}/>
     </Dialog>}
   </section>;
 }

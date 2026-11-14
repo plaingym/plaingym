@@ -7,6 +7,12 @@ household `Autocomplete`. Receipt, cash/check, saved-card confirmation, refund,
 pay-link, review-hold and card-management views stay inside invoice details,
 with a back control and focus restored to the action that opened the view.
 
+In the Packs tab, a successful manual payment, saved-card charge or refund starts
+a minute of follow-up credit reads. The invoice action invalidates billing once;
+the follow-up callback only sets that read window. Failed or pending processor
+answers do not start it. Releasing a hold or sending a pay link may settle much
+later; use Refresh credits after those actions to read the latest balance.
+
 The registered member profile tab resolves the member's household and requests
 that household's invoices. Cache keys include gym, household/member, filters and
 pagination. A created one-off invoice opens its detail so staff can choose cash or
