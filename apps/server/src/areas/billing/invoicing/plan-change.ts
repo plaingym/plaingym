@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { idSchema } from '@plaingym/shared/contracts';
 import type { BillingInterval, Currency, Id, IsoDate } from '@plaingym/shared/contracts';
+import { createTranslator } from '@plaingym/shared';
+import { formatMinorUnits } from '@plaingym/shared/money';
+import messages from '../../../../../../locales/en/billing/runner.json' with { type: 'json' };
 import type { MembershipSnapshot } from '../../../core/interfaces/membership-lifecycle.js';
 import { calendarDate, calendarDaysBetween, isOffDay, offDayPeriodStart, previousBillingDate } from './calendar.js';
 import { cents } from './money.js';
 import {
   calculatePrices, calendar, membershipPrice, prorate, validateHousehold, validateMembership,
-  membershipDiscountAmount, step, validateDiscount, validateTaxRates,
+  membershipDiscountAmount, chargeUnit, step, validateDiscount, validateTaxRates,
 } from './pricing.js';
 import type { AppliedTaxRate, CalculatedInvoice, HouseholdPricing, MembershipDiscount, PricedMembership } from './pricing.js';
+const t = createTranslator({ 'billing/runner': messages });
 
 /** The plan a membership switches to. */
 export interface PlanChangeTarget {
@@ -93,20 +97,20 @@ export function calculatePlanChange(input: PlanChangeInput): PlanChangeResult {
   // Keep the undiscounted difference's single rounding when neither side has a discount.
   const current = membershipPrice({ ...item, ...input.currentDiscount === undefined ? {} : { discount: input.currentDiscount } });
   const next = { ...item, ...input.newDiscount === undefined ? {} : { discount: input.newDiscount } };
-  const unit = [membership.amountCents, newPlan.amountCents].some((amount) => BigInt(amount) % step(input.currency) !== 0n)
-    ? 1n : step(input.currency);
+  const unit = chargeUnit(input.currency, [BigInt(membership.amountCents), BigInt(newPlan.amountCents)]);
   const currentAmount = BigInt(membership.amountCents);
   const currentEffective = currentAmount - membershipDiscountAmount(current, currentAmount, unit);
   const nextAmount = BigInt(newPlan.amountCents);
   const nextEffective = nextAmount - membershipDiscountAmount(membershipPrice(next, newPlan.amountCents), nextAmount, unit);
   if (nextEffective <= currentEffective) return none;
   const difference = newPlan.amountCents - Number(currentEffective);
-  if (difference <= 0) return none;
   const billedDays = calendarDaysBetween(from, periodEndsOn);
   const amount = prorate(input.currency, difference, billedDays, periodDays);
   if (amount === 0) return none;
-  const price = { ...membershipPrice(next, prorate(input.currency, newPlan.amountCents, billedDays, periodDays),
-    { billedDays, periodDays }), amountCents: amount, planId: newPlan.id };
+  const price = { ...membershipPrice(next, amount, { billedDays, periodDays }), planId: newPlan.id,
+    discountBaseCents: prorate(input.currency, newPlan.amountCents, billedDays, periodDays),
+    description: t('billing/runner:upgradeCredit', { plan: newPlan.description,
+      amount: formatMinorUnits(Number(currentEffective), input.currency) }) };
   // `prorate` lands the amount on the step, so the invoice rounds its discount to the step: check with the same unit.
   if (membershipDiscountAmount(price, BigInt(amount), step(input.currency)) === BigInt(amount)) return none;
   return { periodStartsOn, periodEndsOn, periodDays, billedDays, invoice: { householdId: input.householdId,

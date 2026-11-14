@@ -18,7 +18,10 @@ exposes the same controllable entry points used by the jobs and PostgreSQL scena
 | `onAssigned` | Inject into `createMembershipService`: issue calculated first-period proration and sign-up-fee invoices in the assignment transaction. Never call the provider there. |
 
 Generation locks one household and its due memberships in each short transaction.
-It commits invoice lines, numbering, date advances and audits together. Independent
+It commits invoice lines, numbering, date advances and audits together. Membership
+lines store the full-period `billedUnitAmountCents` and named `billedDiscount`
+before a final discount cycle is consumed, including first-period and upgrade
+invoices. These immutable terms supply later upgrade credits. Independent
 due dates get separate invoices; the cycle uniqueness constraint backs up the lock.
 The calculator receives `annualAnchorOn` only for non-null persisted anniversaries;
 legacy rows retain the calculator's fallback. Frozen periods advance without charges;

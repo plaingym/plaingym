@@ -228,6 +228,9 @@ describe('switch a plan now through the routes', () => {
     expect((await f.preview(cent.id)).body.data!.proration).toEqual({ periodStartsOn: '2028-03-01', periodEndsOn: '2028-04-01',
       billedDays: 0, periodDays: 31, totalCents: 0 });
     expect((await f.switchNow(cent.id)).body.data).toMatchObject({ invoiceId: null, membership: { planId: cent.id, amountCents: 10_001 } });
+    const higher = await f.newPlan({ amountCents: 13_101 });
+    expect((await f.preview(higher.id)).body.data!.proration).toMatchObject({ totalCents: 100 });
+    expect((await f.switchNow(higher.id)).status).toBe(200);
     const g = await setup({ bill: false });
     await db.forGym(g.gymId, tx => tx.update(households).set({ familyDiscountBasisPoints: 10_000 }).where(eq(households.id, g.home.id)));
     await g.dailyOn('2028-03-01'); g.clock.set('2028-03-16T17:00:00Z');
@@ -235,11 +238,51 @@ describe('switch a plan now through the routes', () => {
     expect((await g.preview(premium.id)).body.data!.proration).toEqual({ periodStartsOn: '2028-03-01', periodEndsOn: '2028-04-01',
       billedDays: 16, periodDays: 31, totalCents: 0 });
     expect((await g.switchNow(premium.id)).body.data).toMatchObject({ invoiceId: null, membership: { planId: premium.id, amountCents: 13_000 } });
+    const highest = await g.newPlan({ amountCents: 16_000 });
+    expect((await g.preview(highest.id)).body.data!.proration).toMatchObject({ totalCents: 0 });
+    expect((await g.switchNow(highest.id)).body.data).toMatchObject({ invoiceId: null, membership: { amountCents: 16_000 } });
     expect(await g.switchInvoices()).toEqual([]);
   });
 });
 
 describe('switch now refusals', () => {
+  it.each(['void', 'refunded'] as const)('refuses another upgrade when the cycle is %s but a switch invoice remains', async status => {
+    const f = await setup(), premium = await f.newPlan({ amountCents: 13_000 }), higher = await f.newPlan({ amountCents: 16_000 });
+    expect((await f.switchNow(premium.id)).status).toBe(200);
+    const cycle = (await f.read()).invoices.find(invoice => invoice.kind === 'cycle')!;
+    await db.forGym(f.gymId, tx => tx.update(invoices).set({ status }).where(eq(invoices.id, cycle.id)));
+    refused(await f.preview(higher.id), 'period_not_billed');
+    refused(await f.switchNow(higher.id), 'period_not_billed');
+    expect(await f.switchInvoices()).toHaveLength(1);
+  });
+
+  it('does not mistake a switch on the start date for a refunded first-period bill', async () => {
+    const f = await setup({ bill: false, on: '2028-03-01T17:00:00Z' });
+    const assigned = await f.service.assign(f.staff, { id: uuidv7(), householdId: f.home.id, memberId: f.membership.memberId,
+      planId: f.plan.id, startsOn: '2028-03-01', nextDueOn: '2028-04-01', firstPeriod: 'prorate_now', initialStatus: 'active' });
+    const premium = await f.newPlan({ amountCents: 13_000 }), higher = await f.newPlan({ amountCents: 16_000 });
+    expect((await f.switchNow(premium.id, {}, assigned.id)).status).toBe(200);
+    const first = (await f.read()).lines.find(line => line.kind === 'membership' && line.membershipId === assigned.id && line.planId === f.plan.id)!;
+    await db.forGym(f.gymId, tx => tx.update(invoices).set({ status: 'refunded' }).where(eq(invoices.id, first.invoiceId)));
+    refused(await f.preview(higher.id, 'now', assigned.id), 'period_not_billed');
+    refused(await f.switchNow(higher.id, {}, assigned.id), 'period_not_billed');
+  });
+
+  it('does not use a previous-period switch invoice when a refunded off-day cycle leaves a month-end ambiguous', async () => {
+    const f = await setup({ bill: false, dueOn: '2026-01-31', startsOn: '2026-01-01', now: '2026-01-31T17:00:00Z' });
+    await db.forGym(f.gymId, tx => tx.update(households).set({ billingDay: 31 }).where(eq(households.id, f.home.id)));
+    await f.dailyOn('2026-01-31'); f.clock.set('2026-02-15T17:00:00Z');
+    await db.forGym(f.gymId, tx => tx.update(households).set({ billingDay: 15 }).where(eq(households.id, f.home.id)));
+    const premium = await f.newPlan({ amountCents: 13_000 });
+    const cycle = (await f.read()).invoices.find(invoice => invoice.kind === 'cycle')!;
+    await db.forGym(f.gymId, tx => tx.update(invoices).set({ status: 'refunded' }).where(eq(invoices.id, cycle.id)));
+    const previous = await factory('invoices', f.gymId, { householdId: f.home.id, kind: 'one_off', dueOn: '2026-01-29',
+      periodStartsOn: null, periodEndsOn: null, status: 'paid', number: 999 });
+    await factory('invoiceLineItems', f.gymId, { householdId: f.home.id, invoiceId: previous.id, membershipId: f.membership.id,
+      kind: 'membership', planId: f.plan.id, billedUnitAmountCents: 10_000 });
+    refused(await f.preview(premium.id), 'period_not_billed');
+    refused(await f.switchNow(premium.id), 'period_not_billed');
+  });
   it.each(['cancelled', 'erased', 'active'] as const)('keeps preview and switch refusal order for an archived target and %s membership', async state => {
     const f = await setup(), archived = await f.newPlan({ active: false, amountCents: 13_000 });
     if (state === 'cancelled') await f.service.cancel(f.staff, { membershipId: f.membership.id, revision: (await f.row()).revision });

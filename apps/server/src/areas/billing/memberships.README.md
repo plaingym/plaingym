@@ -139,9 +139,9 @@ starts on a due date), and needs the current period billed. Otherwise it is a
 conflict: `not_active` for a pending, trial or frozen membership, `interval_change`,
 or `period_not_billed`. The period counts as billed when the cycle due on an earlier
 date has run (the next due date is not before the gym's local today) and, for an
-upgrade with days left, when a membership line for this membership sits on an
-invoice that isn't void or fully refunded and is due within the current period (its
-cycle, its first period, or an earlier switch), and no staff price edit has changed
+upgrade with days left, when a membership line for this membership sits on a
+cycle or first-period invoice that isn't void or fully refunded and is due within
+the current period, and no staff price edit has changed
 the membership's price since the first such invoice was issued. A freeze resumed
 early, a trial activated early, a first period left to the next billing date, an
 imported membership, a refunded period or a price edited mid-period leaves the days
@@ -173,12 +173,18 @@ the due date's own day a month earlier, as described in `invoicing/README.md`.
   an invoice no attempt has reached (the process stopped before collecting) and
   leaves one already attempted alone. Paying the invoice changes nothing on the
   active membership.
-  The invoice's issuance audit snapshots the membership price and discount before
-  any full-cycle allowance is consumed. Replacing, removing or completing that
-  discount later cannot alter the credit side of an upgrade. Older invoices can
-  recover those terms from application history when its timestamps unambiguously
-  identify the application at issuance; ambiguous history requires switching on
-  the next billing date (`period_not_billed`).
+  The membership invoice line stores `billedUnitAmountCents` and `billedDiscount`
+  before any full-cycle allowance is consumed. Replacing, removing or completing
+  that discount later cannot alter the credit side of an upgrade. A previous
+  switch invoice supplies updated terms but cannot establish a billed period by
+  itself. The upgrade line's description names the current discounted per-period
+  credit before proration; its named discount line still applies to the prorated
+  new price. Migration `0034` fills older lines from their issuance audits and
+  leaves unavailable terms null; unknown terms require the next billing date
+  (`period_not_billed`). A zero-invoice upgrade's audited new terms count for
+  another upgrade until the next bill, including a full household or kept 100%
+  membership discount. Billing no longer reads issuance audits or application
+  timestamps when quoting an upgrade.
 - **Downgrade or equal:** the membership takes the new plan at once and keeps its
   current price until the next due date, through a price change scheduled on the
   new plan (the four `scheduled_*` columns, with the new plan as both the current

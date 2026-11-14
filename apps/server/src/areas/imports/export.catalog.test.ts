@@ -113,7 +113,7 @@ describe('export schema coverage and secret exclusions', () => {
     const plan = await factory('plans', gymA);
     const membership = await factory('memberships', gymA, { scheduledPlanId: plan.id, scheduledAmountCents: 9000,
       scheduledInterval: 'annual', scheduledOn: '2026-12-01', switchOverrideReason: 'Moving away' });
-    const line = await factory('invoiceLineItems', gymA, { kind: 'membership', planId: plan.id });
+    const line = await factory('invoiceLineItems', gymA, { kind: 'membership', planId: plan.id, billedUnitAmountCents: 10_000 });
     const plain = await factory('invoiceLineItems', gymA);
     await factory('memberships', gymB); await factory('invoiceLineItems', gymB, { kind: 'membership', planId: (await factory('plans', gymB)).id });
     const cutoff = new Date('2099-01-01T00:00:00Z');
@@ -124,8 +124,8 @@ describe('export schema coverage and secret exclusions', () => {
     const lines = await exportCatalog.invoice_line_items.page(database.forGym, gymA, cutoff);
     expect(lines).toHaveLength(2);
     expect(lines).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: line.id, kind: 'membership', plan_id: plan.id }),
-      expect.objectContaining({ id: plain.id, kind: 'charge', plan_id: null }),
+      expect.objectContaining({ id: line.id, kind: 'membership', plan_id: plan.id, billed_unit_amount_cents: 10_000, billed_discount: null }),
+      expect.objectContaining({ id: plain.id, kind: 'charge', plan_id: null, billed_unit_amount_cents: null, billed_discount: null }),
     ]));
   });
   it('accounts for every schema column with an explicit safe projection or exclusion', () => {

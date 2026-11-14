@@ -158,6 +158,13 @@ as the rules it applied before. The plan switch, a downgrade now and a plan pric
 (`apps/server/src/areas/billing/memberships.README.md`). It is exported with the other membership
 columns.
 
+Migration `0034_invoice_billed_terms.sql` adds nullable `invoice_line_items.billed_unit_amount_cents`
+and `billed_discount` (the named applied discount as JSON). Only membership lines with a known price
+can hold a discount. Issuance writes these full-period terms before consuming a discount cycle;
+proration and tax do not change them. The migration backfills matching gym, invoice and membership
+terms from existing `billing.invoice.issued` audits. Lines without a usable snapshot stay null;
+later upgrades never reconstruct those terms from mutable discount history.
+
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver

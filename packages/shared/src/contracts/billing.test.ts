@@ -58,6 +58,7 @@ const line: InvoiceLineItem = {
   id: ids.other, createdAt: now, householdId: ids.household, invoiceId: ids.invoice,
   membershipId: membership.id, chargeTypeId: null, description: 'Monthly', ...price,
   kind: 'membership', planId: ids.plan, quantity: 1, taxRateId: null, taxRateMillionths: null, taxInclusive: null,
+  billedUnitAmountCents: null, billedDiscount: null,
 };
 const payment: Payment = {
   id: ids.payment, createdAt: now, invoiceId: ids.invoice, ...price, method: 'cash', reference: null, paidAt: now,

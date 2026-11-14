@@ -34,6 +34,15 @@ it('accepts only the explicit open-dispute filter', () => {
     expect(invoiceListQuerySchema.safeParse({ dispute }).success).toBe(false);
 });
 
+it('keeps billed unit terms on membership lines and distinguishes unknown terms from an undiscounted price', () => {
+  const membership = { ...line, kind: 'membership', planId, billedUnitAmountCents: 10_000, billedDiscount: null };
+  expect(invoiceLineItemSchema.parse(membership)).toMatchObject({ billedUnitAmountCents: 10_000, billedDiscount: null });
+  expect(invoiceLineItemSchema.parse({ ...membership, billedUnitAmountCents: null })).toMatchObject({ billedUnitAmountCents: null });
+  for (const kind of ['charge', 'discount', 'signup_fee', 'tax'])
+    expect(invoiceLineItemSchema.safeParse({ ...membership, kind }).success).toBe(false);
+  expect(invoiceLineItemSchema.safeParse({ ...membership, billedUnitAmountCents: -1 }).success).toBe(false);
+});
+
 it('limits review confirmation to owners and admins without a payment body', () => {
   expect(contract.path).toBe('/api/billing/invoices/{invoiceId}/release-hold');
   for (const role of ['owner', 'admin', 'front_desk', 'coach'] as const)

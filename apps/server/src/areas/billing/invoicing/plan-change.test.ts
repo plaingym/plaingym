@@ -242,12 +242,14 @@ describe('plan change discount and taxes', () => {
     const first = calculateFirstPeriod({ householdId, currency: 'CAD', billingDay: 1, familyDiscountBasisPoints: 1_000,
       discountDescription: 'Family discount', firstPeriod: 'prorate_now', description: 'Gold, rest of this period', taxRates,
       membership: membership({ status: 'pending', startsOn: '2026-04-16', nextDueOn: '2026-05-01', amountCents: 11_300, planId: newPlanId }) });
-    expect(calculated).toEqual({ ...first.invoice, dueOn: '2026-04-16' });
+    expect(calculated).toEqual({ ...first.invoice, dueOn: '2026-04-16',
+      lineItems: first.invoice!.lineItems.map(line => line.kind === 'membership'
+        ? { ...line, description: 'Gold, rest of this period (credits CA$100.00 per period before proration)' } : line) });
   });
   it('records the membership and the new plan on the priced line, and no plan on its discount and tax lines', () => {
     const calculated = charged(quote({ familyDiscountBasisPoints: 1_000, plan: { taxRates: [tax(130_000, true), tax(50_000, false, 51)] } }));
     expect(calculated.lineItems.map((line) => [line.kind, line.membershipId, line.planId, line.description])).toEqual([
-      ['membership', membershipId, newPlanId, 'Gold, rest of this period'],
+      ['membership', membershipId, newPlanId, 'Gold, rest of this period (credits CA$100.00 per period before proration)'],
       ['discount', membershipId, null, 'Family discount'],
       ['tax', membershipId, null, 'Tax 50'],
       ['tax', membershipId, null, 'Tax 51'],

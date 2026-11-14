@@ -5,6 +5,7 @@ import type { Currency } from '@plaingym/shared/contracts';
 import type { MembershipSnapshot } from '../../../core/interfaces/membership-lifecycle.js';
 import { calculateCycleInvoice, calculateFirstPeriod, calculatePlanChange } from './index.js';
 import type { AppliedTaxRate, CalculatedInvoice, MembershipDiscount, PlanChangeInput, PricedMembership } from './index.js';
+import { calculatePrices, membershipPrice } from './pricing.js';
 
 const id = (n: number) => '00000000-0000-7000-8000-' + n.toString().padStart(12, '0');
 const household = { householdId: id(1), currency: 'CAD' as Currency, billingDay: 1,
@@ -56,6 +57,16 @@ const change = (overrides: Partial<PlanChangeInput> = {}): PlanChangeInput => ({
 });
 
 describe('membership discount quotes', () => {
+  it('calculates a percentage from the actual extended gross after a caller changes its price or quantity', () => {
+    const price = membershipPrice(priced(percentage(2_000)));
+    const result = calculatePrices('CAD', [{ ...price, amountCents: 20_000, quantity: 3 }], 0, '');
+    expect(result.lineItems.map(line => line.amountCents)).toEqual([60_000, -12_000]);
+    expect(result.amountCents).toBe(48_000);
+  });
+  it('keeps an explicit plan-change percentage base separate from the credited line gross', () => {
+    const price = { ...membershipPrice(priced(percentage(2_000)), 2_632), discountBaseCents: 6_761 };
+    expect(calculatePrices('CAD', [price], 0, '').lineItems.map(line => line.amountCents)).toEqual([2_632, -1_352]);
+  });
   it.each([
     { name: 'percentage', discount: percentage(2_000), price: 10_000, lines: [10_000, -2_000], total: 8_000 },
     { name: 'fixed', discount: fixed(1_500), price: 10_000, lines: [10_000, -1_500], total: 8_500 },
@@ -186,6 +197,7 @@ describe('plan changes with membership discounts', () => {
     const invoice = checked(result.invoice);
     expect(amounts(invoice)).toEqual(lines);
     expect(invoice.lineItems[0]).toMatchObject({ membershipId: id(10), planId: id(31), kind: 'membership' });
+    expect(invoice.lineItems[0]!.description).toMatch(/^Upgrade \(credits .+ per period before proration\)$/);
     for (const line of invoice.lineItems.filter((line) => line.kind === 'discount')) expect(line.description).toBe(newDiscount!.name);
     expect(input).toEqual(before);
   });

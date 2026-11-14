@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { sql } from 'drizzle-orm';
-import { boolean, check, date, foreignKey, index, integer, pgTable, text, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import { boolean, check, date, foreignKey, index, integer, jsonb, pgTable, text, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import type { AppliedMembershipDiscount } from '@plaingym/shared/contracts';
 import { base, choice, currencyCheck, gymCurrency, instant, ref, revision, revisionCheck, scoped } from './common.js';
 import { households, members } from './members.js';
 import { authUser } from './auth.js';
@@ -175,6 +176,9 @@ export const invoiceLineItems = pgTable('invoice_line_items', {
   // The plan a membership or signup-fee line was billed under, recorded when the line is written; null on
   // other kinds and on lines written before it was recorded.
   planId: uuid('plan_id'),
+  // Full-period terms, independent of proration, tax and later edits; null price means unknown historical terms.
+  billedUnitAmountCents: integer('billed_unit_amount_cents'),
+  billedDiscount: jsonb('billed_discount').$type<AppliedMembershipDiscount>(),
 }, (t) => [...scoped('invoice_line_items', t),
   foreignKey({ name: 'invoice_line_items_invoice_fk', columns: [t.gymId, t.householdId, t.invoiceId, t.currency],
     foreignColumns: [invoices.gymId, invoices.householdId, invoices.id, invoices.currency] }),
@@ -182,6 +186,9 @@ export const invoiceLineItems = pgTable('invoice_line_items', {
   ref('invoice_line_items_charge_type_fk', t.gymId, t.chargeTypeId, chargeTypes), ref('invoice_line_items_tax_fk', t.gymId, t.taxRateId, taxRates),
   ref('invoice_line_items_plan_fk', t.gymId, t.planId, plans),
   check('invoice_line_items_plan_check', sql`${t.planId} is null or ${t.kind} in ('membership', 'signup_fee')`),
+  check('invoice_line_items_billed_terms_check', sql`(${t.billedUnitAmountCents} is null and ${t.billedDiscount} is null)
+    or (${t.kind} = 'membership' and ${t.billedUnitAmountCents} is not null and ${t.billedUnitAmountCents} >= 0
+      and (${t.billedDiscount} is null or jsonb_typeof(${t.billedDiscount}) = 'object'))`),
   index('invoice_line_items_invoice_idx').on(t.gymId, t.invoiceId),
   choice('invoice_line_items_kind_check', t.kind, ['membership', 'signup_fee', 'charge', 'discount', 'tax']),
   check('invoice_line_items_tax_check', sql`(${t.kind} = 'tax' and ${t.taxRateMillionths} is not null and ${t.taxRateMillionths} between 0 and 1000000 and ${t.taxInclusive} is not null)

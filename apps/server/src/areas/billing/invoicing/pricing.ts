@@ -7,7 +7,7 @@ import type { MembershipSnapshot } from '../../../core/interfaces/membership-lif
 import { billingDay, calendarDate } from './calendar.js';
 import { allocate, cents, checkedCents, nonnegativeInteger, roundRatio } from './money.js';
 
-type WithoutIdentity<T> = T extends unknown ? Omit<T, 'id' | 'createdAt' | 'invoiceId' | 'householdId'> : never;
+type WithoutIdentity<T> = T extends unknown ? Omit<T, 'id' | 'createdAt' | 'invoiceId' | 'householdId' | 'billedUnitAmountCents' | 'billedDiscount'> : never;
 export type CalculatedLineItem = WithoutIdentity<InvoiceLineItem>;
 export interface CalculatedInvoice extends Pick<Invoice,
   'householdId' | 'kind' | 'dueOn' | 'periodStartsOn' | 'periodEndsOn' | 'amountCents' | 'currency'> {
@@ -51,8 +51,11 @@ export interface Price {
   /** Recorded on membership and signup-fee lines only. */
   readonly planId: Id | null;
   readonly taxRates: readonly AppliedTaxRate[];
-  /** Unrounded so the invoice's currency step also governs the discount. */
-  readonly membershipDiscount?: { readonly name: string; readonly numerator: bigint; readonly denominator: bigint };
+  readonly membershipDiscount?: MembershipDiscount;
+  /** Explicit percentage base when a plan-change line has already credited the current price. */
+  readonly discountBaseCents?: number;
+  /** Fixed discounts on a stub or upgrade cover only its remaining days. */
+  readonly discountPeriod?: Proration;
 }
 
 export function description(value: string): void {
@@ -107,28 +110,36 @@ export function calendar(input: HouseholdPricing, item: PricedMembership) {
     billingDay: input.billingDay, annualAnchorOn: annualAnchor(item) };
 }
 export function membershipPrice(item: PricedMembership, amountCents = item.membership.amountCents, period?: Proration): Price {
-  const discount = item.discount;
-  const membershipDiscount = discount === undefined ? undefined : { name: discount.name,
-    numerator: discount.kind === 'percentage' ? BigInt(amountCents) * BigInt(discount.basisPoints)
-      : BigInt(discount.amountCents) * BigInt(period?.billedDays ?? 1),
-    denominator: discount.kind === 'percentage' ? 10_000n : BigInt(period?.periodDays ?? 1) };
   return { kind: 'membership', description: item.description, amountCents, currency: item.membership.currency,
     quantity: 1, membershipId: item.membership.id, chargeTypeId: null, planId: item.membership.planId, taxRates: item.taxRates,
-    ...membershipDiscount === undefined ? {} : { membershipDiscount } };
+    ...item.discount === undefined ? {} : { membershipDiscount: item.discount },
+    ...period === undefined ? {} : { discountPeriod: period } };
 }
 /** The currency's charge step: every amount the engine rounds lands on it, so a card charge in ISK or KWD is never refused. */
 export function step(currency: Currency): bigint { return BigInt(minorUnitStep(currency)); }
+/** Legacy off-step prices must round in single minor units to avoid over-crediting a line. */
+export function chargeUnit(currency: Currency, amounts: readonly bigint[]): bigint {
+  const unit = step(currency);
+  return amounts.some(amount => amount % unit !== 0n) ? 1n : unit;
+}
 export function compareIds(a: { id: Id }, b: { id: Id }): number { return a.id < b.id ? -1 : a.id > b.id ? 1 : 0; }
 
 export function membershipDiscountAmount(price: Price, amount: bigint, unit: bigint): bigint {
   if (price.membershipDiscount === undefined) return 0n;
-  const { numerator, denominator } = price.membershipDiscount;
+  const spec = price.membershipDiscount;
+  validateDiscount(spec);
+  if (price.discountBaseCents !== undefined) cents(price.discountBaseCents);
+  const period = price.discountPeriod;
+  if (period && (!Number.isInteger(period.billedDays) || !Number.isInteger(period.periodDays)
+    || period.billedDays < 0 || period.periodDays < 1 || period.billedDays > period.periodDays)) throw new RangeError('Invalid discount period');
+  const numerator = spec.kind === 'percentage' ? BigInt(price.discountBaseCents ?? amount) * BigInt(spec.basisPoints)
+    : BigInt(spec.amountCents) * BigInt(price.quantity) * BigInt(period?.billedDays ?? 1);
+  const denominator = spec.kind === 'percentage' ? 10_000n : BigInt(period?.periodDays ?? 1);
   const discount = roundRatio(numerator, denominator, unit);
   return discount > amount ? amount : discount;
 }
 
 export function calculatePrices(currency: Currency, prices: readonly Price[], discountBasisPoints: number, discountDescription: string) {
-  let unit = step(currency);
   const taxSnapshots = new Map<Id, string>();
   const gross = prices.map((price) => {
     description(price.description); cents(price.amountCents);
@@ -144,7 +155,7 @@ export function calculatePrices(currency: Currency, prices: readonly Price[], di
   });
   // A price stored off the step (from before prices were checked) can't land on it, and rounding it to whole steps
   // could take more discount or net than the line holds, so such an invoice is calculated in single minor units.
-  if (gross.some((amount) => amount % unit !== 0n)) unit = 1n;
+  const unit = chargeUnit(currency, gross);
   const afterMembershipDiscount = prices.map((price, index) => gross[index]! - membershipDiscountAmount(price, gross[index]!, unit));
   const discountBase = afterMembershipDiscount.reduce((sum, amount) => sum + amount, 0n);
   const discount = roundRatio(discountBase * BigInt(discountBasisPoints), 10_000n, unit);

@@ -213,9 +213,11 @@ source of truth; Stripe is the processor. In outline:
   its revision, effective on the next invoice without proration. Plan switches
   keep its remaining cycles only when the applied snapshot allows the new plan;
   the preview reports whether it is kept or ended. Scheduled switches resolve
-  that eligibility before the cycle is priced. Issuance audits retain the billed
-  membership price and discount so an immediate upgrade credits the terms that
-  were billed, even after a later discount edit or its final cycle.
+  that eligibility before the cycle is priced. Membership invoice lines retain the billed
+  full-period unit price and discount so an immediate upgrade credits the terms that
+  were billed, even after a later discount edit or its final cycle. An upgrade
+  requires a current-period cycle or first-period bill; a previous switch invoice
+  supplies updated terms but cannot replace a voided or refunded period bill.
 * **Invoicing** (`areas/billing/invoicing/`): pure calculation of invoice lines and tax.
 * **Charge runner** (`areas/billing/runner/`): the daily run charges saved cards in
   two steps (create, then confirm) with idempotency keys, retries on the gym's

@@ -35,8 +35,6 @@ export async function issue(tx: Transaction, context: MutationContext, clock: Cl
   await tx.insert(invoices).values({ ...fields, id, gymId: context.gymId, status: 'open',
     number: await allocateInvoiceNumber(tx, context.gymId), needsReview,
     createdAt: clock.now() });
-  if (lineItems.length) await tx.insert(invoiceLineItems).values(lineItems.map(line => ({ ...line,
-    id: uuidv7(), gymId: context.gymId, householdId: fields.householdId, invoiceId: id, createdAt: clock.now() })));
   // Preserve the price and named discount actually billed, including a discount's final cycle.
   // Later staff edits must not change the credit side of an immediate plan upgrade.
   const ids = [...new Set(lineItems.filter(line => line.kind === 'membership').map(line => line.membershipId!))];
@@ -44,6 +42,13 @@ export async function issue(tx: Transaction, context: MutationContext, clock: Cl
   const billed = ids.length ? await tx.select().from(memberships).where(inArray(memberships.id, ids)) : [];
   const membershipPricing = billed.map(row => ({ membershipId: row.id, amountCents: row.amountCents,
     discount: presentDiscount(applied.get(row.id)) }));
+  const byMembership = new Map(membershipPricing.map(item => [item.membershipId, item]));
+  if (lineItems.length) await tx.insert(invoiceLineItems).values(lineItems.map(line => {
+    const terms = line.kind === 'membership' ? byMembership.get(line.membershipId!) : undefined;
+    if (line.kind === 'membership' && !terms) throw new Error('A membership line needs billed terms');
+    return { ...line, billedUnitAmountCents: terms?.amountCents ?? null, billedDiscount: terms?.discount ?? null,
+      id: uuidv7(), gymId: context.gymId, householdId: fields.householdId, invoiceId: id, createdAt: clock.now() };
+  }));
   await audit(tx, context, clock, 'billing.invoice.issued', 'invoice', id,
     { ...fields, needsReview, membershipPricing });
   return id;

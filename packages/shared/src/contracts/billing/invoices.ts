@@ -7,6 +7,7 @@ import {
 } from '../common.js';
 import { refinePriceStep } from './catalog.js';
 import { paymentSchema, refundSchema } from './payments.js';
+import { appliedMembershipDiscountSchema } from './memberships.js';
 import type { EndpointContract } from '../definition.js';
 
 export { invoiceKindSchema } from '../states.js';
@@ -48,6 +49,8 @@ const lineFields = {
   description: z.string().min(1),
   ...moneySchema.shape,
   quantity: z.int32().positive(),
+  billedUnitAmountCents: z.null().default(null),
+  billedDiscount: z.null().default(null),
 };
 export const invoiceLineItemSchema = z.discriminatedUnion('kind', [
   z.strictObject({
@@ -61,7 +64,17 @@ export const invoiceLineItemSchema = z.discriminatedUnion('kind', [
   // planId is the plan the line was billed under; lines written before it was recorded have none.
   z.strictObject({
     ...lineFields,
-    kind: z.enum(['membership', 'signup_fee']),
+    kind: z.literal('membership'),
+    billedUnitAmountCents: amountCentsSchema.nonnegative().nullable().default(null),
+    billedDiscount: appliedMembershipDiscountSchema.nullable().default(null),
+    planId: idSchema.nullable(),
+    taxRateId: z.null(),
+    taxRateMillionths: z.null(),
+    taxInclusive: z.null(),
+  }),
+  z.strictObject({
+    ...lineFields,
+    kind: z.literal('signup_fee'),
     planId: idSchema.nullable(),
     taxRateId: z.null(),
     taxRateMillionths: z.null(),
@@ -75,7 +88,10 @@ export const invoiceLineItemSchema = z.discriminatedUnion('kind', [
     taxRateMillionths: z.null(),
     taxInclusive: z.null(),
   }),
-]);
+]).superRefine((line, context) => {
+  if (line.billedDiscount !== null && (line.billedUnitAmountCents === null || line.billedDiscount.currency !== line.currency))
+    context.addIssue({ code: 'custom', path: ['billedDiscount'], message: 'Billed discount needs a known price in the line currency.' });
+});
 export const invoiceDetailSchema = z.strictObject({
   invoice: invoiceSchema,
   lineItems: z.array(invoiceLineItemSchema),

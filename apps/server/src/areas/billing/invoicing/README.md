@@ -87,6 +87,10 @@ price even when the sticker price falls. The result is a `one_off` invoice due o
 the later of `changeOn` and `startsOn`, with one
 `membership` line that records the membership and the **new** plan, then its
 discount and tax lines, and the period with its billed and total days beside it.
+The membership description names the current discounted per-period credit before
+proration. A percentage discount uses the actual extended gross at calculation
+time; plan changes explicitly supply the prorated new price as its discount base
+because the membership line already includes the current-price credit.
 There is no invoice (and zero billed days) when the new effective price isn't
 higher, the change is on or after the due date, the rounded proration is zero, or the
 membership is in a trial, frozen or cancelled. A plan with another billing

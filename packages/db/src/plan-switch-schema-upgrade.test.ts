@@ -45,7 +45,7 @@ it('adds the plan switch columns to a populated database, leaves existing rows u
     const afterMemberships = await maintenance.sql`select * from memberships order by id`;
     const afterLines = await maintenance.sql`select * from invoice_line_items order by id`;
     expect(afterMemberships).toEqual(beforeMemberships.map(row => ({ ...row, ...Object.fromEntries(newMembershipColumns.map(c => [c, null])) })));
-    expect(afterLines).toEqual(beforeLines.map(row => ({ ...row, plan_id: null })));
+    expect(afterLines).toEqual(beforeLines.map(row => ({ ...row, plan_id: null, billed_unit_amount_cents: null, billed_discount: null })));
 
     const rejected = (code: string) => expect.objectContaining({ code });
     // A scheduled change is all four columns or none.

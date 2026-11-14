@@ -2,7 +2,7 @@
 import '@hono/zod-openapi';
 import { describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
-import { auditEvents, discounts, households, membershipDiscounts, uuidv7 } from '@plaingym/db';
+import { auditEvents, discounts, households, invoiceLineItems, membershipDiscounts, uuidv7 } from '@plaingym/db';
 // Historical/corrupt fixtures need maintenance access; production audits remain append-only.
 // eslint-disable-next-line no-restricted-imports, database/system-tables -- Test-only fixture setup for immutable audit history.
 import { openConnection } from '@plaingym/db/client';
@@ -140,10 +140,9 @@ describe('discounts through plan switches', () => {
   it('does not label malformed billed discount terms as an unbilled period', async () => {
     const f = await setup(), plan = await factory('plans', f.gymId, { amountCents: 20_000 });
     await f.set((await f.create()).id); await f.daily('2028-03-01');
-    const issued = (await f.read()).audits.find(row => row.action === 'billing.invoice.issued')!;
-    const snapshot = structuredClone(issued.after) as { membershipPricing: { discount: { name: string } }[] };
-    snapshot.membershipPricing[0]!.discount.name = ' ';
-    await rewriteAuditFixture(f.gymId, issued.id, snapshot);
+    const line = (await f.read()).lines.find(row => row.kind === 'membership')!;
+    await db.forGym(f.gymId, tx => tx.update(invoiceLineItems).set({ billedDiscount: { ...line.billedDiscount!, name: ' ' } })
+      .where(eq(invoiceLineItems.id, line.id)));
     f.clock.set('2028-03-16T17:00:00Z');
     await expect(f.preview(plan.id, 'now')).rejects.toBeInstanceOf(RangeError);
   });
@@ -183,16 +182,62 @@ describe('discounts through plan switches', () => {
     expect((await f.get()).discount).toMatchObject({ cyclesLeft: 1 });
   });
 
-  it('recovers the billed terms of an older invoice from unambiguous application history', async () => {
+  it('credits the stored line without an issuance audit snapshot or application timestamp fallback', async () => {
     const f = await setup(), plan = await factory('plans', f.gymId, { amountCents: 20_000 });
     f.clock.set('2028-02-28T17:00:00Z'); await f.set((await f.create()).id);
     await f.daily('2028-03-01');
     const issued = (await f.read()).audits.find(row => row.action === 'billing.invoice.issued')!;
     const legacy = Object.fromEntries(Object.entries(issued.after as Record<string, unknown>).filter(([key]) => key !== 'membershipPricing'));
-    // Model an invoice issued before the pricing snapshot existed.
+    // Issuance audit shape and mutable application history are no longer the source of billed terms.
     await rewriteAuditFixture(f.gymId, issued.id, legacy);
     f.clock.set('2028-03-16T17:00:00Z'); await f.remove();
     expect((await f.preview(plan.id, 'now')).proration!.totalCents).toBe(7_742);
+  });
+
+  it('keeps a 100 percent discount through two zero-invoice upgrades at the same instant', async () => {
+    const f = await setup(), first = await factory('plans', f.gymId, { amountCents: 20_000 }), second = await factory('plans', f.gymId, { amountCents: 30_000 });
+    await f.set((await f.create({ percentBasisPoints: 10_000, duration: 'forever', cycles: undefined })).id);
+    await f.daily('2028-03-01'); f.clock.set('2028-03-16T17:00:00Z');
+    expect((await f.change(first.id, 'now')).invoiceId).toBeNull();
+    expect((await f.preview(second.id, 'now')).proration!.totalCents).toBe(0);
+    expect((await f.change(second.id, 'now')).invoiceId).toBeNull();
+    expect((await f.get()).amountCents).toBe(30_000);
+    expect((await f.read()).invoices).toHaveLength(1);
+  });
+
+  it('uses a zero-invoice upgrade audit when the older bill has no recoverable stored terms', async () => {
+    const f = await setup(), first = await factory('plans', f.gymId, { amountCents: 20_000 }), second = await factory('plans', f.gymId, { amountCents: 30_000 });
+    await f.set((await f.create({ percentBasisPoints: 10_000, duration: 'forever', cycles: undefined })).id);
+    await f.daily('2028-03-01'); f.clock.set('2028-03-16T17:00:00Z');
+    expect((await f.change(first.id, 'now')).invoiceId).toBeNull();
+    await db.forGym(f.gymId, tx => tx.update(invoiceLineItems).set({ billedUnitAmountCents: null, billedDiscount: null })
+      .where(eq(invoiceLineItems.membershipId, f.membership.id)));
+    expect((await f.preview(second.id, 'now')).proration!.totalCents).toBe(0);
+    expect((await f.change(second.id, 'now')).invoiceId).toBeNull();
+  });
+
+  it('refuses unknown legacy terms without trying the old issuance audit at quote time', async () => {
+    const f = await setup(), plan = await factory('plans', f.gymId, { amountCents: 20_000 });
+    await f.daily('2028-03-01');
+    await db.forGym(f.gymId, tx => tx.update(invoiceLineItems).set({ billedUnitAmountCents: null, billedDiscount: null })
+      .where(eq(invoiceLineItems.membershipId, f.membership.id)));
+    f.clock.set('2028-03-16T17:00:00Z');
+    await expect(f.preview(plan.id, 'now')).rejects.toMatchObject({ code: 'conflict', details: { reason: ['period_not_billed'] } });
+  });
+
+  it('stores assignment-time discount terms even when assignment and issuance share an instant and the audit has no snapshot', async () => {
+    const f = await setup(), plan = await factory('plans', f.gymId, { amountCents: 20_000 });
+    const discount = await f.create({ duration: 'once', cycles: undefined });
+    const service = createMembershipService({ ...f.serviceOptions, onAssigned: f.runner.onAssigned });
+    const member = await factory('members', f.gymId, { householdId: f.home.id });
+    const assigned = await service.assign(f.context, { id: uuidv7(), householdId: f.home.id, memberId: member.id, planId: f.plan.id,
+      startsOn: '2028-03-01', nextDueOn: '2028-04-01', firstPeriod: 'prorate_now', initialStatus: 'active', discount: { discountId: discount.id } });
+    const line = (await f.read()).lines.find(row => row.membershipId === assigned.id && row.kind === 'membership')!;
+    expect(line).toMatchObject({ billedUnitAmountCents: 10_000, billedDiscount: { discountId: discount.id, cyclesLeft: 1 } });
+    const issued = (await f.read()).audits.find(row => row.action === 'billing.invoice.issued' && row.targetId === line.invoiceId)!;
+    await rewriteAuditFixture(f.gymId, issued.id, {});
+    await f.daily('2028-03-01'); f.clock.set('2028-03-16T17:00:00Z');
+    expect((await service.previewSwitch(f.gymId, assigned.id, { planId: plan.id, timing: 'now' })).proration!.totalCents).toBe(7_742);
   });
 
   it.each(['now', 'next_billing_date'] as const)('a %s switch keeps the snapshotted eligibility and remaining cycles after catalog edits', async timing => {
