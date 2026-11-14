@@ -92,9 +92,9 @@ export function DemoShell({ children }: { children: ReactNode }) {
     {(discovery.isError || expired) && <div className="p-4" role="alert">
       <p>{t('demo/demo:error')}</p><Button type="button" onClick={() => { void refetch(); }}>{t('shell/shell:retry')}</Button>
     </div>}
-    <CopyPrompt showcase={mode?.mode === 'showcase'} /><DemoNotice /><DemoEntry />
     {copyToken ? handoffError ? <Alert variant="error">{t('demo/demo:handoffError')}</Alert> : <LoadingState />
-      : kioskToken && (discovery.isPending || activeSandbox) ? (tokenSaveFailed ? null : <LoadingState />) : children}
+      : <><CopyPrompt showcase={mode?.mode === 'showcase'} /><DemoNotice /><DemoEntry />
+        {kioskToken && (discovery.isPending || activeSandbox) ? (tokenSaveFailed ? null : <LoadingState />) : children}</>}
   </LoginContext.Provider></DemoContext.Provider>;
 }
 export function DemoEntry() {

@@ -138,7 +138,10 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
   if (options.restoreGate) app.use('*', options.restoreGate);
   const demoInstallIds = new Set([demoContracts.create, demoContracts.progress, demoContracts.entry].map((contract) => `${contract.method.toUpperCase()} ${contract.path}`));
   const demoInstallRoutes = (contributions.routes ?? []).filter((entry) => demoInstallIds.has(entry.id));
-  for (const entry of demoInstallRoutes) entry.mount(app, authorizeInstall);
+  // Demo creation checks its own configured entry/showcase origin; the install origin alone is too narrow.
+  for (const entry of demoInstallRoutes) entry.mount(app, permission => async (context, next) => {
+    await installLimiter(context, async () => { await installAuthorize(permission)(context, next); });
+  });
   for (const entry of installRoutes.filter((entry) => entry.id === catalogId)) entry.mount(app, authorizeInstall);
   app.use('*', staticAssets(options.publicDirectory));
   // Flood protection runs before the session middleware, which answers auth requests itself. A single-gym install

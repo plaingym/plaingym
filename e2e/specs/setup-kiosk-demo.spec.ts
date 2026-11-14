@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { test, expect, Client, gymOrigin, password } from '../support.js';
 import { accessibleLayout, sizes } from '../responsive.js';
+test.use({ trace: 'off' });
 
 test('login at phone, tablet and desktop widths supports errors and password sign-in', async ({ page }, info) => {
   test.setTimeout(120_000);
@@ -54,7 +55,7 @@ test('demo entry opens the showcase, private copy menu and kiosk work at every s
   // One slim row: the sandbox, its expiry and the demo menu. The kiosk's sample household shows only on the kiosk's name search.
   await expect(menuButton).toBeVisible();
   await expect(page.getByText(/Marcus Rivera/)).toHaveCount(0);
-  await expect.poll(() => page.evaluate(() => location.hash.includes('kioskToken'))).toBe(false);
+  await expect(page).not.toHaveURL(/#/);
   await expect(page.getByRole('button', { name: 'Try the demo', exact: true })).toHaveCount(0);
   // Follow the public visitor path through the demo menu; sandbox creation provisions the device.
   await menuButton.click();

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { publicCopyScript } from '../../demo/copy-browser.js';
+import { publicCopyScript } from '../../demo/copy.page.js';
 /**
  * The message key for a refused public form post, shared by the join and drop-in scripts. A 429 is worth retrying at
  * once only for a momentarily full queue (the busy reason, `core/errors.ts`); any other is a limit for now.

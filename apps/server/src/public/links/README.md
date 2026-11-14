@@ -230,7 +230,7 @@ This uses the pinned web Tailwind version and shared design tokens, plus the
 existing esbuild toolchain. Browser code is built separately, avoiding server
 transpiler helpers in the browser. Generated CSS and JavaScript are not committed.
 The stylesheet takes its classes from `page.ts` and `*.page.ts` files under
-`public/` and `modules/` (the website), plus the explicit staff invitation source
+`public/`, `modules/` (the website), and `demo/` (the public copy prompt), plus the explicit staff invitation source
 `areas/staff/profiles.accept.ts`. A new public file that renders markup must be
 named `*.page.ts` or added explicitly to the sources, or its classes get no CSS.
 `pnpm dev` builds into the ignored `apps/server/public/` directory once at startup,

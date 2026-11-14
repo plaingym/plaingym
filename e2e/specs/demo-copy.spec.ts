@@ -24,7 +24,9 @@ for (const { role, width, pagePath } of [
     await expect(prompt).toBeVisible();
     await accessibleLayout(page, info, 'demo-copy-' + width);
     await page.screenshot({ path: info.outputPath('demo-copy-' + width + '.png'), fullPage: true });
+    const created = page.waitForResponse(response => new URL(response.url()).pathname === '/api/demo/sandboxes' && response.request().method() === 'POST');
     await prompt.getByRole('button', { name: 'Make my own copy', exact: true }).click();
+    expect((await created).status(), 'Signed-in showcase copy creation').toBe(201);
     await page.waitForURL(url => url.hostname.endsWith('.demo.localhost') && url.hostname !== 'showcase.demo.localhost' && url.pathname === pagePath && !url.hash);
     const client = new Client(new URL(page.url()).origin);
     client.cookie = (await page.context().cookies(client.origin)).map(cookie => `${cookie.name}=${cookie.value}`).join('; ');

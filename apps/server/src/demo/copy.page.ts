@@ -7,9 +7,11 @@ export const publicCopyScript = String.raw`async function demoCopyPrompt(respons
   let dialog = document.querySelector('[data-demo-copy]');
   if (dialog) { dialog.showModal(); return true; }
   dialog = document.createElement('dialog'); dialog.dataset.demoCopy = '';
-  dialog.className = 'rounded-xl border border-border bg-background p-4 sm:p-6';
-  const title = document.createElement('h2'); title.textContent = 'This demo is shared. Make your own copy to change things.';
+  dialog.className = 'm-auto w-[calc(100%-2rem)] max-w-lg space-y-4 rounded-xl border border-border bg-background p-4 sm:p-6';
+  dialog.setAttribute('aria-label', 'Shared demo');
+  const title = document.createElement('h2'); title.textContent = 'Shared demo';
   title.className = 'text-lg font-semibold';
+  const description = document.createElement('p'); description.textContent = 'This demo is shared. Make your own copy to change things.';
   const button = document.createElement('button'); button.type = 'button'; button.textContent = 'Make my own copy';
   button.className = 'min-h-11 rounded-lg bg-primary px-4 py-3 font-semibold text-primary-foreground';
   const status = document.createElement('p'); status.setAttribute('role', 'status');
@@ -46,6 +48,6 @@ export const publicCopyScript = String.raw`async function demoCopyPrompt(respons
       location.assign(destination.href);
     } catch { status.textContent = 'We could not create your copy. Please try again.'; button.disabled = false; }
   });
-  dialog.append(title, button, status, close); document.body.append(dialog); dialog.showModal();
+  dialog.append(title, description, button, status, close); document.body.append(dialog); dialog.showModal();
   return true;
 }`;
