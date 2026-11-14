@@ -62,6 +62,11 @@ missed period, and the go-live page asks you to confirm every one first. Export
 after your old system's last billing run and before its next, so a date isn't billed
 twice.
 
+When updating an existing membership, moving its next due date earlier also moves
+a scheduled plan switch to that date. A scheduled catalog price change keeps its
+announced date. Changing the imported price or interval clears a pending switch;
+the import's audit event records the cleared plan and date.
+
 ### Ranks and attendance columns
 
 Each row is either a **promotion** (program, rank, promotion date, optional sub-rank)

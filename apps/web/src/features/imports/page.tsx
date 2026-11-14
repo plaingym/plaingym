@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { parseResponse } from '../../lib/response.js';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { canStaff } from '@plaingym/shared';
 import { importTargetFieldSchema, importUploadSchema, importPreviewResponseSchema, importJobSchema, importIssueSchema,
@@ -32,6 +32,8 @@ function ImportPanel({ gymId }: { gymId: string }) {
   const [runId, setRunId] = useState<string>(), [runPlan, setRunPlan] = useState(''), [errorOffset, setErrorOffset] = useState(0);
   const plan = upload ? { uploadId: upload.id, mapper, mapping, duplicatePolicy } : undefined;
   const fingerprint = JSON.stringify(plan);
+  const currentPlan = useRef(fingerprint);
+  useEffect(() => { currentPlan.current = fingerprint; }, [fingerprint]);
   const progress = useQuery({ queryKey: ['imports', gymId, runId], enabled: !!runId,
     queryFn: async () => parseResponse(importJobSchema, (await request<{ data: unknown }>('/api/imports/' + runId)).data),
     refetchInterval: (query) => query.state.data && ['succeeded', 'failed'].includes(query.state.data.status) ? false : 1500 });
@@ -57,8 +59,11 @@ function ImportPanel({ gymId }: { gymId: string }) {
       if (message) throw new PreviewError(message);
       throw new Error('Preview failed');
     }
-    return parseResponse(importPreviewResponseSchema, await response.json());
-  }, onSuccess(data) { setPreview(data); setOffset(data.pagination.offset); } });
+    return { data: parseResponse(importPreviewResponseSchema, await response.json()), fingerprint };
+  }, onSuccess({ data, fingerprint: requestedPlan }) {
+    if (requestedPlan !== currentPlan.current) return;
+    setPreview(data); setOffset(data.pagination.offset);
+  } });
   const start = useMutation({ mutationFn: async (dryRun: boolean) => parseResponse(importJobSchema, (await request<{ data: unknown }>('/api/imports', { ...plan, dryRun })).data),
     onSuccess(data) { setRunId(data.id); setRunPlan(fingerprint); setErrorOffset(0); } });
   const busy = uploadFile.isPending || start.isPending || progress.data?.status === 'pending' || progress.data?.status === 'running';

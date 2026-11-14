@@ -189,7 +189,8 @@ affected by the branch's changes since it left `main`.
 Vitest finds those by following imports. Whole-app tests (those importing the area
 registry, the runtime, or the demo seed composition) relate to almost every change,
 so they run locally only when their own folder changed. The listed source-scanning
-tests run every time, even for Markdown-only changes; one of them is a whole-app
+tests run every time, even for Markdown-only changes; a guard test requires new file-reading
+tests to join that list or declare their fixture-only reads. One scanner is a whole-app
 test and one uses the test database, so `pnpm verify` always needs Docker (or
 `TEST_DATABASE_URL`). Changes that tests read
 without importing them (migrations, test setup, the lockfile; `forceRerunTriggers`
@@ -200,11 +201,17 @@ run the full suite. The disposable test database skips durable writes
 request that changes more than Markdown files, and gates landing; the **Repo compliance**
 workflow runs the documentation tests on every push and pull request, Markdown-only ones
 included. `pnpm test:docs` generates shared inputs and runs every docs test, failing
-if one belongs to the integration project. Selected verification runs use this command;
-full runs include docs tests once in the full suite.
+if one belongs to the integration project. It discovers and runs the specs on one Vitest instance.
+Verification generates shared inputs once, and includes docs specs from Vitest's own discovery
+in the same test run as the selected tests (or the full suite).
 End-to-end skips Markdown-only pushes too, and still runs nightly, as does the **Memory** workflow, which measures the whole
 stack against its memory budget (`deploy/test/memory/README.md`). On a push to `main`, CI reuses a passing run of the same
 commit (from its integration branch) instead of repeating it.
+The people mapper compatibility test runs two small fixtures and a 3,000-row export by default,
+under five mapping variants each. Set `PEOPLE_COMPAT_LARGE=1` when running
+`pnpm test apps/server/src/areas/imports/mappers/people.compat.test.ts` to include the two
+100,000-row exports. Its reference hashes cover issue codes and locations, and failures
+identify the first differing 1,000-row chunk.
 Dependency lifecycle scripts are allowlisted for esbuild only.
 
 The server build copies Noto Sans and the PDF renderer's CJK, Arabic, Hebrew,

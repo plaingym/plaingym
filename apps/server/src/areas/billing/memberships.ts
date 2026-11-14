@@ -13,7 +13,7 @@ import { gymSettingsAccessor } from '../settings/settings.js';
 import { markLeadWon } from '../leads/stages.js';
 import { catalogAudit, catalogMissing } from './catalog.js';
 import { addCalendarMonths, advanceDue, householdNextDate, trialEnd } from './memberships.calendar.js';
-import { cancelScheduledSwitchRequestSchema, checkSwitch, clearedSwitch, planSwitchedAction, recordedSwitch, refuse, sameSwitchRequest,
+import { cancelScheduledSwitchRequestSchema, checkSwitch, clearedSwitch, planSwitchedAction, recordedSwitch, refuse, rescheduledSwitch, sameSwitchRequest,
   scheduledSwitch, switchedNow, unscheduled, switchPlanRequestSchema, switchScheduledAction, type CancelScheduledSwitchRequest,
   type PlanSwitchedNowAudit, type RecordedSwitchRequest, type SwitchPlanRequest, type SwitchScheduledAudit } from './memberships.plan-change.js';
 import { checkNow, issuable, planTaxes, prorateNow, switchPreview } from './memberships.plan-change.now.js';
@@ -22,7 +22,7 @@ import { applyDiscount, endDiscount, liveDiscounts, presentDiscount, refuseMembe
 
 type Row = typeof memberships.$inferSelect;
 // The override reason stays out of the Membership contract (erasure clears it; no response or audit carries it), and so
-// does the scheduled change's origin, which only the due-date rule in `update` reads.
+// does the scheduled change's origin, which the shared due-date rule reads.
 const serialize = ({ gymId: _gymId, anniversaryOn: _anniversaryOn, switchOverrideReason: _reason, scheduledOrigin: _origin, ...row }: Row,
   discount: c.AppliedMembershipDiscount | null): c.Membership => c.membershipSchema.parse({ ...row, discount,
   createdAt: row.createdAt.toISOString(), frozenAt: row.frozenAt?.toISOString() ?? null,
@@ -396,10 +396,8 @@ export function createMembershipService(options: MembershipOptions = {}) {
         if (changes.price && before.scheduledPlanId !== null && !priceOnly)
           refuse('switch_scheduled', 'A plan switch is scheduled; cancel it before changing the price');
         const replaced = changes.price && priceOnly;
-        const follows = !replaced && changes.nextDueOn && before.scheduledOn !== null && changes.nextDueOn < before.scheduledOn
-          && before.scheduledOrigin !== 'price_change';
         return { ...(changes.price ?? {}), ...(changes.nextDueOn ? { nextDueOn: changes.nextDueOn } : {}),
-          ...(replaced ? unscheduled : {}), ...(follows ? { scheduledOn: changes.nextDueOn } : {}),
+          ...(replaced ? unscheduled : rescheduledSwitch(before, changes.nextDueOn)),
           anniversaryOn: editedAnniversary(before, changes.nextDueOn) };
       });
     },

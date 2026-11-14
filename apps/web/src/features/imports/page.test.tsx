@@ -28,6 +28,24 @@ function start() {
 beforeEach(() => { bootstrap(); request.mockReset(); });
 afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear(); vi.unstubAllGlobals(); });
 describe('CSV admin workflow', () => {
+  it('ignores a pending preview after the import type changes', async () => {
+    let resolvePreview!: (response: Response) => void;
+    const pending = new Promise<Response>(resolve => { resolvePreview = resolve; });
+    vi.stubGlobal('fetch', vi.fn(async (path: string) => path === '/api/imports/uploads'
+      ? Response.json({ data: uploaded }) : pending));
+    start();
+    fireEvent.change(screen.getByLabelText(/CSV file/), { target: { files: [new File(['Name\nTest'], 'people.csv')] } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview' }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    fireEvent.change(screen.getByLabelText('Import type'), { target: { value: 'memberships' } });
+    resolvePreview(Response.json({ data: [{ rowNumber: 2, values: { firstName: 'Obsolete preview' }, action: 'create', duplicateIds: [] }],
+      pagination: { limit: 50, offset: 0, total: 1 }, summary: { totalRows: 1, create: 1, update: 0, skip: 0, errors: 0 } }));
+    // Wait for the mutation callback as well as the response to finish.
+    await waitFor(() => expect(clients[0]!.getMutationCache().getAll().every(mutation => mutation.state.status !== 'pending')).toBe(true));
+    expect(screen.queryByText('Obsolete preview')).toBeNull();
+    expect(screen.queryByRole('columnheader', { name: 'First name' })).toBeNull();
+    expect((screen.getByLabelText('Import type') as HTMLSelectElement).value).toBe('memberships');
+  });
   it.each([
     { status: 500, code: 'unavailable', message: 'Private server detail' },
     { status: 503, code: 'unknown', message: 'Private server detail' },

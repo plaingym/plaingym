@@ -86,6 +86,11 @@ export function scheduledSwitch(row: Row, plan: Plan, overrideReason: string | n
  */
 export const unscheduled = { scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null,
   scheduledOrigin: null } as const;
+/** A switch follows an earlier billing date; a notified catalog price change keeps its date. */
+export function rescheduledSwitch(row: Pick<Row, 'scheduledOn' | 'scheduledOrigin'>, nextDueOn?: string) {
+  return nextDueOn && row.scheduledOn !== null && nextDueOn < row.scheduledOn && row.scheduledOrigin !== 'price_change'
+    ? { scheduledOn: nextDueOn } : {};
+}
 /**
  * Clears a switch that hasn't applied yet, with its override reason. A reason left with no switch scheduled records
  * the last applied switch and stays until the next switch is scheduled (or the member is erased). A price change left
