@@ -8,6 +8,49 @@
 set -eu
 umask 077
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# Bootstrap recovery must stay self-contained: this script and lib.sh may be different generations.
+# Keep this protocol in sync with update.sh; take the lock before reading or restoring host files.
+[ "$(id -u)" -eq 0 ] || { echo 'Run rotate-key.sh as root.' >&2; exit 1; }
+[ -f "$ROOT/.env" ] || { echo 'Missing installation .env.' >&2; exit 1; }
+exec 9>"$ROOT/.update.lock"
+flock -n 9 || { echo 'An update or key rotation is running; run this again once it finishes. Nothing was changed.' >&2; exit 1; }
+bootstrap_recover() {
+  [ -d "$ROOT/.host-update" ] || return 0
+  [ -s "$ROOT/.host-update/target" ] && [ -d "$ROOT/.host-update/before/files" ] || return 1
+  bootstrap_units=${SYSTEMD_UNIT_DIR:-/etc/systemd/system}
+  bootstrap_pin=$(awk 'index($0, "APP_IMAGE=") == 1 { value=substr($0, 11) } END { print value }' "$ROOT/.env") || return 1
+  bootstrap_restored=false
+  if [ "$bootstrap_pin" != "$(cat "$ROOT/.host-update/target")" ]; then
+    echo 'Restoring host files from the unfinished update.' >&2
+    for bootstrap_file in update.sh lib.sh rotate-key.sh restore.sh systemd/plaingym-update.service systemd/plaingym-update.timer; do
+      bootstrap_dest="$ROOT/$bootstrap_file"
+      if [ -f "$ROOT/.host-update/before/files/$bootstrap_file" ]; then
+        case "$bootstrap_file" in update.sh|rotate-key.sh|restore.sh) bootstrap_mode=0700 ;; *) bootstrap_mode=0644 ;; esac
+        mkdir -p "$(dirname "$bootstrap_dest")" || return 1
+        install -m "$bootstrap_mode" "$ROOT/.host-update/before/files/$bootstrap_file" "$bootstrap_dest.host-next" || return 1
+        mv -f "$bootstrap_dest.host-next" "$bootstrap_dest" || return 1
+      else rm -f "$bootstrap_dest" || return 1; fi
+    done
+    for bootstrap_unit in plaingym-update.service plaingym-update.timer; do
+      bootstrap_dest="$bootstrap_units/$bootstrap_unit"
+      if [ -f "$ROOT/.host-update/before/units/$bootstrap_unit" ]; then
+        mkdir -p "$bootstrap_units" || return 1
+        install -m 0644 "$ROOT/.host-update/before/units/$bootstrap_unit" "$bootstrap_dest.host-next" || return 1
+        mv -f "$bootstrap_dest.host-next" "$bootstrap_dest" || return 1
+      else rm -f "$bootstrap_dest" || return 1; fi
+    done
+    sync -f "$ROOT" "$bootstrap_units" || return 1
+    systemctl daemon-reload || return 1
+    bootstrap_restored=true
+  fi
+  sync -f "$ROOT" "$bootstrap_units" || return 1
+  bootstrap_retired=$(mktemp -d "$ROOT/.host-retired.XXXXXX") || return 1
+  mv "$ROOT/.host-update" "$bootstrap_retired/transaction" || return 1
+  sync -f "$ROOT" || return 1
+  rm -rf -- "$bootstrap_retired" || return 1
+}
+bootstrap_recover || { echo 'Host file recovery failed; run update.sh again to retry it.' >&2; exit 1; }
+if [ "${bootstrap_restored:-false}" = true ]; then exec sh "$ROOT/rotate-key.sh" "$@" 9>&-; fi
 # shellcheck source=deploy/lib.sh
 . "$ROOT/lib.sh"
 [ "$(id -u)" -eq 0 ] || fail 'Run rotate-key.sh as root.'
@@ -18,9 +61,7 @@ valid_key() { printf '%s\n' "$1" | grep -Eq '^[a-fA-F0-9]{64}$'; }
 inflight_value() { # KEY
   awk -v key="$1" 'index($0, key "=") == 1 { value = substr($0, length(key) + 2) } END { print value }' "$INFLIGHT"
 }
-# The updater's lock: an update and a key rotation never run at once.
-exec 9>"$ROOT/.update.lock"
-flock -n 9 || fail 'An update or key rotation is running; run this again once it finishes. Nothing was changed.'
+host_recover || fail 'Could not recover host files from an interrupted update.'
 
 stopped=false
 switched=false

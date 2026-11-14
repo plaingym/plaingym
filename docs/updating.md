@@ -47,7 +47,8 @@ sudo /opt/plaingym/update.sh --patch --now
 An SMTP refusal does not delay later results on the health tile. The host keeps refused notices separately
 and retries each on its next run, with the same per-owner delivery key. An unsent failed-rollback notice is
 replaced by the recovery notice for that outage. Accepted or uncertain sends are never repeated. Other
-notice errors, such as unreadable SMTP settings, are logged in the updater journal without blocking results.
+notice errors from database, connection, owner or settings lookups stay queued for the next run.
+Unreadable SMTP settings and rendering errors are logged in the updater journal without retrying the notice.
 
 | The tile says | What to do |
 | :--- | :--- |
@@ -127,7 +128,14 @@ still names the required manual steps in its upgrade notes.
 Previous copies stay in `.host-history/`, associated with the image they ran with.
 A failed replacement restores them before restarting the previous image. After a
 power loss, the next invocation recovers `.host-update` before doing another update.
+Both the updater and `rotate-key.sh` take the update lock and recover before loading
+the shared library, then restart from their restored script. If systemd cannot reload,
+the restored files and journal stay for another try; a failed update still rolls the
+image back and records its result. A manual update also settles any interrupted nightly
+patch first; run the manual update again afterwards.
 `--rollback` restores the previous host files and units when a saved copy exists.
+Successful updates remove saved host generations once their image is gone from the host
+and has no saved registry pin that `--rollback` could pull again.
 Do not remove these directories while an update or recovery is unfinished.
 
 The signing key must remain the currently trusted key. A release cannot rotate it
@@ -136,10 +144,7 @@ key must change, verify the replacement through the maintainer's trusted release
 instructions and install it explicitly before updating. This is separate from
 rotating the installation's encryption key with `rotate-key.sh`.
 
-Installs whose updater predates host-file updates need a one-time manual copy of
-reviewed `update.sh` and `lib.sh` before using this mechanism: until then, they refuse
-releases that carry host-file digests, and nightly updates skip them. Older signed
-releases without host-file digests still update only the image.
+Signed releases without host-file digests still update only the image.
 
 While `/opt/plaingym/.rotate-key.inflight` exists, a manual update fails and
 the nightly update skips, both saying that key rotation is unfinished. Rerun `rotate-key.sh` to finish

@@ -14,6 +14,7 @@ import {
   type AutoUpdateAttempt, type AutoUpdateState,
 } from './auto-update.js';
 import { createAutoUpdateCommand } from './auto-update.cli.js';
+import { createAutoUpdateNotices, PermanentAutoUpdateNoticeError } from './auto-update.notices.js';
 import { createHealthService } from './status.js';
 import { createUpdateAvailableProvider } from './updates.js';
 
@@ -361,7 +362,8 @@ describe('gym-app auto-update', () => {
   });
   it('logs permanent notice errors and uncertain sends without keeping the stored result pending', async () => {
     const f = await fixture();
-    for (const error of [new Error('SMTP settings cannot be decrypted'), new DeliveryError('unknown', 'Lost reply')]) {
+    for (const error of [new PermanentAutoUpdateNoticeError('SMTP settings cannot be decrypted'),
+      new PermanentAutoUpdateNoticeError('Notice cannot be rendered'), new DeliveryError('unknown', 'Lost reply')]) {
       const out = f.io();
       expect(await f.command({ notify: async () => { throw error; } }).run(['record', '--at', '2026-11-03T16:05:00Z',
         '--result', 'failed', '--reason', 'rollback_failed', '--from', 'v1.2.3', '--to', 'v1.2.4'], out.io)).toBe(0);
@@ -369,6 +371,24 @@ describe('gym-app auto-update', () => {
       expect(out.out).toEqual(['Recorded.']);
     }
     expect(await f.attempts.latest(f.gymId)).toMatchObject({ result: 'failed' });
+  });
+  it.each(['smtp', 'owners', 'settings'] as const)('keeps a notice after a temporary %s lookup failure and delivers it on retry', async (lookup) => {
+    const f = await fixture(), out = f.io(), unavailable = new Error('Database connection temporarily unavailable');
+    let reads = 0;
+    const notify = createAutoUpdateNotices({ env: { APP_ENCRYPTION_KEY: '07'.repeat(32), SMTP_HOST: 'smtp.example.org' },
+      clock: f.clock, scope: async (gymId, fn) => {
+        // SMTP reads first; the gym settings read follows the owner lookup.
+        reads++;
+        if (lookup === 'smtp' || lookup === 'settings' && reads === 2) throw unavailable;
+        return db.forGym(gymId, fn);
+      }, owners: async () => { if (lookup === 'owners') throw unavailable; return []; } });
+    const args = ['--at', '2026-11-03T16:05:00Z', '--result', 'failed', '--reason', 'rollback_failed', '--from', 'v1.2.3', '--to', 'v1.2.4'];
+    expect(await f.command({ notify }).run(['notice', ...args], out.io)).toBe(3);
+    expect(out.err).toEqual([unavailable.message]);
+    let sent = false;
+    expect(await f.command({ notify: async () => { sent = true; } }).run(['notice', ...args], f.io().io)).toBe(0);
+    expect(sent).toBe(true);
+    expect(await f.attempts.latest(f.gymId)).toBeNull();
   });
   it('refuses malformed input, an install serving several gyms, and reports failures without a stack', async () => {
     const f = await fixture();

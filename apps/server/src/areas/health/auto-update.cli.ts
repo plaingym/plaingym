@@ -10,7 +10,7 @@ import { listGyms, singleGymId, tenancyMode } from '../../core/tenancy.js';
 import { DeliveryError } from '../../infra/email/index.js';
 import { createAutoUpdateSettings, type AutoUpdateSettings } from '../settings/auto-update.js';
 import { autoUpdateAttemptSchema, createAutoUpdateAttempts, type AutoUpdateAttempt } from './auto-update.js';
-import { createAutoUpdateNotices } from './auto-update.notices.js';
+import { createAutoUpdateNotices, PermanentAutoUpdateNoticeError } from './auto-update.notices.js';
 import { backupsConfigured } from './restore.config.js';
 import { RestoreGate } from './restore.gate.js';
 
@@ -90,10 +90,11 @@ export function createAutoUpdateCommand(options: AutoUpdateCommandOptions = {}):
           try {
             await (options.notify ?? createAutoUpdateNotices({ env, ...options.scope ? { scope: options.scope } : {}, clock: options.clock ?? defaultClock }))(gymId, attempt.data);
           } catch (error) {
-            // The result is already stored. Only proof of a non-send warrants a notice retry; an uncertain send,
-            // lookup, decryption or rendering error must not hold back later results or resend an accepted email.
+            // Delivery keys prevent resending accepted or uncertain mail. Lookup and database failures can clear;
+            // keep their notice queued without holding back later results. Local settings/rendering cannot clear.
             io.stderr(error instanceof Error ? error.message : 'Automatic update notice failed');
-            if (error instanceof DeliveryError && error.acceptance === 'not_accepted') return 3;
+            if (!(error instanceof PermanentAutoUpdateNoticeError) &&
+              (!(error instanceof DeliveryError) || error.acceptance === 'not_accepted')) return 3;
           }
         }
         return 0;

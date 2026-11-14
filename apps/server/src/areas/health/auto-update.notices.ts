@@ -18,30 +18,37 @@ export interface AutoUpdateNoticeOptions {
   owners?: (gymId: string) => Promise<string[]>;
   transport?: (config: SmtpConfig) => Email & { close?: () => void };
 }
+/** Retrying unchanged local settings or rendering cannot make this notice sendable. */
+export class PermanentAutoUpdateNoticeError extends Error {}
 /** Called by the host's record command. A replay uses the same durable per-attempt, per-owner delivery key. */
 export function createAutoUpdateNotices(options: AutoUpdateNoticeOptions = {}) {
   const env = options.env ?? process.env, scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   return async (gymId: string, attempt: AutoUpdateAttempt): Promise<void> => {
     if (env.TENANCY === 'multi' || !['rolled_back', 'failed'].includes(attempt.result)) return;
-    const smtp = createSmtpResolver({ key: parseEncryptionKey(env.APP_ENCRYPTION_KEY ?? ''), env, scope });
+    let smtp;
+    try { smtp = createSmtpResolver({ key: parseEncryptionKey(env.APP_ENCRYPTION_KEY ?? ''), env, scope }); }
+    catch (error) { throw new PermanentAutoUpdateNoticeError('Automatic update notice settings are invalid', { cause: error }); }
     const config = await smtp.config(gymId);
     if (!config) return;
     const owners = options.owners ?? ((id: string) => createAccountService(authConfig(env)).staffEmails(id, ['owner']));
     const [recipients, gym] = await Promise.all([owners(gymId), createSettingsService({ scope, clock }).get(gymId)]);
-    const rendered = await renderAutoUpdateNotice({ gymName: gym.name, timezone: gym.timezone,
-      time: formatAutoUpdateTime(attempt.attemptedAt, gym.timezone),
-      message: describeAttempt(true, attempt, new Date(attempt.attemptedAt), { timezone: gym.timezone }).message });
+    let rendered;
+    try {
+      rendered = await renderAutoUpdateNotice({ gymName: gym.name, timezone: gym.timezone,
+        time: formatAutoUpdateTime(attempt.attemptedAt, gym.timezone),
+        message: describeAttempt(true, attempt, new Date(attempt.attemptedAt), { timezone: gym.timezone }).message });
+    } catch (error) { throw new PermanentAutoUpdateNoticeError('Automatic update notice could not be rendered', { cause: error }); }
     const deliveries = createEmailDeliveries({ scope, clock }), email = options.transport?.(config) ?? new SmtpEmail(config);
     const errors: unknown[] = [];
     try {
       // Owners get separate messages; neither their addresses nor SMTP credentials reach an audit row.
       for (const to of new Set(recipients.map(address => address.trim().toLowerCase()))) {
         const key = `auto-update:${new Date(attempt.attemptedAt).toISOString()}:${attempt.toVersion}:${recipientDigest(to)}`;
-        // One owner's failed send must not keep the notice from the others: the host may not retry it.
+        // One owner's failed send must not keep the notice from the others.
         try { await deliveries.send(gymId, key, email, { ...rendered, to }); } catch (error) { errors.push(error); }
       }
     } finally { email.close?.(); }
     // A definite non-send wins, so the host retries it; the delivery keys skip owners already sent to.
-    if (errors.length) throw errors.find(error => error instanceof DeliveryError && error.acceptance === 'not_accepted') ?? errors[0];
+    if (errors.length) throw errors.find(error => !(error instanceof DeliveryError) || error.acceptance === 'not_accepted') ?? errors[0];
   };
 }

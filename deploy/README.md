@@ -444,9 +444,10 @@ failure notice with the recovery notice, which says when the site went down and 
 Durable delivery reservations prevent a repeated report from resending an
 accepted or uncertain email. A definite SMTP refusal leaves only the notice in `auto-update.notices`;
 each run retries each notice once after recording the queued results, so later results and notices still
-go through. `record` without deferral, and `notice`, exit 3 for a definite non-send; result storage errors
-exit 1 and invalid input exits 2. Other notice errors (owner lookup, SMTP decryption or rendering)
-are logged and exit 0 after the result is stored. The health tile keeps stale errors visible and formats the last check in
+go through. `record` without deferral, and `notice`, exit 3 for a definite non-send or a temporary
+database, owner, or settings lookup failure; result storage errors exit 1 and invalid input exits 2.
+Invalid local settings, unreadable SMTP secrets and rendering errors are logged without retrying the notice;
+accepted or uncertain sends also exit 0. The health tile keeps stale errors visible and formats the last check in
 the gym's timezone. A never-run install becomes stale 50 hours after its first
 health read; transient skips raise the update banner after two consecutive
 attempts. An invalid `RELEASE_REPOSITORY` raises a warning that patches cannot
@@ -642,8 +643,8 @@ from an update. `auto-update-images.tsv` also saves registry pins for manual upd
 image, so `--rollback` can pull a removed image and verify its ID and version. Local builds without
 registry digests still need their image on disk. Pruning removes inventory rows whose reference no longer
 resolves to the recorded image, except for images still on the rollback stack, whose pins stay so a removed
-image can be pulled again. A rollback request first settles an interrupted nightly
-patch; a failed snapshot preserves an app that was already stopped.
+image can be pulled again. A rollback request or manual update first settles an interrupted nightly
+patch, then exits so the owner runs it again; a failed snapshot preserves an app that was already stopped.
 `schema-compatibility.yaml` passes the checked floor, schema release and snapshot to
 the app. Keep it with the database. It goes up before a new image starts. Before
 each manual release update, `.schema-attempt` keeps the database's migration state
@@ -665,17 +666,22 @@ steps in the upgrade notes; the updater never replaces local configuration.
 `.host-update` journals the old files and rendered units before the first rename.
 Until `.env` pins the target image, a failure or next invocation after an
 interruption restores those files. After the pin it keeps the new files.
+Both `update.sh` and `rotate-key.sh` recover under the update lock before loading `lib.sh`,
+then re-execute their restored script. A failed systemd reload leaves restored files and the
+journal in place for the next run. Failure during cleanup still rolls the image back and
+writes the result and version history. A signal after the pin counts as success and removes
+the schema attempt's recovery files.
 `.host-history/<image-id>/` retains previous generations for `--rollback`; older
 images without a saved generation retain their current host files on rollback.
+After a successful update, history for images no longer on the host is removed beside
+image cleanup, except for images whose saved pin `--rollback` can still pull. Recovery also sweeps abandoned prepare and retired journal directories.
 Back up these directories with the install and keep them through recovery. The
 signing key is never rolled back, and a different key in an archive is refused:
 key rotation requires verifying and installing a new trusted public key explicitly
 through the maintainer's release instructions, before updating. `rotate-key.sh`
 rotates the app's encryption key, not this release trust key.
 
-An install with older host scripts needs a one-time manual refresh of reviewed
-`update.sh` and `lib.sh` to gain this path. Manifests without `host_format` retain
-their image-only behavior.
+Manifests without `host_format` retain their image-only behavior.
 
 The **Release** workflow (`.github/workflows/release.yml`) runs on a pushed
 `vX.Y.Z` tag. It accepts only an annotated tag that GitHub verified as signed,
@@ -767,11 +773,9 @@ released=2026-11-03T12:00:00Z
   Image checks runs the same test on any commit that changes the migrations. Older code
   accepts a newer release's table only with the security shape every table has
   ([versioning guide](../docs/versioning.md#compatibility-from-10)).
-* The current reader also accepts format 1 and older manifests without host digests.
-  Older readers, including format 2 readers from before host digests, reject a
-  manifest with `host.*` keys (their names contain `-`): until the one-time
-  host-script refresh above, nightly updates skip such a release as `manifest_invalid`
-  and a manual update refuses it.
+* The current reader also accepts format 1 and manifests without host digests.
+  The first tagged release uses format 2 including the `host.*` keys. From that first
+  tag, adding a key that existing readers reject requires a new manifest format.
 * A deployment archive that can't be downloaded is skipped as `manifest_unavailable`,
   like the manifest itself.
 * GitHub release notes come from the matching `CHANGELOG.md` section.

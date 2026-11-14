@@ -8,6 +8,49 @@
 set -eu
 umask 077
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# Bootstrap recovery must stay self-contained: this script and lib.sh may be different generations.
+# Keep this protocol in sync with rotate-key.sh; take the lock before reading or restoring host files.
+[ "$(id -u)" -eq 0 ] || { echo 'Run update.sh as root.' >&2; exit 1; }
+[ -f "$ROOT/.env" ] || { echo 'Missing installation .env.' >&2; exit 1; }
+exec 9>"$ROOT/.update.lock"
+flock -n 9 || { [ "${1:-}" = --patch ] && { echo 'Another update is running; this run does nothing.'; exit 0; }; echo 'An update or key rotation is running.' >&2; exit 1; }
+bootstrap_recover() {
+  [ -d "$ROOT/.host-update" ] || return 0
+  [ -s "$ROOT/.host-update/target" ] && [ -d "$ROOT/.host-update/before/files" ] || return 1
+  bootstrap_units=${SYSTEMD_UNIT_DIR:-/etc/systemd/system}
+  bootstrap_pin=$(awk 'index($0, "APP_IMAGE=") == 1 { value=substr($0, 11) } END { print value }' "$ROOT/.env") || return 1
+  bootstrap_restored=false
+  if [ "$bootstrap_pin" != "$(cat "$ROOT/.host-update/target")" ]; then
+    echo 'Restoring host files from the unfinished update.' >&2
+    for bootstrap_file in update.sh lib.sh rotate-key.sh restore.sh systemd/plaingym-update.service systemd/plaingym-update.timer; do
+      bootstrap_dest="$ROOT/$bootstrap_file"
+      if [ -f "$ROOT/.host-update/before/files/$bootstrap_file" ]; then
+        case "$bootstrap_file" in update.sh|rotate-key.sh|restore.sh) bootstrap_mode=0700 ;; *) bootstrap_mode=0644 ;; esac
+        mkdir -p "$(dirname "$bootstrap_dest")" || return 1
+        install -m "$bootstrap_mode" "$ROOT/.host-update/before/files/$bootstrap_file" "$bootstrap_dest.host-next" || return 1
+        mv -f "$bootstrap_dest.host-next" "$bootstrap_dest" || return 1
+      else rm -f "$bootstrap_dest" || return 1; fi
+    done
+    for bootstrap_unit in plaingym-update.service plaingym-update.timer; do
+      bootstrap_dest="$bootstrap_units/$bootstrap_unit"
+      if [ -f "$ROOT/.host-update/before/units/$bootstrap_unit" ]; then
+        mkdir -p "$bootstrap_units" || return 1
+        install -m 0644 "$ROOT/.host-update/before/units/$bootstrap_unit" "$bootstrap_dest.host-next" || return 1
+        mv -f "$bootstrap_dest.host-next" "$bootstrap_dest" || return 1
+      else rm -f "$bootstrap_dest" || return 1; fi
+    done
+    sync -f "$ROOT" "$bootstrap_units" || return 1
+    systemctl daemon-reload || return 1
+    bootstrap_restored=true
+  fi
+  sync -f "$ROOT" "$bootstrap_units" || return 1
+  bootstrap_retired=$(mktemp -d "$ROOT/.host-retired.XXXXXX") || return 1
+  mv "$ROOT/.host-update" "$bootstrap_retired/transaction" || return 1
+  sync -f "$ROOT" || return 1
+  rm -rf -- "$bootstrap_retired" || return 1
+}
+bootstrap_recover || { echo 'Host file recovery failed; run update.sh again to retry it.' >&2; exit 1; }
+if [ "${bootstrap_restored:-false}" = true ]; then exec sh "$ROOT/update.sh" "$@" 9>&-; fi
 # shellcheck source=deploy/lib.sh
 . "$ROOT/lib.sh"
 [ "$(id -u)" -eq 0 ] || fail 'Run update.sh as root.'
@@ -105,11 +148,13 @@ cleanup() {
   exit_status=$?
   trap - EXIT HUP INT TERM
   # The rename of .env commits both the image and its host files, even if a signal arrived immediately after it.
-  if [ "$changed" = true ] && [ "$(read_env APP_IMAGE)" = "$swap_pin" ]; then
+  if { [ "$changed" = true ] || [ "$stage" = finished ]; } && [ "$(read_env APP_IMAGE)" = "$swap_pin" ]; then
     changed=false; stopped=false; stage=finished
+    rm -f "$ATTEMPT" "$RECOVERY" "$ROOT/schema-compatibility.yaml.before"
+    exit_status=0
   fi
   # Restore before rollback uses Compose or any other release-owned file. Leave the journal for a retry on failure.
-  if ! host_recover; then echo 'Host file recovery failed; run update.sh again to retry it.' >&2; exit 1; fi
+  if ! host_recover; then echo 'Host file recovery failed; run update.sh again to retry it.' >&2; exit_status=1; fi
   outcome=unchanged
   if [ "$exit_status" -ne 0 ] && [ "$changed" = true ]; then
     if [ "$requested_rollback" = true ]; then echo 'Rollback failed; restarting the original image.' >&2
@@ -127,7 +172,7 @@ cleanup() {
       history_record "$to_version" "$target_id" "$history_outcome" "$target_floor" "$snapshot"
       if [ "$requested_rollback" = true ]; then report updated -; fi
       # After the update's own row, so its image tops the rollback stack.
-      if [ "$requested_rollback" = false ]; then prune_images || true; fi
+      if [ "$requested_rollback" = false ]; then prune_images || true; prune_host_history || true; fi
     else
       history_record "$to_version" "$target_id" "$attempt_end" "$target_floor" "$snapshot"
       if [ "$outcome" = rolled_back ] || [ "$outcome" = restarted ]; then
@@ -141,6 +186,8 @@ cleanup() {
     elif [ "$stage" = startup ]; then report rolled_back startup_failed
     else report rolled_back health_check_failed; fi
   fi
+  # Send once, after every result for this run has reached the app.
+  send_notices || true
   [ -z "$work" ] || rm -rf -- "$work"
   [ -z "$snapshot_file" ] || rm -f -- "$snapshot_file"
   exit "$exit_status"
@@ -229,8 +276,8 @@ swap_image() { # TARGET
   chmod 0600 "$ROOT/.env.next"
   mv "$ROOT/.env.next" "$ROOT/.env"
   rm -f "$RECOVERY" "$ATTEMPT" "$ROOT/schema-compatibility.yaml.before"
-  changed=false
   stage=finished
+  changed=false
 }
 # A healthy start must stay healthy: wait, then check that the same container still runs, healthy and never restarted.
 settle() { # TARGET
@@ -279,7 +326,7 @@ send_pending() { # Oldest first; each result leaves the file once the app took i
     pending_args record || record_status=$?
     # Exit 2 is the app refusing the result itself, which no retry changes: say so, and go on with the next.
     if [ "$record_status" -eq 2 ]; then echo "The app refused the recorded result \"$pending_result $pending_reason\" from $pending_at; it was dropped." >&2
-    elif [ "$record_status" -ne 0 ] && [ "$record_status" -ne 3 ]; then return 1
+    elif [ "$record_status" -ne 0 ]; then return 1
     else
       case "$pending_result" in rolled_back|failed)
         pending_line=$(head -n 1 "$PENDING")
@@ -296,6 +343,7 @@ send_notices() {
   # Results are drained first, including a recovered failed rollback, so owners hear the whole outage in one notice.
   [ ! -s "$PENDING" ] || return 1
   [ -s "$NOTICES" ] || return 0
+  app_running || return 1
   awk '
     NR == FNR { if ($2 == "rolled_back" && $3 == "rollback_failed" && $7 != "-") {
       n++; from[n]=$4; to[n]=$5; down[n]=$7; recovered[n]=$1
@@ -309,7 +357,7 @@ send_notices() {
   # Try each notice once: a refused mailbox cannot starve any later notice.
   while read -r pending_at pending_result pending_reason pending_from pending_to pending_failures pending_down; do
     notice_status=0
-    if app_running; then pending_args notice </dev/null || notice_status=$?; else notice_status=1; fi
+    pending_args notice </dev/null || notice_status=$?
     case "$notice_status" in
       0) ;;
       2) echo 'The app refused an automatic update notice; it was dropped.' >&2 ;;
@@ -337,7 +385,6 @@ report() { # RESULT REASON: keep the result after any still unsent, say it on th
     printf 'Automatic patch update: %s.\n' "$(summary "$1" "$2")"
   fi
   send_pending || echo 'The app could not record this result yet; the next run sends it.' >&2
-  send_notices || true
 }
 finish() { # RESULT REASON [STATUS]: report and stop. Expected situations exit 0; problems exit 1.
   report "$1" "$2"
@@ -391,20 +438,17 @@ registry_pin() { # IMAGE_ID TAG: NAME:TAG@DIGEST from the image's registry diges
   valid_image "$pin" && [ "$(docker image inspect "$pin" --format '{{.Id}}' 2>/dev/null)" = "$1" ] && printf '%s\n' "$pin"
   return 0
 }
-remember_patch_image() { # Only images this updater actually pulled can be removed later; each is listed once.
-  pulled_id=$(docker image inspect "$target" --format '{{.Id}}') || return 0
-  printf '%s\n' "$pulled_id" | grep -Eq '^sha256:[a-f0-9]{64}$' || return 0
-  if [ -f "$ROOT/auto-update-images.tsv" ] && cut -f2 "$ROOT/auto-update-images.tsv" | grep -qxF "$pulled_id"; then return 0; fi
-  printf '%s\t%s\t%s\n' "$image:$tag@$digest" "$pulled_id" "$tag" >> "$ROOT/auto-update-images.tsv" \
+remember_image() { # ID PIN VERSION: each image this updater pulled is listed once.
+  printf '%s\n' "$1" | grep -Eq '^sha256:[a-f0-9]{64}$' || return 0
+  if [ -f "$ROOT/auto-update-images.tsv" ] && cut -f2 "$ROOT/auto-update-images.tsv" | grep -qxF "$1"; then return 0; fi
+  printf '%s\t%s\t%s\n' "$2" "$1" "$3" >> "$ROOT/auto-update-images.tsv" \
     || echo 'Could not record the pulled image for later cleanup.' >&2
 }
 remember_manual_image() { # IMAGE VERSION: retain a pullable pin for rollback, without changing history's format.
   manual_id=$(docker image inspect "$1" --format '{{.Id}}' 2>/dev/null) || return 0
   manual_pin=$(registry_pin "$manual_id" "$2")
   [ -n "$manual_pin" ] || return 0
-  if [ -f "$ROOT/auto-update-images.tsv" ] && cut -f2 "$ROOT/auto-update-images.tsv" | grep -qxF "$manual_id"; then return 0; fi
-  printf '%s\t%s\t%s\n' "$manual_pin" "$manual_id" "$2" >> "$ROOT/auto-update-images.tsv" \
-    || echo 'Could not record the image for a later rollback.' >&2
+  remember_image "$manual_id" "$manual_pin" "$2"
 }
 remove_image() { # IMAGE_ID: never forced, and bounded, so maintenance can't hold the update lock forever.
   printf '%s\n' "$1" | grep -Eq '^sha256:[a-f0-9]{64}$' || return 1
@@ -447,6 +491,21 @@ migrations_of() { # IMAGE: a digest of the migrations the image applies when it 
   docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint sh "$1" \
     -c 'cd /app/migrations && find . -type f | LC_ALL=C sort | xargs sha256sum | sha256sum' | awk '{ print $1 }'
 }
+prune_host_history() { # After prune_images, which keeps saved pins only for images --rollback can still use.
+  [ -d "$ROOT/.host-history" ] || return 0
+  # A daemon failure is not evidence that every image disappeared.
+  host_images=$(docker image ls --quiet --no-trunc) || return 0
+  # --rollback pulls a kept image again by its saved pin, so its generation stays while the pin does.
+  if [ -f "$ROOT/auto-update-images.tsv" ]; then
+    host_images=$(printf '%s\n' "$host_images"; cut -f2 "$ROOT/auto-update-images.tsv") || return 0
+  fi
+  for host_history in "$ROOT/.host-history/"*; do
+    [ -d "$host_history" ] || continue
+    host_id=${host_history##*/}
+    printf '%s\n' "$host_id" | grep -Eq '^[a-f0-9]{64}$' || continue
+    printf '%s\n' "$host_images" | grep -qxF "sha256:$host_id" || rm -rf -- "$host_history" || return 1
+  done
+}
 valid_timezone() { printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$' && [ -f "/usr/share/zoneinfo/$1" ]; }
 in_window() { hour=$(TZ="$1" date +%H); hour=${hour#0}; [ "$hour" -ge 2 ] && [ "$hour" -lt 5 ]; }
 download() { # URL FILE [MAX_BYTES]
@@ -454,8 +513,6 @@ download() { # URL FILE [MAX_BYTES]
     --max-filesize "${3:-65536}" -H 'User-Agent: plaingym-update' "$1" -o "$2"
 }
 
-exec 9>"$ROOT/.update.lock"
-flock -n 9 || { [ "$patch" = true ] && { echo 'Another update is running; this run does nothing.'; exit 0; }; fail 'Another update is running.'; }
 rotation_check
 trap cleanup EXIT
 trap 'interrupted=true; exit 130' HUP INT TERM
@@ -490,8 +547,8 @@ if [ -f "$RECOVERY" ] && [ "$patch" = false ]; then
   valid_version "$recovery_version" || fail 'Invalid schema recovery state. Restore the pre-upgrade snapshot; see docs/restoring.md.'
 fi
 
-if { [ "$patch" = true ] || [ "$requested_rollback" = true ]; } && [ -f "$INFLIGHT" ]; then
-  # Finish the interrupted patch before accepting a separate rollback request.
+if [ -f "$INFLIGHT" ]; then
+  # Finish the interrupted patch before accepting a separate manual update or rollback request.
   patch=true
   requested_rollback=false
   work=$(mktemp -d)
@@ -619,8 +676,6 @@ fi
 work=$(mktemp -d)
 send_pending || true
 
-send_notices || true
-
 # Once a night, between 02:00 and 05:00 where the gym is. The timer fires every hour; the other runs stop here.
 # Each run asks the app for the gym's timezone, so a changed zone counts from its next night. The zone it last gave
 # is the fallback while the app can't answer (or a restore holds it); with that, a run outside the window stops
@@ -698,7 +753,7 @@ valid_image "$target" || finish skipped manifest_invalid 1
 
 # Pull while the app runs, and check what arrived before anything stops.
 APP_IMAGE="$target" compose pull app || finish skipped pull_failed 1
-remember_patch_image
+remember_image "$(docker image inspect "$target" --format '{{.Id}}' 2>/dev/null || true)" "$image:$tag@$digest" "$tag"
 if ! docker image inspect "$target" --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep -qxF "$image@$digest" \
   || [ "$(image_version "$target")" != "$tag" ]; then finish skipped digest_mismatch 1; fi
 # Patch releases never change the database: the release workflow refuses them, and so does this check.

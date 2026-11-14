@@ -65,6 +65,12 @@ case "$*" in
   'image inspect '*RepoDigests*) echo "${REPO_DIGEST:-ghcr.io/example/app@$DIGEST}"; echo 'ghcr.io/example/app@sha256:0000000000000000000000000000000000000000000000000000000000000000' ;;
   # An image is there until it is removed.
   'image inspect '*) [ ! -e "$FIXTURES/removed" ] || ! grep -qxF "$3" "$FIXTURES/removed" ;;
+  'image ls --quiet --no-trunc')
+    [ "${FAIL_AT:-}" != image_list ] || exit 1
+    for image_id in "$PREVIOUS_ID" "$DIGEST" "${HISTORY_IMAGE:-}"; do
+      [ -n "$image_id" ] || continue
+      if [ ! -f "$FIXTURES/removed" ] || ! grep -qxF "$image_id" "$FIXTURES/removed"; then echo "$image_id"; fi
+    done ;;
   'image rm '*) printf '%s\n' "$3" >> "$FIXTURES/removed" ;;
   'run --rm --network none '*)
     case "$*" in *@sha256:*' -c '*) [ "${FAIL_AT:-}" != migration ] || { echo "$(printf 'f%.0s' $(seq 64))  -"; exit 0; } ;; esac
@@ -104,7 +110,25 @@ case "$*" in '+%H') echo "${FAKE_HOUR:-03}" ;; '+%F') echo "${FAKE_DAY:-2026-11-
 MOCK
 REAL_OPENSSL=$(command -v openssl)
 REAL_MV=$(command -v mv)
-export REAL_OPENSSL REAL_MV
+REAL_CP=$(command -v cp)
+REAL_MKDIR=$(command -v mkdir)
+REAL_TAR=$(command -v tar)
+export REAL_OPENSSL REAL_MV REAL_CP REAL_MKDIR REAL_TAR
+cat > "$temporary/bin/cp" <<'MOCK'
+#!/bin/sh
+case "$*" in *'.host-history/'*'.next') [ "${FAIL_AT:-}" != host_history_copy ] || exit 1 ;; esac
+exec "$REAL_CP" "$@"
+MOCK
+cat > "$temporary/bin/mkdir" <<'MOCK'
+#!/bin/sh
+case "$*" in *'/.host-history') [ "${FAIL_AT:-}" != host_history_mkdir ] || exit 1 ;; esac
+exec "$REAL_MKDIR" "$@"
+MOCK
+cat > "$temporary/bin/tar" <<'MOCK'
+#!/bin/sh
+printf 'tar %s\n' "$*" >> "$CALLS"
+exec "$REAL_TAR" "$@"
+MOCK
 cat > "$temporary/bin/openssl" <<'MOCK'
 #!/bin/sh
 printf 'openssl %s\n' "$*" >> "$CALLS"
@@ -113,6 +137,7 @@ MOCK
 cat > "$temporary/bin/systemctl" <<'MOCK'
 #!/bin/sh
 printf 'systemctl %s\n' "$*" >> "$CALLS"
+[ "${FAIL_AT:-}" != host_reload_always ] || exit 1
 if [ "${FAIL_AT:-}" = host_reload ] && [ ! -f "$FIXTURES/reload_failed" ]; then
   touch "$FIXTURES/reload_failed"; exit 1
 fi
@@ -128,13 +153,14 @@ case "$*" in
     if [ ! -f "$FIXTURES/mv_failed" ]; then
       case "${FAIL_AT:-}" in
         host_midway) touch "$FIXTURES/mv_failed"; exit 1 ;;
-        host_killed) touch "$FIXTURES/mv_failed"; "$REAL_MV" "$@"; kill -KILL "$PPID"; exit 1 ;;
+        host_killed) touch "$FIXTURES/mv_failed"; kill -KILL "$PPID"; exit 1 ;;
       esac
     fi ;;
 esac
 exec "$REAL_MV" "$@"
 MOCK
 chmod 0700 "$temporary/bin/docker" "$temporary/bin/curl" "$temporary/bin/date" "$temporary/bin/openssl" "$temporary/bin/systemctl" "$temporary/bin/mv"
+chmod 0700 "$temporary/bin/cp" "$temporary/bin/mkdir" "$temporary/bin/tar"
 
 openssl genpkey -algorithm ed25519 -out "$temporary/release/key.pem" 2>/dev/null
 openssl pkey -in "$temporary/release/key.pem" -pubout -out "$temporary/release/public.pem"
@@ -153,6 +179,7 @@ make_install() {
   case_dir="$temporary/$1"
   mkdir "$case_dir"
   cp "$source_dir/update.sh" "$source_dir/lib.sh" "$case_dir/"
+  chmod 0644 "$case_dir/lib.sh"
   cp "$temporary/release/public.pem" "$case_dir/release-signing.pem"
   : > "$case_dir/compose.yaml"
   printf 'APP_IMAGE=ghcr.io/example/app:v1.2.3\nRELEASE_REPOSITORY=example/app\nFAKE_SECRET=private-test-value\n' > "$case_dir/.env"
@@ -212,7 +239,11 @@ printf 'ghcr.io/example/app:v1.2.1@%s\t%s\tv1.2.1\n' "$old_id" "$old_id" > "$cas
 printf 'ghcr.io/example/app:v1.2.2@%s\t%s\tv1.2.2\n' "$retained_id" "$retained_id" >> "$case_dir/auto-update-images.tsv"
 printf '2026-11-01T00:00:00Z\tv1.2.2\t%s\tinstall\tv1.2.0\t-\n' "$retained_id" > "$case_dir/version-history.tsv"
 printf '2026-11-02T00:00:00Z\tv1.2.3\t%s\tupdate\tv1.2.0\t-\n' "$PREVIOUS_ID" >> "$case_dir/version-history.tsv"
+mkdir -p "$case_dir/.host-history/${old_id#sha256:}" "$case_dir/.host-history/${retained_id#sha256:}"
 expect_status 0 --patch --now
+# Neither image is local now; only the kept one's saved pin lets --rollback pull it, with its host generation.
+[ ! -d "$case_dir/.host-history/${old_id#sha256:}" ]
+[ -d "$case_dir/.host-history/${retained_id#sha256:}" ]
 called "image rm $old_id"
 [ "$(grep -c 'image rm ' "$CALLS")" -eq 1 ]
 never "image rm $retained_id"
@@ -477,6 +508,7 @@ grep -Eq '^[0-9T:Z-]+ skipped check_failed - - - -$' "$case_dir/auto-update.resu
 make_install notice-retry
 printf '2026-11-03T08:00:00Z rolled_back health_check_failed v1.2.3 v1.2.4 1 -\n' > "$case_dir/auto-update.result"
 expect_status 0 FAIL_AT=notice --patch --now
+[ "$(grep -c 'auto-update notice ' "$CALLS")" -eq 1 ] # One send attempt per run, including reports.
 [ ! -e "$case_dir/auto-update.result" ]
 [ "$(wc -l < "$RECORDS")" -eq 2 ]
 recorded '--result updated --from v1.2.3 --to v1.2.5'
@@ -489,6 +521,7 @@ expect_status 0 FAKE_HOUR=14 --patch
 make_install notice-fairness
 printf '2026-11-03T08:00:00Z rolled_back health_check_failed v1.2.3 v1.2.4 1 -\n2026-11-03T09:00:00Z rolled_back health_check_failed v1.2.3 v1.2.5 1 -\n' > "$case_dir/auto-update.result"
 expect_status 0 FAIL_AT=notice_one FAKE_HOUR=14 --patch
+[ "$(grep -c 'auto-update notice ' "$CALLS")" -eq 2 ]
 [ "$(wc -l < "$NOTIFIED")" -eq 1 ]
 grep -q -- '--to v1.2.5' "$NOTIFIED"
 [ "$(wc -l < "$case_dir/auto-update.notices")" -eq 1 ]
@@ -654,8 +687,12 @@ host_release() {
   mkdir -p "$FIXTURES/host/deploy"
   cp -R "$case_dir/systemd" "$case_dir/postgres" "$FIXTURES/host/deploy/"
   for file in update.sh lib.sh rotate-key.sh restore.sh compose.yaml Caddyfile release-signing.pem; do cp "$case_dir/$file" "$FIXTURES/host/deploy/"; done
-  awk '{ print; if ($0 == "set -eu") print "echo new-updater >> \"$FIXTURES/generations\"" }' "$case_dir/update.sh" > "$FIXTURES/host/deploy/update.sh"
-  printf '\n# New library generation\n' >> "$FIXTURES/host/deploy/lib.sh"
+  # This generation cannot run with the old library, even just after sourcing it.
+  awk '{ print; if ($0 == ". \"$ROOT/lib.sh\"") print "new_library_only" }' "$case_dir/update.sh" > "$FIXTURES/host/deploy/update.sh"
+  awk '{ print; if ($0 == ". \"$ROOT/lib.sh\"") print "new_library_only" }' "$case_dir/rotate-key.sh" > "$FIXTURES/host/deploy/rotate-key.sh"
+  # The generated function reads FIXTURES when the new library is loaded.
+  # shellcheck disable=SC2016
+  printf '\nnew_library_only() { echo new-updater >> "$FIXTURES/generations"; }\n' >> "$FIXTURES/host/deploy/lib.sh"
   printf '\n# New unit generation\n' >> "$FIXTURES/host/deploy/systemd/plaingym-update.service"
   write_manifest v1.2.5
   sed -i 's#manifest/1#manifest/2#' "$FIXTURES/manifest"
@@ -678,6 +715,7 @@ host_sign() {
 old_hosts() {
   cmp -s "$source_dir/update.sh" "$case_dir/update.sh"
   cmp -s "$source_dir/lib.sh" "$case_dir/lib.sh"
+  [ "$(stat -c %a "$case_dir/lib.sh")" = 644 ]
   grep -qx 'old unit plaingym-update.service' "$SYSTEMD_UNIT_DIR/plaingym-update.service"
   pinned "${1:-ghcr.io/example/app:v1.2.3}"
   [ ! -d "$case_dir/.host-update" ]
@@ -690,6 +728,7 @@ for file in update.sh lib.sh systemd/plaingym-update.service; do cmp -s "$case_d
 grep -q 'New unit generation' "$SYSTEMD_UNIT_DIR/plaingym-update.service"
 grep -qx "ExecStart=/bin/sh $case_dir/update.sh --patch" "$SYSTEMD_UNIT_DIR/plaingym-update.service"
 called 'systemctl daemon-reload'
+[ "$(grep -c '^tar -xzf ' "$CALLS")" -eq 1 ]
 [ "$(line_of 'openssl pkeyutl -verify')" -lt "$(line_of 'curl .*plaingym-deploy-')" ]
 [ ! -e "$FIXTURES/generations" ] # The running shell finishes the inode it opened before replacement.
 expect_status 0 CURRENT_LABEL=v1.2.5 --patch --now
@@ -710,20 +749,72 @@ cmp -s "$case_dir/update.sh" "$FIXTURES/host/deploy/update.sh"
 expect_status 0 --rollback
 old_hosts "$PREVIOUS_ID"
 
-for failure in host_midway host_reload; do
+for failure in host_midway host_reload host_history_mkdir host_history_copy; do
   make_install "$failure"
   host_release
   expect_status 1 "FAIL_AT=$failure" --patch --now
   old_hosts
+  [ -z "$(find "$case_dir" -maxdepth 1 -name '.host-prepare.*' -print)" ]
+  [ -z "$(find "$case_dir/.host-history" -name '*.next' -print 2>/dev/null)" ]
 done
+# Even a persistent systemd failure must not skip image rollback or leave its history starting.
+make_install host-reload-always
+host_release
+expect_status 1 FAIL_AT=host_reload_always --patch --now
+cmp -s "$source_dir/update.sh" "$case_dir/update.sh"
+cmp -s "$source_dir/lib.sh" "$case_dir/lib.sh"
+[ -d "$case_dir/.host-update" ]
+called "up -d .* IMAGE=$PREVIOUS_ID"
+recorded '--result rolled_back --reason health_check_failed --from v1.2.3 --to v1.2.5 --failures 1'
+tail -n 2 "$case_dir/version-history.tsv" | cut -f4 | tr '\n' ' ' | grep -qx 'failed rollback '
+[ ! -e "$case_dir/.auto-update.inflight" ]
+expect_status 1 FAIL_AT=host_reload_always --patch --now # The next run preserves the restored generation and journal.
+cmp -s "$source_dir/lib.sh" "$case_dir/lib.sh"
+expect_status 0 --patch --now
+[ ! -d "$case_dir/.host-update" ]
+
+make_install host-rollback-reload-always
+host_release
+expect_status 0 --patch --now
+expect_status 1 FAIL_AT=host_reload_always CURRENT_LABEL=v1.2.5 --rollback
+pinned "$target"
+cmp -s "$case_dir/update.sh" "$FIXTURES/host/deploy/update.sh"
+[ -d "$case_dir/.host-update" ]
+called "up -d .* IMAGE=$DIGEST" # A failed rollback restarts the image it began on.
+recorded '--result rolled_back --reason health_check_failed --from v1.2.5 --to v1.2.3'
+tail -n 2 "$case_dir/version-history.tsv" | cut -f4 | tr '\n' ' ' | grep -qx 'failed rollback '
+
 # A process killed between renames leaves a durable journal; the next invocation restores before acting.
 make_install host-killed
 host_release
 expect_status 137 FAIL_AT=host_killed --patch --now
 [ -d "$case_dir/.host-update" ]
+cmp -s "$source_dir/lib.sh" "$case_dir/lib.sh" # New updater, old library at the interruption.
 checks false false
 expect_status 1 --patch --now # Reports recovery of the interrupted automatic attempt.
 old_hosts
+[ ! -e "$FIXTURES/generations" ] # Recovery re-execs the old updater; new top-level code never runs.
+
+make_install host-killed-rotation
+host_release
+expect_status 137 FAIL_AT=host_killed --patch --now
+rotation_old=$(printf 'a%.0s' $(seq 64))
+printf 'APP_ENCRYPTION_KEY=%s\n' "$rotation_old" >> "$case_dir/.env"
+sh "$case_dir/rotate-key.sh" > "$temporary/output" 2>&1
+old_hosts
+[ "$(awk -F= '$1 == "APP_ENCRYPTION_KEY" { print $2 }' "$case_dir/.env")" != "$rotation_old" ]
+[ ! -e "$case_dir/.rotate-key.inflight" ]
+called ' /app/maintenance.mjs rotate-key'
+[ "$(line_of 'systemctl daemon-reload')" -lt "$(line_of ' /app/maintenance.mjs rotate-key')" ]
+[ ! -e "$FIXTURES/generations" ]
+
+make_install host-killed-rotation-marker
+host_release
+expect_status 137 FAIL_AT=host_killed --patch --now
+touch "$case_dir/.rotate-key.inflight"
+expect_status 0 --patch --now
+old_hosts # Host recovery happens before the early rotation check, too.
+[ ! -e "$FIXTURES/generations" ]
 
 make_install host-cleanup-killed
 host_release
@@ -733,14 +824,46 @@ pinned "$target"
 expect_status 0 CURRENT_LABEL=v1.2.5 --patch --now
 pinned "$target"
 cmp -s "$case_dir/update.sh" "$FIXTURES/host/deploy/update.sh"
+[ -z "$(find "$case_dir" -maxdepth 1 -name '.host-retired.*' -print)" ]
 
 make_install host-pin-signal
 host_release
-expect_status 130 FAIL_AT=host_pin_signal --patch --now
+expect_status 0 FAIL_AT=host_pin_signal --patch --now
 pinned "$target"
 cmp -s "$case_dir/update.sh" "$FIXTURES/host/deploy/update.sh"
 recorded "--result updated --from v1.2.3 --to v1.2.5"
 never "up -d .* IMAGE=$PREVIOUS_ID"
+[ ! -e "$case_dir/.schema-attempt" ] && [ ! -e "$case_dir/.schema-recovery" ] && [ ! -e "$case_dir/schema-compatibility.yaml.before" ]
+
+make_install host-pin-signal-manual
+host_release
+expect_status 0 FAIL_AT=host_pin_signal "$target"
+pinned "$target"
+[ ! -e "$case_dir/.schema-attempt" ] && [ ! -e "$case_dir/.schema-recovery" ] && [ ! -e "$case_dir/schema-compatibility.yaml.before" ]
+
+# A manual update first settles a killed nightly patch, even after the owner hand-started the app.
+make_install manual-after-killed-patch
+printf 'v1.2.3 v1.2.5 2026-11-03T09:02:00Z -\n' > "$case_dir/.auto-update.inflight"
+expect_status 1 ghcr.io/example/app:v1.3.0
+[ ! -e "$case_dir/.auto-update.inflight" ]
+recorded '--result rolled_back --reason interrupted --from v1.2.3 --to v1.2.5 --failures 1'
+never 'IMAGE=ghcr.io/example/app:v1.3.0'
+pinned ghcr.io/example/app:v1.2.3
+
+# Saved host generations follow the local image inventory and saved pins (see the pruning case above).
+for inventory in available unavailable; do
+  make_install "host-history-$inventory"
+  orphan=$(printf 'f%.0s' $(seq 64))
+  mkdir -p "$case_dir/.host-history/$orphan" "$case_dir/.host-history/${PREVIOUS_ID#sha256:}"
+  if [ "$inventory" = available ]; then
+    expect_status 0 --patch --now
+    [ ! -d "$case_dir/.host-history/$orphan" ]
+  else
+    expect_status 0 FAIL_AT=image_list --patch --now
+    [ -d "$case_dir/.host-history/$orphan" ]
+  fi
+  [ -d "$case_dir/.host-history/${PREVIOUS_ID#sha256:}" ]
+done
 
 for corruption in archive file signature key; do
   make_install "host-$corruption"

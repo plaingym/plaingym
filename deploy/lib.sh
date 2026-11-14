@@ -198,8 +198,13 @@ host_download() { # MANIFEST BASE_URL WORK
   download "$2/$(manifest_value "$1" deploy_archive)" "$3/host.tar.gz" 52428800 || return 2
   printf '%s  %s\n' "$(manifest_value "$1" deploy_archive_sha256 | sed 's/^sha256://')" "$3/host.tar.gz" | sha256sum -c - >/dev/null 2>&1 || return 1
   mkdir "$3/host" || return 1
+  # Expand only the fixed allowlist, and decompress the archive once.
+  host_manifest=$1; host_base=$2; host_archive=$3
+  set --
+  for host_file in $host_files; do set -- "$@" "deploy/$host_file"; done
+  tar -xzf "$host_archive/host.tar.gz" -C "$host_archive/host" --no-same-owner -- "$@" || return 1
+  set -- "$host_manifest" "$host_base" "$host_archive"
   for host_file in $host_files; do
-    tar -xzf "$3/host.tar.gz" -C "$3/host" --no-same-owner -- "deploy/$host_file" || return 1
     host_path="$3/host/deploy/$host_file"
     [ -f "$host_path" ] && [ ! -L "$host_path" ] || return 1
     host_hash=$(manifest_value "$1" "host.$(printf '%s' "$host_file" | tr '[:upper:]' '[:lower:]')")
@@ -243,10 +248,15 @@ host_restore() { # SNAPSHOT: repeatable after an interrupted restoration.
       host_replace "$1/units/$host_unit" "$(host_units_dir)/$host_unit" 0644 || return 1
     else rm -f "$(host_units_dir)/$host_unit" || return 1; fi
   done
-  systemctl daemon-reload || return 1
-  sync -f "$ROOT" "$(host_units_dir)"
+  sync -f "$ROOT" "$(host_units_dir)" || return 1
+  # The restored files stay in place even when systemd is unavailable; the journal retries the reload.
+  systemctl daemon-reload
 }
 host_recover() { # The pin commits the transaction. Before it, every failure restores the previous files.
+  # These directories are never authoritative once their rename has completed (or before it starts).
+  for host_leftover in "$ROOT"/.host-prepare.* "$ROOT"/.host-retired.* "$ROOT"/.host-history/*.next; do
+    [ ! -d "$host_leftover" ] || rm -rf -- "$host_leftover" || return 1
+  done
   [ -d "$ROOT/.host-update" ] || return 0
   [ -s "$ROOT/.host-update/target" ] && [ -d "$ROOT/.host-update/before/files" ] || return 1
   if [ "$(read_env APP_IMAGE)" != "$(cat "$ROOT/.host-update/target")" ]; then
@@ -266,14 +276,16 @@ host_apply() { # SOURCE TARGET_PIN PREVIOUS_IMAGE_ID
   if ! host_capture "$host_journal/before" || ! printf '%s\n' "$2" > "$host_journal/target"; then
     rm -rf -- "$host_journal"; return 1
   fi
-  mkdir -p "$ROOT/.host-history" || return 1
+  mkdir -p "$ROOT/.host-history" || { rm -rf -- "$host_journal"; return 1; }
   # Preserve the first copy for this image; a later rollback must not rewrite its original host generation.
   if [ ! -d "$ROOT/.host-history/${3#sha256:}" ]; then
-    rm -rf -- "$ROOT/.host-history/${3#sha256:}.next" || return 1
-    cp -Rp "$host_journal/before" "$ROOT/.host-history/${3#sha256:}.next" || return 1
-    mv "$ROOT/.host-history/${3#sha256:}.next" "$ROOT/.host-history/${3#sha256:}" || return 1
+    if ! rm -rf -- "$ROOT/.host-history/${3#sha256:}.next" ||
+      ! cp -Rp "$host_journal/before" "$ROOT/.host-history/${3#sha256:}.next" ||
+      ! mv "$ROOT/.host-history/${3#sha256:}.next" "$ROOT/.host-history/${3#sha256:}"; then
+      rm -rf -- "$host_journal" "$ROOT/.host-history/${3#sha256:}.next"; return 1
+    fi
   fi
-  mv "$host_journal" "$ROOT/.host-update" || return 1
+  mv "$host_journal" "$ROOT/.host-update" || { rm -rf -- "$host_journal"; return 1; }
   sync -f "$ROOT" || return 1
   if [ -d "$1/files" ]; then
     host_restore "$1" || return 1
