@@ -113,6 +113,21 @@ it('does not consume a token until sandbox discovery succeeds', async () => {
   expect(window.location.hash).toBe('');
 });
 const sandbox = (join = false) => Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString(), join } });
+it('keeps an overdue showcase usable without a private-copy expiry notice', async () => {
+  window.history.replaceState(null, '', '/admin#kioskToken=showcase-device');
+  fetcher.mockImplementation(async (path: string) => Response.json({ data: path === '/api/demo/menu'
+    ? { members: [], website: false } : { mode: 'showcase', expiresAt: '2000-01-01T00:00:00.000Z', join: false } }));
+  start();
+  const bar = await screen.findByRole('complementary', { name: 'Demo controls' });
+  expect(within(bar).getByRole('button', { name: 'Make my own copy' })).toBeDefined();
+  expect(readToken()).toBe('showcase-device');
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(bar.textContent).not.toMatch(/expires/i);
+  fireEvent.click(within(bar).getByRole('button', { name: 'Demo menu' }));
+  const menu = await screen.findByRole('dialog', { name: 'Demo menu' });
+  expect(menu.textContent).not.toMatch(/expires|deleted after/i);
+  expect(within(menu).getByRole('button', { name: 'Sign in as owner' })).toBeDefined();
+});
 const riley = { id: '019a0000-0000-7000-8000-0000000000aa', name: 'Riley Visitor' };
 /** Discovery, the demo menu and any other path, answered by path. */
 function serve(options: { join?: boolean; website?: boolean; members?: { id: string; name: string }[]; login?: () => Promise<Response> } = {}) {

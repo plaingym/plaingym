@@ -4,7 +4,7 @@ export { createApiClient };
 export type { paths } from '@plaingym/shared/api';
 
 /** Typed contract client; auth transport is separate because it is not in OpenAPI. */
-export const api = createApiClient({ credentials: 'same-origin' });
+export const api = createApiClient({ credentials: 'same-origin', fetch: (...args) => fetch(...args) });
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, readonly reason: readonly string[] = []) {
     super('Request failed');
@@ -35,7 +35,7 @@ export async function apiErrorReasons(response: Response): Promise<readonly stri
   return (await readApiError(response)).reasons;
 }
 /** Restrict all API calls to this gym's origin, including injected auth transports. */
-export function createJsonTransport(fetcher: typeof fetch = fetch) {
+export function createJsonTransport(fetcher: typeof fetch = (...args) => fetch(...args)) {
   return async function request<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
     if (!path.startsWith('/api/') || /[\\?#]/.test(path)) throw new Error('Expected a local API path');
     const response = await fetcher(path, {

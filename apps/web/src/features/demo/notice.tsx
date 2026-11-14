@@ -4,7 +4,8 @@ import { parseResponse } from '../../lib/response.js';
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useRouterState } from '@tanstack/react-router';
-import { demoEntryResponse, demoMenuResponse, sandboxResponse, type DemoLoginTarget, type DemoRole } from '@plaingym/shared/contracts';
+import { demoEntryResponse, demoMenuResponse, demoHandoffResponse, sandboxResponse, type DemoLoginTarget, type DemoRole } from '@plaingym/shared/contracts';
+import { CopyPrompt, CreateCopyButton, rememberDemoRole } from './copy.js';
 import { Button } from '../../components/ui/button.js';
 import { Alert } from '../../components/ui/alert.js';
 import { Dialog } from '../../components/ui/dialog.js';
@@ -18,12 +19,27 @@ type DemoDiscovery = ReturnType<typeof demoEntryResponse.parse>['data'];
 const DemoContext = createContext<DemoDiscovery | undefined>(undefined);
 export const useDemoMode = () => useContext(DemoContext)?.mode;
 /** Whether this sandbox takes test-card joins (the shared Stripe test account is configured). */
-export const useDemoJoin = () => { const discovery = useContext(DemoContext); return discovery?.mode === 'sandbox' && discovery.join; };
-export const useDemoSandbox = () => useDemoMode() === 'sandbox';
+export const useDemoJoin = () => { const discovery = useContext(DemoContext); return (discovery?.mode === 'sandbox' || discovery?.mode === 'showcase') && discovery.join; };
+export const useDemoSandbox = () => { const mode = useDemoMode(); return mode === 'sandbox' || mode === 'showcase'; };
 export function DemoShell({ children }: { children: ReactNode }) {
   // Capture before a child route's login guard can redirect and discard the fragment.
   const [kioskToken, setKioskToken] = useState(() => new URLSearchParams(window.location.hash.slice(1)).get('kioskToken'));
   const [tokenSaveFailed, setTokenSaveFailed] = useState(false);
+  const [copyToken] = useState(() => new URLSearchParams(window.location.hash.slice(1)).get('copyToken'));
+  const handoff = useRef<Promise<ReturnType<typeof demoHandoffResponse.parse>> | null>(null);
+  const [handoffError, setHandoffError] = useState(false);
+  useEffect(() => {
+    if (!copyToken) return;
+    window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
+    handoff.current ??= request('/api/demo/handoff', { token: copyToken }).then(value => demoHandoffResponse.parse(value));
+    let active = true;
+    void handoff.current.then(({ data }) => {
+      if (!active) return;
+      if (!saveToken(data.kioskToken)) { setHandoffError(true); return; }
+      window.location.assign(data.redirect);
+    }).catch(() => { if (active) setHandoffError(true); });
+    return () => { active = false; };
+  }, [copyToken]);
   const discovery = useQuery({
     queryKey: ['demo', 'discovery', window.location.origin],
     // Let an in-flight discovery finish across a StrictMode/root remount, so it
@@ -31,6 +47,7 @@ export function DemoShell({ children }: { children: ReactNode }) {
     queryFn: async () => parseResponse(demoEntryResponse, await request('/api/demo')),
     staleTime: Infinity, gcTime: Infinity, retry: false,
     refetchOnMount: false, refetchOnWindowFocus: false, refetchOnReconnect: false,
+    refetchInterval: 300_000,
   });
   const mode = discovery.data?.data;
   const expires = mode?.mode === 'sandbox' ? mode.expiresAt : undefined;
@@ -57,7 +74,7 @@ export function DemoShell({ children }: { children: ReactNode }) {
     };
   }, [expires, refetch]);
   const expired = expires !== undefined && (expiredAt === expires || Date.parse(expires) <= Date.now());
-  const activeSandbox = mode?.mode === 'sandbox' && !discovery.isError && !expired;
+  const activeSandbox = (mode?.mode === 'sandbox' || mode?.mode === 'showcase') && !discovery.isError && !expired;
   useEffect(() => {
     if (!activeSandbox || !kioskToken) return;
     if (!saveToken(kioskToken)) { setTokenSaveFailed(true); return; }
@@ -75,7 +92,9 @@ export function DemoShell({ children }: { children: ReactNode }) {
     {(discovery.isError || expired) && <div className="p-4" role="alert">
       <p>{t('demo/demo:error')}</p><Button type="button" onClick={() => { void refetch(); }}>{t('shell/shell:retry')}</Button>
     </div>}
-    <DemoNotice /><DemoEntry />{kioskToken && (discovery.isPending || activeSandbox) ? (tokenSaveFailed ? null : <LoadingState />) : children}
+    {copyToken ? handoffError ? <Alert variant="error">{t('demo/demo:handoffError')}</Alert> : <LoadingState />
+      : <><CopyPrompt showcase={mode?.mode === 'showcase'} /><DemoNotice /><DemoEntry />
+        {kioskToken && (discovery.isPending || activeSandbox) ? (tokenSaveFailed ? null : <LoadingState />) : children}</>}
   </LoginContext.Provider></DemoContext.Provider>;
 }
 export function DemoEntry() {
@@ -111,6 +130,7 @@ function useLoginState(): DemoLogin {
     try {
       const body: DemoLoginTarget = typeof target === 'string' ? { role: target } : target;
       const result = await request<{ data: { redirect: '/admin' | '/portal' } }>('/api/demo/login', body);
+      if (typeof target === 'string') rememberDemoRole(target);
       window.location.assign(destination && result.data.redirect === '/admin' ? destination : result.data.redirect);
     }
     catch { setError(true); setPending(false); }
@@ -146,21 +166,22 @@ export function DemoSignInButtons({ members = [], className }: { members?: reado
 const shortTime = (iso: string) => new Date(iso).toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' });
 /** One slim row above every page of a sandbox: what this is, when it ends, and the demo menu. A role-login error shows in the row. */
 export function DemoNotice() {
-  const mode = useContext(DemoContext), expires = mode?.mode === 'sandbox' ? mode.expiresAt : undefined;
+  const mode = useContext(DemoContext), expires = mode?.mode === 'sandbox' || mode?.mode === 'showcase' ? mode.expiresAt : undefined;
   const { error } = useDemoLogin(), [open, setOpen] = useState(false);
   if (!expires) return null;
   return <aside className="border-b border-border bg-secondary px-4" aria-label={t('demo/demo:controls')}>
     <div className="mx-auto flex min-h-11 max-w-6xl items-center justify-between gap-3">
-      <p className="min-w-0 text-sm leading-tight"><span className="font-semibold">{t('demo/demo:sandbox')}</span>
-        {' · '}<span className="text-muted-foreground">{t('demo/demo:barExpires', { time: shortTime(expires) })}</span></p>
+      <p className="min-w-0 text-sm leading-tight"><span className="font-semibold">{t(mode?.mode === 'showcase' ? 'demo/demo:sharedTitle' : 'demo/demo:sandbox')}</span>
+        {mode?.mode === 'sandbox' && <>{' · '}<span className="text-muted-foreground">{t('demo/demo:barExpires', { time: shortTime(expires) })}</span></>}</p>
       <Button type="button" variant="outline" size="sm" className="shrink-0 whitespace-nowrap" aria-haspopup="dialog" onClick={() => setOpen(true)}>{t('demo/demo:menu')}</Button>
     </div>
     {error && !open && <div className="mx-auto max-w-6xl pb-2"><Alert variant="error" focusOnReveal>{t('demo/demo:error')}</Alert></div>}
-    {open && <DemoMenu expires={expires} onClose={() => setOpen(false)} />}
+    {mode?.mode === 'showcase' && <div className="mx-auto flex max-w-6xl flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between"><p className="text-sm">{t('demo/demo:copyHelp')}</p><CreateCopyButton /></div>}
+    {open && <DemoMenu expires={mode?.mode === 'showcase' ? undefined : expires} onClose={() => setOpen(false)} />}
   </aside>;
 }
 /** The demo's navigation: a bottom sheet on phones and a side panel on wider screens, on the shared dialog. */
-function DemoMenu({ expires, onClose }: { expires: string; onClose: () => void }) {
+function DemoMenu({ expires, onClose }: { expires: string | undefined; onClose: () => void }) {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const menu = useDemoMenu(), join = useDemoJoin(), { error } = useDemoLogin();
   const within = (path: string) => pathname === path || pathname.startsWith(path + '/');
@@ -183,20 +204,32 @@ function DemoMenu({ expires, onClose }: { expires: string; onClose: () => void }
           <DemoMenuLink href={href} current={current}>{t(`demo/demo:${key}`)}</DemoMenuLink></li>)}</ul>
       </nav>
       <section className={section} aria-labelledby="demo-menu-about"><h3 id="demo-menu-about" className={heading}>{t('demo/demo:about')}</h3>
-        <p className="text-sm">{t('demo/demo:expires', { time: instantLabel(expires) })}</p>
-        <p className="text-sm">{t('demo/demo:banner')}</p><p className="text-sm">{t('demo/demo:roleHelp')}</p>
+        {expires ? <><p className="text-sm">{t('demo/demo:expires', { time: instantLabel(expires) })}</p>
+          <p className="text-sm">{t('demo/demo:banner')}</p></> : <p className="text-sm">{t('demo/demo:copyHelp')}</p>}
+        <p className="text-sm">{t('demo/demo:roleHelp')}</p>
       </section>
     </div>
   </Dialog>;
 }
 export function TryDemoButton({ navigate = (url: string) => window.location.assign(url) }: { navigate?: (url: string) => void } = {}) {
+  const discovery = useContext(DemoContext);
   const [pending, setPending] = useState(false), [error, setError] = useState('');
   const active = useRef(false), button = useRef<HTMLButtonElement>(null);
   async function start() {
+    if (discovery?.mode === 'entry' && discovery.showcase) { navigate(discovery.showcase); return; }
     if (active.current) return;
     active.current = true;
     setPending(true); setError('');
     try {
+      if (discovery?.mode === 'entry') {
+        const deadline = Date.now() + 3_600_000;
+        while (Date.now() < deadline) {
+          const result = demoEntryResponse.parse(await request('/api/demo')).data;
+          if (result.mode === 'entry' && result.showcase) { navigate(result.showcase); return; }
+          await new Promise(resolve => window.setTimeout(resolve, 2000));
+        }
+        throw new Error('Showcase preparation timed out');
+      }
       const { data } = parseResponse(sandboxResponse, await request('/api/demo/sandboxes', {}));
       // The sandbox's start page offers every role, the join walkthrough and the kiosk.
       const destination = new URL('/demo', data.origin);

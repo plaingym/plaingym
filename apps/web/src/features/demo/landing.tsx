@@ -10,7 +10,7 @@ const roles = ['owner', 'coach', 'student'] as const;
 
 export function DemoPage() {
   const mode = useDemoMode(), entry = mode === 'entry';
-  if (mode === 'sandbox') return <SandboxLanding />;
+  if (mode === 'sandbox' || mode === 'showcase') return <SandboxLanding />;
   return <main id="main-content" className="flex-1 p-4 sm:p-6">
     <Page className="max-w-4xl">
       <PageHeader title={t(entry ? 'demo/demo:rolesTitle' : 'demo/demo:inactiveTitle')}

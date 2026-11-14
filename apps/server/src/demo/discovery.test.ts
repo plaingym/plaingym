@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import '@hono/zod-openapi';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { eq } from 'drizzle-orm';
 import { gymDomains, gyms, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { demoEntryResponse } from '@plaingym/shared/contracts';
 import { startRuntime, type Runtime } from '../core/runtime.js';
+import { clock } from '../core/clock.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
 const ordinaryOrigin = 'https://gym.example.test', demoOrigin = 'https://demo.example.test';
@@ -136,6 +138,25 @@ describe('demo runtime discovery', () => {
   it('rejects ordinary gyms and unknown hosts rather than advertising a sandbox', async () => {
     expect((await get('https://previous.example.test')).status).toBe(404);
     expect((await get('https://unknown.example.test')).status).toBe(404);
+  });
+
+  it('discovery-only polling never extends a private copy past its idle deadline', async () => {
+    const gymId = uuidv7(), hostname = 'poll-only.demo.example.test';
+    const allocatedAt = new Date('2026-11-14T12:00:00Z'), deadline = '2026-11-14T14:00:00.000Z';
+    await factory('gyms', gymId, { settings: { demo: { sandbox: true, ready: true, kind: 'private',
+      allocatedAt: allocatedAt.toISOString(), lastActivityAt: allocatedAt.toISOString(), expiresAt: deadline } } });
+    await factory('gymDomains', gymId, { hostname });
+    const now = vi.spyOn(clock, 'now');
+    try {
+      for (let minutes = 5; minutes < 120; minutes += 5) {
+        now.mockReturnValue(new Date(allocatedAt.getTime() + minutes * 60_000));
+        expect((await get('https://' + hostname)).status).toBe(200);
+      }
+      const [gym] = await database.forGym(gymId, tx => tx.select().from(gyms).where(eq(gyms.id, gymId)));
+      expect(gym!.settings).toMatchObject({ demo: { expiresAt: deadline, lastActivityAt: allocatedAt.toISOString() } });
+      now.mockReturnValue(new Date(deadline));
+      expect((await get('https://' + hostname)).status).toBe(404);
+    } finally { now.mockRestore(); }
   });
 });
 

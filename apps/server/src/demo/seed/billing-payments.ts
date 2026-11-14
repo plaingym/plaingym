@@ -4,6 +4,7 @@ import type { Clock } from '../../core/clock.js';
 import type { Payments } from '../../infra/payments/index.js';
 import { StripePayments, stripeTransport } from '../../infra/payments/stripe.js';
 import type { PaymentTransport } from '../../infra/payments/transport.js';
+import { setTimeout as delay } from 'node:timers/promises';
 
 export interface BillingSeedProvider {
   readonly gymId: string;
@@ -16,12 +17,21 @@ export interface BillingSeedProvider {
 /** Seed-only adapter over the payments transport. Customer creation stays in Payments.createCustomer. */
 export function billingSeedPayments(options: {
   gymId: string; apiKey: string; webhookSecret: string; clock?: Clock; transport?: PaymentTransport;
+  sleep?: (ms: number) => Promise<void>;
 }): BillingSeedProvider {
   if (!/^(rk|sk)_test_[A-Za-z0-9]+$/.test(options.apiKey)) throw new Error('Billing seed requires a Stripe test-mode key');
   const underlying = options.transport ?? stripeTransport(options.apiKey, { testOnly: true });
   const transport: PaymentTransport = { async request(input) {
     assertNoTransaction('payments.billingSeed');
-    const result = await underlying.request(input);
+    let result;
+    for (let attempt = 0; ; attempt++) {
+      try { result = await underlying.request(input); break; }
+      catch (error) {
+        const value = error as { statusCode?: number; code?: string; type?: string } | null;
+        if (attempt >= 5 || !(value?.statusCode === 429 || value?.code === 'rate_limit' || value?.type === 'StripeRateLimitError')) throw error;
+        await (options.sleep ?? delay)(Math.min(30_000, 1000 * 2 ** attempt));
+      }
+    }
     if (result.livemode === true) throw new Error('Billing seed refuses live Stripe objects');
     return result;
   } };

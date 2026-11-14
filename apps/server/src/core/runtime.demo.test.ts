@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- Assembly test inspects install cleanup jobs and gym settings in real PostgreSQL.
-import { emailOutbox, gyms, householdUsers, jobs, kioskDevices, programs, uuidv7 } from '@plaingym/db';
+import { emailOutbox, gyms, gymDomains, householdUsers, jobs, kioskDevices, programs, uuidv7 } from '@plaingym/db';
 import { SmtpEmail } from '../infra/email/index.js';
 import { createSignedLinksService } from '../areas/links/service.js';
 import { atomicJson } from '../areas/health/backups.files.js';
@@ -13,11 +13,22 @@ import { origin, useDemoRuntime } from './runtime.fixture.test-helper.js';
 
 const app = useDemoRuntime({ sandbox: true }), { database } = app;
 
+it('lets a signed-in showcase visitor copy through the install route while rejecting a foreign origin', async () => {
+  const origin = 'https://showcase.demo.example.test';
+  const [domain] = await database.forSystem(tx => tx.select().from(gymDomains).where(eq(gymDomains.hostname, new URL(origin).hostname)));
+  expect(domain).toBeDefined();
+  const showcase = { gymId: domain!.gymId, origin, kioskToken: '' };
+  const cookie = await app.login('owner', showcase);
+  const body = { role: 'owner', page: '/admin/members' };
+  expect((await app.post('/api/demo/sandboxes', body, origin, { cookie })).status).toBe(201);
+  expect((await app.post('/api/demo/sandboxes', body, origin, { cookie, origin: 'https://elsewhere.example.test' })).status).toBe(403);
+});
+
 it('serves the demo entry and creates sandboxes before tenant resolution, with setup disabled', async () => {
   const sandbox = app.sandbox;
   const discovery = await app.runtime.app.request(origin + '/api/demo');
   expect(discovery.status).toBe(200);
-  expect(await discovery.json()).toEqual({ data: { mode: 'entry' } });
+  expect(await discovery.json()).toEqual({ data: { mode: 'entry', showcase: expect.stringContaining('https://showcase.demo.example.test/demo#kioskToken=') } });
   const status = await app.runtime.app.request(sandbox.origin + '/api/demo', { headers: app.headers(sandbox) });
   expect(status.status).toBe(200);
   expect(await status.json()).toEqual({ data: { mode: 'sandbox', expiresAt: expect.any(String), join: false } });

@@ -18,11 +18,11 @@ async function stylesheet(sources?: string[]) {
 }
 
 describe('public stylesheet sources', () => {
-  it('scan exactly the files that render markup: every page.ts and *.page.ts under public/ and modules/', async () => {
+  it('scan exactly the files that render markup: every page.ts and *.page.ts under public, modules and demo', async () => {
     const sources: string[] = await linkStyleSources();
     const pages = (await readdir(publicRoot, { recursive: true })).filter(file => /(^|[\\/])([^\\/]+\.)?page\.ts$/.test(file));
     expect(names(sources.filter(file => file.startsWith(publicRoot)))).toEqual(names(pages.map(file => join(publicRoot, file)).sort()));
-    expect(names(sources)).toEqual(['../areas/staff/profiles.accept.ts', '../modules/website/site.page.ts', 'links/page.ts', 'pages/join.page.ts', 'pages/page.ts']);
+    expect(names(sources)).toEqual(['../areas/staff/profiles.accept.ts', '../demo/copy.page.ts', '../modules/website/site.page.ts', 'links/page.ts', 'pages/join.page.ts', 'pages/page.ts']);
   });
 
   it('keeps the staff invitation layout classes even without any other page', async () => {

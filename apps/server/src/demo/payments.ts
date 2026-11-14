@@ -37,7 +37,7 @@ export function createDemoPayments(options: {
     async demoGyms() {
       if (!options.config.enabled || !options.config.stripe) return [];
       const rows = await system(tx => tx.select({ gymId: gyms.id, status: gyms.status, settings: gyms.settings }).from(gyms));
-      return rows.filter(gym => active(gym, true)).map(({ gymId }) => ({ gymId }));
+      return rows.filter(gym => active(gym, true) && !['showcase', 'pool', 'queued', 'retired'].includes(sandboxSettings(gym.settings)?.kind ?? '')).map(({ gymId }) => ({ gymId }));
     },
   };
 }

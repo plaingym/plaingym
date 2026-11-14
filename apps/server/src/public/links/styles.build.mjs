@@ -5,9 +5,9 @@ import { readFile, readdir, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-/** The directories whose pages share the public stylesheet: the core public pages and the feature modules (the website). */
-export const publicPageRoots = [fileURLToPath(new URL('..', import.meta.url)), fileURLToPath(new URL('../../modules', import.meta.url))];
-/** The public files that render markup, `page.ts` and `*.page.ts` anywhere under `public/` and `modules/`, so a class used in any
+/** Core public pages, feature modules (the website), and the demo's public copy prompt share this stylesheet. */
+export const publicPageRoots = [fileURLToPath(new URL('..', import.meta.url)), fileURLToPath(new URL('../../modules', import.meta.url)), fileURLToPath(new URL('../../demo', import.meta.url))];
+/** The public files that render markup, `page.ts` and `*.page.ts` under public, modules and demo, so a class used in any
  * public page compiles. The staff invitation page is also an explicit source. Services, jobs and notices are left out:
  * their identifiers would otherwise match a utility and emit CSS.
  * @param {string | string[]} [roots] the directories to scan, `publicPageRoots` by default

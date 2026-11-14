@@ -75,7 +75,7 @@ describe('demo boundaries and sandbox lifecycle', () => {
     expect(demoBootCheck({})).toMatchObject({ enabled: false });
     expect(() => demoBootCheck({ DEMO_MODE: 'true', TENANCY: 'single' })).toThrow(/multi/);
     for (const token of ['sk_live_secret', 'rk_live_restricted', 'pk_live_public']) expect(() => demoBootCheck({ DEMO_MODE: 'true', TENANCY: 'multi', DEMO_DOMAIN: config.domain, STRIPE_KEY: token })).toThrow(/live/);
-    expect(demoBootCheck({ DEMO_MODE: 'true', TENANCY: 'multi', DEMO_DOMAIN: config.domain, STRIPE_KEY: 'sk_test_123' })).toEqual(config);
+    expect(demoBootCheck({ DEMO_MODE: 'true', TENANCY: 'multi', DEMO_DOMAIN: config.domain, STRIPE_KEY: 'sk_test_123' })).toEqual({ ...config, poolSize: 5, idleHours: 2 });
     for (const value of ['0', '-1', '1.5', '1001', 'NaN']) expect(() => demoBootCheck({ DEMO_MODE: 'true', TENANCY: 'multi', DEMO_DOMAIN: config.domain, DEMO_MAX_SANDBOXES: value })).toThrow();
   });
   it('enforces the cap under concurrent requests, including an empty sandbox pool', async () => {

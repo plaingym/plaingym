@@ -1,4 +1,9 @@
 {
+  "sharedTitle": "Shared demo",
+  "copyHelp": "This demo is shared. Make your own copy to change things.",
+  "copy": "Make my own copy",
+  "queuePosition": "Your place in line: {position}. Your copy will open automatically.",
+  "handoffError": "This copy link has expired or was already used. Return to the shared demo to make another copy.",
   "uploadsDisabled": "Uploads are disabled in the demo",
   "_spdx": "SPDX-License-Identifier: AGPL-3.0-only",
   "title": "Demo outbox",
@@ -14,7 +19,7 @@
   "inactiveHelp": "Sign in to your gym to continue.",
   "signIn": "Go to sign in",
   "entryTitle": "Explore PlainGym",
-  "entryHelp": "Start your own sample gym. Explore with fictional members and classes, with no account to create.",
+  "entryHelp": "Explore the shared sample gym, with no account to create. Make a private copy whenever you want to change something.",
   "sandbox": "Demo gym",
   "controls": "Demo controls",
   "roleHelp": "Everything here is fictional. Sign in as the owner, a coach, the sample student, or a member who joined in this demo, as often as you like.",

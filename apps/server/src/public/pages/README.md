@@ -1,6 +1,11 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Core public pages
 
+In the shared demo showcase, intake writes return the demo read-only reason. The
+join, trial and drop-in scripts offer a private copy, show its queue position and
+open it through the destination-host one-time sign-in exchange. Ordinary gyms
+keep their existing form behavior.
+
 The shared shell on `/join`, `/trial` and `/drop-in` (including their status
 pages) shows the gym's address, public phone and public email when configured.
 The address comes from Settings → Gym details; phone and email come from

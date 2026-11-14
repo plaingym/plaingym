@@ -15,10 +15,10 @@ import { RootError, SourceFooter } from '../routes/__root.js';
 
 // The real root shell discovers capabilities independently of the injected
 // authentication services. Give these ordinary-gym fixtures a successful mode.
-vi.hoisted(() => {
+const ordinaryDiscovery = vi.hoisted(() => {
   const fetcher = globalThis.fetch;
-  vi.stubGlobal('fetch', (...args: Parameters<typeof fetch>) => args[0] === '/api/demo'
-    ? Promise.resolve(Response.json({ data: { mode: 'disabled' } })) : fetcher(...args));
+  return (...args: Parameters<typeof fetch>) => args[0] === '/api/demo'
+    ? Promise.resolve(Response.json({ data: { mode: 'disabled' } })) : fetcher(...args);
 });
 
 const anonymous: ShellBootstrap = {
@@ -34,7 +34,7 @@ function start(service: ShellServices, path = '/login') {
   render(<App services={service} router={router} />);
   return router;
 }
-beforeEach(() => { vi.stubGlobal('__SOURCE_URL__', 'https://example.org/source/v1'); vi.stubGlobal('scrollTo', vi.fn()); });
+beforeEach(() => { vi.stubGlobal('fetch', ordinaryDiscovery); vi.stubGlobal('__SOURCE_URL__', 'https://example.org/source/v1'); vi.stubGlobal('scrollTo', vi.fn()); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('login', () => {

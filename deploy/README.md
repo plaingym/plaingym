@@ -2,6 +2,10 @@
 
 # Deploying PlainGym
 
+The separate [demo deployment](demo/README.md) provides a read-only showcase and
+private copies from a serialized seed pool. Its default pool size is five and
+private copies expire after two idle hours, with a hard 24-hour lifetime.
+
 This stack serves the application and setup wizard over HTTPS. The installer
 prints a private first-boot setup link after the health check succeeds.
 
