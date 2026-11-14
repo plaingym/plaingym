@@ -14,22 +14,24 @@ type FollowOptions = {
  * The root route's check. Hovering a link preloads its route, which must not reload the page under an
  * open form. `pnpm dev` runs two processes that compute the version apart, so the guard stays off there.
  */
-let lastCheck = -Infinity;
+let nextCheck = -Infinity;
 let checking = false;
 export function checkOnNavigation({ preload, location }: { preload: boolean; location: { href: string } }, options: FollowOptions & { development?: boolean } = {}) {
   if (preload || (options.development ?? import.meta.env.DEV)) return;
   const now = Date.now();
-  if (checking || now - lastCheck < 60_000) return;
+  if (checking || now < nextCheck) return;
   checking = true;
-  return followServerVersion({ ...options, destination: location.href }, () => { lastCheck = Date.now(); })
-    .finally(() => { checking = false; });
+  let answered = false;
+  return followServerVersion({ ...options, destination: location.href }, () => { answered = true; })
+    .finally(() => { nextCheck = Date.now() + (answered ? 60_000 : 10_000); checking = false; });
 }
 
 function reloadDestination(destination: string) {
   const current = new URL(window.location.href), target = new URL(destination, current);
   if (current.origin === target.origin && current.pathname === target.pathname && current.search === target.search) {
     // Assigning only a fragment leaves the old bundle running, even if the fragment is unchanged.
-    window.location.hash = target.hash;
+    if (target.hash) window.location.hash = target.hash;
+    else window.history.replaceState(window.history.state, '', target.href);
     window.location.reload();
   } else window.location.assign(destination);
 }

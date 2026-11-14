@@ -34,6 +34,7 @@ describe('the shared navigation version check', () => {
     expect(f.request).toHaveBeenCalledTimes(2);
   });
   it('bounds a stalled check and does not let another navigation start a check', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(100_000);
     const f = { ...fixture(built), development: false };
     f.request = vi.fn((_url, init) => new Promise<Response>((_resolve, reject) => {
       init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
@@ -47,27 +48,41 @@ describe('the shared navigation version check', () => {
     expect(f.reload).not.toHaveBeenCalled();
     f.request = vi.fn(async () => Response.json(built));
     await checkOnNavigation(navigation, f);
+    expect(f.request).not.toHaveBeenCalled();
+    now.mockReturnValue(110_000);
+    await checkOnNavigation(navigation, f);
     expect(f.request).toHaveBeenCalledOnce();
   });
-  it.each(['network', 'http', 'malformed'] as const)('retries a failed %s check on the next navigation', async failure => {
+  it.each(['network', 'http', 'malformed'] as const)('waits ten seconds after a failed %s check, then a minute after an answer', async failure => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(100_000);
     const f = { ...fixture(built), development: false };
     const request = vi.fn().mockResolvedValue(Response.json(built));
     if (failure === 'network') request.mockRejectedValueOnce(new TypeError('offline'));
     else request.mockResolvedValueOnce(failure === 'http' ? new Response(null, { status: 503 }) : Response.json({}));
     f.request = request;
     await checkOnNavigation(navigation, f);
+    now.mockReturnValue(109_999);
+    await checkOnNavigation(navigation, f);
+    expect(request).toHaveBeenCalledOnce();
+    now.mockReturnValue(110_000);
     await checkOnNavigation(navigation, f);
     expect(request).toHaveBeenCalledTimes(2);
+    now.mockReturnValue(169_999);
     await checkOnNavigation(navigation, f);
     expect(request).toHaveBeenCalledTimes(2);
+    now.mockReturnValue(170_000);
+    await checkOnNavigation(navigation, f);
+    expect(request).toHaveBeenCalledTimes(3);
   });
   it.each(['/portal/schedule#classes', '/portal/schedule', '/portal/schedule?day=tomorrow', '/admin'])('loads the destination with the default reload: %s', async destination => {
-    const location = { href: 'https://gym.example.test/portal/schedule', hash: '', assign: vi.fn(), reload: vi.fn() };
-    vi.stubGlobal('window', { location });
+    const location = { href: 'https://gym.example.test/portal/schedule#old', hash: '#old', assign: vi.fn(), reload: vi.fn() };
+    const history = { state: { route: true }, replaceState: vi.fn() };
+    vi.stubGlobal('window', { location, history });
     const f = fixture({ ...built, version: '1.4.0' });
     await followServerVersion({ built: f.built, request: f.request, storage: f.storage, destination });
     if (destination === '/portal/schedule#classes' || destination === '/portal/schedule') {
-      expect(location.hash).toBe(destination.includes('#') ? '#classes' : '');
+      if (destination.includes('#')) expect(location.hash).toBe('#classes');
+      else expect(history.replaceState).toHaveBeenCalledExactlyOnceWith(history.state, '', 'https://gym.example.test/portal/schedule');
       expect(location.reload).toHaveBeenCalledOnce();
       expect(location.assign).not.toHaveBeenCalled();
     } else {
