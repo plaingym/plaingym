@@ -89,10 +89,11 @@ async function selectTests(since) {
 }
 
 function pnpm(script, args = [], env = process.env) {
-  console.log(`\n> pnpm ${[script, ...args].join(' ')}`);
+  const command = [script, ...args].join(' ');
+  console.log(`\n> pnpm ${command}`);
   // Through the shell, so pnpm's Windows .cmd shim resolves.
   const result = spawnSync('pnpm', [script, ...args], { stdio: 'inherit', shell: true, env, cwd: root });
-  if (result.status !== 0) { console.error(`\nVerification failed at pnpm ${script}.`); process.exit(result.status ?? 1); }
+  if (result.status !== 0) { console.error(`\nVerification failed at pnpm ${command}.`); process.exit(result.status ?? 1); }
 }
 
 const since = full ? null : base();
