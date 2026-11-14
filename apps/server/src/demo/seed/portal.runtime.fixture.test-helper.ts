@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, vi } from 'vitest';
 import { uuidv7 } from '@plaingym/db';
+import { demoCreationResponse } from '@plaingym/shared/contracts';
 import { clock } from '../../core/clock.js';
 import { startRuntime, type Runtime } from '../../core/runtime.js';
 import { PostgresJobs } from '../../infra/jobs/postgres.js';
@@ -52,6 +53,7 @@ export function useSandboxRuntime(db: TestDatabase, count: number) {
     directory = await mkdtemp(join(tmpdir(), 'demo-portal-runtime-'));
     runtime = await startRuntime({ DATABASE_URL: db.appUrl, APP_ENCRYPTION_KEY: 'ab'.repeat(32), AUTH_SECRET: 'demo-portal-runtime-secret-with-32-characters',
       TENANCY: 'multi', DEMO_MODE: 'true', DEMO_DOMAIN: 'demo.example.test', PUBLIC_ORIGIN: install, NODE_ENV: 'production',
+      DEMO_POOL_SIZE: '0',
       DEMO_STRIPE_TEST_KEY: 'rk_test_SYNTHETIC', DEMO_STRIPE_WEBHOOK_SECRET: secret,
       UPLOADS_S3_BUCKET: 'demo-uploads', UPLOADS_S3_ENDPOINT: storage.endpoint, UPLOADS_S3_ACCESS_KEY_ID: 'test', UPLOADS_S3_SECRET_ACCESS_KEY: 'test',
       BACKUP_STAGING_DIR: join(directory, 'staging') });
@@ -59,7 +61,14 @@ export function useSandboxRuntime(db: TestDatabase, count: number) {
     const create = async () => {
       const response = await send(install, '/api/demo/sandboxes', { body: {} });
       if (response.status !== 201) throw new Error(`Sandbox creation answered ${response.status}: ${await response.text()}`);
-      return (await response.json()).data as Sandbox;
+      let data = demoCreationResponse.parse(await response.json()).data;
+      const deadline = Date.now() + 90_000;
+      while ('pending' in data) {
+        if (Date.now() >= deadline) throw new Error('Sandbox preparation timed out');
+        if (!await queues[0]!.runNext()) await new Promise(resolve => setTimeout(resolve, 10));
+        data = demoCreationResponse.parse(await (await send(install, '/api/demo/creations/' + data.ticket)).json()).data;
+      }
+      return data;
     };
     sandboxes = await Promise.all(Array.from({ length: count }, create));
   }, 180_000);

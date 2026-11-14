@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { expect, it, vi } from 'vitest';
+import { beforeEach, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { gyms, gymDomains } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
@@ -13,6 +13,7 @@ import { sandboxSettings } from './config.js';
 import { registerDemoCleanup } from './demo.jobs.js';
 
 const db = useTestDatabase();
+beforeEach(async () => { await db.forSystem(tx => tx.delete(gyms)); });
 function fixture() {
   const config = { enabled: true, domain: 'demo.example.test', maxSandboxes: 20, poolSize: 1, idleHours: 2 };
   const clock = new TestClock('2026-11-14T12:00:00Z'), key = Buffer.alloc(32, 17);
@@ -106,7 +107,7 @@ it('swaps the fixed one-level showcase hostname daily and excludes pooled and sh
   f.clock.advance(86_400_000); await f.pool.refill();
   const domains = await db.forSystem(tx => tx.select().from(gymDomains).where(eq(gymDomains.hostname, f.pool.showcaseHostname)));
   expect(domains).toHaveLength(1); expect(domains[0]!.gymId).not.toBe(first.id);
-  expect(sandboxSettings((await rows()).find(gym => gym.id === first.id)!.settings)?.kind).toBe('retired');
+  expect((await rows()).some(gym => gym.id === first.id)).toBe(false);
 });
 
 it('the install job lane runs only one seed across workers and skips queued showcase jobs', async () => {

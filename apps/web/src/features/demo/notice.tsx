@@ -171,7 +171,7 @@ export function DemoNotice() {
   if (!expires) return null;
   return <aside className="border-b border-border bg-secondary px-4" aria-label={t('demo/demo:controls')}>
     <div className="mx-auto flex min-h-11 max-w-6xl items-center justify-between gap-3">
-      <p className="min-w-0 text-sm leading-tight"><span className="font-semibold">{t('demo/demo:sandbox')}</span>
+      <p className="min-w-0 text-sm leading-tight"><span className="font-semibold">{t(mode?.mode === 'showcase' ? 'demo/demo:sharedTitle' : 'demo/demo:sandbox')}</span>
         {' · '}<span className="text-muted-foreground">{t('demo/demo:barExpires', { time: shortTime(expires) })}</span></p>
       <Button type="button" variant="outline" size="sm" className="shrink-0 whitespace-nowrap" aria-haspopup="dialog" onClick={() => setOpen(true)}>{t('demo/demo:menu')}</Button>
     </div>
@@ -220,6 +220,15 @@ export function TryDemoButton({ navigate = (url: string) => window.location.assi
     active.current = true;
     setPending(true); setError('');
     try {
+      if (discovery?.mode === 'entry') {
+        const deadline = Date.now() + 3_600_000;
+        while (Date.now() < deadline) {
+          const result = demoEntryResponse.parse(await request('/api/demo')).data;
+          if (result.mode === 'entry' && result.showcase) { navigate(result.showcase); return; }
+          await new Promise(resolve => window.setTimeout(resolve, 2000));
+        }
+        throw new Error('Showcase preparation timed out');
+      }
       const { data } = parseResponse(sandboxResponse, await request('/api/demo/sandboxes', {}));
       // The sandbox's start page offers every role, the join walkthrough and the kiosk.
       const destination = new URL('/demo', data.origin);

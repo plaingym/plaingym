@@ -35,7 +35,7 @@ export function CopyPrompt({ showcase }: { showcase: boolean }) {
     return () => { if (window.fetch === observing) window.fetch = original; };
   }, [showcase]);
   return open ? <Dialog title={t('demo/demo:sharedTitle')} closeLabel={t('demo/demo:closeMenu')} onClose={() => setOpen(false)}>
-    <p>{t('demo/demo:copyHelp')}</p><CreateCopyButton />
+    <div className="space-y-4"><p>{t('demo/demo:copyHelp')}</p><CreateCopyButton /></div>
   </Dialog> : null;
 }
 export function CreateCopyButton({ navigate = (url: string) => window.location.assign(url) }: { navigate?: (url: string) => void } = {}) {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
-import { forGym, forSystem, gyms, gymDomains, kioskDevices, uuidv7, writeAudit } from '@plaingym/db';
+import { forGym, forSystem, gyms, gymDomains, kioskDevices, uuidv7, writeAudit, RevisionConflictError } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { reserveGym } from '../core/tenancy-bootstrap.js';
@@ -134,7 +134,10 @@ export function createDemoService(options: {
       const marker = (gym?.settings as { bootstrapOwnerEmail?: string } | undefined)?.bootstrapOwnerEmail;
       const reserved = typeof marker === 'string' && /^demo-reservation\.[0-9a-f-]{36}@example[.]invalid$/.test(marker);
       const expiresAt = settings ? Date.parse(settings.expiresAt) : reserved && gym ? gym.createdAt.getTime() + 24 * 60 * 60 * 1000 : Infinity;
-      if (gym && expiresAt <= options.clock.now().getTime()) await options.deletion.remove(gymId, gym.revision);
+      if (gym && expiresAt <= options.clock.now().getTime()) {
+        try { await options.deletion.remove(gymId, gym.revision); }
+        catch (error) { if (!(error instanceof RevisionConflictError)) throw error; }
+      }
     },
   };
 }

@@ -28,7 +28,8 @@ export function createDemoPool(options: {
       const demo = sandboxSettings(gym?.settings);
       if (!gym || !demo) throw new AppError('not_found', 'Not found');
       const next = change(demo, gym);
-      await tx.update(gyms).set({ settings: { ...settingsOf(gym), demo: next }, updatedAt: options.clock.now() }).where(eq(gyms.id, gymId));
+      if (next === demo) return demo;
+      await tx.update(gyms).set({ settings: { ...settingsOf(gym), demo: next }, revision: gym.revision + 1, updatedAt: options.clock.now() }).where(eq(gyms.id, gymId));
       await writeAudit(tx, { gymId, actorKind: 'system', action: 'demo.lifecycle_updated', targetType: 'gym', targetId: gymId, occurredAt: options.clock.now() });
       return next;
     });
@@ -78,7 +79,7 @@ export function createDemoPool(options: {
         if (!row) return undefined;
         const demo = assigned(sandboxSettings(row.settings)!, hash(ticket), input, now);
         demo.handoffHash = hash(copyToken(ticket));
-        await tx.update(gyms).set({ settings: { ...settingsOf(row), demo }, updatedAt: now }).where(eq(gyms.id, row.id));
+        await tx.update(gyms).set({ settings: { ...settingsOf(row), demo }, revision: row.revision + 1, updatedAt: now }).where(eq(gyms.id, row.id));
         return row.id;
       });
       if (id) { await wake(); return completed(id, ticket); }
@@ -146,8 +147,11 @@ export function createDemoPool(options: {
       const demo = sandboxSettings(gym?.settings), now = options.clock.now();
       if (!demo || demo.kind !== 'private' || !demo.allocatedAt || Date.parse(demo.expiresAt) <= now.getTime()
         || now.getTime() - Date.parse(demo.lastActivityAt ?? demo.allocatedAt) < 300_000) return;
-      await update(gymId, current => ({ ...current, lastActivityAt: now.toISOString(),
-        expiresAt: new Date(Math.min(Date.parse(current.allocatedAt!) + day, Date.parse(idleExpiry(now)))).toISOString() }));
+      await update(gymId, (current, gym) => gym.status !== 'active' || current.kind !== 'private'
+        || Date.parse(current.expiresAt) <= now.getTime()
+        || now.getTime() - Date.parse(current.lastActivityAt ?? current.allocatedAt!) < 300_000
+        ? current : { ...current, lastActivityAt: now.toISOString(),
+          expiresAt: new Date(Math.min(Date.parse(current.allocatedAt!) + day, Date.parse(idleExpiry(now)))).toISOString() });
     },
     async eligible(gymId: string) {
       const [gym] = await scope(gymId, tx => tx.select().from(gyms).where(eq(gyms.id, gymId)));

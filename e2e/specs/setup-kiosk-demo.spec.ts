@@ -30,7 +30,7 @@ test('login at phone, tablet and desktop widths supports errors and password sig
   expect((await page.context().cookies(gymOrigin)).some((cookie) => cookie.name.includes('session_token'))).toBe(true);
 });
 
-test('demo entry creates a gym, the slim bar and demo menu work at every size, full-name kiosk check-in fits every size', async ({ page }, info) => {
+test('demo entry opens the showcase, private copy menu and kiosk work at every size', async ({ page }, info) => {
   test.setTimeout(180_000);
   await page.goto('https://demo.localhost/');
   for (const size of sizes) {
@@ -40,11 +40,14 @@ test('demo entry creates a gym, the slim bar and demo menu work at every size, f
     await accessibleLayout(page, info, 'demo-entry-' + size.width);
   }
   await page.setViewportSize(sizes[0]!);
-  const created = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/demo/sandboxes' && response.request().method() === 'POST');
   await page.getByRole('button', { name: 'Try the demo', exact: true }).click();
+  await page.waitForURL(url => url.hostname === 'showcase.demo.localhost');
+  await expect(page.getByText('This demo is shared. Make your own copy to change things.')).toBeVisible();
+  const created = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/demo/sandboxes' && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Make my own copy', exact: true }).click();
   const creation = await created;
   expect(creation.status()).toBe(201);
-  await page.waitForURL((url) => url.hostname.endsWith('.demo.localhost'));
+  await page.waitForURL((url) => url.hostname.endsWith('.demo.localhost') && url.hostname !== 'showcase.demo.localhost' && !url.hash);
   const sandbox = { origin: new URL(page.url()).origin };
   const banner = page.getByRole('complementary', { name: 'Demo controls', exact: true });
   const menuButton = banner.getByRole('button', { name: 'Demo menu', exact: true }), menu = page.getByRole('dialog', { name: 'Demo menu', exact: true });

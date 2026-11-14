@@ -231,9 +231,17 @@ export const test = base.extend<{ cspGuard: CspGuard; cspViolations: string[] },
   sandboxes: [async ({ browserName: _browserName }, use) => {
     await use(await cached('sandboxes', async () => {
       const entry = new Client('https://demo.localhost');
-      const first = await entry.json<{ data: Sandbox }>('/api/demo/sandboxes', 'POST', {});
-      const second = await entry.json<{ data: Sandbox }>('/api/demo/sandboxes', 'POST', {});
-      return [first.data, second.data];
+      async function copy() {
+        let result = await entry.json<{ data: Sandbox | { pending: true; ticket: string; position: number } }>('/api/demo/sandboxes', 'POST', {});
+        const deadline = Date.now() + 90_000;
+        while ('pending' in result.data) {
+          if (Date.now() >= deadline) throw new Error('Demo copy preparation timed out');
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          result = await entry.json('/api/demo/creations/' + result.data.ticket);
+        }
+        return result.data;
+      }
+      return [await copy(), await copy()];
     }));
   }, { scope: 'worker', timeout: 120_000 }],
 });

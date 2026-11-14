@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, expect, vi } from 'vitest';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
+import { demoCreationResponse } from '@plaingym/shared/contracts';
 import { startRuntime, type Runtime } from './runtime.js';
 import { PostgresJobs } from '../infra/jobs/postgres.js';
 import type { JobHandler, SystemJobHandler } from '../infra/jobs/index.js';
@@ -20,6 +21,7 @@ export type Sandbox = { gymId: string; origin: string; kioskToken: string };
 export const demoEnv = (databaseUrl: string, storageEndpoint: string, stagingDir: string) => ({
   DATABASE_URL: databaseUrl, APP_ENCRYPTION_KEY: 'ab'.repeat(32), AUTH_SECRET: 'runtime-secret-with-at-least-32-characters',
   TENANCY: 'multi', DEMO_MODE: 'true', DEMO_DOMAIN: 'demo.example.test', PUBLIC_ORIGIN: origin, NODE_ENV: 'production',
+  DEMO_POOL_SIZE: '0',
   UPLOADS_S3_BUCKET: 'demo-uploads', UPLOADS_S3_ENDPOINT: storageEndpoint,
   UPLOADS_S3_ACCESS_KEY_ID: 'test', UPLOADS_S3_SECRET_ACCESS_KEY: 'test',
   // Invalid SMTP would fail immediately if demo startup constructed a resolver.
@@ -66,7 +68,15 @@ export function useDemoRuntime(options: { sandbox?: boolean } = {}) {
   async function createSandbox(): Promise<Sandbox> {
     const response = await post('/api/demo/sandboxes', {});
     expect(response.status, await response.clone().text()).toBe(201);
-    return (await response.json()).data;
+    let data = demoCreationResponse.parse(await response.json()).data;
+    const deadline = Date.now() + 90_000;
+    while ('pending' in data) {
+      if (Date.now() >= deadline) throw new Error('Sandbox preparation timed out');
+      if (!await workers.at(-1)!.runNext()) await new Promise(resolve => setTimeout(resolve, 10));
+      const progress = await runtime.app.request(origin + '/api/demo/creations/' + data.ticket, { headers: { host: new URL(origin).host } });
+      data = demoCreationResponse.parse(await progress.json()).data;
+    }
+    return data;
   }
   return {
     database, factory, handlers, systemHandlers, workers, batchJobs, env, post, cookieOf, createSandbox,

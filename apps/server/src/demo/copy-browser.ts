@@ -25,7 +25,9 @@ export const publicCopyScript = String.raw`async function demoCopyPrompt(respons
         if (!result.ok) throw new Error('Copy failed');
         return (await result.json()).data;
       };
-      let data = await request('/api/demo/sandboxes', { role: 'student', page });
+      let role = 'student';
+      try { const saved = sessionStorage.getItem('demo-role'); if (['owner', 'coach', 'student'].includes(saved)) role = saved; } catch {}
+      let data = await request('/api/demo/sandboxes', { role, page });
       const deadline = Date.now() + 3600000;
       while (data.pending) {
         if (Date.now() >= deadline) throw new Error('Copy timed out');
