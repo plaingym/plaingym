@@ -65,9 +65,9 @@ describe('waivers against PostgreSQL', () => {
   });
   it('signs and renders unsupported member and signer names without changing the stored text', async () => {
     const f = await fixture();
-    await db.forGym(f.gymId, tx => tx.update(members).set({ firstName: 'שלום' }).where(eq(members.id, f.person.id)));
-    const signed = await f.service.sign(f.ctx, { ...f.input, signer: { kind: 'self', name: 'Before שלום After' } }, f.signing);
-    expect(readSnapshot(signed.snapshot, signed.snapshotHash)).toMatchObject({ member: { firstName: 'שלום' }, signer: { name: 'Before שלום After' } });
+    await db.forGym(f.gymId, tx => tx.update(members).set({ firstName: '🦄' }).where(eq(members.id, f.person.id)));
+    const signed = await f.service.sign(f.ctx, { ...f.input, signer: { kind: 'self', name: 'Before 🦄 After' } }, f.signing);
+    expect(readSnapshot(signed.snapshot, signed.snapshotHash)).toMatchObject({ member: { firstName: '🦄' }, signer: { name: 'Before 🦄 After' } });
     await expect(f.service.pdf(f.gymId, signed.id)).resolves.toMatchObject({ data: { url: expect.any(String) } });
   });
   it('does not store a failed render or a member changed during render preflight', async () => {

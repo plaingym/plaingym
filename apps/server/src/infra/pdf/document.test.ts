@@ -43,6 +43,19 @@ function handBuilt(...extra: (string | readonly [string, Buffer])[]) {
   return Buffer.concat(parts);
 }
 describe('untrusted PDF validation', () => {
+  it.each([false, true])('accepts an own-page destination OpenAction (indirect: %s)', async indirect => {
+    const doc = await PDFDocument.load(await fixture());
+    const destination = doc.context.obj([doc.getPage(1).ref, 'XYZ', null, null, null]);
+    doc.catalog.set(PDFName.of('OpenAction'), indirect ? doc.context.register(destination) : destination);
+    expect(await validateDocumentPdf(await doc.save(), 'gym-test')).toMatchObject({ pages: 2 });
+  });
+  it.each(['empty', 'number', 'name', 'dictionary', 'outside-page'])('rejects a %s destination OpenAction', async kind => {
+    const doc = await PDFDocument.load(await fixture(1));
+    const outside = doc.context.register(doc.context.obj({ Type: 'Page', MediaBox: [0, 0, 612, 792] }));
+    const first = kind === 'number' ? 0 : kind === 'name' ? 'External' : kind === 'outside-page' ? outside : doc.context.obj({});
+    doc.catalog.set(PDFName.of('OpenAction'), doc.context.obj(kind === 'empty' ? [] : [first, 'Fit']));
+    await expect(validateDocumentPdf(await doc.save(), 'gym-test')).rejects.toMatchObject({ code: 'invalid_request' });
+  });
   it('accepts Word-style web, email and internal links with a GoTo open action', async () => {
     const doc = await PDFDocument.load(hybridPdf());
     doc.getPage(0).node.set(PDFName.of('Annots'), doc.context.obj([

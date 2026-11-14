@@ -99,8 +99,9 @@ Onboarding keeps the link active until every current document
 for its household members is signed and its card setup is confirmed.
 
 Images are uploaded only on submitting a signature. A failed sign or an abandoned
-request can still leave an unsigned image. The waiver area's unreferenced-image
-cleanup remains necessary; this page does not delete potentially signed images.
+request can still leave an unsigned image. The waiver area's daily image sweep
+marks those once they are unreferenced and past their grace period; this page
+does not delete potentially signed images.
 
 ## Checkout and completion
 

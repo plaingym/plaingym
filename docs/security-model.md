@@ -390,7 +390,8 @@ Details: `apps/server/src/infra/auth/README.md`.
   Validated waiver documents allow same-origin framing, with a sandboxed policy
   and `X-Frame-Options: SAMEORIGIN`; public signing pages allow these same-origin
   frames. An always-visible document link supports browsers without inline PDFs.
-  Uploads accept plain web, email and page links and a `GoTo` opening-page action;
+  Uploads accept plain web, email and page links and a `GoTo` opening-page action,
+  or a destination-array opening action whose first item is one of that document's pages;
   other annotation subtypes, active actions, forms and embedded files are refused.
   Rendering a signed record checks its stored document hash and resource bounds
   without reapplying upload acceptance policy. Document processing allows at most

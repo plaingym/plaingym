@@ -31,7 +31,8 @@ copying parser and viewer can resolve them differently. Duplicate objects, page-
 encodings are refused. Every parsed dictionary is checked for active actions,
 forms, alternate appearances, attachments, optional-content layers and external references.
 Plain `Link` annotations may navigate within the document or use HTTP, HTTPS and
-email addresses. A `GoTo` open action may select the opening page. Other annotation
+email addresses. A `GoTo` open action may select the opening page; a destination
+array may do so when its first item is one of the document's own pages. Other annotation
 subtypes, action types and action chains are refused; those documents must be flattened. Parser
 success alone does not establish that an upload is valid. Refusals for conflicting
 revisions or unsupported compression ask for a flattened new copy or a standard
@@ -69,7 +70,8 @@ This is a plain-text document renderer, not an HTML or rich-text engine.
 ## Font assets
 
 `fonts/provenance.json` pins every upstream revision and SHA-256. Noto Sans and
-Noto Sans Arabic are unchanged upstream TrueType files. Noto CJK is a **static
+Noto Sans Arabic, Hebrew, Thai and Devanagari are unchanged upstream TrueType
+files under OFL-1.1. Noto CJK is a **static
 weight-400 instance** of the pinned upstream TrueType variable font, retaining
 all glyphs. `instantiate-cjk.py` reproduces it with FontTools **4.60.1**, with
 timestamp recalculation disabled. Python and FontTools are maintainer tools;
@@ -77,7 +79,7 @@ neither is needed to build the app from the checked-in assets or run it.
 
 Install that exact FontTools version in a disposable Python environment, then run
 `node apps/server/src/infra/pdf/fetch-fonts.mjs` from the repository root to
-reproduce all three files. The script verifies both source and output hashes.
+reproduce all six files. The script verifies both source and output hashes.
 Notices are in `fonts/OFL.txt`, `fonts/CJK-LICENSE.txt` and `THIRD_PARTY_LICENSES`.
 The server build copies the assets into `dist/assets/pdf`; path resolution does
 not depend on the process working directory.
@@ -96,8 +98,14 @@ TrueType instance avoids both issues without patching the libraries.
 
 The waiver tests independently extract CJK (Chinese, Japanese and Korean),
 Cyrillic, two-word Arabic, Arabic with Western and Arabic-Indic digits, Latin
-combining marks and Arabic marks using PDF.js 6.4.299. They verify embedded
+combining marks, Arabic marks, Hebrew (including vowel marks), Thai and Devanagari
+using PDF.js 6.4.299. They verify embedded
 subsets with system fonts disabled, and rasterize the multilingual fixture.
+Generated documents declare PDF 1.5, the first version that allows `ActualText`
+in marked content. Devanagari runs carry PDF `ActualText` with their original
+reading order, retaining the shaped positions of pre-base vowels. PDF.js 6.4.299 ignores `ActualText` and
+extracts those vowels in visual glyph order; its regression checks the complete
+glyph inventory and independently decodes the original logical text from the PDF.
 
 `node --max-old-space-size=256 --import tsx src/areas/waivers/pdf-benchmark.ts latin`
 from `apps/server` renders 20 pages cold and then ten more times in a fresh
@@ -114,12 +122,13 @@ process high-water RSS on 2026-10-25:
 | Bundle | Latin | 128.2 | 165.3 |
 | Bundle | Mixed | 149.6 | 191.1 |
 
+The mixed fixture includes Hebrew, Thai and Devanagari in every one of its 20 pages.
 The test enforces <300 MiB RSS for the shipped esbuild bundle, run with the
 runtime image's allocator defaults (`MALLOC_MMAP_THRESHOLD_=131072`,
 `MALLOC_ARENA_MAX=2`) and V8 flags (`PLAINGYM_NODE_FLAGS`), all read from
 `deploy/Dockerfile`; source runs
 record RSS without a cap because `tsx` compiles in-process. All runs retain the
 256 MiB V8 old-space cap and assert <256 MiB heap. It asserts that Latin and
-Cyrillic never load CJK or Arabic. These are isolated-renderer measurements, not
+Cyrillic load only Noto Sans; mixed text loads all six faces. These are isolated-renderer measurements, not
 whole-install measurements. Combined API/database/backup workloads require
 separate checks.

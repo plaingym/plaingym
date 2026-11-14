@@ -106,7 +106,12 @@ function drawLine(doc: PDFKit.PDFDocument, text: string, y: number, size = 11, d
   // can recover mixed-script logical order without reversing numeric runs.
   for (const { run, start } of positioned.sort((a, b) => a.run.index - b.run.index)) {
     selectFont(doc, run.font).fontSize(size);
+    // Indic shaping moves pre-base vowels ahead of their consonant glyphs.
+    // Keep that visual layout and provide the original reading order to PDF consumers.
+    const indic = /\p{Script=Devanagari}/u.test(run.text);
+    if (indic) doc.markContent('Span', { actual: run.text });
     doc.text(run.text, start, y, { lineBreak: false, features: [] });
+    if (indic) doc.endMarkedContent();
   }
 }
 function wrapLines(doc: PDFKit.PDFDocument, paragraph: string, size: number) {
@@ -146,7 +151,7 @@ export async function renderPdf(input: PdfInput): Promise<Uint8Array> {
   await acquire();
   try {
     if (input.blocks.length > 1000 || input.blocks.reduce((size, block) => size + (block.kind === 'text' ? block.text.length : 0), 0) > 100_000) throw new AppError('invalid_request', pdfText('inputLimit'));
-    const doc = new PDFDocument({ size: 'LETTER', margin: 48, font: pdfFont(font(0)) as unknown as string, autoFirstPage: false,
+    const doc = new PDFDocument({ pdfVersion: '1.5', size: 'LETTER', margin: 48, font: pdfFont(font(0)) as unknown as string, autoFirstPage: false,
       info: { Title: input.title, CreationDate: input.createdAt, ModDate: input.createdAt } });
     const chunks: Buffer[] = []; let bytes = 0;
     const finished = new Promise<Uint8Array>((resolve, reject) => {

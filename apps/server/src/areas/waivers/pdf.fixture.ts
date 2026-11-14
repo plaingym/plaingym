@@ -2,6 +2,7 @@
 import { demoSignaturePng } from '../../demo/seed/waivers-image.js';
 import { digest, serializeSnapshot } from './snapshot.js';
 export const scripts = ['山田太郎 王小明 김민수', 'Александр Иванов', 'أحمد محمد', 'أحمد محمد 12345 ١٢٣٤٥', 'Jose\u0301 A\u030Angstro\u0308m', 'مُحَمَّد أَحْمَد'];
+scripts.push('שלום עולם', 'שָׁלוֹם עוֹלָם', 'สวัสดี ภาษาไทย', 'नमस्ते दुनिया');
 export function pdfFixture(body = scripts.join('\n'), signerName = 'Alex Example') {
   const png = demoSignaturePng();
   return { png, ...serializeSnapshot({

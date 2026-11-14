@@ -56,8 +56,18 @@ Normal installs have no demo admission cap.
 Downloads expire after five minutes. Rendered PDFs are tombstoned immediately
 for the normal deferred storage sweep, so generated copies do not accumulate
 indefinitely. Existing signed URLs remain usable until expiry. Signature images
-are marked for deletion by the member-erasure service. Abandoned unsigned image
-uploads are not yet swept by this area; cleanup should retain referenced images.
+are marked for deletion by the member-erasure service. The daily
+`waivers.signature-images.sweep` job (batch lane) also marks unsigned images
+older than seven days, including those of removed members, which no signature
+can reference. Referenced images are always retained. Signing records an image claim under
+the member lock before rendering; that claim grants a fresh seven-day grace period.
+Cleanup takes the same lock, checks for signatures and recent claims, then records
+a durable deletion decision before calling storage outside the transaction.
+Signing rechecks this decision before insertion, so a cleanup that won the lock
+cannot leave a new signature pointing at a deleted image. A failed storage marker
+does not stop the run for the other images, and retries on the next run; abandoned signing claims expire after seven days. These
+audit markers contain only image UUIDs, with no signature bytes or personal data.
+Physical removal uses the existing backup-aware storage sweep.
 
 Demo downloads reuse one immutable PDF keyed by the signature image, keeping the
 same JSON response and five-minute signed URLs. The demo upload wrapper refuses
@@ -91,6 +101,7 @@ the waiver handler. Like other
 large uploads, this route requires a valid `Content-Length` and refuses transfer
 encoding before reading the body.
 
+`configureWaivers` also configures the prewired daily image-sweep registration.
 `core/runtime.ts` calls `configureWaivers({ uploadsFor: uploads.forGym, clock,
 documentDelivery })` (the delivery key is derived from the install's encryption key)
 before serving the existing area registrations. The prewired waiver routes and web
@@ -112,7 +123,9 @@ creating or publishing a version. A version can switch between text and PDF.
 Documents are limited to 10 MiB and 20 pages, validated before storage under a new
 immutable `${gymId}/waivers/templates/<uuid>.pdf` key, and never logged. The demo
 refuses these uploads with its existing uploads-disabled message.
-Plain web, email and internal page links and a `GoTo` open action are accepted;
+Plain web, email and internal page links and a `GoTo` open action are accepted.
+A destination-array open action is also accepted when its first item is one of
+the document's own pages;
 other annotations, actions, forms and embedded files are refused. Signed copies
 verify the snapshot's document hash and size and retain bounded structural parsing,
 without reapplying upload policy to a legal record. Document parsing and copying

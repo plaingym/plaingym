@@ -13,9 +13,12 @@ import { createWaiversService, type WaiversService, type WaiverOptions } from '.
 import { documentByteLimit } from '../../infra/pdf/document.js';
 import { createWaiverDocumentDownloadRoute } from './document-delivery.js';
 import { documentReadLimit } from './document-read.js';
+import { configureWaiverImageSweep } from './waivers.jobs.js';
 
 let configured: WaiversService | undefined;
-export function configureWaivers(options: WaiverOptions) { configured = createWaiversService(options); return configured; }
+export function configureWaivers(options: WaiverOptions) {
+  configured = createWaiversService(options); configureWaiverImageSweep(options); return configured;
+}
 const mutation = (ctx: RequestContext) => {
   if (ctx.principal.kind !== 'staff' || ctx.principal.gymId !== ctx.gym.gymId) throw new AppError('not_found', 'Resource not found');
   return { gymId: ctx.gym.gymId, actor: { kind: 'user' as const, userId: ctx.principal.userId } };

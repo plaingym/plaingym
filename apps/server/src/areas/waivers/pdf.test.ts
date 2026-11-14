@@ -4,7 +4,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { getDocument, OPS } from 'pdfjs-dist/legacy/build/pdf.mjs';
-import { PDFDocument, PDFName } from '@cantoo/pdf-lib';
+import { PDFDocument, PDFName, PDFRawStream, PDFHexString, PDFString, PDFObjectParser, decodePDFRawStream } from '@cantoo/pdf-lib';
 import { validateDocumentPdf } from '../../infra/pdf/document.js';
 import { renderWaiver } from './pdf.js';
 import { missingGlyphs } from '../../infra/pdf/index.js';
@@ -36,8 +36,26 @@ describe('immutable waiver rendering', () => {
       const page = await pdf.getPage(1), content = await page.getTextContent();
       const lines = content.items.flatMap(item => 'str' in item ? [item.str] : []);
       const extracted = lines.join(' ').normalize('NFC').replace(/\s+/g, ' ');
-      expect(extracted).toContain(script.normalize('NFC'));
-      expect(extracted.split(script.normalize('NFC')).length).toBe(3); // Body and labelled signer.
+      if (/\p{Script=Devanagari}/u.test(script)) {
+        expect(Buffer.from(bytes).subarray(0, 8).toString()).toBe('%PDF-1.5'); // ActualText in marked content needs PDF 1.5.
+        // PDF.js 6.4.299 extracts shaped Indic glyphs in visual order and ignores
+        // ActualText. Independently check every glyph and the PDF's logical text below.
+        const points = (text: string) => [...text].filter(c => /\p{Script=Devanagari}/u.test(c)).sort();
+        expect(points(extracted)).toEqual(points(script + script)); // Body and labelled signer.
+        const document = await PDFDocument.load(bytes), actual: string[] = [];
+        for (const [, object] of document.context.enumerateIndirectObjects()) if (object instanceof PDFRawStream) {
+          const source = Buffer.from(decodePDFRawStream(object).decode()).toString('latin1');
+          for (const match of source.matchAll(/\/ActualText\s+/g)) {
+            const value = PDFObjectParser.forBytes(Buffer.from(source.slice(match.index + match[0].length), 'latin1'), document.context).parseObject();
+            if (!(value instanceof PDFString || value instanceof PDFHexString)) throw new Error('Expected ActualText string');
+            actual.push(value.decodeText());
+          }
+        }
+        expect(actual.filter(text => text === script)).toHaveLength(2);
+      } else {
+        expect(extracted).toContain(script.normalize('NFC'));
+        expect(extracted.split(script.normalize('NFC')).length).toBe(3); // Body and labelled signer.
+      }
       expect(extracted).toContain(digest(f.snapshot));
       const ops = await page.getOperatorList();
       expect(ops.fnArray).toContain(OPS.paintImageXObject);
@@ -58,8 +76,8 @@ describe('immutable waiver rendering', () => {
     await expect(renderWaiver(f.snapshot, f.snapshotHash, Uint8Array.from(f.png, (x, i) => i === 40 ? x ^ 1 : x), undefined, 'gym-test')).rejects.toThrow();
     await expect(renderWaiver(f.snapshot, f.snapshotHash, f.png, undefined, 'gym-test')).resolves.toBeInstanceOf(Uint8Array);
   });
-  it('replaces each missing code point in a Hebrew signer name and keeps the rest of the line', async () => {
-    const f = pdfFixture('Original accepted terms', 'Before שלום After');
+  it('replaces each unsupported emoji code point and keeps the rest of the signer name', async () => {
+    const f = pdfFixture('Original accepted terms', 'Before 🦄🦄🦄🦄 After');
     const bytes = await renderWaiver(f.snapshot, f.snapshotHash, f.png, undefined, 'gym-test');
     const task = getDocument({ data: Uint8Array.from(bytes), useSystemFonts: false });
     try {
@@ -143,7 +161,8 @@ describe('immutable waiver rendering', () => {
       expect(records.map(r => r.run)).toEqual(['cold', 'repeated']);
       for (const record of records) {
         expect(record.pages).toBe(20); if (bundle) expect(record.rssMiB, `${mode} ${record.run}: ${JSON.stringify(record)}`).toBeLessThan(300); expect(record.heapMiB).toBeLessThan(256);
-        expect(record.fonts).toEqual(mode === 'mixed' ? ['NotoSans-Regular.ttf', 'NotoSansCJKsc-Regular.ttf', 'NotoSansArabic-Regular.ttf'] : ['NotoSans-Regular.ttf']);
+        expect(record.fonts).toEqual(mode === 'mixed' ? ['NotoSans-Regular.ttf', 'NotoSansCJKsc-Regular.ttf', 'NotoSansArabic-Regular.ttf',
+          'NotoSansHebrew-Regular.ttf', 'NotoSansThai-Regular.ttf', 'NotoSansDevanagari-Regular.ttf'] : ['NotoSans-Regular.ttf']);
       }
       console.info('Waiver memory:', bundle ? 'bundle' : 'source', mode, records);
     }

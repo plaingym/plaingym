@@ -203,7 +203,8 @@ stack against its memory budget (`deploy/test/memory/README.md`). On a push to `
 commit (from its integration branch) instead of repeating it.
 Dependency lifecycle scripts are allowlisted for esbuild only.
 
-The server build copies the Noto Sans font and its [OFL notice](apps/server/src/assets/fonts/OFL.txt).
+The server build copies Noto Sans and the PDF renderer's CJK, Arabic, Hebrew,
+Thai and Devanagari fonts with their [license notices](apps/server/src/infra/pdf/README.md#font-assets).
 Tests boot a relocated bundle to check asset resolution and run a bundled
 CommonJS dependency using a Node builtin. The web dev server includes React Fast Refresh.
 `pnpm compliance` checks dependency licenses, SPDX headers and `THIRD_PARTY_LICENSES`

@@ -17,6 +17,7 @@ import { digest, invalid, needsGuardian, readSnapshot, serializeSnapshot, valida
 import { renderWaiver, validateTemplatePdf } from './pdf.js';
 import { validateDocumentPdf } from '../../infra/pdf/document.js';
 import { headWaiverDocument, readWaiverDocument, type WaiverDocumentDelivery } from './document-delivery.js';
+import { checkSignatureImage } from './signature-images.js';
 
 export interface WaiverOptions {
   scope?: typeof forGym; clock?: Clock; uploadsFor: (gymId: string) => Promise<Uploads>;
@@ -194,7 +195,7 @@ export function createWaiversService(options: WaiverOptions) {
       // Authorize the member before touching storage. Recheck under the erasure lock at commit.
       await scope(ctx.gymId, tx => member(tx, p.memberId));
       const png = await image(ctx.gymId, p.memberId, p.signatureImageKey, p.signatureImageHash), now = clock.now();
-      async function prepare(tx: Transaction) {
+      async function prepare(tx: Transaction, claim = false) {
         const m = await member(tx, p.memberId);
         // The image key is the signing request's idempotency key. A retry must
         // carry the same signer and terms, including after later template edits.
@@ -205,6 +206,7 @@ export function createWaiversService(options: WaiverOptions) {
             || (saved.commitmentEndsOn ?? null) !== (p.commitmentEndsOn ?? null) || existing.signatureImageHash !== p.signatureImageHash) conflict(waiverValidation('imageUsed'));
           return { kind: 'existing' as const, value: signature(existing) };
         }
+        await checkSignatureImage(tx, ctx.gymId, m.id, p.signatureImageKey, claim ? clock.now() : undefined);
         const current = await family(tx, p.templateId);
         if (current.id !== p.templateId || current.version !== p.templateVersion || current.retiredAt) conflict(waiverValidation('templateReview'));
         if (needsGuardian(m.dateOfBirth, now, signing.timezone) && p.signer.kind !== 'guardian') invalid(waiverValidation('guardian'));
@@ -215,7 +217,7 @@ export function createWaiversService(options: WaiverOptions) {
           signedAt: now.toISOString(), signatureImage: { key: p.signatureImageKey, hash: p.signatureImageHash }, commitmentEndsOn: p.commitmentEndsOn ?? null });
         return { kind: 'prepared' as const, snapshot };
       }
-      const prepared = await scope(ctx.gymId, prepare);
+      const prepared = await scope(ctx.gymId, tx => prepare(tx, true));
       if (prepared.kind === 'existing') return prepared.value;
       // Never persist a snapshot whose full layout or signature PNG cannot render.
       // No rendering/storage work runs inside either short transaction.

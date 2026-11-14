@@ -34,5 +34,32 @@
     "sha256": "3012a9b63f5eca3e3b38f23a1be5ed504675e394abf8e7a4fa981506582c04aa",
     "notice": "apps/server/src/infra/pdf/fonts/CJK-LICENSE.txt",
     "upstream": "https://raw.githubusercontent.com/notofonts/noto-cjk/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/Variable/TTF/NotoSansCJKsc-VF.ttf"
+  },
+  {
+    "path": "apps/server/src/infra/pdf/fonts/NotoSansHebrew-Regular.ttf",
+    "kind": "font",
+    "name": "NotoSansHebrew-Regular.ttf",
+    "license": "OFL-1.1",
+    "sha256": "a7fa16fffb27bedb060a0866267c29e9859aeb9c21cc33f5b3aaf6eb062eca85",
+    "notice": "apps/server/src/infra/pdf/fonts/OFL.txt",
+    "upstream": "https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansHebrew/NotoSansHebrew-Regular.ttf"
+  },
+  {
+    "path": "apps/server/src/infra/pdf/fonts/NotoSansThai-Regular.ttf",
+    "kind": "font",
+    "name": "NotoSansThai-Regular.ttf",
+    "license": "OFL-1.1",
+    "sha256": "404ddfb5ed0aaa6b6ec8a85700d682978992062d67da93903967b56cbd9a4acc",
+    "notice": "apps/server/src/infra/pdf/fonts/OFL.txt",
+    "upstream": "https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansThai/NotoSansThai-Regular.ttf"
+  },
+  {
+    "path": "apps/server/src/infra/pdf/fonts/NotoSansDevanagari-Regular.ttf",
+    "kind": "font",
+    "name": "NotoSansDevanagari-Regular.ttf",
+    "license": "OFL-1.1",
+    "sha256": "385e78e6359a9d88a0f243d53b1209d7548361ba2194e2b9ec779bcaa7e8949d",
+    "notice": "apps/server/src/infra/pdf/fonts/OFL.txt",
+    "upstream": "https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansDevanagari/NotoSansDevanagari-Regular.ttf"
   }
 ]

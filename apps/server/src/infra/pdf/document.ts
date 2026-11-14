@@ -322,6 +322,7 @@ async function load(bytes: Uint8Array) {
 
 function validateUploadPolicy(document: PDFDocument) {
   const name = PDFName.of;
+  const pages = new Set<PDFDict>(document.getPages().map(page => page.node));
   const links = new Set<PDFObject>(), uriActions = new Set<PDFObject>(), actions = new Set<PDFObject>();
   const dicts: PDFDict[] = [];
   const seen = new Set<PDFObject>();
@@ -361,7 +362,10 @@ function validateUploadPolicy(document: PDFDocument) {
       dict.has(name('Subtype')) && dict.lookup(name('Subtype')) === name('Link') && !links.has(dict)) invalid(activeMessage);
     if (dict.has(name('OpenAction'))) {
       const action = dict.lookup(name('OpenAction'));
-      if (!(action instanceof PDFDict) || action.lookup(name('S')) !== name('GoTo')) invalid(activeMessage);
+      if (action instanceof PDFArray) {
+        const destination = action.lookup(0);
+        if (!(destination instanceof PDFDict) || !pages.has(destination)) invalid(activeMessage);
+      } else if (!(action instanceof PDFDict) || action.lookup(name('S')) !== name('GoTo')) invalid(activeMessage);
     }
     const action = dict.lookup(name('S'));
     // /S is also used by ordinary graphics dictionaries (for example /S /Transparency).
