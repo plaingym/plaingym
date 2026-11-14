@@ -10,6 +10,7 @@ import { customerRedactedAction, guardRedaction, queueEarlierRedactions, redactE
 import { FakePayments } from '../../infra/payments/index.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
 import { TestClock } from '../../core/clock.js';
+import { setLogSink } from '../../core/log.js';
 
 const database = useTestDatabase(), factory = createFactories(database), clock = new TestClock('2026-11-03T12:00:00Z');
 const gymA = uuidv7(), gymB = uuidv7(), secret = new Uint8Array(32).fill(7);
@@ -117,6 +118,32 @@ describe('redaction of customers erased earlier', () => {
     expect(pendingFor()).toHaveLength(2);
     expect(new Set(pendingFor().map(job => job.options.idempotencyKey)).size).toBe(2);
     expect(await queue(gymA, jobs)).toBe(0);
+  });
+  it('gives each erasure its own customer job even while the first finished job remains', async () => {
+    const reused = customer('ownjob'), jobs = new FakeJobs(clock);
+    for (let index = 0; index < 2; index++) {
+      const home = await factory('households', gymA, { stripeCustomerId: reused });
+      const person = await factory('members', gymA, { householdId: home.id });
+      await service.eraseMember({ gymId: gymA, actor: { kind: 'system' } }, person.id, { revision: 1 }, { jobs, timezone: 'UTC' });
+      if (index === 0) jobs.jobs[0]!.status = 'completed';
+    }
+    expect(jobs.jobs).toHaveLength(2);
+    const audits = await database.forGym(gymA, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'household.anonymized')));
+    const ids = audits.filter(row => (row.before as { stripeCustomerId?: string } | null)?.stripeCustomerId === reused).map(row => row.id);
+    expect(jobs.jobs.map(job => job.options.idempotencyKey).sort()).toEqual(ids.map(id => 'redact:' + id).sort());
+  });
+  it('logs a link made during the provider call without recording personal data', async () => {
+    const gymId = uuidv7();
+    await factory('gyms', gymId);
+    const customerId = customer('gap'), home = await factory('households', gymId), lines: string[] = [];
+    const previous = setLogSink(line => lines.push(line));
+    try {
+      await guardRedaction(async () => {
+        await database.forGym(gymId, tx => tx.update(households).set({ stripeCustomerId: customerId }).where(eq(households.id, home.id)));
+      }, { clock, scope: database.forGym })(gymId, customerId);
+    } finally { setLogSink(previous); }
+    expect(lines.map(line => JSON.parse(line))).toContainEqual(expect.objectContaining({ level: 'error', event: 'members.erasure.redaction_relinked', gymId, householdId: home.id }));
+    expect(lines.join('')).not.toContain(customerId);
   });
   it('reads a marker from before markers named the erasure as covering only the erasures before it', async () => {
     const legacy = customer('legacy');

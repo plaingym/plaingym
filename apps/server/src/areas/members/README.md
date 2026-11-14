@@ -35,7 +35,7 @@ has no remaining identifiable members, its contact details and remaining portal
 and signed-link access are also removed. Other household members remain intact.
 Erasure cancels booked and waitlisted places in sessions that haven't started,
 under each session's row lock, clears their waitlist positions without
-renumbering others, and unlinks staff profiles from the erased member. Bookings
+renumbering others, and unlinks staff profiles from the erased member, advancing their revisions so an open form cannot restore the link. Bookings
 for sessions that have started stay as history. For a household's last member it
 also revokes active cards, clears the local Stripe customer ID and holds open and
 past-due invoices for review. `eraseMember` takes the job queue and the gym's
@@ -45,7 +45,7 @@ transaction, so the erasure and its jobs commit or roll back together:
 12 attempts, a one-minute delay), `members.erasure.release_files` for the photo and signature images
 it released (key `release:<member ID>`, 12 attempts, a one-minute delay), and,
 when it cleared a customer ID, `members.erasure.redact_customer` carrying that ID
-(key `redact:<customer ID>`, 12 attempts, a one-minute delay). It returns `files`,
+(key `redact:<household erasure audit ID>`, 12 attempts, a one-minute delay). It returns `files`,
 `revokedCards` and `erasedCustomerId` (the cleared Stripe customer ID) for an
 immediate attempt after commit. The runtime passes the billing detach callback,
 the customer redaction callback (`Payments.redactCustomer`), file storage and the
@@ -79,7 +79,9 @@ audits (row-level security), selects and limits in SQL (`erasure-redaction.query
 next run continues), and needs no start-up wiring. It skips a customer that a household of the gym links today (the gym
 reused it). `guardRedaction(redact, { clock, scope })` wraps the provider redaction: it checks again when the
 redaction runs, skipping and logging (`members.erasure.redaction_skipped_linked`) a customer a household links by
-then, and audits a redaction that succeeds. Redaction is idempotent, so a repeat is harmless.
+then, and audits a redaction that succeeds. It also checks after the provider call and logs an error,
+`members.erasure.redaction_relinked`, if a household linked the customer during that call; the external call and a local link cannot be atomic.
+Redaction is idempotent, so a repeat is harmless.
 Unused households can be deleted; referenced households return a conflict.
 
 Deleting a member (`deleteMember`, `DELETE /api/members/{memberId}`, `members.delete`: owners and admins) is for a
@@ -93,14 +95,29 @@ deleting a member while another member stays in the household, since they stay w
 member in one transaction: memberships that were never invoiced, attendance and bookings, the check-in code, rank
 history and promotion notes, signed waivers, tag links, the lead and its contacts, announcement recipients and opt-outs
 (the delivery records lose their address digests, as on erasure), member logins and member links; a staff profile
-linked to the member is unlinked. With the household's last member the household goes too, with its portal logins and
+linked to the member is unlinked and its revision advances. With the household's last member the household goes too, with its portal logins and
 signed links. The member row is locked first (`FOR UPDATE`), then the household and the member's memberships, before
 the checks, so a charge, sale or card that starts at the same moment either commits first and the delete is refused,
-or waits and then fails its own reference to the deleted rows; a delete that loses such a race answers with a conflict.
+or waits and then fails its own reference to the deleted rows. Bookings, check-ins, tags, promotions and pack sales
+report a conflicting reference as 409 and log the constraint name. In bookings, tags, promotions and pack sales a member
+visible before waiting for its lock but deleted meanwhile also produces 409; a check-in that waited answers 404, as for
+a member that is gone. A missing or foreign-gym member still produces 404. A delete that loses such a race answers with a conflict and logs
+`members.delete.foreign_key` for a failed foreign key. The delete test checks the database's foreign-key catalog by name,
+so adding a reference to members, households or memberships requires an explicit cleanup or refusal decision.
 Upcoming places are freed under each session's row lock and the route promotes their waitlists after commit. The
 release of the photo and signature images commits with the delete as a `members.erasure.release_files` job (key
 `release-deleted:<member ID>`), so the route needs the job queue like erasure does, and the route marks the files
 deleted after commit as a head start. The `member.deleted` and `household.deleted` audit events carry IDs only.
+
+After either erasure or deletion commits, the route revokes the member's pending portal invitations through the auth
+store. With the last member it revokes every invitation and onboarding claim hold for the household. A cleanup failure
+is logged as `members.cleanup.invitations_failed` and those rows expire normally. Until then an invitation for a deleted
+or erased member, or for a deleted household, is refused when accepted; a payer invitation for a household whose last
+member was erased is not, because the anonymized household still exists.
+Tests can inject the store through the `invitations` option; production uses the auth store directly without extra runtime wiring.
+Delivery cleanup clears the member's own announcement and cancellation digests, shared-address announcement digests
+for announcements they were a recipient of, and shared-address cancellation digests. SQL computes the sender's exact
+JSON/sha256 digest over the indexed delivery key ranges; no notice history is loaded into JavaScript.
 
 `hashHouseholdPin` and `verifyHouseholdPin` take the per-gym secret, gym ID,
 household ID and the PIN. They preserve leading zeros, use a domain-separated

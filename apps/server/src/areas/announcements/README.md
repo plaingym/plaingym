@@ -55,10 +55,12 @@ is not a readable address. A member's erasure clears the digests of their
 announcement and cancellation notice rows in the same transaction
 (`forgetErasedAddressDigests`, `erasure.ts`), so another member still at that
 address could get a copy of an announcement that is still being sent.
-Announcement keys are cleared with one UPDATE subquery over the member's
-recipients. Cancellation keys are read in indexed batches of 500; matching
-address digests are also cleared when a shared address was keyed by another
-member, using the erased member's stored normalized address before it is removed.
+Announcement keys are cleared with an UPDATE subquery over the member's
+recipients. Matching shared-address digests are also cleared on other recipients
+of those announcements and on cancellation notices keyed by another member.
+SQL computes the same JSON/sha256 digest as the sender over the indexed delivery
+key ranges, using the member's stored normalized address before it is removed;
+erasure does not load cancellation history into JavaScript.
 Reservation and `issueUnsubscribeLink` commit together.
 The worker renders before reserving, using a fresh random unsubscribe token that
 only becomes usable when the reservation commits. It reads eligibility once per

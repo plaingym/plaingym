@@ -40,6 +40,7 @@ export function createStaffProfileService(scope = forGym) {
       await assertStaffManager(tx, actor.actorUserId);
       const [existing] = await tx.select().from(staffProfiles).where(eq(staffProfiles.id, id)).for('update');
       if (!existing) throw new AppError('not_found', 'Staff profile not found');
+      if (existing.revision !== input.revision) throw new AppError('conflict', 'The record changed; reload before saving');
       await links(tx, input);
       if (input.userId && (await tx.select({ id: staffProfiles.id }).from(staffProfiles).where(eq(staffProfiles.userId, input.userId))).some((row) => row.id !== id))
         throw new AppError('conflict', 'Account already has a staff profile');

@@ -142,8 +142,10 @@ describe.each(['fake', 'postgres'] as const)('%s atomic erasure', kind => {
     // The erasure's cancel drops the switch that hadn't applied yet.
     expect((await database.forGym(gymId, tx => tx.select().from(memberships).where(eq(memberships.id, membership.id))))[0]).toMatchObject({
       status: 'cancelled', scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null, scheduledOrigin: null });
+    const erasures = await database.forGym(gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'household.anonymized')));
+    const erasure = erasures.find(row => (row.before as { stripeCustomerId?: string } | null)?.stripeCustomerId === customerId)!;
     if (q instanceof FakeJobs) expect(q.jobs[0]).toMatchObject({ name: redactCustomerJob, payload: { customerId },
-      options: { idempotencyKey: `redact:${customerId}`, maxAttempts: 12, timezone: 'UTC' }, runAt: new Date(clock.now().getTime() + 60_000) });
+      options: { idempotencyKey: `redact:${erasure.id}`, maxAttempts: 12, timezone: 'UTC' }, runAt: new Date(clock.now().getTime() + 60_000) });
     else expect((await redactions(customerId))[0]).toMatchObject({ name: redactCustomerJob, maxAttempts: 12,
       payload: { timezone: 'UTC', value: { customerId } }, runAt: new Date(clock.now().getTime() + 60_000) });
     expect(server.redactCustomer).toHaveBeenCalledExactlyOnceWith(gymId, customerId);

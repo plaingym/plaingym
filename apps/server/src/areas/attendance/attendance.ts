@@ -19,6 +19,7 @@ import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js'
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { advanceLeadOnCheckIn } from '../leads/stages.js';
 import { isLeadMember } from '../leads/eligibility.js';
+import { memberWriteScope } from '../members/member-write.js';
 import { drawCredits, hasActiveMembership, isPackHolder, lockMemberCredits, returnCredit } from '../billing/packs/ledger.js';
 import messages from '../../../../../locales/en/attendance/attendance.json' with { type: 'json' };
 
@@ -91,7 +92,7 @@ async function sessionLinks(tx: Transaction, gymId: string, rows: readonly Row[]
 }
 
 export function createAttendanceService(options: AttendanceOptions = {}) {
-  const scope = options.scope ?? forGym, householdScope = options.householdScope ?? forHousehold;
+  const scope = memberWriteScope(options.scope ?? forGym), householdScope = options.householdScope ?? forHousehold;
   const clock = options.clock ?? defaultClock, settings = options.settings ?? createGymSettingsAccessor({ scope });
   async function countsOpenMat(gymId: string) { return (await settings.get(gymId)).openMatCountsAsClass; }
   async function resolve(gymId: string, filter: Filter): Promise<Filter> {

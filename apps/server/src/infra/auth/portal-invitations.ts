@@ -133,6 +133,21 @@ export function createPortalClaimCodes(secret: string) {
 export function createPortalInvitationStore(database = systemDatabase) {
   const forGym = <T>(gymId: string, fn: (tx: Transaction) => Promise<T>) => scopedDatabase(database()).forGym(gymId, fn);
   return {
+    /** Removes invitations for an erased/deleted member, or all invitations and claim holds for their last household.
+     * Called after the application transaction commits; system rows use this module's own pool. */
+    async revokeFor(gymId: string, householdId: string, memberId?: string) {
+      assertNoTransaction('auth.revokeInvitationsFor');
+      const gym = idSchema.parse(gymId).toLowerCase(), home = idSchema.parse(householdId).toLowerCase();
+      const member = memberId === undefined ? undefined : idSchema.parse(memberId).toLowerCase();
+      return forGym(gym, async tx => {
+        // `issue` serializes a strict binding with JSON.stringify. Claims are household-wide, without a member ID.
+        const rows = await tx.delete(authVerification).where(and(portalRowsOf(gym), eq(authVerification.householdId, home),
+          member ? like(authVerification.value, '%"memberId":"' + member + '"%') : undefined))
+          .returning({ userId: authVerification.userId });
+        await removeOrphanedInvitees(tx, rows.flatMap(row => row.userId ? [row.userId] : []));
+        return rows.length;
+      });
+    },
     /** A staff-authorized household listing may display the linked identity's email. */
     async loginEmails(gymId: string, householdId: string) {
       return forGym(gymId, tx => tx.select({ id: householdUsers.id, email: authUser.email }).from(householdUsers)

@@ -5,7 +5,7 @@ import type { Clock } from '@plaingym/shared';
 import { z } from 'zod';
 import type { Jobs } from '../../infra/jobs/index.js';
 import type { Uploads } from '../../infra/storage/index.js';
-import { logInfo } from '../../core/log.js';
+import { logError, logInfo } from '../../core/log.js';
 import { customerRedactedAction, erasuresToRedact, redactionQueuedAction } from './erasure-redaction.query.js';
 
 /** The sole ledger update: erase free text while preserving the append-only credit history. */
@@ -73,6 +73,8 @@ export function guardRedaction(redact: (gymId: string, customerId: string) => Pr
     const [linked] = await scope(gymId, tx => tx.select({ id: households.id }).from(households).where(eq(households.stripeCustomerId, customerId)).limit(1));
     if (linked) { logInfo('members.erasure.redaction_skipped_linked', { gymId, householdId: linked.id }); return; }
     await redact(gymId, customerId);
+    const [relinked] = await scope(gymId, tx => tx.select({ id: households.id }).from(households).where(eq(households.stripeCustomerId, customerId)).limit(1));
+    if (relinked) logError('members.erasure.redaction_relinked', { gymId, householdId: relinked.id });
     await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: customerRedactedAction, targetType: 'gym', targetId: gymId,
       after: { stripeCustomerId: customerId }, occurredAt: options.clock.now() }));
   };

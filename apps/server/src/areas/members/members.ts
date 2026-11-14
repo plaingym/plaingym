@@ -10,11 +10,13 @@ import type { MutationContext } from '../../core/interfaces/common.js';
 import { forgetErasedAddressDigests } from '../announcements/erasure.js';
 import { clock as defaultClock } from '../../core/clock.js';
 import { hashHouseholdPin, type HouseholdPinSecret } from './pin.js';
-import { withJobTransaction, type Jobs } from '../../infra/jobs/index.js';
+import { withJobTransaction, type Jobs, type JobTransaction } from '../../infra/jobs/index.js';
+import { logError } from '../../core/log.js';
 import { eraseCreditReasons, redactCustomerJob, releaseErasedFilesJob } from './erasure-redaction.js';
 import { detachJob } from '../billing/payments.mutations.js';
 import { unscheduled } from '../billing/memberships.plan-change.js';
 import { endDiscount } from '../billing/discounts/apply.js';
+import { lockMemberForWrite, memberWriteScope } from './member-write.js';
 
 /** The queue and gym timezone an erasure's cleanup jobs are inserted with. */
 export interface ErasureQueue { jobs: Pick<Jobs, 'enqueue'>; timezone: string }
@@ -44,6 +46,19 @@ function editable(row: { anonymizedAt: Date | null }) {
   if (row.anonymizedAt) throw new AppError('conflict', 'Anonymized profiles cannot be edited');
 }
 const search = (value: string) => '%' + escapeLike(value) + '%';
+
+async function unlinkStaffProfiles(tx: Transaction, memberId: string) {
+  const profiles = await tx.select({ id: staffProfiles.id, revision: staffProfiles.revision }).from(staffProfiles)
+    .where(eq(staffProfiles.memberId, memberId)).orderBy(asc(staffProfiles.id)).for('update');
+  for (const profile of profiles) await tx.update(staffProfiles).set({ memberId: null, revision: profile.revision + 1 })
+    .where(eq(staffProfiles.id, profile.id));
+}
+async function queueReleasedFiles(transaction: JobTransaction, cleanup: ErasureQueue, files: string[], key: string, now: Date) {
+  if (files.length) await cleanup.jobs.enqueue(releaseErasedFilesJob, { keys: files }, {
+    gymId: transaction.gymId, timezone: cleanup.timezone, maxAttempts: 12,
+    idempotencyKey: key, runAt: new Date(now.getTime() + 60_000),
+  }, transaction);
+}
 /** `pinSecret` resolves the gym's random key (`areas/settings/gym-keys.ts`); without it, setting a PIN fails closed. */
 export interface MembersOptions { scope?: typeof forGym; clock?: Clock; pinSecret?: HouseholdPinSecret }
 export function createMembersService(options: MembersOptions = {}) {
@@ -54,6 +69,24 @@ export function createMembersService(options: MembersOptions = {}) {
       action, targetType, targetId, occurredAt: clock.now(), ...(before ? { before } : {}) }); // No PII or PINs in the append-only log.
   const getMemberRow = async (tx: Transaction, id: string) => missing((await tx.select(memberFields).from(members).where(eq(members.id, id)))[0]);
   const getHouseholdRow = async (tx: Transaction, id: string) => missing((await tx.select(householdFields).from(households).where(eq(households.id, id)).for('update'))[0]);
+  async function freeUpcomingPlaces(tx: Transaction, memberId: string, now: Date, context: MutationContext) {
+    const sessions = await tx.selectDistinct({ id: classBookings.sessionId }).from(classBookings)
+      .innerJoin(classSessions, and(eq(classSessions.gymId, classBookings.gymId), eq(classSessions.id, classBookings.sessionId)))
+      .where(and(eq(classBookings.memberId, memberId), inArray(classBookings.status, ['booked', 'waitlisted']), gt(classSessions.startsAt, now)))
+      .orderBy(asc(classBookings.sessionId));
+    const freedSessionIds: string[] = [];
+    for (const session of sessions) {
+      const [upcoming] = await tx.select({ id: classSessions.id }).from(classSessions)
+        .where(and(eq(classSessions.id, session.id), gt(classSessions.startsAt, now))).for('update');
+      if (!upcoming) continue;
+      const cancelled = await tx.update(classBookings).set({ status: 'cancelled', waitlistPosition: null, cancelledAt: now })
+        .where(and(eq(classBookings.sessionId, session.id), eq(classBookings.memberId, memberId),
+          inArray(classBookings.status, ['booked', 'waitlisted']))).returning({ id: classBookings.id });
+      if (cancelled.length) freedSessionIds.push(session.id);
+      for (const booking of cancelled) await audit(tx, context, 'booking.cancelled', 'class_booking', booking.id);
+    }
+    return freedSessionIds;
+  }
   const service = {
     async listMembers(gymId: string, input: c.MemberListQuery) {
       const query = c.memberListQuerySchema.parse(input);
@@ -114,9 +147,8 @@ export function createMembersService(options: MembersOptions = {}) {
         const found = missing((await tx.select({ householdId: members.householdId }).from(members).where(eq(members.id, id)))[0]);
         const home = await getHouseholdRow(tx, found.householdId);
         // Match activation and assignment: household first, then read the member under its lock.
-        const before = missing((await tx.select(memberFields).from(members).where(eq(members.id, id)).for('update'))[0]);
+        const before = missing((await tx.select({ ...memberFields, emailAddress: members.emailAddress }).from(members).where(eq(members.id, id)).for('update'))[0]);
         editable(before); const guard = revisionGuard(members.revision, revision), now = clock.now();
-        const [erased] = await tx.select({ address: members.emailAddress }).from(members).where(eq(members.id, id)).for('update');
         const row = assertRevised(await tx.update(members).set({ firstName: 'Anonymized', lastName: 'Member', email: null, phone: null, dateOfBirth: null,
           photoKey: null, emergencyContacts: [], medicalNotes: null, emailOptOut: true, emailDeliverable: false, status: 'cancelled',
           checkinCodeHash: null, anonymizedAt: now, revision: guard.next })
@@ -130,22 +162,8 @@ export function createMembersService(options: MembersOptions = {}) {
         await tx.update(memberships).set({ switchOverrideReason: null })
           .where(and(eq(memberships.memberId, id), isNotNull(memberships.switchOverrideReason)));
         // Only upcoming places are freed; bookings for sessions that have started stay as history.
-        const sessions = await tx.selectDistinct({ id: classBookings.sessionId }).from(classBookings)
-          .innerJoin(classSessions, and(eq(classSessions.gymId, classBookings.gymId), eq(classSessions.id, classBookings.sessionId)))
-          .where(and(eq(classBookings.memberId, id), inArray(classBookings.status, ['booked', 'waitlisted']), gt(classSessions.startsAt, now)))
-          .orderBy(asc(classBookings.sessionId));
-        const freedSessionIds: string[] = [];
-        for (const session of sessions) {
-          const [upcoming] = await tx.select({ id: classSessions.id }).from(classSessions)
-            .where(and(eq(classSessions.id, session.id), gt(classSessions.startsAt, now))).for('update');
-          if (!upcoming) continue;
-          const cancelled = await tx.update(classBookings).set({ status: 'cancelled', waitlistPosition: null, cancelledAt: now })
-            .where(and(eq(classBookings.sessionId, session.id), eq(classBookings.memberId, id),
-              inArray(classBookings.status, ['booked', 'waitlisted']))).returning({ id: classBookings.id });
-          if (cancelled.length) freedSessionIds.push(session.id);
-          for (const booking of cancelled) await audit(tx, context, 'booking.cancelled', 'class_booking', booking.id);
-        }
-        await tx.update(staffProfiles).set({ memberId: null }).where(eq(staffProfiles.memberId, id));
+        const freedSessionIds = await freeUpcomingPlaces(tx, id, now, context);
+        await unlinkStaffProfiles(tx, id);
         // An erased member is never billed again: their memberships end with the erasure, in the same transaction.
         const open = await tx.select({ id: memberships.id, revision: memberships.revision }).from(memberships)
           .where(and(eq(memberships.memberId, id), ne(memberships.status, 'cancelled'))).for('update');
@@ -164,14 +182,14 @@ export function createMembersService(options: MembersOptions = {}) {
         await tx.delete(householdUsers).where(eq(householdUsers.memberId, id));
         await tx.update(signedLinks).set({ revokedAt: now }).where(and(eq(signedLinks.memberId, id), isNull(signedLinks.revokedAt)));
         // No delivery record keeps a value derived from the member's address (`infra/email/README.md`).
-        await forgetErasedAddressDigests(tx, context.gymId, id, erased!.address);
+        await forgetErasedAddressDigests(tx, context.gymId, id, before.emailAddress);
         const remaining = await tx.select({ id: members.id }).from(members).where(and(eq(members.householdId, home.id), isNull(members.anonymizedAt))).limit(1);
         const last = remaining.length === 0;
         // The provider's copy of the payer is redacted after commit (erasure keeps the customer for the books).
         const [billing] = last ? await tx.select({ customerId: households.stripeCustomerId }).from(households).where(eq(households.id, home.id)) : [];
         const homeGuard = revisionGuard(households.revision, home.revision);
         // `email_address` is stored trimmed and lowercased; the household email is compared the same way.
-        const erasedBillingAddress = !!erased?.address && home.email?.trim().toLowerCase() === erased.address;
+        const erasedBillingAddress = !!before.emailAddress && home.email?.trim().toLowerCase() === before.emailAddress;
         await tx.update(households).set({ pinHash: null, revision: homeGuard.next,
           ...(erasedBillingAddress ? { email: null } : {}),
           ...(last ? { name: 'Anonymized household', email: null, phone: null, address: {}, stripeCustomerId: null } : {}) }).where(eq(households.id, home.id));
@@ -190,21 +208,19 @@ export function createMembersService(options: MembersOptions = {}) {
         await audit(tx, context, 'member.anonymized', 'member', id);
         if (waivers.length) await audit(tx, context, 'member.waivers.deleted', 'member', id);
         // The cleared provider customer ID (not personal data) stays on record until its redaction is confirmed.
-        await audit(tx, context, last ? 'household.anonymized' : 'household.pin.cleared', 'household', home.id,
+        const erasure = await audit(tx, context, last ? 'household.anonymized' : 'household.pin.cleared', 'household', home.id,
           billing?.customerId ? { stripeCustomerId: billing.customerId } : undefined);
         // Each cleared reference and its durable provider or storage cleanup commit together; the calls stay after commit.
         const queued = { gymId: context.gymId, timezone: cleanup.timezone, maxAttempts: 12 };
         if (billing?.customerId) await cleanup.jobs.enqueue(redactCustomerJob, { customerId: billing.customerId }, {
-          ...queued, idempotencyKey: `redact:${billing.customerId}`, runAt: new Date(now.getTime() + 60_000),
+          ...queued, idempotencyKey: `redact:${erasure.id}`, runAt: new Date(now.getTime() + 60_000),
         }, transaction);
         // Each card's billing details are cleared before it is detached (a staff card removal leaves them).
         for (const card of revokedCards) await cleanup.jobs.enqueue(detachJob, { paymentMethodId: card.id, redactBillingDetails: true },
           { ...queued, idempotencyKey: `detach:${card.id}`, runAt: new Date(now.getTime() + 60_000) }, transaction);
         const files = [...(before.photoKey ? [before.photoKey] : []), ...waivers.map((waiver) => waiver.key)];
-        if (files.length) await cleanup.jobs.enqueue(releaseErasedFilesJob, { keys: files }, {
-          ...queued, idempotencyKey: `release:${id}`, runAt: new Date(now.getTime() + 60_000),
-        }, transaction);
-        return { member: member(row), freedSessionIds, revokedCards, erasedCustomerId: billing?.customerId ?? null, files };
+        await queueReleasedFiles(transaction, cleanup, files, `release:${id}`, now);
+        return { member: member(row), householdId: home.id, householdErased: last, freedSessionIds, revokedCards, erasedCustomerId: billing?.customerId ?? null, files };
       });
     },
     /**
@@ -236,16 +252,7 @@ export function createMembersService(options: MembersOptions = {}) {
               || await any(tx.select({ id: households.id }).from(households).where(and(eq(households.id, home.id), isNotNull(households.stripeCustomerId)))));
           if (billed) throw new AppError('conflict', 'Members with billing records cannot be deleted', { reason: [c.memberDeleteBlockedReason] });
           // Each upcoming place is freed under its session's lock, in session order, like any other booking change.
-          const sessions = await tx.selectDistinct({ id: classBookings.sessionId }).from(classBookings)
-            .innerJoin(classSessions, and(eq(classSessions.gymId, classBookings.gymId), eq(classSessions.id, classBookings.sessionId)))
-            .where(and(eq(classBookings.memberId, id), inArray(classBookings.status, ['booked', 'waitlisted']), gt(classSessions.startsAt, now)))
-            .orderBy(asc(classBookings.sessionId));
-          const freedSessionIds: string[] = [];
-          for (const session of sessions) {
-            const [upcoming] = await tx.select({ id: classSessions.id }).from(classSessions)
-              .where(and(eq(classSessions.id, session.id), gt(classSessions.startsAt, now))).for('update');
-            if (upcoming) freedSessionIds.push(session.id);
-          }
+          const freedSessionIds = await freeUpcomingPlaces(tx, id, now, context);
           await tx.delete(classBookings).where(eq(classBookings.memberId, id));
           await tx.delete(attendances).where(eq(attendances.memberId, id));
           await tx.delete(memberTagLinks).where(eq(memberTagLinks.memberId, id));
@@ -254,7 +261,7 @@ export function createMembersService(options: MembersOptions = {}) {
           const lead = await tx.select({ id: leads.id }).from(leads).where(eq(leads.memberId, id));
           if (lead.length) await tx.delete(leadContacts).where(inArray(leadContacts.leadId, lead.map((row) => row.id)));
           await tx.delete(leads).where(eq(leads.memberId, id));
-          await tx.update(staffProfiles).set({ memberId: null }).where(eq(staffProfiles.memberId, id));
+          await unlinkStaffProfiles(tx, id);
           // Delivery records keep no value derived from the deleted member's address (`infra/email/README.md`).
           await forgetErasedAddressDigests(tx, context.gymId, id, before.email);
           await tx.delete(announcementRecipients).where(eq(announcementRecipients.memberId, id));
@@ -271,13 +278,12 @@ export function createMembersService(options: MembersOptions = {}) {
             await audit(tx, context, 'household.deleted', 'household', home.id);
           }
           const files = [...(before.photoKey ? [before.photoKey] : []), ...waivers.map((waiver) => waiver.key)];
-          if (files.length) await cleanup.jobs.enqueue(releaseErasedFilesJob, { keys: files }, {
-            gymId: context.gymId, timezone: cleanup.timezone, maxAttempts: 12, idempotencyKey: `release-deleted:${id}`, runAt: new Date(now.getTime() + 60_000),
-          }, transaction);
-          return { householdDeleted: last, freedSessionIds, files };
+          await queueReleasedFiles(transaction, cleanup, files, `release-deleted:${id}`, now);
+          return { householdId: home.id, householdDeleted: last, freedSessionIds, files };
         });
       } catch (error) {
         // A booking, sale or charge that took its own lock first and then raced the delete: the caller can look again.
+        if (databaseCode(error) === '23503') logError('members.delete.foreign_key', { gymId: context.gymId, memberId: id }, error);
         if (['23503', '40P01'].includes(databaseCode(error) ?? '')) throw new AppError('conflict', 'The member changed while being deleted');
         throw error;
       }
@@ -394,9 +400,9 @@ export function createMembersService(options: MembersOptions = {}) {
     },
     async addTag(context: MutationContext, id: string, input: c.AddMemberTagRequest) {
       const { tagId } = c.addMemberTagRequestSchema.parse(input);
-      return scope(context.gymId, async (tx) => {
+      return memberWriteScope(scope)(context.gymId, async (tx) => {
         // Serialize tag changes with anonymization so no association can be added afterwards.
-        const row = missing((await tx.select({ anonymizedAt: members.anonymizedAt }).from(members).where(eq(members.id, id)).for('update'))[0]); editable(row);
+        editable(await lockMemberForWrite(tx, id, 'update'));
         missing((await tx.select({ id: memberTags.id }).from(memberTags).where(eq(memberTags.id, tagId)).for('key share'))[0]);
         const added = (await tx.insert(memberTagLinks).values({ id: uuidv7(), gymId: context.gymId, memberId: id, tagId, createdAt: clock.now() }).onConflictDoNothing().returning(linkFields))[0];
         if (added) { await audit(tx, context, 'member.tag.added', 'member', id); return link(added); }

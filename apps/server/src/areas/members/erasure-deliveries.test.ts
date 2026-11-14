@@ -91,4 +91,25 @@ describe('erasure and delivery records', () => {
     expect(rows.filter(row => row.commandDigest !== null)).toMatchObject([{ commandDigest: noticeRows[501]!.commandDigest }]);
     expect((await db.forGym(otherGym, tx => tx.select().from(emailDeliveries)))[0]!.commandDigest).toBe(digest);
   });
+
+  it.each(['shared@example.invalid', 'we"ird\\name+é@example.invalid'])('clears shared announcement digests using the same JSON escaping as the sender: %s', async address => {
+    const gymId = uuidv7(), otherGym = uuidv7(), clock = new TestClock('2026-11-12T12:00:00Z');
+    await factory('gyms', gymId); await factory('gyms', otherGym);
+    const erased = await factory('members', gymId, { email: address }), sender = await factory('members', gymId, { email: address });
+    const announcement = await factory('announcements', gymId);
+    await factory('announcementRecipients', gymId, { announcementId: announcement.id, memberId: erased.id, state: 'skipped', reason: 'duplicate_address' });
+    const sent = await factory('announcementRecipients', gymId, { announcementId: announcement.id, memberId: sender.id, state: 'sent' });
+    const key = announcementDeliveryKey(announcement.id, sent.id), digest = commandDigest([announcement.id, address]);
+    await factory('emailDeliveries', gymId, { key, commandDigest: digest });
+    await factory('emailDeliveries', otherGym, { key, commandDigest: digest });
+    const unrelated = await factory('announcements', gymId);
+    const unrelatedKey = announcementDeliveryKey(unrelated.id, uuidv7());
+    await factory('emailDeliveries', gymId, { key: unrelatedKey, commandDigest: commandDigest([unrelated.id, address]) });
+    await createMembersService({ scope: db.forGym, clock }).eraseMember({ gymId, actor: { kind: 'system' } }, erased.id, { revision: 1 }, queue);
+    await db.forGym(gymId, tx => tx.update(members).set({ email: 'changed@example.invalid' }).where(eq(members.id, sender.id)));
+    const rows = await db.forGym(gymId, tx => tx.select().from(emailDeliveries));
+    expect(rows.find(row => row.key === key)!.commandDigest).toBeNull();
+    expect(rows.find(row => row.key === unrelatedKey)!.commandDigest).toBe(commandDigest([unrelated.id, address]));
+    expect((await db.forGym(otherGym, tx => tx.select().from(emailDeliveries)))[0]!.commandDigest).toBe(digest);
+  });
 });

@@ -8,6 +8,7 @@ import { clock as defaultClock } from '../../core/clock.js';
 import { notFound, type MutationContext } from '../../core/interfaces/common.js';
 import type { PortalIdentity } from '../../core/interfaces/member-household.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
+import { lockMemberForWrite, memberWriteScope } from '../members/member-write.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { lacksClassEligibility } from '../billing/packs/index.js';
 import { activeBookings, assertBookable, assertCancellable, bookingAudit, bookingConflict, openPlaces, reconcileSessionBookings,
@@ -53,7 +54,7 @@ export async function promoteWaitlist(gymId: string, sessionId: string, options:
 }
 
 export function createBookingService(options: BookingOptions = {}) {
-  const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
+  const scope = memberWriteScope(options.scope ?? forGym), clock = options.clock ?? defaultClock;
   const settings = options.settings ?? createGymSettingsAccessor({ scope });
   return {
     requireSession: (gymId: string, sessionId: string) => scope(gymId, tx => references(tx, { sessionId })),
@@ -61,7 +62,7 @@ export function createBookingService(options: BookingOptions = {}) {
       const value = createBookingRequestSchema.parse(input), gym = await settings.get(context.gymId);
       return scope(context.gymId, async tx => {
         // Lock member before session, matching erasure's order, so an erasure cannot leave a new booking behind.
-        await tx.select({ id: members.id }).from(members).where(eq(members.id, value.memberId)).for('share');
+        await lockMemberForWrite(tx, value.memberId, 'share');
         const [session] = await tx.select().from(classSessions).where(eq(classSessions.id, value.sessionId)).for('update');
         if (!session) notFound();
         await requireMember(tx, context, value.memberId);

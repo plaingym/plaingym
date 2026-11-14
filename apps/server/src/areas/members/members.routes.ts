@@ -15,6 +15,7 @@ import { promoteWaitlist } from '../bookings/bookings.js';
 import type { DetachOptions } from '../../infra/payments/index.js';
 import { releaseFiles } from '../../infra/storage/release.js';
 import { queueEarlierRedactions, redactCustomerJob, redactEarlierJob, releaseErasedFiles, releaseErasedFilesJob } from './erasure-redaction.js';
+import { createPortalInvitationStore } from '../../infra/auth/portal-invitations.js';
 
 function mutation(context: RequestContext) {
   if (context.principal.kind !== 'staff' || context.principal.gymId !== context.gym.gymId) throw new AppError('not_found', 'Resource not found');
@@ -36,6 +37,7 @@ function jsonRoute(contract: c.EndpointContract, handler: (context: RequestConte
 }
 
 type ErasureOptions = { clock?: Clock; detachCard?: (gymId: string, processorId: string, options?: DetachOptions) => Promise<void>;
+  invitations?: Pick<ReturnType<typeof createPortalInvitationStore>, 'revokeFor'>;
   /** Payments.redactCustomer for the gym: the erased household's provider customer keeps no name or email. */
   redactCustomer?: (gymId: string, customerId: string) => Promise<void>;
   /** Erasure commits its cleanup jobs with it: without a queue the erasure route refuses (`unavailable`) before erasing. */
@@ -80,6 +82,17 @@ export function createMembersRoutes(service?: MembersService, uploadsFor?: Membe
   const fixed: Composition | undefined = service ? { ...erasure, service, ...(uploadsFor ? { uploadsFor } : {}), photos: uploadsFor ? createMemberPhotoService(service, uploadsFor) : undefined } : undefined;
   const fallback: Composition = { service: createMembersService(), photos: undefined };
   const current = () => fixed ?? configured ?? fallback;
+  const invitations = createPortalInvitationStore();
+  async function revokeInvitations(gymId: string, householdId: string, memberId: string, last: boolean) {
+    try { await (current().invitations ?? invitations).revokeFor(gymId, householdId, last ? undefined : memberId); }
+    catch (error) { logError('members.cleanup.invitations_failed', { gymId, householdId, memberId }, error); }
+  }
+  async function promoteFreedPlaces(gymId: string, memberId: string, sessionIds: string[], event: string, clock?: Clock) {
+    for (const sessionId of sessionIds) {
+      try { await promoteWaitlist(gymId, sessionId, clock ? { clock } : {}); }
+      catch (error) { logError(event, { gymId, memberId, sessionId }, error); }
+    }
+  }
   const contracts = c.membersContracts;
   return [
     jsonRoute(contracts.listMembers, async (ctx, _p, q) => current().service.listMembers(ctx.gym.gymId, c.memberListQuerySchema.parse(q))),
@@ -94,8 +107,9 @@ export function createMembersRoutes(service?: MembersService, uploadsFor?: Membe
       // The erasure commits its cleanup jobs with it, so it never runs without a queue.
       if (!jobs) throw new AppError('unavailable', 'Erasure is not configured');
       const gymId = ctx.gym.gymId, memberId = p.memberId!;
-      const { member, files, revokedCards, freedSessionIds, erasedCustomerId } = await service.eraseMember(mutation(ctx), memberId, { revision },
+      const { member, householdId, householdErased, files, revokedCards, freedSessionIds, erasedCustomerId } = await service.eraseMember(mutation(ctx), memberId, { revision },
         { jobs, timezone: ctx.gym.timezone });
+      await revokeInvitations(gymId, householdId, memberId, householdErased);
       // The erasure and its detach, release and redaction jobs have committed. Each immediate attempt below is a head start on
       // its job: a failure is logged with identifiers only, a missing callback leaves the work to the job, and the request succeeds.
       await Promise.all([
@@ -110,10 +124,7 @@ export function createMembersRoutes(service?: MembersService, uploadsFor?: Membe
         ...(uploadsFor ? [releaseFiles(gymId, files, uploadsFor, 'members.erasure.release_failed')] : []),
       ]);
       // Waitlist promotion comes last, and one session's failure neither stops the others nor fails the committed erasure.
-      for (const sessionId of freedSessionIds) {
-        try { await promoteWaitlist(gymId, sessionId, clock ? { clock } : {}); }
-        catch (error) { logError('members.erasure.promotion_failed', { gymId, memberId, sessionId }, error); }
-      }
+      await promoteFreedPlaces(gymId, memberId, freedSessionIds, 'members.erasure.promotion_failed', clock);
       return { data: member };
     }),
     jsonRoute(contracts.deleteMember, async (ctx, p, _q, b) => {
@@ -121,13 +132,11 @@ export function createMembersRoutes(service?: MembersService, uploadsFor?: Membe
       // The release of the deleted photo and signature images commits with the delete, so it never runs without a queue.
       if (!jobs) throw new AppError('unavailable', 'Member deletion is not configured');
       const gymId = ctx.gym.gymId, memberId = p.memberId!;
-      const { files, freedSessionIds } = await service.deleteMember(mutation(ctx), memberId, revision, { jobs, timezone: ctx.gym.timezone });
+      const { files, freedSessionIds, householdId, householdDeleted } = await service.deleteMember(mutation(ctx), memberId, revision, { jobs, timezone: ctx.gym.timezone });
+      await revokeInvitations(gymId, householdId, memberId, householdDeleted);
       // After commit: the file release is a head start on its job, and the freed places go to the waitlist.
       if (uploadsFor) await releaseFiles(gymId, files, uploadsFor, 'members.delete.release_failed');
-      for (const sessionId of freedSessionIds) {
-        try { await promoteWaitlist(gymId, sessionId, clock ? { clock } : {}); }
-        catch (error) { logError('members.delete.promotion_failed', { gymId, memberId, sessionId }, error); }
-      }
+      await promoteFreedPlaces(gymId, memberId, freedSessionIds, 'members.delete.promotion_failed', clock);
       return { data: null };
     }),
     jsonRoute(contracts.getMedicalNotes, async (ctx, p) => ({ data: await current().service.getMedicalNotes(ctx.gym.gymId, p.memberId!) })),

@@ -24,6 +24,7 @@ import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js'
 import type { AttendanceScope } from '../../core/interfaces/attendance.js';
 import type { CriterionContext } from '../../core/interfaces/extensions.js';
 import { canReceive, nextPromotion, nextSubRank, promotionOrder } from './progression.js';
+import { lockMemberForWrite, memberWriteScope } from '../members/member-write.js';
 
 type PromotionRow = typeof memberRanks.$inferSelect;
 /** The fields of a promotion the rank ordering needs; notes and the promoting coach are never read. */
@@ -51,7 +52,7 @@ async function safe<T>(operation: () => Promise<T>): Promise<T> {
 }
 
 export function createRanksService(options: { scope?: typeof forGym; clock: Clock; criteria: PromotionCriteria; settings?: GymSettingsAccessor }) {
-  const scope = options.scope ?? forGym, { clock, criteria } = options;
+  const scope = memberWriteScope(options.scope ?? forGym), { clock, criteria } = options;
   const settings = options.settings ?? createGymSettingsAccessor({ scope });
   const base = (gymId: string) => { const now = clock.now(); return { gymId, id: uuidv7(now.getTime()), createdAt: now }; };
   async function audit(tx: Transaction, context: MutationContext, action: string, targetId: string, before: unknown, after: unknown) {
@@ -75,8 +76,7 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
   }
   async function promoteInTransaction(tx: Transaction, context: MutationContext, input: CreatePromotionRequest) {
     // Serializing on the member prevents simultaneous promotions from both passing the history check.
-    const [member] = await tx.select().from(members).where(eq(members.id, input.memberId)).for('update');
-    if (!member) notFound();
+    const member = await lockMemberForWrite(tx, input.memberId, 'update');
     if (member.anonymizedAt) conflict('An anonymized member cannot be promoted');
     const { program, rank } = await references(tx, input.programId, input.rankId, input.rankSystemId);
     if (!program.active) conflict('The program is inactive');

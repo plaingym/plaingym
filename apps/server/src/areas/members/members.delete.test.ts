@@ -18,6 +18,10 @@ import { TestClock } from '../../core/clock.js';
 import { createServerRegistry } from '../../core/registry.js';
 import { errorHandler, respondError } from '../../core/errors.js';
 import type { RequestEnvironment } from '../../core/context.js';
+import { createPortalInvitationStore } from '../../infra/auth/portal-invitations.js';
+import { createBookingService } from '../bookings/bookings.js';
+import { createStaffProfileService } from '../staff/profiles.js';
+import { createBookingRoutes } from '../bookings/bookings.routes.js';
 
 const database = useTestDatabase(), factory = createFactories(database), clock = new TestClock('2026-10-22T12:00:00Z');
 const gymA = uuidv7(), gymB = uuidv7();
@@ -36,7 +40,8 @@ function server(role: StaffRole, gymId = gymA) {
   const app = new OpenAPIHono<RequestEnvironment>({ defaultHook: (result, ctx) => { if (!result.success) return respondError(ctx, result.error); } });
   app.use('*', async (ctx, next) => { ctx.set('context', { principal: { kind: 'staff', userId, gymId, roles: [role] }, gym: { gymId, timezone: 'UTC', enabledModules: new Set() }, requestId: 'delete', clock }); await next(); });
   app.onError(errorHandler);
-  createServerRegistry({ routes: createMembersRoutes(service, uploadsFor, { jobs: new FakeJobs(clock), clock }) }).mount(app, authorize, new Set());
+  createServerRegistry({ routes: createMembersRoutes(service, uploadsFor, { jobs: new FakeJobs(clock), clock,
+    invitations: createPortalInvitationStore(() => database.system.db) }) }).mount(app, authorize, new Set());
   return app;
 }
 const remove = (app: ReturnType<typeof server>, memberId: string, revision = 1) => app.request(`/api/members/${memberId}`,
@@ -79,7 +84,7 @@ describe('member deletion', () => {
     const jobs = new FakeJobs(clock);
 
     const result = await service.deleteMember(context(), person.id, uploaded.revision, queue(jobs));
-    expect(result).toEqual({ householdDeleted: false, freedSessionIds: [upcoming.id], files: [uploaded.photoKey, signatureKey] });
+    expect(result).toEqual({ householdId: home.id, householdDeleted: false, freedSessionIds: [upcoming.id], files: [uploaded.photoKey, signatureKey] });
     const left = await database.forGym(gymA, async (tx) => {
       const count = async (rows: Promise<unknown[]>) => (await rows).length;
       return {
@@ -95,7 +100,7 @@ describe('member deletion', () => {
           await count(tx.select().from(memberships).where(eq(memberships.memberId, person.id)))],
         contacts: await tx.select().from(leadContacts).where(eq(leadContacts.leadId, lead.id)),
         links: (await tx.select({ id: signedLinks.id }).from(signedLinks).where(eq(signedLinks.householdId, home.id))).map((row) => row.id),
-        coach: (await tx.select({ memberId: staffProfiles.memberId }).from(staffProfiles).where(eq(staffProfiles.id, coach.id)))[0],
+        coach: (await tx.select({ memberId: staffProfiles.memberId, revision: staffProfiles.revision }).from(staffProfiles).where(eq(staffProfiles.id, coach.id)))[0],
         sibling: (await tx.select({ id: classBookings.id }).from(classBookings).where(eq(classBookings.id, kept.id))).length,
         home: (await tx.select({ id: households.id }).from(households).where(eq(households.id, home.id))).length,
         audits: await tx.select().from(auditEvents).where(eq(auditEvents.targetId, person.id)),
@@ -104,7 +109,7 @@ describe('member deletion', () => {
     expect(left.rows).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     expect(left.contacts).toEqual([]);
     expect(left.links).toEqual([payerLink.id]);
-    expect(left.coach).toEqual({ memberId: null });
+    expect(left.coach).toEqual({ memberId: null, revision: 2 });
     expect(left.sibling).toBe(1); expect(left.home).toBe(1);
     expect(await exists(gymA, person.id)).toBe(false); expect(await exists(gymA, sibling.id)).toBe(true);
     // The audit event names the deleted member by ID only, as an erasure's does.
@@ -125,7 +130,7 @@ describe('member deletion', () => {
     await factory('signedLinks', gymA, { householdId: home.id, purpose: 'onboarding' });
     await factory('memberships', gymA, { householdId: home.id, memberId: person.id });
     const jobs = new FakeJobs(clock);
-    expect(await service.deleteMember(context(), person.id, 1, queue(jobs))).toEqual({ householdDeleted: true, freedSessionIds: [], files: [] });
+    expect(await service.deleteMember(context(), person.id, 1, queue(jobs))).toEqual({ householdId: home.id, householdDeleted: true, freedSessionIds: [], files: [] });
     const left = await database.forGym(gymA, async (tx) => ({
       home: await tx.select().from(households).where(eq(households.id, home.id)),
       users: await tx.select().from(householdUsers).where(eq(householdUsers.householdId, home.id)),
@@ -236,5 +241,98 @@ describe('member deletion', () => {
     // The charge's reference to the deleted membership fails once the delete commits.
     expect(databaseCode(await charge)).toBe('23503');
     expect(await exists(gymA, person.id)).toBe(false);
+  });
+
+  it('answers 409 for a booking that waits on deletion, while missing and foreign members stay 404', async () => {
+    const { person } = await family(), session = await factory('classSessions', gymA, {
+      startsAt: new Date('2026-10-23T12:00:00Z'), endsAt: new Date('2026-10-23T13:00:00Z') });
+    let release!: () => void, reached!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; }), held = new Promise<void>(resolve => { reached = resolve; });
+    const scope: typeof database.forGym = (gymId, fn) => database.forGym(gymId, async tx => {
+      const result = await fn(tx); reached(); await gate; return result;
+    });
+    const deleting = createMembersService({ scope, clock }).deleteMember(context(), person.id, 1, queue());
+    await held;
+    const app = new OpenAPIHono<RequestEnvironment>();
+    app.use('*', async (ctx, next) => { ctx.set('context', { principal: { kind: 'staff', userId, gymId: gymA, roles: ['owner'] },
+      gym: { gymId: gymA, timezone: 'UTC', enabledModules: new Set() }, requestId: 'booking-race', clock }); await next(); });
+    app.onError(errorHandler);
+    createServerRegistry({ routes: createBookingRoutes(createBookingService({ scope: database.forGym, clock })) }).mount(app, authorize, new Set());
+    const booking = app.request('/api/bookings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ memberId: person.id, sessionId: session.id, allowWaitlist: false }) });
+    try {
+      await expect.poll(async () => {
+        const [row] = await database.system.sql`select exists (select 1 from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock' and query ilike '%from "members"%for share%') as waiting`;
+        return row!.waiting;
+      }, { timeout: 5000 }).toBe(true);
+    } finally { release(); }
+    await deleting;
+    expect((await booking).status).toBe(409);
+    const foreign = await family(gymB), bookings = createBookingService({ scope: database.forGym, clock });
+    for (const memberId of [person.id, foreign.person.id]) await expect(bookings.book({ gymId: gymA, actor: { kind: 'user', userId } },
+      { memberId, sessionId: session.id, allowWaitlist: false })).rejects.toMatchObject({ code: 'not_found' });
+    expect(await database.forGym(gymA, tx => tx.select().from(classBookings).where(eq(classBookings.memberId, person.id)))).toEqual([]);
+  });
+
+  it.each(['erase', 'delete'] as const)('revokes pending member invitations after %s, and household claims with the last member', async kind => {
+    const invitations = createPortalInvitationStore(() => database.system.db);
+    for (const last of [false, true]) {
+      const { home, person, sibling } = await family();
+      if (last) await service.deleteMember(context(), sibling.id, 1, queue());
+      const invitee = await factory('authUser', gymA), payer = await factory('authUser', gymA);
+      const invite = await database.forSystem(tx => invitations.issue(tx, gymA,
+        { userId: invitee.id, householdId: home.id, memberId: person.id, scope: 'member' }, clock));
+      await database.forSystem(tx => invitations.issue(tx, gymA,
+        { userId: payer.id, householdId: home.id, memberId: null, scope: 'payer' }, clock));
+      await database.forSystem(tx => invitations.holdClaim(tx, gymA,
+        { userId: payer.id, householdId: home.id, linkId: uuidv7() }, new Date(clock.now().getTime() + 60_000), clock));
+      // Even a row in another gym with identical target IDs must be untouched.
+      const foreignUser = await factory('authUser', gymB);
+      const foreign = await database.forSystem(tx => invitations.issue(tx, gymB,
+        { userId: foreignUser.id, householdId: home.id, memberId: person.id, scope: 'member' }, clock));
+      const response = kind === 'delete' ? await remove(server('owner'), person.id)
+        : await server('owner').request(`/api/members/${person.id}/anonymize`, { method: 'POST',
+          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: 1 }) });
+      expect(response.status, await response.clone().text()).toBe(200);
+      await expect(invitations.inspect(gymA, invite.token, clock)).rejects.toMatchObject({ code: 'not_found' });
+      expect(await invitations.outstanding(gymA, home.id, clock)).toHaveLength(last ? 0 : 1);
+      const claims = await database.system.sql`select id from auth_verification where gym_id = ${gymA} and household_id = ${home.id}
+        and identifier like 'portal-claim:%'`;
+      expect(claims).toHaveLength(last ? 0 : 1);
+      expect((await invitations.inspect(gymB, foreign.token, clock)).binding.memberId).toBe(person.id);
+    }
+  });
+
+  it.each(['erase', 'delete'] as const)('invalidates an open staff profile form after %s unlinks its member', async kind => {
+    const { person } = await family();
+    const manager = await factory('authUser', gymA);
+    await factory('staffRoles', gymA, { userId: manager.id, role: 'owner' });
+    const profile = await factory('staffProfiles', gymA, { memberId: person.id });
+    if (kind === 'erase') await service.eraseMember(context(), person.id, { revision: 1 }, queue());
+    else await service.deleteMember(context(), person.id, 1, queue());
+    const profiles = createStaffProfileService(database.forGym);
+    await expect(profiles.updateProfile({ gymId: gymA, actorUserId: manager.id, clock }, profile.id,
+      { revision: 1, memberId: person.id, displayName: 'Old form' })).rejects.toMatchObject({ code: 'conflict' });
+    expect((await database.forGym(gymA, tx => tx.select().from(staffProfiles).where(eq(staffProfiles.id, profile.id))))[0])
+      .toMatchObject({ revision: 2, memberId: null });
+  });
+
+  it('accounts by name for every foreign key into the rows deletion removes', async () => {
+    const constraints = await database.app.sql<{ name: string }[]>`select c.conname as name
+      from pg_constraint c join pg_class target on target.oid = c.confrelid
+      join pg_namespace ns on ns.oid = target.relnamespace
+      where c.contype = 'f' and ns.nspname = 'public' and target.relname in ('members', 'households', 'memberships')`;
+    // Cleared, unlinked or checked by deleteMember. A new reference must make an explicit deletion decision here.
+    const handled = [
+      'members_household_fk', 'household_users_household_fk', 'household_users_member_fk',
+      'member_tag_links_member_fk', 'signed_links_household_fk', 'signed_links_member_fk', 'leads_member_fk',
+      'memberships_household_fk', 'memberships_member_fk', 'membership_discounts_membership_fk',
+      'invoices_household_fk', 'invoice_line_items_membership_fk', 'payment_methods_household_fk',
+      'class_pack_sales_household_fk', 'class_pack_sales_member_fk', 'class_credit_entries_member_fk',
+      'announcement_recipients_member_fk', 'announcement_opt_outs_member_fk', 'waiver_signatures_member_fk',
+      'staff_profiles_member_fk', 'attendances_member_fk', 'class_bookings_member_fk', 'member_ranks_member_fk',
+    ];
+    expect(constraints.map(row => row.name).sort()).toEqual(handled.sort());
   });
 });

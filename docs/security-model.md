@@ -505,6 +505,13 @@ Old versions and documents referenced by signatures remain retained after retire
   attendance keep their IDs for the books. Erasure clears the household's billing
   email when it matches the member's address, ignoring case and surrounding spaces, even when other
   members remain. Household mail stops until staff enter a new billing address.
+  Erasure and deletion unlink staff profiles and advance their revisions, so stale
+  staff forms cannot restore the member link. After commit the auth store revokes
+  the member's pending portal invitations; with the household's last member it
+  also removes every household invitation and onboarding claim hold. A failure
+  is logged and those rows expire. Meanwhile an invitation for a deleted or erased
+  member, or a deleted household, is refused; a payer invitation for a household
+  whose last member was erased can still be accepted.
   Erasing a household's last member also
   revokes its cards, clears each card's billing name, email, phone and address at
   Stripe before detaching it, and clears the Stripe Customer's name, email, phone,
@@ -526,7 +533,9 @@ Old versions and documents referenced by signatures remain retained after retire
   household invoice, card or Stripe customer) can't be deleted: the gym cancels or
   erases them instead, so the books never lose a record. The checks run under row
   locks on the member, household and memberships, so a charge or sale at the same
-  moment either refuses the delete or fails. The audit event carries IDs only
+  moment either refuses the delete or fails with a conflict (409). A booking
+  that waits on deletion also receives 409; missing and foreign-gym members stay
+  404. The audit event carries IDs only
   (`apps/server/src/areas/members/README.md`).
 * **Delivery records.** `email_deliveries`, the record that keeps each email from
   being sent twice, holds no plain hash of a member's address once the member is
