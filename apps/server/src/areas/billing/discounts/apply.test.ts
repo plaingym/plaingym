@@ -136,6 +136,22 @@ describe('applying membership discounts', () => {
     expect((await f.state()).applications).toHaveLength(2);
   });
 
+  it('rolls back a fresh reservation when its assignment ID is already recorded', async () => {
+    const f = await fixture(), request = { ...await f.request(), discountUseTaken: true };
+    const reserveAndAssign = () => db.forGym(f.gymId, async tx => {
+      await tx.select().from(households).where(eq(households.id, request.householdId)).for('update');
+      const resolved = await resolveDiscount(tx, { discountId: f.discount.id }, { planIds: [f.plan.id], clock: f.clock, timezone: 'America/Vancouver' });
+      await takeDiscountUses(tx, f.context, f.clock, resolved);
+      const scope: typeof db.forGym = async (_gymId, work) => work(tx);
+      return createMembershipService({ scope, clock: f.clock, settings: createGymSettingsAccessor({ scope }) }).assign(f.context, request);
+    });
+    await reserveAndAssign();
+    const before = await f.state();
+    await expect(reserveAndAssign()).rejects.toMatchObject({ code: 'conflict' });
+    expect(await f.state()).toEqual(before);
+    expect(before.discounts[0]!.uses).toBe(1);
+  });
+
   it('rolls back a reservation when later application fails, and never returns a cancelled use', async () => {
     const f = await fixture();
     await expect(db.forGym(f.gymId, async tx => {

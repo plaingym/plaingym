@@ -110,7 +110,7 @@ export async function endDiscount(tx: Transaction, context: MutationContext, clo
 }
 
 /**
- * Gives back uses a voided join took, the one case a use returns. Caller holds the household lock and writes, in the same
+ * Gives back uses an unpaid join took, the one case a use returns. Caller holds the household lock and writes, in the same
  * transaction, the record that makes a replay release nothing. Takes the discount row lock, as reserving does.
  */
 export async function releaseDiscountUses(tx: Transaction, context: MutationContext, clock: Clock, discountId: string, count: number) {

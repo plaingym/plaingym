@@ -198,14 +198,17 @@ source of truth; Stripe is the processor. In outline:
   receive the discount without consuming an allowance, and waived signup fees
   produce no invoice. On `/join` a visitor may enter a code (never a discount ID):
   every refused code gets one neutral answer behind the join rate limits, and a
-  join takes one use per person, all or none, with its memberships in one
+  join takes one use per person, all or none, with its memberships and first invoice in one
   transaction, so a replay takes none. A submitted join still unpaid on the
   seventh local day after submission is voided by the nightly join cleanup, once
   the payment provider confirms its Checkout sessions expired: its invoice voided
   (lines kept), its link revoked and its pending memberships cancelled, and its
-  uses given back exactly once; the prospects, waivers, leads and household stay
+  uses given back exactly once, including a submission interrupted before its
+  invoice; the prospects, waivers, leads and household stay
   for staff follow-up (see the
-  [join README](../apps/server/src/public/pages/join.md)).
+  [join README](../apps/server/src/public/pages/join.md)). A join still waiting
+  for payment confirmation on its 21st local day is marked stalled for staff
+  follow-up and automatic cleanup checks stop.
   Owners and admins can add, replace or remove a live membership's discount with
   its revision, effective on the next invoice without proration. Plan switches
   keep its remaining cycles only when the applied snapshot allows the new plan;

@@ -48,10 +48,13 @@ household's links, then its invoices, and answers `ready`, `wait` (a paid invoic
 link that can still start Checkout, an unended reservation or a session not confirmed
 expired) or `keep` (another link but a spare revoked before use, which `joinFollowedUp`
 also reports before any provider call, or another invoice, a used link, a payment, attempt or saved
-card, or a review hold other than the runner's overdue hold or one staff released),
+card, or a review hold whose latest hold audit is not the runner's overdue hold,
+or one staff released),
 and `voidSubmittedJoin` voids the open invoice (`billing.invoice.voided`, lines kept)
 and revokes the join's link in the caller's transaction. A payment recorded on a void
 invoice is refused as a conflict.
+The cleanup stops retrying a `wait` on the 21st local day after submission and
+writes `public.join.void_stalled` for staff follow-up, leaving billing intact.
 
 Failures update attempt diagnostics, but cannot reopen paid, refunded or void
 invoices, or change the invoice for an older attempt. A cancellation is a decline

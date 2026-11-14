@@ -68,6 +68,16 @@ async function fixture(demo = false) {
 }
 
 describe('core public pages through the production registrations', () => {
+  it('accepts a drop-in address with unknown stored keys while checking known fields', async () => {
+    const f = await fixture(), input = await f.admit();
+    const memberId = input.waivers[0]!.signatureImageKey.split('/')[2]!, before = await f.rows();
+    const person = before.members.find(m => m.id === memberId)!;
+    await db.forGym(f.gymId, tx => tx.update(households).set({ address: { future: true } }).where(eq(households.id, person.householdId)));
+    expect((await f.post('/api/public/drop-in', { ...input, contact: { ...input.contact, address: { city: 'Different' } } })).status).toBe(404);
+    expect((await f.post('/api/public/drop-in', input)).status).toBe(200);
+    expect((await f.post('/api/public/drop-in', input)).status).toBe(200);
+  });
+
   it('renders branded pages with the website off, escaped terms, CSP, fee and source link', async () => {
     const f = await fixture();
     for (const path of ['/trial', '/drop-in', '/trial/received', '/drop-in/received']) {

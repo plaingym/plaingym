@@ -32,8 +32,6 @@ import { createJoinCleanup } from './join.cleanup.js';
 import { createInvoiceTransitions } from '../../areas/billing/transitions/index.js';
 import { joinAdmissionExpired } from './join.expiry.js';
 import { liveDiscounts, priceDiscount, resolveDiscount, takeDiscountCycle, takeDiscountUses, type ResolvedDiscount } from '../../areas/billing/discounts/apply.js';
-import type { GymSettings } from '../../core/interfaces/gym-settings.js';
-import joinMessages from '../../../../../locales/en/public/join.json' with { type: 'json' };
 
 const t = createTranslator(locales.en ?? {});
 /** Fixed same-origin return pages, never request values. Checkout and its reservation last an hour. */
@@ -48,10 +46,8 @@ const admitted = z.strictObject({ planId: c.idSchema, joinedOn: c.dateSchema, me
 const received = admitted.extend({ linkId: c.idSchema, invoiceId: c.idSchema });
 /** The uses a join took, written in the transaction that took them and assigned its memberships, so a replay takes none. */
 const discounted = z.strictObject({ discountId: c.idSchema, uses: z.int32().positive(), membershipIds: z.array(c.idSchema) });
-const codeFormat = /^[A-Za-z0-9-]{3,40}$/;
-const joinText = createTranslator({ 'public/join': joinMessages });
 /** Every refused code (unknown, malformed, without a code, off, ended, used up, another plan, too few uses) gets this one answer. */
-function codeRefused(): never { throw new AppError('invalid_request', joinText('public/join:codeRefused'), { reason: ['code_refused'] }); }
+function codeRefused(): never { throw new AppError('invalid_request', t('public/join:codeRefused'), { reason: ['code_refused'] }); }
 const isRefusal = (error: unknown) => error instanceof AppError && error.details?.reason?.[0] === 'discount_unknown';
 const invoiced = z.strictObject({ invoiceId: c.idSchema, next: z.array(z.strictObject({ membershipId: c.idSchema, nextDueOn: c.dateSchema })) });
 // Audit records outlive the code that wrote them; writes below still use the strict schemas.
@@ -77,7 +73,8 @@ export interface JoinOptions {
   invitations: Pick<PortalInvitationService, 'accept' | 'passwordRequired'>;
   accounts: Pick<AccountService, 'provisionUser'>;
   invitationStore?: Pick<ReturnType<typeof createPortalInvitationStore>, 'issue'>;
-  memberships?: Pick<ReturnType<typeof createMembershipService>, 'assign' | 'get' | 'update' | 'activate'>;
+  /** Builds the lifecycle with the supplied scope, including inside the discounted join's transaction. */
+  memberships?: (scope: typeof forGym) => Pick<ReturnType<typeof createMembershipService>, 'assign' | 'get' | 'update' | 'activate'>;
   links?: Pick<ReturnType<typeof createSignedLinksService>, 'create' | 'revoke'>;
   uploadsFor?(gymId: string): Promise<Uploads>;
   /** The runtime's payments resolver: the nightly cleanup confirms an unpaid join's Checkout sessions closed before voiding it. */
@@ -119,7 +116,8 @@ export function createJoinService(options: JoinOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const settings = (gymId: string) => scope(gymId, tx => readGymSettings(tx, gymId));
   // No assignment callback: the join issues one first invoice with every first period and sign-up fee.
-  const lifecycle = options.memberships ?? createMembershipService({ scope, clock, settings: createGymSettingsAccessor({ scope, clock }) });
+  const membershipService = options.memberships ?? ((scope: typeof forGym) => createMembershipService({ scope, clock, settings: createGymSettingsAccessor({ scope, clock }) }));
+  const lifecycle = membershipService(scope);
   const links = options.links ?? createSignedLinksService({ scope, clock, allowZeroInvoices: true });
   const store = options.invitationStore ?? createPortalInvitationStore();
   const transitions = createInvoiceTransitions({ scope, clock });
@@ -185,7 +183,7 @@ export function createJoinService(options: JoinOptions) {
       const record = await recorded(tx, 'public.join.admitted', householdId, admittedRead);
       // A leaked staff image key cannot enroll, edit, or sign for an existing member.
       if (!home || !record || record.planId !== input.planId || record.memberIds.length !== ids.length || home.email !== input.contact.email
-        || home.name !== input.contact.name || home.phone !== (input.contact.phone ?? null) || !isDeepStrictEqual(home.address, input.contact.address ?? {})) missing();
+        || home.name !== input.contact.name || home.phone !== (input.contact.phone ?? null) || !isDeepStrictEqual(c.householdAddressReadSchema.parse(home.address), input.contact.address ?? {})) missing();
       const membershipIds = ids.map((id, i) => {
         const index = record.memberIds.indexOf(id), person = people.find(p => p.id === id)!, requested = input.members[i]!.member;
         if (index < 0 || person.anonymizedAt || !['prospect', 'trial', 'active'].includes(person.status) || person.firstName !== requested.firstName
@@ -198,7 +196,7 @@ export function createJoinService(options: JoinOptions) {
   /** The discount a code names for this plan with a use for each of `count` people, under its row lock. Every refusal is the neutral one. */
   async function checkCode(tx: Transaction, code: string, planId: string, count: number, timezone: string): Promise<ResolvedDiscount> {
     // The lookup reads only this gym's discounts (row-level security), by code: a discount without one is never found.
-    if (!codeFormat.test(code)) codeRefused();
+    if (!c.membershipDiscountSelectionSchema.safeParse({ code }).success) codeRefused();
     let resolved: ResolvedDiscount;
     try { resolved = await resolveDiscount(tx, { code }, { planIds: [planId], timezone, clock, audience: 'public' }); }
     catch (error) { if (isRefusal(error)) codeRefused(); throw error; }
@@ -209,32 +207,33 @@ export function createJoinService(options: JoinOptions) {
    * Takes every use the join needs under the discount's row lock, assigns its memberships with the discount and records the
    * uses, in one transaction: all of them or none. A replay finds the record and takes nothing.
    */
-  async function assignDiscounted(gymId: string, planId: string, found: Awaited<ReturnType<typeof admission>>, code: string | undefined) {
-    await scope(gymId, async tx => {
+  async function assignDiscounted(gymId: string, row: typeof plans.$inferSelect, found: Awaited<ReturnType<typeof admission>>, code: string | undefined) {
+    return scope(gymId, async tx => {
       const [home] = await tx.select({ id: households.id }).from(households).where(eq(households.id, found.householdId)).for('update');
       if (!home || await marked(tx, 'public.join.cleanup.started', home.id)) missing();
-      if (await recorded(tx, 'public.join.discounted', home.id, discountedRead)) return;
+      if (await recorded(tx, 'public.join.discounted', home.id, discountedRead))
+        return invoice(gymId, home.id, row, found.membershipIds, found.joinedOn, tx);
       if (!code || !found.discountId) codeRefused();
       const gym = await readGymSettings(tx, gymId), count = found.memberIds.length;
-      const resolved = await checkCode(tx, code, planId, count, gym.timezone);
+      const resolved = await checkCode(tx, code, row.id, count, gym.timezone);
       if (resolved.row.id !== found.discountId) codeRefused();
       try { await takeDiscountUses(tx, system(gymId), clock, resolved, count); }
       catch (error) { if (isRefusal(error)) codeRefused(); throw error; }
-      const settings: GymSettings = { gymId, timezone: gym.timezone, currency: gym.currency, billingEnabled: gym.billingEnabled,
-        memberEmailsEnabled: gym.memberEmailsEnabled, websiteEnabled: gym.websiteEnabled, bookingWindowDays: gym.bookingWindowDays,
-        cancellationCutoffMinutes: gym.cancellationCutoffMinutes, openMatCountsAsClass: gym.openMatCountsAsClass, revision: gym.revision };
       // The membership service runs in this transaction, so the uses, the memberships and their discounts commit together.
-      const within = createMembershipService({ scope: async (_gymId, work) => work(tx), clock, settings: { get: async () => settings } });
+      const within = membershipService(async (_gymId, work) => work(tx));
       for (const [i, memberId] of found.memberIds.entries())
-        await within.assign(system(gymId), { id: found.membershipIds[i]!, householdId: home.id, memberId, planId, startsOn: found.joinedOn,
+        await within.assign(system(gymId), { id: found.membershipIds[i]!, householdId: home.id, memberId, planId: row.id, startsOn: found.joinedOn,
           nextDueOn: found.joinedOn, initialStatus: 'pending', firstPeriod: 'next_billing_date', discount: { discountId: resolved.row.id }, discountUseTaken: true });
       await audit(tx, gymId, 'public.join.discounted', 'household', home.id,
         discounted.parse({ discountId: resolved.row.id, uses: count, membershipIds: found.membershipIds }));
+      // A conflict issuing the invoice must roll back the reservation too: a browser retry may admit a new household.
+      return invoice(gymId, home.id, row, found.membershipIds, found.joinedOn, tx);
     });
   }
   /** The first period of every membership and the sign-up fees, as the new household's first cycle. */
-  async function invoice(gymId: string, householdId: string, row: typeof plans.$inferSelect, membershipIds: readonly string[], today: string) {
-    return scope(gymId, async tx => {
+  async function invoice(gymId: string, householdId: string, row: typeof plans.$inferSelect, membershipIds: readonly string[], today: string, transaction?: Transaction) {
+    const within: typeof forGym = transaction ? async (_gymId, work) => work(transaction) : scope;
+    return within(gymId, async tx => {
       const [home] = await tx.select().from(households).where(eq(households.id, householdId)).for('update');
       if (!home) missing();
       const previous = await recorded(tx, 'public.join.invoiced', householdId, invoicedRead);
@@ -260,7 +259,7 @@ export function createJoinService(options: JoinOptions) {
       // A code's discount was applied at assignment: its locked-in terms price the first period, and its fee waiver drops that
       // membership's sign-up fee. A waiver-only application ends at assignment, so the first application of each counts.
       const applications = new Map<string, typeof membershipDiscounts.$inferSelect>();
-      for (const applied of await tx.select().from(membershipDiscounts).where(inArray(membershipDiscounts.membershipId, [...membershipIds]))
+      if (await recorded(tx, 'public.join.discounted', home.id, discountedRead)) for (const applied of await tx.select().from(membershipDiscounts).where(inArray(membershipDiscounts.membershipId, [...membershipIds]))
         .orderBy(asc(membershipDiscounts.appliedAt), asc(membershipDiscounts.id))) if (!applications.has(applied.membershipId)) applications.set(applied.membershipId, applied);
       const price = (id: string) => {
         const applied = applications.get(id), discount = applied && applied.endedAt === null ? priceDiscount(applied) : undefined;
@@ -283,7 +282,7 @@ export function createJoinService(options: JoinOptions) {
       const invoiceId = await issue(tx, system(gymId), clock, { ...base,
         amountCents: base.amountCents + (fees?.amountCents ?? 0), lineItems: [...base.lineItems, ...(fees?.lineItems ?? [])] });
       // The first cycle is a full period, so a once or cycles discount uses one cycle here, once (the record below ends replays). A trial uses none.
-      if (cycle) for (const r of rows) await takeDiscountCycle(tx, system(gymId), clock, r.id);
+      if (cycle) for (const id of applications.keys()) await takeDiscountCycle(tx, system(gymId), clock, id);
       const result = invoiced.parse({ invoiceId, next: trialEndsOn !== null ? [] : cycle!.nextDueDates.map(d => ({ membershipId: d.membershipId, nextDueOn: d.nextDueOn })) });
       await audit(tx, gymId, 'public.join.invoiced', 'household', home.id, result);
       return result;
@@ -490,11 +489,14 @@ export function createJoinService(options: JoinOptions) {
       for (const [i, m] of input.members.entries()) for (const acceptance of m.waivers)
         await options.waivers.sign(system(gymId), { ...acceptance, memberId: found.memberIds[i]! }, { timezone, ipAddress });
       if (!await scope(gymId, tx => signedLinkWaiversComplete(tx, found.memberIds))) changed();
-      if (discountTaken || code !== undefined) await assignDiscounted(gymId, input.planId, found, code);
-      else for (const [i, memberId] of found.memberIds.entries())
-        await lifecycle.assign(system(gymId), { id: found.membershipIds[i]!, householdId: found.householdId, memberId, planId: input.planId,
-          startsOn: today, nextDueOn: today, initialStatus: 'pending', firstPeriod: 'next_billing_date' });
-      const first = await invoice(gymId, found.householdId, selectedPlan, found.membershipIds, today);
+      let first;
+      if (discountTaken || code !== undefined) first = await assignDiscounted(gymId, selectedPlan, found, code);
+      else {
+        for (const [i, memberId] of found.memberIds.entries())
+          await lifecycle.assign(system(gymId), { id: found.membershipIds[i]!, householdId: found.householdId, memberId, planId: input.planId,
+            startsOn: today, nextDueOn: today, initialStatus: 'pending', firstPeriod: 'next_billing_date' });
+        first = await invoice(gymId, found.householdId, selectedPlan, found.membershipIds, today);
+      }
       // Each membership is next due on the join-date anniversary; its annual anniversary keeps the join date (February 29 included).
       for (const change of first.next) {
         const membership = await lifecycle.get(gymId, change.membershipId);
@@ -506,14 +508,23 @@ export function createJoinService(options: JoinOptions) {
       }
       const purpose = await scope(gymId, async tx => {
         const [bill] = await tx.select().from(invoices).where(eq(invoices.id, first.invoiceId));
-        const assigned = await tx.select({ id: memberships.id, amountCents: memberships.amountCents }).from(memberships).where(inArray(memberships.id, found.membershipIds));
-        // A card is needed only for a later charge: a forever discount that covers the whole price leaves none.
-        const live = await liveDiscounts(tx, found.membershipIds);
-        const later = assigned.some(m => {
-          const applied = live.get(m.id);
-          return m.amountCents > 0 && !(applied?.duration === 'forever' && (applied.percentBasisPoints === 10_000 || (applied.amountCents ?? 0) >= m.amountCents));
-        });
-        return bill!.amountCents === 0 && later ? 'update_card' as const : 'pay_invoice' as const;
+        if (bill!.amountCents !== 0) return 'pay_invoice' as const;
+        const [home] = await tx.select().from(households).where(eq(households.id, found.householdId));
+        const assigned = await tx.select().from(memberships).where(inArray(memberships.id, found.membershipIds));
+        const live = found.discountId ? await liveDiscounts(tx, found.membershipIds) : new Map();
+        // Price the next full cycle as the runner does, including family discounts and integer rounding.
+        // A finite discount still needs a card for charges after its remaining cycles.
+        const dueOn = assigned[0]!.nextDueOn;
+        const later = calculateCycleInvoice({ householdId: home!.id, currency: c.currencySchema.parse(bill!.currency),
+          billingDay: home!.billingDay, familyDiscountBasisPoints: home!.familyDiscountBasisPoints, dueOn,
+          discountDescription: t('billing/runner:familyDiscount'), memberships: assigned.map(m => {
+            const applied = live.get(m.id);
+            const discount = applied?.duration === 'forever' ? priceDiscount(applied) : undefined;
+            return { membership: { ...snapshot(m), status: 'active' as const, nextDueOn: dueOn }, description: selectedPlan.name, taxRates: [],
+              ...(discount ? { discount } : {}),
+              ...(m.anniversaryOn === null ? {} : { annualAnchorOn: m.anniversaryOn }) };
+          }) }).invoice;
+        return later && later.amountCents > 0 ? 'update_card' as const : 'pay_invoice' as const;
       });
       const [reusable] = await scope(gymId, tx => tx.select({ id: signedLinks.id }).from(signedLinks).where(and(eq(signedLinks.householdId, found.householdId),
         eq(signedLinks.purpose, purpose), purpose === 'pay_invoice' ? eq(signedLinks.invoiceId, first.invoiceId) : undefined,

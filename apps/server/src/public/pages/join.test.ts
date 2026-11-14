@@ -85,7 +85,8 @@ async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29
   const settings = createGymSettingsAccessor({ scope: db.forGym, clock }), lifecycle = createMembershipService({ scope: db.forGym, clock, settings });
   const paymentsConfigured = vi.fn(async (id: string) => id === gymId);
   const join = configureJoin({ scope: db.forGym, clock, key, waivers, checkout, paymentsConfigured, invitations, accounts, uploadsFor,
-    memberships: lifecycle, invitationStore: createPortalInvitationStore(() => db.system.db) });
+    memberships: scope => scope === db.forGym ? lifecycle : createMembershipService({ scope, clock, settings: createGymSettingsAccessor({ scope, clock }) }),
+    invitationStore: createPortalInvitationStore(() => db.system.db) });
   const jobs = new FakeJobs(clock), transitions = createInvoiceTransitions({ scope: db.forGym, clock });
   const notifications = createTransitionNotifications({ scope: db.forGym, clock, settings, async prepare() { return { email: mail, origin }; }, async staffRecipients() { return []; } });
   // As the runtime composes it: the paid-invoice effect completes a join however its invoice was paid.
@@ -1143,6 +1144,17 @@ describe('promo codes on /join', () => {
   };
   // Everything but the request ID: unknown, malformed, without a code, off, ended, used up, another plan and another gym's look the same.
   const neutral = async (response: Response) => ({ status: response.status, error: ((await response.json()) as { error: unknown }).error });
+
+  it('settles a rounded zero future cycle using the same pricing as the runner', async () => {
+    const f = await fixture(), plan = await factory('plans', f.gymId, { amountCents: 1, currency: 'CAD', signupFeeCents: 0 });
+    await withCode(f, { percentBasisPoints: 9999, duration: 'forever' });
+    const body = await admitted(f, [adult()], 'rounded@example.invalid', 'SPRING-20', plan.id);
+    const response = await f.post('/api/public/join', body);
+    expect(response.status, await response.clone().text()).toBe(200);
+    const { bill, state, home } = await invoiceOf(f, 'rounded@example.invalid');
+    expect(bill).toMatchObject({ amountCents: 0, status: 'paid' });
+    expect(state.links.find(l => l.householdId === home.id)!.purpose).toBe('pay_invoice');
+  });
 
   it('bills the discounted first cycle, takes one use per person once, and a replay takes none', async () => {
     const f = await fixture(), discount = await withCode(f, { name: 'Spring', percentBasisPoints: 2000, duration: 'once', maxUses: 5 });

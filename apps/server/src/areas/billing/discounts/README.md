@@ -63,15 +63,20 @@ same transaction. `applyDiscount` writes the snapshot. The internal lifecycle
 flag `discountUseTaken` is only for callers that already reserved that use in
 the encompassing transaction; the HTTP request never accepts it. Assignment
 replays compare the whole request, including the discount, before reserving.
+An assignment replay with `discountUseTaken` conflicts, so the enclosing
+transaction rolls back its fresh reservation instead of losing the use.
 
 Every application takes a use, including a fee-only waiver; cancellation does
-not return it. The one exception is a public join voided unpaid after seven days
-(`public/pages/join.md`, **Unpaid joins**): in the void's transaction, under the
+not return it. The exception is an unpaid public join voided after seven days,
+including one interrupted before invoicing (`public/pages/join.md`, **Unpaid
+joins**): in that transaction, under the
 household lock, the join cleanup ends the code's live applications with reason
 `released` (`endDiscount`), and `releaseDiscountUses` lowers `uses` by the count
 the join recorded, under the discount row lock and never below zero, audited as
-`billing.discount.uses_released`. The join's `public.join.voided` record, written in
-the same transaction, keeps a replay or a second run from releasing again. Fee-only applications finish with `completed` at assignment.
+`billing.discount.uses_released`. The join's `public.join.discount_released`
+record, written in the same transaction, keeps a replay or a second run from
+releasing again. Existing `public.join.voided`
+records also prevent another release. Fee-only applications finish with `completed` at assignment.
 The membership response includes the live snapshot's name, terms, eligible
 plans and cycles left, or null when no live application remains. Invoices use
 that snapshot even if the catalog's name, code or eligibility changes later.

@@ -57,8 +57,8 @@ timezone. The full following calendar day is protected, including across dayligh
 saving changes. Submission writes `public.join.submitting` under the household lock
 before signing or assigning anything; that marker, a received/completed join, a
 signed waiver, staff edits, a lead row for a prospect (a staff edit or logged
-contact on the Leads screen, or a check-in), a linked login or a saved card protect
-the admission.
+contact on the Leads screen, or a check-in), a discount staff applied to a
+membership, a linked login or a saved card protect the admission.
 Cleanup locks the same household and its resources. Its join-specific billing
 transition can void an associated open unpaid invoice only for an unsubmitted
 admission; a join issues its invoice only after submission has begun, so submitted
@@ -81,14 +81,21 @@ The same nightly job then voids a submitted join whose first invoice is still un
 on the seventh calendar day after submission in the gym's timezone (submitted on
 March 1, it is payable through March 7 and voided from March 8), across daylight
 saving changes. It reads submissions in pages of 100, skipping completed, voided and
-retained joins. Before voiding, it asks the payment provider to confirm every Checkout
+retained or stalled joins. Submissions interrupted before their first invoice are
+also checked: with no invoice, link, saved card, login or started membership, their
+pending memberships are cancelled and reserved uses returned once. An interrupted
+submission with other billing or access records is retained for staff.
+Before voiding, it asks the payment provider to confirm every Checkout
 session the household's links started, and the one the invoice holds, expired
 (`expireCheckout`, outside any transaction). It asks nothing for a join staff followed
 up with another link, which it keeps (below), so a payer's live session there stays open. A completed session may hold a payment
 not yet recorded, and an uncertain answer proves nothing: the join waits, and a later
 run asks again. A reserved session whose creation never returned exposed no URL, but
 its reservation must have ended. Without a payments resolver (`paymentsFor`), or with
-no provider configured, a join that started a Checkout waits.
+no provider configured, a join that started a Checkout waits. From the 21st local
+day after submission, a still-waiting join gets `public.join.void_stalled` in the
+staff audit log and automatic checks stop. Its invoice and memberships stay as
+they are for staff follow-up; a later recorded payment can still complete it.
 
 Then, in one transaction under the household lock, it locks the household's links,
 then its invoices, then its memberships, and checks again. A paid invoice is never
@@ -97,13 +104,15 @@ voided: its join completes through the paid-invoice effect. The join is kept for
 the join: another link (other than a spare revoked before use, such as a concurrent
 submission's) or invoice, a used link, any payment, charge attempt or saved
 card, a review hold other than the runner's overdue hold (the runner holds an unpaid
-invoice more than seven days past due; that hold doesn't protect it), a hold staff
+invoice more than seven days past due; only when the latest invoice hold audit is
+`billing.runner.overdue_held` does that hold not protect it), a hold staff
 released to collect, a membership added, started or changed in status, or a linked
 login. Otherwise it voids the invoice (`billing.invoice.voided`; its lines and
 number stay), revokes the join's link, cancels the pending memberships through the
 membership service, and, for a join that took a code's uses, ends those applications
 with reason `released` and gives the uses back under the discount's row lock
-(`billing.discount.uses_released`). It writes `public.join.voided` (invoice, link,
+(`billing.discount.uses_released`). It writes `public.join.discount_released` and
+`public.join.voided` (invoice, link,
 memberships, and the discount and uses released) in the same transaction, so a
 replay, a second run or a concurrent one finds the record and releases nothing.
 
@@ -148,8 +157,9 @@ with the admission; it takes no use. The submission must repeat that code; any
 other code is refused. It checks again before signing or recording leads. Then,
 in one transaction, it locks the household and the discount, takes one use per
 person (a join that would pass the limit takes none and is refused), assigns
-every membership with the discount and records `public.join.discounted`, so a
-replay or concurrent retry takes no second use. The uses come back, once, only when
+every membership with the discount, records `public.join.discounted`, and issues
+the first invoice, so an invoice conflict rolls back the reservation and a replay
+or concurrent retry takes no second use. The uses come back, once, only when
 the join is voided unpaid (**Unpaid joins**, above). If the uses ran out after
 admission, the visitor can clear the field and submit again: the submission
 without a code reuses the admission and continues without the discount.
@@ -158,7 +168,8 @@ The first invoice prices each first cycle with the snapshot the assignment
 took, and a `once` or `cycles` discount uses one cycle there, as the runner does
 for a full cycle; a trial's invoice uses none. A fee waiver drops that
 membership's sign-up fee. A zero first invoice settles without Checkout when no
-later charge is due (a forever discount covering the whole price, or a free plan);
+later charge is due, using the runner's cycle pricing with family discounts and
+integer rounding; finite discounts still require a card for later full-price cycles;
 otherwise card setup runs as for a trial. With a code, the script continues to
 `GET /join/review`, and the native form's next page, which both show the first
 invoice's lines (inclusive taxes left out) and total before payment or card setup.

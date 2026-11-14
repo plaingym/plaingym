@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { auditEvents, discounts, households, invoiceLineItems, invoices, leads, members, memberships, membershipDiscounts, signedLinks,
-  uuidv7, waiverSignatures } from '@plaingym/db';
+  uuidv7, waiverSignatures, writeAudit, type Transaction } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 // eslint-disable-next-line no-restricted-imports, database/system-tables -- Test-only newer-release fixtures in immutable audit history.
@@ -15,6 +15,7 @@ import { createSignedLinkCheckout } from '../../areas/billing/signed-link-checko
 import { createSignedLinksService } from '../../areas/links/service.js';
 import { createInvoiceTransitions } from '../../areas/billing/transitions/index.js';
 import { createChargeRunner } from '../../areas/billing/runner/index.js';
+import { createMembershipService } from '../../areas/billing/memberships.js';
 import { FakePayments } from '../../infra/payments/index.js';
 import { FakeUploads } from '../../infra/storage/index.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
@@ -29,7 +30,7 @@ const system = (gymId: string) => ({ gymId, actor: { kind: 'system' as const } }
 // Submitted on 2026-10-29 (New York): the sixth local day after it ends at 2026-11-04 23:59:59.999 EST, after the fall clock change.
 const submittedAt = '2026-10-29T18:00:00Z', sixthDayEnds = '2026-11-05T04:59:59.999Z', seventhDay = '2026-11-05T05:00:00Z';
 
-async function fixture(start = submittedAt) {
+async function fixture(start = submittedAt, onAssigned?: (tx: Transaction) => Promise<void>) {
   const gymId = uuidv7(), clock = new TestClock(start);
   await factory('gyms', gymId, { name: 'Unpaid joins', currency: 'CAD', timezone, billingEnabled: true, memberEmailsEnabled: true, websiteEnabled: false });
   const plan = await factory('plans', gymId, { name: 'Adult monthly', amountCents: 15000, currency: 'CAD', interval: 'monthly', signupFeeCents: 5000 });
@@ -39,7 +40,8 @@ async function fixture(start = submittedAt) {
   const waivers = createWaiversService({ scope: db.forGym, clock, uploadsFor });
   const checkout = createSignedLinkCheckout({ scope: db.forGym, clock, paymentsFor, originFor: async () => origin });
   const join = createJoinService({ scope: db.forGym, clock, waivers, checkout, paymentsConfigured: async id => id === gymId,
-    invitations: { accept: vi.fn(), passwordRequired: async () => true }, accounts: { provisionUser: vi.fn() }, uploadsFor, paymentsFor });
+    invitations: { accept: vi.fn(), passwordRequired: async () => true }, accounts: { provisionUser: vi.fn() }, uploadsFor, paymentsFor,
+    memberships: scope => createMembershipService({ scope, clock, settings: createGymSettingsAccessor({ scope, clock }), ...(onAssigned ? { onAssigned } : {}) }) });
   const transitions = createInvoiceTransitions({ scope: db.forGym, clock });
   const signer = (firstName: string) => ({ kind: 'self' as const, name: firstName + ' Joiner' });
   /** Admits `people` and returns the submission body that repeats the admission. */
@@ -73,13 +75,94 @@ async function fixture(start = submittedAt) {
   const leadRows = (memberIds: string[]) => db.forGym(gymId, async tx => (await tx.select().from(leads)).filter(l => memberIds.includes(l.memberId)));
   const discount = (id: string) => db.forGym(gymId, async tx => (await tx.select().from(discounts).where(eq(discounts.id, id)))[0]!);
   const run = () => join.cleanup.run(gymId, timezone);
-  return { gymId, clock, plan, provider, paymentsFor, uploadsFor, join, transitions, admit, submit, openCheckout, state, signatures, leadRows,
+  return { gymId, clock, plan, provider, paymentsFor, uploadsFor, waivers, join, transitions, admit, submit, openCheckout, state, signatures, leadRows,
     discount, run };
 }
 const count = (audits: { action: string; targetId: string }[], action: string, targetId?: string) =>
   audits.filter(a => a.action === action && (targetId === undefined || a.targetId === targetId)).length;
 
 describe('unpaid submitted joins', () => {
+  it('replays an admission whose stored address has newer keys, while still rejecting a different known address', async () => {
+    const f = await fixture(), body = await f.admit('address@example.invalid');
+    const memberId = body.members[0]!.waivers[0]!.signatureImageKey.split('/')[2]!;
+    const [member] = await db.forGym(f.gymId, tx => tx.select().from(members).where(eq(members.id, memberId)));
+    await db.forGym(f.gymId, tx => tx.update(households).set({ address: { future: true } }).where(eq(households.id, member!.householdId)));
+    await expect(f.join.join(f.gymId, { ...body, contact: { ...body.contact, address: { city: 'Different' } } }, timezone, '127.0.0.1'))
+      .rejects.toMatchObject({ code: 'not_found' });
+    await expect(f.join.join(f.gymId, body, timezone, '127.0.0.1')).resolves.toHaveProperty('linkId');
+  });
+
+  it('rolls back reserved uses on an invoice conflict before a retry admits a new household', async () => {
+    let fail = true, assignments = 0;
+    const f = await fixture(submittedAt, async tx => {
+      assignments++;
+      if (fail) await tx.update(memberships).set({ nextDueOn: '2026-12-01' });
+    });
+    const code = await factory('discounts', f.gymId, { code: 'LAST-USE', percentBasisPoints: 2000, duration: 'forever', maxUses: 1 });
+    const body = await f.admit('conflict@example.invalid', 1, code.code!);
+    await expect(f.join.join(f.gymId, body, timezone, '127.0.0.1')).rejects.toMatchObject({ code: 'conflict' });
+    expect(assignments).toBe(1);
+    expect(await f.discount(code.id)).toMatchObject({ uses: 0, revision: 1 });
+    expect(await db.forGym(f.gymId, tx => tx.select().from(membershipDiscounts))).toEqual([]);
+    expect(await db.forGym(f.gymId, tx => tx.select().from(memberships))).toEqual([]);
+    fail = false;
+    const retried = await f.submit('conflict@example.invalid', 1, code.code!);
+    await f.join.join(f.gymId, retried.body, timezone, '127.0.0.1');
+    expect(assignments).toBe(2);
+    expect(await f.discount(code.id)).toMatchObject({ uses: 1 });
+    expect((await f.state(retried.householdId)).invoices).toHaveLength(1);
+  });
+
+  /** Admits one prospect with the code and assigns its pending membership with the discount, as staff or an older submission would. */
+  async function assignedWithDiscount(f: Awaited<ReturnType<typeof fixture>>, code: { id: string; code: string | null }, sign: boolean) {
+    const body = await f.admit('interrupted@example.invalid', 1, code.code!);
+    const memberId = body.members[0]!.waivers[0]!.signatureImageKey.split('/')[2]!;
+    const [member] = await db.forGym(f.gymId, tx => tx.select().from(members).where(eq(members.id, memberId)));
+    const before = await f.state(member!.householdId), admitted = before.audits.find(a => a.action === 'public.join.admitted')!;
+    const { membershipIds } = admitted.after as { membershipIds: string[] };
+    if (sign) for (const acceptance of body.members[0]!.waivers)
+      await f.waivers.sign(system(f.gymId), { ...acceptance, memberId }, { timezone, ipAddress: '127.0.0.1' });
+    const service = createMembershipService({ scope: db.forGym, clock: f.clock, settings: createGymSettingsAccessor({ scope: db.forGym }) });
+    await service.assign(system(f.gymId), { id: membershipIds[0]!, householdId: member!.householdId, memberId, planId: f.plan.id,
+      startsOn: '2026-10-29', nextDueOn: '2026-10-29', initialStatus: 'pending', firstPeriod: 'next_billing_date', discount: { discountId: code.id } });
+    return { memberId, householdId: member!.householdId, membershipIds };
+  }
+
+  it('returns a legacy submission reservation before invoicing exactly once', async () => {
+    const f = await fixture(), code = await factory('discounts', f.gymId, { code: 'LEGACY', percentBasisPoints: 2000, duration: 'forever', maxUses: 1 });
+    const { memberId, householdId, membershipIds } = await assignedWithDiscount(f, code, true);
+    await db.forGym(f.gymId, async tx => {
+      await writeAudit(tx, { gymId: f.gymId, actorKind: 'system', action: 'public.join.submitting', targetType: 'household', targetId: householdId, occurredAt: f.clock.now() });
+      await writeAudit(tx, { gymId: f.gymId, actorKind: 'system', action: 'public.join.discounted', targetType: 'household',
+        targetId: householdId, occurredAt: f.clock.now(), after: { discountId: code.id, uses: 1, membershipIds } });
+    });
+    f.clock.set(seventhDay);
+    const results = await Promise.all([f.run(), f.run()]);
+    expect(results[0]! + results[1]!).toBe(1);
+    expect(await f.run()).toBe(0);
+    expect(await f.discount(code.id)).toMatchObject({ uses: 0 });
+    const after = await f.state(householdId);
+    expect(after.memberships[0]!.status).toBe('cancelled');
+    expect(after.applications[0]!.endReason).toBe('released');
+    expect(await f.signatures([memberId])).toHaveLength(1);
+    expect(count(after.audits, 'public.join.discount_released', householdId)).toBe(1);
+  });
+
+  it('keeps an unsubmitted admission whose membership has a discount staff applied, with its use', async () => {
+    const f = await fixture(), code = await factory('discounts', f.gymId, { code: 'STAFF', percentBasisPoints: 2000, duration: 'forever', maxUses: 1 });
+    const { householdId } = await assignedWithDiscount(f, code, false);
+    f.clock.set(seventhDay);
+    expect(await f.run()).toBe(0);
+    expect(await f.discount(code.id)).toMatchObject({ uses: 1 });
+    const after = await f.state(householdId);
+    expect(after.home).toBeDefined();
+    expect(after.memberships.map(m => m.status)).toEqual(['pending']);
+    expect(after.applications).toHaveLength(1);
+    expect(after.applications[0]!.endedAt).toBeNull();
+    expect(count(after.audits, 'public.join.retained', householdId)).toBe(1);
+    expect(count(after.audits, 'public.join.cleanup.started', householdId)).toBe(0);
+  });
+
   it.each(['admitted', 'discounted', 'invoiced', 'received'] as const)('replays an extended public.join.%s record without duplicating writes', async (action) => {
     const f = await fixture(), code = await factory('discounts', f.gymId, { name: 'Spring', code: 'SPRING-20', percentBasisPoints: 2000,
       duration: 'forever', maxUses: 2 });
@@ -206,6 +289,29 @@ describe('unpaid submitted joins', () => {
     expect(after.memberships.map(m => m.status)).toEqual(['cancelled']);
   });
 
+  it.each(['completed', 'unavailable'] as const)('stops automatic checks of a %s Checkout after 21 local days', async kind => {
+    const f = await fixture(), join = await f.submit('stalled@example.invalid'), sessionId = await f.openCheckout(join.linkId);
+    if (kind === 'completed') f.provider.completeCheckout(sessionId);
+    const cleanup = kind === 'completed' ? f.join.cleanup : createJoinCleanup({ scope: db.forGym, clock: f.clock,
+      uploadsFor: f.uploadsFor, paymentsFor: async () => null });
+    const expire = vi.spyOn(f.provider, 'expireCheckout');
+    f.clock.set('2026-11-19T04:59:59.999Z');
+    expect(await cleanup.run(f.gymId, timezone)).toBe(0);
+    expect(count((await f.state(join.householdId)).audits, 'public.join.void_stalled')).toBe(0);
+    f.clock.set('2026-11-19T05:00:00Z');
+    expect(await cleanup.run(f.gymId, timezone)).toBe(0);
+    expect(count((await f.state(join.householdId)).audits, 'public.join.void_stalled')).toBe(1);
+    expire.mockClear();
+    f.clock.advance(90 * 86_400_000);
+    expect(await cleanup.run(f.gymId, timezone)).toBe(0);
+    expect(await cleanup.voidUnpaid(f.gymId, join.householdId, timezone)).toBe(false);
+    expect(expire).not.toHaveBeenCalled();
+    const after = await f.state(join.householdId);
+    expect(after.invoices[0]!.status).toBe('open');
+    expect(after.memberships[0]!.status).toBe('pending');
+    expect(count(after.audits, 'public.join.void_stalled')).toBe(1);
+  });
+
   it('waits while a completed Checkout may hold a payment not yet recorded', async () => {
     const f = await fixture(), join = await f.submit('completed@example.invalid'), sessionId = await f.openCheckout(join.linkId);
     f.provider.completeCheckout(sessionId);
@@ -273,6 +379,24 @@ describe('unpaid submitted joins', () => {
     expect((await f.state(link!.householdId)).invoices.map(i => [i.status, i.needsReview])).toEqual([['open', true]]);
     expect(await f.run()).toBe(1);
     expect((await f.state(link!.householdId)).invoices.map(i => i.status)).toEqual(['void']);
+  });
+
+  it.each([['billing.runner.overdue_held', 'billing.invoice.held', false], ['billing.invoice.held', 'billing.runner.overdue_held', true]] as const)(
+    'uses the latest hold when %s is followed by %s', async (first, last, voided) => {
+    const f = await fixture(), join = await f.submit('hold-order@example.invalid');
+    await db.forGym(f.gymId, async tx => {
+      await tx.update(invoices).set({ needsReview: true }).where(eq(invoices.id, join.invoiceId));
+      // A millisecond apart: IDs created within one millisecond have no order.
+      for (const [i, action] of [first, last].entries()) await writeAudit(tx, { gymId: f.gymId, actorKind: 'system', action, targetType: 'invoice',
+        targetId: join.invoiceId, occurredAt: new Date(f.clock.now().getTime() + i) });
+    });
+    const expire = vi.spyOn(f.provider, 'expireCheckout');
+    f.clock.set(seventhDay);
+    expect(await f.run()).toBe(voided ? 1 : 0);
+    expect(expire).not.toHaveBeenCalled();
+    const after = await f.state(join.householdId);
+    expect(after.invoices[0]!.status).toBe(voided ? 'void' : 'open');
+    expect(count(after.audits, 'public.join.retained')).toBe(voided ? 0 : 1);
   });
 
   it('without the payments resolver, voids only a join that never opened Checkout', async () => {

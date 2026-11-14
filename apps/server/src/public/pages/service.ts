@@ -144,7 +144,7 @@ export function createPublicPagesService(options: PublicPagesOptions) {
         if (!m || !admission || m.anonymizedAt || !['prospect', 'visitor'].includes(m.status)) return missing();
         const [home] = await tx.select().from(households).where(eq(households.id, m.householdId));
         if (!home || home.email !== input.contact.email || home.name !== input.contact.name
-          || home.phone !== (input.contact.phone ?? null) || !isDeepStrictEqual(home.address, input.contact.address ?? {})
+          || home.phone !== (input.contact.phone ?? null) || !isDeepStrictEqual(c.householdAddressReadSchema.parse(home.address), input.contact.address ?? {})
           || m.firstName !== input.member.firstName || m.lastName !== input.member.lastName || m.dateOfBirth !== input.member.dateOfBirth) return missing();
       });
       for (const acceptance of input.waivers) {

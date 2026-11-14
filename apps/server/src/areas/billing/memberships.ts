@@ -92,6 +92,8 @@ export function createMembershipService(options: MembershipOptions = {}) {
       const home = catalogMissing((await tx.select().from(households).where(eq(households.id, request.householdId)).for('update'))[0]);
       const previous = (await tx.select().from(memberships).where(eq(memberships.id, request.id)))[0];
       if (previous) {
+        // The enclosing transaction reserved a fresh use: replaying cannot consume it without an application.
+        if (request.discountUseTaken) conflict('A reserved discount use cannot replay an assignment');
         const audit = (await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(eq(auditEvents.targetId, request.id), eq(auditEvents.action, 'billing.membership.assigned'))))[0];
         const recorded = audit?.after as { request?: AssignMembership } | undefined;
         if (!recorded?.request || fingerprint(recorded.request) !== fingerprint(request)) conflict('Assignment ID reused with different parameters');

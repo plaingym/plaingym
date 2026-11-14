@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, or } from 'drizzle-orm';
 import { auditEvents, households, invoices, paymentAttempts, paymentMethods, payments, signedLinks, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { revokeSignedLinkIn } from '../../links/service.js';
@@ -63,7 +63,12 @@ export async function checkSubmittedJoin(tx: Transaction, join: SubmittedJoin, c
   const audited = async (action: string) => (await tx.select({ id: auditEvents.id }).from(auditEvents)
     .where(and(eq(auditEvents.targetId, invoice.id), eq(auditEvents.action, action))).limit(1)).length > 0;
   // The runner's overdue hold doesn't protect it; a hold from anything else, or staff releasing one to collect, does.
-  if (invoice.needsReview ? !await audited('billing.runner.overdue_held') : await audited('billing.invoice.review_released')) return keep;
+  if (invoice.needsReview) {
+    const [hold] = await tx.select({ action: auditEvents.action }).from(auditEvents).where(and(eq(auditEvents.targetId, invoice.id),
+      inArray(auditEvents.action, ['billing.runner.overdue_held', 'billing.invoice.held'])))
+      .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1);
+    if (hold?.action !== 'billing.runner.overdue_held') return keep;
+  } else if (await audited('billing.invoice.review_released')) return keep;
   // An unconfirmed reservation never disclosed a URL, but it must have ended.
   if (invoice.checkoutExpiresAt && invoice.checkoutExpiresAt > now) return wait;
   if ((await tx.select({ id: payments.id }).from(payments).where(eq(payments.invoiceId, invoice.id)).limit(1)).length
