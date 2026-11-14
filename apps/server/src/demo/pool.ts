@@ -3,9 +3,10 @@ import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { and, asc, eq } from 'drizzle-orm';
 import { forGym, forSystem, gyms, gymDomains, writeAudit } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
-import { demoCopyRequest, type DemoRole } from '@plaingym/shared/contracts';
+import { demoCopyRequest, idSchema, type DemoRole } from '@plaingym/shared/contracts';
 import type { DemoService } from './service.js';
-import { requireDemo, sandboxSettings, type DemoConfig, type SandboxSettings } from './config.js';
+import { logError } from '../core/log.js';
+import { requireDemo, sandboxSettings, type DemoConfig, type SandboxSettings, type SeedRecovery } from './config.js';
 
 const day = 86_400_000;
 const hash = (token: string) => createHash('sha256').update(token).digest('hex');
@@ -19,6 +20,7 @@ export function createDemoPool(options: {
   const scope = options.scope ?? forGym, system = options.system ?? forSystem;
   const showcaseHostname = `showcase.${options.config.domain}`;
   let wake: () => Promise<void> = async () => {};
+  let checkpoint: (recovery: SeedRecovery) => Promise<void> = async () => {};
   const all = () => system(tx => tx.select().from(gyms).orderBy(asc(gyms.createdAt), asc(gyms.id)));
   const copyToken = (ticket: string) => createHmac('sha256', options.key).update('demo-copy-v1:' + ticket).digest('base64url');
   const idleExpiry = (now: Date) => new Date(now.getTime() + (options.config.idleHours ?? 2) * 3_600_000).toISOString();
@@ -60,12 +62,29 @@ export function createDemoPool(options: {
     await wake();
     return { pending: true as const, ticket, position: Math.max(1, waiting.findIndex(gym => gym.id === row.id) + 1), retryAfterSeconds: 2 as const };
   }
+  async function recoverSeed(payload: unknown) {
+    requireDemo(options.config);
+    const input = payload as Partial<SeedRecovery> | null;
+    const gymId = idSchema.parse(input?.gymId), demo = sandboxSettings({ demo: input?.demo });
+    if (!demo || demo.ready || !demo.seedStartedAt || !['queued', 'pool'].includes(demo.kind ?? '')) throw new Error('Invalid seed recovery');
+    const rows = await all(), previous = rows.find(gym => gym.id === gymId);
+    if (previous) {
+      await update(gymId, current => ({ ...current, kind: 'retired', expiresAt: options.clock.now().toISOString() }));
+      await options.service.expire(gymId);
+    }
+    if (Date.parse(demo.ticketExpiresAt ?? demo.expiresAt) <= options.clock.now().getTime()) return;
+    // The durable job keeps the ticket across deletion and bootstrap; reserve is idempotent for this recovery.
+    if (demo.ticketHash && rows.some(gym => gym.id !== gymId && sandboxSettings(gym.settings)?.ticketHash === demo.ticketHash)) return;
+    await options.service.reserve(demo.kind, { gymId, demo });
+  }
   return {
-    showcaseHostname, progress,
+    showcaseHostname, progress, recoverSeed,
     setWake(callback: () => Promise<void>) { wake = callback; },
+    setRecoveryCheckpoint(callback: (recovery: SeedRecovery) => Promise<void>) { checkpoint = callback; },
     async showcase() {
       const rows = await all();
-      const gym = rows.find(row => sandboxSettings(row.settings)?.kind === 'showcase');
+      // The active showcase remains available past its replacement deadline until the swap commits.
+      const gym = rows.find(row => row.status === 'active' && sandboxSettings(row.settings)?.kind === 'showcase' && sandboxSettings(row.settings)?.ready);
       return gym ? `https://${showcaseHostname}/demo#kioskToken=${options.service.kioskTokenFor(gym.id)}` : undefined;
     },
     async request(body: unknown) {
@@ -96,22 +115,36 @@ export function createDemoPool(options: {
     /** Called only by an install job: the job worker serializes the null-gym lane across processes and renews its lease. */
     async refill() {
       requireDemo(options.config);
-      for (let count = 0; count < options.config.maxSandboxes; count++) {
+      const cleanupFailed = new Set<string>();
+      for (let count = 0; count < options.config.maxSandboxes * 4 + 4; count++) {
         const rows = await all(), now = options.clock.now();
-        const stale = rows.find(gym => { const demo = sandboxSettings(gym.settings); return demo && demo.kind !== 'showcase' && Date.parse(demo.expiresAt) <= now.getTime(); });
-        if (stale) { await options.service.expire(stale.id); continue; }
+        const stale = rows.find(gym => { const demo = sandboxSettings(gym.settings); return !cleanupFailed.has(gym.id) && demo && demo.kind !== 'showcase' && Date.parse(demo.expiresAt) <= now.getTime(); });
+        if (stale) {
+          try { await options.service.expire(stale.id); }
+          catch (error) { cleanupFailed.add(stale.id); logError('demo.cleanup_failed', { gymId: stale.id }, error); }
+          continue;
+        }
         const orphan = rows.find(gym => !sandboxSettings(gym.settings) && /^demo-reservation\.[0-9a-f-]{36}@example[.]invalid$/.test(String(settingsOf(gym).bootstrapOwnerEmail ?? '')));
         if (orphan) { await options.service.recover(orphan.id, 'pool'); continue; }
         const waiting = rows.find(gym => { const demo = sandboxSettings(gym.settings); return gym.status === 'active' && demo && ((demo.kind === 'queued' && demo.ticketHash && demo.copy) || (!demo.ready && demo.kind === 'pool')); });
         if (waiting) {
-          if (!sandboxSettings(waiting.settings)!.ready) await options.service.prepare(waiting.id);
+          const previous = sandboxSettings(waiting.settings)!;
+          if (!previous.ready && previous.seedStartedAt) {
+            // A previous lease ended mid-seed. Seed steps aren't repeatable: discard the partial gym.
+            const recovery = { gymId: waiting.id, demo: previous };
+            await checkpoint(recovery);
+            try { await recoverSeed(recovery); }
+            catch (error) { cleanupFailed.add(waiting.id); logError('demo.cleanup_failed', { gymId: waiting.id }, error); continue; }
+            continue;
+          }
+          if (!previous.ready) await options.service.prepare(waiting.id);
           await update(waiting.id, demo => demo.kind === 'queued' && demo.ticketHash && demo.copy
             ? { ...assigned(demo, demo.ticketHash, demo.copy, options.clock.now()), handoffHash: demo.handoffHash! }
             : { ...demo, kind: 'pool' });
           continue;
         }
         const showcase = rows.find(gym => sandboxSettings(gym.settings)?.kind === 'showcase');
-        const replace = !showcase || now.getTime() - Date.parse(sandboxSettings(showcase.settings)!.seededAt ?? showcase.createdAt.toISOString()) >= day;
+        const replace = !showcase || now.getTime() - Date.parse(sandboxSettings(showcase.settings)!.promotedAt ?? sandboxSettings(showcase.settings)!.seededAt ?? showcase.createdAt.toISOString()) >= day;
         const pool = rows.filter(gym => { const demo = sandboxSettings(gym.settings); return gym.status === 'active' && demo?.kind === 'pool' && demo.ready; });
         if (replace && pool[0]) {
           const next = pool[0];
@@ -125,7 +158,7 @@ export function createDemoPool(options: {
               await tx.update(gyms).set({ settings: { ...settingsOf(old), demo: { ...sandboxSettings(old.settings)!, kind: 'retired', expiresAt: now.toISOString() } } }).where(eq(gyms.id, old.id));
             }
             await tx.update(gymDomains).set({ hostname: showcaseHostname }).where(and(eq(gymDomains.gymId, next.id), eq(gymDomains.kind, 'default')));
-            await tx.update(gyms).set({ settings: { ...settingsOf(candidate), demo: { ...sandboxSettings(candidate.settings)!, kind: 'showcase', expiresAt: new Date(now.getTime() + day).toISOString() } } }).where(eq(gyms.id, next.id));
+            await tx.update(gyms).set({ settings: { ...settingsOf(candidate), demo: { ...sandboxSettings(candidate.settings)!, kind: 'showcase', promotedAt: now.toISOString(), expiresAt: new Date(now.getTime() + day).toISOString() } } }).where(eq(gyms.id, next.id));
           });
           continue;
         }

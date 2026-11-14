@@ -12,17 +12,21 @@ The entry button opens `showcase.<DEMO_DOMAIN>`, a shared, read-only gym with th
 same role logins and kiosk. `demoRequestGuard` runs after tenant resolution and
 before sessions and routes. It refuses mutations with `forbidden` and
 `details.reason: [demo_showcase_read_only]`, including kiosk, booking, public
-intake, signed links and gym deletion. Sign-in, sign-out and demo login remain
-available. The SPA and public intake forms offer a private copy. Scheduled gym
+intake, signed links and gym deletion. One-click demo login and sign-out remain
+available. Magic-link requests are refused so visitors cannot change the shared
+outbox. The SPA and public intake forms offer a private copy. Scheduled gym
 enumeration, job execution and shared payment webhooks exclude the showcase and
-pooled gyms. A freshly seeded showcase replaces the fixed hostname daily.
+pooled gyms. A ready seed replaces the fixed hostname 24 hours after promotion.
+If the cap delays replacement, the current showcase keeps serving until the swap.
 
 `DEMO_POOL_SIZE` (default 5, 0 through the sandbox cap) maintains ready gyms.
 One install job seeds at a time across processes using the worker's renewed lease.
 Reservations and creation tickets live in gym settings; claims and handoffs use
-row locks. A restart resumes the same partial seed. Stripe rate limits back off
-with the same idempotent request; an exhausted attempt leaves the reservation for
-the install job's retry. The cap includes the showcase, ready pool and pending
+row locks. A restart discards an interrupted seed and seeds a fresh gym instead;
+waiting tickets move to the replacement. A durable `demo.replace-seed` job saves
+the ticket before deletion and resumes an idempotent replacement bootstrap.
+Stripe rate limits back off with the
+same idempotent request. The cap includes the showcase, ready pool and pending
 reservations. Keep settings consistent across processes and leave room for daily
 showcase replacement.
 
@@ -37,6 +41,7 @@ expire after an hour.
 Private copies have a random hostname, seeded content packs, identities and a kiosk.
 `DEMO_IDLE_HOURS` (default 2, greater than 0 through 24) starts on hand-out, with
 activity persisted at most every five minutes and a hard 24-hour lifetime.
+Background discovery polls do not count as activity.
 Kiosk tokens are derived from the install key and gym ID; only their hash is stored.
 Ready sandboxes do not retain bootstrap email. No bootstrap email is sent.
 
@@ -111,8 +116,10 @@ Untrusted forwarded headers do not change the bucket. Use the trusted-proxy opti
 when Caddy is the sole peer. Configure the same cap on every app process.
 
 Direct service provisioning failures roll back using the gym's current revision,
-since seed steps can change it. The pool instead retains failed reservations for
-retry. If upload deletion fails, the gym stays suspended for expiry to retry.
+since seed steps can change it. The pool discards failed or interrupted seeds
+before preparing fresh reservations. If upload deletion fails, the gym stays
+suspended for expiry to retry; each cleanup failure is logged independently so
+other expired gyms and pool work can continue.
 The original provisioning error is preserved even if rollback also fails. Structured
 `demo.seed_failed` logs identify the gym and seed step; `demo.provisioning_failed`
 and `demo.cleanup_failed` distinguish the original failure from rollback failures.

@@ -591,9 +591,11 @@ updates" and "Releases").
 `DEMO_MODE=true` (multi-gym only) provides a shared read-only showcase and private
 copies from a ready pool. The showcase refuses writes before sessions and route
 handlers, including public intake, kiosk, bookings and signed-link actions; it is
-excluded from gym jobs and payment webhooks. Sign-in and sign-out still work.
+excluded from gym jobs and payment webhooks. One-click role sign-in and sign-out
+still work; magic-link requests are refused to keep its outbox read-only.
 Copy handoffs are gym-bound, single-use, expire after ten minutes and accept only
 allowlisted local pages. Private copies expire after two idle hours by default
-and at most 24 hours after allocation. It sends no email (an in-app outbox instead), disables
+and at most 24 hours after allocation; discovery polls do not extend that deadline.
+The showcase stays available until its replacement is ready. It sends no email (an in-app outbox instead), disables
 visitor uploads apart from bounded waiver signatures, refuses live Stripe keys,
 and turns password sign-in off.

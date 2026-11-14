@@ -277,11 +277,14 @@ and no feature reads across gyms.
 ## Demo mode
 
 In demo mode, one install job maintains a ready seed pool and replaces a read-only
-showcase daily. Gym metadata stores reservations, hashed queue tickets and copy
+showcase 24 hours after promotion, keeping it available until the swap commits.
+Failed or interrupted seeds are discarded rather than replayed on partial data.
+Gym metadata stores reservations, hashed queue tickets and copy
 handoffs. Row locks protect claims and one-time consumption. The scheduler and
 worker policy exclude showcase and pooled gyms from gym jobs. Private copies
 record activity at most every five minutes and expire after two idle hours by
-default, never more than 24 hours after allocation. See [demo.md](demo.md).
+default, never more than 24 hours after allocation. Discovery polls do not count
+as activity. See [demo.md](demo.md).
 
 ## Testing
 

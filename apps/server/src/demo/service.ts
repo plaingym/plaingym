@@ -8,7 +8,7 @@ import { reserveGym } from '../core/tenancy-bootstrap.js';
 import type { GymContext } from '../core/context.js';
 import { logError } from '../core/log.js';
 import type { GymDeleteService } from '../areas/settings/gym-delete.js';
-import { requireDemo, sandboxSettings, type DemoConfig, type SandboxSettings } from './config.js';
+import { requireDemo, sandboxSettings, type DemoConfig, type SandboxSettings, type SeedRecovery } from './config.js';
 import type { DemoLoginTarget } from '@plaingym/shared/contracts';
 import type { JoinService } from '../public/pages/join.service.js';
 
@@ -20,12 +20,12 @@ export function createDemoService(options: {
   const scope = options.scope ?? forGym, system = options.system ?? forSystem;
   const kioskTokenFor = (gymId: string) => createHmac('sha256', options.key).update('demo-kiosk-v1:' + gymId).digest('base64url');
   let joinReadiness: Pick<JoinService, 'ready'> | undefined;
-  /** The cheap guard every sandbox route needs: the sandbox exists, is ready and hasn't expired. */
+  /** Private sandboxes must be live; the showcase stays readable until its replacement is swapped in. */
   async function live(gymId: string) {
     requireDemo(options.config);
     const [gym] = await scope(gymId, (tx) => tx.select().from(gyms).where(eq(gyms.id, gymId)));
     const settings = sandboxSettings(gym?.settings);
-    if (!gym || gym.status !== 'active' || !settings?.ready || Date.parse(settings.expiresAt) <= options.clock.now().getTime())
+    if (!gym || gym.status !== 'active' || !settings?.ready || (settings.kind !== 'showcase' && Date.parse(settings.expiresAt) <= options.clock.now().getTime()))
       throw new AppError('not_found', 'Not found');
     if (settings.kind === 'pool' || settings.kind === 'queued' || settings.kind === 'retired') throw new AppError('not_found', 'Not found');
     return { expiresAt: settings.expiresAt };
@@ -40,17 +40,27 @@ export function createDemoService(options: {
     }
     return { expiresAt, join };
   }
-  async function reserve(kind?: SandboxSettings['kind']) {
+  async function reserve(kind?: SandboxSettings['kind'], replacement?: SeedRecovery) {
       assertNoTransaction('demo.create'); requireDemo(options.config);
       const reservationId = uuidv7(options.clock.now().getTime()), now = options.clock.now();
       const expiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
-      const hostname = `${randomBytes(16).toString('hex')}.${options.config.domain}`;
+      const hostname = `${replacement ? createHmac('sha256', options.key).update('demo-replacement:' + replacement.gymId).digest('hex').slice(0, 32) : randomBytes(16).toString('hex')}.${options.config.domain}`;
+      const ownerEmail = replacement ? `demo-replacement.${replacement.gymId}@example.invalid` : `demo-reservation.${reservationId}@example.invalid`;
+      // A recovery job can restart between bootstrap and initialization without reserving a second slot.
+      if (replacement) {
+        const existing = (await system(tx => tx.select().from(gyms))).find(gym =>
+          sandboxSettings(gym.settings)?.replacementFor === replacement.gymId || (gym.settings as { bootstrapOwnerEmail?: string }).bootstrapOwnerEmail === ownerEmail);
+        if (existing) {
+          await recover(existing.id, kind, replacement);
+          return { gymId: existing.id, origin: `https://${hostname}`, expiresAt: sandboxSettings(existing.settings)?.expiresAt ?? expiresAt, kioskToken: kioskTokenFor(existing.id) };
+        }
+      }
       // Unique bounded slots enforce the cap across processes, even in an empty install.
       let id: string | undefined;
       for (let slot = 1; slot <= options.config.maxSandboxes; slot++) {
         try {
           id = await reserveGym({ name: 'Demo academy', slug: `sandbox-${slot}`, hostname,
-            ownerEmail: `demo-reservation.${reservationId}@example.invalid`, timezone: 'UTC', currency: 'USD',
+            ownerEmail, timezone: 'UTC', currency: 'USD',
           }, { system, clock: options.clock, key: options.key });
           break;
         } catch (error) {
@@ -60,10 +70,10 @@ export function createDemoService(options: {
       if (!id) throw new AppError('rate_limited', 'Demo capacity reached');
       const gymId = id;
       const kioskToken = kioskTokenFor(gymId);
-      await recover(gymId, kind);
+      await recover(gymId, kind, replacement);
       return { gymId, origin: `https://${hostname}`, expiresAt, kioskToken };
   }
-  async function recover(gymId: string, kind?: SandboxSettings['kind']) {
+  async function recover(gymId: string, kind?: SandboxSettings['kind'], replacement?: SeedRecovery) {
     const now = options.clock.now(), kioskToken = kioskTokenFor(gymId);
     await scope(gymId, async tx => {
       const [gym] = await tx.select().from(gyms).where(eq(gyms.id, gymId)).for('update');
@@ -71,8 +81,11 @@ export function createDemoService(options: {
       const existing = sandboxSettings(gym.settings);
       if (!existing) {
         const marker = (gym.settings as { bootstrapOwnerEmail?: unknown }).bootstrapOwnerEmail;
-        if (typeof marker !== 'string' || !/^demo-reservation\.[0-9a-f-]{36}@example[.]invalid$/.test(marker)) throw new AppError('not_found', 'Not found');
-        await tx.update(gyms).set({ settings: { setupComplete: true, demo: { sandbox: true, ready: false,
+        if (typeof marker !== 'string' || !/^demo-(?:reservation|replacement)\.[0-9a-f-]{36}@example[.]invalid$/.test(marker)) throw new AppError('not_found', 'Not found');
+        const inherited = { ...replacement?.demo };
+        delete inherited.seedStartedAt; delete inherited.seededAt;
+        await tx.update(gyms).set({ settings: { setupComplete: true, demo: { ...inherited, sandbox: true, ready: false,
+          ...(replacement ? { replacementFor: replacement.gymId } : {}),
           expiresAt: new Date(gym.createdAt.getTime() + 86_400_000).toISOString(), ...(kind ? { kind } : {}) } } }).where(eq(gyms.id, gymId));
       }
       const devices = await tx.select({ id: kioskDevices.id }).from(kioskDevices).limit(1);
@@ -87,6 +100,13 @@ export function createDemoService(options: {
     assertNoTransaction('demo.prepare'); requireDemo(options.config);
     const [initial] = await scope(gymId, tx => tx.select().from(gyms).where(eq(gyms.id, gymId)));
     if (!initial || !sandboxSettings(initial.settings)) throw new AppError('not_found', 'Not found');
+        await scope(gymId, async tx => {
+          const [gym] = await tx.select().from(gyms).where(eq(gyms.id, gymId)).for('update');
+          const demo = sandboxSettings(gym?.settings);
+          if (!gym || !demo || demo.seedStartedAt) throw new AppError('conflict', 'Demo seed already started');
+          await tx.update(gyms).set({ settings: { ...(gym.settings as object), demo: { ...demo, seedStartedAt: options.clock.now().toISOString() } } }).where(eq(gyms.id, gymId));
+          await writeAudit(tx, { gymId, actorKind: 'system', action: 'demo.seed_started', targetType: 'gym', targetId: gymId, occurredAt: options.clock.now() });
+        });
         await options.identities.seed(gymId);
         await options.seed({ gymId, timezone: 'UTC', enabledModules: new Set() });
         await scope(gymId, async (tx) => {
@@ -132,7 +152,7 @@ export function createDemoService(options: {
       const settings = sandboxSettings(gym?.settings);
       if (settings?.kind === 'showcase') return;
       const marker = (gym?.settings as { bootstrapOwnerEmail?: string } | undefined)?.bootstrapOwnerEmail;
-      const reserved = typeof marker === 'string' && /^demo-reservation\.[0-9a-f-]{36}@example[.]invalid$/.test(marker);
+      const reserved = typeof marker === 'string' && /^demo-(?:reservation|replacement)\.[0-9a-f-]{36}@example[.]invalid$/.test(marker);
       const expiresAt = settings ? Date.parse(settings.expiresAt) : reserved && gym ? gym.createdAt.getTime() + 24 * 60 * 60 * 1000 : Infinity;
       if (gym && expiresAt <= options.clock.now().getTime()) {
         try { await options.deletion.remove(gymId, gym.revision); }

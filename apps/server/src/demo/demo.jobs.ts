@@ -3,6 +3,7 @@ import { forSystem, gyms } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import type { JobRegistration } from '../core/registry.js';
 import type { PostgresJobs } from '../infra/jobs/postgres.js';
+import { logError } from '../core/log.js';
 import type { DemoService } from './service.js';
 import type { DemoPool } from './pool.js';
 import { sandboxSettings, type DemoConfig } from './config.js';
@@ -16,14 +17,20 @@ export function registerDemoCleanup(queue: Pick<PostgresJobs, 'handleSystem' | '
     idempotencyKey: String(Math.floor(options.clock.now().getTime() / 2_000)), maxAttempts: 20 }); };
   if (options.config.enabled && options.pool) {
     queue.handleSystem('demo.pool', async () => { await options.pool!.refill(); });
+    queue.handleSystem('demo.replace-seed', async payload => { await options.pool!.recoverSeed(payload); });
     options.pool.setWake(wake);
+    options.pool.setRecoveryCheckpoint(async recovery => {
+      await queue.enqueueSystem('demo.replace-seed', recovery, { timezone: 'UTC', idempotencyKey: recovery.gymId, maxAttempts: 20 });
+    });
   }
   if (options.config.enabled) queue.handleSystem('demo.expire', async () => {
     const rows = await system((tx) => tx.select({ id: gyms.id, settings: gyms.settings }).from(gyms));
     for (const gym of rows) {
       const marker = (gym.settings as { bootstrapOwnerEmail?: unknown }).bootstrapOwnerEmail;
-      if (sandboxSettings(gym.settings) || (typeof marker === 'string' && /^demo-reservation\.[0-9a-f-]{36}@example[.]invalid$/.test(marker)))
-        await options.service.expire(gym.id);
+      if (sandboxSettings(gym.settings) || (typeof marker === 'string' && /^demo-(?:reservation|replacement)\.[0-9a-f-]{36}@example[.]invalid$/.test(marker))) {
+        try { await options.service.expire(gym.id); }
+        catch (error) { logError('demo.cleanup_failed', { gymId: gym.id }, error); }
+      }
     }
   });
   return { async scheduleDue() {

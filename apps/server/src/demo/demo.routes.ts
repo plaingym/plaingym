@@ -49,7 +49,6 @@ export function createDemoRoutes(service: DemoService, options: { installOrigin:
       if (isInstallHost(c.req.header('host') ?? new URL(c.req.url).host))
         return c.json({ data: { mode: 'entry' as const, ...(options.pool ? { showcase: await options.pool.showcase() } : {}) } }, 200);
       const host = c.req.header('host') ?? new URL(c.req.url).host;
-      await options.pool?.touch(c.get('context').gym.gymId);
       return c.json({ data: { mode: host === options.pool?.showcaseHostname ? 'showcase' as const : 'sandbox' as const, ...await service.status(c.get('context').gym.gymId) } }, 200);
     });
   return [

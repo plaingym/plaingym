@@ -4,7 +4,9 @@
 The entry page opens the shared, read-only showcase at `showcase.<GYM_HOSTNAME>`,
 one level below the demo domain. Owner, coach and student logins and the kiosk
 remain available; an edit offers **Make my own copy**, signed in as the same role.
-The showcase is replaced with fresh sample dates daily and runs no gym jobs.
+The showcase is replaced 24 hours after promotion and runs no gym jobs. It stays
+available until a replacement is ready if capacity delays the swap. Use the
+one-click role logins; magic-link requests are refused on the shared showcase.
 
 Optional settings accepted by the installer and saved in its protected `.env`:
 
@@ -15,8 +17,10 @@ Optional settings accepted by the installer and saved in its protected `.env`:
 | `DEMO_IDLE_HOURS` | `2` | Private copy lifetime without requests; activity is persisted at most every five minutes, with a hard 24-hour limit after allocation. |
 
 Keep settings identical across app processes and leave capacity for daily showcase
-replacement. Partial seeds resume after restart; Stripe test rate limits back off
-without rolling the seed back. Cleanup checks every five minutes.
+replacement. Failed or interrupted seeds are discarded and replaced with fresh
+gyms; Stripe test rate limits back off before failing a seed. Cleanup checks every
+five minutes and logs individual failures while continuing with other gyms.
+Background discovery polls do not extend a private copy's idle lifetime.
 
 One command on Ubuntu 24.04 or 26.04 LTS (amd64 or arm64) installs Docker,
 preserves the SSH listener in the firewall, enables security updates, adds swap,

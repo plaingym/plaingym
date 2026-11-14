@@ -32,11 +32,13 @@ export function requireDemo(config: DemoConfig): void {
 export interface SandboxSettings {
   sandbox: true; expiresAt: string; ready: boolean;
   kind?: 'pool' | 'queued' | 'private' | 'showcase' | 'retired';
-  seededAt?: string; allocatedAt?: string; lastActivityAt?: string;
+  seededAt?: string; seedStartedAt?: string; promotedAt?: string; allocatedAt?: string; lastActivityAt?: string;
+  replacementFor?: string;
   ticketHash?: string; ticketExpiresAt?: string;
   copy?: { role: 'owner' | 'coach' | 'student'; page: string };
   handoffHash?: string; handoffExpiresAt?: string;
 }
+export interface SeedRecovery { gymId: string; demo: SandboxSettings }
 export function sandboxSettings(value: unknown): SandboxSettings | null {
   if (!value || typeof value !== 'object') return null;
   const demo = (value as { demo?: unknown }).demo;

@@ -32,14 +32,17 @@ use a test Stripe key ([going-live.md](going-live.md#1-try-it-in-test-mode-optio
   shows as not configured.
 * **Idle expiry.** Copies expire after `DEMO_IDLE_HOURS` (default 2) without a
   request, at most 24 hours after allocation. Activity is persisted at most once
-  every five minutes. Cleanup checks every five minutes.
+  every five minutes. Background discovery polls do not count as activity.
+  Cleanup checks every five minutes.
 * **Ready copies.** `DEMO_POOL_SIZE` (default 5) keeps gyms seeded ahead, one at
   a time. Empty-pool visitors see their place in line. `DEMO_MAX_SANDBOXES`
   (default 50) includes the showcase, pool and queued reservations.
 
 The showcase uses `showcase.<DEMO_DOMAIN>`, one level below the demo domain, and
-is replaced daily. It refuses changes including kiosk check-ins, bookings, public
-submissions and signed links, and runs no gym jobs. Copies open signed in as the
+is replaced 24 hours after promotion, remaining available until the replacement
+is ready if capacity delays the swap. It refuses changes including kiosk check-ins, bookings, public
+submissions, magic-link requests and signed links, and runs no gym jobs. Use its
+one-click role logins. Copies open signed in as the
 selected seeded role on the same static page where possible; resource-detail
 URLs open the role's home because each seed has different resource IDs.
 
