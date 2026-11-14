@@ -245,6 +245,19 @@ describe('Postgres enqueue and execution', () => {
     });
     expect(await database.forGym(gymA, (tx) => tx.select().from(jobs))).toEqual([]);
   });
+  it('reads pending install payloads by exact name without including gym jobs or terminal jobs', async () => {
+    const q = queue();
+    const pending = await q.enqueueSystem('copy.recovery', { checkpoint: 'pending' }, { timezone: 'UTC' });
+    await q.enqueue('copy.recovery', { checkpoint: 'gym-only' }, options);
+    await q.enqueueSystem('copy.recovery.other', { checkpoint: 'other-name' }, { timezone: 'UTC' });
+    expect(await q.pendingSystemPayloads('copy.recovery')).toEqual([{ checkpoint: 'pending' }]);
+    await database.forSystem(tx => tx.update(jobs).set({ status: 'running' }).where(eq(jobs.id, pending.jobId)));
+    expect(await q.pendingSystemPayloads('copy.recovery')).toEqual([{ checkpoint: 'pending' }]);
+    for (const status of ['succeeded', 'failed'] as const) {
+      await database.forSystem(tx => tx.update(jobs).set({ status }).where(eq(jobs.id, pending.jobId)));
+      expect(await q.pendingSystemPayloads('copy.recovery')).toEqual([]);
+    }
+  });
 });
 
 describe('worker leases, caps, and lifecycle', () => {

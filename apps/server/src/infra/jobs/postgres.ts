@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { and, asc, eq, inArray, lt, notInArray, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, lt, notInArray, or, sql } from 'drizzle-orm';
 import { advisoryLockNamespace, advisoryLocks, forGym, forSystem, isConnectionError, jobs, jobScheduleCursors, uuidv7 } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
@@ -150,6 +150,12 @@ export class PostgresJobs implements Jobs, JobRecovery {
   async enqueueSystem(name: string, payload: unknown, options: SystemJobOptions): Promise<{ jobId: string }> {
     assertNoTransaction('jobs.enqueue');
     return this.#enqueue(name, payload, options, null);
+  }
+  /** Internal install orchestration can recover progress while its tenant reservation is being replaced. */
+  async pendingSystemPayloads(name: string): Promise<readonly unknown[]> {
+    const rows = await this.#database.forSystem(tx => tx.select({ payload: jobs.payload }).from(jobs)
+      .where(and(isNull(jobs.gymId), eq(jobs.name, name), inArray(jobs.status, ['pending', 'running']))));
+    return rows.map(row => envelope(row.payload).value);
   }
   async #enqueue(name: string, payload: unknown, options: SystemJobOptions, gymId: string | null,
     schedule?: Envelope['schedule'] & { name: string }, transaction?: Tx): Promise<{ jobId: string }> {

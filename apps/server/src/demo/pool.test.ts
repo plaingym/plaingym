@@ -93,7 +93,7 @@ it('discards a seed that committed partial rows and moves the waiting ticket to 
   let failedId = '';
   f.seed.mockImplementationOnce(async context => {
     failedId = context.gymId;
-    await db.forGym(context.gymId, tx => tx.insert(kioskDevices).values({ gymId: context.gymId, name: 'Partial seed', tokenHash: 'seed-test-partial' }));
+    await db.forGym(context.gymId, tx => tx.insert(kioskDevices).values({ gymId: context.gymId, name: 'Partial seed', tokenHash: 'a'.repeat(64), createdAt: f.clock.now() }));
     throw new Error('Interrupted seed');
   });
   await expect(f.pool.refill()).rejects.toThrow('Interrupted seed');
@@ -138,6 +138,8 @@ it('keeps a queued ticket in a durable recovery job if replacement fails after d
   vi.spyOn(f.service, 'reserve').mockRejectedValueOnce(new Error('Interrupted after deletion'));
   await f.pool.refill();
   expect((await rows()).some(gym => gym.id === failed.id)).toBe(false);
+  expect(await f.pool.progress(pending.ticket)).toMatchObject({ pending: true, ticket: pending.ticket });
+  await expect(f.pool.progress('z'.repeat(43))).rejects.toMatchObject({ code: 'not_found' });
   // A new worker still has the recovery payload even though the original reservation is gone.
   const restarted = new PostgresJobs({ database: { forGym: db.forGym, forSystem: db.forSystem }, clock: f.clock });
   registerDemoCleanup(restarted, { ...f, pool: f.makePool(), system: db.forSystem });
@@ -172,14 +174,12 @@ it('continues refill and expiry cleanup past an undeletable stale gym', async ()
 });
 
 it('keeps an overdue showcase serving when private copies fill the cap', async () => {
-  const f = fixture(); f.config.maxSandboxes = 2;
+  const f = fixture(); f.config.maxSandboxes = 2; f.config.idleHours = 24;
   await f.pool.refill();
   const shared = (await rows()).find(gym => sandboxSettings(gym.settings)?.kind === 'showcase')!;
-  await create(f);
-  // Keep the private allocation within its own 24-hour lifetime at the showcase deadline.
+  // Allocate just after promotion, so the private copy is still live at the swap deadline.
   f.clock.advance(1);
-  const copy = (await rows()).find(gym => sandboxSettings(gym.settings)?.kind === 'private')!;
-  await db.forGym(copy.id, tx => tx.update(gyms).set({ settings: { demo: { ...sandboxSettings(copy.settings)!, expiresAt: '2026-11-15T12:00:00.001Z' } } }).where(eq(gyms.id, copy.id)));
+  await create(f);
   f.clock.advance(86_399_999);
   await f.pool.refill();
   expect(await f.pool.showcase()).toContain(f.service.kioskTokenFor(shared.id));
@@ -194,7 +194,7 @@ it('measures the daily replacement from promotion rather than the pool seed time
   const f = fixture(); await f.pool.refill();
   f.clock.advance(20 * 3_600_000);
   const old = (await rows()).find(gym => sandboxSettings(gym.settings)?.kind === 'showcase')!;
-  await db.forGym(old.id, tx => tx.delete(gyms).where(eq(gyms.id, old.id)));
+  await db.forSystem(tx => tx.delete(gyms).where(eq(gyms.id, old.id)));
   await f.pool.refill();
   const promoted = (await rows()).find(gym => sandboxSettings(gym.settings)?.kind === 'showcase')!;
   expect(sandboxSettings(promoted.settings)?.promotedAt).toBe(f.clock.now().toISOString());

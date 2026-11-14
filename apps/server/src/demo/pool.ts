@@ -21,6 +21,7 @@ export function createDemoPool(options: {
   const showcaseHostname = `showcase.${options.config.domain}`;
   let wake: () => Promise<void> = async () => {};
   let checkpoint: (recovery: SeedRecovery) => Promise<void> = async () => {};
+  let recoveryFor: (ticketHash: string) => Promise<SeedRecovery | undefined> = async () => undefined;
   const all = () => system(tx => tx.select().from(gyms).orderBy(asc(gyms.createdAt), asc(gyms.id)));
   const copyToken = (ticket: string) => createHmac('sha256', options.key).update('demo-copy-v1:' + ticket).digest('base64url');
   const idleExpiry = (now: Date) => new Date(now.getTime() + (options.config.idleHours ?? 2) * 3_600_000).toISOString();
@@ -53,8 +54,19 @@ export function createDemoPool(options: {
   }
   async function progress(ticket: string) {
     requireDemo(options.config);
-    const rows = await all(), now = options.clock.now().getTime();
-    const row = rows.find(gym => sandboxSettings(gym.settings)?.ticketHash === hash(ticket));
+    let rows = await all();
+    const now = options.clock.now().getTime();
+    let row = rows.find(gym => sandboxSettings(gym.settings)?.ticketHash === hash(ticket));
+    if (!row) {
+      const recovery = await recoveryFor(hash(ticket));
+      if (recovery?.demo.ticketExpiresAt && Date.parse(recovery.demo.ticketExpiresAt) > now) {
+        await wake();
+        return { pending: true as const, ticket, position: 1, retryAfterSeconds: 2 as const };
+      }
+      // Recovery may have created the new reservation and finished its job between the two reads.
+      rows = await all();
+      row = rows.find(gym => sandboxSettings(gym.settings)?.ticketHash === hash(ticket));
+    }
     const demo = sandboxSettings(row?.settings);
     if (!row || !demo || !demo.ticketExpiresAt || Date.parse(demo.ticketExpiresAt) <= now) throw new AppError('not_found', 'Not found');
     if (demo.ready && demo.kind === 'private') return completed(row.id, ticket);
@@ -81,6 +93,7 @@ export function createDemoPool(options: {
     showcaseHostname, progress, recoverSeed,
     setWake(callback: () => Promise<void>) { wake = callback; },
     setRecoveryCheckpoint(callback: (recovery: SeedRecovery) => Promise<void>) { checkpoint = callback; },
+    setRecoveryLookup(callback: (ticketHash: string) => Promise<SeedRecovery | undefined>) { recoveryFor = callback; },
     async showcase() {
       const rows = await all();
       // The active showcase remains available past its replacement deadline until the swap commits.

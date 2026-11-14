@@ -50,6 +50,9 @@ Install-level work uses `enqueueSystem` and `handleSystem`, with `gymId: null` i
 the handler context. These separate methods keep the gym-required `Jobs` contract
 intact. Install jobs share their own concurrency bucket and never appear in gym
 statistics. Database statuses are `pending`, `running`, `succeeded`, and `failed`.
+`pendingSystemPayloads(name)` reads only pending/running install payloads for an
+exact job name. Internal orchestration uses it to retain polling progress while
+a failed demo seed's tenant reservation is being replaced; gym jobs are excluded.
 The optional `eligibleGym` policy is checked immediately before a gym handler.
 A false result acknowledges the queued job without calling its handler; demo
 composition uses it to exclude the shared showcase and pooled gyms, including

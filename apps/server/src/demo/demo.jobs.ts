@@ -6,10 +6,10 @@ import type { PostgresJobs } from '../infra/jobs/postgres.js';
 import { logError } from '../core/log.js';
 import type { DemoService } from './service.js';
 import type { DemoPool } from './pool.js';
-import { sandboxSettings, type DemoConfig } from './config.js';
+import { sandboxSettings, type DemoConfig, type SeedRecovery } from './config.js';
 
 /** Explicit install job also retries suspended gyms whose upload cleanup failed. */
-export function registerDemoCleanup(queue: Pick<PostgresJobs, 'handleSystem' | 'enqueueSystem'>, options: {
+export function registerDemoCleanup(queue: Pick<PostgresJobs, 'handleSystem' | 'enqueueSystem' | 'pendingSystemPayloads'>, options: {
   config: DemoConfig; service: DemoService; pool?: DemoPool; clock: Clock; system?: typeof forSystem;
 }) {
   const system = options.system ?? forSystem;
@@ -21,6 +21,10 @@ export function registerDemoCleanup(queue: Pick<PostgresJobs, 'handleSystem' | '
     options.pool.setWake(wake);
     options.pool.setRecoveryCheckpoint(async recovery => {
       await queue.enqueueSystem('demo.replace-seed', recovery, { timezone: 'UTC', idempotencyKey: recovery.gymId, maxAttempts: 20 });
+    });
+    options.pool.setRecoveryLookup(async ticketHash => {
+      const pending = await queue.pendingSystemPayloads('demo.replace-seed');
+      return pending.find(payload => sandboxSettings({ demo: (payload as SeedRecovery | null)?.demo })?.ticketHash === ticketHash) as SeedRecovery | undefined;
     });
   }
   if (options.config.enabled) queue.handleSystem('demo.expire', async () => {
