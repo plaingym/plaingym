@@ -2,7 +2,7 @@
 import { randomBytes } from 'node:crypto';
 import AxeBuilder from '@axe-core/playwright';
 import type { Browser, Locator, Page, TestInfo } from '@playwright/test';
-import { test, expect, Client, demoClient, localDate, showWeek, wall, type Person, type Program, type RecordId } from '../support.js';
+import { test, expect, Client, demoClient, clientAddress, localDate, showWeek, wall, type Person, type Program, type RecordId } from '../support.js';
 import { accessibleLayout } from '../responsive.js';
 import { deliverStripeEvent, fakeStripe, outboxIds, outboxLink, stripeOrigin } from '../portal.js';
 
@@ -83,7 +83,7 @@ async function midnightGym(owner: Client, info: TestInfo) {
 async function join(page: Page, info: TestInfo, origin: string, visitor: Visitor) {
   await page.setViewportSize(phone);
   await page.goto(origin + '/join');
-  await expect(page.getByRole('heading', { name: 'Join', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Join online', exact: true })).toBeVisible();
   await bothWidths(page, info, 'join-plans');
   await page.getByRole('link', { name: /^Choose / }).first().click();
   await expect(page.getByRole('heading', { name: /^Join: / })).toBeVisible();
@@ -115,7 +115,37 @@ async function signInToPortal(page: Page, info: TestInfo, owner: Client, visitor
   await bothWidths(page, info, 'portal-home');
 }
 
-// Both tests use the run's second sandbox, created fresh by this run: sandbox creation allows three per address an hour.
+test('a refused native join keeps typed details and names missing signature files on phone and desktop', async ({ browser, sandboxes }, info) => {
+  const sandbox = sandboxes[1]!;
+  for (const viewport of [phone, desktop]) {
+    const context = await browser.newContext({ javaScriptEnabled: false, viewport, ignoreHTTPSErrors: true, extraHTTPHeaders: { 'x-forwarded-for': clientAddress() } });
+    try {
+      const page = await context.newPage(), visitor = newVisitor();
+      await page.goto(sandbox.origin + '/join');
+      await page.getByRole('link', { name: /^Choose / }).first().click();
+      await page.getByLabel('Contact or parent/guardian name', { exact: true }).fill(visitor.fullName);
+      await page.getByLabel('Email', { exact: true }).fill(visitor.email);
+      await page.getByLabel('First name', { exact: true }).fill(visitor.firstName);
+      await page.getByLabel('Last name', { exact: true }).fill(visitor.lastName);
+      await page.getByLabel('Date of birth', { exact: true }).fill('1994-05-06');
+      for (const waiver of await page.locator('fieldset[data-waiver]').all()) {
+        await waiver.getByLabel('Signer full name', { exact: true }).fill(visitor.fullName);
+        await waiver.getByLabel('I have read and agree to this document.', { exact: true }).check();
+        await expect(waiver.getByRole('button', { name: 'Clear signature' })).not.toHaveClass(/bg-primary/);
+      }
+      await page.getByRole('button', { name: 'Continue to payment', exact: true }).click();
+      await expect(page.getByRole('alert')).toContainText('choose a PNG signature image');
+      await expect(page.getByLabel('Email', { exact: true })).toHaveValue(visitor.email);
+      await expect(page.getByLabel('First name', { exact: true })).toHaveValue(visitor.firstName);
+      await expect(page.getByLabel('Last name', { exact: true })).toHaveValue(visitor.lastName);
+      await expect(page.getByLabel('Date of birth', { exact: true })).toHaveValue('1994-05-06');
+      await accessibleLayout(page, info, 'native-join-refusal-' + viewport.width);
+      await info.attach('native-join-refusal-' + viewport.width, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
+    } finally { await context.close(); }
+  }
+});
+
+// These flows use the run's second sandbox, created fresh by this run: sandbox creation allows three per address an hour.
 test('a visitor joins with the test card, and only the signed checkout webhook activates the join and its portal login', async ({ page, sandboxes }, info) => {
   test.setTimeout(180_000);
   const sandbox = sandboxes[1]!, owner = await demoClient(sandbox, 'owner'), visitor = newVisitor();

@@ -6,7 +6,7 @@ import { zonedInstant } from '@plaingym/shared/time';
 import { cardChargeIssue } from '@plaingym/shared/money';
 import { needsGuardian } from '../../areas/waivers/snapshot.js';
 import { formatMoney } from '../../core/money.js';
-import { waiverDocumentView } from '../pages/page.js';
+import { secondaryButton, waiverDocumentView } from '../pages/page.js';
 import { logoVersion } from '../short-hash.js';
 
 const button = 'inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg bg-primary px-4 py-3 text-center font-semibold text-primary-foreground disabled:opacity-50';
@@ -29,6 +29,12 @@ export interface PageInput {
 /** Server-rendered Hono JSX; dynamic terms and names are escaped as text. */
 export function linkPage({ data, state, portalClaim, tablet = false, now, timezone, locale = 'en', t, documentBase, gymName, logoKey }: PageInput) {
   const text = (key: string, values?: Record<string, string | number>) => t('public/links:' + key, values);
+  const unsigned = data && (data.purpose === 'onboarding' || data.purpose === 'sign_waiver')
+    && (data.purpose === 'onboarding' ? data.members : [data.member]).some(member => data.templates.some(template =>
+      !data.signatures.some(signature => signature.memberId === member.id && signature.templateId === template.id)));
+  const primaryAction = data?.purpose === 'onboarding'
+    ? portalClaim ? 'portal' : !data.paymentMethods.length ? 'card' : unsigned ? 'waiver' : 'complete'
+    : data?.purpose === 'update_card' ? 'card' : data?.purpose === 'sign_waiver' ? 'waiver' : 'invoice';
   const announcementText = (key: string, values?: Record<string, string | number>) => t('links/unsubscribe:' + key, values);
   const title = !state && data?.purpose === 'unsubscribe' ? announcementText('title') : text(state ?? data?.purpose ?? 'unavailable');
   const money = (value: number, currency: string) => formatMoney(value, currency, locale);
@@ -40,7 +46,7 @@ export function linkPage({ data, state, portalClaim, tablet = false, now, timezo
       h('p', null, text('cardHelp')),
       data.paymentMethods.length === 0 ? h('p', { 'data-card-status': true }, text('noCard')) : null,
       ...data.paymentMethods.map(c => h('p', { 'data-card-status': true }, c.last4 ? text('savedCard', { last4: c.last4 }) : text('noCard'))),
-      h('button', { type: 'button', class: button, 'data-checkout': true }, text('setupCard'))) : null;
+      h('button', { type: 'button', class: primaryAction === 'card' ? button : secondaryButton, 'data-checkout': true }, text('setupCard'))) : null;
   const invoice = data?.purpose === 'pay_invoice' ? h('section', { class: panel },
     h('h2', { class: 'text-xl font-semibold' }, text('invoice', { number: data.invoice.invoice.number })),
     h('p', null, text('due', { date: date(data.invoice.invoice.dueOn) })),
@@ -55,12 +61,15 @@ export function linkPage({ data, state, portalClaim, tablet = false, now, timezo
         : h('button', { type: 'button', class: button, 'data-checkout': true }, text('pay'))
       : h('p', null, text(['paid', 'partially_refunded', 'refunded'].includes(data.invoice.invoice.status) ? 'alreadyDoneBody' : 'paymentPending'))) : null;
   const previewed = new Set<string>();
+  let primarySignature = false;
   function form(member: { id: string; firstName: string; lastName: string; dateOfBirth: string | null }, template: WaiverTemplate) {
     if (!data || !('signatures' in data)) return null;
     const id = member.id + '-' + template.id;
     const signed = data.signatures.some(s => s.memberId === member.id && s.templateId === template.id);
     const guardian = needsGuardian(member.dateOfBirth, now, timezone);
     const preview = !signed && !previewed.has(template.id);
+    const signClass = primaryAction === 'waiver' && !primarySignature ? button : secondaryButton;
+    if (!signed) primarySignature = true;
     if (!signed) previewed.add(template.id);
     return h('section', { class: panel }, h('h3', { class: 'text-lg font-semibold' }, template.name),
       h('p', null, text('member', { name: member.firstName + ' ' + member.lastName })),
@@ -77,10 +86,10 @@ export function linkPage({ data, state, portalClaim, tablet = false, now, timezo
         h('p', { id: id + '-signature', class: 'font-semibold' }, text('signature')),
         h('p', { id: id + '-help', class: 'text-sm text-muted-foreground' }, text('signatureHelp')),
         h('canvas', { width: 900, height: 300, class: 'block h-40 w-full touch-none rounded-lg border border-border bg-white', 'aria-labelledby': id + '-signature', 'aria-describedby': id + '-help' }),
-        h('button', { type: 'button', class: button, 'data-clear-signature': true }, text('clearSignature')),
+        h('button', { type: 'button', class: secondaryButton, 'data-clear-signature': true }, text('clearSignature')),
         h('label', { for: id + '-file', class: 'block space-y-1' }, text('signatureFile'), h('input', { id: id + '-file', name: 'image', type: 'file', accept: 'image/png', class: input })),
         h('label', { class: 'flex min-h-11 items-center gap-3' }, h('input', { name: 'consent', type: 'checkbox', required: true, class: 'h-6 w-6 shrink-0' }), h('span', null, text('consent'))),
-        h('button', { type: 'submit', class: button }, text('sign'))));
+        h('button', { type: 'submit', class: signClass }, text('sign'))));
   }
   const waiverData = data && (data.purpose === 'sign_waiver' || data.purpose === 'onboarding') ? data : null;
   const waivers = waiverData ? h('section', { class: 'space-y-4' }, h('h2', { class: 'text-xl font-semibold' }, text('waivers')),
@@ -100,7 +109,7 @@ export function linkPage({ data, state, portalClaim, tablet = false, now, timezo
           logoKey ? h('img', { src: '/public/pages/logo/' + logoVersion(logoKey), alt: gymName, width: 64, height: 64, class: 'h-16 w-16 object-contain' }) : null,
           h('p', { class: 'break-words font-semibold' }, gymName)) : null,
         tablet ? h('aside', { class: panel }, h('p', { class: 'font-semibold' }, text('tablet')), h('p', null, text('tabletHelp')),
-          h('a', { class: button, href: '/l/cleared', 'data-exit': true }, text('clear'))) : null,
+          h('a', { class: secondaryButton, href: '/l/cleared', 'data-exit': true }, text('clear'))) : null,
         notice ?? h('header', { class: 'space-y-2' }, h('h1', { class: 'text-2xl font-bold sm:text-3xl' }, title),
           data?.purpose === 'unsubscribe' ? null : h('p', null, text('welcome'))),
         h('p', { id: 'feedback', role: 'status', 'aria-live': 'polite', class: 'break-words' }),
@@ -112,7 +121,7 @@ export function linkPage({ data, state, portalClaim, tablet = false, now, timezo
             portalClaim.password ? h('label', { for: 'portal-password', class: 'block space-y-1' }, text('portalPassword'), h('input', { id: 'portal-password', name: 'password', type: 'password', required: true, minlength: 12, maxlength: 128, autocomplete: 'new-password', class: input })) : null,
             h('button', { type: 'submit', class: button }, text('portalClaim')))) : null,
         invoice, card, waivers, unsubscribe,
-        data && data.purpose !== 'sign_waiver' && data.purpose !== 'unsubscribe' ? h('button', { type: 'button', class: button, 'data-complete': true }, text('checkCompletion')) : null,
+        data && data.purpose !== 'sign_waiver' && data.purpose !== 'unsubscribe' ? h('button', { type: 'button', class: primaryAction === 'complete' ? button : secondaryButton, 'data-complete': true }, text('checkCompletion')) : null,
         data ? h('noscript', null, text('javascript')) : null,
         h('footer', { class: 'block' }, h('a', { href: '/source', rel: 'noreferrer', class: 'inline-flex min-h-11 items-center underline' }, text('source')))),
       data?.purpose !== 'unsubscribe' ? h('template', { id: 'completed-message' }, h('section', { class: panel, tabindex: -1 },

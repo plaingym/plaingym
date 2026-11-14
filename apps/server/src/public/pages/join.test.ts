@@ -626,6 +626,23 @@ function nativeForm(f: Fixture, planId: string, email: string) {
 }
 
 describe('public join pages through the production registrations', () => {
+  it('keeps native join drafts and identifies missing signatures and consent without saving a household', async () => {
+    const f = await fixture(), form = nativeForm(f, f.plan.id, 'draft@example.invalid');
+    form.set('contactName', 'Pat <Payer>'); form.set('phone', '555-0123'); form.set('code', 'TRYAGAIN');
+    form.set('waiver-0-0-kind', 'guardian'); form.set('waiver-0-0-name', 'Pat <Payer>'); form.set('waiver-0-0-relationship', 'Parent');
+    form.delete('waiver-0-0-image'); form.delete('waiver-0-0-consent');
+    const response = await f.server.request(await requestWithLength(origin + '/join', { method: 'POST', headers: { origin }, body: form }));
+    const html = await response.text();
+    expect(response.status).toBe(400);
+    expect(html).toContain('role="alert"');
+    expect(html).toContain(f.templates[0]!.name + ': choose a PNG signature image');
+    expect(html).toContain(f.templates[0]!.name + ': agree to the document');
+    for (const value of ['Pat &lt;Payer&gt;', 'draft@example.invalid', '555-0123', 'Avery', 'Native', '1990-01-02', 'Parent', 'TRYAGAIN']) expect(html).toContain('value="' + value + '"');
+    expect(html).toContain('value="guardian" selected');
+    expect(html).toContain('signature files must be selected again');
+    expect(html).not.toContain('<Payer>'); expect(html).not.toContain(pngBase64);
+    expect((await f.joined()).some(home => home.email === 'draft@example.invalid')).toBe(false);
+  });
   it('shows a zero-decimal gym\'s plan prices in whole yen, in the page and the API', async () => {
     const f = await fixture(), yenGym = uuidv7();
     await factory('gyms', yenGym, { name: 'Tokyo Gym', currency: 'JPY', timezone, billingEnabled: true });

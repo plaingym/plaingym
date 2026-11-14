@@ -9,6 +9,20 @@ import messages from '../../../../../locales/en/public/links.json' with { type: 
 const t = createTranslator({ 'public/links': messages });
 const now = new Date('2026-10-25T12:00:00Z');
 describe('signed-link presentation and return receipts', () => {
+  it('keeps payment primary and completion secondary', () => {
+    const page = linkPage({ now, timezone: 'UTC', t, data: { purpose: 'pay_invoice', invoice: { lines: [], invoice: {
+      id: 'invoice', number: 1, kind: 'one_off', status: 'open', dueOn: '2026-10-25', amountCents: 2500, currency: 'USD', paidAt: null,
+    } } } });
+    expect(page).toMatch(/class="[^"]*bg-primary[^"]*" data-checkout/);
+    expect(page).toMatch(/class="[^"]*border-border bg-background[^"]*" data-complete/);
+  });
+  it('gives onboarding one primary action when login, card and several signatures are offered', () => {
+    const page = linkPage({ now, timezone: 'UTC', t, portalClaim: { password: true }, data: { purpose: 'onboarding', paymentMethods: [], signatures: [],
+      members: [{ id: 'member', firstName: 'Alex', lastName: 'Example', dateOfBirth: '2000-01-01', revision: 1 }],
+      templates: ['one', 'two'].map(id => ({ id, name: 'Terms', kind: 'waiver', version: 1, body: 'Terms', retiredAt: null, createdAt: now.toISOString() })) } });
+    expect(page.split('</main>')[0]!.match(/\bbg-primary\b/g)).toHaveLength(1);
+    expect(page).toMatch(/class="[^"]*bg-background[^"]*" data-clear-signature/);
+  });
   it.each(['alreadyDone', 'unavailable', 'replaced', 'cleared'] as const)('keeps gym branding on the %s page', state => {
     const page = linkPage({ now, timezone: 'UTC', t, state, gymName: 'North <Gym>', logoKey: 'gym/website/logo/one.png' });
     expect(page).toContain('North &lt;Gym&gt;'); expect(page).toMatch(/src="\/public\/pages\/logo\/[a-f0-9]+"/);

@@ -113,11 +113,13 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
     // Native multipart form: signature PNG files replace the canvases when JavaScript is unavailable.
     route({ method: 'post', path: '/join', permission: { kind: 'public' }, middleware: [submissions, boundedForm], responses: html }, async ctx => {
       const context = ctx.get('context'), service = options().service, gymId = context.gym.gymId;
+      let fields: FormData | undefined;
       try {
         const contentType = ctx.req.header('content-type')?.split(';')[0]?.trim().toLowerCase();
         if (contentType !== 'multipart/form-data') throw new AppError('invalid_request', 'Expected a form submission');
-        const fields = await ctx.req.raw.formData().catch(() => { throw new AppError('invalid_request', 'Invalid form submission'); });
-        const value = (name: string) => { const field = fields.get(name); return typeof field === 'string' ? field : ''; };
+        const submitted = await ctx.req.raw.formData().catch(() => { throw new AppError('invalid_request', 'Invalid form submission'); });
+        fields = submitted;
+        const value = (name: string) => { const field = submitted.get(name); return typeof field === 'string' ? field : ''; };
         const count = Number(value('members'));
         if (!Number.isInteger(count) || count < 1 || count > maxJoinMembers) throw new AppError('invalid_request', 'Invalid member count');
         const contact = { name: value('contactName'), email: value('email'), ...(value('phone') ? { phone: value('phone') } : {}) };
@@ -127,7 +129,7 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
         // The documents the page rendered; the admission checks them against the current set.
         const documents = Array.from({ length: maxJoinDocuments }, (_, j) => j).filter(j => value(`waiver-0-${j}-template`));
         const signatures = await Promise.all(people.map((_, i) => Promise.all(documents.map(async j => {
-          const prefix = `waiver-${i}-${j}`, file = fields.get(prefix + '-image');
+          const prefix = `waiver-${i}-${j}`, file = submitted.get(prefix + '-image');
           if (!(file instanceof File) || !file.size || file.size > 256 * 1024 || value(prefix + '-consent') !== 'on') throw new AppError('invalid_request', 'Signature and consent required');
           return { templateId: value(prefix + '-template'), templateVersion: Number(value(prefix + '-version')),
             pngBase64: Buffer.from(await file.arrayBuffer()).toString('base64'), signer: signer(value, prefix) };
@@ -142,6 +144,39 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
         return page(ctx, status === 'manual' ? 'manual' : 'cardOnly' in state && state.cardOnly ? 'card' : 'continue', 200, linkId);
       } catch (error) {
         if (error instanceof AppError && error.code === 'unavailable') return page(ctx, 'unavailable', 503);
+        if (fields && (error instanceof z.ZodError || error instanceof AppError && ['invalid_request', 'not_found', 'conflict'].includes(error.code))) {
+          const values = Object.fromEntries([...fields].filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+          const count = Number(values.members);
+          if (idSchema.safeParse(values.planId).success && Number.isInteger(count) && count >= 1 && count <= maxJoinMembers) {
+            try {
+              const plan = await service.joinablePlan(gymId, values.planId!), templates = await service.ready(gymId);
+              const t = options().t ?? translator, text = (key: string, args?: Record<string, string | number>) => t('public/join:' + key, args);
+              const errors: string[] = [];
+              const labels = { contactName: text('contactName'), email: text('email'), phone: text('phone'), firstName: text('firstName'), lastName: text('lastName'),
+                dateOfBirth: text('dateOfBirth'), name: text('signerName'), relationship: text('relationship') };
+              for (const name of ['contactName', 'email'] as const) if (!values[name]?.trim()) errors.push(text('checkField', { field: labels[name] }));
+              for (let i = 0; i < count; i++) {
+                const member = text('member', { number: i + 1 });
+                for (const name of ['firstName', 'lastName', 'dateOfBirth'] as const) if (!values[`member-${i}-${name}`]?.trim()) errors.push(text('checkField', { field: member + ': ' + labels[name] }));
+                templates.forEach((template, j) => {
+                  const prefix = `waiver-${i}-${j}`, file = fields!.get(prefix + '-image');
+                  const document = member + ': ' + template.name;
+                  if (!(file instanceof File) || !file.size || file.size > 256 * 1024) errors.push(text('checkSignature', { document }));
+                  if (values[prefix + '-consent'] !== 'on') errors.push(text('checkConsent', { document }));
+                });
+              }
+              if (error instanceof z.ZodError) for (const issue of error.issues) {
+                const name = issue.path.at(-1), label = issue.path[0] === 'contact' && name === 'name' ? labels.contactName : typeof name === 'string' ? labels[name as keyof typeof labels] : undefined;
+                if (label) errors.push(text('checkField', { field: issue.path[0] === 'members' ? text('member', { number: Number(issue.path[1]) + 1 }) + ': ' + label : label }));
+              }
+              if (codeRefused(error)) errors.push(text('codeRefused'));
+              else if (!errors.length) errors.push(text(error instanceof AppError && error.code === 'conflict' ? 'conflict' : 'checkApplicants'));
+              return ctx.html(joinFormPage({ gym: await service.branding(gymId), t, plan, count, templates, values, errors: [...new Set(errors)] }), 400);
+            } catch (retryError) {
+              if (!(retryError instanceof AppError && ['not_found', 'unavailable'].includes(retryError.code))) throw retryError;
+            }
+          }
+        }
         if (codeRefused(error)) return page(ctx, 'codeRefused', 400);
         if (error instanceof z.ZodError || error instanceof AppError && ['invalid_request', 'not_found', 'conflict'].includes(error.code)) return page(ctx, 'failed', 400);
         throw error;

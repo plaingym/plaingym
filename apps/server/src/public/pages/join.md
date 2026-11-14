@@ -22,6 +22,12 @@ source link, and posts as a native multipart form when JavaScript is unavailable
 the page says to contact the gym, while billing is off, no payment provider is
 configured, or the gym has no current document or more than eight.
 
+A refused native submission redisplays the form with typed contact, member and
+signer details and any discount code. It names missing signature images and consent
+per member and document, and identifies invalid fields reported by validation.
+Signature files must be selected again. If a document has changed, its signer
+details and consent are reset so the new version is reviewed.
+
 ## Submission
 
 The join is two requests, like drop-in admission. `POST /join/signatures`

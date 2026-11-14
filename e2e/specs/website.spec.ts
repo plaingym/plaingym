@@ -39,6 +39,9 @@ test('the website pages load under their own policy and fit a 360 px phone and a
       for (const path of pages) {
         await open(page, sandbox, path);
         await accessibleLayout(page, info, `website${path === '/' ? '-home' : path.replace('/', '-')}-${size.width}`);
+        const footerBottom = await page.locator('footer').evaluate(element => element.getBoundingClientRect().bottom + window.scrollY);
+        expect(footerBottom).toBeGreaterThanOrEqual(size.height);
+        if (path === '/contact') await info.attach('website-footer-' + size.width, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
       }
     }
     // Structured data for search engines, in a block that runs nothing.
