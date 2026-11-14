@@ -61,6 +61,9 @@ are never returned.
 
 `GET /api/portal/members/{memberId}/attendance` pages the member's visits,
 newest first, through the shared attendance queries in household scope.
+Each visit includes the session's `sessionName` when there is one, or null for
+visits without a session. The portal shows that name, falling back to the visit
+kind for imported or open-mat visits without a session.
 
 ## Composition
 

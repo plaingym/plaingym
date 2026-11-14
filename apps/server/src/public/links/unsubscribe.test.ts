@@ -95,7 +95,7 @@ async function fixture(tenancy: 'single' | 'multi' = 'multi') {
   const [row] = await db.forGym(gymId, tx => tx.select().from(signedLinks));
   const links = createSignedLinksService({ scope: db.forGym, clock });
   const payments = new FakePayments(gymId, clock), uploads = new FakeUploads(gymId, clock);
-  configureLinkPages({ scope: db.forHousehold, links, receiptKey: new Uint8Array(32).fill(7),
+  configureLinkPages({ brandingFor: async () => ({ name: 'Example Academy', branding: {} }), scope: db.forHousehold, links, receiptKey: new Uint8Array(32).fill(7),
     gymNameFor: async () => 'Example Academy', stylesheet: async () => '', browserScript: async () => '',
     waivers: createWaiversService({ scope: db.forGym, clock, uploadsFor: async () => uploads }),
     checkout: createSignedLinkCheckout({ scope: db.forGym, clock, paymentsFor: async () => payments, originFor: async () => origin }) });

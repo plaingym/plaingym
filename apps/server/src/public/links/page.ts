@@ -7,6 +7,7 @@ import { cardChargeIssue } from '@plaingym/shared/money';
 import { needsGuardian } from '../../areas/waivers/snapshot.js';
 import { formatMoney } from '../../core/money.js';
 import { waiverDocumentView } from '../pages/page.js';
+import { logoVersion } from '../short-hash.js';
 
 const button = 'inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg bg-primary px-4 py-3 text-center font-semibold text-primary-foreground disabled:opacity-50';
 const input = 'block min-h-11 w-full rounded-md border border-border bg-background px-3 py-2 text-base';
@@ -14,6 +15,7 @@ const panel = 'space-y-4 rounded-xl border border-border bg-card p-4 sm:p-6';
 const h = jsx;
 export interface PageInput {
   gymName?: string;
+  logoKey?: string | null;
   documentBase?: string;
   portalClaim?: { password: boolean } | undefined;
   data?: PortalSignedLinkData;
@@ -25,7 +27,7 @@ export interface PageInput {
   t: Translator;
 }
 /** Server-rendered Hono JSX; dynamic terms and names are escaped as text. */
-export function linkPage({ data, state, portalClaim, tablet = false, now, timezone, locale = 'en', t, documentBase, gymName }: PageInput) {
+export function linkPage({ data, state, portalClaim, tablet = false, now, timezone, locale = 'en', t, documentBase, gymName, logoKey }: PageInput) {
   const text = (key: string, values?: Record<string, string | number>) => t('public/links:' + key, values);
   const announcementText = (key: string, values?: Record<string, string | number>) => t('links/unsubscribe:' + key, values);
   const title = !state && data?.purpose === 'unsubscribe' ? announcementText('title') : text(state ?? data?.purpose ?? 'unavailable');
@@ -85,16 +87,18 @@ export function linkPage({ data, state, portalClaim, tablet = false, now, timezo
     waiverData.templates.length === 0 ? h('p', null, text('noWaivers')) : null,
     ...(waiverData.purpose === 'sign_waiver' ? [waiverData.member] : waiverData.members).flatMap(m => waiverData.templates.map(template => form(m, template)))) : null;
   const unsubscribe = data?.purpose === 'unsubscribe' ? h('section', { class: panel },
-    h('p', { class: 'break-words text-xl font-semibold' }, gymName),
     h('p', { class: 'break-words', 'data-announcement-status': true }, announcementText(data.optedOut ? 'unsubscribed' : 'subscribed', { name: data.member.firstName + ' ' + data.member.lastName })),
     h('p', null, announcementText('help')),
     h('button', { type: 'button', class: button, 'data-announcement-opt-out': String(!data.optedOut) }, announcementText(data.optedOut ? 'resubscribe' : 'unsubscribe'))) : null;
   return '<!doctype html>' + h('html', { lang: locale },
     h('head', null, h('meta', { charset: 'utf-8' }), h('meta', { name: 'viewport', content: 'width=device-width, initial-scale=1' }),
-      h('meta', { name: 'robots', content: 'noindex, nofollow' }), h('title', null, title), h('link', { rel: 'stylesheet', href: '/l/styles.css' }),
+      h('meta', { name: 'robots', content: 'noindex, nofollow' }), h('title', null, gymName ? title + ' · ' + gymName : title), h('link', { rel: 'stylesheet', href: '/l/styles.css' }),
       data || (tablet && state === 'alreadyDone') ? h('script', { src: '/l/client.js', defer: true }) : null),
     h('body', { class: 'm-0 bg-background text-foreground', 'data-state': state ?? '', 'data-purpose': data?.purpose ?? '', 'data-tablet': String(tablet) },
       h('main', { class: 'mx-auto w-full max-w-2xl space-y-6 px-4 py-6 sm:px-6 sm:py-10' },
+        gymName ? h('header', { class: 'space-y-2' },
+          logoKey ? h('img', { src: '/public/pages/logo/' + logoVersion(logoKey), alt: gymName, width: 64, height: 64, class: 'h-16 w-16 object-contain' }) : null,
+          h('p', { class: 'break-words font-semibold' }, gymName)) : null,
         tablet ? h('aside', { class: panel }, h('p', { class: 'font-semibold' }, text('tablet')), h('p', null, text('tabletHelp')),
           h('a', { class: button, href: '/l/cleared', 'data-exit': true }, text('clear'))) : null,
         notice ?? h('header', { class: 'space-y-2' }, h('h1', { class: 'text-2xl font-bold sm:text-3xl' }, title),

@@ -8,6 +8,7 @@ export interface AttendanceEntry {
   readonly id: Id;
   readonly memberId: Id;
   readonly sessionId: Id | null;
+  readonly sessionName?: string | null;
   readonly programId: Id | null;
   readonly occurredAt: IsoInstant;
   readonly source: 'kiosk' | 'coach' | 'import';

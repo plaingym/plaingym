@@ -9,6 +9,15 @@ import messages from '../../../../../locales/en/public/links.json' with { type: 
 const t = createTranslator({ 'public/links': messages });
 const now = new Date('2026-10-25T12:00:00Z');
 describe('signed-link presentation and return receipts', () => {
+  it.each(['alreadyDone', 'unavailable', 'replaced', 'cleared'] as const)('keeps gym branding on the %s page', state => {
+    const page = linkPage({ now, timezone: 'UTC', t, state, gymName: 'North <Gym>', logoKey: 'gym/website/logo/one.png' });
+    expect(page).toContain('North &lt;Gym&gt;'); expect(page).toMatch(/src="\/public\/pages\/logo\/[a-f0-9]+"/);
+    expect(page).not.toContain('gym/website/logo/one.png'); expect(page).toContain('object-contain');
+  });
+  it('brands active signed-link pages without a logo when none is configured', () => {
+    const page = linkPage({ now, timezone: 'UTC', t, gymName: 'North Gym', data: { purpose: 'update_card', paymentMethods: [] } });
+    expect(page).toContain('North Gym'); expect(page).not.toContain('<img');
+  });
   it('frames only unsigned PDF templates after a signature', () => {
     const member = { id: 'member', firstName: 'Alex', lastName: 'Example', dateOfBirth: '2000-01-01', revision: 1 };
     const template = { name: 'Terms', kind: 'waiver' as const, version: 1, body: '', retiredAt: null, createdAt: now.toISOString(),

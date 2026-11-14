@@ -141,8 +141,8 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
       }
       const { limit, offset } = paginationSchema.parse({ limit: page.limit, offset: page.offset });
       const { rows, total } = await householdRead(context.identity, filter, (queries, activity) => queries.attendancePage(activity, { limit, offset }));
-      return { data: rows.map(({ id, memberId, sessionId, programId, occurredAt, source, kind }) => ({
-        id, memberId, sessionId, programId, occurredAt: occurredAt.toISOString(), source: attendanceSourceSchema.parse(source),
+      return { data: rows.map(({ id, memberId, sessionId, sessionName, programId, occurredAt, source, kind }) => ({
+        id, memberId, sessionId, sessionName, programId, occurredAt: occurredAt.toISOString(), source: attendanceSourceSchema.parse(source),
         kind: classKindSchema.parse(kind),
       })), pagination: { limit, offset, total } };
     },

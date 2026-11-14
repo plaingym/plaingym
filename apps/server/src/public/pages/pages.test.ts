@@ -31,7 +31,9 @@ const body = (email = 'visitor@example.invalid') => ({ contact: { name: 'Alex Co
   member: { firstName: 'New', lastName: 'Visitor', dateOfBirth: '1990-01-02' }, honeypot: '' });
 async function fixture(demo = false) {
   const gymId = uuidv7(), otherGym = uuidv7(), clock = new TestClock('2026-10-29T12:00:00Z');
-  await factory('gyms', gymId, { name: 'North <Gym>', websiteEnabled: false, branding: { primaryColor: '#ffff00', logoKey: gymId + '/logo.png' } });
+  await factory('gyms', gymId, { name: 'North <Gym>', websiteEnabled: false, address: { line1: '12 Mat Street', city: 'Vancouver' },
+    settings: { modules: { website: { phone: '+1 (604) 555-0100', email: 'hello@north.example.test', secret: 'Not public' } } },
+    branding: { primaryColor: '#ffff00', logoKey: gymId + '/logo.png' } });
   await factory('gyms', otherGym, { name: 'Other private gym', branding: { primaryColor: '#000080' } });
   const existingHome = await factory('households', gymId, { name: 'Existing household', email: 'existing@example.invalid' });
   const existing = await factory('members', gymId, { householdId: existingHome.id, status: 'active', email: 'existing@example.invalid', firstName: 'Private Member' });
@@ -83,6 +85,8 @@ describe('core public pages through the production registrations', () => {
     for (const path of ['/trial', '/drop-in', '/trial/received', '/drop-in/received']) {
       const response = await f.server.request(origin + path), html = await response.text();
       expect(response.status).toBe(200); expect(html).toContain('North &lt;Gym&gt;');
+      expect(html).toContain('12 Mat Street'); expect(html).toContain('href="tel:+16045550100"');
+      expect(html).toContain('href="mailto:hello@north.example.test"'); expect(html).not.toContain('Not public');
       expect(html).toContain('href="/source"'); expect(html).not.toContain('Private Member');
       expect(response.headers.get('content-security-policy')).toContain("script-src 'self'");
       expect(response.headers.get('content-security-policy')).toMatch(/; report-uri \/csp-report; report-to csp$/);
@@ -100,6 +104,7 @@ describe('core public pages through the production registrations', () => {
     for (const path of ['/trial', '/drop-in', '/trial/received', '/drop-in/received', '/api/public/config', '/api/public/waivers', '/public/pages/theme.css']) {
       const response = await other.request(origin + path), text = await response.text();
       expect(response.status).toBe(200); expect(text).not.toContain('North'); expect(text).not.toContain(f.template.id); expect(text).not.toContain('#ffff00');
+      expect(text).not.toContain('12 Mat Street'); expect(text).not.toContain('hello@north.example.test');
     }
     const path = origin + '/public/pages/logo/' + logoVersion(f.gymId + '/logo.png');
     expect((await other.request(path)).status).toBe(404);

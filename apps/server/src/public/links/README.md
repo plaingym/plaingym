@@ -1,6 +1,13 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Signed-link pages
 
+Every signed-link page shows the resolved gym's name and its configured logo,
+including unavailable, replaced, already-completed, return and cleared states.
+The logo uses the same versioned public image route as the core public pages;
+its storage key is never put in the HTML. `brandingFor` optionally supplies these
+settings to `configureLinkPages` or `createLinkRoutes`; by default the routes read
+them through the gym settings service, with no additional runtime wiring.
+
 Campaign reminders with a link rotate their token. An unresolvable token in the public
 `campaign_` format renders a static **This link was replaced** page with instructions
 to use the newest email. It returns 404, exposes no data or actions, and looks the

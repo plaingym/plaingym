@@ -32,6 +32,10 @@ const page = () => render(<QueryClientProvider client={portalTestCache('gym', 'u
   <PortalProgressPage client={client as unknown as PortalClient} /></QueryClientProvider>);
 
 describe('portal progress', () => {
+  it('renders the class name returned with a session attendance', async () => {
+    client.attendance.mockResolvedValue({ data: [{ ...visit(1), sessionId: first, sessionName: 'Evening fundamentals' }], pagination: { limit: 20, offset: 0, total: 1 }, householdId: 'household' });
+    page(); expect(await screen.findByText('Evening fundamentals')).toBeDefined();
+  });
   it("a parent sees a child's rank, next step, criterion bars and attendance", async () => {
     const user = userEvent.setup(); page();
     await screen.findByText('No ranks yet');

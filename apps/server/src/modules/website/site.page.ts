@@ -236,9 +236,9 @@ function contactPage(input: SitePageInput) {
         lines.length ? h('address', { class: 'not-italic' }, ...lines.map((line) => h('p', { class: 'break-words' }, line))) : h('p', null, text('noAddress')),
         map ? h('p', null, h('a', { href: map, rel: 'noreferrer', class: 'inline-flex min-h-11 items-center underline' }, text('openMap'))) : null),
       h('section', { class: card + ' space-y-2' }, h('h2', { class: 'text-xl font-semibold' }, text('contact')),
-        phone ? h('p', null, h('a', { href: 'tel:' + phone.replace(/[^+\d]/g, ''), class: 'inline-flex min-h-11 items-center underline' }, text('phone', { phone }))) : null,
+        phone ? h('p', { class: 'break-all' }, h('a', { href: 'tel:' + phone.replace(/[^+\d]/g, ''), class: 'inline-flex min-h-11 items-center underline' }, text('phone', { phone }))) : null,
         email ? h('p', { class: 'break-all' }, h('a', { href: 'mailto:' + email, class: 'inline-flex min-h-11 items-center underline' }, text('email', { email }))) : null,
-        !phone && !email ? h('p', null, text('noContact')) : null)),
+        !phone || !email ? h('p', null, text('noContact')) : null)),
     calls(input.t, true)];
 }
 const pages: Record<SitePage, (input: SitePageInput) => (Node | null)[]> = {

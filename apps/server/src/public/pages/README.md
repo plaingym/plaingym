@@ -1,6 +1,14 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Core public pages
 
+The shared shell on `/join`, `/trial` and `/drop-in` (including their status
+pages) shows the gym's address, public phone and public email when configured.
+The address comes from Settings → Gym details; phone and email come from
+Settings → Website and remain public with the website switched off. Missing
+details show guidance for gym owners. `/api/public/config` includes these optional
+fields in its gym branding projection; it never returns the rest of the website
+settings. The join pages use the same projection.
+
 `configurePublicPages` supplies the real waiver service, gym uploads, a staff
 notifier and an optional `dropInFeeFor(gymId, tx)` projection: `createDropInFee()`
 (`areas/settings/drop-in-fee.ts`) reads the gym's chosen drop-in charge type at its

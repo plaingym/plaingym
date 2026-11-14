@@ -16,7 +16,7 @@ import { createMembersRoutes } from '../members/members.routes.js';
 import { createMembersService } from '../members/members.js';
 import { createSignedLinksService } from '../links/service.js';
 import { createWaiversService } from '../waivers/waivers.js';
-import { createGymSettingsAccessor } from '../settings/settings.js';
+import { createGymSettingsAccessor, createSettingsService } from '../settings/settings.js';
 import { createSignedLinkCheckout, CustomerNotLinked } from './signed-link-checkout.js';
 import { createCustomersService } from './customers.js';
 import { createChargeRunner } from './runner/index.js';
@@ -70,7 +70,7 @@ async function fixture(purpose: SignedLinkPurposeName = 'pay_invoice', invoiceKi
   const link = await links.create({ gymId, actor: { kind: 'system' } }, { householdId,
     expiresAt: new Date(clock.now().getTime() + 7 * 86400000).toISOString(),
     ...(purpose === 'pay_invoice' ? { purpose, invoiceId: invoice.id } : { purpose: purpose as 'update_card' | 'onboarding' }) });
-  configureLinkPages({ scope: db.forHousehold, checkout, links, receiptKey: new Uint8Array(32).fill(7),
+  configureLinkPages({ brandingFor: gymId => createSettingsService({ scope: db.forGym }).get(gymId), scope: db.forHousehold, checkout, links, receiptKey: new Uint8Array(32).fill(7),
     waivers: createWaiversService({ scope: db.forGym, clock, uploadsFor: async () => new FakeUploads(gymId, clock) }), stylesheet: async () => '' });
   const server = app();
   const path = '/api/links/' + purpose.replaceAll('_', '-');

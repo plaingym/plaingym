@@ -31,6 +31,7 @@ const stylesheet = cachedLinkAsset('./public/links.css'), browserScript = cached
 const linkPageDirectives = ["default-src 'none'", "script-src 'self'", "style-src 'self'", "connect-src 'self'", "img-src 'self' data:", "base-uri 'none'",
   "form-action 'self'", "frame-src 'self'", "frame-ancestors 'none'"];
 interface PageRoutesOptions {
+  brandingFor?: (gymId: string) => Promise<{ name: string; branding: { logoKey?: string | null | undefined } }>;
   gymNameFor?: (gymId: string) => Promise<string>;
   portalInvitations?: PortalInvitationService;
   service: LinkPageService;
@@ -43,9 +44,9 @@ interface PageRoutesOptions {
 }
 let configured: PageRoutesOptions | undefined;
 /** Runtime supplies real services, canonical payment origins and a stable receipt key. */
-export function configureLinkPages(options: LinkPageOptions & { gymNameFor?: PageRoutesOptions['gymNameFor']; portalInvitations?: PortalInvitationService; receiptKey: Uint8Array; links?: PageRoutesOptions['links']; t?: Translator; localeFor?: PageRoutesOptions['localeFor']; stylesheet?: () => Promise<string>; browserScript?: () => Promise<string> }) {
+export function configureLinkPages(options: LinkPageOptions & { brandingFor?: PageRoutesOptions['brandingFor']; gymNameFor?: PageRoutesOptions['gymNameFor']; portalInvitations?: PortalInvitationService; receiptKey: Uint8Array; links?: PageRoutesOptions['links']; t?: Translator; localeFor?: PageRoutesOptions['localeFor']; stylesheet?: () => Promise<string>; browserScript?: () => Promise<string> }) {
   const service = createLinkPageService(options);
-  configured = { service, ...(options.portalInvitations ? { portalInvitations: options.portalInvitations } : {}), links: options.links ?? createSignedLinksService(), receipts: checkoutReceipts(options.receiptKey),
+  configured = { service, ...(options.brandingFor ? { brandingFor: options.brandingFor } : {}), ...(options.portalInvitations ? { portalInvitations: options.portalInvitations } : {}), links: options.links ?? createSignedLinksService(), receipts: checkoutReceipts(options.receiptKey),
     ...(options.gymNameFor ? { gymNameFor: options.gymNameFor } : {}), ...(options.t ? { t: options.t } : {}), ...(options.localeFor ? { localeFor: options.localeFor } : {}), ...(options.stylesheet ? { stylesheet: options.stylesheet } : {}), ...(options.browserScript ? { browserScript: options.browserScript } : {}) };
   return service;
 }
@@ -53,7 +54,8 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
   const options = () => supplied ?? configured ?? (() => { throw new AppError('unavailable', 'Signed-link pages are not configured'); })();
   async function presentation(c: Context<RequestEnvironment>) {
     const ctx = c.get('context'), config = options();
-    return { now: ctx.clock.now(), timezone: ctx.gym.timezone, t: config.t ?? t,
+    const gym = await (config.brandingFor ?? (gymId => settings.get(gymId)))(ctx.gym.gymId);
+    return { now: ctx.clock.now(), timezone: ctx.gym.timezone, t: config.t ?? t, gymName: gym.name, logoKey: gym.branding.logoKey ?? null,
       portalClaim: config.portalInvitations ? { password: await config.portalInvitations.passwordRequired(ctx.gym.gymId) } : undefined,
       locale: await config.localeFor?.(ctx.gym.gymId) ?? 'en' };
   }

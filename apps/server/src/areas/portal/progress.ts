@@ -47,7 +47,7 @@ export function createPortalProgressService(options: PortalProgressOptions) {
         ...(query.programId ? { programId: query.programId } : {}), ...(query.tagId ? { tagId: query.tagId } : {}), ...(query.since ? { since: query.since } : {}) },
       { limit: query.limit, offset: query.offset });
       return { pagination: page.pagination, data: page.data.map(entry => portalAttendanceSchema.parse({ id: entry.id, memberId: entry.memberId,
-        sessionId: entry.sessionId, programId: entry.programId, occurredAt: entry.occurredAt, source: entry.source, kind: entry.kind })) };
+        sessionId: entry.sessionId, sessionName: entry.sessionName ?? null, programId: entry.programId, occurredAt: entry.occurredAt, source: entry.source, kind: entry.kind })) };
     },
   };
 }

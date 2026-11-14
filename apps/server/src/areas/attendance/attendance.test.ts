@@ -334,7 +334,8 @@ describe('real AttendanceQueries conformance', () => {
     const { createdAt: _createdAt, ...entry } = siblingVisit;
     expect(_createdAt).toBe(clock.now().toISOString());
     const fake = new FakeAttendanceQueries([...fixtures, { gymId: f.gymId, entry,
-      sessionProgramIds: [f.program.id, f.otherProgram.id], sessionTagIds: [f.tag.id, f.otherTag.id] }], households);
+      sessionProgramIds: [f.program.id, f.otherProgram.id], sessionTagIds: [f.tag.id, f.otherTag.id] }]
+      .map(fixture => ({ ...fixture, entry: { ...fixture.entry, sessionName: fixture.entry.sessionId ? f.session.name : null } })), households);
     for (const identity of [payerIdentity, adultIdentity]) {
       const scope = { kind: 'household' as const, identity };
       for (const filter of [{}, { tagId: f.tag.id }, { programId: f.otherProgram.id }, { memberId: f.member.id }])

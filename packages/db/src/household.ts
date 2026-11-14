@@ -4,7 +4,7 @@ import { alias, type AnyPgColumn, type PgTable } from 'drizzle-orm/pg-core';
 import type { Transaction } from './client.js';
 import { writeAudit } from './audit.js';
 import {
-  attendances, classBookings, classSessionPrograms, classSessionTags, householdUsers, households, invoiceLineItems, invoices,
+  attendances, classBookings, classSessions, classSessionPrograms, classSessionTags, householdUsers, households, invoiceLineItems, invoices,
   announcementOptOuts, classCreditEntries, memberRanks, members, memberships, paymentMethods, signedLinks, waiverSignatures, waiverTemplates,
 } from './schema/index.js';
 
@@ -252,8 +252,9 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
       requireAccess(grant.memberActivity);
       const where = attendancePredicate(filter);
       const rows = await tx.select({ id: attendances.id, memberId: attendances.memberId, sessionId: attendances.sessionId,
-        programId: attendances.programId, occurredAt: attendances.occurredAt, source: attendances.source, kind: attendances.kind })
-        .from(attendances).where(where).orderBy(desc(attendances.occurredAt), asc(attendances.id)).limit(page.limit).offset(page.offset);
+        programId: attendances.programId, sessionName: classSessions.name, occurredAt: attendances.occurredAt, source: attendances.source, kind: attendances.kind })
+        .from(attendances).leftJoin(classSessions, and(eq(classSessions.gymId, grant.gymId), eq(classSessions.id, attendances.sessionId)))
+        .where(where).orderBy(desc(attendances.occurredAt), asc(attendances.id)).limit(page.limit).offset(page.offset);
       return { rows, total: await countRows(tx, attendances, where) };
     },
     attendanceCount: async (filter: HouseholdAttendanceFilter) => {

@@ -6,10 +6,13 @@ import {
   listResponseSchema, paginationSchema, revisionSchema,
 } from './common.js';
 import { waiverSignerSchema, waiverDigestSchema, waiverTemplateSchema, waiverTemplateVersionSchema } from './waivers.js';
+import { gymAddressSchema } from './settings.js';
 
 export const publicBrandingSchema = z.strictObject({
   name: z.string().min(1), revision: revisionSchema, logoKey: z.string().nullable(),
   primaryColor: z.string().regex(/^#[a-fA-F0-9]{6}$/).nullable(),
+  address: gymAddressSchema.optional(), phone: z.string().trim().max(40).nullable().optional(),
+  email: z.email().max(254).nullable().optional(),
 });
 export const publicPlanSchema = z.strictObject({
   id: idSchema, name: z.string().min(1), amountCents: amountCentsSchema.nonnegative(),

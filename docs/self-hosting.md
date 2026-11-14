@@ -383,7 +383,10 @@ coaches (staff profiles marked **Show on the public website**) and location and
 contact, plus a sitemap and `LocalBusiness` structured data for search engines.
 **Settings → Website** sets the logo, the primary and accent colors, up to eight
 photos, a tagline, an about text and a public phone number and email. The logo and
-primary color also brand `/join`, `/trial` and `/drop-in`. With the website off,
+primary color also brand `/join`, `/trial` and `/drop-in`, and the gym's name and
+logo head every signed-link page (`/l/*`). `/join`, `/trial` and `/drop-in` also
+show the address from **Settings → Gym details** and the public phone number and
+email from **Settings → Website**, even with the website off. With the website off,
 `/` sends visitors to the member portal and the website's other pages answer 404;
 `/join`, `/trial`, `/drop-in` and the portal work either way.
 

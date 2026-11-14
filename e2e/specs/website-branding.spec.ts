@@ -30,7 +30,7 @@ test('logo URLs follow the upload across website, core pages and admin previews 
   try {
     const first = await upload();
     expect(first.logoVersion).toMatch(/^[a-f0-9]{12}$/);
-    const saved = (await owner.json<{ data: Website }>('/api/website', 'PUT', { ...editable(first), tagline: 'A new tagline' })).data;
+    const saved = (await owner.json<{ data: Website }>('/api/website', 'PUT', { ...editable(first), tagline: 'A new tagline', phone: '+1 (604) 555-0100', email: 'hello@north.example.test' })).data;
     expect(saved.logoVersion).toBe(first.logoVersion);
     const second = await upload();
     expect(second.logoVersion).not.toBe(first.logoVersion);
@@ -38,12 +38,16 @@ test('logo URLs follow the upload across website, core pages and admin previews 
     await owner.browser(page.context());
     for (const width of [360, 1280]) {
       await page.setViewportSize({ width, height: 800 });
-      for (const path of ['/', '/join', '/trial', '/drop-in', '/trial/received', '/drop-in/received']) {
+      for (const path of ['/', '/join', '/trial', '/drop-in', '/trial/received', '/drop-in/received', '/contact', '/l/unavailable', '/l/cleared', '/l/return']) {
         const response = await page.goto(gymOrigin + path);
-        expect(response?.status(), path).toBe(200);
+        expect(response?.status(), path).toBe(path === '/l/unavailable' || path === '/l/return' ? 404 : 200);
         const logo = page.locator(`img[src="${logoPath}"]`);
         await expect(logo, path).toBeVisible();
         expect(await logo.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0), path).toBe(true);
+        if (['/join', '/trial', '/drop-in', '/trial/received', '/drop-in/received', '/contact'].includes(path)) {
+          await expect(page.locator('main a[href="tel:+16045550100"]')).toBeVisible();
+          await expect(page.locator('main a[href="mailto:hello@north.example.test"]')).toBeVisible();
+        }
         expect(await horizontalOverflow(page), path).toBeUndefined();
         await page.screenshot({ path: info.outputPath(`public-${path === '/' ? 'home' : path.slice(1).replaceAll('/', '-')}-${width}.png`) });
       }

@@ -10,6 +10,7 @@ import * as c from '@plaingym/shared/contracts';
 import { localDate } from '@plaingym/shared/time';
 import { z } from 'zod';
 import { clock as defaultClock } from '../../core/clock.js';
+import { readPublicBranding } from './service.js';
 import { logError } from '../../core/log.js';
 import { createGymSettingsAccessor, readGymSettings } from '../../areas/settings/settings.js';
 import { addsTaxOnTop } from '../../areas/billing/invoicing/adds-tax-on-top.js';
@@ -395,8 +396,7 @@ export function createJoinService(options: JoinOptions) {
       });
     },
     async branding(gymId: string) {
-      const gym = await settings(gymId);
-      return c.publicBrandingSchema.parse({ name: gym.name, revision: gym.revision, logoKey: gym.branding.logoKey ?? null, primaryColor: gym.branding.primaryColor ?? null });
+      return scope(gymId, tx => readPublicBranding(tx, gymId));
     },
     /** Creates the new household and its prospects, then stores each validated signature image. Never looks up an address. */
     async admit(gymId: string, body: unknown, timezone: string) {

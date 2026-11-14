@@ -84,6 +84,7 @@ export const portalClassCreditSchema = z.strictObject({
 export const portalClassCreditsResponseSchema = z.strictObject({ data: z.array(portalClassCreditSchema) });
 export const portalAttendanceSchema = z.strictObject({
   id: idSchema, memberId: idSchema, sessionId: idSchema.nullable(), programId: idSchema.nullable(),
+  sessionName: z.string().min(1).nullable().optional(),
   occurredAt: instantSchema, source: attendanceSourceSchema, kind: classKindSchema,
 });
 export const portalAttendanceQuerySchema = paginationSchema.extend({

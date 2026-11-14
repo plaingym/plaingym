@@ -58,7 +58,8 @@ const child = (firstName = 'Kai'): Person => ({ firstName, lastName: 'Joiner', d
 
 async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29T18:00:00Z', currency = 'CAD', gymTimezone = timezone) {
   const gymId = uuidv7(), otherGym = uuidv7(), clock = new TestClock(start);
-  await factory('gyms', gymId, { name: 'North <Gym>', currency, timezone: gymTimezone, billingEnabled: true, memberEmailsEnabled: true, websiteEnabled: false });
+  await factory('gyms', gymId, { name: 'North <Gym>', currency, timezone: gymTimezone, billingEnabled: true, memberEmailsEnabled: true, websiteEnabled: false,
+    address: { line1: '12 Mat Street' }, settings: { modules: { website: { phone: '+1 (604) 555-0100', email: 'hello@north.example.test' } } } });
   await factory('gyms', otherGym, { name: 'Other private gym', currency: 'CAD', timezone: gymTimezone, billingEnabled: true });
   const plan = await factory('plans', gymId, { name: 'Adult monthly', amountCents: 15000, currency, interval: 'monthly', signupFeeCents: 5000 });
   const gst = await factory('taxRates', gymId, { name: 'GST', rateMillionths: 50_000, inclusive: false });
@@ -582,6 +583,7 @@ describe('public join pages through the production registrations', () => {
   it('lists eligible paid, trial and free plans, renders with the website off, and projects nothing from another gym', async () => {
     const f = await fixture(), list = await f.get('/join'), html = await list.text();
     expect(list.status).toBe(200); expect(html).toContain('North &lt;Gym&gt;'); expect(html).toContain('href="/source"');
+    expect(html).toContain('12 Mat Street'); expect(html).toContain('href="tel:+16045550100"'); expect(html).toContain('href="mailto:hello@north.example.test"');
     expect(html).toContain('Adult monthly'); expect(html).toContain('Annual'); expect(html).toContain('$150.00\u00a0+\u00a0tax per month'); expect(html).toMatch(/Sign-up fee: [A-Z]*\$50\.00\u00a0\+\u00a0tax/);
     expect(html).toContain('Trial plan'); expect(html).toContain('Free plan'); expect(html).toContain('href="/join"');
     for (const hidden of ['Retired plan', 'Private other plan', 'Private']) expect(html).not.toContain(hidden);
@@ -589,6 +591,7 @@ describe('public join pages through the production registrations', () => {
     expect(list.headers.get('content-security-policy')).toMatch(/; report-uri \/csp-report; report-to csp$/);
     expect(list.headers.get('reporting-endpoints')).toBe('csp="/csp-report"');
     const form = await (await f.get(`/join?plan=${f.plan.id}&members=2`)).text();
+    expect(form).toContain('href="mailto:hello@north.example.test"');
     expect(form.match(/data-member=/g)).toHaveLength(2); expect(form.match(/data-waiver/g)).toHaveLength(4);
     expect(form).toContain('&lt;script&gt;bad()&lt;/script&gt;'); expect(form).not.toContain('<script>bad()'); expect(form).toContain('src="/join/client.js"');
     expect(form).toContain('enctype="multipart/form-data"');

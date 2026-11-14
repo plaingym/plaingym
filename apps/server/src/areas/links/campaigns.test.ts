@@ -24,6 +24,7 @@ import { registerBillingWebhookHandlers } from '../billing/webhooks/handlers/ind
 import type { WebhookHandler } from '../billing/webhooks/inbox.js';
 import { createCustomersService } from '../billing/customers.js';
 import { createGoLiveService } from '../settings/go-live.js';
+import { createSettingsService } from '../settings/settings.js';
 import { createSignedLinksService } from './service.js';
 import { createCampaignsService, configureCampaigns, campaignPublishJob, campaignSendJob } from './campaigns.js';
 import { createWaiversService } from '../waivers/waivers.js';
@@ -826,7 +827,7 @@ describe('campaign completion and production registrations', () => {
     const f = await fixture(), c = await f.campaign(); await f.drain(); const original = f.token();
     f.clock.advance(86400000); await f.service.remindCampaign(f.context, c.campaign.id); await f.drain();
     const checkout = createSignedLinkCheckout({ scope: db.forGym, clock: f.clock, paymentsFor: f.paymentsFor, originFor: async () => origin });
-    configureLinkPages({ scope: db.forHousehold, links: f.links, checkout, receiptKey: new Uint8Array(32).fill(7),
+    configureLinkPages({ brandingFor: gymId => createSettingsService({ scope: db.forGym }).get(gymId), scope: db.forHousehold, links: f.links, checkout, receiptKey: new Uint8Array(32).fill(7),
       waivers: createWaiversService({ scope: db.forGym, clock: f.clock, uploadsFor: async () => new FakeUploads(f.gymId, f.clock) }) });
     const app = (gymId = f.gymId) => createApp({ clock: f.clock, skipSetup: true, authorize, origin, contributions: areaContributions,
       resolveGym: async (ctx, next) => { ctx.set('context', { ...ctx.get('context'), gym: { gymId, timezone: 'UTC', enabledModules: new Set() } }); await next(); },
@@ -899,7 +900,7 @@ describe('campaign completion and production registrations', () => {
     const link = (await f.service.recipients(f.gymId, c.campaign.id)).data[0]!.link;
     await f.drain(); const token = f.token();
     const checkout = createSignedLinkCheckout({ scope: db.forGym, clock: f.clock, paymentsFor: f.paymentsFor, originFor: async () => origin });
-    configureLinkPages({ scope: db.forHousehold, links: f.links, checkout, receiptKey: new Uint8Array(32).fill(7),
+    configureLinkPages({ brandingFor: gymId => createSettingsService({ scope: db.forGym }).get(gymId), scope: db.forHousehold, links: f.links, checkout, receiptKey: new Uint8Array(32).fill(7),
       waivers: createWaiversService({ scope: db.forGym, clock: f.clock, uploadsFor: async () => new FakeUploads(f.gymId, f.clock) }) });
     const app = createApp({ clock: f.clock, skipSetup: true, authorize, origin, contributions: areaContributions,
       resolveGym: async (ctx, next) => { ctx.set('context', { ...ctx.get('context'), gym: { gymId: f.gymId, timezone: 'UTC', enabledModules: new Set() } }); await next(); },

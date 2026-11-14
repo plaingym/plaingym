@@ -166,6 +166,20 @@ describe('portal progress', () => {
     expect((await crossGym.request(`/api/portal/members/${foreign.child.id}/progress`)).status).toBe(404);
     expect((await crossGym.request(attendancePath(foreign.child.id))).status).toBe(404);
   });
+  it('names attended sessions, preserves imported visits and excludes other household session names', async () => {
+    const f = await portalFixture(factory), foreign = await portalFixture(factory);
+    const session = await factory('classSessions', f.gymId, { name: 'Evening fundamentals' });
+    const privateSession = await factory('classSessions', foreign.gymId, { name: 'Foreign private class' });
+    await factory('attendances', f.gymId, { memberId: f.child.id, sessionId: session.id, occurredAt: clock.now() });
+    await factory('attendances', f.gymId, { memberId: f.child.id, sessionId: null, occurredAt: new Date('2026-10-28T16:00:00Z') });
+    await factory('attendances', foreign.gymId, { memberId: foreign.child.id, sessionId: privateSession.id, occurredAt: clock.now() });
+    const server = services.app(f.gymId, f.principal('payer'));
+    const all = portalContracts.attendance.response.parse(await (await server.request(attendancePath(f.child.id))).json());
+    expect(all.data.map(row => row.sessionName)).toEqual(['Evening fundamentals', null]);
+    expect(JSON.stringify(all)).not.toContain('Foreign private class');
+    expect((await server.request(attendancePath(foreign.child.id))).status).toBe(404);
+    expect((await services.app(f.gymId, f.principal('adult')).request(attendancePath(f.child.id))).status).toBe(404);
+  });
   it('denies anonymous, staff and kiosk principals and reports unconfigured ranks as unavailable', async () => {
     const f = await portalFixture(factory);
     for (const principal of [{ kind: 'anonymous' }, { kind: 'staff', gymId: f.gymId, userId: f.staff.id, roles: ['owner'] },

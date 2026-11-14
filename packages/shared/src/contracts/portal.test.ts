@@ -138,7 +138,7 @@ describe('portal access and safe projections', () => {
     expectTypeOf<Exclude<keyof PortalHousehold, keyof typeof households.$inferSelect>>().toEqualTypeOf<never>();
     expectTypeOf<Exclude<keyof PortalMembership, keyof typeof memberships.$inferSelect>>().toEqualTypeOf<never>();
     expectTypeOf<Exclude<keyof PortalSession, keyof typeof classSessions.$inferSelect>>().toEqualTypeOf<never>();
-    expectTypeOf<Exclude<keyof PortalAttendance, keyof typeof attendances.$inferSelect>>().toEqualTypeOf<never>();
+    expectTypeOf<Exclude<keyof PortalAttendance, keyof typeof attendances.$inferSelect>>().toEqualTypeOf<'sessionName'>();
     expectTypeOf<Exclude<keyof PortalRankHistory, keyof typeof memberRanks.$inferSelect>>().toEqualTypeOf<never>();
     expectTypeOf<Exclude<keyof PortalPaymentMethod, keyof typeof paymentMethods.$inferSelect>>().toEqualTypeOf<never>();
   });

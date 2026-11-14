@@ -248,4 +248,4 @@ export function PortalShell() {
   const pathname = useRouterState({ select: state => state.location.pathname });
   return pathname === '/portal/claim' ? <Outlet /> : <AuthenticatedPortal />;
 }
-export function PortalHome() { return <Page><PageHeader title={text('welcome')} description={text('description')} /></Page>; }
+export { PortalHome } from './home.js';

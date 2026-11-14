@@ -12,6 +12,9 @@ import { createAppRouter } from '../../../app/router.js';
 import type { ShellServices } from '../../../app/services.js';
 import { portalNavigation } from './shell.js';
 
+// Keep shell request-order assertions independent of home summaries, covered in home.test.tsx and End-to-end.
+vi.mock('./home.js', () => ({ PortalHome: () => <h1>Welcome to your member portal</h1> }));
+
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 it('filters disabled, staff, payer-only and inactive-module navigation for adult members', () => {
   const self: NavigationEntry = { id: 'self', href: '/portal', labelKey: 'Self', enabled: true, permission: { kind: 'member', capability: 'profile.read' } };

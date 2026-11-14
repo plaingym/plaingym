@@ -9,6 +9,7 @@ import { localDate } from '@plaingym/shared/time';
 import { clock as defaultClock } from '../../core/clock.js';
 import { logError } from '../../core/log.js';
 import { readGymSettings } from '../../areas/settings/settings.js';
+import { readGymAndModuleSettings } from '../../areas/settings/module-settings.js';
 import { recordLeadIntake } from '../../areas/leads/intake.js';
 import { signedLinkWaiversComplete, type WaiversService } from '../../areas/waivers/waivers.js';
 import { validateSignatureImage } from '../../areas/waivers/snapshot.js';
@@ -30,6 +31,13 @@ const missing = (): never => { throw new AppError('not_found', 'Admission not fo
 export const servedImageTypes: readonly string[] = ['image/png', 'image/jpeg', 'image/webp'];
 export const maxServedImageBytes = 2_000_000;
 const imageMissing = (): never => { throw new AppError('not_found', 'Image not found'); };
+/** The core public pages share the gym's public contacts without depending on the website module. */
+export async function readPublicBranding(tx: Transaction, gymId: string) {
+  const { gym, module } = await readGymAndModuleSettings(tx, gymId, 'website');
+  const contact = c.publicBrandingSchema.pick({ phone: true, email: true }).strip().safeParse(module.value);
+  return c.publicBrandingSchema.parse({ name: gym.name, revision: gym.revision, logoKey: gym.branding.logoKey ?? null,
+    primaryColor: gym.branding.primaryColor ?? null, address: gym.address, ...(contact.success ? contact.data : {}) });
+}
 /**
  * One of the gym's own uploads as a public image: not found for a key outside `prefix` (the gym's ID by default), a
  * missing or deleted file, a type that isn't a served image type or a file over the size cap.
@@ -98,12 +106,10 @@ export function createPublicPagesService(options: PublicPagesOptions) {
     async config(gymId: string) {
       // One short transaction on one connection; a missing gym fails on the settings read before the fee is read.
       const { gym, dropInFee } = await scope(gymId, async tx => {
-        const gym = await readGymSettings(tx, gymId);
+        const gym = await readPublicBranding(tx, gymId);
         return { gym, dropInFee: await options.dropInFeeFor?.(gymId, tx) ?? null };
       });
-      return c.publicPageConfigResponseSchema.parse({ data: { gym: { name: gym.name, revision: gym.revision,
-        logoKey: gym.branding.logoKey ?? null, primaryColor: gym.branding.primaryColor ?? null },
-      dropInFee } });
+      return c.publicPageConfigResponseSchema.parse({ data: { gym, dropInFee } });
     },
     /** Only the hash of the current immutable logo key identifies the image. */
     async logo(gymId: string, version: string) {

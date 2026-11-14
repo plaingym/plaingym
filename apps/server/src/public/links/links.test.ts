@@ -25,6 +25,7 @@ import { FakeUploads } from '../../infra/storage/index.js';
 import { demoUploads } from '../../demo/uploads.js';
 import { demoSignaturePng } from '../../demo/seed/waivers-image.js';
 import { configureLinkPages } from './links.routes.js';
+import { createSettingsService } from '../../areas/settings/settings.js';
 import { createLinkPageService } from './service.js';
 import { cachedLinkAsset } from './assets.js';
 import type { Principal, RequestContext } from '../../core/context.js';
@@ -37,7 +38,7 @@ import { reportingEndpoints } from '../../core/csp.js';
 const db = useTestDatabase(), factory = createFactories(db);
 async function fixture(purpose: SignedLinkPurposeName = 'pay_invoice', customer = true, demo = false) {
   const clock = new TestClock('2026-10-25T12:00:00Z'), gymId = uuidv7();
-  await factory('gyms', gymId, { billingEnabled: true });
+  await factory('gyms', gymId, { name: 'North <Gym>', branding: { logoKey: gymId + '/website/logo/one.png' }, billingEnabled: true });
   const household = await factory('households', gymId, { stripeCustomerId: customer ? 'cus_' + gymId : null });
   const member = await factory('members', gymId, { householdId: household.id, firstName: 'Target', dateOfBirth: '2020-01-01' });
   const sibling = await factory('members', gymId, { householdId: household.id, firstName: 'Sibling' });
@@ -61,7 +62,7 @@ async function fixture(purpose: SignedLinkPurposeName = 'pay_invoice', customer 
   const config = authConfig({ AUTH_SECRET: 'onboarding-test-secret-at-least-32-characters', AUTH_PASSWORD_LOGIN: 'on' }, false);
   const portalInvitations = createPortalInvitationService({ config, database: () => db.system.db, scope: db.forGym, householdScope: db.forHousehold, smtpConfigured: async () => false, mailer: async () => null, loginLink: async () => undefined });
   const accounts = createAccountService(config, () => db.system.db);
-  const service = configureLinkPages({ portalInvitations, scope: db.forHousehold, waivers, checkout, links, receiptKey: new Uint8Array(32).fill(7), stylesheet: async () => '' });
+  const service = configureLinkPages({ brandingFor: gymId => createSettingsService({ scope: db.forGym }).get(gymId), portalInvitations, scope: db.forHousehold, waivers, checkout, links, receiptKey: new Uint8Array(32).fill(7), stylesheet: async () => '' });
   const app = (resolvedGym = gymId, principal: Principal = { kind: 'anonymous' }) => createApp({ clock, skipSetup: true, authorize,
     origin: 'https://gym.example.test', contributions: areaContributions,
     resolveGym: async (c, next) => { c.set('context', { ...c.get('context'), gym: { gymId: resolvedGym, timezone: 'UTC', enabledModules: new Set() } }); await next(); },
@@ -85,6 +86,13 @@ async function fixture(purpose: SignedLinkPurposeName = 'pay_invoice', customer 
   return { gymId, clock, household, member, sibling, other, invoice, invoiceB, template, links, link, create, provider, uploads, waivers, checkout, service, app, request, path, mutation, completeAtStripe, accounts };
 }
 describe('signed-link pages through production registrations', () => {
+  it.each(['pay_invoice', 'update_card', 'sign_waiver', 'onboarding'] as const)('brands the active %s page and resolves branding from the request gym', async purpose => {
+    const f = await fixture(purpose), page = await (await f.app().request('/l/' + f.link.token)).text();
+    expect(page).toContain('North &lt;Gym&gt;'); expect(page).toMatch(/src="\/public\/pages\/logo\/[a-f0-9]+"/);
+    const otherGym = uuidv7(); await factory('gyms', otherGym, { name: 'Other Academy' });
+    const foreign = await f.app(otherGym).request('/l/' + f.link.token), html = await foreign.text();
+    expect(foreign.status).toBe(404); expect(html).toContain('Other Academy'); expect(html).not.toContain('North &lt;Gym&gt;');
+  });
   it('claims onboarding access only for the verified household, rejecting cross-gym and forged household requests', async () => {
     const f = await fixture('onboarding'), otherGym = uuidv7(); await factory('gyms', otherGym);
     const path = '/api/links/onboarding/portal', body = { email: uuidv7() + '@example.test', password: 'onboarding-password-123' };
@@ -193,7 +201,7 @@ describe('signed-link pages through production registrations', () => {
   });
   it('uses the configured translation and gym locale on resource, cleared and return pages', async () => {
     const f = await fixture();
-    configureLinkPages({ scope: db.forHousehold, waivers: f.waivers, checkout: f.checkout, links: f.links, receiptKey: new Uint8Array(32).fill(7),
+    configureLinkPages({ brandingFor: gymId => createSettingsService({ scope: db.forGym }).get(gymId), scope: db.forHousehold, waivers: f.waivers, checkout: f.checkout, links: f.links, receiptKey: new Uint8Array(32).fill(7),
       t: createTranslator({ 'public/links': { cleared: 'Effacé', unavailable: 'Indisponible', pay_invoice: 'Payer' } }), localeFor: gymId => { expect(gymId).toBe(f.gymId); return 'fr-CA'; } });
     for (const [path, title] of [['/l/cleared', 'Effacé'], ['/l/return', 'Indisponible'], ['/l/' + f.link.token, 'Payer']]) {
       const page = await (await f.app().request(path!)).text(); expect(page).toContain(title); expect(page).toContain('lang="fr-CA"');
@@ -203,7 +211,7 @@ describe('signed-link pages through production registrations', () => {
     const f = await fixture(), log = vi.fn(), previous = setLogSink(log);
     const read = vi.fn(async (): Promise<string> => { throw new Error('ENOENT'); });
     try {
-      configureLinkPages({ scope: db.forHousehold, waivers: f.waivers, checkout: f.checkout, links: f.links, receiptKey: new Uint8Array(32).fill(7),
+      configureLinkPages({ brandingFor: gymId => createSettingsService({ scope: db.forGym }).get(gymId), scope: db.forHousehold, waivers: f.waivers, checkout: f.checkout, links: f.links, receiptKey: new Uint8Array(32).fill(7),
         stylesheet: cachedLinkAsset('links.css', read), browserScript: cachedLinkAsset('links.js', read) });
       for (const path of ['/l/styles.css', '/l/client.js']) for (let i = 0; i < 2; i++) {
         const response = await f.app().request(path); expect(response.status).toBe(503);

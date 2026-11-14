@@ -46,6 +46,14 @@ claim for the signed-in user, removes the code from the address bar and opens th
 portal. Signing out clears the query cache before returning to login.
 The root layout supplies the source-code footer.
 
+The home page summarizes the next booked, scheduled class within 30 days (not a
+waitlist place), with the attending household members, and links directly to the
+check-in code. It shows the current unsigned-waiver count and, for payers only,
+the total number of open and past-due invoices. Rank progress follows the selected
+visible member and includes the current rank, next rank and criterion bars.
+Each summary loads independently and offers a retry on failure. Every read uses
+the open household's cache key and checks the response's household before display.
+
 The portal-access member tab supports email or printed invitations, revocation,
 and protected password resets when password login is enabled. Server permissions
 are authoritative. A printed URL is displayed in full with wrapping so it remains
