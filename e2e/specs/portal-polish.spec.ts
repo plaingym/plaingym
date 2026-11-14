@@ -5,6 +5,19 @@ import { accessibleLayout } from '../responsive.js';
 const id = (n: number) => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
 const householdId = id(3), memberId = id(4);
 for (const width of [360, 1280]) {
+  test(`password recovery help fits sign-in at ${width}px`, async ({ page }, info) => {
+    await page.setViewportSize({ width, height: 800 });
+    await page.route('**/api/auth/bootstrap', route => route.fulfill({ json: { data: {
+      gym: { id: id(1), name: 'Test Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] },
+      session: null, login: { password: true, magicLink: false },
+    } } }));
+    await page.route('**/api/demo', route => route.fulfill({ json: { data: { mode: 'disabled' } } }));
+    await page.goto(gymOrigin + '/login');
+    await expect(page.getByText(/Forgot your password/)).toBeVisible();
+    await expect(page.getByLabel('Password', { exact: true })).toHaveAttribute('aria-describedby', 'password-help');
+    await accessibleLayout(page, info, 'password-help-' + width);
+    await info.attach('password-help-' + width, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
+  });
   test(`portal pages use one content width and clear states at ${width}px`, async ({ page }, info) => {
     await page.setViewportSize({ width, height: 800 });
     const startsAt = new Date().toISOString();
