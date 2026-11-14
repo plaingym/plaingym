@@ -47,9 +47,12 @@ Household addresses, member emergency contacts, rank sub-ranks and criterion ent
 strip unknown keys on read, while their request schemas still reject them. Portal
 contacts project only the fields that release knows. A save that sends one of these
 fields replaces it in full, dropping keys the running release doesn't know; a save
-that leaves it out keeps the stored JSON intact. The rank editor and the portal's
-household and member forms send these fields with every save, so a minor may add a
-key there only for data an older release may drop this way. Provider-owned
+that leaves it out keeps the stored JSON intact. The rank editor and the admin and
+portal household and member forms send only changed fields, so an unrelated edit
+after a rollback keeps stored keys the running release cannot read. Editing one of
+these JSON fields still replaces it in full; a minor may add a key there only for
+data an older release may drop when that field is edited. Rank update audits record
+the stored row before and after the change, including unknown keys. Provider-owned
 criterion `config` is validated by the registered provider, so a minor must not add
 a configuration key or a provider ID that the previous minor cannot evaluate.
 

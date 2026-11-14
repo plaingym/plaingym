@@ -18,7 +18,9 @@ database snapshot transaction closes, so a provider can safely call other servic
 
 Stored sub-ranks and criterion entries strip unknown keys before projection or
 evaluation; create and update requests remain strict. An update that sends them
-replaces them in full, and the rank editor sends both with every save. Provider configuration is
+replaces them in full. The rank editor sends only changed fields, keeping stored
+extensions on unrelated edits. Rank update audits use the stored row for both
+before and after, while responses still strip unknown entry keys. Provider configuration is
 still validated by its provider: a compatible minor cannot add configuration keys
 or provider IDs that the previous minor cannot evaluate (`docs/versioning.md`).
 

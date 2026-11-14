@@ -90,6 +90,11 @@ describe('rank routes with real permissions and Postgres RLS', () => {
     await expect(f.service.updateRank(f.context, f.rank.id, { revision: 1, [field]: stored })).rejects.toThrow();
     await expect(f.service.createRank(f.context, { rankSystemId: f.system.id, name: 'New', position: 1, subRanks: [], criteria: [], [field]: stored })).rejects.toThrow();
     expect((await f.service.updateRank(f.context, f.rank.id, { revision: 1, name: 'Renamed' }))[field]).toEqual([entry]);
+    const [saved] = await database.forGym(f.gymId, tx => tx.select().from(ranks).where(eq(ranks.id, f.rank.id)));
+    expect(saved?.[field]).toEqual(stored);
+    const audits = await database.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, f.rank.id)));
+    const audit = audits.find(row => row.action === 'rank.updated');
+    expect(audit).toMatchObject({ before: { [field]: stored }, after: { [field]: stored, name: 'Renamed', revision: 2 } });
     await expect(f.service.promote(f.context, f.promotion)).resolves.toMatchObject({ rankId: f.rank.id });
   });
   it('keeps provider configuration validation strict on writes and evaluation', async () => {

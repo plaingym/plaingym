@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createWebRegistries } from '@plaingym/shared';
-import type { Member, Rank, RankSystem, Program, PromotionEligibility, Promotion } from '@plaingym/shared/contracts';
+import { rankReadSchema, type Member, type Rank, type RankSystem, type Program, type PromotionEligibility, type Promotion } from '@plaingym/shared/contracts';
 import { ApiError } from '../../lib/api.js';
 import type { RanksClient } from './api.js';
 import { RanksWorkspace } from './page.js';
@@ -48,7 +48,40 @@ describe('rank management', () => {
     fireEvent.change(screen.getByLabelText('Order (use an unused position)'), { target: { value: '5' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ name: 'Our foundation', color: '#123abc', position: 5,
-      subRanks: [{ id: 'tip', name: 'Degree' }], criteria: [{ providerId: 'skills', config: { target: 2 } }, { providerId: 'classes-since-promotion', config: { target: 10 } }] })));
+      subRanks: [{ id: 'tip', name: 'Degree' }] })));
+    expect(save.mock.calls[0]).toEqual([{ name: 'Our foundation', color: '#123abc', position: 5, subRanks: [{ id: 'tip', name: 'Degree' }] }]);
+  });
+  it('sends only the renamed field through the update client after reading extended stored entries', async () => {
+    const stored = { ...rank, subRanks: rank.subRanks.map(item => ({ ...item, future: true })),
+      criteria: rank.criteria.map(item => ({ ...item, future: true })) };
+    const client = makeClient(); client.ranks.mockResolvedValue([rankReadSchema.parse(stored)]);
+    start(<RanksWorkspace gymId={gymId} configure promote={false} client={client}/>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit Foundation' }));
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Renamed' } });
+    fireEvent.submit(screen.getByRole('form', { name: 'Edit rank' }));
+    await waitFor(() => expect(client.call).toHaveBeenCalledWith('updateRank', { revision: 3, name: 'Renamed' }, rank.id));
+  });
+  it('omits reverted edits and does not submit a revision-only update', async () => {
+    const save = vi.fn(async () => {}), cancel = vi.fn();
+    render(<RankEditor rank={{ ...rank, color: '#ABCDEF' }} rankSystemId={system.id} nextPosition={1} busy={false} save={save} cancel={cancel}/>);
+    fireEvent.change(screen.getByLabelText('Sub-rank 1'), { target: { value: 'Draft' } });
+    fireEvent.change(screen.getByLabelText('Sub-rank 1'), { target: { value: 'Tip' } });
+    fireEvent.submit(screen.getByRole('form', { name: 'Edit rank' }));
+    expect(save).not.toHaveBeenCalled(); expect(cancel).toHaveBeenCalledOnce();
+  });
+  it('sends an edited criteria array, keeping module entries, and allows clearing it', async () => {
+    const save = vi.fn(async () => {});
+    render(<RankEditor rank={rank} rankSystemId={system.id} nextPosition={1} busy={false} save={save} cancel={() => {}}/>);
+    fireEvent.change(screen.getByLabelText('Classes since promotion'), { target: { value: '' } });
+    fireEvent.submit(screen.getByRole('form', { name: 'Edit rank' }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ criteria: [{ providerId: 'skills', config: { target: 2 } }] }));
+  });
+  it('still sends the complete definition when creating a rank', async () => {
+    const save = vi.fn(async () => {});
+    render(<RankEditor rankSystemId={system.id} nextPosition={1} busy={false} save={save} cancel={() => {}}/>);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'New' } });
+    fireEvent.submit(screen.getByRole('form', { name: 'Add rank' }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ rankSystemId: system.id, name: 'New', position: 1, color: '#ffffff', subRanks: [], criteria: [] }));
   });
   it('bulk promotes mixed base ranks and sub-ranks with the correct shared system', async () => {
     const client = makeClient(); start(<RanksWorkspace gymId={gymId} configure promote client={client}/>);

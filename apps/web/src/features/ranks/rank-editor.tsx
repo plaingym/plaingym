@@ -15,7 +15,7 @@ export const text = (key: string) => t('ranks/ranks:' + key);
 /** Adds or edits a rank in a dialog. `message` repeats the page's save result inside the dialog. */
 export function RankEditor({ rank, rankSystemId, nextPosition, busy, save, cancel, message }: {
   rank?: Rank; rankSystemId: string; nextPosition: number; busy: boolean;
-  save: (body: CreateRankRequest) => Promise<void>; cancel: () => void; message?: string;
+  save: (body: Partial<CreateRankRequest>) => Promise<void>; cancel: () => void; message?: string;
 }) {
   const [subRanks, setSubRanks] = useState(rank?.subRanks ?? []);
   const [hasColor, setHasColor] = useState(rank ? rank.color !== null : true);
@@ -26,8 +26,22 @@ export function RankEditor({ rank, rankSystemId, nextPosition, busy, save, cance
       const value = String(form.get(provider.id) ?? '').trim();
       if (value) criteria.push({ providerId: provider.id, config: { target: Number(value) } });
     }
-    await save({ rankSystemId, name: String(form.get('name')), position: Number(form.get('position')),
-      color: hasColor ? String(form.get('color')) : null, subRanks, criteria });
+    const body = { name: String(form.get('name')), position: Number(form.get('position')),
+      color: hasColor ? String(form.get('color')) : null, subRanks, criteria };
+    if (!rank) { await save({ rankSystemId, ...body }); return; }
+    const changes: Partial<CreateRankRequest> = {};
+    if (body.name !== rank.name) changes.name = body.name;
+    if (body.position !== rank.position) changes.position = body.position;
+    if (body.color !== (rank.color?.toLowerCase() ?? null)) changes.color = body.color;
+    if (JSON.stringify(subRanks) !== JSON.stringify(rank.subRanks)) changes.subRanks = subRanks;
+    // Compare the editable targets, without treating a rebuilt array's order as an edit.
+    if (coreCriteria.some(provider => {
+      const previous = rank.criteria.find(item => item.providerId === provider.id)?.config.target;
+      const current = criteria.find(item => item.providerId === provider.id)?.config.target;
+      return previous !== current;
+    })) changes.criteria = criteria;
+    if (!Object.keys(changes).length) { cancel(); return; }
+    await save(changes);
   }
   function move(index: number, direction: number) {
     const rows = [...subRanks], other = index + direction;

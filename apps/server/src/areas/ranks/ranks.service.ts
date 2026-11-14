@@ -266,7 +266,7 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
         const row = assertRevised(await tx.update(ranks).set({ ...body, revision: guard.next })
           .where(and(eq(ranks.id, id), guard.matches)).returning());
         const result = rankReadSchema.parse(present(row));
-        await audit(tx, context, 'rank.updated', id, present(before), result); return result;
+        await audit(tx, context, 'rank.updated', id, present(before), present(row)); return result;
       }));
     },
     async listPromotions(gymId: string, input: unknown) {

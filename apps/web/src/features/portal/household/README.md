@@ -27,6 +27,9 @@ as their parent or guardian; an adult member sees only their own documents.
 `/portal/household` lets payers edit the household's contact details, their own
 profile and children's profiles, and shows each member's memberships read-only.
 An adult member sees their own profile, read-only.
+Household and member saves send only changed fields. An unrelated edit preserves
+stored address and emergency-contact keys that the running release cannot read;
+editing either of those fields replaces that entire value.
 
 Each page reads the open household once, with `usePortalScope` (or `usePortalMembers`,
 which also loads the members a login may act for), and builds every query key from its

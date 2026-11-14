@@ -384,6 +384,64 @@ describe('portal waivers page', () => {
 });
 
 describe('portal household page', () => {
+  it.each(['household', 'member'] as const)('omits untouched JSON after reading extended %s data', async kind => {
+    const storedHome = { ...household, address: { ...household.address, future: 'stored extension' } };
+    const storedChild = { ...people[1]!, emergencyContacts: [{ ...people[1]!.emergencyContacts[0]!, future: true }] };
+    const view = mount(<PortalHousehold />, (path, init) => {
+      if (path === '/api/portal/household') return { data: storedHome };
+      if (path.startsWith('/api/portal/members?')) return page([storedChild]);
+      if (path === `/api/portal/members/${ids.child}` && init?.method === 'PATCH') return { data: storedChild };
+      return undefined;
+    }, { context: payer });
+    await screen.findByLabelText('Phone');
+    if (kind === 'household') {
+      fireEvent.change(screen.getByLabelText('Phone'), { target: { value: '555-0199' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(view.calls('PATCH', '/api/portal/household')).toHaveLength(1));
+      expect(JSON.parse(String(view.calls('PATCH', '/api/portal/household')[0]![1]!.body))).toEqual({ revision: 3, phone: '555-0199' });
+    } else {
+      fireEvent.click(await screen.findByRole('button', { name: 'Edit details' }));
+      const dialog = within(screen.getByRole('dialog'));
+      fireEvent.change(dialog.getByLabelText('Phone'), { target: { value: '555-0199' } });
+      fireEvent.click(dialog.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(view.calls('PATCH', `/api/portal/members/${ids.child}`)).toHaveLength(1));
+      expect(JSON.parse(String(view.calls('PATCH', `/api/portal/members/${ids.child}`)[0]![1]!.body))).toEqual({ revision: 1, phone: '555-0199' });
+    }
+  });
+  it.each(['household', 'member'] as const)('sends a deliberately cleared %s JSON field, but skips reverted edits', async kind => {
+    const view = mount(<PortalHousehold />, (path, init) => {
+      if (path === '/api/portal/household') return { data: household };
+      if (path.startsWith('/api/portal/members?')) return page([people[1]!]);
+      if (path === `/api/portal/members/${ids.child}` && init?.method === 'PATCH') return { data: people[1] };
+      return undefined;
+    }, { context: payer });
+    await screen.findByLabelText('Phone');
+    fireEvent.change(screen.getByLabelText('Address line 1'), { target: { value: 'Draft' } });
+    fireEvent.change(screen.getByLabelText('Address line 1'), { target: { value: '1 Main St' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('Saved.');
+    expect(view.calls('PATCH', '/api/portal/household')).toHaveLength(0);
+    if (kind === 'household') {
+      fireEvent.change(screen.getByLabelText('Address line 1'), { target: { value: '' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(view.calls('PATCH', '/api/portal/household')).toHaveLength(1));
+      expect(JSON.parse(String(view.calls('PATCH', '/api/portal/household')[0]![1]!.body))).toEqual({ revision: 3, address: {} });
+    } else {
+      fireEvent.click(await screen.findByRole('button', { name: 'Edit details' }));
+      let dialog = within(screen.getByRole('dialog'));
+      fireEvent.change(dialog.getByLabelText('Relationship'), { target: { value: 'Draft' } });
+      fireEvent.change(dialog.getByLabelText('Relationship'), { target: { value: '' } });
+      fireEvent.click(dialog.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(view.calls('PATCH', `/api/portal/members/${ids.child}`)).toHaveLength(0);
+      fireEvent.click(screen.getByRole('button', { name: 'Edit details' }));
+      dialog = within(screen.getByRole('dialog'));
+      fireEvent.click(dialog.getByRole('button', { name: 'Remove contact' }));
+      fireEvent.click(dialog.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(view.calls('PATCH', `/api/portal/members/${ids.child}`)).toHaveLength(1));
+      expect(JSON.parse(String(view.calls('PATCH', `/api/portal/members/${ids.child}`)[0]![1]!.body))).toEqual({ revision: 1, emergencyContacts: [] });
+    }
+  });
   it('shows a cached read failure inside the page width and the open editor, without rewinding shell scrolling', async () => {
     let down = false;
     const view = mount(<PortalHousehold />, path => {
@@ -496,8 +554,7 @@ describe('portal household page', () => {
     await user.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(view.calls('PATCH', '/api/portal/household')).toHaveLength(1));
     expect(await screen.findByText('Saved.')).toBeDefined();
-    expect(JSON.parse(String(view.calls('PATCH', '/api/portal/household')[0]![1]!.body))).toEqual({ name: 'Rivera household', email: 'payer@example.test',
-      phone: '555-0199', address: { line1: '1 Main St' }, revision: 3 });
+    expect(JSON.parse(String(view.calls('PATCH', '/api/portal/household')[0]![1]!.body))).toEqual({ phone: '555-0199', revision: 3 });
     const items = screen.getAllByRole('listitem').filter(item => within(item).queryByText(/Rivera$/));
     const row = (name: string) => items.find(item => within(item).queryByText(new RegExp('^' + name)))!;
     expect(within(row('Kim')).getByRole('button', { name: 'Edit details' })).toBeDefined();
@@ -513,8 +570,7 @@ describe('portal household page', () => {
     await user.clear(within(dialog).getByLabelText('First name')); await user.type(within(dialog).getByLabelText('First name'), 'Kimberly');
     await user.click(within(dialog).getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(view.calls('PATCH', `/api/portal/members/${ids.child}`)).toHaveLength(1));
-    expect(JSON.parse(String(view.calls('PATCH', `/api/portal/members/${ids.child}`)[0]![1]!.body))).toMatchObject({ firstName: 'Kimberly', revision: 1,
-      emergencyContacts: [{ name: 'Grandparent', relationship: null, phone: '555-0100' }] });
+    expect(JSON.parse(String(view.calls('PATCH', `/api/portal/members/${ids.child}`)[0]![1]!.body))).toEqual({ firstName: 'Kimberly', revision: 1 });
   });
   it('shows an adult member only their own profile, read-only', async () => {
     const view = mount(<PortalHousehold />, path => path === `/api/portal/members/${ids.adult}` ? { data: people[2] } : undefined, { context: adult });

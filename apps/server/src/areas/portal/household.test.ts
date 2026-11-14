@@ -2,7 +2,7 @@
 import '@hono/zod-openapi';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
-import { auditEvents, householdUsers, memberships, members as memberRows } from '@plaingym/db';
+import { auditEvents, households, householdUsers, memberships, members as memberRows } from '@plaingym/db';
 // eslint-disable-next-line no-restricted-imports -- Initialize the default app-role pools for the production registrations; no raw queries.
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
@@ -41,6 +41,18 @@ describe('portal household routes', () => {
     const child = await json(await server.request(`/api/portal/members/${f.child.id}`), contracts.profile.response);
     expect(child.data.emergencyContacts).toEqual([{ name: 'Grandparent', relationship: null, phone: '555-0100' }]);
     expect(contracts.updateMember.body.safeParse({ revision: 1, emergencyContacts: [{ ...contact, email: 'contact@example.test' }] }).success).toBe(false);
+    await json(await send(server, 'PATCH', `/api/portal/members/${f.child.id}`, { revision: child.data.revision, firstName: 'Renamed' }), contracts.updateMember.response);
+    const [stored] = await db.forGym(f.gymId, tx => tx.select().from(memberRows).where(eq(memberRows.id, f.child.id)));
+    expect(stored?.emergencyContacts).toEqual([contact]);
+  });
+  it('keeps extended stored address keys on a phone-only save after a rollback', async () => {
+    const f = await portalFixture(factory), server = app(f, payerPrincipal(f)), address = { line1: '1 Main St', future: true };
+    await db.forGym(f.gymId, tx => tx.update(households).set({ address }).where(eq(households.id, f.household.id)));
+    const read = await json(await server.request('/api/portal/household'), contracts.household.response);
+    expect(read.data.address).toEqual({ line1: '1 Main St' });
+    await json(await send(server, 'PATCH', '/api/portal/household', { revision: read.data.revision, phone: '555-0199' }), contracts.updateHousehold.response);
+    const [stored] = await db.forGym(f.gymId, tx => tx.select().from(households).where(eq(households.id, f.household.id)));
+    expect(stored?.address).toEqual(address);
   });
   it('registers every portal contract through the household answer helper', () => {
     for (const contract of Object.values(contracts)) {

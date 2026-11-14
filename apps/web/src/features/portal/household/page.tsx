@@ -86,7 +86,17 @@ function HouseholdForm({ household, scope, saved, setSaved }: { household: Porta
   const save = useMutation({ mutationFn: async (form: FormData) => {
     const value = (name: string) => String(form.get(name) ?? '').trim();
     const address = Object.fromEntries(addressFields.map(field => [field, field === 'countryCode' ? value(field).toUpperCase() : value(field)]).filter(([, entry]) => entry));
-    scope.own(await scope.call(contracts.updateHousehold, { name: value('name'), email: value('email') || null, phone: value('phone') || null, address, revision: household.revision }));
+    const changes = {
+      ...(value('name') !== household.name.trim() ? { name: value('name') } : {}),
+      ...(value('email') !== (household.email ?? '').trim() ? { email: value('email') || null } : {}),
+      ...(value('phone') !== (household.phone ?? '').trim() ? { phone: value('phone') || null } : {}),
+      ...(addressFields.some(field => {
+        const previous = (household.address[field] ?? '').trim();
+        return (address[field] ?? '') !== (field === 'countryCode' ? previous.toUpperCase() : previous);
+      }) ? { address } : {}),
+    };
+    if (!Object.keys(changes).length) return;
+    scope.own(await scope.call(contracts.updateHousehold, { ...changes, revision: household.revision }));
   }, onSuccess: async () => { setSaved(true); await cache.invalidateQueries({ queryKey: [...scope.key, 'household'] }); } });
   function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setSaved(false); save.mutate(new FormData(event.currentTarget)); }
   return <Card className="p-4 sm:p-6"><form className="space-y-4" onSubmit={submit} aria-labelledby="household-contact">
@@ -113,10 +123,17 @@ function EditMember({ member, scope, close }: { member: PortalMember; scope: Por
   const [contacts, setContacts] = useState<PortalEmergencyContact[]>(member.emergencyContacts), [changed, setChanged] = useState(false);
   const save = useMutation({ mutationFn: async (form: FormData) => {
     const value = (name: string) => String(form.get(name) ?? '').trim();
-    scope.own(await scope.call(contracts.updateMember, { firstName: value('firstName'), lastName: value('lastName'), email: value('email') || null, phone: value('phone') || null,
-      dateOfBirth: value('dateOfBirth') || null, revision: member.revision,
-      emergencyContacts: contacts.map(item => ({ name: item.name.trim(), relationship: item.relationship?.trim() || null, phone: item.phone.trim(),
-        ...(item.email?.trim() ? { email: item.email.trim() } : {}) })) }, { memberId: member.id }));
+    const normalizeContacts = (items: PortalEmergencyContact[]) => items.map(item => ({ name: item.name.trim(),
+      relationship: item.relationship?.trim() || null, phone: item.phone.trim(), ...(item.email?.trim() ? { email: item.email.trim() } : {}) }));
+    const emergencyContacts = normalizeContacts(contacts);
+    const changes = {
+      ...Object.fromEntries((['firstName', 'lastName', 'email', 'phone', 'dateOfBirth'] as const)
+        .filter(field => value(field) !== (member[field] ?? '').trim())
+        .map(field => [field, value(field) || null])),
+      ...(JSON.stringify(emergencyContacts) !== JSON.stringify(normalizeContacts(member.emergencyContacts)) ? { emergencyContacts } : {}),
+    };
+    if (!Object.keys(changes).length) return;
+    scope.own(await scope.call(contracts.updateMember, { ...changes, revision: member.revision }, { memberId: member.id }));
   }, onSuccess: async () => { await cache.invalidateQueries({ queryKey: [...scope.key, 'household'] }); close(); } });
   const update = (index: number, field: keyof PortalEmergencyContact, value: string) => {
     setChanged(true); setContacts(contacts.map((item, position) => position === index ? { ...item, [field]: value } : item));
