@@ -156,7 +156,7 @@ export function createDemoPool(options: {
     async eligible(gymId: string) {
       const [gym] = await scope(gymId, tx => tx.select().from(gyms).where(eq(gyms.id, gymId)));
       const demo = sandboxSettings(gym?.settings);
-      return !demo || (gym?.status === 'active' && demo.ready && (!demo.kind || demo.kind === 'private') && Date.parse(demo.expiresAt) > options.clock.now().getTime());
+      return Boolean(gym && gym.status === 'active' && (!demo || (demo.ready && (!demo.kind || demo.kind === 'private') && Date.parse(demo.expiresAt) > options.clock.now().getTime())));
     },
   };
 }

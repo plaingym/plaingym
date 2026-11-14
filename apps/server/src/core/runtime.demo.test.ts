@@ -17,7 +17,7 @@ it('serves the demo entry and creates sandboxes before tenant resolution, with s
   const sandbox = app.sandbox;
   const discovery = await app.runtime.app.request(origin + '/api/demo');
   expect(discovery.status).toBe(200);
-  expect(await discovery.json()).toEqual({ data: { mode: 'entry' } });
+  expect(await discovery.json()).toEqual({ data: { mode: 'entry', showcase: expect.stringContaining('https://showcase.demo.example.test/demo#kioskToken=') } });
   const status = await app.runtime.app.request(sandbox.origin + '/api/demo', { headers: app.headers(sandbox) });
   expect(status.status).toBe(200);
   expect(await status.json()).toEqual({ data: { mode: 'sandbox', expiresAt: expect.any(String), join: false } });

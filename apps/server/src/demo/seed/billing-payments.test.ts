@@ -8,7 +8,7 @@ const gymId = '00000000-0000-7000-8000-000000000001', householdId = '00000000-00
 const options = { gymId, apiKey: 'rk_test_synthetic', webhookSecret: 'whsec_synthetic' };
 it('backs off rate limits while preserving the same idempotent request', async () => {
   const request = vi.fn().mockRejectedValueOnce({ statusCode: 429 }).mockRejectedValueOnce({ type: 'StripeRateLimitError' })
-    .mockResolvedValue({ id: 'cus_fixture', email: 'demo@example.invalid', metadata: { gym_id: gymId }, livemode: false });
+    .mockResolvedValue({ id: 'cus_fixture', email: 'demo@example.invalid', metadata: { gym_id: gymId, household_id: householdId }, livemode: false });
   const sleep = vi.fn(async () => {}), provider = billingSeedPayments({ ...options, transport: { request }, sleep });
   await provider.payments.createCustomer({ email: 'demo@example.invalid', name: 'Demo', householdId, idempotencyKey: 'same-request' });
   expect(sleep.mock.calls).toEqual([[1000], [2000]]);
