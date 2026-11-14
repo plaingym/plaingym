@@ -60,6 +60,8 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
   const mayNotify = roles.some(role => role === 'owner' || role === 'admin')
     || (roles.includes('coach') && !!staffProfileId && staffProfileId === session.coachId);
   const offerNotice = mayNotify && session.status !== 'cancelled' && counts !== null;
+  // With nobody left to email the box is off and locked, whatever was ticked before the counts changed.
+  const notifying = offerNotice && emailMembers && counts.booked + counts.waitlisted > 0;
   async function change(kind: 'coach' | 'notes' | 'capacity' | 'cancel', event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
     const formElement = event?.currentTarget, form = formElement ? new FormData(formElement) : null;
@@ -68,7 +70,7 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
     try {
       const params = { path: { id } };
       const result = kind === 'cancel' ? await api.POST('/api/schedule/sessions/{id}/cancel', { params,
-        body: { revision, ...(offerNotice && emailMembers ? { notify: true, note: String(form?.get('note') ?? '') } : {}) } })
+        body: { revision, ...(notifying ? { notify: true, note: String(form?.get('note') ?? '') } : {}) } })
         : kind === 'coach' ? await api.POST('/api/schedule/sessions/{id}/coach', { params, body: { revision, coachId: String(form?.get('coachId') ?? '') || null } })
         : kind === 'capacity' ? await api.PATCH('/api/schedule/sessions/{id}/capacity', { params, body: { revision, capacity: form?.get('capacity') ? Number(form.get('capacity')) : null } })
         : await api.PATCH('/api/schedule/sessions/{id}/notes', { params, body: { revision, notes: String(form?.get('notes') ?? '') || null } });
@@ -106,9 +108,9 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
         <Button type="submit" disabled={busy}>{text('saveCapacity')}</Button></form>
       <form onSubmit={(event) => void change('cancel', event)} className="space-y-3">
         {offerNotice && <>
-          <CheckboxField name="notify" checked={emailMembers} disabled={busy || counts.stale} onChange={event => setEmailMembers(event.target.checked)}
-            label={t('schedule/schedule:cancelNotify', { count: counts.booked + counts.waitlisted })}/>
-          {emailMembers && <Field label={text('cancelNote')}><Textarea name="note" maxLength={1_000} disabled={busy}/></Field>}
+          <CheckboxField name="notify" checked={notifying} disabled={busy || counts.stale || counts.booked + counts.waitlisted === 0} onChange={event => setEmailMembers(event.target.checked)}
+            label={t('schedule/schedule:' + (counts.booked + counts.waitlisted === 0 ? 'cancelNotifyNone' : counts.booked + counts.waitlisted === 1 ? 'cancelNotifyOne' : 'cancelNotify'), { count: (counts.booked + counts.waitlisted).toLocaleString() })}/>
+          {notifying && <Field label={text('cancelNote')}><Textarea name="note" maxLength={1_000} disabled={busy}/></Field>}
         </>}
         <Button type="submit" variant="outline" className="w-full border-destructive text-destructive sm:w-auto"
           disabled={busy || session.status === 'cancelled' || (emailMembers && mayNotify && (!counts || counts.stale))}>{text('cancelSession')}</Button>

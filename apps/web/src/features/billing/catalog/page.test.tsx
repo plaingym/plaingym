@@ -45,12 +45,17 @@ describe('catalog and member billing screens', () => {
     fireEvent.change(screen.getByLabelText('Amount (CAD)'), { target: { value: '120.00' } });
     fireEvent.change(screen.getByLabelText('Billing interval'), { target: { value: 'annual' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    const dialog = await screen.findByRole('dialog');
+    const dialog = await screen.findByRole('dialog', { name: 'Change plan price' });
     expect(api.call).toHaveBeenCalledWith('previewPlanPriceChange', undefined, { planId: plan.id },
       expect.objectContaining({ amountCents: plan.amountCents }));
     expect(within(dialog).getAllByRole('radio')).toHaveLength(1);
     expect(within(dialog).getByRole('note').textContent).toContain('Existing memberships keep their current terms and price');
     expect(within(dialog).getByText(/new price.*120/)).toBeTruthy();
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByRole('dialog', { name: 'Edit plan' })).toBeDefined();
+    expect((screen.getByLabelText('Amount (CAD)') as HTMLInputElement).value).toBe('120.00');
+    expect((screen.getByLabelText('Billing interval') as HTMLSelectElement).value).toBe('annual');
   });
   it('registers the catalog and membership tab', () => {
     expect(catalogRegistration.adminNav?.[0]).toMatchObject({ enabled: true, href: '/admin/billing/plans' });

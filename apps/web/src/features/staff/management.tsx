@@ -4,6 +4,7 @@ import { canStaff, type StaffRole } from '@plaingym/shared';
 import type { StaffProfile, StaffRoleRecord, StaffProfileListResponse, AssignableStaffRole } from '@plaingym/shared/contracts';
 import { Input } from '../../components/ui/input.js';
 import { Button } from '../../components/ui/button.js';
+import { Pager } from '../../components/ui/pager.js';
 import { Alert } from '../../components/ui/alert.js';
 import { Dialog } from '../../components/ui/dialog.js';
 import { Label } from '../../components/ui/label.js';
@@ -104,8 +105,7 @@ export function StaffManagement({ roles: actorRoles, passwordEnabled, services =
             <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">{profile.rank}{profile.isPublic && <Badge tone="muted">{label('public')}</Badge>}</p></div>
           <Button variant="outline" disabled={busy} aria-label={label('edit') + ' ' + profile.displayName} onClick={() => { setMessage(''); setEditing(profile); setCreating(false); }}>{label('edit')}</Button>
         </StackedItem>)}</StackedList>}
-      {profiles && profiles.pagination.total > 25 && <div className="flex justify-between gap-3"><Button variant="outline" disabled={busy || offset === 0} onClick={() => setOffset(Math.max(0, offset - 25))}>{label('previous')}</Button>
-        <Button variant="outline" disabled={busy || offset + 25 >= profiles.pagination.total} onClick={() => setOffset(offset + 25)}>{label('next')}</Button></div>}
+      {profiles && <Pager offset={offset} total={profiles.pagination.total} limit={25} disabled={busy} onChange={setOffset} previousLabel={label('previous')} nextLabel={label('next')}/>}
     </PageSection>
     {(creating || editing) && <Dialog title={label(creating ? 'addProfile' : 'editProfile')} description={editing?.displayName} closeLabel={label('closeDialog')} dismissible={!busy} onClose={closeEditor}>
       <form key={editing?.id ?? 'new'} className="space-y-4" onSubmit={(event) => submit(event, async (data, form) => {
@@ -155,8 +155,7 @@ export function StaffManagement({ roles: actorRoles, passwordEnabled, services =
           <fieldset disabled={busy} className="flex flex-col gap-2 sm:flex-row sm:items-end"><Field text={label('newPassword')} className="flex-1"><Input name="password" type="password" minLength={12} maxLength={128} required autoComplete="new-password"/></Field>
             <Button type="submit" variant="outline">{label('resetPassword')}</Button></fieldset><p className="text-sm text-muted-foreground">{label('resetHelp')}</p></form>}
       </StackedItem>)}</StackedList>}
-      {totalRoles > 25 && <div className="flex justify-between gap-3"><Button variant="outline" disabled={busy || roleOffset === 0} onClick={() => setRoleOffset(Math.max(0, roleOffset - 25))}>{label('previous')}</Button>
-        <Button variant="outline" disabled={busy || roleOffset + 25 >= totalRoles} onClick={() => setRoleOffset(roleOffset + 25)}>{label('next')}</Button></div>}
+      <Pager offset={roleOffset} total={totalRoles} limit={25} disabled={busy} onChange={setRoleOffset} previousLabel={label('previous')} nextLabel={label('next')}/>
     </PageSection>
   </Page>;
 }

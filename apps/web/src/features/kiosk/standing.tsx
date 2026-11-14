@@ -14,10 +14,12 @@ export function KioskStandingTab({ memberId }: ExtensionViewProps) {
     if (!response.ok) throw new Error('Request failed');
     return parseResponse(kioskStandingResponseSchema, await response.json()).data;
   } });
-  if (query.isPending) return <p role="status">{t('kiosk/standing:loading')}</p>;
-  if (query.isError) return <Alert variant="error" role="alert">{t('kiosk/standing:error')}</Alert>;
   const standing = query.data;
-  if (standing.status === 'ok') return <p>{t('kiosk/standing:ok')}</p>;
-  return <div className="space-y-2"><p>{t('kiosk/standing:frontDesk')}</p><ul className="list-disc pl-6">{standing.reasons.map((code) =>
-    <li key={code}>{known.has(code) ? t('kiosk/standing:reason.' + code) : t('kiosk/standing:reason.unknown', { code })}</li>)}</ul></div>;
+  return <section className="space-y-4" aria-labelledby="kiosk-standing-title"><h2 id="kiosk-standing-title" className="text-lg font-semibold">{t('kiosk/standing:title')}</h2>
+    {query.isPending ? <p role="status">{t('kiosk/standing:loading')}</p>
+      : query.isError || !standing ? <Alert variant="error" role="alert">{t('kiosk/standing:error')}</Alert>
+      : standing.status === 'ok' ? <p>{t('kiosk/standing:ok')}</p>
+      : <div className="space-y-2"><p>{t('kiosk/standing:frontDesk')}</p><ul className="list-disc pl-6">{standing.reasons.map((code) =>
+        <li key={code}>{known.has(code) ? t('kiosk/standing:reason.' + code) : t('kiosk/standing:reason.unknown', { code })}</li>)}</ul></div>}
+  </section>;
 }

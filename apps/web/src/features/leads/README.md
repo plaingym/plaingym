@@ -6,6 +6,8 @@ see it; coaches don't, and opening the address as a coach shows a notice
 without calling the API. The server enforces the same permission on every
 `/api/leads` route.
 
+The board offers an **Add lead** link to the public trial form. Trial requests appear on the
+board automatically; sources absent from older records display **Not recorded**.
 One section per open stage (new, contacted, trial booked, trial attended), each
 with its own total and its own pages of 25 ("Show more"), so a long stage never
 hides another. Sections stack on phones, two across on tablets and four across

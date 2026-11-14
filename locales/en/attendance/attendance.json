@@ -21,7 +21,7 @@
   "confirmUndo": "Undo check-in",
   "creditAssistance": "Check-in requires staff assistance.",
   "importUndoBlocked": "Imported attendance cannot be undone.",
-  "noMembers": "No members found.",
+  "noMembers": "No members found",
   "previous": "Previous page",
   "next": "Next page",
   "total": "Total visits: {count}",

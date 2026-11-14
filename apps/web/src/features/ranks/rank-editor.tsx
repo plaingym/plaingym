@@ -3,7 +3,7 @@ import { useState, type FormEvent } from 'react';
 import type { Rank, CreateRankRequest } from '@plaingym/shared/contracts';
 import { t } from '../../lib/i18n.js';
 import { Button } from '../../components/ui/button.js';
-import { Dialog } from '../../components/ui/dialog.js';
+import { Dialog, DialogActions } from '../../components/ui/dialog.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { CheckboxField } from '../../components/ui/select.js';
@@ -62,11 +62,11 @@ export function RankEditor({ rank, rankSystemId, nextPosition, busy, save, cance
         </div>
         <fieldset className="min-w-0 space-y-3"><legend className="font-medium">{text('subRanks')}</legend>
           {subRanks.length === 0 && <p className="text-sm text-muted-foreground">{text('noSubRanks')}</p>}
-          {subRanks.map((subRank, index) => <div key={subRank.id} className="grid grid-cols-[1fr_auto_auto] items-end gap-2 sm:grid-cols-[1fr_auto_auto_auto]">
-            <Label className="col-span-3 grid gap-2 sm:col-span-1">{text('subRank')} {index + 1}<Input required value={subRank.name} onChange={(event) => setSubRanks(subRanks.map((item, i) => i === index ? { ...item, name: event.target.value } : item))}/></Label>
-            <Button variant="outline" size="icon" disabled={index === 0} onClick={() => move(index, -1)} aria-label={text('moveUp') + ' ' + (index + 1)}><span aria-hidden="true">↑</span></Button>
-            <Button variant="outline" size="icon" disabled={index === subRanks.length - 1} onClick={() => move(index, 1)} aria-label={text('moveDown') + ' ' + (index + 1)}><span aria-hidden="true">↓</span></Button>
-            <Button variant="outline" onClick={() => setSubRanks(subRanks.filter((_, i) => i !== index))} aria-label={text('remove') + ' ' + text('subRank') + ' ' + (index + 1)}>{text('remove')}</Button>
+          {subRanks.map((subRank, index) => <div key={subRank.id} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-end gap-2 lg:grid-cols-[1fr_auto_auto_auto]">
+            <Label className="col-span-2 grid gap-2 lg:col-span-1">{text('subRank')} {index + 1}<Input required value={subRank.name} onChange={(event) => setSubRanks(subRanks.map((item, i) => i === index ? { ...item, name: event.target.value } : item))}/></Label>
+            <Button variant="outline" disabled={index === 0} onClick={() => move(index, -1)} aria-label={text('moveUp') + ' ' + (index + 1)}><span aria-hidden="true">↑</span>{text('moveUp')}</Button>
+            <Button variant="outline" disabled={index === subRanks.length - 1} onClick={() => move(index, 1)} aria-label={text('moveDown') + ' ' + (index + 1)}><span aria-hidden="true">↓</span>{text('moveDown')}</Button>
+            <Button variant="outline" onClick={() => setSubRanks(subRanks.filter((_, i) => i !== index))} className="col-span-2 lg:col-span-1" aria-label={text('remove') + ' ' + text('subRank') + ' ' + (index + 1)}>{text('remove')}</Button>
           </div>)}
           <Button variant="outline" className="w-full sm:w-auto" onClick={() => setSubRanks([...subRanks, { id: 'step-' + crypto.randomUUID(), name: '' }])}>{text('addSubRank')}</Button>
         </fieldset>
@@ -76,7 +76,7 @@ export function RankEditor({ rank, rankSystemId, nextPosition, busy, save, cance
           {(rank?.criteria ?? []).filter((criterion) => !coreCriteria.some((core) => core.id === criterion.providerId)).map((criterion, index) =>
             <p key={index} className="text-sm">{text('moduleCriterion')}: {criterion.providerId}</p>)}
         </fieldset>
-        <div className="flex flex-col gap-2 sm:flex-row"><Button type="submit">{text('save')}</Button><Button variant="outline" onClick={cancel}>{text('cancel')}</Button></div>
+        <DialogActions><Button type="submit">{text('save')}</Button><Button variant="outline" onClick={cancel}>{text('cancel')}</Button></DialogActions>
       </fieldset>
     </form>
   </Dialog>;

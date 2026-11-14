@@ -7,9 +7,11 @@ import { importTargetFieldSchema, importUploadSchema, importPreviewResponseSchem
   exportJobSchema, listResponseSchema, type ImportUpload, type ImportColumnMapping, type ImportMapper,
   type ImportPlanRequest, type ImportPreviewResponse } from '@plaingym/shared/contracts';
 import { useBootstrap } from '../../app/context.js';
+import { useDemoSandbox } from '../demo/notice.js';
 import { createJsonTransport, readApiError } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 import { Button } from '../../components/ui/button.js';
+import { Pager } from '../../components/ui/pager.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { Alert } from '../../components/ui/alert.js';
@@ -23,6 +25,7 @@ class PreviewError extends Error {}
 const card = 'min-w-0 space-y-5 rounded-xl border border-border bg-card p-4 sm:p-6';
 const summaryTone = { create: 'success', update: 'default', skip: 'muted' } as const;
 function ImportPanel({ gymId }: { gymId: string }) {
+  const demo = useDemoSandbox();
   const [upload, setUpload] = useState<ImportUpload>(), [mapping, setMapping] = useState<ImportColumnMapping[]>([]);
   const [mapper, setMapper] = useState<ImportMapper>('people'), [duplicatePolicy, setPolicy] = useState<ImportPlanRequest['duplicatePolicy']>('error');
   const [preview, setPreview] = useState<ImportPreviewResponse>(), [offset, setOffset] = useState(0);
@@ -63,11 +66,13 @@ function ImportPanel({ gymId }: { gymId: string }) {
   // A preview's explanation must not stand in for a later failure of another request.
   const otherFailure = uploadFile.isError || start.isError || progress.isError || errors.isError;
   // Exactly one status region: the run's progress.
+  const columns = [...new Set(preview?.data.flatMap(row => Object.keys(row.values)) ?? [])];
   return <PageSection title={label('import')} description={label('mapperNotice')}><div className={card}>
     <ol className="grid gap-1 text-sm text-muted-foreground sm:grid-cols-4" aria-label={label('steps')}>
       {(['stepUpload', 'stepMatch', 'stepCheck', 'stepCommit'] as const).map((step, index) => <li key={step}>{index + 1}. {label(step)}</li>)}</ol>
     <div className="grid gap-2"><Label htmlFor="csv-file">{label('file')}</Label>
-      <Input id="csv-file" type="file" accept=".csv,text/csv" className="py-2" disabled={!!busy} onChange={(event) => { const file = event.target.files?.[0]; if (file) uploadFile.mutate(file); }}/></div>
+      <Input id="csv-file" type="file" accept=".csv,text/csv" className="py-2" disabled={demo || !!busy} onChange={(event) => { const file = event.target.files?.[0]; if (file) uploadFile.mutate(file); }}/></div>
+    {demo && <Alert>{label('demoNotice')}</Alert>}
     {(otherFailure || previewRows.isError) && <Alert variant="error" focusOnReveal>{!otherFailure && previewRows.error instanceof PreviewError
       ? previewRows.error.message : label('requestFailed')}</Alert>}
     {upload && <>
@@ -102,13 +107,10 @@ function ImportPanel({ gymId }: { gymId: string }) {
         <li><Badge tone={preview.summary.errors ? 'destructive' : 'muted'}>{label('errors')}: {preview.summary.errors}</Badge></li>
       </ul>
       <TableContainer label={label('previewTable')}><table className="w-full min-w-[32rem] text-left text-sm">
-        <thead className="bg-muted"><tr><th scope="col" className="p-2">{label('row')}</th><th scope="col" className="p-2">{label('action')}</th><th scope="col" className="p-2">{label('values')}</th></tr></thead>
+        <thead className="bg-muted"><tr><th scope="col" className="p-2">{label('row')}</th><th scope="col" className="p-2">{label('action')}</th>{columns.map(field => <th scope="col" className="p-2" key={field}>{importTargetFieldSchema.safeParse(field).success ? label('field.' + field) : field}</th>)}</tr></thead>
         <tbody>{preview.data.map((row) => <tr key={row.rowNumber} className="border-t border-border"><td className="p-2 tabular-nums">{row.rowNumber}</td><td className="p-2">{label(row.action)}</td>
-          <td className="max-w-xl break-all p-2 font-mono text-xs">{JSON.stringify(row.values)}</td></tr>)}</tbody></table></TableContainer>
-      {preview.pagination.total > 50 && <div className="flex justify-between gap-2">
-        <Button variant="outline" disabled={offset === 0 || previewRows.isPending} onClick={() => previewRows.mutate(Math.max(0, offset - 50))}>{label('previous')}</Button>
-        <Button variant="outline" disabled={offset + 50 >= preview.pagination.total || previewRows.isPending} onClick={() => previewRows.mutate(offset + 50)}>{label('next')}</Button>
-      </div>}
+          {columns.map(field => <td key={field} className="max-w-xs wrap-anywhere p-2">{row.values[field] ?? '—'}</td>)}</tr>)}</tbody></table></TableContainer>
+      <Pager offset={offset} total={preview.pagination.total} limit={50} onChange={value => previewRows.mutate(value)} disabled={previewRows.isPending} previousLabel={label('previous')} nextLabel={label('next')}/>
     </div>}
     {progress.data && <div role="status" className="space-y-2 rounded-lg border border-border bg-muted p-3 text-sm">
       <p className="font-medium">{label(progress.data.dryRun ? 'dryRun' : 'import')}: {label('status.' + progress.data.status)}</p>
@@ -118,10 +120,7 @@ function ImportPanel({ gymId }: { gymId: string }) {
     {errors.data && <div className="space-y-2"><h3 className="font-semibold">{label('errorReport')}</h3>
       <ul className="divide-y divide-border rounded-xl border border-border text-sm">{errors.data.data.map((issue, index) => <li key={index} className="break-words p-3">
         <span className="font-medium">{label('row')} {issue.rowNumber}:</span> {t(issue.message)}</li>)}</ul>
-      {errors.data.pagination.total > 50 && <div className="flex justify-between gap-2">
-        <Button variant="outline" disabled={!errorOffset} onClick={() => setErrorOffset(Math.max(0, errorOffset - 50))}>{label('previous')}</Button>
-        <Button variant="outline" disabled={errorOffset + 50 >= errors.data.pagination.total} onClick={() => setErrorOffset(errorOffset + 50)}>{label('next')}</Button>
-      </div>}
+      <Pager offset={errorOffset} total={errors.data.pagination.total} limit={50} onChange={setErrorOffset} previousLabel={label('previous')} nextLabel={label('next')}/>
     </div>}
   </div></PageSection>;
 }

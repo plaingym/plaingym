@@ -1,6 +1,10 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Billing catalog
 
+Plans, tax rates and charge types are created and edited in a dialog. Save
+failures and revision reloads stay in that dialog. A plan price change replaces
+the editor with its review dialog, and cancelling that review returns to the draft.
+
 Changing a plan's price with current memberships opens **Change plan price**.
 **New members only** saves only the plan; **All existing members** also moves
 frozen memberships, leaving commitments and custom prices out until **Include

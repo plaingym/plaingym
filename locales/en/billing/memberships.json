@@ -45,7 +45,7 @@
   "loading": "Loading memberships…",
   "error": "Could not load memberships. Please try again.",
   "retry": "Try again",
-  "empty": "No memberships assigned yet.",
+  "empty": "No memberships assigned yet",
   "noPlans": "Add an active plan in the billing catalog first.",
   "close": "Close",
   "changePlan": "Change plan",

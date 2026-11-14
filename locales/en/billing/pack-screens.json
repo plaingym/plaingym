@@ -17,7 +17,7 @@
   "noTaxes": "No tax rates configured.",
   "active": "Active",
   "archived": "Archived",
-  "noPacks": "No class packs to show.",
+  "noPacks": "No class packs to show",
   "noPacksHelp": "Use Create class pack to sell a set number of classes, such as a 10-class card.",
   "noActivePacks": "Create or restore an active class pack in the billing catalog first.",
   "neverExpires": "No expiry",
@@ -64,5 +64,5 @@
   "refused": "The server refused this change. The pack or member may have changed. Reload and try again.",
   "stale": "This pack changed elsewhere. Close and reload, then reopen it to review the latest values before saving.",
   "error": "The request failed. Try again.",
-  "denied": "You do not have access to class packs."
+  "denied": "You do not have access to class packs"
 }

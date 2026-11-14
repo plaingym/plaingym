@@ -8,6 +8,7 @@ import { AmountInputError } from '@plaingym/shared/money';
 import { invoiceClient, invoiceError, type InvoiceClient } from './api.js';
 import { text, money, minorUnitsToInput, parseMinorUnits } from './format.js';
 import { Button } from '../../../components/ui/button.js';
+import { Pager } from '../../../components/ui/pager.js';
 import { useDialogOperation, useDialogSaved } from '../../../components/ui/dialog.js';
 import { t } from '../../../lib/i18n.js';
 import { createSendGeneration } from '../../../lib/send-generation.js';
@@ -127,7 +128,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
           <Button variant="outline" onClick={() => open({ kind: 'revoke', card })}>{text(card.revokedAt ? 'retryRemoval' : 'removeCard')}</Button>
         </div>}
       </StackedItem>)}</StackedList>
-      {cards.data && cards.data.pagination.total > 25 && <div className="flex gap-2"><Button variant="outline" disabled={!cardOffset} onClick={() => setCardOffset(v => v - 25)}>{text('previous')}</Button><Button variant="outline" disabled={cardOffset + 25 >= cards.data.pagination.total} onClick={() => setCardOffset(v => v + 25)}>{text('next')}</Button></div>}
+      {cards.data && <Pager offset={cardOffset} total={cards.data.pagination.total} limit={25} onChange={setCardOffset} previousLabel={text('previous')} nextLabel={text('next')}/>}
     </PageSection>
     </div>
     {action && <section aria-labelledby={actionTitle} className="space-y-4">

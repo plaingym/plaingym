@@ -49,7 +49,12 @@ export function adminScreens({ populated, owner }: { populated: boolean; owner?:
     { name: 'announcements', path: '/admin/announcements', dialogs: [{ name: 'compose', button: 'New announcement' }] },
     { name: 'campaigns', path: '/admin/campaigns', dialogs: [{ name: 'new', button: /^(New|New campaign|Create campaign)$/ }] },
     { name: 'imports', path: '/admin/imports', extras: [{ name: 'preview', reach: async (page) => {
-      await page.getByLabel('CSV file (UTF-8, up to 20 MB)', { exact: true }).setInputFiles({ name: 'ux-people.csv', mimeType: 'text/csv', buffer: Buffer.from(csv) });
+      const upload = page.getByLabel('CSV file (UTF-8, up to 20 MB)', { exact: true });
+      if (await upload.isDisabled()) {
+        await expect(page.getByText('CSV uploads are disabled in this demo. You can export the sample data to explore the file format.', { exact: true })).toBeVisible();
+        return;
+      }
+      await upload.setInputFiles({ name: 'ux-people.csv', mimeType: 'text/csv', buffer: Buffer.from(csv) });
       await page.getByRole('button', { name: 'Preview', exact: true }).click();
       await expect(page.getByRole('cell', { name: /Ana/ })).toBeVisible();
     } }] },

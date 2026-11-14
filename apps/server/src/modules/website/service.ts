@@ -75,7 +75,7 @@ function withPrimaryColor(branding: GymBranding, primaryColor: string | null): G
 
 async function readPlans(tx: Transaction, currency: string): Promise<SitePlan[]> {
   const rows = await tx.select().from(plans).where(and(eq(plans.active, true), eq(plans.currency, currency)))
-    .orderBy(asc(plans.amountCents), asc(plans.name), asc(plans.id));
+    .orderBy(asc(plans.name), asc(plans.id));
   // Invoicing adds tax on top for an attached rate that is exclusive and above zero (the join page's rule).
   const taxed = rows.length ? new Set((await tx.selectDistinct({ planId: planTaxRates.planId }).from(planTaxRates)
     .innerJoin(taxRates, eq(taxRates.id, planTaxRates.taxRateId))

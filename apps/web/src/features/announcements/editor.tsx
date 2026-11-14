@@ -5,7 +5,7 @@ import { Button } from '../../components/ui/button.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { CheckboxField, Textarea } from '../../components/ui/select.js';
-import { Dialog } from '../../components/ui/dialog.js';
+import { Dialog, DialogActions } from '../../components/ui/dialog.js';
 import { Alert } from '../../components/ui/alert.js';
 import { t } from '../../lib/i18n.js';
 import type { Announcement, AnnouncementClient } from './api.js';
@@ -56,10 +56,10 @@ export function AnnouncementEditor({ gymName, programs, client, close, sent, own
         <fieldset disabled={busy} className="min-w-0 space-y-4">
           <div><Label htmlFor="announcement-subject">{text('subject')}</Label>
             <Input id="announcement-subject" value={subject} maxLength={150} required aria-describedby="subject-count" onChange={event => setSubject(event.target.value)} />
-            <p id="subject-count" className="text-sm text-muted-foreground">{text('characters', { count: subject.length, max: 150 })}</p></div>
+            <p id="subject-count" className="text-sm text-muted-foreground">{text('characters', { count: subject.length.toLocaleString(), max: (150).toLocaleString() })}</p></div>
           <div><Label htmlFor="announcement-body">{text('body')}</Label>
             <Textarea id="announcement-body" rows={8} value={body} maxLength={10000} required aria-describedby="body-count" onChange={event => setBody(event.target.value)} />
-            <p id="body-count" className="text-sm text-muted-foreground">{text('characters', { count: body.length, max: 10000 })}</p></div>
+            <p id="body-count" className="text-sm text-muted-foreground">{text('characters', { count: body.length.toLocaleString(), max: (10_000).toLocaleString() })}</p></div>
           <fieldset className="space-y-2"><legend className="font-medium">{text('statuses')}</legend>
             <p className="text-sm text-muted-foreground">{text('statusHelp')}</p>
             {statuses.map(status => <CheckboxField key={status} label={text(status)} checked={selectedStatuses.includes(status)}
@@ -69,13 +69,13 @@ export function AnnouncementEditor({ gymName, programs, client, close, sent, own
             <div className="max-h-64 overflow-y-auto">{programs.map(program => <CheckboxField key={program.id}
               label={program.name} checked={programIds.includes(program.id)} disabled={programIds.length >= 100 && !programIds.includes(program.id)}
               onChange={event => setPrograms(toggle(programIds, program.id, event.target.checked))} />)}</div></fieldset>
-          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+          <DialogActions>
             <Button type="submit" className="w-full sm:w-auto">{text(busy ? 'working' : 'preview')}</Button>
             <Button type="button" variant="outline" onClick={() => {
               const parsed = draft();
               if (parsed) void run(async () => { await client.test(parsed); setTestSent(true); }, 'testError');
             }}>{text('test')}</Button>
-          </div>
+          </DialogActions>
         </fieldset>
       </form> : <>
         <p className="font-medium">{text('recipients', { count: preview.count })}</p>
@@ -89,7 +89,7 @@ export function AnnouncementEditor({ gymName, programs, client, close, sent, own
         <p className="text-sm text-muted-foreground">{text('testHelp')}</p>
         {confirming && <Alert role="note">{text('confirmHelp')}</Alert>}
         {preview.count === 0 && <Alert role="note">{text('noRecipients')}</Alert>}
-        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+        <DialogActions>
           {!attempted && <Button variant="outline" disabled={busy} onClick={() => { setPreview(null); setConfirming(false); setError(null); setTestSent(false); }}>{text('edit')}</Button>}
           <Button variant="outline" disabled={busy} onClick={() => void run(async () => { await client.test(preview.draft); setTestSent(true); }, 'testError')}>{text('test')}</Button>
           {!confirming ? <Button disabled={busy || preview.count === 0} onClick={() => { setConfirming(true); setError(null); setTestSent(false); }}>{text('continue')}</Button>
@@ -111,7 +111,7 @@ export function AnnouncementEditor({ gymName, programs, client, close, sent, own
               rememberAttempt?.(undefined);
               sent(result);
             }, 'sendError')}>{text(pending === 'sendError' ? 'sending' : 'confirm', { count: preview.count })}</Button>}
-        </div>
+        </DialogActions>
       </>}
       {testSent && <Alert role="status">{text('testSent')}</Alert>}
       {attempted && !busy && <Alert role="note">{text('retainedAttempt')}</Alert>}

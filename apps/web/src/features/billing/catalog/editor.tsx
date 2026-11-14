@@ -5,6 +5,7 @@ import { Button } from '../../../components/ui/button.js';
 import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
 import { Alert } from '../../../components/ui/alert.js';
+import { DialogActions } from '../../../components/ui/dialog.js';
 import { t } from '../../../lib/i18n.js';
 import { amountInputStep, decimalUnits, minorUnitsToInput, parseMinorUnits, say, selectClass, text } from './format.js';
 
@@ -104,8 +105,7 @@ export function CatalogEditor({ kind, record, currency, taxes, busy, locked = fa
     } catch { setInvalid(true); return; }
     await save({ ...data, ...(record ? { revision: record.revision } : {}) });
   }
-  return <form onSubmit={event => void submit(event)} className="min-w-0 space-y-4 rounded-lg border p-4">
-    <h2 className="text-lg font-semibold">{text((record ? 'edit.' : 'create.') + kind)}</h2>
+  return <form onSubmit={event => void submit(event)} className="min-w-0 space-y-4">
     {invalid && <Alert variant="error" focusOnReveal role="alert">{text('invalid')}</Alert>}
     <fieldset disabled={busy || locked} className="grid min-w-0 gap-4 sm:grid-cols-2">
       <div className="min-w-0 sm:col-span-2"><Label className="block min-w-0">{text('name')}<Input name="name" required value={draft.name} onChange={event => change('name', event.target.value)}/></Label>{latest('name')}</div>
@@ -130,7 +130,7 @@ export function CatalogEditor({ kind, record, currency, taxes, busy, locked = fa
         </fieldset>
       </>}
       <div className="min-w-0"><Label className="flex min-h-11 items-center gap-3"><input className="size-5" type="checkbox" name="active" checked={draft.active} onChange={event => change('active', event.target.checked)}/>{text('active')}</Label>{latest('active')}</div>
-      <div className="flex flex-col gap-2 sm:col-span-2 sm:flex-row"><Button type="submit" disabled={stale}>{text(busy ? 'saving' : 'save')}</Button><Button variant="outline" onClick={cancel}>{text('cancel')}</Button></div>
+      <DialogActions className="sm:col-span-2"><Button type="submit" disabled={stale}>{text(busy ? 'saving' : 'save')}</Button><Button variant="outline" onClick={cancel}>{text('cancel')}</Button></DialogActions>
     </fieldset>
   </form>;
 }

@@ -54,7 +54,7 @@
   "readyOnly": "Show ready members only",
   "eligible": "Ready",
   "notEligible": "In progress",
-  "noEligible": "No members match this selection.",
+  "noEligible": "No members match this selection",
   "namesUnavailable": "Member names are unavailable. Member IDs are shown until the roster loads.",
   "promotedAt": "Promotion date and time",
   "notes": "Notes",

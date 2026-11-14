@@ -161,13 +161,14 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   const continueHeld = <SetupActions><Button onClick={proceed}>{t('setup/setup:next')}</Button></SetupActions>;
   return <FormContext.Provider value={{ busy, error, run }}><main id="main-content" className="mx-auto w-full max-w-2xl min-w-0 flex-1 p-3 sm:p-6"><Card className="space-y-5 p-4 sm:space-y-6 sm:p-6">
     <h1 className="text-2xl font-semibold">{t('setup/setup:title')}</h1>
-    {complete ? <><p role="status">{t(restoreState === 'restored' ? 'setup/setup:restored' : 'setup/setup:finished')}</p>
-      <a href="/login" className="inline-flex min-h-11 items-center underline">{t('setup/setup:signIn')}</a></>
+    {complete ? <><h2 className="text-xl font-semibold">{t('setup/setup:completeTitle')}</h2><p role="status">{t(restoreState === 'restored' ? 'setup/setup:restored' : 'setup/setup:finished')}</p>
+      {restoreState === 'restored' ? <Button asChild><a href="/login">{t('setup/setup:signIn')}</a></Button>
+        : <Button asChild><a href="/admin">{t('setup/setup:openAdmin')}</a></Button>}</>
     : unavailable ? <><Alert>{t('setup/setup:unavailable')}</Alert><a href="/login" className="inline-flex min-h-11 items-center underline">{t('setup/setup:signIn')}</a></>
     : status.isPending && !jobId ? <LoadingState label={t('setup/setup:loading')} />
     : jobId || restoreState === 'running' ? <LoadingState label={t('setup/setup:restoring')} />
     : <>
-      <p className="text-sm text-muted-foreground">{t('setup/setup:step')} {(googlePage ? 5 : step) + 1} / 9</p>
+      <p className="text-sm text-muted-foreground">{t('setup/setup:step')} {googlePage ? t('setup/setup:googleStepNumber') : step + 1} / 9</p>
       <h2 ref={heading} tabIndex={-1} className="scroll-mt-4 text-xl font-semibold focus:outline-none">{googlePage ? t('setup/google-step:title') : t('setup/setup:step' + step)}</h2>
       {error && <Alert ref={errorBox} tabIndex={-1} variant="error">{say(error)}</Alert>}
       {restoreState === 'failed' && <Alert variant="error">{t('setup/setup:restoreFailed')}</Alert>}
@@ -198,8 +199,8 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
         {step === 2 && <Form draft={draft} action={async (data) => {
           await client.call('gym', { name: text(data, 'gymName'), timezone: text(data, 'timezone'), currency: text(data, 'currency').toUpperCase(),
             address: text(data, 'address').trim() ? { line1: text(data, 'address').trim() } : {}, branding: { logoKey: null, primaryColor: text(data, 'primaryColor') || null }, revision }); await refresh();
-        }}><Field name="gymName" /><Field name="timezone" value={hostZone.zone} hint={hostZone.fallback && !zoneEdited ? t('setup/setup:timezoneFallback') : undefined} onEdit={() => setZoneEdited(true)} />
-          <Field name="currency" value="USD" maxLength={3} /><Field name="address" required={false} /><Field name="primaryColor" type="color" value="#2563eb" check={null} /></Form>}
+        }}><Field name="gymName" /><Field name="timezone" value={hostZone.zone} hint={t('setup/setup:' + (hostZone.fallback && !zoneEdited ? 'timezoneFallback' : 'timezoneHint'))} onEdit={() => setZoneEdited(true)} />
+          <Field name="currency" value="USD" maxLength={3} /><Field name="address" required={false} /><Field name="primaryColor" type="color" value="#155e55" check={null} /></Form>}
         {step === 3 && <Form action={async (data) => {
           const selected = data.getAll('packs').map(String);
           await client.call('packs', { revision, packs: (catalog.data ?? []).filter((pack) => selected.includes(pack.id)).map((pack) => ({ packId: pack.id, version: pack.version })) }); await refresh();

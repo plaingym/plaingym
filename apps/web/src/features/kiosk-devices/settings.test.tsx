@@ -195,7 +195,7 @@ describe('kiosk device settings', () => {
     expect(client.GET).toHaveBeenLastCalledWith('/api/kiosk/devices', { params: { query: { limit: 20, offset: 20 } } });
     expect((screen.getByRole('button', { name: 'Next page' }) as HTMLButtonElement).disabled).toBe(true);
     await user.click(screen.getByRole('button', { name: 'Previous page' }));
-    await screen.findByText('No kiosk devices registered.');
+    await screen.findByText('No kiosk devices registered');
     await user.click(screen.getByRole('button', { name: 'Refresh devices' }));
     await waitFor(() => expect(client.GET).toHaveBeenCalledTimes(4));
   });

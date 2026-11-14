@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { canStaff } from '@plaingym/shared';
 import type { ChargeType, Plan, PlanPriceChangePreview, TaxRate, TaxRateUsage } from '@plaingym/shared/contracts';
@@ -7,6 +7,7 @@ import { addDays, localDate } from '@plaingym/shared/time';
 import { useBootstrap } from '../../../app/context.js';
 import { Alert } from '../../../components/ui/alert.js';
 import { Button } from '../../../components/ui/button.js';
+import { Dialog } from '../../../components/ui/dialog.js';
 import { EmptyState } from '../../../components/ui/states.js';
 import { userNames } from '../../../components/ui/page.js';
 import { ApiError } from '../../../lib/api.js';
@@ -29,6 +30,11 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
   const [archive, setArchive] = useState<Archive | null>(null);
   const [stale, setStale] = useState(false);
   const [priceChange, setPriceChange] = useState<{ plan: Plan; input: Record<string, unknown>; initial: PlanPriceChangePreview } | null>(null);
+  const dialogBody = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const controls = dialogBody.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)');
+    [...controls ?? []].find(control => !control.closest('[hidden]'))?.focus();
+  }, [priceChange]);
   const data = useQuery({ queryKey: key, queryFn: async () => {
     const [plans, taxes, charges, settings] = await Promise.all([client.plans(), client.taxes(), client.charges(), client.settings()]);
     return { plans, taxes, charges, settings };
@@ -103,12 +109,19 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
     await cache.invalidateQueries({ queryKey: key });
   });
   const switchTo = (value: CatalogKind) => { setKind(value); setEditor(null); setArchive(null); setMessage(''); setStale(false); };
+  const closeEditor = () => { setEditor(null); setArchive(null); setMessage(''); setStale(false); };
+  const notice = (message || stale) && <Alert variant={!stale && message === text('reloaded') ? 'info' : 'error'} focusOnReveal={stale || message !== text('reloaded')} role={!stale && message === text('reloaded') ? 'status' : 'alert'} className="space-y-3"><p>{message || text('conflict')}</p>{stale && <Button className="w-full sm:w-auto" variant="outline" disabled={busy} onClick={() => void reloadEditor()}>{text('reloadRecord')}</Button>}</Alert>;
   return <div className={cn('min-w-0 space-y-5', userNames)}>
     <div><h1 className="text-2xl font-semibold">{text('title')}</h1><p className="mt-1 text-muted-foreground">{text('help')}</p></div>
     {data.isPending && <p role="status">{text('loading')}</p>}
     {data.isError && <Alert variant="error" role="alert">{text('error')} <Button variant="outline" onClick={() => void data.refetch()}>{text('retry')}</Button></Alert>}
     {data.data && <>
-      {priceChange && <PriceChange {...priceChange} client={client} cancel={() => setPriceChange(null)}
+
+      <nav className="flex flex-wrap gap-2" aria-label={text('sections')}>{(['plans', 'taxes', 'charges'] as const).map(value => <Button key={value} aria-pressed={value === kind} variant={value === kind ? 'default' : 'outline'} disabled={busy} onClick={() => switchTo(value)}>{text(value)}</Button>)}</nav>
+      {!editor && !archive && notice}
+      {(editor || archive) && <Dialog title={!editor && archive ? say(archive.rate.active ? 'archiveTitle' : 'detachTitle', { name: archive.rate.name }) : text(priceChange ? 'pcTitle' : (editor === 'new' ? 'create.' : 'edit.') + kind)} size={priceChange ? 'wide' : 'default'} closeLabel={text('closeEditor')} dismissible={!busy && !priceChange} onClose={closeEditor}>
+      <div ref={dialogBody}>
+      {priceChange && <PriceChange embedded {...priceChange} client={client} cancel={() => setPriceChange(null)}
         done={async () => { await cache.invalidateQueries({ queryKey: key }); setPriceChange(null); setEditor(null); }}
         reload={async () => {
           const refreshed = await data.refetch({ throwOnError: true });
@@ -116,17 +129,18 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
           if (!plan) throw new Error('Plan missing');
           setEditor(plan); setPriceChange(null); setStale(false); setMessage(text('reloaded'));
         }}/>}
-      <nav className="flex flex-wrap gap-2" aria-label={text('sections')}>{(['plans', 'taxes', 'charges'] as const).map(value => <Button key={value} aria-pressed={value === kind} variant={value === kind ? 'default' : 'outline'} disabled={busy} onClick={() => switchTo(value)}>{text(value)}</Button>)}</nav>
-      {(message || stale) && <Alert variant={!stale && message === text('reloaded') ? 'info' : 'error'} focusOnReveal={stale || message !== text('reloaded')} role={!stale && message === text('reloaded') ? 'status' : 'alert'} className="space-y-3"><p>{message || text('conflict')}</p>{stale && <Button className="w-full sm:w-auto" variant="outline" disabled={busy} onClick={() => void reloadEditor()}>{text('reloadRecord')}</Button>}</Alert>}
+      <div hidden={!!priceChange} className="space-y-4">
+      {notice}
       {archive && <ArchiveConfirmation rate={archive.rate} usage={archive.usage} busy={busy} confirm={confirmArchive} cancel={() => { setArchive(null); setMessage(''); }}/>}
-      {editor ? <CatalogEditor key={kind + (editor === 'new' ? 'new' : editor.id)} kind={kind} {...(editor === 'new' ? {} : { record: editor })} currency={data.data.settings.currency} taxes={data.data.taxes} busy={busy} locked={archive !== null} stale={stale} save={save} cancel={() => { setEditor(null); setArchive(null); setMessage(''); setStale(false); }}/>
-        : !archive && <Button onClick={() => { setEditor('new'); setStale(false); }}>{text('create.' + kind)}</Button>}
+      {editor && <CatalogEditor key={kind + (editor === 'new' ? 'new' : editor.id)} kind={kind} {...(editor === 'new' ? {} : { record: editor })} currency={data.data.settings.currency} taxes={data.data.taxes} busy={busy} locked={archive !== null} stale={stale} save={save} cancel={closeEditor}/>}
+      </div></div></Dialog>}
+      {!editor && !archive && <Button onClick={() => { setEditor('new'); setStale(false); }}>{text('create.' + kind)}</Button>}
       {!data.data[kind].length && <EmptyState title={text('empty.' + kind)} description={text('emptyHelp.' + kind)}/>}
       <ul className="grid min-w-0 gap-3 lg:grid-cols-2">{data.data[kind].map(record => {
         const priced = 'taxRateIds' in record ? record : undefined;
         const archived = priced ? data.data.taxes.filter(rate => !rate.active && carries(priced, rate.id)) : [];
         const carriers = 'rateMillionths' in record && !record.active ? [...data.data.plans, ...data.data.charges].filter(item => carries(item, record.id)).length : 0;
-        return <li key={record.id} className="min-w-0 rounded-lg border p-4">
+        return <li key={record.id} className="min-w-0 rounded-lg border border-border bg-card p-4">
           <h2 className="text-lg font-medium">{record.name}</h2><p className="text-sm text-muted-foreground">{text(record.active ? 'active' : 'inactive')}</p>
           {'amountCents' in record ? <p className="mt-2">{money(record.amountCents, record.currency)} {'interval' in record ? '/ ' + text(record.interval) : ''}</p> : <p className="mt-2">{record.rateMillionths / 10_000}% · {text(record.inclusive ? 'inclusive' : 'exclusive')}</p>}
           {'signupFeeCents' in record && <p className="text-sm">{text('signupFee')}: {money(record.signupFeeCents, record.currency)} · {text('trialDays')}: {record.trialDays}</p>}

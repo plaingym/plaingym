@@ -209,6 +209,7 @@ function Results({ screen, busy, onChoose, onDone, onMembers }: { screen: Extrac
       + (result?.status === 'checked_in' || result?.status === 'already_checked_in' ? 'border-success bg-success/10' : 'border-border')}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4"><Person member={member}/>
         <span className="text-xl font-medium">{text(!result ? 'error' : result.status === 'select_session' ? 'chooseClass' : result.status)}</span></div>
+      {result?.status === 'see_front_desk' && <p className="mt-2 text-sm">{text('frontDeskHelp')}</p>}
       {result?.status === 'select_session' && <div className="grid gap-3 sm:grid-cols-2">
         {result.sessions.map((session) => <Button key={session.id} className={big + ' wrap-anywhere'} disabled={busy} onClick={() => onChoose(member.id, session.id)}>{text('session', { name: session.name, time: time(session) })}</Button>)}
         <Button variant="outline" className={big} disabled={busy} onClick={() => onChoose(member.id, null)}>{text('openMat')}</Button></div>}

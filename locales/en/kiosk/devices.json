@@ -25,7 +25,7 @@
   "revoked": "Revoked",
   "revoke": "Revoke access",
   "revokeNamed": "Revoke access for {name}",
-  "empty": "No kiosk devices registered.",
+  "empty": "No kiosk devices registered",
   "error": "The request failed. Refresh the list and try again.",
   "previous": "Previous page",
   "next": "Next page",

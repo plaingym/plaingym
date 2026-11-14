@@ -8,6 +8,7 @@ import { api } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 import { instantLabel } from '../../lib/instant.js';
 import { Button } from '../../components/ui/button.js';
+import { Pager } from '../../components/ui/pager.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { Alert } from '../../components/ui/alert.js';
@@ -118,9 +119,6 @@ export function KioskDevicesSettings() {
           {t('kiosk/devices:revoke')}</Button></td>
       </tr>)}</tbody>
     </table>{page.data.length === 0 && <p className="p-2">{t('kiosk/devices:empty')}</p>}</TableContainer>}
-    {(offset > 0 || (page?.pagination.total ?? 0) > pageSize) && <div className="flex gap-2">
-      <Button variant="outline" disabled={busy || offset === 0} onClick={() => setOffset(Math.max(0, offset - pageSize))}>{t('kiosk/devices:previous')}</Button>
-      <Button variant="outline" disabled={busy || !page || offset + pageSize >= page.pagination.total} onClick={() => setOffset(offset + pageSize)}>{t('kiosk/devices:next')}</Button>
-    </div>}
+    <Pager offset={offset} total={page?.pagination.total ?? 0} limit={pageSize} disabled={busy} onChange={setOffset} previousLabel={t('kiosk/devices:previous')} nextLabel={t('kiosk/devices:next')}/>
   </section>;
 }

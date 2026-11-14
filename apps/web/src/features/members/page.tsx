@@ -8,6 +8,7 @@ import { useBootstrap } from '../../app/context.js';
 import { t } from '../../lib/i18n.js';
 import { Alert } from '../../components/ui/alert.js';
 import { Button } from '../../components/ui/button.js';
+import { Pager } from '../../components/ui/pager.js';
 import { Dialog } from '../../components/ui/dialog.js';
 import { Autocomplete } from '../../components/ui/autocomplete.js';
 import { Input } from '../../components/ui/input.js';
@@ -68,10 +69,7 @@ function Roster({ gymId, manage }: { gymId: string; manage: boolean }) {
             <td className="p-1"><Link to="/admin/members/$memberId" params={{ memberId: member.id }} className="flex min-h-11 items-center rounded-md px-2 font-medium underline underline-offset-4 hover:bg-muted">{member.firstName} {member.lastName}</Link></td>
             <td className="p-3"><StatusBadge status={member.status}/></td><td className="break-all p-3">{member.email}</td></tr>)}</tbody>
         </table></TableContainer>
-        {(offset > 0 || total > pageSize) && <div className="flex items-center justify-between gap-3">
-          <Button variant="outline" disabled={!offset} onClick={() => setOffset(Math.max(0, offset - pageSize))}>{text('previous')}</Button>
-          <Button variant="outline" disabled={offset + pageSize >= total} onClick={() => setOffset(offset + pageSize)}>{text('next')}</Button>
-        </div>}
+        <Pager offset={offset} total={total} limit={pageSize} onChange={setOffset} previousLabel={text('previous')} nextLabel={text('next')}/>
       </div>}
     {manage && <TagManager tags={tags.data?.data ?? []}/>}
     {manage && <PageSection title={text('manageHouseholds')} actions={<Button variant="outline" aria-expanded={showHouseholds} aria-controls="households-manager"
@@ -104,7 +102,7 @@ function AddMember({ gymId, onCreated }: { gymId: string; onCreated: (member: c.
 function TagManager({ tags }: { tags: c.MemberTag[] }) {
   const [name, setName] = useState(''), [color, setColor] = useState('#64748b'), [selected, setSelected] = useState(''), [confirmDelete, setConfirmDelete] = useState(false), state = useMemberSave();
   return <PageSection title={text('manageTags')}><div className="space-y-4 rounded-xl border border-border bg-card p-4 sm:p-6">
-    <form className="grid gap-3 sm:grid-cols-[1fr_1fr_6rem_auto] sm:items-end" onSubmit={(event) => { event.preventDefault(); void state.save(async () => {
+    <form className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(10rem,1fr)_minmax(0,1fr)_6rem_auto] sm:items-end" onSubmit={(event) => { event.preventDefault(); void state.save(async () => {
       const existing = tags.find((tag) => tag.id === selected);
       await memberRequest(c.memberTagResponseSchema, existing ? `/api/member-tags/${existing.id}` : '/api/member-tags', existing ? 'PATCH' : 'POST', existing ? c.updateMemberTagRequestSchema.parse({ name, color, revision: existing.revision }) : c.createMemberTagRequestSchema.parse({ name, color }));
     }); }}>

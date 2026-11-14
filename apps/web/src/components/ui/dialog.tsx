@@ -6,6 +6,11 @@ import { Button } from './button.js';
 import { CloseIcon } from './icons.js';
 const OperationContext = createContext<Dispatch<SetStateAction<number>> | undefined>(undefined);
 const DraftContext = createContext<((form?: HTMLFormElement) => void) | undefined>(undefined);
+
+/** Keep a long dialog's actions visible inside its single scrolling body. */
+export function DialogActions({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={cn('sticky bottom-0 z-10 flex flex-col gap-3 border-t border-border bg-background py-3 sm:flex-row sm:flex-wrap', className)}>{children}</div>;
+}
 /** Temporarily release modal focus containment while the containing page recovers. */
 export const DialogRecoveryContext = createContext<{ suspended: boolean; notice?: ReactNode }>({ suspended: false });
 export function useDialogSaved() {

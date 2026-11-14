@@ -25,6 +25,7 @@
   "checked_in": "Checked in",
   "already_checked_in": "Already checked in",
   "see_front_desk": "Please see the front desk",
+  "frontDeskHelp": "Ask staff for help checking in. They can explain the next step privately.",
   "chooseClass": "Choose your class",
   "session": "{name} · {time}",
   "openMat": "Open mat",

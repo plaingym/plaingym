@@ -118,6 +118,8 @@ describe('CSV admin workflow', () => {
     expect((screen.getByRole('button', { name: 'Commit import' }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
     await screen.findByText(/<script>secret/); expect(document.querySelector('script')).toBeNull();
+    expect(screen.getByRole('columnheader', { name: 'First name' })).toBeDefined();
+    expect(screen.queryByRole('columnheader', { name: 'Values' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Dry run' }));
     await waitFor(() => expect((screen.getByRole('button', { name: 'Commit import' }) as HTMLButtonElement).disabled).toBe(false));
     expect(request).toHaveBeenCalledWith('/api/imports', expect.objectContaining({ dryRun: true, uploadId: id }));

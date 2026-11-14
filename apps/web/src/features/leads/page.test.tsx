@@ -349,7 +349,7 @@ describe('mark lost and reopen', () => {
     await screen.findByText('Lead No6');
     const lost = card('Lead No6');
     expect(within(lost).queryByRole('button', { name: /Mark/ })).toBeNull();
-    expect(within(lost).getByText('Unknown · Prospect')).toBeDefined();
+    expect(within(lost).getByText('Not recorded · Prospect')).toBeDefined();
     await userEvent.click(within(lost).getByRole('button', { name: 'Reopen lead: Lead No6' }));
     await waitFor(() => expect(client.reopen).toHaveBeenCalledWith(expect.objectContaining({ memberId: id(6), revision: 6 })));
     expect(await screen.findByText('Lead reopened as contacted.')).toBeDefined();

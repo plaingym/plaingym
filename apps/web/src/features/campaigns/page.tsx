@@ -7,6 +7,7 @@ import { useBootstrap } from '../../app/context.js';
 import { Page, PageHeader } from '../../components/ui/page.js';
 import { LoadingState, EmptyState, ErrorState } from '../../components/ui/states.js';
 import { Button } from '../../components/ui/button.js';
+import { Pager } from '../../components/ui/pager.js';
 import { Card } from '../../components/ui/card.js';
 import { Alert } from '../../components/ui/alert.js';
 import { Select } from '../../components/ui/select.js';
@@ -18,14 +19,6 @@ import { CampaignEditor, text } from './editor.js';
 function Progress({ detail }: { detail: LinkCampaignDetail }) {
   return <dl className="grid grid-cols-2 gap-2 sm:grid-cols-5">{(['pending', 'completed', 'expired', 'revoked', 'total'] as const).map(key =>
     <div key={key}><dt className="text-sm text-muted-foreground">{text(key)}</dt><dd className="font-semibold">{detail.progress[key]}</dd></div>)}</dl>;
-}
-/** Previous and next, only when the list is more than one page. */
-function Pager({ offset, total, change }: { offset: number; total: number; change(value: number): void }) {
-  if (offset === 0 && total <= 20) return null;
-  return <nav className="flex flex-wrap gap-2" aria-label={text('pages')}>
-    <Button variant="outline" disabled={offset === 0} onClick={() => change(Math.max(0, offset - 20))}>{text('previous')}</Button>
-    <Button variant="outline" disabled={offset + 20 >= total} onClick={() => change(offset + 20)}>{text('next')}</Button>
-  </nav>;
 }
 export function CampaignWorkspace({ gymId, timezone, client = campaignClient }: { gymId: string; timezone: string; client?: CampaignClient }) {
   const cache = useQueryClient(), key = ['campaigns', gymId];
@@ -59,7 +52,7 @@ export function CampaignWorkspace({ gymId, timezone, client = campaignClient }: 
         <ul className="space-y-3">{list.data.data.map(item => <li key={item.campaign.id}><Card className="min-w-0 space-y-3">
           <h2 className="text-lg font-medium">{item.campaign.name}</h2><p>{text(item.campaign.purpose)}</p><Progress detail={item} />
           <Button variant="outline" className="wrap-anywhere" onClick={() => { setSelected(item.campaign.id); setRecipientOffset(0); setFilter('pending'); setMessage(''); }}>{text('view')} {item.campaign.name}</Button>
-        </Card></li>)}</ul><Pager offset={offset} total={list.data.pagination.total} change={setOffset} />
+        </Card></li>)}</ul><Pager offset={offset} total={list.data.pagination.total} onChange={setOffset} label={text('pages')} />
       </>}
     </> : <>
       {detail.isPending && <LoadingState />}
@@ -79,7 +72,7 @@ export function CampaignWorkspace({ gymId, timezone, client = campaignClient }: 
           <h2 className="break-all font-medium">{names.get(r.link.householdId) ?? r.link.householdId}</h2><p>{text(r.state)}</p>
           {r.customerMatchHeld && <Alert role="note">{text('customerMatchHeld')}</Alert>}
           <p className="text-sm text-muted-foreground">{text('expires')}: {new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short', timeZone: timezone }).format(new Date(r.link.expiresAt))}</p>
-        </li>)}</ul><Pager offset={recipientOffset} total={recipients.data.pagination.total} change={setRecipientOffset} />
+        </li>)}</ul><Pager offset={recipientOffset} total={recipients.data.pagination.total} onChange={setRecipientOffset} label={text('pages')} />
       </>}
     </>}
     {editing && households.data && <CampaignEditor households={households.data} timezone={timezone} loadNeedsCard={client.needsCard} close={() => setEditing(false)} save={async input => {

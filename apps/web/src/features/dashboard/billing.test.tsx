@@ -60,7 +60,7 @@ describe('billing dashboard panel', () => {
   });
   it('shows an empty response and refuses malformed totals', async () => {
     vi.mocked(api.GET).mockResolvedValueOnce({ response: new Response(), data: { data: { generatedAt: '2026-10-26T12:00:00Z', currency: 'CAD', widgets: [] } } } as Awaited<ReturnType<typeof api.GET>>);
-    const view = start(); await screen.findByText('No billing widgets are available.');
+    const view = start(); await screen.findByText('No billing widgets are available');
     vi.mocked(api.GET).mockResolvedValueOnce({ response: new Response(), data: { data: { generatedAt: '2026-10-26T12:00:00Z', currency: 'USD', widgets } } } as Awaited<ReturnType<typeof api.GET>>);
     view.rerender(view.renderPanel('gym-b'));
     await screen.findByRole('alert');

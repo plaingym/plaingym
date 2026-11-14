@@ -61,7 +61,8 @@ describe('portal schedule page', () => {
   it('a parent books a place for a child and sees the household places', async () => {
     const user = userEvent.setup(); page();
     await screen.findByText('Fundamentals');
-    expect(client.schedule).toHaveBeenCalledWith('2026-10-29T00:00:00.000Z', '2026-11-05T00:00:00.000Z');
+    expect(client.schedule).toHaveBeenCalledWith('2026-10-26T00:00:00.000Z', '2026-11-02T00:00:00.000Z');
+    expect(screen.getByText('Week of Monday, October 26')).toBeDefined();
     await user.selectOptions(screen.getByLabelText('Booking for'), child);
     client.schedule.mockResolvedValue(answer([{ ...session, placesLeft: 3, bookings: [booking] }]));
     await user.click(screen.getByRole('button', { name: 'Book Fundamentals for Casey Parent' }));
@@ -107,7 +108,7 @@ describe('portal schedule page', () => {
     client.schedule.mockResolvedValue(answer([]));
     await user.click(screen.getByRole('button', { name: 'Next week' }));
     await screen.findByText('No classes this week');
-    expect(client.schedule).toHaveBeenLastCalledWith('2026-11-05T00:00:00.000Z', '2026-11-12T00:00:00.000Z');
+    expect(client.schedule).toHaveBeenLastCalledWith('2026-11-02T00:00:00.000Z', '2026-11-09T00:00:00.000Z');
   });
   it('never shows a schedule answered for another household than the open one, and reads the household lists again', async () => {
     const reads = stubHouseholdLists(), cache = portalTestCache('gym', 'user', 'household', { defaultOptions: { queries: { retry: false } } });

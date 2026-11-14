@@ -9,6 +9,7 @@ import { api } from '../../lib/api.js';
 import type { ExtensionViewProps } from '../../lib/registries.js';
 import { Page, PageHeader } from '../../components/ui/page.js';
 import { Button } from '../../components/ui/button.js';
+import { Pager } from '../../components/ui/pager.js';
 import { Dialog } from '../../components/ui/dialog.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
@@ -33,8 +34,7 @@ export function Templates({ gymId, manage, client = waiversClient }: { gymId: st
       <p className="whitespace-pre-wrap break-words text-sm text-muted-foreground">{row.document ? text('pdfDocument') : row.body.slice(0, 240)}</p>
       {manage && <Button variant="outline" onClick={() => setEditor(row)}>{text('edit')}</Button>}
     </li>)}</ul>
-    {query.data && (offset > 0 || query.data.pagination.total > 20) && <div className="flex flex-wrap gap-3"><Button variant="outline" disabled={!offset} onClick={() => setOffset(offset - 20)}>{text('previous')}</Button>
-      <Button variant="outline" disabled={offset + 20 >= query.data.pagination.total} onClick={() => setOffset(offset + 20)}>{text('next')}</Button></div>}
+    {query.data && <Pager offset={offset} total={query.data.pagination.total} onChange={setOffset} previousLabel={text('previous')} nextLabel={text('next')}/>}
     {editor && <TemplateEditor row={editor} client={client} close={() => setEditor(null)} saved={async () => { await cache.invalidateQueries({ queryKey: key }); setEditor(null); }} />}
   </Page>;
 }
@@ -117,7 +117,7 @@ export function MemberWaivers({ gymId, memberId, manage, timezone = 'UTC', local
         <p className="text-sm">{statuses[index]?.isSuccess ? text(statuses[index].data ? 'currentSigned' : 'needsSignature') : text('checkingSignature')}</p></div>
       {manage && <Button variant="outline" onClick={() => setSigning(row)}>{text('reviewSign')}</Button>}
     </li>)}</ul>
-    {templates.data && <Pager offset={templateOffset} total={templates.data.pagination.total} setOffset={setTemplateOffset} />}
+    {templates.data && <Pager offset={templateOffset} total={templates.data.pagination.total} onChange={setTemplateOffset} />}
     <h3 className="font-semibold">{text('signed')}</h3>
     {signed.data?.data.length === 0 && <EmptyState title={text('unsigned')} />}
     <ul className="space-y-3">{signed.data?.data.map(row => <li key={row.id} className="space-y-2 rounded-xl border border-border p-4">
@@ -128,15 +128,9 @@ export function MemberWaivers({ gymId, memberId, manage, timezone = 'UTC', local
       <p className="break-all text-sm text-muted-foreground">{row.snapshotHash}</p>
       <Button variant="outline" onClick={() => void pdf(row.id)}>{text('pdf')}</Button>
     </li>)}</ul>
-    {signed.data && <Pager offset={offset} total={signed.data.pagination.total} setOffset={setOffset} />}
+    {signed.data && <Pager offset={offset} total={signed.data.pagination.total} onChange={setOffset} />}
     {signing && <Signing key={signing.id} template={signing} memberId={memberId} client={client} close={() => setSigning(null)} saved={async () => { await cache.invalidateQueries({ queryKey: key }); setSigning(null); }} />}
   </section>;
-}
-/** Previous and next, only when the list is more than one page. */
-function Pager({ offset, total, setOffset }: { offset: number; total: number; setOffset: (value: number) => void }) {
-  if (offset === 0 && total <= 20) return null;
-  return <div className="flex flex-wrap gap-3"><Button variant="outline" disabled={!offset} onClick={() => setOffset(offset - 20)}>{text('previous')}</Button>
-    <Button variant="outline" disabled={offset + 20 >= total} onClick={() => setOffset(offset + 20)}>{text('next')}</Button></div>;
 }
 function Signing({ template, memberId, client, close, saved }: { template: WaiverTemplate; memberId: string; client: WaiversClient; close: () => void; saved: () => Promise<void> }) {
   const document = useWaiverDocument(template, ['waivers', memberId], () => client.call('document', undefined, { templateId: template.id }));

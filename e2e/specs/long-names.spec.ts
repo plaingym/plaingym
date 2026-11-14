@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { randomBytes } from 'node:crypto';
 import type { Locator, Page } from '@playwright/test';
-import { test, expect, createClass, demoClient, Client, type Person, type Program, type RecordId, type Sandbox } from '../support.js';
+import { test, expect, createClass, demoClient, Client, showPortalClass, type Person, type Program, type RecordId, type Sandbox } from '../support.js';
 import { accessibleLayout, horizontalOverflow } from '../responsive.js';
 import { claimPortal, outboxIds, outboxLink } from '../portal.js';
 
@@ -146,6 +146,7 @@ test('the portal schedule wraps class and member names with no break opportunity
   await owner.json('/api/bookings', 'POST', { memberId: longMember.id, sessionId: session.id, allowWaitlist: false });
   await portalLogin(page, sandbox, owner, home.id, email);
   await page.goto(sandbox.origin + '/portal/schedule');
+  await showPortalClass(page, page.getByText(name, { exact: true }));
   await expect(page.getByRole('heading', { name: 'Class schedule', exact: true })).toBeVisible();
   const loading = page.getByText('Loading classes…', { exact: true });
   await expect(loading).toHaveCount(0);

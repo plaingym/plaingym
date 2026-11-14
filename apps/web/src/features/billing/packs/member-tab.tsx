@@ -7,6 +7,7 @@ import { useBootstrap } from '../../../app/context.js';
 import type { ExtensionViewProps } from '../../../lib/registries.js';
 import { Alert } from '../../../components/ui/alert.js';
 import { Button } from '../../../components/ui/button.js';
+import { Pager } from '../../../components/ui/pager.js';
 import { Dialog } from '../../../components/ui/dialog.js';
 import { userNames } from '../../../components/ui/page.js';
 import { LoadingState, ErrorState } from '../../../components/ui/states.js';
@@ -51,11 +52,9 @@ export function PackPanel({ gymId, memberId, timezone, access, client = packClie
           <div className="flex flex-col gap-2 sm:flex-row sm:justify-between"><p className="font-medium">{text('kind.' + entry.kind)} · {text('creditCount', { count: entry.credits })}</p><p className="text-sm text-muted-foreground">{date(entry.createdAt)}</p></div>
           {entry.reason && <p className="whitespace-pre-wrap">{entry.reason}</p>}{invoice(entry.invoiceId, entry.invoiceNumber)}
         </li>)}</ul>
-        {(offset > 0 || ledger.data.pagination.total > 25) && <div className="flex flex-wrap items-center gap-3">
-          <Button variant="outline" disabled={!offset || ledger.isPlaceholderData} onClick={() => setOffset(value => value - 25)}>{text('previous')}</Button>
-          <span>{text('page', { start: Math.min(offset + 1, ledger.data.pagination.total), end: Math.min(offset + 25, ledger.data.pagination.total), total: ledger.data.pagination.total })}</span>
-          <Button variant="outline" disabled={offset + 25 >= ledger.data.pagination.total || ledger.isPlaceholderData} onClick={() => setOffset(value => value + 25)}>{text('next')}</Button>
-        </div>}
+        <Pager offset={offset} total={ledger.data.pagination.total} limit={25} disabled={ledger.isPlaceholderData} onChange={setOffset} previousLabel={text('previous')} nextLabel={text('next')}>
+          <span>{text('page', { start: Math.min(offset + 1, ledger.data.pagination.total).toLocaleString(), end: Math.min(offset + 25, ledger.data.pagination.total).toLocaleString(), total: ledger.data.pagination.total.toLocaleString() })}</span>
+        </Pager>
       </div>
     </>}
     {access.record && <div className="flex flex-col gap-3 sm:flex-row">

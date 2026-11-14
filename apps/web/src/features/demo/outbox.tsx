@@ -33,7 +33,7 @@ export function OutboxPage() {
     <div className="sm:max-w-sm"><DemoMenuLink href="/admin">{t('demo/demo:back')}</DemoMenuLink></div>
     {error && <ErrorState message={t('demo/demo:unavailable')} onRetry={() => setRetry((value) => value + 1)} />}
     {loading && <LoadingState label={t('demo/demo:loading')} />}
-    {!loading && !error && messages.length === 0 && <EmptyState title={t('demo/demo:empty')} />}
+    {!loading && !error && messages.length === 0 && <EmptyState title={t('demo/demo:empty')} description={t('demo/demo:emptyHelp')} />}
     {messages.map((message) => <Card key={message.id}>
       <h2 className="text-lg font-semibold">{message.subject}</h2>
       <div className="space-y-3">

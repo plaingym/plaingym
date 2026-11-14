@@ -53,7 +53,7 @@
   "resetPassword": "Reset password",
   "resetHelp": "Requires 12–128 characters. Resetting ends all of this account's sessions.",
   "loading": "Loading staff…",
-  "empty": "No staff profiles found.",
+  "empty": "No staff profiles found",
   "previous": "Previous",
   "next": "Next",
   "reload": "Reload staff",

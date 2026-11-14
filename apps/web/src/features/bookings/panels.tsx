@@ -8,6 +8,7 @@ import { ApiError } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 import { Alert } from '../../components/ui/alert.js';
 import { Button } from '../../components/ui/button.js';
+import { Pager } from '../../components/ui/pager.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { Select } from '../../components/ui/select.js';
@@ -101,8 +102,7 @@ function Bookings({ memberId, sessionId }: ExtensionViewProps) {
         {row.checked !== undefined && <p className="text-sm text-muted-foreground">{text(row.checked ? 'checkedIn' : 'notCheckedIn')}</p>}</div>
       {row.booking && row.booking.status !== 'cancelled' && <Button variant="outline" className="shrink-0" disabled={busy} aria-label={text('cancelNamed', { name: row.name })} onClick={() => void cancel(row.booking!.id)}>{text('cancel')}</Button>}
     </li>)}</ul>
-    {(shownOffset > 0 || total > 50) && <div className="flex justify-between gap-2"><Button variant="outline" disabled={busy || shownOffset === 0} onClick={() => { fullLoad.current = true; setOffset(Math.max(0, shownOffset - 50)); setReload(value => value + 1); }}>{text('previous')}</Button>
-      <Button variant="outline" disabled={busy || shownOffset + 50 >= total} onClick={() => { fullLoad.current = true; setOffset(shownOffset + 50); setReload(value => value + 1); }}>{text('next')}</Button></div>}
+    <Pager offset={shownOffset} total={total} limit={50} disabled={busy} onChange={value => { fullLoad.current = true; setOffset(value); setReload(value => value + 1); }} previousLabel={text('previous')} nextLabel={text('next')}/>
     {timezone && <BookingForm {...(memberId ? { memberId } : {})} {...(sessionId ? { sessionId } : {})} timezone={timezone} disabled={busy}
       onSaved={booking => { setNotice(booking.status === 'waitlisted' ? text('waitlistSaved', { rank: booking.queueRank! }) : text('bookingSaved')); fullLoad.current = true; setOffset(0); setReload(value => value + 1); }}/ >}
   </section>;

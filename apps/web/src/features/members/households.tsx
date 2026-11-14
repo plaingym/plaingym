@@ -3,6 +3,7 @@ import { useState, type FormEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import * as c from '@plaingym/shared/contracts';
 import { Button } from '../../components/ui/button.js';
+import { Pager } from '../../components/ui/pager.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { CheckboxField } from '../../components/ui/select.js';
@@ -11,6 +12,7 @@ import { Autocomplete } from '../../components/ui/autocomplete.js';
 import { useDialogSaved } from '../../components/ui/dialog.js';
 import { memberRequest } from './api.js';
 import { Field, Panel, ErrorMessage, text, useDraft, useMemberSave } from './common.js';
+import { basisPointsToPercent, percentToBasisPoints } from '../billing/discounts/percent.js';
 
 export function HouseholdsManager({ gymId }: { gymId: string }) {
   const [search, setSearch] = useState(''), [offset, setOffset] = useState(0), [selected, setSelected] = useState('');
@@ -21,7 +23,7 @@ export function HouseholdsManager({ gymId }: { gymId: string }) {
       options={(query.data?.data ?? []).map(home => ({ id: home.id, label: home.name }))} loading={query.isPending} />
     {selected && <Button variant="outline" onClick={() => { setSelected(''); setSearch(''); }}>{text('createHousehold')}</Button>}
     <ErrorMessage error={query.error}/>
-    {(offset > 0 || (query.data?.pagination.total ?? 0) > 50) && <div className="flex justify-between gap-2"><Button variant="outline" disabled={!offset} onClick={() => setOffset(Math.max(0, offset - 50))}>{text('previous')}</Button><Button variant="outline" disabled={!query.data || offset + 50 >= query.data.pagination.total} onClick={() => setOffset(offset + 50)}>{text('next')}</Button></div>}
+    <Pager offset={offset} total={query.data?.pagination.total ?? 0} limit={50} onChange={setOffset} previousLabel={text('previous')} nextLabel={text('next')}/>
     {selected ? <HouseholdDetails key={selected} gymId={gymId} householdId={selected} onDeleted={() => { setSelected(''); setSearch(''); }}/>
       : <HouseholdForm onSaved={(home) => { setSelected(home.id); setSearch(home.name); }}/>}
   </div>;
@@ -77,12 +79,15 @@ function PinForm({ household }: { household: c.Household }) {
   </form>;
 }
 function BillingForm({ billing }: { billing: c.HouseholdBillingSettings }) {
-  const draft = useDraft({ day: String(billing.billingDay), discount: String(billing.familyDiscountBasisPoints) }), state = useMemberSave();
+  const draft = useDraft({ day: String(billing.billingDay), discount: basisPointsToPercent(billing.familyDiscountBasisPoints) }), state = useMemberSave();
   // The household revision also changes with contact and PIN saves; draft.changes() catches real conflicts.
   return <form className="space-y-3 border-t border-border pt-4" onSubmit={(event) => { event.preventDefault(); void state.save(async () => {
     const { day, discount } = { ...draft.values, ...draft.changes() };
-    await memberRequest(c.householdBillingSettingsResponseSchema, `/api/households/${billing.id}/billing-settings`, 'PATCH', c.updateHouseholdBillingSettingsRequestSchema.parse({ revision: billing.revision, billingDay: Number(day), familyDiscountBasisPoints: Number(discount) }));
+    const familyDiscountBasisPoints = /^0(?:\.0{1,2})?$/.test(discount) ? 0 : percentToBasisPoints(discount);
+    await memberRequest(c.householdBillingSettingsResponseSchema, `/api/households/${billing.id}/billing-settings`, 'PATCH', c.updateHouseholdBillingSettingsRequestSchema.parse({ revision: billing.revision, billingDay: Number(day), familyDiscountBasisPoints }));
   }, draft.reset); }}>
-    <ErrorMessage error={state.error}/><Field name="billingDay" type="number" value={draft.values.day} onChange={(value) => draft.set('day', value)}/><Field name="discount" type="number" value={draft.values.discount} onChange={(value) => draft.set('discount', value)}/><Button type="submit" className="w-full sm:w-auto" disabled={state.busy}>{text('saveBilling')}</Button>
+    <ErrorMessage error={state.error}/><Field name="billingDay" type="number" value={draft.values.day} onChange={(value) => draft.set('day', value)}/>
+    <Label className="grid gap-2">{text('discount')}<Input type="number" min="0" max="100" step="0.01" required value={draft.values.discount} onChange={event => draft.set('discount', event.target.value)}/></Label>
+    <Button type="submit" className="w-full sm:w-auto" disabled={state.busy}>{text('saveBilling')}</Button>
   </form>;
 }

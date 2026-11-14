@@ -20,5 +20,5 @@
   "refresh": "Refresh billing",
   "loading": "Loading billing overview…",
   "loadFailed": "Unable to load billing overview. Try again.",
-  "empty": "No billing widgets are available."
+  "empty": "No billing widgets are available"
 }

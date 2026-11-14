@@ -184,7 +184,7 @@ it.each(['owner', 'admin', 'front_desk', 'coach'] as const)('registers and rende
     await screen.findByText('Available credits: 8'); expect(load).toHaveBeenCalledWith(id(3), 0);
     expect(screen.queryByRole('button', { name: 'Sell a pack' }) !== null).toBe(canStaff([role], 'payments.record'));
     expect(screen.queryByRole('button', { name: 'Adjust credits' }) !== null).toBe(canStaff([role], 'payments.record'));
-  } else { await screen.findByText('You do not have access to class packs.'); expect(load).not.toHaveBeenCalled(); }
+  } else { await screen.findByText('You do not have access to class packs'); expect(load).not.toHaveBeenCalled(); }
 });
 
 it.each(['currency_mismatch', 'tax_inactive'])('keeps Save available for the specific %s refusal', async reason => {

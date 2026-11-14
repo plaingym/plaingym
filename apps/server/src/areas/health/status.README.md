@@ -56,7 +56,9 @@ the install's configured backup gym to match the requester.
 No bucket names, filesystem paths, job errors, or SMTP credentials enter responses.
 
 The SMTP check validates configuration rather than attempting a send. It uses
-`SmtpResolver.source(gymId)` to report gym versus install configuration.
+`SmtpResolver.source(gymId)` to report gym versus install configuration. In demo mode
+(`DEMO_MODE=true`) it reports the in-app outbox as ready without consulting SMTP, since
+demo gyms send no email.
 `lastTestAt` is the latest submitted SMTP test, sent or failed, read from the gym's
 `integrations.email_tested` and `setup.email_tested` audit rows, counted only while the
 gym's own SMTP settings are in use. A failed test leaves saved settings unchanged and

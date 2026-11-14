@@ -35,8 +35,7 @@ async function sign(canvas: Locator, page: Page) {
   for (const step of [0.3, 0.45, 0.6, 0.75, 0.85]) await page.mouse.move(box.x + box.width * step, box.y + box.height * (step % 0.3 + 0.3), { steps: 4 });
   await page.mouse.up();
 }
-/** A class in the portal schedule's current or next week. The portal's week runs from today for seven days, so which of the two holds a
- * class depends on the day the run starts (a seeded class two weekly slots away is next week from a Tuesday evening). */
+/** A seeded class in the portal schedule's current or next Monday-based calendar week. */
 async function portalClass(page: Page, button: string | RegExp) {
   // A name stays strict (one button); a pattern may match several, such as each class the student waits for.
   const named = page.getByRole('button', { name: button, exact: typeof button === 'string' });

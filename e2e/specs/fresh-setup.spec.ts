@@ -78,7 +78,7 @@ test('phone-first fresh wizard completes with disabled discovery, reachable acti
   await page.getByRole('button', { name: 'Save and continue', exact: true }).click();
   await expect(page.getByLabel('Gym name', { exact: true })).toBeFocused();
   await page.getByLabel('Gym name', { exact: true }).fill('QA academy');
-  await page.getByLabel('IANA timezone', { exact: true }).fill('UTC');
+  await page.getByLabel('Timezone', { exact: true }).fill('UTC');
   await page.getByRole('button', { name: 'Save and continue', exact: true }).click();
   await expect(page.getByRole('checkbox', { name: /Brazilian Jiu-Jitsu/ })).toBeVisible();
   await checkStep('packs', 'Save and continue');
@@ -97,6 +97,7 @@ test('phone-first fresh wizard completes with disabled discovery, reachable acti
   await page.getByRole('button', { name: 'Skip Google sign-in', exact: true }).click();
   // The payments step belongs to the payment integration; exercise its existing skip unchanged.
   await expect(page.getByLabel('Restricted Stripe key', { exact: true })).toBeVisible();
+  await checkStep('payments', 'Validate and connect');
   await page.getByRole('button', { name: 'Set up later', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Protect your gym with backups', exact: true })).toBeVisible();
   await checkStep('backups', 'Generate backup key');
@@ -109,6 +110,13 @@ test('phone-first fresh wizard completes with disabled discovery, reachable acti
   await page.getByRole('button', { name: 'Back', exact: true }).click();
   await page.getByRole('button', { name: 'Start fresh', exact: true }).click();
   await expect(page.getByText('Setup is complete. Billing and member emails are off until you turn them on.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Setup complete', exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Open admin', exact: true })).toHaveAttribute('href', '/admin');
+  for (const { width, height } of sizes) {
+    await page.setViewportSize({ width, height });
+    await accessibleLayout(page, info, 'setup-complete-' + width);
+    await page.screenshot({ path: info.outputPath('setup-complete-' + width + '.png'), fullPage: true });
+  }
   expect(probes).toEqual(['/api/demo', '/api/demo', '/api/demo']);
 });
 

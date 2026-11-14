@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { BrowserContext, Page, TestInfo } from '@playwright/test';
-import { expect, gymOrigin, localDate, showWeek, test, wall, weekday, createClass, demoClient, type Install, type Person, type RecordId } from '../support.js';
+import { expect, gymOrigin, localDate, showWeek, showPortalClass, test, wall, weekday, createClass, demoClient, type Install, type Person, type RecordId } from '../support.js';
 import { accessibleThemes, keyboardActivate, tabTo } from '../responsive.js';
 import { stripeOrigin, outboxIds, outboxLink } from '../portal.js';
 
@@ -320,6 +320,7 @@ test.describe('member and public accessibility', () => {
       await student.browser(context);
       await page.setViewportSize(viewport);
       await page.goto(sandbox.origin + '/portal/schedule');
+      await showPortalClass(page, page.getByRole('button', { name: new RegExp('^Book ' + session.name + ' for ') }));
       await keyboardActivate(page, page.getByRole('button', { name: new RegExp('^Book ' + session.name + ' for ') }));
       const cancel = page.getByRole('button', { name: new RegExp('^Cancel booking: ' + session.name + ' for ') });
       await expect(cancel).toBeVisible();

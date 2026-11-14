@@ -9,7 +9,7 @@ import { App } from '../app.js';
 import { createAppRouter } from './router.js';
 import type { ShellBootstrap, ShellServices } from './services.js';
 import { createWebRegistries } from '@plaingym/shared';
-import { AdminShell, visibleAdminNavigation } from './admin-shell.js';
+import { AdminShell, adminNavigationGroups, visibleAdminNavigation } from './admin-shell.js';
 import { sessionName } from './identity.js';
 import { RootError, SourceFooter } from '../routes/__root.js';
 
@@ -131,6 +131,14 @@ const nav: NavigationEntry[] = [
   { id: 'public', labelKey: 'Public', href: '/login', enabled: true, permission: { kind: 'public' } },
 ];
 describe('admin shell', () => {
+  it('puts Dashboard first and keeps billing together regardless of registry order', () => {
+    const paths = ['/admin/settings', '/admin/billing/plans', '/admin/members', '/admin', '/admin/billing/invoices'];
+    const entries = paths.map(href => ({ ...nav[0]!, id: href, href }));
+    expect(adminNavigationGroups(entries).map(group => [group.id, group.entries.map(entry => entry.href)])).toEqual([
+      ['overview', ['/admin']], ['gym', ['/admin/members']],
+      ['billing', ['/admin/billing/invoices', '/admin/billing/plans']], ['administration', ['/admin/settings']],
+    ]);
+  });
   it('filters enabled items by module and all of the principal roles', () => {
     const coach = { userId: 'coach', displayName: 'Test User', roles: ['coach'] as const, member: false };
     expect(visibleAdminNavigation(nav, coach, []).map((x) => x.id)).toEqual(['members']);

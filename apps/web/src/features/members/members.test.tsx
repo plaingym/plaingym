@@ -10,7 +10,7 @@ import { createWebRegistries } from '@plaingym/shared';
 import type { ExtensionView } from '../../lib/registries.js';
 import { MemberProfile, MemberTabs } from './profile.js';
 import { MemberForm } from './member-form.js';
-import { HouseholdForm } from './households.js';
+import { HouseholdDetails, HouseholdForm } from './households.js';
 import { memberRequest } from './api.js';
 import { ApiError } from '../../lib/api.js';
 import { memberDeleteBlockedReason } from '@plaingym/shared/contracts';
@@ -46,6 +46,12 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 describe('member admin UI', () => {
+  it.each([['12.34', 1234], ['0', 0], ['100', 10000]])('saves a household discount of %s percent as %s basis points', async (percent, points) => {
+    view(<HouseholdDetails householdId={homeId} gymId={homeId}/>);
+    fireEvent.change(await screen.findByLabelText('Family discount (%)'), { target: { value: percent } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save billing settings' }));
+    await waitFor(() => expect(memberRequest).toHaveBeenCalledWith(expect.anything(), `/api/households/${homeId}/billing-settings`, 'PATCH', expect.objectContaining({ familyDiscountBasisPoints: points })));
+  });
   it('places tabs above profile fields and destructive actions in the last section at 360 px', async () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 360 });
     bootstrap(['owner']); view(<MemberProfile memberId={memberId}/>);

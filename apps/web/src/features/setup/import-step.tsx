@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { importsContracts, importJobSchema, importTargetFieldSchema, importUploadSchema, type ImportColumnMapping, type ImportJob,
   type ImportMapper, type ImportUpload, type ImportPlanRequest } from '@plaingym/shared/contracts';
 import { Button } from '../../components/ui/button.js';
+import { Pager } from '../../components/ui/pager.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { Select } from '../../components/ui/select.js';
@@ -11,7 +12,7 @@ import { Alert } from '../../components/ui/alert.js';
 import { t } from '../../lib/i18n.js';
 import { ApiError, createJsonTransport } from '../../lib/api.js';
 import { createSetupClient } from './api.js';
-import { SetupActions } from './actions.js';
+import { SetupActions, SetupSecondaryActions } from './actions.js';
 
 const label = (key: string, values?: Record<string, string | number>) => t('setup/import-step:' + key, values);
 const pipeline = (key: string) => t('imports/pipeline:' + key);
@@ -69,7 +70,7 @@ export function ImportStep({ fetcher = fetch, pollMs = 1500 }: { fetcher?: typeo
     setJob(parseResponse(importJobSchema, (await request<{ data: unknown }>('/api/imports',
       { uploadId: upload.id, mapper, mapping, duplicatePolicy, dryRun })).data));
   });
-  if (done) return <div className="space-y-3"><p role="status">{label('finished')}</p><a href="/login" className="inline-flex min-h-11 items-center underline">{t('setup/setup:signIn')}</a></div>;
+  if (done) return <div className="space-y-3"><h2 className="text-xl font-semibold">{t('setup/setup:completeTitle')}</h2><p role="status">{label('finished')}</p><Button asChild><a href="/admin">{t('setup/setup:openAdmin')}</a></Button></div>;
   const checked = job?.dryRun && job.status === 'succeeded' && job.errorCount === 0;
   const committed = job && !job.dryRun && job.status === 'succeeded';
   const active = busy || (!!job && !finished) || !!committed;
@@ -83,7 +84,7 @@ export function ImportStep({ fetcher = fetch, pollMs = 1500 }: { fetcher?: typeo
     {!importing ? <SetupActions>
       <Button disabled={busy} onClick={() => void finish()}>{label('fresh')}</Button>
       <Button variant="outline" disabled={busy} onClick={() => setImporting(true)}>{label('import')}</Button>
-    </SetupActions> : <div className="space-y-4">
+    </SetupActions> : <SetupSecondaryActions.Provider value={null}><div className="space-y-4">
       <p>{label('importHelp')}</p>
       <div className="space-y-2"><Label htmlFor="setup-import-file">{pipeline('file')}</Label>
         <Input id="setup-import-file" type="file" accept=".csv,text/csv" disabled={active}
@@ -118,7 +119,7 @@ export function ImportStep({ fetcher = fetch, pollMs = 1500 }: { fetcher?: typeo
         {committed && <Button disabled={busy} onClick={() => void finish(job.id)}>{label('finishWithImport')}</Button>}
         <Button variant="outline" disabled={active || !!committed} onClick={() => { setImporting(false); setUpload(undefined); setJob(undefined); setFailure(null); }}>{label('back')}</Button>
       </SetupActions>
-    </div>}
+    </div></SetupSecondaryActions.Provider>}
   </div>;
 }
 
@@ -141,8 +142,7 @@ function ImportIssues({ id, fetcher }: { id: string; fetcher: typeof fetch }) {
     {failed ? <Alert variant="error" focusOnReveal>{pipeline('requestFailed')} <Button variant="outline" onClick={() => setRetry((value) => value + 1)}>{label('retryErrors')}</Button></Alert>
       : !data ? <p>{pipeline('loading')}</p> : <>
         <ul>{data.data.map((issue, index) => <li key={index}>{pipeline('row')} {issue.rowNumber}: {issue.message}</li>)}</ul>
-        <div className="flex gap-3"><Button variant="outline" disabled={offset === 0} onClick={() => setOffset(offset - 50)}>{pipeline('previous')}</Button>
-          <Button variant="outline" disabled={offset + 50 >= data.pagination.total} onClick={() => setOffset(offset + 50)}>{pipeline('next')}</Button></div>
+        <Pager offset={offset} total={data.pagination.total} limit={50} onChange={setOffset} previousLabel={pipeline('previous')} nextLabel={pipeline('next')}/>
       </>}
   </section>;
 }

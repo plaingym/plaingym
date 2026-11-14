@@ -47,6 +47,16 @@ for (const width of [360, 1280]) {
       await page.getByRole('combobox', { name: /^Import type/ }).selectOption('memberships');
       await expect(page.getByRole('alert')).toHaveCount(0);
       await capture('import-plan-changed');
+      await page.route('**/api/imports/preview?*', route => route.fulfill({ json: {
+        data: [{ rowNumber: 2, values: { firstName: 'Person', lastName: 'Preview' }, action: 'create', duplicateIds: [] }],
+        pagination: { limit: 50, offset: 0, total: 1 }, summary: { totalRows: 1, create: 1, update: 0, skip: 0, errors: 0 },
+      } }));
+      await page.getByRole('button', { name: 'Preview', exact: true }).click();
+      await expect(page.getByRole('columnheader', { name: 'First name', exact: true })).toBeVisible();
+      await expect(page.getByRole('columnheader', { name: 'Last name', exact: true })).toBeVisible();
+      await expect(page.getByRole('cell', { name: 'Person', exact: true })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Previous', exact: true })).toHaveCount(0);
+      await capture('import-preview-columns');
     } finally { await context.close(); }
   });
 }

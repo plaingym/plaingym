@@ -81,7 +81,7 @@
   "missingTitle": "We can't find your sign-up here",
   "missingBody": "This browser no longer has your sign-up, so nothing more can be done from this page. If you completed payment, your membership starts once the payment is confirmed: look for a sign-in link in your email, or contact the gym to set up your portal login. Otherwise, start again.",
   "startOver": "Start again",
-  "code": "Promo code (optional)",
+  "code": "Discount code (optional)",
   "codeHelp": "If the gym gave you a code, enter it here. You see the discounted amount before you pay.",
   "codeRefused": "This code can't be used. Check it, or clear the promo code field to continue without it.",
   "codeRefusedPage": "This code can't be used. Start again and check the code, or leave the promo code field empty to continue without it.",

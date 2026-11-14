@@ -14,6 +14,7 @@ import { EmptyState, ErrorState, LoadingState } from '../../../components/ui/sta
 import { Page, PageHeader, PageSection } from '../../../components/ui/page.js';
 import { BookingConflictError, portalClient, type PortalClient } from './client.js';
 import { MemberPicker, usePortalMembers } from './members.js';
+import { weekStart } from '../../schedule/calendar.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('portal/schedule:' + key, values);
 export type SessionAction =
@@ -31,7 +32,7 @@ export function sessionAction(session: PortalScheduleSession, memberId: string, 
   return { kind: session.placesLeft === 0 ? 'waitlist' : 'book' };
 }
 function weekRange(today: string, week: number, timezone: string) {
-  const start = addDays(today, week * 7), end = addDays(start, 7);
+  const start = addDays(weekStart(today), week * 7), end = addDays(start, 7);
   return { start, from: zonedInstant(start, '00:00', timezone, { gap: 'shift' })!.toISOString(), to: zonedInstant(end, '00:00', timezone, { gap: 'shift' })!.toISOString() };
 }
 function status(booking: MemberBooking) {

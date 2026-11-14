@@ -47,6 +47,7 @@ function start(step = 0, completedSteps = Array.from({ length: step }, (_, i) =>
       return Response.json({ data: { publicKey, confirmed: true, revision } });
     }
     if (name.endsWith('/stripe')) { currentStep = 7; revision++; return Response.json({ data: { configured: false, mode: null, webhookRegistered: false, revision } }); }
+    if (name.startsWith('/api/setup/restore/')) return Response.json({ data: { status: 'restored', jobId: name.split('/').pop(), billingEnabled: false, next: 'login' } });
     if (name.endsWith('/finish')) return Response.json({ data: { completed: true, billingEnabled: false, memberEmailsEnabled: false, revision: ++revision } });
     return Response.json({}, { status: 500 });
   });
@@ -60,6 +61,13 @@ function start(step = 0, completedSteps = Array.from({ length: step }, (_, i) =>
 beforeEach(() => { sessionStorage.clear(); localStorage.clear(); vi.clearAllMocks(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 describe('setup wizard', () => {
+  it('shows only the import Back action while choosing a CSV', async () => {
+    start(8, [0, 1, 2, 3, 4, 5, 6], undefined, { backupsLater: true });
+    await userEvent.click(await screen.findByRole('button', { name: 'Import a CSV' }));
+    expect(screen.queryByRole('button', { name: 'Back to backups' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Back' }));
+    expect(screen.getByRole('button', { name: 'Back to backups' })).toBeDefined();
+  });
   it('keeps restore submit and Back together, and Back works without validating the restore form', async () => {
     const { fetcher } = start();
     await userEvent.click(await screen.findByRole('button', { name: 'Restore a backup' }));
@@ -165,7 +173,7 @@ describe('setup wizard', () => {
     const { fetcher, query } = start(6);
     await screen.findByLabelText('Client ID');
     expect(screen.getByRole('heading', { name: 'Google sign-in (optional)' })).toBeDefined();
-    expect(screen.getByText('Step 6 / 9')).toBeDefined();
+    expect(screen.getByText('Step 6a / 9')).toBeDefined();
     expect(screen.getByText(window.location.origin + '/api/auth/callback/google')).toBeDefined();
     expect(screen.queryByLabelText('Restricted Stripe key')).toBeNull();
     const secret = screen.getByLabelText('Client secret') as HTMLInputElement;
@@ -264,15 +272,16 @@ describe('setup wizard', () => {
     ])('%s', async (_name, zone, expected, hinted) => {
       hostZone(zone);
       start(2);
-      const input = (await screen.findByLabelText('IANA timezone')) as HTMLInputElement;
+      const input = (await screen.findByLabelText('Timezone')) as HTMLInputElement;
       expect(input.value).toBe(expected);
       expect(!!screen.queryByText(hint)).toBe(hinted);
-      expect(input.getAttribute('aria-describedby') !== null).toBe(hinted);
+      expect(input.getAttribute('aria-describedby')).not.toBeNull();
+      if (!hinted) expect(screen.getByText('For example, America/Vancouver or Europe/London.')).toBeDefined();
     });
     it('drops the fallback hint once the owner edits the field', async () => {
       hostZone(undefined);
       start(2);
-      const input = await screen.findByLabelText('IANA timezone');
+      const input = await screen.findByLabelText('Timezone');
       expect(screen.queryByText(hint)).not.toBeNull();
       await userEvent.type(input, '/Vancouver');
       expect(screen.queryByText(hint)).toBeNull();
@@ -280,7 +289,7 @@ describe('setup wizard', () => {
     it('reads the host zone once per wizard mount', async () => {
       hostZone('America/Vancouver');
       start(2);
-      const input = await screen.findByLabelText('IANA timezone');
+      const input = await screen.findByLabelText('Timezone');
       await userEvent.type(input, 'x');
       await userEvent.type(screen.getByLabelText('Gym name'), 'Academy');
       expect(hostReads).toBe(1);
@@ -315,9 +324,9 @@ describe('setup wizard', () => {
   });
   it('explains relay delivery and permits skipping SMTP without erasing fallback settings', async () => {
     const { fetcher } = start(5);
-    await screen.findByText(/Mail sent directly from the server itself lands in spam/);
+    await screen.findByText(/Connect your email sending service/);
     expect(screen.getByText(/SPF and DKIM/)).toBeDefined();
-    expect(screen.getByText(/AUTH_PASSWORD_LOGIN=auto/)).toBeDefined();
+    expect(screen.getByText(/Email-link sign-in becomes available/)).toBeDefined();
     await userEvent.click(await screen.findByRole('button', { name: 'Skip email configuration' }));
     await userEvent.click(await screen.findByRole('button', { name: 'Skip Google sign-in' }));
     await screen.findByLabelText('Restricted Stripe key');
@@ -330,13 +339,22 @@ describe('setup wizard', () => {
     expect(screen.queryByRole('button', { name: 'Finish setup' })).toBeNull();
     expect(screen.getByText(/Only your backup private key can open them/)).toBeDefined();
   });
+  it('sends a restored install to sign in, since the setup session is not in the restored database', async () => {
+    sessionStorage.setItem('setup.restore', '019a0af0-9c00-7000-8000-0000000000aa');
+    start(0);
+    expect(await screen.findByRole('heading', { name: 'Setup complete' })).toBeDefined();
+    expect(screen.getByRole('status').textContent).toContain('Backup restored.');
+    expect(screen.getByRole('link', { name: 'Sign in' }).getAttribute('href')).toBe('/login');
+    expect(screen.queryByRole('link', { name: 'Open admin' })).toBeNull();
+  });
   it('can finish at step 8 after a confirmed key survives a reload', async () => {
     const { fetcher } = start(8, [0, 1, 2, 3, 4, 5, 6, 7]);
     expect(await screen.findByText('Import or start fresh')).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Back to backups' })).toBeNull();
     await userEvent.click(await screen.findByRole('button', { name: 'Start fresh' }));
     expect(await screen.findByText(/Setup is complete/)).toBeDefined();
-    expect(screen.getByRole('link', { name: 'Sign in' }).getAttribute('href')).toBe('/login');
+    expect(screen.getByRole('link', { name: 'Open admin' }).getAttribute('href')).toBe('/admin');
+    expect(screen.getByRole('heading', { name: 'Setup complete' })).toBeDefined();
     const call = fetcher.mock.calls.find(([path]) => path === '/api/setup/finish');
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({ choice: 'fresh', revision: 1 });
   });
@@ -534,7 +552,7 @@ describe('setup wizard field checks', () => {
     expect(described(currency)).toContain('Enter a three-letter currency code');
     await userEvent.type(currency, 'd');
     expect(described(currency)).toContain('Looks right');
-    const zone = screen.getByLabelText('IANA timezone');
+    const zone = screen.getByLabelText('Timezone');
     await userEvent.clear(zone); await userEvent.type(zone, 'CET'); await userEvent.tab();
     expect(zone.getAttribute('aria-invalid')).toBe('true');
     expect(described(zone)).toContain('Enter an IANA timezone');

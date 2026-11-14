@@ -10,6 +10,7 @@ import { Page, PageHeader, PageSection } from '../../../components/ui/page.js';
 import { LoadingState, EmptyState, ErrorState } from '../../../components/ui/states.js';
 import { StackedList, StackedItem, Badge } from '../../../components/ui/table.js';
 import { Button } from '../../../components/ui/button.js';
+import { Pager } from '../../../components/ui/pager.js';
 import { Label } from '../../../components/ui/label.js';
 import { Select } from '../../../components/ui/select.js';
 import { Dialog } from '../../../components/ui/dialog.js';
@@ -34,7 +35,7 @@ export function InvoiceList({ gymId, householdId, access, custom, catalog, clien
       {access.record && <Button onClick={() => setCreate(true)}>{text('create')}</Button>}
     </div>
     {rows.isPending && <LoadingState/>}{rows.isError && <ErrorState onRetry={() => void rows.refetch()}/>}
-    {rows.data?.data.length === 0 && <EmptyState title={text('empty')} description={text('emptyHelp')}/>}
+    {rows.data?.data.length === 0 && <EmptyState title={text(status ? 'empty' : 'emptyAll')} description={status ? text('emptyHelp') : undefined}/>}
     <StackedList>{rows.data?.data.map(invoice => <StackedItem key={invoice.id}>
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-2"><span className="font-semibold">{text('number')} {invoice.number ?? text('draft')}</span><Badge>{text(invoice.status)}</Badge></div>
       {!householdId && <HouseholdName gymId={gymId} householdId={invoice.householdId} client={client}/>}
@@ -42,11 +43,9 @@ export function InvoiceList({ gymId, householdId, access, custom, catalog, clien
       <Button variant="outline" onClick={() => setSelected(invoice.id)}>{text('viewInvoice')} {invoice.number ?? text('draft')}</Button>
     </StackedItem>)}</StackedList>
     {/* Paging only when the invoices are more than one page. */}
-    {rows.data && (offset > 0 || rows.data.pagination.total > 25) && <div className="flex flex-wrap items-center gap-3">
-      <Button variant="outline" disabled={!offset} onClick={() => setOffset(v => v - 25)}>{text('previous')}</Button>
-      <span>{Math.min(offset + 1, rows.data.pagination.total)}–{Math.min(offset + 25, rows.data.pagination.total)} / {rows.data.pagination.total}</span>
-      <Button variant="outline" disabled={offset + 25 >= rows.data.pagination.total} onClick={() => setOffset(v => v + 25)}>{text('next')}</Button>
-    </div>}
+    {rows.data && <Pager offset={offset} total={rows.data.pagination.total} limit={25} onChange={setOffset} previousLabel={text('previous')} nextLabel={text('next')}>
+      <span>{Math.min(offset + 1, rows.data.pagination.total).toLocaleString()}–{Math.min(offset + 25, rows.data.pagination.total).toLocaleString()} / {rows.data.pagination.total.toLocaleString()}</span>
+    </Pager>}
     {create && <OneOffEditor gymId={gymId} {...(householdId ? { householdId } : {})} custom={custom} catalog={catalog} client={client} close={() => setCreate(false)} created={invoiceId => {
       setCreate(false); setSelected(invoiceId); void cache.invalidateQueries({ queryKey: ['billing', gymId] });
     }}/>}

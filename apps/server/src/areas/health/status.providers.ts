@@ -21,6 +21,9 @@ export interface StatusOptions {
   disk?: (path: string) => Promise<{ blocks: number; bsize: number; bavail: number }>;
 }
 /** Audit rows for submitted SMTP tests, plus legacy saves and removal. */
+/** Decimal GB to two places, with more digits below 0.01 GB so a nearly full disk never reads "0 GB". */
+const gigabytes = (bytes: number) => (bytes / 1_000_000_000)
+  .toLocaleString('en', { maximumFractionDigits: 2, maximumSignificantDigits: 2, roundingPriority: 'morePrecision' });
 const emailTestActions = ['integrations.email_saved', 'integrations.email_removed', 'setup.step_completed', 'integrations.email_tested', 'setup.email_tested'];
 /**
  * The latest submitted SMTP test and its outcome, while the gym's own settings are in use (legacy saves too);
@@ -52,6 +55,8 @@ export function createStatusProviders(options: StatusOptions = {}) {
         details: { failed: stats.failed, pending: stats.pending, running: stats.running, oldestFailureAt: null } };
     }),
     healthProvider('smtp', async (context) => {
+      if (env.DEMO_MODE === 'true') return { id: 'smtp', status: 'healthy', checkedAt: context.clock.now().toISOString(),
+        details: { configured: true, lastTestAt: null }, message: statusMessage('smtpDemo') };
       const resolver = createSmtpResolver({ key: parseEncryptionKey(env.APP_ENCRYPTION_KEY ?? ''), env, scope });
       const configured = await resolver.configured(context.gymId);
       const source = await resolver.source(context.gymId);
@@ -91,7 +96,9 @@ export function createStatusProviders(options: StatusOptions = {}) {
       const details = [...volumes].sort((a, b) => a.availableBytes - b.availableBytes)[0]!;
       return { id: 'disk', checkedAt: context.clock.now().toISOString(), details,
         status: volumes.some((v) => critical(v.availableBytes)) ? 'error' : volumes.some(low) ? 'warning' : 'healthy',
-        message: statusMessage(volumes[1] ? 'diskFree' : 'diskFreeUploads', { uploads: Math.floor(volumes[0]!.availableBytes / 1048576), staging: volumes[1] ? Math.floor(volumes[1].availableBytes / 1048576) : 0 }) };
+        message: statusMessage(volumes[1] ? 'diskFree' : 'diskFreeUploads', {
+          uploads: gigabytes(volumes[0]!.availableBytes), staging: gigabytes(volumes[1]?.availableBytes ?? 0),
+        }) };
     }),
     healthProvider('version', async (context) => {
       const { version, commit } = runningVersion(env);

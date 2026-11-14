@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { request as httpsRequest } from 'node:https';
 import { readFileSync } from 'node:fs';
 import { readFile, rename, writeFile } from 'node:fs/promises';
-import { expect, test as base, type BrowserContext, type Page } from '@playwright/test';
+import { expect, test as base, type BrowserContext, type Locator, type Page } from '@playwright/test';
 import { classStart, localDate, mondayOf, type ClassStartOptions } from './dates.js';
 
 export const gymOrigin = 'https://gym.localhost';
@@ -265,6 +265,18 @@ export async function createClass(owner: Client, name: string, options: ClassSta
   const startsAt = classStart(Date.now(), await gymTimezone(owner), { ...timing, leadMinutes, durationMinutes });
   return (await owner.json<{ data: ClassSession }>('/api/schedule/sessions', 'POST', { name, startsAt: new Date(startsAt).toISOString(),
     endsAt: new Date(startsAt + durationMinutes * 60_000).toISOString(), coachId: null, capacity, notes: null, kind: 'class', programIds: [selectedProgram], tagIds: [] })).data;
+}
+
+/** A near-future class may fall in the next Monday-based calendar week. */
+export async function showPortalClass(page: Page, target: Locator) {
+  const loading = page.getByText('Loading classes…', { exact: true });
+  await expect(page.getByRole('heading', { name: 'Class schedule', exact: true })).toBeVisible();
+  await expect(loading).toHaveCount(0);
+  if (!await target.isVisible()) {
+    await page.getByRole('button', { name: 'Next week', exact: true }).click();
+    await expect(loading).toHaveCount(0);
+  }
+  await expect(target).toBeVisible();
 }
 
 export async function demoClient(sandbox: Sandbox, role: 'owner' | 'coach' | 'student') {

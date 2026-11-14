@@ -94,7 +94,7 @@ export async function wizard(page: Page, config: Config, setupLink: string): Pro
   let gymName = 'VM QA Academy ' + Date.now();
   if(step <= 2) {
     await page.getByLabel('Gym name', { exact: true }).fill(gymName);
-    await page.getByLabel('IANA timezone', { exact: true }).fill('America/Vancouver');
+    await page.getByLabel('Timezone', { exact: true }).fill('America/Vancouver');
     await next(page);
   } else {
     gymName = (await api<{ data: { name: string } }>(page, '/api/settings')).data.name;

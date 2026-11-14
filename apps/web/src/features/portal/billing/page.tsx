@@ -8,6 +8,7 @@ import { portalContracts as contracts, type PortalInvoice } from '@plaingym/shar
 import { useBootstrap } from '../../../app/context.js';
 import { t } from '../../../lib/i18n.js';
 import { Button } from '../../../components/ui/button.js';
+import { Pager } from '../../../components/ui/pager.js';
 import { Alert } from '../../../components/ui/alert.js';
 import { Page, PageHeader, PageSection } from '../../../components/ui/page.js';
 import { Badge, StackedItem, StackedList } from '../../../components/ui/table.js';
@@ -87,10 +88,7 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
           {receipted.has(row.status) && row.paidAt && <Button variant="outline" disabled={download.isPending} onClick={() => download.mutate(row.id)}>{text('receipt')}</Button>}
         </div>
       </StackedItem>)}</StackedList>}
-      {invoices.data && invoices.data.pagination.total > pageSize && <div className="flex flex-wrap gap-3">
-        <Button variant="outline" disabled={!offset} onClick={() => setOffset(Math.max(0, offset - pageSize))}>{text('previous')}</Button>
-        <Button variant="outline" disabled={offset + pageSize >= invoices.data.pagination.total} onClick={() => setOffset(offset + pageSize)}>{text('next')}</Button>
-      </div>}
+      {invoices.data && <Pager offset={offset} total={invoices.data.pagination.total} limit={pageSize} onChange={setOffset} previousLabel={text('previous')} nextLabel={text('next')}/>}
     </PageSection>
     <PageSection title={text('cards')} description={text('checkoutNote')}
       actions={<Button variant="outline" disabled={checkout.isPending || !cards.isSuccess} onClick={() => checkout.mutate(null)}>{text(cards.data?.length ? 'updateCard' : 'addCard')}</Button>}>

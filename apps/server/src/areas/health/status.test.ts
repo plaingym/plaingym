@@ -71,6 +71,10 @@ describe('health permissions and isolation against PostgreSQL', () => {
 });
 
 describe('built-in providers', () => {
+  it('reports the demo outbox as ready without requiring SMTP', async () => {
+    expect(await tile('smtp', gymB, { env: { ...env, DEMO_MODE: 'true', SMTP_HOST: '', SMTP_FROM: '' } }))
+      .toMatchObject({ status: 'healthy', details: { configured: true, lastTestAt: null }, message: expect.stringContaining('in-app outbox') });
+  });
   it('reports install SMTP fallback and prefers the gym settings', async () => {
     const fallback = { ...env, SMTP_HOST: 'fallback.private', SMTP_FROM: 'install@example.test', SMTP_USER: 'fallback-user', SMTP_PASS: 'fallback-secret' };
     expect(await tile('smtp', gymB, { env: fallback })).toMatchObject({ status: 'healthy', message: expect.stringContaining("install's") });
@@ -140,7 +144,7 @@ describe('built-in providers', () => {
     const single = { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' };
     const check = vi.fn(async (path: string) => ({ blocks: 20_000_000, bsize: 1024, bavail: path === '/staging' ? 500_000 : 10_000_000 }));
     expect(await tile('disk', gymA, { env: single })).toMatchObject({ status: 'healthy', details: { availableBytes: 10_240_000_000 } });
-    expect(await tile('disk', gymA, { env: single, disk: check })).toMatchObject({ status: 'warning', details: { availableBytes: 512_000_000 }, message: expect.stringContaining('staging 488 MiB') });
+    expect(await tile('disk', gymA, { env: single, disk: check })).toMatchObject({ status: 'warning', details: { availableBytes: 512_000_000 }, message: expect.stringContaining('staging 0.51 GB') });
     expect(check.mock.calls.map(([path]) => path).sort()).toEqual(['/staging', '/uploads']);
     expect(await tile('disk', gymA, { env: single, disk: async () => ({ blocks: 1000, bsize: 1024, bavail: 0 }) })).toMatchObject({ status: 'error' });
     const result = await createHealthService(createStatusProviders({ env: single, disk: async () => { throw new Error('/private/path secret'); } })).get(context());
@@ -151,8 +155,11 @@ describe('built-in providers', () => {
     const multi = { ...env, BACKUP_STAGING_DIR: undefined };
     const check = vi.fn(async (_path: string) => ({ blocks: 20_000_000, bsize: 1024, bavail: 500_000 }));
     const result = await tile('disk', gymA, { env: multi, disk: check });
-    expect(result).toMatchObject({ status: 'warning', details: { availableBytes: 512_000_000 }, message: 'Free space: uploads 488 MiB.' });
+    expect(result).toMatchObject({ status: 'warning', details: { availableBytes: 512_000_000 }, message: 'Free space: uploads 0.51 GB.' });
     expect(check.mock.calls.map(([path]) => path)).toEqual(['/uploads']);
+    // A nearly full disk still shows its figure rather than rounding to 0 GB.
+    expect(await tile('disk', gymA, { env: multi, disk: async () => ({ blocks: 20_000_000, bsize: 1024, bavail: 4_000 }) }))
+      .toMatchObject({ status: 'error', message: 'Free space: uploads 0.0041 GB.' });
     expect(await tile('disk', gymA, { env: { ...multi, BACKUP_STAGING_DIR: '' } })).toMatchObject({ status: 'healthy' });
     expect(await tile('disk', gymA, { env: { ...multi, UPLOADS_DIR: '' } })).toMatchObject({ status: 'not_configured' });
     // The app ignores a staging directory set by hand in multi-gym mode, so the tile does too.
@@ -160,7 +167,7 @@ describe('built-in providers', () => {
     await tile('disk', gymA, { env, disk: handSet });
     expect(handSet.mock.calls.map(([path]) => path)).toEqual(['/uploads']);
     // A single-gym install without staging reports the uploads volume alone too.
-    expect(await tile('disk', gymA, { env: { ...multi, TENANCY: 'single' } })).toMatchObject({ status: 'healthy', message: 'Free space: uploads 9765 MiB.' });
+    expect(await tile('disk', gymA, { env: { ...multi, TENANCY: 'single' } })).toMatchObject({ status: 'healthy', message: 'Free space: uploads 10.24 GB.' });
   });
   it('reports missing disk paths and invalid disk statistics safely', async () => {
     expect(await tile('disk', gymA, { env: { ...env, UPLOADS_DIR: '' } })).toMatchObject({ status: 'not_configured' });

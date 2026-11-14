@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { restrictedKeyPattern } from '@plaingym/shared/contracts';
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '../../components/ui/button.js';
 import { Input } from '../../components/ui/input.js';
@@ -9,10 +9,12 @@ import { Alert } from '../../components/ui/alert.js';
 import { t } from '../../lib/i18n.js';
 import { ApiError } from '../../lib/api.js';
 import { createSetupClient } from './api.js';
+import { SetupActions } from './actions.js';
 
 const label = (key: string) => t('setup/stripe-step:' + key);
 const permissions = ['customers', 'intents', 'checkout', 'setupIntents', 'methods', 'refunds', 'webhooks', 'events', 'disputes'];
 export function StripeStep({ fetcher = fetch, onComplete }: { fetcher?: typeof fetch; onComplete?: () => void }) {
+  const formId = useId();
   const [client] = useState(() => createSetupClient(fetcher));
   const [restrictedKey, setKey] = useState(''), [busy, setBusy] = useState(false), [done, setDone] = useState(false);
   const [failure, setFailure] = useState<'failed' | 'changed' | 'invalid' | null>(null);
@@ -41,15 +43,15 @@ export function StripeStep({ fetcher = fetch, onComplete }: { fetcher?: typeof f
         </div>)}
       </dl><p className="text-sm">{label('other')}</p>
       {failure && <Alert variant="error" focusOnReveal>{label(failure)}</Alert>}
-      <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void save('configure'); }}>
+      <form id={formId} className="space-y-4" onSubmit={(event) => { event.preventDefault(); void save('configure'); }}>
         <Label htmlFor="stripe-restricted-key">{label('key')}</Label>
         <Input id="stripe-restricted-key" name="restrictedKey" type="password" autoComplete="off" spellCheck={false}
           value={restrictedKey} onChange={(event) => setKey(event.target.value)} disabled={busy} required />
-        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-          <Button type="submit" disabled={busy}>{label(busy ? 'busy' : 'configure')}</Button>
-          <Button variant="outline" disabled={busy} onClick={() => void save('skip')}>{label('skip')}</Button>
-        </div>
       </form>
+        <SetupActions>
+          <Button type="submit" form={formId} disabled={busy}>{label(busy ? 'busy' : 'configure')}</Button>
+          <Button variant="outline" disabled={busy} onClick={() => void save('skip')}>{label('skip')}</Button>
+        </SetupActions>
     </>}
   </section>;
 }

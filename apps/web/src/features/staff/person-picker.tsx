@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useEffect, useId, useState } from 'react';
 import { Button } from '../../components/ui/button.js';
+import { Pager } from '../../components/ui/pager.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { Alert } from '../../components/ui/alert.js';
@@ -53,10 +54,7 @@ export function PersonPicker({ name, kind, initialId = '', services, onChange }:
           <span className="min-w-0 break-words">{person.displayName}{person.email && person.email !== person.displayName && <span className="block break-all text-xs font-normal text-muted-foreground">{' '}{person.email}</span>}</span>
         </Button></li>)}
       </ul> : <p className="text-sm text-muted-foreground">{text('noPeople')}</p>}
-      {page.total > 25 && <div className="flex justify-between gap-2">
-        <Button type="button" variant="outline" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 25))}>{text('previous')}</Button>
-        <Button type="button" variant="outline" disabled={offset + 25 >= page.total} onClick={() => setOffset(offset + 25)}>{text('next')}</Button>
-      </div>}
+      <Pager offset={offset} total={page.total} limit={25} onChange={setOffset} previousLabel={text('previous')} nextLabel={text('next')}/>
     </>}
   </div>;
 }

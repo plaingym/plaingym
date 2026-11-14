@@ -287,9 +287,10 @@ from `support.ts` with `createClass` and `showWeek`, keep to these rules:
   the promotion form. `toISOString()` is UTC, which is neither unless the zone is `UTC`. A class
   that must start within minutes (the join spec checks in to one) can't wait for `classStart`'s
   window, so it may cross a local midnight; it still takes its day and week from its own start.
-* The portal schedule lists seven days from today, not a calendar week, so a seeded class can
-  be in either of its first two pages; click **Next week** when it isn't on the first
-  (`portalClass` in `demo-join.spec.ts`).
+* The portal schedule starts each gym-local week on Monday, like the admin calendar.
+  A near-future class can fall in the next week, so `showPortalClass` in `support.ts`
+  checks the current page and then **Next week**. The demo join's `portalClass` does
+  the same for seeded classes.
 
 `dates.test.ts` runs with the repository's unit tests (`pnpm test:unit`, no stack needed) and
 covers Sunday 23:59, Monday 00:00, month ends and both daylight saving changes in UTC and the

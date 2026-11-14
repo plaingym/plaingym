@@ -5,6 +5,7 @@ import type { ExtensionViewProps } from '../../lib/registries.js';
 import { t } from '../../lib/i18n.js';
 import { Alert } from '../../components/ui/alert.js';
 import { Button } from '../../components/ui/button.js';
+import { Pager } from '../../components/ui/pager.js';
 import { Dialog, useDialogOperation } from '../../components/ui/dialog.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
@@ -93,10 +94,7 @@ function Roster({ sessionId }: { sessionId: string }) {
       </li>;
     })}</ul>}
     {roster?.data.length === 0 && <EmptyState title={text('noMembers')} description={query ? text('noMembersHelp') : undefined}/>}
-    {roster && (offset > 0 || roster.total > 50) && <div className="flex justify-between gap-2">
-      <Button variant="outline" disabled={busy || offset === 0} onClick={() => setOffset(Math.max(0, offset - 50))}>{text('previous')}</Button>
-      <Button variant="outline" disabled={busy || offset + 50 >= roster.total} onClick={() => setOffset(offset + 50)}>{text('next')}</Button>
-    </div>}
+    {roster && <Pager offset={offset} total={roster.total} limit={50} onChange={setOffset} disabled={busy} previousLabel={text('previous')} nextLabel={text('next')}/>}
     {undoing && <Dialog title={text('undoTitle')} description={text('undoHelp', { name: undoing.name })}
       closeLabel={text('closeUndo')} onClose={closeUndo} dismissible={!saving}>
       {error && <Alert variant="error" focusOnReveal>{text('error')}</Alert>}

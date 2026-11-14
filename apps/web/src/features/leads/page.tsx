@@ -5,6 +5,7 @@ import { leadSourceSchema, type LeadStage } from '@plaingym/shared/contracts';
 import { useBootstrap } from '../../app/context.js';
 import { Page, PageHeader } from '../../components/ui/page.js';
 import { Alert } from '../../components/ui/alert.js';
+import { Button } from '../../components/ui/button.js';
 import { Label } from '../../components/ui/label.js';
 import { Select, CheckboxField } from '../../components/ui/select.js';
 import { LoadingState, ErrorState } from '../../components/ui/states.js';
@@ -33,7 +34,8 @@ function LeadsBoard({ timezone, client }: { timezone: string; client: LeadClient
     });
   }
   return <Page>
-    <PageHeader title={text('title')} description={text('help')} />
+    <PageHeader title={text('title')} description={text('help')} actions={<Button asChild><a href="/trial">{text('addLead')}</a></Button>} />
+    <p className="text-sm text-muted-foreground">{text('entryHelp')}</p>
     <div className="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-3 lg:items-end">
       <div className="min-w-0 space-y-2"><Label htmlFor="leads-source">{text('source')}</Label>
         <Select id="leads-source" value={filters.source} onChange={event => setFilters({ ...filters, source: event.target.value as Filters['source'] })}>

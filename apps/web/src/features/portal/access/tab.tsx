@@ -9,6 +9,7 @@ import { t } from '../../../lib/i18n.js';
 import { createSendGeneration } from '../../../lib/send-generation.js';
 import { memberRequest } from '../../members/api.js';
 import { Button } from '../../../components/ui/button.js';
+import { Pager } from '../../../components/ui/pager.js';
 import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
 import { Select } from '../../../components/ui/select.js';
@@ -63,7 +64,7 @@ export function PortalAccessTab({ memberId }: ExtensionViewProps) {
     {pending.data && pending.data.data.length > 0 && <div className="space-y-3"><h3 className="font-medium">{text('pendingTitle')}</h3><p className="text-sm text-muted-foreground">{text('pendingHelp')}</p>
       <ul className="space-y-3">{pending.data.data.map(invitation => <li key={invitation.id} className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-lg border border-border p-4"><div className="min-w-0"><p className="font-medium">{text(invitation.scope)}{invitation.memberName && <span className="font-normal text-muted-foreground"> · {invitation.memberName}</span>}</p><p className="break-all text-sm text-muted-foreground">{invitation.email}</p><p className="text-sm text-muted-foreground">{text('expires')} <time dateTime={invitation.expiresAt}>{dateLabel(invitation.expiresAt)}</time></p></div><Button variant="outline" onClick={() => open({ kind: 'withdraw', invitation })}>{text('withdraw')}</Button></li>)}</ul></div>}
     <ul className="space-y-3">{users.data.data.map(login => <li key={login.id} className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-lg border border-border p-4"><div className="min-w-0"><p className="font-medium">{text(login.scope)}</p><p className="break-all text-sm text-muted-foreground">{login.email ?? text('account')}</p></div><div className="flex flex-wrap gap-2">{bootstrap.data?.login.password && <Button variant="outline" onClick={() => open({ kind: 'reset', login })}>{text('reset')}</Button>}<Button variant="outline" onClick={() => open({ kind: 'revoke', login })}>{text('revoke')}</Button></div></li>)}</ul>
-    {(offset > 0 || users.data.pagination.total > 20) && <div className="flex gap-2"><Button variant="outline" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 20))}>{text('previous')}</Button><Button variant="outline" disabled={offset + 20 >= users.data.pagination.total} onClick={() => setOffset(offset + 20)}>{text('next')}</Button></div>}
+    <Pager offset={offset} total={users.data.pagination.total} onChange={setOffset} previousLabel={text('previous')} nextLabel={text('next')}/>
     {edit && <Dialog title={text(label)} closeLabel={text('cancel')} onClose={() => { setEdit(null); setPassword(''); }} dismissible={!operation.isPending}>
       <form onSubmit={submit} className="space-y-4">{edit === 'invite' ? <>
         <div className="space-y-2"><Label htmlFor="portal-email">{text('email')}</Label><Input id="portal-email" type="email" required maxLength={254} value={email} onChange={event => setEmail(event.target.value)} /></div>

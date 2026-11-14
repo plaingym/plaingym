@@ -14,7 +14,7 @@ import { money, say, selectClass, text } from './format.js';
 
 type Choice = 'new' | 'all' | 'chosen';
 type Props = { plan: Plan; input: Record<string, unknown>; initial: PlanPriceChangePreview; client: BillingClient;
-  cancel: () => void; reload: () => Promise<void>; done: () => Promise<void> };
+  cancel: () => void; reload: () => Promise<void>; done: () => Promise<void>; embedded?: boolean };
 
 export const planTermsChanged = (plan: Plan, input: Record<string, unknown>) =>
   (input.currency !== undefined && input.currency !== plan.currency) || (input.interval !== undefined && input.interval !== plan.interval);
@@ -47,7 +47,7 @@ export function priceChangeCounts(rows: readonly PlanPriceChangeMembership[]) {
   return { reachable: count('ok'), noAddress: count('no_address'), erased: count('payer_erased'), suppressed: count('suppressed') };
 }
 
-export function PriceChange({ plan, input, initial, client, cancel, reload, done }: Props) {
+export function PriceChange({ plan, input, initial, client, cancel, reload, done, embedded = false }: Props) {
   const newOnly = planTermsChanged(plan, input);
   const [preview, setPreview] = useState(initial), [date, setDate] = useState(initial.effectiveOn);
   const [choice, setChoice] = useState<Choice>('new'), [include, setInclude] = useState(false);
@@ -125,9 +125,8 @@ export function PriceChange({ plan, input, initial, client, cancel, reload, done
     try { await reload(); } catch { setError(text('error')); } finally { setBusy(false); }
   }
   const name = (id: string) => preview.memberships.find(row => row.id === id)?.memberName ?? id;
-  return <Dialog title={text(result ? 'pcResult' : 'pcTitle')} closeLabel={text('cancel')} size="wide" dismissible={!busy && !attempted}
-    onClose={cancel}>
-    <div className="min-w-0 space-y-4 wrap-anywhere">
+  const content = <div className="min-w-0 space-y-4 wrap-anywhere">
+      {embedded && result && <h3 className="text-lg font-semibold">{text('pcResult')}</h3>}
       <p>{say('pcPrice', { name: plan.name, amount: money(Number(input.amountCents ?? initial.amountCents), String(input.currency ?? plan.currency)) })}</p>
       {newOnly && !result && <p role="note">{text('pcTermsNewOnly')}</p>}
       {error && <Alert variant="error" focusOnReveal role="alert" className="space-y-3"><p>{error}</p>{(conflict || attempted) && <Button disabled={busy} onClick={() => void reloadPlan()}>{text('pcReload')}</Button>}</Alert>}
@@ -210,6 +209,7 @@ export function PriceChange({ plan, input, initial, client, cancel, reload, done
           {!attempted && <Button variant="outline" disabled={busy} onClick={cancel}>{text('cancel')}</Button>}
         </div>
       </>}
-    </div>
-  </Dialog>;
+    </div>;
+  return embedded ? content : <Dialog title={text(result ? 'pcResult' : 'pcTitle')} closeLabel={text('cancel')} size="wide" dismissible={!busy && !attempted}
+    onClose={cancel}>{content}</Dialog>;
 }

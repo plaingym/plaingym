@@ -3,7 +3,7 @@ import { useState, type FormEvent } from 'react';
 import { createClassSessionRequestSchema, createClassTemplateRequestSchema, type ClassTag, type ClassTemplate } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
 import { Button } from '../../components/ui/button.js';
-import { Dialog } from '../../components/ui/dialog.js';
+import { Dialog, DialogActions } from '../../components/ui/dialog.js';
 import { Input } from '../../components/ui/input.js';
 import { Select, Textarea } from '../../components/ui/select.js';
 import { calendarInstant } from './calendar.js';
@@ -57,10 +57,10 @@ export function ClassEditor({ template, options, tags, onSaved, onClose, standal
         <div className="sm:col-span-2"><Field label={text('notes')}><Textarea name="notes" defaultValue={template?.notes ?? ''}/></Field></div>
       </fieldset>
       <p className="text-sm text-muted-foreground">{options.timezone} · {text('timeHelp')}</p>
-      <div className="flex flex-col gap-2 sm:flex-row">
+      <DialogActions>
         <Button type="submit" disabled={busy}>{text('save')}</Button>
         <Button variant="outline" onClick={onClose} disabled={busy}>{text('close')}</Button>
-      </div>
+      </DialogActions>
     </form>
   </Dialog>;
 }

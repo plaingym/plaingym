@@ -9,7 +9,7 @@ The server decides every permission; the pages only choose which allowed path to
 call (the payer uses the household-member booking paths, an adult member the
 self paths).
 
-The schedule shows one gym-local week at a time, grouped by day. A class offers
+The schedule shows one gym-local week at a time, starting on Monday and grouped by day. A class offers
 Book or Join the waitlist once its booking window opens, and Cancel or Leave the
 waitlist only until its `cancelBefore` instant; after that it says the cutoff has
 passed. A conflict from the booking engine shows a general message and refreshes

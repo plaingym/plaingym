@@ -23,7 +23,7 @@ export function SettingsPage() {
   // Presentation only: each section's API enforces its own permission.
   const sections = orderSettingsSections(createRegistries().settingsSections.forModules(modules)
     .filter((entry) => entry.enabled && entry.permission.kind === 'staff' && canStaff(roles, entry.permission.capability)));
-  return <Page className="max-w-3xl">
+  return <Page>
     <PageHeader title={t('settings/settings:title')}/>
     <SettingsSectionMenu sections={sections}/>
     <div className="space-y-6">

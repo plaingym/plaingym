@@ -36,7 +36,7 @@ function LeadView({ memberId, timezone, client }: { memberId: string; timezone: 
     if (result.lead) setLead(result.lead);
     if (result.reload) { setState('loading'); setVersion(value => value + 1); setContactsVersion(value => value + 1); }
   }
-  const back = <a className="inline-flex min-h-11 items-center text-sm font-medium underline underline-offset-4" href="/admin/leads">{text('lead.back')}</a>;
+  const back = <a className="-my-2 inline-flex min-h-11 items-center gap-1 text-sm font-medium underline underline-offset-4" href="/admin/leads"><span aria-hidden="true">‹</span>{text('lead.back')}</a>;
   if (state === 'missing') return <Page>{back}<Alert variant="error">{text('lead.missing')}</Alert></Page>;
   const retry = () => { setState('loading'); setVersion(value => value + 1); };
   if (state === 'failed' && !lead) return <Page>{back}<ErrorState message={text('lead.loadError')} onRetry={retry} /></Page>;

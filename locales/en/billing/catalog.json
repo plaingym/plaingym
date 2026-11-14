@@ -7,6 +7,7 @@
   "taxes": "Tax rates",
   "charges": "Charge types",
   "edit": "Edit",
+  "closeEditor": "Close editor",
   "name": "Name",
   "rate": "Tax rate (%)",
   "inclusive": "Tax included",

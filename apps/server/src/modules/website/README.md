@@ -13,7 +13,7 @@ it's off every route below answers 404. Core never imports this module.
 | `/` | Home: the gym's name, tagline, calls to action (`/trial`, `/join`, `/portal`), the first photo, the about text, active programs, the other photos as a gallery and the address. |
 | `/programs` | Each active program with the weekly classes linked to it. |
 | `/schedule` | The weekly class templates by weekday, Monday first, as local wall times in the gym's timezone, then **Changes this week**: the week's (Monday to Sunday, in the gym's zone) sessions that differ from the timetable as it stands, by date: cancelled ones, one-off ones (no template, including those left by a deleted template) and moved ones (not at their template's weekday and time, including this week's occurrence moved into another week). A session that runs as the timetable says isn't listed. A coach is named only when their staff profile is public. |
-| `/plans` | Active plans in the gym's currency, cheapest first, with "+ tax" when an attached rate adds tax on top (the join page's rule), the sign-up fee, trial days and minimum term. |
+| `/plans` | Active plans in the gym's currency, by name (the join page's order), with "+ tax" when an attached rate adds tax on top (the join page's rule), the sign-up fee, trial days and minimum term. |
 | `/coaches` | Public staff profiles: name, rank, bio and photo. |
 | `/contact` | Address with an OpenStreetMap search link, public phone (`tel:`) and email (`mailto:`). Missing fields tell gym owners where to set them in Settings. |
 

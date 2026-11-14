@@ -62,7 +62,7 @@ test('setup wizard: every step of a fresh install', async ({ page }) => {
     await expect(page.getByLabel('Gym name', { exact: true })).toBeFocused();
   });
   await page.getByLabel('Gym name', { exact: true }).fill('QA academy');
-  await page.getByLabel('IANA timezone', { exact: true }).fill('UTC');
+  await page.getByLabel('Timezone', { exact: true }).fill('UTC');
   await save();
   await capture.step(page, 'packs', async () => { await expect(page.getByRole('checkbox', { name: /Brazilian Jiu-Jitsu/ })).toBeVisible(); });
   await page.getByRole('checkbox', { name: /Brazilian Jiu-Jitsu/ }).check();

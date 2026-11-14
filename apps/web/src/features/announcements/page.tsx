@@ -6,6 +6,7 @@ import { useBootstrap } from '../../app/context.js';
 import { Page, PageHeader, PageSection } from '../../components/ui/page.js';
 import { LoadingState, EmptyState, ErrorState } from '../../components/ui/states.js';
 import { Button } from '../../components/ui/button.js';
+import { Pager } from '../../components/ui/pager.js';
 import { Card } from '../../components/ui/card.js';
 import { Alert } from '../../components/ui/alert.js';
 import { announcementClient, type AnnouncementClient } from './api.js';
@@ -46,10 +47,7 @@ export function AnnouncementWorkspace({ gymId, gymName, timezone, owner = false,
           </dl>
           <p className="text-sm text-muted-foreground">{text(item.status + 'Status')}</p>
         </Card></li>)}</ul>
-        {(offset > 0 || history.data.pagination.total > 20) && <nav aria-label={text('pages')} className="flex flex-wrap gap-3">
-          <Button variant="outline" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 20))}>{text('previous')}</Button>
-          <Button variant="outline" disabled={offset + 20 >= history.data.pagination.total} onClick={() => setOffset(offset + 20)}>{text('next')}</Button>
-        </nav>}
+        <Pager offset={offset} total={history.data.pagination.total} onChange={setOffset} label={text('pages')} previousLabel={text('previous')} nextLabel={text('next')}/>
       </div>}
     </PageSection>
     {editing && programs.data && <AnnouncementEditor gymName={gymName} programs={programs.data} client={client} owner={owner}

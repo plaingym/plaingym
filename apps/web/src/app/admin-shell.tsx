@@ -16,6 +16,21 @@ export function visibleAdminNavigation(
     && entry.permission.kind === 'staff' && canStaff(session.roles, entry.permission.capability));
 }
 const roleNames = (session: ShellSession) => session.roles.map((role) => t('staff/profiles:' + role)).join(', ');
+/** Task order is a shell presentation choice; registries and API permissions stay independent. */
+export function adminNavigationGroups(entries: readonly NavigationEntry[]) {
+  const groups = [
+    { id: 'overview', paths: ['/admin'] },
+    { id: 'gym', paths: ['/admin/members', '/admin/leads', '/admin/schedule', '/admin/ranks', '/admin/waivers'] },
+    { id: 'billing', paths: ['/admin/billing/invoices', '/admin/billing/plans', '/admin/reports'] },
+    { id: 'communication', paths: ['/admin/announcements', '/admin/campaigns', '/admin/outbox'] },
+    { id: 'administration', paths: ['/admin/staff', '/admin/imports', '/admin/health', '/admin/settings'] },
+  ];
+  const known = new Set(groups.flatMap(group => group.paths));
+  return groups.map(group => ({ id: group.id, entries: [
+    ...group.paths.flatMap(path => entries.filter(entry => entry.href === path)),
+    ...(group.id === 'administration' ? entries.filter(entry => !known.has(entry.href)) : []),
+  ] })).filter(group => group.entries.length);
+}
 /** Closes an open popover on Escape (returning focus to its trigger) or on a press outside it. */
 function useDismiss(open: boolean, close: () => void, refs: RefObject<HTMLElement | null>[], trigger: RefObject<HTMLButtonElement | null>) {
   useEffect(() => {
@@ -89,11 +104,13 @@ export function AdminShell({ state, entries = createRegistries().adminNav.all(),
       <nav ref={nav} id="admin-navigation" aria-label={t('shell/shell:navigation')}
         className={`${open ? 'block' : 'hidden'} absolute inset-x-0 top-0 z-20 max-h-[calc(100dvh-var(--spacing-header))] overflow-y-auto border-b border-border bg-background p-2 shadow-lg
           md:sticky md:top-header md:block md:max-h-[calc(100dvh-var(--spacing-header))] md:w-60 md:shrink-0 md:self-start md:border-b-0 md:border-r md:p-3 md:shadow-none`}>
-        <ul className="space-y-1">{entriesToShow.map((entry) => <li key={entry.id}>
+        <div className="space-y-4">{adminNavigationGroups(entriesToShow).map(group => <section key={group.id} aria-labelledby={'nav-' + group.id}>
+          <h2 id={'nav-' + group.id} className="px-3 pb-1 text-xs font-semibold text-muted-foreground">{t('shell/shell:nav.' + group.id)}</h2>
+        <ul className="space-y-1">{group.entries.map((entry) => <li key={entry.id}>
           <Link to={entry.href} onClick={() => setOpen(false)} activeOptions={{ exact: entry.href === '/admin' }}
             activeProps={{ className: 'bg-muted font-semibold', 'aria-current': 'page' }}
             className="flex min-h-11 items-center rounded-md px-3 text-base hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:text-sm">{t(entry.labelKey)}</Link>
-        </li>)}</ul>
+        </li>)}</ul></section>)}</div>
       </nav>
       <main id="main-content" tabIndex={-1} className="min-w-0 flex-1 px-4 py-6 focus:outline-none sm:px-6 lg:px-8">{children}</main>
     </div>
