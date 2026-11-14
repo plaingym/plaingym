@@ -41,7 +41,9 @@ function scanVariables(sources: Map<string, string>): Set<string> {
     throw new Error(`Unresolved environment variable at ${file.fileName}:${line + 1}: ${node.getText()}`);
   }
   // With noResolve, only direct local calls can supply a helper's complete argument set.
+  const checkedHelpers = new Set<ts.SignatureDeclaration>();
   function assertLocalCalls(fn: ts.SignatureDeclaration) {
+    if (checkedHelpers.has(fn)) return;
     const declaration = ts.isFunctionDeclaration(fn) ? fn : ts.isVariableDeclaration(fn.parent) ? fn.parent : undefined;
     if (!declaration?.name || !ts.isIdentifier(declaration.name)) unresolved(fn);
     const symbol = checker.getSymbolAtLocation(declaration.name);
@@ -51,6 +53,7 @@ function scanVariables(sources: Map<string, string>): Set<string> {
       if (!ts.isIdentifier(node) || node === declaration.name || checker.getSymbolAtLocation(node) !== symbol) return;
       if (!ts.isCallExpression(node.parent) || node.parent.expression !== node) unresolved(node);
     });
+    checkedHelpers.add(fn);
   }
   function namesAt(expression: ts.Expression, visiting = new Set<ts.Node>()): string[] {
     const names = literalNames(checker.getTypeAtLocation(expression));
@@ -68,14 +71,47 @@ function scanVariables(sources: Map<string, string>): Set<string> {
     return unresolved(expression);
   }
   const names = new Set<string>();
+  function environmentObject(expression: ts.Expression): boolean {
+    if (ts.isParenthesizedExpression(expression) || ts.isAsExpression(expression) || ts.isNonNullExpression(expression)) return environmentObject(expression.expression);
+    if (ts.isBinaryExpression(expression) && [ts.SyntaxKind.QuestionQuestionToken, ts.SyntaxKind.BarBarToken].includes(expression.operatorToken.kind))
+      return environmentObject(expression.left) || environmentObject(expression.right);
+    return /(?:^|\.)env$/.test(expression.getText().replaceAll(/\s/g, ''));
+  }
+  function canonicalDestination(expression: ts.Expression): boolean {
+    let node: ts.Node = expression;
+    while (ts.isParenthesizedExpression(node.parent) || ts.isAsExpression(node.parent) || ts.isNonNullExpression(node.parent)
+      || ts.isSpreadAssignment(node.parent) || ts.isObjectLiteralExpression(node.parent)
+      || ts.isBinaryExpression(node.parent) && [ts.SyntaxKind.QuestionQuestionToken, ts.SyntaxKind.BarBarToken].includes(node.parent.operatorToken.kind)) node = node.parent;
+    const parent = node.parent;
+    if ((ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) && parent.expression === node) return true;
+    if (ts.isPropertyAssignment(parent) && ts.isIdentifier(parent.name) && parent.name.text === 'env') return true;
+    if ((ts.isVariableDeclaration(parent) || ts.isParameter(parent)) && parent.initializer === node)
+      return ts.isIdentifier(parent.name) && parent.name.text === 'env';
+    // Passing the environment to another canonical reader preserves the names that reader scans.
+    if (ts.isCallExpression(parent)) {
+      const index = parent.arguments.indexOf(node as ts.Expression);
+      const parameter = checker.getResolvedSignature(parent)?.declaration?.parameters[index];
+      return !!parameter && ts.isIdentifier(parameter.name) && parameter.name.text === 'env';
+    }
+    return false;
+  }
   for (const file of files) visit(file, (node) => {
     // Reject destructuring and aliases instead of silently losing their subsequent reads.
     if (ts.isVariableDeclaration(node) && node.initializer && /(?:^|\.)env$/.test(node.initializer.getText().replaceAll(/\s/g, ''))
       && (!ts.isIdentifier(node.name) || node.name.text !== 'env')) unresolved(node);
     if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
-      && /(?:^|\.)env$/.test(node.right.getText().replaceAll(/\s/g, ''))) unresolved(node);
+      && /(?:^|\.)env$/.test(node.right.getText().replaceAll(/\s/g, ''))
+      && !(ts.isPropertyAccessExpression(node.left) && node.left.expression.kind === ts.SyntaxKind.ThisKeyword && node.left.name.text === 'env'
+        && ts.isIdentifier(node.right) && node.right.text === 'env')) unresolved(node);
     if (!ts.isPropertyAccessExpression(node) && !ts.isElementAccessExpression(node)) return;
-    if (!/(?:^|\.)env$/.test(node.expression.getText().replaceAll(/\s/g, ''))) return;
+    if (ts.isPropertyAccessExpression(node) && node.name.text === 'env') {
+      const parent = node.parent;
+      const access = (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) && parent.expression === node;
+      const store = ts.isBinaryExpression(parent) && parent.left === node && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        && node.expression.kind === ts.SyntaxKind.ThisKeyword && ts.isIdentifier(parent.right) && parent.right.text === 'env';
+      if (!access && !store && !canonicalDestination(node)) unresolved(node);
+    }
+    if (!environmentObject(node.expression)) return;
     const found = ts.isPropertyAccessExpression(node) ? [node.name.text] : namesAt(node.argumentExpression);
     for (const name of found) if (/^[A-Z][A-Z0-9_]*$/.test(name)) names.add(name);
   });
@@ -141,11 +177,24 @@ describe('docs/configuration.md', () => {
     'const { X } = process.env;',
     'const source = process.env; source.X;',
     'let source; source = process.env; source.X;',
+    'function read(source = process.env) { return source.X; }',
+    'function load(cfg: Record<string, string>) { return cfg.X; } load(process.env);',
+    'const source = { ...process.env }; source.X;',
+    'let source; source ??= process.env; source.X;',
     "export function required(name: string) { return process.env[name]; } required('LOCAL');",
     "function read(name: string) { return process.env[name]; } read('LOCAL'); ['CALLBACK'].map(read);",
     "function read(name: string) { return process.env[name]; } read('LOCAL'); export { read };",
   ])('rejects incomplete environment scans: %s', source => {
     expect(() => scanVariables(new Map([[resolve(root, 'scan-fixture.ts'), source]]))).toThrow('Unresolved environment variable');
+  });
+  it('allows canonical defaults, calls, and storing the canonical environment on this', () => {
+    expect([...scanVariables(new Map([[resolve(root, 'scan-fixture.ts'), `
+      class Reader { env: Record<string, string>; constructor(env: Record<string, string>) { this.env = env; } read() { return this.env.STORED; } }
+      function read(env = process.env) { return env.DEFAULT; } read(process.env);
+      const env = { ...process.env }; env.COPY;
+      const options = { env: process.env }; options.env.OPTION;
+      (options.env ?? process.env).FALLBACK;
+    `]]))].sort()).toEqual(['COPY', 'DEFAULT', 'FALLBACK', 'OPTION', 'STORED']);
   });
   it('rejects an exported helper even when another source calls it', () => {
     expect(() => scanVariables(new Map([

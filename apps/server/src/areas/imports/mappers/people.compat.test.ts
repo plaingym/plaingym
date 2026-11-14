@@ -88,6 +88,17 @@ it('preserves all 25 reference hashes for large people exports and mapping varia
       for (const start of [...outputs.keys()].sort((a, b) => a - b)) hash.update(outputs.get(start)!);
       const digest = hash.digest('hex');
       expect(digest, 'reference plan ' + (digests.length + 1)).toBe(expected[digests.length]);
+      // Collect code-based references only after the existing full-output reference passes.
+      const chunks: string[] = [];
+      for (let start = 0; start < rows.length; start += 1000) {
+        const chunk = createHash('sha256');
+        for (let offset = start; offset < Math.min(start + 1000, rows.length); offset += IMPORT_CHUNK_SIZE) {
+          const planned = JSON.parse(outputs.get(offset)!) as { issues: { message?: string }[] }[];
+          chunk.update(JSON.stringify(planned.map(row => ({ ...row, issues: row.issues.map(({ message: _message, ...issue }) => issue) }))));
+        }
+        chunks.push(chunk.digest('hex'));
+      }
+      console.log('PEOPLE_REFERENCE ' + JSON.stringify({ plan: digests.length, chunks }));
       digests.push(digest);
     }
   }

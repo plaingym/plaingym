@@ -8,7 +8,7 @@ import { dateSchema, idSchema, type ImportIssue, type ImportPlanRequest, type Im
 import { minorUnitStep, onMinorUnitStep } from '@plaingym/shared/money';
 import { isCalendarDate, localDate } from '@plaingym/shared/time';
 import { householdDateOnOrAfter } from '../../billing/invoicing/calendar.js';
-import { clearedSwitch } from '../../billing/memberships.plan-change.js';
+import { clearedSwitch, rescheduledSwitch } from '../../billing/memberships.plan-change.js';
 import type { CsvRow } from '../pipeline.csv.js';
 import type { CsvMapper, MapperContext, PlannedRow } from './registry.js';
 import { annualAnniversary, message, normalize, parseMembership, type Identity, type Source } from './memberships.parse.js';
@@ -247,7 +247,8 @@ async function commit(tx: Transaction, rows: readonly PlannedRow[], context: Map
           // later-chunk dates here so their failure cannot leave an off-anchor membership.
           if (update.nextDueOn === update.oldDueOn || records.some(record => record.action === 'update' && record.membershipId === update.id)) continue;
           const before = existing.find(row => row.id === update.id)!, guard = revisionGuard(memberships.revision, update.revision);
-          const after = assertRevised(await tx.update(memberships).set({ nextDueOn: update.nextDueOn, revision: guard.next })
+          const after = assertRevised(await tx.update(memberships).set({ nextDueOn: update.nextDueOn,
+            ...rescheduledSwitch(before, update.nextDueOn), revision: guard.next })
             .where(and(eq(memberships.gymId, gymId), eq(memberships.id, update.id), eq(memberships.nextDueOn, update.oldDueOn), guard.matches)).returning());
           await audit('billing.membership.import_schedule_updated', 'membership', before.id,
             { memberId: before.memberId, planId: before.planId, previousDueOn: update.oldDueOn, nextDueOn: after.nextDueOn });
@@ -272,7 +273,7 @@ async function commit(tx: Transaction, rows: readonly PlannedRow[], context: Map
       const guard = revisionGuard(memberships.revision, item.membershipRevision!);
       const replacedTerms = before.amountCents !== changes.amountCents || before.interval !== changes.interval;
       const after = assertRevised(await tx.update(memberships).set({ ...changes,
-        ...(replacedTerms ? clearedSwitch(before) : {}), revision: guard.next })
+        ...(replacedTerms ? clearedSwitch(before) : rescheduledSwitch(before, item.nextDueOn)), revision: guard.next })
         .where(and(eq(memberships.gymId, gymId), eq(memberships.id, before.id), guard.matches)).returning());
       id = after.id;
     } else {
@@ -282,7 +283,9 @@ async function commit(tx: Transaction, rows: readonly PlannedRow[], context: Map
       seen.add(identity);
     }
     await audit(before ? 'billing.membership.import_updated' : 'billing.membership.imported', 'membership', id,
-      { memberId: item.memberId, planId: item.planId, nextDueOn: item.nextDueOn, anniversaryOn });
+      { memberId: item.memberId, planId: item.planId, nextDueOn: item.nextDueOn, anniversaryOn,
+        ...(before?.scheduledPlanId && (before.amountCents !== changes.amountCents || before.interval !== changes.interval)
+          ? { clearedSwitch: { scheduledPlanId: before.scheduledPlanId, scheduledOn: before.scheduledOn } } : {}) });
     count++;
   }
   return count;

@@ -265,13 +265,39 @@ describe('membership renewals through the durable pipeline', () => {
       scheduledOrigin: 'switch', switchOverrideReason: 'Approved change' });
     const source = await services().load([{ email: f.member.email!, plan: f.plan.id, nextDueOn: '2026-11-01',
       amountCents: change === 'price' ? '8000' : '10000', interval: change === 'interval' ? 'annual' : 'monthly' }], 'update');
-    expect((await source.run()).committedRows).toBe(1);
-    const after = (await read()).memberships.find(row => row.id === original.id)!;
+    const job = await source.run(); expect(job.committedRows).toBe(1);
+    const state = await read(), after = state.memberships.find(row => row.id === original.id)!;
     expect(after).toMatchObject(change === 'unchanged'
       ? { scheduledPlanId: next.id, scheduledAmountCents: 15000, scheduledInterval: 'monthly', scheduledOn: '2026-11-01', scheduledOrigin: 'switch' }
       : { scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null, scheduledOrigin: null, switchOverrideReason: null });
     expect(after).toMatchObject({ amountCents: change === 'price' ? 8000 : 10000, interval: change === 'interval' ? 'annual' : 'monthly' });
+    const event = state.audits.find(event => event.action === 'billing.membership.import_updated' && event.targetId === original.id)!;
+    expect(event.after).toMatchObject(change === 'unchanged' ? { importId: job.id }
+      : { clearedSwitch: { scheduledPlanId: next.id, scheduledOn: '2026-11-01' } });
+    expect(JSON.stringify(event)).not.toContain('Approved change');
+    if (change === 'unchanged') expect(event.after).not.toHaveProperty('clearedSwitch');
     expect((await read()).invoices).toEqual([]);
+  });
+  it.each(['switch', 'price_change', null])('moves a scheduled %s only when its switch should follow an earlier imported due date', async origin => {
+    const f = await fixture(), next = await factory('plans', gymId, { amountCents: 15000 });
+    const original = await factory('memberships', gymId, { householdId: f.home.id, memberId: f.member.id, planId: f.plan.id,
+      status: 'active', startsOn: '2026-10-01', nextDueOn: '2026-11-15', amountCents: 10000, interval: 'monthly',
+      scheduledPlanId: next.id, scheduledAmountCents: 15000, scheduledInterval: 'monthly', scheduledOn: '2026-11-15', scheduledOrigin: origin });
+    const source = await services().load([{ email: f.member.email!, plan: f.plan.id, nextDueOn: '2026-11-01' }], 'update');
+    expect((await source.run()).committedRows).toBe(1);
+    expect((await read()).memberships.find(row => row.id === original.id)).toMatchObject({ nextDueOn: '2026-11-01',
+      scheduledPlanId: next.id, scheduledOn: origin === 'price_change' ? '2026-11-15' : '2026-11-01' });
+  });
+  it.each(['switch', 'price_change', null])('moves a later chunk scheduled %s with an earlier household anchor', async origin => {
+    const family = await spanningFamily(), next = await factory('plans', gymId, { amountCents: 15000 });
+    for (const row of family.records) if (row.nextDueOn === '2026-11-20') row.nextDueOn = '2026-11-01';
+    await database.forGym(gymId, tx => tx.update(memberships).set({ scheduledPlanId: next.id, scheduledAmountCents: 15000,
+      scheduledInterval: 'monthly', scheduledOn: '2026-11-15', scheduledOrigin: origin }).where(eq(memberships.id, family.later.id)));
+    const batch = await analyzed(family.records, 'update');
+    expect(batch.planned.every(row => !row.issues.length)).toBe(true);
+    expect(await batch.commit(batch.planned.slice(0, 100))).toBe(100);
+    expect((await read()).memberships.find(row => row.id === family.later.id)).toMatchObject({ nextDueOn: '2026-11-01',
+      scheduledPlanId: next.id, scheduledOn: origin === 'price_change' ? '2026-11-15' : '2026-11-01', amountCents: 10000, revision: 2 });
   });
   it.each(['member', 'household', 'plan', 'membership'] as const)('refuses stale %s revisions atomically', async changed => {
     const f = await fixture();

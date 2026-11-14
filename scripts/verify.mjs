@@ -10,6 +10,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
+import { documentationTests } from './test-selection.mjs';
 
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 const root = git('rev-parse', '--show-toplevel');
@@ -68,31 +69,36 @@ async function selectTests(since) {
   const { createVitest } = await import('vitest/node');
   const vitest = await createVitest('test', { root, related, watch: false, run: true, reporters: [] });
   try {
-    const all = new Set((await vitest.globTestSpecifications()).map((spec) => spec.moduleId));
+    const specifications = await vitest.globTestSpecifications();
+    const docs = documentationTests(specifications);
+    const all = new Set(specifications.map((spec) => spec.moduleId));
     const selected = new Set((await vitest.getRelevantTestSpecifications()).map((spec) => spec.moduleId));
     if (selected.size === all.size) return null; // A rerun trigger changed.
     const changedDirs = new Set(changed.map((file) => slash(dirname(file))));
+    for (const spec of docs) selected.add(spec.moduleId);
     for (const file of sourceScanningTests) {
       const absolute = slash(resolve(root, file));
       if (![...all].some(test => slash(test) === absolute)) throw new Error(`Source-scanning test not found: ${file}`);
       selected.add(absolute);
     }
     return [...selected]
-      .filter((file) => !isDocsTest(file))
-      .filter((file) => sourceScanningTests.includes(slash(relative(root, file))) || changed.includes(slash(file)) || changedDirs.has(slash(dirname(file))) || !isWholeApp(file))
+      .filter((file) => isDocsTest(file) || sourceScanningTests.includes(slash(relative(root, file))) || changed.includes(slash(file)) || changedDirs.has(slash(dirname(file))) || !isWholeApp(file))
       .map((file) => slash(relative(root, file)))
       .sort();
   } finally { await vitest.close(); }
 }
 
-function pnpm(script, env = process.env) {
-  console.log(`\n> pnpm ${script}`);
+function pnpm(script, args = [], env = process.env) {
+  console.log(`\n> pnpm ${[script, ...args].join(' ')}`);
   // Through the shell, so pnpm's Windows .cmd shim resolves.
-  const result = spawnSync('pnpm', [script], { stdio: 'inherit', shell: true, env, cwd: root });
+  const result = spawnSync('pnpm', [script, ...args], { stdio: 'inherit', shell: true, env, cwd: root });
   if (result.status !== 0) { console.error(`\nVerification failed at pnpm ${script}.`); process.exit(result.status ?? 1); }
 }
 
 const since = full ? null : base();
+// check-types generates the shared inputs once, before discovery. The remaining commands
+// invoke their tools directly so package-script generation hooks do not repeat that work.
+if (!listOnly) pnpm('check-types');
 let tests = null;
 if (since) {
   if (!existsSync(join(root, 'packages/shared/dist/locales.gen.ts'))) pnpm('generate');
@@ -102,22 +108,19 @@ if (since) {
     : `\n${tests.length} test files affected by changes since ${since.slice(0, 12)} (whole-app tests run in CI).`);
 }
 if (listOnly) {
-  const { globSync } = await import('node:fs');
-  const docs = globSync(['apps/**/*.docs.test.ts', 'packages/**/*.docs.test.ts'], { cwd: root, exclude: ['**/node_modules/**'] }).map(slash);
-  for (const file of tests ? [...tests, ...docs].sort() : ['(every test file)']) console.log(file);
+  for (const file of tests ?? ['(every test file)']) console.log(file);
   process.exit(0);
 }
-// A full run already includes docs tests. Selected runs use the same generated, unit-only check as CI.
-if (tests !== null) pnpm('test:docs');
-pnpm('check-types'); pnpm('lint');
-if (tests === null) pnpm('test');
+pnpm('lint');
+if (tests === null) pnpm('exec', ['vitest', 'run']);
 else if (tests.length) {
   const directory = mkdtempSync(join(tmpdir(), 'plaingym-verify-'));
   try {
     const list = join(directory, 'tests.txt');
     writeFileSync(list, tests.join('\n') + '\n');
-    pnpm('test', { ...process.env, PLAINGYM_TEST_FILES: list });
+    pnpm('exec', ['vitest', 'run'], { ...process.env, PLAINGYM_TEST_FILES: list });
   } finally { rmSync(directory, { recursive: true, force: true }); }
 } else console.log('No tests affected.');
-pnpm('compliance');
+pnpm('exec', ['node', '--test', 'scripts/compliance/compliance.test.mjs']);
+pnpm('exec', ['node', 'scripts/compliance/cli.mjs']);
 console.log('\nVerified.');
