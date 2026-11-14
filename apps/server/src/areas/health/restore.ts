@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { RestoreFailure, s3Reason } from './restore.failure.js';
 import { mkdtemp, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
-import { z, ZodError } from 'zod';
+import { z } from 'zod';
 import { and, desc, eq } from 'drizzle-orm';
 import { auditEvents, gyms, writeAudit } from '@plaingym/db';
 // Restore infrastructure uses its dedicated maintenance connection, including in the standalone CLI.
@@ -11,7 +11,6 @@ import { auditEvents, gyms, writeAudit } from '@plaingym/db';
 import { openConnection, scopedDatabase } from '@plaingym/db/client';
 import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
-import { decrypt } from '../../infra/age/index.js';
 import { LocalUploads } from '../../infra/storage/index.js';
 import type { BackupObjectStore, S3Uploads } from '../../infra/storage/index.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
@@ -22,6 +21,8 @@ import type { Manifest } from './backups.format.js';
 import { verifyFile } from './backups.js';
 import { RestoreGate, readRestoreJournal, unfinishedRestorePhases } from './restore.gate.js';
 import { PostgresJobs } from '../../infra/jobs/postgres.js';
+import { SnapshotContentError } from './backups.content.js';
+import { decryptSnapshot, readSnapshotJson } from './restore.content.js';
 
 /** Durable, idempotent publication before the restore journal can become complete. */
 export async function enqueueRestoreReconciliation(database: PostgresMaintenance, snapshotAt: string, clock: Clock) {
@@ -109,8 +110,8 @@ export class RestoreService {
       try {
         const manifestCipher = join(staging, 'manifest.age');
         await this.#download(prefix + 'manifest.age', manifestCipher);
-        await saveStream(join(staging, 'manifest.json'), await decrypt(identity, fileStream(manifestCipher)));
-        const manifest = manifestSchema.parse(await readJson(join(staging, 'manifest.json')));
+        await saveStream(join(staging, 'manifest.json'), await decryptSnapshot(identity, fileStream(manifestCipher)));
+        const manifest = manifestSchema.parse(await readSnapshotJson(join(staging, 'manifest.json')));
         if (manifest.id !== id) throw new RestoreFailure('Manifest belongs to another snapshot');
         const blobKey = parseEncryptionKey(manifest.recovery.blobKey);
         validateReferences(manifest.uploads, blobKey);
@@ -124,7 +125,7 @@ export class RestoreService {
         await verifyFile(manifestCipher, references.manifest);
         await this.#download(prefix + 'database.age', join(staging, 'database.age'));
         await verifyFile(join(staging, 'database.age'), references.database);
-        await saveStream(join(staging, 'database.dump'), await decrypt(identity, fileStream(join(staging, 'database.age'))));
+        await saveStream(join(staging, 'database.dump'), await decryptSnapshot(identity, fileStream(join(staging, 'database.age'))));
         await verifyFile(join(staging, 'database.dump'), manifest.database.plaintext);
         // Prepare a complete new LocalUploads tree without opening or modifying the current uploads tree,
         // or, for an object store, verified plaintext files to publish once the database is restored.
@@ -134,7 +135,7 @@ export class RestoreService {
           const cipher = join(staging, 'blob-' + index + '.age'), plain = join(staging, 'blob-' + index);
           await this.#download(upload.blob, cipher);
           await verifyFile(cipher, upload.encrypted);
-          await saveStream(plain, await decrypt(identity, fileStream(cipher)));
+          await saveStream(plain, await decryptSnapshot(identity, fileStream(cipher)));
           await verifyFile(plain, upload.plaintext);
           if (o.uploadsStore) { await rm(cipher); await rename(plain, join(uploadTree, String(index))); continue; }
           const local = new LocalUploads({ gymId: upload.gymId, root: uploadTree,
@@ -159,13 +160,9 @@ export class RestoreService {
         activated = true;
         return { state, manifest };
       } catch (error) {
-        // Preserve actionable configuration, format, bucket and OS failures. Content errors are
-        // classified here, before activation, rather than by shared helpers' wording.
-        if (error instanceof RestoreFailure || error instanceof ZodError || (typeof error === 'object' && error !== null &&
-            ('code' in error || '$metadata' in error)) ||
-            (error instanceof Error && ["no identity matched any of the file's recipients",
-              'Invalid age private key', 'Expected one age identity'].includes(error.message))) throw error;
-        throw new RestoreFailure('The snapshot is damaged; try an earlier one', { cause: error });
+        if (error instanceof SnapshotContentError)
+          throw new RestoreFailure('The snapshot is damaged; try an earlier one', { cause: error.cause ?? error });
+        throw error;
       } finally {
         if (!activated) await rm(staging, { recursive: true, force: true });
       }

@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { randomUUID } from 'node:crypto';
 import { readFile, readdir, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import type { MiddlewareHandler } from 'hono';
 import { AppError, createTranslator, errorResponse } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import type { RequestEnvironment } from '../../core/context.js';
-import { atomicJson, exists, missing, privateDirectory, readJson } from './backups.files.js';
+import { atomicJson, exists, MetadataSizeLimitError, missing, readJson } from './backups.files.js';
 import { RestoreFailure } from './restore.failure.js';
 
 /** Every journal phase before `complete`: a restore is staged and `resume` can finish it. */
@@ -16,7 +16,7 @@ export const unfinishedRestorePhases = ['verified', 'database_restored', 'migrat
 const leaseSchema = z.strictObject({ pid: z.number().int().positive(), started: z.string().nullable() });
 const t = createTranslator(locales.en ?? {});
 /**
- * A lease only marks a request or job of a running process, so once every process on the data volume has stopped,
+ * A lease marks a running process, so once every process on the data volume has stopped,
  * no lease is live and the folder can go; the next start's `resume` then drains nothing and carries on.
  */
 const invalidLease = 'The restore activity lease is invalid; stop the app, delete the restore-activity folder on its data volume, then start the app';
@@ -26,6 +26,66 @@ async function processStart(pid: number): Promise<string | null> {
   const stat = await readFile('/proc/' + pid + '/stat', 'utf8');
   return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]!;
 }
+/** Shared by every gate for this data volume in this process, including maintenance callers. */
+const activities = new Map<string, ProcessActivity>();
+class ProcessActivity {
+  count = 0;
+  drains = 0;
+  #lease: Promise<void> | undefined;
+  #retiring: Promise<void> | undefined;
+  #timer: NodeJS.Timeout | undefined;
+  readonly path: string;
+  constructor(readonly directory: string, readonly statePath: string) {
+    this.path = join(directory, randomUUID() + '.json');
+  }
+  async register(): Promise<void> {
+    await this.#retiring;
+    if (!this.#lease) {
+      this.#lease = (async () => {
+        await atomicJson(this.path, { pid: process.pid, started: await processStart(process.pid) });
+        this.#monitor();
+      })().catch(error => { this.#lease = undefined; throw error; });
+    }
+    await this.#lease;
+  }
+  async retire(): Promise<void> {
+    if (this.#retiring) return this.#retiring;
+    this.#retiring = (async () => {
+      await this.#lease;
+      await rm(this.path, { force: true });
+      this.#lease = undefined;
+    })();
+    try { await this.#retiring; } finally { this.#retiring = undefined; }
+  }
+  #monitor(): void {
+    if (this.#timer) return;
+    // A separate CLI cannot read our count. Once its durable journal closes admission,
+    // acknowledge the drain by removing our process lease, including when already idle.
+    this.#timer = setTimeout(() => {
+      this.#timer = undefined;
+      void (async () => {
+        if (this.count || this.drains) return;
+        let closed: boolean;
+        try { closed = await journalClosed(this.statePath); }
+        catch (error) {
+          // A malformed journal also refuses every admission; let the CLI drain and report it.
+          if (!(error instanceof RestoreFailure)) throw error;
+          closed = true;
+        }
+        // Admission may have begun while the journal read was pending.
+        const removed = !closed && !await exists(this.directory);
+        if (!this.count && (closed || removed)) await this.retire();
+      })().catch(() => { /* Keep the lease on a read/remove failure: the CLI must not skip us. */ })
+        .finally(() => { if (this.#lease) this.#monitor(); });
+    }, 100);
+    this.#timer.unref();
+  }
+}
+async function journalClosed(path: string): Promise<boolean> {
+  if (!await exists(path)) return false;
+  const state = await readRestoreJournal(path);
+  return !state || typeof state !== 'object' || !('phase' in state) || state.phase !== 'complete';
+}
 /**
  * File-backed admission and activity leases live outside the overwritten database.
  * Processes on a single install share the app container's PID namespace and data volume.
@@ -34,16 +94,18 @@ export class RestoreGate {
   #closing = false;
   readonly statePath: string;
   readonly activityDirectory: string;
+  readonly #activity: ProcessActivity;
   constructor(readonly dataDirectory: string) {
     this.statePath = join(dataDirectory, 'restore-state.json');
     this.activityDirectory = join(dataDirectory, 'restore-activity');
+    const key = resolve(this.activityDirectory);
+    let activity = activities.get(key);
+    if (!activity) { activity = new ProcessActivity(key, resolve(this.statePath)); activities.set(key, activity); }
+    this.#activity = activity;
   }
   async isClosed(): Promise<boolean> {
-    if (this.#closing) return true;
-    if (!await exists(this.statePath)) return false;
-    const state = await readRestoreJournal(this.statePath);
-    if (!state || typeof state !== 'object' || !('phase' in state)) return true;
-    return state.phase !== 'complete';
+    if (this.#closing || this.#activity.drains) return true;
+    return journalClosed(this.statePath);
   }
   /** Only durable, unfinished restore phases warrant a resume hint. */
   async hasStagedRestore(): Promise<boolean> {
@@ -56,16 +118,27 @@ export class RestoreGate {
   /** Wrap both requests and job executions. A separate CLI can drain these same durable leases. */
   async activity<T>(action: () => Promise<T>): Promise<T> {
     if (await this.isClosed()) throw new AppError('unavailable', t('health/restore:inProgress'));
-    await privateDirectory(this.activityDirectory);
-    const lease = join(this.activityDirectory, randomUUID() + '.json');
-    await atomicJson(lease, { pid: process.pid, started: await processStart(process.pid) });
+    const activity = this.#activity;
+    // Count pending admissions too: close must wait even for the first durable lease write.
+    if (this.#closing || activity.drains) throw new AppError('unavailable', t('health/restore:inProgress'));
+    activity.count++;
     try {
-      if (await this.isClosed()) throw new AppError('unavailable', t('health/restore:inProgress'));
+      await activity.register();
+      if (await this.isClosed() || this.#closing || activity.drains)
+        throw new AppError('unavailable', t('health/restore:inProgress'));
       return await action();
-    } finally { await rm(lease, { force: true }); }
+    } finally { activity.count--; }
   }
   async close(): Promise<void> {
     this.#closing = true;
+    this.#activity.drains++;
+    try {
+      while (this.#activity.count) await delay(25);
+      await this.#activity.retire();
+      await this.#drain();
+    } finally { this.#activity.drains--; }
+  }
+  async #drain(): Promise<void> {
     for (;;) {
       let names: string[];
       try { names = await readdir(this.activityDirectory); }
@@ -75,9 +148,7 @@ export class RestoreGate {
         if (!/^[a-f0-9-]+[.]json$/.test(name)) continue;
         const path = join(this.activityDirectory, name);
         try {
-          const parsed = leaseSchema.safeParse(await readActivity(path));
-          if (!parsed.success) throw new RestoreFailure(invalidLease);
-          const lease = parsed.data;
+          const lease = await readLease(path);
           try {
             process.kill(lease.pid, 0);
             if (lease.started !== await processStart(lease.pid)) await rm(path, { force: true });
@@ -87,8 +158,6 @@ export class RestoreGate {
             else throw error;
           }
         } catch (error) {
-          if (error instanceof SyntaxError || (error instanceof Error && error.message === 'Metadata exceeds size limit'))
-            throw new RestoreFailure(invalidLease);
           if (!missing(error)) throw error;
         }
       }
@@ -114,8 +183,21 @@ export class RestoreGate {
 export async function readRestoreJournal(path: string): Promise<unknown> {
   try { return await readJson(path); }
   catch (error) {
-    if (error instanceof Error && 'code' in error) throw error;
-    throw new RestoreFailure('The restore journal is not in a format this version reads');
+    if (error instanceof SyntaxError || error instanceof MetadataSizeLimitError)
+      throw new RestoreFailure('The restore journal is not in a format this version reads', { cause: error });
+    throw error;
+  }
+}
+
+async function readLease(path: string): Promise<z.infer<typeof leaseSchema>> {
+  try {
+    const parsed = leaseSchema.safeParse(await readActivity(path));
+    if (parsed.success) return parsed.data;
+    throw parsed.error;
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof MetadataSizeLimitError || error instanceof z.ZodError)
+      throw new RestoreFailure(invalidLease, { cause: error });
+    throw error;
   }
 }
 

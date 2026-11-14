@@ -19,6 +19,23 @@ it does not decrypt backups or replace a restore drill. Age starts at the dump s
 with a warning after two hours. Capacity includes current storage, one more database and
 manifest, and the backup runner's 128 MiB reserve. A failed inventory stops pruning.
 
+Restore admission uses `restore-state.json` and one durable lease per app process in
+`restore-activity/`, shared by requests and job executions. Activity counts stay in memory;
+ordinary requests do not write or delete leases. The gate checks the journal before
+admission and again after registering the process lease, and counts pending admissions
+while closing. A local close waits for its count to reach zero. A separate maintenance
+CLI drains the same process leases: an idle process checks the journal every 100 ms and
+removes its lease once admission is closed and its count is zero. Linux leases include
+the PID's start ticks so a crashed process or a reused PID cannot block the drain.
+After restore completes, new activity registers a fresh lease. All participating processes
+must share the data volume and the app container's PID namespace.
+
+Only typed snapshot-content failures produce earlier-snapshot advice before activation.
+Checksum, reference authentication, JSON and decryption failures retain their causes for
+structured logging. Unexpected storage or programming failures keep their own identity;
+schema compatibility and age key errors keep their existing diagnostics. Snapshot creation
+and pruning retain the same validation rules and refusal messages.
+
 After a restore, `gyms.settings.backupPruningHeld` holds both snapshot pruning
 and explicit pruning (including its upload sweep) while new snapshots continue,
 until the bucket reaches the retention budget and the snapshot's budget check fails.

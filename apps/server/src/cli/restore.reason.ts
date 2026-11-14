@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { ZodError } from 'zod';
-import { RestoreFailure, s3Reason, safeName } from '../areas/health/restore.failure.js';
-
-/** Fixed texts the restore code throws, with what each means to the owner. */
-const knownMessages: readonly (readonly [RegExp, string])[] = [
-  [/^no identity matched any of the file's recipients$/, "The key doesn't open this snapshot"],
-  [/^Invalid age private key$/, "The key file doesn't hold an age private key"],
-  [/^Expected one age identity$/, 'The key file must hold exactly one age private key'],
-];
+import { ageKeyReason, RestoreFailure, s3Reason, safeName } from '../areas/health/restore.failure.js';
 
 /**
  * The fields a Zod error names. Only the paths of the fields the schema defines, never the values that failed.
@@ -32,9 +25,7 @@ export function restoreFailureReason(error: unknown): string {
   if (error instanceof ZodError) return "The snapshot's contents are not in a format this version reads";
   const s3 = s3Reason(error, 'backup');
   if (s3) return s3;
-  if (error instanceof Error) {
-    const known = knownMessages.find(([pattern]) => pattern.test(error.message));
-    if (known) return known[1];
-  }
+  const key = ageKeyReason(error);
+  if (key) return key;
   return 'Unexpected error (' + (error instanceof Error ? safeName(error.name) ?? 'Error' : 'unknown') + ')';
 }

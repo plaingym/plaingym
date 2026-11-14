@@ -40,8 +40,11 @@ export async function fileDigest(path: string): Promise<{ sha256: string; size: 
   return { sha256: hash.digest('hex'), size };
 }
 export async function readJson(path: string, limit = 16 * 1024 * 1024): Promise<unknown> {
-  if ((await stat(path)).size > limit) throw new Error('Metadata exceeds size limit');
+  if ((await stat(path)).size > limit) throw new MetadataSizeLimitError();
   return JSON.parse(await readFile(path, 'utf8')) as unknown;
+}
+export class MetadataSizeLimitError extends Error {
+  constructor() { super('Metadata exceeds size limit'); this.name = 'MetadataSizeLimitError'; }
 }
 /** Sync the new file and rename it before syncing its parent (Linux data volumes). */
 /** Windows refuses to replace a file that another handle (a reader, an antivirus scan) has open; retry briefly. */

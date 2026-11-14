@@ -7,6 +7,17 @@ export class RestoreFailure extends Error {
   constructor(message: string, options?: ErrorOptions) { super(message, options); this.name = 'RestoreFailure'; }
 }
 
+/** The age library has no typed identity errors. Keep its public key diagnostics in one place. */
+export function ageKeyReason(error: unknown): string | null {
+  if (!(error instanceof Error)) return null;
+  switch (error.message) {
+    case "no identity matched any of the file's recipients": return "The key doesn't open this snapshot";
+    case 'Invalid age private key': return "The key file doesn't hold an age private key";
+    case 'Expected one age identity': return 'The key file must hold exactly one age private key';
+    default: return null;
+  }
+}
+
 const identifier = /^[A-Za-z][A-Za-z0-9_.:-]{0,63}$/;
 /** A value that looks like an error code or name, or null: anything else could quote a path or a secret. */
 export const safeName = (value: unknown): string | null => typeof value === 'string' && identifier.test(value) ? value : null;

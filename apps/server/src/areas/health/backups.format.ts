@@ -3,6 +3,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import type { BackupObjectStore } from '../../infra/storage/index.js';
 import { bytesStream } from './backups.files.js';
+import { parseSnapshotJson, SnapshotContentError } from './backups.content.js';
 
 export const backupKindSchema = z.enum(['hourly', 'nightly', 'weekly', 'pre_upgrade', 'manual']);
 export type BackupKind = z.infer<typeof backupKindSchema>;
@@ -61,12 +62,12 @@ export function signReferences(snapshot: Snapshot, key: Buffer): string {
 }
 export function verifyReferences(value: unknown, key: Buffer, expectedId: string): Snapshot {
   const envelope = z.strictObject({ payload: z.string(), mac: hash }).parse(value);
-  if (!timingSafeEqual(mac(key, envelope.payload), Buffer.from(envelope.mac, 'hex'))) throw new Error('Invalid reference authentication');
-  const snapshot = snapshotReadSchema.parse(JSON.parse(envelope.payload));
-  if (snapshot.id !== expectedId) throw new Error('Reference list belongs to another snapshot');
+  if (!timingSafeEqual(mac(key, envelope.payload), Buffer.from(envelope.mac, 'hex'))) throw new SnapshotContentError('Invalid reference authentication');
+  const snapshot = snapshotReadSchema.parse(parseSnapshotJson(envelope.payload));
+  if (snapshot.id !== expectedId) throw new SnapshotContentError('Reference list belongs to another snapshot');
   if (new Set(snapshot.uploads.map((u) => u.blob)).size !== snapshot.uploads.length ||
       new Set(snapshot.uploads.map((u) => u.protectedHash)).size !== snapshot.uploads.length)
-    throw new Error('Duplicate upload references');
+    throw new SnapshotContentError('Duplicate upload references');
   return snapshot;
 }
 export function validateReferences(uploads: readonly UploadReference[], key: Buffer): void {
@@ -75,19 +76,19 @@ export function validateReferences(uploads: readonly UploadReference[], key: Buf
     if (!upload.key.startsWith(upload.gymId + '/') || upload.key.includes('\\') ||
         upload.key.split('/').some((part) => !part || part === '.' || part === '..') ||
         names.has(upload.key) || blobName(key, upload.gymId, upload.key, upload.plaintext.sha256, upload.recipient) !== upload.blob)
-      throw new Error('Invalid upload reference');
+      throw new SnapshotContentError('Invalid upload reference');
     names.add(upload.key);
   }
 }
 export async function readReferences(store: BackupObjectStore, key: string): Promise<unknown> {
   const body = await store.getObject(key);
-  if (!body) throw new Error('Missing snapshot reference list; pruning stopped');
+  if (!body) throw new SnapshotContentError('Missing snapshot reference list; pruning stopped');
   const chunks: Uint8Array[] = []; let length = 0;
   for await (const chunk of body) {
     length += chunk.length;
-    if (length > 16 * 1024 * 1024) throw new Error('Reference list exceeds size limit');
+    if (length > 16 * 1024 * 1024) throw new SnapshotContentError('Reference list exceeds size limit');
     chunks.push(chunk);
   }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
+  return parseSnapshotJson(Buffer.concat(chunks).toString('utf8'));
 }
 export const referenceStream = (snapshot: Snapshot, key: Buffer): ReadableStream<Uint8Array> => bytesStream(signReferences(snapshot, key));

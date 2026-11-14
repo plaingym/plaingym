@@ -15,6 +15,8 @@ import { PostgresMaintenance } from './backups.database.js';
 import { RestoreService, enqueueRestoreReconciliation } from './restore.js';
 import { RestoreFailure } from './restore.failure.js';
 import { useRestoreFixture } from './restore.fixture.test-helper.js';
+import { LocalUploads } from '../../infra/storage/index.js';
+import { SnapshotContentError } from './backups.content.js';
 
 vi.mock('node:fs/promises', async importOriginal => ({ ...await importOriginal<typeof import('node:fs/promises')>() }));
 
@@ -223,6 +225,26 @@ it('keeps the cause of a wrapped failure in the log, never in the printed line o
   expect(lines).toEqual(['Restore failed: ' + damaged]);
   expect(logged.join()).toContain('"cause":{"name":"SyntaxError"');
   expect(logged.join()).not.toContain('PRIVATE-CONTENT');
+});
+it.each([new TypeError('Code defect'), new Error('Local upload failure')])('preserves an unexpected pre-activation %s', async failure => {
+  const spy = vi.spyOn(LocalUploads.prototype, 'put').mockRejectedValueOnce(failure);
+  try { await expect(f.restore().restore(base, f.identity)).rejects.toBe(failure); }
+  finally { spy.mockRestore(); }
+  expect(await f.gate().isClosed()).toBe(false);
+  expect(await new Response(await f.restoredUploads().get(f.gymId + '/sentinel')).text()).toBe('live upload sentinel');
+});
+it('keeps a plain bucket failure out of snapshot damage advice', async () => {
+  const failure = new Error('Object reader failure');
+  const spy = vi.spyOn(f.store, 'getObject').mockRejectedValueOnce(failure);
+  try { await expect(f.restore().restore(base, f.identity)).rejects.toBe(failure); }
+  finally { spy.mockRestore(); }
+  expect(await f.gate().isClosed()).toBe(false);
+});
+it('classifies a typed verification failure as damaged content', async () => {
+  const failure = new SnapshotContentError('Checksum mismatch');
+  const spy = vi.spyOn(f.store, 'getObject').mockRejectedValueOnce(failure);
+  try { await rejects(f.restore().restore(base, f.identity), damaged); }
+  finally { spy.mockRestore(); }
 });
 it('reports an oversized lease without snapshot advice', async () => {
   const path = join(f.gate().activityDirectory, randomUUID() + '.json');

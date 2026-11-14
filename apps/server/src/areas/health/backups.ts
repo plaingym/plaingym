@@ -13,6 +13,7 @@ import { backupKindSchema, blobName, manifestSchema, publicReferences, reference
 import type { BackupKind, Manifest, Snapshot, UploadReference } from './backups.format.js';
 import { inventory, pruneUnlocked, UnverifiedInventory, type RunStatuses } from './backups.retention.js';
 import { PostgresMaintenance } from './backups.database.js';
+import { SnapshotContentError } from './backups.content.js';
 
 export interface BackupOptions {
   readonly database: PostgresMaintenance;
@@ -151,7 +152,7 @@ export class BackupService {
 /** Useful for restore verification and operator diagnostics without exposing recovery plaintext. */
 export async function verifyFile(path: string, expected: { sha256: string; size: number }): Promise<void> {
   const actual = await fileDigest(path);
-  if (actual.size !== expected.size || actual.sha256 !== expected.sha256) throw new Error('Snapshot object checksum mismatch');
+  if (actual.size !== expected.size || actual.sha256 !== expected.sha256) throw new SnapshotContentError('Snapshot object checksum mismatch');
 }
 export async function readIdentityFile(path: string): Promise<string> {
   const lines = (await readFile(path, 'utf8')).split(/\r?\n/).filter((s) => s && !s.startsWith('#'));

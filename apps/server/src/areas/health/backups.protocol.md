@@ -92,15 +92,17 @@ filesystem as uploads. When the install keeps uploads in S3, it stages the
 verified plaintext files instead; the journal records which target it chose, and
 a restart with a different storage configuration refuses to continue.
 
-The restore journal and request/job activity leases live on the data volume,
+The restore journal and per-process activity leases live on the data volume,
 outside the overwritten database. `RestoreGate.middleware()` wraps requests;
-`RestoreGate.activity()` wraps each worker execution. All application and CLI
-processes on an install share the container PID namespace and data volume.
+`RestoreGate.activity()` wraps each worker execution. Each process writes one
+lease when it first admits work and counts its requests and jobs in memory; an
+idle process removes its lease once the journal closes admission. All application
+and CLI processes on an install share the container PID namespace and data volume.
 Closing the gate waits for admitted work to finish. Linux process-start ticks
 allow abandoned leases to be distinguished from reused PIDs after restart.
-A lease only marks admitted work of a running process, so with every process on
-the data volume stopped, `restore-activity/` holds no live lease and can be
-deleted: that is the way out when one is unreadable (`docs/restoring.md`).
+A lease only marks a running process, so with every process on the data volume
+stopped, `restore-activity/` holds no live lease and can be deleted: that is the
+way out when one is unreadable (`docs/restoring.md`).
 The journal counts as written once its rename has landed: if the directory sync
 after it fails, the staging it names is kept for `resume`.
 A service using the gate must never initiate restore from inside its own activity

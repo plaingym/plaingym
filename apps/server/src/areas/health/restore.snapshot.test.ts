@@ -54,6 +54,30 @@ describe('install snapshot and restore with real Postgres and S3', () => {
     } finally { f.store.getObject = getObject; }
   });
 
+  it('drains a running job and pauses the queue before another handler can start', async () => {
+    const gate = f.gate();
+    const queue = new PostgresJobs({ database: f.source, clock });
+    let release!: () => void, started!: () => void, executions = 0, observedPause = false;
+    const admitted = new Promise<void>(resolve => { started = resolve; });
+    queue.handle('test.restore-gate', async () => {
+      executions++; started(); await new Promise<void>(resolve => { release = resolve; });
+    });
+    await queue.enqueue('test.restore-gate', {}, { gymId, timezone: 'UTC', idempotencyKey: 'first' });
+    await queue.enqueue('test.restore-gate', {}, { gymId, timezone: 'UTC', idempotencyKey: 'second' });
+    const worker = queue.start({ concurrency: 1, pollMs: 5,
+      paused: async () => { const closed = await gate.isClosed(); observedPause ||= closed; return closed; },
+      around: execute => gate.activity(execute) });
+    await admitted;
+    let drained = false;
+    const closing = gate.close().then(() => { drained = true; });
+    try {
+      await expect.poll(() => observedPause).toBe(true);
+      expect(drained).toBe(false);
+      expect(executions).toBe(1);
+    } finally { release(); await closing; await worker.stop(); }
+    expect(drained).toBe(true);
+  });
+
   it('keeps upload paths and content hashes inside the encrypted manifest', async () => {
     const snapshot = await f.backup().snapshot();
     const object = f.server.objects.get('backups/' + snapshotPrefix(snapshot.id) + 'references.json')!;
