@@ -66,7 +66,8 @@ does in a deployed container.
 
 ### Sandbox demo over local HTTPS
 
-The demo redirects to `https://<random>.demo.localhost/admin`, so it needs HTTPS
+The demo opens `https://showcase.demo.localhost/demo` and private copies under
+random hostnames, so it needs HTTPS
 on port **443** alongside `pnpm dev`. In your root `.env`, set:
 
 ```dotenv
@@ -89,7 +90,10 @@ pnpm dev:proxy:trust
 
 Trust the CA once per machine/user, then **fully quit and restart Chrome** (or
 your Chromium browser). Open **https://demo.localhost/demo** and click **Try the
-demo**. Use that HTTPS address instead of `localhost:5173`; sandbox redirects,
+demo**. The showcase refuses edits; **Make my own copy** opens a private sandbox
+signed in as the selected role. Five gyms are seeded ahead, one at a time. Copies
+expire after two idle hours, at most 24 hours after allocation.
+Use that HTTPS address instead of `localhost:5173`; sandbox redirects,
 secure cookies and Vite's HMR websocket then use the same origin on port 443.
 No DNS or hosts-file changes are needed in Chrome/Edge for `.localhost` names.
 

@@ -8,10 +8,37 @@ activation and offers explicit retry feedback. Structured `demo.seed_started`,
 durations in milliseconds. Failures retain the step, safe error classification
 and elapsed duration; no credentials or signed-link tokens enter these logs.
 
-The demo service creates a separate gym per visitor with a random hostname, seeded
-content packs, owner/coach/student identities, and one kiosk device. It never calls
-`gyms create` or sends a bootstrap email. The API returns the kiosk token once;
-only its SHA-256 hash is stored. Ready sandboxes do not retain bootstrap email.
+The entry button opens `showcase.<DEMO_DOMAIN>`, a shared, read-only gym with the
+same role logins and kiosk. `demoRequestGuard` runs after tenant resolution and
+before sessions and routes. It refuses mutations with `forbidden` and
+`details.reason: [demo_showcase_read_only]`, including kiosk, booking, public
+intake, signed links and gym deletion. Sign-in, sign-out and demo login remain
+available. The SPA and public intake forms offer a private copy. Scheduled gym
+enumeration, job execution and shared payment webhooks exclude the showcase and
+pooled gyms. A freshly seeded showcase replaces the fixed hostname daily.
+
+`DEMO_POOL_SIZE` (default 5, 0 through the sandbox cap) maintains ready gyms.
+One install job seeds at a time across processes using the worker's renewed lease.
+Reservations and creation tickets live in gym settings; claims and handoffs use
+row locks. A restart resumes the same partial seed. Stripe rate limits back off
+with the same idempotent request; an exhausted attempt leaves the reservation for
+the install job's retry. The cap includes the showcase, ready pool and pending
+reservations. Keep settings consistent across processes and leave room for daily
+showcase replacement.
+
+Creation returns completed fields or a pending result (`ticket`, `position`,
+`retryAfterSeconds: 2`). Poll `GET /api/demo/creations/{ticket}` on the entry or
+showcase host. Completed copies carry a handoff token; the browser removes it
+from the destination fragment and exchanges it through `POST /api/demo/handoff`
+on that sandbox. The ten-minute, single-use token is bound to its gym, seeded role
+and allowlisted local page. Detail URLs fall back to the role's home. Tickets
+expire after an hour.
+
+Private copies have a random hostname, seeded content packs, identities and a kiosk.
+`DEMO_IDLE_HOURS` (default 2, greater than 0 through 24) starts on hand-out, with
+activity persisted at most every five minutes and a hard 24-hour lifetime.
+Kiosk tokens are derived from the install key and gym ID; only their hash is stored.
+Ready sandboxes do not retain bootstrap email. No bootstrap email is sent.
 
 `DEMO_MODE=true` requires `TENANCY=multi`, `DEMO_DOMAIN` (a lowercase hostname with
 wildcard DNS/TLS), and optionally `DEMO_MAX_SANDBOXES` (1–1000, default 50).
@@ -83,8 +110,9 @@ the ordinary sign-in limit of five.
 Untrusted forwarded headers do not change the bucket. Use the trusted-proxy options
 when Caddy is the sole peer. Configure the same cap on every app process.
 
-Provisioning failures roll back using the gym's current revision, since seed steps
-can change it. If upload deletion fails, the gym stays suspended for expiry to retry.
+Direct service provisioning failures roll back using the gym's current revision,
+since seed steps can change it. The pool instead retains failed reservations for
+retry. If upload deletion fails, the gym stays suspended for expiry to retry.
 The original provisioning error is preserved even if rollback also fails. Structured
 `demo.seed_failed` logs identify the gym and seed step; `demo.provisioning_failed`
 and `demo.cleanup_failed` distinguish the original failure from rollback failures.

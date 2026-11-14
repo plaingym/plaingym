@@ -12,6 +12,8 @@ import { createGymDeleteService } from '../areas/settings/gym-delete.js';
 import { configureGymDeletion } from '../areas/settings/gym-delete.routes.js';
 import { demoBootCheck } from './config.js';
 import { createDemoService } from './service.js';
+import { createDemoPool } from './pool.js';
+import { demoRequestGuard } from './guard.js';
 import { createDemoIdentities } from './identities.js';
 import { configureDemoRoutes, disableDemoRoutes, joinTestCardHint } from './demo.routes.js';
 import { registerDemoCleanup } from './demo.jobs.js';
@@ -41,11 +43,12 @@ export async function createDemoRuntime(options: {
   const payments = createDemoPayments({ config, clock: defaultClock });
   const service = createDemoService({ config, key, clock: defaultClock, deletion, identities,
     seed: context => runSeeds(context, undefined, { env, clock: defaultClock, billingPaymentsFor: payments.forSeed }) });
-  configureDemoRoutes(service, { installOrigin: options.installOrigin, ...(options.clientIp ? { clientIp: options.clientIp } : {}) });
+  const pool = createDemoPool({ config, service, key, clock: defaultClock });
+  configureDemoRoutes(service, { pool, installOrigin: options.installOrigin, ...(options.clientIp ? { clientIp: options.clientIp } : {}) });
   configureGymDeletion(deletion);
   const t = createTranslator(locales.en ?? {});
   const emailFor = (gymId: string) => new OutboxEmail(gymId, defaultClock);
-  return { service, payments, joinTestCardHint: joinTestCardHint(service, t), registerCleanup: (queue: Parameters<typeof registerDemoCleanup>[0]) => registerDemoCleanup(queue, { config, service, clock: defaultClock }), authConfig: authentication, emailFor, skipSetup: true as const,
+  return { service, pool, guard: demoRequestGuard(pool), payments, joinTestCardHint: joinTestCardHint(service, t), registerCleanup: (queue: Parameters<typeof registerDemoCleanup>[0]) => registerDemoCleanup(queue, { config, service, pool, clock: defaultClock }), authConfig: authentication, emailFor, skipSetup: true as const,
     async sendMagicLink(input: { email: string; url: string; gymId: string }) {
       const rendered = await renderDemoLogin(input.url, t);
       await emailFor(input.gymId).sendEmail({ to: input.email, ...rendered });

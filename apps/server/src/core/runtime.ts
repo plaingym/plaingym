@@ -253,7 +253,12 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   // Restore state and activity leases live beside the staging directory, as in the maintenance CLI (single mode only).
   const restoreStaging = restoreStagingDirectory(env);
   const gate = restoreStaging ? new RestoreGate(dirname(restoreStaging)) : undefined;
-  const queue = new PostgresJobs({ clock, listGyms: () => listGyms(), retention: { keep: [sendAlertJob] } });
+  const queue = new PostgresJobs({ clock, listGyms: async () => {
+    const gyms = await listGyms();
+    if (!demo) return gyms;
+    const eligible = await Promise.all(gyms.map(async gym => await demo.pool.eligible(gym.gymId) ? gym : undefined));
+    return eligible.filter(gym => gym !== undefined);
+  }, ...(demo ? { eligibleGym: demo.pool.eligible } : {}), retention: { keep: [sendAlertJob] } });
   // Expired magic links and staff invitations are swept by one install job an hour, in either tenancy mode.
   const verificationSweep = registerVerificationSweep(queue, clock);
   // The public forms' named limits are counted in the database, so every process shares one window; each process remembers
@@ -442,7 +447,9 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   // One map, passed to the app and refilled in place: the CSP report route reads it live and never queries the database.
   const reportHostnames = new Map<string, string>();
   const app = createApp({
-    contributions, clock, resolveGym: createTenantResolver({ mode }), tenancy: mode, authorize: createPortalAuthorization(),
+    contributions, clock, resolveGym: async (context, next) => createTenantResolver({ mode })(context, async () => {
+      if (demo) await demo.guard(context, next); else await next();
+    }), tenancy: mode, authorize: createPortalAuthorization(),
     // A waiver PDF may be up to 10 MiB; the default cap would stop it before the handler.
     bodyLimits: { ...defaultBodyLimits, routes: { ...defaultBodyLimits.routes, '/api/waivers/template-documents': documentByteLimit } },
     ...(mode === 'multi' ? { cspReportHostnames: reportHostnames } : {}),

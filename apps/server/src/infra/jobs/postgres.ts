@@ -36,6 +36,8 @@ export interface BatchLaneOptions {
   readonly perGymConcurrency?: number;
 }
 export interface PostgresJobsOptions {
+  /** Install policy checked before a gym job executes, including already queued work. */
+  readonly eligibleGym?: (gymId: string) => Promise<boolean>;
   readonly database?: Scope;
   readonly clock?: Clock;
   readonly perGymConcurrency?: number;
@@ -86,6 +88,7 @@ const hashKey = (name: string, key: string) => createHash('sha256').update(JSON.
 
 
 export class PostgresJobs implements Jobs, JobRecovery {
+  readonly #eligibleGym: PostgresJobsOptions['eligibleGym'];
   readonly #database: Scope;
   readonly clock: Clock;
   readonly #cap: number;
@@ -102,6 +105,7 @@ export class PostgresJobs implements Jobs, JobRecovery {
   #retentionDay: string | undefined;
   #started = false;
   constructor(options: PostgresJobsOptions = {}) {
+    this.#eligibleGym = options.eligibleGym;
     this.#database = options.database ?? { forGym, forSystem };
     this.clock = options.clock ?? systemClock;
     this.#cap = positive(options.perGymConcurrency ?? 1, 'perGymConcurrency');
@@ -238,7 +242,7 @@ export class PostgresJobs implements Jobs, JobRecovery {
       const body = envelope(row.payload);
       const context = { jobId: row.id, timezone: body.timezone, attempt: row.attempts, clock: this.clock };
       if (row.gymId === null) await this.#systemHandlers.get(row.name)!(body.value, { ...context, gymId: null });
-      else await this.#handlers.get(row.name)!(body.value, { ...context, gymId: row.gymId });
+      else if (!this.#eligibleGym || await this.#eligibleGym(row.gymId)) await this.#handlers.get(row.name)!(body.value, { ...context, gymId: row.gymId });
     } catch (error) { failed = true; failure = error; }
     finally { heartbeatAbort.abort(); await heartbeatResult; }
     const now = this.clock.now();

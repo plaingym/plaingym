@@ -72,6 +72,11 @@ def validate(config):
         raise ValueError("ACME_CA must be an HTTPS directory URL.")
     if not re.fullmatch(r"[1-9][0-9]*", config.get("DEMO_SNAPSHOT_RETENTION", "3")):
         raise ValueError("Snapshot retention must be a positive integer.")
+    maximum = int(config.get("DEMO_MAX_SANDBOXES", "50"))
+    pool = int(config.get("DEMO_POOL_SIZE", "5"))
+    idle = float(config.get("DEMO_IDLE_HOURS", "2"))
+    if not 1 <= maximum <= 1000 or not 0 <= pool <= maximum or not 0 < idle <= 24:
+        raise ValueError("Invalid demo capacity, pool size or idle hours.")
 
 
 def validate_billing(config):
@@ -306,6 +311,8 @@ def main():
     config.setdefault("UPLOADS_S3_REGION", os.environ.get("UPLOADS_S3_REGION", "auto"))
     config.setdefault("ACME_CA", os.environ.get("ACME_CA", "https://acme-v02.api.letsencrypt.org/directory"))
     config.setdefault("DEMO_SNAPSHOT_RETENTION", os.environ.get("DEMO_SNAPSHOT_RETENTION", "3"))
+    for name, default in (("DEMO_MAX_SANDBOXES", "50"), ("DEMO_POOL_SIZE", "5"), ("DEMO_IDLE_HOURS", "2")):
+        config.setdefault(name, os.environ.get(name, default))
     # The required inputs are validated and checked before the optional billing question, so a mistake in
     # them is reported before the operator types a key.
     validate(config)

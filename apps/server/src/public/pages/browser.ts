@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { publicCopyScript } from '../../demo/copy-browser.js';
 /**
  * The message key for a refused public form post, shared by the join and drop-in scripts. A 429 is worth retrying at
  * once only for a momentarily full queue (the busy reason, `core/errors.ts`); any other is a limit for now.
  */
-export const refusalScript = String.raw`async function refusal(response) {
+export const refusalScript = publicCopyScript + String.raw`
+  async function refusal(response) {
+    if (await demoCopyPrompt(response)) return 'failed';
     if (response.status === 409) return 'conflict';
     if (response.status !== 429) return 'failed';
     const reason = (await response.json().catch(() => null))?.error?.details?.reason;

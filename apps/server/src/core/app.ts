@@ -136,7 +136,7 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
     });
   }
   if (options.restoreGate) app.use('*', options.restoreGate);
-  const demoInstallIds = new Set([demoContracts.create, demoContracts.entry].map((contract) => `${contract.method.toUpperCase()} ${contract.path}`));
+  const demoInstallIds = new Set([demoContracts.create, demoContracts.progress, demoContracts.entry].map((contract) => `${contract.method.toUpperCase()} ${contract.path}`));
   const demoInstallRoutes = (contributions.routes ?? []).filter((entry) => demoInstallIds.has(entry.id));
   for (const entry of demoInstallRoutes) entry.mount(app, authorizeInstall);
   for (const entry of installRoutes.filter((entry) => entry.id === catalogId)) entry.mount(app, authorizeInstall);

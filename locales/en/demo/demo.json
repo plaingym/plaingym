@@ -1,4 +1,9 @@
 {
+  "sharedTitle": "Shared demo",
+  "copyHelp": "This demo is shared. Make your own copy to change things.",
+  "copy": "Make my own copy",
+  "queuePosition": "Your place in line: {position}. Your copy will open automatically.",
+  "handoffError": "This copy link has expired or was already used. Return to the shared demo to make another copy.",
   "uploadsDisabled": "Uploads are disabled in the demo",
   "_spdx": "SPDX-License-Identifier: AGPL-3.0-only",
   "title": "Demo outbox",

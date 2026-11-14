@@ -1,6 +1,23 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Demo server
 
+The entry page opens the shared, read-only showcase at `showcase.<GYM_HOSTNAME>`,
+one level below the demo domain. Owner, coach and student logins and the kiosk
+remain available; an edit offers **Make my own copy**, signed in as the same role.
+The showcase is replaced with fresh sample dates daily and runs no gym jobs.
+
+Optional settings accepted by the installer and saved in its protected `.env`:
+
+| Setting | Default | Meaning |
+| :--- | :--- | :--- |
+| `DEMO_MAX_SANDBOXES` | `50` | Total cap including the showcase, ready pool and queued reservations. |
+| `DEMO_POOL_SIZE` | `5` | Gyms seeded ahead, one at a time. Empty-pool visitors see their place in line. |
+| `DEMO_IDLE_HOURS` | `2` | Private copy lifetime without requests; activity is persisted at most every five minutes, with a hard 24-hour limit after allocation. |
+
+Keep settings identical across app processes and leave capacity for daily showcase
+replacement. Partial seeds resume after restart; Stripe test rate limits back off
+without rolling the seed back. Cleanup checks every five minutes.
+
 One command on Ubuntu 24.04 or 26.04 LTS (amd64 or arm64) installs Docker,
 preserves the SSH listener in the firewall, enables security updates, adds swap,
 and starts Postgres, the app and a prebuilt Cloudflare-enabled Caddy. Images are
@@ -64,10 +81,10 @@ host configuration written, and names the S3 request that was refused. A key
 deleted or narrowed after the install shows up later, as sandboxes that fail to
 create.
 
-Success prints the demo's address (`https://` and the demo domain). Open it, create a sandbox, and select
+Success prints the demo's address (`https://` and the demo domain). Open the showcase, then select
 owner or coach from the start page or the **Demo menu**. Everything about the sandbox happens in the
 web interface. Email stays in its outbox, uploads are disabled, and it expires
-after 24 hours. The sample [kiosk instructions](../../apps/server/src/demo/README.md)
+after two idle hours (at most 24 hours) when you make a private copy. The sample [kiosk instructions](../../apps/server/src/demo/README.md)
 choose Name and PIN, then use a full member name and PIN `2468`.
 
 Demo billing is optional ([the environment template](.env.example) lists the

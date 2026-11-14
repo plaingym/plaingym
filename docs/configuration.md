@@ -199,6 +199,8 @@ restart; people then sign in another way.
 | `DEMO_MODE` | `false` | `true` turns on sandbox gyms for visitors (multi-gym only). See `apps/server/src/demo/README.md`. |
 | `DEMO_DOMAIN` | none | Demo mode: the domain sandboxes are created under. |
 | `DEMO_MAX_SANDBOXES` | `50` | Demo mode: the most sandboxes that may exist at once. |
+| `DEMO_POOL_SIZE` | `5` | Demo mode: preseeded gyms to keep ready (0 through the cap). Pool and showcase count toward the cap; one install job seeds at a time. |
+| `DEMO_IDLE_HOURS` | `2` | Demo mode: private copy idle lifetime, greater than 0 through 24 hours. Activity is persisted at most every five minutes, with a hard 24-hour limit after allocation. |
 | `DEMO_STRIPE_TEST_KEY` | unset | Demo mode: a Stripe test-mode key shared by sandboxes. Live keys are refused. |
 | `DEMO_STRIPE_WEBHOOK_SECRET` | unset | Demo mode: the signing secret (`whsec_…`) of that account's webhook endpoint. Required with `DEMO_STRIPE_TEST_KEY`. |
 

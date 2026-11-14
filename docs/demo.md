@@ -1,10 +1,11 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Running a demo
 
-A demo lets people try PlainGym without an account of their own: each visitor
-creates a **sandbox gym** filled with sample members, classes, ranks and invoices,
-signs in as its owner, coach or student with one click, and watches it disappear after
-24 hours. Use a demo to evaluate the software, to train staff before launch, or to
+A demo lets people try PlainGym without an account of their own. **Try the demo**
+opens a shared, read-only showcase with sample data and one-click owner, coach
+and student logins. Choose **Make my own copy** to edit a private sandbox.
+Copies expire after two idle hours and at most 24 hours after allocation.
+Use a demo to evaluate the software, to train staff before launch, or to
 show it to your board. Don't use it for your real gym: sandboxes are throwaway, and
 demo mode is a separate kind of install.
 
@@ -14,7 +15,7 @@ use a test Stripe key ([going-live.md](going-live.md#1-try-it-in-test-mode-optio
 
 ## What a sandbox is
 
-* **A whole gym per visitor**, at its own random hostname, seeded with sample
+* **A private gym when you edit**, at its own random hostname, seeded with sample
   households, a class schedule, promotion history and a student's portal.
 * **One-click logins** as owner, coach and student, and as the latest members who
   joined in the sandbox, on its start page (`/demo`) and in the **Demo menu**. A slim
@@ -29,8 +30,18 @@ use a test Stripe key ([going-live.md](going-live.md#1-try-it-in-test-mode-optio
 * **Test payments, optionally.** With a Stripe *test* key configured for the install
   (see below), `/join` takes payments with Stripe's test cards; without it, billing
   shows as not configured.
-* **Deleted after 24 hours.** The number of sandboxes at once is capped
-  (`DEMO_MAX_SANDBOXES`, default 50).
+* **Idle expiry.** Copies expire after `DEMO_IDLE_HOURS` (default 2) without a
+  request, at most 24 hours after allocation. Activity is persisted at most once
+  every five minutes. Cleanup checks every five minutes.
+* **Ready copies.** `DEMO_POOL_SIZE` (default 5) keeps gyms seeded ahead, one at
+  a time. Empty-pool visitors see their place in line. `DEMO_MAX_SANDBOXES`
+  (default 50) includes the showcase, pool and queued reservations.
+
+The showcase uses `showcase.<DEMO_DOMAIN>`, one level below the demo domain, and
+is replaced daily. It refuses changes including kiosk check-ins, bookings, public
+submissions and signed links, and runs no gym jobs. Copies open signed in as the
+selected seeded role on the same static page where possible; resource-detail
+URLs open the role's home because each seed has different resource IDs.
 
 A demo needs a multi-gym install: `TENANCY=multi`, `DEMO_MODE=true`, a
 `DEMO_DOMAIN` with wildcard DNS and TLS, and working S3-compatible storage (even

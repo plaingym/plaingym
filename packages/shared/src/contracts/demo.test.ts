@@ -1,8 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { demoContracts, demoEntryResponse, demoLoginRequest, demoMenuResponse, demoSignInLinkResponse, outboxMessageResponse, outboxResponse } from './index.js';
+import { demoContracts, demoEntryResponse, demoLoginRequest, demoMenuResponse, demoSignInLinkResponse, outboxMessageResponse, outboxResponse, demoCreationResponse, demoCopyRequest, demoHandoffRequest } from './index.js';
 
 const expiresAt = '2099-10-24T12:00:00.000Z';
+it('bounds queue progress and restricts copy pages and one-time bearer shape', () => {
+  expect(demoCreationResponse.safeParse({ data: { pending: true, ticket: 'a'.repeat(43), position: 50, retryAfterSeconds: 2 } }).success).toBe(true);
+  for (const position of [0, 1001, 1.5]) expect(demoCreationResponse.safeParse({ data: { pending: true, ticket: 'a'.repeat(43), position, retryAfterSeconds: 2 } }).success).toBe(false);
+  for (const page of ['https://evil.test', '//evil.test', '/admin/../outside', '/admin#//evil.test', '/admin?next=https://evil.test'])
+    expect(demoCopyRequest.safeParse({ role: 'owner', page }).success).toBe(false);
+  expect(demoHandoffRequest.safeParse({ token: 'short' }).success).toBe(false);
+  expect(demoEntryResponse.safeParse({ data: { mode: 'showcase', expiresAt, join: true } }).success).toBe(true);
+});
 describe('demo discovery', () => {
   it.each([true, false])('carries whether a sandbox can take a join (%s)', (join) => {
     expect(demoEntryResponse.parse({ data: { mode: 'sandbox', expiresAt, join } }).data).toEqual({ mode: 'sandbox', expiresAt, join });

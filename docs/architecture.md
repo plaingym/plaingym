@@ -276,6 +276,13 @@ and no feature reads across gyms.
 
 ## Testing
 
+In demo mode, one install job maintains a ready seed pool and replaces a read-only
+showcase daily. Gym metadata stores reservations, hashed queue tickets and copy
+handoffs. Row locks protect claims and one-time consumption. The scheduler and
+worker policy exclude showcase and pooled gyms from gym jobs. Private copies
+record activity at most every five minutes and expire after two idle hours by
+default, never more than 24 hours after allocation. See [demo.md](demo.md).
+
 Unit tests need no database; integration tests run against a real, disposable
 PostgreSQL. The billing scenario suite (`areas/billing/scenarios/`) drives whole
 billing flows through the fakes and, optionally, Stripe test mode. End-to-end

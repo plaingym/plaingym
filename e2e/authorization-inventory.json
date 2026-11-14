@@ -1,4 +1,6 @@
 [
+  {"method": "GET", "path": "/api/demo/creations/{ticket}", "permission": {"kind": "public"}},
+  {"method": "POST", "path": "/api/demo/handoff", "permission": {"kind": "public"}},
   {"method": "GET", "path": "/api/staff/accounts", "permission": {"kind": "staff", "capability": "staff.manage"}},
   {"method": "PUT", "path": "/api/billing/memberships/{membershipId}/discount", "permission": {"kind": "staff", "capability": "plans.manage"}},
   {"method": "DELETE", "path": "/api/billing/memberships/{membershipId}/discount", "permission": {"kind": "staff", "capability": "plans.manage"}},

@@ -5,7 +5,15 @@ export const demoRoleSchema = z.enum(['owner', 'coach', 'student']);
 export type DemoRole = z.infer<typeof demoRoleSchema>;
 /** Stripe's documented test card; sandboxes only ever use the shared test-mode account. */
 export const demoTestCard = '4242 4242 4242 4242';
-export const sandboxResponse = z.strictObject({ data: z.strictObject({ gymId: z.uuid(), origin: z.url(), expiresAt: z.iso.datetime(), kioskToken: z.string() }) });
+export const sandboxResponse = z.strictObject({ data: z.strictObject({ gymId: z.uuid(), origin: z.url(), expiresAt: z.iso.datetime(), kioskToken: z.string(), handoffToken: z.string().optional() }) });
+/** Only static local pages exist in both seeds; resource-detail URLs fall back to the role's home. */
+export const demoCopyPage = z.enum(['/demo', '/', '/admin', '/admin/members', '/admin/households', '/admin/schedule', '/admin/attendance', '/admin/billing', '/admin/ranks', '/admin/settings', '/admin/outbox', '/portal', '/portal/bookings', '/portal/billing', '/portal/progress', '/kiosk', '/join', '/trial', '/drop-in']);
+export const demoCopyRequest = z.strictObject({ role: demoRoleSchema.default('owner'), page: demoCopyPage.default('/demo') });
+export const demoTicket = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+export const demoCreationResponse = z.strictObject({ data: z.union([sandboxResponse.shape.data, z.strictObject({ pending: z.literal(true), ticket: demoTicket, position: z.number().int().min(1).max(1000), retryAfterSeconds: z.literal(2) })]) });
+export const demoCreationParams = z.object({ ticket: demoTicket });
+export const demoHandoffRequest = z.strictObject({ token: demoTicket });
+export const demoHandoffResponse = z.strictObject({ data: z.strictObject({ redirect: demoCopyPage, kioskToken: z.string() }) });
 export const demoStatusResponse = z.strictObject({ data: z.strictObject({ expiresAt: z.iso.datetime() }) });
 export const outboxMessage = z.strictObject({ id: z.uuid(), recipient: z.string(), subject: z.string(), text: z.string(), sentAt: z.iso.datetime() });
 export const outboxResponse = z.strictObject({ data: z.array(outboxMessage), next: z.uuid().nullable() });
@@ -31,12 +39,15 @@ export const demoSignInLinkResponse = z.strictObject({ data: z.strictObject({
 export const outboxMessageResponse = z.strictObject({ data: outboxMessage });
 export const demoEntryResponse = z.strictObject({ data: z.discriminatedUnion('mode', [
   z.strictObject({ mode: z.literal('disabled') }),
-  z.strictObject({ mode: z.literal('entry') }),
+  z.strictObject({ mode: z.literal('entry'), showcase: z.url().optional() }),
+  z.strictObject({ mode: z.literal('showcase'), expiresAt: z.iso.datetime(), join: z.boolean() }),
   z.strictObject({ mode: z.literal('sandbox'), expiresAt: z.iso.datetime(), join: z.boolean() }),
 ]) });
 export const demoContracts = {
   entry: { method: 'get', path: '/api/demo', permission: { kind: 'public' }, response: demoEntryResponse },
-  create: { method: 'post', path: '/api/demo/sandboxes', permission: { kind: 'public' }, successStatus: 201, response: sandboxResponse },
+  create: { method: 'post', path: '/api/demo/sandboxes', permission: { kind: 'public' }, body: demoCopyRequest, successStatus: 201, response: demoCreationResponse },
+  progress: { method: 'get', path: '/api/demo/creations/{ticket}', permission: { kind: 'public' }, params: demoCreationParams, response: demoCreationResponse },
+  handoff: { method: 'post', path: '/api/demo/handoff', permission: { kind: 'public' }, body: demoHandoffRequest, response: demoHandoffResponse },
   status: { method: 'get', path: '/api/demo/status', permission: { kind: 'public' }, response: demoStatusResponse },
   login: { method: 'post', path: '/api/demo/login', permission: { kind: 'public' }, body: demoLoginRequest, response: demoLoginResponse },
   menu: { method: 'get', path: '/api/demo/menu', permission: { kind: 'public' }, response: demoMenuResponse },

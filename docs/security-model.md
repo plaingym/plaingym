@@ -588,7 +588,12 @@ updates" and "Releases").
 
 ## Demo mode
 
-`DEMO_MODE=true` (multi-gym only) lets visitors create sandbox gyms that are
-deleted after 24 hours. It sends no email (an in-app outbox instead), disables
+`DEMO_MODE=true` (multi-gym only) provides a shared read-only showcase and private
+copies from a ready pool. The showcase refuses writes before sessions and route
+handlers, including public intake, kiosk, bookings and signed-link actions; it is
+excluded from gym jobs and payment webhooks. Sign-in and sign-out still work.
+Copy handoffs are gym-bound, single-use, expire after ten minutes and accept only
+allowlisted local pages. Private copies expire after two idle hours by default
+and at most 24 hours after allocation. It sends no email (an in-app outbox instead), disables
 visitor uploads apart from bounded waiver signatures, refuses live Stripe keys,
 and turns password sign-in off.

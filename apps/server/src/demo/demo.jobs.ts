@@ -4,13 +4,20 @@ import type { Clock } from '@plaingym/shared';
 import type { JobRegistration } from '../core/registry.js';
 import type { PostgresJobs } from '../infra/jobs/postgres.js';
 import type { DemoService } from './service.js';
+import type { DemoPool } from './pool.js';
 import { sandboxSettings, type DemoConfig } from './config.js';
 
 /** Explicit install job also retries suspended gyms whose upload cleanup failed. */
 export function registerDemoCleanup(queue: Pick<PostgresJobs, 'handleSystem' | 'enqueueSystem'>, options: {
-  config: DemoConfig; service: DemoService; clock: Clock; system?: typeof forSystem;
+  config: DemoConfig; service: DemoService; pool?: DemoPool; clock: Clock; system?: typeof forSystem;
 }) {
   const system = options.system ?? forSystem;
+  const wake = async () => { await queue.enqueueSystem('demo.pool', {}, { timezone: 'UTC',
+    idempotencyKey: String(Math.floor(options.clock.now().getTime() / 2_000)), maxAttempts: 20 }); };
+  if (options.config.enabled && options.pool) {
+    queue.handleSystem('demo.pool', async () => { await options.pool!.refill(); });
+    options.pool.setWake(wake);
+  }
   if (options.config.enabled) queue.handleSystem('demo.expire', async () => {
     const rows = await system((tx) => tx.select({ id: gyms.id, settings: gyms.settings }).from(gyms));
     for (const gym of rows) {
@@ -20,6 +27,7 @@ export function registerDemoCleanup(queue: Pick<PostgresJobs, 'handleSystem' | '
     }
   });
   return { async scheduleDue() {
+    if (options.config.enabled && options.pool) await wake();
     if (options.config.enabled) await queue.enqueueSystem('demo.expire', {}, { timezone: 'UTC',
       idempotencyKey: String(Math.floor(options.clock.now().getTime() / 300_000)), maxAttempts: 5 });
   } };

@@ -4,6 +4,7 @@ import { normalizeHostname } from '../core/tenancy.js';
 
 export interface DemoConfig {
   enabled: boolean; domain: string; maxSandboxes: number;
+  poolSize?: number; idleHours?: number;
   stripe?: { testKey: string; webhookSecret: string };
 }
 /** Run before constructing any payment, email, or upload provider. */
@@ -20,12 +21,22 @@ export function demoBootCheck(env: NodeJS.ProcessEnv = process.env): DemoConfig 
   if (!domain || domain !== env.DEMO_DOMAIN || domain.length > 200) throw new Error('Set a valid DEMO_DOMAIN');
   const maxSandboxes = Number(env.DEMO_MAX_SANDBOXES ?? 50);
   if (!Number.isSafeInteger(maxSandboxes) || maxSandboxes < 1 || maxSandboxes > 1000) throw new Error('Invalid DEMO_MAX_SANDBOXES');
-  return { enabled, domain, maxSandboxes, ...(testKey ? { stripe: { testKey, webhookSecret: env.DEMO_STRIPE_WEBHOOK_SECRET! } } : {}) };
+  const poolSize = Number(env.DEMO_POOL_SIZE ?? 5), idleHours = Number(env.DEMO_IDLE_HOURS ?? 2);
+  if (!Number.isSafeInteger(poolSize) || poolSize < 0 || poolSize > maxSandboxes) throw new Error('Invalid DEMO_POOL_SIZE');
+  if (!Number.isFinite(idleHours) || idleHours <= 0 || idleHours > 24) throw new Error('Invalid DEMO_IDLE_HOURS');
+  return { enabled, domain, maxSandboxes, poolSize, idleHours, ...(testKey ? { stripe: { testKey, webhookSecret: env.DEMO_STRIPE_WEBHOOK_SECRET! } } : {}) };
 }
 export function requireDemo(config: DemoConfig): void {
   if (!config.enabled) throw new AppError('not_found', 'Not found');
 }
-export interface SandboxSettings { sandbox: true; expiresAt: string; ready: boolean; }
+export interface SandboxSettings {
+  sandbox: true; expiresAt: string; ready: boolean;
+  kind?: 'pool' | 'queued' | 'private' | 'showcase' | 'retired';
+  seededAt?: string; allocatedAt?: string; lastActivityAt?: string;
+  ticketHash?: string; ticketExpiresAt?: string;
+  copy?: { role: 'owner' | 'coach' | 'student'; page: string };
+  handoffHash?: string; handoffExpiresAt?: string;
+}
 export function sandboxSettings(value: unknown): SandboxSettings | null {
   if (!value || typeof value !== 'object') return null;
   const demo = (value as { demo?: unknown }).demo;

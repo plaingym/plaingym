@@ -50,6 +50,10 @@ Install-level work uses `enqueueSystem` and `handleSystem`, with `gymId: null` i
 the handler context. These separate methods keep the gym-required `Jobs` contract
 intact. Install jobs share their own concurrency bucket and never appear in gym
 statistics. Database statuses are `pending`, `running`, `succeeded`, and `failed`.
+The optional `eligibleGym` policy is checked immediately before a gym handler.
+A false result acknowledges the queued job without calling its handler; demo
+composition uses it to exclude the shared showcase and pooled gyms, including
+jobs queued before they became shared. Ordinary installs leave it unset.
 Payloads use a versioned internal envelope to persist timezone and scheduler
 metadata; handlers receive only the caller's original JSON value. Caller
 idempotency keys are hashed together with the job name to fit the schema's

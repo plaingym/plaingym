@@ -10,6 +10,7 @@ import { createTenantResolver, type TenancyMode } from '../core/tenancy.js';
 import { demoContracts, demoTestCard } from '@plaingym/shared/contracts';
 import { createOutboxQuery } from './outbox.js';
 import type { DemoService } from './service.js';
+import type { DemoPool } from './pool.js';
 import { demoLoginRateLimit, demoLoginRedirect, joinedMembers } from './identities.js';
 import type { forGym } from '@plaingym/db';
 import { clock as defaultClock, type Clock } from '../core/clock.js';
@@ -18,12 +19,13 @@ import { clock as defaultClock, type Clock } from '../core/clock.js';
 export const outboxPreviewDirectives = ["default-src 'none'", "style-src 'unsafe-inline'", 'img-src data:', "base-uri 'none'",
   "form-action 'none'", 'sandbox', "frame-ancestors 'self'"];
 
-export function createDemoRoutes(service: DemoService, options: { installOrigin: string; enabled?: boolean; tenancy?: TenancyMode; clientIp?: ClientIpOptions; outbox?: ReturnType<typeof createOutboxQuery>; scope?: typeof forGym }) {
+export function createDemoRoutes(service: DemoService, options: { installOrigin: string; pool?: DemoPool; enabled?: boolean; tenancy?: TenancyMode; clientIp?: ClientIpOptions; outbox?: ReturnType<typeof createOutboxQuery>; scope?: typeof forGym }) {
   const limiter = rateLimit({ ...options.clientIp, sharedKey: 'demo.create', limit: 3, windowMs: 60 * 60 * 1000 });
   const loginLimiter = rateLimit({ ...options.clientIp, sharedKey: 'demo.login', limit: demoLoginRateLimit.max, windowMs: demoLoginRateLimit.window * 1000 });
-  const guard = csrf(options.installOrigin), outbox = options.outbox ?? createOutboxQuery();
+  const guard = csrf(c => options.pool && (c.req.header('host') ?? new URL(c.req.url).host) === options.pool.showcaseHostname
+    ? `https://${options.pool.showcaseHostname}` : options.installOrigin), outbox = options.outbox ?? createOutboxQuery();
   const modeGuard: MiddlewareHandler<RequestEnvironment> = async (_c, next) => { if (options.enabled === false) throw new AppError('not_found', 'Not found'); await next(); };
-  const { create, status, login, menu, signInLink, outbox: list, message, preview, entry } = demoContracts;
+  const { create, progress, handoff, status, login, menu, signInLink, outbox: list, message, preview, entry } = demoContracts;
   // The configured install host is known before setup creates a gym and after a
   // restore changes its hostname. Multi-tenant gym hosts still require resolution.
   const mode = options.tenancy ?? (options.enabled === false ? 'single' : 'multi');
@@ -36,7 +38,8 @@ export function createDemoRoutes(service: DemoService, options: { installOrigin:
     return resolveDiscoveryGym(c, next);
   };
   const installHost: MiddlewareHandler<RequestEnvironment> = async (c, next) => {
-    if (!isInstallHost(c.req.header('host') ?? new URL(c.req.url).host)) throw new AppError('not_found', 'Not found');
+    const host = c.req.header('host') ?? new URL(c.req.url).host;
+    if (!isInstallHost(host) && host !== options.pool?.showcaseHostname) throw new AppError('not_found', 'Not found');
     await next();
   };
   const discovery = route({ ...entry, middleware: [discoveryHost], responses: { 200: { description: 'Demo discovery', content: { 'application/json': { schema: entry.response } } } } },
@@ -44,13 +47,30 @@ export function createDemoRoutes(service: DemoService, options: { installOrigin:
       c.header('cache-control', 'no-store');
       if (options.enabled === false) return c.json({ data: { mode: 'disabled' as const } }, 200);
       if (isInstallHost(c.req.header('host') ?? new URL(c.req.url).host))
-        return c.json({ data: { mode: 'entry' as const } }, 200);
-      return c.json({ data: { mode: 'sandbox' as const, ...await service.status(c.get('context').gym.gymId) } }, 200);
+        return c.json({ data: { mode: 'entry' as const, ...(options.pool ? { showcase: await options.pool.showcase() } : {}) } }, 200);
+      const host = c.req.header('host') ?? new URL(c.req.url).host;
+      await options.pool?.touch(c.get('context').gym.gymId);
+      return c.json({ data: { mode: host === options.pool?.showcaseHostname ? 'showcase' as const : 'sandbox' as const, ...await service.status(c.get('context').gym.gymId) } }, 200);
     });
   return [
     route({ ...create, middleware: [modeGuard, installHost, guard, limiter],
-      responses: { 201: { description: 'Created', content: { 'application/json': { schema: create.response } } } },
-    }, async (c) => { c.header('cache-control', 'no-store'); return c.json({ data: await service.create() }, 201); }),
+      request: { body: { required: true, content: { 'application/json': { schema: create.body } } } },
+      responses: { 201: { description: 'Created or queued', content: { 'application/json': { schema: create.response } } } },
+    }, async (c) => { c.header('cache-control', 'no-store'); return c.json({ data: options.pool ? await options.pool.request(c.req.valid('json')) : await service.create() }, 201); }),
+    route({ ...progress, middleware: [modeGuard, installHost], request: { params: progress.params },
+      responses: { 200: { description: 'Creation progress', content: { 'application/json': { schema: progress.response } } } },
+    }, async c => { c.header('cache-control', 'no-store'); c.header('referrer-policy', 'no-referrer');
+      if (!options.pool) throw new AppError('not_found', 'Not found');
+      return c.json({ data: await options.pool.progress(c.req.valid('param').ticket) }, 200); }),
+    route({ ...handoff, middleware: [modeGuard, loginLimiter], request: { body: { required: true, content: { 'application/json': { schema: handoff.body } } } },
+      responses: { 200: { description: 'Copy signed in on this host', content: { 'application/json': { schema: handoff.response } } } },
+    }, async c => {
+      if (!options.pool) throw new AppError('not_found', 'Not found');
+      const result = await options.pool.handoff(c.get('context').gym.gymId, c.req.valid('json').token, clientIp(c, options.clientIp));
+      for (const cookie of result.response.headers.getSetCookie()) c.header('set-cookie', cookie, { append: true });
+      c.header('cache-control', 'no-store'); c.header('referrer-policy', 'no-referrer');
+      return c.json(handoff.response.parse({ data: { redirect: result.redirect, kioskToken: result.kioskToken } }), 200);
+    }),
     route({ ...status,
       responses: { 200: { description: 'Demo status', content: { 'application/json': { schema: status.response } } } },
     }, async (c) => { c.header('cache-control', 'no-store'); const { expiresAt } = await service.live(c.get('context').gym.gymId); return c.json({ data: { expiresAt } }, 200); }),
@@ -138,7 +158,7 @@ export function configureDemoRoutes(service: DemoService, options: Parameters<ty
 export function disableDemoRoutes(installOrigin: string, tenancy: TenancyMode = 'single'): void { configured = createDemoRoutes(placeholder, { installOrigin, tenancy, enabled: false }); }
 // Stable registrations delegate to the configured runtime; outside demo mode only discovery succeeds.
 const disabled = async () => { throw new AppError('not_found', 'Not found'); };
-const placeholder: DemoService = { create: disabled, status: disabled, live: disabled, login: disabled, expire: async () => {}, setJoinReadiness() {} };
+const placeholder: DemoService = { create: disabled, reserve: disabled, recover: disabled, prepare: disabled, kioskTokenFor: () => '', status: disabled, live: disabled, login: disabled, expire: async () => {}, setJoinReadiness() {} };
 export const routes: readonly RouteRegistration[] = createDemoRoutes(placeholder, { installOrigin: '', enabled: false }).map((entry, index) => ({
   ...entry, mount(app, authorize) {
     if (configured) configured[index]!.mount(app, authorize);
