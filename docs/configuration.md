@@ -59,7 +59,7 @@ and the Repo compliance workflow runs them even for Markdown-only changes.
 | `HOST` | `127.0.0.1` | The address the server listens on. Compose sets `0.0.0.0` inside the container. |
 | `PORT` | `3000` | The port the server listens on. |
 | `TRUST_PROXY` | unset | `true` makes the last `X-Forwarded-For` entry the client address (for rate limits and sign-in). Set only when a reverse proxy is the app's only peer, as Caddy is in Compose. |
-| `TRUST_CLOUDFLARE` | unset | `true` (written by the installer, and by the demo installer, when the hostname is proxied by Cloudflare) reads the client address from `CF-Connecting-IP` when the address the trusted proxy forwarded is in Cloudflare's published ranges (`deploy/cloudflare-ranges.txt`); from any other address the header is ignored. Needs `TRUST_PROXY=true`. Any other value leaves it off. See [install.md](install.md#behind-cloudflares-proxy-recommended) and its limits in [security-model.md](security-model.md). |
+| `TRUST_CLOUDFLARE` | unset | `true` (written by the installer, and by the demo installer, when the hostname is proxied by Cloudflare) reads the client address from `CF-Connecting-IP` when the address the trusted proxy forwarded is in Cloudflare's published ranges (`deploy/cloudflare-ranges.txt`); from any other address the header is ignored. Needs `TRUST_PROXY=true`. Any other value leaves it off. See [cloudflare.md](cloudflare.md) and its limits in [security-model.md](security-model.md). |
 | `PLAINGYM_ORIGIN_NONCE` | unset | Written by the installer: a random value Caddy serves at `/.well-known/plaingym-origin`, which the installer fetches through the hostname before printing the setup link. Not a secret. |
 | `SOURCE_URL` | `https://github.com/plaingym/plaingym` | Where the "Source code" link points (AGPL section 13). A modified install must point it at its own source. |
 
@@ -209,7 +209,7 @@ restart; people then sign in another way.
 | `NODE_ENV` | `production` in the image | `production` turns on `Strict-Transport-Security`, production sign-in behavior, and the server's own multi-gym check that it holds no maintenance credentials. The image's entrypoint makes that check in multi-gym mode whatever `NODE_ENV` is. |
 | `APP_VERSION` | the embedded Git version | The version shown on the health page, in OpenAPI and by `/healthz`; build metadata marks a development build. |
 | `APP_REVISION` | the embedded Git commit | Full commit returned by `/healthz`; the UI displays its short form. |
-| `SCHEMA_ROLLBACK_FLOOR` | unset on a new install | Oldest compatible version, supplied by the updater's checked `schema-compatibility.yaml`. Keep that file with its database; see [rollback](updating.md#roll-back-a-release). |
+| `SCHEMA_ROLLBACK_FLOOR` | unset on a new install | Oldest compatible version, supplied by the updater's checked `schema-compatibility.yaml`. Keep that file with its database; see [rollback](update-by-hand.md#roll-back-to-the-previous-version). |
 | `SCHEMA_RELEASE` | unset on a new install | Release that raised the recorded rollback floor, shown when older code is refused. |
 | `SCHEMA_SNAPSHOT` | unset on a new install | Pre-upgrade snapshot from before the recorded compatibility boundary, shown with restore instructions. |
 | `NODE_OPTIONS` | `--max-old-space-size=256` | Node's options; the default caps the JavaScript heap at 256 MiB. |

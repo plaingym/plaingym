@@ -10,14 +10,14 @@ To run it for a gym, see [the self-hosting guide](docs/self-hosting.md); the
 
 ## Getting started as a gym owner
 
-1. [Install](docs/install.md) on an Ubuntu server with one command, cloud-init or
-   Docker Compose, and open the private setup link it prints.
+1. [Install](docs/install.md) on an Ubuntu server with one command (cloud-init and
+   Docker Compose are on the [install reference](docs/install-reference.md)), and open the private setup link it prints.
 2. Walk through the [setup wizard](docs/self-hosting.md#setup-wizard); store the backup
    key it shows once.
 3. [Import your members](docs/importing.md), [collect cards again](docs/card-recollection.md)
    and set up the [member portal and booking](docs/member-portal.md).
 4. [Go live](docs/going-live.md) by turning on billing and member emails.
-5. Later: [update](docs/updating.md), [restore from a backup](docs/restoring.md), or
+5. Later: [what happens each night](docs/updating.md), [update by hand](docs/update-by-hand.md), [restore after losing a server](docs/restoring.md), or
    try a [sandbox demo](docs/demo.md) first.
 
 ## Local development
@@ -148,7 +148,7 @@ not alter an existing database.
 
 The root package version is shared by all private workspace packages. Builds report
 their Git version and commit, and `CHANGELOG.md` records releases. See
-[versioning and compatibility](docs/versioning.md) and [updates and rollback](docs/updating.md).
+[versioning and compatibility](docs/versioning.md) and [updates and rollback](docs/update-by-hand.md).
 
 `pnpm install && pnpm test` works on a fresh clone with Node, pnpm, and Docker
 running; no `.env` or manual database startup is needed, and tests never read

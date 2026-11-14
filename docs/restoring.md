@@ -1,120 +1,79 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
-# Restore guide
+# Restore after losing a server
 
-How to bring a gym back from a backup: after losing a server, moving to a new one,
-or undoing a bad update. A restore always goes onto a **fresh install**; it replaces
-that install's data with the snapshot's. How backups work (hourly snapshots,
-retention, encryption) is in [self-hosting.md](self-hosting.md#backups).
+Use this page to bring the gym back from a backup: after the server is lost or broken, to
+move to a new server, or to undo an update that can't be rolled back. A restore always goes
+onto a **fresh install**, and it replaces that install's data with the backup's. How backups
+work (hourly snapshots; 24 hourly, 7 nightly and 4 weekly are kept; encrypted) is in
+[self-hosting.md](self-hosting.md#backups).
 
-## When rollback is refused
+Plan on about an hour, mostly the install.
 
-`update.sh --rollback` prints the snapshot identifier when the previous image is
-below the recorded rollback floor, and so does a failed update across a floor that
-had already migrated the database. Find that pre-upgrade snapshot in the backup
-destination and follow this guide using the private backup key. For a downgrade
-across that boundary, restore into a fresh installation of the version that made
-the snapshot, with its own empty database and volumes. Keep the stopped original
-installation until the restored gym has been checked. Do not copy the newer
-installation's `schema-compatibility.yaml` into the restored installation or remove
-that file to run older code against the newer database. The source installation's
-`version-history.tsv` records the version, digest, floor and snapshot for each attempt.
+## Before you start
 
-## What you need
+You need four things. If you are moving on purpose, capture the latest changes first (below).
 
-To capture recent changes before planned work, owners and admins can choose
-**Back up now** on **System health → Last backup**; owners can also use it in
-**Settings → Email, payments and backups**. Wait for the completed snapshot's time
-and ID. The action queues one manual snapshot; a second request is refused until it
-finishes, and requests during a restore or before backup setup are refused.
-Without the admin, run `sudo docker compose exec -T app node /app/maintenance.mjs snapshot`
-from the installation directory. It prints the new snapshot ID.
+1. **The backup private key.** It was shown once when backups were set up: a block of text
+   beginning `AGE-SECRET-KEY-`, or the file you downloaded. Without it nobody can open the
+   backups. If you replaced the key since, you need the key that matches the snapshot.
+2. **The storage bucket's details:** the bucket name, the service's address (the endpoint,
+   for services other than AWS), the region, and an access key ID and secret that can read it.
+   Your storage provider's dashboard shows them.
+3. **A snapshot ID.** In the bucket, each snapshot is a folder under `snapshots/`; the folder's
+   name is the ID. Choose the newest one from before the problem. A snapshot taken before an
+   update is in the same place.
+4. **A fresh server,** installed with the [install page](install.md) **up to the point where it
+   prints the setup link.** Use the same hostname as before, or a new one. **Don't go through
+   the wizard first:** setup closes once an owner exists.
 
-Settings and System health report the last restorable snapshot for the current
-backup key and destination. After changing either, they report none under that
-key yet until a matching snapshot succeeds. Keep older private keys to restore
-older snapshots; replacing a key does not make those snapshots open with the new
-one. Older snapshots without recipient metadata remain restorable with their
-original key, but do not establish the current-key health status.
+**Moving on purpose?** Owners and admins can choose **Back up now** on **System health → Last
+backup** (owners can also use it in **Settings → Email, payments and backups**) and wait for
+the completed snapshot's time and ID. Without the admin, run
+`sudo docker compose exec -T app node /app/maintenance.mjs snapshot` in `/opt/plaingym`; it
+prints the new snapshot ID.
 
-* **The backup private key** shown once when backups were set up (a block of text
-  beginning `AGE-SECRET-KEY-`, or the file you downloaded). Without it no one can
-  open the snapshots.
-* **The bucket details**: bucket name, endpoint (for non-AWS services), region, and an
-  access key that can read it.
-* **A snapshot ID.** In the bucket, each snapshot is a folder under `snapshots/`; its
-  name is the ID. Choose the newest one that predates the problem. A pre-upgrade
-  snapshot from an update is in the same place.
-* **A fresh server**, installed with the [install guide](install.md) up to the point
-  where it prints the setup link. Use the same hostname as before, or a new one.
-  Don't go through the wizard first: setup closes once an owner exists.
+**Is the old server still running?** Shut it down as soon as the restore is done, and always
+before you turn billing or member emails on. Two installs would charge the same members, send
+them the same emails, and both take and prune backups in the same bucket.
 
 ## Restore from the setup wizard
 
-1. Open the setup link (`https://gym.example.org/setup#token=…`). If you lost it, print
-   it on the server:
+1. Open the setup link (`https://gym.example.org/setup#token=…`). If you lost it, log in to
+   the server over SSH ([how](install.md#3-log-in-to-the-server)) and print it:
 
    ```sh
    cd /opt/plaingym
    sudo docker compose exec -T app gym-app setup-link
    ```
 2. On the first step, choose **Restore a backup**.
-3. Enter the storage endpoint, region, bucket and access key (ID and secret), the
-   snapshot (its ID, or the `snapshots/ID/` prefix) and the backup private key, and
-   start the restore. Keep the page open: it shows progress.
+3. Enter the storage endpoint, region, bucket and access key (ID and secret), the snapshot
+   (its ID, or the `snapshots/ID/` prefix) and the backup private key, and start the restore.
+   Keep the page open: it shows progress.
 4. When it reports "Backup restored", sign in as the owner you had before.
 
-The restore verifies the snapshot, loads the database and the uploaded files, and
-re-encrypts the gym's stored secrets for the new install (Stripe key, email
-password, backup settings), with the `APP_ENCRYPTION_KEY` the backup carries as
-the old key. A backup taken before a key rotation
-([self-hosting.md](self-hosting.md#rotating-the-encryption-key)) restores the
-same way. The wizard is skipped, because the restored gym is already set up.
+The restore checks the backup, loads the database and the uploaded files, and re-encrypts the
+gym's stored secrets (Stripe key, email password, backup settings) for the new install. The
+wizard is skipped afterwards, because the restored gym is already set up. A backup taken
+before an encryption-key rotation restores the same way.
 
-## What to check afterwards
-
-1. **Billing and member emails are paused.** Both stay off until you turn them on
-   yourself in **Settings → Go live**, so a restored copy doesn't charge members or
-   send duplicate member emails while the old server still runs.
-2. **Reconcile payments.** The app compares its payment records with Stripe. Open
-   **Settings → Go live**; the checklist's *Payment reconciliation* item must be
-   clear. If it shows unresolved items, correct them and use **Check restored
-   payments again**. Then turn billing back on ([going-live.md](going-live.md)).
-   If the gym has no Stripe key (it takes only cash or other manual payments), the
-   check reads only the restored records: with no card payments in progress it is
-   clear and the item reads *not applicable*. If the records still refer to Stripe
-   payments, connect Stripe and check again. Once Stripe is connected, a check made
-   without it no longer counts. Saving the Stripe settings pauses billing in the
-   same transaction, even if you already turned it on after the earlier check.
-   Go live labels that check's count as *Stored references* and says it ran without
-   Stripe. The Payments section also explains the pause. The check also records
-   the Stripe mode it read: a test-mode check does not clear live payments, so
-   saving Stripe settings in a different mode pauses billing the same way, while
-   re-saving the checked mode keeps it on. Run **Check restored
-   payments again** to compare with Stripe, then turn billing back on once it is clear.
-3. **Stripe webhooks.** Open **Settings → Email, payments and backups** and check that
-   **Payments** shows the webhook endpoint as registered. If the hostname changed, the
-   endpoint Stripe knows still points at the old address: paste the Stripe key
-   again, which registers the endpoint at the new address (the same key and mode
-   are accepted without clearing anything).
-4. **Backups.** Check that the **System health** page shows a new successful backup. If the
-   backup key was lost or you want a new one, replace it under **Settings → Email,
-   payments and backups**. New snapshots continue, but retention pruning is held.
-   After shutting down the old server, the owner must use **Confirm the old server
-   is gone** in Settings or on the Last backup tile and confirm **Resume backup
-   pruning**. The confirmation is audited; until then no snapshot or backup blob
-   is pruned, so the bucket grows, and once it reaches the retention budget new
-   snapshots fail.
-5. **Only one install should run the gym.** If the old server is still up, shut it
-   down as soon as the restore is done, and always before you turn billing or member emails on.
-   Otherwise two installs charge the same members, send them the same emails, and
-   both take and prune snapshots in the same backup bucket.
+If the wizard says the restore failed, check the bucket details, snapshot ID and key against
+the [restore errors](restore-reference.md#restore-errors), then start it again. An interrupted
+restore finishes by itself when the app restarts ([details](restore-reference.md#if-a-restore-is-interrupted)).
 
 ## Restore from the command line
 
-Use this when the wizard can't be reached, or to script a restore. Run it on the
-fresh install, before anyone has completed setup.
+Use this when the wizard can't be reached. Run it on the fresh install, before anyone has
+completed setup. You work on the server over SSH.
 
-1. Create a private JSON file with the bucket details:
+1. **Write the bucket details to a file.** Files on the server are edited with `nano`, a simple
+   text editor. Create the file and open it:
+
+   ```sh
+   cd /opt/plaingym
+   sudo nano restore.json
+   ```
+
+   Paste this, replace the values, and keep the quotes and commas:
 
    ```json
    {
@@ -126,81 +85,56 @@ fresh install, before anyone has completed setup.
    }
    ```
 
-   `endpoint` is optional (leave it out for AWS S3), `region` defaults to `auto`, and
-   the key file holds the private key as downloaded.
-2. Save that configuration as `restore.json` and the downloaded private key as
-   `backup-key.txt` on the host. Keep both private (`chmod 600 restore.json backup-key.txt`).
-   The installer supplies `restore.sh`, and each release's update refreshes it.
-3. From the installation directory, run the helper with the host file paths:
+   Save with **Ctrl+O** then **Enter**, and leave with **Ctrl+X**. `endpoint` is the storage
+   service's address without the bucket name; leave the line out for AWS S3. `region` is
+   optional and defaults to `auto`.
+2. **Save the backup private key** the same way, as the file `backup-key.txt` (`sudo nano
+   backup-key.txt`, paste the whole key, save).
+3. **Check the JSON.** `python3 -m json.tool restore.json` prints the file back when it is
+   valid and names the line when it isn't. Fix it with `sudo nano restore.json` if needed.
+4. **Make both files private:** `sudo chmod 600 restore.json backup-key.txt`.
+5. **Run the restore** with your snapshot ID:
 
    ```sh
-   cd /opt/plaingym
-   sudo ./restore.sh SNAPSHOT_ID /path/to/restore.json /path/to/backup-key.txt
+   sudo ./restore.sh SNAPSHOT_ID restore.json backup-key.txt
    ```
-   It streams both files to the maintenance CLI, which writes an app-owned 0700
-   directory and 0600 files on the data volume, sets the key path automatically,
-   and removes those copies on success or failure. It prints that billing and member
-   emails remain paused and pruning is held when it succeeds. When it fails
-   it prints `Restore failed: ` and the reason, then "A verified restore can be resumed
-   with the maintenance CLI" only if an unfinished restore is staged. The reason names
-   a configuration field, a code or an error name, never a path, key, credential or field value:
 
-   | Reason | What to check |
-   | :--- | :--- |
-   | `Cannot read the restore configuration file (CODE)` | The path, and that the file is inside the container (`ENOENT` is a missing file, `EACCES` a file the app can't read). |
-   | `The restore configuration file is not valid JSON` | The file's syntax. |
-   | `The restore configuration file has invalid fields: NAMES` | The fields named: missing, empty or wrongly formed. A field the file has that the command doesn't know is counted (`(1 unrecognized field)`), not named; look for a misspelled name next to a missing one. |
-   | `SNAPSHOT is not a snapshot ID (a UUID)` | The ID you passed. |
-   | `The restore configuration names a different snapshot than SNAPSHOT` | The `snapshotId` field, if you set one. |
-   | `Cannot read the key file (CODE)` | `identityFile` in the configuration, and that the file is inside the container. |
-   | `The backup bucket answered with error CODE` | The bucket's error code (such as `AccessDenied`, or `HTTP` and a status): the access keys, region and endpoint. |
-   | `Cannot reach the backup bucket (CODE)` | The `endpoint` and the server's network connection; `ECONNREFUSED` and `ENOTFOUND` mean nothing answered at that address. |
-   | `Snapshot not found in the bucket` | The snapshot ID, and the `bucket` name: a bucket that doesn't exist reads the same as a snapshot that doesn't. |
-   | `The key doesn't open this snapshot` | That the key file is the private key for the backup key the snapshot was made with. |
-   | `The key file doesn't hold an age private key`, `The key file must hold exactly one age private key` | The key file's content. |
-   | `A snapshot object is missing from the bucket` | The snapshot was damaged or deleted in the bucket; try an earlier one. |
-   | `A verified restore is already staged; resume it first` | See **If a restore is interrupted**. |
-   | `Missing NAME` | The environment variable the app container needs. |
-   | `Restored gym receipt is missing` | The restored database's restore audit record. Keep the staged restore and investigate before retrying. |
-   | `Invalid current app key` | APP_ENCRYPTION_KEY must be the destination install's key, 64 hex characters. |
-   | `Restore staging must be outside uploads` | Place BACKUP_STAGING_DIR outside UPLOADS_DIR so replacing uploads cannot remove staging. |
-   | `Restore staging and uploads must share a filesystem` | Place staging and directory uploads on the same mounted volume for atomic renames. |
-   | `Manifest belongs to another snapshot` | The snapshot's manifest does not match its ID. Use an intact snapshot. |
-   | `Manifest and authenticated references disagree` | The snapshot's manifest and reference list disagree. Use an intact snapshot. |
-   | `The restore journal is not in a format this version reads` | `restore-state.json` on the data volume is damaged or from another app version. Keep it, run the app version that started the restore, and investigate if that doesn't help. |
-   | `Restore journal does not match staged snapshot` | The staged manifest does not match the restore journal. Preserve both and investigate. |
-   | `Current install key changed during restore` | Restore the destination APP_ENCRYPTION_KEY used when this restore began before resuming. |
-   | `Upload storage changed during restore` | Restore the uploads storage configuration used when this restore began before resuming. |
-   | `Unexpected uploads directory during restore` | An uploads directory appeared during the switch. Preserve the current and staged trees and investigate. |
-   | `Restored uploads tree missing` | The staged and destination upload trees are missing. Preserve the journal and recover the staged files before resuming. |
-   | `MAINTENANCE_DATABASE_URL must name the maintenance database role` | The user in MAINTENANCE_DATABASE_URL: the maintenance commands (migrate, snapshot, restore, resume, rotate-key, restore-connect) connect only as `maintenance`. |
-   | `Usage: restore SNAPSHOT --config PRIVATE_JSON_FILE` | Supply the snapshot ID and --config followed by the private configuration filename. |
-   | `The snapshot's contents are not in a format this version reads` | Use a compatible snapshot and app version. Snapshot field names and values are not printed. |
-   | `The snapshot is damaged; try an earlier one` | Snapshot metadata, authentication or checksums failed before activation. Nothing was restored; use an intact earlier snapshot. |
-   | `The staged restore failed; preserve the restore state and check the server before retrying resume` | A failure after activation, including damaged staged files, a database restore failure, or a disk error just after the restore journal was written. Keep the journal and staged files, investigate the server and storage, then retry `resume` once the cause is resolved. An earlier snapshot cannot replace an active restore. |
-   | `The staged restore failed: the uploads bucket answered with error CODE; preserve the restore state, fix the uploads bucket, then retry resume` | An install that keeps uploads in S3: its uploads bucket (`UPLOADS_S3_*`, not the backup bucket) refused to take the restored files, with that error code (such as `AccessDenied`, or `HTTP` and a status). Fix its access keys or policy, then resume. |
-   | `The staged restore failed: cannot reach the uploads bucket (CODE); preserve the restore state, fix the uploads bucket, then retry resume` | The uploads bucket's endpoint didn't answer (`ECONNREFUSED`, `ENOTFOUND` or a timeout). Check `UPLOADS_S3_ENDPOINT` and the network, then resume. |
-   | `The restore activity lease is invalid; stop the app, delete the restore-activity folder on its data volume, then start the app` | A process lease file on the data volume is invalid or oversized. Each process keeps one lease while requests and jobs are counted in memory; with the app stopped none is live and the folder can go: `sudo docker compose stop app`, then `sudo docker compose run --rm --no-deps --entrypoint rm app -rf /var/lib/plaingym/restore-activity`, then `sudo docker compose up -d`. Leave `restore-state.json` and `staging/` alone: a staged restore resumes when the app starts. |
-   | `Unexpected error (NAME)` | Any other failure, with only the error's name. |
+   It copies both files into the app's private storage for the restore and removes those
+   copies afterwards, whether the restore works or not. On success it says that billing and
+   member emails remain paused and that pruning is held. On failure it prints
+   `Restore failed: ` and a reason; look the reason up in the
+   [restore errors](restore-reference.md#restore-errors), fix what it names and run the
+   command again. If it also says a verified restore can be resumed, a restore is staged and a
+   new one is refused: finish it as in
+   [If a restore is interrupted](restore-reference.md#if-a-restore-is-interrupted).
+6. **Delete your copies:** `sudo rm restore.json backup-key.txt`. Keep your original backup
+   private key in safe storage.
 
-   Fix what it names. If the resume hint appeared, a restore is staged and a new
-   `restore` is refused, so finish it as in **If a restore is interrupted**; otherwise
-   run the command again.
-4. Remove the host's temporary copies of both files. Keep your original backup
-   private key in safe storage. A forcibly killed helper can leave a private
-   `restore-input-*` directory on the data volume; remove that directory once no
-   helper uses it. Resume uses the verified restore staging, not those input files.
+## What to check afterwards
 
-The lower-level command remains `gym-app restore SNAPSHOT_ID --config PRIVATE_JSON_FILE`.
-For that command, the JSON also needs `identityFile` naming a key file already
-inside the app container; you manage those files yourself.
+1. **Billing and member emails are paused.** Both stay off until you turn them on yourself in
+   **Settings → Go live**, so a restored copy doesn't charge members or send duplicate member
+   emails while the old server still runs.
+2. **Reconcile payments.** The app compares its payment records with Stripe. Open **Settings →
+   Go live**: the checklist's *Payment reconciliation* item must be clear. If it shows
+   unresolved items, correct them and use **Check restored payments again**. Then turn billing
+   back on ([going-live.md](going-live.md)). The detail, including a gym with no Stripe key, is
+   in [payment reconciliation](restore-reference.md#payment-reconciliation).
+3. **Stripe webhooks.** In **Settings → Email, payments and backups**, check that **Payments**
+   shows the webhook endpoint as registered. If the hostname changed, the endpoint Stripe knows
+   still points at the old address: paste the Stripe key again, which registers the endpoint at
+   the new address (the same key and mode are accepted without clearing anything).
+4. **Backups.** Check that **System health** shows a new successful backup. New snapshots
+   continue after a restore, but the bucket's old snapshots aren't pruned until the owner
+   uses **Confirm the old server is gone** in Settings or on the Last backup tile and confirms
+   **Resume backup pruning**. Until then the bucket grows, and once it reaches the retention
+   budget new snapshots fail. If the backup key was lost, or you want a new one, replace it
+   under **Settings → Email, payments and backups**; pruning stays held until the owner
+   confirms the old server is gone.
+5. **Only one install should run the gym.** Shut the old server down now (see above).
 
-Details of the file, the snapshot format and the lock are in
-`apps/server/src/areas/health/backups.protocol.md`.
+## When rollback is refused
 
-## If a restore is interrupted
-
-A verified restore resumes by itself when the app restarts (`sudo docker compose up -d`):
-the container's entrypoint resumes it before migrations or any request. If the wizard
-says the restore failed, check the bucket, credentials, snapshot ID and key against the
-list above, then start it again.
+`update.sh --rollback` prints a snapshot ID when the previous version is older than the rollback
+floor, and so does a failed update that already migrated the database. Restore that snapshot
+with this page, using the private backup key: [what to do and why](restore-reference.md#when-rollback-is-refused).

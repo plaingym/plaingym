@@ -3,8 +3,8 @@
 
 This guide takes a gym from an empty server to a running install, and covers
 backups, updates and day-to-day operation. One install runs one gym on one
-hostname. Step-by-step guides cover [installing](install.md), [updating](updating.md),
-[restoring](restoring.md), [importing](importing.md), [card re-collection](card-recollection.md),
+hostname. Step-by-step guides cover [installing](install.md), [nightly updates](updating.md),
+[updating by hand](update-by-hand.md), [restoring](restoring.md), [importing](importing.md), [card re-collection](card-recollection.md),
 the [member portal](member-portal.md), [going live](going-live.md) and [demos](demo.md).
 For building images and the installer's internals, see
 [`deploy/README.md`](../deploy/README.md); for every setting, see
@@ -18,7 +18,7 @@ For building images and the installer's internals, see
 * **A hostname** such as `gym.example.org`, with an A record (and an AAAA record,
   if you use IPv6) pointing at the server. Behind Cloudflare's proxy (the orange
   cloud) is recommended if your domain is on Cloudflare
-  ([install guide](install.md#behind-cloudflares-proxy-recommended)); otherwise use a
+  ([Cloudflare page](cloudflare.md)); otherwise use a
   DNS-only record. Other proxies fail the installer's DNS check.
 * **Open ports**: TCP 80 and 443, and your SSH port.
 * **A PlainGym release** to install, from the
@@ -45,34 +45,19 @@ curl -fsSL https://github.com/plaingym/plaingym/releases/download/vX.Y.Z/bootstr
   | sudo sh -s -- --hostname gym.example.org --email owner@example.org
 ```
 
-`--email` is where the certificate authority sends notices about your certificate.
-The bootstrap checks the release's signed manifest with the release signing key it
-carries, downloads the release's deployment files (`plaingym-deploy-vX.Y.Z.tar.gz`)
-and checks their SHA-256 against that manifest, then runs their `install.sh` with
-the manifest's image. A failed check changes nothing. Trust starts with the HTTPS
-download of `bootstrap.sh` from GitHub; the
-[install guide](install.md#route-1-one-command) says how to check it first, and gives
-the other routes (cloud-init, or Compose by hand).
+`--email` is where the certificate authority sends notices about your certificate. The
+bootstrap checks the release's signed manifest and deployment files before it installs
+anything; a failed check changes nothing. The installer then checks that the hostname
+resolves only to this server, installs Docker, turns on the firewall (SSH, 80, 443),
+unattended OS security updates and swap, writes `/opt/plaingym/.env` (mode 0600) with six
+independent random secrets, starts Caddy, the app and PostgreSQL, turns on automatic patch
+updates (a systemd timer, see [Updates](#updates)) and prints a private setup link:
+`https://gym.example.org/setup#token=…`. Re-running the same command is safe.
 
-The installer first checks that the hostname resolves only to this server; if a
-check fails, it stops before changing anything. Then it:
-
-1. installs Docker, turns on the firewall (SSH, 80, 443), unattended OS security
-   updates and swap;
-2. writes `/opt/plaingym/.env` (mode 0600) with six independent random secrets;
-3. starts Caddy, the app and PostgreSQL, waits for a valid certificate and a
-   healthy app;
-4. turns on automatic patch updates: a systemd timer (`plaingym-update.timer`)
-   that installs patch releases each night (see [Updates](#updates));
-5. prints a private setup link: `https://gym.example.org/setup#token=…`.
-
-Re-running the same command is safe: it keeps `.env`, starts anything that
-stopped and prints the setup link again. It refuses to change the hostname, email
-or image; change the image with `update.sh`.
-
-If the certificate never validates, check DNS, the firewall, and
-`sudo docker compose logs caddy` in `/opt/plaingym`. Don't delete the database
-volume to retry.
+[Install PlainGym](install.md) walks a gym owner through it from an empty server, including
+DNS and SSH. What the installer checks and does, the cloud-init and Compose routes, and
+reading `bootstrap.sh` first are on the [install reference](install-reference.md); Cloudflare's
+proxy is on [its own page](cloudflare.md).
 
 ## Setup wizard
 
@@ -269,27 +254,20 @@ in the installation directory and keep the snapshot ID it prints.
 
 ### Restore
 
-Restore onto a fresh install:
+Restore onto a fresh install: install as above with the same or a new hostname, open the
+setup link, choose **Restore a backup**, and give the bucket, its credentials, the snapshot
+ID (the folder name under `snapshots/` in the bucket) and your backup private key. The restore
+verifies the snapshot, loads the database and files, and re-encrypts the stored secrets for the
+new install. Billing and member emails stay paused; turn them on in **Settings → Go live** only
+after shutting down the old server (billing also requires payment reconciliation). New
+snapshots continue, but pruning is held until the owner confirms **the old server is gone** in
+the backups section of Settings or on the Last backup tile. Once a held bucket reaches the
+retention budget, new snapshots fail until the owner confirms.
 
-1. Install as above, with the same or a new hostname.
-2. Open the setup link and choose **Restore a backup**.
-3. Enter the bucket, its credentials, the snapshot ID (the folder name under
-   `snapshots/` in the bucket) and your backup private key.
-
-The restore verifies the snapshot, loads the database and files, and re-encrypts
-the stored secrets for the new install. Billing and member emails stay paused;
-turn them on in **Settings → Go live** only after shutting down the old server
-(billing also requires payment reconciliation). New snapshots continue, but
-pruning is held until the owner confirms **the old server is gone** in the
-backups section of Settings or on the Last backup tile. Once a held bucket
-reaches the retention budget, new snapshots fail until the owner confirms.
-
-For a command-line restore, run `sudo ./restore.sh SNAPSHOT_ID CONFIG_JSON KEY_FILE`
-with the host's private config and key files. The helper stages app-owned private
-copies and removes them afterwards; see [restoring.md](restoring.md#restore-from-the-command-line).
-The lower-level `gym-app restore <snapshot-id> --config <file>` remains available
-for files already inside the container. An interrupted restore
-resumes when the app restarts.
+[Restore after losing a server](restoring.md) has the steps, including the command-line restore
+(`sudo ./restore.sh SNAPSHOT_ID CONFIG_JSON KEY_FILE`) and what to check afterwards; the
+[restore reference](restore-reference.md) lists the errors. An interrupted restore resumes when
+the app restarts.
 
 ## Updates
 
@@ -300,26 +278,16 @@ never changes the database; a minor or major release can.
 
 Each night the server installs the newest patch release of the version it runs:
 from 1.2.3 it takes 1.2.4 or 1.2.5, never 1.3.0. The installer's timer runs
-`update.sh --patch` once a night between 02:00 and 05:00 in the gym's timezone.
-It:
+`update.sh --patch` once a night between 02:00 and 05:00 in the gym's timezone. It checks
+the release's signed manifest and the image it names, takes a pre-upgrade backup, starts the
+new version, checks that it stays healthy for a minute, and goes back to the previous version
+if it doesn't. A release that fails is tried once more the next night; after a second failure
+automatic updates wait for a newer patch release.
 
-1. asks the app whether automatic updates are on and backups are set up;
-2. finds the newest patch release and checks its signed release manifest and the
-   image it names, so it only ever installs an image the project published;
-3. takes a pre-upgrade backup, starts the new version and checks that it stays
-   healthy for a minute;
-4. goes back to the previous version if the new one doesn't start or isn't healthy.
-
-A release that fails is tried once more the next night; after a second failure
-automatic updates wait for a newer patch release. After an update the server keeps
-the current image and the two before it, and removes older ones.
-
-The **Health** page's **Automatic updates** tile shows the last night's result:
-up to date, updated, rolled back, or skipped and why (for example, backups that
-aren't set up yet: without a backup it changes nothing), and the last update after
-later checks. Owners turn automatic
-patch updates off, or on again, in **Settings → Updates**; they are on by default.
-To run tonight's check at once, for example after setting up backups:
+The **Health** page's **Automatic updates** tile shows the last night's result. Owners turn
+automatic patch updates off, or on again, in **Settings → Updates**; they are on by default.
+[What happens each night](updating.md) explains the tile's messages; to run tonight's check at
+once, for example after setting up backups:
 
 ```sh
 sudo /opt/plaingym/update.sh --patch --now
@@ -329,24 +297,14 @@ sudo /opt/plaingym/update.sh --patch --now
 
 Once a day the app reads the newest release from GitHub's public releases list (no
 token, nothing about your install is sent) for the repository in `RELEASE_REPOSITORY`,
-the one the updater follows (`plaingym/plaingym` unless you set another). When a newer minor or major version is
-out, owners and admins see an "Update available" banner with a link to the changelog,
-and the Health page's **Available update** tile shows the running and latest versions.
-A newer patch release raises no banner while the nightly update is expected to install
-it. It does raise the banner when that update won't happen: automatic updates are
-off, no nightly check has run for two days since the last one (the timer stopped; an install
-that has never reported a check counts from the day the app first saw it), or the last check
-for that release was refused, rolled back or failed. A skip for a passing cause, such as GitHub
-or the registry being unreachable, raises the banner only when two checks in a row skipped. The banner and the tile say
-why; this banner is headed "Patch release not installed", and one raised by an invalid `RELEASE_REPOSITORY`
-"Updates can't install". With automatic updates off or the timer stopped, turn them on or fix the timer, or
-install the release by hand, as below. When the updater refused the release on purpose
-(its signature, image or database changes), don't install it by hand: wait for a fixed
-release ([updating.md](updating.md#patch-releases-automatic)). A fresh start shows
-nothing until the first answer has arrived, a moment later; if GitHub can't be reached
-the last answer is kept and the check retries within the hour (the Health page's tile
-says when it couldn't be read). A development build isn't a release and never asks.
-`UPDATE_CHECK=off` in `.env` stops it (`docs/configuration.md`).
+the one the updater follows (`plaingym/plaingym` unless you set another). When a newer minor or
+major version is out, owners and admins see an "Update available" banner with a link to the
+changelog, and the Health page's **Available update** tile shows the running and latest
+versions. A newer patch release raises a banner ("Patch release not installed") only when the
+nightly update won't install it; the banner says why ([updating.md](updating.md#when-a-patch-doesnt-install-by-itself)).
+A fresh start shows nothing until the first answer has arrived, a moment later; if GitHub can't
+be reached the last answer is kept and the check retries within the hour. A development build
+isn't a release and never asks. `UPDATE_CHECK=off` in `.env` stops it (`docs/configuration.md`).
 
 Update to a new minor or major release with:
 
@@ -355,24 +313,15 @@ cd /opt/plaingym
 sudo ./update.sh ghcr.io/plaingym/app:vX.Y.Z
 ```
 
-The updater:
-
-1. pulls the new image while the app keeps running;
-2. stops the app and takes a pre-upgrade backup. If backups aren't set up, it
-   says so ("Backups are not set up: set them up in Settings → Email, payments
-   and backups, then run the update again"), changes nothing and restarts the current version;
-3. starts the new image, which applies its database migrations before it reports
-   healthy;
-4. records the new image in `.env` only once the new version is healthy.
-
-If the new version fails to start, the updater restarts the previous image when
-the recorded schema floor allows it. `sudo ./update.sh --rollback` also works with
-the app stopped or restarting, within that floor. If a failed update migrated
-across the floor, retry its release or update to a newer compatible signed release;
-to go back, restore the pre-upgrade snapshot. The [updating guide](updating.md)
-explains these recovery paths. Keep previous and failed-release images locally
-until you are sure of an update. Patch releases (x.y.Z) never change the database;
-minor and major releases wait for you to run the updater.
+The updater pulls the image while the app runs, stops the app and takes a pre-upgrade backup
+(it changes nothing and restarts the current version if backups aren't set up), starts the new
+image, which applies its database migrations before it reports healthy, and records the new
+image in `.env` only once it is healthy. If the new version fails to start, the updater
+restarts the previous image when the recorded schema floor allows it, and
+`sudo ./update.sh --rollback` goes back within that floor. [Update by hand](update-by-hand.md)
+has the steps and the messages; the [updating reference](update-reference.md) covers rollback
+floors and recovery. Keep previous and failed-release images locally until you are sure of an
+update.
 
 ### Public website
 

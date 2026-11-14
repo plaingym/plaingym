@@ -211,7 +211,7 @@ Before opening either the application or migration connection,
 `APP_VERSION`. `SCHEMA_RELEASE` and `SCHEMA_SNAPSHOT` identify recovery steps when
 older code is refused. This metadata is supplied by the checked installation file
 `schema-compatibility.yaml`; it adds no database table or migration. Keep that file
-with the database. See [rollback](../../docs/updating.md#roll-back-a-release).
+with the database. See [rollback](../../docs/update-by-hand.md#roll-back-to-the-previous-version).
 
 Database bootstrap creates `app` and `maintenance`. The app role has DML privileges,
 no DDL, no TRUNCATE, and no membership in maintenance. Maintenance owns the database

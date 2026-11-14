@@ -29,7 +29,7 @@ domain should be the zone itself: sandboxes one level further down (under
 `demo.example.org`) need a paid edge certificate. Add a rate-limiting rule for both
 names, for example
 `(http.host eq "demo-example.org" or ends_with(http.host, ".demo-example.org"))`, 50
-requests per 10 seconds per IP ([install guide](../../docs/install.md#behind-cloudflares-proxy-recommended)).
+requests per 10 seconds per IP ([Cloudflare page](../../docs/cloudflare.md)).
 The installer recognizes Cloudflare's addresses (`deploy/cloudflare-ranges.txt`)
 and writes `TRUST_CLOUDFLARE=true`, so sandbox rate limits count real visitors.
 With the proxy, the DNS check can't see which server is behind it; the HTTPS check

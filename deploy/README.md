@@ -151,7 +151,7 @@ are checked separately by the **Dependency advisories** workflow (`pnpm audit`).
 
 ## Install
 
-A release installs with its own `bootstrap.sh` (`docs/install.md`, Route 1):
+A release installs with its own `bootstrap.sh` (`docs/install-reference.md`, "What the one-command install checks"):
 
 ```sh
 curl -fsSL https://github.com/plaingym/plaingym/releases/download/vX.Y.Z/bootstrap.sh \
@@ -197,15 +197,11 @@ can't see past the proxy, the installer then fetches this install's random
 `PLAINGYM_ORIGIN_NONCE` through the hostname (Caddy serves it at
 `/.well-known/plaingym-origin`) and prints the private setup link only if it comes
 back. That check runs once the stack is up, so when it fails the server is
-installed (update timer included) but the link is withheld: fix the record, or
-allow that path if a Cloudflare security setting challenges it, and re-run with the
-same options. An install whose `compose.yaml` and Caddyfile predate proxy support
-refuses a proxied re-run before changing anything; copy both from the current
-deployment files first. If you proxy the record after installing, re-run the
-installer so the app trusts Cloudflare's header. Set SSL/TLS to Full (strict) (Always
-Use HTTPS can stay on; Cloudflare doesn't redirect `/.well-known/acme-challenge/`)
-and add a Cloudflare rate-limiting rule, such as 50 requests in 10 seconds per IP
-([../docs/install.md](../docs/install.md#behind-cloudflares-proxy-recommended)).
+installed (update timer included) but the link is withheld. An install whose
+`compose.yaml` and Caddyfile predate proxy support refuses a proxied re-run before
+changing anything. The owner's steps (SSL/TLS mode, the rate-limiting rule, fixing a
+withheld link, proxying after installing) are on
+[../docs/cloudflare.md](../docs/cloudflare.md).
 When the published ranges change, `node scripts/cloudflare-ranges.mjs` rewrites
 the single canonical `cloudflare-ranges.txt`; the server build packages that same
 file beside `server.mjs`, where the app reads it. Use deployment files and an image
@@ -652,7 +648,7 @@ and `schema-compatibility.yaml.before` the guard it replaced, so a failed update
 later run can take it down if nothing migrated. If a migrated attempt leaves the
 pinned image below the floor, `.schema-recovery` keeps its identity until forward
 recovery succeeds; a retry that changes nothing preserves that record and floor
-(`docs/updating.md`). Releases carry the host files in the deployment archive, with
+(`docs/update-reference.md`). Releases carry the host files in the deployment archive, with
 individual digests in the signed manifest. `update.sh` verifies the archive and
 each file before stopping the app. After health checks, it replaces `update.sh`,
 `lib.sh`, `rotate-key.sh`, `restore.sh`,

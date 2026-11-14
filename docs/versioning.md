@@ -20,8 +20,8 @@ The signed release manifest includes the deployment archive and individual host-
 digests. Updates install those files with the image and retain previous copies for
 rollback, including the updater and its systemd units. The release signing key must
 stay the current trusted key; replacing that trust key is an explicit host step,
-and rollback never reverts it. See the [updating guide](updating.md#update) for
-recovery, local overrides and the one-time upgrade for older host scripts.
+and rollback never reverts it. See the [updating reference](update-reference.md#host-files)
+for how host files are recovered and which local files the updater preserves.
 
 Before 1.0 there is no compatibility promise. From 1.0, each release's schema and
 stored data must run the previous minor's code. Migrations expand first and remove
@@ -185,5 +185,5 @@ The Release workflow explicitly marks a backport below a newer stable release wi
 If signing and cleanup both fail, the original signing error is preserved with
 the cleanup errors attached.
 
-See [updating.md](updating.md) for owner updates and rollback, and
+See [update by hand](update-by-hand.md) and [what happens each night](updating.md) for owner updates and rollback, and
 [deploy/README.md](../deploy/README.md#releases) for manifests and release infrastructure.
