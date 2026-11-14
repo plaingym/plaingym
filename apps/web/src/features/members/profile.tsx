@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { canStaff, type StaffRole } from '@plaingym/shared';
@@ -21,8 +21,9 @@ import { ErrorMessage, Panel, StatusBadge, text, useDraft, useMemberSave } from 
 import { MemberForm } from './member-form.js';
 import { HouseholdDetails } from './households.js';
 
-export function MemberTabs({ memberId, roles, enabledModules, registries = createRegistries() }: { memberId: string; roles: readonly StaffRole[]; enabledModules: ReadonlySet<string>; registries?: ReturnType<typeof createRegistries> }) {
-  const entries = registries.memberTabs.forModules(enabledModules).filter((entry) => entry.enabled && entry.permission.kind === 'staff' && canStaff(roles, entry.permission.capability));
+export function MemberTabs({ memberId, roles, enabledModules, overview, registries = createRegistries() }: { memberId: string; roles: readonly StaffRole[]; enabledModules: ReadonlySet<string>; overview?: ReactNode; registries?: ReturnType<typeof createRegistries> }) {
+  const entries = [...(overview ? [{ id: 'memberTabs.profile', labelKey: 'members/members:profile', component: () => null }] : []),
+    ...registries.memberTabs.forModules(enabledModules).filter((entry) => entry.enabled && entry.permission.kind === 'staff' && canStaff(roles, entry.permission.capability))];
   // A link may name the tab to open (`#memberTabs.portal-access`), such as the dashboard's confirmation shortlist.
   const [activeId, setActive] = useState<string | undefined>(() => {
     try { return decodeURIComponent(window.location.hash.slice(1)) || undefined; } catch { return undefined; }
@@ -30,7 +31,7 @@ export function MemberTabs({ memberId, roles, enabledModules, registries = creat
   const active = entries.some((entry) => entry.id === activeId) ? activeId : entries[0]?.id;
   if (!entries.length) return null;
   return <div className="space-y-4"><div role="tablist" aria-label={text('profileTabs')} className="flex flex-wrap gap-2 border-b border-border pb-3">{entries.map((entry) => <Button type="button" key={entry.id} role="tab" id={'tab-' + entry.id} aria-controls={'panel-' + entry.id} aria-selected={active === entry.id} variant={active === entry.id ? 'default' : 'outline'} onClick={() => setActive(entry.id)}>{t(entry.labelKey)}</Button>)}</div>
-    {entries.map((entry) => { const Component = entry.component; return <section role="tabpanel" id={'panel-' + entry.id} aria-labelledby={'tab-' + entry.id} hidden={active !== entry.id} key={entry.id} className="min-w-0"><Component memberId={memberId}/></section>; })}</div>;
+    {entries.map((entry) => { const Component = entry.component; return <section role="tabpanel" id={'panel-' + entry.id} aria-labelledby={'tab-' + entry.id} hidden={active !== entry.id} key={entry.id} className="min-w-0">{entry.id === 'memberTabs.profile' ? overview : <Component memberId={memberId}/>}</section>; })}</div>;
 }
 export function MemberProfile({ memberId }: { memberId: string }) {
   const bootstrap = useBootstrap();
@@ -49,7 +50,8 @@ function Profile({ memberId, gymId, roles, enabledModules }: { memberId: string;
     {query.isPending ? <LoadingState label={text('loading')}/> : query.isError ? <ErrorState message={text('loadFailed')} onRetry={() => void query.refetch()}/> : member && <>
       <PageHeader title={`${member.firstName} ${member.lastName}`} description={member.anonymizedAt ? undefined : <StatusBadge status={member.status}/>}
         actions={<Button variant="outline" onClick={() => void client.invalidateQueries({ queryKey: ['members', gymId] })}>{text('refresh')}</Button>}/>
-      {member.anonymizedAt ? <><Alert>{text('anonymized')}</Alert>{canStaff(roles, 'members.delete') && <DeleteMember gymId={gymId} member={member}/>}</> : <div className="grid items-start gap-6 lg:grid-cols-2"><div className="min-w-0 space-y-6">
+      {member.anonymizedAt && <Alert>{text('anonymized')}</Alert>}
+      <MemberTabs memberId={memberId} roles={roles} enabledModules={enabledModules} overview={!member.anonymizedAt && <div className="grid items-start gap-6 lg:grid-cols-2"><div className="min-w-0 space-y-6">
         <Panel title={text('profile')}>{manage ? <MemberForm member={member} householdId={member.householdId}/> : <>
           <dl className="grid gap-3 sm:grid-cols-2">{(['status', 'email', 'phone', 'dateOfBirth'] as const).map((field) => <div key={field} className="min-w-0"><dt className="text-sm text-muted-foreground">{text(field)}</dt>
             <dd>{field === 'status' ? text('status.' + member.status) : member[field] || '—'}</dd></div>)}</dl>
@@ -62,10 +64,13 @@ function Profile({ memberId, gymId, roles, enabledModules }: { memberId: string;
         <Photo member={member} manage={manage}/><MemberTags gymId={gymId} memberId={memberId} manage={canStaff(roles, 'tags.manage')}/>
       </div><div className="min-w-0 space-y-6">{manage && <HouseholdDetails key={member.householdId} gymId={gymId} householdId={member.householdId}/>}
         {canStaff(roles, 'medical.read') && <MedicalNotes gymId={gymId} memberId={memberId} manage={manage}/>}
-        {canStaff(roles, 'members.anonymize') && <Anonymize member={member}/>}
-        {canStaff(roles, 'members.delete') && <DeleteMember gymId={gymId} member={member}/>}
-      </div></div>}
-      <MemberTabs memberId={memberId} roles={roles} enabledModules={enabledModules}/>
+      </div></div>}/>
+      {(canStaff(roles, 'members.delete') || (!member.anonymizedAt && canStaff(roles, 'members.anonymize'))) &&
+        <section aria-label={text('memberData')} className="space-y-4 border-t border-destructive/30 pt-6">
+          <h2 className="text-lg font-semibold">{text('memberData')}</h2>
+          {!member.anonymizedAt && canStaff(roles, 'members.anonymize') && <Anonymize member={member}/>}
+          {canStaff(roles, 'members.delete') && <DeleteMember gymId={gymId} member={member}/>}
+        </section>}
     </>}
   </Page>;
 }

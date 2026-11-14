@@ -16,6 +16,7 @@ import { createSendGeneration } from '../../lib/send-generation.js';
 import { ApiError } from '../../lib/api.js';
 import { createStaffClient, StaffRequestError, type StaffClient } from './client.js';
 import { resizeStaffPhoto } from './photo.js';
+import { PersonPicker } from './person-picker.js';
 const client = createStaffClient();
 const label = (key: string) => t('staff/profiles:' + key);
 const value = (form: FormData, key: string) => String(form.get(key) ?? '').trim();
@@ -41,6 +42,7 @@ export function StaffManagement({ roles: actorRoles, passwordEnabled, services =
   const [uncertain, setUncertain] = useState(false);
   const inviteSend = useRef(createSendGeneration('staff-invitation'));
   const [revoking, setRevoking] = useState<string | null>(null);
+  const [grantUserId, setGrantUserId] = useState(''), [grantPicker, setGrantPicker] = useState(0);
   const allowed = canStaff(actorRoles, 'staff.manage');
   function error(e: unknown) { setMessage(label((e instanceof StaffRequestError || e instanceof ApiError) && e.status === 409 ? 'conflict' : 'error')); }
   async function load() {
@@ -66,7 +68,7 @@ export function StaffManagement({ roles: actorRoles, passwordEnabled, services =
   }
   const closeEditor = () => { setEditing(null); setCreating(false); };
   if (!allowed) return <Page><Alert variant="error">{label('forbidden')}</Alert></Page>;
-  const nameFor = (role: StaffRoleRecord) => profiles?.data.find((profile) => profile.userId === role.userId)?.displayName;
+  const nameFor = (role: StaffRoleRecord) => role.displayName || profiles?.data.find((profile) => profile.userId === role.userId)?.displayName || label('unknownAccount');
   return <Page>
     <PageHeader className="print:hidden" title={label('title')} actions={<Button variant="outline" disabled={busy}
       onClick={() => void action(async () => { closeEditor(); setRevoking(null); })}>{label('reload')}</Button>}/>
@@ -121,7 +123,9 @@ export function StaffManagement({ roles: actorRoles, passwordEnabled, services =
         <fieldset disabled={busy} className="grid gap-4 sm:grid-cols-2">
           <Field text={label('displayName')} className="sm:col-span-2"><Input name="displayName" defaultValue={editing?.displayName} required/></Field>
           <Field text={label('bio')} className="sm:col-span-2"><Textarea name="bio" defaultValue={editing?.bio ?? ''}/></Field>
-          {(['rank', 'memberId', 'userId'] as const).map((key) => <Field key={key} text={label(key)} className={key === 'rank' ? 'sm:col-span-2' : ''}><Input name={key} defaultValue={editing?.[key] ?? ''}/></Field>)}
+          <Field text={label('rank')} className="sm:col-span-2"><Input name="rank" defaultValue={editing?.rank ?? ''}/></Field>
+          <PersonPicker name="memberId" kind="member" initialId={editing?.memberId ?? ''} services={services}/>
+          <PersonPicker name="userId" kind="staff" initialId={editing?.userId ?? ''} services={services}/>
           {editing?.photoKey && <img className="size-24 rounded-lg object-cover" src={'/api/staff/profiles/' + encodeURIComponent(editing.id) + '/photo'} alt={editing.displayName}/>}
           <div className="space-y-2 sm:col-span-2"><Field text={label('photo')}><Input name="photo" type="file" accept="image/jpeg,image/png,image/webp" className="py-2"/></Field>
             <p className="text-sm text-muted-foreground">{label('photoHelp')}</p>
@@ -132,11 +136,15 @@ export function StaffManagement({ roles: actorRoles, passwordEnabled, services =
       </form>
     </Dialog>}
     <PageSection className="print:hidden" title={label('access')} description={label('accessHelp')}>
-      <form onSubmit={(event) => submit(event, (data) => services.grantRole(value(data, 'userId'), value(data, 'role') as AssignableStaffRole))}
+      <form onSubmit={(event) => submit(event, async (data) => {
+        if (!grantUserId) return;
+        await services.grantRole(grantUserId, value(data, 'role') as AssignableStaffRole);
+        setGrantUserId(''); setGrantPicker((key) => key + 1);
+      })}
         className="rounded-xl border border-border bg-card p-4 sm:p-6"><fieldset disabled={busy} className="grid gap-3 sm:grid-cols-[2fr_1fr_auto] sm:items-end">
-        <Field text={label('userId')}><Input name="userId" required/></Field><RoleSelect/><Button type="submit">{label('grantRole')}</Button></fieldset></form>
+        <PersonPicker key={grantPicker} name="userId" kind="account" services={services} onChange={setGrantUserId}/><RoleSelect/><Button type="submit" disabled={!grantUserId}>{label('grantRole')}</Button></fieldset></form>
       {roles.length > 0 && <StackedList>{roles.map((role) => <StackedItem key={role.id} className="gap-3">
-        <h3 className="flex flex-wrap items-center gap-2 font-semibold"><span className="break-all">{nameFor(role) ?? role.userId}</span><Badge>{label(role.role)}</Badge></h3>
+        <h3 className="flex flex-wrap items-center gap-2 font-semibold"><span className="break-words">{nameFor(role)}</span><Badge>{label(role.role)}</Badge></h3>
         {role.role !== 'owner' && <><form key={role.revision} onSubmit={(event) => submit(event, (data) => services.changeRole(role.id, value(data, 'role') as AssignableStaffRole, role.revision))}>
           <fieldset disabled={busy} className="flex flex-col gap-2 sm:flex-row sm:items-end"><div className="sm:w-56"><RoleSelect initial={role.role}/></div><Button type="submit" variant="outline">{label('changeRole')}</Button></fieldset></form>
           {revoking !== role.id ? <Button variant="outline" className="self-start" disabled={busy} onClick={() => setRevoking(role.id)}>{label('revoke')}</Button>

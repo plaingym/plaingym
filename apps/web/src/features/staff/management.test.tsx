@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { StaffProfile } from '@plaingym/shared/contracts';
 import { StaffManagement } from './management.js';
@@ -12,12 +12,54 @@ vi.mock('./photo.js', () => ({ resizeStaffPhoto: vi.fn() }));
 const profile: StaffProfile = { id: '01900000-0000-7000-8000-000000000001', userId: '01900000-0000-7000-8000-000000000002', memberId: null, displayName: 'Alex Coach', bio: 'Coach bio', rank: 'Level 2', photoKey: null, isPublic: false, revision: 7, createdAt: '2026-10-22T12:00:00Z' };
 function services(): StaffClient {
   return { profiles: vi.fn().mockResolvedValue({ data: [profile], pagination: { limit: 25, offset: 0, total: 1 } }),
-    roles: vi.fn().mockResolvedValue({ data: [{ id: 'coach-role', userId: profile.userId, role: 'coach', revision: 2, createdAt: profile.createdAt }, { id: 'owner-role', userId: 'owner', role: 'owner', revision: 1, createdAt: profile.createdAt }], pagination: { limit: 25, offset: 0, total: 2 } }),
+    people: vi.fn().mockResolvedValue({ data: [{ id: profile.userId!, displayName: 'Alex Coach', email: 'alex@example.test' }], total: 1 }),
+    person: vi.fn().mockResolvedValue({ id: profile.userId!, displayName: 'Alex Coach', email: 'alex@example.test' }),
+    roles: vi.fn().mockResolvedValue({ data: [{ id: 'coach-role', userId: profile.userId, displayName: 'Alex Coach', role: 'coach', revision: 2, createdAt: profile.createdAt }, { id: 'owner-role', userId: 'owner', displayName: 'Morgan Owner', role: 'owner', revision: 1, createdAt: profile.createdAt }], pagination: { limit: 25, offset: 0, total: 2 } }),
     createProfile: vi.fn().mockResolvedValue(profile), updateProfile: vi.fn().mockResolvedValue(profile),
     invite: vi.fn().mockResolvedValue({ delivery: 'print', staffRole: { id: 'new-role', userId: 'new-user', role: 'coach', revision: 1, createdAt: profile.createdAt }, invitationUrl: 'https://gym.example.test/staff-invitation#private-token' }),
     grantRole: vi.fn().mockResolvedValue(undefined), changeRole: vi.fn().mockResolvedValue(undefined), revokeRole: vi.fn().mockResolvedValue(undefined), resetPassword: vi.fn().mockResolvedValue(undefined), uploadPhoto: vi.fn().mockResolvedValue(profile) };
 }
 afterEach(cleanup);
+it('names the owner independently of profile search and grants access by an explicit person selection at 360 px', async () => {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 360 });
+  const service = services(), user = userEvent.setup();
+  render(<StaffManagement roles={['owner']} passwordEnabled services={service}/>);
+  await screen.findByText('Morgan Owner');
+  expect(document.body.textContent).not.toContain(profile.userId);
+  const grant = screen.getByRole('button', { name: 'Grant role' });
+  expect((grant as HTMLButtonElement).disabled).toBe(true);
+  await user.type(screen.getByLabelText('Find an account by name or email'), 'Alex Coach');
+  await user.click(await screen.findByRole('button', { name: 'Alex Coach alex@example.test' }));
+  await user.type(screen.getByLabelText('Find an account by name or email'), '{Enter}');
+  expect(service.grantRole).not.toHaveBeenCalled();
+  await user.click(grant);
+  await waitFor(() => expect(service.grantRole).toHaveBeenCalledWith(profile.userId, 'coach'));
+  expect(service.people).toHaveBeenCalledWith('account', 'Alex Coach', 0);
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Grant role' }) as HTMLButtonElement).disabled).toBe(true));
+  expect(screen.queryByRole('button', { name: 'Clear selection' })).toBeNull();
+});
+it('labels a profile link that no longer resolves instead of a placeholder', async () => {
+  const service = services(), user = userEvent.setup();
+  vi.mocked(service.person).mockResolvedValue(null);
+  render(<StaffManagement roles={['owner']} passwordEnabled services={service}/>);
+  await user.click(await screen.findByRole('button', { name: 'Edit Alex Coach' }));
+  expect(await within(screen.getByRole('dialog')).findByText(/Linked person unavailable/)).toBeDefined();
+});
+it('searches profile links by person and preserves an existing link until explicitly cleared', async () => {
+  const service = services(), user = userEvent.setup();
+  render(<StaffManagement roles={['owner']} passwordEnabled services={service}/>);
+  await user.click(await screen.findByRole('button', { name: 'Edit Alex Coach' }));
+  const dialog = within(screen.getByRole('dialog'));
+  await dialog.findByRole('button', { name: 'Clear selection' });
+  await user.type(dialog.getByLabelText('Find a member to link (optional)'), 'Casey Phone');
+  await waitFor(() => expect(service.people).toHaveBeenCalledWith('member', 'Casey Phone', 0));
+  await user.click(dialog.getByRole('button', { name: 'Save profile' }));
+  await waitFor(() => expect(service.updateProfile).toHaveBeenCalledWith(profile.id, expect.objectContaining({ userId: profile.userId, memberId: null })));
+  await user.click(await screen.findByRole('button', { name: 'Edit Alex Coach' }));
+  await user.click(await within(screen.getByRole('dialog')).findByRole('button', { name: 'Clear selection' }));
+  await user.click(screen.getByRole('button', { name: 'Save profile' }));
+  await waitFor(() => expect(service.updateProfile).toHaveBeenLastCalledWith(profile.id, expect.objectContaining({ userId: null })));
+});
 it('denies coaches without fetching staff data', () => {
   const service = services(); render(<StaffManagement roles={['coach']} passwordEnabled services={service}/>);
   expect(screen.getByRole('alert').textContent).toContain('Only owners and admins'); expect(service.profiles).not.toHaveBeenCalled();

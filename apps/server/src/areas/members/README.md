@@ -1,6 +1,12 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Members and households
 
+Member list search splits on whitespace. Every word must match at least one of
+first name, last name or email, ignoring case; literal `%` and `_` stay literal.
+The admin members list and coach check-in roster use this same query.
+The member profile puts its tabs directly below the heading, with general details
+in the Profile tab and erase/delete actions in a separate final section.
+
 Erasure clears the household billing email when it matches the erased member's
 address, ignoring case and surrounding spaces, even if another member remains. A different household
 address is preserved. Receipts and notices stop for a cleared address until staff

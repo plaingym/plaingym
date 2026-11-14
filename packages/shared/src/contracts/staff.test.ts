@@ -98,6 +98,7 @@ describe('staff profiles and roles', () => {
   it('matches the locked schema without requiring profiles to have a login', () => {
     expectTypeOf<StaffProfile>().toExtend<Wire<Pick<typeof staffProfiles.$inferSelect, keyof StaffProfile>>>();
     expectTypeOf<PublicStaffProfile>().toExtend<Pick<typeof staffProfiles.$inferSelect, keyof PublicStaffProfile>>();
-    expectTypeOf<StaffRoleRecord>().toExtend<Wire<Pick<typeof staffRoleTable.$inferSelect, keyof StaffRoleRecord>>>();
+    expectTypeOf<Omit<StaffRoleRecord, 'displayName'>>().toExtend<Wire<Pick<typeof staffRoleTable.$inferSelect, Exclude<keyof StaffRoleRecord, 'displayName'>>>>();
+    expectTypeOf<StaffRoleRecord['displayName']>().toEqualTypeOf<string | undefined>();
   });
 });

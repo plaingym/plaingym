@@ -22,6 +22,7 @@ function server() {
 it('registers every staff route for OpenAPI without requiring runtime dependencies', () => {
   const document = server().getOpenAPIDocument({ openapi: '3.1.0', info: { title: 'Staff', version: '1' } });
   expect(document.paths).toHaveProperty('/api/staff/invitations');
+  expect(document.paths).toHaveProperty('/api/staff/accounts');
   expect(document.paths).toHaveProperty('/api/staff/invitations/accept');
   expect(document.paths).toHaveProperty('/api/staff/profiles/{staffProfileId}/photo');
   expect(document.paths).toHaveProperty('/staff-invitation');
@@ -29,6 +30,7 @@ it('registers every staff route for OpenAPI without requiring runtime dependenci
 it('fails closed with 503 until runtime configures all staff dependencies', async () => {
   const app = server();
   const cases: [string, string, unknown?][] = [
+    ['GET', '/api/staff/accounts'],
     ['GET', '/api/staff/profiles'], ['GET', '/api/staff/profiles/' + id], ['POST', '/api/staff/profiles', { displayName: 'Coach' }],
     ['PATCH', '/api/staff/profiles/' + id, { revision: 1, bio: 'Bio' }], ['GET', '/api/staff/roles'],
     ['POST', '/api/staff/roles', { userId: id, role: 'coach' }], ['PATCH', '/api/staff/roles/' + id, { revision: 1, role: 'coach' }],

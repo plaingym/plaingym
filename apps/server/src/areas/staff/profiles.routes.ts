@@ -13,6 +13,7 @@ import type { StaffInvitationService } from './profiles.invitations.js';
 import { createStaffPhotoRoutes, createStaffPhotoService } from './profiles.photos.js';
 import type { Uploads } from '../../infra/storage/index.js';
 import { invitationPage } from './profiles.accept.js';
+import { createStaffDirectory } from '../../infra/auth/staff-directory.js';
 
 function actor(c: Context<RequestEnvironment>): StaffActor {
   const { principal, gym, clock } = c.get('context');
@@ -30,10 +31,14 @@ function configuration() {
 export function configureStaffProfiles(options: { invitations: StaffInvitationService; uploadsFor: (gymId: string) => Promise<Uploads>; origin: Origin }) {
   configured = { service: createStaffProfileService(), invitations: options.invitations, photos: createStaffPhotoService(options.uploadsFor), origin: options.origin };
 }
-export function createStaffProfileRoutes(service?: ReturnType<typeof createStaffProfileService>) {
+export function createStaffProfileRoutes(service?: ReturnType<typeof createStaffProfileService>, directory = createStaffDirectory()) {
   const current = () => service ?? configuration().service;
   const contracts = staffContracts;
   return [
+    route({ ...contracts.listAccounts, request: { query: contracts.listAccounts.query }, responses: { 200: { description: 'Gym accounts', content: { 'application/json': { schema: contracts.listAccounts.response } } } } }, async (c) => {
+      current();
+      c.header('Cache-Control', 'no-store'); return c.json(await directory.list(actor(c).gymId, c.req.valid('query')), 200);
+    }),
     route({ ...contracts.listProfiles, request: { query: contracts.listProfiles.query }, responses: { 200: { description: 'Staff profiles', content: { 'application/json': { schema: contracts.listProfiles.response } } } } }, async (c) => {
       c.header('Cache-Control', 'no-store'); return c.json(await current().listProfiles(actor(c).gymId, c.req.valid('query')), 200);
     }),
@@ -43,7 +48,10 @@ export function createStaffProfileRoutes(service?: ReturnType<typeof createStaff
     route({ ...contracts.createProfile, request: { body: { required: true, content: { 'application/json': { schema: contracts.createProfile.body } } } }, responses: { 200: { description: 'Staff profile created', content: { 'application/json': { schema: contracts.createProfile.response } } } } }, async (c) => c.json(await current().createProfile(actor(c), c.req.valid('json')), 200)),
     route({ ...contracts.updateProfile, request: { params: contracts.updateProfile.params, body: { required: true, content: { 'application/json': { schema: contracts.updateProfile.body } } } }, responses: { 200: { description: 'Staff profile updated', content: { 'application/json': { schema: contracts.updateProfile.response } } } } }, async (c) => c.json(await (service ? service.updateProfile(actor(c), c.req.valid('param').staffProfileId, c.req.valid('json')) : configuration().photos.update(actor(c), c.req.valid('param').staffProfileId, c.req.valid('json'))), 200)),
     route({ ...contracts.listRoles, request: { query: contracts.listRoles.query }, responses: { 200: { description: 'Staff roles', content: { 'application/json': { schema: contracts.listRoles.response } } } } }, async (c) => {
-      c.header('Cache-Control', 'no-store'); return c.json(await current().listRoles(actor(c).gymId, c.req.valid('query')), 200);
+      c.header('Cache-Control', 'no-store');
+      const gymId = actor(c).gymId, result = await current().listRoles(gymId, c.req.valid('query'));
+      const names = new Map((await directory.names(gymId, result.data.map(row => row.userId))).map(row => [row.id, row.displayName]));
+      return c.json({ ...result, data: result.data.map(row => ({ ...row, displayName: names.get(row.userId) })) }, 200);
     }),
     route({ ...contracts.grantRole, request: { body: { required: true, content: { 'application/json': { schema: contracts.grantRole.body } } } }, responses: { 200: { description: 'Staff role granted', content: { 'application/json': { schema: contracts.grantRole.response } } } } }, async (c) => c.json(await current().grantRole(actor(c), c.req.valid('json')), 200)),
     route({ ...contracts.updateRole, request: { params: contracts.updateRole.params, body: { required: true, content: { 'application/json': { schema: contracts.updateRole.body } } } }, responses: { 200: { description: 'Staff role updated', content: { 'application/json': { schema: contracts.updateRole.response } } } } }, async (c) => c.json({ data: (await current().changeRole(actor(c), c.req.valid('param').staffRoleId, c.req.valid('json')))! }, 200)),

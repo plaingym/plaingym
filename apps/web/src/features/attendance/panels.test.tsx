@@ -91,12 +91,12 @@ describe('registered attendance panels', () => {
     client.members.mockResolvedValue({ data: [{ id: memberId, firstName: 'River', lastName: 'Lee' }], total: 51 });
     const user = userEvent.setup(); render(<AttendanceRosterPanel sessionId={sessionId}/>);
     await screen.findByText('River Lee');
-    await user.type(screen.getByLabelText('Member name'), 'River');
+    await user.type(screen.getByLabelText('Member name'), 'River Lee');
     await user.click(screen.getByRole('button', { name: 'Search members' }));
-    await waitFor(() => expect(client.members).toHaveBeenLastCalledWith('River', 0));
+    await waitFor(() => expect(client.members).toHaveBeenLastCalledWith('River Lee', 0));
     await screen.findByText('River Lee');
     await user.click(screen.getByRole('button', { name: 'Next page' }));
-    await waitFor(() => expect(client.members).toHaveBeenLastCalledWith('River', 50));
+    await waitFor(() => expect(client.members).toHaveBeenLastCalledWith('River Lee', 50));
     expect(client.checkedIn).toHaveBeenLastCalledWith(sessionId);
   });
   it('shows safe failures and allows a failed check-in to be retried', async () => {

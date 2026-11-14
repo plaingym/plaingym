@@ -46,6 +46,18 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 describe('member admin UI', () => {
+  it('places tabs above profile fields and destructive actions in the last section at 360 px', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 360 });
+    bootstrap(['owner']); view(<MemberProfile memberId={memberId}/>);
+    const firstName = await screen.findByLabelText('First name');
+    const tabs = screen.getByRole('tablist');
+    expect(tabs.compareDocumentPosition(firstName) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Profile', selected: true })).toBeDefined();
+    const danger = screen.getByRole('region', { name: 'Erase or delete member data' });
+    expect(within(danger).getByRole('button', { name: 'Erase personal data' })).toBeDefined();
+    expect(within(danger).getByRole('button', { name: 'Delete member' })).toBeDefined();
+    expect(danger.parentElement?.lastElementChild).toBe(danger);
+  });
   it('renders and switches all registered member tabs and supplies the member ID', () => {
     const registries = createWebRegistries<ExtensionView>([{ memberTabs: [
       { id: 'test.one', labelKey: 'members/members:profile', enabled: true, permission: { kind: 'staff', capability: 'members.read' }, component: ({ memberId }) => <p>One {memberId}</p> },

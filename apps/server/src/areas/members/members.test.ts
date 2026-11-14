@@ -82,6 +82,20 @@ async function requestFor(definition: ReturnType<typeof createMembersRoutes>[num
   return { path, method: definition.method.toUpperCase(), body, foreignIds: [person.id, householdId, tag.id] };
 }
 describe('member route access boundaries', () => {
+  it('matches every search word across first name, last name and email for members and the coach roster', async () => {
+    const person = await factory('members', gymA, { firstName: 'Casey', lastName: 'Phone%only', email: 'literal_100only@example.test' });
+    await factory('members', gymA, { firstName: 'Casey', lastName: 'Other', email: 'different@example.test' });
+    await factory('members', gymB, { firstName: 'Casey', lastName: 'Phone%only', email: 'literal_100only@example.test' });
+    for (const role of ['owner', 'coach'] as const) {
+      for (const search of ['Casey Phone', ' PHONE   case ', 'Casey %only', 'literal_ Phone']) {
+        const response = await staff(role).request('/api/members?search=' + encodeURIComponent(search));
+        expect(response.status).toBe(200);
+        const page = c.memberListResponseSchema.parse(await response.json());
+        expect(page.data.map(row => row.id)).toEqual([person.id]); expect(page.pagination.total).toBe(1);
+      }
+      expect(c.memberListResponseSchema.parse(await (await staff(role).request('/api/members?search=Casey%20Missing')).json()).data).toEqual([]);
+    }
+  });
   it('reads extended household addresses while refusing the same extension on writes', async () => {
     const address = { city: 'Example', future: true }, home = await factory('households', gymA, { address });
     expect((await service.getHousehold(gymA, home.id)).address).toEqual({ city: 'Example' });

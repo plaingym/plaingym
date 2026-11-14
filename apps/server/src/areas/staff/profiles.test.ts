@@ -4,6 +4,7 @@ import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
 import { staffRoles, auditEvents, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
+import { createStaffDirectory } from '../../infra/auth/staff-directory.js';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { staffRoles as roleNames, type StaffRole } from '@plaingym/shared';
 import { staffProfileResponseSchema, staffProfileListResponseSchema, staffRoleResponseSchema } from '@plaingym/shared/contracts';
@@ -17,6 +18,7 @@ import type { Principal, RequestEnvironment } from '../../core/context.js';
 
 const db = useTestDatabase(), factory = createFactories(db), clock = new TestClock('2026-10-22T12:00:00Z');
 const service = createStaffProfileService(db.forGym), gymA = uuidv7(), gymB = uuidv7();
+const directory = createStaffDirectory(() => db.system.db, 'single');
 const users = new Map<StaffRole, string>();
 let otherOwner: string;
 beforeAll(async () => {
@@ -29,7 +31,7 @@ function server(role: StaffRole | 'anonymous' = 'owner', gymId = gymA, principal
   const app = new OpenAPIHono<RequestEnvironment>();
   app.use('*', async (c, next) => { c.set('context', { gym: { gymId, timezone: 'UTC', enabledModules: new Set() }, clock, requestId: 'staff-test',
     principal: principalOverride ?? (role === 'anonymous' ? { kind: 'anonymous' } : { kind: 'staff', userId: actor(role, gymId).actorUserId, gymId, roles: [role] }) }); await next(); });
-  app.onError(errorHandler); createServerRegistry({ routes: createStaffProfileRoutes(service) }).mount(app, authorize, new Set()); return app;
+  app.onError(errorHandler); createServerRegistry({ routes: createStaffProfileRoutes(service, directory) }).mount(app, authorize, new Set()); return app;
 }
 const request = (app: ReturnType<typeof server>, method: string, path: string, body?: unknown) => app.request(path, { method, headers: { 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
 it.each(roleNames)('only owner/admin can use every profile and role endpoint: %s', async (role) => {
@@ -38,7 +40,7 @@ it.each(roleNames)('only owner/admin can use every profile and role endpoint: %s
   const target = await factory('staffRoles', gymA, { role: 'coach' });
   const local = await factory('householdUsers', gymA);
   const cases: [string, string, unknown?][] = [
-    ['GET', '/api/staff/profiles'], ['GET', '/api/staff/profiles/' + profile.id], ['GET', '/api/staff/roles'],
+    ['GET', '/api/staff/accounts'], ['GET', '/api/staff/profiles'], ['GET', '/api/staff/profiles/' + profile.id], ['GET', '/api/staff/roles'],
     ['POST', '/api/staff/profiles', { displayName: role }], ['PATCH', '/api/staff/profiles/' + profile.id, { revision: 1, rank: 'Level 2' }],
     ['POST', '/api/staff/roles', { userId: local.userId, role: 'coach' }], ['PATCH', '/api/staff/roles/' + target.id, { revision: 1, role: 'front_desk' }],
     ['DELETE', '/api/staff/roles/' + target.id, { revision: allowed ? 2 : 1 }],
@@ -46,7 +48,7 @@ it.each(roleNames)('only owner/admin can use every profile and role endpoint: %s
   for (const [method, path, body] of cases) expect((await request(app, method, path, body)).status, method + ' ' + path).toBe(allowed ? 200 : 403);
 });
 it('denies anonymous, household members, kiosks and principals from another gym', async () => {
-  const endpoints = createStaffProfileRoutes(service);
+  const endpoints = createStaffProfileRoutes(service, directory);
   const principals: Principal[] = [{ kind: 'anonymous' }, { kind: 'member', userId: users.get('coach')!, scope: { gymId: gymA, householdId: uuidv7(), role: 'payer' } }, { kind: 'kiosk', gymId: gymA, deviceId: uuidv7() }, { kind: 'staff', gymId: gymB, userId: otherOwner, roles: ['owner'] }];
   for (const principal of principals) for (const entry of endpoints) {
     const path = entry.definition.path.replace(/\{[^}]+\}/g, uuidv7());
@@ -99,4 +101,31 @@ it('rechecks manager access inside mutations and rolls back a rejected change', 
   const stale = { gymId: gymA, actorUserId: user.userId, clock };
   await db.forGym(gymA, (tx) => tx.delete(staffRoles).where(eq(staffRoles.id, user.id)));
   await expect(service.createProfile(stale, { displayName: 'Denied stale session' })).rejects.toMatchObject({ code: 'forbidden' });
+});
+
+it('names the owner without a profile and searches only linked gym accounts, with literal words and pagination', async () => {
+  const owner = await factory('authUser', gymA, { name: 'Morgan Owner', email: 'site.owner@example.test' });
+  await factory('staffRoles', gymA, { userId: owner.id, role: 'owner' });
+  const memberLogin = await factory('authUser', gymA, { name: 'Casey Phone', email: 'casey_phone@example.test' });
+  await factory('householdUsers', gymA, { userId: memberLogin.id });
+  const foreign = await factory('authUser', gymB, { name: 'Casey Foreign', email: 'casey.foreign@example.test' });
+  await factory('staffRoles', gymB, { userId: foreign.id });
+  const unlinked = await factory('authUser', gymA, { name: 'Casey Unlinked' });
+  const app = server();
+  const accounts = async (query: string) => (await (await app.request('/api/staff/accounts?' + query)).json()) as { data: { id: string; displayName: string }[]; pagination: { total: number } };
+  expect((await accounts('search=Phone%20Casey')).data.map(row => row.id)).toEqual([memberLogin.id]);
+  expect((await accounts('search=casey_')).data.map(row => row.id)).toEqual([memberLogin.id]);
+  expect((await accounts('search=Casey&limit=1&offset=1')).pagination.total).toBe(1);
+  expect((await accounts('search=Casey&limit=1&offset=1')).data).toEqual([]);
+  expect((await accounts('userId=' + foreign.id)).data).toEqual([]);
+  expect((await accounts('userId=' + unlinked.id)).data).toEqual([]);
+  expect((await accounts('userId=' + memberLogin.id + '&staffOnly=true')).data).toEqual([]);
+  expect((await accounts('userId=' + owner.id)).data[0]?.displayName).toBe('Morgan Owner');
+  expect(await (await app.request('/api/staff/roles?limit=100')).text()).toContain('Morgan Owner');
+  expect((await app.request('/api/staff/accounts')).headers.get('cache-control')).toBe('no-store');
+  const multi = createStaffDirectory(() => db.system.db, 'multi');
+  expect((await multi.list(gymA, { limit: 25, offset: 0, userId: owner.id })).data[0]?.displayName).toBe(owner.email);
+  expect((await multi.list(gymA, { limit: 25, offset: 0, search: 'Morgan' })).data).toEqual([]);
+  await service.createProfile(actor(), { displayName: 'Local Gym Owner', userId: owner.id });
+  expect((await multi.list(gymA, { limit: 25, offset: 0, search: 'Local Owner' })).data[0]?.displayName).toBe('Local Gym Owner');
 });

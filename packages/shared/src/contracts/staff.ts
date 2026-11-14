@@ -12,6 +12,7 @@ export const assignableStaffRoleSchema = staffRoleNameSchema.exclude(['owner']);
 export const staffRoleSchema = z.strictObject({
   id: idSchema, userId: idSchema, role: staffRoleNameSchema,
   revision: revisionSchema, createdAt: instantSchema,
+  displayName: z.string().optional(),
 });
 export const grantStaffRoleRequestSchema = z.strictObject({
   userId: idSchema, role: assignableStaffRoleSchema,
@@ -23,6 +24,17 @@ export const revokeStaffRoleRequestSchema = z.strictObject({ revision: revisionS
 export const staffRoleParamsSchema = z.strictObject({ staffRoleId: idSchema });
 export const staffRoleResponseSchema = z.strictObject({ data: staffRoleSchema });
 export const staffRoleListResponseSchema = listResponseSchema(staffRoleSchema);
+
+/** Only accounts already linked to this gym; profile linking may restrict these to staff. */
+export const staffAccountQuerySchema = paginationSchema.extend({
+  search: z.string().trim().min(1).max(200).optional(),
+  userId: idSchema.optional(),
+  staffOnly: z.enum(['true', 'false']).optional(),
+});
+export const staffAccountSchema = z.strictObject({ id: idSchema, displayName: z.string(), email: z.email() });
+export const staffAccountListResponseSchema = listResponseSchema(staffAccountSchema);
+export type StaffAccount = z.infer<typeof staffAccountSchema>;
+export type StaffAccountQuery = z.infer<typeof staffAccountQuerySchema>;
 
 /** A profile is for scheduling/presentation; a null userId is valid and grants no access. */
 export const staffProfileSchema = z.strictObject({
@@ -100,6 +112,8 @@ export const uploadStaffPhotoRequestSchema = z.strictObject({
  * Revisioned mutations use the shared conflict (409) response on a stale save.
  */
 export const staffContracts = {
+  listAccounts: { method: 'get', path: '/api/staff/accounts', permission: { kind: 'staff', capability: 'staff.manage' },
+    query: staffAccountQuerySchema, response: staffAccountListResponseSchema },
   listProfiles: { method: 'get', path: '/api/staff/profiles', permission: { kind: 'staff', capability: 'staff.manage' },
     query: staffProfileListQuerySchema, response: staffProfileListResponseSchema },
   getProfile: { method: 'get', path: '/api/staff/profiles/{staffProfileId}', permission: { kind: 'staff', capability: 'staff.manage' },

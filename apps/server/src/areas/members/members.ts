@@ -60,7 +60,8 @@ export function createMembersService(options: MembersOptions = {}) {
         const tagged = query.tagId ? tx.select({ id: memberTagLinks.memberId }).from(memberTagLinks).where(eq(memberTagLinks.tagId, query.tagId)) : undefined;
         const where = and(query.householdId ? eq(members.householdId, query.householdId) : undefined,
           query.status ? eq(members.status, query.status) : undefined, tagged ? inArray(members.id, tagged) : undefined,
-          query.search ? or(ilike(members.firstName, search(query.search)), ilike(members.lastName, search(query.search)), ilike(members.email, search(query.search))) : undefined);
+          ...((query.search?.trim().split(/\s+/).filter(Boolean) ?? []).map((word) =>
+            or(ilike(members.firstName, search(word)), ilike(members.lastName, search(word)), ilike(members.email, search(word))))));
         if (query.householdId) await getHouseholdRow(tx, query.householdId);
         if (query.tagId) missing((await tx.select({ id: memberTags.id }).from(memberTags).where(eq(memberTags.id, query.tagId)))[0]);
         const total = await tx.$count(members, where);
