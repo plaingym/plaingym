@@ -24,3 +24,6 @@ export function AlertIcon(props: ComponentProps<'svg'>) {
 export function InboxIcon(props: ComponentProps<'svg'>) {
   return <Icon {...props}><path d="M4 13l2-8h12l2 8v6H4z" /><path d="M4 13h5l1 2h4l1-2h5" /></Icon>;
 }
+export function CheckIcon(props: ComponentProps<'svg'>) {
+  return <Icon {...props}><circle cx="12" cy="12" r="9" /><path d="m8 12 3 3 5-6" /></Icon>;
+}

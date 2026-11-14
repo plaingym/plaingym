@@ -54,6 +54,22 @@ function fixture() {
 }
 
 describe('portal write household preconditions', () => {
+  it('keeps the key stable and ignores ordinary household-list fetches for recovery state', async () => {
+    const f = fixture(), key = f.result.current.key;
+    f.rerender();
+    expect(f.result.current.key).toBe(key);
+    const read = f.cache.fetchQuery(portalHouseholdsOptions(portalLoginKey('gym', 'user'), true));
+    expect(f.result.current.refreshing).toBe(false);
+    expect(f.result.current.settling).toBe(false);
+    await f.resolveLists(home);
+    await read;
+    expect(f.result.current.key).toBe(key);
+    await act(async () => { await expect(f.result.current.run(async () => { throw new ApiError(404, 'not_found'); })).rejects.toBeInstanceOf(ApiError); });
+    expect(f.result.current.refreshing).toBe(true);
+    expect(f.result.current.settling).toBe(true);
+    await f.resolveLists(home, 500);
+    await waitFor(() => expect(f.result.current.settling).toBe(false));
+  });
   it('keeps ordinary 404 recovery in the background and reads again for a late 404 from the same version', async () => {
     const f = fixture();
     let rejectLate!: (error: unknown) => void;

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useCallback, useLayoutEffect, useRef, useSyncExternalStore, type ReactNode } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useQueryClient, type Query } from '@tanstack/react-query';
 import { Button } from '../../../components/ui/button.js';
 import { Alert } from '../../../components/ui/alert.js';
@@ -21,6 +21,8 @@ export function PortalRecovery({ moving, children }: { moving: boolean; children
   const lastFocused = useRef<HTMLElement | null>(null);
   const restore = useRef<HTMLElement | null>(null);
   const cache = useQueryClient(), key = usePortalHouseholdKey();
+  const [dialogs, setDialogs] = useState(0);
+  const registerDialog = useCallback(() => { setDialogs(count => count + 1); return () => setDialogs(count => count - 1); }, []);
   const failed = useSyncExternalStore(useCallback(notify => cache.getQueryCache().subscribe(event => {
     if (key.every((part, index) => event.query.queryKey[index] === part)) notify();
   }), [cache, key]), () => cache.getQueryCache().findAll({ queryKey: key }).some(refetchFailed));
@@ -35,12 +37,14 @@ export function PortalRecovery({ moving, children }: { moving: boolean; children
       restore.current = null;
     }
   }, [moving]);
-  const notice = !moving && failed ? <ErrorState onRetry={() => void cache.invalidateQueries({ queryKey: key, predicate: refetchFailed })} /> : undefined;
-  return <DialogRecoveryContext.Provider value={{ suspended: moving, notice }}><div>
+  const retry = useCallback(() => { void cache.invalidateQueries({ queryKey: key, predicate: refetchFailed }); }, [cache, key]);
+  const notice = useMemo(() => !moving && failed ? <ErrorState onRetry={retry} /> : undefined, [moving, failed, retry]);
+  const recovery = useMemo(() => ({ suspended: moving, notice, registerDialog }), [moving, notice, registerDialog]);
+  return <DialogRecoveryContext.Provider value={recovery}><div>
     {moving && <div className="sticky top-4 z-10 h-0"><LoadingState /></div>}
     <div ref={content} className="space-y-6" style={moving ? { visibility: 'hidden' } : undefined} inert={moving}
       onFocusCapture={event => { lastFocused.current = event.target; }}>
-      {notice && <div className="sticky top-4 z-10 bg-background">{notice}</div>}{children}
+      {notice && !dialogs && <div className="sticky top-4 z-10 bg-background">{notice}</div>}{children}
     </div>
   </div></DialogRecoveryContext.Provider>;
 }

@@ -35,8 +35,8 @@ Each page reads the open household once, with `usePortalScope` (or `usePortalMem
 which also loads the members a login may act for), and builds every query key from its
 key, which includes the open household, so one household's cached pages can't be reached
 from another's. Pages that need the login's role share one context query
-(`usePortalContext`); billing uses the open household's role from the shell's
-household list to show its payer sections. Every portal answer names the household the server read it for;
+(`usePortalContext`); billing waits for this role before showing its credit or payer
+sections and description. A failed first context read shows only its retry state. Every portal answer names the household the server read it for;
 `PortalScope.own` passes on only an answer for the page's own household. An answer for
 another one (the session moved on, say because another tab switched) is never stored or
 shown: the page shows loading while the household lists are read again, after which
@@ -44,13 +44,14 @@ every key is the other household's. Writes and member-ID reads send `X-Portal-Ho
 page key. A household conflict (409 with that response header) starts the same
 recovery; a revision conflict stays with the form. Portal 404s refresh the lists in the background without hiding the page,
 including when a revoked link leaves several households to choose from. Recovery
-keeps a page's first context or act-for members read loading until those lists settle, without hiding cached content.
+keeps first reads (context, act-for members and inner page sections) loading until those lists settle, without hiding cached content.
+Only a recovery-triggered refresh delays those failures; ordinary focus and reconnect list fetches do not.
 Recovery shares in-flight reads for the request's list version, sampled when the request starts. A later 404 always reads again after recovery settles. If
 a joined read predates the move or does not name the household returned by the
 conflict, recovery reads again. A second mismatch fails rather than looping.
 During a confirmed mismatch, the six portal pages hide their content without collapsing the page or unmounting forms
 or dialogs. Dialogs close themselves during recovery (including ones mounted while it is running), then reopen with their own focus and scroll restored if recovery fails. Recovery never rewinds window or page scrolling.
-Typed drafts and drawn signatures remain. Every read shows its own failure, except those a page keeps showing from its cache (the context, the act-for members and the household details): when a refetch of one fails, `PortalRecovery` shows a sticky failure inside the page's width and inside an open dialog. Its retry reads only those again. After
+Typed drafts and drawn signatures remain. Every read shows its own failure, except those a page keeps showing from its cache (the context, the act-for members and the household details): when a refetch of one fails, `PortalRecovery` shows a sticky failure inside an open dialog, or inside the page's width when no dialog is open. Its retry reads only those again. After
 a move the shell resets the page and asks the person to review the household and
 any unfinished work. The notice clears on dismissal, navigation, or a deliberate
 household switch; late answers from that switch do not show it again.

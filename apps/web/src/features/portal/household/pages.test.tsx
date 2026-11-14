@@ -14,7 +14,7 @@ import { PortalHousehold } from './page.js';
 import { PortalSchedulePage } from '../schedule/page.js';
 import { PortalCheckinPage } from '../checkin/page.js';
 import { PortalProgressPage } from '../progress/page.js';
-import { gymToday, knownMinor, needsGuardian, portalHouseholdKey, portalLoginKey, portalRecoveryNoticeKey, usePortalScope } from './api.js';
+import { gymToday, knownMinor, needsGuardian, portalHouseholdKey, portalHouseholdsOptions, portalLoginKey, portalRecoveryNoticeKey, usePortalScope } from './api.js';
 import { PortalRecoveryNotice } from './recovery.js';
 import { portalTestCache } from './test-cache.test-helper.js';
 
@@ -83,6 +83,33 @@ it.each(['household', 'waivers', 'schedule', 'checkin', 'progress'] as const)('k
   await act(async () => { release(new Response(null, { status: 503 })); });
   expect(await screen.findByRole('alert')).toBeDefined();
   expect(view.calls('GET', '/api/portal/households')).toHaveLength(1);
+});
+
+it('keeps a first context failure visible during an ordinary household-list refetch', async () => {
+  let release!: (response: Response) => void;
+  const view = mount(<PortalHousehold />, () => new Response(null, { status: 500 }), { householdLists: () => new Promise(resolve => { release = resolve; }) });
+  await screen.findByRole('alert');
+  let read!: Promise<unknown>;
+  await act(async () => { read = view.cache.fetchQuery(portalHouseholdsOptions(portalLoginKey(ids.gym, ids.user), true)); });
+  expect(screen.getByRole('alert')).toBeDefined();
+  expect(screen.queryByRole('status')).toBeNull();
+  await act(async () => { release(Response.json({ data: { current: ids.household, households: [{ householdId: ids.household, name: 'Rivera', role: 'payer' }] } })); await read; });
+  expect(screen.getByRole('alert')).toBeDefined();
+});
+
+it.each(['billing', 'waivers', 'checkin', 'progress'] as const)('waits for 404 recovery before showing a first inner %s read failure', async name => {
+  let release!: (response: Response) => void;
+  const elements = { billing: <PortalBillingPage />, waivers: <PortalWaivers />, checkin: <PortalCheckinPage />, progress: <PortalProgressPage /> };
+  const view = mount(elements[name], path => {
+    if (path === '/api/portal/schedule/members') return { data: [{ id: ids.payer, name: 'Pat' }] };
+    if (path.startsWith('/api/portal/members?')) return page(people);
+    return new Response(null, { status: 404 });
+  }, { context: payer, householdLists: () => new Promise(resolve => { release = resolve; }) });
+  await waitFor(() => expect(view.calls('GET', '/api/portal/households')).toHaveLength(1));
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.getAllByRole('status').length).toBeGreaterThan(0);
+  await act(async () => release(new Response(null, { status: 503 })));
+  expect((await screen.findAllByRole('alert')).length).toBeGreaterThan(0);
 });
 
 it.each(['schedule', 'checkin', 'progress'] as const)('shows loading, not a failure, while a %s read recovers, and keeps the page if recovery fails', async name => {
@@ -442,7 +469,7 @@ describe('portal household page', () => {
       expect(JSON.parse(String(view.calls('PATCH', `/api/portal/members/${ids.child}`)[0]![1]!.body))).toEqual({ revision: 1, emergencyContacts: [] });
     }
   });
-  it('shows a cached read failure inside the page width and the open editor, without rewinding shell scrolling', async () => {
+  it('shows a cached read failure only in the open editor, without rewinding shell scrolling', async () => {
     let down = false;
     const view = mount(<PortalHousehold />, path => {
       if (path === '/api/portal/household') return down ? new Response(null, { status: 503 }) : { data: household };
@@ -456,9 +483,8 @@ describe('portal household page', () => {
     down = true;
     await act(async () => { await view.cache.invalidateQueries({ queryKey: [...portalHouseholdKey(portalLoginKey(ids.gym, ids.user), ids.household), 'household', 'details'], exact: true }); });
     expect(within(dialog).getByRole('button', { name: 'Try again' })).toBeDefined();
-    const pageAlert = screen.getAllByRole('alert').find(element => !dialog.contains(element))!;
-    expect(pageAlert.closest('.max-w-3xl')).not.toBeNull();
-    expect(pageAlert.parentElement!.className).toContain('sticky');
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Try again' })).toHaveLength(1);
     expect(within(dialog).getByRole('alert').parentElement!.className).toContain('sticky');
     down = false;
     await user.click(within(dialog).getByRole('button', { name: 'Try again' }));

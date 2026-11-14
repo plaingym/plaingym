@@ -22,7 +22,7 @@ const text = (key: string, values?: Record<string, string | number>) => t('porta
 /** Reads the open household once; everything below is keyed by it and checks each answer was for it. */
 export function PortalHousehold() {
   const scope = usePortalScope(), context = usePortalContext(scope);
-  if (!context.data) return context.isPending || scope.moving || scope.refreshing ? <LoadingState /> : <ErrorState onRetry={() => void context.refetch()} />;
+  if (!context.data) return context.isPending || scope.settling ? <LoadingState /> : <ErrorState onRetry={() => void context.refetch()} />;
   return <PortalHouseholdPage context={context.data} scope={scope} />;
 }
 function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope: PortalScope }) {
@@ -38,10 +38,9 @@ function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope
     <PageHeader title={text(payer ? 'title' : 'profileTitle')} description={text(payer ? 'description' : 'profileDescription')} />
     {/* A failed refetch keeps its data, so the form and its draft stay. */}
     {payer && (household.data ? <HouseholdForm key={household.data.revision} household={household.data} scope={scope} saved={saved} setSaved={setSaved} />
-      : household.isPending ? <LoadingState /> : <ErrorState onRetry={() => void household.refetch()} />)}
+      : household.isPending || scope.settling ? <LoadingState /> : <ErrorState onRetry={() => void household.refetch()} />)}
     <PageSection title={text(payer ? 'members' : 'profile')}>
-      {members.isPending && <LoadingState />}
-      {members.isError && <ErrorState onRetry={() => void members.refetch()} />}
+      {members.isPending || (!members.data && scope.settling) ? <LoadingState /> : members.isError && <ErrorState onRetry={() => void members.refetch()} />}
       {members.data?.length === 0 && <EmptyState title={text('noMembers')} />}
       {!!members.data?.length && <StackedList>{members.data.map(member => <StackedItem key={member.id} className="gap-3">
         <div className="flex flex-wrap items-start justify-between gap-2">
@@ -70,7 +69,7 @@ function Memberships({ memberId, scope }: { memberId: string; scope: PortalScope
     queryFn: async () => scope.own(await scope.call(contracts.memberships, undefined, { memberId }, { limit: 50, offset: 0 })).data });
   return <div className="space-y-2">
     <Button variant="ghost" className="px-0" aria-expanded={open} onClick={() => setOpen(!open)}>{text(open ? 'hideMemberships' : 'showMemberships')}</Button>
-    {open && (rows.isPending ? <LoadingState /> : rows.isError ? <ErrorState onRetry={() => void rows.refetch()} />
+    {open && (rows.isPending || (!rows.data && scope.settling) ? <LoadingState /> : rows.isError ? <ErrorState onRetry={() => void rows.refetch()} />
       : rows.data.length === 0 ? <p className="text-sm text-muted-foreground">{text('noMemberships')}</p>
       : <ul className="space-y-1 text-sm">{rows.data.map(row => <li key={row.id} className="rounded-lg bg-muted/50 p-3">
         <span className="font-medium">{text('interval_' + row.interval)}</span> · {text('membershipStatus_' + row.status)}

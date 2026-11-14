@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { ShellServicesContext } from '../../../app/context.js';
 import type { ShellServices } from '../../../app/services.js';
@@ -13,15 +13,15 @@ import { registration } from './registrations.js';
 const id = (n: number) => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
 const gymId = id(1), userId = id(2), householdId = id(3);
 const row = { memberId: id(4), firstName: 'Alex', lastName: 'Rivera', balance: 7, soonestExpiry: '2026-11-12T08:00:00Z' };
-function mount({ data = [row], role = 'payer', answeredFor = householdId, fail = false }: {
+function mount({ data = [row], role = 'payer', answeredFor = householdId, fail = false, contextResponse }: {
   data?: (typeof row | Omit<typeof row, 'soonestExpiry'> & { soonestExpiry: null })[];
-  role?: 'payer' | 'member'; answeredFor?: string; fail?: boolean;
+  role?: 'payer' | 'member'; answeredFor?: string; fail?: boolean; contextResponse?: () => Promise<Response>;
 } = {}) {
   const cache = portalTestCache(gymId, userId, householdId, { defaultOptions: { queries: { retry: false } } });
   cache.setQueryData(portalHouseholdsKey(portalLoginKey(gymId, userId)), { current: householdId, households: [{ householdId, name: 'Rivera', role }] });
   const fetcher = vi.fn(async (input: string | URL | Request) => {
     const path = String(input);
-    if (path === '/api/portal/context') return Response.json({ data: { role, memberId: role === 'member' ? row.memberId : null }, householdId });
+    if (path === '/api/portal/context') return contextResponse ? contextResponse() : Response.json({ data: { role, memberId: role === 'member' ? row.memberId : null }, householdId });
     if (path === '/api/portal/credits') return fail ? new Response(null, { status: 503 }) : Response.json({ data, householdId: answeredFor });
     if (path.startsWith('/api/portal/invoices?')) return Response.json({ data: [], pagination: { limit: 20, offset: 0, total: 0 }, householdId });
     if (path === '/api/portal/payment-methods') return Response.json({ data: [], householdId });
@@ -35,6 +35,23 @@ function mount({ data = [row], role = 'payer', answeredFor = householdId, fail =
   return { cache, fetcher };
 }
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+it('waits for the role before showing either billing layout, and retries a failed context alone', async () => {
+  let release!: (response: Response) => void;
+  mount({ data: [], contextResponse: () => new Promise(resolve => { release = resolve; }) });
+  await waitFor(() => expect(release).toBeTypeOf('function'));
+  expect(screen.queryByRole('heading', { name: 'Class credits' })).toBeNull();
+  expect(screen.queryByRole('heading', { name: 'Invoices' })).toBeNull();
+  await act(async () => release(new Response(null, { status: 500 })));
+  expect(await screen.findByRole('button', { name: 'Try again' })).toBeTruthy();
+  expect(screen.queryByRole('heading', { name: 'Class credits' })).toBeNull();
+  expect(screen.queryByRole('heading', { name: 'Invoices' })).toBeNull();
+  expect(screen.queryByRole('status')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+  await act(async () => release(Response.json({ data: { role: 'payer', memberId: null }, householdId })));
+  expect(await screen.findByRole('heading', { name: 'Invoices' })).toBeTruthy();
+  expect(screen.queryByRole('heading', { name: 'Class credits' })).toBeNull();
+});
 
 it('shows each balance and the soonest expiry in the gym timezone beside payer billing', async () => {
   mount({ data: [row, { ...row, memberId: id(5), firstName: 'Kim', balance: 1, soonestExpiry: null }] });

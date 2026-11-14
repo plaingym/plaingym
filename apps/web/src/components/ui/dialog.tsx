@@ -12,7 +12,7 @@ export function DialogActions({ children, className }: { children: ReactNode; cl
   return <div className={cn('sticky bottom-0 z-10 flex flex-col gap-3 border-t border-border bg-background py-3 sm:flex-row sm:flex-wrap', className)}>{children}</div>;
 }
 /** Temporarily release modal focus containment while the containing page recovers. */
-export const DialogRecoveryContext = createContext<{ suspended: boolean; notice?: ReactNode }>({ suspended: false });
+export const DialogRecoveryContext = createContext<{ suspended: boolean; notice?: ReactNode; registerDialog?: () => () => void }>({ suspended: false });
 export function useDialogSaved() {
   const saved = useContext(DraftContext);
   return (form?: HTMLFormElement) => saved?.(form);
@@ -29,7 +29,8 @@ const skippedRadio = (element: HTMLElement) => element instanceof HTMLInputEleme
 export function Dialog({ title, description, closeLabel, onClose, size = 'default', className, children, dismissible = true, unsavedChanges = false }:
   { title: ReactNode; description?: ReactNode; closeLabel: string; onClose: () => void; size?: 'default' | 'wide'; className?: string; children: ReactNode; dismissible?: boolean; unsavedChanges?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null), titleId = useId(), descriptionId = useId();
-  const { suspended, notice } = useContext(DialogRecoveryContext);
+  const { suspended, notice, registerDialog } = useContext(DialogRecoveryContext);
+  useLayoutEffect(() => { if (!suspended) return registerDialog?.(); }, [suspended, registerDialog]);
   const lastFocused = useRef<HTMLElement | null>(null);
   const resume = useRef<{ focused: HTMLElement | null; positions: { element: HTMLElement; top: number; left: number }[] } | undefined>(undefined);
   const [busy, setBusy] = useState(0), [confirm, setConfirm] = useState(false);

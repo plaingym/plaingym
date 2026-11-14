@@ -35,13 +35,13 @@ export function PortalProgressPage({ client = portalClient }: { client?: PortalC
     getNextPageParam: last => last.pagination.offset + last.data.length < last.pagination.total ? last.pagination.offset + last.data.length : undefined });
   const date = dateFormatter('date', timezone);
   const dateTime = dateFormatter('instant', timezone);
-  if (!members.data) return members.isPending || scope.moving || scope.refreshing ? <LoadingState /> : <ErrorState message={text('error')} onRetry={() => void members.refetch()} />;
+  if (!members.data) return members.isPending || scope.settling ? <LoadingState /> : <ErrorState message={text('error')} onRetry={() => void members.refetch()} />;
   const data = progress.data, programName = (id: string | null) => data?.programs.find(item => item.id === id)?.name;
   const visits = attendance.data?.pages.flatMap(page => page.data) ?? [];
   return <Page className="max-w-3xl"><PortalRecovery moving={scope.moving}>
     <PageHeader title={text('title')} description={text('description')} />
     <MemberPicker label={text('member')} members={members.data} value={memberId} onChange={choose} />
-    {progress.isPending ? <LoadingState label={text('loading')} />
+    {progress.isPending || (!progress.data && scope.settling) ? <LoadingState label={text('loading')} />
       : progress.isError || !data ? <ErrorState message={text('error')} onRetry={() => void progress.refetch()} />
         : <>
           <PageSection title={text('ranks')}>
@@ -72,7 +72,7 @@ export function PortalProgressPage({ client = portalClient }: { client?: PortalC
           </PageSection>}
         </>}
     <PageSection title={text('attendance')}>
-      {attendance.isPending ? <LoadingState label={text('loading')} />
+      {attendance.isPending || (!attendance.data && scope.settling) ? <LoadingState label={text('loading')} />
         : attendance.isError ? <ErrorState message={text('error')} onRetry={() => void attendance.refetch()} />
           : !visits.length ? <EmptyState title={text('noAttendance')} />
             : <><p className="text-sm text-muted-foreground">{text('attendanceTotal', { count: attendance.data.pages[0]!.pagination.total })}</p>

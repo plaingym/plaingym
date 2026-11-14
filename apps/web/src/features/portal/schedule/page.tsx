@@ -58,7 +58,7 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
   const timeLabel = new Intl.DateTimeFormat(undefined, { timeZone: timezone, hour: 'numeric', minute: '2-digit' });
   const whenLabel = new Intl.DateTimeFormat(undefined, { timeZone: timezone, dateStyle: 'medium', timeStyle: 'short' });
   const names = new Map(members.data?.map(row => [row.id, row.name]));
-  if (!context.data || !members.data) return context.isPending || members.isPending || scope.moving || scope.refreshing ? <LoadingState />
+  if (!context.data || !members.data) return context.isPending || members.isPending || scope.settling ? <LoadingState />
     : <ErrorState message={text('error')} onRetry={() => { void context.refetch(); void members.refetch(); }} />;
   const days = new Map<string, PortalScheduleSession[]>();
   for (const session of schedule.data ?? []) {
@@ -66,7 +66,7 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
     days.set(day, [...days.get(day) ?? [], session]);
   }
   const current = now();
-  return <Page><PortalRecovery moving={scope.moving}>
+  return <Page className="max-w-3xl"><PortalRecovery moving={scope.moving}>
     <PageHeader title={text('title')} description={text('description')} />
     <MemberPicker label={text('member')} members={members.data} value={memberId} onChange={id => { setMessage(undefined); choose(id); }} />
     <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -75,7 +75,7 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
       <Button variant="outline" onClick={() => setWeek(week + 1)}>{text('nextWeek')}</Button>
     </div>
     {message && <Alert variant={message.tone === 'error' ? 'error' : 'info'} focusOnReveal={message.tone === 'error'} role={message.tone === 'error' ? 'alert' : 'status'}>{message.text}</Alert>}
-    {schedule.isPending ? <LoadingState label={text('loading')} />
+    {schedule.isPending || (!schedule.data && scope.settling) ? <LoadingState label={text('loading')} />
       : schedule.isError ? <ErrorState message={text('error')} onRetry={() => void schedule.refetch()} />
         : !days.size ? <EmptyState title={text('empty')} description={text('emptyDescription')} />
           : [...days].map(([day, sessions]) => <PageSection key={day} title={dateLabel.format(new Date(sessions[0]!.startsAt))}>
@@ -109,9 +109,9 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
                     : action.kind === 'cancel'
                       ? <Button variant="outline" disabled={busy} onClick={() => run('cancel', action.booking)} aria-label={text(action.booking.status === 'waitlisted' ? 'leaveNamed' : 'cancelNamed', { name: member!.name, session: session.name })}>
                         {text(action.booking.status === 'waitlisted' ? 'leaveWaitlist' : 'cancel')}</Button>
-                      : <p className="text-sm text-muted-foreground">{action.kind === 'opens' ? text('opens', { when: whenLabel.format(action.at) })
+                      : action.kind !== 'cancelled' && <p className="text-sm text-muted-foreground">{action.kind === 'opens' ? text('opens', { when: whenLabel.format(action.at) })
                         : action.kind === 'locked' ? text('locked') : action.kind === 'dropIn' ? text('dropInHelp')
-                          : action.kind === 'cancelled' ? text('sessionCancelled') : text('started')}</p>}
+                          : text('started')}</p>}
                   {action.kind === 'cancel' && <p className="text-sm text-muted-foreground">{text('cancelUntil', { when: whenLabel.format(new Date(session.cancelBefore)) })}</p>}
                 </div>
               </li>;
