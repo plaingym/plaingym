@@ -38,7 +38,11 @@ admitted people, and a leaked staff image key cannot enroll an existing member.
 It signs the immutable waivers, assigns a pending membership per person, issues one
 invoice and a pay link, and answers `received`. Replays and concurrent retries
 return the same join. A submission retried after a plan edit uses the assigned
-memberships' trial dates and prices for invoicing and card setup. Before issuing
+memberships' trial dates and prices for invoicing and card setup. All household
+memberships are assigned in one transaction with the first invoice, holding
+the plan lock so a staff edit cannot split their trial dates. The first assignment's
+recorded sign-up fee, taxes and plan description price that invoice, including
+when the plan changed while waivers were being signed. Before issuing
 the first invoice it aligns the household
 billing day to their trial end, or keeps the join day for a non-trial membership;
 if staff changed the billing day since admission, the submission is refused.

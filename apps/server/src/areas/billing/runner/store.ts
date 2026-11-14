@@ -4,7 +4,7 @@ import { allocateInvoiceNumber, households, invoiceLineItems, invoices, membersh
   uuidv7, writeAudit, assertRevised, type Transaction } from '@plaingym/db';
 import { createTranslator, type Clock } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
-import { membershipSchema } from '@plaingym/shared/contracts';
+import { membershipSchema, type Membership } from '@plaingym/shared/contracts';
 import { addDays } from '@plaingym/shared/time';
 import type { MutationContext } from '../../../core/interfaces/common.js';
 import type { GymSettings } from '../../../core/interfaces/gym-settings.js';
@@ -29,7 +29,7 @@ export async function latestAttempt(tx: Transaction, invoiceId: string) {
     .orderBy(desc(paymentAttempts.attemptNumber)).limit(1))[0];
 }
 export async function issue(tx: Transaction, context: MutationContext, clock: Clock, calculated: CalculatedInvoice,
-  needsReview = false) {
+  needsReview = false, pricingSnapshot?: readonly { membership: Pick<Membership, 'id' | 'amountCents' | 'discount'> }[]) {
   const { lineItems, ...fields } = calculated;
   const id = uuidv7();
   await tx.insert(invoices).values({ ...fields, id, gymId: context.gymId, status: 'open',
@@ -38,10 +38,14 @@ export async function issue(tx: Transaction, context: MutationContext, clock: Cl
   // Preserve the price and named discount actually billed, including a discount's final cycle.
   // Later staff edits must not change the credit side of an immediate plan upgrade.
   const ids = [...new Set(lineItems.filter(line => line.kind === 'membership').map(line => line.membershipId!))];
-  const applied = await liveDiscounts(tx, ids);
-  const billed = ids.length ? await tx.select().from(memberships).where(inArray(memberships.id, ids)) : [];
-  const membershipPricing = billed.map(row => ({ membershipId: row.id, amountCents: row.amountCents,
-    discount: presentDiscount(applied.get(row.id)) }));
+  const membershipPricing = pricingSnapshot
+    ? pricingSnapshot.filter(item => ids.includes(item.membership.id)).map(({ membership: row }) => ({
+      membershipId: row.id, amountCents: row.amountCents, discount: row.discount }))
+    : await (async () => {
+      const applied = await liveDiscounts(tx, ids);
+      const billed = ids.length ? await tx.select().from(memberships).where(inArray(memberships.id, ids)) : [];
+      return billed.map(row => ({ membershipId: row.id, amountCents: row.amountCents, discount: presentDiscount(applied.get(row.id)) }));
+    })();
   const byMembership = new Map(membershipPricing.map(item => [item.membershipId, item]));
   if (lineItems.length) await tx.insert(invoiceLineItems).values(lineItems.map(line => {
     const terms = line.kind === 'membership' ? byMembership.get(line.membershipId!) : undefined;
@@ -58,7 +62,7 @@ export function pricing(home: typeof households.$inferSelect, currency: GymSetti
   return { householdId: home.id, currency, billingDay: home.billingDay,
     familyDiscountBasisPoints: home.familyDiscountBasisPoints, discountDescription: t('billing/runner:familyDiscount') };
 }
-async function priced(tx: Transaction, row: typeof memberships.$inferSelect): Promise<PricedMembership> {
+async function priced(tx: Transaction, row: typeof memberships.$inferSelect): Promise<PricedMembership & { membership: Membership }> {
   const plan = (await tx.select().from(plans).where(eq(plans.id, row.planId)))[0]!;
   const taxes = await planTaxes(tx, row.planId);
   const { gymId: _gymId, anniversaryOn, switchOverrideReason: _reason, scheduledOrigin: _origin, ...fields } = row;
@@ -85,12 +89,12 @@ export async function generateCycle(tx: Transaction, gym: GymSettings, clock: Cl
   // A scheduled plan switch applies at the first cycle billed on or after its date, before that cycle is priced.
   const current = due.filter(row => row.nextDueOn === dueOn);
   for (const [index, row] of current.entries()) current[index] = await applyScheduledSwitch(tx, row, clock);
-  const result = calculateCycleInvoice({ ...pricing(home, gym.currency), dueOn,
-    memberships: await Promise.all(current.map(row => priced(tx, row))) });
+  const pricingSnapshot = await Promise.all(current.map(row => priced(tx, row)));
+  const result = calculateCycleInvoice({ ...pricing(home, gym.currency), dueOn, memberships: pricingSnapshot });
   if (!result.nextDueDates.length) return false;
   if (result.invoice) {
     const calculated = previous ? { ...result.invoice, kind: 'one_off' as const, periodStartsOn: null, periodEndsOn: null } : result.invoice;
-    const invoiceId = await issue(tx, system(gym.gymId), clock, calculated, !!previous || dueOn < addDays(today, -7));
+    const invoiceId = await issue(tx, system(gym.gymId), clock, calculated, !!previous || dueOn < addDays(today, -7), pricingSnapshot);
     if (previous) await audit(tx, system(gym.gymId), clock, 'billing.runner.cycle_conflict', 'invoice', invoiceId,
       { cycleInvoiceId: previous.id, dueOn, periodStartsOn: result.invoice.periodStartsOn, periodEndsOn: result.invoice.periodEndsOn });
   }

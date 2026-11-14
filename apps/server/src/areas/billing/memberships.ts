@@ -2,7 +2,7 @@
 import { and, asc, desc, eq, gt, lte, ne, or } from 'drizzle-orm';
 import { forGym, memberships, households, members, plans, auditEvents,
   revisionGuard, assertRevised, uuidv7, type Transaction } from '@plaingym/db';
-import { AppError, createTranslator, type Clock } from '@plaingym/shared';
+import { AppError, type Clock } from '@plaingym/shared';
 import { isCalendarDate, localDate } from '@plaingym/shared/time';
 import * as c from '@plaingym/shared/contracts';
 import type { MutationContext } from '../../core/interfaces/common.js';
@@ -18,11 +18,9 @@ import { cancelScheduledSwitchRequestSchema, checkSwitch, clearedSwitch, planSwi
   type PlanSwitchedNowAudit, type RecordedSwitchRequest, type SwitchPlanRequest, type SwitchScheduledAudit } from './memberships.plan-change.js';
 import { checkNow, issuable, planTaxes, prorateNow, switchPreview } from './memberships.plan-change.now.js';
 import { issue } from './runner/store.js';
-import { applyDiscount, endDiscount, liveDiscounts, presentDiscount, resolveDiscount, switchAppliedDiscount } from './discounts/apply.js';
-import discountMessages from '../../../../../locales/en/billing/discounts.json' with { type: 'json' };
+import { applyDiscount, endDiscount, liveDiscounts, presentDiscount, refuseMembership, resolveDiscount, switchAppliedDiscount } from './discounts/apply.js';
 
 type Row = typeof memberships.$inferSelect;
-const discountText = createTranslator({ 'billing/discounts': discountMessages });
 // The override reason stays out of the Membership contract (erasure clears it; no response or audit carries it), and so
 // does the scheduled change's origin, which only the due-date rule in `update` reads.
 const serialize = ({ gymId: _gymId, anniversaryOn: _anniversaryOn, switchOverrideReason: _reason, scheduledOrigin: _origin, ...row }: Row,
@@ -61,6 +59,8 @@ function editedAnniversary(before: Row, nextDueOn?: string): string | null {
 }
 /** Persisted in the assignment audit so invoice integration can recover after downtime. */
 export interface AssignmentBilling {
+  /** Plan name at assignment; older recorded assignments may omit it. */
+  description?: string;
   firstPeriod: 'prorate_now' | 'next_billing_date';
   startsOn: string; nextDueOn: string; amountCents: number; currency: string; signupFeeCents: number;
   /** Persisted annual anniversary, passed directly to the invoice calculators. */
@@ -145,7 +145,7 @@ export function createMembershipService(options: MembershipOptions = {}) {
         anniversaryOn: plan.interval === 'annual' ? nextDueOn : null,
         commitmentEndsOn: plan.commitmentMonths === null ? null : addCalendarMonths(request.startsOn, plan.commitmentMonths), createdAt: clock.now() }).returning())[0]);
       const attached = await planTaxes(tx, plan.id);
-      const billing: AssignmentBilling = { firstPeriod: request.firstPeriod, startsOn: request.startsOn, nextDueOn,
+      const billing: AssignmentBilling = { description: plan.name, firstPeriod: request.firstPeriod, startsOn: request.startsOn, nextDueOn,
         ...(row.anniversaryOn === null ? {} : { annualAnchorOn: row.anniversaryOn }),
         amountCents: plan.amountCents, currency: plan.currency, signupFeeCents: plan.signupFeeCents, taxes: attached };
       if (request.discount) {
@@ -181,15 +181,32 @@ export function createMembershipService(options: MembershipOptions = {}) {
     return after;
   }
   async function edit(context: MutationContext, request: MembershipEdit, action: string,
-    change: (tx: Transaction, before: Row) => Promise<Partial<typeof memberships.$inferInsert>>) {
+    change: (tx: Transaction, before: Row, previous: c.Membership) => Promise<Partial<typeof memberships.$inferInsert>>) {
     c.idSchema.parse(request.membershipId); c.revisionSchema.parse(request.revision);
     return scope(context.gymId, async tx => {
       // Serialize sibling activations and assignments before checking the member's remaining trials.
       const { row: before } = await lockForSwitch(tx, request.membershipId);
-      if (before.revision !== request.revision) conflict('The record changed; reload before saving');
+      if (before.revision !== request.revision) refuseMembership('membership_changed');
       const previous = await present(tx, before);
-      return saveEdit(tx, context, before, previous, await change(tx, before), 'billing.membership.' + action);
+      const after = await saveEdit(tx, context, before, previous, await change(tx, before, previous), 'billing.membership.' + action);
+      if (action === 'activated' || action === 'cancelled') await reconcileTrialMember(tx, context, before.memberId);
+      return after;
     });
+  }
+  /** The caller holds the household lock and has saved the membership's new state. */
+  async function reconcileTrialMember(tx: Transaction, context: MutationContext, memberId: string) {
+    const [member] = await tx.select().from(members).where(eq(members.id, memberId)).for('update');
+    if (!member || member.status !== 'trial' || member.anonymizedAt) return;
+    const rows = await tx.select().from(memberships).where(eq(memberships.memberId, memberId));
+    if (!rows.some(row => row.status === 'active')) return;
+    for (const row of rows) {
+      if (row.status === 'trial' || (row.trialEndsOn !== null && await frozenBeforeActive(tx, row))) return;
+    }
+    const guard = revisionGuard(members.revision, member.revision);
+    assertRevised(await tx.update(members).set({ status: 'active', revision: guard.next })
+      .where(and(eq(members.id, member.id), guard.matches)).returning({ id: members.id }));
+    await catalogAudit(tx, context, clock, 'billing.member.activated', 'member', member.id,
+      { status: member.status, revision: member.revision }, { status: 'active', revision: member.revision + 1 });
   }
   const service = {
     assign,
@@ -197,33 +214,27 @@ export function createMembershipService(options: MembershipOptions = {}) {
       return assign(context, { ...c.assignMembershipRequestSchema.parse(input), id: uuidv7() }, true);
     },
     async setDiscount(context: MutationContext, membershipId: string, input: c.SetMembershipDiscountRequest) {
-      c.idSchema.parse(membershipId);
       const request = c.setMembershipDiscountRequestSchema.parse(input), gym = await settings.get(context.gymId);
-      return scope(context.gymId, async tx => {
-        const { row: before } = await lockForSwitch(tx, membershipId);
-        if (before.revision !== request.revision) conflict(discountText('billing/discounts:membership_changed'));
-        if (before.status === 'cancelled') conflict(discountText('billing/discounts:membership_cancelled'));
+      return edit(context, { membershipId, revision: request.revision }, 'discount_set', async (tx, before) => {
+        if (before.status === 'cancelled') refuseMembership('membership_cancelled');
         const member = catalogMissing((await tx.select({ anonymizedAt: members.anonymizedAt }).from(members).where(eq(members.id, before.memberId)))[0]);
-        if (member.anonymizedAt) conflict(discountText('billing/discounts:membership_erased'));
-        const resolved = await resolveDiscount(tx, request.discount, { planIds: [before.planId], timezone: gym.timezone, clock });
+        if (member.anonymizedAt) refuseMembership('membership_erased');
+        const resolved = await resolveDiscount(tx, request.discount, {
+          planIds: [before.planId, ...(before.scheduledPlanId ? [before.scheduledPlanId] : [])], timezone: gym.timezone, clock });
         // A signup-fee waiver alone applies only at assignment: it would end the live discount and take a use for nothing.
-        if (resolved.row.duration === null) conflict(discountText('billing/discounts:membership_fee_only'));
-        const previous = await present(tx, before);
+        if (resolved.row.duration === null) refuseMembership('membership_fee_only');
         await endDiscount(tx, context, clock, membershipId, 'replaced');
         await applyDiscount(tx, context, clock, resolved, before);
-        return saveEdit(tx, context, before, previous, {}, 'billing.membership.discount_set');
+        return {};
       });
     },
     async removeDiscount(context: MutationContext, membershipId: string, input: c.RemoveMembershipDiscountRequest) {
-      c.idSchema.parse(membershipId);
       const request = c.removeMembershipDiscountRequestSchema.parse(input);
-      return scope(context.gymId, async tx => {
-        const { row: before } = await lockForSwitch(tx, membershipId);
-        if (before.revision !== request.revision) conflict(discountText('billing/discounts:membership_changed'));
-        if (before.status === 'cancelled') conflict(discountText('billing/discounts:membership_cancelled'));
-        const previous = await present(tx, before);
+      return edit(context, { membershipId, revision: request.revision }, 'discount_removed', async (tx, before, previous) => {
+        if (before.status === 'cancelled') refuseMembership('membership_cancelled');
+        if (!previous.discount) refuseMembership('membership_no_discount');
         await endDiscount(tx, context, clock, membershipId, 'removed');
-        return saveEdit(tx, context, before, previous, {}, 'billing.membership.discount_removed');
+        return {};
       });
     },
     async get(gymId: string, id: string) { return scope(gymId, async tx => present(tx, await getRow(tx, id))); },
@@ -246,7 +257,7 @@ export function createMembershipService(options: MembershipOptions = {}) {
       return edit(context, request, 'activated', async (tx, before) => {
         if (!['pending', 'trial', 'frozen'].includes(before.status)) conflict('Membership cannot be activated');
         // Take the member lock before lead work, matching attendance's member/lead lock order.
-        const [member] = await tx.select().from(members).where(eq(members.id, before.memberId)).for('update');
+        await tx.select({ id: members.id }).from(members).where(eq(members.id, before.memberId)).for('update');
         let due = request.nextDueOn ?? before.nextDueOn;
         c.dateSchema.parse(due);
         if (due < before.startsOn) conflict('Billing cannot start before membership starts');
@@ -262,15 +273,6 @@ export function createMembershipService(options: MembershipOptions = {}) {
         }
         if (before.status === 'pending' || before.status === 'trial' || await frozenBeforeActive(tx, before))
           await markLeadWon(tx, { ...context, memberId: before.memberId, now: clock.now() });
-        if (before.status === 'trial' && member?.status === 'trial' && !member.anonymizedAt
-          && !(await tx.select({ id: memberships.id }).from(memberships).where(and(
-            eq(memberships.memberId, member.id), eq(memberships.status, 'trial'), ne(memberships.id, before.id))).limit(1)).length) {
-          const guard = revisionGuard(members.revision, member.revision);
-          assertRevised(await tx.update(members).set({ status: 'active', revision: guard.next })
-            .where(and(eq(members.id, member.id), guard.matches)).returning({ id: members.id }));
-          await catalogAudit(tx, context, clock, 'billing.member.activated', 'member', member.id,
-            { status: member.status, revision: member.revision }, { status: 'active', revision: member.revision + 1 });
-        }
         return { status: 'active', nextDueOn: due, anniversaryOn, frozenAt: null, resumesOn: null };
       });
     },
@@ -316,7 +318,7 @@ export function createMembershipService(options: MembershipOptions = {}) {
           if (!sameSwitchRequest(replay.request, recorded)) conflict('Request ID reused with different parameters');
           return { membership: replay.membership, invoiceId: replay.invoiceId };
         }
-        if (before.revision !== request.revision) conflict('The record changed; reload before saving');
+        if (before.revision !== request.revision) refuseMembership('membership_changed');
         // switchTerms owns refusal precedence for both switch and preview.
         const plan = await getPlan(tx, request.planId, { allowInactive: true });
         const member = catalogMissing((await tx.select({ anonymizedAt: members.anonymizedAt }).from(members).where(eq(members.id, before.memberId)))[0]);

@@ -11,6 +11,9 @@ import { catalogAudit } from '../catalog.js';
 import messages from '../../../../../../locales/en/billing/discounts.json' with { type: 'json' };
 
 const t = createTranslator({ 'billing/discounts': messages });
+export function refuseMembership(reason: 'membership_changed' | 'membership_cancelled' | 'membership_erased' | 'membership_fee_only' | 'membership_no_discount'): never {
+  throw new AppError('conflict', t('billing/discounts:' + reason));
+}
 type Audience = 'staff' | 'public';
 type Reason = 'discount_unknown' | 'discount_ended' | 'discount_used_up' | 'discount_plan';
 type Application = typeof membershipDiscounts.$inferSelect;

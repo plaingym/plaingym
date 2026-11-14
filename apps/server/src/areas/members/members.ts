@@ -14,6 +14,7 @@ import { withJobTransaction, type Jobs } from '../../infra/jobs/index.js';
 import { eraseCreditReasons, redactCustomerJob, releaseErasedFilesJob } from './erasure-redaction.js';
 import { detachJob } from '../billing/payments.mutations.js';
 import { unscheduled } from '../billing/memberships.plan-change.js';
+import { endDiscount } from '../billing/discounts/apply.js';
 
 /** The queue and gym timezone an erasure's cleanup jobs are inserted with. */
 export interface ErasureQueue { jobs: Pick<Jobs, 'enqueue'>; timezone: string }
@@ -110,8 +111,10 @@ export function createMembersService(options: MembersOptions = {}) {
       const { revision } = c.anonymizeMemberRequestSchema.parse(input);
       return withJobTransaction(scope, context.gymId, async (transaction) => {
         const { tx } = transaction;
-        const before = await getMemberRow(tx, id);
-        const home = await getHouseholdRow(tx, before.householdId);
+        const found = missing((await tx.select({ householdId: members.householdId }).from(members).where(eq(members.id, id)))[0]);
+        const home = await getHouseholdRow(tx, found.householdId);
+        // Match activation and assignment: household first, then read the member under its lock.
+        const before = missing((await tx.select(memberFields).from(members).where(eq(members.id, id)).for('update'))[0]);
         editable(before); const guard = revisionGuard(members.revision, revision), now = clock.now();
         const [erased] = await tx.select({ address: members.emailAddress }).from(members).where(eq(members.id, id)).for('update');
         const row = assertRevised(await tx.update(members).set({ firstName: 'Anonymized', lastName: 'Member', email: null, phone: null, dateOfBirth: null,
@@ -147,6 +150,7 @@ export function createMembersService(options: MembersOptions = {}) {
         const open = await tx.select({ id: memberships.id, revision: memberships.revision }).from(memberships)
           .where(and(eq(memberships.memberId, id), ne(memberships.status, 'cancelled'))).for('update');
         for (const membership of open) {
+          await endDiscount(tx, context, clock, membership.id, 'removed');
           // Like a staff cancel, it drops any plan switch that hasn't applied yet.
           await tx.update(memberships).set({ status: 'cancelled', cancelledAt: now, resumesOn: null, ...unscheduled,
             revision: membership.revision + 1 })

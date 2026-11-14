@@ -14,6 +14,7 @@ import { createDiscountCatalogService } from './discounts/catalog.js';
 import { createMembershipService } from './memberships.js';
 import { createMembershipRoutes } from './memberships.routes.js';
 import { useRunnerFixture } from './runner/runner.fixture.test-helper.js';
+import { createMembersService } from '../members/members.js';
 
 const { db, factory, fixture } = useRunnerFixture();
 async function rewriteAuditFixture(gymId: string, id: string, after: Record<string, unknown>) {
@@ -52,6 +53,38 @@ async function setup() {
 }
 
 describe('editing a live membership discount', () => {
+  it('refuses removal without a live discount, without changing the revision or audit', async () => {
+    const f = await setup(), before = await f.get(), state = await f.read();
+    await expect(f.remove()).rejects.toMatchObject({ code: 'conflict' });
+    expect(await f.get()).toEqual(before); expect((await f.read()).audits).toEqual(state.audits);
+  });
+  it.each([false, true])('refuses a discount outside a scheduled destination before taking a use (replacement %s)', async replacement => {
+    const f = await setup(), plan = await factory('plans', f.gymId, { amountCents: 20_000 });
+    const original = await f.create(), restricted = await f.create({ planIds: [f.plan.id] });
+    if (replacement) await f.set(original.id);
+    await f.change(plan.id, 'next_billing_date');
+    const before = await f.get(), state = await f.state(), audits = (await f.read()).audits;
+    await expect(f.set(restricted.id)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['discount_plan'] } });
+    expect(await f.get()).toEqual(before); expect(await f.state()).toEqual(state); expect((await f.read()).audits).toEqual(audits);
+    const eligible = await f.create({ planIds: [f.plan.id, plan.id] });
+    expect((await f.set(eligible.id)).discount).toMatchObject({ discountId: eligible.id });
+  });
+  it('erasure ends the application in the erasure transaction without returning a use', async () => {
+    const f = await setup(), discount = await f.create();
+    await f.set(discount.id);
+    const people = createMembersService(f.serviceOptions), person = await people.getMember(f.gymId, f.member.id);
+    const cleanup = { jobs: f.serviceOptions.jobs, timezone: 'America/Vancouver' };
+    const failing = createMembersService({ ...f.serviceOptions, scope: (gymId, work) => db.forGym(gymId, async tx => {
+      await work(tx); throw new Error('erasure interrupted');
+    }) });
+    await expect(failing.eraseMember(f.context, person.id, { revision: person.revision }, cleanup)).rejects.toThrow('erasure interrupted');
+    expect((await f.get()).discount).toMatchObject({ discountId: discount.id });
+    expect((await f.state()).applications[0]!.endedAt).toBeNull();
+    await people.eraseMember(f.context, person.id, { revision: person.revision }, cleanup);
+    expect(await f.get()).toMatchObject({ status: 'cancelled', discount: null });
+    expect((await f.state()).applications[0]).toMatchObject({ endReason: 'removed', endedAt: f.clock.now() });
+    expect((await f.state()).discounts[0]!.uses).toBe(1);
+  });
   it('cancellation ends the application without returning its use and preserves the before snapshot in the audit', async () => {
     const f = await setup(), discount = await f.create(), before = await f.set(discount.id);
     const after = await f.service.cancel(f.context, { membershipId: before.id, revision: before.revision });
@@ -150,13 +183,13 @@ describe('discounts through plan switches', () => {
     const f = await setup(), plan = await factory('plans', f.gymId, { amountCents: 20_000 });
     await f.set((await f.create()).id); await f.daily('2028-03-01');
     await f.change(plan.id, 'next_billing_date');
-    const replacement = await f.create({ planIds: [f.plan.id], percentBasisPoints: 2_000 });
+    const replacement = await f.create({ planIds: [f.plan.id, plan.id], percentBasisPoints: 2_000 });
     f.clock.set('2028-03-16T17:00:00Z'); await f.set(replacement.id);
-    expect((await f.preview(plan.id, 'next_billing_date')).discount).toBe('ended');
+    expect((await f.preview(plan.id, 'next_billing_date')).discount).toBe('kept');
     await f.daily('2028-04-01');
-    expect((await f.get()).discount).toBeNull();
-    expect((await f.state()).applications.find(row => row.discountId === replacement.id)).toMatchObject({ cyclesLeft: 3, endReason: 'switch' });
-    expect((await f.read()).invoices.find(row => row.dueOn === '2028-04-01')!.amountCents).toBe(20_000);
+    expect((await f.get()).discount).toMatchObject({ discountId: replacement.id, cyclesLeft: 2 });
+    expect((await f.state()).applications.find(row => row.discountId === replacement.id)).toMatchObject({ cyclesLeft: 2, endReason: null });
+    expect((await f.read()).invoices.find(row => row.dueOn === '2028-04-01')!.amountCents).toBe(16_000);
   });
 
   it('a discount added after billing affects only the new side, including a second upgrade at the same instant', async () => {

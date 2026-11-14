@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
-import { auditEvents, households, members, memberships, uuidv7 } from '@plaingym/db';
+// eslint-disable-next-line database/system-tables -- PostgreSQL lock probes make the erasure race deterministic.
+import { eq, sql } from 'drizzle-orm';
+import { auditEvents, households, members, memberships, RevisionConflictError, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
@@ -10,6 +11,8 @@ import { TestClock } from '../../core/clock.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { createMembershipService, type AssignmentBilling } from './memberships.js';
 import { createMembershipJobs } from './memberships.jobs.js';
+import { createMembersService } from '../members/members.js';
+import { FakeJobs } from '../../infra/jobs/index.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 async function fixture(initialStatus: 'pending' | 'trial' | 'active' = 'pending') {
@@ -158,6 +161,91 @@ describe('membership lifecycle against PostgreSQL', () => {
       .toMatchObject({ status: 'active', revision: 2 });
     expect((await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, f.member.id)))))
       .toMatchObject([{ action: 'billing.member.activated' }]);
+  });
+  it('promotes a trial member when their frozen trial resumes', async () => {
+    const f = await fixture('trial');
+    await db.forGym(f.gymId, tx => tx.update(members).set({ status: 'trial' }).where(eq(members.id, f.member.id)));
+    const frozen = await f.service.freeze(f.context, { membershipId: f.membership.id, revision: 1 });
+    await f.service.activate(f.context, { membershipId: frozen.id, revision: frozen.revision });
+    expect((await db.forGym(f.gymId, tx => tx.select().from(members).where(eq(members.id, f.member.id))))[0])
+      .toMatchObject({ status: 'active', revision: 2 });
+  });
+  it.each(['trial', 'frozen'] as const)('cancelling the last %s promotes a member with another active membership', async status => {
+    const f = await fixture('trial');
+    await db.forGym(f.gymId, tx => tx.update(members).set({ status: 'trial' }).where(eq(members.id, f.member.id)));
+    let second = await f.service.assign(f.context, { ...f.request, id: uuidv7() });
+    if (status === 'frozen') second = await f.service.freeze(f.context, { membershipId: second.id, revision: second.revision });
+    await f.service.activate(f.context, { membershipId: f.membership.id, revision: 1 });
+    expect((await db.forGym(f.gymId, tx => tx.select().from(members).where(eq(members.id, f.member.id))))[0]!.status).toBe('trial');
+    await f.service.cancel(f.context, { membershipId: second.id, revision: second.revision });
+    expect((await db.forGym(f.gymId, tx => tx.select().from(members).where(eq(members.id, f.member.id))))[0])
+      .toMatchObject({ status: 'active', revision: 2 });
+    expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, f.member.id))))
+      .toMatchObject([{ action: 'billing.member.activated' }]);
+  });
+  it('does not promote a member when cancellation leaves no active membership', async () => {
+    const f = await fixture('trial');
+    await db.forGym(f.gymId, tx => tx.update(members).set({ status: 'trial' }).where(eq(members.id, f.member.id)));
+    await f.service.cancel(f.context, { membershipId: f.membership.id, revision: 1 });
+    expect((await db.forGym(f.gymId, tx => tx.select().from(members).where(eq(members.id, f.member.id))))[0])
+      .toMatchObject({ status: 'trial', revision: 1 });
+  });
+  it('a frozen previously active trial does not hold back another activation', async () => {
+    const f = await fixture('trial');
+    await f.service.activate(f.context, { membershipId: f.membership.id, revision: 1 });
+    await f.service.freeze(f.context, { membershipId: f.membership.id, revision: 2 });
+    await db.forGym(f.gymId, tx => tx.update(members).set({ status: 'trial' }).where(eq(members.id, f.member.id)));
+    const second = await f.service.assign(f.context, { ...f.request, id: uuidv7() });
+    await f.service.activate(f.context, { membershipId: second.id, revision: second.revision });
+    expect((await db.forGym(f.gymId, tx => tx.select().from(members).where(eq(members.id, f.member.id))))[0]!.status).toBe('active');
+  });
+  it.each(['activation', 'erasure'] as const)('races erasure with trial activation without a deadlock, starting %s first', async first => {
+    const f = await fixture('trial');
+    await db.forGym(f.gymId, tx => tx.update(members).set({ status: 'trial' }).where(eq(members.id, f.member.id)));
+    const people = createMembersService(f.options), cleanup = { jobs: new FakeJobs(f.clock), timezone: 'America/Vancouver' };
+    const activate = () => f.service.activate(f.context, { membershipId: f.membership.id, revision: 1 });
+    const erase = () => people.eraseMember(f.context, f.member.id, { revision: 1 }, cleanup);
+    const results = await Promise.allSettled(first === 'activation' ? [activate(), erase()] : [erase(), activate()]);
+    expect(results.some(result => result.status === 'fulfilled')).toBe(true);
+    for (const result of results) if (result.status === 'rejected') {
+      if (!(result.reason instanceof RevisionConflictError)) expect(result.reason).toMatchObject({ code: 'conflict' });
+    }
+    const person = await people.getMember(f.gymId, f.member.id);
+    if (!person.anonymizedAt) await people.eraseMember(f.context, person.id, { revision: person.revision }, cleanup);
+    expect(await f.service.get(f.gymId, f.membership.id)).toMatchObject({ status: 'cancelled' });
+    expect(await people.getMember(f.gymId, f.member.id)).toMatchObject({ status: 'cancelled', anonymizedAt: f.clock.now().toISOString() });
+  });
+  it('erasure waits on an activating household before locking its member', async () => {
+    const f = await fixture('trial'), locked = Promise.withResolvers<number>(), release = Promise.withResolvers<void>();
+    await db.forGym(f.gymId, tx => tx.update(members).set({ status: 'trial' }).where(eq(members.id, f.member.id)));
+    const activating = createMembershipService({ ...f.options, scope: (gymId, work) => db.forGym(gymId, async tx => {
+      await tx.select().from(households).where(eq(households.id, f.home.id)).for('update');
+      // eslint-disable-next-line database/system-tables -- Identify the household lock holder for the wait probe.
+      locked.resolve((await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`))[0]!.pid);
+      await release.promise;
+      // A waiting erasure must not hold this member while it waits for our household.
+      await tx.select().from(members).where(eq(members.id, f.member.id)).for('update', { noWait: true });
+      return work(tx);
+    }) }).activate(f.context, { membershipId: f.membership.id, revision: 1 });
+    const pid = await locked.promise, people = createMembersService(f.options);
+    const cleanup = { jobs: new FakeJobs(f.clock), timezone: 'America/Vancouver' };
+    const erasing = people.eraseMember(f.context, f.member.id, { revision: 1 }, cleanup);
+    const results = Promise.allSettled([activating, erasing]);
+    try {
+      await expect.poll(async () => {
+        // eslint-disable-next-line database/system-tables -- Both gym connections are busy; inspect their blocking from the system pool.
+        const rows = await db.system.db.execute<{ waiting: boolean }>(sql`select exists (
+          select 1 from pg_stat_activity where ${pid} = any(pg_blocking_pids(pid))
+        ) as waiting`);
+        return rows[0]!.waiting;
+      }, { timeout: 10_000, interval: 10 }).toBe(true);
+    } finally { release.resolve(); await results; }
+    const [activation, erasure] = await results;
+    expect(activation.status).toBe('fulfilled');
+    expect(erasure).toMatchObject({ status: 'rejected', reason: { name: 'RevisionConflictError' } });
+    const person = await people.getMember(f.gymId, f.member.id);
+    await people.eraseMember(f.context, person.id, { revision: person.revision }, cleanup);
+    expect(await f.service.get(f.gymId, f.membership.id)).toMatchObject({ status: 'cancelled' });
   });
   it.each(['prospect', 'active', 'frozen', 'cancelled', 'visitor'])('preserves a member status of %s at trial end', async status => {
     const f = await fixture('trial');

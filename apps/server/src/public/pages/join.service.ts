@@ -56,6 +56,9 @@ const admittedRead = admitted.strip();
 const receivedRead = received.strip();
 const discountedRead = discounted.strip();
 const invoicedRead = invoiced.strip().extend({ next: z.array(invoiced.shape.next.element.strip()) });
+const assignmentBillingRead = z.object({ billing: z.object({ description: z.string().optional(),
+  currency: c.currencySchema, signupFeeCents: z.int32().nonnegative(),
+  taxes: z.array(z.object({ id: c.idSchema, name: z.string(), rateMillionths: z.int32().nonnegative(), inclusive: z.boolean() })) }) });
 /** Strict producer schemas for the replayable audit records. */
 export const joinRecordWriteSchemas = { admitted, received, discounted, invoiced };
 /** `closed`: unpaid, and staff voided the invoice or revoked the join's link, so it can no longer be paid here. */
@@ -254,9 +257,10 @@ export function createJoinService(options: JoinOptions) {
         await audit(tx, gymId, 'billing.household.anchor_set', 'household', home.id,
           { billingDay, revision: home.revision + 1 }, { billingDay: home.billingDay, revision: home.revision });
       }
-      const currency = c.currencySchema.parse(row.currency);
-      const taxes = await tx.select({ id: taxRates.id, name: taxRates.name, rateMillionths: taxRates.rateMillionths, inclusive: taxRates.inclusive })
-        .from(planTaxRates).innerJoin(taxRates, eq(taxRates.id, planTaxRates.taxRateId)).where(eq(planTaxRates.planId, row.id)).orderBy(asc(taxRates.id));
+      const assigned = await recorded(tx, 'billing.membership.assigned', membershipIds[0]!, assignmentBillingRead);
+      if (!assigned) changed();
+      const { currency, signupFeeCents, taxes } = assigned.billing;
+      const description = assigned.billing.description ?? row.name;
       // A code's discount was applied at assignment: its locked-in terms price the first period, and its fee waiver drops that
       // membership's sign-up fee. A waiver-only application ends at assignment, so the first application of each counts.
       const applications = new Map<string, typeof membershipDiscounts.$inferSelect>();
@@ -269,12 +273,12 @@ export function createJoinService(options: JoinOptions) {
       // Priced as the runner prices an active membership on its due date; the memberships stay pending until it is paid.
       const cycle = trialEndsOn !== null ? null : calculateCycleInvoice({ householdId: home.id, currency, billingDay, familyDiscountBasisPoints: home.familyDiscountBasisPoints,
         discountDescription: t('billing/runner:familyDiscount'), dueOn: today, memberships: rows.map(r => ({ membership: { ...snapshot(r), status: 'active' as const },
-          description: row.name, taxRates: taxes, ...price(r.id), ...(r.anniversaryOn === null ? {} : { annualAnchorOn: r.anniversaryOn }) })) });
+          description, taxRates: taxes, ...price(r.id), ...(r.anniversaryOn === null ? {} : { annualAnchorOn: r.anniversaryOn }) })) });
       if (cycle && !cycle.invoice) changed();
       const charged = rows.filter(r => !applications.get(r.id)?.waivesSignupFee);
-      const fees = row.signupFeeCents > 0 && charged.length ? calculateOneOffInvoice({ householdId: home.id, currency, dueOn: today, charges: charged.map(r => ({
-        kind: 'signup_fee' as const, description: t('billing/runner:signupFee', { plan: row.name }), membershipId: r.id, planId: r.planId,
-        amountCents: row.signupFeeCents, currency, taxRates: taxes })) }) : null;
+      const fees = signupFeeCents > 0 && charged.length ? calculateOneOffInvoice({ householdId: home.id, currency, dueOn: today, charges: charged.map(r => ({
+        kind: 'signup_fee' as const, description: t('billing/runner:signupFee', { plan: description }), membershipId: r.id, planId: r.planId,
+        amountCents: signupFeeCents, currency, taxRates: taxes })) }) : null;
       // A trial owes only its sign-up fee now; its first full period is due when the trial ends.
       // Trial invoices have no membership lines: the generic paid-invoice effect would activate trials early.
       const base = cycle?.invoice ?? { householdId: home.id, currency, kind: 'cycle' as const, dueOn: today,
@@ -491,12 +495,14 @@ export function createJoinService(options: JoinOptions) {
       if (!await scope(gymId, tx => signedLinkWaiversComplete(tx, found.memberIds))) changed();
       let first;
       if (discountTaken || code !== undefined) first = await assignDiscounted(gymId, selectedPlan, found, code);
-      else {
+      else first = await scope(gymId, async tx => {
+        // Keep every assignment under the same household and plan locks, including joins without a code.
+        const within = membershipService(async (_gymId, work) => work(tx));
         for (const [i, memberId] of found.memberIds.entries())
-          await lifecycle.assign(system(gymId), { id: found.membershipIds[i]!, householdId: found.householdId, memberId, planId: input.planId,
+          await within.assign(system(gymId), { id: found.membershipIds[i]!, householdId: found.householdId, memberId, planId: input.planId,
             startsOn: today, nextDueOn: today, initialStatus: 'pending', firstPeriod: 'next_billing_date' });
-        first = await invoice(gymId, found.householdId, selectedPlan, found.membershipIds, today);
-      }
+        return invoice(gymId, found.householdId, selectedPlan, found.membershipIds, today, tx);
+      });
       // Each membership is next due on the join-date anniversary; its annual anniversary keeps the join date (February 29 included).
       for (const change of first.next) {
         const membership = await lifecycle.get(gymId, change.membershipId);

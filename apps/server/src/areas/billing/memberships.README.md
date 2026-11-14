@@ -23,8 +23,12 @@ changes affect the next invoice, with no proration or changes to issued invoices
 Cancelled memberships cannot be edited, and a discount that only waives the
 signup fee is refused (it applies only at assignment). The ended applications and audit events
 retain the history.
+Adding a discount also checks any scheduled destination plan, refusing one that
+would end before it could price that plan. Removing a discount when none is live
+is a conflict and changes neither the revision nor the audit history.
 Cancelling a membership ends its application as `removed`, without returning a
-use, and the cancelled membership's response has no live discount.
+use, and the cancelled membership's response has no live discount. Member erasure
+ends the application in the same transaction as the membership cancellation.
 
 A plan switch keeps the applied discount and remaining cycles when its
 snapshotted plan list is empty or includes the destination plan, and otherwise
@@ -41,12 +45,15 @@ transition jobs. Catalog edits leave existing application terms unchanged.
 
 ## Lead conversion
 
-When a trial membership activates, its member also becomes `active` if their
-status is still `trial`, they have not been erased, and they have no other trial
-membership. This applies to online joins and staff-set trials. The member update
+After activation or cancellation, a member becomes `active` if their status is
+still `trial`, they have not been erased, they have an active membership, and no
+unfinished trial remains. A frozen trial that has never activated counts as
+unfinished; resuming it or cancelling the last trial rechecks the member. This
+applies to online joins and staff-set trials. The member update
 uses a revision guard and writes `billing.member.activated` in the membership's
 transaction. Other member statuses stay as set by staff. Household locks serialize
-sibling activations and assignments, so concurrent trial endings promote once.
+sibling activations, cancellations and assignments, so concurrent trial endings
+promote once. Erasure locks the household before the member, matching activation.
 
 Activating a pending or trial membership marks its member's lead `won` in the
 same transaction, including activations from a paid invoice's effect. An

@@ -7,7 +7,7 @@ import '@hono/zod-openapi';
 import { asc, eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- The test turns a gym's billing switch off in real PostgreSQL.
 import { auditEvents, gyms, households, householdUsers, invoiceLineItems, invoices, leads, members, memberships, paymentMethods, plans, signedLinks,
-  waiverSignatures, waiverTemplates, uuidv7, discounts, membershipDiscounts } from '@plaingym/db';
+  waiverSignatures, waiverTemplates, uuidv7, discounts, membershipDiscounts, taxRates, databaseCode } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError } from '@plaingym/shared';
@@ -84,9 +84,17 @@ async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29
     smtpConfigured: async () => mode === 'email', mailer: async () => mail, loginLink: async input => { sent.push(input); } });
   const accounts = createAccountService(config, () => db.system.db);
   const settings = createGymSettingsAccessor({ scope: db.forGym, clock }), lifecycle = createMembershipService({ scope: db.forGym, clock, settings });
+  const assigned = vi.fn(async (_scope: typeof db.forGym, _membership: Awaited<ReturnType<typeof lifecycle.assign>>) => {});
   const paymentsConfigured = vi.fn(async (id: string) => id === gymId);
   const join = configureJoin({ scope: db.forGym, clock, key, waivers, checkout, paymentsConfigured, invitations, accounts, uploadsFor,
-    memberships: scope => scope === db.forGym ? lifecycle : createMembershipService({ scope, clock, settings: createGymSettingsAccessor({ scope, clock }) }),
+    memberships: scope => {
+      const service = scope === db.forGym ? lifecycle : createMembershipService({ scope, clock, settings: createGymSettingsAccessor({ scope, clock }) });
+      return { ...service, async assign(...args) {
+        const membership = await service.assign(...args);
+        await assigned(scope, membership);
+        return membership;
+      } };
+    },
     invitationStore: createPortalInvitationStore(() => db.system.db) });
   const jobs = new FakeJobs(clock), transitions = createInvoiceTransitions({ scope: db.forGym, clock });
   const notifications = createTransitionNotifications({ scope: db.forGym, clock, settings, async prepare() { return { email: mail, origin }; }, async staffRecipients() { return []; } });
@@ -147,7 +155,7 @@ async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29
     logins: await tx.select().from(householdUsers), methods: await tx.select().from(paymentMethods), audits: await tx.select().from(auditEvents), leads: await tx.select().from(leads) }));
   const joined = async () => (await rows()).homes.filter(h => h.id !== existingHome.id);
   return { gymId, otherGym, clock, plan, annual, trial, free, retired, foreignPlan, templates, foreignTemplate, existingHome, existing, provider, paymentsFor,
-    uploads, uploadsFor, paymentsConfigured, waivers, checkout, invitations, accounts, settings, lifecycle, join, jobs, transitions, sent, mail, afterCheckout, afterInvoicePaid, webhook, drain,
+    uploads, uploadsFor, paymentsConfigured, waivers, checkout, invitations, accounts, settings, lifecycle, assigned, join, jobs, transitions, sent, mail, afterCheckout, afterInvoicePaid, webhook, drain,
     app, server, get, post, admit, body, submit, pay, rows, joined };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
@@ -288,6 +296,63 @@ describe('trial and zero-value joining', () => {
   });
 });
 describe('plan edits while joining', () => {
+  it.each([[0, 7], [7, 0], [7, 14]])('serializes a plan edit between two assignments from %i to %i trial days', async (before, after) => {
+    const f = await fixture(), plan = await factory('plans', f.gymId, { trialDays: before, amountCents: 10_000 });
+    let edit: Promise<unknown> | undefined, assigned = false;
+    const release = Promise.withResolvers<void>();
+    f.assigned.mockImplementationOnce(async () => {
+      assigned = true;
+      await release.promise;
+    });
+    const people = [adult(), child()], email = 'family-plan-edit@example.invalid';
+    const submitting = f.submit(people, email, plan.id);
+    let submission: Awaited<ReturnType<typeof f.submit>>;
+    try {
+      await expect.poll(() => assigned, { timeout: 10_000, interval: 10 }).toBe(true);
+      // A competing editor must wait until every person and the first invoice commit.
+      try {
+        await db.forGym(f.gymId, tx => tx.select().from(plans).where(eq(plans.id, plan.id)).for('update', { noWait: true }));
+        throw new Error('The assigning transaction released its plan lock');
+      } catch (error) { expect(databaseCode(error)).toBe('55P03'); }
+      edit = db.forGym(f.gymId, tx => tx.update(plans).set({ trialDays: after }).where(eq(plans.id, plan.id)));
+      release.resolve();
+      submission = await submitting;
+    } finally { release.resolve(); await submitting; await edit; }
+    const { response, images } = submission;
+    expect(response.status, await response.clone().text()).toBe(200);
+    const [home] = await f.joined(), state = await f.rows();
+    expect(state.memberships.filter(m => m.householdId === home!.id).map(m => m.trialEndsOn))
+      .toEqual([before === 0 ? null : '2026-11-05', before === 0 ? null : '2026-11-05']);
+    expect((await db.forGym(f.gymId, tx => tx.select().from(plans).where(eq(plans.id, plan.id))))[0]!.trialDays).toBe(after);
+    expect((await f.post('/api/public/join', f.body(people, images, email, plan.id))).status).toBe(200);
+    expect((await f.rows()).invoices.filter(i => i.householdId === home!.id)).toHaveLength(1);
+  });
+  it.each(['waiver', 'assignment'] as const)('bills the recorded assignment fee, taxes and description after a plan edit during %s', async timing => {
+    const f = await fixture();
+    async function edit(scope: typeof db.forGym) {
+      await scope(f.gymId, async tx => {
+        await tx.update(plans).set({ name: 'Revised plan', signupFeeCents: 7_000 }).where(eq(plans.id, f.plan.id));
+        await tx.update(taxRates).set({ rateMillionths: 100_000 }).where(eq(taxRates.name, 'GST'));
+      });
+    }
+    if (timing === 'waiver') {
+      const sign = f.waivers.sign.bind(f.waivers);
+      vi.spyOn(f.waivers, 'sign').mockImplementationOnce(async (...args) => {
+        await edit(db.forGym); return sign(...args);
+      });
+    } else f.assigned.mockImplementationOnce(async scope => edit(scope));
+    const { response } = await f.submit([adult()], 'fee-edit@example.invalid');
+    expect(response.status, await response.clone().text()).toBe(200);
+    const [home] = await f.joined(), state = await f.rows();
+    const revised = timing === 'waiver', description = revised ? 'Revised plan' : f.plan.name;
+    expect(state.lines.find(line => line.householdId === home!.id && line.kind === 'signup_fee'))
+      .toMatchObject({ amountCents: revised ? 7_000 : 5_000, description: expect.stringContaining(description) });
+    expect(state.lines.find(line => line.householdId === home!.id && line.kind === 'membership')!.description).toBe(description);
+    expect(state.invoices.find(bill => bill.householdId === home!.id)!.amountCents).toBe(revised ? 24_200 : 21_000);
+    expect(state.audits.find(event => event.action === 'billing.membership.assigned')!.after)
+      .toMatchObject({ billing: { description, signupFeeCents: revised ? 7_000 : 5_000,
+        taxes: [{ rateMillionths: revised ? 100_000 : 50_000 }] } });
+  });
   it.each([[0, 7], [7, 0], [7, 14]])('uses assigned trial dates when the plan changes from %i to %i days after admission', async (before, after) => {
     const f = await fixture(), plan = await factory('plans', f.gymId, { trialDays: before, amountCents: 10000 });
     const people = [adult()], email = 'changed-trial@example.invalid', images = await f.admit(people, email, plan.id);
@@ -318,11 +383,8 @@ describe('plan edits while joining', () => {
     });
   it.each([[0, 7], [7, 0]])('keeps the assigned trial when its plan changes from %i to %i days before invoicing', async (before, after) => {
     const f = await fixture(), plan = await factory('plans', f.gymId, { trialDays: before, amountCents: 10000 });
-    const assign = f.lifecycle.assign.bind(f.lifecycle);
-    vi.spyOn(f.lifecycle, 'assign').mockImplementation(async (...args) => {
-      const membership = await assign(...args);
-      await db.forGym(f.gymId, tx => tx.update(plans).set({ trialDays: after }).where(eq(plans.id, plan.id)));
-      return membership;
+    f.assigned.mockImplementation(async scope => {
+      await scope(f.gymId, tx => tx.update(plans).set({ trialDays: after }).where(eq(plans.id, plan.id)));
     });
     const { response } = await f.submit([adult()], 'assigned-trial@example.invalid', plan.id);
     expect(response.status, await response.clone().text()).toBe(200);
@@ -344,11 +406,8 @@ describe('plan edits while joining', () => {
   });
   it.each([[0, 10000], [10000, 0]])('keeps card setup based on assigned price %i when the plan becomes %i before linking', async (before, after) => {
     const f = await fixture(), plan = await factory('plans', f.gymId, { trialDays: 7, amountCents: before });
-    const assign = f.lifecycle.assign.bind(f.lifecycle);
-    vi.spyOn(f.lifecycle, 'assign').mockImplementation(async (...args) => {
-      const membership = await assign(...args);
-      await db.forGym(f.gymId, tx => tx.update(plans).set({ amountCents: after }).where(eq(plans.id, plan.id)));
-      return membership;
+    f.assigned.mockImplementation(async scope => {
+      await scope(f.gymId, tx => tx.update(plans).set({ amountCents: after }).where(eq(plans.id, plan.id)));
     });
     const { response, cookie } = await f.submit([adult()], 'assigned-price@example.invalid', plan.id);
     expect(response.status, await response.clone().text()).toBe(200);
