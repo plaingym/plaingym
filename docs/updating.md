@@ -86,6 +86,20 @@ image prune; images pulled by other tools are left alone.
 
 ## Minor and major releases: by hand
 
+### Internal v0.x builds
+
+The v0.1 through v0.4 milestones were internal commits, without release tags. A
+database from one of those builds migrates forward when the current image starts;
+it does not need each intermediate image. Preserve the installation's encryption
+key and uploads alongside its database backup. Development versions are not offered
+automatic updates, so choose an explicit image and follow the backup and manual
+update steps below. Returning to an internal build requires restoring its complete
+pre-upgrade backup; the release rollback promise does not cover those builds.
+
+The [historical upgrade suite](../e2e/upgrade/README.md) records the four gate
+commits and checks their data, encrypted settings and application pages after a
+restore and migration to the current schema.
+
 ### Before you update
 
 1. **Backups must be set up.** The updater takes a backup first and refuses to go on
