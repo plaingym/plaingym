@@ -135,7 +135,7 @@ test('upgrade notes name every host file the installer copies', () => {
   const f = fixture();
   try {
     release({ ...f.options, version: '1.0.0' }); f.publishFixture();
-    const hostFiles = ['deploy/Caddyfile', 'deploy/rotate-key.sh', 'deploy/postgres/01-roles.sh', 'deploy/update.sh'];
+    const hostFiles = ['deploy/compose.yaml', 'deploy/Caddyfile', 'deploy/rotate-key.sh', 'deploy/postgres/01-roles.sh', 'deploy/update.sh'];
     for (const path of hostFiles) f.write(path, 'changed\n');
     f.write('deploy/release/publish.sh', 'not on the host\n');
     f.commit('fix: host files'); f.publishFixture();

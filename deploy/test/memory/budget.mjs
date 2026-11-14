@@ -70,11 +70,15 @@ export function summarize(samples, marks) {
       freshIdleBytes: mean(fresh.map((sample) => processBytes(sample.services[name], name))),
       warmIdleBytes: mean(warm.map((sample) => processBytes(sample.services[name], name))),
       peakRssBytes: Math.max(0, ...all.map((s) => s.rss)),
-      peakCgroupBytes: Math.max(0, ...all.map((s) => s.current), last.peak ?? 0),
+      peakCgroupBytes: Math.max(0, ...all.map((s) => Math.max(s.current, s.peak ?? 0))),
+      peakSocketBytes: Math.max(0, ...all.map((s) => s.stat?.sock ?? 0)),
+      peakAnonBytes: Math.max(0, ...all.map((s) => s.stat?.anon ?? 0)),
+      peakFileBytes: Math.max(0, ...all.map((s) => s.stat?.file ?? 0)),
       maxBytes: last.max === 'max' ? null : Number(last.max),
       swapPeakBytes: Math.max(0, ...all.map((s) => s.swap)),
-      oomEvents: Math.max(0, last.events.oom - first.events.oom),
-      oomKills: Math.max(0, last.events.oom_kill - first.events.oom_kill),
+      // Restarts can replace the cgroup and reset its counters before the last sample.
+      oomEvents: Math.max(0, ...samples.map((s) => s.services[name].events.oom - first.events.oom)),
+      oomKills: Math.max(0, ...samples.map((s) => s.services[name].events.oom_kill - first.events.oom_kill)),
     }];
   }));
   const stack = (pick) => sum(names.map((name) => pick(name)));
@@ -130,7 +134,7 @@ export function evaluate(summary, { mode, facts = {} }) {
   for (const [name, service] of Object.entries(services)) {
     if (service.oomEvents > 0 || service.oomKills > 0) bad.push(`${name} hit its memory limit (${service.oomEvents} oom, ${service.oomKills} oom_kill)`);
   }
-  if (summary.hostOomKills > 0) bad.push(`the host killed ${summary.hostOomKills} process(es) for memory`);
+  if (summary.hostOomKills > 0) bad.push(`the kernel killed ${summary.hostOomKills} process(es) for memory (global counter; see diagnostics for the OOM constraint)`);
   bad.push(...containerViolations(facts));
 
   if (mode === 'capped') {
@@ -189,7 +193,7 @@ export function report(summary, violations, mode) {
     ...Object.entries(summary.services).map(([name, s]) => row(name, s)),
     row('stack', { ...summary.stack, swapPeakBytes: 0 }),
     `sampler   ${summary.coverage.samples} samples over ${Math.round(summary.coverage.spanMs / 1000)} s, coverage ${(summary.coverage.ratio * 100).toFixed(0)}%, longest gap ${summary.coverage.maxGapMs} ms`,
-    `OOM       host ${summary.hostOomKills}; ${Object.entries(summary.services).map(([n, s]) => `${n} ${s.oomEvents}/${s.oomKills}`).join(', ')} (oom/oom_kill)`];
+    `OOM       global ${summary.hostOomKills}; ${Object.entries(summary.services).map(([n, s]) => `${n} ${s.oomEvents}/${s.oomKills}`).join(', ')} (oom/oom_kill)`];
   lines.push(violations.length ? 'FAIL:\n  - ' + violations.join('\n  - ') : 'PASS: within the budget');
   return lines.join('\n');
 }

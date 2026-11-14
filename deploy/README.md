@@ -21,6 +21,31 @@ same file sets `AUTH_PASSWORD_LOGIN`, `RATE_LIMIT_PER_MINUTE`, `UPDATE_CHECK`, `
 not). `HardeningTests` in `demo/test_compose.py` renders the Compose file with and
 without each to check this, with the caller's interpolated variables removed.
 
+Caddy's network namespace sets `net.ipv4.tcp_wmem` to `4096 16384 524288` and
+`net.ipv4.tcp_rmem` to `4096 131072 524288` (minimum, initial and maximum TCP
+send/receive-buffer bytes). Both maxima are 512 KiB. Forty paused document readers
+previously charged about 127 MiB of socket memory to Caddy's 128 MiB container and
+killed it, despite only about 57 MiB of process RSS. Limiting sends alone still
+failed four of five capped measurements: a reverse proxy also receives from the
+app while its downstream reader is paused. Forty connections on each proxy leg
+at 512 KiB account for about 40 MiB, leaving room for the process and kernel
+overhead. These are autotuning bounds, not a total socket-memory limit. They apply to Caddy in both shipped stacks;
+the host and other containers keep their own settings. Docker applies the
+namespaced sysctl on the supported Ubuntu kernels without extra capabilities.
+The send bound sustained 4.57 MB/s in a 32 MiB download over an emulated 100 ms
+round-trip link; the Memory workflow checks at least 3 MB/s with both bounds.
+
+**Existing installs:** image updates preserve local Compose configuration. Merge
+the `caddy.sysctls` block above from the new release's `deploy/compose.yaml` in
+the deployment archive, after verifying its SHA-256 against the signed release
+manifest. The release's upgrade notes name changed host files. Then run
+`docker compose up -d caddy` from the install directory to recreate the proxy.
+Confirm with `docker compose exec -T caddy sysctl net.ipv4.tcp_wmem net.ipv4.tcp_rmem`.
+Restarting Caddy interrupts active connections briefly. Pulling a new app image
+alone does not install this host configuration change. A demo install gets both
+Compose files and a recreated proxy from its deployment-file refresh instead
+([demo/README.md](demo/README.md), **Refreshing deployment files**).
+
 ## Build and check
 
 Run from the repository root with Docker running:

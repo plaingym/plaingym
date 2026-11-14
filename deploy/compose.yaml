@@ -112,6 +112,10 @@ services:
     image: caddy:2.11.7-alpine@sha256:3095ad245c353e3bdb27a38f22a095c1cfa9e295ab21c0214c3e72b0e2960525
     restart: unless-stopped
     mem_limit: ${CADDY_MEMORY_LIMIT:-128m}
+    # Bound downstream send and upstream receive queues within Caddy's 128 MiB limit (deploy/README.md).
+    sysctls:
+      net.ipv4.tcp_wmem: "4096 16384 524288"
+      net.ipv4.tcp_rmem: "4096 131072 524288"
     environment:
       GYM_HOSTNAME: ${GYM_HOSTNAME:?required}
       ACME_EMAIL: ${ACME_EMAIL:?required}

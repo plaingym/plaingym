@@ -185,7 +185,7 @@ for file in $host_files; do
   field="host.$(printf '%s' "$file" | tr '[:upper:]' '[:lower:]')"
   [ "$(manifest_value "$manifest" "$field")" = "sha256:$(sha256sum "$temporary/archive/deploy/$file" | cut -d' ' -f1)" ]
 done
-for file in install.sh lib.sh update.sh bootstrap.sh compose.yaml Caddyfile; do
+for file in install.sh lib.sh update.sh bootstrap.sh compose.yaml demo/compose.yaml Caddyfile; do
   git -C "$source_dir/.." show "$revision:deploy/$file" | cmp -s - "$temporary/archive/deploy/$file" || { echo "The archive's $file is not the commit's." >&2; exit 1; }
 done
 cmp -s "$temporary/public.pem" "$temporary/archive/deploy/release-signing.pem" || { echo 'The archive carries another public key.' >&2; exit 1; }

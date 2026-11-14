@@ -227,6 +227,14 @@ for the measured effect.
 
 These are read by `deploy/compose.yaml`, not by the app.
 
+The Caddy service also sets the namespaced Linux sysctls `net.ipv4.tcp_wmem` to
+`4096 16384 524288` and `net.ipv4.tcp_rmem` to `4096 131072 524288`, bounding
+autotuned TCP send and receive buffers to 512 KiB per connection. Both proxy legs
+need a bound when a slow document reader backs up traffic from the app; the host's
+networking settings are unchanged. The [deployment notes](../deploy/README.md)
+explain the measurements and the manual Compose update for existing installs;
+image updates preserve their local Compose configuration.
+
 | Variable | Default | Meaning |
 | :--- | :--- | :--- |
 | `APP_IMAGE` | none | The exact image to run: a version tag or a `sha256` digest, never `latest`. `update.sh` changes it. |

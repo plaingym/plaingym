@@ -159,6 +159,22 @@ test('sampled cgroup OOM or host kills override a failed workload even when Dock
   }
 });
 
+test('a cgroup counter reset cannot erase sampled OOM evidence or its memory peak', () => {
+  const samples = run({ shape: healthy });
+  const killed = samples.find((sample) => sample.at === marks.loadStart + 1000).services.caddy;
+  killed.events = { oom: 1, oom_kill: 1 };
+  killed.peak = 128 * MiB;
+  killed.stat = { sock: 80 * MiB, anon: 40 * MiB, file: 8 * MiB };
+  const summary = summarize(samples, marks);
+  assert.equal(summary.services.caddy.oomKills, 1);
+  assert.equal(summary.services.caddy.oomEvents, 1);
+  assert.equal(summary.services.caddy.peakCgroupBytes, 128 * MiB);
+  assert.equal(summary.services.caddy.peakSocketBytes, 80 * MiB);
+  assert.equal(summary.services.caddy.peakAnonBytes, 40 * MiB);
+  assert.equal(summary.services.caddy.peakFileBytes, 8 * MiB);
+  assert.equal(judgeRun(summary, ['load exited 3']).exitCode, 2);
+});
+
 test('without samples, an exit 2 still names the Docker kill evidence', () => {
   const result = judgeRun(null, ['load exited 3'], { app: { oomKilled: true, restarts: 2 } });
   assert.equal(result.exitCode, 2);
@@ -264,7 +280,7 @@ test('an out-of-memory kill fails whatever the figures', () => {
   const killed = (name, seconds) => (name === 'app' && seconds > 50 ? { oom: 1, oom_kill: 1 } : {});
   const bad = judge(run({ shape: healthy, events: killed }));
   assert.ok(bad.some((line) => line.startsWith('app hit its memory limit')), bad.join('\n'));
-  assert.ok(judge(run({ shape: healthy, hostOom: 0 }).map((s, i, all) => ({ ...s, hostOomKills: i === all.length - 1 ? 2 : 0 }))).some((line) => line.includes('host killed')));
+  assert.ok(judge(run({ shape: healthy, hostOom: 0 }).map((s, i, all) => ({ ...s, hostOomKills: i === all.length - 1 ? 2 : 0 }))).some((line) => line.includes('kernel killed')));
   const facts = { containers: { postgres: { oomKilled: true, restarts: 1 } } };
   const flagged = judge(run({ shape: healthy }), 'capped', facts);
   assert.ok(flagged.some((line) => line.includes('OOM killed')) && flagged.some((line) => line.includes('restarted')));

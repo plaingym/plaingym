@@ -529,6 +529,18 @@ class HardeningTests(unittest.TestCase):
     interpolated_names = staticmethod(interpolated_names)
     clean_environment = staticmethod(clean_environment)
 
+    def test_caddy_tcp_buffers_are_bounded_in_both_stacks(self):
+        for files in ([DEPLOY / "compose.yaml"], [DEPLOY / "compose.yaml", HERE / "compose.yaml"]):
+            with self.subTest(files=files):
+                services = self.render(files, DEMO_ENV)
+                self.assertEqual(services["caddy"]["sysctls"], {"net.ipv4.tcp_wmem": "4096 16384 524288",
+                                                             "net.ipv4.tcp_rmem": "4096 131072 524288"})
+                self.assertEqual(int(services["caddy"]["mem_limit"]), 128 * 1024 ** 2)
+                for name, service in services.items():
+                    if name != "caddy":
+                        self.assertNotIn("net.ipv4.tcp_wmem", service.get("sysctls", {}))
+                        self.assertNotIn("net.ipv4.tcp_rmem", service.get("sysctls", {}))
+
     def test_operator_environment_defaults_and_overrides(self):
         defaults = dict(TRUST_CLOUDFLARE="", AUTH_PASSWORD_LOGIN="auto", RATE_LIMIT_PER_MINUTE="300",
                         DATABASE_POOL_MAX="8", UPDATE_CHECK="on", RELEASE_REPOSITORY="plaingym/plaingym")

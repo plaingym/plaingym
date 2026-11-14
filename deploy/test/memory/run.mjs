@@ -2,7 +2,8 @@
 // The memory check (deploy/test/memory/README.md): the shipped Compose stack under its shipped limits, then again without
 // limits, each sampled while a representative workload runs, judged against budget.mjs.
 //
-//   node deploy/test/memory/run.mjs [--mode capped|uncapped|both] [--image TAG] [--inject-leak [--leak-mib N]] [--out DIR]
+//   node deploy/test/memory/run.mjs [--mode capped|uncapped|both] [--capped-runs 1..5] [--image TAG]
+//     [--inject-leak [--leak-mib N]] [--out DIR]
 //
 // Exit codes: 0 within the budget, 2 the budget was exceeded or something was killed, 1 the harness itself failed
 // (a failed run proves nothing and is never reported as a pass).
@@ -14,14 +15,16 @@ import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { assessRun, budget, report, resolveMarks, summarize } from './budget.mjs';
+import { collectDiagnostics, formatDiagnostics } from './diagnostics.mjs';
 import { buildInfo } from '../../../scripts/release/version.mjs';
 
 const here = fileURLToPath(new URL('./', import.meta.url)), deploy = resolve(here, '../..'), root = resolve(deploy, '..');
 const nodeImage = 'node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205';
-const options = { mode: 'both', image: process.env.MEMORY_IMAGE ?? '', leak: false, leakMiB: 160, out: join(here, 'out') };
+const options = { mode: 'both', cappedRuns: 1, image: process.env.MEMORY_IMAGE ?? '', leak: false, leakMiB: 160, out: join(here, 'out') };
 for (let index = 2; import.meta.main && index < process.argv.length; index++) {
   const flag = process.argv[index];
   if (flag === '--mode') options.mode = process.argv[++index];
+  else if (flag === '--capped-runs') options.cappedRuns = Number(process.argv[++index]);
   else if (flag === '--image') options.image = process.argv[++index];
   else if (flag === '--out') options.out = resolve(process.argv[++index]);
   else if (flag === '--inject-leak') options.leak = true;
@@ -29,6 +32,7 @@ for (let index = 2; import.meta.main && index < process.argv.length; index++) {
   else throw new Error('Unknown option ' + flag);
 }
 if (!['capped', 'uncapped', 'both'].includes(options.mode)) throw new Error('--mode is capped, uncapped or both');
+if (!Number.isSafeInteger(options.cappedRuns) || options.cappedRuns < 1 || options.cappedRuns > 5) throw new Error('--capped-runs must be an integer from 1 to 5');
 if (!Number.isSafeInteger(options.leakMiB) || options.leakMiB < 1 || options.leakMiB > 4096) throw new Error('--leak-mib must be an integer from 1 to 4096');
 const controller = new AbortController();
 const sleep = (ms) => delay(ms, undefined, { signal: controller.signal });
@@ -141,10 +145,10 @@ async function buildImage(tag) {
   });
 }
 
-async function oneRun(mode, image) {
+async function oneRun(mode, image, runNumber) {
   const id = randomBytes(4).toString('hex'), project = 'plaingym-memory-' + id, sampler = project + '-sampler';
   const loaders = new Set();
-  const work = await mkdtemp(join(tmpdir(), project + '-')), out = join(options.out, mode);
+  const work = await mkdtemp(join(tmpdir(), project + '-')), out = join(options.out, mode + (runNumber ? '-' + runNumber : ''));
   await rm(out, { recursive: true, force: true });
   await mkdir(out, { recursive: true });
   const token = () => randomBytes(24).toString('hex');
@@ -162,6 +166,8 @@ async function oneRun(mode, image) {
     '-f', join(deploy, 'compose.yaml'), '-f', join(here, 'compose.memory.yaml')];
   const saveSummary = (result) => writeFile(join(out, 'summary.json'), JSON.stringify(result, null, 2));
   const phaseTimes = {};
+  const since = new Date().toISOString();
+  let finished, diagnostics;
   let autoUpdateCheckPeakRssBytes = null;
   const mark = (name) => {
     // A restart may stop the sampler before it can record the final marks. Keep bounds for the samples it did record.
@@ -171,7 +177,7 @@ async function oneRun(mode, image) {
   const loadContainer = (command, extra = []) => {
     const name = project + '-' + command;
     loaders.add(name);
-    return ['run', '--rm', '--name', name, '--cpus', '1', '--network', project + '_web', '-v', `${out}:/out`, '-v', `${here}:/harness:ro`,
+    return ['run', '--rm', '--name', name, '--label', 'com.docker.compose.project=' + project, '--cpus', '1', '--network', project + '_web', '-v', `${out}:/out`, '-v', `${here}:/harness:ro`,
     '-v', `${caFile}:/ca/root.crt:ro`, '-e', 'CA_FILE=/ca/root.crt',
     '-e', 'GYM_HOST=gym.localhost', '-e', 'PROXY_HOST=caddy', '-e', 'SETUP_TOKEN=' + secrets.setupToken, '-e', 'S3_ENDPOINT=http://s3:7070',
     '-e', 'S3_ACCESS_KEY=' + secrets.s3Access, '-e', 'S3_SECRET_KEY=' + secrets.s3Secret, '-e', 'STATE_FILE=/out/state.json', ...extra,
@@ -179,14 +185,20 @@ async function oneRun(mode, image) {
   };
   const psql = (sql) => run('docker', [...compose, 'exec', '-T', 'postgres', 'psql', '-U', 'postgres', '-d', 'plaingym', '-v', 'ON_ERROR_STOP=1', '-At', '-c', sql]);
   const result = await withCleanup(async () => {
-    log(`${mode}: starting ${project}`);
+    log(`${mode}${runNumber ? ' measurement ' + runNumber : ''}: starting ${project}`);
     await run('docker', [...compose, 'up', '-d', '--wait', '--wait-timeout', '240'], { quiet: false });
     const ids = {}, short = {};
     for (const service of ['app', 'postgres', 'caddy']) {
       short[service] = (await run('docker', [...compose, 'ps', '-q', service])).out.trim();
       ids[service] = (await docker('inspect', '--format', '{{.Id}}', short[service])).out.trim();
     }
-    await run('docker', ['run', '-d', '--name', sampler, '--privileged', '--pid=host', '--cgroupns=host', '--cpus', '0.25',
+    const tcpWmem = (await docker('exec', short.caddy, 'cat', '/proc/sys/net/ipv4/tcp_wmem')).out.trim().replace(/\s+/g, ' ');
+    if (tcpWmem !== '4096 16384 524288') throw new Error('Caddy TCP send-buffer policy differs from the shipped setting: ' + tcpWmem);
+    log('Caddy TCP send buffers: ' + tcpWmem);
+    const tcpRmem = (await docker('exec', short.caddy, 'cat', '/proc/sys/net/ipv4/tcp_rmem')).out.trim().replace(/\s+/g, ' ');
+    if (tcpRmem !== '4096 131072 524288') throw new Error('Caddy TCP receive-buffer policy differs from the shipped setting: ' + tcpRmem);
+    log('Caddy TCP receive buffers: ' + tcpRmem);
+    await run('docker', ['run', '-d', '--name', sampler, '--label', 'com.docker.compose.project=' + project, '--privileged', '--pid=host', '--cgroupns=host', '--cpus', '0.25',
       '-v', `${out}:/out`, '-v', `${here}:/harness:ro`, '-e', 'SERVICES=' + JSON.stringify(ids), '-e', 'SAMPLES_OUT=/out/samples.jsonl',
       nodeImage, 'nice', '-n', '10', 'timeout', '3000', 'node', '/harness/sampler.mjs']);
     for (let attempt = 0; ; attempt++) {
@@ -278,18 +290,23 @@ async function oneRun(mode, image) {
       const samples = parseSamples(await readFile(join(out, 'samples.jsonl'), 'utf8'));
       summary = summarize(samples, marks);
     });
-    const finished = { mode, image, budget, summary, facts, marks, clock, ...assessRun(summary, { mode, facts, failures, bookkeepingFailures }),
+    finished = { mode, image, budget, summary, facts, marks, clock, ...assessRun(summary, { mode, facts, failures, bookkeepingFailures }),
       failures, bookkeepingFailures, cleanupFailures: [], leakInjected: options.leak, leakMiB: options.leak ? options.leakMiB : 0 };
     // Written before cleanup so a hung teardown can't lose the result, and again afterwards for its failures.
     await saveSummary(finished);
     return finished;
   }, [
+    ['failure diagnostics', async () => {
+      diagnostics = await collectDiagnostics({ compose, sampler, since, out }, run);
+      if (!finished) console.error(formatDiagnostics(diagnostics));
+    }],
     // Abort stops Docker clients, not their containers. Remove the named loaders too, then the Compose volumes.
     ['remove sampler and loaders', () => removeContainers(project, [sampler, ...loaders])],
     ['compose down', () => run('docker', [...compose, 'down', '--volumes', '--remove-orphans'], { cleanup: true })],
     ['remove temporary files', () => rm(work, { recursive: true, force: true })],
   ]);
   await saveSummary(result);
+  if (result.exitCode && diagnostics) console.error(formatDiagnostics(diagnostics));
   if (result.summary) console.log(report(result.summary, [...result.violations, ...result.cleanupFailures], mode));
   else console.error('No memory summary: ' + result.violations.join('; '));
   console.log('jobs: ' + (result.facts.jobs.join(', ') || 'none'));
@@ -313,11 +330,14 @@ async function main() {
       await buildImage(image);
       built = image;
     }
-    const modes = options.mode === 'both' ? ['capped', 'uncapped'] : [options.mode];
+    // A fixed series, never retries: every measurement is kept and any failure fails the workflow.
+    const capped = Array(options.cappedRuns).fill('capped');
+    const modes = options.mode === 'both' ? [...capped, 'uncapped'] : options.mode === 'capped' ? capped : ['uncapped'];
     const violations = [];
+    let cappedRun = 0;
     for (const mode of modes) {
       controller.signal.throwIfAborted();
-      const result = await oneRun(mode, image);
+      const result = await oneRun(mode, image, mode === 'capped' && options.cappedRuns > 1 ? ++cappedRun : undefined);
       controller.signal.throwIfAborted();
       violations.push(...[...result.violations, ...result.cleanupFailures].map((line) => `${mode}: ${line}`));
       process.exitCode = Math.max(process.exitCode ?? 0, result.exitCode);

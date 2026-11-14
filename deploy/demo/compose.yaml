@@ -56,6 +56,10 @@ services:
       UPLOADS_S3_SECRET_ACCESS_KEY: ${UPLOADS_S3_SECRET_ACCESS_KEY:?required}
   caddy:
     image: ${CADDY_IMAGE:?use the prebuilt Cloudflare proxy}
+    # Keep the same per-connection TCP buffer bounds as the single-gym stack.
+    sysctls:
+      net.ipv4.tcp_wmem: "4096 16384 524288"
+      net.ipv4.tcp_rmem: "4096 131072 524288"
     environment:
       CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:?required}
       ACME_CA: ${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}

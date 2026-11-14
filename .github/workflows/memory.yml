@@ -11,6 +11,12 @@ on:
   schedule:
     - cron: '41 5 * * *'
   workflow_dispatch:
+    inputs:
+      capped-runs:
+        description: Number of independent capped measurements (every failure fails the run)
+        type: choice
+        options: ['1', '5']
+        default: '1'
 permissions:
   contents: read
 concurrency:
@@ -76,11 +82,15 @@ jobs:
         with:
           node-version: 24.22.1
       # The budget arithmetic, against synthetic runs including a leak and a kill.
-      - run: node --test deploy/test/memory/budget.test.mjs
+      - run: node --test deploy/test/memory/budget.test.mjs deploy/test/memory/diagnostics.test.mjs deploy/test/memory/tcp-queues.test.mjs
       - run: node --test e2e/vm/harness.test.mjs
-      # Builds committed HEAD into the production image, then runs the shipped Compose stack twice (limits, then
-      # none), sampling the real cgroups every 500 ms. Removes its containers, volumes and image afterwards.
-      - run: node deploy/test/memory/run.mjs --mode both --out "$RUNNER_TEMP/memory"
+      - name: Check Caddy download throughput at 100 ms RTT
+        run: node deploy/test/memory/tcp-throughput.mjs
+      # Builds committed HEAD once, then measures the shipped Compose stack capped and uncapped, sampling real
+      # cgroups every 500 ms. On demand, capped measurements may repeat; every failure is retained.
+      - env:
+          CAPPED_RUNS: ${{ inputs.capped-runs || '1' }}
+        run: node deploy/test/memory/run.mjs --mode both --capped-runs "$CAPPED_RUNS" --out "$RUNNER_TEMP/memory"
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

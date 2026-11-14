@@ -15,6 +15,7 @@ sampler's baseline and peak stack process memory in `summary.autoUpdateCheck`. T
 measurement captures short CLI peaks between the sampler's 500 ms samples; general budgets stay unchanged.
 
     node --test deploy/test/memory/budget.test.mjs    # budget arithmetic and failure classification, no Docker
+    node --test deploy/test/memory/diagnostics.test.mjs
     node deploy/test/memory/run.mjs --mode both        # builds committed HEAD, then measures it
     node --test deploy/test/memory/waiver-budget.test.mjs
     node deploy/test/memory/waiver-budget.mjs baseline/capped branch/capped
@@ -36,13 +37,26 @@ images in a PDF comparison must use them. The image's start scripts also pass `P
 (`--max-semi-space-size=4`) to `node`, so the young generation is collected sooner. The container and V8
 old-space limits stay unchanged.
 
-`run.mjs` needs Docker with Compose v2.24 or later and cgroup v2. Options: `--mode capped|uncapped|both`,
+`run.mjs` needs Docker with Compose v2.24 or later and cgroup v2. Options: `--mode capped|uncapped|both`, `--capped-runs N` (1–5, default 1),
 `--image TAG` (skip the build; `MEMORY_IMAGE` works too), `--out DIR` (default `deploy/test/memory/out`,
 ignored by Git), `--inject-leak` and `--leak-mib N` (1–4096, default 160; used with `--inject-leak`). Exit code 0 means within budget, 2 the budget was exceeded or
 something was killed, 1 the harness could not run (never a pass).
 If the load or backup fails, the runner still stops sampling, reads Docker's kill/restart facts,
 evaluates the samples and writes `summary.json`, including the workload failures and exit code.
 OOM, kill or restart evidence makes that run exit 2; without it, a failed workload exits 1.
+Before teardown, every run saves `diagnostics.json`: container exit state and restart counts, app,
+Postgres, Caddy and sampler logs, bounded Docker events, and the host kernel log since the run began
+(requires passwordless `sudo dmesg`, available on the CI runner). Failures also print this evidence,
+including diagnostic commands that failed. Container environment variables are never dumped.
+Samples also retain `memory.stat` (including kernel socket buffers, anonymous memory and file cache),
+with their per-service peaks in the summary. Sampled OOM counters and cgroup peaks survive a later
+counter reset after a restart.
+The global `/proc/vmstat` OOM-kill counter includes cgroup kills; it does not by itself prove that
+the host exhausted its RAM. Kernel messages identify the OOM constraint and affected cgroup, while
+Docker's `oom` and `die` events retain the kill and exit code even after a restart clears `OOMKilled`.
+On demand, select five capped measurements with the workflow's `capped-runs` input, or pass
+`--capped-runs 5`. These are independent measurements, with separate `capped-1` through `capped-5`
+artifacts; any failure fails the workflow. They are never retried or replaced with a later pass.
 Setup, seed, load and backup failures are workload failures. Phase marks, sampler shutdown,
 reading the sampler's files, container inspection and job counts are bookkeeping: with a completed workload and a summary,
 a budget violation still exits 2 when bookkeeping fails. Bookkeeping alone exits 1, and so does
@@ -58,6 +72,22 @@ The shipped `deploy/compose.yaml` (Caddy, app, PostgreSQL with the tuned setting
 limits installs get), laid over by `compose.memory.yaml`: no published port, CPU caps on every service
 (app 1, Postgres 1, Caddy 0.5) and an S3-compatible stand-in (versitygw) as the backup bucket. Nothing
 about the stack under test changes.
+
+The shipped Caddy service bounds TCP send and receive-buffer autotuning to 512 KiB
+per connection (`net.ipv4.tcp_wmem=4096 16384 524288` and
+`net.ipv4.tcp_rmem=4096 131072 524288`), including the demo overlay.
+Without it, the forty paused document readers could charge about 127 MiB of
+kernel socket queues to Caddy's 128 MiB cgroup and kill the proxy while its RSS
+stayed near 57 MiB. Limiting only sends still failed four of five capped runs;
+the proxy also receives upstream data while a downstream reader pauses. The
+runner verifies both live namespaced settings. The sampler records aggregate
+upstream/downstream TCP payload queue lengths, without addresses, alongside
+charged socket memory to distinguish the proxy legs. The workflow
+also runs `tcp-throughput.mjs` in separate disposable containers with the shipped
+Caddy image, memory cap and sysctls, using 50 ms of delay in each direction. A
+32 MiB single download must sustain at least 3 MB/s at 100 ms RTT. These containers
+are CPU-capped, lower priority, limited to 180 seconds and removed afterwards.
+The forty-reader workload, memory budgets and leak canary are unchanged.
 
 1. **Setup** through the API: owner, gym, packs, and encrypted backups to the stand-in bucket.
 2. **Seed**: 100 households with 300 members, an uploaded 20-page, 10 MiB waiver PDF and six signatures; a 115 MB

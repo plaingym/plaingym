@@ -6,6 +6,7 @@
 //
 // SERVICES is a JSON object of service name to full container ID; SAMPLES_OUT is the JSON-lines file to append to.
 import { appendFileSync, readdirSync, readFileSync } from 'node:fs';
+import { tcpQueues } from './tcp-queues.mjs';
 
 const services = JSON.parse(process.env.SERVICES ?? '{}');
 const out = process.env.SAMPLES_OUT ?? '/out/samples.jsonl';
@@ -27,9 +28,10 @@ function cgroupOf(id) {
 const groups = Object.fromEntries(Object.entries(services).map(([name, id]) => [name, cgroupOf(id)]));
 const keyValues = (text) => Object.fromEntries(text.trim().split('\n').map((line) => { const [key, value] = line.split(' '); return [key, Number(value)]; }));
 
-function sampleService(group) {
+function sampleService(group, proxy) {
   let rss = 0, pss = 0, procs = 0;
-  for (const pid of read(`${group}/cgroup.procs`).split('\n').filter(Boolean)) {
+  const pids = read(`${group}/cgroup.procs`).split('\n').filter(Boolean);
+  for (const pid of pids) {
     try {
       const rollup = read(`/proc/${pid}/smaps_rollup`);
       rss += kib(rollup, 'Rss'); pss += kib(rollup, 'Pss'); procs += 1;
@@ -38,8 +40,13 @@ function sampleService(group) {
   const max = read(`${group}/memory.max`).trim();
   let peak = null;
   try { peak = Number(read(`${group}/memory.peak`)); } catch { /* older kernels have no memory.peak */ }
+  let queues;
+  if (proxy && pids.length) {
+    try { queues = tcpQueues(['tcp', 'tcp6'].map(table => read(`/proc/${pids[0]}/net/${table}`))); }
+    catch { /* optional diagnostics; a process can end between samples */ }
+  }
   return { current: Number(read(`${group}/memory.current`)), peak, max, swap: Number(read(`${group}/memory.swap.current`)),
-    events: keyValues(read(`${group}/memory.events`)), rss, pss, procs };
+    events: keyValues(read(`${group}/memory.events`)), stat: keyValues(read(`${group}/memory.stat`)), queues, rss, pss, procs };
 }
 const hostOomKills = () => Number((/^oom_kill (\d+)/m.exec(read('/proc/vmstat')) ?? [])[1] ?? 0);
 
@@ -50,7 +57,7 @@ while (!stopping) {
   const at = Date.now();
   try {
     appendFileSync(out, JSON.stringify({ at, hostOomKills: hostOomKills(),
-      services: Object.fromEntries(Object.entries(groups).map(([name, group]) => [name, sampleService(group)])) }) + '\n');
+      services: Object.fromEntries(Object.entries(groups).map(([name, group]) => [name, sampleService(group, name === 'caddy')])) }) + '\n');
   } catch (error) {
     // A container that is gone ends the run; anything else is worth a line in the container log.
     console.error(String(error));

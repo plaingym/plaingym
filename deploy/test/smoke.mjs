@@ -103,6 +103,10 @@ try {
   compose(['exec', '-T', 'app', '/app/deploy/database.sh', 'roles']);
 
   const caddyId = compose(['ps', '-q', 'caddy']).trim();
+  assert.equal(compose(['exec', '-T', 'caddy', 'cat', '/proc/sys/net/ipv4/tcp_wmem']).trim().replace(/\s+/g, ' '),
+    '4096 16384 524288', 'the shipped TCP send-buffer policy applies in Caddy on this architecture');
+  assert.equal(compose(['exec', '-T', 'caddy', 'cat', '/proc/sys/net/ipv4/tcp_rmem']).trim().replace(/\s+/g, ' '),
+    '4096 131072 524288', 'the shipped TCP receive-buffer policy applies in Caddy on this architecture');
   const caPath = join(temporary, 'root.crt');
   docker(['cp', caddyId + ':/data/caddy/pki/authorities/local/root.crt', caPath]);
   const ca = readFileSync(caPath);
