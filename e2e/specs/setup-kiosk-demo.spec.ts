@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { test, expect, Client, gymOrigin, password } from '../support.js';
 import { accessibleLayout, sizes } from '../responsive.js';
+import type { Request } from '@playwright/test';
 test.use({ trace: 'off' });
 
 test('login at phone, tablet and desktop widths supports errors and password sign-in', async ({ page }, info) => {
@@ -58,6 +59,10 @@ test('demo entry opens the showcase, private copy menu and kiosk work at every s
   await expect(page).not.toHaveURL(/#/);
   await expect(page.getByRole('button', { name: 'Try the demo', exact: true })).toHaveCount(0);
   // Follow the public visitor path through the demo menu; sandbox creation provisions the device.
+  const kioskRequests: Request[] = [];
+  page.on('request', (request) => {
+    if (/^\/api\/kiosk\/(lookup|checkin)(\/|$)/.test(new URL(request.url()).pathname)) kioskRequests.push(request);
+  });
   await menuButton.click();
   await menu.getByRole('navigation', { name: 'Go to' }).getByRole('link', { name: 'Kiosk', exact: true }).click();
   await expect(page.getByLabel('Device token', { exact: true })).toHaveCount(0);
@@ -129,7 +134,10 @@ test('demo entry opens the showcase, private copy menu and kiosk work at every s
   await page.getByRole('button', { name: 'Name and PIN', exact: true }).click();
   await expect(page.getByLabel('Your name', { exact: true })).toHaveValue('');
   await expect(page.getByLabel('Household PIN', { exact: true })).toHaveValue('');
-  expect((await page.context().cookies()).filter((cookie) => cookie.name.includes('session_token'))).toHaveLength(0);
+  // Copy handoff signs in the visitor, but the kiosk must still use only its device credentials.
+  expect((await page.context().cookies(sandbox.origin)).some((cookie) => cookie.name.includes('session_token'))).toBe(true);
+  expect(kioskRequests.length).toBeGreaterThan(0);
+  for (const request of kioskRequests) expect((await request.allHeaders()).cookie).toBeUndefined();
   // A sandbox's /demo is its start page: every role, the join walkthrough with the test card, and the kiosk.
   await page.goto(sandbox.origin + '/demo');
   const start = page.getByRole('main');
