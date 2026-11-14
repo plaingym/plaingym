@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
+import { sessionTimes } from './session.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryObserver } from '@tanstack/react-query';
@@ -93,6 +94,7 @@ describe('schedule calendar and session detail', () => {
     expect(() => calendarInstant('2026-03-08T02:30', 'America/New_York')).toThrow();
     expect(calendarInstant('2026-11-01T01:30', 'America/New_York')).toBe('2026-11-01T05:30:00.000Z');
     expect(localTime(new Date('2026-03-02T23:00:00Z'), 'America/New_York')).toBe('18:00');
+    expect(sessionTimes(session, 'America/New_York')).toBe('6:00 PM–7:00 PM');
   });
   it('renders all permitted registered panels with the session ID, and honors modules and flags', () => {
     const seen: string[] = [];
@@ -185,6 +187,17 @@ describe('schedule calendar and session detail', () => {
     fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'open_mat' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(api.POST).toHaveBeenCalledWith('/api/schedule/templates', { body: { name: 'Morning class', weekday: 1, localStartTime: '18:00', durationMinutes: 60, coachId: null, capacity: null, notes: null, kind: 'open_mat', programIds: [programId], tagIds: [] } }));
+  });
+  it('uses the same clock style for weekly-class summaries and sessions', async () => {
+    const load = vi.mocked(api.GET).getMockImplementation()!;
+    vi.mocked(api.GET).mockImplementation((...args) => args[0] === '/api/schedule/templates'
+      ? Promise.resolve({ response: new Response(), data: { data: [{ id, name: 'Weekly evening class', weekday: 1, localStartTime: '18:00',
+        durationMinutes: 60, coachId: null, capacity: null, notes: null, kind: 'class', programIds: [programId], tagIds: [], revision: 1,
+        createdAt: session.createdAt }], pagination: { offset: 0, limit: 100, total: 1 } } } as Awaited<ReturnType<typeof api.GET>>)
+      : load(...args));
+    render(<SchedulePage/>);
+    expect(await screen.findByText(/Monday 6:00 PM/)).toBeDefined();
+    expect((await screen.findByRole('button', { name: /Evening class/ })).textContent).toContain('6:00 PM–7:00 PM');
   });
   it('fails closed for a member and never requests schedule data', () => {
     bootstrap([]); render(<SchedulePage/>);

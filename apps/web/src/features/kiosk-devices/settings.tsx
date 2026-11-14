@@ -6,7 +6,7 @@ import { kioskDeviceListResponseSchema, kioskDeviceResponseSchema, registerKiosk
   type KioskDeviceListResponse } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
-import { instantLabel } from '../../lib/instant.js';
+import { useGymTime } from '../../lib/instant.js';
 import { Button } from '../../components/ui/button.js';
 import { Pager } from '../../components/ui/pager.js';
 import { Input } from '../../components/ui/input.js';
@@ -16,6 +16,7 @@ import { TableContainer } from '../../components/ui/table.js';
 
 const pageSize = 20;
 export function KioskDevicesSettings() {
+  const { instantLabel } = useGymTime();
   const [page, setPage] = useState<KioskDeviceListResponse | null>(null);
   const [token, setToken] = useState<{ deviceId: string; value: string } | null>(null);
   const [busy, setBusy] = useState(false);

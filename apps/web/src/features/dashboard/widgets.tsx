@@ -31,8 +31,8 @@ export function CountWidget({ widget, help, footer }: { widget: DashboardWidget;
   </>;
 }
 /** Data and renderer extensions are independent of the page framework. */
-export function DashboardWidgets({ widgets, roles, views = [] }: {
-  widgets: readonly DashboardWidget[]; roles: readonly StaffRole[]; views?: readonly DashboardView[];
+export function DashboardWidgets({ widgets, roles, views = [], timezone = 'UTC' }: {
+  timezone?: string; widgets: readonly DashboardWidget[]; roles: readonly StaffRole[]; views?: readonly DashboardView[];
 }) {
   return <div className="grid items-start gap-4 sm:grid-cols-2 xl:grid-cols-3">{widgets.map((widget) => {
     const view = views.find((entry) => entry.id === widget.id);
@@ -50,7 +50,7 @@ export function DashboardWidgets({ widgets, roles, views = [] }: {
               : <ul className="mt-3 divide-y divide-border">{widget.members.map((member) => <li key={member.memberId} className="py-2">
                 <a className="flex min-h-11 items-center font-medium underline underline-offset-4" href={'/admin/members/' + encodeURIComponent(member.memberId)}>{member.firstName} {member.lastName}</a>
                 <p className="text-sm text-muted-foreground">{label('lastSeen')}: {member.lastSeenAt
-                  ? <time dateTime={member.lastSeenAt}>{dateLabel(member.lastSeenAt)}</time> : label('neverSeen')}</p>
+                  ? <time dateTime={member.lastSeenAt}>{dateLabel(member.lastSeenAt, timezone)}</time> : label('neverSeen')}</p>
               </li>)}</ul>}
             {widget.count > widget.members.length && <p className="mt-4 text-sm text-muted-foreground">{t('dashboard/dashboard:showing', { shown: widget.members.length, total: widget.count })}</p>}
           </>}

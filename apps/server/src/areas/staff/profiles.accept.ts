@@ -4,7 +4,7 @@ import { jsx } from 'hono/jsx/jsx-runtime';
 import { button, inputClass, panel } from '../../public/pages/page.js';
 /** Public form uses a fragment token, never interpolates it into markup, and submits JSON to the same origin.
  * The inline script carries the response's Content-Security-Policy nonce. It wears the core public pages' stylesheet and the
- * gym's colors, using only classes those pages already use (the stylesheet is built from them). */
+ * gym's colors; this file is one of that stylesheet's explicit sources (`public/links/styles.build.mjs`), so its classes compile. */
 export function invitationPage(t: Translator, passwordRequired: boolean, nonce: string) {
   const script = `const form=document.getElementById('invite');const token=location.hash.slice(1);history.replaceState(null,'',location.pathname);form.addEventListener('submit',async(event)=>{event.preventDefault();const button=form.querySelector('button');button.disabled=true;const fields=new FormData(form);try{const response=await fetch('/api/staff/invitations/accept',{method:'POST',credentials:'same-origin',redirect:'error',headers:{'Content-Type':'application/json'},body:JSON.stringify({token,name:fields.get('name'),...(fields.has('password')?{password:fields.get('password')}:{})})});document.getElementById(response.ok?'success':'error').hidden=false;if(response.ok)form.hidden=true;}catch{document.getElementById('error').hidden=false;}finally{button.disabled=false;}});`;
   const field = (label: string, input: Record<string, unknown>) =>

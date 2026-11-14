@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
+import { ShellServicesContext } from '../../app/context.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -19,7 +20,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 function start(owner = true, onConfirmed = vi.fn()) {
   const cache = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  render(<QueryClientProvider client={cache}><BackupActions gymId={uuid(1)} owner={owner} onConfirmed={onConfirmed}/></QueryClientProvider>);
+  render(<QueryClientProvider client={cache}><ShellServicesContext.Provider value={({ signInWithPassword: async () => {}, requestMagicLink: async () => {}, signOut: async () => {}, loadBootstrap: async () => ({ gym: { id: 'gym', name: 'Gym', timezone: 'America/Los_Angeles', currency: 'USD', enabledModules: [] }, session: null, login: { password: true, magicLink: false } }) })}><BackupActions gymId={uuid(1)} owner={owner} onConfirmed={onConfirmed}/></ShellServicesContext.Provider></QueryClientProvider>);
   return { cache, onConfirmed };
 }
 describe('backup actions shared by Settings and Health', () => {

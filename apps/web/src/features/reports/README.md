@@ -15,6 +15,10 @@ A refreshed answer that no longer contains the selected program also resets it
 to All programs, using the same selection for the control, table, chart and CSV.
 
 The default range is twelve inclusive months through the gym's current month.
+Month ranges, table dates and chart labels use readable calendar labels without
+shifting dates into the browser's timezone. Each period includes its start date
+and stops before its Before date. A selection with zero counts keeps the chart
+and table and explains the zeros; an empty answer says there are no results.
 Apply a range of at most 24 months. Attendance supports month or week and a
 program filter. Zero-activity periods stay in filtered tables; unique members
 must not be added across program rows. Boundary periods retain the
@@ -32,7 +36,7 @@ total including tax; it never adds currencies together. Amounts use
 `views.tsx` memoizes tables, program choices and chart series by report data and
 program selection. `DataTable` renders those columns and rows and
 passes the same object to `csv.ts` for browser downloads. CSV includes a UTF-8
-BOM, quoted fields, CRLF records, ISO dates and formula-prefix neutralization
+BOM, quoted fields, CRLF records, readable calendar dates and formula-prefix neutralization
 except for plain numbers matching `^-?\d+(\.\d+)?$`, which stay numeric, including
 negative discounts, refunds and nets. Every other cell starting with `-`, `=`,
 `+`, `@`, tab or carriage return gets a leading apostrophe. Filenames contain report, month range and,

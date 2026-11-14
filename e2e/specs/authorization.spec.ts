@@ -305,6 +305,8 @@ for (const width of [360, 1280]) test('report tabs retain their program and rece
   for (const name of ['Members', 'Revenue', 'Attendance']) {
     await page.getByRole('tab', { name, exact: true }).click();
     await page.getByRole('table').first().waitFor();
+    await expect(page.getByRole('table').first()).not.toContainText(/\d{4}-\d{2}-\d{2}/);
+    await expect(page.getByText(/^Showing /)).toContainText(/Showing [A-Z][a-z]+ \d{4} through [A-Z][a-z]+ \d{4}/);
     await accessibleLayout(page, info, 'reports-' + name.toLowerCase() + '-' + width);
     const path = info.outputPath('reports-' + name.toLowerCase() + '-' + width + '.png');
     await page.screenshot({ path, fullPage: true });

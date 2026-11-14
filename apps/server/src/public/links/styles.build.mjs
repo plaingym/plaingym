@@ -8,13 +8,14 @@ import { fileURLToPath } from 'node:url';
 /** The directories whose pages share the public stylesheet: the core public pages and the feature modules (the website). */
 export const publicPageRoots = [fileURLToPath(new URL('..', import.meta.url)), fileURLToPath(new URL('../../modules', import.meta.url))];
 /** The public files that render markup, `page.ts` and `*.page.ts` anywhere under `public/` and `modules/`, so a class used in any
- * public page compiles. Services, jobs and notices are left out: their identifiers would otherwise match a utility and emit CSS.
+ * public page compiles. The staff invitation page is also an explicit source. Services, jobs and notices are left out:
+ * their identifiers would otherwise match a utility and emit CSS.
  * @param {string | string[]} [roots] the directories to scan, `publicPageRoots` by default
  * @returns {Promise<string[]>} absolute paths, sorted */
 export async function linkStyleSources(roots = publicPageRoots) {
   const found = await Promise.all([roots].flat().map(async root => (await readdir(root, { recursive: true }))
     .filter(file => /(^|[\\/])([^\\/]+\.)?page\.ts$/.test(file)).map(file => join(root, file))));
-  return found.flat().sort();
+  return [...found.flat(), ...(roots === publicPageRoots ? [fileURLToPath(new URL('../../areas/staff/profiles.accept.ts', import.meta.url))] : [])].sort();
 }
 /** Build with the web app's already-pinned Tailwind toolchain and shared tokens.
  * @param {string} destination

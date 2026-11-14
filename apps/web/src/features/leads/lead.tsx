@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { instantLabel } from '../../lib/instant.js';
 import { useEffect, useState, type ReactNode } from 'react';
 import { canStaff, type StaffRole } from '@plaingym/shared';
 import { useBootstrap } from '../../app/context.js';
@@ -84,7 +85,7 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
   return <div className="min-w-0"><dt className="text-sm text-muted-foreground">{label}</dt><dd className="font-medium">{children}</dd></div>;
 }
 function Instant({ value, timezone }: { value: string; timezone: string }) {
-  return <time dateTime={value}>{new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short', timeZone: timezone }).format(new Date(value))}</time>;
+  return <time dateTime={value}>{instantLabel(value, timezone)}</time>;
 }
 
 export function LeadPage({ memberId }: { memberId: string }) {

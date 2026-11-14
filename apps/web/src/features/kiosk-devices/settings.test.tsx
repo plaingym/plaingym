@@ -1,11 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { ShellServicesContext } from '../../app/context.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as baseRender, screen, waitFor } from '@testing-library/react';
 import { renderSVG } from 'uqr';
 import userEvent from '@testing-library/user-event';
 import { KioskDevicesSettings } from './settings.js';
 import { registration } from './registrations.js';
+function render(content: React.ReactNode) {
+  const services = ({ signInWithPassword: async () => {}, requestMagicLink: async () => {}, signOut: async () => {}, loadBootstrap: async () => ({ gym: { id: 'gym', name: 'Gym', timezone: 'America/Los_Angeles', currency: 'USD', enabledModules: [] },
+    session: null, login: { password: true, magicLink: false } }) });
+  return baseRender(<QueryClientProvider client={new QueryClient()}><ShellServicesContext.Provider value={services}>{content}</ShellServicesContext.Provider></QueryClientProvider>);
+}
 const client = vi.hoisted(() => ({ GET: vi.fn(), POST: vi.fn() }));
 vi.mock('../../lib/api.js', () => ({ api: client }));
 vi.mock('uqr', async (original) => {
@@ -25,6 +32,11 @@ afterEach(() => {
   cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); localStorage.clear(); sessionStorage.clear(); window.history.replaceState(null, '', '/');
 });
 describe('kiosk device settings', () => {
+  it('shows device instants on the gym day near midnight UTC', async () => {
+    client.GET.mockResolvedValue(page([{ ...device, createdAt: '2026-11-02T00:30:00Z' }]));
+    render(<KioskDevicesSettings/>);
+    expect(await screen.findByText('Nov 1, 2026, 4:30 PM')).toBeDefined();
+  });
   it('clears the copied note three seconds after the latest copy', async () => {
     client.POST.mockResolvedValue(ok({ data: { device, token } }));
     const user = userEvent.setup();

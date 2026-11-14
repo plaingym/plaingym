@@ -10,6 +10,8 @@ describe('ReportChart legend', () => {
     const { container } = render(<ReportChart title="Chart" periods={['2026-10-01', '2026-11-01']} series={[
       { label: 'New', values: [1, 2] }, { label: 'Active', values: [3, 4], line: true },
     ]} />);
+    expect(container.textContent).toContain('Oct 1, 2026');
+    expect(container.textContent).not.toContain('2026-10-01');
     const swatches = [...container.querySelectorAll('li > span')].map(span => [...span.classList]);
     expect(swatches[0]).toEqual(expect.arrayContaining(['text-primary', 'h-3', 'bg-current']));
     expect(swatches[1]).toEqual(expect.arrayContaining(['text-muted-foreground', 'border-t-2']));

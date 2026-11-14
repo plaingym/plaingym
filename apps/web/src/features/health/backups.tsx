@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { instantLabel } from '../../lib/instant.js';
+import { useGymTime } from '../../lib/instant.js';
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { backupControlContracts, backupControlResponseSchema } from '@plaingym/shared/contracts';
@@ -14,6 +14,7 @@ import { Dialog } from '../../components/ui/dialog.js';
 const label = (key: string, values?: Record<string, string | number>) => t('health/backups:' + key, values);
 /** Shared by Settings and the Last backup tile; cache and pending requests belong to this gym. */
 export function BackupActions({ gymId, owner, onConfirmed }: { gymId: string; owner: boolean; onConfirmed?: () => void }) {
+  const { instantLabel } = useGymTime();
   const cache = useQueryClient(), key = ['health', gymId, 'backups'];
   const [confirming, setConfirming] = useState<number | null>(null), [checked, setChecked] = useState(false);
   // Retain the ID across an uncertain response: retrying the same click must not take another snapshot.

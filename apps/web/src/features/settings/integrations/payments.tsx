@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { instantLabel } from '../../../lib/instant.js';
+import { useGymTime } from '../../../lib/instant.js';
 import { goLiveChecklistResponseSchema, restrictedKeyPattern } from '@plaingym/shared/contracts';
 import { useQuery } from '@tanstack/react-query';
 import { useState, type FormEvent } from 'react';
@@ -35,6 +35,7 @@ function refusal(reply: ChangeResult<unknown>, mode: PaymentsIntegration['mode']
 export function PaymentsIntegrationSection({ payments, editable, lastEventAt, state }: {
   payments: PaymentsIntegration; editable: boolean; lastEventAt: string | null | undefined; state: ReturnType<typeof useIntegrations>;
 }) {
+  const { instantLabel } = useGymTime();
   const [key, setKey] = useState(''), [busy, setBusy] = useState(false), [switchKey, setSwitchKey] = useState<string | null>(null);
   const [message, setMessage] = useState<Message | null>(null);
   const gym = useGymSettings();

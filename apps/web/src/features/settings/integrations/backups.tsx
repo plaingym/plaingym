@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { instantLabel } from '../../../lib/instant.js';
+import { useGymTime } from '../../../lib/instant.js';
 import { parseResponse } from '../../../lib/response.js';
 import { useState, type FormEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
@@ -34,6 +34,7 @@ function Field({ name, type = 'text', value, text: shown }: { name: string; type
  * private key is shown once, and nothing used until the owner pastes it back.
  */
 export function BackupsIntegrationSection({ backups, lastSnapshot, state }: { backups: BackupsIntegration; lastSnapshot: LastSnapshot; state: ReturnType<typeof useIntegrations> }) {
+  const { instantLabel } = useGymTime();
   const cache = useQueryClient();
   const [busy, setBusy] = useState(false), [open, setOpen] = useState(false);
   const [created, setCreated] = useState<{ privateKey: string; publicKey: string } | null>(null);

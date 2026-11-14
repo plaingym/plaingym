@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { calendarDateLabel as date } from '../../../lib/instant.js';
 import { PortalRecovery } from './recovery.js';
 import { useState, type ComponentProps, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -17,7 +18,6 @@ import { EmptyState, ErrorState, LoadingState } from '../../../components/ui/sta
 import { conflict, gymToday, knownMinor, usePortalContext, usePortalScope, type PortalScope } from './api.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('portal/household:' + key, values);
-const date = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(value + 'T00:00:00Z'));
 
 /** Reads the open household once; everything below is keyed by it and checks each answer was for it. */
 export function PortalHousehold() {

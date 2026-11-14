@@ -15,8 +15,8 @@ import { ranksClient, type RanksClient } from './api.js';
 import { Criteria, Field } from './page.js';
 import { text } from './rank-editor.js';
 
-export function MemberRanksPanel({ gymId, memberId, promote, client = ranksClient }: {
-  gymId: string; memberId: string; promote: boolean; client?: RanksClient;
+export function MemberRanksPanel({ gymId, memberId, promote, client = ranksClient, timezone = 'UTC' }: {
+  timezone?: string; gymId: string; memberId: string; promote: boolean; client?: RanksClient;
 }) {
   const cache = useQueryClient(), key = ['ranks', gymId];
   const [programChoice, setProgram] = useState(''), [rankChoice, setRank] = useState('');
@@ -57,7 +57,7 @@ export function MemberRanksPanel({ gymId, memberId, promote, client = ranksClien
         return <li key={entry.id} className="space-y-1 rounded-lg border border-border p-3" data-rank-system={entry.rankSystemId}>
           <p className="font-medium">{catalog.data.programs.find((item) => item.id === entry.programId)?.name} — {rank?.name} {entry.subRank > 0 ? rank?.subRanks[entry.subRank - 1]?.name ?? entry.subRank : ''}</p>
           <p className="text-sm text-muted-foreground">{text('system')}: {catalog.data.systems.find((item) => item.id === entry.rankSystemId)?.name}</p>
-          <p className="text-sm"><time dateTime={entry.promotedAt}>{instantLabel(entry.promotedAt)}</time></p>
+          <p className="text-sm"><time dateTime={entry.promotedAt}>{instantLabel(entry.promotedAt, timezone)}</time></p>
           {entry.notes && <p className="whitespace-pre-wrap">{entry.notes}</p>}
         </li>;
       })}</ol>
@@ -90,6 +90,6 @@ export function MemberRanksPanel({ gymId, memberId, promote, client = ranksClien
 export function MemberRanksTab({ memberId }: ExtensionViewProps) {
   const bootstrap = useBootstrap();
   if (!memberId || !bootstrap.data?.session || !canStaff(bootstrap.data.session.roles, 'members.read')) return null;
-  return <MemberRanksPanel key={bootstrap.data.gym.id + ':' + memberId} gymId={bootstrap.data.gym.id} memberId={memberId}
+  return <MemberRanksPanel timezone={bootstrap.data.gym.timezone} key={bootstrap.data.gym.id + ':' + memberId} gymId={bootstrap.data.gym.id} memberId={memberId}
     promote={canStaff(bootstrap.data.session.roles, 'promotions.manage')}/>;
 }

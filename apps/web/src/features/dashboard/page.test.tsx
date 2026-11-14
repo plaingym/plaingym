@@ -24,8 +24,8 @@ const widgets: MatDashboardWidget[] = [
     members: [{ memberId, firstName: 'Alex', lastName: 'River', lastSeenAt: null }] },
   { id: 'promotion_ready', titleKey: 'dashboard/dashboard:widget.promotion_ready', status: 'ready', count: 0, members: [] },
 ];
-function bootstrap(roles: StaffRole[] = ['owner'], gymId = 'gym-a') {
-  const data: ShellBootstrap = { gym: { id: gymId, name: 'Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: 'user', displayName: 'Test User', roles, member: false }, login: { password: true, magicLink: false } };
+function bootstrap(roles: StaffRole[] = ['owner'], gymId = 'gym-a', timezone = 'UTC') {
+  const data: ShellBootstrap = { gym: { id: gymId, name: 'Academy', timezone, currency: 'USD', enabledModules: [] }, session: { userId: 'user', displayName: 'Test User', roles, member: false }, login: { password: true, magicLink: false } };
   vi.mocked(useBootstrap).mockReturnValue(new QueryObserver(new QueryClient(), { queryKey: ['bootstrap'], queryFn: async () => data, initialData: data }).getCurrentResult());
 }
 function start() {
@@ -39,6 +39,15 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 describe('dashboard page', () => {
+  it('uses the bootstrap timezone for last visits as well as the header', async () => {
+    bootstrap(['owner'], 'gym-a', 'America/Los_Angeles');
+    vi.mocked(api.GET).mockResolvedValue({ response: new Response(), data: { data: { generatedAt, widgets: [
+      { id: 'not_seen', titleKey: 'dashboard/dashboard:widget.not_seen', status: 'ready', days: 14, count: 1,
+        members: [{ memberId, firstName: 'Alex', lastName: 'River', lastSeenAt: '2026-11-02T00:30:00Z' }] },
+    ] } } } as Awaited<ReturnType<typeof api.GET>>);
+    start();
+    expect(await screen.findByText('Nov 1, 2026')).toBeDefined();
+  });
   it('renders live mat metrics, member links, empty states and truncation, and refreshes', async () => {
     start();
     await screen.findByRole('heading', { name: 'Active members' });

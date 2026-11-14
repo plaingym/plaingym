@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { monthLabel } from '../../lib/instant.js';
 import { useState, type KeyboardEvent } from 'react';
 import { canStaff, type StaffRole } from '@plaingym/shared';
 import { reportRangeQuerySchema } from '@plaingym/shared/contracts';
@@ -68,7 +69,7 @@ function ReportsContent({ gymId, userId, timezone, client = reportClient, report
         onClick={() => setSelected(report)} onKeyDown={event => tabKey(event, index)}>{text(report)}</Button>)}
     </div>
     <div id="report-panel" role="tabpanel" aria-labelledby={'report-tab-' + selected} tabIndex={0} className="min-w-0 space-y-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-      <p className="text-sm text-muted-foreground">{text('shownRange', { from: range.from, to: range.to })}</p>
+      <p className="text-sm text-muted-foreground">{text('shownRange', { from: monthLabel(range.from), to: monthLabel(range.to) })}</p>
       {selected === 'attendance' && <>
         <div className="space-y-2 sm:max-w-sm"><Label htmlFor="report-granularity">{text('granularity')}</Label>
           <Select id="report-granularity" value={granularity} onChange={event => { setGranularity(event.target.value as 'week' | 'month'); setProgram(allPrograms); }}>

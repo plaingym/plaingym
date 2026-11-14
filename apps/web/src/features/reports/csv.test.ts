@@ -32,6 +32,7 @@ it('defaults to twelve inclusive gym-local months across a year boundary', () =>
 });
 it('keeps zero periods in a filtered attendance table', () => {
   const table = attendanceTable(attendanceFixture, fixtureId);
+  expect(table.rows[0]!.slice(0, 2)).toEqual(['Oct 1, 2026', 'Nov 1, 2026']);
   expect(table.rows).toHaveLength(2);
   expect(table.rows[1]!.slice(-2)).toEqual(['0', '0']);
 });

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { wallTimeLabel } from '../../lib/instant.js';
 import { parseResponse } from '../../lib/response.js';
 import { useEffect, useState, type FormEvent } from 'react';
 import { canStaff, type StaffRole } from '@plaingym/shared';
@@ -143,7 +144,7 @@ function ScheduleContent({ gymId, roles, enabledModules }: { gymId: string | und
           {templates.length === 0 ? <EmptyState title={text('noTemplates')} description={text('noTemplatesHelp')}/>
             : <StackedList>{templates.map((template) => <StackedItem key={template.id} className="sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0"><p className="break-words font-medium">{template.name}</p>
-                <p className="text-sm text-muted-foreground">{text('day' + template.weekday)} {template.localStartTime} · {template.durationMinutes} {text('minutes')}
+                <p className="text-sm text-muted-foreground">{text('day' + template.weekday)} {wallTimeLabel(template.localStartTime)} · {template.durationMinutes} {text('minutes')}
                   {template.coachId && ' · ' + (options.coaches.find((coach) => coach.id === template.coachId)?.name ?? '')}</p></div>
               <div className="grid grid-cols-2 gap-2 pt-2 sm:flex sm:pt-0">
                 <Button variant="outline" onClick={() => setEditor(template)} aria-label={text('edit') + ' ' + template.name}>{text('edit')}</Button>

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { instantLabel } from '../../lib/instant.js';
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { localDate } from '@plaingym/shared/time';
 import type { BookingRosterEntry, BookingSessionCounts, ClassBooking, ClassSession, Member } from '@plaingym/shared/contracts';
@@ -20,7 +21,7 @@ const REFETCH_MS = 45_000;
 const text = (key: string, values?: Record<string, string | number>) => t('bookings/bookings:' + key, values);
 const status = (booking: ClassBooking) => text(booking.status, { rank: booking.queueRank ?? 0 });
 const errorText = (error: unknown) => text(error instanceof ApiError && error.status === 409 ? 'conflict' : 'error');
-const sessionLabel = (session: ClassSession, timezone: string) => `${session.name} · ${new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short', timeZone: timezone }).format(new Date(session.startsAt))}`;
+const sessionLabel = (session: ClassSession, timezone: string) => `${session.name} · ${instantLabel(session.startsAt, timezone)}`;
 
 export function BookingRosterPanel({ sessionId }: ExtensionViewProps) { return sessionId ? <Bookings key={sessionId} sessionId={sessionId}/> : null; }
 export function MemberBookingsPanel({ memberId }: ExtensionViewProps) { return memberId ? <Bookings key={memberId} memberId={memberId}/> : null; }

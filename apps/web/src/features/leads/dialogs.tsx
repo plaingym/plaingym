@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { instantLabel } from '../../lib/instant.js';
 import { useEffect, useId, useState } from 'react';
 import type { ClassSession, LeadStage } from '@plaingym/shared/contracts';
 import { localDate } from '@plaingym/shared/time';
@@ -18,7 +19,7 @@ export interface Outcome { message: string; error?: boolean; reload: boolean; le
 export const leadName = (lead: Lead) => `${lead.firstName} ${lead.lastName}`.trim();
 const conflict = (error: unknown) => error instanceof ApiError && error.status === 409;
 export const changedOutcome = (): Outcome => ({ message: text('changed'), error: true, reload: true });
-const sessionLabel = (session: ClassSession, timezone: string) => `${session.name} · ${new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short', timeZone: timezone }).format(new Date(session.startsAt))}`;
+const sessionLabel = (session: ClassSession, timezone: string) => `${session.name} · ${instantLabel(session.startsAt, timezone)}`;
 
 interface DialogProps { lead: Lead; client: LeadClient; onClose(): void; onDone(outcome: Outcome): void }
 

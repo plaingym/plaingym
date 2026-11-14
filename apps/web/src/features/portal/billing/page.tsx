@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { calendarDateLabel as date, dateLabel } from '../../../lib/instant.js';
 import { PortalRecovery } from '../household/recovery.js';
 import { cardBrand } from '../../../lib/card-brand.js';
 import { useState } from 'react';
@@ -42,8 +43,7 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
     setReceipt(null); setReceipt(own(await scope.call(contracts.receipt, undefined, { invoiceId })).data.url);
   } });
   if (!gym) return null;
-  const date = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(value + 'T00:00:00Z'));
-  const instant = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: gym.timezone }).format(new Date(value));
+  const instant = (value: string) => dateLabel(value, gym.timezone);
   const failure = checkout.error ?? download.error, unavailableKey = checkout.error ? 'unavailable' : 'receiptUnavailable';
   return <Page className="max-w-3xl"><PortalRecovery moving={scope.moving}>
     <PageHeader title={text('title')} description={text(payer ? 'description' : 'creditsDescription')} />

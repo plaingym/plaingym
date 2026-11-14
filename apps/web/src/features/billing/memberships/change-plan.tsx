@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { calendarDateLabel } from '../../../lib/instant.js';
 import { useRef, useState, type FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Membership, MembershipSwitchResult, Plan, PlanSwitchTiming } from '@plaingym/shared/contracts';
@@ -82,7 +83,7 @@ export function ChangePlanDialog({ row, plans, client, close, changed, reload, g
         <div role="radiogroup" aria-label={text('timing')} className="min-w-0 space-y-2">
           <p className="font-medium">{text('timing')}</p>
           <Label className="flex min-h-11 items-center gap-3"><input type="radio" className="size-5 shrink-0 accent-primary" name="timing" value="next_billing_date" checked={timing === 'next_billing_date'}
-            onChange={() => setWanted('next_billing_date')}/>{text('timingNext', { date: row.nextDueOn })}</Label>
+            onChange={() => setWanted('next_billing_date')}/>{text('timingNext', { date: calendarDateLabel(row.nextDueOn) })}</Label>
           <Label className="flex min-h-11 items-center gap-3"><input type="radio" className="size-5 shrink-0 accent-primary" name="timing" value="now" checked={timing === 'now'} disabled={!!blocked}
             onChange={() => setWanted('now')}/>{text('timingNow')}</Label>
           {blocked && <p className="text-sm text-muted-foreground">{blocked}</p>}
@@ -94,12 +95,12 @@ export function ChangePlanDialog({ row, plans, client, close, changed, reload, g
           <p className="font-medium">{text('kind_' + data.kind)}</p>
           <p>{discountText(data.discount === 'none' ? 'noDiscount' : data.discount)}</p>
           <p>{text(row.status !== 'active' ? 'priceWhenActive' : timing === 'now' && data.kind === 'upgrade' ? 'priceStartsToday' : 'priceStartsOn',
-            { date: data.priceStartsOn, price: money(plan!.amountCents, data.currency) })}</p>
-          {timing === 'now' && data.kind === 'downgrade' && <p>{text('keepsPrice', { date: row.nextDueOn })}</p>}
+            { date: calendarDateLabel(data.priceStartsOn), price: money(plan!.amountCents, data.currency) })}</p>
+          {timing === 'now' && data.kind === 'downgrade' && <p>{text('keepsPrice', { date: calendarDateLabel(row.nextDueOn) })}</p>}
           {timing === 'now' && data.kind === 'upgrade' && (data.proration && data.proration.totalCents > 0
             ? <p className="font-medium">{text('chargedNow', { total: money(data.proration.totalCents, data.currency), days: data.proration.billedDays, periodDays: data.proration.periodDays })}</p>
             : <p>{text('noCharge')}</p>)}
-          {data.commitmentBlocks && <p>{text('commitmentBlocks', { date: row.commitmentEndsOn ?? '' })}</p>}
+          {data.commitmentBlocks && <p>{text('commitmentBlocks', { date: calendarDateLabel(row.commitmentEndsOn ?? '') })}</p>}
         </div>}
         {needsReason && <Label className="block min-w-0">{text('overrideReason')}<Textarea value={reason} required maxLength={500}
           onChange={event => setReason(event.target.value)}/></Label>}

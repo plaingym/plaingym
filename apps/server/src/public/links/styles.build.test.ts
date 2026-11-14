@@ -22,7 +22,14 @@ describe('public stylesheet sources', () => {
     const sources: string[] = await linkStyleSources();
     const pages = (await readdir(publicRoot, { recursive: true })).filter(file => /(^|[\\/])([^\\/]+\.)?page\.ts$/.test(file));
     expect(names(sources.filter(file => file.startsWith(publicRoot)))).toEqual(names(pages.map(file => join(publicRoot, file)).sort()));
-    expect(names(sources)).toEqual(['../modules/website/site.page.ts', 'links/page.ts', 'pages/join.page.ts', 'pages/page.ts']);
+    expect(names(sources)).toEqual(['../areas/staff/profiles.accept.ts', '../modules/website/site.page.ts', 'links/page.ts', 'pages/join.page.ts', 'pages/page.ts']);
+  });
+
+  it('keeps the staff invitation layout classes even without any other page', async () => {
+    const source = fileURLToPath(new URL('../../areas/staff/profiles.accept.ts', import.meta.url));
+    expect(await linkStyleSources()).toContain(source);
+    const css = await stylesheet([source]);
+    for (const selector of ['.max-w-2xl', '.sm\\:text-3xl', '.sm\\:py-10', '.w-full', '.space-y-6']) expect(css).toContain(selector);
   });
 
   it('compile a class only one page file uses, and miss it when that file drops out of the sources', async () => {

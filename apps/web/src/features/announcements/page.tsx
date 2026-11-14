@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useMemo, useState } from 'react';
+import { instantLabel } from '../../lib/instant.js';
+import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { canStaff } from '@plaingym/shared';
 import { useBootstrap } from '../../app/context.js';
@@ -22,7 +23,6 @@ export function AnnouncementWorkspace({ gymId, gymName, timezone, owner = false,
   // Poll only while a shown announcement is still being delivered.
   const history = useQuery({ queryKey: [...key, 'history', offset], queryFn: () => client.list(offset),
     refetchInterval: query => query.state.data?.data.some(item => item.status === 'sending') ? 5000 : false });
-  const dates = useMemo(() => new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short', timeZone: timezone }), [timezone]);
   const programs = useQuery({ queryKey: [...key, 'programs'], queryFn: () => client.programs() });
   const senders = useQuery({ queryKey: [...key, 'senders'], queryFn: () => client.senders() });
   const names = new Map(senders.data?.filter(profile => profile.userId).map(profile => [profile.userId, profile.displayName]));
@@ -41,7 +41,7 @@ export function AnnouncementWorkspace({ gymId, gymName, timezone, owner = false,
         <ul className="space-y-3">{history.data.data.map(item => <li key={item.id}><Card className="min-w-0 space-y-3">
           <h3 className="text-lg font-medium">{item.subject}</h3>
           <dl className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6">
-            <div><dt className="text-sm text-muted-foreground">{text('date')}</dt><dd>{dates.format(new Date(item.createdAt))}</dd></div>
+            <div><dt className="text-sm text-muted-foreground">{text('date')}</dt><dd>{instantLabel(item.createdAt, timezone)}</dd></div>
             <div className="min-w-0 lg:col-span-2"><dt className="text-sm text-muted-foreground">{text('sender')}</dt><dd>{names.get(item.createdBy) ?? text('senderId', { id: item.createdBy })}</dd></div>
             {(['sent', 'failed', 'skipped'] as const).map(count => <div key={count}><dt className="text-sm text-muted-foreground">{text(count)}</dt><dd>{item[count]}</dd></div>)}
           </dl>

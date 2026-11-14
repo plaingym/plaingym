@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { calendarDateLabel as calendarDate } from '../../lib/instant.js';
 import { parseResponse } from '../../lib/response.js';
 import { canStaff, type StaffRole } from '@plaingym/shared';
 import { useQuery } from '@tanstack/react-query';
@@ -13,7 +14,6 @@ import type { DashboardView } from './widgets.js';
 import { money } from '../billing/catalog/format.js';
 
 const label = (key: string, values?: Parameters<typeof t>[1]) => t('dashboard/billing:' + key, values);
-const calendarDate = (date: string) => new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(date + 'T00:00:00Z'));
 function BillingMetric({ widget }: { widget: DashboardWidget }) {
   if (!('money' in widget)) return null;
   return <div className="min-w-0 space-y-3 pt-3">

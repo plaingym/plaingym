@@ -48,7 +48,7 @@ export function AttendanceReport({ gymId, userId, range, client, granularity, se
         </Select>
       </div>
       <p className="text-sm text-muted-foreground">{text('attendanceHelp')}</p>
-      {values.every(value => value === 0) && empty()}
+      {periods.length === 0 ? empty() : values.every(value => value === 0) && <p className="text-sm text-muted-foreground">{text('zeroHelp')}</p>}
       {periods.length > 0 && <ReportChart title={text('attendanceChart')} periods={periods} series={series} />}
       <DataTable title={text('attendanceTable')} table={table} filename={filename('attendance', range, '-' + granularity)} />
     </PageSection>;
@@ -64,8 +64,8 @@ export function MembersReport({ gymId, userId, range, client }: ReportViewProps)
     ] }), [query.data]);
   return <Result query={query}>{data => <PageSection title={text('members')}>
     <p className="text-sm text-muted-foreground">{text('membersHelp')}</p>
-    {data.buckets.every(bucket => bucket.activeAtStart === 0 && bucket.activeAtEnd === 0 && bucket.frozenAtEnd === 0
-      && bucket.new === 0 && bucket.imported === 0 && bucket.cancelled === 0) && empty()}
+    {data.buckets.length === 0 ? empty() : data.buckets.every(bucket => bucket.activeAtStart === 0 && bucket.activeAtEnd === 0 && bucket.frozenAtEnd === 0
+      && bucket.new === 0 && bucket.imported === 0 && bucket.cancelled === 0) && <p className="text-sm text-muted-foreground">{text('zeroHelp')}</p>}
     {data.buckets.length > 0 && <ReportChart title={text('membersChart')} periods={model!.periods} series={model!.series} />}
     <DataTable title={text('membersTable')} table={model!.table} filename={filename('members', range)} />
   </PageSection>}</Result>;

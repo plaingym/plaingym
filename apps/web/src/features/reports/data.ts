@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { calendarDateLabel } from '../../lib/instant.js';
 import { minorUnitsToInput } from '@plaingym/shared/money';
 import { localDate } from '@plaingym/shared/time';
 import type { AttendanceReportResponse, MembersReportResponse, RevenueReportResponse, ReportRangeQuery, ReportBucket } from '@plaingym/shared/contracts';
@@ -17,7 +18,7 @@ const periodColumns = () => [text('start'), text('end'), text('periodStatus')];
 const currentPeriod = (buckets: readonly ReportBucket[]) => buckets.find(bucket => bucket.inProgress)?.startDate;
 const period = (bucket: ReportBucket, current: string | undefined) => {
   const status = bucket.inProgress ? 'inProgress' : current && bucket.startDate > current ? 'upcoming' : bucket.partial ? 'partial' : 'complete';
-  return [bucket.startDate, bucket.endDate, text(bucket.partial && (status === 'inProgress' || status === 'upcoming') ? status + 'Partial' : status)];
+  return [calendarDateLabel(bucket.startDate), calendarDateLabel(bucket.endDate), text(bucket.partial && (status === 'inProgress' || status === 'upcoming') ? status + 'Partial' : status)];
 };
 export function membersTable(data: MembersReportResponse['data']): ReportTable {
   const current = currentPeriod(data.buckets);

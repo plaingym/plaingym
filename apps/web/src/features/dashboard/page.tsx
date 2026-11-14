@@ -30,7 +30,7 @@ function DashboardPanel({ gymId, roles }: { gymId: string; roles: readonly Staff
     {query.data && !query.isError && (query.data.widgets.length === 0 || query.data.widgets.some(widget => widget.id === 'active_members' && widget.status === 'ready' && 'count' in widget && widget.count === 0)) && <GettingStarted gymId={gymId} roles={roles}/>}
     {query.isPending ? <LoadingState label={label('loading')}/> : query.isError ? <ErrorState message={label('loadFailed')} onRetry={() => void query.refetch()}/>
       : query.data.widgets.length === 0 ? <EmptyState title={label('empty')} description={label('emptyHelp')}/>
-      : <DashboardWidgets widgets={query.data.widgets} roles={roles} views={[...billingWidgetViews, ...leadsWidgetViews]}/>}
+      : <DashboardWidgets timezone={timezone ?? 'UTC'} widgets={query.data.widgets} roles={roles} views={[...billingWidgetViews, ...leadsWidgetViews]}/>}
     {canStaff(roles, 'billing.read') && <BillingDashboardPanel gymId={gymId} roles={roles}/>}
   </Page>;
 }

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { instantLabel } from '../../lib/instant.js';
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { canStaff } from '@plaingym/shared';
@@ -71,7 +72,7 @@ export function CampaignWorkspace({ gymId, timezone, client = campaignClient }: 
         <ul className="space-y-3">{recipients.data.data.map(r => <li key={r.link.id} className="min-w-0 space-y-2 rounded-xl border p-4">
           <h2 className="break-all font-medium">{names.get(r.link.householdId) ?? r.link.householdId}</h2><p>{text(r.state)}</p>
           {r.customerMatchHeld && <Alert role="note">{text('customerMatchHeld')}</Alert>}
-          <p className="text-sm text-muted-foreground">{text('expires')}: {new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short', timeZone: timezone }).format(new Date(r.link.expiresAt))}</p>
+          <p className="text-sm text-muted-foreground">{text('expires')}: {instantLabel(r.link.expiresAt, timezone)}</p>
         </li>)}</ul><Pager offset={recipientOffset} total={recipients.data.pagination.total} onChange={setRecipientOffset} label={text('pages')} />
       </>}
     </>}

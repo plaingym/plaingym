@@ -90,10 +90,16 @@ export function adminScreens({ populated, owner }: { populated: boolean; owner?:
       await settle(page);
     }, dialogs: [{ name: 'release', button: 'Release review hold' }] },
     { name: 'session', path: '', open: async (page, origin) => {
-      await page.goto(origin + '/admin/schedule');
+      const [response] = await Promise.all([
+        page.waitForResponse(response => new URL(response.url()).pathname === '/api/schedule/sessions' && response.ok()),
+        page.goto(origin + '/admin/schedule'),
+      ]);
+      const { data: sessions } = await response.json() as { data: { name: string }[] };
+      const session = sessions[0];
+      if (!session) throw new Error('The demo seed has no session in the displayed week');
       await settle(page);
-      await page.locator('#main-content').getByRole('button', { name: /^\d{2}:\d{2}–\d{2}:\d{2} / }).first().click();
-      await expect(page.getByRole('dialog')).toBeVisible();
+      await page.locator('#main-content').getByRole('button').filter({ has: page.getByText(session.name, { exact: true }) }).first().click();
+      await expect(page.getByRole('dialog').getByRole('heading', { name: session.name, exact: true })).toBeVisible();
     } },
   ];
 }

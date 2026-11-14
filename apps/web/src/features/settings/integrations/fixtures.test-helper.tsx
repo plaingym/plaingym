@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { ShellServicesContext } from '../../../app/context.js';
 import { render } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { GymSettings, Integrations } from '@plaingym/shared/contracts';
@@ -24,7 +25,7 @@ export const health = (lastReceivedAt: string | null, latestRestorableAt: string
 export const reply = (status: number, body?: unknown) => ({ response: { ok: status < 300, status }, ...(status < 300 ? { data: body } : { error: body }) });
 export const refusal = (status: number, field: string, code: string) => reply(status, { error: { code: 'conflict', message: 'private server text', details: { [field]: [code] } }, requestId: 'r' });
 /** The section under a fresh query cache, as the settings page renders it. */
-export const renderSection = () => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><IntegrationsSettings/></QueryClientProvider>);
+export const renderSection = () => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><ShellServicesContext.Provider value={({ signInWithPassword: async () => {}, requestMagicLink: async () => {}, signOut: async () => {}, loadBootstrap: async () => ({ gym: { id: 'gym', name: 'Gym', timezone: 'America/Los_Angeles', currency: 'USD', enabledModules: [] }, session: null, login: { password: true, magicLink: false } }) })}><IntegrationsSettings/></ShellServicesContext.Provider></QueryClientProvider>);
 /** Answers GETs for the settings, the integrations and the health checks. */
 export function serve(GET: { mockImplementation(fn: (path: string) => Promise<unknown>): unknown }, current: () => Integrations, tiles = health(null, null)) {
   GET.mockImplementation(async (path: string) => path === '/api/settings' ? reply(200, { data: settings })

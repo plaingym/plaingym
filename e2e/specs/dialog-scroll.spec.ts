@@ -49,7 +49,7 @@ for (const size of sizes) {
 
     await page.goto(sandbox.origin + '/admin/schedule');
     await showWeek(page, zone, Date.parse(session.startsAt));
-    await page.getByRole('button', { name: new RegExp(`^\\d{2}:\\d{2}–\\d{2}:\\d{2} ${name}`) }).click();
+    await page.getByRole('button').filter({ has: page.getByText(name, { exact: true }) }).click();
     const sessionDialog = page.getByRole('dialog', { name });
     await expect(sessionDialog).toBeVisible();
     await onlyBodyScrolls(page, sessionDialog, 'session dialog');

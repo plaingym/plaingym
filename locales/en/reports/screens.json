@@ -10,7 +10,7 @@
   "from": "From month",
   "to": "Through month",
   "apply": "Apply range",
-  "rangeHelp": "Choose up to 24 months, ending no later than the current month. Enter months as YYYY-MM, such as 2026-01. Dates use {timezone}. Current-period counts are provisional.",
+  "rangeHelp": "Choose up to 24 months, ending with this month or earlier. If your browser shows a text box, enter months as YYYY-MM, such as 2026-01. Dates use {timezone}. Counts for the current period can still change.",
   "rangeError": "Choose a valid range of 1 to 24 months in the form YYYY-MM, ending no later than the current month.",
   "shownRange": "Showing {from} through {to}.",
   "granularity": "Attendance period",
@@ -20,7 +20,7 @@
   "allPrograms": "All programs",
   "unassigned": "No program",
   "start": "Start date",
-  "end": "End date (exclusive)",
+  "end": "Before date",
   "periodStatus": "Period status",
   "partial": "Partial",
   "complete": "Complete",
@@ -57,7 +57,7 @@
   "download": "Download CSV",
   "downloadNamed": "Download CSV: {name}",
   "empty": "No activity in this range",
-  "emptyHelp": "Try another range. Any available zero-count periods remain in the table.",
+  "emptyHelp": "There are no results for this selection. Choose another range or program.",
   "chartHelp": "The data table immediately below gives every period and value. Negative bars extend below zero.",
   "chartRange": "{from} to {to}. Scale: {min} to {max}.",
   "lineLegend": "{name} (line)",
@@ -70,6 +70,7 @@
   "revenueTable": "Revenue data ({currency})",
   "revenueCurrency": "Revenue — {currency}",
   "attendanceHelp": "All programs shows totals followed by program rows. Unique members are counted separately in each row; do not add them across programs. Weekly boundary periods can be partial.",
-  "membersHelp": "New and imported members are separate. Churn counts distinct members active at the month's start who cancel during it, divided by active members at the start, or N/A when that count is zero. Frozen at end counts a member only when every live membership is frozen. Current-period counts are provisional.",
-  "revenueHelp": "Receipts use their paid month and refunds the month they succeeded. A later reversal counts as a negative refund in its own month, leaving the success month unchanged. Tax has its own group rows. Totals include tax; discounts are negative. Amounts are plain decimals in the currency shown, and currencies are never combined."
+  "membersHelp": "New and imported members are counted separately. Churn is the share of members active at the start of the month who cancel that month. N/A means nobody was active at the start. A member is counted as frozen only when all their current memberships are frozen. Counts for the current period can still change.",
+  "revenueHelp": "Payments count in the month they were paid, and refunds in the month they succeeded. A reversed refund is subtracted in the month it was reversed. Tax appears separately and is included in totals. Discounts are negative. Amounts use the currency shown; different currencies are kept separate.",
+  "zeroHelp": "All counts are zero for this selection. The chart and table include each period."
 }

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { dateFormatter } from '../../../lib/instant.js';
 import { PortalRecovery } from '../household/recovery.js';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import type { PortalMemberProgress } from '@plaingym/shared/contracts';
@@ -32,8 +33,8 @@ export function PortalProgressPage({ client = portalClient }: { client?: PortalC
   const attendance = useInfiniteQuery({ queryKey: [...scope.key, 'attendance', memberId], enabled: !!memberId, initialPageParam: 0, staleTime: 0,
     queryFn: async ({ pageParam }) => scope.own(await scope.run(() => client.attendance(memberId, pageParam, scope.key[4]!))),
     getNextPageParam: last => last.pagination.offset + last.data.length < last.pagination.total ? last.pagination.offset + last.data.length : undefined });
-  const date = new Intl.DateTimeFormat(undefined, { timeZone: timezone, dateStyle: 'medium' });
-  const dateTime = new Intl.DateTimeFormat(undefined, { timeZone: timezone, dateStyle: 'medium', timeStyle: 'short' });
+  const date = dateFormatter('date', timezone);
+  const dateTime = dateFormatter('instant', timezone);
   if (!members.data) return members.isPending || scope.moving || scope.refreshing ? <LoadingState /> : <ErrorState message={text('error')} onRetry={() => void members.refetch()} />;
   const data = progress.data, programName = (id: string | null) => data?.programs.find(item => item.id === id)?.name;
   const visits = attendance.data?.pages.flatMap(page => page.data) ?? [];

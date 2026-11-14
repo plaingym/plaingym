@@ -123,7 +123,7 @@ function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, 
   const [base, setBase] = useState(row);
   const plan = plans.find(item => item.id === row.planId);
   const scheduled = row.scheduledPlanId && row.scheduledAmountCents !== null && row.scheduledInterval && row.scheduledOn
-    ? { plan: plans.find(item => item.id === row.scheduledPlanId), price: money(row.scheduledAmountCents, row.currency), interval: text(row.scheduledInterval), on: row.scheduledOn } : null;
+    ? { plan: plans.find(item => item.id === row.scheduledPlanId), price: money(row.scheduledAmountCents, row.currency), interval: text(row.scheduledInterval), on: calendarDateLabel(row.scheduledOn) } : null;
   const priceOnly = !!scheduled && row.scheduledPlanId === row.planId;
   const differentPlanPrice = !!plan && plan.currency === row.currency && plan.interval === row.interval && plan.amountCents !== row.amountCents;
   async function edit(event: FormEvent<HTMLFormElement>) {

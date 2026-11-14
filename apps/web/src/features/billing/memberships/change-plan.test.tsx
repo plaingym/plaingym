@@ -57,7 +57,7 @@ it('preselects the next billing date and previews the switch', async () => {
   const dialog = await openDialog();
   expect((dialog.getByRole('radio', { name: /next billing date/ }) as HTMLInputElement).checked).toBe(true);
   expect((dialog.getByRole('radio', { name: 'Now' }) as HTMLInputElement).disabled).toBe(false);
-  expect(await dialog.findByText(/starts on 2026-11-01/)).toBeDefined();
+  expect(await dialog.findByText(/starts on Nov 1, 2026/)).toBeDefined();
   expect(calls(call, 'previewMembershipSwitch')[0]!.slice(1)).toEqual([undefined, { membershipId: membership.id }, { planId: premium.id, timing: 'next_billing_date' }]);
 });
 it('lists only other active plans in the membership currency', async () => {
@@ -77,8 +77,8 @@ it.each(['frozen', 'pending', 'trial'] as const)('explains the conditional price
   const dialog = await openDialog();
   expect((dialog.getByRole('radio', { name: 'Now' }) as HTMLInputElement).disabled).toBe(true);
   expect(dialog.getByText('Only an active membership can change plan now.')).toBeDefined();
-  expect(await dialog.findByText(/The new price, .* applies when the membership is next billed as active, on or after 2026-11-01\./)).toBeDefined();
-  expect(dialog.queryByText(/starts on 2026-11-01/)).toBeNull();
+  expect(await dialog.findByText(/The new price, .* applies when the membership is next billed as active, on or after Nov 1, 2026\./)).toBeDefined();
+  expect(dialog.queryByText(/starts on Nov 1, 2026/)).toBeNull();
 });
 it('shows the amount charged now and the days it covers for an upgrade now', async () => {
   const proration = { periodStartsOn: '2026-10-01', periodEndsOn: '2026-11-01', billedDays: 6, periodDays: 31, totalCents: 4839 };
@@ -86,21 +86,21 @@ it('shows the amount charged now and the days it covers for an upgrade now', asy
   const dialog = await openDialog();
   fireEvent.click(dialog.getByRole('radio', { name: 'Now' }));
   expect(await dialog.findByText(/invoice for .*48\.39.* 6 of 31 days/)).toBeDefined();
-  expect(dialog.getByText(/starts today \(2026-10-26\)/)).toBeDefined();
+  expect(dialog.getByText(/starts today \(Oct 26, 2026\)/)).toBeDefined();
   await waitFor(() => expect(calls(call, 'previewMembershipSwitch').at(-1)![3]).toEqual({ planId: premium.id, timing: 'now' }));
 });
 it('says a downgrade now keeps the current price until the next billing date', async () => {
   start({ plans: [plan, basic], preview: query => ({ ...upgrade, planId: basic.id, kind: 'downgrade', timing: query.timing as 'now' }) });
   const dialog = await openDialog();
   fireEvent.click(dialog.getByRole('radio', { name: 'Now' }));
-  expect(await dialog.findByText(/keeps its current price until 2026-11-01/)).toBeDefined();
+  expect(await dialog.findByText(/keeps its current price until Nov 1, 2026/)).toBeDefined();
 });
 it('asks for a reason only when the commitment blocks the switch', async () => {
   const { call } = start({ plans: [plan, basic], row: { ...membership, commitmentEndsOn: '2027-10-01' },
     preview: () => ({ ...upgrade, planId: basic.id, kind: 'downgrade', commitmentBlocks: true }) });
   const dialog = await openDialog();
   const reason = await dialog.findByLabelText('Reason for switching before the commitment ends');
-  expect(dialog.getByText(/commitment runs until 2027-10-01/)).toBeDefined();
+  expect(dialog.getByText(/commitment runs until Oct 1, 2027/)).toBeDefined();
   const submit = dialog.getByRole('button', { name: 'Change plan' }) as HTMLButtonElement;
   expect(submit.disabled).toBe(true);
   fireEvent.change(reason, { target: { value: '   ' } });
@@ -113,7 +113,7 @@ it('asks for a reason only when the commitment blocks the switch', async () => {
 it('sends no reason and no field for it when the commitment does not block', async () => {
   const { call } = start();
   const dialog = await openDialog();
-  await dialog.findByText(/starts on 2026-11-01/);
+  await dialog.findByText(/starts on Nov 1, 2026/);
   expect(dialog.queryByLabelText('Reason for switching before the commitment ends')).toBeNull();
   fireEvent.click(dialog.getByRole('button', { name: 'Change plan' }));
   await waitFor(() => expect(calls(call, 'switchMembershipPlan')).toHaveLength(1));
@@ -127,7 +127,7 @@ const reminder = /needs a new agreement.*Waivers and agreements tab/;
 it('reminds staff about the agreement after a scheduled switch', async () => {
   start();
   const dialog = await openDialog();
-  await dialog.findByText(/starts on 2026-11-01/);
+  await dialog.findByText(/starts on Nov 1, 2026/);
   fireEvent.click(dialog.getByRole('button', { name: 'Change plan' }));
   expect(await screen.findByText(reminder)).toBeDefined();
 });
@@ -238,13 +238,13 @@ it('retries a preview that failed', async () => {
   expect(await dialog.findByText('Could not check the change. Please try again.')).toBeDefined();
   expect((dialog.getByRole('button', { name: 'Change plan' }) as HTMLButtonElement).disabled).toBe(true);
   fireEvent.click(dialog.getByRole('button', { name: 'Try again' }));
-  expect(await dialog.findByText(/starts on 2026-11-01/)).toBeDefined();
+  expect(await dialog.findByText(/starts on Nov 1, 2026/)).toBeDefined();
   expect((dialog.getByRole('button', { name: 'Change plan' }) as HTMLButtonElement).disabled).toBe(false);
 });
 it('shows a scheduled plan change on the card and cancels it after a confirmation', async () => {
   const row = { ...membership, scheduledPlanId: premium.id, scheduledAmountCents: 15000, scheduledInterval: 'monthly' as const, scheduledOn: '2026-11-01' };
   const { call } = start({ row });
-  expect(await screen.findByText(/^Changes to Premium on 2026-11-01 \(.*150\.00 \/ Monthly\)\.$/)).toBeDefined();
+  expect(await screen.findByText(/^Changes to Premium on Nov 1, 2026 \(.*150\.00 \/ Monthly\)\.$/)).toBeDefined();
   fireEvent.click(screen.getByRole('button', { name: 'Cancel change' }));
   expect(calls(call, 'cancelMembershipSwitch')).toHaveLength(0);
   fireEvent.click(await screen.findByRole('button', { name: 'Confirm: cancel change' }));
@@ -254,17 +254,17 @@ it('shows a scheduled plan change on the card and cancels it after a confirmatio
 it('shows a scheduled price change beside the price form, with no cancel action', async () => {
   const row = { ...membership, scheduledPlanId: plan.id, scheduledAmountCents: 8000, scheduledInterval: 'monthly' as const, scheduledOn: '2026-11-01' };
   start({ row });
-  expect(await screen.findByText(/^New price .*80\.00 \/ Monthly from 2026-11-01\.$/)).toBeDefined();
+  expect(await screen.findByText(/^New price .*80\.00 \/ Monthly from Nov 1, 2026\.$/)).toBeDefined();
   // Cancelling it would keep the new plan at the old price; a price edit replaces it instead.
   expect(screen.queryByRole('button', { name: 'Cancel change' })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Change price' }));
-  expect(await screen.findByText('A new price is scheduled for 2026-11-01. A price entered here replaces it.')).toBeDefined();
+  expect(await screen.findByText('A new price is scheduled for Nov 1, 2026. A price entered here replaces it.')).toBeDefined();
 });
 it('says a scheduled plan change blocks a price edit, and shows the server\'s refusal', async () => {
   const row = { ...membership, scheduledPlanId: premium.id, scheduledAmountCents: 15000, scheduledInterval: 'monthly' as const, scheduledOn: '2026-11-01' };
   start({ row, update: async () => { throw new ApiError(409, 'conflict', ['switch_scheduled']); } });
   fireEvent.click(await screen.findByRole('button', { name: 'Change price' }));
-  expect(await screen.findByText(/^A plan change is scheduled for 2026-11-01\./)).toBeDefined();
+  expect(await screen.findByText(/^A plan change is scheduled for Nov 1, 2026\./)).toBeDefined();
   fireEvent.change(screen.getByLabelText(/^Price/), { target: { value: '90' } });
   fireEvent.click(screen.getByRole('button', { name: 'Save' }));
   expect(await screen.findByText('A plan change is scheduled. Cancel it before changing the price.')).toBeDefined();

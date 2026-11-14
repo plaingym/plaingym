@@ -41,6 +41,12 @@ test('the staff invitation page runs its inline script with the response nonce',
   await expect(page.locator('form#invite')).toBeVisible();
   // The script removes the token from the address bar as soon as it runs.
   await expect.poll(() => new URL(page.url()).hash).toBe('');
+  for (const width of [360, 1280]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect(page.locator('main')).toHaveCSS('max-width', '672px');
+    await expect(page.locator('h1')).toHaveCSS('font-size', width === 360 ? '24px' : '30px');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  }
 });
 
 test('the public pages load under their own policies', async ({ page, sandboxes }) => {

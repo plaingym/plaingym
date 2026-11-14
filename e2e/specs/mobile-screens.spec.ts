@@ -43,9 +43,9 @@ async function go(page: Page, href: string) {
   await link.click();
   await expect(page).toHaveURL(gymOrigin + href);
 }
-/** A session in the calendar (its time range first), not the weekly class's edit and delete buttons. */
+/** A session button containing its exact class name, independently of the displayed clock style. */
 function sessionButton(page: Page, size: string) {
-  return page.getByRole('button', { name: new RegExp(`^\\d{2}:\\d{2}–\\d{2}:\\d{2} QA ${size} class`) });
+  return page.getByRole('button').filter({ has: page.getByText(`QA ${size} class`, { exact: true }) });
 }
 /** A phone dialog fills the screen; on desktop it is a centered panel. */
 async function dialogLayout(page: Page, name: string, phone: boolean) {
@@ -162,7 +162,7 @@ for (const { name: size, viewport, hasTouch } of viewports) {
         expect(wall(new Date(moved.startsAt), zone)).toEqual({ date: localDate(new Date(first.startsAt), zone), time: '19:30' });
         expect(Date.parse(moved.startsAt) % 60_000).toBe(0);
         expect(Date.parse(moved.endsAt) - Date.parse(moved.startsAt)).toBe(60 * 60_000);
-        await expect(dialog.getByText('19:30–20:30 · ' + zone, { exact: true })).toBeVisible();
+        await expect(dialog.getByText('7:30 PM–8:30 PM · ' + zone, { exact: true })).toBeVisible();
         expect((await owner.json<{ data: Session }>('/api/schedule/sessions/' + second.id)).data.startsAt).toBe(second.startsAt);
         await dialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
         await expect(dialog).toBeHidden();

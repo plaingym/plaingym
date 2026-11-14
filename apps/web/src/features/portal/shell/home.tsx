@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { dateFormatter } from '../../../lib/instant.js';
 import { useState } from 'react';
 import { Link } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
@@ -38,7 +39,7 @@ export function PortalHome({ client = portalClient }: { client?: PortalClient })
   const next = schedule.data?.filter(session => session.status === 'scheduled' && Date.parse(session.startsAt) >= Date.now()
     && session.bookings.some(booking => booking.status === 'booked'))
     .sort((a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt))[0];
-  const date = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short', timeZone: bootstrap.data?.gym.timezone ?? 'UTC' });
+  const date = dateFormatter('instant', bootstrap.data?.gym.timezone ?? 'UTC');
   return <Page className="max-w-4xl"><PortalRecovery moving={scope.moving}>
     <PageHeader title={text('welcome')} description={text('homeDescription')} />
     <div className="grid gap-4 sm:grid-cols-2">

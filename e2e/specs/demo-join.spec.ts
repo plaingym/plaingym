@@ -258,7 +258,7 @@ test('a joined visitor books, is promoted from the waitlist, checks in by QR cod
       const coachPage = await coachContext.newPage();
       await coachPage.goto(sandbox.origin + '/admin/schedule');
       await showWeek(coachPage, bootstrap.data.gym.timezone, start);
-      await coachPage.getByRole('button', { name: new RegExp(`^\\d{2}:\\d{2}–\\d{2}:\\d{2} ${soon.name}`) }).first().click();
+      await coachPage.getByRole('button').filter({ has: coachPage.getByText(soon.name, { exact: true }) }).first().click();
       const bookings = coachPage.getByRole('region', { name: 'Bookings and check-ins', exact: true });
       await expect(bookings.getByText(visitor.fullName)).toBeVisible();
       await expect(bookings.getByText('Checked in', { exact: true }).first()).toBeVisible();

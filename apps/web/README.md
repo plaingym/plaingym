@@ -138,3 +138,11 @@ Kiosk lookup and check-in answers remain strict to reject unexpected private fie
 on shared devices.
 
 Emailed pay links, staff invitations and portal invitations keep pending send generations in tab-local session storage across reloads, keyed by the form and request identity. Confirmed sends clear the generation. An uncertain replay displays a warning and a Send again action; that deliberate action chooses a new generation. If the browser blocks session storage, retries retain their generation only while the form stays mounted.
+
+Display timestamps through `src/lib/instant.ts`: `useGymTime()` reads the gym's
+bootstrap timezone, while presentational components can pass the zone explicitly.
+Formatters are cached by style, zone and locale. Calendar dates use
+`calendarDateLabel` and month ranges use `monthLabel`, so the browser's timezone
+cannot move them to another day. Admin schedule labels use the same locale clock
+as the portal (`6:30 AM` in English), including weekly-class summaries through
+`wallTimeLabel`; time inputs still use `HH:MM`.

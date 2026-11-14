@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { instantLabel } from '../../lib/instant.js';
 import { useEffect, useId, useRef, useState } from 'react';
 import { leadContactChannelSchema, type LeadContact, type LeadContactChannel } from '@plaingym/shared/contracts';
 import { ApiError } from '../../lib/api.js';
@@ -95,13 +96,12 @@ export function ContactLog({ memberId, client, timezone, version }: { memberId: 
       setRows(current => [...current, ...page.data.filter(row => !current.some(have => have.id === row.id))]); setTotal(page.pagination.total);
     } catch { if (started === generation.current) setFailed(true); } finally { setMore(false); }
   }
-  const when = new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short', timeZone: timezone });
   if (loading) return <LoadingState />;
   return <div className="min-w-0 space-y-3">
     {failed && <Alert variant="error" role="alert">{contactText('loadError')}</Alert>}
     {rows.length === 0 && !failed ? <p className="text-sm text-muted-foreground">{contactText('empty')}</p>
       : <ol className="divide-y divide-border rounded-lg border border-border">{rows.map(row => <li key={row.id} className="min-w-0 space-y-1 p-3">
-        <p className="text-sm font-medium">{contactText('channel.' + row.channel)} · <time dateTime={row.occurredAt}>{when.format(new Date(row.occurredAt))}</time></p>
+        <p className="text-sm font-medium">{contactText('channel.' + row.channel)} · <time dateTime={row.occurredAt}>{instantLabel(row.occurredAt, timezone)}</time></p>
         <p className={'text-sm text-muted-foreground ' + userNames}>{contactText('by', { name: row.createdByName ?? contactText('unknownStaff') })}</p>
         {row.note && <p className={'whitespace-pre-wrap text-sm ' + userNames}>{row.note}</p>}
       </li>)}</ol>}

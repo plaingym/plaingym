@@ -155,6 +155,22 @@ describe('report tables and CSV downloads', () => {
   });
 });
 
+it('formats report ranges and calendar dates without raw ISO on screen', async () => {
+  mount();
+  const table = await screen.findByRole('table');
+  expect(table.textContent).toContain('Oct 1, 2026');
+  expect(table.textContent).not.toMatch(/2026-10-01/);
+  expect(screen.getByText(/^Showing /).textContent).toMatch(/Showing [A-Z][a-z]+ \d{4} through [A-Z][a-z]+ \d{4}\./);
+});
+it('keeps zero attendance periods visible with an explanation that matches them', async () => {
+  const service = client();
+  service.attendance = vi.fn(async () => ({ ...attendanceFixture, buckets: attendanceFixture.buckets.map(bucket => ({ ...bucket, programs: [], totals: { checkIns: 0, uniqueMembers: 0 } })) }));
+  mount(service);
+  expect(await screen.findByText('All counts are zero for this selection. The chart and table include each period.')).toBeDefined();
+  expect(screen.getByRole('table')).toBeDefined();
+  expect(screen.queryByText('No activity in this range')).toBeNull();
+});
+
 describe('report access through production composition', () => {
   it.each(['owner', 'admin', 'coach', 'front_desk'] as const)('gates the registered Reports navigation for %s', role => {
     const navigation = visibleAdminNavigation(createRegistries().adminNav.all(), { userId: fixtureId, displayName: 'Staff', roles: [role], member: false }, []);

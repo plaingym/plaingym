@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { timeLabel } from '../../lib/instant.js';
 import { parseResponse } from '../../lib/response.js';
 import { useCallback, useState, type FormEvent, type ReactNode } from 'react';
 import { canStaff, type StaffRole } from '@plaingym/shared';
@@ -23,7 +24,7 @@ export function check(response: Response) {
 }
 export function message(error: unknown): string { return text(error instanceof Error && error.message === 'conflict' ? 'conflict' : 'error'); }
 export function sessionTimes(session: ClassSession, timezone: string) {
-  return `${localTime(new Date(session.startsAt), timezone)}–${localTime(new Date(session.endsAt), timezone)}`;
+  return `${timeLabel(session.startsAt, timezone)}–${timeLabel(session.endsAt, timezone)}`;
 }
 /** "Booked 4 of 5 · 2 waitlisted · 3 checked in"; without a capacity, "Booked 4 · …". */
 function countsSummary(counts: SessionCounts, capacity: number | null) {

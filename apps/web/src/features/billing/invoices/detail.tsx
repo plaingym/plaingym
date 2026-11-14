@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { calendarDateLabel, instantLabel } from '../../../lib/instant.js';
+import { calendarDateLabel, useGymTime } from '../../../lib/instant.js';
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { cardBrand } from '../../../lib/card-brand.js';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -25,6 +25,7 @@ type Action = { kind: 'cash' | 'charge' | 'link' | 'receipt' | 'viewReceipt' | '
 export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClient, onCreditChange }: {
   gymId: string; invoiceId: string; access: InvoiceAccess; client?: InvoiceClient; onCreditChange?: () => void;
 }) {
+  const { instantLabel } = useGymTime();
   const cache = useQueryClient(), key = ['billing', gymId, 'invoice', invoiceId];
   const [action, setAction] = useState<Action | null>(null), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const [message, setMessage] = useState(''), [url, setUrl] = useState(''), [cardOffset, setCardOffset] = useState(0);
@@ -173,8 +174,9 @@ function LineItems({ data }: { data: InvoiceDetail }) {
   </StackedItem>)}</StackedList>;
 }
 function Receipt({ data }: { data: InvoiceDetail }) {
+  const { instantLabel } = useGymTime();
   return <div className="space-y-4"><p>{text('number')} {data.invoice.number} · {money(data.invoice.amountCents, data.invoice.currency)}</p>
-    <LineItems data={data}/>{data.payments.map(p => <p key={p.id}>{text(p.method)} · {money(p.amountCents, p.currency)} · {new Date(p.paidAt).toLocaleString()}</p>)}
+    <LineItems data={data}/>{data.payments.map(p => <p key={p.id}>{text(p.method)} · {money(p.amountCents, p.currency)} · {instantLabel(p.paidAt)}</p>)}
     {data.refunds.map(r => <p key={r.id}>{text('refund')} · {money(r.amountCents, r.currency)} · {text(r.status)}</p>)}
   </div>;
 }

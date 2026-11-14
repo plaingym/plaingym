@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { instantLabel } from '../../lib/instant.js';
+import { useGymTime } from '../../lib/instant.js';
 import { parseResponse } from '../../lib/response.js';
 import { useEffect, useState } from 'react';
 import { Button } from '../../components/ui/button.js';
@@ -13,6 +13,7 @@ import { api } from '../../lib/api.js';
 import { DemoMenuLink } from './notice.js';
 type Message = ReturnType<typeof outboxResponse.parse>['data'][number];
 export function OutboxPage() {
+  const { instantLabel } = useGymTime();
   const [messages, setMessages] = useState<Message[]>([]), [next, setNext] = useState<string | null>(null);
   const [cursor, setCursor] = useState<string | null>(null), [loading, setLoading] = useState(true), [error, setError] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
