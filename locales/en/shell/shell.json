@@ -3,6 +3,7 @@
   "title": "Sign in to your gym",
   "email": "Email address",
   "password": "Password",
+  "forgotPassword": "Forgot your password? Ask your gym to reset it. Gym owners can reset their own password using the server CLI.",
   "passwordSubmit": "Sign in",
   "magicSubmit": "Email me a sign-in link",
   "magicHint": "Use a link sent to your email address to sign in.",

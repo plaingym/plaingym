@@ -35,6 +35,13 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.stubGlobal('fetch', fetch
   discovery.link = () => Response.json({}, { status: 404 }); });
 
 describe('a sign-in that came back with an error', () => {
+  it.each([true, false])('shows forgotten-password help only when password login is available: %s', async password => {
+    const custom = services(); custom.loadBootstrap = async () => ({ ...anonymous, login: { password, magicLink: true } });
+    render(<App services={custom} router={createAppRouter(createMemoryHistory({ initialEntries: ['/login'] }))} />);
+    await screen.findByLabelText('Email address');
+    expect(screen.queryByText(/Forgot your password/) !== null).toBe(password);
+    if (password) expect(screen.getByLabelText('Password').getAttribute('aria-describedby')).toBe('password-help');
+  });
   it.each([
     ['INVALID_TOKEN', 'This sign-in link was already used or has expired. Request a new one below.'],
     ['EXPIRED_TOKEN', 'This sign-in link was already used or has expired. Request a new one below.'],
