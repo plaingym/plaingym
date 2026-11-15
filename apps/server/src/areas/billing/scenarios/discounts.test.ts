@@ -87,8 +87,13 @@ describe('discounted assignment and recurring billing', () => {
     await bill(f, '2028-03-11');
     expect((await f.read()).invoices.map(row => row.amountCents)).toEqual([2100]);
     expect((await f.applications())[0]!.cyclesLeft).toBe(3);
+    expect((await f.read()).audits.filter(event => event.action === 'billing.membership.period_advanced'))
+      .toMatchObject([{ after: { membershipId: assigned.id, prorated: true, skipped: false } }]);
     for (const date of ['2028-04-01', '2028-05-01', '2028-06-01', '2028-07-01']) await bill(f, date);
     expect((await f.read()).invoices.map(row => row.amountCents)).toEqual([2100, 3100, 3100, 3100, 6200]);
+    const full = (await f.read()).audits.filter(event => event.action === 'billing.membership.period_advanced'
+      && (event.after as { previousDueOn?: string }).previousDueOn === '2028-04-01');
+    expect(full).toMatchObject([{ after: { membershipId: assigned.id, prorated: false, skipped: false } }]);
   });
 
   it('discounts a prorated first period without taking a once cycle', async () => {

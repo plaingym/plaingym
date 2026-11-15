@@ -48,8 +48,10 @@ members get; it changes no membership. Two owner and admin routes (`plans.manage
   is found by that audit before its revision is checked, so a retry, a concurrent request with the
   key or a resume after a failed chunk schedules nothing twice. It counts as scheduled on a resume
   while its pending price, plan, interval, date and origin still match, or when the cycle already applied
-  those terms and its application is still the membership's latest price change, switch or
-  membership edit audit. The latter keeps
+  those terms with origin `price_change` and its application is still the membership's latest
+  price change, switch, import update or price/interval edit audit. A due-date-only staff edit
+  does not replace that application; an import update does, including a price changed away and back.
+  A downgrade's cycle application cannot stand in for the request's price change. A matching application keeps
   its household in the notice count without queueing another notice. One that changed, was cancelled or
   left the plan since the preview is skipped (`changed`). A household is never split. With
   `notify`, each household with a membership scheduled gets the price notice job

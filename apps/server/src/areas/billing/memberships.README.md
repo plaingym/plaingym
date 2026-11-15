@@ -36,6 +36,8 @@ ends it as `switch`. Later catalog edits cannot change that eligibility. A switc
 uses no cycle. A scheduled switch checks this when the cycle build applies it,
 before pricing; an immediate switch checks it in the switching transaction.
 The preview's `discount` is `kept`, `ended` or `none`.
+Ordinary edits reuse the live discount read for their before and after snapshots;
+discount replacements, removals and switches return the application they actually saved.
 
 First-period invoices receive the discount; a waived signup fee creates no fee
 invoice. Fee-only waivers complete at assignment. Full cycle invoices, including a
@@ -58,6 +60,9 @@ staff-set status. This includes abandoned joins and mistaken pending assignments
 cancelled by staff. A staff edit stands until the next membership change.
 An active membership takes priority over an unfinished
 or frozen trial.
+An existing trial member with a pending join trial (`trialEndsOn` set) keeps their
+trial status while that join remains unpaid, even if a sibling membership activates.
+This exception does not start a trial for a prospect with only a pending join.
 
 Cancelling the last live membership after a trial or activation makes the member
 `cancelled` even when pack credits remain; the kiosk sends them to the front desk. Cancelling a frozen

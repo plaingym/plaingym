@@ -65,6 +65,8 @@ for (const width of [360, 1280]) test('plan price selection, summary, warning an
     await capture(page, info, 'summary-warning-' + width);
     await dialog.getByLabel('I confirm applying this increase with short notice or without email notice.').check();
     await dialog.getByRole('button', { name: 'Apply price change', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: 'Price change result', exact: true })).toBeVisible();
+    await expect(page.getByRole('dialog', { name: 'Change plan price', exact: true })).toHaveCount(0);
     await expect(dialog.getByRole('heading', { name: 'Price change result' })).toBeVisible();
     await expect(dialog.getByText('Memberships scheduled: 2, from ' + today + '.', { exact: true })).toBeVisible();
     await capture(page, info, 'result-' + width);

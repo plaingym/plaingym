@@ -57,6 +57,20 @@ const change = (overrides: Partial<PlanChangeInput> = {}): PlanChangeInput => ({
 });
 
 describe('membership discount quotes', () => {
+  it.each([
+    ['2026-03-16', 'monthly', 'active', true, '2026-04-01'],
+    ['2026-04-01', 'monthly', 'active', false, '2026-05-01'],
+    ['2026-04-01', 'annual', 'active', false, '2027-04-01'],
+    ['2026-03-16', 'monthly', 'frozen', true, '2026-04-01'],
+    ['2026-04-01', 'monthly', 'frozen', false, '2026-05-01'],
+    ['2026-04-01', 'annual', 'frozen', false, '2027-04-01'],
+  ] as const)('reports the engine proration flag for %s %s %s', (dueOn, interval, status, prorated, nextDueOn) => {
+    const result = calculateCycleInvoice({ ...household, dueOn,
+      memberships: [priced(percentage(5_000), { nextDueOn: dueOn, interval, status })] });
+    expect(result.nextDueDates).toMatchObject([{ membershipId: id(10), previousDueOn: dueOn, nextDueOn, prorated, skipped: status === 'frozen' }]);
+    expect(result.invoice === null).toBe(status === 'frozen');
+  });
+
   it('calculates a percentage from the actual extended gross after a caller changes its price or quantity', () => {
     const price = membershipPrice(priced(percentage(2_000)));
     const result = calculatePrices('CAD', [{ ...price, amountCents: 20_000, quantity: 3 }], 0, '');

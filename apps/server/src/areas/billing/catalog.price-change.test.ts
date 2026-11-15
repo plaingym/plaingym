@@ -3,16 +3,19 @@ import { describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
 import { households, members, memberships, plans, RevisionConflictError, uuidv7 } from '@plaingym/db';
-import type { ApplyPlanPriceChangeRequest } from '@plaingym/shared/contracts';
+import type { ApplyPlanPriceChangeRequest, ImportPlanRequest } from '@plaingym/shared/contracts';
 import { billingContracts } from '@plaingym/shared/contracts';
 import type { Principal, RequestEnvironment } from '../../core/context.js';
 import { errorHandler } from '../../core/errors.js';
 import { setLogSink } from '../../core/log.js';
 import { FakeEmail } from '../../infra/email/index.js';
+import { FakeUploads } from '../../infra/storage/index.js';
 import { createServerRegistry } from '../../core/registry.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { createGoLiveService } from '../settings/go-live.js';
+import { autoMatch, csvLine, parseCsv } from '../imports/pipeline.csv.js';
+import { createImportPipeline } from '../imports/pipeline.js';
 import { createCatalogService } from './catalog.js';
 import { createPriceChangeService, priceChanges, planPriceChangeAppliedAction, planPriceChangedAction, priceChangeScheduledAction,
   type PriceChangeOptions } from './catalog.price-change.js';
@@ -320,7 +323,7 @@ describe('plan price change apply', () => {
     f.clock.set('2028-04-17T17:00:00Z'); expect(await f.apply(input)).toEqual(result);
     expect(await f.audits(planPriceChangeAppliedAction)).toHaveLength(1);
   });
-  it.each(['unchanged', 'repriced', 'restored'] as const)('recognizes a cycle-applied keyed change only while its terms remain current: %s', async kind => {
+  it.each(['unchanged', 'date', 'repriced', 'restored', 'import_restored'] as const)('recognizes a cycle-applied keyed change only while its terms remain current: %s', async kind => {
     const f = await setup();
     const input = await f.request([f.membership.id]);
     let calls = 0;
@@ -330,7 +333,29 @@ describe('plan price change apply', () => {
     await expect(f.apply(input, f.make({ scope }))).rejects.toThrow('Result rolled back');
     await f.dailyOn('2028-05-01');
     expect(await f.row(f.membership.id)).toMatchObject({ amountCents: 12_000, scheduledPlanId: null });
-    if (kind !== 'unchanged') {
+    expect((await f.audits(planSwitchedAction)).at(-1)?.after).toMatchObject({ scheduledOrigin: 'price_change' });
+    if (kind === 'date') {
+      f.clock.advance(1_000);
+      await f.lifecycle.update(f.staff, { membershipId: f.membership.id, revision: (await f.row(f.membership.id)).revision,
+        nextDueOn: '2028-06-15' });
+    } else if (kind === 'import_restored') {
+      const email = 'resume@example.test';
+      await db.forGym(f.gymId, tx => tx.update(members).set({ email }).where(eq(members.id, f.member.id)));
+      const uploads = new FakeUploads(f.gymId, f.clock);
+      const pipeline = createImportPipeline({ ...f.serviceOptions, uploadsFor: async () => uploads });
+      // Run the real pipeline twice, including its duplicate policy: import audits differ from staff edit audits.
+      for (const amount of [11_000, 12_000]) {
+        f.clock.advance(1_000);
+        const text = csvLine(['email', 'plan', 'nextDueOn', 'amountCents']) + csvLine([email, f.plan.id, '2028-06-01', String(amount)]);
+        const document = parseCsv(text), upload = await pipeline.upload(f.staff, new File([text], 'resume.csv'));
+        const plan: ImportPlanRequest = { uploadId: upload.id, mapper: 'memberships', duplicatePolicy: 'update', mapping: autoMatch(document.columns) };
+        const job = await pipeline.start(f.staff, { ...plan, dryRun: false }, 'America/Vancouver');
+        await pipeline.run(f.gymId, job.id);
+        expect(await pipeline.get(f.gymId, job.id)).toMatchObject({ committedRows: 1, errorCount: 0 });
+        expect(await f.row(f.membership.id)).toMatchObject({ amountCents: amount });
+      }
+      expect(await f.audits('billing.membership.import_updated')).toHaveLength(2);
+    } else if (kind !== 'unchanged') {
       // Later instants, so the edits' audits never tie with the cycle's application.
       f.clock.advance(1_000);
       await f.lifecycle.update(f.staff, { membershipId: f.membership.id, revision: (await f.row(f.membership.id)).revision,
@@ -340,12 +365,38 @@ describe('plan price change apply', () => {
         revision: (await f.row(f.membership.id)).revision, price: { amountCents: 12_000, currency: 'CAD' } });
     }
     const result = await f.apply(input);
-    expect(result).toMatchObject(kind === 'unchanged'
+    expect(result).toMatchObject(kind === 'unchanged' || kind === 'date'
       ? { scheduled: [f.membership.id], skipped: [], householdsNotified: 1 }
       : { scheduled: [], skipped: [{ id: f.membership.id, reason: 'changed' }], householdsNotified: 0 });
     expect(await f.audits(priceChangeScheduledAction)).toHaveLength(1); expect(f.notices()).toHaveLength(1);
     expect(await f.apply(input)).toEqual(result);
     expect(await f.audits(planPriceChangeAppliedAction)).toHaveLength(1);
+  });
+  it('does not count a downgrade back to the plan applied on the request date as its price change', async () => {
+    const f = await setup({ amount: 15_000, dueOn: '2028-04-15' });
+    const input = await f.request([f.membership.id]);
+    let calls = 0;
+    const scope: typeof db.forGym = (gymId, fn) => db.forGym(gymId, async tx => {
+      const result = await fn(tx); if (++calls === 3) throw new Error('Result rolled back'); return result;
+    });
+    await expect(f.apply(input, f.make({ scope }))).rejects.toThrow('Result rolled back');
+    const other = await factory('plans', f.gymId, { amountCents: 15_000, currency: 'CAD', interval: 'monthly' });
+    for (const planId of [other.id, f.plan.id]) {
+      f.clock.advance(1_000);
+      await f.lifecycle.switchPlan(f.staff, { membershipId: f.membership.id, revision: (await f.row(f.membership.id)).revision,
+        requestId: uuidv7(), planId, timing: 'now' });
+    }
+    expect(await f.row(f.membership.id)).toMatchObject({ scheduledOrigin: 'downgrade', scheduledOn: input.effectiveOn });
+    await f.dailyOn(input.effectiveOn);
+    expect(await f.row(f.membership.id)).toMatchObject({ amountCents: 12_000, scheduledPlanId: null });
+    const applications = (await f.audits(planSwitchedAction)).filter(event =>
+      (event.after as { dueOn?: string } | null)?.dueOn === input.effectiveOn);
+    expect(applications).toMatchObject([{ after: { scheduledOrigin: 'downgrade', amountCents: 12_000,
+      scheduledOn: input.effectiveOn, dueOn: input.effectiveOn } }]);
+    const result = await f.apply(input);
+    expect(result).toMatchObject({ scheduled: [], skipped: [{ id: f.membership.id, reason: 'changed' }], householdsNotified: 0 });
+    expect(f.notices()).toHaveLength(1);
+    expect(await f.apply(input)).toEqual(result);
   });
   it.each(['price', 'switch', 'cancel', 'interval', 'date', 'origin'] as const)('does not count a keyed schedule replaced by a %s edit on resume', async kind => {
     const f = await setup();

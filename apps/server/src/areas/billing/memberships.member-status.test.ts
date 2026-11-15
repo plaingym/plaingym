@@ -34,6 +34,19 @@ async function fixture(status: MemberStatus = 'prospect') {
 }
 
 describe('member status derived from memberships against PostgreSQL', () => {
+  it.each(['activate', 'cancel'] as const)('keeps an unpaid join trial from promoting a trial member on sibling %s', async action => {
+    const f = await fixture('trial');
+    const unpaid = await f.service.assign(f.context, { ...f.request, initialStatus: 'pending', trialEndsOn: '2028-03-15' });
+    const other = await factory('memberships', f.gymId, { ...f.request, id: uuidv7(), status: action === 'activate' ? 'trial' : 'active' });
+    await f.service[action](f.context, { membershipId: other.id, revision: other.revision });
+    expect(await f.read()).toMatchObject({ status: 'trial', revision: 1 });
+    expect(await f.events()).toEqual([]);
+    expect(await f.service.get(f.gymId, unpaid.id)).toMatchObject({ status: 'pending', trialEndsOn: '2028-03-15' });
+    // Once the unpaid trial itself activates there is no pending trial left to defer promotion.
+    await f.service.activate(f.context, { membershipId: unpaid.id, revision: unpaid.revision });
+    expect(await f.read()).toMatchObject({ status: 'active', revision: 2 });
+  });
+
   it.each(memberStatuses)('derives active and trial assignments from a staff-set %s status', async status => {
     for (const initialStatus of ['active', 'trial'] as const) {
       const f = await fixture(status), membership = await f.assign(initialStatus);

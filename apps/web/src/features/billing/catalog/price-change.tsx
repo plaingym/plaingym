@@ -5,7 +5,6 @@ import type { ApplyPlanPriceChangeRequest, Plan, PlanPriceChangeMembership, Plan
 import { addDays, isCalendarDate } from '@plaingym/shared/time';
 import { Alert } from '../../../components/ui/alert.js';
 import { Button } from '../../../components/ui/button.js';
-import { Dialog } from '../../../components/ui/dialog.js';
 import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
 import { StackedItem, StackedList, TableContainer } from '../../../components/ui/table.js';
@@ -14,8 +13,10 @@ import { applyPriceChange, PriceChangeError, previewPriceChange, type BillingCli
 import { money, say, selectClass, text } from './format.js';
 
 type Choice = 'new' | 'all' | 'chosen';
-type Props = { plan: Plan; input: Record<string, unknown>; initial?: PlanPriceChangePreview; client: BillingClient;
-  cancel: () => void; reload: () => Promise<void>; done: () => Promise<void>; embedded?: boolean };
+export type PriceChangeState = { plan: Plan; input: Record<string, unknown> } & (
+  { kind: 'terms'; initial?: never } | { kind: 'price'; initial: PlanPriceChangePreview });
+type Props = PriceChangeState & { client: BillingClient; onResult: (result: PlanPriceChangeResult) => void;
+  cancel: () => void; reload: () => Promise<void>; done: () => Promise<void> };
 
 export const planTermsChanged = (plan: Plan, input: Record<string, unknown>) =>
   (input.currency !== undefined && input.currency !== plan.currency) || (input.interval !== undefined && input.interval !== plan.interval);
@@ -48,12 +49,14 @@ export function priceChangeCounts(rows: readonly PlanPriceChangeMembership[]) {
   return { reachable: count('ok'), noAddress: count('no_address'), erased: count('payer_erased'), suppressed: count('suppressed') };
 }
 
-export function PriceChange({ plan, input, initial, client, cancel, reload, done, embedded = false }: Props) {
-  const newOnly = planTermsChanged(plan, input);
-  if (!initial && !newOnly) throw new Error('An existing-member price change requires a preview');
+export function PriceChange(props: Props) {
+  const { plan, input, client, cancel, reload, done, onResult } = props;
+  const newOnly = props.kind === 'terms';
   // A terms edit offers only a plan save, so it needs no membership preview or effective date.
-  const opening = initial ?? { amountCents: Number(input.amountCents), effectiveOn: '', today: '', memberships: [],
-    total: 0, change: 'none', canEmail: false, switchesToPlan: 0 };
+  const [opening] = useState<PlanPriceChangePreview>(() => props.kind === 'price' ? props.initial : {
+    plan, amountCents: Number(input.amountCents), effectiveOn: '', today: '', memberships: [],
+    total: 0, households: 0, householdsWithoutAddress: 0, householdsPayerErased: 0, householdsSuppressed: 0,
+    change: 'none', canEmail: false, switchesToPlan: 0 });
   const [preview, setPreview] = useState(opening), [date, setDate] = useState(opening.effectiveOn);
   const [choice, setChoice] = useState<Choice>('new'), [include, setInclude] = useState(false);
   const [ticks, setTicks] = useState(() => new Set(opening.memberships.filter(row => row.tickedByDefault).map(row => row.id)));
@@ -117,7 +120,8 @@ export function PriceChange({ plan, input, initial, client, cancel, reload, done
         command.current = { requestKey: requestKey.current, planRevision: updated.revision, amountCents: opening.amountCents,
           effectiveOn: date, notify: sendNotice, memberships: selected.map(row => ({ id: row.id, revision: row.revision })) };
       }
-      setResult(await applyPriceChange(client, plan.id, command.current));
+      const applied = await applyPriceChange(client, plan.id, command.current);
+      setResult(applied); onResult(applied);
     } catch (failure) {
       // Cancel is gone once the attempt started, so every error also offers the reload (a lasting failure must not trap staff).
       if (failure instanceof ApiError && failure.status === 409) {
@@ -130,8 +134,7 @@ export function PriceChange({ plan, input, initial, client, cancel, reload, done
     try { await reload(); } catch { setError(text('error')); } finally { setBusy(false); }
   }
   const name = (id: string) => preview.memberships.find(row => row.id === id)?.memberName ?? id;
-  const content = <div className="min-w-0 space-y-4 wrap-anywhere">
-      {embedded && result && <h3 className="text-lg font-semibold">{text('pcResult')}</h3>}
+  return <div className="min-w-0 space-y-4 wrap-anywhere">
       <p>{say('pcPrice', { name: plan.name, amount: money(Number(input.amountCents ?? opening.amountCents), String(input.currency ?? plan.currency)) })}</p>
       {newOnly && !result && <p role="note">{text('pcTermsNewOnly')}</p>}
       {error && <Alert variant="error" focusOnReveal role="alert" className="space-y-3"><p>{error}</p>{(conflict || attempted) && <Button disabled={busy} onClick={() => void reloadPlan()}>{text('pcReload')}</Button>}</Alert>}
@@ -215,6 +218,4 @@ export function PriceChange({ plan, input, initial, client, cancel, reload, done
         </div>
       </>}
     </div>;
-  return embedded ? content : <Dialog title={text(result ? 'pcResult' : 'pcTitle')} closeLabel={text('cancel')} size="wide" dismissible={!busy && !attempted}
-    onClose={cancel}>{content}</Dialog>;
 }

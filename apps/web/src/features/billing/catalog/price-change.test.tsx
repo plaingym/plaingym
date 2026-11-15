@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import type { Plan, PlanPriceChangeMembership, PlanPriceChangePreview, PlanPriceChangeResult } from '@plaingym/shared/contracts';
 import { ApiError } from '../../../lib/api.js';
 import { PriceChangeError, type BillingClient } from './api.js';
-import { PriceChange } from './price-change.js';
+import { planTermsChanged, PriceChange, type PriceChangeState } from './price-change.js';
 
 const id = (n: number) => '019a0000-0000-7000-8000-' + String(n).padStart(12, '0');
 const plan: Plan = { id: id(1), name: 'All classes', amountCents: 10000, currency: 'CAD', interval: 'monthly', signupFeeCents: 0,
@@ -29,8 +29,11 @@ function start(changes: Partial<PlanPriceChangePreview> = {}, edits: Record<stri
     : name === 'previewPlanPriceChange' ? { ...initial, ...changes } : result }));
   const client = { call } as unknown as BillingClient;
   const done = vi.fn(async () => {}), reload = vi.fn(async () => {}), cancel = vi.fn();
-  render(<PriceChange plan={plan} input={edits} initial={{ ...initial, ...changes }} client={client} done={done} reload={reload} cancel={cancel}/>);
-  return { call, done, reload, cancel };
+  const state: PriceChangeState = planTermsChanged(plan, edits) ? { kind: 'terms', plan, input: edits }
+    : { kind: 'price', plan, input: edits, initial: { ...initial, ...changes } };
+  const onResult = vi.fn();
+  render(<PriceChange {...state} client={client} done={done} reload={reload} cancel={cancel} onResult={onResult}/>);
+  return { call, done, reload, cancel, onResult };
 }
 const choose = (name = 'Choose members') => fireEvent.click(screen.getByRole('radio', { name }));
 const tick = (name: string) => screen.getAllByRole('checkbox', { name: 'Move ' + name })[0] as HTMLInputElement;
@@ -46,7 +49,8 @@ describe('plan price change step', () => {
     f.call.mockResolvedValueOnce({ data: { ...result, householdsNotified: 2400, householdsWithoutAddress: 3600,
       householdsPayerErased: 4800, householdsSuppressed: 5600 } });
     apply();
-    await screen.findByRole('heading', { name: 'Price change result' });
+    await waitFor(() => expect(f.onResult).toHaveBeenCalledWith(expect.objectContaining({ householdsNotified: 2400 })));
+    expect(screen.queryByRole('heading', { name: 'Price change result' })).toBeNull();
     for (const count of ['2,400', '3,600', '4,800', '5,600']) expect(screen.getByText(new RegExp(count))).toBeDefined();
   });
   it.each([{ interval: 'annual' }, { currency: 'USD' }])('offers only new members when the price and terms change: %j', async terms => {
@@ -59,7 +63,7 @@ describe('plan price change step', () => {
   });
   it('applies a price-only edit without updating the plan or adding a revision first', async () => {
     const f = start({}, { revision: plan.revision, amountCents: 12000, name: plan.name, taxRateIds: [] });
-    choose(); review(); apply(); await screen.findByRole('heading', { name: 'Price change result' });
+    choose(); review(); apply(); await waitFor(() => expect(f.onResult).toHaveBeenCalledOnce());
     expect(f.call).toHaveBeenCalledExactlyOnceWith('applyPlanPriceChange', expect.objectContaining({ planRevision: plan.revision }), { planId: plan.id });
   });
   it('recovers a lost new-members-only save without applying to existing memberships', async () => {
@@ -73,7 +77,7 @@ describe('plan price change step', () => {
     const f = start();
     f.call.mockRejectedValueOnce(conflict ? new ApiError(409, 'conflict') : new Error('Connection lost'))
       .mockResolvedValueOnce({ data: { ...plan, name: input.name, revision: 6 } });
-    choose(); review(); apply(); await screen.findByRole('heading', { name: 'Price change result' });
+    choose(); review(); apply(); await waitFor(() => expect(f.onResult).toHaveBeenCalledOnce());
     expect(f.call.mock.calls.map(call => call[0])).toEqual(['updatePlan', 'getPlan', 'applyPlanPriceChange']);
     expect(f.call).toHaveBeenLastCalledWith('applyPlanPriceChange', expect.objectContaining({ planRevision: 6 }), { planId: plan.id });
   });
@@ -84,7 +88,7 @@ describe('plan price change step', () => {
     expect(f.call.mock.calls.map(call => call[0])).toEqual(['updatePlan', 'getPlan']);
     f.call.mockRejectedValueOnce(new ApiError(409, 'conflict')).mockResolvedValueOnce({ data: { ...plan, name: input.name, revision: 7 } });
     fireEvent.click(screen.getByRole('button', { name: 'Retry this price change' }));
-    await screen.findByRole('heading', { name: 'Price change result' });
+    await waitFor(() => expect(f.onResult).toHaveBeenCalledOnce());
     expect(f.call).toHaveBeenLastCalledWith('applyPlanPriceChange', expect.objectContaining({ planRevision: 7 }), { planId: plan.id });
   });
   it('shows the server reason for an invalid apply date and keeps retry and reload available', async () => {
@@ -122,7 +126,7 @@ describe('plan price change step', () => {
   });
   it('sends exactly the chosen subset, including explicit commitment and custom-price ticks, using the updated plan revision', async () => {
     const f = start(); choose(); fireEvent.click(tick('Ada')); fireEvent.click(tick('Fox')); fireEvent.click(tick('Cal')); fireEvent.click(tick('Dee'));
-    review(); apply(); await screen.findByRole('heading', { name: 'Price change result' });
+    review(); apply(); await waitFor(() => expect(f.onResult).toHaveBeenCalledOnce());
     expect(f.call).toHaveBeenNthCalledWith(1, 'updatePlan', { ...input, amountCents: 10000 }, { planId: plan.id });
     expect(f.call).toHaveBeenNthCalledWith(2, 'applyPlanPriceChange', expect.objectContaining({ planRevision: 5, amountCents: 12000, notify: true,
       effectiveOn: initial.effectiveOn, memberships: [{ id: id(4), revision: 4 }, { id: id(5), revision: 5 }] }), { planId: plan.id });
@@ -134,7 +138,7 @@ describe('plan price change step', () => {
     review();
     expect(screen.getByText('Frozen memberships moving: 1.')).toBeTruthy();
     expect(screen.getByText(`Memberships keeping their terms: in a commitment ${include ? 0 : 1}; custom price ${include ? 0 : 1}. A membership can be in both groups.`)).toBeTruthy();
-    apply(); await screen.findByRole('heading', { name: 'Price change result' });
+    apply(); await waitFor(() => expect(f.onResult).toHaveBeenCalledOnce());
     expect(f.call).toHaveBeenLastCalledWith('applyPlanPriceChange', expect.objectContaining({ memberships: rows.filter(row => !row.skipReason && (include || row.includedByAll))
       .map(row => ({ id: row.id, revision: row.revision })) }), { planId: plan.id });
   });
@@ -142,13 +146,13 @@ describe('plan price change step', () => {
     const f = start(); f.call.mockResolvedValueOnce({ data: { ...plan, revision: 5 } }).mockRejectedValueOnce(new Error('Connection lost'));
     choose(); review(); apply(); await screen.findByRole('alert');
     const retry = screen.getByRole('button', { name: 'Retry this price change' }); fireEvent.click(retry);
-    await screen.findByRole('heading', { name: 'Price change result' });
+    await waitFor(() => expect(f.onResult).toHaveBeenCalledOnce());
     expect(f.call.mock.calls[1]).toEqual(f.call.mock.calls[2]); expect(f.call.mock.calls.filter(call => call[0] === 'updatePlan')).toHaveLength(1);
   });
   it('offers the reload as a way out when an attempted apply keeps failing', async () => {
     const f = start(); f.call.mockResolvedValueOnce({ data: { ...plan, revision: 5 } }).mockRejectedValueOnce(new Error('Still failing'));
     choose(); review(); apply(); await screen.findByRole('alert');
-    expect(screen.getAllByRole('button', { name: 'Cancel' }).every(button => (button as HTMLButtonElement).disabled)).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Retry this price change' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Reload plan and start again' })); await waitFor(() => expect(f.reload).toHaveBeenCalledOnce());
   });
@@ -156,7 +160,7 @@ describe('plan price change step', () => {
     const f = start({ canEmail: false, change: 'decrease', amountCents: 9000 }); choose();
     const notice = screen.getByLabelText('Email households about this change') as HTMLInputElement;
     expect(notice.checked).toBe(false); expect(notice.disabled).toBe(true); expect(screen.getByRole('note')).toBeTruthy();
-    review(); apply(); await screen.findByRole('heading', { name: 'Price change result' });
+    review(); apply(); await waitFor(() => expect(f.onResult).toHaveBeenCalledOnce());
     expect(f.call).toHaveBeenLastCalledWith('applyPlanPriceChange', expect.objectContaining({ notify: false }), { planId: plan.id });
   });
   it('counts selected households once, separating suppressed, missing-address and erased payers', () => {
@@ -177,7 +181,7 @@ describe('plan price change step', () => {
   });
   it('shows the result with member names, skip reasons and truthful notice counts', async () => {
     const f = start(); choose(); review(); apply();
-    await screen.findByRole('heading', { name: 'Price change result' });
+    await waitFor(() => expect(f.onResult).toHaveBeenCalledOnce());
     expect(screen.getByText('Ada', { selector: 'li' })).toBeTruthy(); expect(screen.getByText(/Fox: The membership changed/)).toBeTruthy();
     expect(screen.getByText(/Reachable households with a notice queued: 1\./)).toBeTruthy(); fireEvent.click(screen.getByRole('button', { name: 'Done' }));
     await waitFor(() => expect(f.done).toHaveBeenCalledOnce());

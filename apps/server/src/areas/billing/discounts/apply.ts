@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, ilike, inArray, isNull } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- Reviewed parameterized lower(code) equality on gym-scoped discounts; no system-table access.
+import { sql } from 'drizzle-orm';
 import { discounts, discountPlans, membershipDiscounts, uuidv7, assertRevised, revisionGuard, type Transaction } from '@plaingym/db';
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { appliedMembershipDiscountSchema, membershipDiscountSelectionSchema,
@@ -32,9 +34,9 @@ export async function resolveDiscount(tx: Transaction, selection: MembershipDisc
   planIds: readonly string[]; timezone: string; clock: Clock; audience?: Audience; useTaken?: boolean;
 }): Promise<ResolvedDiscount> {
   const selected = membershipDiscountSelectionSchema.parse(selection), audience = options.audience ?? 'staff';
-  // Codes have no SQL wildcard characters; ilike matches the complete code, in any case.
+  // Reviewed expression: match the lower(code) unique index with a bound, case-insensitive exact code.
   const [row] = await tx.select().from(discounts).where('discountId' in selected
-    ? eq(discounts.id, selected.discountId) : ilike(discounts.code, selected.code)).for('update');
+    ? eq(discounts.id, selected.discountId) : sql`lower(${discounts.code}) = lower(${selected.code})`).for('update');
   if (!row || !row.active) refuse('discount_unknown', audience);
   if (row.endsOn !== null && localDate(options.clock.now(), options.timezone) > row.endsOn) refuse('discount_ended', audience);
   if (!options.useTaken && row.maxUses !== null && row.uses >= row.maxUses) refuse('discount_used_up', audience);

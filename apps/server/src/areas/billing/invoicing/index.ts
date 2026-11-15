@@ -19,6 +19,8 @@ export interface CycleInvoiceInput extends HouseholdPricing {
   readonly memberships: readonly PricedMembership[];
 }
 export interface DueDateChange {
+  /** True only for the engine's off-day stub; it does not consume a discount cycle. */
+  readonly prorated: boolean;
   readonly membershipId: Id;
   readonly expectedRevision: number;
   readonly previousDueOn: IsoDate;
@@ -74,9 +76,9 @@ export function calculateCycleInvoice(input: CycleInvoiceInput): CycleInvoiceRes
       (membership.resumesOn === null || membership.resumesOn > input.dueOn)))
     .toSorted((a, b) => compareIds(a.membership, b.membership))
     .map((item) => ({ item, ...cycleTerms(input, item) }));
-  const nextDueDates = due.map(({ item, nextDueOn }): DueDateChange => ({
+  const nextDueDates = due.map(({ item, nextDueOn, period }): DueDateChange => ({
     membershipId: item.membership.id, expectedRevision: item.membership.revision,
-    previousDueOn: item.membership.nextDueOn, nextDueOn, skipped: item.membership.status === 'frozen',
+    previousDueOn: item.membership.nextDueOn, nextDueOn, skipped: item.membership.status === 'frozen', prorated: period !== undefined,
   }));
   const active = due.filter(({ item }) => item.membership.status === 'active');
   if (!active.length) return { invoice: null, nextDueDates };

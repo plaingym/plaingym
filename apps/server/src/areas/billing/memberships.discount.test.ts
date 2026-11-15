@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import '@hono/zod-openapi';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { auditEvents, discounts, households, invoiceLineItems, membershipDiscounts, uuidv7 } from '@plaingym/db';
 // Historical/corrupt fixtures need maintenance access; production audits remain append-only.
@@ -15,6 +15,8 @@ import { createMembershipService } from './memberships.js';
 import { createMembershipRoutes } from './memberships.routes.js';
 import { useRunnerFixture } from './runner/runner.fixture.test-helper.js';
 import { createMembersService } from '../members/members.js';
+import * as discountApplications from './discounts/apply.js';
+import { generateCycle } from './runner/store.js';
 
 const { db, factory, fixture } = useRunnerFixture();
 async function rewriteAuditFixture(gymId: string, id: string, after: Record<string, unknown>) {
@@ -53,6 +55,49 @@ async function setup() {
 }
 
 describe('editing a live membership discount', () => {
+  it('reads a live discount once for each ordinary edit and immediate switch, preserving its snapshots', async () => {
+    const f = await setup(), discount = await f.create();
+    const assigned = await f.set(discount.id);
+    const read = vi.spyOn(discountApplications, 'liveDiscounts');
+    try {
+      const changed = await f.service.update(f.context, { membershipId: assigned.id, revision: assigned.revision, nextDueOn: '2028-04-01' });
+      expect(changed.discount).toEqual(assigned.discount);
+      expect(read).toHaveBeenCalledExactlyOnceWith(expect.anything(), [assigned.id]);
+      read.mockClear();
+      const frozen = await f.service.freeze(f.context, { membershipId: changed.id, revision: changed.revision });
+      expect(frozen.discount).toEqual(assigned.discount);
+      expect(read).toHaveBeenCalledOnce();
+      read.mockClear();
+      const resumed = await f.service.activate(f.context, { membershipId: frozen.id, revision: frozen.revision });
+      expect(resumed.discount).toEqual(assigned.discount);
+      expect(read).toHaveBeenCalledOnce();
+      read.mockClear();
+      const other = await factory('plans', f.gymId, { amountCents: 8000, currency: 'CAD', interval: 'monthly' });
+      const switched = await f.service.switchPlan(f.context, { membershipId: resumed.id, revision: resumed.revision,
+        requestId: uuidv7(), planId: other.id, timing: 'now' });
+      expect(switched.membership.discount).toEqual(assigned.discount);
+      expect(read).toHaveBeenCalledOnce();
+      const events = (await f.read()).audits.filter(event => event.targetId === assigned.id && event.action === 'billing.membership.updated');
+      expect(events).toMatchObject([{ before: { discount: assigned.discount }, after: { discount: assigned.discount } }]);
+    } finally { read.mockRestore(); }
+  });
+
+  it('reads discounts once for all memberships priced in a household cycle', async () => {
+    const f = await setup(), discount = await f.create();
+    await f.set(discount.id);
+    const other = await factory('memberships', f.gymId, { householdId: f.home.id, memberId: f.member.id, planId: f.plan.id,
+      amountCents: 10_000, currency: 'CAD', interval: 'monthly', status: 'active', startsOn: '2028-01-01', nextDueOn: '2028-03-01' });
+    const read = vi.spyOn(discountApplications, 'liveDiscounts');
+    try {
+      const gym = await f.settings.get(f.gymId);
+      await db.forGym(f.gymId, tx => generateCycle(tx, gym, f.clock, f.home.id, '2028-03-01'));
+      expect(read).toHaveBeenCalledExactlyOnceWith(expect.anything(), [f.membership.id, other.id].sort());
+      const state = await f.read();
+      expect(state.invoices).toMatchObject([{ amountCents: 15_000 }]);
+      expect(state.lines.filter(line => line.kind === 'membership')).toHaveLength(2);
+    } finally { read.mockRestore(); }
+  });
+
   it('refuses removal without a live discount, without changing the revision or audit', async () => {
     const f = await setup(), before = await f.get(), state = await f.read();
     await expect(f.remove()).rejects.toMatchObject({ code: 'conflict' });

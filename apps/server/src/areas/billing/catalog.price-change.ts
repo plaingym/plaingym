@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, count, desc, eq, gte, inArray, isNull, ne } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, inArray, isNull, ne, or } from 'drizzle-orm';
 import { assertRevised, auditEvents, forGym, households, members, memberships, plans, revisionGuard,
   type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
@@ -16,7 +16,7 @@ import type { SmtpResolver } from '../settings/smtp.js';
 import { catalogAudit, catalogMissing } from './catalog.js';
 import { planSwitchedAction, refuse, switchCancelledAction, switchScheduledAction } from './memberships.plan-change.js';
 import { priceNoticeJob, priceNoticePayload, priceNoticeReach } from './memberships.price-notice.js';
-import { lockPriceRequest, priceRequestKey, priceResultKey, priceSchedulePlan } from './catalog.price-change.query.js';
+import { lockPriceRequest, priceRequestKey, priceResultKey, priceSchedulePlan, priceTermsEdited } from './catalog.price-change.query.js';
 
 type Row = typeof memberships.$inferSelect;
 type Plan = typeof plans.$inferSelect;
@@ -129,7 +129,9 @@ export function createPriceChangeService(options: PriceChangeOptions) {
     const changes = earliest ? await tx.selectDistinctOn([auditEvents.targetId], {
       targetId: auditEvents.targetId, action: auditEvents.action, after: auditEvents.after,
     }).from(auditEvents).where(and(inArray(auditEvents.targetId, [...keyed.keys()]), gte(auditEvents.occurredAt, earliest),
-      inArray(auditEvents.action, [priceChangeScheduledAction, planSwitchedAction, switchScheduledAction, switchCancelledAction, 'billing.membership.updated'])))
+      inArray(auditEvents.action, [priceChangeScheduledAction, planSwitchedAction, switchScheduledAction, switchCancelledAction,
+        'billing.membership.updated', 'billing.membership.import_updated']),
+      or(ne(auditEvents.action, 'billing.membership.updated'), priceTermsEdited())))
       .orderBy(asc(auditEvents.targetId), desc(auditEvents.occurredAt), desc(auditEvents.id)) : [];
     const latest = new Map(changes.map(event => [event.targetId, event]));
     const outcome: Outcome = { scheduled: [], skipped: [], notified: 0, reach: [] };
@@ -141,10 +143,11 @@ export function createPriceChangeService(options: PriceChangeOptions) {
         const pending = row.scheduledPlanId === planId && row.scheduledAmountCents === request.amountCents
           && row.scheduledInterval === interval && row.scheduledOn === request.effectiveOn && row.scheduledOrigin === 'price_change';
         const event = latest.get(row.id);
-        const applied = event?.after as { planId?: string; amountCents?: number; interval?: string; scheduledOn?: string; dueOn?: string } | null;
+        const applied = event?.after as { planId?: string; amountCents?: number; interval?: string; scheduledOn?: string;
+          dueOn?: string; scheduledOrigin?: string } | null;
         const billed = row.scheduledPlanId === null && row.amountCents === request.amountCents && row.interval === interval
           && event?.action === planSwitchedAction && applied?.planId === planId && applied.amountCents === request.amountCents
-          && applied.interval === interval && applied.scheduledOn === request.effectiveOn
+          && applied.interval === interval && applied.scheduledOn === request.effectiveOn && applied.scheduledOrigin === 'price_change'
           && applied.dueOn !== undefined && applied.dueOn >= request.effectiveOn;
         if (row.planId === planId && row.status !== 'cancelled' && row.cancelledAt === null && !erased.has(row.memberId)
           && (pending || billed) && lockedHouseholds.has(row.householdId)) {

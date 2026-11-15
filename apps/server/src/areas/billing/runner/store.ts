@@ -11,11 +11,12 @@ import type { GymSettings } from '../../../core/interfaces/gym-settings.js';
 import type { MembershipOptions } from '../memberships.js';
 import { applyScheduledSwitch } from '../memberships.plan-change.js';
 import { planTaxes } from '../memberships.plan-change.taxes.js';
-import { calculateCycleInvoice, calculateFirstPeriod, calculateOneOffInvoice, previousBillingDate, type CalculatedInvoice,
+import { calculateCycleInvoice, calculateFirstPeriod, calculateOneOffInvoice, type CalculatedInvoice,
   type PricedMembership } from '../invoicing/index.js';
 import { liveDiscounts, presentDiscount, priceDiscount, takeDiscountCycle } from '../discounts/apply.js';
 
 const t = createTranslator(locales.en ?? {});
+export const cycleConflictAction = 'billing.runner.cycle_conflict';
 export const system = (gymId: string): MutationContext => ({ gymId, actor: { kind: 'system' } });
 export async function audit(tx: Transaction, context: MutationContext, clock: Clock, action: string,
   targetType: string, targetId: string, after: unknown, before?: unknown) {
@@ -62,12 +63,13 @@ export function pricing(home: typeof households.$inferSelect, currency: GymSetti
   return { householdId: home.id, currency, billingDay: home.billingDay,
     familyDiscountBasisPoints: home.familyDiscountBasisPoints, discountDescription: t('billing/runner:familyDiscount') };
 }
-async function priced(tx: Transaction, row: typeof memberships.$inferSelect): Promise<PricedMembership & { membership: Membership }> {
+async function priced(tx: Transaction, row: typeof memberships.$inferSelect,
+  discount: Membership['discount']): Promise<PricedMembership & { membership: Membership }> {
   const plan = (await tx.select().from(plans).where(eq(plans.id, row.planId)))[0]!;
   const taxes = await planTaxes(tx, row.planId);
   const { gymId: _gymId, anniversaryOn, switchOverrideReason: _reason, scheduledOrigin: _origin, ...fields } = row;
   void [_gymId, _reason, _origin];
-  const discount = presentDiscount((await liveDiscounts(tx, [row.id])).get(row.id)), price = priceDiscount(discount);
+  const price = priceDiscount(discount);
   return { membership: membershipSchema.parse({ ...fields, discount, createdAt: row.createdAt.toISOString(),
     frozenAt: row.frozenAt?.toISOString() ?? null, cancelledAt: row.cancelledAt?.toISOString() ?? null }),
     description: plan.name, taxRates: taxes, ...(price ? { discount: price } : {}),
@@ -89,23 +91,21 @@ export async function generateCycle(tx: Transaction, gym: GymSettings, clock: Cl
   // A scheduled plan switch applies at the first cycle billed on or after its date, before that cycle is priced.
   const current = due.filter(row => row.nextDueOn === dueOn);
   for (const [index, row] of current.entries()) current[index] = await applyScheduledSwitch(tx, row, clock);
-  const pricingSnapshot = await Promise.all(current.map(row => priced(tx, row)));
+  const applied = await liveDiscounts(tx, current.map(row => row.id));
+  const pricingSnapshot = await Promise.all(current.map(row => priced(tx, row, presentDiscount(applied.get(row.id)))));
   const result = calculateCycleInvoice({ ...pricing(home, gym.currency), dueOn, memberships: pricingSnapshot });
   if (!result.nextDueDates.length) return false;
   if (result.invoice) {
     const calculated = previous ? { ...result.invoice, kind: 'one_off' as const, periodStartsOn: null, periodEndsOn: null } : result.invoice;
     const invoiceId = await issue(tx, system(gym.gymId), clock, calculated, !!previous || dueOn < addDays(today, -7), pricingSnapshot);
-    if (previous) await audit(tx, system(gym.gymId), clock, 'billing.runner.cycle_conflict', 'invoice', invoiceId,
+    if (previous) await audit(tx, system(gym.gymId), clock, cycleConflictAction, 'invoice', invoiceId,
       { cycleInvoiceId: previous.id, dueOn, periodStartsOn: result.invoice.periodStartsOn, periodEndsOn: result.invoice.periodEndsOn });
   }
   for (const change of result.nextDueDates) {
     assertRevised(await tx.update(memberships).set({ nextDueOn: change.nextDueOn, revision: change.expectedRevision + 1 })
       .where(and(eq(memberships.id, change.membershipId), eq(memberships.revision, change.expectedRevision))).returning({ id: memberships.id }));
-    const row = current.find(row => row.id === change.membershipId)!;
-    // An off-day monthly stub ends at the billing day but starts after the preceding full-period boundary.
-    const full = row.interval === 'annual' || change.previousDueOn === previousBillingDate({ dueOn: change.nextDueOn,
-      interval: 'monthly', billingDay: home.billingDay });
-    if (!change.skipped && result.invoice && full) await takeDiscountCycle(tx, system(gym.gymId), clock, row.id);
+    if (!change.skipped && result.invoice && !change.prorated)
+      await takeDiscountCycle(tx, system(gym.gymId), clock, change.membershipId);
     await audit(tx, system(gym.gymId), clock, 'billing.membership.period_advanced', 'membership', change.membershipId, change);
   }
   return true;

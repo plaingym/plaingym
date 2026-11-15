@@ -224,6 +224,8 @@ source of truth; Stripe is the processor. In outline:
   memberships, no memberships, or memberships that never left pending preserve
   the staff-set status. The memberships import uses this same reconciliation
   after inserts and updates and wins leads for active memberships.
+  An existing trial member with an unpaid pending join trial keeps their trial
+  status until that pending trial starts or is cancelled, even when a sibling activates.
   Staff edits stand until the next membership change. The daily trial-end and
   resume-date job uses the same transaction and member revision guard; changes
   audit their causing membership. Even with pack credits left, a member whose

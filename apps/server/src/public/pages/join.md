@@ -229,7 +229,9 @@ any sign-up fee, with no membership lines that could activate a trial early. Joi
 completion moves a pending trial membership and its prospective member to `trial`;
 other prospective members become `active`. The membership date job activates the
 trial at `trialEndsOn`, when the runner bills its first full period. At that
-activation the member becomes `active` even if another trial remains; any active
+activation the member becomes `active` even if another trial remains, except when
+an existing trial member still has an unpaid pending join trial. That member keeps
+`trial` until the pending trial starts or is cancelled. Otherwise any active
 membership takes priority under the
 [membership status rule](../../areas/billing/memberships.README.md#member-status).
 The member update is revision-guarded and audited in the same transaction. The join

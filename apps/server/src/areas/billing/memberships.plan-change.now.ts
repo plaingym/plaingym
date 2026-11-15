@@ -5,7 +5,7 @@ import type * as c from '@plaingym/shared/contracts';
 import { addDays, monthStart, nextMonth } from '@plaingym/shared/time';
 import { calculatePlanChange, currentPeriodStart, type CalculatedInvoice, type PlanChangeResult } from './invoicing/index.js';
 import { isOffDay } from './invoicing/calendar.js';
-import { pricing } from './runner/store.js';
+import { cycleConflictAction, pricing } from './runner/store.js';
 import { planSwitchedAction, refuse, switchTerms, type PlanSwitchedNowAudit } from './memberships.plan-change.js';
 import { priceDiscount, switchDiscount } from './discounts/apply.js';
 import { planTaxes } from './memberships.plan-change.taxes.js';
@@ -63,15 +63,19 @@ export async function prorateNow(tx: Transaction, home: Household, row: Row, mem
     eq(auditEvents.action, planSwitchedAction), eq(auditEvents.targetId, row.id), gte(auditEvents.occurredAt, earliestBill)));
   const recorded = switches.map(event => ({ ...event, after: event.after as PlanSwitchedNowAudit | null }));
   const switchInvoices = new Set(recorded.map(event => event.after?.invoiceId).filter(id => id !== null && id !== undefined));
-  const conflicts = new Set((await tx.select({ id: auditEvents.targetId }).from(auditEvents).where(and(
-    eq(auditEvents.action, 'billing.runner.cycle_conflict'), inArray(auditEvents.targetId, usable.map(bill => bill.id)))))
-    .map(event => event.id));
-  const cycleBill = (bill: typeof usable[number]) => bill.kind === 'cycle' || conflicts.has(bill.id);
   // A cycle or conflict bill identifies the original anchor; an earlier switch's one-off invoice doesn't. A cycle bill
   // after the previous month-end (a due date edited mid-period) names no anchor, so the own-day rule applies.
   const ambiguous = row.interval === 'monthly' && isOffDay(row.nextDueOn, home.billingDay)
     && addDays(row.nextDueOn, 1) === nextMonth(monthStart(row.nextDueOn));
   const previousEnd = addDays(monthStart(row.nextDueOn), -1);
+  // Conflict audits can't change the outcome when a cycle bill already decides it: any cycle bill proves an unambiguous
+  // period, and an ambiguous one is anchored by the latest bill before the month-end only when that bill is the cycle bill.
+  const hasCycle = ambiguous ? usable.find(bill => bill.dueOn <= previousEnd)?.kind === 'cycle'
+    : usable.some(bill => bill.kind === 'cycle');
+  const conflicts = new Set(hasCycle ? [] : (await tx.select({ id: auditEvents.targetId }).from(auditEvents).where(and(
+    eq(auditEvents.action, cycleConflictAction), inArray(auditEvents.targetId, usable.map(bill => bill.id)))))
+    .map(event => event.id));
+  const cycleBill = (bill: typeof usable[number]) => bill.kind === 'cycle' || conflicts.has(bill.id);
   const billedPeriodStartsOn = ambiguous
     ? usable.find(bill => cycleBill(bill) && bill.dueOn <= previousEnd)?.dueOn : undefined;
   const periodStartsOn = currentPeriodStart(terms, item, billedPeriodStartsOn);

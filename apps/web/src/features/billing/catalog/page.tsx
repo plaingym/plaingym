@@ -3,7 +3,7 @@ import { formatCount } from '../../../lib/count.js';
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { canStaff } from '@plaingym/shared';
-import type { ChargeType, Plan, PlanPriceChangePreview, TaxRate, TaxRateUsage } from '@plaingym/shared/contracts';
+import type { ChargeType, Plan, PlanPriceChangePreview, PlanPriceChangeResult, TaxRate, TaxRateUsage } from '@plaingym/shared/contracts';
 import { addDays, localDate } from '@plaingym/shared/time';
 import { useBootstrap } from '../../../app/context.js';
 import { Alert } from '../../../components/ui/alert.js';
@@ -14,7 +14,7 @@ import { userNames } from '../../../components/ui/page.js';
 import { ApiError } from '../../../lib/api.js';
 import { cn } from '../../../lib/utils.js';
 import { billingClient, previewPriceChange, type BillingClient } from './api.js';
-import { planTermsChanged, PriceChange } from './price-change.js';
+import { planTermsChanged, PriceChange, type PriceChangeState } from './price-change.js';
 import { ArchiveConfirmation, CatalogEditor, type CatalogKind, type CatalogRecord } from './editor.js';
 import { money, saveError, say, text } from './format.js';
 import { PackCatalog } from '../packs/catalog.js';
@@ -30,7 +30,7 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
   const [busy, setBusy] = useState(false), [message, setMessage] = useState('');
   const [archive, setArchive] = useState<Archive | null>(null);
   const [stale, setStale] = useState(false);
-  const [priceChange, setPriceChange] = useState<{ plan: Plan; input: Record<string, unknown>; initial?: PlanPriceChangePreview } | null>(null);
+  const [priceChange, setPriceChange] = useState<(PriceChangeState & { result?: PlanPriceChangeResult }) | null>(null);
   const dialogBody = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const controls = dialogBody.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)');
@@ -54,7 +54,7 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
     if (stale) return;
     const record = editor === 'new' ? undefined : editor;
     if (kind === 'plans' && record && isPlan(record) && input.amountCents !== record.amountCents && data.data) {
-      if (planTermsChanged(record, input)) { setPriceChange({ plan: record, input }); return; }
+      if (planTermsChanged(record, input)) { setPriceChange({ kind: 'terms', plan: record, input }); return; }
       const effectiveOn = addDays(localDate(new Date(), data.data.settings.timezone), 30);
       let initial: PlanPriceChangePreview;
       try { initial = await previewPriceChange(client, record.id, Number(input.amountCents), effectiveOn); }
@@ -65,7 +65,7 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
       if (initial.plan.revision !== record.revision) {
         setStale(true); setMessage(text('pcConflict')); await cache.invalidateQueries({ queryKey: key }); return;
       }
-      if (initial.total > 0) { setPriceChange({ plan: record, input, initial }); return; }
+      if (initial.total > 0) { setPriceChange({ kind: 'price', plan: record, input, initial }); return; }
     }
     // Only archiving an active rate needs the detach; a rate archived before that rule stays editable as it is.
     const archiving = kind === 'taxes' && record && 'rateMillionths' in record && record.active && input.active === false ? record : undefined;
@@ -120,9 +120,10 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
 
       <nav className="flex flex-wrap gap-2" aria-label={text('sections')}>{(['plans', 'taxes', 'charges'] as const).map(value => <Button key={value} aria-pressed={value === kind} variant={value === kind ? 'default' : 'outline'} disabled={busy} onClick={() => switchTo(value)}>{text(value)}</Button>)}</nav>
       {!editor && !archive && notice}
-      {(editor || archive) && <Dialog title={!editor && archive ? say(archive.rate.active ? 'archiveTitle' : 'detachTitle', { name: archive.rate.name }) : text(priceChange ? 'pcTitle' : (editor === 'new' ? 'create.' : 'edit.') + kind)} size={priceChange ? 'wide' : 'default'} closeLabel={text('closeEditor')} dismissible={!busy && !priceChange} onClose={closeEditor}>
+      {(editor || archive) && <Dialog title={!editor && archive ? say(archive.rate.active ? 'archiveTitle' : 'detachTitle', { name: archive.rate.name }) : text(priceChange ? priceChange.result ? 'pcResult' : 'pcTitle' : (editor === 'new' ? 'create.' : 'edit.') + kind)} size={priceChange ? 'wide' : 'default'} closeLabel={text('closeEditor')} dismissible={!busy && !priceChange} onClose={closeEditor}>
       <div ref={dialogBody}>
-      {priceChange && <PriceChange embedded {...priceChange} client={client} cancel={() => setPriceChange(null)}
+      {priceChange && <PriceChange {...priceChange} client={client} cancel={() => setPriceChange(null)}
+        onResult={result => setPriceChange(current => current && { ...current, result })}
         done={async () => { await cache.invalidateQueries({ queryKey: key }); setPriceChange(null); setEditor(null); }}
         reload={async () => {
           const refreshed = await data.refetch({ throwOnError: true });

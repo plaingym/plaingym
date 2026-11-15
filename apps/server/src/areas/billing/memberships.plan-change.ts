@@ -154,6 +154,6 @@ export async function applyScheduledSwitch(tx: Transaction, row: Row, clock: Clo
   const terms = (value: Row) => ({ planId: value.planId, amountCents: value.amountCents, interval: value.interval,
     anniversaryOn: value.anniversaryOn, revision: value.revision });
   await catalogAudit(tx, { gymId: row.gymId, actor: { kind: 'system' } }, clock, planSwitchedAction, 'membership', row.id,
-    terms(row), { ...terms(after), dueOn: row.nextDueOn, scheduledOn: row.scheduledOn });
+    terms(row), { ...terms(after), dueOn: row.nextDueOn, scheduledOn: row.scheduledOn, scheduledOrigin: row.scheduledOrigin });
   return after;
 }

@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { ChargeType, GymSettings, Member, Plan, TaxRate, TaxRateUsage, Membership } from '@plaingym/shared/contracts';
+import type { ChargeType, GymSettings, Member, Plan, TaxRate, TaxRateUsage, Membership, PlanPriceChangePreview, PlanPriceChangeResult } from '@plaingym/shared/contracts';
 import { ShellServicesContext } from '../../../app/context.js';
 import { createShellServices } from '../../../app/services.js';
 import { ApiError } from '../../../lib/api.js';
@@ -36,6 +36,40 @@ function start(view: React.ReactNode) {
 }
 afterEach(cleanup);
 describe('catalog and member billing screens', () => {
+  it('titles the outer dialog from the applied price-change result, and resets it on reopening', async () => {
+    const api = client();
+    const preview: PlanPriceChangePreview = { plan: { id: plan.id, name: plan.name, amountCents: plan.amountCents,
+      currency: plan.currency, interval: plan.interval, active: plan.active, revision: plan.revision },
+    amountCents: 12000, effectiveOn: '2026-12-15', today: '2026-11-15', change: 'increase', total: 1, households: 1,
+    householdsWithoutAddress: 1, householdsPayerErased: 0, householdsSuppressed: 0, switchesToPlan: 0, canEmail: false,
+    memberships: [{ id: membership.id, revision: membership.revision, householdId: member.householdId, memberName: 'Ada Student',
+      status: 'active', amountCents: membership.amountCents, currency: 'CAD', interval: 'monthly', commitmentEndsOn: null,
+      inCommitment: false, customPrice: false, scheduled: null, tickedByDefault: true, includedByAll: true, skipReason: null, householdReach: 'no_address' }] };
+    const result: PlanPriceChangeResult = { planId: plan.id, amountCents: 12000, effectiveOn: preview.effectiveOn,
+      scheduled: [membership.id], skipped: [], householdsNotified: 0, householdsWithoutAddress: 1, householdsPayerErased: 0, householdsSuppressed: 0 };
+    api.call = vi.fn(async (name: string) => ({ data: name === 'previewPlanPriceChange' ? preview
+      : name === 'applyPlanPriceChange' ? result : plan })) as unknown as BillingClient['call'];
+    start(<CatalogWorkspace gymId={id(1)} client={api}/>);
+    const open = async () => {
+      fireEvent.click(await screen.findByRole('button', { name: 'Edit Unlimited' }));
+      fireEvent.change(screen.getByLabelText('Amount (CAD)'), { target: { value: '120.00' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      return screen.findByRole('dialog', { name: 'Change plan price' });
+    };
+    const dialog = await open();
+    fireEvent.click(within(dialog).getByRole('radio', { name: 'Choose members' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Review change' }));
+    fireEvent.click(within(dialog).getByLabelText('I confirm applying this increase with short notice or without email notice.'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Apply price change' }));
+    const applied = await screen.findByRole('dialog', { name: 'Price change result' });
+    expect(within(applied).getAllByRole('heading', { name: 'Price change result' })).toHaveLength(1);
+    expect(screen.queryByRole('dialog', { name: 'Change plan price' })).toBeNull();
+    fireEvent.click(within(applied).getByRole('button', { name: 'Done' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(await open()).toBeDefined();
+    expect(screen.queryByRole('dialog', { name: 'Price change result' })).toBeNull();
+  });
+
   it.each(['interval', 'currency'] as const)('offers only new members without a preview when the price and %s change', async term => {
     const api = client();
     if (term === 'currency') api.settings.mockResolvedValue({ ...settings, currency: 'USD' });

@@ -67,10 +67,10 @@ describe('household cycles', () => {
       periodStartsOn: '2026-03-01', periodEndsOn: '2027-03-01', amountCents: 135_000, currency: 'CAD' });
     expect(result.invoice!.lineItems.map((line) => line.membershipId)).toEqual([id(10), id(11), id(12)]);
     expect(result.nextDueDates).toEqual([
-      { membershipId: id(10), expectedRevision: 3, previousDueOn: '2026-03-01', nextDueOn: '2026-04-01', skipped: false },
-      { membershipId: id(11), expectedRevision: 3, previousDueOn: '2026-03-01', nextDueOn: '2026-04-01', skipped: false },
-      { membershipId: id(12), expectedRevision: 3, previousDueOn: '2026-03-01', nextDueOn: '2027-03-01', skipped: false },
-      { membershipId: id(13), expectedRevision: 3, previousDueOn: '2026-03-01', nextDueOn: '2026-04-01', skipped: true },
+      { membershipId: id(10), expectedRevision: 3, previousDueOn: '2026-03-01', nextDueOn: '2026-04-01', skipped: false, prorated: false },
+      { membershipId: id(11), expectedRevision: 3, previousDueOn: '2026-03-01', nextDueOn: '2026-04-01', skipped: false, prorated: false },
+      { membershipId: id(12), expectedRevision: 3, previousDueOn: '2026-03-01', nextDueOn: '2027-03-01', skipped: false, prorated: false },
+      { membershipId: id(13), expectedRevision: 3, previousDueOn: '2026-03-01', nextDueOn: '2026-04-01', skipped: true, prorated: false },
     ]);
     checkContract(result.invoice!);
   });

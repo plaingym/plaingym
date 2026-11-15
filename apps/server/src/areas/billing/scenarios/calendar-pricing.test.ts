@@ -20,7 +20,7 @@ describe('billing scenarios: persisted catalog and lifecycle → invoice calcula
       const result = await f.cycle();
       expect(invoiceDetail(result.invoice, f.clock).invoice).toMatchObject({ dueOn: due, amountCents: 10_000, periodEndsOn: next });
       expect(result.nextDueDates).toEqual([{ membershipId: member.id, expectedRevision: member.revision,
-        previousDueOn: due, nextDueOn: next, skipped: false }]);
+        previousDueOn: due, nextDueOn: next, skipped: false, prorated: false }]);
       // Exercise the existing revision-checked lifecycle. This does not simulate issuing an invoice.
       member = await f.lifecycle.update(f.context, { membershipId: member.id, revision: member.revision, nextDueOn: next });
     }

@@ -11,6 +11,8 @@ date) is neither skipped nor billed: that cycle is owed, so it waits for the res
 and is then billed as active. Run the lifecycle's date job before the charge run.
 An empty or entirely frozen cycle has no invoice. Free active plans produce a
 zero-total invoice and advance normally.
+Each due-date advance carries the engine's `prorated` flag. Callers use that flag
+to distinguish an off-day stub from a full cycle when consuming discount allowances.
 
 There is no database access, clock read, ID allocation, state transition, or I/O.
 Inputs are not mutated. All outputs use integer minor units and the supplied gym currency;

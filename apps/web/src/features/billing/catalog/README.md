@@ -2,7 +2,8 @@
 # Billing catalog
 
 Plans, tax rates and charge types are created and edited in a dialog. Save
-failures and revision reloads stay in that dialog. A plan price change replaces
+failures and revision reloads stay in that dialog. After a price change applies, the same
+dialog is titled **Price change result** and shows its outcome. A plan price change replaces
 the editor with its review dialog, and cancelling that review returns to the draft.
 
 Changing a plan's price with current memberships opens **Change plan price**.
