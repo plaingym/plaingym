@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull } from 'drizzle-orm';
 import { forGym, paymentMethods, payments, refunds, uuidv7 } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
@@ -51,16 +51,27 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
     },
     async revokeCard(context: MutationContext, householdId: string, id: string) {
       // Ownership precedes configuration checks; never reveal whether another gym configured Stripe.
-      const card = await scope(context.gymId, async tx => {
+      await scope(context.gymId, async tx => {
         await loadHousehold(tx, householdId, true);
         return (await tx.select().from(paymentMethods).where(and(eq(paymentMethods.id, c.idSchema.parse(id)), eq(paymentMethods.householdId, householdId))))[0] ?? notFound();
       });
       if (!detachCard) paymentUnavailable('detach_unavailable', 'Card removal is not configured');
       const row = await scope(context.gymId, async tx => {
         await loadHousehold(tx, householdId, true);
+        // Card state may have changed since the ownership check. Decide under the household lock.
+        const card = (await tx.select().from(paymentMethods).where(and(eq(paymentMethods.id, id), eq(paymentMethods.householdId, householdId))))[0] ?? notFound();
         const changed = (await tx.update(paymentMethods).set({ isDefault: false, revokedAt: card.revokedAt ?? clock.now() })
           .where(eq(paymentMethods.id, id)).returning())[0] ?? notFound();
         if (!card.revokedAt) await catalogAudit(tx, context, clock, 'billing.card.revoked', 'payment_method', id, undefined, { householdId });
+        if (card.isDefault) {
+          const [replacement] = await tx.select({ id: paymentMethods.id }).from(paymentMethods)
+            .where(and(eq(paymentMethods.householdId, householdId), isNull(paymentMethods.revokedAt)))
+            .orderBy(desc(paymentMethods.createdAt), desc(paymentMethods.id)).limit(1);
+          if (replacement) {
+            await tx.update(paymentMethods).set({ isDefault: true }).where(eq(paymentMethods.id, replacement.id));
+            await catalogAudit(tx, context, clock, 'billing.card.default_changed', 'payment_method', replacement.id, undefined, { householdId });
+          }
+        }
         return changed;
       });
       // Queue before the immediate attempt: a Stripe outage leaves a revoked local card and durable retry.

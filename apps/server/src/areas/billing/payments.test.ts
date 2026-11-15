@@ -828,11 +828,109 @@ describe('one-off collection and payment durability', () => {
     await f.service.refund(f.context, payment.id, { ...input, amountCents: 1500 });
     expect((await f.service.getInvoice(f.gymId, f.invoice.id)).invoice.status).toBe('refunded');
   });
-  it('revokes locally before detaching outside a transaction, retries an outage, and never charges the removed card', async () => {
+  it.each([1, 2])('promotes and audits the newest of %i remaining cards, then charges it', async count => {
+    const f = await fixture(), remaining = [];
+    for (let index = 0; index < count; index++) remaining.push(await factory('paymentMethods', f.gymId, {
+      householdId: f.home.id, processorId: `pm_remaining_${index}`, createdAt: new Date(`2026-10-${23 + index}T12:00:00Z`),
+    }));
+    const newest = remaining.at(-1)!;
+    const removed = await f.service.revokeCard(f.context, f.home.id, f.card.id);
+    expect(removed).toMatchObject({ id: f.card.id, isDefault: false, revokedAt: f.clock.now().toISOString() });
+    const cards = (await f.service.listPaymentMethods(f.gymId, f.home.id, {})).data;
+    expect(cards.filter(card => card.isDefault).map(card => card.id)).toEqual([newest.id]);
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.card.default_changed')));
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({ targetType: 'payment_method', targetId: newest.id, after: { householdId: f.home.id },
+      actorKind: 'user', actorUserId: f.user.id, occurredAt: f.clock.now() });
+    expect(f.detachCard).toHaveBeenLastCalledWith(f.gymId, f.card.processorId);
+    const charge = vi.spyOn(f.provider, 'createCharge');
+    await f.service.charge(f.context, f.invoice.id);
+    expect(charge).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ paymentMethodId: newest.processorId }));
+    expect((await f.service.getInvoice(f.gymId, f.invoice.id)).invoice.status).toBe('paid');
+  });
+  it('breaks equal creation-time ties by descending ID and ignores revoked cards and other households and gyms', async () => {
+    const f = await fixture(), createdAt = new Date('2026-10-24T12:00:00Z');
+    const first = await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_first', createdAt });
+    const second = await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_second', createdAt });
+    await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_revoked', revokedAt: f.clock.now(), createdAt: f.clock.now() });
+    const sibling = await factory('households', f.gymId);
+    const siblingCard = await factory('paymentMethods', f.gymId, { householdId: sibling.id, processorId: 'pm_sibling', createdAt: f.clock.now() });
+    const other = await fixture();
+    await f.service.revokeCard(f.context, f.home.id, f.card.id);
+    const cards = await db.forGym(f.gymId, tx => tx.select().from(paymentMethods));
+    const newest = [first.id, second.id].sort().at(-1)!;
+    expect(cards.filter(card => card.isDefault).map(card => card.id)).toEqual([newest]);
+    expect(cards.find(card => card.id === siblingCard.id)).toEqual(siblingCard);
+    expect((await other.service.listPaymentMethods(other.gymId, other.home.id, {})).data[0]?.isDefault).toBe(true);
+  });
+  it('keeps the chosen default when removing a non-default card', async () => {
+    const f = await fixture();
+    const card = await factory('paymentMethods', f.gymId, { householdId: f.home.id });
+    await f.service.revokeCard(f.context, f.home.id, card.id);
+    expect((await f.service.listPaymentMethods(f.gymId, f.home.id, {})).data.filter(row => row.isDefault).map(row => row.id)).toEqual([f.card.id]);
+    expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.card.default_changed')))).toHaveLength(0);
+  });
+  it('does not change a later chosen default or repeat audits when retrying a revoked card', async () => {
+    const f = await fixture();
+    const older = await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_older', createdAt: new Date('2026-10-23T12:00:00Z') });
+    await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_newer', createdAt: new Date('2026-10-24T12:00:00Z') });
+    await f.service.revokeCard(f.context, f.home.id, f.card.id);
+    await f.service.setDefault(f.context, f.home.id, older.id);
+    const before = await db.forGym(f.gymId, tx => tx.select().from(auditEvents));
+    f.clock.advance(3_600_000);
+    const retried = await f.service.revokeCard(f.context, f.home.id, f.card.id);
+    expect(retried.revokedAt).toBe('2026-10-25T12:00:00.000Z');
+    expect((await f.service.listPaymentMethods(f.gymId, f.home.id, {})).data.filter(row => row.isDefault).map(row => row.id)).toEqual([older.id]);
+    expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents))).toHaveLength(before.length);
+  });
+  it.each([true, false])('rechecks default state under the household lock when the initial default flag was %s', async initialDefault => {
+    const f = await fixture();
+    const chosen = await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_chosen', createdAt: new Date('2026-10-23T12:00:00Z') });
+    const newest = await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_newest', createdAt: new Date('2026-10-24T12:00:00Z') });
+    if (!initialDefault) await f.service.setDefault(f.context, f.home.id, chosen.id);
+    let calls = 0;
+    const scope: typeof db.forGym = async (gymId, fn) => {
+      // Another request commits between the ownership check and the removal transaction.
+      if (++calls === 2) await f.service.setDefault(f.context, f.home.id, initialDefault ? chosen.id : f.card.id);
+      return db.forGym(gymId, fn);
+    };
+    const service = createPaymentService({ ...f.options, scope });
+    await service.revokeCard(f.context, f.home.id, f.card.id);
+    expect((await f.service.listPaymentMethods(f.gymId, f.home.id, {})).data.filter(row => row.isDefault).map(row => row.id))
+      .toEqual([initialDefault ? chosen.id : newest.id]);
+  });
+  it('rolls back the revocation, promotion and both audits together', async () => {
+    const f = await fixture();
+    await factory('paymentMethods', f.gymId, { householdId: f.home.id });
+    const before = (await f.service.listPaymentMethods(f.gymId, f.home.id, {})).data;
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents));
+    let calls = 0;
+    const scope: typeof db.forGym = (gymId, fn) => db.forGym(gymId, async tx => {
+      const result = await fn(tx);
+      if (++calls === 2) throw new Error('Commit interrupted');
+      return result;
+    });
+    await expect(createPaymentService({ ...f.options, scope }).revokeCard(f.context, f.home.id, f.card.id)).rejects.toThrow('Commit interrupted');
+    expect((await f.service.listPaymentMethods(f.gymId, f.home.id, {})).data).toEqual(before);
+    expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents))).toHaveLength(audits.length);
+    expect(f.detachCard).not.toHaveBeenCalled();
+  });
+  it('preserves the promoted default through a detach outage and its retry', async () => {
+    const f = await fixture();
+    const remaining = await factory('paymentMethods', f.gymId, { householdId: f.home.id });
+    f.detachCard.mockRejectedValueOnce(new Error('Stripe unavailable'));
+    await expect(f.service.revokeCard(f.context, f.home.id, f.card.id)).rejects.toThrow('Stripe unavailable');
+    await f.jobs.runNext();
+    await f.service.revokeCard(f.context, f.home.id, f.card.id);
+    expect((await f.service.listPaymentMethods(f.gymId, f.home.id, {})).data.filter(row => row.isDefault).map(row => row.id)).toEqual([remaining.id]);
+    expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.card.default_changed')))).toHaveLength(1);
+  });
+  it('revokes the only card locally before detaching outside a transaction, retries an outage, and never charges the removed card', async () => {
     const f = await fixture(); f.detachCard.mockRejectedValueOnce(new Error('Stripe unavailable'));
     await expect(f.service.revokeCard(f.context, f.home.id, f.card.id)).rejects.toThrow('Stripe unavailable');
     const card = (await f.service.listPaymentMethods(f.gymId, f.home.id, {})).data[0]!;
     expect(card).toMatchObject({ isDefault: false, revokedAt: f.clock.now().toISOString() });
+    expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.card.default_changed')))).toHaveLength(0);
     expect(JSON.stringify(card)).not.toContain('pm_4242');
     await expect(f.service.charge(f.context, f.invoice.id)).rejects.toMatchObject({ code: 'conflict' });
     await f.jobs.runNext(); expect(f.detachCard).toHaveBeenLastCalledWith(f.gymId, 'pm_4242');

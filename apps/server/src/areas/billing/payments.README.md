@@ -109,7 +109,13 @@ the route answers 403 and creates nothing, before it validates the body (a malfo
 custom body gets the same 403), and the invoice editor hides the custom amount. Charging an existing invoice is unchanged. Front desk therefore bills
 catalog charge types, which managers price.
 
-Removing a card first revokes it locally and clears its default flag, then queues
+Removing a card first revokes it locally and clears its default flag. Removing the
+default promotes the household's most recently added active card, ordered by
+`createdAt` and then ID descending, in the same transaction under the household
+lock, with a `billing.card.default_changed` audit. Removing a non-default card
+leaves the default alone; removing the only active card leaves no default, so
+automatic card payments need another card. Retrying removal of a revoked card
+does not change the default or repeat these audits. Removal then queues
 a detach retry and attempts detachment outside the transaction. Revoked rows
 remain visible so staff can retry removal after an outage. No processor IDs leave
 the staff API. `detachCard(gymId, processorId, options?)` delegates to the gym's
