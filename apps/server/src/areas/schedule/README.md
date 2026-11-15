@@ -38,6 +38,11 @@ The local `GET /api/schedule/options` response projects the gym timezone and
 program/coach IDs and names for schedule readers (TODO: move the response into the shared contract).
 All other endpoints use the shared schedule contracts. The cancel request accepts
 optional `notify: true` and a plain text `note` of at most 1,000 characters.
+Once its start time is reached, a session cannot be cancelled, with or without a
+notice. The service checks the injected clock after acquiring the session row
+lock and returns a conflict with reason `session_started` before any writes.
+The session dialog hides cancellation controls for started sessions and shows
+the specific refusal if the session starts while a request is in flight.
 With notification requested, the service checks the current user's stored roles
 and linked staff profile under the session row lock: only an owner, admin or
 that session's assigned coach may proceed. A refusal rolls back the entire

@@ -54,6 +54,22 @@ describe('schedule calendar and session detail', () => {
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
     expect(api.POST).toHaveBeenCalledWith('/api/schedule/sessions/{id}/cancel', { params: { path: { id } }, body: { revision: 4, notify: true, note: '<b>Closed</b>\nTomorrow' } });
   });
+  it.each(['2026-03-02T23:00:00Z', '2026-03-02T23:30:00Z', '2026-03-03T01:00:00Z'])('hides cancellation controls once started at %s', now => {
+    vi.setSystemTime(new Date(now));
+    render(<SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={vi.fn()} registries={noticeRegistries()}/>);
+    expect(screen.queryByRole('button', { name: 'Cancel session' })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: /Email the/ })).toBeNull();
+  });
+  it('shows the specific refusal when the server finds the session has started', async () => {
+    const onSaved = vi.fn();
+    const response = Response.json({ error: { code: 'conflict', message: 'Server message', details: { reason: ['session_started'] } } }, { status: 409 });
+    const error: unknown = await response.json(); // The typed API client consumes the body before returning.
+    vi.mocked(api.POST).mockResolvedValue({ response, error } as Awaited<ReturnType<typeof api.POST>>);
+    render(<SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={onSaved} registries={noticeRegistries()}/>);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel session' }));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('This session has started and cannot be cancelled.'));
+    expect(onSaved).not.toHaveBeenCalled();
+  });
   it.each(['other_coach', 'unlinked_coach', 'front_desk'] as const)('hides the notice option from %s', kind => {
     const role = kind === 'front_desk' ? 'front_desk' : 'coach';
     bootstrap([role], id, kind === 'other_coach' ? id : null);

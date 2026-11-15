@@ -10,7 +10,7 @@ import { createFactories } from '@plaingym/db/testing/factories';
 import { type StaffRole } from '@plaingym/shared';
 import { isInTransaction } from '@plaingym/shared/transaction';
 import { createApp } from '../../app.js';
-import { TestClock } from '../../core/clock.js';
+import { clock as systemClock, TestClock } from '../../core/clock.js';
 import { errorHandler } from '../../core/errors.js';
 import { areaContributions } from '../../core/registry-areas.js';
 import { createServerRegistry } from '../../core/registry.js';
@@ -106,6 +106,33 @@ async function fixture(role: StaffRole = 'owner', assigned = true) {
   return { gymId, user, coach, session, email, jobs, clock, options, notice, service, actor, principal, booked, cancel, payload, run, emailSwitch, request };
 }
 
+it.each([false, true])('refuses started and ended sessions without side effects (notify=%s)', async notify => {
+  for (const offset of [0, 1, 60 * 60 * 1_000, 2 * 60 * 60 * 1_000]) {
+    const f = await fixture();
+    await f.booked(); await f.booked({}, 'waitlisted');
+    f.clock.set(new Date(f.session.startsAt.getTime() + offset));
+    const snapshot = () => db.forGym(f.gymId, async tx => ({
+      sessions: await tx.select().from(classSessions),
+      bookings: await tx.select().from(classBookings),
+      audits: await tx.select().from(auditEvents),
+    }));
+    const before = await snapshot();
+    await expect(f.cancel(notify)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['session_started'] } });
+    expect(await snapshot()).toEqual(before);
+    expect(f.jobs.jobs).toHaveLength(0); expect(f.email.messages).toHaveLength(0);
+  }
+});
+
+it.each([false, true])('still cancels a session one millisecond before its start (notify=%s)', async notify => {
+  const f = await fixture(); await f.booked(); await f.booked({}, 'waitlisted');
+  f.clock.set(new Date(f.session.startsAt.getTime() - 1));
+  expect(await f.cancel(notify)).toMatchObject({ status: 'cancelled', revision: f.session.revision + 1 });
+  const bookings = await db.forGym(f.gymId, tx => tx.select().from(classBookings));
+  expect(bookings).toHaveLength(2);
+  for (const booking of bookings) expect(booking).toMatchObject({ status: 'cancelled', cancelledAt: f.clock.now(), waitlistPosition: null });
+  expect(f.jobs.jobs).toHaveLength(notify ? 1 : 0);
+});
+
 it.each(['owner', 'admin', 'coach'] as const)('lets %s cancel with a notice through the route and under the service lock', async role => {
   const f = await fixture(role); const member = await f.booked();
   expect((await f.request()).status).toBe(200);
@@ -124,6 +151,28 @@ it('forbids another coach’s notice while retaining ordinary cancellation, and 
     if (role === 'coach') expect(await f.cancel(false)).toMatchObject({ status: 'cancelled' });
   }
 });
+it.each([false, true])('reads time after acquiring the session lock (notify=%s)', async notify => {
+  const f = await fixture();
+  const entered = Promise.withResolvers<void>(), locked = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const scope: typeof db.forGym = (gymId, fn) => db.forGym(gymId, tx => { entered.resolve(); return fn(tx); });
+  const service = createScheduleService({ scope, clock: f.clock, cancellation: f.notice });
+  const holding = db.forGym(f.gymId, async tx => {
+    await tx.select().from(classSessions).where(eq(classSessions.id, f.session.id)).for('update');
+    locked.resolve(); await release.promise;
+  });
+  try {
+    await Promise.race([locked.promise, holding]);
+    const cancelling = service.changeSession(f.actor, f.session.id, 'cancel', { revision: 1, notify });
+    void cancelling.catch(() => undefined);
+    await Promise.race([entered.promise, cancelling]);
+    f.clock.set(f.session.startsAt); release.resolve(); await holding;
+    await expect(cancelling).rejects.toMatchObject({ code: 'conflict', details: { reason: ['session_started'] } });
+  } finally { release.resolve(); await holding; }
+  expect(await f.service.getSession(f.gymId, f.session.id)).toMatchObject({ status: 'scheduled', revision: 1 });
+  expect(f.jobs.jobs).toHaveLength(0);
+  expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents))).toBe(0);
+});
+
 it('uses the assigned coach after acquiring the lock, even when the coach changed while cancellation waited', async () => {
   const f = await fixture('coach');
   const replacement = await factory('staffProfiles', f.gymId);
@@ -315,6 +364,7 @@ it('uses only the demo outbox and fails closed when its outbox is absent', async
 });
 it('runs a cancellation request and its job through the production area registrations', async () => {
   const f = await fixture(); await f.booked(); configureCancellationNotice(f.notice);
+  vi.spyOn(systemClock, 'now').mockImplementation(() => f.clock.now());
   const app = createApp({ clock: f.clock, skipSetup: true, authorize, origin, contributions: areaContributions,
     resolveGym: async (c, next) => { c.set('context', { ...c.get('context'), gym: { gymId: f.gymId, timezone: 'America/New_York', enabledModules: new Set() } }); await next(); },
     session: async (c, next) => { c.set('context', { ...c.get('context'), principal: f.principal }); await next(); } });

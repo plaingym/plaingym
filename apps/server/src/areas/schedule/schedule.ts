@@ -255,6 +255,8 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
           const { tx } = transaction;
           const [row] = await tx.select().from(classSessions).where(eq(classSessions.id, id)).for('update'); if (!row) missing();
           if (row.status === 'cancelled') throw new AppError('conflict', t('schedule/schedule:alreadyCancelled'), { reason: ['already_cancelled'] });
+          const now = clock.now();
+          if (row.startsAt <= now) throw new AppError('conflict', t('schedule/schedule:sessionStarted'), { reason: ['session_started'] });
           if (value.notify) {
             const roles = context.actor.kind === 'user' ? await tx.select({ role: staffRoles.role }).from(staffRoles)
               .where(eq(staffRoles.userId, context.actor.userId)) : [];
@@ -270,7 +272,6 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
             const memberIds = await readCancellationRecipients(tx, id);
             await (options.cancellation ?? cancellationNotice()).enqueue(transaction, { sessionId: id, memberIds, note: value.note ?? '' }, gym!.timezone);
           }
-          const now = clock.now();
           const cancelled = await tx.update(classBookings).set({ status: 'cancelled', cancelledAt: now, waitlistPosition: null })
             .where(and(eq(classBookings.sessionId, id), inArray(classBookings.status, ['booked', 'waitlisted']))).returning();
           for (const booking of cancelled) await bookingAudit(tx, context, now, 'cancelled', booking);

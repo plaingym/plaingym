@@ -40,6 +40,7 @@
   "saveCapacity": "Save capacity",
   "saveNotes": "Save notes",
   "cancelSession": "Cancel session",
+  "sessionStarted": "This session has started and cannot be cancelled.",
   "cancelNotify": "Email the {count} booked and waitlisted members",
   "cancelNotifyOne": "Email the 1 booked or waitlisted member",
   "cancelNotifyNone": "No booked or waitlisted members to email",

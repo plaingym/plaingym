@@ -2,7 +2,7 @@
 import { formatCount } from '../../lib/count.js';
 import { timeLabel } from '../../lib/instant.js';
 import { parseResponse } from '../../lib/response.js';
-import { useCallback, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { canStaff, type StaffRole } from '@plaingym/shared';
 import { classSessionResponseSchema, updateClassSessionRequestSchema, type ClassSession, type ClassTag } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
@@ -52,6 +52,12 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
     tags?: readonly ClassTag[]; siblings?: readonly ClassSession[]; registries?: ReturnType<typeof createRegistries> }) {
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState(''), [editing, setEditing] = useState(false);
   const [emailMembers, setEmailMembers] = useState(false);
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const started = Date.parse(session.startsAt) <= now;
   const staffProfileId = useBootstrap().data?.session?.staffProfileId;
   // Booking numbers come from whichever session panel publishes them (the bookings panel), not from an import.
   const [counts, setCounts] = useState<SessionCounts | null>(null), [changed, setChanged] = useState(0);
@@ -61,7 +67,7 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
   const manage = canStaff(roles, 'schedule.manage'), notes = canStaff(roles, 'class_notes.manage');
   const mayNotify = roles.some(role => role === 'owner' || role === 'admin')
     || (roles.includes('coach') && !!staffProfileId && staffProfileId === session.coachId);
-  const offerNotice = mayNotify && session.status !== 'cancelled' && counts !== null;
+  const offerNotice = mayNotify && !started && session.status !== 'cancelled' && counts !== null;
   // With nobody left to email the box is off and locked, whatever was ticked before the counts changed.
   const notifying = offerNotice && emailMembers && counts.booked + counts.waitlisted > 0;
   async function change(kind: 'coach' | 'notes' | 'capacity' | 'cancel', event?: FormEvent<HTMLFormElement>) {
@@ -76,6 +82,11 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
         : kind === 'coach' ? await api.POST('/api/schedule/sessions/{id}/coach', { params, body: { revision, coachId: String(form?.get('coachId') ?? '') || null } })
         : kind === 'capacity' ? await api.PATCH('/api/schedule/sessions/{id}/capacity', { params, body: { revision, capacity: form?.get('capacity') ? Number(form.get('capacity')) : null } })
         : await api.PATCH('/api/schedule/sessions/{id}/notes', { params, body: { revision, notes: String(form?.get('notes') ?? '') || null } });
+      const error = result.error as { error?: { details?: { reason?: unknown } } } | undefined;
+      const reasons = error?.error?.details?.reason;
+      if (kind === 'cancel' && result.response.status === 409 && Array.isArray(reasons) && reasons.includes('session_started')) {
+        setNotice(text('sessionStarted')); setNow(Date.now()); return;
+      }
       check(result.response); if (formElement) markSaved(formElement);
       onSaved(parseResponse(classSessionResponseSchema, result.data).data); setNotice(text('saved'));
       // A new capacity can promote or move bookings, and cancelling a session cancels its bookings, so the panels that show counts reload.
@@ -108,7 +119,7 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
       <form key={'capacity-' + session.revision} onSubmit={(event) => void change('capacity', event)} className="flex flex-col gap-2 sm:flex-row sm:items-end">
         <div className="flex-1"><Field label={text('capacity')}><Input name="capacity" type="number" min={1} step={1} defaultValue={session.capacity ?? ''} disabled={busy}/></Field></div>
         <Button type="submit" disabled={busy}>{text('saveCapacity')}</Button></form>
-      <form onSubmit={(event) => void change('cancel', event)} className="space-y-3">
+      {!started && <form onSubmit={(event) => void change('cancel', event)} className="space-y-3">
         {offerNotice && <>
           <CheckboxField name="notify" checked={notifying} disabled={busy || counts.stale || counts.booked + counts.waitlisted === 0} onChange={event => setEmailMembers(event.target.checked)}
             label={t('schedule/schedule:' + (counts.booked + counts.waitlisted === 0 ? 'cancelNotifyNone' : counts.booked + counts.waitlisted === 1 ? 'cancelNotifyOne' : 'cancelNotify'), { count: (counts.booked + counts.waitlisted).toLocaleString() })}/>
@@ -116,7 +127,7 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
         </>}
         <Button type="submit" variant="outline" className="w-full border-destructive text-destructive sm:w-auto"
           disabled={busy || session.status === 'cancelled' || (emailMembers && mayNotify && (!counts || counts.stale))}>{text('cancelSession')}</Button>
-      </form>
+      </form>}
     </div>}
     {notes && <form key={'notes-' + session.revision} onSubmit={(event) => void change('notes', event)} className="space-y-2">
       <Field label={text('notes')}><Textarea name="notes" defaultValue={session.notes ?? ''} disabled={busy}/></Field>
