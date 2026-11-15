@@ -113,6 +113,11 @@ export function createPaymentService(options: PaymentOptions = {}) {
   }
   return {
     ...mutations, getInvoice,
+    async voidInvoice(context: MutationContext, invoiceId: string, input: c.VoidInvoiceRequest) {
+      const request = c.voidInvoiceRequestSchema.parse(input);
+      await transitions.voidInvoice(context, { ...request, invoiceId });
+      return (await getInvoice(context.gymId, invoiceId)).invoice;
+    },
     async charge(context: MutationContext, invoiceId: string) {
       const row = await scope(context.gymId, tx => loadInvoice(tx, invoiceId));
       if (row.amountCents === 0) paymentConflict('zero_invoice', 'A zero-value invoice cannot be charged from this action');

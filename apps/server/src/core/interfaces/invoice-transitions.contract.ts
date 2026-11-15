@@ -18,6 +18,24 @@ export interface InvoiceTransitionsHarness {
 export function invoiceTransitionsContract(name: string, create: () => Promise<InvoiceTransitionsHarness>) {
   describe(name + ': cancellations and refund reversals', () => {
     const count = (effects: readonly string[], kind: InvoiceEffect['kind']) => effects.filter((effect) => effect === kind).length;
+    it('refuses an unresolved attempt, then voids a failed invoice and refunds a late success once', async () => {
+      const h = await create(), { invoiceId, attemptId, paymentIntentId } = h.success;
+      const request = { invoiceId, reason: 'Invoice issued in error' };
+      await expect(h.transitions.voidInvoice(h.context, request)).rejects.toMatchObject({ code: 'conflict' });
+      await h.transitions.cardFailed(h.context, { invoiceId, attemptId, paymentIntentId, outcome: 'requires_action' });
+      await expect(h.transitions.voidInvoice(h.context, request)).rejects.toMatchObject({ code: 'conflict' });
+      await h.transitions.cardFailed(h.context, { invoiceId, attemptId, paymentIntentId, outcome: 'canceled' });
+      expect((await h.transitions.voidInvoice(h.context, request)).invoice.status).toBe('void');
+      expect((await h.transitions.voidInvoice(h.context, request)).outcome).toBe('ignored');
+      await expect(h.transitions.manualPayment(h.context, h.manual)).rejects.toMatchObject({ code: 'conflict' });
+      expect((await h.transitions.cardSucceeded(h.context, h.success)).outcome).toBe('duplicate_payment');
+      expect((await h.transitions.cardSucceeded(h.context, h.success)).outcome).toBe('ignored');
+      const after = await h.read();
+      expect(after.invoice).toBe('void');
+      expect(count(after.effects, 'refund_duplicate')).toBe(1);
+      expect(count(after.effects, 'staff_notice')).toBe(1);
+      expect(count(after.effects, 'activate_memberships')).toBe(0);
+    });
     it('closes a cancelled, never-confirmed attempt as confirm_abandoned without touching the invoice or dunning', async () => {
       const h = await create(), before = await h.read();
       const { invoiceId, attemptId, paymentIntentId } = h.success;

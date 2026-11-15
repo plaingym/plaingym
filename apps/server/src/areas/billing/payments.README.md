@@ -37,6 +37,13 @@ action, which clears `needsReview` under the invoice lock and records the staff
 confirmation. It never charges by itself, but makes the invoice eligible for the
 next daily run unless staff charge or record a payment first. The runner never
 holds a released invoice again.
+They may also void an open or past-due invoice through
+`POST /api/billing/invoices/{invoiceId}/void` (`refunds.create`) with a required
+reason. The transition refuses unresolved card attempts and reserved Checkout,
+audits the reason, revokes pay links and stops dunning and retries. A late card
+success is recorded as a duplicate and refunded. Voiding does not cancel a
+membership; cancelling a membership leaves unpaid invoices owed. See
+[invoice transitions](transitions/README.md).
 Any staff member with `payments.record` may record cash/check on a held invoice;
 the recorded payment confirms and clears the hold with an audit linked to that
 payment. The transitions handle a card outcome that races another payment.

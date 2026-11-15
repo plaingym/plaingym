@@ -80,7 +80,8 @@ export async function checkSubmittedJoin(tx: Transaction, join: SubmittedJoin, c
 }
 
 /** Voids the invoice {@link checkSubmittedJoin} found ready, in the same transaction, and revokes the join's link.
- * The invoice keeps its lines and number; a payment recorded later is refused as for any void invoice. */
+ * The invoice keeps its lines and number; a later payment is handled as for any void invoice (refused, or refunded
+ * as a duplicate for a card success). */
 export async function voidSubmittedJoin(tx: Transaction, gymId: string, join: SubmittedJoin, invoice: InvoiceRow, clock: Clock) {
   const context = systemContext(gymId);
   await tx.update(invoices).set({ status: 'void' }).where(eq(invoices.id, invoice.id));

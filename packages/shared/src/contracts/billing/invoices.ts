@@ -117,6 +117,15 @@ export const invoiceDetailSchema = z.strictObject({
   }
 });
 export const invoiceResponseSchema = z.strictObject({ data: invoiceSchema });
+export const voidInvoiceRequestSchema = z.strictObject({ reason: z.string().trim().min(1).max(1000) });
+export type VoidInvoiceRequest = z.input<typeof voidInvoiceRequestSchema>;
+/** Owners and admins cancel an unpaid invoice with an audited reason. */
+export const voidInvoiceContract = {
+  method: 'post', path: '/api/billing/invoices/{invoiceId}/void',
+  permission: { kind: 'staff', capability: 'refunds.create' },
+  params: z.strictObject({ invoiceId: idSchema }), body: voidInvoiceRequestSchema,
+  response: invoiceResponseSchema, successStatus: 200,
+} as const satisfies EndpointContract;
 /** Staff confirmation clears a review hold without collecting money. */
 export const releaseInvoiceHoldContract = {
   method: 'post', path: '/api/billing/invoices/{invoiceId}/release-hold',

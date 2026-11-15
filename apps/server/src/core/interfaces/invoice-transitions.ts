@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { Id, IsoInstant, Money } from '@plaingym/shared/contracts';
-import { moneySchema, refundReleased } from '@plaingym/shared/contracts';
+import { idSchema, moneySchema, refundReleased, voidInvoiceRequestSchema, type VoidInvoiceRequest } from '@plaingym/shared/contracts';
 import { conflict, instant, notFound, requireMoney, scopedKey } from './common.js';
 import { clock as defaultClock, type Clock } from '../clock.js';
 import type { MutationContext } from './common.js';
@@ -68,6 +68,7 @@ export interface InvoiceTransitionResult {
  * recorded as canceled and released like a failed one, without a notice; it never reverses a successful refund.
  */
 export interface InvoiceTransitions {
+  voidInvoice(context: MutationContext, request: VoidInvoiceRequest & { invoiceId: Id }): Promise<InvoiceTransitionResult>;
   settleZero(context: MutationContext, request: { invoiceId: Id }): Promise<InvoiceTransitionResult>;
   cardSucceeded(context: MutationContext, request: CardSuccess): Promise<InvoiceTransitionResult>;
   cardFailed(context: MutationContext, request: CardFailure): Promise<InvoiceTransitionResult>;
@@ -163,7 +164,7 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
         }
       }
     }
-    if (invoice.status === 'void') conflict('Void invoice cannot accept a payment');
+    if (invoice.status === 'void' && method !== 'card') conflict('Void invoice cannot accept a payment');
     if (terminal.has(invoice.status) && method !== 'card') conflict('Invoice is already paid');
     const accepted = !terminal.has(invoice.status);
     this.#payments.set(key, { id: request.paymentId, invoiceId: invoice.id, accepted, fingerprint,
@@ -183,10 +184,22 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
     this.#effect(context.gymId, invoice.id, 'activate_memberships', request.paymentId);
     return this.#result('applied', paid);
   }
+  async voidInvoice(context: MutationContext, request: VoidInvoiceRequest & { invoiceId: Id }): Promise<InvoiceTransitionResult> {
+    idSchema.parse(request.invoiceId); voidInvoiceRequestSchema.parse({ reason: request.reason });
+    const invoice = this.#invoice(context.gymId, request.invoiceId);
+    if (invoice.status === 'void') return this.#result('ignored', invoice);
+    if (!['open', 'past_due'].includes(invoice.status)) conflict('Only unpaid invoices can be voided');
+    if ([...this.#attempts.values()].some(attempt => attempt.gymId === context.gymId && attempt.invoiceId === invoice.id
+      && ['pending', 'requires_action'].includes(attempt.status))) conflict('Resolve the outstanding card attempt before voiding');
+    const voided = { ...invoice, status: 'void' as const };
+    this.#invoices.set(scopedKey(context.gymId, invoice.id), voided);
+    return this.#result('applied', voided);
+  }
   async cardSucceeded(context: MutationContext, request: CardSuccess): Promise<InvoiceTransitionResult> {
     if (request.attemptId !== undefined) {
       const attempt = this.#attempt(context.gymId, request.invoiceId, request.attemptId, request.paymentIntentId);
-      if (canceled(attempt)) return this.#result('ignored', this.#invoice(context.gymId, request.invoiceId));
+      if (canceled(attempt) && this.#invoice(context.gymId, request.invoiceId).status !== 'void')
+        return this.#result('ignored', this.#invoice(context.gymId, request.invoiceId));
     }
     const result = this.#recordPayment(context, request, 'card');
     if (request.attemptId !== undefined) {

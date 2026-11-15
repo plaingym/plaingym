@@ -2,6 +2,10 @@
 
 # Charge runner
 
+Voided invoices are never eligible for automatic, retry or staff collection.
+Reconciliation still applies a late successful card outcome to the transitions,
+which record it as a duplicate and refund it while keeping the invoice void.
+
 Each completed restore report records `stripeMode` from the provider's `keyMode`
 (or null without a known mode). Go live accepts a Stripe report only for the mode
 currently saved, so checking a test account does not clear live billing. Account

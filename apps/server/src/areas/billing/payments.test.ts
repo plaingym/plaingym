@@ -88,7 +88,7 @@ function app(f: Fixture, principal: Principal, realRegistrations = false) {
 const staff = (f: Fixture, role: StaffRole): Principal => ({ kind: 'staff', gymId: f.gymId, userId: f.user.id, roles: [role] });
 const contracts = { ...billingContracts, releaseInvoiceHold: releaseInvoiceHoldContract };
 const operations = ['listInvoices', 'getInvoice', 'createOneOffInvoice', 'chargeInvoice', 'recordManualPayment', 'listPayments',
-  'listRefunds', 'createRefund', 'listPaymentMethods', 'setDefaultPaymentMethod', 'revokePaymentMethod', 'resendReceipt', 'releaseInvoiceHold'] as const satisfies readonly (BillingEndpoint | 'releaseInvoiceHold')[];
+  'listRefunds', 'createRefund', 'listPaymentMethods', 'setDefaultPaymentMethod', 'revokePaymentMethod', 'resendReceipt', 'releaseInvoiceHold', 'voidInvoice'] as const satisfies readonly (BillingEndpoint | 'releaseInvoiceHold')[];
 type Operation = typeof operations[number];
 function request(server: ReturnType<typeof app>, operation: Operation, f: Fixture, oneOff?: unknown) {
   const contract = contracts[operation];
@@ -96,7 +96,8 @@ function request(server: ReturnType<typeof app>, operation: Operation, f: Fixtur
     .replace('{householdId}', f.home.id).replace('{paymentMethodId}', f.card.id).replace('{paymentId}', f.payment.id);
   const body = operation === 'createOneOffInvoice' && oneOff ? oneOff : operation === 'createOneOffInvoice' ? { source: 'custom', householdId: f.home.id, dueOn: '2026-10-25', description: 'Drop-in', amountCents: 2500, currency: 'USD' }
     : operation === 'recordManualPayment' ? { amountCents: 2500, currency: 'USD', method: 'cash', paidAt: f.clock.now().toISOString() }
-      : operation === 'createRefund' ? { amountCents: 2500, currency: 'USD', reason: null } : {};
+      : operation === 'createRefund' ? { amountCents: 2500, currency: 'USD', reason: null }
+        : operation === 'voidInvoice' ? { reason: 'Issued in error' } : {};
   return server.request(origin + path, { method: contract.method.toUpperCase(),
     ...(contract.method === 'get' ? {} : { headers: { 'content-type': 'application/json', origin }, body: JSON.stringify(body) }) });
 }

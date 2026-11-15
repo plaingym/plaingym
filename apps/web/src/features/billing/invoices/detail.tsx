@@ -22,7 +22,7 @@ import { PageSection } from '../../../components/ui/page.js';
 import { LoadingState, ErrorState, EmptyState } from '../../../components/ui/states.js';
 
 export interface InvoiceAccess { record: boolean; refund: boolean; links: boolean }
-type Action = { kind: 'cash' | 'charge' | 'link' | 'receipt' | 'viewReceipt' | 'releaseHold' } | { kind: 'refund'; payment: Payment } | { kind: 'revoke' | 'default'; card: MaskedPaymentMethod };
+type Action = { kind: 'cash' | 'charge' | 'link' | 'receipt' | 'viewReceipt' | 'releaseHold' | 'voidInvoice' } | { kind: 'refund'; payment: Payment } | { kind: 'revoke' | 'default'; card: MaskedPaymentMethod };
 export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClient, onCreditChange }: {
   gymId: string; invoiceId: string; access: InvoiceAccess; client?: InvoiceClient; onCreditChange?: () => void;
 }) {
@@ -56,6 +56,10 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
         creditChanged = true;
       }
       if (action.kind === 'releaseHold') { await client.releaseHold(invoiceId); setMessage(text(allCards.data === false ? 'holdReleasedNoCard' : 'holdReleased')); }
+      if (action.kind === 'voidInvoice') {
+        await client.call('voidInvoice', { reason: String(form.get('reason') ?? '') }, { invoiceId });
+        setMessage(text('invoiceVoided'));
+      }
       if (action.kind === 'charge') {
         const result = await client.call('chargeInvoice', {}, { invoiceId });
         creditChanged = result.data.status === 'succeeded';
@@ -109,6 +113,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
       <div className="flex flex-col flex-wrap gap-2 sm:flex-row">
         {collectible && access.record && <><Button onClick={() => open({ kind: 'cash' })}>{text('recordCash')}</Button><Button variant="outline" disabled={invoice.needsReview || allCards.data !== true} onClick={() => open({ kind: 'charge' })}>{text('chargeCard')}</Button></>}
         {collectible && invoice.needsReview && access.refund && <Button variant="outline" onClick={() => open({ kind: 'releaseHold' })}>{text('releaseHold')}</Button>}
+        {collectible && access.refund && <Button variant="destructive" onClick={() => open({ kind: 'voidInvoice' })}>{text('voidInvoice')}</Button>}
         {collectible && invoice.amountCents > 0 && access.links && <Button variant="outline" onClick={() => open({ kind: 'link' })}>{text('payLink')}</Button>}
         {invoice.paidAt && <Button variant="outline" onClick={() => open({ kind: 'viewReceipt' })}>{text('viewReceipt')}</Button>}
         {invoice.paidAt && access.record && <Button variant="outline" onClick={() => open({ kind: 'receipt' })}>{text('resendReceipt')}</Button>}
@@ -157,6 +162,10 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
           {action.kind === 'cash' && <>
             <Label className="block">{text('method')}<Select name="method"><option value="cash">{text('cash')}</option><option value="check">{text('check')}</option></Select></Label>
             <Label className="block">{text('reference')}<Input name="reference"/></Label>
+          </>}
+          {action.kind === 'voidInvoice' && <>
+            <p>{text('voidHelp')}</p>
+            <Label className="block">{text('voidReason')}<Input name="reason" required maxLength={1000} pattern=".*\S.*"/></Label>
           </>}
           {action.kind === 'refund' && <>
             <p className="text-sm text-muted-foreground">{text(action.payment.method === 'card' ? 'refundHelp' : 'manualRefundHelp')}</p>

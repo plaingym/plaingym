@@ -11,7 +11,7 @@ import { canStaff } from '@plaingym/shared';
 import { InvoiceList } from './page.js';
 import { InvoiceDetails } from './detail.js';
 import { OneOffEditor } from './editor.js';
-import { createInvoiceClient } from './api.js';
+import { createInvoiceClient, InvoiceRequestError } from './api.js';
 import { registration } from './registrations.js';
 import type { Invoice, InvoiceDetail, MaskedPaymentMethod, GymSettings, Payment } from '@plaingym/shared/contracts';
 
@@ -41,6 +41,7 @@ function transport(initial: Partial<InvoiceDetail> = {}) {
     if (url.pathname === '/api/billing/invoices/one-off') return Response.json({ data: detail.invoice }, { status: 201 });
     if (url.pathname === '/api/billing/invoices/' + invoice.id && method === 'GET') return Response.json({ data: detail });
     if (url.pathname.endsWith('/release-hold')) { detail.invoice = { ...detail.invoice, needsReview: false }; return Response.json({ data: detail.invoice }); }
+    if (url.pathname.endsWith('/void')) { detail.invoice = { ...detail.invoice, status: 'void' }; return Response.json({ data: detail.invoice }); }
     if (url.pathname.endsWith('/payment-methods')) return Response.json(page([card]));
     if (url.pathname === '/api/households/' + home) return Response.json({ data: { id: home, name: 'Rivera household', email: null, phone: null, address: {}, revision: 1, createdAt } });
     if (url.pathname.endsWith('/payments') && method === 'POST') {
@@ -63,6 +64,39 @@ function start(view: React.ReactNode) {
   return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}><ShellServicesContext.Provider value={createShellServices(async () => bootstrap)}>{view}</ShellServicesContext.Provider></QueryClientProvider>);
 }
 afterEach(cleanup);
+it.each(['open', 'past_due'] as const)('voids an %s invoice with a reason and removes collection actions', async status => {
+  const f = transport({ invoice: { ...invoice, status } });
+  start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={admin} client={f.client}/>);
+  fireEvent.click(await screen.findByRole('button', { name: 'Void invoice' }));
+  const reason = screen.getByRole('textbox', { name: 'Reason' });
+  expect(reason).toHaveProperty('required', true);
+  fireEvent.change(reason, { target: { value: 'Issued in error' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+  await screen.findByText('Invoice voided. No payment is owed on this invoice.');
+  expect(f.fetcher).toHaveBeenCalledWith('/api/billing/invoices/' + invoice.id + '/void', expect.objectContaining({
+    method: 'POST', body: JSON.stringify({ reason: 'Issued in error' }),
+  }));
+  expect(screen.queryByRole('button', { name: 'Void invoice' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Charge saved card' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Record cash or check' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Send or share pay link' })).toBeNull();
+});
+it('keeps a failed void open and shows the outstanding Checkout explanation', async () => {
+  const f = transport();
+  f.client.call = vi.fn(async () => { throw new InvoiceRequestError('checkout_reserved'); }) as typeof f.client.call;
+  start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={admin} client={f.client}/>);
+  fireEvent.click(await screen.findByRole('button', { name: 'Void invoice' }));
+  fireEvent.change(screen.getByRole('textbox', { name: 'Reason' }), { target: { value: 'Mistake' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+  expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'A Checkout payment is reserved for this invoice. Resolve it before voiding the invoice.');
+  expect(screen.getByRole('textbox', { name: 'Reason' })).toHaveProperty('value', 'Mistake');
+});
+it('does not offer invoice voiding to front desk', async () => {
+  const f = transport();
+  start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={{ record: true, links: true, refund: false }} client={f.client}/>);
+  await screen.findByRole('button', { name: 'Charge saved card' });
+  expect(screen.queryByRole('button', { name: 'Void invoice' })).toBeNull();
+});
 it.each(['succeeded', 'failed', 'pending', 'requires_action'] as const)('follows credits only for a successful charge: %s', async status => {
   const f = transport(), changed = vi.fn();
   const call = f.client.call.bind(f.client);

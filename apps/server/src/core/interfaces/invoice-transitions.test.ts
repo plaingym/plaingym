@@ -111,7 +111,7 @@ describe('InvoiceTransitions fake', () => {
     expect((await restored.cardSucceeded(mutation, success)).outcome).toBe('ignored');
     expect((await fake.cardSucceeded(mutation, success)).outcome).toBe('ignored');
     expect(fake.payments).toEqual([]);
-    await expect(build({ status: 'void' }).cardSucceeded(mutation, success)).rejects.toMatchObject({ code: 'conflict' });
+    expect((await build({ status: 'void' }).cardSucceeded(mutation, success)).outcome).toBe('duplicate_payment');
   });
   it('returns snapshots without sharing fake state', async () => {
     const fake = build();

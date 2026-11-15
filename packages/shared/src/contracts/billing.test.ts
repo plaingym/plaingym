@@ -316,7 +316,7 @@ describe('billing endpoint permissions', () => {
     'createClassPack', 'updateClassPack',
     'createTaxRate', 'updateTaxRate', 'createPlan', 'updatePlan', 'previewPlanPriceChange', 'applyPlanPriceChange', 'createChargeType', 'updateChargeType',
     'assignMembership', 'updateMembership', 'activateMembership', 'freezeMembership', 'resumeMembership', 'setMembershipDiscount', 'removeMembershipDiscount',
-    'cancelMembership', 'switchMembershipPlan', 'cancelMembershipSwitch', 'previewMembershipSwitch', 'createRefund', 'releaseInvoiceHold',
+    'cancelMembership', 'switchMembershipPlan', 'cancelMembershipSwitch', 'previewMembershipSwitch', 'createRefund', 'releaseInvoiceHold', 'voidInvoice',
   ]);
   it.each(Object.entries(billingContracts))('covers allowed and denied staff roles for %s', (name, endpoint) => {
     for (const role of staffRoles) {

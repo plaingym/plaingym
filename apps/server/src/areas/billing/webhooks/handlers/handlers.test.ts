@@ -92,6 +92,20 @@ async function recordedIntent(f: Fixture, card: string) {
 }
 
 describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures', () => {
+  it('records a late success webhook on a void invoice as a duplicate and refunds it once', async () => {
+    const f = await fixture();
+    const context = { gymId: f.gymId, actor: { kind: 'system' as const } };
+    await f.composed.transitions.cardFailed(context, { invoiceId: f.invoice.id, attemptId: f.attempt.id,
+      paymentIntentId: 'pi_1', outcome: 'failed' });
+    await f.composed.transitions.voidInvoice(context, { invoiceId: f.invoice.id, reason: 'Invoice issued in error' });
+    await f.run('payment_intent.succeeded'); await f.run('payment_intent.succeeded'); await f.drain();
+    const rows = await f.read();
+    expect(rows.invoice).toMatchObject({ status: 'void', paidAt: null });
+    expect(rows.payments).toHaveLength(1); expect(rows.refunds).toHaveLength(1);
+    expect(rows.refunds[0]).toMatchObject({ status: 'succeeded', reason: 'duplicate_payment', amountCents: 10000 });
+    expect(rows.audits.find(event => event.action === 'billing.payment.recorded')?.after).toMatchObject({ accepted: false });
+    expect(f.email.messages).toHaveLength(1);
+  });
   it.each([
     ['4242', 'payment_intent.succeeded', 'paid', 'succeeded'],
     ['0341', 'payment_intent.payment_failed', 'past_due', 'failed'],

@@ -718,7 +718,7 @@ describe('invoice transitions with real PostgreSQL', () => {
     await expect(applyChargeOutcome(f.transitions, { ...f.context, gymId: uuidv7() }, f.success, paid)).rejects.toMatchObject({ code: 'conflict' });
     expect((await f.read()).payments).toEqual([]);
   });
-  it('rejects wrong amounts, identity reuse, mismatched attempts, draft/void and cross-gym resources', async () => {
+  it('rejects wrong amounts, identity reuse, mismatched attempts and cross-gym resources, and refunds void payments', async () => {
     const f = await fixture(), stranger = await fixture();
     await expect(f.transitions.cardSucceeded(f.context, { ...f.success, currency: 'USD' })).rejects.toMatchObject({ code: 'conflict' });
     await expect(f.transitions.cardSucceeded(f.context, { ...f.success, amountCents: 9999 })).rejects.toMatchObject({ code: 'conflict' });
@@ -729,8 +729,8 @@ describe('invoice transitions with real PostgreSQL', () => {
     await expect(f.transitions.refund(stranger.context, { invoiceId: f.invoice.id, paymentId: uuidv7(), refundId: uuidv7(), amountCents: 1, currency: 'CAD', status: 'pending' }))
       .rejects.toMatchObject({ code: 'not_found' });
     await db.forGym(f.gymId, tx => tx.update(invoices).set({ status: 'void' }).where(eq(invoices.id, f.invoice.id)));
-    await expect(f.transitions.cardSucceeded(f.context, f.success)).rejects.toMatchObject({ code: 'conflict' });
-    expect((await f.read()).payments).toEqual([]);
+    expect((await f.transitions.cardSucceeded(f.context, f.success)).outcome).toBe('duplicate_payment');
+    expect((await f.read()).payments).toHaveLength(1);
   });
   it('recovers committed effects after a process/queue outage and retries failed email delivery', async () => {
     const f = await fixture(); await f.transitions.cardSucceeded(f.context, f.success);

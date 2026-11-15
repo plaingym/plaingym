@@ -150,9 +150,9 @@ The join page then shows the closed page,
 Checkout can't start, and a replayed submission returns the same link without taking
 a use or starting anything. Recorded submissions still replay after the member
 becomes frozen or cancelled; erased members and mismatched identity details are
-refused. A payment recorded after the void is refused like any
-payment on a void invoice (`Void invoice cannot accept payment`, 409); staff take it
-on a new invoice.
+refused. As on any void invoice, a manual payment recorded after the void is refused
+(`Void invoice cannot accept payment`, 409), and a late card success is recorded as a
+duplicate and refunded; staff take payment on a new invoice.
 
 Outside a trial, the invoice is the household's first cycle: each membership's first full period,
 priced by the invoice engine as the runner prices an active membership on its due

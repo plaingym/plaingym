@@ -247,6 +247,10 @@ isn't checked; neither is any server on a single-gym install.
 
 `payments.custom` is billing a custom amount; front desk bills catalog charge
 types and existing invoices only.
+Voiding an unpaid invoice uses `refunds.create` (owner and admin only), with a
+required audited reason. It refuses pending or authentication-needed card
+attempts and reserved Checkout, revokes the invoice's pay links and prevents
+further collection. A late card success is recorded and refunded as a duplicate.
 
 ### Member capabilities
 

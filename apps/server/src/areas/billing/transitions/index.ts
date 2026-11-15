@@ -9,6 +9,7 @@ import type { CardSuccess, CardFailure, ManualPayment, RefundTransition, Invoice
 import { logError } from '../../../core/log.js';
 import { readBillingRules } from '../../settings/settings.js';
 import { pastRefundWindow } from './lapsed-refunds.js';
+import { createInvoiceVoid } from './void.js';
 import { accepted, audit, canceledAttempt, confirmAbandoned, effect, lockInvoice, paymentRecorded, recorded, result, snapshot, terminal,
   type InvoiceRow } from './store.js';
 
@@ -37,7 +38,7 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
       const card = 'paymentIntentId' in request;
       if (card && (!request.paymentIntentId || !request.chargeId)) conflict('Processor payment IDs are required');
       const linkedAttempt = card ? await attempt(tx, invoice, request.paymentIntentId, request.attemptId) : undefined;
-      if (linkedAttempt && canceledAttempt(linkedAttempt)) return result('ignored', invoice);
+      if (linkedAttempt && canceledAttempt(linkedAttempt) && invoice.status !== 'void') return result('ignored', invoice);
       const method = card ? 'card' : request.method;
       const previous = await tx.select().from(payments).where(or(eq(payments.id, request.paymentId),
         ...(card ? [eq(payments.paymentIntentId, request.paymentIntentId), eq(payments.chargeId, request.chargeId)] : [])));
@@ -46,7 +47,7 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
         if (linkedAttempt && linkedAttempt.status !== 'succeeded') await resolveAttempt(tx, context, linkedAttempt, 'succeeded', null);
         return result('ignored', invoice);
       }
-      if (invoice.status === 'void') conflict('Void invoice cannot accept payment');
+      if (invoice.status === 'void' && !card) conflict('Void invoice cannot accept payment');
       if (terminal(invoice) && !card) conflict('Invoice is already paid');
       const isAccepted = !terminal(invoice);
       // Unique keys also guard processor/local IDs racing on different invoices.
@@ -86,6 +87,7 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
       { status, declineCode }, { status: row.status, declineCode: row.declineCode });
   }
   const service: InvoiceTransitions = {
+    voidInvoice: createInvoiceVoid(scope, clock),
     cardSucceeded: pay,
     manualPayment: pay,
     async settleZero(context, request) {
@@ -234,6 +236,7 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
     return value;
   }
   return {
+    voidInvoice: (context, request) => published(context, service.voidInvoice(context, request)),
     settleZero: (context, request) => published(context, service.settleZero(context, request)),
     cardSucceeded: (context, request) => published(context, service.cardSucceeded(context, request)),
     manualPayment: (context, request) => published(context, service.manualPayment(context, request)),

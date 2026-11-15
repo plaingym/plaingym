@@ -83,7 +83,7 @@ export function createReconciliation(options: Options) {
       const invoiceId = attempt?.invoiceId ?? payment?.invoiceId ?? outcome.metadata.invoiceId;
       if (!invoiceId) return null;
       const invoice = (await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).for('update'))[0];
-      if (!invoice || invoice.status === 'draft' || invoice.status === 'void'
+      if (!invoice || invoice.status === 'draft'
         || (outcome.metadata.invoiceId !== undefined && invoice.id !== outcome.metadata.invoiceId)
         || (outcome.metadata.attemptId && outcome.metadata.attemptId !== attempt?.id)) return null;
       const home = (await tx.select().from(households).where(eq(households.id, invoice.householdId)))[0]!;

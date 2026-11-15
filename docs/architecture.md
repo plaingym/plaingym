@@ -234,6 +234,11 @@ source of truth; Stripe is the processor. In outline:
   state; its effects (receipts, dunning, membership activation, class credit grants
   and full-refund reversals)
   run as jobs.
+  Owners and admins can void an open or past-due invoice with a reason once no
+  card attempt is pending or awaiting authentication and no Checkout is reserved.
+  Voiding revokes pay links and stops dunning and retries. A late card success is
+  recorded as a duplicate and refunded, keeping the invoice void. Voiding changes
+  no membership or future invoice; cancelling a membership leaves unpaid invoices owed.
 * **Webhook inbox** (`areas/billing/webhooks/`): verify the signature, store the
   event once, process it in a job.
 * **Signed links and campaigns** (`areas/links/`): pay, update-card, waiver and

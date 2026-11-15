@@ -25,7 +25,27 @@ failure and refund. Processor intent/Charge IDs and local payment/refund UUIDs
 deduplicate commands. Reusing an identity with different money or ownership is
 a conflict. Payment timestamps can differ between a runner result and a webhook;
 the first accepted timestamp is retained. A missing attempt ID on a Checkout or
-webhook does not bypass a stored intent cancellation.
+webhook does not bypass a stored intent cancellation, except that a void invoice
+records a late success as a duplicate to refund it.
+
+`voidInvoice(context, { invoiceId, reason })` voids an open or past-due invoice.
+Owners and admins use the payments area's `POST /api/billing/invoices/{invoiceId}/void`
+route (`refunds.create`), supplying a nonblank reason of at most 1,000 characters.
+The transition locks the invoice and its pay links in Checkout's lock order,
+refuses any pending or authentication-needed attempt and any stored Checkout
+session or unexpired reservation, and audits `billing.invoice.voided` with the
+reason and before/after state. It revokes unused pay links in the same transaction.
+Link creation shares the invoice lock and refuses void invoices; a link created
+while voiding waited causes a conflict so staff can retry with that link locked.
+Repeating a completed void is ignored. It changes no membership or future bill;
+cancelling a membership also leaves its unpaid invoices owed.
+
+Voided invoices suppress queued dunning and retries and cannot be collected by
+the runner or paid manually. A late card success, including one for an attempt
+previously marked canceled, is recorded with `accepted: false`, reserves a full
+duplicate-payment refund, and queues the existing durable refund and staff notice
+effects. Replay creates neither another payment nor another refund. The invoice
+stays void after the refund; it sends no receipt and activates no memberships.
 
 `settleZero(context, { invoiceId })` settles an open or past-due zero-value invoice
 under its invoice lock, provided it has no accepted payments. It sets `paid` and
@@ -39,7 +59,7 @@ resolving a payment provider, checking a saved card, reserving an attempt or
 touching Checkout. Thus free plans and full family discounts can activate pending
 memberships through the ordinary effect job.
 
-`join-cleanup.ts` is the only code that voids an invoice, for the public join's cleanup
+Besides `voidInvoice`, `join-cleanup.ts` voids invoices for the public join's cleanup
 (`public/pages/join.md`). `voidAbandonedJoinInvoice` covers an admission that was never
 submitted. For a submitted join unpaid after seven days, `submittedJoinSessions` lists
 the Checkout sessions the household's links started for the caller to confirm expired
@@ -51,8 +71,9 @@ also reports before any provider call, or another invoice, a used link, a paymen
 card, or a review hold whose latest hold audit is not the runner's overdue hold,
 or one staff released),
 and `voidSubmittedJoin` voids the open invoice (`billing.invoice.voided`, lines kept)
-and revokes the join's link in the caller's transaction. A payment recorded on a void
-invoice is refused as a conflict.
+and revokes the join's link in the caller's transaction. As on any void invoice, a
+manual payment recorded later is refused as a conflict, and a late card success is
+recorded as a duplicate and refunded.
 The cleanup stops retrying a `wait` on the 21st local day after submission and
 writes `public.join.void_stalled` for staff follow-up, leaving billing intact.
 

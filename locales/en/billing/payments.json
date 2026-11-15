@@ -141,5 +141,10 @@
   "householdInvoices": "Invoices belong to the household and may include other household members.",
   "confirm": "Confirm",
   "sendUncertain": "The earlier email may have been delivered, but we could not confirm it. Choose Send again only if you want another email.",
-  "sendAgain": "Send again"
+  "sendAgain": "Send again",
+  "voidInvoice": "Void invoice",
+  "voidReason": "Reason",
+  "voidHelp": "This invoice will no longer be owed. Dunning and retries stop, and its pay links are revoked. This does not cancel a membership or change future invoices. Give a reason for the audit record.",
+  "invoiceVoided": "Invoice voided. No payment is owed on this invoice.",
+  "errors.checkout_reserved": "A Checkout payment is reserved for this invoice. Resolve it before voiding the invoice."
 }

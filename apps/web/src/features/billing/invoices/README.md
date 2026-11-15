@@ -4,7 +4,7 @@
 The invoice page and detail route use the shared page/state components. Lists and
 line items use stacked rows. One-off editors use the shared `Dialog` and searchable
 household `Autocomplete`. Receipt, cash/check, saved-card confirmation, refund,
-pay-link, review-hold and card-management views stay inside invoice details,
+pay-link, void, review-hold and card-management views stay inside invoice details,
 with a back control and focus restored to the action that opened the view.
 
 In the Packs tab, a successful manual payment, saved-card charge or refund starts
@@ -25,8 +25,11 @@ a typed amount converts to the currency's minor units with `parseMinorUnits` fro
 of the currency, as Stripe does (no 1.255 KWD); a cash or check refund takes any minor unit.
 
 The one-off editor offers a custom amount only with `payments.custom` (owner, admin);
-without it, staff pick a catalog charge type. When the gym has no active charge type, the editor says so: staff with `plans.manage` (the right to add a charge type; owners and admins) are told to add one in the billing catalog, with `or use a custom amount` when they can bill one, and other staff are told to ask an owner or admin (adding `or use a custom amount` when they can bill one). Collection controls use `payments.record`, pay links use `links.send`, and refund
-and review-release controls use `refunds.create`. Server routes enforce the same permissions. A
+without it, staff pick a catalog charge type. When the gym has no active charge type, the editor says so: staff with `plans.manage` (the right to add a charge type; owners and admins) are told to add one in the billing catalog, with `or use a custom amount` when they can bill one, and other staff are told to ask an owner or admin (adding `or use a custom amount` when they can bill one). Collection controls use `payments.record`, pay links use `links.send`, and refund,
+void and review-release controls use `refunds.create`. Voiding an open or past-due
+invoice requires a reason and explains that dunning, retries and pay links stop,
+while memberships and future invoices stay as they are. Pending card or Checkout
+payments must be resolved first. Server routes enforce the same permissions. A
 failed charge reports that the invoice remains open; unresolved outcomes tell
 staff to check the invoice before collecting another payment. Save errors stay in
 the open dialog, preserving the staff member's draft.

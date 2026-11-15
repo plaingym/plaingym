@@ -2,9 +2,16 @@
 import { expect, it } from 'vitest';
 import { canStaff } from '@plaingym/shared';
 import { releaseInvoiceHoldContract as contract } from './invoices.js';
-import { invoiceLineItemSchema, invoiceListQuerySchema } from './invoices.js';
+import { invoiceLineItemSchema, invoiceListQuerySchema, voidInvoiceContract } from './invoices.js';
 
 const planId = '019a08bf-1234-7000-8000-000000000003';
+it('requires an audited reason for an owner or admin to void an invoice', () => {
+  for (const role of ['owner', 'admin', 'front_desk', 'coach'] as const)
+    expect(canStaff([role], voidInvoiceContract.permission.capability)).toBe(role === 'owner' || role === 'admin');
+  expect(voidInvoiceContract.body.parse({ reason: '  Issued in error  ' })).toEqual({ reason: 'Issued in error' });
+  for (const body of [{}, { reason: '' }, { reason: '   ' }, { reason: 'a'.repeat(1001) }, { reason: 'Reason', amountCents: 100 }])
+    expect(voidInvoiceContract.body.safeParse(body).success).toBe(false);
+});
 const line = {
   id: '019a08bf-1234-7000-8000-000000000001', createdAt: '2026-10-21T12:00:00.000Z',
   householdId: '019a08bf-1234-7000-8000-000000000002', invoiceId: '019a08bf-1234-7000-8000-000000000004',

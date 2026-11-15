@@ -95,8 +95,8 @@ async function checkResources(tx: Transaction, gymId: string, all: CreateSignedL
   const householdIds = new Set((await lookup(requests.map(r => r.householdId), ids => tx.select({ id: households.id })
     .from(households).where(and(eq(households.gymId, gymId), inArray(households.id, ids))))).map(row => row.id));
   const invoiceHouseholds = new Map((await lookup(requests.flatMap(r => r.purpose === 'pay_invoice' ? [r.invoiceId] : []),
-    ids => tx.select({ id: invoices.id, householdId: invoices.householdId, amountCents: invoices.amountCents }).from(invoices)
-      .where(and(eq(invoices.gymId, gymId), inArray(invoices.id, ids))))).map(row => [row.id, row]));
+    ids => tx.select({ id: invoices.id, householdId: invoices.householdId, amountCents: invoices.amountCents, status: invoices.status }).from(invoices)
+      .where(and(eq(invoices.gymId, gymId), inArray(invoices.id, ids))).orderBy(asc(invoices.id)).for('share'))).map(row => [row.id, row]));
   const waiverMembers = new Map((await lookup(requests.flatMap(r => r.purpose === 'sign_waiver' ? [r.memberId] : []),
     ids => tx.select({ id: members.id, householdId: members.householdId, anonymizedAt: members.anonymizedAt }).from(members)
       .where(and(eq(members.gymId, gymId), inArray(members.id, ids))).orderBy(asc(members.id)).for('update'))).map(row => [row.id, row]));
@@ -108,6 +108,7 @@ async function checkResources(tx: Transaction, gymId: string, all: CreateSignedL
     if (request.purpose === 'pay_invoice') {
       const invoice = invoiceHouseholds.get(request.invoiceId);
       if (invoice?.householdId !== request.householdId) missing();
+      if (invoice.status === 'void') throw new AppError('conflict', 'Invoice has been voided', { reason: ['not_payable'] });
       if (invoice.amountCents === 0 && !allowZeroInvoices)
         throw new AppError('conflict', 'No payment is needed', { reason: ['zero_invoice'] });
     } else if (request.purpose === 'sign_waiver') {
