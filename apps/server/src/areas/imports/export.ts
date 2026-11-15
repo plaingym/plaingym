@@ -24,11 +24,13 @@ export function createExportService(options: { uploadsFor: UploadsFor; jobs: Job
   const whereRun = (gymId: string, id: string) => and(eq(exportRuns.gymId, gymId), eq(exportRuns.id, id));
   const findRun = (gymId: string, id: string) => scope(gymId, async (tx) =>
     (await tx.select().from(exportRuns).where(whereRun(gymId, id)))[0]);
-  async function finish(gymId: string, job: ExportJob, stored: boolean) {
-    if (!stored) return store.put(gymId, key(gymId, job.id, 'finished.json'), job);
-    await scope(gymId, (tx) => tx.update(exportRuns).set({ status: job.status, updatedAt: clock.now(),
+  async function finish(gymId: string, job: ExportJob, stored: boolean, expected: 'pending' | 'running' = 'running') {
+    if (!stored) { await store.put(gymId, key(gymId, job.id, 'finished.json'), job); return true; }
+    const changed = await scope(gymId, (tx) => tx.update(exportRuns).set({ status: job.status, updatedAt: clock.now(),
       completedAt: job.completedAt ? new Date(job.completedAt) : null, downloadUrl: job.downloadUrl,
-      expiresAt: job.expiresAt ? new Date(job.expiresAt) : null }).where(whereRun(gymId, job.id)));
+      expiresAt: job.expiresAt ? new Date(job.expiresAt) : null })
+      .where(and(whereRun(gymId, job.id), eq(exportRuns.status, expected))).returning({ id: exportRuns.id }));
+    return changed.length > 0;
   }
   async function* entries(gymId: string, cutoff: Date, datasets: ExportJob['datasets']): AsyncGenerator<ArchiveEntry> {
     const encoder = new TextEncoder();
@@ -59,7 +61,7 @@ export function createExportService(options: { uploadsFor: UploadsFor; jobs: Job
       });
       try { await options.jobs.enqueue(EXPORT_JOB, { id }, { gymId: context.gymId, timezone, idempotencyKey: id, maxAttempts: 1 }); }
       catch (error) {
-        await finish(context.gymId, { ...job, status: 'failed', completedAt: clock.now().toISOString() }, true);
+        await finish(context.gymId, { ...job, status: 'failed', completedAt: clock.now().toISOString() }, true, 'pending');
         throw error;
       }
       return job;
@@ -116,8 +118,9 @@ export function createExportService(options: { uploadsFor: UploadsFor; jobs: Job
         await uploads.put(archiveKey, archiveStream(entries(gymId, new Date(job.createdAt), job.datasets)), 'application/zip');
         const downloadUrl = await uploads.signedUrl(archiveKey, DOWNLOAD_LIFETIME);
         if (!downloadUrl) throw new Error('Export download is unavailable');
-        await finish(gymId, { ...job, status: 'succeeded', completedAt: clock.now().toISOString(),
+        const finished = await finish(gymId, { ...job, status: 'succeeded', completedAt: clock.now().toISOString(),
           downloadUrl, expiresAt: new Date(clock.now().getTime() + DOWNLOAD_LIFETIME * 1000).toISOString() }, !!row);
+        if (!finished) await uploads.markDeleted(archiveKey);
       } catch (error) {
         await finish(gymId, { ...job, status: 'failed', completedAt: clock.now().toISOString() }, !!row);
         throw error;

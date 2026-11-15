@@ -9,6 +9,8 @@
   "row": "Row", "rows": "Rows", "action": "Action", "values": "Values", "summary": "Summary", "create": "Create", "update": "Update",
   "skip": "Skip", "error": "Error", "errors": "Errors", "previous": "Previous", "next": "Next", "processed": "Processed", "committed": "Committed",
   "status.pending": "Queued", "status.running": "Running", "status.succeeded": "Complete", "status.failed": "Failed; review the error report",
+  "status.rowErrors": "Finished with {count} row errors; review the error report",
+  "status.rowError": "Finished with {count} row error; review the error report",
   "loading": "Loading…", "noAccess": "You do not have permission to import or export data.", "requestFailed": "The request failed. Please try again.",
   "invalidCsv": "The CSV is invalid. Use UTF-8 with unique column names and the same number of cells in every row.",
   "previewTimedOut": "This preview took too long to finish. Split the file into smaller files and preview each one.",

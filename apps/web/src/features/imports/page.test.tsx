@@ -28,6 +28,26 @@ function start() {
 beforeEach(() => { bootstrap(); request.mockReset(); });
 afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear(); vi.unstubAllGlobals(); });
 describe('CSV admin workflow', () => {
+  it.each([
+    { status: 'succeeded', processedRows: 1000, committedRows: 1000, errorCount: 0, outcome: 'Complete' },
+    { status: 'failed', processedRows: 1000, committedRows: 999, errorCount: 1, outcome: 'Finished with 1 row error; review the error report' },
+    { status: 'failed', processedRows: 1000, committedRows: 998, errorCount: 2, outcome: 'Finished with 2 row errors; review the error report' },
+    { status: 'failed', processedRows: 500, committedRows: 499, errorCount: 1, outcome: 'Failed; review the error report' },
+  ])('distinguishes the import outcome: $outcome', async ({ outcome, ...counts }) => {
+    const job = { id: runId, uploadId: id, mapper: 'people', dryRun: false, totalRows: 1000,
+      createdAt, completedAt: createdAt, ...counts };
+    request.mockResolvedValue({ data: job });
+    vi.stubGlobal('fetch', vi.fn(async (path: string) => Response.json(path === '/api/imports/uploads'
+      ? { data: uploaded } : { data: [], pagination: { limit: 50, offset: 0, total: 0 } })));
+    start();
+    fireEvent.change(screen.getByLabelText(/CSV file/), { target: { files: [new File(['Name\nTest'], 'people.csv')] } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Dry run' }));
+    const status = await screen.findByRole('status');
+    await waitFor(() => expect(status.textContent).toContain('Import CSV: ' + outcome));
+    expect(status.textContent).toContain('Committed: ' + new Intl.NumberFormat('en').format(counts.committedRows));
+    expect(status.textContent).toContain('Processed: ' + new Intl.NumberFormat('en').format(counts.processedRows) + '/1,000');
+    if (counts.processedRows === 1000) expect(status.textContent).not.toContain('Failed');
+  });
   it('ignores a pending preview after the import type changes', async () => {
     let resolvePreview!: (response: Response) => void;
     const pending = new Promise<Response>(resolve => { resolvePreview = resolve; });

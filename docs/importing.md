@@ -105,6 +105,11 @@ promotion history, keep each member's history for a program together so it can b
 checked in order. Dry runs and commits run in the background and do not have the
 preview's two-minute limit.
 
+An import that checks every row shows **Complete** when there are no errors, or
+**Finished with N row errors** when some rows could not be imported. The committed
+count shows how many rows were saved; review the error report before importing
+corrections. A finished run with row errors does not mean its saved rows were lost.
+
 If a run fails part-way, rows committed before the failure stay saved. Read the
 error report, correct the CSV, choose *Skip* (keep existing records) or *Update one
 match* (apply corrections), and run a fresh dry run before committing again.

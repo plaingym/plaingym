@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { exportRuns, forGym, importChunks, importRuns, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
 import { FakeUploads } from '../../infra/storage/index.js';
+import { FakeJobs } from '../../infra/jobs/index.js';
+import { createExportService } from './export.js';
 import { createImportRetention, EXPORT_STALE_MS, RUN_RETENTION_MS, UPLOAD_RETENTION_MS } from './retention.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
@@ -15,6 +17,29 @@ async function fixture() {
   const options = { clock, uploadsFor: async () => storage, scope: database.forGym };
   return { gymId, clock, storage, options, service: createImportRetention(options) };
 }
+
+it('keeps a retention failure when the running export finishes late and deletes its archive', async () => {
+  const { gymId, clock, storage, options, service } = await fixture();
+  const exports = createExportService({ ...options, jobs: new FakeJobs(clock) });
+  const job = await exports.create({ gymId, actor: { kind: 'system' } }, 'UTC');
+  const put = storage.put.bind(storage);
+  let failed: Awaited<ReturnType<typeof exports.get>> | undefined;
+  vi.spyOn(storage, 'put').mockImplementationOnce(async (...args) => {
+    const result = await put(...args);
+    expect((await exports.get(gymId, job.id)).status).toBe('running');
+    clock.advance(EXPORT_STALE_MS);
+    await service.expire(gymId);
+    failed = await exports.get(gymId, job.id);
+    expect(failed.status).toBe('failed');
+    clock.advance(1000);
+    return result;
+  });
+  await exports.run(gymId, job.id);
+  expect(await exports.get(gymId, job.id)).toEqual(failed);
+  expect(failed).toMatchObject({ downloadUrl: null, expiresAt: null });
+  clock.advance(1);
+  expect(await storage.sweep({ before: clock.now() })).toEqual([`${gymId}/imports/exports/${job.id}/export.zip`]);
+});
 
 it.each(['pending', 'running'] as const)('recovers stale %s table runs, preserving fresh runs, progress and other gyms', async (status) => {
   const { gymId, clock, service } = await fixture(), now = clock.now();

@@ -119,7 +119,8 @@ function ImportPanel({ gymId }: { gymId: string }) {
       <Pager offset={offset} total={preview.pagination.total} limit={50} onChange={value => previewRows.mutate(value)} disabled={previewRows.isPending} previousLabel={label('previous')} nextLabel={label('next')}/>
     </div>}
     {progress.data && <div role="status" className="space-y-2 rounded-lg border border-border bg-muted p-3 text-sm">
-      <p className="font-medium">{label(progress.data.dryRun ? 'dryRun' : 'import')}: {label('status.' + progress.data.status)}</p>
+      <p className="font-medium">{label(progress.data.dryRun ? 'dryRun' : 'import')}: {progress.data.status === 'failed' && progress.data.processedRows === progress.data.totalRows && progress.data.errorCount > 0
+        ? t('imports/pipeline:status.' + (progress.data.errorCount === 1 ? 'rowError' : 'rowErrors'), { count: formatCount(progress.data.errorCount) }) : label('status.' + progress.data.status)}</p>
       <p>{label('processed')}: {formatCount(progress.data.processedRows)}/{formatCount(progress.data.totalRows)} · {label('committed')}: {formatCount(progress.data.committedRows)} · {label('errors')}: {formatCount(progress.data.errorCount)}</p>
       {progress.data.totalRows > 0 && <progress className="block h-2 w-full accent-primary" aria-label={label('processed')} max={progress.data.totalRows} value={progress.data.processedRows}/>}
     </div>}

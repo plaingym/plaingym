@@ -160,7 +160,14 @@ while streaming; the conservative 48-hour bound allows two full days for a large
 gym's archive, far beyond the queue's 30-second lease and 10-second heartbeat.
 It is an abandonment deadline, not a check that the worker's lease expired.
 Status compare-and-set prevents recovery from overwriting a concurrent successful
-finish. Recovery preserves committed import rows, counters, and issues; it does
+finish and prevents a late export finisher from overwriting a recovery failure.
+A late export finisher marks its archive deleted instead of publishing its link.
+Recovery preserves committed import rows, counters, and issues; it does
 not retry either run or change legacy manifests. Failed run state remains
 available for 30 days after recovery before normal retention removes it and
 any remaining files. Request another export after inspecting the failed status.
+
+Import runs retain the stored `failed` status when any row has an issue. The admin
+page distinguishes a finished run with row errors (`processedRows === totalRows`
+and `errorCount > 0`) from one that stopped short, and shows the committed count
+for both. A clean run reads Complete.
