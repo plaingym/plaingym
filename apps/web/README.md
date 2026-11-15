@@ -149,7 +149,7 @@ between page sections, `gap-3` within groups, cards `p-4 sm:p-6`.
 elements are real buttons and links with accessible names. The production-image
 e2e suite (`e2e/specs/mobile.spec.ts`) checks the admin shell at 360 px and
 desktop width: every admin page reachable through the menu, no sideways
-scrolling, 44 px shell targets, and axe WCAG 2.1 A/AA; `e2e/specs/mobile-screens.spec.ts` checks the admin screens themselves at both widths (whole-page axe, 44 px content targets) and their main flows.
+scrolling, 44 px shell targets, and axe WCAG 2.1 A/AA; `e2e/specs/mobile-admin-{phone,desktop}.spec.ts` check the admin screens themselves at both widths (whole-page axe, 44 px content targets) and their main flows.
 
 ## API answer compatibility
 

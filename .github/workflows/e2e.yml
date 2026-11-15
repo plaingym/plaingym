@@ -65,6 +65,8 @@ jobs:
       - run: pnpm --dir e2e exec playwright install chromium
         timeout-minutes: 5
       - run: pnpm --dir e2e check-types
+      - name: Assign whole files across the four stacks
+        run: node e2e/ci.mjs shard-lists
       - name: Check every test belongs to exactly one shard
         if: matrix.shard == 1
         run: node e2e/ci.mjs inventory
@@ -72,7 +74,7 @@ jobs:
       # removes its containers and volumes afterwards, also on failure.
       # Dependencies would repeat fresh-setup in every members-mat shard. Without them the wizard
       # stays first on shard 1; other stacks complete setup through the single-gym fixture's API path.
-      - run: pnpm --dir e2e test --shard=${{ matrix.shard }}/4 --no-deps
+      - run: pnpm --dir e2e test --test-list coverage/shard-${{ matrix.shard }}.txt --no-deps
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

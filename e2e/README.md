@@ -20,8 +20,10 @@ pnpm --dir e2e test
 ```
 
 CI runs this suite in the **End-to-end** workflow on every task and integration branch, nightly,
-and on demand. Four independent stacks run `pnpm --dir e2e test --shard=N/4 --no-deps`,
-with one worker per stack and whole files assigned to shards (`fullyParallel: false`).
+and on demand. `node e2e/ci.mjs shard-lists` assigns sorted whole files round-robin across four stacks,
+keeping the setup wizard on stack 1. Each runs `pnpm --dir e2e test --test-list coverage/shard-N.txt --no-deps`,
+with one worker per stack (`fullyParallel: false`). File assignment lets one-test isolation slices spread
+across stacks even when a preceding spec contains many short tests.
 The local command above still runs the entire suite on one stack. The suite includes portal recovery fixtures at 360 px and 1280 px that
 check notices in the page and editor, preserved drafts, and the shell's availability
 during recovery. The hosted Ubuntu runner already has Chromium's system libraries, so the workflow
@@ -127,7 +129,7 @@ The checks cover:
   seed CLI runs materialization again, plus a stale-revision conflict.
 * A portrait touch viewport, real fullscreen, kiosk privacy reset, source link,
   and axe WCAG A/AA checks.
-* The admin screens at 360 px and 1280 px (`mobile.spec.ts` for the shell, `mobile-screens.spec.ts`
+* The admin screens at 360 px and 1280 px (`mobile.spec.ts` for the shell, `mobile-admin-{phone,desktop}.spec.ts` and `mobile-{portal,public,kiosk-keyboard,portal-keyboard}.spec.ts`
   for the screens): no sideways scrolling, 44 px targets, axe WCAG A/AA on whole pages, finding a member,
   a promotion, moving a generated session (and the refusal when it lands on another occurrence's
   exact start), a coach's roster check-in, and stacked dashboard widgets. Session moves use New York
@@ -254,7 +256,7 @@ to the gym's own hostname (`deliverStripeEvent` in `portal.ts`, shared with demo
 * Stripe accounts (`flows.spec.ts`, last): each key lists its own customers, Checkout sessions, cards and
   payment intents, none appears in the other account, every object the gym tagged carries its own gym ID, and the
   other key gets 404 for each by ID.
-* A cross-gym sweep (`isolation.spec.ts`) of every non-public operation of the running OpenAPI document, in both
+* A cross-gym sweep (`isolation-{alpha-beta,beta-alpha}-{1,2,3}.spec.ts`, with public record-ID checks in `isolation.spec.ts`) of every non-public operation of the running OpenAPI document, in both
   directions (232 operations when written). Nothing is listed by hand: a route added to the application is swept
   without widening a list. Only the demo routes, the single-gym setup wizard and the install's own release state
   are left out (`outOfScope` in `multi/probe.ts`, which fails if an exclusion stops matching a route), and every
@@ -272,6 +274,10 @@ to the gym's own hostname (`deliverStripeEvent` in `portal.ts`, shared with demo
   a positive control first proves that each gym's signing link reads its own uploaded PDF.
   The sweep creates an adult member login for the self-service document read, since the household's
   payer login has no member identity; that same credential supplies its positive and cross-gym controls.
+  Each direction partitions the complete operation list into three disjoint groups by position, one file per group;
+  public reads use the same three-way partition. Every file checks that all six files exist and each sweeps its own group. Each file snapshots both gyms across the full route inventory.
+  The sweep prepares four staff-issued signed-link purposes; the two unsubscribe operations remain without
+  probe credentials. It asserts this existing gap explicitly so no other operation silently loses its probes.
 * A second pass aims a caller's own record in the path at gym B's IDs in the body (an own class or schedule
   template given gym B's programs, an own member given gym B's tag, an own household given gym B's member or
   login, a membership or plan given gym B's plan): every one must answer 404, and the controls then send the same

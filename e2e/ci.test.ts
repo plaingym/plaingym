@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { changedSpecs, fileFilters, reportTests, verifyShards } from './ci.mjs';
+import { changedSpecs, fileFilters, reportTests, shardFiles, verifyShards } from './ci.mjs';
 
 describe('browser CI selection and completeness', () => {
   it('selects only specs in the default suite, including new names from a rename', () => {
@@ -34,5 +34,23 @@ describe('browser CI selection and completeness', () => {
     expect(() => verifyShards(['wizard', 'a'], [['wizard']])).toThrow();
     expect(() => verifyShards([], [[], [], [], []])).toThrow();
     expect(() => verifyShards(['a', 'a'], [['a']])).toThrow();
+  });
+
+  it('spreads one-test files, keeps nested describes together, and pins the wizard to stack 1', () => {
+    const spec = (file: string, projectName = 'multi-gym') => ({ file, id: file, tests: [{ projectName }] });
+    const report = { suites: [
+      { specs: [spec('fresh-setup.spec.ts', 'fresh-setup')] },
+      { specs: [spec('../multi/a.spec.ts'), spec('../multi/b.spec.ts')], suites: [
+        { specs: [spec('../multi/a.spec.ts'), spec('../multi/c.spec.ts'), spec('../multi/d.spec.ts')] },
+      ] },
+    ] };
+    expect(shardFiles(report)).toEqual([
+      ['[fresh-setup] > fresh-setup.spec.ts', '[multi-gym] > ../multi/a.spec.ts'],
+      ['[multi-gym] > ../multi/b.spec.ts'],
+      ['[multi-gym] > ../multi/c.spec.ts'],
+      ['[multi-gym] > ../multi/d.spec.ts'],
+    ]);
+    expect(() => shardFiles({ suites: [] })).toThrow('wizard');
+    expect(() => shardFiles({ errors: [{ message: 'collection failed' }], suites: [] })).toThrow('collect');
   });
 });

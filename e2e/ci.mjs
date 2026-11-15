@@ -41,11 +41,46 @@ export function verifyShards(single, shards) {
   return { single: single.length, shards: shards.map(tests => tests.length), total: actual.length };
 }
 
-function list(args = []) {
+export function shardFiles(report) {
+  reportTests(report); // Reject collection errors before writing a partial selection.
+  const files = new Map();
+  const visit = (suite, ownerFile = suite.file) => {
+    for (const spec of suite.specs ?? []) for (const test of spec.tests) {
+      // A helper can declare a test for a spec wrapper: its declaration location is
+      // not the discoverable spec file. Keep the top-level suite's owning filename.
+      const file = (ownerFile ?? spec.file).replaceAll('\\', '/');
+      if (!files.has(file)) files.set(file, new Set());
+      files.get(file).add(`[${test.projectName}] > ${file}`);
+    }
+    for (const child of suite.suites ?? []) visit(child, ownerFile ?? child.file);
+  };
+  for (const suite of report.suites) visit(suite);
+  const shards = [[], [], [], []];
+  const wizard = [...files].filter(([, lines]) => [...lines].some(line => line.startsWith('[fresh-setup]')));
+  if (wizard.length !== 1) throw new Error('Expected exactly one wizard file');
+  shards[0].push(...wizard[0][1]);
+  // Balance by whole files, not test counts: the many small tests in one file must not
+  // push every one-test isolation slice onto the last shard. Keep nested describes together.
+  [...files.keys()].filter(file => file !== wizard[0][0]).sort().forEach((file, index) => {
+    shards[index % shards.length].push(...files.get(file));
+  });
+  return shards;
+}
+
+function collect(args = []) {
   // Collection only; this never starts browsers or needs the Compose stack's credentials.
   const output = execFileSync(process.execPath, ['node_modules/@playwright/test/cli.js', 'test', '--list', '--reporter=json', ...args],
     { cwd: directory, encoding: 'utf8', timeout: 120_000, maxBuffer: 16 * 1024 * 1024 });
-  return reportTests(JSON.parse(output));
+  return JSON.parse(output);
+}
+
+function writeShardLists(report) {
+  mkdirSync(resolve(directory, 'coverage'), { recursive: true });
+  return shardFiles(report).map((lines, index) => {
+    const path = resolve(directory, `coverage/shard-${index + 1}.txt`);
+    writeFileSync(path, lines.join('\n') + '\n');
+    return path;
+  });
 }
 
 function main(command) {
@@ -59,8 +94,12 @@ function main(command) {
     const filters = fileFilters(JSON.parse(process.env.E2E_CHANGED_SPECS ?? '[]'));
     // The fixture initializes setup through the API; do not add unrelated dependency specs.
     execFileSync(process.execPath, ['run.mjs', '--no-deps', ...filters], { cwd: directory, stdio: 'inherit', timeout: 18 * 60_000 });
+  } else if (command === 'shard-lists') {
+    const paths = writeShardLists(collect());
+    console.log(`Wrote ${paths.length} whole-file shard selections`);
   } else if (command === 'inventory') {
-    const single = list(), shards = [1, 2, 3, 4].map(shard => list([`--shard=${shard}/4`, '--no-deps']));
+    const report = collect(), single = reportTests(report);
+    const shards = writeShardLists(report).map(path => reportTests(collect(['--test-list', path, '--no-deps'])));
     const counts = verifyShards(single, shards);
     // Configuration order and one worker keep the only real wizard ahead of its shard's other specs.
     if (!shards[0][0]?.startsWith('fresh-setup:') || shards.flat().filter(id => id.startsWith('fresh-setup:')).length !== 1) {
@@ -75,7 +114,7 @@ function main(command) {
     const counts = verifyShards(inventory.tests, [reportTests(report)]);
     console.log(`Merged report matches single-stack inventory: ${counts.total} tests; ${JSON.stringify(report.stats)}`);
   } else {
-    throw new Error('Expected changed-specs, run-changed, inventory or verify-report');
+    throw new Error('Expected changed-specs, run-changed, shard-lists, inventory or verify-report');
   }
 }
 

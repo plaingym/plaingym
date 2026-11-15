@@ -155,7 +155,7 @@ export class Capture {
   }
 }
 
-/** A context like `mobile-screens.spec.ts` opens: touch on, so the phone size is a touch device; the walk resizes it per shot. */
+/** A context like `open()` in `specs/mobile-screens.ts` opens: touch on, so the phone size is a touch device; the walk resizes it per shot. */
 export async function openContext(browser: Browser, options: Parameters<Browser['newContext']>[0] = {}): Promise<[BrowserContext, Page]> {
   const context = await browser.newContext({ viewport: sizes[0], hasTouch: true, ignoreHTTPSErrors: true, ...options });
   return [context, await context.newPage()];

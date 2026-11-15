@@ -34,13 +34,13 @@ export interface Target { ids: Record<string, string>; secrets: string[]; checki
 export async function targetOf(gym: Context): Promise<Target> {
   const { owner } = gym;
   const discount = (await owner.json<{ data: RecordId }>('/api/billing/discounts', 'POST', {
-    name: gym.name + ' discount', currency: 'USD', waivesSignupFee: true, planIds: [gym.planId],
+    name: gym.name + ' discount ' + crypto.randomUUID(), currency: 'USD', waivesSignupFee: true, planIds: [gym.planId],
   })).data;
   const roles = (await owner.json<{ data: (RecordId & { userId: string })[] }>('/api/staff/roles?limit=100')).data;
   const profiles = (await owner.json<{ data: RecordId[] }>('/api/staff/profiles?limit=100')).data;
   const householdUsers = (await owner.json<{ data: RecordId[] }>(`/api/households/${gym.householdId}/users?limit=100`)).data;
   // An invitation nobody has accepted, so revoking one is aimed at a real record too.
-  await owner.json(`/api/households/${gym.householdId}/portal-invitations`, 'POST', { email: `pending@${gym.slug}.example.invalid`, delivery: 'print', scope: 'payer' });
+  await owner.json(`/api/households/${gym.householdId}/portal-invitations`, 'POST', { email: `pending-${crypto.randomUUID()}@${gym.slug}.example.invalid`, delivery: 'print', scope: 'payer' });
   const invitations = (await owner.json<{ data: RecordId[] }>(`/api/households/${gym.householdId}/portal-invitations`)).data;
   // The member's QR check-in code, issued by the household (reading it shows no code until one is issued).
   const codePath = `/api/portal/members/${gym.student.id}/checkin-code`;
