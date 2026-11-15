@@ -96,7 +96,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
   if (detail.isError) return <ErrorState onRetry={() => void detail.refetch()}/>;
   const data = detail.data, invoice = data.invoice, collectible = ['open', 'past_due'].includes(invoice.status);
   return <div className="min-w-0 space-y-6">
-    {message && <Alert variant={message === text('chargeFailed') ? 'error' : 'info'} focusOnReveal={message === text('chargeFailed')} role={message === text('chargeFailed') ? 'alert' : 'status'}>{message}</Alert>}
+    {message && <Alert variant={message === text('chargeFailed') ? 'error' : 'info'} focusOnReveal>{message}</Alert>}
     <div hidden={!!action} className="space-y-6">
     <PageSection title={household.data?.name ?? text('household')}>
       <dl className="grid min-w-0 gap-3 sm:grid-cols-2">

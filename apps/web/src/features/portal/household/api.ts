@@ -18,6 +18,7 @@ export const portalLoginKey = (gymId: string | undefined, userId: string | undef
 /** Everything cached for one household. Another household's key shares none of it, so its pages can never reach these entries. */
 export const portalHouseholdKey = (login: ReturnType<typeof portalLoginKey>, householdId: string | null | undefined) => [...login, 'household', householdId] as const;
 export const portalHouseholdsKey = (login: ReturnType<typeof portalLoginKey>) => [...login, 'households'] as const;
+const portalRefreshingKey = (key: PortalKey) => [key[0], key[1], key[2], 'household-refresh', key[4]] as const;
 export function usePortalLogin() {
   const bootstrap = useBootstrap();
   return portalLoginKey(bootstrap.data?.gym.id, bootstrap.data?.session?.userId);
@@ -73,12 +74,16 @@ export function refreshHouseholds(cache: QueryClient, key: PortalKey, version: n
   if (previous && previous.householdId === key[4] && previous.expected === expected && previous.version >= version) return previous.promise;
   const options = portalHouseholdsOptions(login, true);
   const alreadyFetching = list?.state.fetchStatus === 'fetching';
+  if (expected === undefined) cache.setQueryData<number>(portalRefreshingKey(key), count => (count ?? 0) + 1);
   const promise = (async () => {
     let result = await cache.fetchQuery(options);
     // A joined read may predate the move. Never finish that recovery on its old snapshot.
     if (!recovered(result.current) && (alreadyFetching || expected !== undefined)) result = await cache.fetchQuery(options);
     if (expected !== undefined && !recovered(result.current)) throw new Error('Household recovery did not reach the expected household');
   })().finally(() => {
+    if (expected === undefined && cache.getQueryState(portalRefreshingKey(key))) {
+      cache.setQueryData<number>(portalRefreshingKey(key), count => Math.max(0, (count ?? 0) - 1));
+    }
     const entry = findList();
     if (entry && recoveries.get(entry)?.promise === promise) recoveries.delete(entry);
   });
@@ -127,15 +132,12 @@ export function usePortalHouseholdKey(): PortalKey {
  */
 export function usePortalScope(): PortalScope {
   const cache = useQueryClient(), key = usePortalHouseholdKey();
-  const [refreshing, setRefreshing] = useState(false);
-  const refreshingCount = useRef(0);
+  const refreshing = (useQuery({ queryKey: portalRefreshingKey(key), queryFn: () => 0, enabled: false }).data ?? 0) > 0;
   const [moving, setMoving] = useState(false);
   const pending = useRef(0);
   const recover = (version: number, expected?: string) => {
     if (expected === undefined) {
-      refreshingCount.current++;
-      setRefreshing(true);
-      void refreshHouseholds(cache, key, version).catch(() => undefined).finally(() => { if (--refreshingCount.current === 0) setRefreshing(false); });
+      void refreshHouseholds(cache, key, version).catch(() => undefined);
       return;
     }
     pending.current++;

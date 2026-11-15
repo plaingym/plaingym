@@ -124,7 +124,7 @@ describe('Settings → Updates', () => {
     stored = { ...stored, available: false };
     section();
     expect((await toggle()).disabled).toBe(true);
-    expect(screen.getByRole('alert').textContent).toContain('install that serves several gyms');
+    expect(screen.getByText(/install that serves several gyms/).closest('[role="status"]')).not.toBeNull();
     cleanup();
     client.GET.mockResolvedValueOnce(reply(500));
     section();

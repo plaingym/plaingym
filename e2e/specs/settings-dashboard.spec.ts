@@ -21,7 +21,17 @@ for (const width of [360, 1280]) test(`settings sections and an empty dashboard 
     if (path === '/api/settings') return route.fulfill(route.request().method() === 'GET' ? { json: { data: settings } }
       : { status: 500, json: { error: { code: 'internal_error' } } });
     if (path === '/api/settings/go-live') return route.fulfill({ json: { data: { revision: 3, billingEnabled: false, memberEmailsEnabled: false,
-      items: [{ id: 'members_imported', status: rosterReady ? 'ready' : 'needs_attention', message: 'Add your first members.' }] } } });
+      items: [{ id: 'members_imported', status: rosterReady ? 'ready' : 'needs_attention', message: 'Add your first members.' },
+        { id: 'reconciliation_complete', status: 'needs_attention', message: 'The last check read Stripe test mode. Billing is paused. Check restored payments again in live mode before turning billing back on.' }],
+      restoreReconciliation: { restoreId: '00000000-0000-7000-8000-000000000003', snapshotAt: '2026-11-01T12:00:00Z',
+        checkedAt: '2026-11-02T12:00:00Z', inspected: 0, unresolved: 0, stripeConfigured: true, stripeMode: 'test' },
+    } } });
+    if (path === '/api/settings/integrations') return route.fulfill({ json: { data: { revision: 3, sandbox: false, integrationsEditable: true,
+      email: { source: 'none', host: null, port: null, security: null, from: null,
+        signIn: { password: true, magicLink: false }, signInAfterSave: { password: false, magicLink: true }, signInAfterRemove: null, removeBlocked: false },
+      payments: { configured: true, mode: 'live', webhookRegistered: true, accountLocked: false, testData: null, importedCustomersOnly: false },
+      backups: null,
+    } } });
     if (path === '/api/website') return route.fulfill({ json: { data: { revision: 3, tagline: null, about: null, phone: null, email: null,
       primaryColor: '#155e55', accentColor: '#e3eeec', logo: false, logoVersion: null, photos: [] } } });
     if (path === '/api/settings/integrations/google') return route.fulfill({ json: { data: { source: 'none', editable: false,
@@ -37,6 +47,9 @@ for (const width of [360, 1280]) test(`settings sections and an empty dashboard 
   await expect(menu.getByRole('link', { name: 'Google sign-in' })).toHaveCount(0);
   await expect(page.locator('main section[id]').first()).toHaveAttribute('id', 'settingsSections.settings.general');
   await expect(page.locator('input[type="color"]')).toHaveCount(1);
+  const modeNote = page.getByRole('note').filter({ hasText: 'The last check read Stripe test mode.' });
+  await expect(modeNote).toHaveCount(2);
+  await expect(modeNote.first()).toContainText('again in live mode before turning billing back on');
   await expect(page.getByLabel('Logo storage key')).toBeHidden();
   await page.getByText('Advanced logo settings', { exact: true }).click();
   await expect(page.getByLabel('Logo storage key')).toBeVisible();
@@ -54,8 +67,17 @@ for (const width of [360, 1280]) test(`settings sections and an empty dashboard 
   for (const name of ['Add classes', 'Add membership plans', 'Add members', 'Import members', 'Review go-live checklist'])
     await expect(page.getByRole('link', { name, exact: true })).toBeVisible();
   await accessibleThemes(page, info, 'dashboard-getting-started-' + width);
+  await page.getByRole('link', { name: 'Review go-live checklist', exact: true }).click();
+  await expect(page).toHaveURL(/\/admin\/settings#settingsSections.settings.go-live$/);
+  const goLive = page.locator('section[id="settingsSections.settings.go-live"]');
+  await expect(goLive).toBeFocused();
+  await expect(goLive).toBeInViewport();
+  const headerBottom = await page.locator('header').first().evaluate(header => header.getBoundingClientRect().bottom);
+  await expect.poll(async () => (await goLive.getByRole('heading', { name: 'Go-live', exact: true }).boundingBox())?.y ?? -1)
+    .toBeGreaterThanOrEqual(headerBottom);
+  await accessibleThemes(page, info, 'settings-go-live-from-dashboard-' + width);
   rosterReady = true;
-  await page.reload();
+  await page.goto(gymOrigin + '/admin');
   await expect(page.getByRole('heading', { name: 'Active members' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Get your gym ready' })).toHaveCount(0);
 });

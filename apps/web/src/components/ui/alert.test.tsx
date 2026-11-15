@@ -24,12 +24,12 @@ describe('failure alerts', () => {
     expect(document.activeElement).toBe(screen.getByRole('alert'));
   });
   it('leaves focus alone for information and background read errors', () => {
-    render(<><Alert role="status">Saved</Alert><Alert variant="error">Background read failed</Alert></>);
+    render(<><Alert focusOnReveal>Saved</Alert><Alert variant="error">Background read failed</Alert></>);
     expect(document.activeElement).toBe(document.body);
     expect(screen.getByRole('status').dataset.variant).toBe('info');
   });
   it('switches a status into a focused failure without remounting', () => {
-    const view = render(<Alert role="status">Saved</Alert>);
+    const view = render(<Alert focusOnReveal>Saved</Alert>);
     view.rerender(<Alert variant="error" focusOnReveal>Unable to save</Alert>);
     expect(document.activeElement).toBe(screen.getByRole('alert'));
   });

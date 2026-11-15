@@ -49,7 +49,7 @@ afterEach(cleanup);
 describe('rank management', () => {
   it('edits names, belt colors and sub-ranks, preserving module criteria and stable sub-rank IDs', async () => {
     const save = vi.fn(async () => {});
-    render(<RankEditor rank={rank} rankSystemId={system.id} nextPosition={1} busy={false} save={save} cancel={() => {}}/>);
+    render(<RankEditor rank={rank} rankSystemId={system.id} nextPosition={1} busy={false} create={save} update={save} cancel={() => {}}/>);
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Our foundation' } });
     fireEvent.change(screen.getByLabelText('Belt color'), { target: { value: '#123abc' } });
     fireEvent.change(screen.getByLabelText('Sub-rank 1'), { target: { value: 'Degree' } });
@@ -71,7 +71,7 @@ describe('rank management', () => {
   });
   it('omits reverted edits and does not submit a revision-only update', async () => {
     const save = vi.fn(async () => {}), cancel = vi.fn();
-    render(<RankEditor rank={{ ...rank, color: '#ABCDEF' }} rankSystemId={system.id} nextPosition={1} busy={false} save={save} cancel={cancel}/>);
+    render(<RankEditor rank={{ ...rank, color: '#ABCDEF' }} rankSystemId={system.id} nextPosition={1} busy={false} create={save} update={save} cancel={cancel}/>);
     fireEvent.change(screen.getByLabelText('Sub-rank 1'), { target: { value: 'Draft' } });
     fireEvent.change(screen.getByLabelText('Sub-rank 1'), { target: { value: 'Tip' } });
     fireEvent.submit(screen.getByRole('form', { name: 'Edit rank' }));
@@ -79,14 +79,24 @@ describe('rank management', () => {
   });
   it('sends an edited criteria array, keeping module entries, and allows clearing it', async () => {
     const save = vi.fn(async () => {});
-    render(<RankEditor rank={rank} rankSystemId={system.id} nextPosition={1} busy={false} save={save} cancel={() => {}}/>);
+    render(<RankEditor rank={rank} rankSystemId={system.id} nextPosition={1} busy={false} create={save} update={save} cancel={() => {}}/>);
     fireEvent.change(screen.getByLabelText('Classes since promotion'), { target: { value: '' } });
     fireEvent.submit(screen.getByRole('form', { name: 'Edit rank' }));
     await waitFor(() => expect(save).toHaveBeenCalledWith({ criteria: [{ providerId: 'skills', config: { target: 2 } }] }));
   });
+  it('lets the position be cleared and retyped, sending it as a number', async () => {
+    const save = vi.fn(async () => {});
+    render(<RankEditor rank={rank} rankSystemId={system.id} nextPosition={1} busy={false} create={save} update={save} cancel={() => {}}/>);
+    const position = screen.getByLabelText('Order (use an unused position)') as HTMLInputElement;
+    fireEvent.change(position, { target: { value: '' } });
+    expect(position.value).toBe('');
+    fireEvent.change(position, { target: { value: '4' } });
+    fireEvent.submit(screen.getByRole('form', { name: 'Edit rank' }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ position: 4 }));
+  });
   it('still sends the complete definition when creating a rank', async () => {
     const save = vi.fn(async () => {});
-    render(<RankEditor rankSystemId={system.id} nextPosition={1} busy={false} save={save} cancel={() => {}}/>);
+    render(<RankEditor rankSystemId={system.id} nextPosition={1} busy={false} create={save} update={save} cancel={() => {}}/>);
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'New' } });
     fireEvent.submit(screen.getByRole('form', { name: 'Add rank' }));
     await waitFor(() => expect(save).toHaveBeenCalledWith({ rankSystemId: system.id, name: 'New', position: 1, color: '#ffffff', subRanks: [], criteria: [] }));
@@ -120,6 +130,11 @@ describe('rank management', () => {
     await waitFor(() => expect(client.call).toHaveBeenCalledWith('updateRank', expect.objectContaining({ revision: 3, name: 'Edited' }), rank.id));
     await screen.findByText(/The record changed or the change conflicts/);
     expect(screen.getByRole('dialog', { name: 'Edit rank' })).toBeDefined();
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: rank.name } });
+    fireEvent.submit(editor);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.queryByText(/The record changed or the change conflicts/)).toBeNull();
+    expect(client.call).toHaveBeenCalledTimes(1);
   });
   it('registers a real member tab and renders promotion history with its rank system', async () => {
     const registries = createWebRegistries([registration]);

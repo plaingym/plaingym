@@ -102,9 +102,10 @@ export function RanksWorkspace({ gymId, configure, promote, client = ranksClient
     </PageSection>}
     {configure && editor && system && <RankEditor key={editor === 'new' ? 'new-' + systemId : editor.id + ':' + editor.revision}
       {...(editor === 'new' ? {} : { rank: editor })} rankSystemId={systemId} nextPosition={Math.max(-1, ...(ranks.data ?? []).map((rank) => rank.position)) + 1} busy={busy}
-      message={message} save={async (body) => { const { rankSystemId, ...changes } = body; void rankSystemId;
-        if (await run(() => editor === 'new' ? client.call('createRank', body) : client.call('updateRank', { ...changes, revision: editor.revision }, editor.id))) setEditor(null);
-      }} cancel={() => setEditor(null)}/>}
+      message={message} create={async body => { if (await run(() => client.call('createRank', body))) setEditor(null); }}
+      update={async changes => {
+        if (editor !== 'new' && await run(() => client.call('updateRank', { ...changes, revision: editor.revision }, editor.id))) setEditor(null);
+      }} cancel={() => { setMessage(''); setEditor(null); }}/>}
     {promote && <PageSection title={text('ready')} description={text('readyHelp')}><div className={card}>
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label={text('program')}><Select value={programId} onChange={(event) => { setProgram(event.target.value); setSelected([]); }}>

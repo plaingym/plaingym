@@ -9,6 +9,7 @@ import { api } from '../../../lib/api.js';
 import { parseResponse } from '../../../lib/response.js';
 import { t } from '../../../lib/i18n.js';
 import { useGymSettings } from '../gym-settings.js';
+import { RestoreModeNote } from '../restore-mode-note.js';
 import { Button } from '../../../components/ui/button.js';
 import { FormMessage } from '../../../components/ui/alert.js';
 import { Input } from '../../../components/ui/input.js';
@@ -83,6 +84,7 @@ export function PaymentsIntegrationSection({ payments, editable, lastEventAt, st
     {editable && payments.importedCustomersOnly && <p className="text-sm text-muted-foreground">{label('importedOnly')}</p>}
     {restore.data?.stripeConfigured === false && <p className="break-words text-sm" role="note">
       {t('settings/go-live:reconcileStripeConnected')}</p>}
+    <RestoreModeNote checkedMode={restore.data?.stripeMode} savedMode={payments.mode}/>
     <FormMessage message={message}/>
     {!editable ? null : switchKey ? <form onSubmit={(event) => void confirmSwitch(event)} aria-label={label('switchTitle')}>
       <fieldset disabled={busy} className="grid min-w-0 gap-4 rounded-md border border-border p-3">

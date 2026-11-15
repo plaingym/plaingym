@@ -54,6 +54,16 @@ function fixture() {
 }
 
 describe('portal write household preconditions', () => {
+  it('shares 404 recovery settling across scope instances and clears it on failure', async () => {
+    const f = fixture();
+    let refresh!: Promise<unknown>;
+    act(() => { refresh = refreshHouseholds(f.cache, f.result.current.key, 0).catch(() => undefined); });
+    await waitFor(() => expect(f.result.current.settling).toBe(true));
+    expect(f.result.current.moving).toBe(false);
+    await f.resolveLists(home, 503);
+    await refresh;
+    await waitFor(() => expect(f.result.current.settling).toBe(false));
+  });
   it('keeps the key stable and ignores ordinary household-list fetches for recovery state', async () => {
     const f = fixture(), key = f.result.current.key;
     f.rerender();

@@ -54,7 +54,7 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
   const reload = () => cache.invalidateQueries({ queryKey: key });
   return <section className="min-w-0 space-y-4" aria-label={text('title')}>
     <h2 className="text-lg font-semibold">{text('title')}</h2>
-    {message && <Alert variant={message === text('saved') || reminder ? 'info' : 'error'} focusOnReveal={message !== text('saved') && !reminder} role={message === text('saved') || reminder ? 'status' : 'alert'}>{message}{reminder && <span className="mt-1 block">{text('agreementReminder')}</span>}</Alert>}
+    {message && <Alert variant={message === text('saved') || reminder ? 'info' : 'error'} focusOnReveal>{message}{reminder && <span className="mt-1 block">{text('agreementReminder')}</span>}</Alert>}
     {rows.isPending && <p role="status">{text('loading')}</p>}
     {rows.isError && <Alert variant="error" role="alert">{text('error')} <Button variant="outline" onClick={() => void rows.refetch()}>{text('retry')}</Button></Alert>}
     {rows.data?.length === 0 && <p className="rounded-lg border p-4 text-muted-foreground">{text('empty')}</p>}

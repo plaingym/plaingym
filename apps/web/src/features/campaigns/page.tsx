@@ -44,7 +44,7 @@ export function CampaignWorkspace({ gymId, timezone, client = campaignClient }: 
     <PageHeader title={detail.data?.campaign.name ?? text('title')} description={text('help')}
       actions={<>{selected && <Button variant="outline" onClick={() => { setSelected(null); setMessage(''); }}>{text('back')}</Button>}
         <Button disabled={!households.data} onClick={() => setEditing(true)}>{text('create')}</Button></>} />
-    {message && <Alert variant={message === text('saveError') ? 'error' : 'info'} focusOnReveal={message === text('saveError')} role={message === text('saveError') ? 'alert' : 'status'}>{message}</Alert>}
+    {message && <Alert variant={message === text('saveError') ? 'error' : 'info'} focusOnReveal>{message}</Alert>}
     {households.isError && <ErrorState message={text('householdsError')} onRetry={() => void households.refetch()} />}
     {!selected ? <>
       {list.isPending && <LoadingState />}

@@ -24,6 +24,20 @@ async function submit(user: ReturnType<typeof userEvent.setup>, key: string) {
 }
 
 describe('Settings → Payments', () => {
+  it.each(['test', 'live'] as const)('names the %s-mode restore check after a mode switch', async checkedMode => {
+    current = checkedMode === 'test' ? live : connected;
+    const get = client.GET.getMockImplementation()!;
+    client.GET.mockImplementation((path: string) => path === '/api/settings/go-live' ? Promise.resolve(reply(200, { data: {
+      revision: current.revision, billingEnabled: false, memberEmailsEnabled: false, items: [], restoreReconciliation: {
+        restoreId: '00000000-0000-7000-8000-000000000003', snapshotAt: '2026-11-01T12:00:00Z',
+        checkedAt: '2026-11-02T12:00:00Z', inspected: 0, unresolved: 0, stripeConfigured: true, stripeMode: checkedMode,
+      },
+    } })) : get(path));
+    renderSection();
+    const note = await screen.findByRole('note');
+    expect(note.textContent).toContain(`last check read Stripe ${checkedMode} mode`);
+    expect(note.textContent).toContain(`again in ${current.payments.mode} mode before turning billing back on`);
+  });
   it('reloads an operator-managed refusal and hides the payment form', async () => {
     renderSection();
     client.PUT.mockImplementation(async () => { current = { ...integrations, integrationsEditable: false };

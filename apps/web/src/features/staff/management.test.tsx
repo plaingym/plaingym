@@ -170,13 +170,13 @@ it('reuses a lost invitation after remount and offers a deliberate resend when i
   await fill(); await screen.findByText(/Unable to save or load staff/);
   view.unmount(); view = render(<StaffManagement roles={['owner']} passwordEnabled services={service}/>);
   await fill();
-  expect((await screen.findByRole('alert')).textContent).toContain('may have been delivered');
+  expect((await screen.findByRole('status')).textContent).toContain('may have been delivered');
   const generations = () => vi.mocked(service.invite).mock.calls.map(([input]) => input.delivery === 'email' ? input.sendGeneration : null);
   expect(generations()[1]).toBe(generations()[0]);
   await user.click(screen.getByRole('button', { name: 'Send again' }));
   await waitFor(() => expect(generations()).toHaveLength(3));
   expect(generations()[2]).not.toBe(generations()[1]);
-  await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  await waitFor(() => expect(screen.queryByText(/may have been delivered/)).toBeNull());
   view.unmount(); sessionStorage.clear();
 });
 
@@ -189,7 +189,7 @@ it('shows a later failure after an uncertain invitation', async () => {
   await user.type(screen.getByLabelText('Email address'), 'later@example.test');
   await user.selectOptions(screen.getByLabelText('Delivery'), 'email');
   await user.click(screen.getByRole('button', { name: 'Invite staff' }));
-  expect((await screen.findByRole('alert')).textContent).toContain('may have been delivered');
+  expect((await screen.findByRole('status')).textContent).toContain('may have been delivered');
   vi.mocked(service.profiles).mockRejectedValueOnce(new Error('Down'));
   await user.click(screen.getByRole('button', { name: 'Reload staff' }));
   await screen.findByText(/Unable to save or load staff/);

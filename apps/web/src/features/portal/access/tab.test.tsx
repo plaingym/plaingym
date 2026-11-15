@@ -86,7 +86,7 @@ it('keeps an uncertain invitation in the dialog with a deliberate resend', async
   await user.type(screen.getByLabelText('Login email'), 'alex@example.test');
   await user.selectOptions(screen.getByLabelText('Invitation delivery'), 'email');
   await user.click(screen.getByRole('dialog').querySelector('button[type=submit]')!);
-  expect((await screen.findByRole('alert')).textContent).toContain('may have been delivered');
+  expect((await screen.findByRole('status')).textContent).toContain('may have been delivered');
   expect(generations).toHaveLength(1);
   uncertain = false; await user.click(screen.getByRole('button', { name: 'Send again' }));
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
@@ -101,13 +101,13 @@ it('drops a stale uncertain warning when the dialog reopens, and replays the sam
     await user.selectOptions(screen.getByLabelText('Invitation delivery'), 'email');
   };
   await send(); await user.click(screen.getByRole('dialog').querySelector('button[type=submit]')!);
-  await screen.findByRole('alert');
+  await screen.findByRole('status');
   await user.click(screen.getByRole('button', { name: 'Cancel' }));
   await user.click(screen.getByRole('button', { name: 'Discard changes' }));
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   await send();
-  expect(screen.queryByRole('alert')).toBeNull(); expect(screen.queryByRole('button', { name: 'Send again' })).toBeNull();
+  expect(screen.queryByText(/may have been delivered/)).toBeNull(); expect(screen.queryByRole('button', { name: 'Send again' })).toBeNull();
   await user.click(screen.getByRole('dialog').querySelector('button[type=submit]')!);
-  await screen.findByRole('alert');
+  await screen.findByRole('status');
   expect(generations).toHaveLength(2); expect(generations[1]).toBe(generations[0]);
 });

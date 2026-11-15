@@ -44,6 +44,10 @@ so hooks can fetch feature-specific availability without coupling the page to a 
 Omitting it lists the section by default. The empty state appears only when no section renders.
 The section menu uses the same availability hooks, wraps on phones, and links to
 each section. Gym details comes first; go-live comes after the configuration sections.
+The page scrolls to and focuses a section named in the URL hash once that section
+renders, including links from the dashboard and sections whose availability loads later.
+It follows layout changes while the other sections load, then yields on the first
+pointer, keyboard, wheel, or touch interaction so it does not interrupt editing.
 Gym details owns the one brand-color control. The Website section links there
 and clears legacy website accents on save; the website uses a tint of the brand color.
 The raw logo reference is under an
@@ -55,6 +59,14 @@ readiness read and disappears when the roster has members, including inactive on
 Failure `Alert`s use `variant="error"`. Set `focusOnReveal` on submit errors to
 scroll into view and receive focus when the rendered message changes; without it, an
 error leaves focus alone, including background read failures inside forms. Neutral status messages leave focus alone.
+`Alert` derives its announcement role from the variant (`status` for info, `alert`
+for error); callers can override it for a note. A conditional variant can keep
+`focusOnReveal` enabled: it focuses only errors.
+
+`lib/use-draft.ts` keeps field edits across refetches, lets untouched fields follow
+the server, and reports conflicts on edited fields. Its optional normalization
+mapper compares stored and typed values without changing what the user types.
+Admin member forms, rank definitions, and portal household and member forms use it.
 
 **Layout.** The admin shell supplies the header, the navigation (a menu on
 phones, a sidebar from `md`), and the page gutters. A page renders its content

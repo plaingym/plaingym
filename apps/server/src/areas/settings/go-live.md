@@ -40,6 +40,8 @@ pending and the restore's check found no payment objects. Restored gyms
 cannot enable billing until that check is clear; turning it on is the manager's
 explicit confirmation after reconciliation. The remaining readiness checks advise
 the manager. Viewing the checklist does not require a live Stripe request.
+The restore detail returns the last check's `stripeMode` (null when unavailable),
+so Go live and Payments can explain a mode change while keeping the earlier counts visible.
 
 Restore queues `billing.runner.restore` for each restored gym, using the manifest's
 snapshot time and an idempotency key derived from that gym's restore receipt. The

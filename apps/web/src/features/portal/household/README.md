@@ -30,6 +30,8 @@ An adult member sees their own profile, read-only.
 Household and member saves send only changed fields. An unrelated edit preserves
 stored address and emergency-contact keys that the running release cannot read;
 editing either of those fields replaces that entire value.
+Saves with no changes send no request and do not refetch: the household form says
+"Nothing changed." and the member editor closes.
 
 Each page reads the open household once, with `usePortalScope` (or `usePortalMembers`,
 which also loads the members a login may act for), and builds every query key from its
@@ -46,6 +48,8 @@ recovery; a revision conflict stays with the form. Portal 404s refresh the lists
 including when a revoked link leaves several households to choose from. Recovery
 keeps first reads (context, act-for members and inner page sections) loading until those lists settle, without hiding cached content.
 Only a recovery-triggered refresh delays those failures; ordinary focus and reconnect list fetches do not.
+The 404 refresh marker is shared in the login's query cache per household, so a
+refresh started by the shell or another scope also keeps a page's first failure loading.
 Recovery shares in-flight reads for the request's list version, sampled when the request starts. A later 404 always reads again after recovery settles. If
 a joined read predates the move or does not name the household returned by the
 conflict, recovery reads again. A second mismatch fails rather than looping.

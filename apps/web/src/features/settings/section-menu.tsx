@@ -10,9 +10,12 @@ export function orderSettingsSections(sections: SettingsSection[]) {
   return [...sections].sort((a, b) => position(a.id) - position(b.id));
 }
 const alwaysListed = () => true;
-function SectionLink({ entry }: { entry: SettingsSection }) {
+export function useSectionListed(entry: SettingsSection) {
   const useListed = entry.listed ?? alwaysListed;
-  if (!useListed()) return null;
+  return useListed();
+}
+function SectionLink({ entry }: { entry: SettingsSection }) {
+  if (!useSectionListed(entry)) return null;
   return <a href={'#' + entry.id} className="inline-flex min-h-11 min-w-0 items-center rounded-md px-3 py-2 text-sm underline underline-offset-4 hover:bg-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring [overflow-wrap:anywhere]">{t(entry.labelKey)}</a>;
 }
 export function SettingsSectionMenu({ sections }: { sections: SettingsSection[] }) {

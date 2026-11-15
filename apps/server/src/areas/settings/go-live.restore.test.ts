@@ -198,10 +198,15 @@ describe('restore checks belong to the Stripe mode they read', () => {
       expect((await service.checklist(gymId)).billingEnabled).toBe(true);
       await saveStripe('live'); connected.set(gymId, live);
       expect((await service.checklist(gymId)).billingEnabled).toBe(false);
+      expect((await service.checklist(gymId)).restoreReconciliation).toMatchObject({ stripeMode: 'test', stripeConfigured: true, unresolved: 0 });
+      expect((await service.checklist(gymId)).items.find(item => item.id === 'reconciliation_complete')?.message)
+        .toContain('The last check read Stripe test mode. Billing is paused. Check restored payments again in live mode');
       expect(await item(gymId)).toBe('needs_attention');
       expect((await enable(app, gymId)).status).toBe(409);
       expect((await rerun(app, gymId, restoreId)).status).toBe(200);
       expect(liveList).toHaveBeenCalledWith(new Date(new Date(snapshotAt).getTime() - 300_000), {});
+      expect((await service.checklist(gymId)).restoreReconciliation).toMatchObject({ stripeMode: 'live', stripeConfigured: true, unresolved: 0 });
+      expect((await service.checklist(gymId)).items.find(item => item.id === 'reconciliation_complete')?.message).not.toContain('last check read Stripe');
       expect(testList).toHaveBeenCalledTimes(1);
       expect((await reports(gymId)).map(row => row.after)).toEqual(expect.arrayContaining([
         expect.objectContaining({ stripeConfigured: true, stripeMode: 'test', unresolved: 0 }),

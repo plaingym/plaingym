@@ -18,8 +18,8 @@ const t = createTranslator(locales.en ?? {});
 type WireChecklist = ReturnType<typeof goLiveChecklistResponseSchema.parse>['data'];
 type Checklist = WireChecklist & { pastDueMemberships: NonNullable<WireChecklist['pastDueMemberships']> };
 type Status = GoLiveChecklistItem['status'];
-const item = (id: GoLiveChecklistItem['id'], status: Status): GoLiveChecklistItem =>
-  ({ id, status, message: t(`settings/go-live:check.${id}.${status}`) });
+const item = (id: GoLiveChecklistItem['id'], status: Status, message?: string): GoLiveChecklistItem =>
+  ({ id, status, message: message ?? t(`settings/go-live:check.${id}.${status}`) });
 const ready = (value: unknown): Status => value ? 'ready' : 'needs_attention';
 /** Credentials and opaque settings are read here, never returned or audited. */
 const projection = {
@@ -50,10 +50,15 @@ async function reconciliation(tx: Transaction, stripe: boolean) {
   const [pendingRefund] = await tx.select({ id: refunds.id }).from(refunds).where(eq(refunds.status, 'pending')).limit(1);
   const { restore, request, checked, report } = await readRestoreCheck(tx);
   const snapshotAt = (request?.after as { snapshotAt?: string } | undefined)?.snapshotAt ?? null;
-  const clear = report?.unresolved === 0 && restoreCheckCoversStripe(report, stripe, await readSavedStripeMode(tx));
+  const savedMode = await readSavedStripeMode(tx);
+  const clear = report?.unresolved === 0 && restoreCheckCoversStripe(report, stripe, savedMode);
   return { applicable: !!restore || !!pending || !!pendingRefund, restored: !!restore,
+    modeMessage: stripe && savedMode && report?.stripeMode && savedMode !== report.stripeMode ? t('settings/go-live:reconcileModeChanged', {
+      checkedMode: t('settings/integrations:payments.mode_' + report.stripeMode), savedMode: t('settings/integrations:payments.mode_' + savedMode),
+    }) : undefined,
     detail: restore ? { restoreId: restore.id, snapshotAt, checkedAt: checked?.occurredAt.toISOString() ?? null,
-      inspected: report?.inspected ?? null, unresolved: report?.unresolved ?? null, stripeConfigured: report?.stripeConfigured ?? null } : null,
+      inspected: report?.inspected ?? null, unresolved: report?.unresolved ?? null, stripeConfigured: report?.stripeConfigured ?? null,
+      stripeMode: report?.stripeMode ?? null } : null,
     ready: !pending && !pendingRefund && (!restore || clear),
     // Nothing was left to reconcile: no pending work, and any restore's check found no payment objects at all.
     empty: !pending && !pendingRefund && (!restore || (clear && report.inspected === 0)) };
@@ -130,7 +135,7 @@ export function createGoLiveService(options: {
         item('backup_ready', ready(gym.backupPublicKey && gym.backupDestination)),
         item('webhook_ready', !stripe ? 'not_applicable'
           : ready(webhook.lastProcessedAt && !webhook.pendingCount && !webhook.failedCount)),
-        item('reconciliation_complete', !stripe && recovery.empty ? 'not_applicable' : ready(recovery.ready)),
+        item('reconciliation_complete', !stripe && recovery.empty ? 'not_applicable' : ready(recovery.ready), recovery.modeMessage),
         item('past_due_dates', ready(!pastDueMemberships.length)),
       ] });
       return { ...result, pastDueMemberships };

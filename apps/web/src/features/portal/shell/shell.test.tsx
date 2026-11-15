@@ -154,6 +154,23 @@ it('keeps loading while a first context 404 reads the lists, and fails only if t
   await act(async () => { f.release(); });
   await screen.findByText(/couldn.t load your portal/);
 });
+it('keeps a page read failure loading while the shell context 404 refreshes household lists', async () => {
+  const f = portal(ids.first, { path: '/portal/household', holdHouseholds: true });
+  await screen.findByLabelText('Phone');
+  const fetch = f.fetcher.getMockImplementation()!;
+  f.fetcher.mockImplementation((path, init) => path === '/api/portal/context' ? Promise.resolve(new Response(null, { status: 404 }))
+    : path === '/api/portal/household' ? Promise.resolve(new Response(null, { status: 500 })) : fetch(path, init));
+  act(() => {
+    void f.cache.invalidateQueries({ queryKey: [...household(ids.first), 'shell', 'context'], exact: true });
+    void f.cache.resetQueries({ queryKey: [...household(ids.first), 'household', 'details'], exact: true });
+  });
+  await waitFor(() => expect(f.householdGates).toHaveLength(1));
+  await waitFor(() => expect(f.cache.getQueryState([...household(ids.first), 'household', 'details'])?.status).toBe('error'));
+  expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+  expect(screen.getByRole('status').textContent).toContain('Loading');
+  await act(async () => { f.release(); });
+  expect((await screen.findAllByRole('button', { name: 'Try again' })).length).toBeGreaterThan(0);
+});
 it('asks a login with several households to choose one before showing the portal', async () => {
   const f = portal(null), user = userEvent.setup();
   expect(await screen.findByRole('heading', { name: 'Choose a household' })).toBeDefined();

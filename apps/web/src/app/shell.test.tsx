@@ -105,7 +105,7 @@ describe('login', () => {
   });
   it('shows no enabled login method when the server disables both', async () => {
     start(services({ ...anonymous, login: { password: false, magicLink: false } }));
-    expect((await screen.findByRole('alert')).textContent).toContain('Sign-in is currently unavailable');
+    expect((await screen.findByText(/Sign-in is currently unavailable/)).closest('[role="status"]')).not.toBeNull();
     expect(screen.queryByLabelText('Email address')).toBeNull();
   });
   it('retries a failed bootstrap without exposing server details', async () => {

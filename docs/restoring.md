@@ -170,6 +170,9 @@ completed setup. You work on the server over SSH.
    unresolved items, correct them and use **Check restored payments again**. Then turn billing
    back on ([going-live.md](going-live.md)). The detail, including a gym with no Stripe key, is
    in [payment reconciliation](restore-reference.md#payment-reconciliation).
+   If you switch Stripe modes after the check, billing pauses. Go live and Payments
+   name the mode the earlier check read and ask you to check again in the saved
+   mode before turning billing back on; a clear test-mode check cannot clear live payments.
 3. **Stripe webhooks.** In **Settings → Email, payments and backups**, check that **Payments**
    shows the webhook endpoint as registered. If the hostname changed, the endpoint Stripe knows
    still points at the old address: paste the Stripe key again, which registers the endpoint at

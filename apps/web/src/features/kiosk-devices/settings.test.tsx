@@ -61,7 +61,7 @@ describe('kiosk device settings', () => {
     const user = userEvent.setup(); render(<KioskDevicesSettings/>); await screen.findByText('Front desk');
     await user.type(screen.getByLabelText('Device name'), 'Tablet');
     await user.click(screen.getByRole('button', { name: 'Register device' }));
-    expect(await screen.findByRole('status')).toHaveProperty('textContent', 'The QR code could not be drawn. Open the setup link on the check-in device instead.');
+    expect((await screen.findByText('The QR code could not be drawn. Open the setup link on the check-in device instead.')).getAttribute('role')).toBe('status');
     expect(screen.getByText(window.location.origin + '/kiosk#token=' + token)).toBeDefined();
     expect(screen.queryByAltText('QR code of the kiosk setup link')).toBeNull();
     expect(document.body.textContent).not.toContain('private rendering details');

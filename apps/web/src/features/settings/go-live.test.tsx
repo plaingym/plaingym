@@ -39,6 +39,18 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 describe('go-live settings', () => {
+  it.each(['test', 'live'] as const)('names the %s-mode restore check when the saved mode differs', async checkedMode => {
+    const savedMode = checkedMode === 'test' ? 'live' : 'test', response = restored(0);
+    live.mockResolvedValue(reply(200, { data: { ...response.data,
+      items: response.data.items.map(item => item.id === 'reconciliation_complete' ? { ...item, status: 'needs_attention',
+        message: `The last check read Stripe ${checkedMode} mode. Billing is paused. Check restored payments again in ${savedMode} mode before turning billing back on.` } : item),
+      restoreReconciliation: { ...response.data.restoreReconciliation, stripeConfigured: true, stripeMode: checkedMode } } }));
+    start();
+    const note = await screen.findByRole('note');
+    expect(note.textContent).toContain(`last check read Stripe ${checkedMode} mode`);
+    expect(note.textContent).toContain(`again in ${savedMode} mode before turning billing back on`);
+    expect(screen.getByText(/Objects checked: 1,200. Unresolved: 0/)).toBeDefined();
+  });
   it('registers an enabled section for go-live managers', () => {
     expect(registration.settingsSections?.[0]).toMatchObject({ enabled: true,
       permission: { kind: 'staff', capability: 'go_live.manage' }, component: GoLiveSettings });

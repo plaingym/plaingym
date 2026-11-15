@@ -447,8 +447,9 @@ describe('portal household page', () => {
     fireEvent.change(screen.getByLabelText('Address line 1'), { target: { value: 'Draft' } });
     fireEvent.change(screen.getByLabelText('Address line 1'), { target: { value: '1 Main St' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await screen.findByText('Saved.');
+    await screen.findByText('Nothing changed.');
     expect(view.calls('PATCH', '/api/portal/household')).toHaveLength(0);
+    expect(view.calls('GET', '/api/portal/household')).toHaveLength(1);
     if (kind === 'household') {
       fireEvent.change(screen.getByLabelText('Address line 1'), { target: { value: '' } });
       fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -462,6 +463,7 @@ describe('portal household page', () => {
       fireEvent.click(dialog.getByRole('button', { name: 'Save' }));
       await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
       expect(view.calls('PATCH', `/api/portal/members/${ids.child}`)).toHaveLength(0);
+      expect(view.calls('GET', '/api/portal/members')).toHaveLength(1);
       fireEvent.click(screen.getByRole('button', { name: 'Edit details' }));
       dialog = within(screen.getByRole('dialog'));
       fireEvent.click(dialog.getByRole('button', { name: 'Remove contact' }));

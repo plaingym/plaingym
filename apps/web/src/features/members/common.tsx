@@ -27,31 +27,7 @@ export function useMemberSave() {
     finally { setBusy(false); }
   } };
 }
-const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
-/** Keeps a form's unsaved edits across refetches. Only edited fields are drafts; the others follow the
- * latest server values, so saving another part of the same record (which advances its revision)
- * never discards a draft. `changes()` returns the edits, or throws a conflict when another save
- * changed an edited field after editing began. Call `reset` once the saved record has reloaded. */
-export function useDraft<T extends Record<string, unknown>>(server: T) {
-  const [edits, setEdits] = useState<{ [K in keyof T]?: { value: T[K]; base: T[K] } }>({});
-  const values = { ...server };
-  for (const key of Object.keys(edits) as (keyof T)[]) values[key] = edits[key]!.value;
-  return {
-    values,
-    set<K extends keyof T>(key: K, value: T[K]) {
-      setEdits((previous) => ({ ...previous, [key]: { value, base: previous[key] ? previous[key].base : server[key] } }));
-    },
-    changes(): Partial<T> {
-      const result: Partial<T> = {};
-      for (const key of Object.keys(edits) as (keyof T)[]) {
-        if (!same(edits[key]!.base, server[key])) throw new ApiError(409, 'conflict');
-        if (!same(edits[key]!.value, server[key])) result[key] = edits[key]!.value;
-      }
-      return result;
-    },
-    reset() { setEdits({}); },
-  };
-}
+export { useDraft } from '../../lib/use-draft.js';
 export function Panel({ title, children }: { title: string; children: ReactNode }) {
   return <section className="min-w-0 space-y-4 rounded-xl border border-border bg-card p-4 sm:p-6"><h2 className="text-lg font-semibold">{title}</h2>{children}</section>;
 }

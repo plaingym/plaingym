@@ -57,8 +57,10 @@ billing, even if you already turned it on. A test-mode check does not clear live
 payments. Re-saving the same checked mode keeps billing on. In
 **Go live**, choose **Check restored payments again**, resolve any issues, and turn
 billing back on once the check is clear. After a check without Stripe, the Payments
-section also explains this pause. After a mode switch, Go live still shows the
-earlier check's result, but *Payment reconciliation* needs attention until you check again.
+section also explains this pause. After a mode switch, Go live and Payments name
+the earlier check's mode and ask you to check again in the saved mode before
+turning billing back on. Go live keeps the earlier check's counts visible, but
+*Payment reconciliation* needs attention until you check again.
 
 Then:
 

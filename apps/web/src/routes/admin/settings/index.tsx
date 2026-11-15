@@ -6,14 +6,14 @@ import { createRegistries, type SettingsSection } from '../../../lib/registries.
 import { t } from '../../../lib/i18n.js';
 import { Page, PageHeader } from '../../../components/ui/page.js';
 import { EmptyState, ErrorState, LoadingState } from '../../../components/ui/states.js';
-import { orderSettingsSections, SettingsSectionMenu } from '../../../features/settings/section-menu.js';
-const alwaysListed = () => true;
+import { orderSettingsSections, SettingsSectionMenu, useSectionListed } from '../../../features/settings/section-menu.js';
+import { useSectionHash } from '../../../features/settings/section-hash.js';
 function Section({ entry }: { entry: SettingsSection }) {
-  const useListed = entry.listed ?? alwaysListed;
-  const listed = useListed();
+  const listed = useSectionListed(entry);
+  useSectionHash(entry.id, listed);
   if (!listed) return null;
   const Component = entry.component;
-  return <section id={entry.id} tabIndex={-1} aria-label={t(entry.labelKey)} className="min-w-0 scroll-mt-4 rounded-xl border border-border bg-card p-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring sm:p-6"><Component/></section>;
+  return <section id={entry.id} tabIndex={-1} aria-label={t(entry.labelKey)} className="min-w-0 scroll-mt-[calc(var(--spacing-header)+1rem)] rounded-xl border border-border bg-card p-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring sm:p-6"><Component/></section>;
 }
 export function SettingsPage() {
   const bootstrap = useBootstrap();

@@ -49,6 +49,7 @@
   "billingNote": "Your billing day and memberships are set by your gym.",
   "save": "Save",
   "saved": "Saved.",
+  "unchanged": "Nothing changed.",
   "close": "Close",
   "changed": "These details were changed somewhere else. Close and reopen them, then try again.",
   "failed": "We couldn't save. Check the details and try again.",

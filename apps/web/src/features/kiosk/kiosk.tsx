@@ -164,7 +164,7 @@ function Search({ busy, message, onSearch }: { busy: boolean; message?: 'not_fou
   const press = (digit: string) => setPin((value) => value.length < 8 ? value + digit : value);
   function submit(event: FormEvent) { event.preventDefault(); if (name.trim() && pin.length >= 4 && !busy) { onSearch(name.trim(), pin); setPin(''); } }
   return <form className="space-y-4 sm:space-y-6" onSubmit={submit}>
-    {message && <Alert variant={message === 'error' ? 'error' : 'info'} focusOnReveal={message === 'error'} role={message === 'error' ? 'alert' : 'status'}>{text(message === 'error' ? 'error' : 'notFound')}</Alert>}
+    {message && <Alert variant={message === 'error' ? 'error' : 'info'} focusOnReveal>{text(message === 'error' ? 'error' : 'notFound')}</Alert>}
     <Label className="grid gap-2 text-lg sm:text-xl">{text('name')}<Input data-kiosk-focus className="h-12 text-lg sm:h-16 sm:text-2xl" value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" autoCapitalize="words" required/></Label>
     <div className="space-y-3"><Label className="grid gap-2 text-lg sm:text-xl">{text('pin')}
       <Input type="password" inputMode="numeric" autoComplete="off" maxLength={8} pattern="[0-9]{4,8}" required

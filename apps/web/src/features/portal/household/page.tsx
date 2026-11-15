@@ -2,6 +2,7 @@
 import { calendarDateLabel as date } from '../../../lib/instant.js';
 import { PortalRecovery } from './recovery.js';
 import { useState, type ComponentProps, type FormEvent } from 'react';
+import { useDraft } from '../../../lib/use-draft.js';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { portalContracts as contracts, type PortalContext, type PortalEmergencyContact, type PortalHousehold, type PortalMember } from '@plaingym/shared/contracts';
 import { useBootstrap } from '../../../app/context.js';
@@ -27,7 +28,7 @@ export function PortalHousehold() {
 }
 function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope: PortalScope }) {
   const bootstrap = useBootstrap(), { ready, own } = scope, payer = context.role === 'payer';
-  const [editing, setEditing] = useState<PortalMember | null>(null), [saved, setSaved] = useState(false);
+  const [editing, setEditing] = useState<PortalMember | null>(null), [saved, setSaved] = useState<'saved' | 'unchanged' | null>(null);
   const household = useQuery({ queryKey: [...scope.key, 'household', 'details'], enabled: ready && payer, queryFn: async () => own(await scope.call(contracts.household)).data });
   const members = useQuery({ queryKey: [...scope.key, 'household', 'members'], enabled: ready, queryFn: async () => payer
     ? own(await scope.call(contracts.members, undefined, {}, { limit: 100, offset: 0 })).data
@@ -79,34 +80,33 @@ function Memberships({ memberId, scope }: { memberId: string; scope: PortalScope
   </div>;
 }
 const addressFields = ['line1', 'line2', 'city', 'region', 'postalCode', 'countryCode'] as const;
+const normalizeAddress = (address: PortalHousehold['address']) => Object.fromEntries(addressFields
+  .map(field => [field, field === 'countryCode' ? address[field]?.trim().toUpperCase() : address[field]?.trim()])
+  .filter(([, value]) => value)) as PortalHousehold['address'];
+const normalizeHousehold = (value: Pick<PortalHousehold, 'name' | 'email' | 'phone' | 'address'>) => ({
+  name: value.name.trim(), email: value.email?.trim() || null, phone: value.phone?.trim() || null, address: normalizeAddress(value.address),
+});
 /** Keyed by revision so a save shows the stored values; the confirmation lives in the parent and survives that remount. */
-function HouseholdForm({ household, scope, saved, setSaved }: { household: PortalHousehold; scope: PortalScope; saved: boolean; setSaved(value: boolean): void }) {
+function HouseholdForm({ household, scope, saved, setSaved }: { household: PortalHousehold; scope: PortalScope; saved: 'saved' | 'unchanged' | null; setSaved(value: 'saved' | 'unchanged' | null): void }) {
   const cache = useQueryClient();
-  const save = useMutation({ mutationFn: async (form: FormData) => {
-    const value = (name: string) => String(form.get(name) ?? '').trim();
-    const address = Object.fromEntries(addressFields.map(field => [field, field === 'countryCode' ? value(field).toUpperCase() : value(field)]).filter(([, entry]) => entry));
-    const changes = {
-      ...(value('name') !== household.name.trim() ? { name: value('name') } : {}),
-      ...(value('email') !== (household.email ?? '').trim() ? { email: value('email') || null } : {}),
-      ...(value('phone') !== (household.phone ?? '').trim() ? { phone: value('phone') || null } : {}),
-      ...(addressFields.some(field => {
-        const previous = (household.address[field] ?? '').trim();
-        return (address[field] ?? '') !== (field === 'countryCode' ? previous.toUpperCase() : previous);
-      }) ? { address } : {}),
-    };
-    if (!Object.keys(changes).length) return;
+  const draft = useDraft({ name: household.name, email: household.email, phone: household.phone, address: household.address }, normalizeHousehold);
+  const save = useMutation({ mutationFn: async () => {
+    const changes = draft.changes();
+    if (!Object.keys(changes).length) return false;
     scope.own(await scope.call(contracts.updateHousehold, { ...changes, revision: household.revision }));
-  }, onSuccess: async () => { setSaved(true); await cache.invalidateQueries({ queryKey: [...scope.key, 'household'] }); } });
-  function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setSaved(false); save.mutate(new FormData(event.currentTarget)); }
+    return true;
+  }, onSuccess: async changed => { setSaved(changed ? 'saved' : 'unchanged'); if (changed) await cache.invalidateQueries({ queryKey: [...scope.key, 'household'] }); } });
+  function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setSaved(null); save.mutate(); }
   return <Card className="p-4 sm:p-6"><form className="space-y-4" onSubmit={submit} aria-labelledby="household-contact">
     <h2 id="household-contact" className="text-lg font-semibold">{text('contactTitle')}</h2>
     {save.isError && <Alert variant="error" focusOnReveal role="alert">{text(conflict(save.error) ? 'changed' : 'failed')}</Alert>}
-    {saved && <Alert role="status">{text('saved')}</Alert>}
+    {saved && <Alert role="status">{text(saved)}</Alert>}
     <div className="grid gap-4 sm:grid-cols-2">
-      <Field name="name" label={text('householdName')} value={household.name} required />
-      <Field name="email" label={text('email')} value={household.email ?? ''} type="email" autoComplete="email" />
-      <Field name="phone" label={text('phone')} value={household.phone ?? ''} type="tel" autoComplete="tel" />
-      {addressFields.map(field => <Field key={field} name={field} label={text('address_' + field)} value={household.address[field] ?? ''}
+      <Field name="name" label={text('householdName')} value={draft.values.name} onChange={event => draft.set('name', event.target.value)} required />
+      <Field name="email" label={text('email')} value={draft.values.email ?? ''} onChange={event => draft.set('email', event.target.value)} type="email" autoComplete="email" />
+      <Field name="phone" label={text('phone')} value={draft.values.phone ?? ''} onChange={event => draft.set('phone', event.target.value)} type="tel" autoComplete="tel" />
+      {addressFields.map(field => <Field key={field} name={field} label={text('address_' + field)} value={draft.values.address[field] ?? ''}
+        onChange={event => draft.set('address', { ...draft.values.address, [field]: event.target.value })}
         {...(field === 'countryCode' ? { maxLength: 2, pattern: '[A-Za-z]{2}' } : {})} />)}
     </div>
     <p className="text-sm text-muted-foreground">{text('billingNote')}</p>
@@ -115,37 +115,38 @@ function HouseholdForm({ household, scope, saved, setSaved }: { household: Porta
 }
 function Field({ name, label, value, prefix = 'household', ...props }: { name: string; label: string; value: string; prefix?: string }
   & Omit<ComponentProps<typeof Input>, 'name' | 'value' | 'defaultValue' | 'prefix'>) {
-  return <div className="min-w-0"><Label htmlFor={`${prefix}-${name}`}>{label}</Label><Input id={`${prefix}-${name}`} name={name} defaultValue={value} {...props} /></div>;
+  return <div className="min-w-0"><Label htmlFor={`${prefix}-${name}`}>{label}</Label><Input id={`${prefix}-${name}`} name={name} value={value} {...props} /></div>;
 }
 function EditMember({ member, scope, close }: { member: PortalMember; scope: PortalScope; close: () => void }) {
   const cache = useQueryClient();
-  const [contacts, setContacts] = useState<PortalEmergencyContact[]>(member.emergencyContacts), [changed, setChanged] = useState(false);
-  const save = useMutation({ mutationFn: async (form: FormData) => {
-    const value = (name: string) => String(form.get(name) ?? '').trim();
-    const normalizeContacts = (items: PortalEmergencyContact[]) => items.map(item => ({ name: item.name.trim(),
-      relationship: item.relationship?.trim() || null, phone: item.phone.trim(), ...(item.email?.trim() ? { email: item.email.trim() } : {}) }));
-    const emergencyContacts = normalizeContacts(contacts);
-    const changes = {
-      ...Object.fromEntries((['firstName', 'lastName', 'email', 'phone', 'dateOfBirth'] as const)
-        .filter(field => value(field) !== (member[field] ?? '').trim())
-        .map(field => [field, value(field) || null])),
-      ...(JSON.stringify(emergencyContacts) !== JSON.stringify(normalizeContacts(member.emergencyContacts)) ? { emergencyContacts } : {}),
-    };
-    if (!Object.keys(changes).length) return;
+  const draft = useDraft({ firstName: member.firstName, lastName: member.lastName, email: member.email,
+    phone: member.phone, dateOfBirth: member.dateOfBirth, emergencyContacts: member.emergencyContacts }, value => ({
+    firstName: value.firstName.trim(), lastName: value.lastName.trim(), email: value.email?.trim() || null,
+    phone: value.phone?.trim() || null, dateOfBirth: value.dateOfBirth || null,
+    emergencyContacts: value.emergencyContacts.map(item => ({ name: item.name.trim(), relationship: item.relationship?.trim() || null,
+      phone: item.phone.trim(), ...(item.email?.trim() ? { email: item.email.trim() } : {}) })),
+  }));
+  const { emergencyContacts: contacts } = draft.values;
+  const setContacts = (value: PortalEmergencyContact[]) => draft.set('emergencyContacts', value);
+  const [changed, setChanged] = useState(false);
+  const save = useMutation({ mutationFn: async () => {
+    const changes = draft.changes();
+    if (!Object.keys(changes).length) return false;
     scope.own(await scope.call(contracts.updateMember, { ...changes, revision: member.revision }, { memberId: member.id }));
-  }, onSuccess: async () => { await cache.invalidateQueries({ queryKey: [...scope.key, 'household'] }); close(); } });
+    return true;
+  }, onSuccess: async changed => { if (changed) await cache.invalidateQueries({ queryKey: [...scope.key, 'household'] }); close(); } });
   const update = (index: number, field: keyof PortalEmergencyContact, value: string) => {
     setChanged(true); setContacts(contacts.map((item, position) => position === index ? { ...item, [field]: value } : item));
   };
   return <Dialog title={text('editTitle', { name: member.firstName })} closeLabel={text('close')} onClose={close} dismissible={!save.isPending} unsavedChanges={changed} size="wide">
-    <form className="space-y-4" onChange={() => setChanged(true)} onSubmit={event => { event.preventDefault(); save.mutate(new FormData(event.currentTarget)); }}>
+    <form className="space-y-4" onChange={() => setChanged(true)} onSubmit={event => { event.preventDefault(); save.mutate(); }}>
       {save.isError && <Alert variant="error" focusOnReveal role="alert">{text(conflict(save.error) ? 'changed' : 'failed')}</Alert>}
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field prefix="member" name="firstName" label={text('firstName')} value={member.firstName} required autoComplete="off" />
-        <Field prefix="member" name="lastName" label={text('lastName')} value={member.lastName} required autoComplete="off" />
-        <Field prefix="member" name="email" label={text('email')} value={member.email ?? ''} type="email" />
-        <Field prefix="member" name="phone" label={text('phone')} value={member.phone ?? ''} type="tel" />
-        <Field prefix="member" name="dateOfBirth" label={text('dateOfBirth')} value={member.dateOfBirth ?? ''} type="date" />
+        <Field prefix="member" name="firstName" label={text('firstName')} value={draft.values.firstName} onChange={event => draft.set('firstName', event.target.value)} required autoComplete="off" />
+        <Field prefix="member" name="lastName" label={text('lastName')} value={draft.values.lastName} onChange={event => draft.set('lastName', event.target.value)} required autoComplete="off" />
+        <Field prefix="member" name="email" label={text('email')} value={draft.values.email ?? ''} onChange={event => draft.set('email', event.target.value)} type="email" />
+        <Field prefix="member" name="phone" label={text('phone')} value={draft.values.phone ?? ''} onChange={event => draft.set('phone', event.target.value)} type="tel" />
+        <Field prefix="member" name="dateOfBirth" label={text('dateOfBirth')} value={draft.values.dateOfBirth ?? ''} onChange={event => draft.set('dateOfBirth', event.target.value)} type="date" />
       </div>
       <fieldset className="space-y-3"><legend className="font-semibold">{text('contacts')}</legend>
         {contacts.map((item, index) => <div key={index} className="grid gap-3 rounded-lg border border-border p-3 sm:grid-cols-2">

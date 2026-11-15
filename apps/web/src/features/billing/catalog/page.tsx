@@ -111,7 +111,7 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
   });
   const switchTo = (value: CatalogKind) => { setKind(value); setEditor(null); setArchive(null); setMessage(''); setStale(false); };
   const closeEditor = () => { setEditor(null); setArchive(null); setMessage(''); setStale(false); };
-  const notice = (message || stale) && <Alert variant={!stale && message === text('reloaded') ? 'info' : 'error'} focusOnReveal={stale || message !== text('reloaded')} role={!stale && message === text('reloaded') ? 'status' : 'alert'} className="space-y-3"><p>{message || text('conflict')}</p>{stale && <Button className="w-full sm:w-auto" variant="outline" disabled={busy} onClick={() => void reloadEditor()}>{text('reloadRecord')}</Button>}</Alert>;
+  const notice = (message || stale) && <Alert variant={!stale && message === text('reloaded') ? 'info' : 'error'} focusOnReveal className="space-y-3"><p>{message || text('conflict')}</p>{stale && <Button className="w-full sm:w-auto" variant="outline" disabled={busy} onClick={() => void reloadEditor()}>{text('reloadRecord')}</Button>}</Alert>;
   return <div className={cn('min-w-0 space-y-5', userNames)}>
     <div><h1 className="text-2xl font-semibold">{text('title')}</h1><p className="mt-1 text-muted-foreground">{text('help')}</p></div>
     {data.isPending && <p role="status">{text('loading')}</p>}

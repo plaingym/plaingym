@@ -75,7 +75,7 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
       <p className="text-center text-sm font-medium sm:flex-1" aria-live="polite">{text('weekOf', { date: dateLabel.format(new Date(range.from)) })}</p>
       <Button variant="outline" onClick={() => setWeek(week + 1)}>{text('nextWeek')}</Button>
     </div>
-    {message && <Alert variant={message.tone === 'error' ? 'error' : 'info'} focusOnReveal={message.tone === 'error'} role={message.tone === 'error' ? 'alert' : 'status'}>{message.text}</Alert>}
+    {message && <Alert variant={message.tone === 'error' ? 'error' : 'info'} focusOnReveal>{message.text}</Alert>}
     {schedule.isPending || (!schedule.data && scope.settling) ? <LoadingState label={text('loading')} />
       : schedule.isError ? <ErrorState message={text('error')} onRetry={() => void schedule.refetch()} />
         : !days.size ? <EmptyState title={text('empty')} description={text('emptyDescription')} />

@@ -136,7 +136,7 @@ export function GoLiveSettings() {
       {busy && <p role="status" className="text-sm text-muted-foreground">{label(checking ? 'reconcileRunning' : 'saving')}</p>}
       <h3 className="font-semibold">{label('checklist')}</h3>
       <ul className="divide-y divide-border rounded-lg border border-border">{checklist.items.map((item) => <li key={item.id} className="flex flex-col items-start gap-2 p-3 sm:flex-row sm:justify-between sm:gap-3">
-        <span className="min-w-0"><span className="block font-medium">{label('item.' + item.id)}</span><span className="block break-words text-sm text-muted-foreground">{item.message}</span></span>
+        <span className="min-w-0"><span className="block font-medium">{label('item.' + item.id)}</span><span role={item.id === 'reconciliation_complete' ? 'note' : undefined} className="block break-words text-sm text-muted-foreground">{item.message}</span></span>
         <Badge tone={statusTone[item.status]} className="shrink-0">{label('status.' + item.status)}</Badge>
       </li>)}</ul>
       {checklist.restoreReconciliation && <div className="space-y-3 rounded-lg border border-border p-3" aria-label={label('reconcileTitle')}>

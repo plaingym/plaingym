@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { GoogleLogin } from '@plaingym/shared/contracts';
 import type { StaffRole } from '@plaingym/shared';
@@ -39,9 +39,42 @@ beforeEach(() => {
   server.GET.mockReset();
   server.GET.mockImplementation(async (path: string) => path === '/api/settings' ? reply(200, { data: settings }) : reply(200, { data: google }));
 });
-afterEach(cleanup);
+afterEach(() => { cleanup(); window.history.replaceState(null, '', window.location.pathname); });
 
 describe('the settings page and the Google sign-in section', () => {
+  it('scrolls to and focuses the hash when an asynchronously listed section renders', async () => {
+    window.history.replaceState(null, '', '#renamed.auth');
+    const original = HTMLElement.prototype.scrollIntoView, scroll = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scroll;
+    try {
+      page();
+      await waitFor(() => expect(document.activeElement?.id).toBe('renamed.auth'));
+      expect(scroll).toHaveBeenCalledWith({ block: 'start' });
+      window.history.replaceState(null, '', '#settingsSections.test.general');
+      fireEvent(window, new Event('hashchange'));
+      expect(document.activeElement?.id).toBe('settingsSections.test.general');
+    } finally { HTMLElement.prototype.scrollIntoView = original; }
+  });
+  it.each(['#missing-section', '#%invalid'])('ignores an unavailable or invalid hash: %s', async hash => {
+    window.history.replaceState(null, '', hash);
+    page();
+    await screen.findByText('General');
+    expect(document.activeElement).toBe(document.body);
+  });
+  it('follows a hash through late sibling changes, then yields to user interaction', async () => {
+    window.history.replaceState(null, '', '#settingsSections.test.general');
+    page();
+    const section = await screen.findByRole('region', { name: 'Gym details' });
+    const link = screen.getByRole('link', { name: 'Gym details' });
+    link.focus();
+    section.before(document.createElement('p'));
+    await waitFor(() => expect(document.activeElement).toBe(section));
+    fireEvent.keyDown(window, { key: 'Tab' });
+    link.focus();
+    section.before(document.createElement('p'));
+    await new Promise(resolve => window.requestAnimationFrame(resolve));
+    expect(document.activeElement).toBe(link);
+  });
   it('is registered for owners', () => {
     expect(registration.settingsSections?.[0]).toMatchObject({ id: 'settingsSections.settings.auth', permission: { capability: 'integrations.manage' } });
   });
