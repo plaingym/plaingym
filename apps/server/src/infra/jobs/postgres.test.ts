@@ -3,12 +3,15 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
 import { advisoryLockNamespace, advisoryLocks, jobs, jobScheduleCursors, uuidv7 } from '@plaingym/db';
+// eslint-disable-next-line database/system-tables -- regression fixtures suspend and delete gyms around real queue claims
+import { gyms } from '@plaingym/db';
 // eslint-disable-next-line database/system-tables -- holds the backup advisory lock exactly as a running snapshot does
 import { openConnection } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { isInTransaction } from '@plaingym/shared/transaction';
 import { TestClock } from '../../core/clock.js';
+import { createGymJobPolicy } from '../../core/tenancy-jobs.js';
 import { setLogSink } from '../../core/log.js';
 import { jobsContract, infraContractGyms } from '../../core/registry-infra-contracts.js';
 import { PostgresJobs, PostgresJobStatsQuery, retentionJob, startJobsWorker } from './postgres.js';
@@ -44,6 +47,61 @@ async function until(predicate: () => Promise<boolean>) {
 }
 
 jobsContract('Postgres Jobs contract', async () => queue());
+
+it('keeps suspended gym jobs pending without spending attempts while active and install jobs run', async () => {
+  const suspended = await factory('gyms', uuidv7());
+  const q = queue({ eligibleGym: createGymJobPolicy({ system: database.forSystem }) });
+  const handler = vi.fn(async () => {}), installHandler = vi.fn(async () => {});
+  q.handle('suspension.work', handler);
+  q.handleSystem('suspension.install', installHandler);
+  const pending = await q.enqueue('suspension.work', {}, { ...options, gymId: suspended.id, maxAttempts: 1 });
+  // Work already queued before suspension must be preserved too.
+  await database.forGym(suspended.id, tx => tx.update(gyms).set({ status: 'suspended' }).where(eq(gyms.id, suspended.id)));
+  const active = await q.enqueue('suspension.work', {}, options);
+  const install = await q.enqueueSystem('suspension.install', {}, { timezone: 'UTC' });
+  for (let n = 0; n < 3; n++) expect(await q.runNext()).toBe(true);
+  expect(await row(pending.jobId)).toMatchObject({ status: 'pending', attempts: 0, lastError: null,
+    runAt: new Date('2026-01-01T00:01:00Z'), lockedUntil: null, lockToken: null });
+  expect(await row(active.jobId)).toMatchObject({ status: 'succeeded', attempts: 1 });
+  expect(await row(install.jobId)).toMatchObject({ status: 'succeeded', attempts: 1 });
+  expect(handler).toHaveBeenCalledExactlyOnceWith({}, expect.objectContaining({ gymId: gymA }));
+  expect(installHandler).toHaveBeenCalledExactlyOnceWith({}, expect.objectContaining({ gymId: null }));
+  expect(await q.runNext()).toBe(false);
+  clock.advance(60_000);
+  expect(await q.runNext()).toBe(true);
+  expect(await row(pending.jobId)).toMatchObject({ status: 'pending', attempts: 0 });
+  expect(handler).toHaveBeenCalledOnce();
+  await database.forGym(suspended.id, tx => tx.update(gyms).set({ status: 'active' }).where(eq(gyms.id, suspended.id)));
+  clock.advance(60_000);
+  expect(await q.runNext()).toBe(true);
+  expect(await row(pending.jobId)).toMatchObject({ status: 'succeeded', attempts: 1 });
+  expect(handler).toHaveBeenLastCalledWith({}, expect.objectContaining({ gymId: suspended.id, attempt: 1 }));
+});
+
+it('retains a suspended gym job until the gym deletion cascades it', async () => {
+  const gym = await factory('gyms', uuidv7(), { status: 'suspended' });
+  const q = queue({ eligibleGym: createGymJobPolicy({ system: database.forSystem }) }), handler = vi.fn(async () => {});
+  q.handle('suspension.delete', handler);
+  const pending = await q.enqueue('suspension.delete', {}, { ...options, gymId: gym.id });
+  await q.runNext();
+  expect(await row(pending.jobId)).toMatchObject({ status: 'pending', attempts: 0 });
+  expect(handler).not.toHaveBeenCalled();
+  await database.forSystem(tx => tx.delete(gyms).where(eq(gyms.id, gym.id)));
+  expect((await rows()).find(job => job.id === pending.jobId)).toBeUndefined();
+});
+
+it('defers when a more specific skip policy observes a concurrent suspension', async () => {
+  const gym = await factory('gyms', uuidv7());
+  const q = queue({ eligibleGym: createGymJobPolicy({ system: database.forSystem, eligibleGym: async gymId => {
+    await database.forGym(gymId, tx => tx.update(gyms).set({ status: 'suspended' }).where(eq(gyms.id, gymId)));
+    return 'skip';
+  } }) }), handler = vi.fn(async () => {});
+  q.handle('suspension.race', handler);
+  const pending = await q.enqueue('suspension.race', {}, { ...options, gymId: gym.id, maxAttempts: 1 });
+  await q.runNext();
+  expect(await row(pending.jobId)).toMatchObject({ status: 'pending', attempts: 0 });
+  expect(handler).not.toHaveBeenCalled();
+});
 
 it('defers gym work without spending attempts, then executes it once eligible; skip acknowledges it', async () => {
   let policy: boolean | 'defer' | 'skip' = 'defer';

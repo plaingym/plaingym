@@ -2,10 +2,13 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { gyms, gymDomains, kioskDevices } from '@plaingym/db';
+// eslint-disable-next-line database/system-tables -- verify the composed demo policy preserves queued rows and attempt counts
+import { jobs } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { demoCreationResponse } from '@plaingym/shared/contracts';
 import { createGymDeleteService } from '../areas/settings/gym-delete.js';
 import { TestClock } from '../core/clock.js';
+import { createGymJobPolicy } from '../core/tenancy-jobs.js';
 import type { GymContext } from '../core/context.js';
 import { PostgresJobs } from '../infra/jobs/postgres.js';
 import { createDemoService } from './service.js';
@@ -184,6 +187,36 @@ it('defers pool jobs until private allocation and lists eligible gyms with one s
   const pool = createDemoPool({ ...f, key: Buffer.alloc(32, 17), scope: db.forGym, system });
   expect(await pool.listEligibleGyms()).toEqual([{ gymId: copy.gymId, timezone: 'UTC' }]);
   expect(calls).toHaveBeenCalledOnce();
+});
+
+it('overrides demo skips for suspended gyms while preserving pool and showcase decisions', async () => {
+  const f = fixture(); await f.pool.refill();
+  const before = await rows(), poolGym = before.find(gym => sandboxSettings(gym.settings)?.kind === 'pool')!;
+  const shared = before.find(gym => sandboxSettings(gym.settings)?.kind === 'showcase')!;
+  const policy = createGymJobPolicy({ system: db.forSystem, eligibleGym: gymId => f.pool.jobPolicy(gymId) });
+  const q = new PostgresJobs({ clock: f.clock, database: db, eligibleGym: policy }), handler = vi.fn(async () => {});
+  q.handle('pool.suspension', handler);
+  const pooled = await q.enqueue('pool.suspension', {}, { gymId: poolGym.id, timezone: 'UTC', maxAttempts: 1 });
+  const showcase = await q.enqueue('pool.suspension', {}, { gymId: shared.id, timezone: 'UTC' });
+  await q.runNext(); await q.runNext();
+  const jobRows = () => db.forSystem(tx => tx.select().from(jobs));
+  expect((await jobRows()).find(job => job.id === pooled.jobId)).toMatchObject({ status: 'pending', attempts: 0 });
+  expect((await jobRows()).find(job => job.id === showcase.jobId)).toMatchObject({ status: 'succeeded' });
+  expect(handler).not.toHaveBeenCalled();
+  const copy = await create(f);
+  expect(copy.gymId).toBe(poolGym.id);
+  expect(await policy(copy.gymId)).toBe(true);
+  await db.forGym(copy.gymId, tx => tx.update(gyms).set({ status: 'suspended' }).where(eq(gyms.id, copy.gymId)));
+  expect(await f.pool.jobPolicy(copy.gymId)).toBe('skip');
+  expect(await policy(copy.gymId)).toBe('defer');
+  f.clock.advance(60_000);
+  await q.runNext();
+  expect((await jobRows()).find(job => job.id === pooled.jobId)).toMatchObject({ status: 'pending', attempts: 0 });
+  expect(handler).not.toHaveBeenCalled();
+  await db.forGym(copy.gymId, tx => tx.update(gyms).set({ status: 'active' }).where(eq(gyms.id, copy.gymId)));
+  f.clock.advance(60_000);
+  await q.runNext();
+  expect(handler).toHaveBeenCalledExactlyOnceWith({}, expect.objectContaining({ gymId: copy.gymId, attempt: 1 }));
 });
 
 it('swaps the showcase without locking an unrelated private gym', async () => {

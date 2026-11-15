@@ -58,7 +58,14 @@ A false or `skip` result acknowledges the queued job without calling its handler
 `defer` returns the job to pending one minute later, with its attempt count
 unchanged; `true` runs it. This preserves work for gyms that will become eligible
 later. Demo composition can supply `pool.jobPolicy` to defer pooled and unfinished
-gyms and skip shared or retired ones. Ordinary installs leave the policy unset.
+gyms and skip shared or retired ones. `createGymJobPolicy` in
+`core/tenancy-jobs.ts` wraps this hook with a fresh gym-status lookup: inactive
+or missing gyms return `defer`, overriding any install-specific policy, and active
+gyms run by default. Install composition should pass this policy in ordinary
+installs too, and wrap `pool.jobPolicy` in demo mode. Suspended gyms keep their
+queued work without spending attempts until their deletion cascades the rows;
+reactivation lets the work run on its next due attempt. Install jobs bypass gym
+eligibility. A job whose handler already started before suspension can finish.
 Payloads use a versioned internal envelope to persist timezone and scheduler
 metadata; handlers receive only the caller's original JSON value. Caller
 idempotency keys are hashed together with the job name to fit the schema's
