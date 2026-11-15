@@ -11,7 +11,6 @@ import type { InvoiceTransitions } from '../../core/interfaces/invoice-transitio
 import type { ChargeOutcome, Dispute, Payments, Refund } from '../../infra/payments/index.js';
 import type { BillingAlerts } from './alerts/index.js';
 import { stripeWriteCurrent, stripeWriteScope } from './stripe-writes.js';
-import { holdGymSettings } from '../settings/settings.js';
 import { audit, effect, lockInvoice, recorded } from './transitions/store.js';
 
 type Payment = typeof payments.$inferSelect;
