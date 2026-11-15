@@ -8,7 +8,9 @@ import { dateSchema, idSchema, type ImportIssue, type ImportPlanRequest, type Im
 import { minorUnitStep, onMinorUnitStep } from '@plaingym/shared/money';
 import { isCalendarDate, localDate } from '@plaingym/shared/time';
 import { householdDateOnOrAfter } from '../../billing/invoicing/calendar.js';
+import { reconcileMemberStatus } from '../../billing/memberships.js';
 import { clearedSwitch, rescheduledSwitch } from '../../billing/memberships.plan-change.js';
+import { markLeadWon } from '../../leads/stages.js';
 import type { CsvRow } from '../pipeline.csv.js';
 import type { CsvMapper, MapperContext, PlannedRow } from './registry.js';
 import { annualAnniversary, message, normalize, parseMembership, type Identity, type Source } from './memberships.parse.js';
@@ -201,12 +203,16 @@ async function commit(tx: Transaction, rows: readonly PlannedRow[], context: Map
   // Match assignment/runner locking: households first. Concurrent imports share these locks.
   const homes = await tx.select().from(households).where(and(eq(households.gymId, gymId), inArray(households.id, homeIds))).orderBy(asc(households.id)).for('update');
   const people = await tx.select().from(members).where(and(eq(members.gymId, gymId), inArray(members.id, [...new Set(records.map(item => item.memberId))])))
-    .orderBy(asc(members.id)).for('share');
+    .orderBy(asc(members.id)).for('update');
   const catalog = await tx.select().from(plans).where(and(eq(plans.gymId, gymId), inArray(plans.id, [...new Set(records.map(item => item.planId))])))
     .orderBy(asc(plans.id)).for('share');
   const existing = await tx.select().from(memberships).where(and(eq(memberships.gymId, gymId), inArray(memberships.householdId, homeIds)))
     .orderBy(asc(memberships.id)).for('update');
+  const seen = new Set(existing.filter(item => item.status !== 'cancelled').map(item => key(item.memberId, item.planId)));
   for (const item of records) {
+    // A concurrent create may have advanced the member revision through reconciliation.
+    // Replaying that already-present pair is a no-op, before checking stale references.
+    if (item.action === 'create' && seen.has(key(item.memberId, item.planId))) continue;
     const home = homes.find(row => row.id === item.householdId), person = people.find(row => row.id === item.memberId), selectedPlan = catalog.find(row => row.id === item.planId);
     if (!home || home.revision !== item.householdRevision || !person || person.revision !== item.memberRevision || person.anonymizedAt
       || person.householdId !== home.id || !selectedPlan || selectedPlan.revision !== item.planRevision || !selectedPlan.active || selectedPlan.currency !== item.currency)
@@ -221,8 +227,15 @@ async function commit(tx: Transaction, rows: readonly PlannedRow[], context: Map
     gymId, actorKind: context.actor.kind, ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
     action, targetType, targetId, after: { importId: context.runId, ...after }, occurredAt: now,
   });
+  const reconcile = async (memberId: string, membershipId: string, status: string, cause: string) => {
+    // Schedule-update siblings are not in the up-front member lock. Take the member lock
+    // before lead work, matching attendance's and activation's member/lead lock order.
+    await tx.select({ id: members.id }).from(members).where(and(eq(members.gymId, gymId), eq(members.id, memberId))).for('update');
+    if (status === 'active') await markLeadWon(tx, { gymId, actor: context.actor, memberId, now });
+    await reconcileMemberStatus(tx, { gymId, actor: context.actor }, context.clock, memberId, membershipId, cause);
+  };
   let count = 0;
-  const seen = new Set(existing.filter(item => item.status !== 'cancelled').map(item => key(item.memberId, item.planId))), updatedHomes = new Set<string>();
+  const updatedHomes = new Set<string>();
   for (const item of records) {
     const identity = key(item.memberId, item.planId);
     // A replay or another import may already have inserted the same membership after analysis.
@@ -255,6 +268,7 @@ async function commit(tx: Transaction, rows: readonly PlannedRow[], context: Map
             { memberId: before.memberId, planId: before.planId, previousDueOn: update.oldDueOn, nextDueOn: after.nextDueOn,
               ...(movedSwitch.scheduledOn ? { rescheduledSwitch: { scheduledPlanId: before.scheduledPlanId,
                 previousScheduledOn: before.scheduledOn, scheduledOn: movedSwitch.scheduledOn } } : {}) });
+          await reconcile(before.memberId, before.id, before.status, 'billing.membership.import_schedule_updated');
           Object.assign(before, after);
         }
         const guard = revisionGuard(households.revision, home.revision);
@@ -286,12 +300,14 @@ async function commit(tx: Transaction, rows: readonly PlannedRow[], context: Map
         ...changes, startsOn: item.nextDueOn < today ? item.nextDueOn : today, status: 'active', createdAt: now });
       seen.add(identity);
     }
-    await audit(before ? 'billing.membership.import_updated' : 'billing.membership.imported', 'membership', id,
+    const cause = before ? 'billing.membership.import_updated' : 'billing.membership.imported';
+    await audit(cause, 'membership', id,
       { memberId: item.memberId, planId: item.planId, nextDueOn: item.nextDueOn, anniversaryOn,
         ...(before?.scheduledPlanId && replacedTerms
           ? { clearedSwitch: { scheduledPlanId: before.scheduledPlanId, scheduledOn: before.scheduledOn } } : {}),
         ...(before && movedSwitch.scheduledOn ? { rescheduledSwitch: { scheduledPlanId: before.scheduledPlanId,
           previousScheduledOn: before.scheduledOn, scheduledOn: movedSwitch.scheduledOn } } : {}) });
+    await reconcile(item.memberId, id, before?.status ?? 'active', cause);
     count++;
   }
   return count;

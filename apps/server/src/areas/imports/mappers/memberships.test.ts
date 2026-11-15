@@ -314,7 +314,7 @@ describe('membership renewals through the durable pipeline', () => {
     const batch = await analyzed([{ email: f.member.email!, plan: f.plan.name, nextDueOn: '2026-12-15' }], 'update');
     expect(batch.planned[0]!.issues).toEqual([]);
     await database.forGym(gymId, async tx => {
-      if (changed === 'member') await tx.update(members).set({ revision: 2 }).where(eq(members.id, f.member.id));
+      if (changed === 'member') await tx.update(members).set({ revision: Number(batch.planned[0]!.values.memberRevision) + 1 }).where(eq(members.id, f.member.id));
       if (changed === 'household') await tx.update(households).set({ revision: 3 }).where(eq(households.id, f.home.id));
       if (changed === 'plan') await tx.update(plans).set({ revision: 2 }).where(eq(plans.id, f.plan.id));
       if (changed === 'membership') await tx.update(memberships).set({ revision: 2 }).where(eq(memberships.memberId, f.member.id));
@@ -327,6 +327,14 @@ describe('membership renewals through the durable pipeline', () => {
     const f = await fixture('annual'), batch = await analyzed([{ email: f.member.email!, plan: f.plan.id, nextDueOn: '2028-06-21' }]);
     expect((await Promise.all([batch.commit(), batch.commit()])).sort()).toEqual([0, 1]);
     expect((await read()).memberships).toHaveLength(1);
+    expect(await database.forGym(gymId, tx => tx.select({ status: members.status, revision: members.revision })
+      .from(members).where(eq(members.id, f.member.id)))).toEqual([{ status: 'active', revision: 2 }]);
+    await database.forGym(gymId, tx => tx.update(members).set({ status: 'visitor', revision: 3 }).where(eq(members.id, f.member.id)));
+    const before = await read();
+    expect(await batch.commit()).toBe(0);
+    expect(await read()).toEqual(before);
+    expect(await database.forGym(gymId, tx => tx.select({ status: members.status, revision: members.revision })
+      .from(members).where(eq(members.id, f.member.id)))).toEqual([{ status: 'visitor', revision: 3 }]);
     await expect(batch.commit(Array.from({ length: 101 }, () => batch.planned[0]!))).rejects.toThrow('100');
   });
   it('reports unknown, ambiguous, erased, inactive and foreign references and mismatched currency', async () => {
@@ -453,6 +461,10 @@ describe('membership renewals through the durable pipeline', () => {
       importId: job.id, previousDueOn: '2026-11-15', nextDueOn: '2026-11-20',
     }) })]);
     expect(JSON.stringify(schedules)).not.toContain(family.sibling.member.email!);
+    expect(await database.forGym(gymId, tx => tx.select({ status: members.status, revision: members.revision })
+      .from(members).where(eq(members.id, family.sibling.member.id)))).toEqual([{ status: 'active', revision: 2 }]);
+    expect(after.audits.find(event => event.action === 'billing.member.activated' && event.targetId === family.sibling.member.id))
+      .toMatchObject({ after: { cause: 'billing.membership.import_schedule_updated', membershipId: later.id } });
     // Reanalysis sees the revision from the atomic anchor move and can apply the remaining fields.
     const retry = await services().load([family.records.at(-1)!], 'update'); expect((await retry.run()).committedRows).toBe(1);
     expect((await read()).memberships.find(row => row.id === later.id)).toMatchObject({ revision: 3, amountCents: 7000, nextDueOn: '2026-11-20' });

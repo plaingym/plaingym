@@ -32,10 +32,10 @@ const system = (gymId: string) => ({ gymId, actor: { kind: 'system' as const } }
 // Submitted on 2026-10-29 (New York): the sixth local day after it ends at 2026-11-04 23:59:59.999 EST, after the fall clock change.
 const submittedAt = '2026-10-29T18:00:00Z', sixthDayEnds = '2026-11-05T04:59:59.999Z', seventhDay = '2026-11-05T05:00:00Z';
 
-async function fixture(start = submittedAt, onAssigned?: (tx: Transaction) => Promise<void>) {
+async function fixture(start = submittedAt, onAssigned?: (tx: Transaction) => Promise<void>, trialDays = 0) {
   const gymId = uuidv7(), clock = new TestClock(start);
   await factory('gyms', gymId, { name: 'Unpaid joins', currency: 'CAD', timezone, billingEnabled: true, memberEmailsEnabled: true, websiteEnabled: false });
-  const plan = await factory('plans', gymId, { name: 'Adult monthly', amountCents: 15000, currency: 'CAD', interval: 'monthly', signupFeeCents: 5000 });
+  const plan = await factory('plans', gymId, { name: 'Adult monthly', amountCents: 15000, currency: 'CAD', interval: 'monthly', signupFeeCents: 5000, trialDays });
   const templates = [await factory('waiverTemplates', gymId, { name: 'Participation', body: 'I understand the training risks.' })];
   const provider = new FakePayments(gymId, clock), paymentsFor = async () => provider;
   const uploads = new FakeUploads(gymId, clock), uploadsFor = async () => uploads;
@@ -247,9 +247,8 @@ describe('unpaid submitted joins', () => {
     expect(after.memberships.map(m => [m.status, m.cancelledAt])).toEqual([['cancelled', f.clock.now()]]);
     // The people, their signed waivers and leads and the household stay for staff follow-up.
     expect(after.home).toBeDefined();
-    expect(after.members.map(m => m.status)).toEqual(['cancelled']);
-    expect(after.audits.find(a => a.action === 'billing.member.cancelled')).toMatchObject({
-      targetId: memberIds[0], after: { cause: 'billing.membership.cancelled', membershipId: after.memberships[0]!.id } });
+    expect(after.members.map(m => m.status)).toEqual(['prospect']);
+    expect(after.audits.find(a => a.action === 'billing.member.cancelled')).toBeUndefined();
     expect(await f.signatures(memberIds)).toHaveLength(1);
     expect(await f.leadRows(memberIds)).toHaveLength(1);
     expect(count(after.audits, 'billing.invoice.voided', join.invoiceId)).toBe(1);
@@ -260,6 +259,21 @@ describe('unpaid submitted joins', () => {
     expect(await f.join.state(f.gymId, join.linkId)).toEqual({ status: 'closed' });
     expect(await f.run()).toBe(0);
     expect(expire).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an abandoned family as prospects when their pending trials already have end dates', async () => {
+    const f = await fixture(submittedAt, undefined, 14), join = await f.submit('pending-trials@example.invalid', 2);
+    const before = await f.state(join.householdId);
+    expect(before.memberships).toHaveLength(2);
+    expect(before.memberships.every(row => row.status === 'pending' && row.trialEndsOn !== null)).toBe(true);
+    f.clock.set(seventhDay);
+    expect(await f.run()).toBe(1);
+    const after = await f.state(join.householdId);
+    expect(after.memberships.map(row => row.status)).toEqual(['cancelled', 'cancelled']);
+    expect(after.members.map(row => [row.status, row.revision])).toEqual(before.members.map(row => [row.status, row.revision]));
+    expect(after.members.every(row => row.status === 'prospect')).toBe(true);
+    expect(count(after.audits, 'billing.member.cancelled')).toBe(0);
+    expect(await f.run()).toBe(0);
   });
 
   it('gives back the uses a code took exactly once, over two runs and two concurrent ones', async () => {

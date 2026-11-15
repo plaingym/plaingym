@@ -54,6 +54,27 @@ describe('member status derived from memberships against PostgreSQL', () => {
     expect(await f.events()).toEqual([]);
   });
 
+  it.each(memberStatuses)('keeps %s when staff cancel assignments that never left pending', async status => {
+    const f = await fixture(status);
+    // Pending public joins can already have trial dates, without starting a trial.
+    const pending = await f.service.assign(f.context, { ...f.request, initialStatus: 'pending', trialEndsOn: '2028-03-15' });
+    const other = await f.assign('pending');
+    await f.service.cancel(f.context, { membershipId: pending.id, revision: pending.revision });
+    await f.service.cancel(f.context, { membershipId: other.id, revision: other.revision });
+    expect(await f.read()).toMatchObject({ status, revision: 1 });
+    expect(await f.events()).toEqual([]);
+  });
+
+  it.each(['active', 'trial'] as const)('uses a cancelled %s sibling history when the final pending assignment is cancelled', async initialStatus => {
+    const f = await fixture('prospect'), started = await f.assign(initialStatus), pending = await f.assign('pending');
+    await f.service.cancel(f.context, { membershipId: started.id, revision: started.revision });
+    await f.people.updateMember(f.context, f.person.id, { status: 'visitor', revision: 2 });
+    await f.service.cancel(f.context, { membershipId: pending.id, revision: pending.revision });
+    expect(await f.read()).toMatchObject({ status: 'cancelled', revision: 4 });
+    expect((await f.events()).at(-1)).toMatchObject({ action: 'billing.member.cancelled',
+      after: { membershipId: pending.id, cause: 'billing.membership.cancelled' } });
+  });
+
   it.each(['active', 'trial', 'frozen', 'pending', 'cancelled'] as const)(
     'derives status when cancelling a trial beside a %s membership', async remaining => {
       const f = await fixture('trial'), target = await f.assign('trial');

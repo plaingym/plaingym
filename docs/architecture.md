@@ -219,12 +219,16 @@ source of truth; Stripe is the processor. In outline:
   requires a current-period cycle or first-period bill; a previous switch invoice
   supplies updated terms but cannot replace a voided or refunded period bill.
   Membership changes also derive member status: any active membership, then any
-  trial, then any frozen membership, then cancelled if all are cancelled. Only
-  pending live memberships, or no memberships, preserve the staff-set status.
+  trial, then any frozen membership, then cancelled if all are cancelled and at
+  least one ever left pending, as recorded in its audit history. Only pending live
+  memberships, no memberships, or memberships that never left pending preserve
+  the staff-set status. The memberships import uses this same reconciliation
+  after inserts and updates and wins leads for active memberships.
   Staff edits stand until the next membership change. The daily trial-end and
   resume-date job uses the same transaction and member revision guard; changes
   audit their causing membership. Even with pack credits left, a member whose
-  memberships are all cancelled goes to the kiosk's front desk. See the
+  memberships are all cancelled after a trial or activation goes to the kiosk's
+  front desk. See the
   [membership status rule](../apps/server/src/areas/billing/memberships.README.md#member-status).
 * **Invoicing** (`areas/billing/invoicing/`): pure calculation of invoice lines and tax.
 * **Charge runner** (`areas/billing/runner/`): the daily run charges saved cards in

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, desc, eq, gt, lte, ne, or } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, lte, ne, or } from 'drizzle-orm';
 import { forGym, memberships, households, members, plans, auditEvents,
   revisionGuard, assertRevised, uuidv7, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
@@ -71,6 +71,36 @@ export interface MembershipOptions {
   scope?: typeof forGym; clock?: Clock; settings?: GymSettingsAccessor;
   /** Database work only: issue first-period/fee invoices in the assigning transaction. Never charge here. */
   onAssigned?: (tx: Transaction, context: MutationContext, membership: c.Membership, billing: AssignmentBilling) => Promise<void>;
+}
+/** The caller holds the household lock and has saved the membership's new state. */
+export async function reconcileMemberStatus(tx: Transaction, context: MutationContext, clock: Clock,
+  memberId: string, membershipId: string, cause: string) {
+  const [member] = await tx.select().from(members).where(eq(members.id, memberId)).for('update');
+  if (!member || member.anonymizedAt) return;
+  const rows = await tx.select({ id: memberships.id, status: memberships.status }).from(memberships).where(eq(memberships.memberId, memberId));
+  // Pending-only live memberships and members without memberships keep the staff-set status.
+  let status: 'active' | 'trial' | 'frozen' | 'cancelled' | undefined = rows.some(row => row.status === 'active') ? 'active'
+    : rows.some(row => row.status === 'trial') ? 'trial'
+    : rows.some(row => row.status === 'frozen') ? 'frozen' : undefined;
+  if (status === undefined && rows.length && rows.every(row => row.status === 'cancelled')) {
+    const history = await tx.select({ action: auditEvents.action, before: auditEvents.before, after: auditEvents.after })
+      .from(auditEvents).where(and(eq(auditEvents.targetType, 'membership'), inArray(auditEvents.targetId, rows.map(row => row.id))));
+    const leftPending = (value: unknown) => {
+      const snapshot = value as { status?: string; membership?: { status?: string } } | null;
+      return [snapshot?.status, snapshot?.membership?.status].some(state => state === 'trial' || state === 'active' || state === 'frozen');
+    };
+    // Imports start active; assignment audits nest the initial state under membership.
+    // A pending trial's trialEndsOn alone is not evidence that it ever started.
+    if (history.some(event => event.action === 'billing.membership.imported'
+      || leftPending(event.before) || leftPending(event.after))) status = 'cancelled';
+  }
+  if (status === undefined || status === member.status) return;
+  const guard = revisionGuard(members.revision, member.revision);
+  assertRevised(await tx.update(members).set({ status, revision: guard.next })
+    .where(and(eq(members.id, member.id), guard.matches)).returning({ id: members.id }));
+  const action = { active: 'activated', trial: 'trial_started', frozen: 'frozen', cancelled: 'cancelled' }[status];
+  await catalogAudit(tx, context, clock, 'billing.member.' + action, 'member', member.id,
+    { status: member.status, revision: member.revision }, { status, revision: member.revision + 1, membershipId, cause });
 }
 export function createMembershipService(options: MembershipOptions = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
@@ -158,7 +188,7 @@ export function createMembershipService(options: MembershipOptions = {}) {
       await catalogAudit(tx, context, clock, 'billing.membership.assigned', 'membership', row.id, undefined, { request, membership: result, billing });
       await options.onAssigned?.(tx, context, result, billing);
       if (status === 'active') await markLeadWon(tx, { ...context, memberId: member.id, now: clock.now() });
-      await reconcileMember(tx, context, member.id, row.id, 'billing.membership.assigned');
+      await reconcileMemberStatus(tx, context, clock, member.id, row.id, 'billing.membership.assigned');
       // A full first period may have used a discount cycle; return the discount as it now stands, as a replay would.
       return request.discount ? present(tx, row) : result;
     });
@@ -179,7 +209,7 @@ export function createMembershipService(options: MembershipOptions = {}) {
     changes: Partial<typeof memberships.$inferInsert>, action: string, describe: (after: c.Membership) => unknown = after => after) {
     const after = await saveChanges(tx, before, changes);
     await catalogAudit(tx, context, clock, action, 'membership', before.id, previous, describe(after));
-    await reconcileMember(tx, context, before.memberId, before.id, action);
+    await reconcileMemberStatus(tx, context, clock, before.memberId, before.id, action);
     return after;
   }
   async function edit(context: MutationContext, request: MembershipEdit, action: string,
@@ -193,24 +223,6 @@ export function createMembershipService(options: MembershipOptions = {}) {
       const after = await saveEdit(tx, context, before, previous, await change(tx, before, previous), 'billing.membership.' + action);
       return after;
     });
-  }
-  /** The caller holds the household lock and has saved the membership's new state. */
-  async function reconcileMember(tx: Transaction, context: MutationContext, memberId: string, membershipId: string, cause: string) {
-    const [member] = await tx.select().from(members).where(eq(members.id, memberId)).for('update');
-    if (!member || member.anonymizedAt) return;
-    const rows = await tx.select({ status: memberships.status }).from(memberships).where(eq(memberships.memberId, memberId));
-    // Pending-only live memberships and members without memberships keep the staff-set status.
-    const status = rows.some(row => row.status === 'active') ? 'active'
-      : rows.some(row => row.status === 'trial') ? 'trial'
-      : rows.some(row => row.status === 'frozen') ? 'frozen'
-      : rows.length && rows.every(row => row.status === 'cancelled') ? 'cancelled' : undefined;
-    if (status === undefined || status === member.status) return;
-    const guard = revisionGuard(members.revision, member.revision);
-    assertRevised(await tx.update(members).set({ status, revision: guard.next })
-      .where(and(eq(members.id, member.id), guard.matches)).returning({ id: members.id }));
-    const action = { active: 'activated', trial: 'trial_started', frozen: 'frozen', cancelled: 'cancelled' }[status];
-    await catalogAudit(tx, context, clock, 'billing.member.' + action, 'member', member.id,
-      { status: member.status, revision: member.revision }, { status, revision: member.revision + 1, membershipId, cause });
   }
   const service = {
     assign,
@@ -348,7 +360,7 @@ export function createMembershipService(options: MembershipOptions = {}) {
         const invoiceId = invoice ? await issue(tx, context, clock, invoice) : null;
         const audit: PlanSwitchedNowAudit = { request: recorded, overrideUsed, kind, invoiceId, membership: after };
         await catalogAudit(tx, context, clock, planSwitchedAction, 'membership', before.id, previous, audit);
-        await reconcileMember(tx, context, before.memberId, before.id, planSwitchedAction);
+        await reconcileMemberStatus(tx, context, clock, before.memberId, before.id, planSwitchedAction);
         return { membership: after, invoiceId };
       });
     },

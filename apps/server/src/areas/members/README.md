@@ -23,11 +23,15 @@ Staff can set a member's status, and that edit stands until their next membershi
 change. Assignment, any staff edit of a membership (such as its discount, due date
 or plan), activation, freeze, resume and cancellation (including the daily
 trial-end and resume-date job) then derive it: any active membership wins,
-then any trial, then any frozen membership, then cancelled if all are cancelled.
-Only pending live memberships, or no memberships at all, leave the staff-set
-status unchanged. This preserves prospect, visitor and pack-only members. A
-member with all memberships cancelled is cancelled even with pack credits left
-and must go to the front desk to check in. See the
+then any trial, then any frozen membership, then cancelled if all are cancelled
+and at least one ever left pending (read from membership audit history).
+Pending-only live memberships, or no memberships at all, leave the staff-set
+status unchanged. Cancelling memberships that never left pending also preserves
+it, including an abandoned join's prospects. This preserves prospect, visitor
+and pack-only members. Imported memberships use the same rule, so an active
+membership overrides an omitted or cancelled status in the people file. A
+member with all memberships cancelled after a trial or activation is cancelled
+even with pack credits left and must go to the front desk to check in. See the
 [membership lifecycle](../billing/memberships.README.md#member-status) for audit
 and transaction details.
 

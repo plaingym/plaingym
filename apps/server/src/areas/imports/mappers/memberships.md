@@ -80,6 +80,15 @@ join date and lifecycle metadata; only active or pending memberships can be
 updated. CSV statuses other than active are rejected: manage trials, freezes and
 cancellations through the membership lifecycle before importing renewals.
 
+After inserts and updates, the chunk runs billing's shared member-status
+reconciliation under the household and member locks, with a member revision
+guard and an audit when the status changes. An imported active membership makes
+its member active even if the people file omitted status or said cancelled or
+frozen. Active inserts and updates also win the member's lead, as active
+assignment does; pending updates do not win it. Members without an imported
+membership keep their file status. Replays add no duplicate member or lead
+transition audits, and a failed chunk rolls back these changes together.
+
 Each commit processes at most 100 source rows. Household locks serialize imports and runner
 work; member and plan references are locked and revision-checked, as are
 membership updates and household anchor edits. A concurrent insert or replay

@@ -49,6 +49,13 @@ ones, from the mapping.
 
 ### Memberships columns
 
+Import people first, then their memberships. A newly imported active membership
+sets its member to **Active** and wins their lead, even when the people file
+omitted status or said Cancelled or Frozen. Updating an active membership applies
+the same rule. An existing pending membership stays pending when updated and
+does not win its lead. People without an imported membership keep the status
+from the people file (Prospect when omitted).
+
 Each row needs an email (or both names), the **plan's name** (or its ID) exactly as
 it is in **Billing catalog**, and **Next due date** as `YYYY-MM-DD`. Optional: amount in
 cents, billing interval (`monthly` or `annual`), currency (it must equal the plan's),
@@ -121,7 +128,9 @@ stay off after setup.
 
 ## 3. Check the result
 
-* **Members** shows the people and their households, with the statuses you mapped.
+* **Members** shows the people and their households. People keep the statuses you
+  mapped until a membership change; importing an active membership sets its
+  member to Active so the kiosk's member-status check admits them.
 * A member's profile shows their membership, rank history and attendance.
 * **Settings → Go live** lists members, memberships and past-due dates under its
   checklist ([going-live.md](going-live.md)).

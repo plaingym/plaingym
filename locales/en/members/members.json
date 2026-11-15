@@ -7,7 +7,7 @@
   "firstName": "First name", "lastName": "Last name", "name": "Name", "email": "Email", "phone": "Phone",
   "dateOfBirth": "Date of birth", "status": "Status", "status.prospect": "Prospect", "status.trial": "Trial", "status.active": "Active",
   "status.frozen": "Frozen", "status.cancelled": "Cancelled", "status.visitor": "Visitor", "emailOptOut": "Do not send member emails",
-  "statusHelp": "Membership changes reset this status: Active, then Trial, then Frozen, or Cancelled when all are cancelled. Pending-only memberships and members without memberships keep the status you set.",
+  "statusHelp": "Membership changes reset this status: Active, then Trial, then Frozen, or Cancelled when all are cancelled after a trial or activation. Imports follow the same rule. Pending-only memberships, memberships that never left Pending, and members without memberships keep the status you set.",
   "save": "Save", "refresh": "Refresh", "close": "Close", "remove": "Remove", "previous": "Previous", "next": "Next", "total": "members",
   "addMember": "Add member", "createMember": "Create member", "profile": "Profile", "search": "Search members", "allStatuses": "All statuses",
   "household": "Household", "householdName": "Household name", "chooseHousehold": "Choose a household", "createHousehold": "Create household", "searchHouseholds": "Find household",
