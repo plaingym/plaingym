@@ -135,7 +135,8 @@ import { createAccountService } from '../infra/auth/accounts.js';
 import { configureStaffAuth } from '../areas/staff/auth.routes.js';
 import { configureAccount } from '../areas/staff/auth.account.js';
 import { createEmailChangeService } from '../infra/auth/email-change.js';
-import type { Jobs } from '../infra/jobs/index.js';
+import type { JobRecovery, Jobs } from '../infra/jobs/index.js';
+import { createGymJobPolicy } from './tenancy-jobs.js';
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name];
@@ -184,8 +185,8 @@ async function prepare(env: NodeJS.ProcessEnv) {
   return { key, mode, config, install, smtp };
 }
 /** Stripe events for each gym, verified by that gym's own Stripe settings; the CLI replays through the same inbox. */
-function webhookInbox(paymentsFor: PaymentsResolver, jobs: Jobs) {
-  const inbox = createWebhookInbox({ paymentsFor, jobs, gymSettings: createGymSettingsAccessor(), clock });
+function webhookInbox(paymentsFor: PaymentsResolver, jobs: Jobs & JobRecovery) {
+  const inbox = createWebhookInbox({ paymentsFor, jobs, recovery: jobs, gymSettings: createGymSettingsAccessor(), clock });
   configureWebhookReplay(inbox);
   return inbox;
 }
@@ -255,7 +256,9 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   const restoreStaging = restoreStagingDirectory(env);
   const gate = restoreStaging ? new RestoreGate(dirname(restoreStaging)) : undefined;
   const queue = new PostgresJobs({ clock, listGyms: demo ? () => demo.pool.listEligibleGyms() : listGyms,
-    ...(demo ? { eligibleGym: (gymId: string) => demo.pool.jobPolicy(gymId) } : {}), retention: { keep: [sendAlertJob] } });
+    // A suspended gym's due jobs stay pending in every mode; the demo pool's own rules apply on top.
+    eligibleGym: createGymJobPolicy(demo ? { eligibleGym: (gymId: string) => demo.pool.jobPolicy(gymId) } : {}),
+    retention: { keep: [sendAlertJob] } });
   // Expired magic links and staff invitations are swept by one install job an hour, in either tenancy mode.
   const verificationSweep = registerVerificationSweep(queue, clock);
   // The public forms' named limits are counted in the database, so every process shares one window; each process remembers
@@ -368,7 +371,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
     paymentsFor, invitations: portalInvitations, accounts, ...(demo ? { testCardHint: demo.joinTestCardHint } : {}),
     key: new Uint8Array(hkdfSync('sha256', key, new Uint8Array(0), 'plaingym public join v1', 32)) });
   demo?.service.setJoinReadiness(join);
-  const billing = composeBillingWebhooks({ inbox, jobs: queue, settings, paymentsFor, clock, prepare: gymMail, disputeAlerts: alerts,
+  const billing = composeBillingWebhooks({ inbox, jobs: queue, recovery: queue, settings, paymentsFor, clock, prepare: gymMail, disputeAlerts: alerts,
     async afterCheckoutRecorded(gymId, linkId, sessionId) {
       try { await checkout.complete(gymId, linkId, sessionId); }
       // Revoked/expired links refuse completion without retrying an already-recorded card or payment.

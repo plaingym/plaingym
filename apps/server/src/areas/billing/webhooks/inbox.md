@@ -30,8 +30,8 @@ and on events stored before it was recorded. Its event ID is
 globally unique. Receipt commits before enqueue; 200 follows durable enqueue. A
 redelivery repairs an interrupted enqueue with the same persistent job key, without
 replacing the saved event or re-running a completed one.
-Pass the queue's recovery capability as `recovery` to `createWebhookInbox` as well
-as `jobs`. A redelivery resets an exhausted original dispatch job with `retryFailed`
+The runtime passes the queue's recovery capability as `recovery` to
+`createWebhookInbox` as well as `jobs`. A redelivery resets an exhausted original dispatch job with `retryFailed`
 and audits `billing.webhook.dispatch_retried`, keeping its ID, payload and key.
 Concurrent redeliveries reset it only once; pending and running jobs are unchanged.
 The inbox has no timer of its own: only a later delivery of the same event resets

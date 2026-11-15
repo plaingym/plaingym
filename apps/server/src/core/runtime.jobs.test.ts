@@ -49,6 +49,40 @@ it('stores a signed Stripe event for its gym and queues its dispatch through the
     expect(await database.forSystem((tx) => tx.select().from(jobs).where(eq(jobs.name, 'billing.webhooks.dispatch')))).toHaveLength(1);
   } finally { provider.mockRestore(); await app.restart(); }
 });
+it('resets a failed webhook dispatch job when Stripe redelivers its event, through the runtime composition', async () => {
+  const sandbox = app.sandbox;
+  const provider = vi.spyOn(stripeAdapter, 'stripeTransport').mockReturnValue(new StripeFixtures(sandbox.gymId));
+  try {
+    await app.restart(demoStripeEnv);
+    expect((await app.deliverStripeEvent('evt_runtime_recovery')).status).toBe(200);
+    const dispatch = () => database.forSystem(tx => tx.select().from(jobs).where(eq(jobs.name, 'billing.webhooks.dispatch')));
+    const [queued] = (await dispatch()).filter(job => job.gymId === sandbox.gymId);
+    expect(queued).toBeDefined();
+    await database.forSystem(tx => tx.update(jobs).set({ status: 'failed', attempts: queued!.maxAttempts, lastError: 'down' })
+      .where(eq(jobs.id, queued!.id)));
+    expect((await app.deliverStripeEvent('evt_runtime_recovery')).status).toBe(200);
+    expect(await dispatch()).toEqual(expect.arrayContaining([expect.objectContaining({ id: queued!.id, status: 'pending', attempts: 0 })]));
+  } finally { provider.mockRestore(); await app.restart(); }
+});
+it('defers a suspended gym\'s due jobs on the runtime worker queue until the gym is active again', async () => {
+  const gymId = app.sandbox.gymId, queue = app.queue, handler = vi.fn(async () => {});
+  queue.handle('runtime.suspended-gym-probe', handler);
+  const queued = await queue.enqueue('runtime.suspended-gym-probe', {}, { gymId, timezone: 'UTC', maxAttempts: 1 });
+  const status = (value: string) => database.forGym(gymId, tx => tx.update(gyms).set({ status: value }).where(eq(gyms.id, gymId)));
+  const job = async () => (await database.forSystem(tx => tx.select().from(jobs).where(eq(jobs.id, queued.jobId))))[0]!;
+  await status('suspended');
+  try {
+    // Drain what is due: other due jobs may run first, and the suspended gym's job is only pushed back.
+    for (let n = 0; n < 50 && await queue.runNext(); n++);
+    expect(handler).not.toHaveBeenCalled();
+    expect(await job()).toMatchObject({ status: 'pending', attempts: 0, lastError: null });
+  } finally { await status('active'); }
+  // The runtime uses the real clock: make the deferred job due now instead of waiting out its minute.
+  await database.forSystem(tx => tx.update(jobs).set({ runAt: new Date(Date.now() - 1000) }).where(eq(jobs.id, queued.jobId)));
+  for (let n = 0; n < 50 && await queue.runNext(); n++);
+  expect(handler).toHaveBeenCalledOnce();
+  expect(await job()).toMatchObject({ status: 'succeeded' });
+});
 it('schedules daily job retention on the worker queue, keeping billing alert jobs', async () => {
   // The worker's first tick schedules today's retention run at 03:30 UTC as an install job.
   const queue = app.queue, date = new Date().toISOString().slice(0, 10);

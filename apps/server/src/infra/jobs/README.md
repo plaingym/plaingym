@@ -61,8 +61,8 @@ later. Demo composition can supply `pool.jobPolicy` to defer pooled and unfinish
 gyms and skip shared or retired ones. `createGymJobPolicy` in
 `core/tenancy-jobs.ts` wraps this hook with a fresh gym-status lookup: inactive
 or missing gyms return `defer`, overriding any install-specific policy, and active
-gyms run by default. Install composition should pass this policy in ordinary
-installs too, and wrap `pool.jobPolicy` in demo mode. Suspended gyms keep their
+gyms run by default. The runtime passes this policy to its worker queue in every
+mode, wrapping `pool.jobPolicy` in demo mode. Suspended gyms keep their
 queued work without spending attempts until their deletion cascades the rows;
 reactivation lets the work run on its next due attempt. Install jobs bypass gym
 eligibility. A job whose handler already started before suspension can finish.

@@ -123,8 +123,8 @@ work is published as soon as its transition commits; a failed publish is logged
 and never fails the committed transition. `createTransitionJobs` supplies an
 hourly recovery sweep and the effect handler; both are already included through
 the existing billing job barrel.
-Supply `recovery` with the queue's `failedJobs` and `retryFailed` capability to
-`createTransitionEffects` (or `composeBillingWebhooks`). After publication the
+The runtime supplies `recovery`, the queue's `failedJobs` and `retryFailed`
+capability, to `composeBillingWebhooks` (and so `createTransitionEffects`). After publication the
 hourly sweep also checks published, incomplete effects, including those older
 than the 30-day publication window, in pages of 100. A job that exhausted its
 twelve attempts is reset in place, preserving its ID, payload and idempotency key;
