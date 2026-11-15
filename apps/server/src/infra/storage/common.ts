@@ -118,6 +118,8 @@ export interface UploadBackend {
 
 /** Durable reservations outlive blobs, so deleting a blob never releases its key. */
 export class DurableUploads implements Uploads {
+  #prefixReconciliation: Promise<void> | undefined;
+  #prefixReconciledAt: number | undefined;
   constructor(readonly gymId: string, protected readonly backend: UploadBackend, readonly clock: Clock) { validGym(gymId); }
   async put(key: string, body: UploadBody, contentType: string): Promise<UploadInfo> {
     assertNoTransaction('storage.put'); gymKey(this.gymId, key);
@@ -151,13 +153,14 @@ export class DurableUploads implements Uploads {
     options.signal?.throwIfAborted();
     return record?.info && !record.swept ? record.info : null;
   }
-  /** Reconciles first, then reads only the indexed records under the prefix. */
+  /** Whole-store reads reconcile every time; prefix reads share a recent reconciliation. */
   async list(prefix = this.gymId + '/'): Promise<readonly UploadInfo[]> {
     assertNoTransaction('storage.list');
     validKey(prefix);
     if (!prefix.startsWith(this.gymId + '/')) throw new Error('Prefix belongs to another gym');
     // A process running an older layout can publish an unindexed key after any previous listing.
-    await this.#reconcile();
+    if (prefix === this.gymId + '/') await this.#reconcile();
+    else await this.#reconcilePrefix();
     const search = indexSearch(this.gymId, prefix);
     const candidates = (await this.#entries(search.slice(0, indexBytes * 2)))
       .filter((entry) => entry.hex.startsWith(search) || (entry.truncated && search.startsWith(entry.hex)));
@@ -221,6 +224,15 @@ export class DurableUploads implements Uploads {
   }
   async #entries(prefix: string): Promise<IndexEntry[]> {
     return (await this.backend.entries(prefix)).flatMap((name) => indexEntry(this.gymId, name) ?? []);
+  }
+  async #reconcilePrefix(): Promise<void> {
+    if (this.#prefixReconciliation) return this.#prefixReconciliation;
+    const age = this.clock.now().getTime() - (this.#prefixReconciledAt ?? -Infinity);
+    if (age >= 0 && age < 60_000) return;
+    this.#prefixReconciliation = this.#reconcile().then(() => {
+      this.#prefixReconciledAt = this.clock.now().getTime();
+    }).finally(() => { this.#prefixReconciliation = undefined; });
+    return this.#prefixReconciliation;
   }
   /** The entry's record, or null when the entry names no record of this gym (a reservation that never happened). */
   async #read(entry: IndexEntry): Promise<UploadRecord | null> {

@@ -26,7 +26,7 @@ afterAll(async () => {
 
 /** One store, opened by as many adapters as a test needs, with the files of its index layout. */
 interface Store {
-  open(gymId?: string): LocalUploads | S3Uploads;
+  open(gymId?: string, at?: TestClock): LocalUploads | S3Uploads;
   /** Names in the gym's key index. */
   entries(gymId?: string): Promise<string[]>;
   /** Removes what the index layout adds, leaving the store as the release before it wrote it. */
@@ -47,7 +47,7 @@ function localStore(root: string): Store {
   const gymRoot = (gymId = 'gym') => join(root, digest(gymId));
   const added = (path: string) => ['index', 'swept'].some((directory) => path === join(gymRoot(), directory) || path.startsWith(join(gymRoot(), directory) + sep));
   return {
-    open: (gymId = 'gym') => new LocalUploads({ gymId, root, signingKey, downloadUrl: 'https://gym.test/uploads/download', clock }),
+    open: (gymId = 'gym', at = clock) => new LocalUploads({ gymId, root, signingKey, downloadUrl: 'https://gym.test/uploads/download', clock: at }),
     entries: async (gymId) => (await readdir(join(gymRoot(gymId), 'index')).catch(() => [])).sort(),
     async removeIndex() { for (const directory of ['index', 'swept']) await rm(join(gymRoot(), directory), { recursive: true, force: true }); },
     removeEntry: (key) => rm(join(gymRoot(), 'index', indexName('gym', key))),
@@ -77,7 +77,7 @@ function s3Store(bucket = 'index-' + sequence++): Store & { readonly bucket: str
   const prefix = (gymId = 'gym') => `${bucket}/${gymId}/.storage/`;
   const object = () => ({ bytes: Buffer.alloc(0), contentType: 'text/plain', etag: '"e"', modified: 'Thu, 22 Oct 2026 12:00:00 GMT' });
   return {
-    open: (gymId = 'gym') => new S3Uploads({ client, bucket, gymId, clock }),
+    open: (gymId = 'gym', at = clock) => new S3Uploads({ client, bucket, gymId, clock: at }),
     entries: async (gymId) => [...server.objects.keys()].filter((key) => key.startsWith(prefix(gymId) + 'index/'))
       .map((key) => key.slice((prefix(gymId) + 'index/').length)).sort(),
     async removeIndex() { for (const key of server.objects.keys()) if (key.startsWith(prefix() + 'index/')) server.objects.delete(key); },
@@ -238,6 +238,34 @@ for (const implementation of ['local', 's3'] as const) {
 for (const implementation of ['local', 's3'] as const) {
   const create = async () => implementation === 'local' ? localStore(await temporaryRoot()) : s3Store();
   describe(`${implementation} key index repairs`, () => {
+    it('reuses prefix reconciliation for a minute while whole-store listings always find older-layout writes', async () => {
+      const store = await create(), at = new TestClock(clock.now()), uploads = store.open('gym', at);
+      const older = store.open();
+      await uploads.put('gym/p/current', stream([1]), 'text/plain');
+      expect(keys(await uploads.list('gym/p/'))).toEqual(['gym/p/current']);
+      await older.put('gym/p/older', stream([2]), 'text/plain');
+      await store.removeEntry('gym/p/older');
+      at.advance(59_999);
+      expect(keys(await uploads.list('gym/p/'))).toEqual(['gym/p/current']);
+      // A backup cannot reuse that prefix scan, even when the caller explicitly passes the gym root.
+      expect(keys(await uploads.list('gym/'))).toEqual(['gym/p/current', 'gym/p/older']);
+      await older.put('gym/p/later', stream([3]), 'text/plain');
+      await store.removeEntry('gym/p/later');
+      at.advance(1);
+      expect(keys(await uploads.list('gym/p/'))).toEqual(['gym/p/current', 'gym/p/later', 'gym/p/older']);
+      await older.put('gym/p/latest', stream([4]), 'text/plain');
+      await store.removeEntry('gym/p/latest');
+      expect(keys(await uploads.list())).toContain('gym/p/latest');
+    });
+    it('retries a failed prefix reconciliation on the same adapter', async () => {
+      const store = await create(), uploads = store.open();
+      for (const key of ['gym/p/1', 'gym/p/2', 'gym/p/3']) await uploads.put(key, stream([1]), 'text/plain');
+      await store.removeIndex();
+      const undo = await store.failIndexWrites();
+      try { await expect(uploads.list('gym/p/')).rejects.toThrow(); }
+      finally { await undo(); }
+      expect(keys(await uploads.list('gym/p/'))).toEqual(['gym/p/1', 'gym/p/2', 'gym/p/3']);
+    });
     it('finishes a sweep the release before the index interrupted before removing the blob', async () => {
       const store = await create(); const uploads = store.open();
       await uploads.put('gym/i/1', stream([1]), 'text/plain');
@@ -311,12 +339,16 @@ describe('S3 key index requests', () => {
     expect(keys(await uploads.list())).toHaveLength(5);
     const touched = (log: readonly string[], key: string) => log.some((line) => line.includes(digest(key)) || line.endsWith(indexName('gym', key)));
     server.state.log = [];
-    expect(keys(await store.open().list('gym/p/'))).toEqual(['gym/p/1', 'gym/p/2']);
+    expect(keys(await uploads.list('gym/p/'))).toEqual(['gym/p/1', 'gym/p/2']);
     const listing = server.state.log;
     // Four reconciliation listings, then the prefix's entries and each matching record's three objects.
     expect(listing.filter((line) => line.startsWith('LIST '))).toHaveLength(5);
     expect(listing).toHaveLength(5 + 2 * 3);
     for (const key of ['gym/p/3', 'gym/q/1', 'gym/q/2', 'gym/q/3']) expect(touched(listing, key)).toBe(false);
+    server.state.log = [];
+    expect(keys(await uploads.list('gym/p/'))).toEqual(['gym/p/1', 'gym/p/2']);
+    expect(server.state.log.filter((line) => line.startsWith('LIST '))).toHaveLength(1);
+    expect(server.state.log).toHaveLength(1 + 2 * 3);
     server.state.log = [];
     expect(await store.open().sweep({ before: new Date(0) })).toEqual([]);
     const sweep = server.state.log;
@@ -324,5 +356,19 @@ describe('S3 key index requests', () => {
     expect(sweep.filter((line) => line.startsWith('LIST '))).toHaveLength(5);
     for (const key of ['gym/p/1', 'gym/p/3', 'gym/q/1', 'gym/q/3']) expect(touched(sweep, key)).toBe(false);
     for (const key of ['gym/p/2', 'gym/q/2']) expect(touched(sweep, key)).toBe(true);
+  });
+  it('shares one reconciliation between concurrent prefix listings', async () => {
+    const store = s3Store(), uploads = store.open();
+    server.state.pageSize = 1000;
+    onTestFinished(() => { server.state.pageSize = 2; server.state.log = undefined; });
+    for (const key of ['gym/p/1', 'gym/q/1']) await uploads.put(key, stream([1]), 'text/plain');
+    await store.removeIndex();
+    server.state.log = [];
+    const [p, q] = await Promise.all([uploads.list('gym/p/'), uploads.list('gym/q/')]);
+    expect(keys(p)).toEqual(['gym/p/1']); expect(keys(q)).toEqual(['gym/q/1']);
+    // Four whole-store reconciliation requests, then one index-prefix request per caller.
+    expect(server.state.log.filter((line) => line.startsWith('LIST '))).toHaveLength(6);
+    for (const key of ['gym/p/1', 'gym/q/1'])
+      expect(server.state.log.filter((line) => line.startsWith('PUT ') && line.endsWith(indexName('gym', key)))).toHaveLength(1);
   });
 });

@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { beforeAll, expect, it } from 'vitest';
+import { afterAll, beforeAll, expect, it, onTestFinished, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
 import { staffRoles, auditEvents, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
+// eslint-disable-next-line no-restricted-imports -- Initialize real database pools for the configured route composition test.
+import { closeDatabase, initializeDatabase } from '@plaingym/db/client';
 import { createStaffDirectory } from '../../infra/auth/staff-directory.js';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { staffRoles as roleNames, type StaffRole } from '@plaingym/shared';
 import { staffProfileResponseSchema, staffProfileListResponseSchema, staffRoleResponseSchema } from '@plaingym/shared/contracts';
 import { createStaffProfileService } from './profiles.js';
-import { createStaffProfileRoutes } from './profiles.routes.js';
+import { configureStaffProfiles, createStaffProfileRoutes } from './profiles.routes.js';
+import { createStaffInvitationService } from './profiles.invitations.js';
+import { FakeUploads } from '../../infra/storage/index.js';
 import { createServerRegistry } from '../../core/registry.js';
 import { errorHandler } from '../../core/errors.js';
 import { TestClock } from '../../core/clock.js';
@@ -23,16 +27,18 @@ const directory = createStaffDirectory(() => db.system.db, 'single');
 const users = new Map<StaffRole, string>();
 let otherOwner: string;
 beforeAll(async () => {
+  await initializeDatabase(db.appUrl);
   await factory('gyms', gymA); await factory('gyms', gymB);
   for (const role of roleNames) { const user = await factory('authUser', gymA); users.set(role, user.id); await factory('staffRoles', gymA, { userId: user.id, role }); }
   const other = await factory('staffRoles', gymB, { role: 'owner' }); otherOwner = other.userId;
 });
+afterAll(closeDatabase);
 const actor = (role: StaffRole = 'owner', gymId = gymA) => ({ gymId, actorUserId: gymId === gymA ? users.get(role)! : otherOwner, clock });
-function server(role: StaffRole | 'anonymous' = 'owner', gymId = gymA, principalOverride?: Principal) {
+function server(role: StaffRole | 'anonymous' = 'owner', gymId = gymA, principalOverride?: Principal, runtimeDirectory = false) {
   const app = new OpenAPIHono<RequestEnvironment>();
   app.use('*', async (c, next) => { c.set('context', { gym: { gymId, timezone: 'UTC', enabledModules: new Set() }, clock, requestId: 'staff-test',
     principal: principalOverride ?? (role === 'anonymous' ? { kind: 'anonymous' } : { kind: 'staff', userId: actor(role, gymId).actorUserId, gymId, roles: [role] }) }); await next(); });
-  app.onError(errorHandler); createServerRegistry({ routes: createStaffProfileRoutes(service, directory) }).mount(app, authorize, new Set()); return app;
+  app.onError(errorHandler); createServerRegistry({ routes: createStaffProfileRoutes(service, runtimeDirectory ? undefined : directory) }).mount(app, authorize, new Set()); return app;
 }
 const request = (app: ReturnType<typeof server>, method: string, path: string, body?: unknown) => app.request(path, { method, headers: { 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
 it.each(roleNames)('only owner/admin can use every profile and role endpoint: %s', async (role) => {
@@ -145,4 +151,34 @@ it('names the owner without a profile and searches only linked gym accounts, wit
   expect((await multi.list(gymA, { limit: 25, offset: 0, search: 'Morgan' })).data).toEqual([]);
   await service.createProfile(actor(), { displayName: 'Local Gym Owner', userId: owner.id });
   expect((await multi.list(gymA, { limit: 25, offset: 0, search: 'Local Owner' })).data[0]?.displayName).toBe('Local Gym Owner');
+});
+it('reads tenancy when a prebuilt directory is called, for account search and owner names', async () => {
+  vi.stubEnv('TENANCY', 'single'); onTestFinished(() => { vi.unstubAllEnvs(); });
+  const lazy = createStaffDirectory(() => db.system.db);
+  const owner = await factory('authUser', gymA, { name: 'GlobalIdentityOnly', email: 'lazy.owner@example.test' });
+  await factory('staffRoles', gymA, { userId: owner.id, role: 'owner' });
+  expect((await lazy.names(gymA, [owner.id]))[0]?.displayName).toBe(owner.name);
+  vi.stubEnv('TENANCY', 'multi');
+  expect((await lazy.list(gymA, { limit: 25, offset: 0, search: owner.name })).data).toEqual([]);
+  expect((await lazy.names(gymA, [owner.id]))[0]?.displayName).toBe(owner.email);
+  expect(await lazy.names(gymB, [owner.id])).toEqual([]);
+  await service.createProfile(actor(), { displayName: 'Local Identity', userId: owner.id });
+  expect((await lazy.names(gymA, [owner.id]))[0]?.displayName).toBe('Local Identity');
+});
+it('uses the configured tenancy for routes built before configuration, including the owner role name', async () => {
+  vi.stubEnv('TENANCY', 'single'); onTestFinished(() => { vi.unstubAllEnvs(); });
+  const app = server('owner', gymA, undefined, true);
+  const owner = await factory('authUser', gymA, { name: 'PrivateInstallIdentity', email: 'configured.owner@example.test' });
+  await factory('staffRoles', gymA, { userId: owner.id, role: 'owner' });
+  configureStaffProfiles({ tenancy: 'multi', origin: () => 'https://gym.test', uploadsFor: async (gymId) => new FakeUploads(gymId, clock),
+    invitations: createStaffInvitationService({ config: { tenancy: 'multi', secret: 's'.repeat(32), production: false,
+      passwordEnabled: false, smtpConfigured: true }, smtpConfigured: async () => true, mailer: async () => null }) });
+  const account = await app.request('/api/staff/accounts?userId=' + owner.id);
+  expect(account.status).toBe(200);
+  expect(await account.json()).toMatchObject({ data: [{ id: owner.id, displayName: owner.email }] });
+  const search = await app.request('/api/staff/accounts?search=' + owner.name);
+  expect(await search.json()).toMatchObject({ data: [] });
+  const roles = await app.request('/api/staff/roles?limit=100');
+  expect(roles.status).toBe(200);
+  expect(await roles.json()).toMatchObject({ data: expect.arrayContaining([expect.objectContaining({ userId: owner.id, displayName: owner.email })]) });
 });

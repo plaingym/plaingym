@@ -7,8 +7,11 @@ With `publicHostOnly`, for a server a tenant named, each session resolves the ho
 
 This check is used for gym-supplied servers in `multi` mode. It queries A and AAAA
 with a per-session `dns.promises.Resolver`, outside the shared worker pool, and
-cancels outstanding queries at the ten-second deadline or when either query fails.
-An absent address family is allowed; other DNS errors fail the check. Address
+cancels outstanding queries at the ten-second deadline. Once one family answers,
+it waits at most 250 ms for the other, then cancels any remaining query. Every
+returned address is still checked, and only checked addresses can be connected to.
+One answering family is enough even when the other returns a DNS error; when
+neither answers, the DNS error remains the delivery error's cause. Address
 literals are checked directly without DNS. Single-gym installs retain Nodemailer's
 existing lookup behavior, including system lookup support for hosts-file names.
 

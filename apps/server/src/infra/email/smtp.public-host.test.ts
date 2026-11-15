@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import net from 'node:net';
 import tls from 'node:tls';
+import { Resolver } from 'node:dns/promises';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SmtpEmail } from './index.js';
 import { captureSmtp } from './test-smtp.js';
@@ -19,6 +20,31 @@ afterAll(async () => { await good?.close(); await bad?.close(); });
 beforeEach(() => { lookup.mockReset(); });
 
 describe('SmtpEmail with publicHostOnly', () => {
+  it('sends to checked A answers when AAAA returns SERVFAIL', async () => {
+    const query4 = vi.spyOn(Resolver.prototype, 'resolve4').mockResolvedValue([rebound]);
+    const query6 = vi.spyOn(Resolver.prototype, 'resolve6').mockRejectedValue(Object.assign(new Error('nameserver failed'), { code: 'ESERVFAIL' }));
+    const connect = vi.spyOn(net, 'connect'), before = bad.messages.length;
+    try {
+      await using(new SmtpEmail({ ...config(), port: bad.port }, { hostCheck: {
+        isPublic: (address) => address === rebound, families: () => new Set([4] as const),
+      } }), async (email) => expect(await email.sendEmail(message)).toMatchObject({ status: 'sent' }));
+      expect(bad.messages).toHaveLength(before + 1);
+      expect(connect.mock.calls[0]?.[0]).toMatchObject({ host: rebound });
+      expect(query4).toHaveBeenCalledOnce(); expect(query6).toHaveBeenCalledOnce();
+    } finally { query4.mockRestore(); query6.mockRestore(); connect.mockRestore(); }
+  });
+  it('keeps NXDOMAIN as the delivery error cause when both families are absent', async () => {
+    const failure = Object.assign(new Error('queryA ENOTFOUND ' + host), { code: 'ENOTFOUND' });
+    const query4 = vi.spyOn(Resolver.prototype, 'resolve4').mockRejectedValue(failure);
+    const query6 = vi.spyOn(Resolver.prototype, 'resolve6').mockRejectedValue(failure);
+    const connections = bad.connections + good.connections;
+    try {
+      await using(new SmtpEmail(config()), async (email) => {
+        await expect(email.sendEmail(message)).rejects.toMatchObject({ acceptance: 'not_accepted', cause: failure });
+      });
+      expect(bad.connections + good.connections).toBe(connections);
+    } finally { query4.mockRestore(); query6.mockRestore(); }
+  });
   it('connects to the checked address even when the name would answer differently a moment later', async () => {
     lookup.mockResolvedValueOnce([checked]).mockResolvedValue([rebound]);
     const before = good.messages.length, strays = bad.connections;

@@ -13,14 +13,30 @@ export interface HostCheck {
 }
 
 const lookupLimitMs = 10_000;
-/** Query both families without getaddrinfo's shared worker pool; an absent family is allowed, a failed query isn't. */
+/** Query both families outside the shared worker pool; use answers even when the sibling query fails or stalls. */
 async function resolveAddresses(host: string, resolver: Resolver): Promise<readonly string[]> {
-  const optional = (query: Promise<string[]>) => query.catch((error: unknown) => {
-    if (error instanceof Error && 'code' in error && (error.code === 'ENODATA' || error.code === 'ENOTFOUND')) return [];
-    throw error;
+  return new Promise((resolve, reject) => {
+    const answers: string[][] = [[], []], failures: unknown[] = [];
+    let pending = 2, finished = false, grace: NodeJS.Timeout | undefined;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(deadline); clearTimeout(grace);
+      const addresses = answers.flat();
+      if (addresses.length) resolve(addresses);
+      else reject(failures[0] ?? Object.assign(new Error('SMTP host lookup timed out'), { code: 'ETIMEDOUT' }));
+    };
+    const deadline = setTimeout(finish, lookupLimitMs);
+    const settled = (family: number, addresses: string[], error?: unknown) => {
+      if (finished) return;
+      answers[family] = addresses;
+      if (error !== undefined) failures.push(error);
+      if (--pending === 0) finish();
+      else if (addresses.length) grace = setTimeout(finish, 250);
+    };
+    void resolver.resolve4(host).then((addresses) => settled(0, addresses), (error: unknown) => settled(0, [], error));
+    void resolver.resolve6(host).then((addresses) => settled(1, addresses), (error: unknown) => settled(1, [], error));
   });
-  const [v4, v6] = await Promise.all([optional(resolver.resolve4(host)), optional(resolver.resolve6(host))]);
-  return [...v4, ...v6];
 }
 
 /** The only IPv6 addresses routed globally. IPv4-mapped, loopback, link-local and unique-local addresses are all outside it. */
@@ -76,7 +92,7 @@ export async function publicAddresses(host: string, check: HostCheck = {}): Prom
   const resolver = literal || check.lookup ? undefined : new Resolver({ timeout: lookupLimitMs, tries: 1 });
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(Object.assign(new Error('SMTP host lookup timed out'), { code: 'ETIMEDOUT' })), lookupLimitMs);
+    if (!resolver) timer = setTimeout(() => reject(Object.assign(new Error('SMTP host lookup timed out'), { code: 'ETIMEDOUT' })), lookupLimitMs);
   });
   try {
     const addresses = await Promise.race([literal ? Promise.resolve([host])

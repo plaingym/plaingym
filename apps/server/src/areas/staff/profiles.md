@@ -10,6 +10,11 @@ Account IDs supplied to role grants must already belong to this gym through a ho
 
 The staff screen chooses accounts and linked members through paginated searches. Typing a search preserves the current link until a result is chosen or the link is cleared. Role grants require an explicit selection. IDs remain request values and are not displayed as names.
 
+The directory resolves tenancy at call time, using the mode supplied to
+`configureStaffProfiles` or `tenancyMode()` when none was supplied. Role names use
+a separate gym-scoped staff query without counting or searching household links;
+owners without a profile retain the same name fallback as account search.
+
 Invitations provision identity through the account service and return the role required by the invitation contract. The auth invitation store writes only authentication tables; staff-role validation, profiles, and audits stay in the staff service. The store persists a SHA-256 digest of a random 256-bit token in `auth_verification`, with the gym in its identifier and the role ID, role name, user ID and revision in its value. Tokens expire after seven days. Changing/revoking the role invalidates the invitation. Resending replaces outstanding links; a delivery failure can be retried. Accepted staff accounts cannot be reinvited to bypass password-reset protection. An emailed invitation carries a `sendGeneration`: a retry with the same generation returns the first result, issues nothing and sends no second email, so an emailed token stays in force unless acceptance or a role change already ended it, and a deliberate resend has a new generation (`infra/email/README.md`). The result it returns can be out of date after either. A printed invitation has none. Its delivery key is `staff.invitation:<recipient hash>:<generation>`.
 
 The public acceptance page reads a URL fragment, removes it from browser history, and submits it as JSON. Consumption, profile creation, credential installation and audit commit atomically. Password hashing/verification happens outside transactions. Existing passwords must be proved and are never replaced. Multi mode accepts no password. Accepting a link does not create a session; the invitee signs in through the normal login flow.
@@ -23,6 +28,10 @@ The profile form saves the presentation fields before its separate photo request
 The staff barrel exports every profile, role, invitation, acceptance-page, and photo route. Every route returns 503 until `core/runtime.ts` calls `configureStaffProfiles` with an invitation service (the runtime's auth config, SMTP check, and the gym's SMTP mailer or the demo outbox), the gym's upload provider, and the canonical origin resolver. Demo mode keeps uploads disabled.
 
 The JSON contracts live in `packages/shared`: `staffContracts.uploadPhoto` and the public `staffInvitationContracts.acceptInvitation`. The photo read and the `/staff-invitation` page are binary and HTML responses outside the JSON contracts. Ordinary profile requests cannot carry a photo key; an update may only clear one with `photoKey: null`. The password reset backend remains the existing staff-auth route; only its UI is added.
+
+Callers that configure the runtime with their own environment object should also
+pass its resolved `tenancy` to `configureStaffProfiles`, so directory reads use
+that mode even when `process.env.TENANCY` differs.
 
 ## Your account
 

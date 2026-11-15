@@ -116,8 +116,11 @@ similar): mail sent directly from a server usually lands in spam.
 In multi-gym mode gym owners change email and payments only when
 `GYM_INTEGRATIONS=gym`; see [Tenancy and demo](#tenancy-and-demo). A gym's own SMTP server there must
 resolve only to public addresses, whichever way the variable is set. The check uses
-cancellable A and AAAA DNS queries with a ten-second deadline; it does not read the
-hosts file. Single-gym installs retain system lookup support for hosts-file names.
+cancellable A and AAAA DNS queries with a ten-second deadline. After one family
+answers it waits up to 250 ms for the other; a DNS failure in one family is allowed
+when the other supplies addresses, and every returned address must still be public.
+It does not read the hosts file. Single-gym installs retain system lookup support
+for hosts-file names.
 
 | Variable | Default | Meaning |
 | :--- | :--- | :--- |

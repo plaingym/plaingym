@@ -22,15 +22,17 @@ export function createRuntimeUploads(env: NodeJS.ProcessEnv, key: Buffer, origin
       credentials: { accessKeyId: env.UPLOADS_S3_ACCESS_KEY_ID, secretAccessKey: env.UPLOADS_S3_SECRET_ACCESS_KEY },
     } : {}),
   }) : undefined;
+  const stores = new Map<string, { uploads: Uploads; downloadUrl: string | undefined }>();
   async function unwrapped(gymId: string): Promise<Uploads> {
       idSchema.parse(gymId);
-      let uploads: Uploads;
-      if (client && bucket) uploads = new S3Uploads({ client, bucket, gymId });
-      else {
-        if (!env.UPLOADS_DIR) throw new Error('Set UPLOADS_DIR');
-        uploads = new LocalUploads({ root: env.UPLOADS_DIR, gymId, signingKey: key,
-          downloadUrl: new URL(uploadDownloadPath, await origin(gymId)).href });
-      }
+      if (!client && !env.UPLOADS_DIR) throw new Error('Set UPLOADS_DIR');
+      // Keep reconciliation state between requests. Local links still follow a changed canonical origin.
+      const downloadUrl = client ? undefined : new URL(uploadDownloadPath, await origin(gymId)).href;
+      const cached = stores.get(gymId);
+      if (cached && cached.downloadUrl === downloadUrl) return cached.uploads;
+      const uploads = client && bucket ? new S3Uploads({ client, bucket, gymId })
+        : new LocalUploads({ root: env.UPLOADS_DIR!, gymId, signingKey: key, downloadUrl: downloadUrl! });
+      stores.set(gymId, { uploads, downloadUrl });
       return uploads;
   }
   return {
@@ -48,12 +50,13 @@ export function createRuntimeUploads(env: NodeJS.ProcessEnv, key: Buffer, origin
     async removeGym(gymId: string): Promise<void> {
       assertNoTransaction('storage.deleteGym');
       idSchema.parse(gymId);
+      stores.delete(gymId);
       if (client && bucket) return createUploadPrefixCleaner(new S3BackupObjectStore({ client, bucket }))(gymId);
       if (!env.UPLOADS_DIR) return;
       const root = resolve(env.UPLOADS_DIR), target = resolve(root, createHash('sha256').update(gymId).digest('hex'));
       if (dirname(target) !== root) throw new Error('Invalid upload directory');
       await rm(target, { recursive: true, force: true });
     },
-    close() { client?.destroy(); },
+    close() { stores.clear(); client?.destroy(); },
   };
 }

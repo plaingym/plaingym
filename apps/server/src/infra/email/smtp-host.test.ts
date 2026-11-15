@@ -63,7 +63,7 @@ describe('publicAddresses', () => {
     expect(query4).not.toHaveBeenCalled(); expect(query6).not.toHaveBeenCalled();
     query4.mockRejectedValue(Object.assign(new Error('no answer'), { code: 'ENOTFOUND' }));
     query6.mockRejectedValue(Object.assign(new Error('no answer'), { code: 'ENOTFOUND' }));
-    await expect(publicAddresses('localhost')).rejects.toBeInstanceOf(SmtpHostRefusedError);
+    await expect(publicAddresses('localhost')).rejects.toMatchObject({ code: 'ENOTFOUND' });
   });
   it('resolves both families using a cancellable resolver and checks all answers before choosing a family', async () => {
     const query4 = vi.spyOn(Resolver.prototype, 'resolve4').mockResolvedValue([v4]);
@@ -80,15 +80,41 @@ describe('publicAddresses', () => {
     expect(query4.mock.contexts[1]).not.toBe(query4.mock.contexts[0]);
     expect(cancel.mock.contexts).toEqual(query4.mock.contexts);
   });
-  it.each(['ENODATA', 'ENOTFOUND'])('accepts an absent address family (%s) but fails closed on other DNS errors', async (code) => {
+  it.each(['ENODATA', 'ENOTFOUND', 'ESERVFAIL', 'EREFUSED', 'ETIMEOUT'])('accepts one answering family when the other fails with %s', async (code) => {
     const query4 = vi.spyOn(Resolver.prototype, 'resolve4').mockResolvedValue([v4]);
     const query6 = vi.spyOn(Resolver.prototype, 'resolve6').mockRejectedValue(Object.assign(new Error('no answer'), { code }));
     await expect(publicAddresses('mail.example.test', { families: both })).resolves.toEqual([v4]);
     query4.mockRejectedValue(Object.assign(new Error('no answer'), { code })); query6.mockResolvedValue([v6]);
     await expect(publicAddresses('mail.example.test', { families: both })).resolves.toEqual([v6]);
-    const failure = Object.assign(new Error('nameserver failed'), { code: 'ESERVFAIL' });
-    query4.mockRejectedValue(failure);
-    await expect(publicAddresses('mail.example.test', { families: both })).rejects.toBe(failure);
+  });
+  it('keeps the DNS error when neither family exists', async () => {
+    const failure = Object.assign(new Error('queryA ENOTFOUND'), { code: 'ENOTFOUND' });
+    vi.spyOn(Resolver.prototype, 'resolve4').mockRejectedValue(failure);
+    vi.spyOn(Resolver.prototype, 'resolve6').mockRejectedValue(Object.assign(new Error('queryAAAA ENOTFOUND'), { code: 'ENOTFOUND' }));
+    await expect(publicAddresses('missing.example.test')).rejects.toBe(failure);
+  });
+  it('uses the answering family after a short wait and cancels the stalled query', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Resolver.prototype, 'resolve4').mockResolvedValue([v4]);
+    let reject6: (error: Error) => void = () => {};
+    vi.spyOn(Resolver.prototype, 'resolve6').mockImplementation(() => new Promise<never>((_resolve, reject) => { reject6 = reject; }));
+    const cancel = vi.spyOn(Resolver.prototype, 'cancel').mockImplementation(() => reject6(new Error('cancelled')));
+    const result = expect(publicAddresses('mail.example.test', { families: both })).resolves.toEqual([v4]);
+    await vi.advanceTimersByTimeAsync(249);
+    expect(cancel).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await result;
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it('checks a private sibling answer received within the short wait', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Resolver.prototype, 'resolve4').mockResolvedValue([v4]);
+    vi.spyOn(Resolver.prototype, 'resolve6').mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve(['fd00::1']), 200)));
+    const result = expect(publicAddresses('mail.example.test')).rejects.toBeInstanceOf(SmtpHostRefusedError);
+    await vi.advanceTimersByTimeAsync(200);
+    await result;
+    expect(vi.getTimerCount()).toBe(0);
   });
   it('cancels both slow DNS queries by the deadline and leaves no pending resolver work', async () => {
     vi.useFakeTimers();
@@ -110,14 +136,18 @@ describe('publicAddresses', () => {
     expect(active.size).toBe(0);
     expect(vi.getTimerCount()).toBe(0);
   });
-  it('cancels a pending sibling query when the other family fails', async () => {
+  it('waits for a pending sibling when the other family fails, then preserves the DNS error', async () => {
+    vi.useFakeTimers();
     const failure = Object.assign(new Error('nameserver failed'), { code: 'ESERVFAIL' });
     vi.spyOn(Resolver.prototype, 'resolve4').mockRejectedValue(failure);
     let reject6: (error: Error) => void = () => {};
     vi.spyOn(Resolver.prototype, 'resolve6').mockImplementation(() => new Promise<never>((_resolve, reject) => { reject6 = reject; }));
     const cancel = vi.spyOn(Resolver.prototype, 'cancel').mockImplementation(() => reject6(Object.assign(new Error('cancelled'), { code: 'ECANCELLED' })));
-    await expect(publicAddresses('mail.example.test')).rejects.toBe(failure);
+    const result = expect(publicAddresses('mail.example.test')).rejects.toBe(failure);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await result;
     expect(cancel).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
   });
   it('stops waiting for a lookup that never answers', async () => {
     vi.useFakeTimers();

@@ -14,6 +14,7 @@ import { createStaffPhotoRoutes, createStaffPhotoService } from './profiles.phot
 import type { Uploads } from '../../infra/storage/index.js';
 import { invitationPage } from './profiles.accept.js';
 import { createStaffDirectory } from '../../infra/auth/staff-directory.js';
+import { tenancyMode, type TenancyMode } from '../../core/tenancy.js';
 
 function actor(c: Context<RequestEnvironment>): StaffActor {
   const { principal, gym, clock } = c.get('context');
@@ -21,17 +22,17 @@ function actor(c: Context<RequestEnvironment>): StaffActor {
   return { gymId: gym.gymId, actorUserId: principal.userId, clock };
 }
 type Origin = (c: Context<RequestEnvironment>) => string;
-type Composition = { service: ReturnType<typeof createStaffProfileService>; invitations: StaffInvitationService; photos: ReturnType<typeof createStaffPhotoService>; origin: Origin };
+type Composition = { service: ReturnType<typeof createStaffProfileService>; invitations: StaffInvitationService; photos: ReturnType<typeof createStaffPhotoService>; origin: Origin; tenancy: TenancyMode | undefined };
 let configured: Composition | undefined;
 function configuration() {
   if (!configured) throw new AppError('unavailable', 'Staff management is not configured');
   return configured;
 }
 /** Runtime supplies per-gym storage, invitation delivery and the canonical hostname origin. */
-export function configureStaffProfiles(options: { invitations: StaffInvitationService; uploadsFor: (gymId: string) => Promise<Uploads>; origin: Origin }) {
-  configured = { service: createStaffProfileService(), invitations: options.invitations, photos: createStaffPhotoService(options.uploadsFor), origin: options.origin };
+export function configureStaffProfiles(options: { invitations: StaffInvitationService; uploadsFor: (gymId: string) => Promise<Uploads>; origin: Origin; tenancy?: TenancyMode }) {
+  configured = { service: createStaffProfileService(), invitations: options.invitations, photos: createStaffPhotoService(options.uploadsFor), origin: options.origin, tenancy: options.tenancy };
 }
-export function createStaffProfileRoutes(service?: ReturnType<typeof createStaffProfileService>, directory = createStaffDirectory()) {
+export function createStaffProfileRoutes(service?: ReturnType<typeof createStaffProfileService>, directory = createStaffDirectory(undefined, () => configured?.tenancy ?? tenancyMode())) {
   const current = () => service ?? configuration().service;
   const contracts = staffContracts;
   return [
