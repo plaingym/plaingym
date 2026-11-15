@@ -10,10 +10,11 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { PostgresJobs } from '../infra/jobs/postgres.js';
 import type { JobHandler } from '../infra/jobs/index.js';
-import { ERASED_CUSTOMER_NAME, FakePayments } from '../infra/payments/index.js';
+import { ERASED_CUSTOMER_NAME, FakePayments, billingEmailDigest } from '../infra/payments/index.js';
 import type { StripePayments } from '../infra/payments/stripe.js';
 import * as stripeStep from '../areas/setup/stripe-step.js';
 import { redactCustomerJob } from '../areas/members/members.routes.js';
+import { clearBillingEmailJob } from '../areas/members/erasure-redaction.js';
 import { customerRedactedAction } from '../areas/members/erasure-redaction.js';
 import { clock } from './clock.js';
 import { setLogSink } from './log.js';
@@ -57,6 +58,26 @@ it('redacts an erased household\'s Stripe customer through the runtime\'s paymen
   await handlers.get(redactCustomerJob)!({ customerId: 'cus_reused' }, { gymId, clock, timezone: 'UTC', jobId: uuidv7(), attempt: 1 });
   expect(fake.customer('cus_reused')?.name).not.toBe(ERASED_CUSTOMER_NAME);
   expect(await redactions()).toHaveLength(1);
+});
+
+it('clears an erased payer\'s email at the gym\'s provider through the runtime\'s payments wiring', async () => {
+  vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
+  const handlers = new Map<string, JobHandler>(), register = PostgresJobs.prototype.handle;
+  vi.spyOn(PostgresJobs.prototype, 'handle').mockImplementation(function (this: PostgresJobs, name, handler, options) {
+    handlers.set(name, handler); register.call(this, name, handler, options);
+  });
+  directory ??= await mkdtemp(join(tmpdir(), 'plaingym-hardening-runtime-'));
+  const gymId = uuidv7(); await factory('gyms', gymId);
+  const home = await factory('households', gymId);
+  await db.forGym(gymId, tx => tx.update(households).set({ stripeCustomerId: 'cus_payer' }).where(eq(households.id, home.id)));
+  const fake = new FakePayments(gymId, clock, 'synthetic-runtime-secret');
+  fake.seedCustomer({ id: 'cus_payer', email: 'payer@example.invalid', name: 'Payer', gymId, householdId: home.id });
+  vi.spyOn(stripeStep, 'createPaymentsResolver').mockReturnValue(async () => fake as unknown as StripePayments);
+  runtime = await startRuntime(env(directory));
+  // The job the erasure queues reaches the gym's own provider, and the household keeps its customer and name.
+  await handlers.get(clearBillingEmailJob)!({ householdId: home.id, customerId: 'cus_payer', emailDigest: billingEmailDigest('payer@example.invalid') },
+    { gymId, clock, timezone: 'UTC', jobId: uuidv7(), attempt: 1 });
+  expect(fake.customer('cus_payer')).toMatchObject({ email: null, name: 'Payer' });
 });
 
 it('allows images from the uploads bucket\'s origin under the enforced policy', async () => {
