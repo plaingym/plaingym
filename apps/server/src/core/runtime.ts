@@ -283,7 +283,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   // The dashboard is configured after the payment service exists (below); portal progress reads through the same services.
   configurePortalProgress({ ranks, attendance });
   // Staff invitations use the gym's SMTP (or the demo outbox); photos use the gym's file storage.
-  configureStaffProfiles({ invitations: createStaffInvitationService({ config, smtpConfigured,
+  configureStaffProfiles({ tenancy: mode, invitations: createStaffInvitationService({ config, smtpConfigured,
     mailer: demo ? demo.emailFor : smtpMailer(smtp!) }), uploadsFor: uploads.forGym, origin: originFor });
   // Passwordless claims prove the address with a login link that returns to the portal claim page.
   const portalInvitations = createPortalInvitationService({ config, smtpConfigured,

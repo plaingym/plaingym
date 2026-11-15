@@ -53,6 +53,19 @@ it('serves staff, dashboard, go-live, and waiver routes through the runtime comp
   const { data } = await invite.json() as { data: { invitationUrl: string } };
   expect(new URL(data.invitationUrl).origin).toBe(sandbox.origin);
 });
+it('shows staff accounts by the runtime\'s tenancy, not the process environment', async () => {
+  // The demo runtime starts in multi mode from its own env object while the process says single.
+  vi.stubEnv('TENANCY', 'single');
+  try {
+    const sandbox = app.sandbox, headers = app.headers(sandbox, await app.login('owner'));
+    const person = await factory('authUser', sandbox.gymId, { name: 'InstallWideIdentityOnly', email: 'tenancy.wiring@example.invalid' });
+    await factory('staffRoles', sandbox.gymId, { userId: person.id, role: 'coach' });
+    const get = async (path: string) => (await (await app.runtime.app.request(sandbox.origin + path, { headers })).json()) as { data: Array<{ displayName?: string }> };
+    expect((await get('/api/staff/accounts?userId=' + person.id)).data[0]?.displayName).toBe(person.email);
+    expect((await get('/api/staff/accounts?search=InstallWideIdentityOnly')).data).toEqual([]);
+    expect((await get('/api/staff/roles?limit=100')).data).toEqual(expect.arrayContaining([expect.objectContaining({ userId: person.id, displayName: person.email })]));
+  } finally { vi.unstubAllEnvs(); }
+});
 it('issues, scans, replaces and revokes QR codes through the production runtime with real bookings', async () => {
   const sandbox = app.sandbox, ownerCookie = await app.login('owner');
   // Marcus is active with the seeded waiver signed, so the real standing providers pass.
