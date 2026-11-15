@@ -61,6 +61,7 @@ it('redacts an erased household\'s Stripe customer through the runtime\'s paymen
 });
 
 it('clears an erased payer\'s email at the gym\'s provider through the runtime\'s payments wiring', async () => {
+  vi.restoreAllMocks(); // the first test's spy on handle would otherwise call itself
   vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
   const handlers = new Map<string, JobHandler>(), register = PostgresJobs.prototype.handle;
   vi.spyOn(PostgresJobs.prototype, 'handle').mockImplementation(function (this: PostgresJobs, name, handler, options) {
