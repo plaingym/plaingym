@@ -14,8 +14,10 @@ import { createWaiversService } from '../../areas/waivers/waivers.js';
 import { createSignedLinkCheckout } from '../../areas/billing/signed-link-checkout.js';
 import { createSignedLinksService } from '../../areas/links/service.js';
 import { createInvoiceTransitions } from '../../areas/billing/transitions/index.js';
+import { checkSubmittedJoin } from '../../areas/billing/transitions/join-cleanup.js';
 import { createChargeRunner } from '../../areas/billing/runner/index.js';
 import { createMembershipService } from '../../areas/billing/memberships.js';
+import { createMembersService } from '../../areas/members/members.js';
 import { FakePayments } from '../../infra/payments/index.js';
 import { FakeUploads } from '../../infra/storage/index.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
@@ -379,6 +381,44 @@ describe('unpaid submitted joins', () => {
     expect((await f.state(link!.householdId)).invoices.map(i => [i.status, i.needsReview])).toEqual([['open', true]]);
     expect(await f.run()).toBe(1);
     expect((await f.state(link!.householdId)).invoices.map(i => i.status)).toEqual(['void']);
+  });
+
+  it.each([true, false])('keeps an anonymized household join when runner goes first: %s', async runnerFirst => {
+    const f = await fixture(), join = await f.submit('anonymized-hold@example.invalid');
+    const runner = createChargeRunner({ scope: db.forGym, clock: f.clock, transitions: f.transitions, jobs: new FakeJobs(f.clock),
+      settings: createGymSettingsAccessor({ scope: db.forGym, clock: f.clock }), payments: f.paymentsFor });
+    f.clock.set('2026-11-06T09:00:00Z');
+    const runBilling = async () => expect((await runner.daily(f.gymId)).errors).toEqual([]);
+    if (runnerFirst) await runBilling();
+    const before = await f.state(join.householdId), person = before.members[0]!;
+    expect(before.invoices[0]).toMatchObject({ status: 'open', needsReview: runnerFirst });
+    expect(count(before.audits, 'billing.runner.overdue_held', join.invoiceId)).toBe(runnerFirst ? 1 : 0);
+    // Distinct instants make the later anonymization audit unambiguous.
+    f.clock.advance(1);
+    await createMembersService({ scope: db.forGym, clock: f.clock }).eraseMember(system(f.gymId), person.id,
+      { revision: person.revision }, { jobs: new FakeJobs(f.clock), timezone });
+    const erased = await f.state(join.householdId);
+    expect(erased.invoices[0]).toMatchObject({ status: 'open', needsReview: true });
+    expect(erased.audits.filter(a => a.action === 'billing.invoice.held' && a.targetId === join.invoiceId)).toEqual([
+      expect.objectContaining({ occurredAt: f.clock.now(), targetType: 'invoice', after: { reason: 'household_anonymized' } }),
+    ]);
+    if (!runnerFirst) { f.clock.advance(1); await runBilling(); }
+    // Check the hold itself, before cleanup's separate protection for cancelled memberships.
+    expect(await db.forGym(f.gymId, async tx => {
+      await tx.select({ id: households.id }).from(households).where(eq(households.id, join.householdId)).for('update');
+      return checkSubmittedJoin(tx, join, new Set(), f.clock);
+    })).toEqual({ outcome: 'keep' });
+    expect(await f.run()).toBe(0);
+    const after = await f.state(join.householdId);
+    expect(after.invoices[0]).toMatchObject({ status: 'open', needsReview: true });
+    expect(after.members).toEqual([expect.objectContaining({ id: person.id, anonymizedAt: expect.any(Date) })]);
+    expect(after.memberships).toEqual([expect.objectContaining({ status: 'cancelled' })]);
+    expect(count(after.audits, 'billing.runner.overdue_held', join.invoiceId)).toBe(runnerFirst ? 1 : 0);
+    expect(count(after.audits, 'public.join.retained', join.householdId)).toBe(1);
+    expect(count(after.audits, 'billing.invoice.voided', join.invoiceId)).toBe(0);
+    expect(count(after.audits, 'public.join.voided', join.householdId)).toBe(0);
+    expect(await f.run()).toBe(0);
+    expect(count((await f.state(join.householdId)).audits, 'public.join.retained', join.householdId)).toBe(1);
   });
 
   it.each([['billing.runner.overdue_held', 'billing.invoice.held', false], ['billing.invoice.held', 'billing.runner.overdue_held', true]] as const)(

@@ -64,7 +64,7 @@ async function queueReleasedFiles(transaction: JobTransaction, cleanup: ErasureQ
 export interface MembersOptions { scope?: typeof forGym; clock?: Clock; pinSecret?: HouseholdPinSecret }
 export function createMembersService(options: MembersOptions = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
-  const audit = (tx: Transaction, context: MutationContext, action: string, targetType: string, targetId: string, before?: Record<string, string>, after?: Record<string, boolean>) =>
+  const audit = (tx: Transaction, context: MutationContext, action: string, targetType: string, targetId: string, before?: Record<string, string>, after?: Record<string, string | boolean>) =>
     writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
       ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
       action, targetType, targetId, occurredAt: clock.now(), ...(before ? { before } : {}), ...(after ? { after } : {}) }); // No PII or PINs in the append-only log.
@@ -201,9 +201,11 @@ export function createMembersService(options: MembersOptions = {}) {
             .where(and(eq(paymentMethods.householdId, home.id), isNull(paymentMethods.revokedAt)))
             .returning({ id: paymentMethods.id, processorId: paymentMethods.processorId }));
           for (const card of revokedCards) await audit(tx, context, 'billing.card.revoked', 'payment_method', card.id);
+          // Record erasure's hold even if the runner already held the invoice, so join cleanup keeps it.
           const held = await tx.update(invoices).set({ needsReview: true }).where(and(eq(invoices.householdId, home.id),
-            inArray(invoices.status, ['open', 'past_due']), eq(invoices.needsReview, false))).returning({ id: invoices.id });
-          for (const invoice of held) await audit(tx, context, 'billing.invoice.held', 'invoice', invoice.id);
+            inArray(invoices.status, ['open', 'past_due']))).returning({ id: invoices.id });
+          for (const invoice of held) await audit(tx, context, 'billing.invoice.held', 'invoice', invoice.id,
+            undefined, { reason: 'household_anonymized' });
           await tx.delete(householdUsers).where(eq(householdUsers.householdId, home.id));
           await tx.update(signedLinks).set({ revokedAt: now }).where(and(eq(signedLinks.householdId, home.id), isNull(signedLinks.revokedAt)));
         }

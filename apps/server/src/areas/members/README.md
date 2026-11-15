@@ -59,7 +59,10 @@ under each session's row lock, clears their waitlist positions without
 renumbering others, and unlinks staff profiles from the erased member, advancing their revisions so an open form cannot restore the link. Bookings
 for sessions that have started stay as history. For a household's last member it
 also revokes active cards, clears the local Stripe customer ID and holds open and
-past-due invoices for review. `eraseMember` takes the job queue and the gym's
+past-due invoices for review. It records `billing.invoice.held` with reason
+`household_anonymized` for each, including invoices already held, so unpaid join
+cleanup keeps the join regardless of whether the runner held its invoice first.
+`eraseMember` takes the job queue and the gym's
 timezone as a required argument and inserts every cleanup job in the erasure
 transaction, so the erasure and its jobs commit or roll back together:
 `billing.payments.detach` for each card it revoked (key `detach:<card ID>`,
