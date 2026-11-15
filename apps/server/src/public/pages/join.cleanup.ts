@@ -14,6 +14,7 @@ import type { Payments } from '../../infra/payments/index.js';
 import type { Uploads } from '../../infra/storage/index.js';
 import { logError, logInfo } from '../../core/log.js';
 import { joinAdmissionExpired, unpaidJoinExpired } from './join.expiry.js';
+import { createAdmissionCleanup } from './admission.cleanup.js';
 
 export const joinCleanupJob = 'public.join.cleanup';
 const dayMs = 86_400_000;
@@ -66,19 +67,16 @@ export function createJoinCleanup(options: JoinCleanupOptions) {
     }
     return releaseUses(tx, gymId, householdId, reservation);
   }
-  async function remove(gymId: string, householdId: string) {
-    const uploads = await options.uploadsFor(gymId);
-    const ids = await scope(gymId, async tx => {
+  const removal = createAdmissionCleanup({ scope, clock, uploadsFor: options.uploadsFor,
+    prefix: 'public.join', targetType: 'household', excluded: excludedActions,
+    memberIds: event => record.parse(event.after).memberIds,
+    lock: async (tx, householdId) => {
       const [home] = await tx.select().from(households).where(eq(households.id, householdId)).for('update');
-      const [event] = await tx.select().from(auditEvents).where(and(eq(auditEvents.action, 'public.join.admitted'), eq(auditEvents.targetId, householdId))).limit(1);
-      if (!event) return null;
-      if ((await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.targetId, householdId),
-        inArray(auditEvents.action, excludedActions))).limit(1)).length) return null;
-      const retain = async () => { await audit(tx, gymId, 'public.join.retained', householdId); return null; };
+      return home;
+    },
+    claim: async (tx, gymId, householdId, home, event) => {
+      const retain = () => false;
       const parsed = record.parse(event.after);
-      // Rows are removed before storage I/O. The admission's audit retains the image prefixes for crash recovery.
-      if ((await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.targetId, householdId), eq(auditEvents.action, 'public.join.cleanup.started'))).limit(1)).length)
-        return parsed.memberIds;
       if (!home || home.revision !== 1) return retain();
       const people = await tx.select().from(members).where(eq(members.householdId, householdId)).for('update');
       // Staff may have adopted an abandoned prospect or attached records. Keep that work.
@@ -99,8 +97,6 @@ export function createJoinCleanup(options: JoinCleanupOptions) {
       // A join creates exactly one invoice. Additional staff billing makes this household ineligible.
       if (bills.length > 1 || bills[0] && !await voidAbandonedJoinInvoice(tx, gymId, householdId, bills[0].id, clock)) return retain();
       if (links.length && !bills.length) return retain();
-      // This durable claim makes a racing submission fail before signing. Failed storage work can retry.
-      await audit(tx, gymId, 'public.join.cleanup.started', householdId);
       // Remove under the same locks as the eligibility check: a staff signature cannot race file deletion.
       await tx.update(invoiceLineItems).set({ membershipId: null }).where(eq(invoiceLineItems.householdId, householdId));
       await tx.delete(memberships).where(eq(memberships.householdId, householdId));
@@ -108,17 +104,10 @@ export function createJoinCleanup(options: JoinCleanupOptions) {
       await tx.update(signedLinks).set({ revokedAt: clock.now() }).where(eq(signedLinks.householdId, householdId));
       // Accounting retains its household and invoice, but the abandoned prospects are removed.
       if (!bills.length) await tx.delete(households).where(eq(households.id, householdId));
-      return parsed.memberIds;
-    });
-    if (!ids) return false;
-    for (const id of ids) for (const image of await uploads.list(`${gymId}/waivers/${id}/signatures/`)) await uploads.markDeleted(image.key);
-    await scope(gymId, async tx => {
-      const [event] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.targetId, householdId), eq(auditEvents.action, 'public.join.admitted')));
-      if (event && !(await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.targetId, householdId), eq(auditEvents.action, 'public.join.cleaned'))).limit(1)).length)
-        await audit(tx, gymId, 'public.join.cleaned', householdId);
-    });
-    return true;
-  }
+      return true;
+    },
+  });
+  const remove = removal.remove;
   /** Older submissions could commit their discount before a conflicting first invoice. No payment surface exists here. */
   async function voidIncomplete(gymId: string, householdId: string, timezone: string) {
     return scope(gymId, async tx => {
@@ -248,6 +237,7 @@ export function createJoinCleanup(options: JoinCleanupOptions) {
   }
   async function removeExpired(gymId: string, timezone: string) {
     const before = new Date(clock.now().getTime() - dayMs);
+    const uploads = removal.uploadsForRun(gymId);
     let removed = 0, cursor: string | undefined, failure: { error: unknown } | undefined;
     for (;;) {
       const rows = await scope(gymId, tx => {
@@ -261,7 +251,7 @@ export function createJoinCleanup(options: JoinCleanupOptions) {
       // One failing household must not hold back the rest of the gym's cleanup; the run still fails so the job retries it.
       for (const row of rows) {
         try {
-          if (joinAdmissionExpired(admission.parse(row.after).joinedOn, clock.now(), timezone) && await remove(gymId, row.householdId)) removed++;
+          if (joinAdmissionExpired(admission.parse(row.after).joinedOn, clock.now(), timezone) && await remove(gymId, row.householdId, uploads)) removed++;
         }
         catch (error) { failure ??= { error }; logError('public.join.cleanup_failed', { gymId, householdId: row.householdId }, error); }
       }

@@ -395,20 +395,34 @@ Details: `apps/server/src/infra/auth/README.md`.
   in batches of at most 5,000 rows. App factories without runtime registration and
   unnamed budgets keep in-memory counting; authentication and kiosk budgets are
   independent.
-  New join, trial and drop-in admissions additionally share per-gym hourly
-  ceilings of 10,000 participants and 8 GiB of decoded signature images (rounded
-  up to KiB per admission), reserved in the same PostgreSQL store after schema
-  validation and before creation/storage. The limits intentionally allow a very
-  large open house; see `apps/server/src/public/pages/README.md` for sizing.
-  Refusals return 429 with the page's own text and the hour's `Retry-After`, and
-  log `public.intake.ceiling_reached` without personal data. Failed work retains
-  reservations for the hour; a rejected weighted increment leaves the remaining
-  budget available to smaller requests. Existing admissions can finish without
-  spending this allowance. The nightly `public.drop_in.cleanup` batch job removes
+  New join, trial and drop-in admissions additionally share per-gym ceilings of
+  10,000 participants and 1 GiB of decoded signature images per fixed UTC hour,
+  plus 4 GiB of images per gym-local calendar day, resetting at local midnight
+  through `@plaingym/shared/time`. Images round up to KiB per admission. Join and
+  drop-in reserve after applicant, plan/readiness, template and PNG validation
+  (and join's signer and discount-code validation), before creation/storage.
+  One PostgreSQL transaction reserves participants and both byte windows;
+  refusal rolls back every increment. The daily limit bounds repeated uploads
+  before cleanup; reaching it closes new image admissions until the next local
+  day. Image-free trials can use any remaining participant allowance.
+  Refusals return 429 with the page's own text and the exhausted window's
+  `Retry-After`, and log `public.intake.ceiling_reached` without personal data.
+  Counter failures use the short busy-retry text and `Retry-After: 1`, rather than
+  claiming the ceiling was reached; database outages follow normal error handling.
+  Failed work after reservation retains its allowance until each window ends;
+  a refused reservation leaves remaining space available to smaller requests.
+  Existing admissions can finish without spending this allowance. Drop-in and
+  join cleanup share one durable claim/storage/marker helper, resolving uploads
+  once per run and checking eligibility under household/member locks.
+  The nightly `public.drop_in.cleanup` batch job removes
   unsigned, unchanged drop-in admissions after their 24-hour window, including
   their automatic leads and households, then marks images through storage outside
   transactions. A durable marker permits retry. Completed or partially signed
-  visits and staff changes are retained with their signatures.
+  visits and staff changes are retained with their signatures. Partly signed
+  prospects can finish after 24 hours only with an already signed image from the
+  same public admission and exactly matching applicant and contact details.
+  An unrelated staff image cannot extend an expired admission or sign for an
+  enrolled household. Unsigned expired admissions still fail before signing.
 * **Body limits** per route, applied before parsing. Routes allowing more than
   1 MiB require a valid `Content-Length` for a body and refuse transfer encoding
   before buffering (including join forms, signatures and CSV uploads).

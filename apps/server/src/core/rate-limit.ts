@@ -191,12 +191,18 @@ export function failureBudget(options: { limit?: number; windowMs?: number; maxB
   };
 }
 
+export interface IntakeReservationBucket {
+  routeKey: string; amount: number; limit: number; start: number; resetAt: number;
+}
+export interface IntakeReservationResult { allowed: boolean; resetAt: number; routeKey?: string; failed?: boolean }
 export interface SharedRateLimitStore {
   /** `failed` marks a refusal because the counter couldn't be written, not because the budget is spent. */
   consume(input: { gymId: string | null; routeKey: string; clientKey: string; now: number; windowMs: number; limit: number;
     /** Weighted reservation: a refusal spends nothing, so smaller requests can still fit. */
     amount?: number }):
     Promise<{ allowed: boolean; resetAt: number; failed?: boolean }>;
+  /** One all-or-nothing reservation across weighted counters, including calendar windows. */
+  reserve?(input: { gymId: string; now: number; buckets: readonly IntakeReservationBucket[] }): Promise<IntakeReservationResult>;
 }
 
 /**
@@ -208,6 +214,8 @@ export interface SharedRateLimitStore {
 export function cacheRefusals(store: SharedRateLimitStore, maxEntries = 10_000, failureMs = 1000): SharedRateLimitStore {
   const refused = new Map<string, { until: number; resetAt: number; failed: boolean }>();
   return {
+    // Weighted refusals cannot be cached: a smaller reservation may still fit.
+    ...(store.reserve ? { reserve: store.reserve.bind(store) } : {}),
     async consume(input) {
       // A large reservation can fail while a smaller one still fits. Never cache weighted refusals.
       if (input.amount !== undefined) return store.consume(input);

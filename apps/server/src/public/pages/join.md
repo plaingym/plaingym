@@ -66,11 +66,14 @@ honeypot run before anything is written. Both join requests accept 4 MiB (`joinB
 dozens of drawn signatures, or a family's chosen PNG files (up to 256 KB each). The
 install-wide limiter allows the native form twice that, so an oversized form gets join's own
 "too large" page (413); the browser checks the size before sending.
-New admissions also reserve each participant and the decoded image bytes against
-the shared gym ceiling (10,000 participants and 8 GiB per fixed UTC hour; sizing
-and counter behavior in `README.md`). JSON and native forms share it with trial
-and drop-in creation; refusal returns 429 with join's own busy-form text and the
-hour's `Retry-After`. An existing admission can continue without this reservation.
+After validation, new admissions atomically reserve each participant and the
+decoded image bytes against the shared gym ceilings: 10,000 participants and
+1 GiB per fixed UTC hour, plus 4 GiB per gym-local day resetting at local midnight
+(sizing and counter behavior in `README.md`). JSON and native forms share them
+with trial and drop-in creation; refusal spends no allowance and returns 429
+with join's own busy-form text and the exhausted window's `Retry-After`.
+A counter write failure instead uses the short busy-retry text and
+`Retry-After: 1`. An existing admission can continue without this reservation.
 
 The daily `public.join.cleanup` batch job removes unsubmitted admissions only when
 they are more than 24 hours old and their submission window has ended in the gym's

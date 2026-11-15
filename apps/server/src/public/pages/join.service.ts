@@ -30,6 +30,7 @@ import { createPortalInvitationStore } from '../../infra/auth/portal-invitations
 import type { Uploads } from '../../infra/storage/index.js';
 import type { Payments } from '../../infra/payments/index.js';
 import { createJoinCleanup } from './join.cleanup.js';
+import { reservePublicIntake } from '../../core/rate-limit-intake.js';
 import { createInvoiceTransitions } from '../../areas/billing/transitions/index.js';
 import { joinAdmissionExpired } from './join.expiry.js';
 import { liveDiscounts, priceDiscount, resolveDiscount, takeDiscountCycle, takeDiscountUses, type ResolvedDiscount } from '../../areas/billing/discounts/apply.js';
@@ -416,9 +417,13 @@ export function createJoinService(options: JoinOptions) {
       const images = input.members.map(m => m.signatures.map(s => Buffer.from(s.pngBase64, 'base64')));
       images.flat().forEach(validateSignatureImage);
       const today = localDate(clock.now(), timezone), code = input.code || undefined;
+      // Complete validation before taking any of the gym's admission or image allowance.
+      const discountId = code === undefined ? undefined : await scope(gymId, async tx =>
+        (await checkCode(tx, code, input.planId, input.members.length, timezone)).row.id);
+      await reservePublicIntake({ gymId, timezone, now: clock.now().getTime(), participants: input.members.length,
+        signatureBytes: images.flat().reduce((total, image) => total + image.length, 0) });
       const memberIds = await scope(gymId, async tx => {
-        // A refused code writes nothing. A code that works is only checked here; the uses are taken at submission.
-        const discountId = code === undefined ? undefined : (await checkCode(tx, code, input.planId, input.members.length, timezone)).row.id;
+        // Code uses are taken only at submission.
         const now = clock.now(), householdId = uuidv7(now.getTime()), ids = input.members.map(() => uuidv7(now.getTime()));
         await tx.insert(households).values({ id: householdId, gymId, name: input.contact.name, email: input.contact.email,
           phone: input.contact.phone ?? null, address: input.contact.address ?? {}, billingDay: Number(today.slice(8)), createdAt: now });

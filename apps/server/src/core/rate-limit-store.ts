@@ -5,12 +5,16 @@ import { inArray, lte, sql } from 'drizzle-orm';
 import type { PostgresJobs } from '../infra/jobs/postgres.js';
 import type { Clock } from './clock.js';
 import { logError } from './log.js';
-import { cacheRefusals, configureSharedRateLimits, type SharedRateLimitStore } from './rate-limit.js';
+import { cacheRefusals, configureSharedRateLimits, type IntakeReservationResult, type SharedRateLimitStore } from './rate-limit.js';
 
 /** Where a failed counter write goes; the log by default, at most once a minute per store. */
 export type IntakeStoreReport = (error: unknown) => void;
 const logStoreFailure: IntakeStoreReport = error => logError('rate_limit.intake_store_failed', {}, error);
 const reportEveryMs = 60_000;
+/** Throwing out of the transaction rolls back every earlier counter increment. */
+class ReservationRefused extends Error {
+  constructor(readonly result: IntakeReservationResult) { super('Intake reservation refused'); }
+}
 
 /**
  * One atomic upsert per request the limiter doesn't already know is refused. Saturation keeps refused traffic from
@@ -18,7 +22,45 @@ const reportEveryMs = 60_000;
  */
 export function createIntakeRateLimitStore(scope: typeof forSystem = forSystem, report: IntakeStoreReport = logStoreFailure): SharedRateLimitStore {
   let reportedAt = -Infinity;
+  async function failed(error: unknown, now: number) {
+    // A working database with a broken counter table gets a short retry; an outage propagates.
+    // eslint-disable-next-line database/system-tables -- Constant connectivity probe, independent of the counters table.
+    await scope(tx => tx.execute(sql`select 1`));
+    if (now - reportedAt >= reportEveryMs) {
+      reportedAt = now;
+      try { report(error); } catch { /* Reporting never changes the answer. */ }
+    }
+  }
   return {
+    async reserve({ gymId, now, buckets }) {
+      for (const bucket of buckets) {
+        if (!Number.isSafeInteger(bucket.amount) || bucket.amount <= 0 || !Number.isSafeInteger(bucket.limit) || bucket.limit <= 0
+          || !Number.isSafeInteger(bucket.start) || !Number.isSafeInteger(bucket.resetAt) || bucket.start > now || bucket.resetAt <= now)
+          throw new Error('Invalid public intake reservation');
+        if (bucket.amount > bucket.limit) return { allowed: false, resetAt: bucket.resetAt, routeKey: bucket.routeKey };
+      }
+      try {
+        // Consistent order prevents competing reservations from deadlocking. A refusal rolls back the
+        // entire transaction, so neither byte window nor participants can be spent independently.
+        await scope(async tx => {
+          for (const bucket of [...buckets].sort((a, b) => a.routeKey.localeCompare(b.routeKey))) {
+            const [row] = await tx.insert(intakeRateLimits).values({ gymId, routeKey: bucket.routeKey, clientKey: '*',
+              windowStart: new Date(bucket.start), expiresAt: new Date(bucket.resetAt), count: bucket.amount,
+            }).onConflictDoUpdate({
+              target: [intakeRateLimits.gymId, intakeRateLimits.routeKey, intakeRateLimits.clientKey, intakeRateLimits.windowStart],
+              set: { count: sql`${intakeRateLimits.count} + ${bucket.amount}` },
+              setWhere: lte(intakeRateLimits.count, bucket.limit - bucket.amount),
+            }).returning({ id: intakeRateLimits.id });
+            if (!row) throw new ReservationRefused({ allowed: false, resetAt: bucket.resetAt, routeKey: bucket.routeKey });
+          }
+        });
+        return { allowed: true, resetAt: Math.min(...buckets.map(bucket => bucket.resetAt)) };
+      } catch (error) {
+        if (error instanceof ReservationRefused) return error.result;
+        await failed(error, now);
+        return { allowed: false, resetAt: now + 1000, failed: true };
+      }
+    },
     async consume({ gymId, routeKey, clientKey, now, windowMs, limit, amount }) {
       const start = Math.floor(now / windowMs) * windowMs, resetAt = start + windowMs;
       if (amount !== undefined && (!Number.isSafeInteger(amount) || amount <= 0)) throw new Error('Invalid reservation amount');
@@ -33,15 +75,7 @@ export function createIntakeRateLimitStore(scope: typeof forSystem = forSystem, 
         }).returning({ count: intakeRateLimits.count }));
         return { allowed: row !== undefined && row.count <= limit, resetAt };
       } catch (error) {
-        // Distinguish a counter write failure from a database outage. If this read also fails,
-        // propagate it to the ordinary request error handler instead of disguising an outage as 429.
-        // eslint-disable-next-line database/system-tables -- Constant connectivity probe, independent of the counters table.
-        await scope(tx => tx.execute(sql`select 1`));
-        // The database answers, so the counters themselves failed: refuse, but say so, since it looks like rate limiting.
-        if (now - reportedAt >= reportEveryMs) {
-          reportedAt = now;
-          try { report(error); } catch { /* Reporting never changes the answer. */ }
-        }
+        await failed(error, now);
         return { allowed: false, resetAt, failed: true };
       }
     },

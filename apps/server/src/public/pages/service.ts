@@ -2,7 +2,7 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import { logoVersion } from '../short-hash.js';
 import { isDeepStrictEqual } from 'node:util';
-import { forGym, type Transaction, members, households, auditEvents, waiverTemplates, uuidv7, writeAudit } from '@plaingym/db';
+import { forGym, type Transaction, members, households, auditEvents, waiverSignatures, waiverTemplates, uuidv7, writeAudit } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { localDate } from '@plaingym/shared/time';
@@ -122,7 +122,7 @@ export function createPublicPagesService(options: PublicPagesOptions) {
     },
     async trial(gymId: string, body: unknown, timezone: string, requestId?: string) {
       const input = c.publicTrialRequestSchema.parse(body); applicant(input, timezone);
-      await reservePublicIntake({ gymId, now: clock.now().getTime(), participants: 1, signatureBytes: 0 });
+      await reservePublicIntake({ gymId, timezone, now: clock.now().getTime(), participants: 1, signatureBytes: 0 });
       const id = await intake(gymId, input, 'public.trial.received', 'trial_form');
       await notifyStaff(gymId, { kind: 'trial', memberId: id }, requestId);
       return received();
@@ -132,7 +132,7 @@ export function createPublicPagesService(options: PublicPagesOptions) {
       await current(gymId, input.signatures);
       const images = input.signatures.map(s => Buffer.from(s.pngBase64, 'base64'));
       images.forEach(validateSignatureImage);
-      await reservePublicIntake({ gymId, now: clock.now().getTime(), participants: 1, signatureBytes: images.reduce((total, image) => total + image.length, 0) });
+      await reservePublicIntake({ gymId, timezone, now: clock.now().getTime(), participants: 1, signatureBytes: images.reduce((total, image) => total + image.length, 0) });
       const id = await intake(gymId, input, 'public.drop_in.admitted', 'drop_in');
       const data = [];
       for (const [i, accepted] of input.signatures.entries()) {
@@ -153,7 +153,13 @@ export function createPublicPagesService(options: PublicPagesOptions) {
         const [admission] = await tx.select({ id: auditEvents.id, occurredAt: auditEvents.occurredAt }).from(auditEvents)
           .where(and(eq(auditEvents.targetId, id), eq(auditEvents.action, 'public.drop_in.admitted'))).limit(1);
         if (!m || !admission || m.anonymizedAt || !['prospect', 'visitor'].includes(m.status)) return missing();
-        if (m.status === 'prospect' && admission.occurredAt.getTime() + dropInAdmissionWindowMs <= clock.now().getTime()) return missing();
+        if (m.status === 'prospect' && admission.occurredAt.getTime() + dropInAdmissionWindowMs <= clock.now().getTime()) {
+          // Only the same partly signed admission may continue after expiry, using one of its already signed
+          // images. An unrelated staff image or another prospect's key cannot extend the admission window.
+          const signed = await tx.select({ key: waiverSignatures.signatureImageKey, hash: waiverSignatures.signatureImageHash })
+            .from(waiverSignatures).where(eq(waiverSignatures.memberId, id));
+          if (!signed.some(s => input.waivers.some(w => w.signatureImageKey === s.key && w.signatureImageHash === s.hash))) return missing();
+        }
         const [home] = await tx.select().from(households).where(eq(households.id, m.householdId));
         if (!home || home.email !== input.contact.email || home.name !== input.contact.name
           || home.phone !== (input.contact.phone ?? null) || !isDeepStrictEqual(c.householdAddressReadSchema.parse(home.address), input.contact.address ?? {})

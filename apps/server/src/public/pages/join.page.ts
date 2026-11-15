@@ -100,7 +100,7 @@ export function joinFormPage(input: JoinPageInput & { plan: PublicPlan; count: n
   return layout(input, text('formTitle', { plan: plan.name }), h('div', { class: 'space-y-6' }, feedback, summary, counter, form), true);
 }
 export type JoinPageState = 'continue' | 'confirming' | 'welcomeEmail' | 'resent' | 'welcomePassword'
-  | 'cancelled' | 'closed' | 'missing' | 'unavailable' | 'failed' | 'limited' | 'tooLarge' | 'manual' | 'card' | 'confirmingCard' | 'cancelledCard' | 'codeRefused';
+  | 'cancelled' | 'closed' | 'missing' | 'unavailable' | 'failed' | 'limited' | 'retry' | 'tooLarge' | 'manual' | 'card' | 'confirmingCard' | 'cancelledCard' | 'codeRefused';
 /** The first invoice's lines and total, as the review step shows them. */
 function invoiceSummary(input: JoinPageInput, invoice: JoinInvoice) {
   const text = joinText(input.t), money = (cents: number) => formatMoney(cents, invoice.currency, input.locale);
@@ -137,6 +137,7 @@ export function joinStatusPage(input: JoinPageInput & { state: JoinPageState; te
     unavailable: ['title', 'unavailable', start],
     failed: ['title', 'failed', start],
     limited: ['title', 'intakeLimited', start],
+    retry: ['title', 'retry', start],
     // The page has no form to clear the code in: the visitor starts again.
     codeRefused: ['title', 'codeRefusedPage', start],
     tooLarge: ['title', 'tooLarge', h('a', { href: '/join', class: link }, text('startOver'))],

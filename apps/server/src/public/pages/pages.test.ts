@@ -27,7 +27,7 @@ import { logoVersion } from '../short-hash.js';
 import { configureSharedRateLimits } from '../../core/rate-limit.js';
 import { createIntakeRateLimitStore } from '../../core/rate-limit-store.js';
 import { publicIntakeLimits } from '../../core/rate-limit-intake.js';
-import { dropInAdmissionWindowMs, dropInCleanupJob } from './pages.cleanup.js';
+import { createDropInCleanup, dropInAdmissionWindowMs, dropInCleanupJob } from './pages.cleanup.js';
 
 const db = useTestDatabase(), factory = createFactories(db), png = demoSignaturePng();
 const origin = 'https://gym.example.test';
@@ -74,6 +74,60 @@ async function fixture(demo = false) {
 }
 
 describe('core public pages through the production registrations', () => {
+  it('resolves storage once across the drop-in cleanup run', async () => {
+    const f = await fixture(); await f.admit(); await f.admit(body('second@example.invalid'));
+    const uploadsFor = vi.fn(async () => f.uploads.get(f.gymId)!);
+    const cleanup = createDropInCleanup({ scope: db.forGym, clock: f.clock, uploadsFor });
+    f.clock.advance(dropInAdmissionWindowMs);
+    expect(await cleanup.run(f.gymId)).toBe(2); expect(uploadsFor).toHaveBeenCalledTimes(1);
+    expect(await cleanup.run(f.gymId)).toBe(0); expect(uploadsFor).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets only the same partially signed admission finish after expiry, including after cleanup retains it', async () => {
+    const f = await fixture(), partial = await f.admit(), unsigned = await f.admit(body('unsigned@example.invalid'));
+    const id = partial.waivers[0]!.signatureImageKey.split('/')[2]!;
+    await f.waivers.sign({ gymId: f.gymId, actor: { kind: 'system' } }, { ...partial.waivers[0]!, memberId: id },
+      { timezone: 'America/Vancouver', ipAddress: '192.0.2.1' });
+    f.clock.advance(dropInAdmissionWindowMs + 1);
+    expect((await f.post('/api/public/drop-in', unsigned)).status).toBe(404);
+    expect((await f.post('/api/public/drop-in', partial, f.app(f.otherGym))).status).toBe(404);
+    expect((await f.post('/api/public/drop-in', { ...partial, contact: { ...partial.contact, email: 'somebody@example.invalid' } })).status).toBe(404);
+    expect((await f.post('/api/public/drop-in', { ...partial, member: { ...partial.member, firstName: 'Somebody' } })).status).toBe(404);
+    // An unsigned staff upload cannot stand in for the original signed capability to extend the window.
+    const staff = await f.waivers.uploadSignature({ gymId: f.gymId, actor: { kind: 'system' } }, id, png);
+    expect((await f.post('/api/public/drop-in', { ...partial, waivers: partial.waivers.map(w => ({ ...w, ...staff })) })).status).toBe(404);
+    expect(await f.service.cleanup!.run(f.gymId)).toBe(1);
+    expect((await f.post('/api/public/drop-in', partial)).status).toBe(200);
+    expect((await f.post('/api/public/drop-in', partial)).status).toBe(200);
+    expect((await f.rows()).signatures).toHaveLength(2); expect(f.notices).toHaveLength(1);
+    for (const image of partial.waivers) expect((await f.uploads.get(f.gymId)!.head(image.signatureImageKey))!.deletedAt).toBeUndefined();
+  });
+
+  it('uses the short busy retry for counter failures across trial, drop-in and native forms', async () => {
+    const f = await fixture(), store = createIntakeRateLimitStore(db.forSystem);
+    vi.spyOn(store, 'reserve').mockImplementation(async ({ now }) => ({ allowed: false, resetAt: now + 3_600_000, failed: true }));
+    const reset = configureSharedRateLimits(store);
+    try {
+      for (const path of ['/api/public/trial', '/drop-in/signatures']) {
+        const reply = await f.post(path, path.includes('signatures') ? f.admission() : body());
+        expect(reply.status).toBe(429); expect(reply.headers.get('retry-after')).toBe('1');
+        expect(await reply.json()).toMatchObject({ error: { message: expect.stringContaining('Wait a moment'), details: { reason: ['busy'] } } });
+      }
+      const trial = new URLSearchParams({ firstName: 'New', lastName: 'Visitor', dateOfBirth: '1990-01-02', contactName: 'Alex Contact', email: 'native@example.invalid', honeypot: '' });
+      const native = await f.server.request(origin + '/trial', { method: 'POST', headers: { origin }, body: trial });
+      expect(native.status).toBe(429); expect(native.headers.get('retry-after')).toBe('1'); expect(await native.text()).toContain('Wait a moment');
+      const dropIn = new FormData(); for (const [key, value] of trial) dropIn.set(key, value);
+      for (const [i, template] of (await f.service.required(f.gymId)).entries()) {
+        for (const [key, value] of Object.entries({ template: template.id, version: String(template.version), kind: 'self', name: 'New Visitor', consent: 'on' }))
+          dropIn.set(`waiver-${i}-${key}`, value);
+        dropIn.set(`waiver-${i}-image`, new File([new Uint8Array(png)], 'signature.png', { type: 'image/png' }));
+      }
+      const nativeDropIn = await f.server.request(origin + '/drop-in', { method: 'POST', headers: { origin }, body: dropIn });
+      expect(nativeDropIn.status).toBe(429); expect(nativeDropIn.headers.get('retry-after')).toBe('1'); expect(await nativeDropIn.text()).toContain('Wait a moment');
+      expect((await f.rows()).members).toHaveLength(2);
+    } finally { reset(); }
+  });
+
   it('cleans expired abandoned admissions through the registered batch job while keeping completed visits', async () => {
     const f = await fixture(), abandoned = await f.admit(), completed = await f.admit(body('completed@example.invalid'));
     expect((await f.post('/api/public/drop-in', completed)).status).toBe(200);

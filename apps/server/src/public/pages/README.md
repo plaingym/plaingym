@@ -85,8 +85,11 @@ new leads, and marks their signature images for the storage module's deferred
 sweep. Storage runs outside transactions. A durable cleanup marker permits retry
 after a storage failure; other admissions are still processed. Completed visits,
 partially signed waivers and records changed or followed up by staff are kept,
-including their images. Expired prospects cannot submit even before cleanup runs;
-completed visits can still replay their final request. Admissions grant no portal
+including their images. An unsigned expired prospect cannot submit even before
+cleanup runs. A partly signed prospect can finish after the window, including
+after cleanup retains it, only with an already signed image from that admission
+and the same applicant and contact details. An unsigned or unrelated staff image cannot extend
+the window. Completed visits can still replay their final request. Admissions grant no portal
 access or membership. No payment provider, invoice or card operation runs.
 The fee is informational and is collected by staff as a one-off charge. If no fee
 is configured, the page directs the visitor to ask the gym; it never assumes zero.
@@ -101,21 +104,32 @@ one window and a restart keeps it (`core/rate-limit-store.ts`). Whole requests a
 to 1 MiB, each image to 256 KiB, and a visit to eight templates. Responses containing
 intake data use `no-store`.
 
-New trial, drop-in and join admissions also share a per-gym ceiling of **10,000
-participants and 8 GiB of decoded signature images per fixed UTC hour**. A family
-join counts each participant, and images are reserved in KiB rounded up per
-admission so the existing integer counters can represent the full allowance.
-This is deliberately far above a large open house: even 4,000 visitors each
-uploading eight maximum-size 256 KiB images fit the byte allowance, while typical
-drawn signatures need much less. Reservations precede record creation and
-storage; failed work keeps its reservation until the hour ends. A byte refusal
-can therefore spend a participant reservation, but rejected weighted increments
-never exhaust the remaining space for a smaller request. PostgreSQL shares both
-ceilings across processes and restarts. A refusal returns 429, the page's own
-busy-form text and `Retry-After` until the hour ends, and logs
-`public.intake.ceiling_reached` once per gym/resource/hour per process, with only
-identifiers and counts. Finishing an existing drop-in or join spends no new
+New trial, drop-in and join admissions share per-gym ceilings of **10,000
+participants and 1 GiB of decoded signature images per fixed UTC hour**, plus
+**4 GiB of decoded signature images per local calendar day**. The daily window
+resets at the gym's local midnight, including daylight saving changes. A family
+join counts each participant; decoded images round up to KiB per admission so
+the integer counters represent the full allowance. Typical drawn signatures need
+much less space than the maximum-size PNGs. The daily limit bounds repeated
+uploads before abandoned admissions are cleaned up; reaching it closes new image
+admissions for that gym until its next local day. Trials without images can still
+use the remaining participant allowance.
+
+Join and drop-in reserve only after applicant, plan/readiness, template and image
+validation (and join's signer and code validation), before record creation and
+storage. One PostgreSQL transaction reserves participants and both byte windows;
+a refusal rolls every increment back, leaving room for smaller requests and
+trials. Failed work after reservation keeps its allowance until each window ends.
+All processes and restarts share these counters. A ceiling refusal returns 429,
+the page's busy-form text and `Retry-After` until the exhausted window ends, and
+logs `public.intake.ceiling_reached` once per gym/resource/window per process,
+with only identifiers and counts. A counter write failure returns 429 with the
+short busy-retry text, `reason: busy` and `Retry-After: 1`; a database outage follows
+normal error handling. Finishing an existing drop-in or join spends no new
 admission/byte allowance, so a flood cannot close an admitted visitor's form.
+Drop-in and join cleanup share the durable claim/storage/completion helper in
+`admission.cleanup.ts`, resolving storage once per run and retaining staff work
+under the same household/member locks as the eligibility checks.
 
 Composition requires the runtime to call `configurePublicPages` with its existing
 waivers, `uploads.forGym`, gym mail and staff recipients. The fee resolver should

@@ -629,6 +629,49 @@ function nativeForm(f: Fixture, planId: string, email: string) {
 }
 
 describe('public join pages through the production registrations', () => {
+  it('spends no intake allowance on invalid plan, templates, PNG, code, or unavailable billing', async () => {
+    const f = await fixture(), store = createIntakeRateLimitStore(db.forSystem), reserve = vi.spyOn(store, 'reserve');
+    const reset = configureSharedRateLimits(store);
+    const input = { planId: f.plan.id, contact: { name: 'Pat Payer', email: 'validation@example.invalid' }, honeypot: '',
+      members: [{ member: adult(), signatures: f.templates.map(t => ({ templateId: t.id, templateVersion: t.version, pngBase64,
+        signer: { kind: 'self' as const, name: 'Avery Joiner' } })) }] };
+    try {
+      for (const bad of [
+        { ...input, planId: uuidv7() },
+        { ...input, members: input.members.map(m => ({ ...m, signatures: m.signatures.map(s => ({ ...s, templateVersion: 999 })) })) },
+        { ...input, members: input.members.map(m => ({ ...m, signatures: m.signatures.map(s => ({ ...s, pngBase64: Buffer.from('invalid PNG').toString('base64') })) })) },
+        { ...input, code: 'UNKNOWN-CODE' },
+      ]) expect((await f.post('/join/signatures', bad)).status).toBeGreaterThanOrEqual(400);
+      f.paymentsConfigured.mockResolvedValue(false);
+      expect((await f.post('/join/signatures', input)).status).toBe(503);
+      expect(reserve).not.toHaveBeenCalled(); expect(await f.joined()).toHaveLength(0);
+      f.paymentsConfigured.mockResolvedValue(true);
+      expect((await f.post('/join/signatures', input)).status).toBe(200);
+      expect(reserve).toHaveBeenCalledTimes(1);
+      expect(reserve).toHaveBeenCalledWith(expect.objectContaining({ gymId: f.gymId, buckets: expect.arrayContaining([
+        expect.objectContaining({ routeKey: 'public.intake.participants', amount: 1 }),
+        expect.objectContaining({ routeKey: 'public.intake.signature_kib', amount: Math.ceil(f.templates.length * png.length / 1024) }),
+      ]) }));
+    } finally { reset(); }
+  });
+
+  it('uses the short busy retry for a failed intake counter on JSON and native join', async () => {
+    const f = await fixture(), store = createIntakeRateLimitStore(db.forSystem);
+    const reserve = vi.spyOn(store, 'reserve').mockImplementation(async ({ now }) => ({ allowed: false, resetAt: now + 3_600_000, failed: true }));
+    const reset = configureSharedRateLimits(store);
+    try {
+      const reply = await f.post('/join/signatures', { planId: f.plan.id, contact: { name: 'Pat Payer', email: 'busy@example.invalid' }, honeypot: '',
+        members: [{ member: adult(), signatures: f.templates.map(t => ({ templateId: t.id, templateVersion: t.version, pngBase64,
+          signer: { kind: 'self', name: 'Avery Joiner' } })) }] });
+      expect(reply.status).toBe(429); expect(reply.headers.get('retry-after')).toBe('1');
+      expect(await reply.json()).toMatchObject({ error: { code: 'rate_limited', message: expect.stringContaining('Wait a moment'), details: { reason: ['busy'] } } });
+      const native = await f.server.request(await requestWithLength(origin + '/join', { method: 'POST', headers: { origin }, body: nativeForm(f, f.plan.id, 'native-busy@example.invalid') }));
+      expect(native.status).toBe(429); expect(native.headers.get('retry-after')).toBe('1');
+      expect(await native.text()).toContain('Wait a moment');
+      expect(await f.joined()).toHaveLength(0); expect(reserve).toHaveBeenCalledTimes(2);
+    } finally { reset(); }
+  });
+
   it('applies the shared gym ceiling to JSON and native join creation without refusing an existing admission', async () => {
     const f = await fixture(), people = [adult()], email = 'existing-admission@example.invalid';
     const images = await f.admit(people, email, f.plan.id), store = createIntakeRateLimitStore(db.forSystem);

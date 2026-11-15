@@ -9,7 +9,7 @@ import { route, type RouteRegistration } from '../../core/registry.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import { rateLimit } from '../../core/rate-limit.js';
 import { logError } from '../../core/log.js';
-import { publicIntakeRefusal, reservePublicIntake } from '../../core/rate-limit-intake.js';
+import { publicIntakeRefusal } from '../../core/rate-limit-intake.js';
 import { setPolicy } from '../../core/csp.js';
 import { publicPageDirectives } from './page.js';
 import { createJoinService, joinBodyBytes, type JoinOptions,
@@ -81,11 +81,9 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
       { httpOnly: true, secure: true, sameSite: 'Lax', path: '/join', maxAge: joinCookieLifetimeMs / 1000 });
   }
   const pending = (ctx: Context<RequestEnvironment>) => options().continuations.open(getCookie(ctx, joinCookie), ctx.get('context').clock.now(), gymOf(ctx));
-  async function reserve(ctx: Context<RequestEnvironment>, input: { members: { signatures: { pngBase64: string }[] }[] }) {
-    try {
-      await reservePublicIntake({ gymId: gymOf(ctx), now: ctx.get('context').clock.now().getTime(), participants: input.members.length,
-        signatureBytes: input.members.reduce((total, person) => total + person.signatures.reduce((sum, image) => sum + Buffer.byteLength(image.pngBase64, 'base64'), 0), 0) });
-    } catch (error) { throw publicIntakeRefusal(error, ctx, (options().t ?? translator)('public/join:intakeLimited')) ?? error; }
+  function refusal(error: unknown, ctx: Context<RequestEnvironment>) {
+    const t = options().t ?? translator;
+    return publicIntakeRefusal(error, ctx, t('public/join:intakeLimited'), t('public/join:retry'));
   }
   const settledOrGone = (error: unknown) => error instanceof AppError && ['conflict', 'not_found', 'forbidden'].includes(error.code);
   const result: RouteRegistration[] = [
@@ -93,8 +91,8 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
       ctx.json(await options().service.plans(gymOf(ctx), ctx.req.valid('query')), 200)),
     route({ ...contracts.joinAdmission, middleware: [admissions, bounded],
       request: { body: { required: true, content: { 'application/json': { schema: contracts.joinAdmission.body } } } }, responses: json(contracts.joinAdmission.response) }, async ctx => {
-      const input = ctx.req.valid('json'); await reserve(ctx, input);
-      return ctx.json(await options().service.admit(gymOf(ctx), input, ctx.get('context').gym.timezone), 200);
+      try { return ctx.json(await options().service.admit(gymOf(ctx), ctx.req.valid('json'), ctx.get('context').gym.timezone), 200); }
+      catch (error) { throw refusal(error, ctx) ?? error; }
     }),
     // The same response for every address; only the cookie, naming this new household's pending join, continues it.
     route({ ...contracts.join, middleware: [submissions, bounded], request: { body: { required: true, content: { 'application/json': { schema: contracts.join.body } } } },
@@ -130,7 +128,6 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
         const submitted = await ctx.req.raw.formData().catch(() => { throw new AppError('invalid_request', 'Invalid form submission'); });
         fields = submitted;
         const admission = await readJoinForm(submitted, await service.ready(gymId), options().t ?? translator, context.clock.now(), context.gym.timezone);
-        await reserve(ctx, admission);
         const images = await service.admit(gymId, admission, context.gym.timezone);
         admitted = true;
         const { members, ...common } = admission;
@@ -147,7 +144,8 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
           logError('public.join.native_failed', { gymId }, error);
           return page(ctx, 'failed', 400);
         }
-        if (publicIntakeRefusal(error, ctx, (options().t ?? translator)('public/join:intakeLimited'))) return page(ctx, 'limited', 429);
+        const refused = refusal(error, ctx);
+        if (refused) return page(ctx, refused.details?.reason?.[0] === 'busy' ? 'retry' : 'limited', 429);
         if (error instanceof AppError && error.code === 'unavailable') return page(ctx, 'unavailable', 503);
         if (fields && (error instanceof JoinFormError || error instanceof z.ZodError || error instanceof AppError && ['invalid_request', 'not_found', 'conflict'].includes(error.code))) {
           const values = Object.fromEntries([...fields].filter((entry): entry is [string, string] => typeof entry[1] === 'string'));

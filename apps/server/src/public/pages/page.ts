@@ -57,7 +57,7 @@ export function publicLayout(input: { gym: PublicBranding; title: string; t: Tra
 export interface IntakePageInput {
   kind: 'trial' | 'drop-in'; gym: PublicBranding; t: Translator; templates?: WaiverTemplate[];
   dropInFee: { amountCents: number; currency: string; plusTax: boolean } | null; locale?: string;
-  state?: 'received' | 'failed' | 'unavailable' | 'limited';
+  state?: 'received' | 'failed' | 'unavailable' | 'limited' | 'retry';
 }
 export function intakePage(input: IntakePageInput) {
   const text = pageText(input.t), title = text(input.state === 'received' ? 'received' : input.kind);

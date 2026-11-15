@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { expect, it } from 'vitest';
-import { uuidv7 } from '@plaingym/db';
+import { expect, it, vi } from 'vitest';
+import { intakeRateLimits, uuidv7 } from '@plaingym/db';
+import { eq } from 'drizzle-orm';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { createIntakeRateLimitStore } from './rate-limit-store.js';
@@ -9,12 +10,95 @@ import { createPublicIntakeCeiling, publicIntakeLimits } from './rate-limit-inta
 import { setLogSink } from './log.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
+const GiB = 1024 ** 3;
+it.each(['database', 'local'] as const)('refuses just past the 1 GiB hourly ceiling without spending participants (%s)', async kind => {
+  const gymId = uuidv7(); await factory('gyms', gymId);
+  const reserve = createPublicIntakeCeiling({ ...(kind === 'database' ? { store: createIntakeRateLimitStore(db.forSystem) } : {}), participants: 2 });
+  const input = { gymId, timezone: 'UTC', now: 0, participants: 1, signatureBytes: GiB };
+  await reserve(input);
+  await expect(reserve({ ...input, signatureBytes: 1 })).rejects.toMatchObject({ details: { reason: ['intake_ceiling'], resetAt: ['3600000'] } });
+  // The byte refusal did not spend the last participant, which a trial can still use.
+  await expect(reserve({ ...input, signatureBytes: 0 })).resolves.toBeUndefined();
+  await expect(reserve({ ...input, signatureBytes: 0 })).rejects.toMatchObject({ code: 'rate_limited' });
+  await expect(reserve({ ...input, now: publicIntakeLimits.windowMs })).resolves.toBeUndefined();
+});
+
+it.each([
+  ['America/New_York', '2026-11-01T04:00:00Z', '2026-11-02T05:00:00Z'], // 25-hour local day.
+  ['America/New_York', '2026-03-08T05:00:00Z', '2026-03-09T04:00:00Z'], // 23-hour local day.
+  ['Asia/Kolkata', '2026-11-01T18:30:00Z', '2026-11-02T18:30:00Z'],
+])('refuses just past 4 GiB and resets at local midnight in %s (%s)', async (timezone, start, end) => {
+  const gymId = uuidv7(); await factory('gyms', gymId);
+  const first = createPublicIntakeCeiling({ store: cacheRefusals(createIntakeRateLimitStore(db.forSystem)) });
+  const second = createPublicIntakeCeiling({ store: createIntakeRateLimitStore(db.forSystem) });
+  const input = { gymId, timezone, now: new Date(start).getTime(), participants: 1, signatureBytes: GiB };
+  for (let hour = 0; hour < 4; hour++) await first({ ...input, now: input.now + hour * publicIntakeLimits.windowMs });
+  const now = input.now + 4 * publicIntakeLimits.windowMs;
+  await expect(second({ ...input, now, signatureBytes: 1 })).rejects.toMatchObject({
+    code: 'rate_limited', details: { resetAt: [String(new Date(end).getTime())] },
+  });
+  await expect(second({ ...input, now: new Date(end).getTime() - 1, signatureBytes: 1 })).rejects.toMatchObject({ code: 'rate_limited' });
+  await expect(second({ ...input, now: new Date(end).getTime() })).resolves.toBeUndefined();
+});
+
+it('resets the local daily fallback at midnight without resetting the containing UTC hour', async () => {
+  const reserve = createPublicIntakeCeiling({ signatureKiB: 4, dailySignatureKiB: 2 });
+  const midnight = new Date('2026-11-02T18:30:00Z').getTime();
+  const input = { gymId: uuidv7(), timezone: 'Asia/Kolkata', now: midnight - 1, participants: 1, signatureBytes: 2048 };
+  await reserve(input);
+  await expect(reserve({ ...input, signatureBytes: 1 })).rejects.toMatchObject({ details: { resetAt: [String(midnight)] } });
+  await expect(reserve({ ...input, now: midnight })).resolves.toBeUndefined();
+  // Both admissions fall in the same UTC hour: its independent byte allowance is now full.
+  const endOfHour = new Date('2026-11-02T19:00:00Z').getTime();
+  await expect(reserve({ ...input, now: midnight, signatureBytes: 1 })).rejects.toMatchObject({ details: { resetAt: [String(endOfHour)] } });
+});
+
+it('rolls back every earlier increment when either byte window or participants refuses', async () => {
+  const gymId = uuidv7(); await factory('gyms', gymId);
+  const reserve = createPublicIntakeCeiling({ store: createIntakeRateLimitStore(db.forSystem), participants: 2, signatureKiB: 4, dailySignatureKiB: 4 });
+  const input = { gymId, timezone: 'UTC', now: 0, participants: 1, signatureBytes: 1025 };
+  await reserve(input);
+  await expect(reserve({ ...input, signatureBytes: 2049 })).rejects.toMatchObject({ code: 'rate_limited' });
+  await reserve(input);
+  await expect(reserve({ ...input, signatureBytes: 1 })).rejects.toMatchObject({ code: 'rate_limited' });
+  const rows = await db.forSystem(tx => tx.select().from(intakeRateLimits).where(eq(intakeRateLimits.gymId, gymId)));
+  expect(Object.fromEntries(rows.map(row => [row.routeKey, row.count]))).toEqual({
+    'public.intake.participants': 2, 'public.intake.signature_kib': 4, 'public.intake.signature_kib_day': 4,
+  });
+});
+
+it('keeps concurrent hourly and daily byte reservations atomic across independent processes', async () => {
+  const gymId = uuidv7(); await factory('gyms', gymId);
+  const stores = Array.from({ length: 2 }, () => createPublicIntakeCeiling({ store: createIntakeRateLimitStore(db.forSystem), signatureKiB: 10, dailySignatureKiB: 15 }));
+  const input = { gymId, timezone: 'UTC', now: 0, participants: 1, signatureBytes: 1 };
+  for (const [hour, allowed] of [[0, 10], [1, 5]] as const) {
+    const replies = await Promise.allSettled(Array.from({ length: 24 }, (_, i) => stores[i % 2]!({ ...input, now: hour * publicIntakeLimits.windowMs })));
+    expect(replies.filter(r => r.status === 'fulfilled')).toHaveLength(allowed);
+  }
+  const rows = await db.forSystem(tx => tx.select().from(intakeRateLimits).where(eq(intakeRateLimits.gymId, gymId)));
+  expect(rows.filter(row => row.routeKey === 'public.intake.participants').map(row => row.count).sort((a, b) => a - b)).toEqual([5, 10]);
+  expect(rows.find(row => row.routeKey === 'public.intake.signature_kib_day')!.count).toBe(15);
+});
+
+it('reports failed counters separately, logs once, and propagates a database outage', async () => {
+  // An invalid gym makes the real counter INSERT fail its foreign key, while select 1 still works.
+  const report = vi.fn(), store = createIntakeRateLimitStore(db.forSystem, report);
+  const reserve = createPublicIntakeCeiling({ store });
+  const input = { gymId: uuidv7(), timezone: 'UTC', now: 0, participants: 1, signatureBytes: 1 };
+  await expect(reserve(input)).rejects.toMatchObject({ details: { reason: ['intake_store_failed'], resetAt: ['1000'] } });
+  await expect(reserve(input)).rejects.toMatchObject({ details: { reason: ['intake_store_failed'] } });
+  expect(report).toHaveBeenCalledTimes(1);
+  const outage = new Error('database unavailable');
+  const down = createPublicIntakeCeiling({ store: createIntakeRateLimitStore(async () => { throw outage; }, report) });
+  await expect(down(input)).rejects.toBe(outage);
+});
+
 it('atomically caps participants across processes, isolates gyms and resets the hour', async () => {
   const gymId = uuidv7(), otherGym = uuidv7();
   await factory('gyms', gymId); await factory('gyms', otherGym);
   const first = createPublicIntakeCeiling({ store: createIntakeRateLimitStore(db.forSystem), participants: 10 });
   const second = createPublicIntakeCeiling({ store: createIntakeRateLimitStore(db.forSystem), participants: 10 });
-  const input = { gymId, now: 0, participants: 1, signatureBytes: 0 };
+  const input = { gymId, timezone: 'UTC', now: 0, participants: 1, signatureBytes: 0 };
   const replies = await Promise.allSettled(Array.from({ length: 24 }, (_, i) => (i % 2 ? first : second)(input)));
   expect(replies.filter(r => r.status === 'fulfilled')).toHaveLength(10);
   expect(replies.filter(r => r.status === 'rejected')).toHaveLength(14);
@@ -26,7 +110,7 @@ it('atomically caps participants across processes, isolates gyms and resets the 
 it('counts decoded bytes rounded up to KiB and a refused large reservation leaves room for a smaller one', async () => {
   const gymId = uuidv7(); await factory('gyms', gymId);
   const ceiling = () => createPublicIntakeCeiling({ store: cacheRefusals(createIntakeRateLimitStore(db.forSystem)), signatureKiB: 4 });
-  const input = { gymId, now: 0, participants: 1, signatureBytes: 1025 };
+  const input = { gymId, timezone: 'UTC', now: 0, participants: 1, signatureBytes: 1025 };
   await ceiling()(input); // Two KiB.
   await expect(ceiling()({ ...input, signatureBytes: 2049 })).rejects.toMatchObject({ code: 'rate_limited' });
   await expect(ceiling()(input)).resolves.toBeUndefined(); // Exactly four KiB across independent stores.
@@ -36,7 +120,7 @@ it('counts decoded bytes rounded up to KiB and a refused large reservation leave
 it('does not cache a weighted refusal and logs the spent resource once per gym and hour', async () => {
   const gymId = uuidv7(); await factory('gyms', gymId);
   const reserve = createPublicIntakeCeiling({ store: cacheRefusals(createIntakeRateLimitStore(db.forSystem)), participants: 3 });
-  const input = { gymId, now: 0, participants: 2, signatureBytes: 0 };
+  const input = { gymId, timezone: 'UTC', now: 0, participants: 2, signatureBytes: 0 };
   const lines: string[] = [], previous = setLogSink(line => { lines.push(line); });
   try {
     await reserve(input);
