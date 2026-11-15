@@ -123,6 +123,22 @@ work is published as soon as its transition commits; a failed publish is logged
 and never fails the committed transition. `createTransitionJobs` supplies an
 hourly recovery sweep and the effect handler; both are already included through
 the existing billing job barrel.
+Supply `recovery` with the queue's `failedJobs` and `retryFailed` capability to
+`createTransitionEffects` (or `composeBillingWebhooks`). After publication the
+hourly sweep also checks published, incomplete effects, including those older
+than the 30-day publication window, in pages of 100. A job that exhausted its
+twelve attempts is reset in place, preserving its ID, payload and idempotency key;
+recovery never enqueues a second effect job. Recovery waits 15 minutes after the
+first failure, then 30, 60, 120 and 240 minutes after subsequent exhausted batches.
+The reset count survives process restarts in `billing.transition.effect.retried`
+audits. After five resets, recovery records
+`billing.transition.effect.recovery_exhausted` once and leaves the failed job for
+the gym's Health failed-jobs warning and staff follow-up. It does not complete or
+discard the effect. Completed effects are excluded, and the handler's completion
+guard also prevents a completed effect from running again. Recovered retry work
+still calls the charge runner, which checks current invoice state and retry windows.
+Settlement or publication failure does not stop this recovery pass.
+
 Before publishing, the hourly job settles up to 100 due, open or past-due
 zero-total one-off invoices without a Checkout session and not held for review.
 This recovers a crash or failed settlement after issuance, including a pack sale.
@@ -147,6 +163,14 @@ The optional `afterInvoicePaid(gymId, invoiceId)`
 then runs for every paid or zero-settled invoice, however it was paid; it must be
 idempotent, since the effect runs it again until it completes, and a throw retries the
 effect job.
+
+The separate hourly `billing.payments.settle_lapsed` sweep can settle a dead
+`refund_duplicate` reservation once its 23-hour retry window has elapsed, provided
+it is tagged, still pending, and has no processor ID. It reads Stripe refunds and
+records a match or releases an unsent reservation; it does not issue a new refund.
+Reservations with a processor ID, older untagged reservations, and work inside the
+window still depend on their effect or webhook processing. Effect recovery retains
+the existing reconciliation and idempotency-window checks before any refund call.
 
 A refund that changes a pack sale's invoice to `refunded` queues `reverse_credits` in its
 transaction. It reverses only unused credits from that sale's lot. Partial refunds

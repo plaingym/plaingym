@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { forGym } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
-import type { Jobs } from '../../../../infra/jobs/index.js';
+import type { Jobs, JobRecovery } from '../../../../infra/jobs/index.js';
 import type { GymSettingsAccessor } from '../../../../core/interfaces/gym-settings.js';
 import { createMembershipService } from '../../memberships.js';
 import { createInvoiceTransitions } from '../../transitions/index.js';
@@ -15,6 +15,7 @@ import { registerBillingWebhookHandlers, type HandlerOptions } from './index.js'
 export function composeBillingWebhooks(options: {
   inbox: WebhookInbox;
   jobs: Jobs;
+  recovery?: JobRecovery;
   settings: GymSettingsAccessor;
   paymentsFor: PaymentsResolver;
   scope?: typeof forGym;

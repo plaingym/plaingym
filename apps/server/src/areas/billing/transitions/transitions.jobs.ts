@@ -13,7 +13,10 @@ export function createTransitionJobs(read: () => TransitionEffects | undefined =
       const service = read();
       // A failed settlement still fails the job, but never stops the effect recovery below.
       try { await service?.settleZeroInvoices(context.gymId); }
-      finally { await service?.publish(context.gymId); }
+      finally {
+        try { await service?.publish(context.gymId); }
+        finally { await service?.recoverFailed(context.gymId); }
+      }
     } },
     { id: effectJob, async handler(payload, context) {
       const service = read();

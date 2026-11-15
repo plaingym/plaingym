@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, gte, inArray, isNull, lte, notInArray } from 'drizzle-orm';
+import { and, asc, eq, gt, gte, inArray, isNull, lte, notInArray } from 'drizzle-orm';
 import { auditEvents, classCreditEntries, classPackSales, forGym, invoiceLineItems, invoices, paymentAttempts, payments, refunds } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { localDate } from '@plaingym/shared/time';
@@ -8,7 +8,7 @@ import { notFound } from '../../../core/interfaces/common.js';
 import type { InvoiceTransitions } from '../../../core/interfaces/invoice-transitions.js';
 import type { MembershipLifecycle } from '../../../core/interfaces/membership-lifecycle.js';
 import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
-import type { Jobs, JobContext } from '../../../infra/jobs/index.js';
+import type { Jobs, JobContext, JobRecovery } from '../../../infra/jobs/index.js';
 import type { Payments, Refund } from '../../../infra/payments/index.js';
 import type { TransitionNotifications } from './notifications.js';
 import { retryAt } from '../runner/eligibility.js';
@@ -22,10 +22,15 @@ export const effectJob = 'billing.transitions.effect';
 export const publishWindowDays = 30;
 /** A release is committed just before the refund that caused it. Waiting lets the notice's amount count that refund. */
 export const releasedNoticeDelayMs = 15 * 60_000;
+export const effectRecoveryDelayMs = 15 * 60_000, effectRecoveryLimit = 5;
+export const effectRetried = 'billing.transition.effect.retried';
+export const effectRecoveryExhausted = 'billing.transition.effect.recovery_exhausted';
 export interface TransitionEffectOptions {
   scope?: typeof forGym;
   clock?: Clock;
   jobs: Jobs;
+  /** The runtime's queue recovery capability; the hourly sweep resets the original exhausted jobs. */
+  recovery?: JobRecovery;
   settings: GymSettingsAccessor;
   transitions: InvoiceTransitions;
   memberships: MembershipLifecycle;
@@ -80,6 +85,48 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
       });
     }
     return rows.length;
+  }
+  async function recoverFailed(gymId: string) {
+    const recovery = options.recovery;
+    let recovered = 0, exhausted = 0;
+    if (!recovery) return { recovered, exhausted };
+    let cursor: string | undefined;
+    for (;;) {
+      // Unlike publication, recovery must include old effects: a completed audit, never age, ends this work.
+      const rows = await scope(gymId, tx => tx.select({ id: auditEvents.id, effectId: auditEvents.targetId,
+        work: auditEvents.after }).from(auditEvents).where(and(eq(auditEvents.action, effectCreated),
+        cursor ? gt(auditEvents.id, cursor) : undefined,
+        inArray(auditEvents.targetId, tx.select({ id: auditEvents.targetId }).from(auditEvents).where(eq(auditEvents.action, effectPublished))),
+        notInArray(auditEvents.targetId, tx.select({ id: auditEvents.targetId }).from(auditEvents).where(eq(auditEvents.action, effectCompleted)))))
+        .orderBy(asc(auditEvents.id)).limit(100));
+      if (!rows.length) break;
+      const byId = new Map(rows.map(row => [row.effectId, row.work as TransitionEffect]));
+      for (const job of await recovery.failedJobs(effectJob, [...byId.keys()], { gymId })) {
+        const effectId = job.idempotencyKey, work = byId.get(effectId)!;
+        const history = await scope(gymId, tx => tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
+          eq(auditEvents.action, effectRetried), eq(auditEvents.targetId, effectId))).limit(effectRecoveryLimit));
+        if (history.length >= effectRecoveryLimit) {
+          await scope(gymId, async tx => {
+            await lockInvoice(tx, work.invoiceId);
+            if (!await recorded(tx, effectCompleted, effectId) && !await recorded(tx, effectRecoveryExhausted, effectId))
+              await audit(tx, system(gymId), clock, effectRecoveryExhausted, 'invoice_effect', effectId,
+                { invoiceId: work.invoiceId, kind: work.kind, jobId: job.jobId, resets: history.length });
+          });
+          // Keep the failed queue row: the gym's Health failed-jobs warning reports it for staff attention.
+          exhausted++;
+          continue;
+        }
+        const now = clock.now(), delayMs = effectRecoveryDelayMs * 2 ** history.length;
+        if (now.getTime() - job.failedAt.getTime() < delayMs) continue;
+        // Compare-and-set permits one concurrent sweep to reset it, preserving its ID, payload and key.
+        if (!await recovery.retryFailed(job.jobId, { gymId, runAt: now })) continue;
+        await scope(gymId, tx => audit(tx, system(gymId), clock, effectRetried, 'invoice_effect', effectId,
+          { invoiceId: work.invoiceId, jobId: job.jobId, delayMs }));
+        recovered++;
+      }
+      cursor = rows.at(-1)!.id;
+    }
+    return { recovered, exhausted };
   }
   async function run(effectId: string, context: JobContext) {
     const { gymId } = context;
@@ -210,6 +257,6 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
         effectCompleted, 'invoice_effect', effectId, { invoiceId: invoice.id });
     });
   }
-  return { publish, run, settleZeroInvoices };
+  return { publish, run, settleZeroInvoices, recoverFailed };
 }
 export type TransitionEffects = ReturnType<typeof createTransitionEffects>;

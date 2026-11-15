@@ -5,7 +5,7 @@ import { AppError, type Clock } from '@plaingym/shared';
 import { z } from 'zod';
 import { clock as systemClock } from '../../../core/clock.js';
 import { recentWebhookFailureMs, type WebhookHealthQuery } from '../../../core/interfaces/webhook-health.js';
-import type { JobContext, Jobs } from '../../../infra/jobs/index.js';
+import type { JobContext, Jobs, JobRecovery } from '../../../infra/jobs/index.js';
 import type { PaymentEvent, Payments } from '../../../infra/payments/index.js';
 import { PaymentWebhookError } from '../../../infra/payments/webhook-error.js';
 import { latestTestSwitch } from '../customers.js';
@@ -33,6 +33,7 @@ const dispatchSchema = z.object({ eventId: z.string().min(1), replay: z.boolean(
 export function createWebhookInbox(options: {
   paymentsFor: PaymentsResolver;
   jobs: Jobs;
+  recovery?: JobRecovery;
   gymSettings: { get(gymId: string): Promise<{ timezone: string }> };
   clock?: Clock;
   scope?: typeof forGym;
@@ -81,6 +82,12 @@ export function createWebhookInbox(options: {
       await options.jobs.enqueue(webhookDispatchJob, { eventId: event.id }, {
         gymId, timezone, idempotencyKey: row.id, maxAttempts: 10,
       });
+      // A redelivery also recovers a dispatch that used all its attempts. Stripe's delivery schedule bounds resets.
+      // Reset only this gym's failed original job; concurrent deliveries cannot reset queued or running work.
+      if (options.recovery) for (const job of await options.recovery.failedJobs(webhookDispatchJob, [row.id], { gymId }))
+        if (await options.recovery.retryFailed(job.jobId, { gymId, runAt: clock.now() }))
+          await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'billing.webhook.dispatch_retried',
+            targetType: 'stripe_event', targetId: row.id, after: { jobId: job.jobId }, occurredAt: clock.now() }));
     },
     async dispatch(payload: unknown, context: JobContext): Promise<void> {
       const input = dispatchSchema.parse(payload), row = await stored(context.gymId, input.eventId);
@@ -101,7 +108,7 @@ export function createWebhookInbox(options: {
         });
       } catch (error) {
         // Provider error messages may contain secrets or personal data. Keep a safe marker only.
-        await scope(context.gymId, (tx) => tx.update(stripeEvents).set({ processedAt: null, error: 'handler_failed' })
+        await scope(context.gymId, (tx) => tx.update(stripeEvents).set({ error: 'handler_failed' })
           .where(match(context.gymId, input.eventId)));
         throw error; // The job queue owns retry/backoff and the attempt limit.
       }

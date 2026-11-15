@@ -30,6 +30,17 @@ and on events stored before it was recorded. Its event ID is
 globally unique. Receipt commits before enqueue; 200 follows durable enqueue. A
 redelivery repairs an interrupted enqueue with the same persistent job key, without
 replacing the saved event or re-running a completed one.
+Pass the queue's recovery capability as `recovery` to `createWebhookInbox` as well
+as `jobs`. A redelivery resets an exhausted original dispatch job with `retryFailed`
+and audits `billing.webhook.dispatch_retried`, keeping its ID, payload and key.
+Concurrent redeliveries reset it only once; pending and running jobs are unchanged.
+The inbox has no timer of its own: only a later delivery of the same event resets
+the job. Stripe retries a delivery automatically only while the endpoint doesn't
+answer 2xx, and this endpoint answers 200 once the dispatch job is enqueued, so a
+dispatch that fails later is reset by a manual redelivery from the provider, a
+duplicate delivery, or a retry after a response that never reached the provider.
+Otherwise it stays failed until staff replay it. Queue or recovery errors fail the
+request so the provider retries.
 
 `inbox.register(type, handler)` registers one handler per event type. The dispatcher
 loads the saved event in the job's gym scope and passes the verified reference,
@@ -47,7 +58,8 @@ processed with a `billing.webhook.test_event_skipped` audit (target: the stored
 event). An event stored without `livemode` counts as test mode when it arrived
 before the gym's latest `integrations.stripe_test_cleared` audit.
 
-A failed handler records only `handler_failed`, leaves the event unprocessed, and
+A failed handler records only `handler_failed`, preserves any existing
+`processed_at` (a failed replay cannot erase a prior successful dispatch), and
 rethrows to the queue. Dispatch jobs allow ten attempts with the queue's backoff.
 `createWebhookHealthQuery` exposes only per-gym timestamps and pending/failed
 counts; it never returns payloads or provider errors.
@@ -67,3 +79,13 @@ composition supplies `configureWebhookReplay(inbox)` in the CLI process too. Rep
 uses a new queue key and bypasses the processed guard, allowing failed, exhausted,
 or completed events to run again. The gym must own the event; there is no raw-body
 or signature input, and replay never runs a handler in the CLI process.
+
+The ordinary hourly `billing.runner.reconcile` sweep inspects stale `pending`
+payment attempts, resolving charge outcomes by PaymentIntent ID or abandoning
+creates that never saved an ID. It does not scan action-needed attempts, Checkout
+sessions, refunds, disputes, SetupIntents or payment-method updates. The separate
+lapsed-refund sweep covers tagged, pending reservations past the retry window that
+still have no processor ID (see [transitions](../transitions/README.md)). Broader
+charge, Checkout, refund and dispute reconciliation runs after a restore; card
+collection and saved-card changes remain webhook-owned. Recovering dispatch is
+therefore needed even with hourly charge reconciliation enabled.
