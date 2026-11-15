@@ -31,10 +31,25 @@ export function cancellationCutoffAt(session: Pick<SessionRow, 'startsAt'>, sett
 export function cutoffPassed(session: Pick<SessionRow, 'startsAt'>, settings: Pick<GymSettings, 'cancellationCutoffMinutes'>, now: Date) {
   return now.getTime() > cancellationCutoffAt(session, settings).getTime();
 }
-/** Places a new booking can take now. A pending waitlist holds every freed place, so a newcomer never jumps it. */
-export function openPlaces(capacity: number, active: readonly Pick<BookingRow, 'status'>[]) {
-  if (active.some(row => row.status === 'waitlisted')) return 0;
-  return Math.max(0, capacity - active.filter(row => row.status === 'booked').length);
+/** Reserve places for everyone promotion can currently confirm before offering the remainder. */
+export function openPlaces(capacity: number, active: readonly Pick<BookingRow, 'status'>[], promotable: number) {
+  return Math.max(0, capacity - active.filter(row => row.status === 'booked').length - promotable);
+}
+async function canPromote(tx: Transaction, waiting: BookingRow, now: Date) {
+  const [member] = await tx.select({ id: members.id }).from(members).where(and(eq(members.id, waiting.memberId), isNull(members.anonymizedAt)));
+  return !!member && (waiting.bookedByKind !== 'member' || !await lacksClassEligibility(tx, waiting.memberId, now));
+}
+/** Read-only counterpart of reconciliation, including the same cutoff and credit checks. */
+export async function bookablePlaces(tx: Transaction, session: SessionRow, active: BookingRow[], settings: Pick<GymSettings, 'cancellationCutoffMinutes'>, now: Date) {
+  if (session.status !== 'scheduled' || session.startsAt <= now) return 0;
+  const available = openPlaces(session.capacity!, active, 0);
+  if (!available || cutoffPassed(session, settings, now)) return available;
+  let promotable = 0;
+  for (const waiting of active.filter(row => row.status === 'waitlisted')) {
+    if (await canPromote(tx, waiting, now)) promotable++;
+    if (promotable >= available) return 0;
+  }
+  return openPlaces(session.capacity!, active, promotable);
 }
 export function assertCancellable(session: SessionRow, settings: GymSettings, now: Date) {
   if (cutoffPassed(session, settings, now)) bookingConflict('cutoffPassed');
@@ -64,12 +79,10 @@ export async function reconcileSessionBookings(tx: Transaction, session: Session
   for (const waiting of active.filter(row => row.status === 'waitlisted')) {
     if (available <= 0) break;
     // Erasure also locks sessions. Never confirm an already-erased member's place.
-    const [member] = await tx.select({ id: members.id }).from(members).where(and(eq(members.id, waiting.memberId), isNull(members.anonymizedAt)));
-    if (!member) continue;
     // A member who joined the waitlist in the portal with pack credits and no membership must still have a usable credit
     // when a place opens, as a new portal booking would. Otherwise they keep their place in the queue and the next
     // member is promoted.
-    if (waiting.bookedByKind === 'member' && await lacksClassEligibility(tx, waiting.memberId, now)) continue;
+    if (!await canPromote(tx, waiting, now)) continue;
     const [row] = await tx.update(classBookings).set({ status: 'booked', waitlistPosition: null })
       .where(eq(classBookings.id, waiting.id)).returning();
     await bookingAudit(tx, context, now, 'promoted', row!);

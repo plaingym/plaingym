@@ -16,10 +16,11 @@ it('allows cancellation through the cutoff instant and not after it', () => {
   expect(cutoffPassed(session, settings, cutoff)).toBe(false);
   expect(cutoffPassed(session, settings, new Date(cutoff.getTime() + 1))).toBe(true);
 });
-it('offers no place to a newcomer while anyone is waiting', () => {
+it('reserves only the places promotion can fill before offering remaining capacity', () => {
   const booked = { status: 'booked' as const }, waiting = { status: 'waitlisted' as const };
-  expect(openPlaces(3, [booked])).toBe(2);
-  expect(openPlaces(2, [booked, booked])).toBe(0);
-  expect(openPlaces(3, [booked, waiting])).toBe(0);
-  expect(openPlaces(1, [booked, booked])).toBe(0);
+  expect(openPlaces(3, [booked], 0)).toBe(2);
+  expect(openPlaces(2, [booked, booked], 0)).toBe(0);
+  expect(openPlaces(3, [booked, waiting], 1)).toBe(1);
+  expect(openPlaces(3, [booked, waiting], 0)).toBe(2);
+  expect(openPlaces(1, [booked, booked], 0)).toBe(0);
 });

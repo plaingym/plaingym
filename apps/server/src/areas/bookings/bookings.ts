@@ -9,9 +9,9 @@ import { notFound, type MutationContext } from '../../core/interfaces/common.js'
 import type { PortalIdentity } from '../../core/interfaces/member-household.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import { lockMemberForWrite, memberWriteScope } from '../members/member-write.js';
-import { createGymSettingsAccessor } from '../settings/settings.js';
+import { createGymSettingsAccessor, readBookingRules } from '../settings/settings.js';
 import { lacksClassEligibility } from '../billing/packs/index.js';
-import { activeBookings, assertBookable, assertCancellable, bookingAudit, bookingConflict, openPlaces, reconcileSessionBookings,
+import { activeBookings, assertBookable, assertCancellable, bookablePlaces, bookingAudit, bookingConflict, cutoffPassed, openPlaces, reconcileSessionBookings,
   type BookingRow } from './bookings.rules.js';
 
 export interface BookingOptions { scope?: typeof forGym; clock?: Clock; settings?: GymSettingsAccessor; }
@@ -66,14 +66,18 @@ export function createBookingService(options: BookingOptions = {}) {
         const [session] = await tx.select().from(classSessions).where(eq(classSessions.id, value.sessionId)).for('update');
         if (!session) notFound();
         await requireMember(tx, context, value.memberId);
-        const active = await activeBookings(tx, session.id);
+        let active = await activeBookings(tx, session.id);
         const existing = active.find(row => row.memberId === value.memberId);
         if (existing) return bookingView(tx, existing);
-        assertBookable(session, gym, clock.now());
-        if (context.portal && await lacksClassEligibility(tx, value.memberId, clock.now())) bookingConflict('noCredits');
+        const now = clock.now(), rules = await readBookingRules(tx, context.gymId);
+        assertBookable(session, { ...gym, ...rules }, now);
+        if (context.portal && await lacksClassEligibility(tx, value.memberId, now)) bookingConflict('noCredits');
+        await reconcileSessionBookings(tx, session, context, now);
+        active = await activeBookings(tx, session.id);
         const waiting = active.filter(row => row.status === 'waitlisted');
-        // A newcomer never jumps an existing queue while its promotion job is pending.
-        const waitlisted = openPlaces(session.capacity!, active) === 0;
+        // Reconciliation has filled every place the queue can take under this lock.
+        const waitlisted = openPlaces(session.capacity!, active, 0) === 0;
+        if (waitlisted && value.allowWaitlist && cutoffPassed(session, rules, now)) bookingConflict('waitlistClosed');
         if (waitlisted && !value.allowWaitlist) bookingConflict('full');
         const position = waitlisted ? Math.max(0, ...waiting.map(row => row.waitlistPosition!)) + 1 : null;
         if (position !== null && position > 2_147_483_647) bookingConflict('full');
@@ -148,11 +152,14 @@ export function createBookingService(options: BookingOptions = {}) {
     async openPlaces(gymId: string, sessionIds: readonly string[]) {
       if (!sessionIds.length) return new Map<string, number>();
       return scope(gymId, async tx => {
-        const sessions = await tx.select({ id: classSessions.id, capacity: classSessions.capacity }).from(classSessions).where(inArray(classSessions.id, [...sessionIds]));
-        const rows = await tx.select({ sessionId: classBookings.sessionId, status: classBookings.status }).from(classBookings)
+        const sessions = await tx.select().from(classSessions).where(inArray(classSessions.id, [...sessionIds]));
+        const rows = await tx.select().from(classBookings)
           .where(and(inArray(classBookings.sessionId, [...sessionIds]), ne(classBookings.status, 'cancelled')));
-        return new Map(sessions.filter(session => session.capacity !== null)
-          .map(session => [session.id, openPlaces(session.capacity!, rows.filter(row => row.sessionId === session.id))]));
+        const rules = await readBookingRules(tx, gymId), now = clock.now(), places = new Map<string, number>();
+        for (const session of sessions.filter(session => session.capacity !== null)) {
+          places.set(session.id, await bookablePlaces(tx, session, rows.filter(row => row.sessionId === session.id), rules, now));
+        }
+        return places;
       });
     },
     promote: (gymId: string, sessionId: string) => promoteWaitlist(gymId, sessionId, { scope, clock, settings }),

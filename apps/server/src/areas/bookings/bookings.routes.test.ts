@@ -65,6 +65,24 @@ const post = (server: ReturnType<typeof app>, path: string, body?: unknown) => s
 const book = (f: Fixture, memberId = f.member.id) => service.book(f.actor, { memberId, sessionId: f.session.id, allowWaitlist: true });
 
 describe('portal class-credit eligibility', () => {
+  it.each(['staff', 'portal'] as const)('allows a direct %s booking while every queued member lacks credits', async source => {
+    const f = await fixture(), localClock = new TestClock(clock.now());
+    const bookings = createBookingService({ scope: db.forGym, clock: localClock });
+    const portal = createPortalBookingService({ households: createMemberHouseholdContext(db.forGym), householdScope: db.forHousehold, bookings });
+    const confirmed = [];
+    for (let n = 0; n < 5; n++) confirmed.push(await bookings.book(f.actor, { memberId: (await factory('members', f.gymId)).id, sessionId: f.session.id, allowWaitlist: false }));
+    const lot = await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1 });
+    expect(await portal.book(f.identity, { sessionId: f.session.id, allowWaitlist: true })).toMatchObject({ status: 'waitlisted' });
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, lotId: lot.id, credits: -1 });
+    await bookings.cancel(f.actor, confirmed[0]!.id);
+    expect((await bookings.openPlaces(f.gymId, [f.session.id])).get(f.session.id)).toBe(1);
+    const input = { sessionId: f.session.id, allowWaitlist: false };
+    const row = source === 'portal' ? await portal.book(f.identity, input, f.sibling.id)
+      : await bookings.book(f.actor, { ...input, memberId: f.sibling.id });
+    expect(row.status).toBe('booked');
+    expect((await bookings.openPlaces(f.gymId, [f.session.id])).get(f.session.id)).toBe(0);
+    expect((await bookings.list(f.gymId, { limit: 50, offset: 0, status: 'waitlisted' })).data).toMatchObject([{ memberId: f.member.id }]);
+  });
   it.each(['self', 'household'] as const)('refuses a new %s booking, then allows it after a grant without reserving credits', async target => {
     const f = await fixture(), server = app(f, memberPrincipal(f));
     const member = target === 'self' ? f.member : f.sibling;

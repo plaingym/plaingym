@@ -15,8 +15,10 @@ class carries the booking engine's own times: `bookingOpensAt` (from
 `bookingOpensAt`) and `cancelBefore` (from `cancellationCutoffAt`, the instant
 `cutoffPassed` compares against, so cancellation at exactly that instant is
 allowed). The waitlist is promoted only until the same cutoff. `placesLeft`
-is a count from `openPlaces`: it is zero while anyone is waiting, because a new
-booking never jumps the waitlist, and `null` when the class needs no booking.
+is a count from `openPlaces`: it reserves places for waitlisted members who can
+be promoted before offering the remainder, and is `null` when the class needs no booking.
+After the cutoff the queue is frozen: a free place can be booked through the
+portal or by staff, and joining a full class's waitlist is refused.
 `bookings` lists only the active places of members this login may see, in the
 sessions of the page, with
 their place in the queue and without who created them. Staff notes and other

@@ -90,11 +90,11 @@ app* option.
   an active or trial membership sees the neutral front-desk message. The kiosk
   shows no credit balance or reason; staff can inspect the standing reason.
 * Booking a full class puts the member on the **waitlist** at a numbered position.
-  A new booking never jumps the waitlist.
+  A new booking first promotes eligible waiting members, so it never takes a place they can fill.
 * When a place opens (a cancellation, or you raise the capacity), waitlisted members
   are promoted in order and told by email, if member emails are on. Promotion stops
   at the cancellation cutoff, so the waitlist is frozen near class time and a freed place
-  stays open for walk-ins at the front desk.
+  can be booked by staff or through the portal. Joining the frozen waitlist is refused.
 * You can lower a class's capacity only to the number of people already booked.
 * Booking and waitlist promotion are safe when many people act at once; the server
   re-checks capacity for each change.

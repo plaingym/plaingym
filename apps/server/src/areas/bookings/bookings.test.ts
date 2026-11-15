@@ -51,7 +51,7 @@ describe('booking transactions', () => {
     const two = await f.book(m2.id), three = await f.book(m3.id);
     await f.service.cancel(f.actor, two.id); await f.service.cancel(f.actor, first.id);
     const four = await f.book(m4.id);
-    expect(four).toMatchObject({ status: 'waitlisted', waitlistPosition: 4, queueRank: 3 });
+    expect(four).toMatchObject({ status: 'waitlisted', waitlistPosition: 4, queueRank: 2 });
     await f.service.promote(f.gymId, f.session.id);
     const rows = (await f.service.list(f.gymId, page)).data;
     expect(rows.find(row => row.id === one.id)).toMatchObject({ status: 'booked', waitlistPosition: null });
@@ -224,5 +224,52 @@ describe('booking transactions', () => {
     f.clock.set('2026-10-29T16:00:00Z');
     await db.forGym(f.gymId, tx => tx.update(classSessions).set({ status: 'cancelled' }).where(eq(classSessions.id, f.session.id)));
     expect(await f.service.promote(f.gymId, f.session.id)).toEqual([]);
+  });
+  it.each(['cancel', 'capacity', 'erasure'] as const)('offers a place freed by %s after the cutoff to staff without moving the frozen queue', async cause => {
+    const f = await fixture(), booked = await f.book(), waiting = await f.book(f.other.id);
+    if (cause === 'cancel') {
+      f.clock.set('2026-10-30T17:00:00Z');
+      await f.service.cancel(f.actor, booked.id);
+    }
+    f.clock.set('2026-10-30T17:00:00.001Z');
+    if (cause === 'capacity') await createScheduleService(f.options).changeSession(f.actor, f.session.id, 'capacity', { capacity: 2, revision: 1 });
+    if (cause === 'erasure') await createMembersService(f.options).eraseMember(f.actor, f.member.id, { revision: f.member.revision }, { jobs: new FakeJobs(f.clock), timezone: 'UTC' });
+    expect((await f.service.openPlaces(f.gymId, [f.session.id])).get(f.session.id)).toBe(1);
+    const newcomer = await factory('members', f.gymId);
+    expect(await f.book(newcomer.id, false)).toMatchObject({ status: 'booked' });
+    expect((await f.service.openPlaces(f.gymId, [f.session.id])).get(f.session.id)).toBe(0);
+    expect((await f.service.list(f.gymId, page)).data.find(row => row.id === waiting.id)).toMatchObject({ status: 'waitlisted' });
+    const late = await factory('members', f.gymId);
+    await expect(f.book(late.id)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['waitlistClosed'] } });
+  });
+  it('reserves only promotable places in counts and reconciles the queue before a direct booking', async () => {
+    const f = await fixture(), booked = await f.book(), waiting = await f.book(f.other.id);
+    await f.service.cancel(f.actor, booked.id);
+    // Simulate an available capacity change before the recovery job gets its lock.
+    await db.forGym(f.gymId, async tx => {
+      await tx.select().from(classSessions).where(eq(classSessions.id, f.session.id)).for('update');
+      await tx.update(classSessions).set({ capacity: 2 }).where(eq(classSessions.id, f.session.id));
+    });
+    expect((await f.service.openPlaces(f.gymId, [f.session.id])).get(f.session.id)).toBe(1);
+    const newcomer = await factory('members', f.gymId);
+    expect(await f.book(newcomer.id, false)).toMatchObject({ status: 'booked' });
+    expect((await f.service.list(f.gymId, page)).data.find(row => row.id === waiting.id)).toMatchObject({ status: 'booked' });
+    expect((await f.service.openPlaces(f.gymId, [f.session.id])).get(f.session.id)).toBe(0);
+  });
+  it('cancels active bookings with the session and refuses every repeated cancel without more audits', async () => {
+    const f = await fixture(), booked = await f.book(), waiting = await f.book(f.other.id);
+    const other = await fixture(); await other.book();
+    const schedule = createScheduleService(f.options);
+    expect(await schedule.changeSession(f.actor, f.session.id, 'cancel', { revision: 1 })).toMatchObject({ revision: 2, status: 'cancelled' });
+    const rows = (await f.service.list(f.gymId, page)).data;
+    for (const id of [booked.id, waiting.id]) expect(rows.find(row => row.id === id)).toMatchObject({ status: 'cancelled', waitlistPosition: null, cancelledAt: f.clock.now().toISOString() });
+    expect((await f.service.list(f.gymId, { ...page, status: 'booked' })).data).toEqual([]);
+    expect((await f.service.list(f.gymId, { ...page, status: 'waitlisted' })).data).toEqual([]);
+    expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents, eq(auditEvents.action, 'booking.cancelled')))).toBe(2);
+    for (const notify of [false, true]) await expect(schedule.changeSession(f.actor, f.session.id, 'cancel', { revision: 2, notify }))
+      .rejects.toMatchObject({ code: 'conflict', details: { reason: ['already_cancelled'] } });
+    expect(await schedule.getSession(f.gymId, f.session.id)).toMatchObject({ revision: 2 });
+    expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents, eq(auditEvents.action, 'schedule.session.cancel')))).toBe(1);
+    expect((await other.service.list(other.gymId, page)).data[0]).toMatchObject({ status: 'booked' });
   });
 });

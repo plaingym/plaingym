@@ -42,6 +42,7 @@
   "sessionClosed": "This class is cancelled or has already started.",
   "noReservation": "This class does not require a reservation.",
   "full": "This class is full.",
+  "waitlistClosed": "The cancellation cutoff has passed and the waitlist is closed.",
   "erasedMember": "An erased member cannot be booked.",
   "noCredits": "You need an unexpired class credit or an active or trial membership to book or join the waitlist. Please contact the front desk.",
   "capacityBelowBooked": "Capacity cannot be lower than the number already booked.",

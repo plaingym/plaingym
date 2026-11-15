@@ -31,10 +31,11 @@ bookings remain history; rebooking creates a new row.
 Waitlist allocation uses the largest active allocation plus one. Cancellation
 and promotion leave gaps; `queueRank` is the current place in line, including
 members outside the viewer's household, without exposing their identities.
-A new booking never jumps a pending waitlist.
+A new booking first reconciles the queue under the session lock, so it never
+takes a place promotion could fill.
 
 `reconcileSessionBookings` is the single rule called **under the session lock**
-by both schedule capacity-update paths and promotion. A capacity below the
+by new bookings, both schedule capacity-update paths and promotion. A capacity below the
 number already booked is rejected, rolling back the capacity and revision.
 Increasing capacity confirms the lowest waitlist positions first. Setting
 capacity to `null` removes the reservation requirement and confirms any existing
@@ -46,18 +47,20 @@ Promotion skips a waitlist entry the member made in the portal (`booked_by_kind`
 `member`) while they hold a class pack, have no active membership and have no
 usable credit, as a new portal booking would be refused; the entry keeps its place
 in the queue and the next member is promoted. A staff-made entry is promoted as
-before. Promotion stops at the cancellation cutoff, so every place a member holds can
+before. Promotion stops at the cancellation cutoff, so every promoted place can
 still be cancelled. `reconcileSessionBookings` reads the gym's current cutoff
 under the session lock and applies the same comparison as cancellation:
 promotion at the exact cutoff is allowed, and after it the waitlist is frozen.
 This covers every path (cancellation, capacity changes, erasure and the recovery
-job). A capacity change after the cutoff is saved without confirming anyone. A
-freed place stays open for walk-ins, whom staff check in; a new booking still
-joins the end of a non-empty waitlist rather than jumping it.
+job and new bookings). A capacity change after the cutoff is saved without confirming anyone.
+Staff and portal members can book a free place after the cutoff, while existing
+waitlisted members keep their frozen positions. Joining a full class's waitlist
+after the cutoff is refused with reason `waitlistClosed`.
 
 Readers share the same rules: `cancellationCutoffAt` is the instant `cutoffPassed`
 compares against, and `openPlaces` counts the places a new booking can take now
-(none while anyone is waiting). The service's `openPlaces(gymId, sessionIds)` returns
+(after reserving any places promotion can fill). Waiting members without usable
+credits and a frozen waitlist do not hold free places. The service's `openPlaces(gymId, sessionIds)` returns
 those counts for reservable sessions without exposing who holds a place; the portal
 schedule shows them beside each class.
 

@@ -43,8 +43,9 @@ and linked staff profile under the session row lock: only an owner, admin or
 that session's assigned coach may proceed. A refusal rolls back the entire
 cancellation. Without notification, the existing cancellation permission applies.
 The cancellation, audit and notice job commit together. The payload snapshots only
-that session's booked and waitlisted member IDs and the note; bookings themselves
-are unchanged. A repeated cancellation with notification returns a conflict
+that session's booked and waitlisted member IDs and the note before cancelling
+those bookings, setting their cancellation time, clearing queue positions and
+writing one `booking.cancelled` audit per booking. Every repeated cancellation returns a conflict
 without changing the revision or queuing another notice.
 
 The session dialog offers an unchecked email option with the booked-plus-waitlisted
@@ -61,6 +62,5 @@ renders enabled, permitted `sessionPanels` contributions without importing
 their components directly. A panel can publish booking counts for the session
 dialog's summary (`lib/session-summary.tsx`); the dialog shows them beside the
 capacity when a panel has published any. The dialog also tells its panels when a
-capacity change may have moved bookings (cancelling a session leaves its
-bookings as they are), and a panel can tell
+capacity change or session cancellation may have changed bookings, and a panel can tell
 the dialog about its own changes (a check-in), so a panel that shows counts reloads.

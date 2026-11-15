@@ -126,7 +126,7 @@ describe('schedule calendar and session detail', () => {
     expect(screen.queryByText(/These counts may be out of date/)).toBeNull();
     view.unmount();
   });
-  it('tells the panels a capacity save changed the bookings, but not a notes save', async () => {
+  it('tells the panels a capacity save or a cancellation changed the bookings, but not a notes save', async () => {
     const changes: number[] = [];
     const Panel = () => { changes.push(useSessionChanged()); return <p>Watching panel</p>; };
     const entry = { id: 'test.watch', labelKey: 'schedule/schedule:notes', permission: { kind: 'staff' as const, capability: 'attendance.manage' as const }, enabled: true, component: Panel };
@@ -138,6 +138,9 @@ describe('schedule calendar and session detail', () => {
     await waitFor(() => expect(api.PATCH).toHaveBeenCalledTimes(1)); expect(Math.max(...changes)).toBe(0);
     fireEvent.change(screen.getByLabelText('Capacity'), { target: { value: '7' } }); fireEvent.click(screen.getByRole('button', { name: 'Save capacity' }));
     await waitFor(() => expect(Math.max(...changes)).toBe(1));
+    vi.mocked(api.POST).mockResolvedValue({ response: new Response(), data: { data: { ...session, revision: 6, capacity: 7, status: 'cancelled' } } } as Awaited<ReturnType<typeof api.POST>>);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel session' }));
+    await waitFor(() => expect(Math.max(...changes)).toBe(2));
   });
   it('shows no booking summary when no panel publishes counts', () => {
     render(<SessionDetail session={session} options={options} roles={['coach']} enabledModules={[]} onSaved={vi.fn()} registries={createRegistries()}/>);

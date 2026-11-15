@@ -156,7 +156,7 @@ it('commits the recipient snapshot, note and job with cancellation, and rolls ev
   expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents))).toBe(0);
   enqueue.mockRestore(); await f.cancel();
   expect(f.payload()).toMatchObject({ memberIds: [member.id], note: '<b>Closed</b>\nSee you tomorrow.' });
-  expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents))).toBe(1);
+  expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents))).toBe(2);
 });
 it('mails only the snapshot’s booked and waitlisted members, combines a household address and ignores announcement opt-outs', async () => {
   const f = await fixture();
@@ -178,7 +178,10 @@ it('mails only the snapshot’s booked and waitlisted members, combines a househ
   expect(mail.html).toContain('&lt;b&gt;Closed&lt;/b&gt;'); expect(mail.listUnsubscribe).toBeUndefined();
   expect(mail.html.toLowerCase()).not.toContain('unsubscribe');
   expect(await db.forGym(f.gymId, tx => tx.select({ memberId: classBookings.memberId, status: classBookings.status }).from(classBookings)))
-    .toContainEqual({ memberId: second.id, status: 'waitlisted' });
+    .toContainEqual({ memberId: second.id, status: 'cancelled' });
+  expect(await db.forGym(f.gymId, tx => tx.select({ status: classBookings.status, cancelledAt: classBookings.cancelledAt, position: classBookings.waitlistPosition })
+    .from(classBookings).where(eq(classBookings.memberId, first.id))))
+    .toEqual([{ status: 'cancelled', cancelledAt: f.clock.now(), position: null }]);
 });
 it.each(['disabled', 'opt_out', 'undeliverable', 'erased', 'missing_email'] as const)('suppresses %s at delivery time', async reason => {
   const f = await fixture(), member = await f.booked(); await f.cancel();
@@ -206,7 +209,7 @@ it('never adds a job on a retried cancellation or duplicates a message on replay
   await expect(f.cancel()).rejects.toMatchObject({ code: 'conflict' });
   await expect(f.cancel(true, cancelled.revision)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['already_cancelled'] } });
   expect(await f.service.getSession(f.gymId, f.session.id)).toMatchObject({ revision: cancelled.revision });
-  expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents))).toBe(1);
+  expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents))).toBe(2);
   expect(f.jobs.jobs).toHaveLength(1);
   await Promise.allSettled([f.run(), f.run()]); await f.run();
   expect(f.email.messages).toHaveLength(1);

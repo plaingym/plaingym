@@ -78,8 +78,8 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
         : await api.PATCH('/api/schedule/sessions/{id}/notes', { params, body: { revision, notes: String(form?.get('notes') ?? '') || null } });
       check(result.response); if (formElement) markSaved(formElement);
       onSaved(parseResponse(classSessionResponseSchema, result.data).data); setNotice(text('saved'));
-      // A new capacity can promote or move bookings, so the panels that show counts reload. Cancelling a session leaves its bookings as they are.
-      if (kind === 'capacity') setChanged((value) => value + 1);
+      // A new capacity can promote or move bookings, and cancelling a session cancels its bookings, so the panels that show counts reload.
+      if (kind === 'capacity' || kind === 'cancel') setChanged((value) => value + 1);
     } catch (error) { setNotice(message(error)); } finally { setBusy(false); }
   }
   const when = new Intl.DateTimeFormat(undefined, { timeZone: options.timezone, dateStyle: 'full' }).format(new Date(session.startsAt));

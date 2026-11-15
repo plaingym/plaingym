@@ -28,6 +28,28 @@ const staffBook = (f: PortalFixture, memberId: string, sessionId = f.session.id)
   services.bookings.book({ gymId: f.gymId, actor: { kind: 'user', userId: f.staff.id } }, { memberId, sessionId, allowWaitlist: true });
 
 describe('portal schedule', () => {
+  it.each(['self', 'household'] as const)('offers a freed place to the %s path after the cutoff and refuses a new frozen waitlist entry', async target => {
+    clock.set('2026-10-29T16:00:00Z');
+    try {
+      const f = await portalFixture(factory), server = services.app(f.gymId, f.principal('payer'));
+      const first = await staffBook(f, (await factory('members', f.gymId)).id);
+      await staffBook(f, (await factory('members', f.gymId)).id);
+      const waiting = await staffBook(f, f.other.id);
+      clock.set('2026-10-30T17:00:00Z');
+      await services.bookings.cancel({ gymId: f.gymId, actor: { kind: 'user', userId: f.staff.id } }, first.id);
+      clock.advance(1);
+      expect((await schedule(f, f.principal('payer'))).data[0]!.placesLeft).toBe(1);
+      const self = '/api/portal/bookings', household = `/api/portal/members/${f.child.id}/bookings`;
+      const accepted = await post(server, target === 'self' ? self : household, { sessionId: f.session.id, allowWaitlist: false });
+      expect(accepted.status).toBe(200);
+      expect((await accepted.json()).data.status).toBe('booked');
+      expect((await schedule(f, f.principal('payer'))).data[0]!.placesLeft).toBe(0);
+      const denied = await post(server, target === 'self' ? household : self, { sessionId: f.session.id, allowWaitlist: true });
+      expect(denied.status).toBe(409);
+      expect(await denied.json()).toMatchObject({ error: { details: { reason: ['waitlistClosed'] } } });
+      expect((await services.bookings.list(f.gymId, { limit: 50, offset: 0 })).data.find(row => row.id === waiting.id)).toMatchObject({ status: 'waitlisted' });
+    } finally { clock.set('2026-10-29T16:00:00Z'); }
+  });
   it('a parent books for a child and sees the engine times, open places and the household places only', async () => {
     clock.set('2026-10-29T16:00:00Z');
     const f = await portalFixture(factory), server = services.app(f.gymId, f.principal('payer'));

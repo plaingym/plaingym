@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, eq, gte, ilike, inArray, isNull, lt, or, type SQL } from 'drizzle-orm';
-import { forGym, classTags, classTemplates, classTemplatePrograms, classTemplateTags, classSessions, classSessionPrograms, classSessionTags, programs, staffProfiles, staffRoles, revisionGuard, assertRevised, writeAudit, RevisionConflictError, type Transaction } from '@plaingym/db';
+import { forGym, classBookings, classTags, classTemplates, classTemplatePrograms, classTemplateTags, classSessions, classSessionPrograms, classSessionTags, programs, staffProfiles, staffRoles, revisionGuard, assertRevised, writeAudit, RevisionConflictError, type Transaction } from '@plaingym/db';
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { classTagSchema, classTemplateSchema, classSessionSchema, createClassTagRequestSchema, updateClassTagRequestSchema, createClassTemplateRequestSchema, updateClassTemplateRequestSchema, createClassSessionRequestSchema, updateClassSessionRequestSchema, classTagListQuerySchema, classTemplateListQuerySchema, classSessionListQuerySchema, scheduleRevisionRequestSchema, swapSessionCoachRequestSchema, updateSessionNotesRequestSchema, updateSessionCapacityRequestSchema,
   type ClassTemplate, type ClassSession, type CreateClassTagRequest, type UpdateClassTagRequest, type CreateClassTemplateRequest, type UpdateClassTemplateRequest, type CreateClassSessionRequest, type UpdateClassSessionRequest, type ClassTagListQuery, type ClassTemplateListQuery, type ClassSessionListQuery, type ScheduleRevisionRequest, type SwapSessionCoachRequest, type UpdateSessionNotesRequest, type UpdateSessionCapacityRequest } from '@plaingym/shared/contracts';
@@ -9,7 +9,7 @@ import type { MutationContext } from '../../core/interfaces/common.js';
 import { localDate, occurrences } from './schedule.time.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
-import { reconcileSessionBookings } from '../bookings/bookings.rules.js';
+import { bookingAudit, reconcileSessionBookings } from '../bookings/bookings.rules.js';
 import { cancelSessionRequestSchema, type CancelSessionRequest } from '@plaingym/shared/contracts';
 import { readCancellationRecipients } from '../bookings/bookings.recipients.js';
 import { cancellationNotice, type CancellationNotice } from '../announcements/cancellation.js';
@@ -254,6 +254,7 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
         return safe(() => withJobTransaction(scope, context.gymId, async transaction => {
           const { tx } = transaction;
           const [row] = await tx.select().from(classSessions).where(eq(classSessions.id, id)).for('update'); if (!row) missing();
+          if (row.status === 'cancelled') throw new AppError('conflict', t('schedule/schedule:alreadyCancelled'), { reason: ['already_cancelled'] });
           if (value.notify) {
             const roles = context.actor.kind === 'user' ? await tx.select({ role: staffRoles.role }).from(staffRoles)
               .where(eq(staffRoles.userId, context.actor.userId)) : [];
@@ -261,7 +262,6 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
             const [profile] = context.actor.kind === 'user' && roles.some(({ role }) => role === 'coach') && row.coachId
               ? await tx.select({ id: staffProfiles.id }).from(staffProfiles).where(and(eq(staffProfiles.id, row.coachId), eq(staffProfiles.userId, context.actor.userId))) : [];
             if (!manager && !profile) throw new AppError('forbidden', 'Only the session coach, an admin or an owner may send a cancellation notice');
-            if (row.status === 'cancelled') throw new AppError('conflict', t('schedule/schedule:alreadyCancelled'), { reason: ['already_cancelled'] });
           }
           const before = await sessionView(tx, row), guard = revisionGuard(classSessions.revision, value.revision);
           const afterRow = assertRevised(await tx.update(classSessions).set({ status: 'cancelled', revision: guard.next })
@@ -270,6 +270,10 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
             const memberIds = await readCancellationRecipients(tx, id);
             await (options.cancellation ?? cancellationNotice()).enqueue(transaction, { sessionId: id, memberIds, note: value.note ?? '' }, gym!.timezone);
           }
+          const now = clock.now();
+          const cancelled = await tx.update(classBookings).set({ status: 'cancelled', cancelledAt: now, waitlistPosition: null })
+            .where(and(eq(classBookings.sessionId, id), inArray(classBookings.status, ['booked', 'waitlisted']))).returning();
+          for (const booking of cancelled) await bookingAudit(tx, context, now, 'cancelled', booking);
           const after = await sessionView(tx, afterRow);
           await audit(tx, context, 'session.cancel', id, before, after);
           return after;
