@@ -30,6 +30,8 @@ export type StaffNotice = TransitionNotice & ({ reason?: 'duplicate_payment' }
   | { reason: 'duplicate_released'; unrefundedCents: number }
   /** A staff refund the app released before it reached the processor: the payer may still be owed it. */
   | { reason: 'refund_released'; refund: typeof refunds.$inferSelect }
+  /** A released reservation did reach Stripe after its release notice. */
+  | { reason: 'refund_arrived'; refund: typeof refunds.$inferSelect }
   /** A class pack paid for a member erased before it was paid: its credits weren't granted. */
   | { reason: 'credits_not_granted'; credits: number });
 export interface TransitionNotifications {
@@ -53,11 +55,11 @@ export function createTransitionNotifications(options: {
   const links = createSignedLinksService({ scope, clock });
   const deliveries = createEmailDeliveries({ scope, clock });
   async function deliver(notice: TransitionNotice, kind: 'receipt' | 'failed' | 'action' | 'duplicate' | 'duplicateReleased' | 'refundFailed' | 'refundReleased'
-    | 'refundReversed' | 'creditsNotGranted', subject: { purpose: string; id: string }, amountCents?: number, credits?: number) {
+    | 'refundArrived' | 'refundReversed' | 'creditsNotGranted', subject: { purpose: string; id: string }, amountCents?: number, credits?: number) {
     assertNoTransaction('invoice notification');
     const { gymId, invoice } = notice;
     const staff = kind === 'duplicate' || kind === 'duplicateReleased' || kind === 'refundFailed' || kind === 'refundReversed' || kind === 'refundReleased'
-      || kind === 'creditsNotGranted';
+      || kind === 'creditsNotGranted' || kind === 'refundArrived';
     const recipients = staff ? await options.staffRecipients(gymId) : await memberRecipients(gymId, invoice.householdId);
     if (!recipients.length) {
       if (staff) throw new Error('No staff recipient configured for billing staff notices');
@@ -147,6 +149,8 @@ export function createTransitionNotifications(options: {
           notice.reversedCredits);
       else if (notice.reason === 'refund_released')
         await deliver(notice, 'refundReleased', { purpose: 'refund_released', id: notice.refund.id }, notice.refund.amountCents);
+      else if (notice.reason === 'refund_arrived')
+        await deliver(notice, 'refundArrived', { purpose: 'refund_arrived', id: notice.refund.id }, notice.refund.amountCents);
       else if (notice.reason === 'credits_not_granted')
         await deliver(notice, 'creditsNotGranted', { purpose: 'credits_not_granted', id: notice.invoice.id }, undefined, notice.credits);
       else if (notice.reason === 'duplicate_released')

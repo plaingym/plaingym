@@ -23,7 +23,7 @@ exposes the same controllable entry points used by the jobs and PostgreSQL scena
 | `reconcile(gymId)` | Reconcile stale pending attempts by ID. Returns unresolved references. Works while billing is disabled. |
 | `postRestore(gymId, snapshotAt)` | Require billing disabled; refresh unresolved IDs and enumerate provider changes with a five-minute overlap. Return `readyForOwnerReview`, unresolved references and `stripeConfigured`; record the report in an immutable audit event. Never enable billing. A gym with no payments provider is checked against the database only (below). |
 | `chargeFailures(gymId)` | The last 90 days' stopped-run failure reports, oldest first, each with only the invoices that still need staff. |
-| `dismissChargeFailures(context, runIds)` | Staff (a user actor) dismiss what the named reports still list, with an audit per report; a report written after the caller read the list is not named, so it stays open. The gym's dismissals run one at a time (a transaction-level advisory lock), so two at once write one audit per report; the lock is the gym's `chargeFailures` entry in `gymAdvisoryLocks` (`packages/db/src/locks.ts`), and the dismissal reads only the named runs under it. Another gym's, an unknown, or a report older than the 90 days listed is `not_found`, and nothing is dismissed. |
+| `dismissChargeFailures(context, runIds)` | Staff (a user actor) dismiss what the named reports still list, with an audit per report; a report written after the caller read the list is not named, so it stays open. The gym's dismissals run one at a time (a transaction-level advisory lock), so two at once write one audit per report; the lock is the gym's `chargeFailures` entry in `gymAdvisoryLocks` (`packages/db/src/locks.ts`), and the dismissal reads only the named runs under it. Foreign, unknown, expired and already-dismissed runs are skipped; the response names only invoices actually dismissed. |
 | `onAssigned` | Inject into `createMembershipService`: issue calculated first-period proration and sign-up-fee invoices in the assignment transaction. Never call the provider there. |
 
 The restore job and go-live rerun share a per-gym PostgreSQL session lease before
@@ -311,6 +311,7 @@ report lists an invoice, the charge-run health tile is an error naming the invoi
 `failed_jobs` check stays clear; the continuation still collects what is left.
 Dismiss all refreshes the list before each confirmation or retry and only sends
 captured runs that are still listed, so a report aging out cannot block the rest.
+The POST also skips runs that age out between that refresh and the dismissal.
 
 The daily run is a batch job: its registration in `runner.jobs.ts` names the batch
 lane (`infra/jobs/README.md`), so the run holds only that lane: webhook dispatch

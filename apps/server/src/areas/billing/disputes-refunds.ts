@@ -11,7 +11,8 @@ import type { InvoiceTransitions } from '../../core/interfaces/invoice-transitio
 import type { ChargeOutcome, Dispute, Payments, Refund } from '../../infra/payments/index.js';
 import type { BillingAlerts } from './alerts/index.js';
 import { stripeWriteCurrent, stripeWriteScope } from './stripe-writes.js';
-import { audit, lockInvoice } from './transitions/store.js';
+import { holdGymSettings } from '../settings/settings.js';
+import { audit, effect, lockInvoice, recorded } from './transitions/store.js';
 
 type Payment = typeof payments.$inferSelect;
 type RefundRow = typeof refunds.$inferSelect;
@@ -114,13 +115,33 @@ export function createDisputeRefundWriter(options: DisputeRefundOptions) {
     const apply = (id: string) => options.transitions.refund(system(gymId), { invoiceId: payment.invoiceId, paymentId: payment.id,
       refundId: id, processorId: value.id, amountCents: value.amount, currency: currency, status: value.status });
     try {
-      await apply(refundId);
+      const result = await apply(refundId);
+      if (result.outcome === 'ignored' && refundId === value.reservationId) {
+        const [row] = await scope(gymId, tx => tx.select().from(refunds).where(eq(refunds.id, refundId)));
+        // Settlement may have released the selected reservation before the transition took its lock. Re-read the
+        // payment's reservations and record this now-external refund, instead of losing the processor outcome.
+        if (row && row.processorId === null && refundReleased(row)) return refund(gymId, payment, value);
+      }
     } catch (error) {
       // A concurrent delivery or restore pass may have recorded this processor refund first, under another local ID.
       const raced = await scope(gymId, async tx => (await tx.select().from(refunds).where(eq(refunds.processorId, value.id)))[0]);
       if (!raced || raced.paymentId !== payment.id || raced.amountCents !== value.amount || raced.currency !== currency) throw error;
       await apply(raced.id);
     }
+    // A timed-out request may finish after settlement listed Stripe and released its reservation. Its external row
+    // records the money; a durable follow-up corrects the earlier release notice, once, including on webhook replay.
+    if (value.reservationId && value.status === 'succeeded') await scope(gymId, async tx => {
+      await lockInvoice(tx, payment.invoiceId);
+      const [released] = await tx.select().from(refunds).where(eq(refunds.id, value.reservationId!));
+      const [external] = await tx.select().from(refunds).where(eq(refunds.processorId, value.id));
+      if (!released || released.paymentId !== payment.id || released.status !== 'failed' || released.processorId !== null
+        || released.taggedAt === null || released.amountCents !== value.amount || released.currency !== currency
+        || !external || external.status !== 'succeeded' || external.paymentId !== payment.id
+        || await recorded(tx, 'billing.refund.release_corrected', released.id)) return;
+      await audit(tx, system(gymId), clock, 'billing.refund.release_corrected', 'refund', released.id, { processorId: value.id });
+      await effect(tx, system(gymId), clock, { kind: 'staff_notice', notice: 'refund_arrived', invoiceId: payment.invoiceId,
+        paymentId: payment.id, refundId: external.id });
+    });
     return true;
   }
   /** Records a dispute's current status on its payment's invoice, under the invoice lock. Only the dispute ID and

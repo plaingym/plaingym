@@ -5,6 +5,7 @@ import { allocateInvoiceNumber, forGym, households, invoices, invoiceLineItems, 
 import { AppError, type Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
+import { logError } from '../../core/log.js';
 import { notFound, type MutationContext } from '../../core/interfaces/common.js';
 import type { InvoiceTransitions } from '../../core/interfaces/invoice-transitions.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
@@ -180,7 +181,10 @@ export function createPaymentService(options: PaymentOptions = {}) {
         chargeTypeId ? async () => (await tx.select().from(chargeTypeTaxRates)
           .where(eq(chargeTypeTaxRates.chargeTypeId, chargeTypeId))).map(link => link.taxRateId) : undefined);
       });
-      if (invoice.amountCents === 0) return { ...invoice, ...(await transitions.settleZero(context, { invoiceId: invoice.id })).invoice };
+      if (invoice.amountCents === 0) {
+        try { return { ...invoice, ...(await transitions.settleZero(context, { invoiceId: invoice.id })).invoice }; }
+        catch (error) { logError('billing.one_off.settle_failed', { gymId: context.gymId, invoiceId: invoice.id }, error); }
+      }
       return invoice;
     },
     async manualPayment(context: MutationContext, invoiceId: string, input: c.RecordManualPaymentRequest) {

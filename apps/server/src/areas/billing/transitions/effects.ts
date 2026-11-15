@@ -7,7 +7,7 @@ import { clock as defaultClock } from '../../../core/clock.js';
 import { notFound } from '../../../core/interfaces/common.js';
 import type { InvoiceTransitions } from '../../../core/interfaces/invoice-transitions.js';
 import type { MembershipLifecycle } from '../../../core/interfaces/membership-lifecycle.js';
-import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
+import type { GymSettings, GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
 import type { Jobs, JobContext, JobRecovery } from '../../../infra/jobs/index.js';
 import type { Payments, Refund } from '../../../infra/payments/index.js';
 import type { TransitionNotifications } from './notifications.js';
@@ -45,8 +45,8 @@ export interface TransitionEffectOptions {
 export function createTransitionEffects(options: TransitionEffectOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const credits = createPackCredits({ scope, clock, settings: options.settings });
-  async function settleZeroInvoices(gymId: string) {
-    const gym = await options.settings.get(gymId);
+  async function settleZeroInvoices(gymId: string, settings?: GymSettings) {
+    const gym = settings ?? await options.settings.get(gymId);
     const rows = await scope(gymId, tx => tx.select({ id: invoices.id }).from(invoices).where(and(
       eq(invoices.kind, 'one_off'), eq(invoices.amountCents, 0), inArray(invoices.status, ['open', 'past_due']),
       lte(invoices.dueOn, localDate(clock.now(), gym.timezone)), isNull(invoices.checkoutSessionId),
@@ -62,8 +62,8 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
     if (failure !== undefined) throw failure;
     return rows.length;
   }
-  async function publish(gymId: string) {
-    const gym = await options.settings.get(gymId);
+  async function publish(gymId: string, settings?: GymSettings) {
+    const gym = settings ?? await options.settings.get(gymId);
     // Effects are published right after their transition commits, or by the hourly sweep. Searching a bounded
     // window keeps this on the (gym, time) audit index instead of scanning the gym's whole audit history.
     const since = new Date(clock.now().getTime() - publishWindowDays * 86_400_000);
@@ -137,7 +137,7 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
       const invoice = await lockInvoice(tx, work.invoiceId);
       const payment = work.paymentId ? (await tx.select().from(payments).where(eq(payments.id, work.paymentId)))[0] : undefined;
       if (payment && payment.invoiceId !== invoice.id) notFound();
-      const refund = (work.notice === 'refund_failed' || work.notice === 'refund_released') && work.refundId
+      const refund = (work.notice === 'refund_failed' || work.notice === 'refund_released' || work.notice === 'refund_arrived') && work.refundId
         ? (await tx.select().from(refunds).where(eq(refunds.id, work.refundId)))[0] : undefined;
       if (refund && refund.paymentId !== payment?.id) notFound();
       const refunded = work.notice === 'duplicate_released' && payment
@@ -192,6 +192,10 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
       } else if (work.notice === 'refund_released') {
         if (!refund) throw new Error('Released refund notice has no refund');
         await options.notifications.staffNotice({ ...data, reason: 'refund_released', refund });
+      } else if (work.notice === 'refund_arrived') {
+        if (!refund) throw new Error('Late refund notice has no refund');
+        // A later processor failure has its own notice; don't send an obsolete success correction after it.
+        if (refund.status === 'succeeded') await options.notifications.staffNotice({ ...data, reason: 'refund_arrived', refund });
       } else if (work.notice !== 'refund_failed') await options.notifications.staffNotice(data);
       else if (refund) await options.notifications.staffNotice({ ...data, reason: 'refund_failed', refund, reversed,
         ...(reversedCredits > 0 ? { reversedCredits } : {}) });
@@ -257,6 +261,7 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
         effectCompleted, 'invoice_effect', effectId, { invoiceId: invoice.id });
     });
   }
-  return { publish, run, settleZeroInvoices, recoverFailed };
+  const settings = (gymId: string) => options.settings.get(gymId);
+  return { publish, run, settleZeroInvoices, recoverFailed, settings };
 }
 export type TransitionEffects = ReturnType<typeof createTransitionEffects>;

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq, gte } from 'drizzle-orm';
 import { auditEvents, invoices, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import type { MutationContext } from '../../../core/interfaces/common.js';
@@ -20,7 +20,7 @@ export interface TransitionEffect {
   refundId?: string;
   retryDay?: number;
   /** A staff notice's subject; absent on older notices, which all report a duplicate payment. */
-  notice?: 'refund_failed' | 'refund_released' | 'duplicate_released' | 'credits_not_granted';
+  notice?: 'refund_failed' | 'refund_released' | 'refund_arrived' | 'duplicate_released' | 'credits_not_granted';
 }
 /** The app gave up on these attempts before the member's card was charged: neither a decline nor a collection. */
 export const createAbandoned = 'create_abandoned', confirmAbandoned = 'confirm_abandoned';
@@ -65,7 +65,18 @@ export async function effect(tx: Transaction, context: MutationContext, clock: C
 }
 /** Durable reversal command, independent of the human-readable refund audit snapshot. */
 export async function hasCreditReversal(tx: Transaction, invoiceId: string) {
+  const [refunded] = await tx.select({ at: auditEvents.occurredAt }).from(auditEvents)
+    .where(and(eq(auditEvents.action, 'billing.invoice.refunded'), eq(auditEvents.targetId, invoiceId)))
+    .orderBy(asc(auditEvents.occurredAt)).limit(1);
+  if (!refunded) return false;
   const work: TransitionEffect = { kind: 'reverse_credits', invoiceId };
   return (await tx.select({ id: auditEvents.id }).from(auditEvents)
-    .where(and(eq(auditEvents.action, effectCreated), eq(auditEvents.after, work))).limit(1)).length > 0;
+    .where(and(gte(auditEvents.occurredAt, refunded.at), eq(auditEvents.action, effectCreated), eq(auditEvents.after, work))).limit(1)).length > 0;
+}
+/** New duplicate reservations have their own durable marker. Older rows predate it: only the worker can have set
+ * this reason without a staff-request audit on a payment explicitly recorded as a duplicate. */
+export async function duplicateReservation(tx: Transaction, row: { id: string; paymentId: string; reason: string | null }) {
+  return Boolean(await recorded(tx, 'billing.refund.duplicate_reserved', row.id))
+    || row.reason === 'duplicate_payment' && !await recorded(tx, 'billing.refund.requested', row.id)
+      && !await accepted(tx, row.paymentId);
 }

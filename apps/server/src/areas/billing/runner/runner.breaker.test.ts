@@ -175,12 +175,26 @@ describe('daily run lane and circuit breaker', () => {
     const staff = async (g: Fixture) => ({ gymId: g.gymId, actor: { kind: 'user' as const, userId: (await factory('authUser', g.gymId)).id } });
     expect(await other.runner.chargeFailures(other.gymId)).toEqual([]);
     expect(await tile(other)).toMatchObject({ status: 'warning', details: { result: 'never_run' } });
-    await expect(other.runner.dismissChargeFailures(await staff(other), [jobId])).rejects.toMatchObject({ code: 'not_found' });
+    expect(await other.runner.dismissChargeFailures(await staff(other), [jobId])).toEqual({ dismissed: [] });
     expect(await f.runner.dismissChargeFailures(await staff(f), [jobId])).toEqual({ dismissed: [refused.id] });
     expect(await f.runner.chargeFailures(f.gymId)).toEqual([]);
     expect(await tile(f)).toMatchObject({ status: 'healthy' });
     expect((await f.read()).audits.filter(row => row.action === 'billing.runner.charge_failures.dismissed'))
       .toMatchObject([{ targetId: jobId, actorKind: 'user', after: { invoiceIds: [refused.id] } }]);
+  });
+  it('dismisses current reports while skipping runs that aged out or were already dismissed', async () => {
+    const f = await fixture(), old = await invoice(f), current = await factory('invoices', f.gymId,
+      { householdId: f.home.id, kind: 'one_off', status: 'open', number: old.number! + 1 });
+    const context = { gymId: f.gymId, actor: { kind: 'user' as const, userId: (await factory('authUser', f.gymId)).id } };
+    const first = uuidv7(), second = uuidv7();
+    await db.forGym(f.gymId, tx => reportChargeFailures(tx, context, f.clock, first, '2028-03-01', [{ invoiceId: old.id, cause: 'unexpected' }]));
+    f.clock.advance(90 * 86400_000 - 1000);
+    await db.forGym(f.gymId, tx => reportChargeFailures(tx, context, f.clock, second, '2028-05-30', [{ invoiceId: current.id, cause: 'unexpected' }]));
+    expect((await f.runner.chargeFailures(f.gymId)).map(report => report.runId)).toContain(first);
+    f.clock.advance(2000);
+    expect(await f.runner.dismissChargeFailures(context, [first, second])).toEqual({ dismissed: [current.id] });
+    expect(await f.runner.dismissChargeFailures(context, [first, second])).toEqual({ dismissed: [] });
+    expect((await f.read()).audits.filter(row => row.action === 'billing.runner.charge_failures.dismissed')).toMatchObject([{ targetId: second }]);
   });
   it('records a report job the previous release queued as that run\'s report, without failing it', async () => {
     const f = await fixture(), bill = await invoice(f), queue = lanes(f);

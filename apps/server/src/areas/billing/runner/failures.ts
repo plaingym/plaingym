@@ -2,7 +2,7 @@
 import { and, asc, eq, gte, inArray, isNotNull, notInArray } from 'drizzle-orm';
 import { auditEvents, invoices, lockGym, paymentAttempts, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
-import { notFound, type MutationContext } from '../../../core/interfaces/common.js';
+import type { MutationContext } from '../../../core/interfaces/common.js';
 import { isProviderOutage } from '../../../infra/payments/index.js';
 import { abandonedAttempt, recorded } from '../transitions/store.js';
 import { audit } from './store.js';
@@ -66,7 +66,7 @@ async function failuresFromReports(tx: Transaction, reports: (typeof auditEvents
 /**
  * Staff dismiss what the named reports still list; the invoices are unchanged. A report written after staff loaded
  * the list isn't named, so it stays open. A named run that no report of the last 90 days belongs to, one past
- * that window included, is not found. Every dismissal of the gym takes one transaction-level advisory lock first
+ * that window included, is skipped. Every dismissal of the gym takes one transaction-level advisory lock first
  * (an audit row can't be locked: the app role may not update `audit_events`), so two dismissals of one report run
  * one after the other, and the second finds it dismissed and writes no audit. Inside the lock it reads only the
  * named runs, however many other reports are open.
@@ -80,7 +80,6 @@ export async function dismissChargeFailures(tx: Transaction, context: MutationCo
   const known = await tx.select().from(auditEvents).where(and(eq(auditEvents.action, reported),
     gte(auditEvents.occurredAt, windowStart(now)), inArray(auditEvents.targetId, named)))
     .orderBy(asc(auditEvents.occurredAt), asc(auditEvents.id));
-  if (new Set(known.map(row => row.targetId)).size !== named.length) notFound();
   const closed = new Set((await tx.select({ id: auditEvents.targetId }).from(auditEvents)
     .where(and(eq(auditEvents.action, dismissed), inArray(auditEvents.targetId, named)))).map(row => row.id));
   const reports = await failuresFromReports(tx, known.filter(row => !closed.has(row.targetId)));

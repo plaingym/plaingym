@@ -11,7 +11,7 @@ import { readBillingRules } from '../../settings/settings.js';
 import { pastRefundWindow } from './lapsed-refunds.js';
 import { createInvoiceVoid } from './void.js';
 import { stripeWriteScope } from '../stripe-writes.js';
-import { accepted, audit, canceledAttempt, confirmAbandoned, effect, lockInvoice, paymentRecorded, recorded, result, snapshot, terminal,
+import { accepted, audit, canceledAttempt, confirmAbandoned, duplicateReservation, effect, lockInvoice, paymentRecorded, recorded, result, snapshot, terminal,
   type InvoiceRow } from './store.js';
 
 export interface TransitionOptions {
@@ -68,6 +68,7 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
           taggedAt: clock.now() });
         await audit(tx, context, clock, 'billing.refund.recorded', 'refund', refundId,
           { paymentId: request.paymentId, status: 'pending', amountCents: request.amountCents, currency: request.currency });
+        await audit(tx, context, clock, 'billing.refund.duplicate_reserved', 'refund', refundId, { paymentId: request.paymentId });
         await effect(tx, context, clock, { kind: 'refund_duplicate', invoiceId: invoice.id, paymentId: request.paymentId, refundId });
         await effect(tx, context, clock, { kind: 'staff_notice', invoiceId: invoice.id, paymentId: request.paymentId, refundId });
         return result('duplicate_payment', invoice);
@@ -114,6 +115,9 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
       return scope(context.gymId, async tx => {
         const invoice = await lockInvoice(tx, request.invoiceId);
         const row = await attempt(tx, invoice, request.paymentIntentId, request.attemptId) ?? notFound();
+        // A terminal invoice never moves, and an attempt already resolved on it stays as recorded. One still unresolved
+        // (a charge that crossed a manual payment, say) is closed below, so reconciliation stops listing it.
+        if (terminal(invoice) && !['pending', 'requires_action'].includes(row.status)) return result('ignored', invoice);
         if (row.status === 'succeeded' || canceledAttempt(row)
           || (row.status === 'requires_action' && request.outcome === 'failed')) return result('ignored', invoice);
         // An intent cancelled before it was confirmed never reached the member's card: close the attempt without
@@ -201,7 +205,7 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
             paymentId: payment.id, refundId: request.refundId });
         // A duplicate payment's reservation released with no processor refund stops its automatic refund for good, so
         // staff hear what stayed with the gym.
-        else if (request.status === 'failed' && previous?.reason === 'duplicate_payment')
+        else if (request.status === 'failed' && previous && await duplicateReservation(tx, previous))
           await effect(tx, context, clock, { kind: 'staff_notice', notice: 'duplicate_released', invoiceId: invoice.id,
             paymentId: payment.id, refundId: request.refundId });
         // Any other reservation the app releases on its own once its retry window has passed (no refund at Stripe names

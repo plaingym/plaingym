@@ -29,7 +29,7 @@ export function createInvoiceVoid(scope: typeof forGym, clock: Clock): InvoiceTr
       // in our lock set rather than taking a new link lock after the invoice and deadlocking a Checkout start.
       const currentLinks = await tx.select({ id: signedLinks.id }).from(signedLinks).where(eq(signedLinks.invoiceId, invoiceId));
       const locked = new Set(links.map(link => link.id));
-      if (currentLinks.some(link => !locked.has(link.id))) paymentConflict('collection_changed', 'Pay links changed; reload before voiding');
+      if (currentLinks.some(link => !locked.has(link.id))) paymentConflict('void_links_changed', 'Pay links changed; reload before voiding');
       const voided = { ...invoice, status: 'void' };
       await tx.update(invoices).set({ status: 'void' }).where(eq(invoices.id, invoiceId));
       await audit(tx, context, clock, 'billing.invoice.voided', 'invoice', invoiceId,

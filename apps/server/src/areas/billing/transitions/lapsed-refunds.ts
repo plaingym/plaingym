@@ -16,6 +16,8 @@ type RefundRow = typeof refunds.$inferSelect;
 /** Stripe keeps an idempotency key for 24 hours. A staff retry reuses its reservation's key only inside this window. */
 export const refundRetryWindowMs = 23 * 3600_000;
 export const pastRefundWindow = (row: { createdAt: Date }, clock: Clock) => clock.now().getTime() - row.createdAt.getTime() >= refundRetryWindowMs;
+/** Settlement waits beyond the send cutoff to cover app processes whose clocks differ by up to five minutes. */
+export const refundSettleSkewMs = 5 * 60_000;
 
 /** A staff request records `sending` in the locked transaction that checks its window, before it calls Stripe, and `sent`
  * once the call has returned or failed. Both name the request's own `sendId`. */
@@ -70,19 +72,21 @@ async function sending(options: LapsedRefundOptions, gymId: string, invoiceId: s
  * payment takes the refund that names it, or is released. Stripe is listed once, after every send a staff request
  * started has finished: a refund Stripe is still making wouldn't be listed yet. A payment a switch to live marked as test
  * is released without calling Stripe: the live key can't read it, and the staff path never sends on it. Every row is
- * tried; the first failure is thrown after the rest. Returns the rows left pending because a send hasn't finished.
+ * tried; the first failure is thrown after the rest. Returns rows left pending by an unfinished send or skew margin.
  */
 export async function settleLapsed(options: LapsedRefundOptions, context: MutationContext, provider: () => Promise<Payments>,
   payment: PaymentRow, rows: readonly RefundRow[]): Promise<RefundRow[]> {
-  const eligible = rows.filter(row => row.gymId === context.gymId && row.paymentId === payment.id && row.status === 'pending'
+  const pending = rows.filter(row => row.gymId === context.gymId && row.paymentId === payment.id && row.status === 'pending'
     && row.taggedAt !== null && row.processorId === null && pastRefundWindow(row, options.clock));
-  if (!eligible.length) return [];
+  const eligible = pending.filter(row => options.clock.now().getTime() - row.createdAt.getTime() >= refundRetryWindowMs + refundSettleSkewMs);
+  const deferred = pending.filter(row => !eligible.includes(row));
+  if (!eligible.length) return deferred;
   if (payment.gymId !== context.gymId || !payment.paymentIntentId) notFound();
   const release = (row: RefundRow, own?: Refund) => options.transitions.refund(context, { invoiceId: payment.invoiceId, paymentId: payment.id,
     refundId: row.id, amountCents: row.amountCents, currency: row.currency, ...(own ? { processorId: own.id, status: own.status } : { status: 'failed' as const }) });
   if (payment.method === 'card' && payment.reference === stripeTestPaymentReference) {
     await settleEach(eligible, row => release(row));
-    return [];
+    return deferred;
   }
   const busy = await sending(options, context.gymId, payment.invoiceId, eligible.map(row => row.id));
   const ready = eligible.filter(row => !busy.has(row.id));
@@ -95,7 +99,7 @@ export async function settleLapsed(options: LapsedRefundOptions, context: Mutati
       await release(row, named.find(refund => sameRefund(refund, row, payment, context.gymId)));
     });
   }
-  return eligible.filter(row => busy.has(row.id));
+  return [...deferred, ...eligible.filter(row => busy.has(row.id))];
 }
 /** Settles every row, so one that fails doesn't hold back the others, then throws the first failure. */
 async function settleEach(rows: readonly RefundRow[], settle: (row: RefundRow) => Promise<unknown>) {

@@ -12,6 +12,9 @@ and allocate a gym-local invoice number. They never join a household billing
 cycle. Invoice transitions change an issued invoice's state. Zero-total one-offs
 settle through `settleZero` immediately after issuance. The hourly transitions
 sweep recovers a failed settlement once the invoice is due, including pack sales.
+If settlement throws after issuance commits, both sale paths log
+`billing.one_off.settle_failed` and return the issued open invoice successfully;
+staff can inspect it without retrying issuance and creating a second invoice.
 A failed or action-required positive one-off stays open without dunning.
 `issueOneOff` shares tax locks, detach rechecks, invoice insertion and its audit
 between ordinary one-offs and pack sales.
@@ -63,8 +66,17 @@ key would be new and Stripe would make a second refund; a request beside one ans
 `pending_refund`. The window is checked with the time read under the invoice lock, in
 the transaction that records the send (`billing.refund.sending`, with a `sendId`) before
 Stripe is called; the request records `billing.refund.sent` once Stripe answers or fails.
-Past the window, the duplicate-refund worker, an hourly per-gym job,
-or a staff refund request on the payment settles a tagged
+Duplicate reservations carry a `billing.refund.duplicate_reserved` audit marker;
+a staff reason literally equal to `duplicate_payment` remains an ordinary staff refund.
+Older duplicate rows are recognized by their reason, absence of a staff-request audit,
+and the payment's explicit duplicate marker. Staff leave these rows to the worker
+and answer `pending_refund`, even after the retry window.
+Settlement waits until 23 hours **plus a five-minute clock-skew margin** after creation;
+the staff send cutoff stays at 23 hours. This covers app clocks differing by up to
+five minutes without letting a slower process start a send after settlement checked
+for sends. Inside that margin staff answer `refund_in_progress`.
+Past that margin, the duplicate-refund worker, an hourly per-gym job,
+or a staff refund request on its own payment settles a tagged
 reservation that has no processor refund, from `Payments.listRefunds`: the refund naming
 the row is recorded, and with none the row is released (`failed`), since no retry can
 reach Stripe any more. A staff request that settles one moves no money and answers `refund_reconciled`, so
@@ -80,6 +92,10 @@ timeout. No request can start a send once the window has passed, so a settle tha
 the lock sees every send there will be. Ambiguous matches require staff resolution:
 a staff request answers `refund_reconciliation`, and the hourly job leaves that row pending,
 settles the rest of the batch and ends failed.
+If Stripe completes a timed-out refund after its reservation was released, the
+webhook/restore writer records it as external and queues one `refund_arrived`
+staff follow-up correcting the release notice. The hourly effect publisher recovers
+that follow-up if immediate publication preceded its commit.
 The hourly job selects up to 100 lapsed tagged reservations, oldest first, in short
 gym-scoped transactions, and calls Stripe only after those transactions commit, listing
 each payment's refunds once. A reservation on a payment marked `Stripe test mode` is

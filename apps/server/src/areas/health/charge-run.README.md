@@ -59,8 +59,9 @@ admin). Its error boundary turns failed reads into a safe unavailable tile.
   and one that fails leaves the earlier batches dismissed.
   A body that names no run is 400: there is no dismiss-everything call. It answers the
   invoice IDs those reports still listed; the invoices are unchanged. A run that never
-  reported, another gym's, or one whose report is older than the 90 days listed, is 404 and nothing is dismissed; dismissing a report
-  twice is a harmless 200 that lists nothing, and two dismissals at once write one audit.
+  reported, another gym's, or one whose report is older than the 90 days listed, is skipped,
+  and the rest of the request is still dismissed; dismissing a report twice is a harmless
+  200 that lists nothing, and two dismissals at once write one audit.
   The charge-run tile's page reads the list only while the tile is an error.
 
 The runtime passes the runner to the routes with `configureChargeFailures(runner)`.

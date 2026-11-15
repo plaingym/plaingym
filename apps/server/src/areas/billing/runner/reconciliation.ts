@@ -4,7 +4,7 @@ import { AppError } from '@plaingym/shared';
 import { auditEvents, households, invoices, paymentAttempts, payments, refunds, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import type { ChargeOutcome, PaymentObject, PaymentObjectReference, Payments } from '../../../infra/payments/index.js';
 import { applyChargeOutcome } from '../transitions/outcomes.js';
-import { createAbandoned } from '../transitions/store.js';
+import { createAbandoned, terminal } from '../transitions/store.js';
 import { createDisputeRefundWriter } from '../disputes-refunds.js';
 import { testModeDispute } from '../alerts/disputes.query.js';
 import { latestTestSwitchId, stripeWriteScope, StripeTestModeSwitched, withStripeTestWrites } from '../stripe-writes.js';
@@ -67,6 +67,9 @@ export function createReconciliation(options: Options) {
       if (!invoice || invoice.status === 'draft'
         || (outcome.metadata.invoiceId !== undefined && invoice.id !== outcome.metadata.invoiceId)
         || (outcome.metadata.attemptId && outcome.metadata.attemptId !== attempt?.id)) return null;
+      // Late success still needs its duplicate refund. Any other outcome on a terminal invoice only closes a still-unresolved
+      // attempt; one already resolved is ignored before ID recovery, so it is never rewritten.
+      if (terminal(invoice) && outcome.status !== 'succeeded' && !(attempt && ['pending', 'requires_action'].includes(attempt.status))) return null;
       const home = (await tx.select().from(households).where(eq(households.id, invoice.householdId)))[0]!;
       if ((attempt?.stripeCustomerId ?? home.stripeCustomerId) !== outcome.customerId || invoice.currency !== outcome.currency.toUpperCase()
         || invoice.amountCents !== outcome.amount) return null;

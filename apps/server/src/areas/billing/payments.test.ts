@@ -34,7 +34,7 @@ import { createChargeRunner, type ChargeResult } from './runner/index.js';
 import { configurePayments, createPaymentRoutes } from './payments.routes.js';
 import { createLapsedRefundJobs, createPaymentJobs, lapsedRefundJob } from './payments.jobs.js';
 import { detachJob } from './payments.mutations.js';
-import { refundSending, refundSendLeaseMs, refundSent } from './transitions/lapsed-refunds.js';
+import { refundSending, refundSendLeaseMs, refundSent, refundSettleSkewMs } from './transitions/lapsed-refunds.js';
 
 const db = useTestDatabase(), factory = createFactories(db), origin = 'https://gym.example.test';
 async function fixture() {
@@ -226,6 +226,19 @@ describe('payment route permissions and tenant isolation', () => {
 });
 
 describe('one-off collection and payment durability', () => {
+  it('returns the issued future-dated zero invoice when settlement fails after commit', async () => {
+    const f = await fixture(), settleZero = vi.fn().mockRejectedValue(new Error('connection lost after issuance'));
+    const service = createPaymentService({ ...f.options, transitions: { ...f.options.transitions, settleZero } });
+    const before = (await service.listInvoices(f.gymId, {})).pagination.total;
+    const response = await request(app({ ...f, service }, staff(f, 'owner')), 'createOneOffInvoice', f,
+      { source: 'custom', householdId: f.home.id, dueOn: '2027-01-01', description: 'Free entry', amountCents: 0, currency: 'USD' });
+    expect(response.status).toBe(201);
+    const issued = billingContracts.createOneOffInvoice.response.parse(await response.json()).data;
+    expect(issued).toMatchObject({ status: 'open', amountCents: 0, dueOn: '2027-01-01' });
+    expect((await service.getInvoice(f.gymId, issued.id)).invoice).toEqual(issued);
+    expect((await service.listInvoices(f.gymId, {})).pagination.total).toBe(before + 1);
+    expect(settleZero).toHaveBeenCalledTimes(1);
+  });
   it('settles a zero-price charge type on issuance without a payment or processor attempt', async () => {
     const f = await fixture(), charge = await factory('chargeTypes', f.gymId, { amountCents: 0, currency: 'USD' });
     const created = await f.service.createOneOff(f.context, { source: 'charge_type', chargeTypeId: charge.id,
@@ -376,10 +389,52 @@ describe('one-off collection and payment durability', () => {
     const payment = (await f.service.getInvoice(f.gymId, f.invoice.id)).payments[0]!, refundId = uuidv7();
     await f.options.transitions.refund(f.context, { invoiceId: f.invoice.id, paymentId: payment.id, refundId, amountCents,
       currency: 'USD', status: 'pending', ...(tagged ? { tagged } : {}) });
-    f.clock.advance(23 * 3600_000);
+    f.clock.advance(23 * 3600_000 + refundSettleSkewMs);
     return { payment, paid: await paymentRow(payment.id, f), refundId };
   }
   const staffRefund = { currency: 'USD', reason: 'Returned item' };
+  it('retries a staff refund whose free-text reason is duplicate_payment with the staff key', async () => {
+    const f = await fixture(); await f.service.charge(f.context, f.invoice.id);
+    const [payment] = (await f.service.getInvoice(f.gymId, f.invoice.id)).payments;
+    const input = { amountCents: 1000, currency: 'USD', reason: 'duplicate_payment' };
+    f.provider.loseNextResponse('refund');
+    await expect(f.service.refund(f.context, payment!.id, input)).rejects.toThrow();
+    const [row] = await refundRows(payment!.id, f), send = vi.spyOn(f.provider, 'refund');
+    expect(await f.service.refund(f.context, payment!.id, input)).toMatchObject({ id: row!.id, status: 'succeeded' });
+    expect(send.mock.calls[0]![0].idempotencyKey).toBe(`refund:${row!.id}`);
+  });
+  it('releases a staff refund named duplicate_payment with the staff release notice', async () => {
+    const f = await fixture(); await f.service.charge(f.context, f.invoice.id);
+    const [payment] = (await f.service.getInvoice(f.gymId, f.invoice.id)).payments;
+    vi.spyOn(f.provider, 'refund').mockRejectedValueOnce(new Error('request never reached Stripe'));
+    await expect(f.service.refund(f.context, payment!.id, { ...staffRefund, reason: 'duplicate_payment', amountCents: 1000 })).rejects.toThrow();
+    f.clock.advance(23 * 3600_000 + refundSettleSkewMs);
+    const [job] = createLapsedRefundJobs({ scope: db.forGym, clock: f.clock, transitions: f.options.transitions, payments: async () => f.provider });
+    await job!.handler({}, { jobId: uuidv7(), gymId: f.gymId, timezone: 'UTC', attempt: 1, clock: f.clock });
+    const notices = (await db.forGym(f.gymId, tx => tx.select().from(auditEvents))).filter(row => row.action === 'billing.transition.effect.created');
+    expect(notices.map(row => row.after)).toContainEqual(expect.objectContaining({ notice: 'refund_released' }));
+    expect(notices.map(row => row.after)).not.toContainEqual(expect.objectContaining({ notice: 'duplicate_released' }));
+  });
+  it('waits through the skew margin when the settling process is ahead of a staff sender', async () => {
+    const f = await fixture(), { payment, refundId } = await lapsedReservation(f);
+    // The worker is two seconds past its cutoff while the staff process is two seconds inside it.
+    f.clock.set(new Date(f.clock.now().getTime() - refundSettleSkewMs + 2000).toISOString());
+    const workerClock = new TestClock(f.clock.now().toISOString());
+    f.clock.advance(-4000);
+    const [job] = createLapsedRefundJobs({ scope: db.forGym, clock: workerClock, transitions: f.options.transitions, payments: async () => f.provider });
+    const run = () => job!.handler({}, { jobId: uuidv7(), gymId: f.gymId, timezone: 'UTC', attempt: 1, clock: workerClock });
+    const list = vi.spyOn(f.provider, 'listRefunds');
+    await run(); expect(list).not.toHaveBeenCalled();
+    const send = f.provider.refund.bind(f.provider);
+    vi.spyOn(f.provider, 'refund').mockImplementationOnce(async request => {
+      workerClock.advance(refundSettleSkewMs);
+      await run(); expect(list).not.toHaveBeenCalled();
+      expect(await refundRows(payment.id, f)).toMatchObject([{ id: refundId, status: 'pending' }]);
+      return send(request);
+    });
+    expect(await f.service.refund(f.context, payment.id, { ...staffRefund, amountCents: 1000 })).toMatchObject({ id: refundId, status: 'succeeded' });
+    await run(); expect(list).not.toHaveBeenCalled();
+  });
   function scheduleLapsed(f: Fixture) {
     createServerRegistry({ jobs: createLapsedRefundJobs({ scope: db.forGym, clock: f.clock, transitions: f.options.transitions,
       payments: async gymId => { expect(gymId).toBe(f.gymId); return f.provider; } }) }).registerJobs(f.jobs, new Set());
@@ -399,9 +454,9 @@ describe('one-off collection and payment durability', () => {
       return id;
     };
     const recent = await createReservation(500, true), unmarked = await createReservation(500, false), atStripe = await createReservation(500, true, 're_at_stripe');
-    await db.forGym(f.gymId, tx => tx.update(refunds).set({ createdAt: new Date(f.clock.now().getTime() - 23 * 3600_000) })
+    await db.forGym(f.gymId, tx => tx.update(refunds).set({ createdAt: new Date(f.clock.now().getTime() - 23 * 3600_000 - refundSettleSkewMs) })
       .where(eq(refunds.id, atStripe)));
-    await db.forGym(f.gymId, tx => tx.update(refunds).set({ createdAt: new Date(f.clock.now().getTime() - 23 * 3600_000) })
+    await db.forGym(f.gymId, tx => tx.update(refunds).set({ createdAt: new Date(f.clock.now().getTime() - 23 * 3600_000 - refundSettleSkewMs) })
       .where(eq(refunds.id, unmarked)));
     const otherRow = await lapsedReservation(other);
     const sent = vi.spyOn(f.provider, 'refund'), listed = vi.spyOn(f.provider, 'listRefunds'), otherListed = vi.spyOn(other.provider, 'listRefunds');
@@ -447,7 +502,7 @@ describe('one-off collection and payment durability', () => {
     const f = await fixture(), { payment, paid, refundId } = await lapsedReservation(f, 500), later = uuidv7();
     await f.options.transitions.refund(f.context, { invoiceId: f.invoice.id, paymentId: payment.id, refundId: later,
       amountCents: 500, currency: 'USD', status: 'pending', tagged: true });
-    await db.forGym(f.gymId, tx => tx.update(refunds).set({ createdAt: new Date(f.clock.now().getTime() - 23 * 3600_000) })
+    await db.forGym(f.gymId, tx => tx.update(refunds).set({ createdAt: new Date(f.clock.now().getTime() - 23 * 3600_000 - refundSettleSkewMs) })
       .where(eq(refunds.id, later)));
     const own = await f.provider.refund({ chargeId: paid.paymentIntentId!, amount: 500, idempotencyKey: 'lost', reservationId: refundId });
     const listed = vi.spyOn(f.provider, 'listRefunds').mockResolvedValue([own, { ...own, id: 're_ambiguous' }]);
@@ -485,10 +540,10 @@ describe('one-off collection and payment durability', () => {
   it('waits for a staff retry still sending as the window passes, and records its refund, with no notice', async () => {
     const f = await fixture(), { payment, refundId } = await lapsedReservation(f);
     // The retry starts a minute before the window ends; while Stripe makes the refund, the window passes and the job runs.
-    f.clock.set(new Date(f.clock.now().getTime() - 60_000).toISOString());
+    f.clock.set(new Date(f.clock.now().getTime() - refundSettleSkewMs - 60_000).toISOString());
     const run = scheduleLapsed(f), send = f.provider.refund.bind(f.provider), listed = vi.spyOn(f.provider, 'listRefunds');
     vi.spyOn(f.provider, 'refund').mockImplementationOnce(async request => {
-      f.clock.advance(5 * 60_000); await run();
+      f.clock.advance(refundSettleSkewMs + 5 * 60_000); await run();
       expect(listed).not.toHaveBeenCalled();
       expect(await refundRows(payment.id, f)).toMatchObject([{ id: refundId, status: 'pending', processorId: null }]);
       return send(request);
@@ -669,7 +724,7 @@ describe('one-off collection and payment durability', () => {
     await db.forGym(f.gymId, tx => tx.update(refunds).set({ createdAt: f.clock.now() }).where(eq(refunds.id, refundId)));
     const transition = f.options.transitions.refund.bind(f.options.transitions);
     vi.spyOn(f.options.transitions, 'refund').mockImplementationOnce(async (context, request) => {
-      const result = await transition(context, request); f.clock.advance(23 * 3600_000); return result;
+      const result = await transition(context, request); f.clock.advance(23 * 3600_000 + refundSettleSkewMs); return result;
     });
     const sent = vi.spyOn(f.provider, 'refund');
     await expect(f.service.refund(f.context, payment.id, { ...staffRefund, amountCents: 1000 }))

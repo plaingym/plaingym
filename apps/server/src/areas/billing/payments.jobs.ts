@@ -10,7 +10,7 @@ import { snapshot } from './transitions/store.js';
 import type { DetachOptions, Payments } from '../../infra/payments/index.js';
 import type { InvoiceTransitions } from '../../core/interfaces/invoice-transitions.js';
 import { detachJob, receiptJob } from './payments.mutations.js';
-import { refundRetryWindowMs, settleLapsed } from './transitions/lapsed-refunds.js';
+import { refundRetryWindowMs, refundSettleSkewMs, settleLapsed } from './transitions/lapsed-refunds.js';
 
 export const lapsedRefundJob = 'billing.payments.settle_lapsed';
 /** The ordinary per-gym job lane serializes this sweep with duplicate-refund workers. A staff retry still sending a row
@@ -21,7 +21,7 @@ export function createLapsedRefundJobs(options: { scope?: typeof forGym; clock: 
   return [{ id: lapsedRefundJob, cron: '43 * * * *', async handler(_payload, context) {
     const rows = await scope(context.gymId, tx => tx.select({ reservation: refunds, payment: payments }).from(refunds)
       .innerJoin(payments, eq(payments.id, refunds.paymentId)).where(and(eq(refunds.status, 'pending'), isNotNull(refunds.taggedAt),
-        isNull(refunds.processorId), lte(refunds.createdAt, new Date(options.clock.now().getTime() - refundRetryWindowMs)),
+        isNull(refunds.processorId), lte(refunds.createdAt, new Date(options.clock.now().getTime() - refundRetryWindowMs - refundSettleSkewMs)),
         eq(payments.method, 'card'))).orderBy(asc(refunds.createdAt), asc(refunds.id)).limit(100));
     // Resolve the provider only when a payment needs Stripe; a gym without Stripe has nothing to settle, and a payment
     // marked as test is released without it.

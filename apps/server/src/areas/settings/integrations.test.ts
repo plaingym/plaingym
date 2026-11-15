@@ -22,6 +22,7 @@ import { stripeProvisioner } from '../../infra/payments/setup.js';
 import { createInvoiceTransitions } from '../billing/transitions/index.js';
 import { abandonedAttempt } from '../billing/transitions/store.js';
 import { createLapsedRefundJobs } from '../billing/payments.jobs.js';
+import { refundSettleSkewMs } from '../billing/transitions/lapsed-refunds.js';
 import type { StripeConfig } from '../setup/stripe-step.js';
 import { createIntegrationsService, type IntegrationsOptions } from './integrations.js';
 import { createIntegrationsRoutes } from './integrations.routes.js';
@@ -332,7 +333,7 @@ describe('Settings → Payments: test to live', () => {
     const stuck = { invoiceId: paid.id, paymentId: cardPayment.id, refundId: uuidv7(), amountCents: 100, currency: cardPayment.currency };
     await transitions.refund(system, { ...stuck, status: 'pending', tagged: true });
     expect((await saveTo(appC(), 'rk_live_gymc', { clearTestData: true })).json?.error?.details).toEqual({ restrictedKey: ['payments_in_progress'] });
-    const settlementClock = new TestClock(new Date(clock.now().getTime() + 23 * 3600_000));
+    const settlementClock = new TestClock(new Date(clock.now().getTime() + 23 * 3600_000 + refundSettleSkewMs));
     const [settlement] = createLapsedRefundJobs({ scope: database.forGym, clock: settlementClock, transitions, payments: async () => provider });
     const refund = vi.spyOn(provider, 'refund');
     await settlement!.handler({}, { jobId: uuidv7(), gymId: gymC, timezone: 'UTC', attempt: 1, clock: settlementClock });

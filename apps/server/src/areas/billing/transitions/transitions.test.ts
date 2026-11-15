@@ -15,6 +15,7 @@ import { replayTransport } from '../../../infra/payments/transport.js';
 import type { Tape } from '../../../infra/payments/recording.js';
 import { createGymSettingsAccessor } from '../../settings/settings.js';
 import { createMembershipService } from '../memberships.js';
+import { createPaymentService } from '../payments.js';
 import { createSignedLinksService } from '../../links/service.js';
 import { createInvoiceTransitions } from './index.js';
 import { formatMinorUnits } from '@plaingym/shared/money';
@@ -24,7 +25,7 @@ import { createTransitionJobs } from './transitions.jobs.js';
 import { createTransitionNotifications } from './notifications.js';
 import { applyChargeOutcome } from './outcomes.js';
 import { effectCreated, effectCompleted, effectPublished } from './store.js';
-import { refundRetryWindowMs } from './lapsed-refunds.js';
+import { refundRetryWindowMs, refundSettleSkewMs } from './lapsed-refunds.js';
 import { invoiceTransitionsContract } from '../../../core/interfaces/invoice-transitions.contract.js';
 import type { InvoiceEffect } from '../../../core/interfaces/invoice-transitions.js';
 
@@ -205,10 +206,14 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect(after.attempts.find(a => a.id === f.attempt.id)!.status).toBe('requires_action');
     await f.drain(); expect(f.email.messages).toEqual([]);
   });
-  it('keeps paid final while recording a failure for a different attempt', async () => {
+  it('keeps paid final while closing a still-pending attempt on failure', async () => {
     const f = await fixture(); await f.transitions.manualPayment(f.context, f.manual);
-    await f.transitions.cardFailed(f.context, f.failure);
+    expect((await f.transitions.cardFailed(f.context, f.failure)).outcome).toBe('ignored');
     expect((await f.read()).invoice.status).toBe('paid'); expect((await f.read()).attempts[0]!.status).toBe('failed');
+    // Once resolved, a later outcome for it on the paid invoice changes nothing.
+    const before = await f.read();
+    await f.transitions.cardFailed(f.context, { ...f.failure, outcome: 'requires_action' });
+    expect(await f.read()).toEqual(before);
     expect((await f.read()).audits.filter(a => a.action === effectCreated)).toHaveLength(2);
   });
   it('never downgrades a paid invoice for a later attempt or an old created/pending snapshot', async () => {
@@ -324,6 +329,63 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect(sent).toHaveBeenCalledTimes(1);
     expect((await f.read()).refunds).toMatchObject([{ status: 'succeeded', processorId: lost!.id, taggedAt: null }]);
   });
+  it('keeps staff out of the duplicate worker settlement while its send crosses the cutoff', async () => {
+    const f = await fixture(); await succeed(f); await f.transitions.manualPayment(f.context, f.manual);
+    await f.transitions.cardSucceeded(f.context, f.success);
+    const user = await factory('authUser', f.gymId), context = { gymId: f.gymId, actor: { kind: 'user' as const, userId: user.id } };
+    const service = createPaymentService({ ...f.options, settings: f.settings, transitions: f.transitions, paymentsFor: async () => f.provider });
+    f.clock.advance(refundRetryWindowMs - 1000);
+    const send = f.provider.refund.bind(f.provider), listed = vi.spyOn(f.provider, 'listRefunds');
+    vi.spyOn(f.provider, 'refund').mockImplementationOnce(async request => {
+      f.clock.advance(refundSettleSkewMs + 2000); listed.mockClear();
+      await expect(service.refund(context, f.success.paymentId, { amountCents: 10000, currency: 'CAD', reason: 'Retry' }))
+        .rejects.toMatchObject({ details: { reason: ['pending_refund'] } });
+      expect(listed).not.toHaveBeenCalled();
+      expect((await f.read()).refunds).toMatchObject([{ status: 'pending', processorId: null }]);
+      return send(request);
+    });
+    await f.drain(); await f.drain();
+    const rows = await f.read();
+    expect(rows.refunds).toMatchObject([{ status: 'succeeded' }]);
+    expect(rows.audits.map(row => row.after)).not.toContainEqual(expect.objectContaining({ notice: 'duplicate_released' }));
+  });
+  it.each([false, true])('corrects a released reservation once unless its late success failed before delivery: %s', async reversed => {
+    const f = await fixture(); await succeed(f); await f.transitions.cardSucceeded(f.context, f.success); await f.drain();
+    const refundId = uuidv7(), payment = (await f.read()).payments[0]!;
+    await f.transitions.refund(f.context, { invoiceId: f.invoice.id, paymentId: payment.id, refundId, amountCents: 3000,
+      currency: 'CAD', status: 'pending', tagged: true });
+    f.clock.advance(refundRetryWindowMs + refundSettleSkewMs);
+    await f.transitions.refund(f.context, { invoiceId: f.invoice.id, paymentId: payment.id, refundId, amountCents: 3000, currency: 'CAD', status: 'failed' });
+    await f.drain();
+    expect(f.email.messages.some(message => message.subject.includes("wasn't sent"))).toBe(true);
+    const value = await f.provider.refund({ chargeId: payment.paymentIntentId!, amount: 3000, idempotencyKey: 'late', reservationId: refundId });
+    const writer = createDisputeRefundWriter({ ...f.options, transitions: f.transitions });
+    await Promise.all([writer.refund(f.gymId, payment, value), writer.refund(f.gymId, payment, value)]);
+    if (reversed) await writer.refund(f.gymId, payment, { ...value, status: 'failed' });
+    await f.drain(); await writer.refund(f.gymId, payment, value); await f.drain();
+    expect((await f.read()).refunds.filter(row => row.processorId === value.id)).toHaveLength(1);
+    const followups = f.email.messages.filter(message => message.subject.includes('reached Stripe'));
+    expect(followups).toHaveLength(reversed ? 0 : 1);
+    if (!reversed) expect(followups[0]).toMatchObject({ to: 'staff@example.invalid', text: expect.stringContaining('did reach Stripe') });
+  });
+  it('records a named refund as external if settlement releases its row while the webhook waits', async () => {
+    const f = await fixture(); await succeed(f); await f.transitions.cardSucceeded(f.context, f.success);
+    const payment = (await f.read()).payments[0]!, refundId = uuidv7();
+    const request = { invoiceId: f.invoice.id, paymentId: payment.id, refundId, amountCents: 3000, currency: 'CAD' };
+    await f.transitions.refund(f.context, { ...request, status: 'pending', tagged: true });
+    const value = await f.provider.refund({ chargeId: payment.paymentIntentId!, amount: 3000, idempotencyKey: 'crossed', reservationId: refundId });
+    const writer = createDisputeRefundWriter({ ...f.options, transitions: { refund: async (context, incoming) => {
+      if (incoming.refundId === refundId && incoming.processorId) {
+        f.clock.advance(refundRetryWindowMs + refundSettleSkewMs);
+        await f.transitions.refund(f.context, { ...request, status: 'failed' });
+      }
+      return f.transitions.refund(context, incoming);
+    } } });
+    expect(await writer.refund(f.gymId, payment, value)).toBe(true);
+    const rows = await f.read();
+    expect(rows.refunds.filter(row => row.processorId === value.id)).toMatchObject([{ status: 'succeeded', amountCents: 3000 }]);
+    expect(rows.audits.map(row => row.after)).toContainEqual(expect.objectContaining({ notice: 'refund_arrived' }));
+  });
   it.each([false, true])('settles a lapsed tagged duplicate with a naming refund: %s, without sending money', async sent => {
     const f = await fixture(); await succeed(f); await f.transitions.manualPayment(f.context, f.manual);
     await f.transitions.cardSucceeded(f.context, f.success);
@@ -332,7 +394,7 @@ describe('invoice transitions with real PostgreSQL', () => {
       idempotencyKey: `invoice:${f.invoice.id}:duplicate:${f.success.paymentId}`, reservationId: reservation!.id }) : undefined;
     const refund = vi.spyOn(f.provider, 'refund'), listed = vi.spyOn(f.provider, 'listRefunds');
     const feed = vi.spyOn(f.provider, 'listChangesSince');
-    f.clock.advance(23 * 3600_000);
+    f.clock.advance(23 * 3600_000 + refundSettleSkewMs);
     await f.drain(); await f.drain();
     expect(refund).not.toHaveBeenCalled(); expect(feed).not.toHaveBeenCalled();
     expect(listed).toHaveBeenCalledExactlyOnceWith(f.success.paymentIntentId);
@@ -353,7 +415,7 @@ describe('invoice transitions with real PostgreSQL', () => {
     const f = await fixture(); await succeed(f); await f.transitions.manualPayment(f.context, f.manual);
     await f.transitions.cardSucceeded(f.context, f.success);
     const list = f.provider.listRefunds.bind(f.provider);
-    vi.spyOn(f.provider, 'listRefunds').mockImplementation(async id => { f.clock.advance(23 * 3600_000); return list(id); });
+    vi.spyOn(f.provider, 'listRefunds').mockImplementation(async id => { f.clock.advance(23 * 3600_000 + refundSettleSkewMs); return list(id); });
     const sent = vi.spyOn(f.provider, 'refund');
     await f.drain();
     expect(sent).not.toHaveBeenCalled(); expect((await f.read()).refunds[0]!.status).toBe('failed');
@@ -364,7 +426,7 @@ describe('invoice transitions with real PostgreSQL', () => {
     const [reservation] = (await f.read()).refunds;
     const own = await f.provider.refund({ chargeId: f.success.paymentIntentId, amount: 10000, idempotencyKey: 'lost', reservationId: reservation!.id });
     vi.spyOn(f.provider, 'listRefunds').mockResolvedValue([own, { ...own, id: 're_ambiguous' }]);
-    const sent = vi.spyOn(f.provider, 'refund'); f.clock.advance(23 * 3600_000);
+    const sent = vi.spyOn(f.provider, 'refund'); f.clock.advance(23 * 3600_000 + refundSettleSkewMs);
     const work = (await f.read()).audits.find(row => row.action === effectCreated && (row.after as { kind?: string }).kind === 'refund_duplicate')!;
     await expect(f.effects.run(work.targetId, { jobId: uuidv7(), gymId: f.gymId, timezone: 'UTC', attempt: 1, clock: f.clock }))
       .rejects.toThrow('Ambiguous');
@@ -375,7 +437,7 @@ describe('invoice transitions with real PostgreSQL', () => {
     await f.transitions.cardSucceeded(f.context, f.success);
     await db.forGym(f.gymId, tx => tx.update(refunds).set({ taggedAt: null }));
     const sent = vi.spyOn(f.provider, 'refund'), listed = vi.spyOn(f.provider, 'listRefunds'), feed = vi.spyOn(f.provider, 'listChangesSince');
-    f.clock.advance(23 * 3600_000);
+    f.clock.advance(23 * 3600_000 + refundSettleSkewMs);
     const work = (await f.read()).audits.find(row => row.action === effectCreated && (row.after as { kind?: string }).kind === 'refund_duplicate')!;
     await expect(f.effects.run(work.targetId, { jobId: uuidv7(), gymId: f.gymId, timezone: 'UTC', attempt: 1, clock: f.clock }))
       .rejects.toThrow('Refund idempotency window elapsed');
@@ -596,7 +658,7 @@ describe('invoice transitions with real PostgreSQL', () => {
     const base = { invoiceId: f.invoice.id, paymentId: f.success.paymentId, currency: 'CAD', status: 'pending' as const, tagged: true };
     const lapsed = { ...base, refundId: uuidv7(), amountCents: 3000 }, recent = { ...base, refundId: uuidv7(), amountCents: 2000 };
     await f.transitions.refund(f.context, lapsed);
-    f.clock.advance(refundRetryWindowMs);
+    f.clock.advance(refundRetryWindowMs + refundSettleSkewMs);
     await f.transitions.refund(f.context, recent);
     const sent = f.email.messages.length;
     for (const request of [lapsed, recent]) {
@@ -879,10 +941,15 @@ describe('invoice transitions with real PostgreSQL', () => {
   });
 });
 
-invoiceTransitionsContract('invoice transitions with real PostgreSQL', async () => {
+invoiceTransitionsContract('invoice transitions with real PostgreSQL', async options => {
   const f = await fixture();
-  // The shared contract exercises credit reversal, so its invoice needs the sale prerequisite.
-  await factory('classPackSales', f.gymId, { memberId: f.member.id, householdId: f.household.id, invoiceId: f.invoice.id });
+  // The void contract starts with a payable invoice, so refusals can name its outstanding collection.
+  await db.forGym(f.gymId, tx => tx.update(invoices).set({ status: 'open' }).where(eq(invoices.id, f.invoice.id)));
+  if (options?.packSale) await factory('classPackSales', f.gymId, { memberId: f.member.id, householdId: f.household.id, invoiceId: f.invoice.id });
+  if (options?.checkout) await db.forGym(f.gymId, tx => tx.update(invoices).set({
+    checkoutSessionId: options.checkout!.checkoutSessionId ?? null,
+    checkoutExpiresAt: options.checkout!.checkoutExpiresAt ? new Date(options.checkout!.checkoutExpiresAt) : null,
+  }).where(eq(invoices.id, f.invoice.id)));
   return { transitions: f.transitions, context: f.context, success: f.success, manual: f.manual,
     async read() {
       const rows = await f.read(), attempt = rows.attempts.find(row => row.id === f.attempt.id)!;

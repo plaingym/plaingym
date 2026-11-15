@@ -81,14 +81,17 @@ it.each(['open', 'past_due'] as const)('voids an %s invoice with a reason and re
   expect(screen.queryByRole('button', { name: 'Record cash or check' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Send or share pay link' })).toBeNull();
 });
-it('keeps a failed void open and shows the outstanding Checkout explanation', async () => {
+it.each([
+  ['checkout_reserved', 'A Checkout payment is reserved for this invoice. Resolve it before voiding the invoice.'],
+  ['void_links_changed', 'Payment links changed while this invoice was being voided. Reload the invoice and try again.'],
+])('keeps a failed void open and explains %s', async (reason, explanation) => {
   const f = transport();
-  f.client.call = vi.fn(async () => { throw new InvoiceRequestError('checkout_reserved'); }) as typeof f.client.call;
+  f.client.call = vi.fn(async () => { throw new InvoiceRequestError(reason); }) as typeof f.client.call;
   start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={admin} client={f.client}/>);
   fireEvent.click(await screen.findByRole('button', { name: 'Void invoice' }));
   fireEvent.change(screen.getByRole('textbox', { name: 'Reason' }), { target: { value: 'Mistake' } });
   fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
-  expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'A Checkout payment is reserved for this invoice. Resolve it before voiding the invoice.');
+  expect(await screen.findByRole('alert')).toHaveProperty('textContent', explanation);
   expect(screen.getByRole('textbox', { name: 'Reason' })).toHaveProperty('value', 'Mistake');
 });
 it('does not offer invoice voiding to front desk', async () => {

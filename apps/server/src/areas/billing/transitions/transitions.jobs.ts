@@ -11,10 +11,11 @@ export function createTransitionJobs(read: () => TransitionEffects | undefined =
     // Recover interrupted zero-value issuance and effect publication after a crash or queue outage.
     { id: 'billing.transitions.publish', cron: '11 * * * *', async handler(_payload, context) {
       const service = read();
+      let gym: Awaited<ReturnType<TransitionEffects['settings']>> | undefined;
       // A failed settlement still fails the job, but never stops the effect recovery below.
-      try { await service?.settleZeroInvoices(context.gymId); }
+      try { gym = await service?.settings(context.gymId); await service?.settleZeroInvoices(context.gymId, gym); }
       finally {
-        try { await service?.publish(context.gymId); }
+        try { if (gym) await service?.publish(context.gymId, gym); }
         finally { await service?.recoverFailed(context.gymId); }
       }
     } },

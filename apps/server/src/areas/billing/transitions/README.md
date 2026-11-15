@@ -165,7 +165,7 @@ idempotent, since the effect runs it again until it completes, and a throw retri
 effect job.
 
 The separate hourly `billing.payments.settle_lapsed` sweep can settle a dead
-`refund_duplicate` reservation once its 23-hour retry window has elapsed, provided
+`refund_duplicate` reservation once its 23-hour retry window and five-minute clock-skew margin have elapsed, provided
 it is tagged, still pending, and has no processor ID. It reads Stripe refunds and
 records a match or releases an unsent reservation; it does not issue a new refund.
 Reservations with a processor ID, older untagged reservations, and work inside the
@@ -180,6 +180,8 @@ invoice; that failure never restores credits. A delayed grant after a full refun
 is suppressed by the durable reversal command, independently of the refund audit
 snapshot. Other invoices queue no credit reversal. See [class packs](../packs/README.md)
 for expiry and replay rules.
+The lookup first finds the invoice's indexed `billing.invoice.refunded` audit time,
+then searches commands from that time onward; it never reads the audit snapshot's payload.
 
 Cycle failures enqueue dunning and one schedule per invoice. The first failure
 reads the gym's billing retry days (default `[3, 7]`) and saves them with
@@ -274,6 +276,14 @@ dashboard; the Stripe adapter reports it as `canceled`) is recorded as `canceled
 and released like a failed one, with no notice: cancelling it was deliberate, not
 a failure. A canceled automatic duplicate-payment refund completes its effect the
 same way.
+
+A refund that names a released tagged reservation and later succeeds is recorded
+as an external refund. `notice: 'refund_arrived'` tells staff it reached Stripe,
+correcting the release notice once; a durable audit marker deduplicates this follow-up.
+A terminal invoice never moves for failed, action-needed and cancellation outcomes.
+An attempt already resolved on it stays as recorded; one still pending or action-needed
+(a charge that crossed a manual payment, say) is closed, so reconciliation stops
+listing it. Late card successes still record and refund duplicates.
 
 `createTransitionNotifications` sends localized receipts, signed pay/update-card
 links, and staff notices (a duplicate card payment, a failed processor refund, a

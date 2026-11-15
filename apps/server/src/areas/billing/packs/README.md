@@ -50,6 +50,8 @@ and expiry days in a sale. The one-off invoice uses the pack's name as its charg
 line and the existing pricing, tax snapshot and invoice numbering helpers. Invoice,
 lines, sale and their audits commit together. A zero-total invoice is then settled
 through `InvoiceTransitions.settleZero`, and the sale returns the paid invoice.
+If settlement fails after issuance commits, it logs `billing.one_off.settle_failed`
+and returns the issued open invoice; the hourly sweep settles it once due.
 The hourly transitions sweep recovers an interrupted settlement once the invoice
 is due. Sales and ordinary one-offs share `issueOneOff`, including tax locking,
 post-detach link checks, numbering and the issuance audit. Sale conflicts expose

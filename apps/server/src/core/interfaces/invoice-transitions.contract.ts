@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { MutationContext } from './common.js';
-import type { CardSuccess, InvoiceEffect, InvoiceTransitions, ManualPayment, RefundTransition } from './invoice-transitions.js';
+import type { CardSuccess, InvoiceEffect, InvoiceFixture, InvoiceTransitions, ManualPayment, RefundTransition } from './invoice-transitions.js';
 
 export interface InvoiceTransitionsHarness {
   transitions: InvoiceTransitions;
@@ -15,15 +15,16 @@ export interface InvoiceTransitionsHarness {
 }
 
 /** Both the fake and the real transitions run these cases, so the fake can't drift from cancellation or refund rules. */
-export function invoiceTransitionsContract(name: string, create: () => Promise<InvoiceTransitionsHarness>) {
+export function invoiceTransitionsContract(name: string, create: (options?: { packSale?: boolean;
+  checkout?: Pick<InvoiceFixture, 'checkoutSessionId' | 'checkoutExpiresAt'> }) => Promise<InvoiceTransitionsHarness>) {
   describe(name + ': cancellations and refund reversals', () => {
     const count = (effects: readonly string[], kind: InvoiceEffect['kind']) => effects.filter((effect) => effect === kind).length;
     it('refuses an unresolved attempt, then voids a failed invoice and refunds a late success once', async () => {
       const h = await create(), { invoiceId, attemptId, paymentIntentId } = h.success;
       const request = { invoiceId, reason: 'Invoice issued in error' };
-      await expect(h.transitions.voidInvoice(h.context, request)).rejects.toMatchObject({ code: 'conflict' });
+      await expect(h.transitions.voidInvoice(h.context, request)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['pending_attempt'] } });
       await h.transitions.cardFailed(h.context, { invoiceId, attemptId, paymentIntentId, outcome: 'requires_action' });
-      await expect(h.transitions.voidInvoice(h.context, request)).rejects.toMatchObject({ code: 'conflict' });
+      await expect(h.transitions.voidInvoice(h.context, request)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['action_required'] } });
       await h.transitions.cardFailed(h.context, { invoiceId, attemptId, paymentIntentId, outcome: 'canceled' });
       expect((await h.transitions.voidInvoice(h.context, request)).invoice.status).toBe('void');
       expect((await h.transitions.voidInvoice(h.context, request)).outcome).toBe('ignored');
@@ -35,6 +36,27 @@ export function invoiceTransitionsContract(name: string, create: () => Promise<I
       expect(count(after.effects, 'refund_duplicate')).toBe(1);
       expect(count(after.effects, 'staff_notice')).toBe(1);
       expect(count(after.effects, 'activate_memberships')).toBe(0);
+    });
+    it.each([
+      { checkoutSessionId: 'cs_reserved' },
+      { checkoutExpiresAt: '2100-01-01T00:00:00Z' },
+      { checkoutSessionId: 'cs_old', checkoutExpiresAt: '2000-01-01T00:00:00Z' },
+    ])('refuses a reserved Checkout: %j', async checkout => {
+      const h = await create({ checkout });
+      await h.transitions.cardFailed(h.context, { invoiceId: h.success.invoiceId, attemptId: h.success.attemptId,
+        paymentIntentId: h.success.paymentIntentId, outcome: 'failed' });
+      const before = await h.read();
+      await expect(h.transitions.voidInvoice(h.context, { invoiceId: h.success.invoiceId, reason: 'Wrong invoice' }))
+        .rejects.toMatchObject({ code: 'conflict', details: { reason: ['checkout_reserved'] } });
+      expect(await h.read()).toEqual(before);
+    });
+    it.each(['failed', 'requires_action', 'canceled'] as const)('ignores %s on a void invoice before changing the attempt', async outcome => {
+      const h = await create(), { invoiceId, attemptId, paymentIntentId } = h.success;
+      await h.transitions.cardFailed(h.context, { invoiceId, attemptId, paymentIntentId, outcome: 'failed' });
+      await h.transitions.voidInvoice(h.context, { invoiceId, reason: 'Wrong invoice' });
+      const before = await h.read();
+      expect((await h.transitions.cardFailed(h.context, { invoiceId, attemptId, paymentIntentId, outcome })).outcome).toBe('ignored');
+      expect(await h.read()).toEqual(before);
     });
     it('closes a cancelled, never-confirmed attempt as confirm_abandoned without touching the invoice or dunning', async () => {
       const h = await create(), before = await h.read();
@@ -56,8 +78,8 @@ export function invoiceTransitionsContract(name: string, create: () => Promise<I
       expect(count(after.effects, 'dunning')).toBe(2);
       expect((await h.transitions.cardSucceeded(h.context, h.success)).outcome).toBe('ignored');
     });
-    it('reverses a processor refund that fails after success, recomputing the invoice and notifying staff', async () => {
-      const h = await create();
+    it.each([false, true])('reverses a processor refund that fails after success, with pack sale: %s', async packSale => {
+      const h = await create({ packSale });
       await h.transitions.cardSucceeded(h.context, h.success);
       const { invoiceId, paymentId, amountCents, currency } = h.success;
       const part = Math.floor(amountCents * 0.4);
@@ -68,9 +90,9 @@ export function invoiceTransitionsContract(name: string, create: () => Promise<I
       expect(await status(first)).toBe('partially_refunded');
       expect(count((await h.read()).effects, 'reverse_credits')).toBe(0);
       expect(await status(second)).toBe('refunded');
-      expect(count((await h.read()).effects, 'reverse_credits')).toBe(1);
+      expect(count((await h.read()).effects, 'reverse_credits')).toBe(packSale ? 1 : 0);
       await status(second);
-      expect(count((await h.read()).effects, 'reverse_credits')).toBe(1);
+      expect(count((await h.read()).effects, 'reverse_credits')).toBe(packSale ? 1 : 0);
       expect(count((await h.read()).effects, 'staff_notice')).toBe(0);
       expect(await status({ ...second, status: 'failed' })).toBe('partially_refunded');
       expect(count((await h.read()).effects, 'staff_notice')).toBe(1);

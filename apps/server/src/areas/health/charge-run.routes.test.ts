@@ -116,10 +116,10 @@ describe('charge failure routes', () => {
     // One audit per dismissed report (two, three and the earlier one), none for the harmless repeat.
     expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents, and(eq(auditEvents.action, dismissed))))).toBe(3);
   });
-  it('answers an unknown run 404 and rejects a malformed body', async () => {
+  it('skips an unknown run and rejects a malformed body', async () => {
     const f = await fixture(), runId = uuidv7();
     await f.report(runId, [(await f.invoice(5)).id]);
-    expect((await f.request('owner', '/api/health/charge-failures/dismiss', { runId: uuidv7() })).status).toBe(404);
+    expect((await f.request('owner', '/api/health/charge-failures/dismiss', { runId: uuidv7() })).status).toBe(200);
     for (const body of [{ runId: 'nope' }, { runId, extra: true }, { runId: null }, { runIds: ['nope'] }, { runIds: [] }, { runId, runIds: [runId] }])
       expect((await f.request('owner', '/api/health/charge-failures/dismiss', body)).status).toBe(400);
     expect((await f.list()).map(report => report.runId)).toEqual([runId]);
@@ -207,19 +207,20 @@ describe('charge failure routes', () => {
     expect((await blocked!).dismissed).toEqual([invoiceA.id]);
     expect(await a.list()).toEqual([]); expect(await b.list()).toEqual([]);
   });
-  it('answers a named report past the 90-day window 404, like an unknown one, and dismisses nothing', async () => {
+  it('skips expired and unknown runs while dismissing the current report in a mixed batch', async () => {
     const f = await fixture(), old = uuidv7(), recent = uuidv7();
     const [a, b] = [await f.invoice(1), await f.invoice(2)];
     await f.report(old, [a.id]);
     f.clock.advance(91 * 86_400_000);
     await f.report(recent, [b.id]);
-    expect((await f.request('owner', '/api/health/charge-failures/dismiss', { runId: old })).status).toBe(404);
-    expect((await f.request('owner', '/api/health/charge-failures/dismiss', { runId: uuidv7() })).status).toBe(404);
-    // Naming it beside a listed report refuses the whole request.
-    expect((await f.request('owner', '/api/health/charge-failures/dismiss', { runIds: [recent, old] })).status).toBe(404);
-    expect((await f.list()).map(report => report.runId)).toEqual([recent]);
-    expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents, eq(auditEvents.action, dismissed)))).toBe(0);
-    // Inside the window it still dismisses.
+    expect((await f.request('owner', '/api/health/charge-failures/dismiss', { runId: old })).status).toBe(200);
+    expect((await f.request('owner', '/api/health/charge-failures/dismiss', { runId: uuidv7() })).status).toBe(200);
+    const response = await f.request('owner', '/api/health/charge-failures/dismiss', { runIds: [recent, old] });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ data: { dismissed: [b.id] } });
+    expect(await f.list()).toEqual([]);
+    expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents, eq(auditEvents.action, dismissed)))).toBe(1);
+    // A repeat remains harmless.
     expect((await f.request('owner', '/api/health/charge-failures/dismiss', { runId: recent })).status).toBe(200);
   });
   it('reads only the named runs, so another report in the gym can\'t get in the way', async () => {
@@ -243,18 +244,18 @@ describe('charge failure routes', () => {
     expect(await f.list()).toEqual([]);
     expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents, eq(auditEvents.action, dismissed)))).toBe(maxDismissedChargeRuns);
   });
-  it('shows gym B nothing of gym A and answers its dismissal of gym A\'s run 404', async () => {
+  it('shows gym B nothing of gym A and skips its run during dismissal', async () => {
     const a = await fixture(), b = await fixture(), runId = uuidv7();
     await a.report(runId, [(await a.invoice(7)).id]);
     await monitorChargeRunner(b.runner, b.options).daily(b.gymId);
     expect(await b.list()).toEqual([]);
     expect(await b.list('admin')).toEqual([]);
-    expect((await b.request('owner', '/api/health/charge-failures/dismiss', { runId })).status).toBe(404);
+    expect((await b.request('owner', '/api/health/charge-failures/dismiss', { runId })).status).toBe(200);
     expect(await b.tile()).toMatchObject({ status: 'healthy' });
-    // Naming gym A's run among its own as gym B refuses the whole request and leaves gym A's report alone.
+    // Gym B dismisses its own report and leaves gym A's report alone.
     const own = uuidv7(); await b.report(own, [(await b.invoice(8)).id]);
-    expect((await b.request('owner', '/api/health/charge-failures/dismiss', { runIds: [own, runId] })).status).toBe(404);
-    expect((await b.list()).map(report => report.runId)).toEqual([own]);
+    expect((await b.request('owner', '/api/health/charge-failures/dismiss', { runIds: [own, runId] })).status).toBe(200);
+    expect(await b.list()).toEqual([]);
     expect((await a.list()).map(report => report.runId)).toEqual([runId]);
     expect(await a.tile()).toMatchObject({ status: 'error' });
   });

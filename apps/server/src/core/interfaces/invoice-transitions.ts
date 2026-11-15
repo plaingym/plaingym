@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { Id, IsoInstant, Money } from '@plaingym/shared/contracts';
+import { AppError } from '@plaingym/shared';
 import { idSchema, moneySchema, refundReleased, voidInvoiceRequestSchema, type VoidInvoiceRequest } from '@plaingym/shared/contracts';
 import { conflict, instant, notFound, requireMoney, scopedKey } from './common.js';
 import { clock as defaultClock, type Clock } from '../clock.js';
@@ -66,6 +67,7 @@ export interface InvoiceTransitionResult {
  * refund status is recomputed (back to partially refunded or paid) and staff are notified. Staff are notified once for
  * every processor refund that ends failed: first recorded failed, pending to failed, or reversed. A canceled refund is
  * recorded as canceled and released like a failed one, without a notice; it never reverses a successful refund.
+ * A full refund queues reverse_credits only when the invoice has a class pack sale.
  */
 export interface InvoiceTransitions {
   voidInvoice(context: MutationContext, request: VoidInvoiceRequest & { invoiceId: Id }): Promise<InvoiceTransitionResult>;
@@ -75,7 +77,12 @@ export interface InvoiceTransitions {
   manualPayment(context: MutationContext, request: ManualPayment): Promise<InvoiceTransitionResult>;
   refund(context: MutationContext, request: RefundTransition): Promise<InvoiceTransitionResult>;
 }
-export interface InvoiceFixture { readonly gymId: Id; readonly invoice: InvoiceSnapshot; }
+export interface InvoiceFixture {
+  readonly gymId: Id;
+  readonly invoice: InvoiceSnapshot;
+  readonly checkoutSessionId?: string | null;
+  readonly checkoutExpiresAt?: IsoInstant | null;
+}
 export interface InvoiceAttemptFixture {
   readonly gymId: Id;
   readonly invoiceId: Id;
@@ -99,6 +106,7 @@ const canceled = (attempt: InvoiceAttemptFixture) => attempt.declineCode === 'in
 
 export class FakeInvoiceTransitions implements InvoiceTransitions {
   readonly #invoices = new Map<string, InvoiceSnapshot>();
+  readonly #checkouts = new Map<string, Pick<InvoiceFixture, 'checkoutSessionId' | 'checkoutExpiresAt'>>();
   readonly #attempts = new Map<string, InvoiceAttemptFixture>();
   readonly #payments = new Map<string, StoredPayment>();
   readonly #intents = new Map<string, string>();
@@ -106,8 +114,13 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
   readonly #refunds = new Map<string, StoredRefund>();
   readonly #processorRefunds = new Map<string, string>();
   readonly #effects: InvoiceEffect[] = [];
-  constructor(invoices: readonly InvoiceFixture[] = [], attempts: readonly InvoiceAttemptFixture[] = [], private readonly clock: Clock = defaultClock) {
-    invoices.forEach(({ gymId, invoice }) => this.#invoices.set(scopedKey(gymId, invoice.id), structuredClone(invoice)));
+  constructor(invoices: readonly InvoiceFixture[] = [], attempts: readonly InvoiceAttemptFixture[] = [], private readonly clock: Clock = defaultClock,
+    private readonly options: { packSale?: (invoiceId: Id) => boolean } = {}) {
+    invoices.forEach(({ gymId, invoice, checkoutSessionId, checkoutExpiresAt }) => {
+      const key = scopedKey(gymId, invoice.id);
+      this.#invoices.set(key, structuredClone(invoice));
+      this.#checkouts.set(key, { checkoutSessionId: checkoutSessionId ?? null, checkoutExpiresAt: checkoutExpiresAt ?? null });
+    });
     attempts.forEach((attempt) => this.seedAttempt(attempt));
   }
   seedAttempt(attempt: InvoiceAttemptFixture): void {
@@ -188,9 +201,14 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
     idSchema.parse(request.invoiceId); voidInvoiceRequestSchema.parse({ reason: request.reason });
     const invoice = this.#invoice(context.gymId, request.invoiceId);
     if (invoice.status === 'void') return this.#result('ignored', invoice);
-    if (!['open', 'past_due'].includes(invoice.status)) conflict('Only unpaid invoices can be voided');
-    if ([...this.#attempts.values()].some(attempt => attempt.gymId === context.gymId && attempt.invoiceId === invoice.id
-      && ['pending', 'requires_action'].includes(attempt.status))) conflict('Resolve the outstanding card attempt before voiding');
+    const refuse = (reason: string, message: string): never => { throw new AppError('conflict', message, { reason: [reason] }); };
+    if (!['open', 'past_due'].includes(invoice.status)) refuse('not_payable', 'Only unpaid invoices can be voided');
+    const attempts = [...this.#attempts.values()].filter(attempt => attempt.gymId === context.gymId && attempt.invoiceId === invoice.id);
+    if (attempts.some(attempt => attempt.status === 'pending')) refuse('pending_attempt', 'Resolve the pending card attempt before voiding');
+    if (attempts.some(attempt => attempt.status === 'requires_action')) refuse('action_required', 'Resolve the authentication attempt before voiding');
+    const checkout = this.#checkouts.get(scopedKey(context.gymId, invoice.id));
+    if (checkout?.checkoutSessionId || checkout?.checkoutExpiresAt && new Date(checkout.checkoutExpiresAt) > this.clock.now())
+      refuse('checkout_reserved', 'Resolve the reserved Checkout before voiding');
     const voided = { ...invoice, status: 'void' as const };
     this.#invoices.set(scopedKey(context.gymId, invoice.id), voided);
     return this.#result('applied', voided);
@@ -211,6 +229,8 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
   async cardFailed(context: MutationContext, request: CardFailure): Promise<InvoiceTransitionResult> {
     const invoice = this.#invoice(context.gymId, request.invoiceId);
     const attempt = this.#attempt(context.gymId, invoice.id, request.attemptId, request.paymentIntentId);
+    // A terminal invoice never moves; only an attempt still unresolved on it is closed.
+    if (terminal.has(invoice.status) && !['pending', 'requires_action'].includes(attempt.status)) return this.#result('ignored', invoice);
     if (attempt.status === 'succeeded' || canceled(attempt) || (attempt.status === 'requires_action' && request.outcome === 'failed')) return this.#result('ignored', invoice);
     // A cancelled, never-confirmed attempt never reached the card: close it without touching the invoice or dunning.
     if (request.outcome === 'canceled' && attempt.status === 'pending') {
@@ -285,7 +305,8 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
       .reduce((sum, [, { request: other }]) => sum + other.amountCents, 0);
     const next: InvoiceSnapshot = { ...invoice,
       status: refunded === 0 ? 'paid' : refunded >= invoice.amountCents ? 'refunded' : 'partially_refunded' };
-    if (next.status === 'refunded' && invoice.status !== 'refunded') this.#effect(context.gymId, invoice.id, 'reverse_credits');
+    if (next.status === 'refunded' && invoice.status !== 'refunded' && this.options.packSale?.(invoice.id))
+      this.#effect(context.gymId, invoice.id, 'reverse_credits');
     this.#invoices.set(scopedKey(context.gymId, invoice.id), next);
     return this.#result('applied', next);
   }

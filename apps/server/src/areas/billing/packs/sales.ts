@@ -4,6 +4,7 @@ import { classPacks, classPackSales, classPackTaxRates, forGym, households, memb
 import { AppError, createTranslator } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../../core/clock.js';
+import { logError } from '../../../core/log.js';
 import { notFound, type MutationContext } from '../../../core/interfaces/common.js';
 import type { InvoiceTransitions } from '../../../core/interfaces/invoice-transitions.js';
 import { gymSettingsAccessor } from '../../settings/settings.js';
@@ -48,8 +49,8 @@ export function createPackSalesService(options: PackSalesOptions = {}) {
       });
       // Commit the sale before its paid effect can run; the hourly sweep recovers a failed settlement.
       if (invoice.amountCents === 0) {
-        const settled = await transitions.settleZero(context, { invoiceId: invoice.id });
-        return { ...invoice, ...settled.invoice };
+        try { return { ...invoice, ...(await transitions.settleZero(context, { invoiceId: invoice.id })).invoice }; }
+        catch (error) { logError('billing.one_off.settle_failed', { gymId: context.gymId, invoiceId: invoice.id }, error); }
       }
       return invoice;
     },

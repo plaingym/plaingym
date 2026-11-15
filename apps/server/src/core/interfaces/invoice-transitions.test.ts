@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { paymentAttemptStatusSchema } from '../../../../../packages/shared/src/contracts/states.js';
 import { FakeInvoiceTransitions } from './invoice-transitions.js';
 import { invoiceTransitionsContract } from './invoice-transitions.contract.js';
-import type { CardSuccess, InvoiceSnapshot, RefundTransition } from './invoice-transitions.js';
+import type { CardSuccess, InvoiceFixture, InvoiceSnapshot, RefundTransition } from './invoice-transitions.js';
 import { gym, otherGym, household, id, mutation } from './test-fixtures.js';
 const invoiceId = id(20);
 const attemptId = id(21);
@@ -15,9 +15,12 @@ const success: CardSuccess = { invoiceId, attemptId, paymentId, paymentIntentId:
 const failure = { invoiceId, attemptId, paymentIntentId: 'pi_1', outcome: 'failed' as const };
 const refund: RefundTransition = { invoiceId, paymentId, refundId: id(30), processorId: 're_1',
   amountCents: 4000, currency: 'CAD', status: 'succeeded' };
-const build = (overrides: Partial<InvoiceSnapshot> = {}) => new FakeInvoiceTransitions(
-  [{ gymId: gym, invoice: { ...invoice, ...overrides } }],
+const build = (overrides: Partial<InvoiceSnapshot> = {}, options?: {
+  packSale?: boolean; checkout?: Pick<InvoiceFixture, 'checkoutSessionId' | 'checkoutExpiresAt'>;
+}) => new FakeInvoiceTransitions(
+  [{ gymId: gym, invoice: { ...invoice, ...overrides }, ...options?.checkout }],
   [{ gymId: gym, invoiceId, id: attemptId, number: 1, paymentIntentId: 'pi_1', status: 'pending' }],
+  undefined, { packSale: id => id === invoiceId && options?.packSale === true },
 );
 describe('InvoiceTransitions fake', () => {
   it('deduplicates success from a runner and webhook by intent even when their local IDs differ', async () => {
@@ -120,8 +123,8 @@ describe('InvoiceTransitions fake', () => {
     expect(fake.read(gym, invoiceId).status).toBe('paid');
   });
 });
-invoiceTransitionsContract('FakeInvoiceTransitions', async () => {
-  const fake = build();
+invoiceTransitionsContract('FakeInvoiceTransitions', async options => {
+  const fake = build({}, options);
   return { transitions: fake, context: mutation, success: { ...success, attemptId },
     manual: { invoiceId, paymentId: id(40), method: 'cash', amountCents: 10000, currency: 'CAD', paidAt: success.paidAt },
     async read() {

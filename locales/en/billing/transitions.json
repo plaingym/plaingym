@@ -15,6 +15,8 @@
   "refundFailedSubject": "Refund failed for invoice {number}",
   "refundFailedBody": "A refund of {amount} for invoice {number} failed, so the payer did not receive it. Check the payment and its refunds in billing, and refund the payer another way only if they are still owed.",
   "refundReleasedSubject": "Refund for invoice {number} wasn't sent",
+  "refundArrivedSubject": "Refund for invoice {number} reached Stripe",
+  "refundArrivedBody": "The refund of {amount} for invoice {number}, whose reservation was released earlier, did reach Stripe and is now recorded as successful in billing. Check the updated payment before issuing another refund.",
   "refundReleasedBody": "A refund of {amount} for invoice {number} was requested in billing, but the request never reached Stripe, so it was cancelled and the payer hasn't received it from this request. Check the payment in Stripe and in billing, and refund the payer again only if they are still owed.",
   "creditsReversedNote": "The refund also took back {credits} unused class credits from the member's pack. If the payer is still owed the pack, add those credits back on the member's Packs tab.",
   "creditsNotGrantedSubject": "Class pack credits not granted for invoice {number}",
