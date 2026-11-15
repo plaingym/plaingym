@@ -1100,6 +1100,7 @@
   {"method": "POST", "path": "/api/billing/memberships/{membershipId}/activate", "permission": {"kind": "staff", "capability": "plans.manage"}},
   {"method": "POST", "path": "/api/billing/memberships/{membershipId}/cancel", "permission": {"kind": "staff", "capability": "plans.manage"}},
   {"method": "POST", "path": "/api/billing/memberships/{membershipId}/freeze", "permission": {"kind": "staff", "capability": "plans.manage"}},
+  {"method": "GET", "path": "/api/billing/memberships/{membershipId}/freeze-history", "permission": {"kind": "staff", "capability": "billing.read"}},
   {"method": "POST", "path": "/api/billing/memberships/{membershipId}/resume", "permission": {"kind": "staff", "capability": "plans.manage"}},
   {"method": "GET", "path": "/api/billing/payments", "permission": {"kind": "staff", "capability": "billing.read"}},
   {"method": "POST", "path": "/api/billing/payments/{paymentId}/refunds", "permission": {"kind": "staff", "capability": "refunds.create"}},

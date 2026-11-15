@@ -14,6 +14,7 @@ import {
 } from './billing/catalog.js';
 import {
   activateMembershipRequestSchema, assignMembershipRequestSchema, cancelMembershipRequestSchema,
+  membershipFreezeHistoryQuerySchema, membershipFreezeHistoryResponseSchema,
   cancelMembershipSwitchRequestSchema, freezeMembershipRequestSchema, membershipListQuerySchema, membershipListResponseSchema,
   membershipResponseSchema, membershipSwitchPreviewQuerySchema, membershipSwitchPreviewResponseSchema,
   membershipSwitchResponseSchema, resumeMembershipRequestSchema, switchMembershipPlanRequestSchema,
@@ -134,6 +135,9 @@ export const billingContracts = {
     query: membershipListQuerySchema, response: membershipListResponseSchema, successStatus: 200 },
   getMembership: { method: 'get', path: '/api/billing/memberships/{membershipId}', permission: read,
     params: billingMembershipParamsSchema, response: membershipResponseSchema, successStatus: 200 },
+  getMembershipFreezeHistory: { method: 'get', path: '/api/billing/memberships/{membershipId}/freeze-history', permission: read,
+    description: 'Freeze events, newest first, with the skipped billing date and the next due date recorded at the freeze.',
+    params: billingMembershipParamsSchema, query: membershipFreezeHistoryQuerySchema, response: membershipFreezeHistoryResponseSchema, successStatus: 200 },
   assignMembership: { method: 'post', path: '/api/billing/memberships', permission: catalog,
     body: assignMembershipRequestSchema, response: membershipResponseSchema, successStatus: 201 },
   updateMembership: { method: 'patch', path: '/api/billing/memberships/{membershipId}', permission: catalog,

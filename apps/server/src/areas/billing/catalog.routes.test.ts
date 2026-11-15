@@ -21,7 +21,7 @@ import { createMembershipRoutes } from './memberships.routes.js';
 const db = useTestDatabase(), factory = createFactories(db), clock = new TestClock('2028-01-15T12:00:00Z');
 const operations = ['listTaxRates', 'getTaxRate', 'getTaxRateUsage', 'createTaxRate', 'updateTaxRate', 'listPlans', 'getPlan', 'createPlan', 'updatePlan',
   'listChargeTypes', 'getChargeType', 'createChargeType', 'updateChargeType', 'listMemberships', 'getMembership', 'assignMembership',
-  'updateMembership', 'activateMembership', 'freezeMembership', 'resumeMembership', 'cancelMembership'] as const;
+  'updateMembership', 'activateMembership', 'freezeMembership', 'resumeMembership', 'cancelMembership', 'getMembershipFreezeHistory'] as const;
 type Operation = typeof operations[number];
 async function fixture(currency = 'CAD') {
   const gymId = uuidv7(); await factory('gyms', gymId, { currency });
@@ -66,6 +66,33 @@ function request(app: ReturnType<typeof server>, name: Operation, f: Fixture, ov
 }
 const staff = (f: Fixture, role: StaffRole): Principal => ({ kind: 'staff', gymId: f.gymId, userId: f.user.id, roles: [role] });
 describe('all billing catalog and membership routes', () => {
+  it('reads bounded freeze snapshots newest first, preserving skipped dates after resume and edits', async () => {
+    const f = await fixture(), other = await fixture(), app = server(f, staff(f, 'front_desk'));
+    const context = { gymId: f.gymId, actor: { kind: 'user' as const, userId: f.user.id } };
+    const foreignContext = { gymId: other.gymId, actor: { kind: 'user' as const, userId: other.user.id } };
+    await other.memberships.freeze(foreignContext, { membershipId: other.active.id, revision: 1 });
+    const first = await f.memberships.freeze(context, { membershipId: f.active.id, revision: 1 });
+    const resumed = await f.memberships.activate(context, { membershipId: first.id, revision: first.revision });
+    const second = await f.memberships.freeze(context, { membershipId: resumed.id, revision: resumed.revision, resumesOn: '2028-06-01' });
+    const resumedAgain = await f.memberships.activate(context, { membershipId: second.id, revision: second.revision });
+    await f.memberships.update(context, { membershipId: second.id, revision: resumedAgain.revision, nextDueOn: '2029-01-31' });
+    const path = '/api/billing/memberships/' + f.active.id + '/freeze-history';
+    const load = async (offset: number) => {
+      const response = await app.request(path + '?limit=1&offset=' + offset);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('Cache-Control')).toBe('no-store');
+      return billingContracts.getMembershipFreezeHistory.response.parse(await response.json());
+    };
+    const page = await load(0), older = await load(1);
+    expect(page.pagination).toEqual({ limit: 1, offset: 0, total: 2 });
+    expect(page.data[0]).toMatchObject({ skippedDueOn: '2028-02-29', nextDueOn: '2028-06-30', occurredAt: clock.now().toISOString() });
+    expect(older.data[0]).toMatchObject({ skippedDueOn: '2028-01-31', nextDueOn: '2028-02-29' });
+    expect(page.data[0]!.id).not.toBe(older.data[0]!.id);
+    expect((await load(2)).data).toEqual([]);
+    expect((await app.request(path + '?limit=101')).status).toBe(400);
+    expect((await app.request(path + '?offset=-1')).status).toBe(400);
+    expect((await app.request('/api/billing/memberships/' + other.active.id + '/freeze-history')).status).toBe(404);
+  });
   for (const operation of operations) {
     for (const role of ['owner', 'admin', 'coach', 'front_desk'] as const) {
       it(operation + ' declares and enforces access for ' + role, async () => {

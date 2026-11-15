@@ -1,9 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
+import { membershipFreezeEventSchema, membershipFreezeHistoryQuerySchema, membershipFreezeHistoryResponseSchema } from './memberships.js';
 import { assignMembershipRequestSchema, appliedMembershipDiscountSchema, membershipSchema,
   setMembershipDiscountRequestSchema, removeMembershipDiscountRequestSchema, membershipSwitchPreviewSchema } from './memberships.js';
 
 const id = '01900000-0000-7000-8000-000000000001';
+describe('membership freeze history contracts', () => {
+  it('accepts only dated snapshots and bounded pagination', () => {
+    const event = { id, occurredAt: '2028-01-15T12:00:00Z', skippedDueOn: '2028-01-31', nextDueOn: '2028-02-29' };
+    expect(membershipFreezeEventSchema.parse(event)).toEqual(event);
+    expect(membershipFreezeHistoryResponseSchema.parse({ data: [event], pagination: { limit: 1, offset: 0, total: 1 } }).data).toEqual([event]);
+    expect(membershipFreezeHistoryQuerySchema.parse({})).toEqual({ limit: 50, offset: 0 });
+    for (const input of [{ limit: 101 }, { limit: 0 }, { offset: -1 }]) expect(membershipFreezeHistoryQuerySchema.safeParse(input).success).toBe(false);
+    expect(membershipFreezeEventSchema.safeParse({ ...event, skippedDueOn: '2028-02-30' }).success).toBe(false);
+    expect(membershipFreezeEventSchema.safeParse({ ...event, before: {} }).success).toBe(false);
+  });
+});
 const request = { householdId: id, memberId: id, planId: id, startsOn: '2028-03-01', nextDueOn: '2028-03-01' };
 describe('membership discount contracts', () => {
   it('requires a revision for setting and removing, and one unambiguous selection for setting', () => {

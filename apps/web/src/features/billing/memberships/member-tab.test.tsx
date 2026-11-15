@@ -17,9 +17,10 @@ const plan: Plan = { id: id(2), createdAt, name: 'Unlimited classes', currency: 
 const membership: Membership = { id: id(3), createdAt, memberId: id(4), householdId: id(5), planId: plan.id, status: 'active', currency: 'CAD', amountCents: 10000, interval: 'monthly', startsOn: '2026-10-01', nextDueOn: '2026-11-01', trialEndsOn: null, frozenAt: null, resumesOn: null, cancelledAt: null, commitmentEndsOn: null,
   scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null, discount: null, revision: 1 };
 const premium: Plan = { ...plan, id: id(7), name: 'Premium', amountCents: 15000 };
-function start(role: StaffRole, options: { plans?: Plan[]; row?: Membership; call?: () => Promise<unknown>; cache?: QueryClient } = {}) {
+function start(role: StaffRole, options: { plans?: Plan[]; row?: Membership; call?: () => Promise<unknown>; cache?: QueryClient; history?: BillingClient['freezeHistory'] } = {}) {
   const data: ShellBootstrap = { gym: { id: id(1), name: 'Academy', timezone: 'America/Vancouver', currency: 'CAD', enabledModules: [] }, session: { userId: id(6), displayName: 'Test User', roles: [role], member: false }, login: { password: true, magicLink: false } };
   const client = { plans: vi.fn(async () => options.plans ?? [plan]), memberships: vi.fn(async () => [options.row ?? membership]),
+    freezeHistory: vi.fn(options.history ?? (async () => ({ data: [], pagination: { limit: 10, offset: 0, total: 0 } }))),
     call: vi.fn(options.call ?? (async () => membership)),
     member: vi.fn(async () => ({ householdId: membership.householdId })), householdBilling: vi.fn(async () => ({ billingDay: null })),
     settings: vi.fn(async () => { throw new Error('Settings are restricted'); }),
@@ -32,6 +33,46 @@ function start(role: StaffRole, options: { plans?: Plan[]; row?: Membership; cal
   return client;
 }
 afterEach(cleanup);
+it.each([
+  { name: 'monthly', interval: 'monthly' as const, status: 'active' as const, due: '2026-11-01', label: 'Nov 1, 2026', resume: '' },
+  { name: 'annual', interval: 'annual' as const, status: 'active' as const, due: '2027-02-28', label: 'Feb 28, 2027', resume: '' },
+  { name: 'several cycles', interval: 'monthly' as const, status: 'active' as const, due: '2026-11-01', label: 'Nov 1, 2026', resume: '2027-03-01' },
+  { name: 'trial', interval: 'monthly' as const, status: 'trial' as const, due: '2026-11-13', label: 'Nov 13, 2026', resume: '' },
+])('names the first skipped billing date for a $name freeze before submitting', async scenario => {
+  const client = start('admin', { row: { ...membership, interval: scenario.interval, status: scenario.status, nextDueOn: scenario.due,
+    trialEndsOn: scenario.status === 'trial' ? scenario.due : null } });
+  fireEvent.click(await screen.findByRole('button', { name: 'Freeze' }));
+  expect(screen.getByText('Freezing skips the billing date ' + scenario.label + ', even if you resume immediately or freeze during a trial. A later resume date can skip more cycles. Leave the resume date blank to freeze until staff resume it.')).toBeDefined();
+  if (scenario.resume) fireEvent.change(screen.getByLabelText('Resume date (optional)'), { target: { value: scenario.resume } });
+  expect(client.call).not.toHaveBeenCalled();
+  save();
+  await waitFor(() => expect(client.call).toHaveBeenCalledWith('freezeMembership', { revision: 1, resumesOn: scenario.resume || null }, { membershipId: membership.id }));
+});
+it('loads historical skipped and resulting dates on demand, pages them, and keeps them after resume', async () => {
+  const event = { id: id(10), occurredAt: createdAt, skippedDueOn: '2026-02-01', nextDueOn: '2026-06-01' };
+  const history = vi.fn(async (_membershipId: string, offset = 0) => ({ data: [{ ...event, id: id(10 + offset), skippedDueOn: offset ? '2025-02-01' : event.skippedDueOn }],
+    pagination: { limit: 10, offset, total: 11 } }));
+  const client = start('front_desk', { history, row: { ...membership, nextDueOn: '2027-01-01' } });
+  await screen.findByRole('heading', { name: plan.name });
+  expect(client.freezeHistory).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Freeze history' }));
+  expect(await screen.findByText('Skipped billing date: Feb 1, 2026')).toBeDefined();
+  expect(screen.getByText('Next billing date after this freeze: Jun 1, 2026')).toBeDefined();
+  expect(screen.getByText('Frozen on Oct 26, 2026, 5:30 PM')).toBeDefined();
+  fireEvent.click(screen.getByRole('button', { name: 'Older freezes' }));
+  expect(await screen.findByText('Skipped billing date: Feb 1, 2025')).toBeDefined();
+  expect(history).toHaveBeenLastCalledWith(membership.id, 10);
+  fireEvent.click(screen.getByRole('button', { name: 'Newer freezes' }));
+  expect(await screen.findByText('Skipped billing date: Feb 1, 2026')).toBeDefined();
+});
+it('shows an empty history and retries a failed history read', async () => {
+  const history = vi.fn<BillingClient['freezeHistory']>().mockRejectedValueOnce(new Error('Offline'))
+    .mockResolvedValue({ data: [], pagination: { limit: 10, offset: 0, total: 0 } });
+  start('front_desk', { history });
+  fireEvent.click(await screen.findByRole('button', { name: 'Freeze history' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
+  expect(await screen.findByText('No freezes recorded.')).toBeDefined();
+});
 it('refreshes an open member profile and the member list after membership changes, within its gym', async () => {
   const cache = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   const profileKey = ['members', id(1), membership.memberId], listKey = ['members', id(1), 'list'], foreignKey = ['members', id(99), 'list'];

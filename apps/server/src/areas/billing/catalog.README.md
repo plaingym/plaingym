@@ -104,6 +104,16 @@ pending monthly due date on or after the start, else the billing day (trial and
 frozen dates don't count). The member tab suggests exactly that date. Internal
 assignments preserve explicitly supplied dates, including imported annual renewals.
 
+The freeze form names the billing date it will skip, including during a trial or
+when staff resume immediately. The membership tab's Freeze history reads
+`GET /api/billing/memberships/{membershipId}/freeze-history` with `billing.read`.
+It returns gym-scoped freeze audit snapshots, newest first (event ID breaks time
+ties), with `id`, `occurredAt`, `skippedDueOn` (`before.nextDueOn`) and `nextDueOn`
+(`after.nextDueOn`). Standard limit/offset pagination applies (50 by default, at
+most 100). Other gyms' memberships return 404. Later edits and resumes do not
+change these historical dates; the recorded next due date describes that freeze,
+not the membership's current billing schedule.
+
 Freezing skips at least the next due cycle immediately. A timed freeze also skips
 every cycle before its resume date. Resuming never restores the skipped cycle or
 back-bills frozen time, but cycles due from a scheduled resume date on stay owed

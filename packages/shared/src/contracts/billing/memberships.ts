@@ -51,6 +51,16 @@ export const membershipSchema = z.strictObject({
 });
 export const membershipResponseSchema = z.strictObject({ data: membershipSchema });
 export const membershipListResponseSchema = listResponseSchema(membershipSchema);
+/** Dates captured by the freeze, independent of later resumes or edits. */
+export const membershipFreezeEventSchema = z.strictObject({
+  id: idSchema,
+  occurredAt: instantSchema,
+  skippedDueOn: dateSchema,
+  nextDueOn: dateSchema,
+});
+export const membershipFreezeHistoryQuerySchema = paginationSchema;
+export const membershipFreezeHistoryResponseSchema = listResponseSchema(membershipFreezeEventSchema);
+export type MembershipFreezeEvent = z.infer<typeof membershipFreezeEventSchema>;
 export const membershipListQuerySchema = paginationSchema.extend({
   householdId: idSchema.optional(),
   memberId: idSchema.optional(),

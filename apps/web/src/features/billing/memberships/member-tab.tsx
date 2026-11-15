@@ -21,6 +21,7 @@ import type { DiscountClient } from '../discounts/api.js';
 import { DiscountSelection } from '../discounts/selection.js';
 import { failure as discountFailure } from '../discounts/messages.js';
 import { MembershipDiscount } from './discount.js';
+import { FreezeHistory } from './freeze-history.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('billing/memberships:' + key, values);
 type Action = 'activateMembership' | 'freezeMembership' | 'resumeMembership' | 'cancelMembership' | 'updateMembership' | 'cancelMembershipSwitch';
@@ -163,6 +164,7 @@ function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, 
       {row.trialEndsOn && <div><dt className="text-muted-foreground">{text('trialEndsOn')}</dt><dd>{calendarDateLabel(row.trialEndsOn)}</dd></div>}
       {row.status === 'frozen' && <div><dt className="text-muted-foreground">{text('resumesOn')}</dt><dd>{row.resumesOn ? calendarDateLabel(row.resumesOn) : text('indefinite')}</dd></div>}
     </dl>
+    <FreezeHistory gymId={gymId} membershipId={row.id} revision={row.revision} client={client}/>
     {manage && <MembershipDiscount row={row} gymId={gymId} client={client} discounts={discounts} reload={reload}/>}
     {manage && row.status !== 'cancelled' && <fieldset disabled={busy} className="min-w-0 space-y-3">
       <div className="flex flex-col flex-wrap gap-2 sm:flex-row">
@@ -184,7 +186,7 @@ function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, 
         <div className="flex flex-col gap-2 sm:flex-row"><Button type="submit">{text('save')}</Button><Button variant="outline" onClick={() => setAction(null)}>{text('back')}</Button></div>
       </form>}
       {(action === 'freeze' || action === 'resume') && <form onSubmit={event => void submit(event)} className="space-y-3">
-        <p className="text-sm text-muted-foreground">{text(action === 'freeze' ? 'freezeHelp' : 'resumeHelp')}</p>
+        <p className="text-sm text-muted-foreground">{text(action === 'freeze' ? 'freezeHelp' : 'resumeHelp', { date: calendarDateLabel(row.nextDueOn) })}</p>
         <Label className="block min-w-0">{text(action === 'freeze' ? 'resumesOn' : 'nextDueOn')}<Input type="date" name="date" required={action === 'resume'} {...(action === 'resume' ? { min: row.nextDueOn, defaultValue: row.nextDueOn } : {})}/></Label>
         <div className="flex flex-col gap-2 sm:flex-row"><Button type="submit">{text('save')}</Button><Button variant="outline" onClick={() => setAction(null)}>{text('back')}</Button></div>
       </form>}

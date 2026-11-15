@@ -254,6 +254,22 @@ export function createMembershipService(options: MembershipOptions = {}) {
       });
     },
     async get(gymId: string, id: string) { return scope(gymId, async tx => present(tx, await getRow(tx, id))); },
+    async freezeHistory(gymId: string, membershipId: string, input: unknown) {
+      const query = c.membershipFreezeHistoryQuerySchema.parse(input);
+      return scope(gymId, async tx => {
+        catalogMissing((await tx.select({ id: memberships.id }).from(memberships).where(eq(memberships.id, membershipId)))[0]);
+        const where = and(eq(auditEvents.gymId, gymId), eq(auditEvents.targetId, membershipId),
+          eq(auditEvents.targetType, 'membership'), eq(auditEvents.action, 'billing.membership.frozen'));
+        const total = await tx.$count(auditEvents, where);
+        const rows = await tx.select({ id: auditEvents.id, occurredAt: auditEvents.occurredAt,
+          before: auditEvents.before, after: auditEvents.after }).from(auditEvents).where(where)
+          .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(query.limit).offset(query.offset);
+        const snapshot = c.membershipSchema.pick({ nextDueOn: true }).strip();
+        return { data: rows.map(row => c.membershipFreezeEventSchema.parse({ id: row.id, occurredAt: row.occurredAt.toISOString(),
+          skippedDueOn: snapshot.parse(row.before).nextDueOn, nextDueOn: snapshot.parse(row.after).nextDueOn })),
+        pagination: { limit: query.limit, offset: query.offset, total } };
+      });
+    },
     async list(gymId: string, input: unknown) {
       const query = c.membershipListQuerySchema.parse(input);
       return scope(gymId, async tx => {

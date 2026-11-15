@@ -12,6 +12,14 @@ cancelled when all are cancelled. Pending-only live memberships and members with
 memberships keep the staff-set status. See the
 [membership status rule](../../../../../server/src/areas/billing/memberships.README.md#member-status).
 
+Before freezing, the form names the first skipped billing date and explains that
+resuming immediately or freezing a trial still skips it; a later timed resume can
+skip more cycles. Freeze history is available with `billing.read`, loads on demand,
+and pages through the recorded freezes, newest first. Each event shows when it
+happened in the gym's timezone, the skipped billing date and the next due date
+recorded at the freeze. These dates survive later resumes and edits. Read errors
+offer a retry and an empty history is explicit.
+
 Assignment optionally selects a named active discount for the plan or accepts a
 code. Codes ignore letter case. Changing the plan clears the selection. Saving
 checks availability on the server and displays ended, used-up and wrong-plan

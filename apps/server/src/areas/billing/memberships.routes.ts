@@ -29,6 +29,7 @@ export function createMembershipRoutes(service?: MembershipService, hooks?: Memb
   return [
     billingRoute(c.billingContracts.listMemberships, async (ctx, _p, q) => read().list(ctx.gym.gymId, q)),
     billingRoute(c.billingContracts.getMembership, async (ctx, p) => ({ data: await read().get(ctx.gym.gymId, p.membershipId!) })),
+    billingRoute(c.billingContracts.getMembershipFreezeHistory, async (ctx, p, q) => read().freezeHistory(ctx.gym.gymId, p.membershipId!, q)),
     billingRoute(c.billingContracts.assignMembership, async (ctx, _p, _q, b) => {
       const data = await read().assignFromCatalog(billingMutation(ctx), c.assignMembershipRequestSchema.parse(b));
       await collect(ctx.gym.gymId, data.householdId);

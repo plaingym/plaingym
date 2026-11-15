@@ -58,6 +58,7 @@ export function createBillingClient(fetcher: typeof fetch = fetch) {
     taxes: () => all(offset => call('listTaxRates', undefined, {}, { offset, limit: 100 })),
     charges: () => all(offset => call('listChargeTypes', undefined, {}, { offset, limit: 100 })),
     memberships: (query: { memberId?: string; householdId?: string }) => all(offset => call('listMemberships', undefined, {}, { ...query, offset, limit: 100 })),
+    freezeHistory: (membershipId: string, offset = 0) => call('getMembershipFreezeHistory', undefined, { membershipId }, { offset, limit: 10 }),
     settings: async () => (await billingRequest(settingsContracts.get, undefined, {}, {}, fetcher)).data,
     member: async (memberId: string) => (await billingRequest(membersContracts.getMember, undefined, { memberId }, {}, fetcher)).data,
     householdBilling: async (householdId: string) => (await billingRequest(membersContracts.getHouseholdBilling, undefined, { householdId }, {}, fetcher)).data,

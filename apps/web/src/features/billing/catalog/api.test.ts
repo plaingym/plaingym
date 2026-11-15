@@ -7,6 +7,18 @@ const id = '019a0af0-9c00-7000-8000-000000000001';
 const plan = { id, createdAt: '2026-10-23T12:00:00Z', name: 'Plan', currency: 'CAD', amountCents: 9999,
   interval: 'monthly', signupFeeCents: 0, trialDays: 0, commitmentMonths: null, active: true, revision: 1, taxRateIds: [] };
 describe('billing contract transport', () => {
+  it('reads a typed bounded page of freeze history without accepting raw audit data', async () => {
+    const event = { id, occurredAt: '2028-01-15T12:00:00Z', skippedDueOn: '2028-01-31', nextDueOn: '2028-02-29' };
+    const body = { data: [event], pagination: { limit: 10, offset: 10, total: 11 } };
+    const paths: string[] = [];
+    const client = createBillingClient(async path => { paths.push(String(path)); return Response.json(body); });
+    expect(await client.freezeHistory(id, 10)).toEqual(body);
+    expect(paths[0]).toBe('/api/billing/memberships/' + id + '/freeze-history?offset=10&limit=10');
+    const extra = createBillingClient(async () => Response.json({ ...body, data: [{ ...event, before: {} }] }));
+    expect(await extra.freezeHistory(id, 10)).toEqual(body);
+    const invalid = createBillingClient(async () => Response.json({ ...body, data: [{ ...event, skippedDueOn: 'invalid' }] }));
+    await expect(invalid.freezeHistory(id)).rejects.toThrow();
+  });
   it.each([
     { status: 400, code: 'invalid_request', message: 'The price change must start on or after today' },
     { status: 400, code: 'invalid_request', message: 'Invalid price change request' },
