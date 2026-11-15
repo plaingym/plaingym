@@ -75,8 +75,11 @@ describe('portal write household preconditions', () => {
     await read;
     expect(f.result.current.key).toBe(key);
     await act(async () => { await expect(f.result.current.run(async () => { throw new ApiError(404, 'not_found'); })).rejects.toBeInstanceOf(ApiError); });
-    expect(f.result.current.refreshing).toBe(true);
-    expect(f.result.current.settling).toBe(true);
+    // The recovery starts after the rejection settles, so its state can land after this act; wait for it.
+    await waitFor(() => {
+      expect(f.result.current.refreshing).toBe(true);
+      expect(f.result.current.settling).toBe(true);
+    });
     await f.resolveLists(home, 500);
     await waitFor(() => expect(f.result.current.settling).toBe(false));
   });
