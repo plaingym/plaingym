@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { git, root } from '../../scripts/release/version.mjs';
 
 /** Cleanup must neither replace the check's result nor skip subsequent cleanup. */
@@ -35,6 +36,11 @@ export function adaptPreviousSmoke(source, deployment, currentDeployment, projec
   replace(/^const prefix = .*;$/m, `const deploymentRoot = ${JSON.stringify(deployment)};
 const prefix = ['compose', '--project-directory', deploymentRoot, '--env-file', envFile, '-p', project, '-f', join(deploymentRoot, 'compose.yaml')];`);
   replace(/^const project = .*;$/m, `const project = ${JSON.stringify(project)};`);
+  // Older parsers reject an empty operator setting. Supply explicit smoke inputs so the
+  // current Compose file can delegate defaults to the new app without breaking the old harness.
+  replace(/^ {2}GYM_HOSTNAME: .*$/m, `  GYM_HOSTNAME: 'gym.localhost', ACME_EMAIL: 'test@example.org',
+  AUTH_PASSWORD_LOGIN: 'on', RATE_LIMIT_PER_MINUTE: '20000', DATABASE_POOL_MAX: '4',
+  PUBLIC_ORIGIN: 'https://gym.localhost', PACKS_DIR: '/app/packs',`);
   replace(/^const compose = .*;$/m, `const migrationRoot = ${JSON.stringify(currentDeployment)};
 const migrationPrefix = ['compose', '--project-directory', migrationRoot, '--env-file', envFile, '-p', project, '-f', join(migrationRoot, 'compose.yaml')];
 const compose = (args, options) => {
@@ -42,7 +48,25 @@ const compose = (args, options) => {
   try { return docker([...(migrating ? migrationPrefix : prefix), ...args], options); }
   catch (error) { throw new Error((migrating ? 'Migrate new image under current deployment files' : 'Run previous image under selected deployment files') + ': ' + error.message, { cause: error }); }
 };`);
+  if (deployment === currentDeployment) source = compatibilityAssertions(source);
   return source;
+}
+
+/** The current-files run checks the older application, without pinning the older deployment's shape.
+ * Keep the previous-files run's complete assertions. Refuse unknown boundaries rather than removing
+ * arbitrary assertions from a published harness.
+ */
+export function compatibilityAssertions(source) {
+  for (const [start, end] of [
+    ["  for (const file of ['Caddyfile', 'demo/Caddyfile']) {", "  assert.equal(docker("],
+    ["  assert.equal(configuration.Config.User,", "  compose(['exec', '-T', 'app', '/app/deploy/database.sh', 'migrate']);"],
+    ["  assert.equal(compose(['exec', '-T', 'caddy', 'cat', '/proc/sys/net/ipv4/tcp_wmem'])", "  const caPath ="],
+  ]) {
+    const first = source.indexOf(start), last = source.indexOf(end, first);
+    if (first < 0 || last <= first) throw new Error(`Previous smoke harness has no supported deployment assertion boundary: ${start}`);
+    source = source.slice(0, first) + source.slice(last);
+  }
+  return source.replace(/ {2}console\.log\('PASS: .*'\);/, "  console.log('PASS: previous application compatibility with current deployment files.');");
 }
 
 /** Remove only the caller's unique project, even when the child never gets to its finally block. */
@@ -76,7 +100,8 @@ export function smokePreviousImage(previousImage, image, tree, commit, run = exe
     console.log(description);
     try {
       writeFileSync(script, adaptPreviousSmoke(source, deployment, resolve(root, 'deploy'), project));
-      run(process.execPath, [script, previousImage], { cwd: tree, stdio: 'inherit', timeout: 900_000, killSignal: 'SIGKILL',
+      run(process.execPath, [fileURLToPath(new URL('./run-smoke.mjs', import.meta.url)), script, previousImage],
+        { cwd: tree, stdio: 'inherit', timeout: 915_000, killSignal: 'SIGKILL',
         env: { ...process.env, SMOKE_MIGRATE_IMAGE: image, VERSION: variable('APP_VERSION'), SOURCE_URL: variable('SOURCE_URL') } });
     } catch (error) { throw new Error(`${description} failed: ${error.message}`, { cause: error }); }
     finally {

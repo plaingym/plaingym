@@ -121,8 +121,7 @@ demo_apply_update() { # TARGET [PREPARED_DEPLOY_DIRECTORY]
   # shellcheck disable=SC2016
   compose exec -T postgres sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -h 127.0.0.1 -U postgres -Fc "$POSTGRES_DB"' > "$snapshot"
   if [ -n "$deploy_source" ]; then
-    python3 "$ROOT/deploy-files.py" capture "$ROOT" "$target"
-    python3 "$ROOT/deploy-files.py" apply "$ROOT" "$deploy_source"
+    python3 "$ROOT/deploy-files.py" apply "$ROOT" "$deploy_source" "$target"
     compose run --rm --no-deps -T caddy caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
   fi
   DEMO_TARGET_APP_IMAGE="$target" compose run --rm --no-deps -T migrate

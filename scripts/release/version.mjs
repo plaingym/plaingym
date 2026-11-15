@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const root = fileURLToPath(new URL('../../', import.meta.url));
 export const releasePattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 /** @param {string[]} args @param {string} cwd */
-export function git(args, cwd = root, { raw = false, timeout = 120_000 } = {}) {
+export function git(args, cwd = root, { raw = false, timeout = 120_000, interactive = false } = {}) {
   const output = execFileSync('git', args, { cwd, encoding: 'utf8', timeout, killSignal: 'SIGKILL',
-    env: { ...process.env, LC_ALL: 'C', GIT_CEILING_DIRECTORIES: dirname(resolve(cwd)) },
-    stdio: ['ignore', 'pipe', 'pipe'] });
+    env: { ...process.env, LC_ALL: 'C' },
+    stdio: [interactive ? 'inherit' : 'ignore', 'pipe', 'pipe'] });
   return raw ? output : output.trim();
 }
 

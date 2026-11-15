@@ -517,8 +517,6 @@ prune_host_history() { # After prune_images, which keeps saved pins only for ima
     printf '%s\n' "$host_images" | grep -qxF "sha256:$host_id" || rm -rf -- "$host_history" || return 1
   done
 }
-valid_timezone() { printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$' && [ -f "/usr/share/zoneinfo/$1" ]; }
-in_window() { hour=$(TZ="$1" date +%H); hour=${hour#0}; [ "$hour" -ge 2 ] && [ "$hour" -lt 5 ]; }
 
 rotation_check
 trap cleanup EXIT

@@ -104,7 +104,7 @@ export function release({ cwd = process.cwd(), version: explicit, notesFile, rol
   const branch = run('branch', '--show-current');
   if (!branch) throw new Error('A release requires a branch, not detached HEAD');
   // Fetch only refs; no working files or tags are created by preflight.
-  run('fetch', 'origin', '--prune', '--tags');
+  git(['fetch', 'origin', '--prune', '--tags'], cwd, { timeout: 600_000, interactive: true });
   const head = run('rev-parse', 'HEAD');
   if (head !== run('rev-parse', `refs/remotes/origin/${branch}`)) throw new Error(`The branch ${branch} is not level with origin`);
   const tags = run('tag', '--merged', 'HEAD', '--list', 'v*').split('\n').filter((tag) => releasePattern.test(tag.slice(1))).sort((a, b) => compare(b, a));
@@ -199,7 +199,7 @@ export function release({ cwd = process.cwd(), version: explicit, notesFile, rol
   writeFileSync(join(cwd, 'deploy/release/rollback-floor.txt'), floor + '\n');
   run('add', '--', ...manifests, 'CHANGELOG.md', 'deploy/release/rollback-floor.txt');
   const before = run('rev-parse', 'HEAD');
-  run('commit', '-m', `chore(release): v${version}`);
+  git(['commit', '-m', `chore(release): v${version}`], cwd, { timeout: 600_000, interactive: true });
   // Git can exit 0 with an unsigned annotated tag when the signer couldn't run (a passphrase it couldn't ask for), so
   // read the tag back. On any failure, the tag and the release commit go: the tree was clean, so nothing else is lost.
   try {
@@ -224,7 +224,7 @@ export function release({ cwd = process.cwd(), version: explicit, notesFile, rol
       }
       writeFileSync(join(mainPath, 'CHANGELOG.md'), mainChangelog);
       git(['add', '--', 'CHANGELOG.md'], mainPath);
-      git(['commit', '-m', `docs: changelog for v${version}`], mainPath);
+      git(['commit', '-m', `docs: changelog for v${version}`], mainPath, { timeout: 600_000, interactive: true });
     }
   } finally { if (createdWorktree) run('worktree', 'remove', mainPath); }
   log(`Created v${version}. Nothing was pushed. Review, then push main${isPatch ? `, ${branch}` : ''} and refs/tags/v${version}.`);

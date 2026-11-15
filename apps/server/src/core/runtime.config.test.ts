@@ -1,21 +1,29 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it, vi } from 'vitest';
+import { connectionBudget } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { maintenanceVariables } from './maintenance-credentials.js';
-import { floodLimit, poolSize, startRuntime, runCommandLine } from './runtime.js';
+import { floodLimit, poolSize, publicOrigin, startRuntime, runCommandLine } from './runtime.js';
 import { demoEnv, origin } from './runtime.fixture.test-helper.js';
 
 const database = useTestDatabase();
 
 it('sizes the app pool from DATABASE_POOL_MAX within the connection budget', () => {
-  expect(poolSize({})).toBe(8);
+  expect(poolSize({})).toBe(connectionBudget.application);
+  expect(poolSize({ DATABASE_POOL_MAX: '' })).toBe(poolSize({}));
   expect(poolSize({ DATABASE_POOL_MAX: '4' })).toBe(4);
   for (const value of ['0', '-1', '1.5', 'many', '101']) expect(() => poolSize({ DATABASE_POOL_MAX: value })).toThrow('DATABASE_POOL_MAX');
 });
 it('reads the flood limit from RATE_LIMIT_PER_MINUTE, leaving the default when unset', () => {
   expect(floodLimit({})).toBeUndefined();
+  expect(floodLimit({ RATE_LIMIT_PER_MINUTE: '' })).toBeUndefined();
   expect(floodLimit({ RATE_LIMIT_PER_MINUTE: '20000' })).toBe(20_000);
-  for (const value of ['', '0', '-1', '1.5', 'many', '100001']) expect(() => floodLimit({ RATE_LIMIT_PER_MINUTE: value })).toThrow('RATE_LIMIT_PER_MINUTE');
+  for (const value of ['0', '-1', '1.5', 'many', '100001']) expect(() => floodLimit({ RATE_LIMIT_PER_MINUTE: value })).toThrow('RATE_LIMIT_PER_MINUTE');
+});
+it('uses the hostname when PUBLIC_ORIGIN is empty, and keeps a nonempty override', () => {
+  expect(publicOrigin({ PUBLIC_ORIGIN: '', GYM_HOSTNAME: 'gym.example.test' })).toBe('https://gym.example.test');
+  expect(publicOrigin({ PUBLIC_ORIGIN: '' })).toBeUndefined();
+  expect(publicOrigin({ PUBLIC_ORIGIN: 'https://custom.example.test', GYM_HOSTNAME: 'gym.example.test' })).toBe('https://custom.example.test');
 });
 it('migrates through the maintenance role from the command line, without the app settings', async () => {
   const io = { stdout: vi.fn(), stderr: vi.fn() };
@@ -46,5 +54,7 @@ it('reprints the setup link without requiring a database connection', async () =
   const io = { stdout: vi.fn(), stderr: vi.fn() }, token = 'private-installer-token-at-least-32-characters';
   expect(await runCommandLine(['setup-link'], io, { PUBLIC_ORIGIN: origin, SETUP_TOKEN: token })).toBe(0);
   expect(io.stdout).toHaveBeenCalledWith(origin + '/setup#token=' + token);
+  expect(await runCommandLine(['setup-link'], io, { PUBLIC_ORIGIN: '', GYM_HOSTNAME: 'gym.example.test', SETUP_TOKEN: token })).toBe(0);
+  expect(io.stdout).toHaveBeenLastCalledWith('https://gym.example.test/setup#token=' + token);
   expect(await runCommandLine(['setup-link'], io, { PUBLIC_ORIGIN: origin })).toBe(1);
 });

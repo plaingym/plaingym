@@ -164,7 +164,8 @@ builds, are skipped. Set these host-only options in the root-only installed `.en
 | `RELEASE_REPOSITORY` | `plaingym/plaingym` | Repository publishing releases, including for forks. |
 
 Only the installed public key can authorize a release. The updater reuses the
-self-hosted manifest/signature and deploy-archive checks; it pulls the manifest's
+self-hosted manifest/signature, deploy-archive checks, host-file journal, timezone
+window and version-selection helpers; it pulls the manifest's
 `IMAGE:vX.Y.Z@sha256:DIGEST` and checks the registry digest and version label
 before stopping the app. Invalid signatures, manifests, digests, labels and
 archives are refused permanently for that tag, even with `--now`. A newer tag

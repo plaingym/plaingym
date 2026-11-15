@@ -195,7 +195,7 @@ manifest_check() { # MANIFEST VERSION
 host_files='update.sh lib.sh rotate-key.sh restore.sh release-signing.pem systemd/plaingym-update.service systemd/plaingym-update.timer'
 host_units='plaingym-update.service plaingym-update.timer'
 host_units_dir() { printf '%s\n' "${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"; }
-host_mode() { case "$1" in update.sh|rotate-key.sh|restore.sh) echo 0700 ;; *) echo 0644 ;; esac; }
+host_mode() { case "$1" in update.sh|rotate-key.sh|restore.sh|auto-update.sh|deploy-files.py|snapshots.py) echo 0700 ;; *) echo 0644 ;; esac; }
 # Prepare only data from the already verified manifest; no script from the archive is sourced or executed.
 # Returns 2 when the archive can't be downloaded, and 1 when it or a file fails a check.
 host_download() { # MANIFEST BASE_URL WORK
@@ -223,15 +223,16 @@ host_download() { # MANIFEST BASE_URL WORK
   # shellcheck disable=SC2034
   host_source="$3/host/deploy"
 }
-host_capture() { # DESTINATION: keep originals, including their absence, before the first replacement.
+host_capture() { # DESTINATION [FILES UNITS]: keep originals, including their absence.
+  host_capture_files=${2-$host_files}; host_capture_units=${3-$host_units}
   mkdir -p "$1/files" "$1/units" || return 1
-  for host_file in $host_files; do
+  for host_file in $host_capture_files; do
     if [ -e "$ROOT/$host_file" ]; then
       mkdir -p "$1/files/$(dirname "$host_file")" || return 1
       cp -p "$ROOT/$host_file" "$1/files/$host_file" || return 1
     fi
   done
-  for host_unit in $host_units; do
+  for host_unit in $host_capture_units; do
     [ ! -e "$(host_units_dir)/$host_unit" ] || cp -p "$(host_units_dir)/$host_unit" "$1/units/$host_unit" || return 1
   done
 }
@@ -240,15 +241,16 @@ host_replace() { # SOURCE DEST MODE: rename within the destination filesystem; r
   install -m "$3" "$1" "$2.host-next" || return 1
   mv -f "$2.host-next" "$2"
 }
-host_restore() { # SNAPSHOT: repeatable after an interrupted restoration.
-  for host_file in $host_files; do
+host_restore() { # SNAPSHOT [FILES UNITS]: repeatable after an interrupted restoration.
+  host_restore_files=${2-$host_files}; host_restore_units=${3-$host_units}
+  for host_file in $host_restore_files; do
     # An explicit trust-key change made since a snapshot must never be undone by an image rollback.
     [ "$host_file" != release-signing.pem ] || continue
     if [ -f "$1/files/$host_file" ]; then
       host_replace "$1/files/$host_file" "$ROOT/$host_file" "$(host_mode "$host_file")" || return 1
     else rm -f "$ROOT/$host_file" || return 1; fi
   done
-  for host_unit in $host_units; do
+  for host_unit in $host_restore_units; do
     if [ -f "$1/units/$host_unit" ]; then
       host_replace "$1/units/$host_unit" "$(host_units_dir)/$host_unit" 0644 || return 1
     else rm -f "$(host_units_dir)/$host_unit" || return 1; fi
@@ -257,54 +259,79 @@ host_restore() { # SNAPSHOT: repeatable after an interrupted restoration.
   # The restored files stay in place even when systemd is unavailable; the journal retries the reload.
   systemctl daemon-reload
 }
-host_recover() { # The pin commits the transaction. Before it, every failure restores the previous files.
+host_recover() { # [FILES UNITS]; the pin commits the transaction.
+  host_recover_files=${1-$host_files}; host_recover_units=${2-$host_units}
+  host_prefix=${HOST_JOURNAL_PREFIX:-.host}
   # These directories are never authoritative once their rename has completed (or before it starts).
-  for host_leftover in "$ROOT"/.host-prepare.* "$ROOT"/.host-retired.* "$ROOT"/.host-history/*.next; do
+  for host_leftover in "$ROOT/$host_prefix"-prepare.* "$ROOT/$host_prefix"-retired.* "$ROOT/$host_prefix"-history/*.next; do
     [ ! -d "$host_leftover" ] || rm -rf -- "$host_leftover" || return 1
   done
-  [ -d "$ROOT/.host-update" ] || return 0
-  [ -s "$ROOT/.host-update/target" ] && [ -d "$ROOT/.host-update/before/files" ] || return 1
-  if [ "$(read_env APP_IMAGE)" != "$(cat "$ROOT/.host-update/target")" ]; then
+  [ -d "$ROOT/$host_prefix-update" ] || return 0
+  [ -s "$ROOT/$host_prefix-update/target" ] && [ -d "$ROOT/$host_prefix-update/before/files" ] || return 1
+  if [ "$(read_env APP_IMAGE)" != "$(cat "$ROOT/$host_prefix-update/target")" ]; then
     echo 'Restoring host files from the unfinished update.' >&2
-    host_restore "$ROOT/.host-update/before" || return 1
+    host_restore "$ROOT/$host_prefix-update/before" "$host_recover_files" "$host_recover_units" || return 1
   fi
   # Persist the pin (or restoration) before retiring the journal. A kill during recursive deletion must not
   # leave a half-deleted directory that the next invocation could mistake for a complete recovery snapshot.
   sync -f "$ROOT" "$(host_units_dir)" || return 1
-  host_retired=$(mktemp -d "$ROOT/.host-retired.XXXXXX") || return 1
-  mv "$ROOT/.host-update" "$host_retired/transaction" || return 1
+  host_retired=$(mktemp -d "$ROOT/$host_prefix-retired.XXXXXX") || return 1
+  mv "$ROOT/$host_prefix-update" "$host_retired/transaction" || return 1
   sync -f "$ROOT" || return 1
   rm -rf -- "$host_retired"
 }
-host_apply() { # SOURCE TARGET_PIN PREVIOUS_IMAGE_ID
-  host_journal=$(mktemp -d "$ROOT/.host-prepare.XXXXXX") || return 1
-  if ! host_capture "$host_journal/before" || ! printf '%s\n' "$2" > "$host_journal/target"; then
+host_install_units() { # SOURCE JOURNAL [UNITS]; demo supplies its systemd quoting renderer.
+  for host_unit in ${3-$host_units}; do
+    sed "s#@ROOT@#$ROOT#g" "$1/systemd/$host_unit" > "$2/$host_unit" || return 1
+    host_replace "$2/$host_unit" "$(host_units_dir)/$host_unit" 0644 || return 1
+  done
+  systemctl daemon-reload
+}
+host_apply() { # SOURCE TARGET_PIN PREVIOUS_IMAGE_ID [FILES UNITS]; empty ID skips history.
+  host_apply_files=${4-$host_files}; host_apply_units=${5-$host_units}
+  host_prefix=${HOST_JOURNAL_PREFIX:-.host}
+  host_journal=$(mktemp -d "$ROOT/$host_prefix-prepare.XXXXXX") || return 1
+  if ! host_capture "$host_journal/before" "$host_apply_files" "$host_apply_units" || ! printf '%s\n' "$2" > "$host_journal/target"; then
     rm -rf -- "$host_journal"; return 1
   fi
-  mkdir -p "$ROOT/.host-history" || { rm -rf -- "$host_journal"; return 1; }
+  # Keep the journal implementation that wrote this transaction, even if the refresh replaces lib.sh.
+  if [ -n "${HOST_JOURNAL_HELPER:-}" ]; then
+    cp "$HOST_JOURNAL_HELPER" "$host_journal/helper.sh" || { rm -rf -- "$host_journal"; return 1; }
+  fi
   # Preserve the first copy for this image; a later rollback must not rewrite its original host generation.
-  if [ ! -d "$ROOT/.host-history/${3#sha256:}" ]; then
-    if ! rm -rf -- "$ROOT/.host-history/${3#sha256:}.next" ||
-      ! cp -Rp "$host_journal/before" "$ROOT/.host-history/${3#sha256:}.next" ||
-      ! mv "$ROOT/.host-history/${3#sha256:}.next" "$ROOT/.host-history/${3#sha256:}"; then
-      rm -rf -- "$host_journal" "$ROOT/.host-history/${3#sha256:}.next"; return 1
+  if [ -n "$3" ] && [ ! -d "$ROOT/$host_prefix-history/${3#sha256:}" ]; then
+    if ! mkdir -p "$ROOT/$host_prefix-history" ||
+      ! rm -rf -- "$ROOT/$host_prefix-history/${3#sha256:}.next" ||
+      ! cp -Rp "$host_journal/before" "$ROOT/$host_prefix-history/${3#sha256:}.next" ||
+      ! mv "$ROOT/$host_prefix-history/${3#sha256:}.next" "$ROOT/$host_prefix-history/${3#sha256:}"; then
+      rm -rf -- "$host_journal" "$ROOT/$host_prefix-history/${3#sha256:}.next"; return 1
     fi
   fi
-  mv "$host_journal" "$ROOT/.host-update" || { rm -rf -- "$host_journal"; return 1; }
+  mv "$host_journal" "$ROOT/$host_prefix-update" || { rm -rf -- "$host_journal"; return 1; }
   sync -f "$ROOT" || return 1
   if [ -d "$1/files" ]; then
-    host_restore "$1" || return 1
+    host_restore "$1" "$host_apply_files" "$host_apply_units" || return 1
   else
-    for host_file in $host_files; do
+    for host_file in $host_apply_files; do
       host_replace "$1/$host_file" "$ROOT/$host_file" "$(host_mode "$host_file")" || return 1
     done
-    for host_unit in $host_units; do
-      sed "s#@ROOT@#$ROOT#g" "$1/systemd/$host_unit" > "$ROOT/.host-update/$host_unit" || return 1
-      host_replace "$ROOT/.host-update/$host_unit" "$(host_units_dir)/$host_unit" 0644 || return 1
-    done
-    systemctl daemon-reload || return 1
+    host_install_units "$1" "$ROOT/$host_prefix-update" "$host_apply_units" || return 1
     sync -f "$ROOT" "$(host_units_dir)" || return 1
   fi
+}
+valid_timezone() { printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$' && [ -f "/usr/share/zoneinfo/$1" ]; }
+in_window() { hour=$(TZ="$1" date +%H); hour=${hour#0}; [ "$hour" -ge 2 ] && [ "$hour" -lt 5 ]; }
+# Select a stable, non-draft release in the running major, using the same version grammar as manifests.
+newest_release() { # VERSION RELEASES_JSON
+  valid_version "$1" || return 1
+  python3 -c 'import json,re,sys
+current=tuple(map(int,sys.argv[1][1:].split(".")))
+releases=json.load(open(sys.argv[2]))
+if not isinstance(releases,list) or any(not isinstance(r,dict) for r in releases): raise ValueError("Invalid release list")
+tags=[r.get("tag_name", "") for r in releases if not r.get("draft") and not r.get("prerelease")]
+versions=[tuple(map(int,t[1:].split("."))) for t in tags if isinstance(t,str) and re.fullmatch(sys.argv[3],t)]
+newer=[v for v in versions if v[0]==current[0] and v>current]
+print("v"+".".join(map(str,max(newer))) if newer else "")' "$1" "$2" "$version_pattern"
 }
 # The newest patch of VERSION's minor among TAGS (one per line), or nothing if VERSION is the newest.
 newest_patch() { # VERSION TAGS

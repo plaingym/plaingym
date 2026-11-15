@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
-import { adaptPreviousSmoke, removeImage, removeSmokeProject, smokePreviousImage, withPreviousTree } from './previous-smoke.mjs';
+import { adaptPreviousSmoke, compatibilityAssertions, removeImage, removeSmokeProject, smokePreviousImage, withPreviousTree } from './previous-smoke.mjs';
+import { runSmoke } from './run-smoke.mjs';
 
 test('the production smoke table assertion accepts schema additions only in compatibility runs', () => {
   const source = readFileSync(new URL('../test/smoke.mjs', import.meta.url), 'utf8');
@@ -42,8 +43,19 @@ test('previous smoke ignores a newer-only assertion but catches a real incompati
 const root = 'original';
 const project = 'original';
 const envFile = 'unused';
+const env = {
+  GYM_HOSTNAME: 'gym.localhost', ACME_EMAIL: 'test@example.org',
+};
 const prefix = [];
 const compose = (args, options) => docker([...prefix, ...args], options);
+if (false) {
+  for (const file of ['Caddyfile', 'demo/Caddyfile']) { void file; }
+  assert.equal(docker([]), 'fixture');
+  assert.equal(configuration.Config.User, 'node');
+  compose(['exec', '-T', 'app', '/app/deploy/database.sh', 'migrate']);
+  assert.equal(compose(['exec', '-T', 'caddy', 'cat', '/proc/sys/net/ipv4/tcp_wmem']).trim(), 'fixture');
+  const caPath = 'fixture'; void caPath;
+}
 `;
   writeFileSync(join(oldTree, 'deploy/test/smoke.mjs'), harness + `
     import assert from 'node:assert/strict';
@@ -89,7 +101,8 @@ test('a killed compatibility smoke is cleaned before its error is returned', () 
     const cleaned = [], original = new Error('smoke timed out');
     assert.throws(() => smokePreviousImage('old-image', 'new-image', tree, 'old-ref', (binary, args, options) => {
       if (binary !== 'docker') {
-        assert.equal(options.timeout, 900_000); assert.equal(options.killSignal, 'SIGKILL');
+        assert.equal(options.timeout, 915_000); assert.equal(options.killSignal, 'SIGKILL');
+        assert.ok(args[0].endsWith('run-smoke.mjs'));
         throw original;
       }
       if (args[0] === 'image') return JSON.stringify([{ Config: { Env: [] } }]);
@@ -99,6 +112,40 @@ test('a killed compatibility smoke is cleaned before its error is returned', () 
     assert.equal(cleaned.length, 3);
     assert.ok(cleaned.every(args => args.at(-1).startsWith('label=com.docker.compose.project=plaingym-compat-')));
   } finally { rmSync(tree, { recursive: true, force: true }); }
+});
+
+test('current deployment keeps health, migration, CLI and source assertions while allowing shape changes', () => {
+  const original = readFileSync(new URL('../test/smoke.mjs', import.meta.url), 'utf8');
+  const adapted = adaptPreviousSmoke(original, '/current', '/current', 'project');
+  assert.ok(adapted.includes("PUBLIC_ORIGIN: 'https://gym.localhost'"));
+  assert.ok(adapted.includes("AUTH_PASSWORD_LOGIN: 'on'"));
+  for (const assertion of ["assert.equal(health.status, 'ok')", "'/app/deploy/database.sh', 'migrate'",
+    "assert.equal(cli.status, 2)", 'assert.equal(source.headers.location,', 'assert.equal(sql(',
+    "assert.equal(compose(['exec', '-T', 'app', 'gym-app', 'setup-link'])"])
+    assert.ok(adapted.includes(assertion), assertion);
+  for (const shape of ['HostConfig.Memory', 'configuration.Mounts', 'ReadonlyRootfs', 'tcp_wmem', 'caddy fmt', '/app/should-fail'])
+    assert.ok(!adapted.includes(shape), shape);
+  assert.ok(adaptPreviousSmoke(original, '/previous', '/current', 'project').includes('HostConfig.Memory'));
+  assert.throws(() => compatibilityAssertions('unknown harness'), /no supported deployment assertion boundary/);
+  // Execute the retained health and CLI assertions: real incompatibilities still fail.
+  const healthCheck = adapted.match(/ {2}assert.equal\(health.status, 'ok'\);/)[0];
+  assert.throws(() => runInNewContext(healthCheck, { assert, health: { status: 'failed' } }), { code: 'ERR_ASSERTION' });
+  const cliCheck = adapted.match(/ {2}assert.equal\(cli.status, 2\);/)[0];
+  assert.throws(() => runInNewContext(cliCheck, { assert, cli: { status: 1 } }), { code: 'ERR_ASSERTION' });
+  const sourceCheck = adapted.match(/ {2}assert.equal\(source.headers.location, .*;/)[0];
+  assert.throws(() => runInNewContext(sourceCheck, { assert, source: { headers: { location: 'wrong' } }, process: { env: {} } }), { code: 'ERR_ASSERTION' });
+});
+
+test('smoke timeout stops an in-flight descendant before project cleanup', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'smoke-group-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const started = join(directory, 'started'), escaped = join(directory, 'escaped');
+  const descendant = `require('node:fs').writeFileSync(${JSON.stringify(started)}, 'ready'); setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(escaped)}, 'orphan'), 2000);`;
+  const parent = `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { stdio: 'inherit' }); setInterval(() => {}, 1000);`;
+  await assert.rejects(runSmoke(['-e', parent], 1500), /timed out/);
+  assert.equal(readFileSync(started, 'utf8'), 'ready');
+  await new Promise(resolve => setTimeout(resolve, 2200));
+  assert.throws(() => readFileSync(escaped), { code: 'ENOENT' });
 });
 
 test('hard-timeout cleanup attempts containers, networks and volumes and preserves later cleanup on a failure', () => {

@@ -6,7 +6,7 @@ export function createSetupLinkCommand(env: NodeJS.ProcessEnv = process.env): Co
   return { id: 'setup-link', description: 'Print the private first-boot setup link', async run(args, io) {
   if (args.length) { io.stderr('Usage: setup-link'); return 2; }
   try {
-    const origin = env.PUBLIC_ORIGIN ?? (env.GYM_HOSTNAME ? `https://${env.GYM_HOSTNAME}` : undefined);
+    const origin = env.PUBLIC_ORIGIN || (env.GYM_HOSTNAME ? `https://${env.GYM_HOSTNAME}` : undefined);
     if (!origin) throw new Error('Set GYM_HOSTNAME or PUBLIC_ORIGIN');
     io.stdout(setupLink(origin, env.SETUP_TOKEN));
     return 0;

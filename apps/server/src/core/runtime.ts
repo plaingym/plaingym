@@ -145,7 +145,7 @@ function required(env: NodeJS.ProcessEnv, name: string): string {
 }
 /** The install's public origin: `PUBLIC_ORIGIN`, else `https://` + `GYM_HOSTNAME` (as Caddy serves it). */
 export function publicOrigin(env: NodeJS.ProcessEnv): string | undefined {
-  const value = env.PUBLIC_ORIGIN ?? (env.GYM_HOSTNAME ? `https://${env.GYM_HOSTNAME}` : undefined);
+  const value = env.PUBLIC_ORIGIN || (env.GYM_HOSTNAME ? `https://${env.GYM_HOSTNAME}` : undefined);
   if (!value) return undefined;
   const url = new URL(value);
   if (!['https:', 'http:'].includes(url.protocol) || url.pathname !== '/' || url.search || url.username) throw new Error('Invalid PUBLIC_ORIGIN');
@@ -154,14 +154,14 @@ export function publicOrigin(env: NodeJS.ProcessEnv): string | undefined {
 
 /** The app pool size: `DATABASE_POOL_MAX`, else the budgeted default that fits the shipped Postgres. */
 export function poolSize(env: NodeJS.ProcessEnv): number {
-  if (env.DATABASE_POOL_MAX === undefined) return connectionBudget.application;
+  if (!env.DATABASE_POOL_MAX) return connectionBudget.application;
   const value = Number(env.DATABASE_POOL_MAX);
   if (!Number.isSafeInteger(value) || value < 1 || value > 100) throw new Error('DATABASE_POOL_MAX must be an integer from 1 to 100');
   return value;
 }
 /** The app's flood limit per gym and client address each minute: `RATE_LIMIT_PER_MINUTE`, else the limiter's default. */
 export function floodLimit(env: NodeJS.ProcessEnv): number | undefined {
-  if (env.RATE_LIMIT_PER_MINUTE === undefined) return undefined;
+  if (!env.RATE_LIMIT_PER_MINUTE) return undefined;
   const value = Number(env.RATE_LIMIT_PER_MINUTE);
   if (!Number.isSafeInteger(value) || value < 1 || value > 100_000) throw new Error('RATE_LIMIT_PER_MINUTE must be an integer from 1 to 100000');
   return value;

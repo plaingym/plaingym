@@ -16,6 +16,11 @@ describe('authentication startup policy', () => {
     expect(authConfig({ AUTH_SECRET: secret, AUTH_PASSWORD_LOGIN: mode }, false).passwordEnabled).toBe(mode !== 'off');
     expect(authConfig({ AUTH_SECRET: secret, AUTH_PASSWORD_LOGIN: mode }, true).passwordEnabled).toBe(mode === 'on');
   });
+  it('uses automatic password policy for an empty environment value', () => {
+    for (const smtp of [false, true])
+      expect(authConfig({ AUTH_SECRET: secret, AUTH_PASSWORD_LOGIN: '' }, smtp))
+        .toEqual(authConfig({ AUTH_SECRET: secret }, smtp));
+  });
   it('requires password=off and SMTP for multiple gyms', () => {
     for (const mode of [undefined, 'auto', 'on']) expect(() => authConfig({ AUTH_SECRET: secret, TENANCY: 'multi', AUTH_PASSWORD_LOGIN: mode }, true)).toThrow('AUTH_PASSWORD_LOGIN=off');
     expect(() => authConfig({ AUTH_SECRET: secret, TENANCY: 'multi', AUTH_PASSWORD_LOGIN: 'off' }, false)).toThrow('requires SMTP');

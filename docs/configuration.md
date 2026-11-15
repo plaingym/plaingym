@@ -17,18 +17,17 @@ is a storage reference for an existing upload. Use Website to upload a logo.
 its `environment:` block names. From `.env` it passes `GYM_HOSTNAME`, the `SMTP_*`
 settings, `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, `SOURCE_URL`, `APP_ENCRYPTION_KEY`, `AUTH_SECRET`, `SETUP_TOKEN`,
 `POSTGRES_DB`, `APP_PASSWORD`, `MAINTENANCE_PASSWORD`, `NODE_OPTIONS`, `TRUST_CLOUDFLARE`,
-`AUTH_PASSWORD_LOGIN`, `RATE_LIMIT_PER_MINUTE`, `UPDATE_CHECK`, `RELEASE_REPOSITORY` and `DATABASE_POOL_MAX` (the last
-five with their defaults when unset or empty); it fixes
+`AUTH_PASSWORD_LOGIN`, `RATE_LIMIT_PER_MINUTE`, `UPDATE_CHECK`, `RELEASE_REPOSITORY`, `DATABASE_POOL_MAX`,
+`PUBLIC_ORIGIN`, `PACKS_DIR` and `UPLOADS_S3_*`; it fixes
 `NODE_ENV`, `HOST`, `PORT`, `TENANCY=single`, `TRUST_PROXY`, `DATABASE_URL`,
 `MAINTENANCE_DATABASE_URL`, `UPLOADS_DIR` and `BACKUP_STAGING_DIR` itself; and it
-reads the Compose and Caddy variables at the end of this page. The other variables
-here (`PUBLIC_ORIGIN`, `PACKS_DIR` and `UPLOADS_S3_*`) are read by the server but
-not passed by the shipped Compose file, so setting them in `.env` has no effect on
-a standard install. The app reads an empty value as a value, not as unset, so
-they can't be passed with an empty default; and a single-gym install is served
-only at `https://GYM_HOSTNAME` and keeps its uploads on its data volume, where
-backups and restores expect them. They apply when you run the server some other
-way, such as in development or with your own Compose file.
+reads the Compose and Caddy variables at the end of this page. Empty values for
+`AUTH_PASSWORD_LOGIN`, `RATE_LIMIT_PER_MINUTE`, `DATABASE_POOL_MAX`, `PUBLIC_ORIGIN`,
+`PACKS_DIR` and `UPLOADS_S3_*` count as unset: the server uses the defaults listed
+below. Compose passes these values through without choosing a second default.
+`PACKS_DIR` must name a directory inside the container; using custom packs requires
+mounting that directory with a Compose override. With no overrides, a single-gym
+install is served at `https://GYM_HOSTNAME` and keeps uploads on its data volume.
 
 After changing `.env`, run `sudo docker compose up -d` in the install directory.
 The app checks its configuration on start and refuses to start with a clear

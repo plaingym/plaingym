@@ -544,8 +544,8 @@ class HardeningTests(unittest.TestCase):
                         self.assertNotIn("net.ipv4.tcp_rmem", service.get("sysctls", {}))
 
     def test_operator_environment_defaults_and_overrides(self):
-        defaults = dict(TRUST_CLOUDFLARE="", AUTH_PASSWORD_LOGIN="auto", RATE_LIMIT_PER_MINUTE="300",
-                        DATABASE_POOL_MAX="8", UPDATE_CHECK="on", RELEASE_REPOSITORY="plaingym/plaingym")
+        defaults = dict(TRUST_CLOUDFLARE="", AUTH_PASSWORD_LOGIN="", RATE_LIMIT_PER_MINUTE="",
+                        DATABASE_POOL_MAX="", UPDATE_CHECK="on", RELEASE_REPOSITORY="plaingym/plaingym")
         values = dict(TRUST_CLOUDFLARE="true", AUTH_PASSWORD_LOGIN="off", RATE_LIMIT_PER_MINUTE="1200",
                       DATABASE_POOL_MAX="12", UPDATE_CHECK="off", RELEASE_REPOSITORY="example/app")
         base = {key: value for key, value in DEMO_ENV.items() if key not in defaults}
@@ -557,13 +557,17 @@ class HardeningTests(unittest.TestCase):
         self.assertEqual(self.render([DEPLOY / "compose.yaml"], {**base, "AUTH_PASSWORD_LOGIN": "on"})
                          ["app"]["environment"]["AUTH_PASSWORD_LOGIN"], "on")
 
-    def test_single_install_does_not_forward_unsupported_environment(self):
+    def test_single_install_forwards_optional_environment_without_repeating_app_defaults(self):
         names = ("PUBLIC_ORIGIN", "PACKS_DIR", "UPLOADS_S3_BUCKET", "UPLOADS_S3_ENDPOINT", "UPLOADS_S3_REGION",
-                 "UPLOADS_S3_ACCESS_KEY_ID", "UPLOADS_S3_SECRET_ACCESS_KEY", "BACKUP_RECIPIENT")
-        env = {**DEMO_ENV, **dict.fromkeys(names, "https://example.org"), "TENANCY": "multi"}
-        rendered = self.render([DEPLOY / "compose.yaml"], env)["app"]["environment"]
-        self.assertEqual(rendered["TENANCY"], "single")
-        self.assertFalse(set(names) & set(rendered))
+                 "UPLOADS_S3_ACCESS_KEY_ID", "UPLOADS_S3_SECRET_ACCESS_KEY")
+        base = {key: value for key, value in DEMO_ENV.items() if key not in names}
+        for extra in ({}, dict.fromkeys(names, ""), dict.fromkeys(names, "configured")):
+            env = {**base, **extra, "TENANCY": "multi", "BACKUP_RECIPIENT": "unused"}
+            rendered = self.render([DEPLOY / "compose.yaml"], env)["app"]["environment"]
+            self.assertEqual(rendered["TENANCY"], "single")
+            self.assertNotIn("BACKUP_RECIPIENT", rendered)
+            for name in names:
+                self.assertEqual(rendered[name] or "", extra.get(name, ""))
 
     def render(self, files, env, caller=None, extra=None):
         """Render the files; `extra` is the text of one more Compose file merged over them."""

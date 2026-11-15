@@ -23,6 +23,17 @@ stay the current trusted key; replacing that trust key is an explicit host step,
 and rollback never reverts it. See the [updating reference](update-reference.md#host-files)
 for how host files are recovered and which local files the updater preserves.
 
+The compatibility smoke runs the older image on the migrated schema under both
+its original deployment files and the current files. The original-files run keeps
+all of that release's assertions. The current-files run keeps application checks
+(health, migrations and forced RLS, setup, CLI and Source code link), while leaving
+memory caps, mounts, container hardening and proxy TCP settings to the current
+release's own production smoke. A timed-out smoke stops its whole process group
+before removing the test project's containers, networks and volumes.
+The harness supplies explicit sign-in, flood-limit, pool, public-origin and pack
+settings so older images can run when current Compose leaves their defaults to
+the application.
+
 Before 1.0 there is no compatibility promise. From 1.0, each release's schema and
 stored data must run the previous minor's code. Migrations expand first and remove
 old shapes only after that compatibility window.
@@ -75,8 +86,9 @@ previous release's minor. A minor can't exclude the previous release. Its defaul
 is that same `.0`, so 1.5.0 after 1.2.3 has the floor 1.2.0, and a floor never names a
 release that doesn't exist. A patch keeps its minor's floor. The release workflow starts
 the previous published minor's image on the database migrated by the new image and
-runs that previous release's own production smoke assertions under both its deployment files
-and the current deployment files before publication. Migration always uses the current files.
+runs that previous release's own production smoke assertions under its deployment files,
+and their application checks under the current deployment files, before publication (the
+compatibility smoke above). Migration always uses the current files.
 With no earlier release, it
 prints a notice and skips that check. A declared major boundary also prints a notice.
 

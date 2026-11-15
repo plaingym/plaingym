@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 /** Preserve full checks on main and integrations; task pushes check the paths that affect the memory budget. */
 export function needsMemory(ref, files) {
   return !ref.startsWith('refs/heads/task/') || files.some(file =>
-    /^(?:apps\/server\/src\/(?:infra\/pdf\/|areas\/waivers\/|core\/rate-limit)|deploy\/|\.github\/workflows\/memory\.yml$)/.test(file));
+    /^(?:pnpm-lock\.yaml$|apps\/server\/package\.json$|apps\/server\/src\/(?:infra\/(?:pdf|jobs)\/|areas\/waivers\/|core\/(?:rate-limit|runtime)|(?:app|index)\.ts$)|deploy\/|\.github\/workflows\/memory\.yml$)/.test(file));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)

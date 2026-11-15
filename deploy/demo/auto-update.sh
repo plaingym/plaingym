@@ -23,10 +23,9 @@ demo_auto_schedule() {
   [ "$(read_env DEMO_AUTO_UPDATE)" != off ] || exit 0
   zone=$(read_env DEMO_UPDATE_TIMEZONE)
   zone=${zone:-America/New_York}
-  if ! printf '%s\n' "$zone" | grep -Eq '^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$' || [ ! -f "/usr/share/zoneinfo/$zone" ]; then demo_auto_finish skipped invalid_timezone; fi
+  valid_timezone "$zone" || demo_auto_finish skipped invalid_timezone
   if [ "$now" = false ]; then
-    hour=$(TZ="$zone" date +%H); hour=${hour#0}
-    [ "$hour" -ge 2 ] && [ "$hour" -lt 5 ] || exit 0
+    in_window "$zone" || exit 0
     night=$(TZ="$zone" date +%F)
     [ "$(demo_state night)" != "$night" ] || exit 0
     # A timezone change cannot cause two nights within six hours.
@@ -45,7 +44,7 @@ demo_auto_run() {
   valid_repository "$repository" || demo_auto_finish skipped invalid_repository
   work=$(mktemp -d "$ROOT/.demo-release.XXXXXXXX")
   download "https://api.github.com/repos/$repository/releases?per_page=100" "$work/releases.json" 5000000 || demo_auto_finish skipped release_list_unavailable
-  tag=$(python3 -c 'import json,re,sys; current=tuple(map(int,sys.argv[1][1:].split("."))); releases=json.load(open(sys.argv[2])); tags=[r.get("tag_name", "") for r in releases if not r.get("draft") and not r.get("prerelease")]; versions=[tuple(map(int,t[1:].split("."))) for t in tags if re.fullmatch(r"v(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})",t)]; newer=[v for v in versions if v[0]==current[0] and v>current]; print("v"+".".join(map(str,max(newer))) if newer else "")' "$from_version" "$work/releases.json") || demo_auto_finish skipped release_list_invalid
+  tag=$(newest_release "$from_version" "$work/releases.json") || demo_auto_finish skipped release_list_invalid
   [ -n "$tag" ] || demo_auto_finish up_to_date -
   refused=$(demo_state "refused.$tag")
   [ -z "$refused" ] || demo_auto_finish skipped "previously_refused_$refused"

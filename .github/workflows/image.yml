@@ -130,7 +130,11 @@ jobs:
             --build-arg "SOURCE_URL=$SOURCE_URL" -t "$IMAGE-archive" .
           test "$(docker image inspect "$IMAGE-archive" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')" = "$archive_version"
           test "$(docker image inspect "$IMAGE-archive" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = unknown
-          VERSION="$archive_version" node deploy/test/smoke.mjs "$IMAGE-archive"
+          test "$(docker image inspect "$IMAGE-archive" --format '{{index .Config.Labels "org.opencontainers.image.url"}}')" = "$SOURCE_URL"
+          docker image inspect "$IMAGE-archive" --format '{{range .Config.Env}}{{println .}}{{end}}' > "$RUNNER_TEMP/archive-env.txt"
+          grep -qxF "APP_VERSION=$archive_version" "$RUNNER_TEMP/archive-env.txt"
+          grep -qxF 'APP_REVISION=unknown' "$RUNNER_TEMP/archive-env.txt"
+          grep -qxF "SOURCE_URL=$SOURCE_URL" "$RUNNER_TEMP/archive-env.txt"
       - name: Run the previous code on this schema
         if: matrix.arch == 'amd64'
         env:

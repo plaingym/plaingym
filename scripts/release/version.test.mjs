@@ -8,6 +8,15 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildInfo, dryRunVersion, git, imageSourceUrl } from './version.mjs';
 
+test('git discovers a repository from a nested caller directory', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'nested-git-'));
+  try {
+    git(['init', '-b', 'main'], cwd);
+    const nested = join(cwd, 'scripts', 'nested'); mkdirSync(nested, { recursive: true });
+    assert.equal(git(['rev-parse', '--show-prefix'], nested).replaceAll('\\', '/'), 'scripts/nested/');
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
+});
+
 test('source archives have an unknown development identity', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'r163-archive-'));
   try {

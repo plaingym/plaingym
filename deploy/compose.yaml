@@ -84,14 +84,20 @@ services:
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       SOURCE_URL: ${SOURCE_URL:-https://github.com/plaingym/plaingym}
-      # Operator settings: unset or empty in .env keeps the app's own default. PUBLIC_ORIGIN, PACKS_DIR and
-      # UPLOADS_S3_* are not passed (docs/configuration.md): the app reads an empty value as a value.
-      AUTH_PASSWORD_LOGIN: ${AUTH_PASSWORD_LOGIN:-auto}
-      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-300}
+      # Operator settings: unset or empty in .env keeps the app's own default.
+      AUTH_PASSWORD_LOGIN: ${AUTH_PASSWORD_LOGIN:-}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
+      PACKS_DIR: ${PACKS_DIR:-}
+      UPLOADS_S3_BUCKET: ${UPLOADS_S3_BUCKET:-}
+      UPLOADS_S3_ENDPOINT: ${UPLOADS_S3_ENDPOINT:-}
+      UPLOADS_S3_REGION: ${UPLOADS_S3_REGION:-}
+      UPLOADS_S3_ACCESS_KEY_ID: ${UPLOADS_S3_ACCESS_KEY_ID:-}
+      UPLOADS_S3_SECRET_ACCESS_KEY: ${UPLOADS_S3_SECRET_ACCESS_KEY:-}
       UPDATE_CHECK: ${UPDATE_CHECK:-on}
       # The repository the update banner reads; the nightly updater reads the same value from .env.
       RELEASE_REPOSITORY: ${RELEASE_REPOSITORY:-plaingym/plaingym}
-      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-8}
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?required}
       AUTH_SECRET: ${AUTH_SECRET:?required}
       SETUP_TOKEN: ${SETUP_TOKEN:?required}

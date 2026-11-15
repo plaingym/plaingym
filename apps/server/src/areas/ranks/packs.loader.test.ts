@@ -22,6 +22,10 @@ afterEach(async () => {
 });
 
 describe('content pack disk loader', () => {
+  it('uses the bundled catalog when PACKS_DIR is empty', async () => {
+    vi.stubEnv('PACKS_DIR', '');
+    expect((await loadContentPacks()).map(pack => pack.id).sort()).toEqual(['bjj', 'functional-fitness', 'judo', 'karate', 'muay-thai']);
+  });
   it('loads shipped packs from the pnpm dev server directory without a PACKS_DIR override', async () => {
     const env = { ...process.env };
     delete env.PACKS_DIR;
