@@ -25,10 +25,48 @@ import { createAnnouncementRoutes } from './send.routes.js';
 import { announcementDeliveryKey } from './send.delivery.js';
 import { announcementSendJob, configureAnnouncements, createAnnouncementsService } from './send.js';
 import { issueUnsubscribeLink } from './unsubscribe.js';
+import { announcementRecoveryJob, createAnnouncementRecoveryJobs } from './recovery.js';
 import * as template from '../../emails/announcements/send.js';
 
 const db = useTestDatabase(), factory = createFactories(db), origin = 'https://gym.example.test';
 const draft = announcementDraftSchema.parse({ subject: 'Closed Monday', body: 'See you Tuesday.\n\nhttps://example.test/classes' });
+it.each(['sent', 'failed', 'skipped'] as const)('recovers a send after twelve failed attempts without mailing a %s recipient again', async outcome => {
+  const f = await fixture(); await f.member(); await f.member();
+  createServerRegistry({ jobs: [...createAnnouncementJobs(() => f.service),
+    ...createAnnouncementRecoveryJobs({ scope: db.forGym, clock: f.clock, jobs: f.jobs })] }).registerJobs(f.jobs, new Set());
+  const row = await f.send(), render = template.renderAnnouncement;
+  const first = (await f.recipients()).sort((a, b) => a.id.localeCompare(b.id))[0]!;
+  if (outcome === 'skipped') await db.forGym(f.gymId, tx => tx.update(members).set({ emailOptOut: true }).where(eq(members.id, first.memberId)));
+  const transport = outcome === 'failed' ? vi.spyOn(f.email, 'sendEmail').mockRejectedValueOnce(new DeliveryError('unknown', 'SMTP disconnected')) : undefined;
+  let broken = true, renders = 0;
+  const rendering = vi.spyOn(template, 'renderAnnouncement').mockImplementation(async input => {
+    if (broken && renders++ > 0) throw new Error('Rendering unavailable');
+    return render(input);
+  });
+  try {
+    for (let attempt = 1; attempt <= 12; attempt++) {
+      expect(await f.jobs.runNext()).toBe(true);
+      const job = f.jobs.jobs.find(job => job.name === announcementSendJob)!;
+      expect(job.attempt).toBe(attempt);
+      f.clock.set(job.runAt);
+    }
+    const failed = f.jobs.jobs.find(job => job.name === announcementSendJob)!;
+    expect(failed.status).toBe('failed');
+    expect(await f.service.get(f.gymId, row.id)).toMatchObject({ status: 'sending' });
+    expect((await f.recipients()).find(recipient => recipient.id === first.id)!.state).toBe(outcome);
+    expect((await f.recipients()).filter(recipient => recipient.state === 'pending')).toHaveLength(1);
+    broken = false; f.clock.advance(15 * 60_000);
+    await f.jobs.triggerSchedule(announcementRecoveryJob, [{ gymId: f.gymId, timezone: 'UTC' }], 'recover-1');
+    expect(await f.jobs.runNext()).toBe(true); // Scheduled sweep resets the original job.
+    expect(f.jobs.jobs.filter(job => job.name === announcementSendJob)).toMatchObject([{ id: failed.id, attempt: 0, status: 'queued' }]);
+    expect(await f.jobs.runNext()).toBe(true);
+    const sent = outcome === 'sent' ? 2 : 1;
+    expect(await f.service.get(f.gymId, row.id)).toMatchObject({ status: 'sent', sent,
+      failed: outcome === 'failed' ? 1 : 0, skipped: outcome === 'skipped' ? 1 : 0 });
+    expect(f.email.messages).toHaveLength(sent);
+    expect(new Set(f.email.messages.map(message => message.to)).size).toBe(sent);
+  } finally { rendering.mockRestore(); transport?.mockRestore(); }
+});
 it('isolates generations from primary keys and from other gyms', async () => {
   const a = await fixture(), b = await fixture(), first = await a.send();
   const second = await b.service.send(b.actor, { ...b.input(), sendGeneration: first.id });

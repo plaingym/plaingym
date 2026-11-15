@@ -82,6 +82,24 @@ an empty audience, the announcement becomes sent; failed/skipped counts still
 describe its outcomes. Every decision and completion is audited without message
 content, addresses, or tokens.
 
+`createAnnouncementRecoveryJobs` (`recovery.ts`) exports the per-gym
+`announcements.recover` schedule for runtime registration, every 15 minutes. It
+scans sending announcements and cancelled sessions in pages of 100 and asks the
+queue for their exhausted send jobs. It resets only failed jobs through
+`retryFailed`, keeping the original job ID, key, payload, recipient snapshot and
+note. A sending announcement with no pending recipients is also eligible, so an
+interrupted completion write can finish. Queued, running, completed and missing
+jobs are left alone; recovery never enqueues a replacement.
+
+Recovery waits at least 15 minutes after exhaustion, doubling that delay after
+each audited reset to a 24-hour cap. Once at the cap, a persistently broken send
+can recover at most once per day after exhaustion. The queue's atomic reset
+prevents concurrent sweeps from resetting the same failure twice. Reset audits
+contain identifiers and the delay, without content or addresses. Recipient
+decisions and durable email delivery keys remain unchanged, so accepted, unknown,
+failed and skipped recipients are not mailed again. The same recovery policy
+applies to class-cancellation notices, retaining their original roster and note.
+
 Database checks keep `sent` paired with a completion timestamp and require reasons
 only for failed/skipped recipients. The expansion migration normalizes unchecked
 legacy pairs before applying those checks, preserving recipients and message content.

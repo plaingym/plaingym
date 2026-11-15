@@ -27,11 +27,46 @@ import { createAnnouncementJobs } from './jobs.js';
 import * as audience from './audience.js';
 import * as template from '../../emails/announcements/cancellation.js';
 import { commandDigest } from '../../infra/email/deliveries.js';
+import { announcementRecoveryJob, createAnnouncementRecoveryJobs } from './recovery.js';
 
 const db = useTestDatabase(), factory = createFactories(db), origin = 'https://gym.example.test';
 beforeAll(async () => { await initializeDatabase(db.appUrl); });
 afterAll(async () => { await closeDatabase(); });
 afterEach(() => { vi.restoreAllMocks(); });
+it('recovers a cancellation after twelve failures using its original roster and accepted delivery key', async () => {
+  const f = await fixture(); await f.booked(); await f.booked();
+  let broken = true;
+  const scope: typeof db.forGym = (gymId, fn) => {
+    // Crash after SMTP accepts the first message, before its outcome audit commits.
+    if (broken && f.email.messages.length) return Promise.reject(new Error('Database unavailable'));
+    return db.forGym(gymId, fn);
+  };
+  const interrupted = createCancellationNotice({ ...f.options, scope });
+  vi.spyOn(f.notice, 'run').mockImplementation(interrupted.run);
+  createServerRegistry({ jobs: createAnnouncementRecoveryJobs({ scope: db.forGym, clock: f.clock, jobs: f.jobs }) })
+    .registerJobs(f.jobs, new Set());
+  await f.cancel();
+  const snapshot = f.payload();
+  for (let attempt = 1; attempt <= 12; attempt++) {
+    expect(await f.jobs.runNext()).toBe(true);
+    const job = f.jobs.jobs.find(job => job.name === cancellationNoticeJob)!;
+    expect(job.attempt).toBe(attempt); f.clock.set(job.runAt);
+  }
+  const failed = f.jobs.jobs.find(job => job.name === cancellationNoticeJob)!;
+  expect(failed.status).toBe('failed'); expect(f.email.messages).toHaveLength(1);
+  const late = await f.booked(); // Recovery must not add a member outside the original snapshot.
+  broken = false; f.clock.advance(15 * 60_000);
+  await f.jobs.triggerSchedule(announcementRecoveryJob, [{ gymId: f.gymId, timezone: 'UTC' }], 'recover-1');
+  expect(await f.jobs.runNext()).toBe(true);
+  expect(f.jobs.jobs.filter(job => job.name === cancellationNoticeJob)).toMatchObject([
+    { id: failed.id, attempt: 0, status: 'queued', payload: snapshot },
+  ]);
+  expect(await f.jobs.runNext()).toBe(true);
+  expect(f.jobs.jobs.find(job => job.name === cancellationNoticeJob)!.status).toBe('completed');
+  expect(f.email.messages).toHaveLength(2);
+  expect(new Set(f.email.messages.map(message => message.to)).size).toBe(2);
+  expect(f.email.messages.some(message => message.to === late.email)).toBe(false);
+});
 async function fixture(role: StaffRole = 'owner', assigned = true) {
   const gymId = uuidv7(), clock = new TestClock('2026-11-10T12:00:00Z');
   await factory('gyms', gymId, { name: 'Cedar Gym', timezone: 'America/New_York', memberEmailsEnabled: true });
