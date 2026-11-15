@@ -72,8 +72,15 @@ by the public drop-in contract. These keys must remain private. The final
 matching applicant and contact details. It never signs for an enrolled household.
 After every immutable waiver has been signed, the prospect becomes a visitor.
 Replaying the same final request reuses the original signatures and visitor.
-Failed or abandoned admissions remain prospects for staff review; they grant no
-portal access or membership. No payment provider, invoice or card operation runs.
+An admission stays open for 24 hours. The nightly `public.drop_in.cleanup` batch
+job removes expired, unsigned, unchanged prospects, their households and automatic
+new leads, and marks their signature images for the storage module's deferred
+sweep. Storage runs outside transactions. A durable cleanup marker permits retry
+after a storage failure; other admissions are still processed. Completed visits,
+partially signed waivers and records changed or followed up by staff are kept,
+including their images. Expired prospects cannot submit even before cleanup runs;
+completed visits can still replay their final request. Admissions grant no portal
+access or membership. No payment provider, invoice or card operation runs.
 The fee is informational and is collected by staff as a one-off charge. If no fee
 is configured, the page directs the visitor to ask the gym; it never assumes zero.
 The price is the charge type's catalog price, followed by "+ tax" when a tax rate
@@ -81,14 +88,33 @@ attached to it is active, exclusive and above zero (`plusTax`); no total or tax 
 
 Submission and upload budgets are separate, each ten per gym/IP per fifteen
 minutes, shared across JSON/native forms, enforced before validation. They are
-counted in PostgreSQL by the trusted client address, so every app process shares
+counted in PostgreSQL by the trusted client address, with IPv6 grouped by /56;
+IPv4 and mapped IPv4 retain their individual address. Every app process shares
 one window and a restart keeps it (`core/rate-limit-store.ts`). Whole requests are limited
 to 1 MiB, each image to 256 KiB, and a visit to eight templates. Responses containing
 intake data use `no-store`.
 
+New trial, drop-in and join admissions also share a per-gym ceiling of **10,000
+participants and 8 GiB of decoded signature images per fixed UTC hour**. A family
+join counts each participant, and images are reserved in KiB rounded up per
+admission so the existing integer counters can represent the full allowance.
+This is deliberately far above a large open house: even 4,000 visitors each
+uploading eight maximum-size 256 KiB images fit the byte allowance, while typical
+drawn signatures need much less. Reservations precede record creation and
+storage; failed work keeps its reservation until the hour ends. A byte refusal
+can therefore spend a participant reservation, but rejected weighted increments
+never exhaust the remaining space for a smaller request. PostgreSQL shares both
+ceilings across processes and restarts. A refusal returns 429, the page's own
+busy-form text and `Retry-After` until the hour ends, and logs
+`public.intake.ceiling_reached` once per gym/resource/hour per process, with only
+identifiers and counts. Finishing an existing drop-in or join spends no new
+admission/byte allowance, so a flood cannot close an admitted visitor's form.
+
 Composition requires the runtime to call `configurePublicPages` with its existing
 waivers, `uploads.forGym`, gym mail and staff recipients. The fee resolver should
 read an explicitly selected charge type; there is no implicit name-based mapping.
+That same call configures cleanup; the existing public area jobs register its
+nightly batch schedule. No separate runtime registration is required.
 The drop-in and join signature admission schemas and routes live in the shared
 public contracts. The services still validate the decoded PNG and enforce the demo
 signature allowance before storage.

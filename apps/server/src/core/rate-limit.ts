@@ -67,15 +67,16 @@ export function isCloudflareAddress(address: string): boolean {
 
 /**
  * The rate-limit key for a client address: IPv4 as it is, an IPv4-mapped IPv6 address as its IPv4 address, and any
- * other IPv6 address by its /64 prefix, since one subscriber is usually given a whole /64 (Better Auth's own limiter
- * groups IPv6 the same way). Anything else, such as `unknown`, is returned unchanged.
+ * other IPv6 address by its /64 prefix by default (as Better Auth does). Public intake opts into /56 to group
+ * a subscriber's adjacent /64s. Anything else, such as `unknown`, is returned unchanged.
  */
-export function clientKey(address: string): string {
+export function clientKey(address: string, ipv6Prefix: 56 | 64 = 64): string {
   if (isIP(address) !== 6) return address;
   const groups = ipv6Groups(address.split('%')[0]!);
   if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff)
     return [groups[6]! >> 8, groups[6]! & 0xff, groups[7]! >> 8, groups[7]! & 0xff].join('.');
-  return groups.slice(0, 4).map((group) => group.toString(16)).join(':') + '::/64';
+  if (ipv6Prefix === 56) groups[3] = groups[3]! & 0xff00;
+  return groups.slice(0, 4).map((group) => group.toString(16)).join(':') + `::/${ipv6Prefix}`;
 }
 /** The eight 16-bit groups of an address `isIP` has accepted as IPv6. */
 function ipv6Groups(address: string): number[] {
@@ -136,6 +137,8 @@ export class RateBuckets<Bucket extends RateBucket = RateBucket> {
 }
 
 export interface RateLimitOptions extends ClientIpOptions {
+  /** Public intake groups a subscriber's IPv6 addresses by /56; other budgets keep /64. */
+  readonly ipv6Prefix?: 56 | 64;
   /** Stable budget identity; runtime registration enables database counting for these budgets. */
   readonly sharedKey?: string;
   readonly sharedStore?: SharedRateLimitStore;
@@ -190,7 +193,9 @@ export function failureBudget(options: { limit?: number; windowMs?: number; maxB
 
 export interface SharedRateLimitStore {
   /** `failed` marks a refusal because the counter couldn't be written, not because the budget is spent. */
-  consume(input: { gymId: string | null; routeKey: string; clientKey: string; now: number; windowMs: number; limit: number }):
+  consume(input: { gymId: string | null; routeKey: string; clientKey: string; now: number; windowMs: number; limit: number;
+    /** Weighted reservation: a refusal spends nothing, so smaller requests can still fit. */
+    amount?: number }):
     Promise<{ allowed: boolean; resetAt: number; failed?: boolean }>;
 }
 
@@ -204,6 +209,8 @@ export function cacheRefusals(store: SharedRateLimitStore, maxEntries = 10_000, 
   const refused = new Map<string, { until: number; resetAt: number; failed: boolean }>();
   return {
     async consume(input) {
+      // A large reservation can fail while a smaller one still fits. Never cache weighted refusals.
+      if (input.amount !== undefined) return store.consume(input);
       const key = `${input.gymId ?? ''}\u0000${input.routeKey}\u0000${input.clientKey}\u0000${input.windowMs}\u0000${input.limit}`;
       const known = refused.get(key);
       if (known && known.until > input.now) return { allowed: false, resetAt: known.resetAt, ...(known.failed ? { failed: true } : {}) };
@@ -219,6 +226,8 @@ export function cacheRefusals(store: SharedRateLimitStore, maxEntries = 10_000, 
   };
 }
 let sharedStore: SharedRateLimitStore | undefined;
+/** Uses runtime's shared counters; factories can supply their own store or a bounded local fallback. */
+export function rateLimitStore(): SharedRateLimitStore | undefined { return sharedStore; }
 /** App factories without runtime infrastructure retain their local budgets. Returns a shutdown reset. */
 export function configureSharedRateLimits(store: SharedRateLimitStore): () => void {
   sharedStore = store;
@@ -241,7 +250,7 @@ export function rateLimit(options: RateLimitOptions = {}): MiddlewareHandler<Req
     const store = options.sharedStore ?? sharedStore;
     if (options.sharedKey && store) {
       const result = await store.consume({ gymId: gym?.gymId || null, routeKey: options.sharedKey,
-        clientKey: options.perGym ? '*' : clientKey(resolved ?? clientIp(context, options)),
+        clientKey: options.perGym ? '*' : clientKey(resolved ?? clientIp(context, options), options.ipv6Prefix),
         now: clock.now().getTime(), windowMs, limit });
       if (!result.allowed) {
         context.header('Retry-After', String(Math.max(1, Math.ceil((result.resetAt - clock.now().getTime()) / 1000))));
@@ -252,7 +261,7 @@ export function rateLimit(options: RateLimitOptions = {}): MiddlewareHandler<Req
     }
     // Route-level limiters share the app's proxy-aware address instead of the proxy's socket peer.
     const now = clock.now().getTime(), key = options.perGym ? gym?.gymId ?? 'install'
-      : `${gym?.gymId ?? 'install'}:${clientKey(resolved ?? clientIp(context, options))}`;
+      : `${gym?.gymId ?? 'install'}:${clientKey(resolved ?? clientIp(context, options), options.ipv6Prefix)}`;
     const bucket = buckets.get(key, now) ?? buckets.add(key, { count: 0, resetAt: now + windowMs }, now);
     if (bucket.count >= limit) {
       context.header('Retry-After', String(Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))));

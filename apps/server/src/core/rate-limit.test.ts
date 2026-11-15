@@ -122,6 +122,23 @@ it('keys IPv4 as it is, IPv4-mapped IPv6 as IPv4, and other IPv6 by its /64', ()
   expect(clientKey('unknown')).toBe('unknown');
 });
 
+it('groups intake IPv6 by /56 while preserving IPv4, mapped IPv4 and default /64 budgets', async () => {
+  expect(clientKey('2001:db8:a:12ff::1', 56)).toBe('2001:db8:a:1200::/56');
+  expect(clientKey('2001:DB8:A:1200:ffff::1', 56)).toBe('2001:db8:a:1200::/56');
+  expect(clientKey('2001:db8:a:1300::1', 56)).toBe('2001:db8:a:1300::/56');
+  expect(clientKey('192.0.2.1', 56)).toBe('192.0.2.1');
+  expect(clientKey('::ffff:c000:201', 56)).toBe('192.0.2.1');
+  let peer = '';
+  const { app } = fixture({ limit: 1, ipv6Prefix: 56, peerAddress: () => peer });
+  const status = async (address: string) => { peer = address; return (await app.request('/api/action')).status; };
+  expect(await status('2001:db8:a:1200::1')).toBe(200);
+  expect(await status('2001:db8:a:12ff::2')).toBe(429);
+  expect(await status('2001:db8:a:1300::1')).toBe(200);
+  expect(await status('192.0.2.1')).toBe(200);
+  expect(await status('::ffff:192.0.2.1')).toBe(429);
+  expect(await status('192.0.2.2')).toBe(200);
+});
+
 it('shares one bucket across a /64, keeps other /64s apart, and counts IPv4-mapped addresses as IPv4', async () => {
   let peer = '';
   const { app } = fixture({ limit: 1, peerAddress: () => peer });

@@ -8,6 +8,7 @@ import { idSchema, maxJoinDocuments, maxJoinMembers, paginationSchema, publicCon
 import { route, type RouteRegistration } from '../../core/registry.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import { rateLimit } from '../../core/rate-limit.js';
+import { publicIntakeRefusal, reservePublicIntake } from '../../core/rate-limit-intake.js';
 import { setPolicy } from '../../core/csp.js';
 import { publicPageDirectives } from './page.js';
 import { createJoinService, joinBodyBytes, type JoinOptions,
@@ -36,10 +37,10 @@ export function configureJoin(options: JoinOptions & { key: Uint8Array; t?: Tran
 export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteRegistration[] {
   const options = () => supplied ?? configured ?? (() => { throw new AppError('unavailable', 'Online joining is not configured'); })();
   // Limits run before validation, so bots and repeats spend their budget before any household or Checkout session exists.
-  const submissions = rateLimit({ sharedKey: 'join.submissions', limit: 10, windowMs: 15 * 60_000 });
-  const admissions = rateLimit({ sharedKey: 'join.admissions', limit: 10, windowMs: 15 * 60_000 });
+  const submissions = rateLimit({ sharedKey: 'join.submissions', ipv6Prefix: 56, limit: 10, windowMs: 15 * 60_000 });
+  const admissions = rateLimit({ sharedKey: 'join.admissions', ipv6Prefix: 56, limit: 10, windowMs: 15 * 60_000 });
   // Steps that reach the payment provider or send mail; the read-only pages, which the confirming poll and the no-script refresh hit repeatedly, have only the global limit.
-  const steps = rateLimit({ sharedKey: 'join.steps', limit: 30, windowMs: 15 * 60_000 });
+  const steps = rateLimit({ sharedKey: 'join.steps', ipv6Prefix: 56, limit: 30, windowMs: 15 * 60_000 });
   // Room for several chosen PNG files. The install-wide limiter in front allows the native form more, so it gets its own page.
   const bounded = bodyLimit({ maxSize: joinBodyBytes, onError: () => { throw new AppError('invalid_request', 'Request too large'); } });
   // The native form renders its own page rather than a JSON error. A browser shows a connection error instead of a
@@ -51,7 +52,7 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
   } });
   const json = <T extends z.ZodType>(schema: T) => ({ 200: { description: 'Join response', content: { 'application/json': { schema } } } });
   const html = { 200: { description: 'Join page' }, 303: { description: 'Next join step' }, 400: { description: 'Please check the request' },
-    413: { description: 'The form is too large' }, 503: { description: 'Online joining is not available' } };
+    413: { description: 'The form is too large' }, 429: { description: 'Too many attempts' }, 503: { description: 'Online joining is not available' } };
   const protect = (entry: RouteRegistration): RouteRegistration => ({ ...entry, mount(app, authorize) {
     entry.mount(app, permission => async (ctx, next) => {
       // Join URLs carry no credential. 'same-origin' keeps the Origin header on the cookie-bearing form posts, which the
@@ -62,7 +63,7 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
     });
   } });
   const gymOf = (ctx: Context<RequestEnvironment>) => ctx.get('context').gym.gymId;
-  async function page(ctx: Context<RequestEnvironment>, state: JoinPageState, status: 200 | 400 | 413 | 503 = 200, linkId?: string) {
+  async function page(ctx: Context<RequestEnvironment>, state: JoinPageState, status: 200 | 400 | 413 | 429 | 503 = 200, linkId?: string) {
     const config = options();
     // Only the steps that lead to payment show the hint, so the other pages skip the lookup.
     const testCardHint = config.testCardHint && ['continue', 'cancelled', 'card', 'cancelledCard'].includes(state) ? await config.testCardHint(gymOf(ctx)) : undefined;
@@ -78,6 +79,12 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
       { httpOnly: true, secure: true, sameSite: 'Lax', path: '/join', maxAge: joinCookieLifetimeMs / 1000 });
   }
   const pending = (ctx: Context<RequestEnvironment>) => options().continuations.open(getCookie(ctx, joinCookie), ctx.get('context').clock.now(), gymOf(ctx));
+  async function reserve(ctx: Context<RequestEnvironment>, input: { members: { signatures: { pngBase64: string }[] }[] }) {
+    try {
+      await reservePublicIntake({ gymId: gymOf(ctx), now: ctx.get('context').clock.now().getTime(), participants: input.members.length,
+        signatureBytes: input.members.reduce((total, person) => total + person.signatures.reduce((sum, image) => sum + Buffer.byteLength(image.pngBase64, 'base64'), 0), 0) });
+    } catch (error) { throw publicIntakeRefusal(error, ctx, (options().t ?? translator)('public/join:intakeLimited')) ?? error; }
+  }
   const settledOrGone = (error: unknown) => error instanceof AppError && ['conflict', 'not_found', 'forbidden'].includes(error.code);
   const signer = (value: (name: string) => string, prefix: string) => value(prefix + '-kind') === 'guardian'
     ? { kind: 'guardian' as const, name: value(prefix + '-name'), relationship: value(prefix + '-relationship') } : { kind: 'self' as const, name: value(prefix + '-name') };
@@ -85,8 +92,10 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
     route({ ...contracts.plans, request: { query: paginationSchema }, responses: json(contracts.plans.response) }, async ctx =>
       ctx.json(await options().service.plans(gymOf(ctx), ctx.req.valid('query')), 200)),
     route({ ...contracts.joinAdmission, middleware: [admissions, bounded],
-      request: { body: { required: true, content: { 'application/json': { schema: contracts.joinAdmission.body } } } }, responses: json(contracts.joinAdmission.response) }, async ctx =>
-      ctx.json(await options().service.admit(gymOf(ctx), ctx.req.valid('json'), ctx.get('context').gym.timezone), 200)),
+      request: { body: { required: true, content: { 'application/json': { schema: contracts.joinAdmission.body } } } }, responses: json(contracts.joinAdmission.response) }, async ctx => {
+      const input = ctx.req.valid('json'); await reserve(ctx, input);
+      return ctx.json(await options().service.admit(gymOf(ctx), input, ctx.get('context').gym.timezone), 200);
+    }),
     // The same response for every address; only the cookie, naming this new household's pending join, continues it.
     route({ ...contracts.join, middleware: [submissions, bounded], request: { body: { required: true, content: { 'application/json': { schema: contracts.join.body } } } },
       responses: json(contracts.join.response) }, async ctx => {
@@ -134,7 +143,9 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
           return { templateId: value(prefix + '-template'), templateVersion: Number(value(prefix + '-version')),
             pngBase64: Buffer.from(await file.arrayBuffer()).toString('base64'), signer: signer(value, prefix) };
         }))));
-        const images = await service.admit(gymId, { ...common, members: people.map((member, i) => ({ member, signatures: signatures[i]! })) }, context.gym.timezone);
+        const admission = contracts.joinAdmission.body.parse({ ...common, members: people.map((member, i) => ({ member, signatures: signatures[i]! })) });
+        await reserve(ctx, admission);
+        const images = await service.admit(gymId, admission, context.gym.timezone);
         const { linkId } = await service.join(gymId, { ...common, members: people.map((member, i) => ({ member,
           waivers: images.data[i]!.map((image, j) => ({ ...image, consent: true, signer: signer(value, `waiver-${i}-${j}`) })) })) },
         context.gym.timezone, context.clientIp ?? 'unknown');
@@ -143,6 +154,7 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
         if (status === 'active') return ctx.redirect('/join/return', 303);
         return page(ctx, status === 'manual' ? 'manual' : 'cardOnly' in state && state.cardOnly ? 'card' : 'continue', 200, linkId);
       } catch (error) {
+        if (publicIntakeRefusal(error, ctx, (options().t ?? translator)('public/join:intakeLimited'))) return page(ctx, 'limited', 429);
         if (error instanceof AppError && error.code === 'unavailable') return page(ctx, 'unavailable', 503);
         if (fields && (error instanceof z.ZodError || error instanceof AppError && ['invalid_request', 'not_found', 'conflict'].includes(error.code))) {
           const values = Object.fromEntries([...fields].filter((entry): entry is [string, string] => typeof entry[1] === 'string'));

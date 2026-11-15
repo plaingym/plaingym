@@ -41,6 +41,7 @@
   "unavailable": "Please contact the gym to arrange your visit.",
   "retry": "The server is busy. Your request has not been sent yet. Wait a moment, then try again.",
   "limited": "Too many attempts from this connection. Wait a few minutes, then try again, or contact the gym.",
+  "intakeLimited": "The gym's online forms are busy. Please try again later, or contact the gym to arrange your visit.",
   "portal": "Member sign in",
   "source": "Source code",
   "staffSubject": "{gym}: {kind}",

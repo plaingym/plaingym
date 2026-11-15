@@ -85,6 +85,7 @@ describe('join and drop-in refusals', () => {
   it('says to retry only a full queue\'s 429, and calls any other 429 a limit', async () => {
     const busy = Response.json({ error: { code: 'rate_limited', details: { reason: ['busy'] } } }, { status: 429, headers: { 'Retry-After': '1' } });
     expect(await refusal(busy)).toBe('retry');
+    expect(await refusal(Response.json({ error: { code: 'rate_limited', details: { reason: ['intake_ceiling'] } } }, { status: 429 }))).toBe('intakeLimited');
     expect(await refusal(Response.json({ error: { code: 'rate_limited' } }, { status: 429, headers: { 'Retry-After': '900' } }))).toBe('limited');
     expect(await refusal(new Response('not json', { status: 429 }))).toBe('limited');
     expect(await refusal(Response.json({ error: { code: 'conflict' } }, { status: 409 }))).toBe('conflict');

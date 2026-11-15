@@ -92,7 +92,7 @@ export function joinFormPage(input: JoinPageInput & { plan: PublicPlan; count: n
     h('p', { id: 'feedback', role: 'status', 'aria-live': 'polite', class: 'break-words' }),
     h('button', { type: 'submit', class: button }, plan.signupFeeCents === 0 && (plan.trialDays > 0 || plan.amountCents === 0)
       ? text(plan.amountCents > 0 ? 'submitCard' : 'submitFree') : text('submit')),
-    ...['failed', 'conflict', 'signatureRequired', 'busy', 'unavailable', 'tooLarge', 'retry', 'limited', 'codeRefused'].map(key => h('span', { hidden: true, 'data-message': key }, text(key))));
+    ...['failed', 'conflict', 'signatureRequired', 'busy', 'unavailable', 'tooLarge', 'retry', 'limited', 'intakeLimited', 'codeRefused'].map(key => h('span', { hidden: true, 'data-message': key }, text(key))));
   const summary = h('section', { class: panel }, ...price(input, plan), h('p', null, text('formHelp')),
     h('p', { class: 'text-sm text-muted-foreground' }, text(plan.amountCents === 0 ? 'dueTodayFree' : plan.trialDays > 0 ? 'dueTodayTrial' : 'dueToday')));
   const feedback = input.errors?.length ? h('section', { role: 'alert', class: panel }, h('p', null, text('checkDetails')),
@@ -100,7 +100,7 @@ export function joinFormPage(input: JoinPageInput & { plan: PublicPlan; count: n
   return layout(input, text('formTitle', { plan: plan.name }), h('div', { class: 'space-y-6' }, feedback, summary, counter, form), true);
 }
 export type JoinPageState = 'continue' | 'confirming' | 'welcomeEmail' | 'resent' | 'welcomePassword'
-  | 'cancelled' | 'closed' | 'missing' | 'unavailable' | 'failed' | 'tooLarge' | 'manual' | 'card' | 'confirmingCard' | 'cancelledCard' | 'codeRefused';
+  | 'cancelled' | 'closed' | 'missing' | 'unavailable' | 'failed' | 'limited' | 'tooLarge' | 'manual' | 'card' | 'confirmingCard' | 'cancelledCard' | 'codeRefused';
 /** The first invoice's lines and total, as the review step shows them. */
 function invoiceSummary(input: JoinPageInput, invoice: JoinInvoice) {
   const text = joinText(input.t), money = (cents: number) => formatMoney(cents, invoice.currency, input.locale);
@@ -136,6 +136,7 @@ export function joinStatusPage(input: JoinPageInput & { state: JoinPageState; te
     missing: ['missingTitle', 'missingBody', start],
     unavailable: ['title', 'unavailable', start],
     failed: ['title', 'failed', start],
+    limited: ['title', 'intakeLimited', start],
     // The page has no form to clear the code in: the visitor starts again.
     codeRefused: ['title', 'codeRefusedPage', start],
     tooLarge: ['title', 'tooLarge', h('a', { href: '/join', class: link }, text('startOver'))],

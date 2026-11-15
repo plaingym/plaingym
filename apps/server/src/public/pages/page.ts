@@ -56,7 +56,7 @@ export function publicLayout(input: { gym: PublicBranding; title: string; t: Tra
 export interface IntakePageInput {
   kind: 'trial' | 'drop-in'; gym: PublicBranding; t: Translator; templates?: WaiverTemplate[];
   dropInFee: { amountCents: number; currency: string; plusTax: boolean } | null; locale?: string;
-  state?: 'received' | 'failed' | 'unavailable';
+  state?: 'received' | 'failed' | 'unavailable' | 'limited';
 }
 export function intakePage(input: IntakePageInput) {
   const text = pageText(input.t), title = text(input.state === 'received' ? 'received' : input.kind);
@@ -66,7 +66,7 @@ export function intakePage(input: IntakePageInput) {
   const fee = input.kind === 'drop-in' ? h('p', { class: 'font-semibold' }, input.dropInFee
     ? text(input.dropInFee.plusTax ? 'feePlusTax' : 'fee', { amount: formatMoney(input.dropInFee.amountCents, input.dropInFee.currency, input.locale) }) : text('feeUnknown')) : null;
   const content = h('section', { class: 'space-y-4' }, fee,
-    input.state ? h('section', { class: panel, role: 'status' }, h('p', null, text(input.state === 'received' ? 'receivedBody' : input.state)))
+    input.state ? h('section', { class: panel, role: 'status' }, h('p', null, text(input.state === 'received' ? 'receivedBody' : input.state === 'limited' ? 'intakeLimited' : input.state)))
       : h('form', { method: 'post', action: '/' + input.kind, enctype: input.kind === 'drop-in' ? 'multipart/form-data' : 'application/x-www-form-urlencoded',
         'data-public-form': input.kind, class: panel },
         h('p', null, text(input.kind === 'trial' ? 'trialHelp' : 'drop-inHelp')),
@@ -77,7 +77,7 @@ export function intakePage(input: IntakePageInput) {
         ...(input.templates ?? []).map((template, i) => waiverForm(template, i, input.t)),
         h('p', { id: 'feedback', role: 'status', 'aria-live': 'polite', class: 'break-words' }),
         h('button', { type: 'submit', class: button }, text('submit')),
-        ...['failed', 'conflict', 'signatureRequired', 'busy', 'retry', 'limited'].map(key => h('span', { hidden: true, 'data-message': key }, text(key)))));
+        ...['failed', 'conflict', 'signatureRequired', 'busy', 'retry', 'limited', 'intakeLimited'].map(key => h('span', { hidden: true, 'data-message': key }, text(key)))));
   return publicLayout({ gym: input.gym, title, t: input.t, content, ...(input.locale ? { locale: input.locale } : {}), script: !input.state });
 }
 function waiverForm(template: WaiverTemplate, i: number, t: Translator) {

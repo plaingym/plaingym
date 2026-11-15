@@ -55,11 +55,17 @@ if staff changed the billing day since admission, the submission is refused.
 The admission fixes the join date, so a submission retried after midnight repeats
 the same memberships. An admission remains valid through
 the next calendar day in the gym's timezone and is refused after that day ends.
-Rate limits (ten per gym and address per fifteen minutes for each request) and the
+Rate limits (ten per gym and address per fifteen minutes for each request, grouping
+IPv6 addresses by /56) and the
 honeypot run before anything is written. Both join requests accept 4 MiB (`joinBodyBytes`):
 dozens of drawn signatures, or a family's chosen PNG files (up to 256 KB each). The
 install-wide limiter allows the native form twice that, so an oversized form gets join's own
 "too large" page (413); the browser checks the size before sending.
+New admissions also reserve each participant and the decoded image bytes against
+the shared gym ceiling (10,000 participants and 8 GiB per fixed UTC hour; sizing
+and counter behavior in `README.md`). JSON and native forms share it with trial
+and drop-in creation; refusal returns 429 with join's own busy-form text and the
+hour's `Retry-After`. An existing admission can continue without this reservation.
 
 The daily `public.join.cleanup` batch job removes unsubmitted admissions only when
 they are more than 24 hours old and their submission window has ended in the gym's

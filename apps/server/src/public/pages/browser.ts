@@ -10,6 +10,7 @@ export const refusalScript = publicCopyScript + String.raw`
     if (response.status === 409) return 'conflict';
     if (response.status !== 429) return 'failed';
     const reason = (await response.json().catch(() => null))?.error?.details?.reason;
+    if (Array.isArray(reason) && reason.includes('intake_ceiling')) return 'intakeLimited';
     return Array.isArray(reason) && reason.includes('busy') ? 'retry' : 'limited';
   }`;
 /** Plain browser JavaScript stays independent of server bundler helpers. No hydration. */

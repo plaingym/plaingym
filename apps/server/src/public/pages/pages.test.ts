@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import '@hono/zod-openapi';
 import { auditEvents, members, households, waiverSignatures, waiverTemplates, invoices, leads, uuidv7 } from '@plaingym/db';
 import { eq } from 'drizzle-orm';
@@ -24,6 +24,10 @@ import { demoSignaturePng } from '../../demo/seed/waivers-image.js';
 import { configurePublicPages, createPublicRoutes } from './pages.routes.js';
 import { themeCss } from './page.js';
 import { logoVersion } from '../short-hash.js';
+import { configureSharedRateLimits } from '../../core/rate-limit.js';
+import { createIntakeRateLimitStore } from '../../core/rate-limit-store.js';
+import { publicIntakeLimits } from '../../core/rate-limit-intake.js';
+import { dropInAdmissionWindowMs, dropInCleanupJob } from './pages.cleanup.js';
 
 const db = useTestDatabase(), factory = createFactories(db), png = demoSignaturePng();
 const origin = 'https://gym.example.test';
@@ -70,6 +74,132 @@ async function fixture(demo = false) {
 }
 
 describe('core public pages through the production registrations', () => {
+  it('cleans expired abandoned admissions through the registered batch job while keeping completed visits', async () => {
+    const f = await fixture(), abandoned = await f.admit(), completed = await f.admit(body('completed@example.invalid'));
+    expect((await f.post('/api/public/drop-in', completed)).status).toBe(200);
+    const id = abandoned.waivers[0]!.signatureImageKey.split('/')[2]!;
+    const home = (await f.rows()).members.find(m => m.id === id)!.householdId;
+    f.clock.advance(dropInAdmissionWindowMs - 1);
+    expect(await f.service.cleanup!.run(f.gymId)).toBe(0);
+    f.clock.advance(1);
+    const job = areaContributions.jobs.find(job => job.id === dropInCleanupJob)!;
+    expect(job).toMatchObject({ cron: '41 3 * * *', lane: 'batch' });
+    await job.handler({}, { gymId: f.gymId, clock: f.clock, timezone: 'America/Vancouver', jobId: uuidv7(), attempt: 1 });
+    const rows = await f.rows();
+    expect(rows.members.some(m => m.id === id)).toBe(false);
+    expect(rows.homes.some(h => h.id === home)).toBe(false);
+    expect(rows.leads.some(l => l.memberId === id)).toBe(false);
+    for (const image of abandoned.waivers) expect((await f.uploads.get(f.gymId)!.head(image.signatureImageKey))!.deletedAt).toBeDefined();
+    for (const image of completed.waivers) expect((await f.uploads.get(f.gymId)!.head(image.signatureImageKey))!.deletedAt).toBeUndefined();
+    expect(rows.signatures).toHaveLength(2);
+    expect((await f.post('/api/public/drop-in', completed)).status).toBe(200);
+    expect(await f.service.cleanup!.run(f.gymId)).toBe(0);
+  });
+
+  it('keeps partially signed admissions and prospects or leads staff have changed', async () => {
+    const f = await fixture(), partial = await f.admit(), edited = await f.admit(), contacted = await f.admit();
+    const partialId = partial.waivers[0]!.signatureImageKey.split('/')[2]!;
+    await f.waivers.sign({ gymId: f.gymId, actor: { kind: 'system' } }, { ...partial.waivers[0]!, memberId: partialId },
+      { timezone: 'America/Vancouver', ipAddress: '192.0.2.1' });
+    const editedId = edited.waivers[0]!.signatureImageKey.split('/')[2]!, contactedId = contacted.waivers[0]!.signatureImageKey.split('/')[2]!;
+    await db.forGym(f.gymId, async tx => {
+      await tx.update(members).set({ revision: 2 }).where(eq(members.id, editedId));
+      await tx.update(leads).set({ stage: 'contacted', revision: 2 }).where(eq(leads.memberId, contactedId));
+    });
+    f.clock.advance(dropInAdmissionWindowMs);
+    expect(await f.service.cleanup!.run(f.gymId)).toBe(0);
+    for (const request of [partial, edited, contacted]) for (const image of request.waivers)
+      expect((await f.uploads.get(f.gymId)!.head(image.signatureImageKey))!.deletedAt).toBeUndefined();
+    expect((await f.rows()).audits.filter(a => a.action === 'public.drop_in.retained')).toHaveLength(3);
+  });
+
+  it('keeps abandoned admissions staff checked in or tagged instead of failing on their references', async () => {
+    const f = await fixture(), checkedIn = await f.admit(), tagged = await f.admit();
+    const checkedInId = checkedIn.waivers[0]!.signatureImageKey.split('/')[2]!, taggedId = tagged.waivers[0]!.signatureImageKey.split('/')[2]!;
+    await factory('attendances', f.gymId, { memberId: checkedInId, kind: 'open_mat' });
+    const tag = await factory('memberTags', f.gymId);
+    await factory('memberTagLinks', f.gymId, { memberId: taggedId, tagId: tag.id });
+    f.clock.advance(dropInAdmissionWindowMs);
+    expect(await f.service.cleanup!.run(f.gymId)).toBe(0);
+    const rows = await f.rows();
+    expect(rows.members.filter(m => [checkedInId, taggedId].includes(m.id))).toHaveLength(2);
+    expect(rows.audits.filter(a => a.action === 'public.drop_in.retained')).toHaveLength(2);
+    for (const request of [checkedIn, tagged]) for (const image of request.waivers)
+      expect((await f.uploads.get(f.gymId)!.head(image.signatureImageKey))!.deletedAt).toBeUndefined();
+  });
+
+  it('retries interrupted image deletion after the durable claim and continues other admissions', async () => {
+    const f = await fixture(), first = await f.admit(), second = await f.admit();
+    const uploads = f.uploads.get(f.gymId)!, erase = vi.spyOn(uploads, 'markDeleted').mockRejectedValueOnce(new Error('storage unavailable'));
+    f.clock.advance(dropInAdmissionWindowMs);
+    await expect(f.service.cleanup!.run(f.gymId)).rejects.toThrow('storage unavailable');
+    expect((await f.rows()).members).toHaveLength(2); // Only the original household's members remain.
+    expect((await f.rows()).audits.filter(a => a.action === 'public.drop_in.cleaned')).toHaveLength(1);
+    expect(await f.service.cleanup!.run(f.gymId)).toBe(1);
+    expect((await f.rows()).audits.filter(a => a.action === 'public.drop_in.cleanup.started')).toHaveLength(2);
+    for (const image of [...first.waivers, ...second.waivers]) expect((await uploads.head(image.signatureImageKey))!.deletedAt).toBeDefined();
+    erase.mockRestore();
+  });
+
+  it('keeps images when an in-progress final submission crosses the cleanup boundary', async () => {
+    const f = await fixture(), input = await f.admit();
+    let resume!: () => void, signed!: () => void;
+    const wait = new Promise<void>(resolve => { resume = resolve; }), started = new Promise<void>(resolve => { signed = resolve; });
+    const sign = f.waivers.sign.bind(f.waivers);
+    const spy = vi.spyOn(f.waivers, 'sign').mockImplementationOnce(async (...args) => {
+      const result = await sign(...args); signed(); await wait; return result;
+    });
+    const completing = f.post('/api/public/drop-in', input);
+    try {
+      await started;
+      f.clock.advance(dropInAdmissionWindowMs);
+      expect(await f.service.cleanup!.run(f.gymId)).toBe(0);
+    } finally { resume(); spy.mockRestore(); }
+    expect((await completing).status).toBe(200);
+    expect((await f.rows()).signatures).toHaveLength(2);
+    for (const image of input.waivers) expect((await f.uploads.get(f.gymId)!.head(image.signatureImageKey))!.deletedAt).toBeUndefined();
+  });
+
+  it('serializes concurrent cleanup claims without updating the append-only audit table', async () => {
+    const f = await fixture(), input = await f.admit(), id = input.waivers[0]!.signatureImageKey.split('/')[2]!;
+    f.clock.advance(dropInAdmissionWindowMs);
+    await Promise.all([f.service.cleanup!.remove(f.gymId, id), f.service.cleanup!.remove(f.gymId, id)]);
+    const rows = await f.rows();
+    expect(rows.members.some(m => m.id === id)).toBe(false);
+    expect(rows.audits.filter(a => a.action === 'public.drop_in.cleanup.started')).toHaveLength(1);
+    expect(rows.audits.filter(a => a.action === 'public.drop_in.retained')).toHaveLength(0);
+    for (const image of input.waivers) expect((await f.uploads.get(f.gymId)!.head(image.signatureImageKey))!.deletedAt).toBeDefined();
+  });
+
+  it('isolates cleanup by gym and refuses an expired admission before signing even before cleanup runs', async () => {
+    const f = await fixture(), input = await f.admit(), id = input.waivers[0]!.signatureImageKey.split('/')[2]!;
+    f.clock.advance(dropInAdmissionWindowMs);
+    expect(await f.service.cleanup!.remove(f.otherGym, id)).toBe(false);
+    expect(await f.service.cleanup!.run(f.otherGym)).toBe(0);
+    expect((await f.post('/api/public/drop-in', input)).status).toBe(404);
+    expect((await f.rows()).signatures).toHaveLength(0);
+    expect(await f.service.cleanup!.remove(f.gymId, id)).toBe(true);
+  });
+
+  it('refuses new trial and drop-in admissions at the shared ceiling with page text while an existing visit finishes', async () => {
+    const f = await fixture(), existing = await f.admit(), store = createIntakeRateLimitStore(db.forSystem);
+    await store.consume({ gymId: f.gymId, routeKey: 'public.intake.participants', clientKey: '*', now: f.clock.now().getTime(),
+      windowMs: publicIntakeLimits.windowMs, limit: publicIntakeLimits.participants, amount: publicIntakeLimits.participants });
+    const reset = configureSharedRateLimits(store);
+    try {
+      for (const path of ['/api/public/trial', '/drop-in/signatures']) {
+        const reply = await f.post(path, path.includes('signatures') ? f.admission() : body());
+        expect(reply.status).toBe(429); expect(reply.headers.get('retry-after')).toBe('3600');
+        expect(await reply.json()).toMatchObject({ error: { code: 'rate_limited', message: expect.stringContaining('online forms are busy') } });
+      }
+      const form = new URLSearchParams({ firstName: 'New', lastName: 'Visitor', dateOfBirth: '1990-01-02', contactName: 'Alex Contact', email: 'native@example.invalid', honeypot: '' });
+      const native = await f.server.request(origin + '/trial', { method: 'POST', headers: { origin }, body: form });
+      expect(native.status).toBe(429); expect(await native.text()).toContain('online forms are busy');
+      expect((await f.post('/api/public/drop-in', existing)).status).toBe(200);
+      expect((await f.post('/api/public/trial', body(), f.app(f.otherGym))).status).toBe(200);
+    } finally { reset(); }
+  });
+
   it('accepts a drop-in address with unknown stored keys while checking known fields', async () => {
     const f = await fixture(), input = await f.admit();
     const memberId = input.waivers[0]!.signatureImageKey.split('/')[2]!, before = await f.rows();

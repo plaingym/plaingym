@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { jsonInit, requestWithLength } from '../../../test/request.js';
 import { describe, expect, it, vi } from 'vitest';
+import { configureSharedRateLimits } from '../../core/rate-limit.js';
+import { createIntakeRateLimitStore } from '../../core/rate-limit-store.js';
+import { publicIntakeLimits } from '../../core/rate-limit-intake.js';
 import { randomBytes } from 'node:crypto';
 import { crc32, deflateSync } from 'node:zlib';
 import '@hono/zod-openapi';
@@ -626,6 +629,25 @@ function nativeForm(f: Fixture, planId: string, email: string) {
 }
 
 describe('public join pages through the production registrations', () => {
+  it('applies the shared gym ceiling to JSON and native join creation without refusing an existing admission', async () => {
+    const f = await fixture(), people = [adult()], email = 'existing-admission@example.invalid';
+    const images = await f.admit(people, email, f.plan.id), store = createIntakeRateLimitStore(db.forSystem);
+    await store.consume({ gymId: f.gymId, routeKey: 'public.intake.signature_kib', clientKey: '*', now: f.clock.now().getTime(),
+      windowMs: publicIntakeLimits.windowMs, limit: publicIntakeLimits.signatureKiB, amount: publicIntakeLimits.signatureKiB });
+    const reset = configureSharedRateLimits(store);
+    try {
+      const response = await f.post('/join/signatures', { planId: f.plan.id, contact: { name: 'Pat Payer', email: 'refused@example.invalid' }, honeypot: '',
+        members: people.map(member => ({ member, signatures: f.templates.map(t => ({ templateId: t.id, templateVersion: t.version, pngBase64, signer: { kind: 'self', name: 'Pat Payer' } })) })) });
+      expect(response.status).toBe(429); expect(response.headers.get('retry-after')).toBe('3600');
+      expect(await response.json()).toMatchObject({ error: { code: 'rate_limited', message: expect.stringContaining('online forms are busy') } });
+      const native = await f.server.request(await requestWithLength(origin + '/join', { method: 'POST', headers: { origin }, body: nativeForm(f, f.plan.id, 'native@example.invalid') }));
+      expect(native.status).toBe(429); expect(native.headers.get('retry-after')).toBe('3600');
+      expect(await native.text()).toContain('online forms are busy');
+      expect((await f.post('/api/public/join', f.body(people, images, email, f.plan.id))).status).toBe(200);
+      expect(await f.joined()).toHaveLength(1);
+    } finally { reset(); }
+  });
+
   it('keeps native join drafts and identifies missing signatures and consent without saving a household', async () => {
     const f = await fixture(), form = nativeForm(f, f.plan.id, 'draft@example.invalid');
     form.set('contactName', 'Pat <Payer>'); form.set('phone', '555-0123'); form.set('code', 'TRYAGAIN');

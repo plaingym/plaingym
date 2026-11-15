@@ -1,16 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { z } from 'zod';
+import type { Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { AppError, createTranslator, type Translator } from '@plaingym/shared';
 import { publicContracts as contracts, paginationSchema, publicTrialRequestSchema, waiverDocumentReadContracts } from '@plaingym/shared/contracts';
 import { route, type RouteRegistration } from '../../core/registry.js';
 import { rateLimit } from '../../core/rate-limit.js';
+import type { RequestEnvironment } from '../../core/context.js';
+import { publicIntakeRefusal } from '../../core/rate-limit-intake.js';
 import { documentReadLimit } from '../../areas/waivers/document-read.js';
 import { setPolicy } from '../../core/csp.js';
 import { cachedLinkAsset } from '../links/assets.js';
 import { createPublicPagesService, type PublicPagesOptions, type PublicPagesService } from './service.js';
 import { intakePage, publicPageDirectives, themeCss } from './page.js';
 import { publicBrowserScript } from './browser.js';
+import { configureDropInCleanup } from './pages.jobs.js';
 import messages from '../../../../../locales/en/public/pages.json' with { type: 'json' };
 import waiverMessages from '../../../../../locales/en/waivers/waivers.json' with { type: 'json' };
 
@@ -21,13 +25,18 @@ let configured: PublicRoutesOptions | undefined;
 /** Integration supplies the same waiver/upload service and gym mail used by signed links. */
 export function configurePublicPages(options: PublicPagesOptions & { t?: Translator; stylesheet?: () => Promise<string> }) {
   const service = createPublicPagesService(options);
+  configureDropInCleanup(service.cleanup);
   configured = { service, ...(options.t ? { t: options.t } : {}), ...(options.stylesheet ? { stylesheet: options.stylesheet } : {}) };
   return service;
 }
 export function createPublicRoutes(supplied?: PublicRoutesOptions): readonly RouteRegistration[] {
   const options = () => supplied ?? configured ?? (() => { throw new AppError('unavailable', 'Public pages are not configured'); })();
-  const budget = rateLimit({ sharedKey: 'public.submissions', limit: 10, windowMs: 15 * 60_000 });
-  const admissionBudget = rateLimit({ sharedKey: 'public.admissions', limit: 10, windowMs: 15 * 60_000 });
+  const budget = rateLimit({ sharedKey: 'public.submissions', ipv6Prefix: 56, limit: 10, windowMs: 15 * 60_000 });
+  const admissionBudget = rateLimit({ sharedKey: 'public.admissions', ipv6Prefix: 56, limit: 10, windowMs: 15 * 60_000 });
+  async function intake<T>(ctx: Context<RequestEnvironment>, work: () => Promise<T>) {
+    try { return await work(); }
+    catch (error) { throw publicIntakeRefusal(error, ctx, (options().t ?? translator)('public/pages:intakeLimited')) ?? error; }
+  }
   const bounded = bodyLimit({ maxSize: 1024 * 1024, onError: () => { throw new AppError('invalid_request', 'Request too large'); } });
   const json = <T extends z.ZodType>(schema: T) => ({ 200: { description: 'Public page response', content: { 'application/json': { schema } } } });
   const pages = { 200: { description: 'Public gym page' }, 400: { description: 'Please check the request' } };
@@ -49,7 +58,7 @@ export function createPublicRoutes(supplied?: PublicRoutesOptions): readonly Rou
     route({ ...contracts.waivers, request: { query: paginationSchema }, responses: json(contracts.waivers.response) }, async ctx =>
       ctx.json(await options().service.templates(ctx.get('context').gym.gymId, ctx.req.valid('query')), 200)),
     route({ ...contracts.trial, middleware: [budget, bounded], request: { body: { required: true, content: { 'application/json': { schema: contracts.trial.body } } } }, responses: json(contracts.trial.response) }, async ctx => {
-      const context = ctx.get('context'); return ctx.json(await options().service.trial(context.gym.gymId, ctx.req.valid('json'), context.gym.timezone, context.requestId), 200);
+      const context = ctx.get('context'); return ctx.json(await intake(ctx, () => options().service.trial(context.gym.gymId, ctx.req.valid('json'), context.gym.timezone, context.requestId)), 200);
     }),
     route({ ...contracts.dropIn, middleware: [budget, bounded], request: { body: { required: true, content: { 'application/json': { schema: contracts.dropIn.body } } } }, responses: json(contracts.dropIn.response) }, async ctx => {
       const context = ctx.get('context'); return ctx.json(await options().service.dropIn(context.gym.gymId, ctx.req.valid('json'), context.gym.timezone, context.clientIp ?? 'unknown', context.requestId), 200);
@@ -57,7 +66,7 @@ export function createPublicRoutes(supplied?: PublicRoutesOptions): readonly Rou
     route({ ...contracts.dropInAdmission, middleware: [admissionBudget, bounded],
       request: { body: { required: true, content: { 'application/json': { schema: contracts.dropInAdmission.body } } } },
       responses: json(contracts.dropInAdmission.response) }, async ctx => {
-      const context = ctx.get('context'); return ctx.json(await options().service.admit(context.gym.gymId, ctx.req.valid('json'), context.gym.timezone), 200);
+      const context = ctx.get('context'); return ctx.json(await intake(ctx, () => options().service.admit(context.gym.gymId, ctx.req.valid('json'), context.gym.timezone)), 200);
     }),
     route({ method: 'get', path: '/public/pages/client.js', permission: { kind: 'public' }, responses: { 200: { description: 'Progressive form enhancement' } } }, ctx => {
       ctx.header('Content-Type', 'text/javascript; charset=utf-8'); return ctx.body(publicBrowserScript);
@@ -114,6 +123,8 @@ export function createPublicRoutes(supplied?: PublicRoutesOptions): readonly Rou
         }
         return ctx.html(intakePage({ ...(await config.service.config(context.gym.gymId)).data, kind, t: config.t ?? translator, state: 'received' }), 200);
       } catch (error) {
+        if (publicIntakeRefusal(error, ctx, (config.t ?? translator)('public/pages:intakeLimited')))
+          return ctx.html(intakePage({ ...(await config.service.config(context.gym.gymId)).data, kind, t: config.t ?? translator, state: 'limited' }), 429);
         if (!(error instanceof z.ZodError) && !(error instanceof AppError && error.code === 'invalid_request')) throw error;
         return ctx.html(intakePage({ ...(await config.service.config(context.gym.gymId)).data, kind, t: config.t ?? translator, state: 'failed' }), 400);
       }

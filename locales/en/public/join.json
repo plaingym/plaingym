@@ -15,6 +15,7 @@
   "manualTitle": "Arrange payment with the gym",
   "manualBody": "Your registration is saved. This invoice cannot be paid by card. Contact the gym to arrange a manual payment; your membership will activate after payment is recorded.",
   "title": "Join online",
+  "intakeLimited": "The gym's online forms are busy. Please try again later, or contact the gym to finish joining.",
   "checkDetails": "We could not finish your registration. Check the following and try again.",
   "checkField": "Check {field}.",
   "checkSignature": "{document}: choose a PNG signature image up to 256 KB.",

@@ -14,6 +14,8 @@ import { recordLeadIntake } from '../../areas/leads/intake.js';
 import { signedLinkWaiversComplete, type WaiversService } from '../../areas/waivers/waivers.js';
 import { validateSignatureImage } from '../../areas/waivers/snapshot.js';
 import type { Uploads } from '../../infra/storage/index.js';
+import { reservePublicIntake } from '../../core/rate-limit-intake.js';
+import { createDropInCleanup, dropInAdmissionWindowMs } from './pages.cleanup.js';
 
 export interface PublicPagesOptions {
   scope?: typeof forGym;
@@ -102,6 +104,7 @@ export function createPublicPagesService(options: PublicPagesOptions) {
   }
   return {
     templates, required,
+    cleanup: options.uploadsFor ? createDropInCleanup({ scope, clock, uploadsFor: options.uploadsFor }) : undefined,
     document: (gymId: string, templateId: string) => options.waivers.document(gymId, templateId, true),
     async config(gymId: string) {
       // One short transaction on one connection; a missing gym fails on the settings read before the fee is read.
@@ -119,6 +122,7 @@ export function createPublicPagesService(options: PublicPagesOptions) {
     },
     async trial(gymId: string, body: unknown, timezone: string, requestId?: string) {
       const input = c.publicTrialRequestSchema.parse(body); applicant(input, timezone);
+      await reservePublicIntake({ gymId, now: clock.now().getTime(), participants: 1, signatureBytes: 0 });
       const id = await intake(gymId, input, 'public.trial.received', 'trial_form');
       await notifyStaff(gymId, { kind: 'trial', memberId: id }, requestId);
       return received();
@@ -128,6 +132,7 @@ export function createPublicPagesService(options: PublicPagesOptions) {
       await current(gymId, input.signatures);
       const images = input.signatures.map(s => Buffer.from(s.pngBase64, 'base64'));
       images.forEach(validateSignatureImage);
+      await reservePublicIntake({ gymId, now: clock.now().getTime(), participants: 1, signatureBytes: images.reduce((total, image) => total + image.length, 0) });
       const id = await intake(gymId, input, 'public.drop_in.admitted', 'drop_in');
       const data = [];
       for (const [i, accepted] of input.signatures.entries()) {
@@ -145,9 +150,10 @@ export function createPublicPagesService(options: PublicPagesOptions) {
       // A leaked staff image key cannot enroll, edit, or sign for an existing member.
       await scope(gymId, async tx => {
         const [m] = await tx.select().from(members).where(eq(members.id, id));
-        const [admission] = await tx.select({ id: auditEvents.id }).from(auditEvents)
+        const [admission] = await tx.select({ id: auditEvents.id, occurredAt: auditEvents.occurredAt }).from(auditEvents)
           .where(and(eq(auditEvents.targetId, id), eq(auditEvents.action, 'public.drop_in.admitted'))).limit(1);
         if (!m || !admission || m.anonymizedAt || !['prospect', 'visitor'].includes(m.status)) return missing();
+        if (m.status === 'prospect' && admission.occurredAt.getTime() + dropInAdmissionWindowMs <= clock.now().getTime()) return missing();
         const [home] = await tx.select().from(households).where(eq(households.id, m.householdId));
         if (!home || home.email !== input.contact.email || home.name !== input.contact.name
           || home.phone !== (input.contact.phone ?? null) || !isDeepStrictEqual(c.householdAddressReadSchema.parse(home.address), input.contact.address ?? {})

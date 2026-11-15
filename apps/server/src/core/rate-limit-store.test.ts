@@ -122,6 +122,22 @@ it('public route factories use the registered shared store before their validato
   expect(await buckets()).toEqual(before);
 });
 
+it('shares intake budgets across IPv6 /64s within one /56, including independent route factories', async () => {
+  const f = await fixture();
+  reset = registerIntakeRateLimits(new PostgresJobs({ database: db, clock: f.clock }), f.clock, db.forSystem).reset;
+  for (let i = 0; i < 10; i++) {
+    const app = f.make(false, createPublicRoutes());
+    expect((await app.request('/api/public/trial', { method: 'POST', body: '{}',
+      headers: { 'content-type': 'application/json', 'test-ip': `2001:db8:a:12${i.toString(16).padStart(2, '0')}::1` } })).status).toBe(400);
+  }
+  const app = f.make(false, createPublicRoutes());
+  const request = (ip: string) => app.request('/api/public/trial', { method: 'POST', body: '{}', headers: { 'content-type': 'application/json', 'test-ip': ip } });
+  expect((await request('2001:DB8:A:12FF::2')).status).toBe(429);
+  expect((await request('2001:db8:a:1300::1')).status).toBe(400);
+  expect((await request('192.0.2.1')).status).toBe(400);
+  expect((await request('192.0.2.2')).status).toBe(400);
+});
+
 it('shares install-level buckets when no gym exists', async () => {
   const input = { gymId: null, routeKey: uuidv7(), clientKey: 'unknown', now: 0, windowMs: 1000, limit: 1 };
   expect((await createIntakeRateLimitStore(db.forSystem).consume(input)).allowed).toBe(true);

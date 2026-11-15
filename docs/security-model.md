@@ -376,7 +376,9 @@ Details: `apps/server/src/infra/auth/README.md`.
   sign-in limit.
   Public intake routes name stable budgets for the PostgreSQL counter store;
   runtime startup enables it with `registerIntakeRateLimits`. These limits run
-  before route body parsing and validation, group IPv6 clients by /64, and use
+  before route body parsing and validation. Join, trial and drop-in budgets group
+  IPv6 clients by /56; other budgets keep /64. IPv4 (including mapped IPv4) is
+  unchanged. All use
   fixed windows shared across processes and restarts. The public token routes
   (portal invitation acceptance, portal claim completion and staff invitation
   acceptance) have named budgets too. Once the database refuses a budget, the
@@ -390,6 +392,20 @@ Details: `apps/server/src/infra/auth/README.md`.
   in batches of at most 5,000 rows. App factories without runtime registration and
   unnamed budgets keep in-memory counting; authentication and kiosk budgets are
   independent.
+  New join, trial and drop-in admissions additionally share per-gym hourly
+  ceilings of 10,000 participants and 8 GiB of decoded signature images (rounded
+  up to KiB per admission), reserved in the same PostgreSQL store after schema
+  validation and before creation/storage. The limits intentionally allow a very
+  large open house; see `apps/server/src/public/pages/README.md` for sizing.
+  Refusals return 429 with the page's own text and the hour's `Retry-After`, and
+  log `public.intake.ceiling_reached` without personal data. Failed work retains
+  reservations for the hour; a rejected weighted increment leaves the remaining
+  budget available to smaller requests. Existing admissions can finish without
+  spending this allowance. The nightly `public.drop_in.cleanup` batch job removes
+  unsigned, unchanged drop-in admissions after their 24-hour window, including
+  their automatic leads and households, then marks images through storage outside
+  transactions. A durable marker permits retry. Completed or partially signed
+  visits and staff changes are retained with their signatures.
 * **Body limits** per route, applied before parsing. Routes allowing more than
   1 MiB require a valid `Content-Length` for a body and refuse transfer encoding
   before buffering (including join forms, signatures and CSV uploads).
