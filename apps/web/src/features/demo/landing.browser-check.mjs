@@ -51,6 +51,8 @@ try {
     page.on('pageerror', error => errors.push(error.message)); page.on('console', message => { if (process.env.DEBUG_CHECK) console.log('console:', message.text()); });
     await page.goto('http://127.0.0.1:' + address.port + '/fixture' + path + '?join=' + join);
     await expect(page.getByRole('heading', { level: 1, name: 'Your demo gym' })).toBeVisible();
+    await expect(page.locator('main [data-demo-deletion]')).toContainText('Using it moves that time later');
+    expect(await page.locator('main [data-demo-deletion]').evaluate(element => element === element.parentElement.lastElementChild)).toBe(true);
     await expect(page.getByText('4242 4242 4242 4242')).toHaveCount(join ? 1 : 0);
     await expect(page.getByRole('link', { name: 'Open the join page' })).toHaveCount(join ? 1 : 0);
     await expect(page.getByText(/check-in QR code and paid invoices/)).toHaveCount(join ? 1 : 0);

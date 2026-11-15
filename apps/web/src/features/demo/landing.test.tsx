@@ -3,22 +3,15 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { DemoPage } from './landing.js';
+import { instantLabel } from '../../lib/instant.js';
 
-const context = vi.hoisted(() => ({ mode: undefined as 'disabled' | 'entry' | 'sandbox' | undefined, join: true, login: vi.fn(), pending: false, error: false,
+const context = vi.hoisted(() => ({ mode: undefined as 'disabled' | 'entry' | 'sandbox' | 'showcase' | undefined, join: true, login: vi.fn(), pending: false, error: false,
   members: [] as { id: string; name: string }[] }));
 vi.mock('./notice.js', async (original) => ({ ...await original<typeof import('./notice.js')>(), useDemoMode: () => context.mode, useDemoJoin: () => context.join,
+  useDemoExpiry: () => context.mode === 'sandbox' ? '2099-11-15T16:12:00.000Z' : undefined,
   useDemoLogin: () => ({ login: context.login, pending: context.pending, error: context.error }), useDemoMenu: () => ({ data: { members: context.members, website: false } }) }));
 afterEach(() => { cleanup(); context.join = true; context.login.mockReset(); context.pending = false; context.error = false; context.members = []; });
 
-it('shows role cards in entry mode without repeating the root entry title or help', () => {
-  context.mode = 'entry';
-  render(<DemoPage />);
-  expect(screen.getByRole('heading', { level: 1, name: 'Explore by role' })).toBeDefined();
-  for (const name of ['Owner', 'Coach', 'Student']) expect(screen.getByRole('heading', { name })).toBeDefined();
-  expect(screen.queryByText('Explore PlainGym')).toBeNull();
-  expect(screen.queryByText(/Start your own sample gym/)).toBeNull();
-  expect(screen.queryByRole('link', { name: 'Go to sign in' })).toBeNull();
-});
 it.each(['disabled', undefined] as const)('shows a neutral sign-in route in %s mode', (mode) => {
   context.mode = mode;
   render(<DemoPage />);
@@ -47,6 +40,18 @@ it('starts a sandbox with one-click roles, the test-card join walkthrough and th
   // The kiosk's sample household is shown on the kiosk's own search, not here; nobody has joined yet.
   expect(document.body.textContent).not.toMatch(/Marcus Rivera|2468/);
   expect(screen.queryByRole('heading', { name: 'Members who joined' })).toBeNull();
+  const notice = screen.getByText(/Using it moves that time later/);
+  expect(notice.textContent).toContain(instantLabel('2099-11-15T16:12:00.000Z'));
+  expect(notice.textContent).toContain('Email stays in the demo outbox and uploads are disabled.');
+  expect(notice).toBe(document.querySelector('main')?.firstElementChild?.lastElementChild);
+  expect(notice.textContent).not.toContain('after 24 hours');
+});
+it('keeps the showcase start page free of deletion notices', () => {
+  context.mode = 'showcase';
+  render(<DemoPage />);
+  expect(screen.getByRole('heading', { level: 1, name: 'Your demo gym' })).toBeDefined();
+  expect(screen.queryByText(/deleted|Inactivity|Expires:/)).toBeNull();
+  expect(document.querySelector('[data-demo-deletion]')).toBeNull();
 });
 it('offers the members who joined by name, as sign-in buttons', () => {
   context.mode = 'sandbox';

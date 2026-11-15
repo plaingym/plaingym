@@ -1,10 +1,17 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Running a demo
 
-A demo lets people try PlainGym without an account of their own. **Try the demo**
+A demo lets people try PlainGym without an account of their own. Its entry host's
+root is a server-rendered product page with **Try the demo** and **GitHub** as its
+first two links; old entry-host `/demo` links redirect there. **Try the demo**
 opens a shared, read-only showcase with sample data and one-click owner, coach
 and student logins. Choose **Make my own copy** to edit a private sandbox.
 Copies expire after two idle hours and at most 24 hours after allocation.
+Each private copy keeps its start page at `/demo`, ending with the current deletion
+time and a reminder that using the copy moves that time later, up to 24 hours
+after it was created. The product page and
+read-only showcase have no deletion notice. Gym website roots and ordinary installs
+keep their existing behavior.
 Use a demo to evaluate the software, to train staff before launch, or to
 show it to your board. Don't use it for your real gym: sandboxes are throwaway, and
 demo mode is a separate kind of install.
@@ -67,7 +74,7 @@ exact versions are in the root [`README.md`](../README.md#local-development).
    `UPLOADS_S3_*` values from `.env.example`.
 3. Run `pnpm dev`, then in another terminal `pnpm dev:proxy:up` and `pnpm dev:proxy:trust`.
    Restart your browser once so it trusts the local certificate.
-4. Open **https://demo.localhost/demo** and choose **Try the demo**.
+4. Open **https://demo.localhost/** and choose **Try the demo**.
 
 The demo redirects to HTTPS on port 443, so nothing else on your computer can be
 using that port. Stripe test payments are optional; the setup is in the

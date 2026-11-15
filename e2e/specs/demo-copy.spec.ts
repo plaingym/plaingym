@@ -11,8 +11,8 @@ for (const { role, width, pagePath } of [
     test.setTimeout(180_000);
     await page.context().setExtraHTTPHeaders({ 'x-forwarded-for': clientAddress() });
     await page.setViewportSize({ width, height: 900 });
-    await page.goto('https://demo.localhost/demo');
-    await page.getByRole('button', { name: 'Try the demo', exact: true }).click();
+    await page.goto('https://demo.localhost/');
+    await page.getByRole('link', { name: 'Try the demo', exact: true }).first().click();
     await page.waitForURL(url => url.hostname === 'showcase.demo.localhost');
     await page.getByRole('button', { name: `Sign in as ${role}`, exact: true }).click();
     await page.waitForURL(url => url.pathname === (role === 'student' ? '/portal' : '/admin'));

@@ -5,3 +5,13 @@ Notable changes are recorded here using [Keep a Changelog 1.1.0](https://keepach
 and [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+### Added
+
+- A server-rendered product page on the demo entry host, with direct showcase and
+  GitHub links. Old entry-host `/demo` links redirect to the product page.
+
+### Fixed
+
+- Private demo start pages show their current deletion time and how activity extends it;
+  the product page and read-only showcase show no deletion notice.

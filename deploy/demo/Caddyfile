@@ -13,10 +13,5 @@
 		}
 	}
 	encode zstd gzip
-	@landing {
-		host {$GYM_HOSTNAME}
-		path /
-	}
-	redir @landing /demo 302
 	reverse_proxy app:3000
 }

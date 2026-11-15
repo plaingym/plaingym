@@ -89,10 +89,13 @@ pnpm dev:proxy:trust
 ```
 
 Trust the CA once per machine/user, then **fully quit and restart Chrome** (or
-your Chromium browser). Open **https://demo.localhost/demo** and click **Try the
+your Chromium browser). Open **https://demo.localhost/** and click **Try the
 demo**. The showcase refuses edits; **Make my own copy** opens a private sandbox
 signed in as the selected role. Five gyms are seeded ahead, one at a time. Copies
 expire after two idle hours, at most 24 hours after allocation.
+On a demo server the demo domain's root is a server-rendered product page, and its
+old `/demo` address redirects there; under `pnpm dev` both show the SPA's entry bar
+instead. The showcase and private copies keep their `/demo` start pages.
 Use that HTTPS address instead of `localhost:5173`; sandbox redirects,
 secure cookies and Vite's HMR websocket then use the same origin on port 443.
 No DNS or hosts-file changes are needed in Chrome/Edge for `.localhost` names.
@@ -119,7 +122,7 @@ The trust script exports **only the public root certificate** from
   `~/.local/share/pki/nssdb`, following [Chromium's trust-store rules](https://chromium.googlesource.com/chromium/src.git/+/refs/heads/main/docs/linux/cert_management.md).
 
 For tools such as curl, `pnpm dev:proxy:trust --export` just exports the root;
-use `curl --cacert data/dev-proxy/root.crt https://demo.localhost/demo`.
+use `curl --cacert data/dev-proxy/root.crt https://demo.localhost/`.
 
 `pnpm dev:proxy:stop` removes the proxy container and network, keeping the named
 volume **`plaingym-dev-proxy-caddy-data`**. The CA survives restarts and worktree

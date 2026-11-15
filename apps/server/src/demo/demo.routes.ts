@@ -14,6 +14,10 @@ import type { DemoPool } from './pool.js';
 import { demoLoginRateLimit, demoLoginRedirect, joinedMembers } from './identities.js';
 import type { forGym } from '@plaingym/db';
 import { clock as defaultClock, type Clock } from '../core/clock.js';
+import { cachedLinkAsset } from '../public/links/assets.js';
+import { demoLandingDirectives, demoLandingPage } from './landing.page.js';
+
+const landingStylesheet = cachedLinkAsset('./public/links.css');
 
 /** A captured email's own policy: inline styles and data: images only, no script (sandbox), framed only by the app. */
 export const outboxPreviewDirectives = ["default-src 'none'", "style-src 'unsafe-inline'", 'img-src data:', "base-uri 'none'",
@@ -120,11 +124,31 @@ export function createDemoRoutes(service: DemoService, options: { installOrigin:
     { ...discovery, mount(app: Parameters<RouteRegistration['mount']>[0], authorize: Parameters<RouteRegistration['mount']>[1]) {
       // Discovery mounts before tenant resolution: the entry host has no gym.
       // Keep ordinary gym roots available to their public website routes.
-      if (options.enabled !== false) app.get('/', async (c, next) => {
-        if (!isInstallHost(c.req.header('host') ?? new URL(c.req.url).host)) return next();
-        await authorize({ kind: 'public' })(c, async () => { c.res = c.redirect('/demo', 302); });
-        return c.res;
-      });
+      if (options.enabled !== false) {
+        app.get('/demo', async (c, next) => {
+          if (!isInstallHost(c.req.header('host') ?? new URL(c.req.url).host)) return next();
+          await authorize({ kind: 'public' })(c, async () => { c.res = c.redirect('/', 302); });
+          return c.res;
+        });
+        app.get('/public/pages/styles.css', async (c, next) => {
+          if (!isInstallHost(c.req.header('host') ?? new URL(c.req.url).host)) return next();
+          await authorize({ kind: 'public' })(c, async () => {
+            c.header('content-type', 'text/css; charset=utf-8'); c.res = c.body(await landingStylesheet());
+          });
+          return c.res;
+        });
+        app.get('/', async (c, next) => {
+          if (!isInstallHost(c.req.header('host') ?? new URL(c.req.url).host)) return next();
+          await authorize({ kind: 'public' })(c, async () => {
+            // Read the install's mounted source redirect so SOURCE_URL and release tags agree with the footer.
+            const source = await app.request(new URL('/source', c.req.url));
+            const showcase = await options.pool?.showcase() ?? `https://showcase.${new URL(options.installOrigin).hostname}/demo`;
+            c.header('cache-control', 'no-store'); setPolicy(c, demoLandingDirectives);
+            c.res = c.html(demoLandingPage(showcase, source.headers.get('location')!));
+          });
+          return c.res;
+        });
+      }
       discovery.mount(app, authorize);
     } },
   ];

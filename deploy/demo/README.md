@@ -1,9 +1,14 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Demo server
 
-The entry page opens the shared, read-only showcase at `showcase.<GYM_HOSTNAME>`,
+The demo domain's root is a server-rendered product page, with **Try the demo**
+and **GitHub** as its first two links. An old `/demo` link redirects to the root.
+**Try the demo** opens `/demo` on the shared, read-only showcase at `showcase.<GYM_HOSTNAME>`,
 one level below the demo domain. Owner, coach and student logins and the kiosk
 remain available; an edit offers **Make my own copy**, signed in as the same role.
+Private copies keep their own `/demo` start page with a deletion notice at the bottom:
+the current expiry time, which activity moves later up to the 24-hour limit. The product page and showcase
+show no deletion notice. Ordinary installs and gym website roots are unchanged.
 The showcase is replaced 24 hours after promotion and runs no gym jobs. It stays
 available until a replacement is ready if capacity delays the swap. Use the
 one-click role logins; magic-link requests are refused on the shared showcase.

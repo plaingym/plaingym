@@ -4,21 +4,18 @@ import { t } from '../../lib/i18n.js';
 import { Page, PageHeader, PageSection } from '../../components/ui/page.js';
 import { Card } from '../../components/ui/card.js';
 import { Button } from '../../components/ui/button.js';
-import { DemoMenuLink, useDemoJoin, useDemoLogin, useDemoMenu, useDemoMode } from './notice.js';
+import { DemoMenuLink, useDemoExpiry, useDemoJoin, useDemoLogin, useDemoMenu, useDemoMode } from './notice.js';
+import { instantLabel } from '../../lib/instant.js';
 
 const roles = ['owner', 'coach', 'student'] as const;
 
 export function DemoPage() {
-  const mode = useDemoMode(), entry = mode === 'entry';
+  const mode = useDemoMode();
   if (mode === 'sandbox' || mode === 'showcase') return <SandboxLanding />;
   return <main id="main-content" className="flex-1 p-4 sm:p-6">
     <Page className="max-w-4xl">
-      <PageHeader title={t(entry ? 'demo/demo:rolesTitle' : 'demo/demo:inactiveTitle')}
-        {...(!entry ? { description: t('demo/demo:inactiveHelp') } : {})} />
-      {entry ? <><div className="grid gap-4 md:grid-cols-3">{roles.map((role) => <Card key={role} className="p-4 sm:p-6">
-        <PageSection title={t(`demo/demo:${role}Label`)}><p>{t(`demo/demo:${role}Help`)}</p></PageSection>
-      </Card>)}</div><p className="text-sm text-muted-foreground">{t('demo/demo:banner')}</p></>
-      : <div className="sm:max-w-sm"><DemoMenuLink href="/login">{t('demo/demo:signIn')}</DemoMenuLink></div>}
+      <PageHeader title={t('demo/demo:inactiveTitle')} description={t('demo/demo:inactiveHelp')} />
+      <div className="sm:max-w-sm"><DemoMenuLink href="/login">{t('demo/demo:signIn')}</DemoMenuLink></div>
     </Page>
   </main>;
 }
@@ -26,7 +23,7 @@ export function DemoPage() {
 /** A sandbox's start page: one-click roles and joined members, the public join with the test card, and the kiosk.
  * Navigation is a menu link and signing in is a button, as in the demo menu. The bar reports sign-in failures. */
 function SandboxLanding() {
-  const { login, pending } = useDemoLogin(), join = useDemoJoin(), members = useDemoMenu().data?.members ?? [];
+  const { login, pending } = useDemoLogin(), join = useDemoJoin(), members = useDemoMenu().data?.members ?? [], expires = useDemoExpiry();
   return <main id="main-content" className="flex-1 p-4 sm:p-6">
     <Page className="max-w-4xl">
       <PageHeader title={t('demo/landing:title')} description={t(join ? 'demo/landing:intro' : 'demo/landing:introWithoutJoin')} />
@@ -60,6 +57,7 @@ function SandboxLanding() {
           <p>{t('demo/landing:kioskHelp')}</p><DemoMenuLink href="/kiosk">{t('demo/landing:kioskOpen')}</DemoMenuLink>
         </PageSection>
       </Card>
+      {expires && <p className="text-sm text-muted-foreground" data-demo-deletion>{t('demo/demo:banner', { time: instantLabel(expires) })}</p>}
     </Page>
   </main>;
 }

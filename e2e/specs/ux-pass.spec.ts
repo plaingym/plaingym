@@ -301,7 +301,7 @@ test('the demo sandbox: populated admin, portal, kiosk, signed links, public pag
     const demo = new Capture('demo');
     await demo.step(guest, 'landing', async () => {
       await visit(guest, 'https://demo.localhost/');
-      await expect(guest.getByRole('button', { name: 'Try the demo', exact: true })).toBeVisible();
+      await expect(guest.getByRole('link', { name: 'Try the demo', exact: true }).first()).toBeVisible();
     });
     await demo.step(guest, 'start-page', async () => { await visit(guest, origin + '/demo'); await expect(guest.locator('h1').first()).toBeVisible(); });
     await demo.step(guest, 'menu', async () => {

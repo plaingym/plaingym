@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { test, expect, gymOrigin } from '../support.js';
 
+test('entry landing renders without SPA capability discovery', async ({ page }) => {
+  const probes: string[] = [];
+  page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/demo')) probes.push(request.url()); });
+  await page.goto('https://demo.localhost/');
+  await expect(page.getByRole('heading', { name: 'PlainGym', exact: true })).toBeVisible();
+  await expect(page.locator('script')).toHaveCount(0);
+  expect(probes).toEqual([]);
+});
+
 for (const { role, width } of [{ role: 'owner', width: 360 }, { role: 'coach', width: 1280 }] as const) {
   test(`ordinary ${role} at ${width}px shares discovery across navigation, focus, reconnect and staff reload`, async ({ page, context, install }) => {
     // The browser's implicit icon request is unrelated to capability discovery.

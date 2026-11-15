@@ -178,7 +178,7 @@ it('opens the demo menu with its labelled groups and returns focus to the bar on
   expect(within(goTo).getByRole('link', { name: 'Gym admin' }).getAttribute('aria-current')).toBeNull();
   const about = within(menu).getByRole('region', { name: 'About this demo' });
   expect(within(about).getByText(/^Expires: /)).toBeDefined();
-  expect(within(about).getByText(/deleted after 24 hours/)).toBeDefined();
+  expect(within(about).getByText(/Using it moves that time later/)).toBeDefined();
   expect(menu.textContent).not.toMatch(/Marcus Rivera|4242/);
   fireEvent.click(within(menu).getByRole('button', { name: 'Close demo menu' }));
   expect(screen.queryByRole('dialog')).toBeNull();

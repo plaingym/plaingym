@@ -1,8 +1,12 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Demo mode
 
-The demo entry host's root opens `/demo`; the development SPA also supplies its
-root landing. Creation announces pending work immediately, prevents duplicate
+The demo entry host's root serves a server-rendered product page. **Try the demo**
+opens the showcase start page directly, followed by a **GitHub** repository link.
+The page uses the public stylesheet, native links and a policy that forbids scripts.
+An old entry-host `/demo` link redirects to `/`. Gym hosts keep their own roots
+and `/demo` start pages; ordinary installs have no product landing page.
+Creation announces pending work immediately, prevents duplicate
 activation and offers explicit retry feedback. Structured `demo.seed_started`,
 `demo.seed_completed` and `demo.seed_completed_all` logs report step and total
 durations in milliseconds. Failures retain the step, safe error classification
@@ -169,9 +173,12 @@ Ordinary install-wide identities remain shared.
 ## Running the demo
 
 The [demo installer](../../../../deploy/demo/README.md) sets up the server, wildcard
-TLS, and S3 configuration. Open its printed link to create a sandbox. A new sandbox
+TLS, and S3 configuration. Open its printed link, then **Try the demo** to explore
+the showcase. **Make my own copy** creates a private sandbox. A new sandbox
 opens on its start page (`/demo`), which offers one-click owner, coach and student
 logins, the members who joined, the public join with the test card, and the kiosk.
+The private copy's start page ends with its current deletion time from `expiresAt`,
+that activity moves it later (up to 24 hours after allocation), and the outbox/upload limits. The showcase has no deletion notice.
 Every page of a sandbox starts with one slim row (`DemoNotice`): the sandbox, its
 expiry and a **Demo menu** button. The menu (a bottom sheet on phones, a side panel on
 wider screens) groups **Sign in as** (the three roles and the joined members),
@@ -209,8 +216,8 @@ matches. Staff can find other sample members' full names in the members page.
 
 The production runtime connects the boot checks, outbox delivery for login and
 signed links, upload restrictions, tenant-free entry routes, and cleanup timer.
-Open `https://<DEMO_DOMAIN>/demo` to create a sandbox. Sandbox creation accepts
-only the install hostname. Every shell shows the demo bar before login guards;
+Open `https://<DEMO_DOMAIN>/` and choose **Try the demo**. Sandbox creation accepts
+the install and showcase hostnames. Every shell shows the demo bar before login guards;
 the outbox navigation appears only in a sandbox.
 
 Set `UPLOADS_S3_BUCKET`, optional `UPLOADS_S3_ENDPOINT` and `UPLOADS_S3_REGION`,

@@ -10,9 +10,10 @@ import { EmptyState, ErrorState, LoadingState } from '../../components/ui/states
 import { t } from '../../lib/i18n.js';
 import { demoContracts, outboxResponse } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
-import { DemoMenuLink } from './notice.js';
+import { DemoMenuLink, useDemoExpiry } from './notice.js';
 type Message = ReturnType<typeof outboxResponse.parse>['data'][number];
 export function OutboxPage() {
+  const expires = useDemoExpiry();
   const { instantLabel } = useGymTime();
   const [messages, setMessages] = useState<Message[]>([]), [next, setNext] = useState<string | null>(null);
   const [cursor, setCursor] = useState<string | null>(null), [loading, setLoading] = useState(true), [error, setError] = useState(false);
@@ -30,7 +31,7 @@ export function OutboxPage() {
   }, [cursor, retry]);
   const selected = messages.find((message) => message.id === preview);
   return <Page className="max-w-4xl">
-    <PageHeader title={t('demo/demo:title')} description={t('demo/demo:banner')} />
+    <PageHeader title={t('demo/demo:title')} description={expires ? t('demo/demo:banner', { time: instantLabel(expires) }) : t('demo/demo:outboxHelp')} />
     <div className="sm:max-w-sm"><DemoMenuLink href="/admin">{t('demo/demo:back')}</DemoMenuLink></div>
     {error && <ErrorState message={t('demo/demo:unavailable')} onRetry={() => setRetry((value) => value + 1)} />}
     {loading && <LoadingState label={t('demo/demo:loading')} />}

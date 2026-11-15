@@ -37,12 +37,12 @@ test('demo entry opens the showcase, private copy menu and kiosk work at every s
   await page.goto('https://demo.localhost/');
   for (const size of sizes) {
     await page.setViewportSize(size);
-    await expect(page.getByRole('button', { name: 'Try the demo', exact: true })).toBeVisible();
-    await expect(page.getByText('Explore PlainGym', { exact: true })).toHaveCount(1);
+    await expect(page.getByRole('link', { name: 'Try the demo', exact: true }).first()).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'PlainGym', exact: true })).toHaveCount(1);
     await accessibleLayout(page, info, 'demo-entry-' + size.width);
   }
   await page.setViewportSize(sizes[0]!);
-  await page.getByRole('button', { name: 'Try the demo', exact: true }).click();
+  await page.getByRole('link', { name: 'Try the demo', exact: true }).first().click();
   await page.waitForURL(url => url.hostname === 'showcase.demo.localhost');
   await expect(page.getByText('This demo is shared. Make your own copy to change things.')).toBeVisible();
   const created = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/demo/sandboxes' && response.request().method() === 'POST');
@@ -148,6 +148,9 @@ test('demo entry opens the showcase, private copy menu and kiosk work at every s
     await expect(start.getByText('4242 4242 4242 4242')).toBeVisible();
     await expect(start.getByRole('link', { name: 'Open the join page', exact: true })).toHaveAttribute('href', '/join');
     await accessibleLayout(page, info, 'sandbox-demo-page-' + size.width);
+    const deletion = start.locator('[data-demo-deletion]');
+    await expect(deletion).toContainText('Using it moves that time later');
+    expect(await deletion.evaluate(element => element === element.parentElement?.lastElementChild)).toBe(true);
     await page.screenshot({ path: info.outputPath('sandbox-demo-page-' + size.width + '.png'), fullPage: true });
   }
   // A readiness flag can change while the student's seeded paid invoices remain available.
