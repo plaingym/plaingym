@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { GymSettings, WebsiteSettings as WebsiteSettingsData } from '@plaingym/shared/contracts';
@@ -41,11 +41,11 @@ describe('website settings', () => {
     expect(sections.forModules(new Set(['website'])).some((entry) => entry.id === 'settingsSections.website')).toBe(true);
   });
 
-  it('saves text and photo order with the current gym revision and clears a stored accent', async () => {
+  it('saves text and photo order without sending a stored legacy accent or rereading the website', async () => {
     stored = { ...website, accentColor: '#abcdef' };
     const user = userEvent.setup();
     client.PUT.mockImplementation(async (_path: string, { body }: { body: Record<string, unknown> }) => {
-      stored = { ...website, ...body, revision: 5, logo: false } as WebsiteSettingsData;
+      stored = { ...website, ...body, accentColor: null, revision: 5, logo: false } as WebsiteSettingsData;
       return reply(200, { data: stored });
     });
     start();
@@ -57,10 +57,13 @@ describe('website settings', () => {
     expect(screen.getByRole('link', { name: 'Change your brand color in Gym details' }).getAttribute('href')).toBe('#settingsSections.settings.general');
     const second = screen.getAllByRole('listitem')[1]!;
     await user.click(within(second).getByRole('button', { name: 'Move up' }));
+    const reads = client.GET.mock.calls.filter(([path]) => path === '/api/website').length;
     await user.click(screen.getByRole('button', { name: 'Save website' }));
     await screen.findByText('Website saved.');
     expect(client.PUT).toHaveBeenCalledWith('/api/website', expect.objectContaining({ body: { revision: 4, tagline: 'Strong together', about: 'Since 2010',
-      phone: '604 555 0100', email: null, accentColor: null, primaryColor: '#123456', photos: [{ id: id(11), alt: 'Class' }, { id: id(10), alt: 'Mats' }] } }));
+      phone: '604 555 0100', email: null, primaryColor: '#123456', photos: [{ id: id(11), alt: 'Class' }, { id: id(10), alt: 'Mats' }] } }));
+    await waitFor(() => expect(cache.getQueryData<{ settings: GymSettings }>(gymSettingsKey)?.settings.revision).toBe(5));
+    expect(client.GET.mock.calls.filter(([path]) => path === '/api/website')).toHaveLength(reads);
   });
 
   it('removes a photo on save and explains a conflict', async () => {
@@ -109,6 +112,47 @@ describe('website settings', () => {
     await user.click(save);
     expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'These settings changed elsewhere. They have been reloaded; check them and save again.');
     expect(client.PUT).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([409, 404])('aborts a reload after a %s when a newer revision read starts', async status => {
+    const user = userEvent.setup();
+    start(); await screen.findByRole('textbox', { name: 'Tagline' });
+    let finish!: (value: ReturnType<typeof reply>) => void;
+    const older = new Promise<ReturnType<typeof reply>>(resolve => { finish = resolve; });
+    let oldSignal: AbortSignal | undefined;
+    client.GET.mockImplementation(async (path: string, options?: { signal?: AbortSignal }) => {
+      if (path !== '/api/website') return reply(200, { data: gym });
+      oldSignal = options?.signal;
+      return older;
+    });
+    client.PUT.mockResolvedValue(reply(status));
+    await user.click(screen.getByRole('button', { name: 'Save website' }));
+    await waitFor(() => expect(oldSignal).toBeDefined());
+    client.GET.mockImplementation(async (path: string) => path === '/api/website'
+      ? reply(200, { data: { ...website, revision: 5, tagline: 'Newer server text' } }) : reply(200, { data: gym }));
+    act(() => cache.setQueryData<{ settings: GymSettings; epoch: number }>(gymSettingsKey,
+      old => old && { ...old, settings: { ...old.settings, revision: 5 } }));
+    await screen.findByDisplayValue('Newer server text');
+    expect(oldSignal?.aborted).toBe(true);
+    await act(async () => { finish(reply(200, { data: website })); await older; });
+    expect(screen.getByRole('textbox', { name: 'Tagline' })).toHaveProperty('value', 'Newer server text');
+  });
+
+  it('aborts a retry read when the section unmounts', async () => {
+    const user = userEvent.setup();
+    client.GET.mockImplementation(async (path: string) => path === '/api/website' ? reply(500) : reply(200, { data: gym }));
+    const view = start(); await screen.findByRole('button', { name: 'Reload' });
+    let finish!: (value: ReturnType<typeof reply>) => void;
+    const pending = new Promise<ReturnType<typeof reply>>(resolve => { finish = resolve; });
+    let signal: AbortSignal | undefined;
+    client.GET.mockImplementation(async (path: string, options?: { signal?: AbortSignal }) => {
+      if (path !== '/api/website') return reply(200, { data: gym });
+      signal = options?.signal; return pending;
+    });
+    await user.click(screen.getByRole('button', { name: 'Reload' }));
+    expect(signal?.aborted).toBe(false);
+    view.unmount(); expect(signal?.aborted).toBe(true);
+    await act(async () => { finish(reply(200, { data: website })); await pending; });
   });
 
   it('uploads a photo without losing unsaved text, and uploads and removes the logo', async () => {

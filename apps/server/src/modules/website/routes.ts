@@ -72,8 +72,8 @@ export function createWebsiteRoutes(supplied?: WebsiteRouteOptions): readonly Ro
       const site = await options().service.site(c.get('context').gym.gymId);
       // Only the content hash names these exact colors; missing or stale versions revalidate.
       c.header('Content-Type', 'text/css; charset=utf-8'); c.header('X-Content-Type-Options', 'nosniff');
-      c.header('Cache-Control', c.req.query('v') === siteThemeVersion(site.gym.primaryColor, site.content.accentColor) ? 'public, max-age=31536000, immutable' : 'no-cache');
-      return c.body(siteThemeCss(site.gym.primaryColor, site.content.accentColor));
+      c.header('Cache-Control', c.req.query('v') === siteThemeVersion(site.gym.primaryColor) ? 'public, max-age=31536000, immutable' : 'no-cache');
+      return c.body(siteThemeCss(site.gym.primaryColor));
     }),
     route({ method: 'get', path: '/website/photos/{photoId}', permission: publicAccess, request: { params: photoParamsSchema },
       responses: { 200: { description: 'Website photo' } } }, async (c) =>

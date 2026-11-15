@@ -15,7 +15,7 @@ it's off every route below answers 404. Core never imports this module.
 | `/schedule` | The weekly class templates by weekday, Monday first, as local wall times in the gym's timezone, then **Changes this week**: the week's (Monday to Sunday, in the gym's zone) sessions that differ from the timetable as it stands, by date: cancelled ones, one-off ones (no template, including those left by a deleted template) and moved ones (not at their template's weekday and time, including this week's occurrence moved into another week). A session that runs as the timetable says isn't listed. A coach is named only when their staff profile is public. |
 | `/plans` | Active plans in the gym's currency, by name (the join page's order), with "+ tax" when an attached rate adds tax on top (the join page's rule), the sign-up fee, trial days and minimum term. |
 | `/coaches` | Public staff profiles: name, rank, bio and photo. |
-| `/contact` | Address with an OpenStreetMap search link, public phone (`tel:`) and email (`mailto:`). Missing fields tell gym owners where to set them in Settings. |
+| `/contact` | Address with an OpenStreetMap search link, public phone (`tel:`) and email (`mailto:`). Missing details use visitor-facing fallback text; owner guidance stays in the admin. |
 
 Every page links to the core public pages (`/trial`, `/drop-in`, `/join`), the
 member portal and `/source`. With the website off, core's `GET /` handler
@@ -73,7 +73,15 @@ share one helper, `serveGymImage`: the gym's own key, a PNG, JPEG or WebP, at mo
 The admin edits the brand color in Settings → Gym details. Website links there
 and refreshes after another section saves, keeping unsaved text. The theme ignores
 legacy accent colors and uses a light tint of the brand color instead. A Website
-text save clears any stored accent. Logo uploads remain in the Website section.
+text save clears any stored accent; legacy update inputs may omit it or send any
+value, which is ignored. The read still includes a nullable `accentColor`.
+Logo uploads remain in the Website section. All settings reads cancel earlier
+ones; a successful save supplies its own revision without another website read.
+
+Public contact pages omit missing channels. On `/contact`, a Contact card with no
+public phone or email shows a visitor-facing line instead. Address, phone and
+email setup guidance stays in the admin Website section; owners may publish only
+the channels they choose.
 
 The text and photo list live in the gym's settings under
 `modules.website`, through `areas/settings/module-settings.ts`. Each save takes the

@@ -22,18 +22,19 @@ export const secondaryButton = 'inline-flex min-h-11 min-w-11 items-center justi
 export const inputClass = 'block min-h-11 w-full rounded-md border border-border bg-background px-3 py-2 text-base';
 export const panel = 'min-w-0 space-y-4 rounded-xl border border-border bg-card p-4 sm:p-6';
 export const pageText = (t: Translator) => (key: string, values?: Record<string, string | number>) => t('public/pages:' + key, values);
+export const addressLines = (address: PublicBranding['address'] = {}) => [address.line1, address.line2,
+  [address.city, address.region, address.postalCode].filter(Boolean).join(', '), address.country]
+  .filter((line): line is string => !!line?.trim());
+export const telephoneHref = (phone: string) => 'tel:' + phone.replace(/[^+\d]/g, '');
 /** Public contact details also remain available with the website turned off. */
 export function contactBlock(gym: PublicBranding, t: Translator) {
-  const text = pageText(t), address = gym.address ?? {};
-  const lines = [address.line1, address.line2, [address.city, address.region, address.postalCode].filter(Boolean).join(', '), address.country]
-    .filter((line): line is string => !!line?.trim());
+  const text = pageText(t), lines = addressLines(gym.address);
   return h('section', { class: panel, 'aria-label': text('contactGym') },
     h('h2', { class: 'text-xl font-semibold' }, text('contactGym')),
     lines.length ? h('address', { class: 'not-italic break-words' }, ...lines.map(line => h('p', null, line))) : null,
-    gym.phone ? h('p', null, h('a', { href: 'tel:' + gym.phone.replace(/[^+\d]/g, ''), class: 'inline-flex min-h-11 items-center break-all underline' }, gym.phone)) : null,
+    gym.phone ? h('p', null, h('a', { href: telephoneHref(gym.phone), class: 'inline-flex min-h-11 items-center break-all underline' }, gym.phone)) : null,
     gym.email ? h('p', null, h('a', { href: 'mailto:' + gym.email, class: 'inline-flex min-h-11 items-center break-all underline' }, gym.email)) : null,
-    !lines.length && !gym.phone && !gym.email ? h('p', null, text('contactMissing')) : null,
-    !lines.length || !gym.phone || !gym.email ? h('p', { class: 'text-sm text-muted-foreground' }, text('contactSettings')) : null);
+    !lines.length && !gym.phone && !gym.email ? h('p', null, text('contactMissing')) : null);
 }
 /** Shared server-rendered shell for the gym's core public pages. */
 export function publicLayout(input: { gym: PublicBranding; title: string; t: Translator; content: ReturnType<typeof h>; locale?: string; script?: boolean; noscriptRefreshSeconds?: number }) {

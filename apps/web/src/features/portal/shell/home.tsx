@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { formatCount } from '../../../lib/count.js';
 import { dateFormatter } from '../../../lib/instant.js';
-import { useState } from 'react';
 import { Link } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import { portalContracts as contracts } from '@plaingym/shared/contracts';
@@ -22,11 +21,19 @@ const card = 'min-w-0 space-y-3 rounded-xl border border-border p-4';
 /** All summaries use the open household's key and check each answer before it enters the cache. */
 export function PortalHome({ client = portalClient }: { client?: PortalClient }) {
   const bootstrap = useBootstrap(), { scope, context, members, memberId, choose } = usePortalMembers(client);
-  const [from] = useState(() => new Date().toISOString());
-  const to = new Date(Date.parse(from) + 30 * 86_400_000).toISOString();
   const payer = context.data?.role === 'payer';
-  const schedule = useQuery({ queryKey: [...scope.key, 'home', 'schedule', from, to], enabled: scope.ready,
-    queryFn: async () => scope.own(await scope.run(() => client.schedule(from, to))).data, staleTime: 0 });
+  const schedule = useQuery({ queryKey: [...scope.key, 'home', 'schedule'], enabled: scope.ready,
+    queryFn: async () => {
+      const now = Date.now(), from = new Date(now).toISOString();
+      const week = new Date(now + 7 * 86_400_000).toISOString(), to = new Date(now + 30 * 86_400_000).toISOString();
+      const nextIn = async (start: string, end: string) => {
+        const sessions = scope.own(await scope.run(() => client.schedule(start, end))).data;
+        return sessions.filter(session => session.status === 'scheduled' && Date.parse(session.startsAt) >= now
+          && session.bookings.some(booking => booking.status === 'booked'))
+          .sort((a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt))[0] ?? null;
+      };
+      return await nextIn(from, week) ?? await nextIn(week, to);
+    }, staleTime: 0 });
   const progress = useQuery({ queryKey: [...scope.key, 'progress', memberId], enabled: scope.ready && !!memberId,
     queryFn: async () => scope.own(await scope.run(() => client.progress(memberId, scope.key[4]!))).data, staleTime: 0 });
   const pending = useQuery({ queryKey: [...scope.key, 'home', 'waivers', context.data?.role], enabled: scope.ready && !!context.data,
@@ -37,9 +44,7 @@ export function PortalHome({ client = portalClient }: { client?: PortalClient })
         scope.own(await scope.call(contracts.invoices, undefined, {}, { status, limit: 1, offset: 0 }))));
       return pages.reduce((total, page) => total + page.pagination.total, 0);
     }, staleTime: 0 });
-  const next = schedule.data?.filter(session => session.status === 'scheduled' && Date.parse(session.startsAt) >= Date.now()
-    && session.bookings.some(booking => booking.status === 'booked'))
-    .sort((a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt))[0];
+  const next = schedule.data;
   const date = dateFormatter('instant', bootstrap.data?.gym.timezone ?? 'UTC');
   const waiting = (query: { isPending: boolean; data: unknown }) => query.isPending || (query.data === undefined && scope.settling);
   return <Page className="max-w-3xl"><PortalRecovery moving={scope.moving}>

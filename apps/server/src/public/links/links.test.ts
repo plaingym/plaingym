@@ -83,9 +83,31 @@ async function fixture(purpose: SignedLinkPurposeName = 'pay_invoice', customer 
     method, headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json', origin: 'https://gym.example.test', ...(cookie ? { cookie } : {}) },
     ...(method === 'GET' ? {} : { body: JSON.stringify(body) }),
   });
-  return { gymId, clock, household, member, sibling, other, invoice, invoiceB, template, links, link, create, provider, uploads, waivers, checkout, service, app, request, path, mutation, completeAtStripe, accounts };
+  return { gymId, clock, household, member, sibling, other, invoice, invoiceB, template, links, link, create, provider, uploads, waivers, checkout, service, app, request, path, mutation, completeAtStripe, accounts, portalInvitations };
 }
 describe('signed-link pages through production registrations', () => {
+  it.each([true, false])('starts branding, password and locale reads together for an active=%s token', async active => {
+    const f = await fixture(), started = new Set<string>();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const password = vi.spyOn(f.portalInvitations, 'passwordRequired').mockImplementation(async () => {
+      started.add('password'); await gate; return false;
+    });
+    const brandingFor = vi.fn(async () => {
+      started.add('branding'); await gate;
+      return { name: 'One branded gym', branding: { logoKey: f.gymId + '/logo.png' } };
+    });
+    configureLinkPages({ brandingFor, portalInvitations: f.portalInvitations, scope: db.forHousehold,
+      waivers: f.waivers, checkout: f.checkout, links: f.links, receiptKey: new Uint8Array(32).fill(7),
+      localeFor: async () => { started.add('locale'); await gate; return 'fr-CA'; } });
+    const request = f.app().request('/l/' + (active ? f.link.token : 'x'.repeat(43)));
+    try { await vi.waitFor(() => expect([...started].sort()).toEqual(['branding', 'locale', 'password'])); }
+    finally { release(); password.mockRestore(); }
+    const response = await request, html = await response.text();
+    expect(response.status).toBe(active ? 200 : 404);
+    expect(html).toContain('One branded gym'); expect(html).toContain('lang="fr-CA"');
+    expect(brandingFor).toHaveBeenCalledTimes(1);
+  });
   it.each(['pay_invoice', 'update_card', 'sign_waiver', 'onboarding'] as const)('brands the active %s page and resolves branding from the request gym', async purpose => {
     const f = await fixture(purpose), page = await (await f.app().request('/l/' + f.link.token)).text();
     expect(page).toContain('North &lt;Gym&gt;'); expect(page).toMatch(/src="\/public\/pages\/logo\/[a-f0-9]+"/);

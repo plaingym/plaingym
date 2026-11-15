@@ -1,7 +1,6 @@
 {
   "contactGym": "Contact the gym",
   "contactMissing": "Contact details have not been added yet.",
-  "contactSettings": "Gym owners: set the address in Settings → Gym details, and public phone and email in Settings → Website.",
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
   "join": "Join online",
   "trial": "Try a class",

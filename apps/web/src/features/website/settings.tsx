@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { parseResponse } from '../../lib/response.js';
-import { useEffect, useId, useMemo, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { maxWebsitePhotos, websiteSettingsResponseSchema, type GymSettings, type WebsiteSettings as WebsiteSettingsData } from '@plaingym/shared/contracts';
 import { bootstrapKey } from '../../app/context.js';
@@ -17,8 +17,8 @@ import { prepareImage } from './images.js';
 
 const text = (key: string, values?: Record<string, string>) => t('website/website:' + key, values);
 const maxPhotos = maxWebsitePhotos;
-type Draft = Omit<WebsiteSettingsData, 'revision' | 'logo' | 'logoVersion'>;
-const draftOf = ({ revision: _revision, logo: _logo, logoVersion: _logoVersion, ...draft }: WebsiteSettingsData): Draft => draft;
+type Draft = Omit<WebsiteSettingsData, 'revision' | 'logo' | 'logoVersion' | 'accentColor'>;
+const draftOf = ({ revision: _revision, logo: _logo, logoVersion: _logoVersion, accentColor: _accentColor, ...draft }: WebsiteSettingsData): Draft => draft;
 type Sent = { response: { ok: boolean; status: number }; data?: unknown };
 
 function Field({ label, help, children }: { label: string; help?: string; children: (describedBy: string | undefined) => ReactNode }) {
@@ -36,6 +36,7 @@ function Field({ label, help, children }: { label: string; help?: string; childr
  */
 export function WebsiteSettings() {
   const cache = useQueryClient(), gym = useGymSettings();
+  const reading = useRef<AbortController | null>(null), savedRevision = useRef<number | null>(null);
   const [state, setState] = useState<{ data: WebsiteSettingsData; draft: Draft; dirty: boolean } | null>(null);
   const [failed, setFailed] = useState(false), [busy, setBusy] = useState(false), [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
   const shown = useMemo(() => message && { kind: message.error ? 'alert' as const : 'status' as const, text: message.text }, [message]);
@@ -49,7 +50,7 @@ export function WebsiteSettings() {
     setState((current) => {
       if (!current?.dirty || !keepEdits) return { data: loaded, draft: draftOf(loaded), dirty: false };
       const base = current.data, draft = { ...current.draft };
-      for (const field of ['tagline', 'about', 'phone', 'email', 'accentColor', 'primaryColor'] as const) {
+      for (const field of ['tagline', 'about', 'phone', 'email', 'primaryColor'] as const) {
         if (loaded[field] !== base[field]) draft[field] = loaded[field];
       }
       const known = new Map(base.photos.map((photo) => [photo.id, photo.alt])), now = new Map(loaded.photos.map((photo) => [photo.id, photo.alt]));
@@ -59,22 +60,32 @@ export function WebsiteSettings() {
       return { data: loaded, draft: { ...draft, photos }, dirty: true };
     });
   }
-  async function load(signal?: AbortSignal) {
+  async function load() {
+    reading.current?.abort();
+    savedRevision.current = null;
+    const controller = new AbortController();
+    reading.current = controller;
+    const { signal } = controller;
     setFailed(false);
     try {
-      const result = await api.GET('/api/website', { signal: signal ?? null });
-      if (signal?.aborted) return;
+      const result = await api.GET('/api/website', { signal });
+      if (signal.aborted) return;
       if (!result.response.ok || !result.data) throw new Error('The website settings request failed');
       show(parseResponse(websiteSettingsResponseSchema, result.data).data, true);
-    } catch { if (!signal?.aborted) setFailed(true); }
+    } catch { if (!signal.aborted) setFailed(true); }
   }
   // Other sections' saves also advance the revision: refresh the colors while preserving unsaved website text.
   useEffect(() => {
-    const controller = new AbortController();
-    void load(controller.signal);
-    return () => controller.abort();
+    // A successful save already supplied this revision, including after the shared settings reload.
+    if (savedRevision.current !== gym.settings?.revision) void load();
+    return () => reading.current?.abort();
   }, [gym.epoch, gym.settings?.revision]);
-  const adopt = (body: unknown, current: GymSettings): GymSettings => ({ ...current, revision: parseResponse(websiteSettingsResponseSchema, body).data.revision });
+  const adopt = (body: unknown, current: GymSettings): GymSettings => {
+    const { revision } = parseResponse(websiteSettingsResponseSchema, body).data;
+    savedRevision.current = revision;
+    reading.current?.abort();
+    return { ...current, revision };
+  };
   /** `kind` says what the save changed: the text (which resends the colors it read), a photo, or the logo. */
   async function run(send: (revision: number, signal: AbortSignal) => Promise<Sent>, done: string, kind: 'content' | 'photo' | 'logo') {
     setBusy(true); setMessage(null);
@@ -88,7 +99,7 @@ export function WebsiteSettings() {
         if (result.status === 409 || result.status === 404) void load();
         return;
       }
-      show(parseResponse(websiteSettingsResponseSchema, result.data).data, kind !== 'content'); setMessage({ text: text(done), error: false });
+      show(parseResponse(websiteSettingsResponseSchema, result.data).data, kind !== 'content'); setFailed(false); setMessage({ text: text(done), error: false });
       // The logo and the primary color also show in General, which would otherwise save back what it read before.
       if (kind !== 'photo') { gym.reload(); void cache.invalidateQueries({ queryKey: bootstrapKey }); }
     } catch { setMessage({ text: text('error'), error: true }); }
@@ -106,7 +117,7 @@ export function WebsiteSettings() {
     event.preventDefault();
     if (!state) return;
     const { draft } = state;
-    await run((revision, signal) => api.PUT('/api/website', { body: { revision, ...draft, accentColor: null,
+    await run((revision, signal) => api.PUT('/api/website', { body: { revision, ...draft,
       tagline: draft.tagline?.trim() || null, about: draft.about?.trim() || null, phone: draft.phone?.trim() || null, email: draft.email?.trim() || null }, signal }), 'saved', 'content');
   }
   if (!state) return failed

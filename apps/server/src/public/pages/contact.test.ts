@@ -7,11 +7,18 @@ import { jsx } from 'hono/jsx';
 
 const t = createTranslator(locales.en ?? {});
 const gym = { name: 'North <Gym>', revision: 1, logoKey: null, primaryColor: null };
-it('tells owners where to add missing public details without making up a contact link', () => {
+it('shows visitor guidance with no contact details without making up a contact link', () => {
   const html = publicLayout({ gym, title: 'Contact', t, content: jsx('p', null, 'Welcome') });
   expect(html).toContain('Contact details have not been added yet.');
-  expect(html).toContain('Settings → Gym details'); expect(html).toContain('Settings → Website');
+  expect(html).not.toContain('Gym owners:'); expect(html).not.toContain('Settings');
   expect(html).not.toContain('href="tel:'); expect(html).not.toContain('href="mailto:');
+});
+it.each(['/join', '/trial', '/drop-in'])('shows only the published phone on the shared %s shell', path => {
+  const html = publicLayout({ gym: { ...gym, phone: '+1 (604) 555-0100' }, title: path, t, content: jsx('p', null, 'Welcome') });
+  expect(html).toContain('href="tel:+16045550100"');
+  expect(html).not.toContain('Contact details have not been added yet.');
+  expect(html).not.toContain('Gym owners:'); expect(html).not.toContain('Settings');
+  expect(html).not.toContain('href="mailto:');
 });
 it('escapes address text and wraps long public contacts', () => {
   const html = publicLayout({ gym: { ...gym, address: { line1: '<script>bad()</script>', city: 'North' }, phone: '+1 (604) 555-0100', email: 'public@example.test' }, title: 'Contact', t, content: jsx('p', null, 'Welcome') });

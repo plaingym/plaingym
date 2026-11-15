@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { jsx as h } from 'hono/jsx';
 import { shortHash } from '../../public/short-hash.js';
+import { addressLines, telephoneHref } from '../../public/pages/page.js';
 import type { Translator } from '@plaingym/shared';
 import { formatMoney } from '../../core/money.js';
 import type { Site, SiteClass, SitePlan, SiteSession } from './service.js';
@@ -37,8 +38,6 @@ export function wallTime(localStartTime: string, offsetMinutes: number, locale =
 /** Weekday 0 is Sunday (2023-01-01 was one). */
 export const weekdayName = (weekday: number, locale = 'en') =>
   new Intl.DateTimeFormat(locale, { weekday: 'long', timeZone: 'UTC' }).format(Date.UTC(2023, 0, 1 + weekday));
-const addressLines = (address: Site['gym']['address']) => [address.line1, address.line2,
-  [address.city, address.region, address.postalCode].filter(Boolean).join(', '), address.country].filter((line): line is string => !!line && !!line.trim());
 const photoUrl = (id: string) => '/website/photos/' + id;
 /** Versioned by the logo file, so the address survives settings saves (search engines and open pages keep it). */
 const logoUrl = (site: Site) => '/public/pages/logo/' + site.gym.logoVersion;
@@ -92,7 +91,7 @@ function layout(input: SitePageInput, content: Node) {
       h('meta', { property: 'og:title', content: title }), h('meta', { property: 'og:description', content: description }),
       h('meta', { property: 'og:url', content: url }),
       image ? h('meta', { property: 'og:image', content: origin + photoUrl(image.id) }) : null,
-      h('link', { rel: 'stylesheet', href: '/public/pages/styles.css' }), h('link', { rel: 'stylesheet', href: '/website/theme.css?v=' + siteThemeVersion(site.gym.primaryColor, site.content.accentColor) }),
+      h('link', { rel: 'stylesheet', href: '/public/pages/styles.css' }), h('link', { rel: 'stylesheet', href: '/website/theme.css?v=' + siteThemeVersion(site.gym.primaryColor) }),
       structured ? h('script', { type: 'application/ld+json', nonce: input.nonce, dangerouslySetInnerHTML: { __html: scriptJson(localBusiness(site, origin)) } }) : null),
     h('body', { class: 'm-0 flex min-h-dvh flex-col bg-background text-foreground' },
       h('a', { href: '#main', class: 'sr-only focus:not-sr-only focus:block focus:p-3' }, text('skip')),
@@ -115,7 +114,7 @@ function layout(input: SitePageInput, content: Node) {
         h('div', { class: 'mx-auto grid w-full max-w-5xl gap-6 px-4 py-8 sm:grid-cols-2 sm:px-6' },
           h('div', { class: 'min-w-0 space-y-1' }, h('p', { class: 'break-words font-semibold' }, site.gym.name),
             ...lines.map((line) => h('p', { class: 'break-words' }, line)),
-            site.content.phone ? h('p', null, h('a', { href: 'tel:' + site.content.phone.replace(/[^+\d]/g, ''), class: 'inline-flex min-h-11 items-center underline' }, site.content.phone)) : null,
+            site.content.phone ? h('p', null, h('a', { href: telephoneHref(site.content.phone), class: 'inline-flex min-h-11 items-center underline' }, site.content.phone)) : null,
             site.content.email ? h('p', { class: 'break-all' }, h('a', { href: 'mailto:' + site.content.email, class: 'inline-flex min-h-11 items-center underline' }, site.content.email)) : null),
           h('nav', { 'aria-label': text('footer.label') }, h('ul', { class: 'flex flex-wrap gap-x-4' },
             ...[['/trial', 'trial'], ['/drop-in', 'dropIn'], ['/join', 'join'], ['/portal', 'signIn'], ['/source', 'source']].map(([href, key]) =>
@@ -236,9 +235,9 @@ function contactPage(input: SitePageInput) {
         lines.length ? h('address', { class: 'not-italic' }, ...lines.map((line) => h('p', { class: 'break-words' }, line))) : h('p', null, text('noAddress')),
         map ? h('p', null, h('a', { href: map, rel: 'noreferrer', class: 'inline-flex min-h-11 items-center underline' }, text('openMap'))) : null),
       h('section', { class: card + ' space-y-2' }, h('h2', { class: 'text-xl font-semibold' }, text('contact')),
-        phone ? h('p', { class: 'break-all' }, h('a', { href: 'tel:' + phone.replace(/[^+\d]/g, ''), class: 'inline-flex min-h-11 items-center underline' }, text('phone', { phone }))) : null,
+        phone ? h('p', { class: 'break-all' }, h('a', { href: telephoneHref(phone), class: 'inline-flex min-h-11 items-center underline' }, text('phone', { phone }))) : null,
         email ? h('p', { class: 'break-all' }, h('a', { href: 'mailto:' + email, class: 'inline-flex min-h-11 items-center underline' }, text('email', { email }))) : null,
-        !phone || !email ? h('p', null, text('noContact')) : null)),
+        !phone && !email ? h('p', null, text('noContact')) : null)),
     calls(input.t, true)];
 }
 const pages: Record<SitePage, (input: SitePageInput) => (Node | null)[]> = {
@@ -250,11 +249,11 @@ export function renderSitePage(input: SitePageInput): string {
 }
 
 /** Hash the rendered colors so restoring an older settings revision cannot reuse a different theme's URL. */
-export const siteThemeVersion = (primary: string | null, accent: string | null) =>
-  shortHash(siteThemeCss(primary, accent));
+export const siteThemeVersion = (primary: string | null) =>
+  shortHash(siteThemeCss(primary));
 
 /** Validated colors only: nothing a gym types can reach the stylesheet except a `#rrggbb` value. */
-export function siteThemeCss(primary: string | null, _accent: string | null) {
+export function siteThemeCss(primary: string | null) {
   const valid = (color: string | null): color is string => !!color && /^#[0-9a-f]{6}$/i.test(color);
   const foreground = (color: string) => {
     const [r, g, b] = [1, 3, 5].map((i) => parseInt(color.slice(i, i + 2), 16) / 255).map((c) => c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4) as [number, number, number];

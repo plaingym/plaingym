@@ -2,7 +2,7 @@
 // @vitest-environment jsdom
 import type { ReactNode } from 'react';
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { portalTestCache } from '../household/test-cache.test-helper.js';
 import type { PortalClient } from '../schedule/client.js';
@@ -11,7 +11,7 @@ import { PortalHome } from './home.js';
 vi.mock('../../../app/context.js', () => ({ useBootstrap: () => ({ data: { gym: { id: 'gym', timezone: 'UTC' }, session: { userId: 'user' } } }) }));
 vi.mock('@tanstack/react-router', async importOriginal => ({ ...await importOriginal<object>(),
   Link: ({ to, children }: { to: string; children: ReactNode }) => <a href={to}>{children}</a> }));
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 const memberId = '00000000-0000-7000-8000-000000000001';
 const householdId = '00000000-0000-7000-8000-000000000002';
 const answer = <T,>(data: T) => ({ data, householdId });
@@ -36,7 +36,7 @@ function fixture(role: 'payer' | 'member' = 'payer', empty = false) {
   vi.stubGlobal('fetch', fetcher);
   const cache = portalTestCache('gym', 'user', householdId, { defaultOptions: { queries: { retry: false } } });
   const view = () => render(<QueryClientProvider client={cache}><PortalHome client={client as unknown as PortalClient} /></QueryClientProvider>);
-  return { client, fetcher, view };
+  return { client, fetcher, view, cache };
 }
 it('shows the next booked class, check-in shortcut, pending work and selected member rank', async () => {
   const f = fixture(); f.view();
@@ -46,6 +46,9 @@ it('shows the next booked class, check-in shortcut, pending work and selected me
   expect(await screen.findByText('Unpaid invoices: 2,400')).toBeDefined();
   expect(await screen.findByText('Current: First')).toBeDefined(); expect(screen.getByText('Next: Second')).toBeDefined();
   expect(screen.getByRole('link', { name: 'Show check-in code' }).getAttribute('href')).toBe('/portal/checkin');
+  expect(f.client.schedule).toHaveBeenCalledTimes(1);
+  const [from, to] = f.client.schedule.mock.calls[0] as unknown as [string, string];
+  expect(Date.parse(to) - Date.parse(from)).toBe(7 * 86_400_000);
   expect(f.fetcher.mock.calls.every(([, init]) => new Headers((init as RequestInit | undefined)?.headers).get('X-Portal-Household') === householdId)).toBe(true);
 });
 it('never requests or renders invoice summaries for a non-payer', async () => {
@@ -69,4 +72,30 @@ it('never renders a schedule answer for another household', async () => {
   f.view(); await waitFor(() => expect(f.client.schedule).toHaveBeenCalled());
   await screen.findByRole('button', { name: 'Try again' });
   expect(screen.queryByText('Private class')).toBeNull();
+});
+it('reads the remaining month only when the first week has no booked class', async () => {
+  const f = fixture('payer', true);
+  const startsAt = new Date(Date.now() + 14 * 86_400_000).toISOString();
+  f.client.schedule.mockResolvedValueOnce(answer([])).mockResolvedValueOnce(answer([
+    { id: 'later', name: 'Later booking', startsAt, status: 'scheduled', bookings: [{ id: 'b', memberId, status: 'booked' }] },
+  ]));
+  f.view(); await screen.findByText('Later booking');
+  expect(f.client.schedule).toHaveBeenCalledTimes(2);
+  const calls = f.client.schedule.mock.calls as unknown as [string, string][];
+  expect(calls[1]![0]).toBe(calls[0]![1]);
+  expect(Date.parse(calls[1]![1]) - Date.parse(calls[0]![0])).toBe(30 * 86_400_000);
+});
+it('recomputes the window when a home left open for over a month refetches', async () => {
+  const f = fixture('payer', true), mountedAt = Date.now();
+  const now = vi.spyOn(Date, 'now').mockReturnValue(mountedAt);
+  f.view(); await screen.findByText('No booked classes in the next 30 days.');
+  now.mockReturnValue(mountedAt + 40 * 86_400_000);
+  const startsAt = new Date(Date.now() + 86_400_000).toISOString();
+  f.client.schedule.mockClear().mockResolvedValue(answer([
+    { id: 'later', name: 'Booking after a long stay', startsAt, status: 'scheduled', bookings: [{ id: 'b', memberId, status: 'booked' }] },
+  ]));
+  await act(() => f.cache.invalidateQueries({ predicate: query => query.queryKey.includes('schedule') }));
+  await screen.findByText('Booking after a long stay');
+  expect((f.client.schedule.mock.calls[0] as unknown as [string])[0]).toBe(new Date(Date.now()).toISOString());
+  expect(f.client.schedule).toHaveBeenCalledTimes(1);
 });

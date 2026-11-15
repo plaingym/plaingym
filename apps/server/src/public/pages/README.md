@@ -10,7 +10,8 @@ The shared shell on `/join`, `/trial` and `/drop-in` (including their status
 pages) shows the gym's address, public phone and public email when configured.
 The address comes from Settings → Gym details; phone and email come from
 Settings → Website and remain public with the website switched off. Missing
-details show guidance for gym owners. `/api/public/config` includes these optional
+channels are omitted; with no contact details, visitors see a short fallback.
+Owner setup guidance lives in the admin Website section. `/api/public/config` includes these optional
 fields in its gym branding projection; it never returns the rest of the website
 settings. The join pages use the same projection.
 

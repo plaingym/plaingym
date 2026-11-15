@@ -207,8 +207,9 @@ The public-area barrel includes these routes. The runtime calls
   the same per-gym provider as the webhook inbox and a trusted canonical origin;
 - `receiptKey`: a stable secret of at least 32 bytes, derived from the install's
   encryption key with a distinct context, never generated per process;
-- optional `gymNameFor(gymId)` for announcement pages; by default the existing
-  gym settings service reads the current gym's name;
+- optional `brandingFor(gymId)` for the gym name and logo on every page, including
+  announcements; by default the existing gym settings service reads both once.
+  Branding, password requirements and locale reads run concurrently;
 - the default translator and asset readers. An optional `localeFor(gymId)` resolver
   is supported. The context
   and settings currently have no display-locale field; the resolver defaults to

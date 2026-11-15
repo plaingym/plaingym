@@ -52,10 +52,10 @@
   "commitment": "Minimum term in months: {months}",
   "noCoaches": "Our coaches will be introduced here soon.",
   "location": "Location",
-  "noAddress": "The address has not been added yet. Gym owners: set it in Settings → Gym details.",
+  "noAddress": "The address has not been added yet.",
   "openMap": "Open in OpenStreetMap",
   "contact": "Contact",
   "phone": "Phone: {phone}",
   "email": "Email: {email}",
-  "noContact": "Gym owners: add missing public phone or email details in Settings → Website."
+  "noContact": "Use the links below to try a class or join."
 }

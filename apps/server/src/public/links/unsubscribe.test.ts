@@ -95,8 +95,9 @@ async function fixture(tenancy: 'single' | 'multi' = 'multi') {
   const [row] = await db.forGym(gymId, tx => tx.select().from(signedLinks));
   const links = createSignedLinksService({ scope: db.forGym, clock });
   const payments = new FakePayments(gymId, clock), uploads = new FakeUploads(gymId, clock);
-  configureLinkPages({ brandingFor: async () => ({ name: 'Example Academy', branding: {} }), scope: db.forHousehold, links, receiptKey: new Uint8Array(32).fill(7),
-    gymNameFor: async () => 'Example Academy', stylesheet: async () => '', browserScript: async () => '',
+  const brandingFor = vi.fn(async () => ({ name: 'Example Academy', branding: { logoKey: gymId + '/logo.png' } }));
+  configureLinkPages({ brandingFor, scope: db.forHousehold, links, receiptKey: new Uint8Array(32).fill(7),
+    stylesheet: async () => '', browserScript: async () => '',
     waivers: createWaiversService({ scope: db.forGym, clock, uploadsFor: async () => uploads }),
     checkout: createSignedLinkCheckout({ scope: db.forGym, clock, paymentsFor: async () => payments, originFor: async () => origin }) });
   const app = (resolvedGym = gymId, principal: Principal = { kind: 'anonymous' }) => createApp({ clock, skipSetup: true, tenancy,
@@ -108,7 +109,7 @@ async function fixture(tenancy: 'single' | 'multi' = 'multi') {
     { method, headers: { authorization: 'Bearer ' + credential, 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const click = (body = oneClickBody, credential = token, application = server, headers = {}) => application.request(origin + '/l/' + credential,
     { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers }, body });
-  return { gymId, otherGym, clock, member, sibling, outsider, token, row: row!, links, app, server, request, click };
+  return { gymId, otherGym, clock, member, sibling, outsider, token, row: row!, links, app, server, request, click, brandingFor };
 }
 
 it('GET has no side effects and the page and API show only the linked member, gym and announcement preference', async () => {
@@ -119,6 +120,8 @@ it('GET has no side effects and the page and API show only the linked member, gy
     expect(response.status).toBe(200); expect(response.headers.get('cache-control')).toContain('no-store');
     expect(response.headers.get('referrer-policy')).toBe('no-referrer');
     expect(html).toContain('Example Academy'); expect(html).toContain('Target'); expect(html).toContain('Unsubscribe');
+    expect(html).toMatch(/src="\/public\/pages\/logo\/[a-f0-9]+"/);
+    expect(f.brandingFor).toHaveBeenCalledTimes(i + 1);
     for (const privateText of ['Sibling', 'Outsider', 'secret@example.test', f.member.householdId, f.sibling.id, f.outsider.id,
       'data-checkout', 'data-waiver=', 'data-complete=']) expect(html).not.toContain(privateText);
     expect(html).not.toContain('Complete these steps');  }

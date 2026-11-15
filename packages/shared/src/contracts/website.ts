@@ -20,10 +20,10 @@ export const websiteSettingsSchema = z.strictObject({
 export type WebsiteSettings = z.infer<typeof websiteSettingsSchema>;
 export const websiteSettingsResponseSchema = z.strictObject({ data: websiteSettingsSchema });
 
-/** Text, colors and the photo list. Photos are added by upload; this reorders them, edits their text and removes any left out. */
+/** Text, colors and the photo list. Legacy accent input is optional and ignored. Photos are added by upload; this reorders them, edits their text and removes any left out. */
 export const updateWebsiteRequestSchema = z.strictObject({
   revision: revisionSchema, tagline: optionalText(160), about: optionalText(5000), phone: optionalText(40),
-  email: z.email().max(254).nullable(), accentColor: color.nullable(), primaryColor: color.nullable(),
+  email: z.email().max(254).nullable(), accentColor: z.unknown().optional(), primaryColor: color.nullable(),
   photos: z.array(z.strictObject({ id: idSchema, alt: z.string().trim().max(200) })).max(maxWebsitePhotos)
     .refine((photos) => new Set(photos.map((photo) => photo.id)).size === photos.length, 'List each photo once'),
 });

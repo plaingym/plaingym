@@ -81,9 +81,10 @@ for (const width of [360, 1280]) test(`website saves after a brand color change 
       if (route.request().method() === 'PUT') {
         saves++;
         const body = route.request().postDataJSON();
-        expect(body).toMatchObject({ revision: current.revision, primaryColor: '#123456', accentColor: null, tagline: 'Unsaved website text' });
+        expect(body).toMatchObject({ revision: current.revision, primaryColor: '#123456', tagline: 'Unsaved website text' });
+        expect(body).not.toHaveProperty('accentColor');
         current = { ...current, revision: current.revision + 1 };
-        website = { ...website, ...body, revision: current.revision };
+        website = { ...website, ...body, accentColor: null, revision: current.revision };
       }
       return route.fulfill({ json: { data: website } });
     }

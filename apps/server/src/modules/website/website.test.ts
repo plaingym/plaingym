@@ -342,6 +342,14 @@ describe('the customization API', () => {
     expect((await send('PUT', '/api/website', { ...data, photos: [{ id: uuidv7(), alt: 'Not uploaded' }] })).status).toBe(404);
   });
 
+  it.each([undefined, 'not-a-color', { legacy: true }, 42])('ignores a legacy accent update value %j', async accentColor => {
+    const before = editable(await service.settings(gymA));
+    const response = await send('PUT', '/api/website', { ...before, accentColor });
+    expect(response.status).toBe(200);
+    expect((await response.json() as { data: { accentColor: unknown } }).data.accentColor).toBeNull();
+    expect((await service.settings(gymA)).primaryColor).toBe(before.primaryColor);
+  });
+
   it('adds, reorders, describes and removes photos, releasing removed files after the save', async () => {
     const upload = async (bytes: Buffer, contentType: string, alt = 'Photo') => send('POST', '/api/website/photos',
       { revision: await revision(), contentType, base64: bytes.toString('base64'), alt });
