@@ -395,7 +395,8 @@ export class StripePayments implements Payments {
   async clearCustomerEmail(customerId: string, options: ClearCustomerEmail): Promise<void> {
     assertNoTransaction('payments.clearCustomerEmail');
     const path = this.#path('customers', customerId);
-    const methodPath = options.paymentMethodId === undefined ? undefined : this.#path('payment_methods', options.paymentMethodId);
+    const methodPaths = [...new Set([...(options.paymentMethodIds ?? []), ...(options.paymentMethodId ? [options.paymentMethodId] : [])])]
+      .map(methodId => this.#path('payment_methods', methodId));
     let customer: ObjectData;
     try { customer = await this.#get(path); }
     catch (error) { if (absent(error)) return; throw error; }
@@ -403,20 +404,23 @@ export class StripePayments implements Payments {
     const metadata = data(customer.metadata ?? {});
     if (metadata.gym_id !== undefined && metadata.gym_id !== this.gymId) throw new NotForGym('Customer belongs to another gym');
     if (metadata.household_id !== undefined && metadata.household_id !== options.householdId) throw new Error('Customer belongs to another household');
-    // Validate both owners before the first write. Untagged imported customers are checked by the caller's local link.
-    let method: ObjectData | undefined;
-    if (methodPath) {
+    // Validate every owner before the first write. Untagged imported customers are checked by the caller's local link.
+    const methods: { path: string; method: ObjectData }[] = [];
+    for (const methodPath of methodPaths) {
+      let method: ObjectData | undefined;
       try { method = await this.#get(methodPath); }
       catch (error) { if (!absent(error)) throw error; }
       if (method?.customer) {
         if (data(method.metadata ?? {}).gym_id !== undefined) this.#metadata(method);
         if (id(method.customer) !== customerId) throw new Error('Card belongs to another customer');
+        methods.push({ path: methodPath, method });
       }
     }
     // No idempotency key: every retry reads current fields and never replays a cached write over a replacement address.
-    if (matchesBillingEmail(customer.email, options.emailDigest)) await this.#post(path, { email: '' });
-    if (methodPath && method?.customer && matchesBillingEmail(data(method.billing_details ?? {}).email, options.emailDigest))
-      await this.#post(methodPath, { billing_details: { email: '' } });
+    if (matchesBillingEmail(customer.email, options.emailDigest, options.secret)) await this.#post(path, { email: '' });
+    for (const { path: methodPath, method } of methods)
+      if (matchesBillingEmail(data(method.billing_details ?? {}).email, options.emailDigest, options.secret))
+        await this.#post(methodPath, { billing_details: { email: '' } });
   }
   async redactCustomer(customerId: string): Promise<void> {
     assertNoTransaction('payments.redactCustomer');
@@ -442,9 +446,37 @@ export class StripePayments implements Payments {
         ...(holds(customer.business_name) ? { business_name: '' } : {}),
         ...(holds(customFields) ? { invoice_settings: { custom_fields: '' } } : {}) });
     }
+    await this.#redactAttachedCards(customerId);
     // Tax IDs are separate objects (a VAT number names the person or business), so they are deleted whatever the rest held.
     // They go last, so a key that can't manage them still has the customer's own fields cleared before the job reports it.
     await this.#deleteTaxIds(path);
+  }
+  /** Attached cards can outlive their local rows. Paginate without detaching or changing payment history. */
+  async #redactAttachedCards(customerId: string): Promise<void> {
+    try {
+      let cursor: string | undefined;
+      for (;;) {
+        const page = await this.#get('/v1/payment_methods', { customer: customerId, type: 'card', limit: 100,
+          ...(cursor ? { starting_after: cursor } : {}) });
+        const methods = (Array.isArray(page.data) ? page.data : []).map(data);
+        for (const method of methods) {
+          if (id(method.customer) !== customerId) throw new Error('Card belongs to another customer');
+          if (data(method.metadata ?? {}).gym_id !== undefined) this.#metadata(method);
+          if (holds(method.billing_details)) {
+            try { await this.#post(this.#path('payment_methods', id(method.id)), { billing_details: { name: '', email: '', phone: '', address: '' } }); }
+            catch (error) { if (!absent(error)) throw error; }
+          }
+        }
+        if (!page.has_more) return;
+        const next = methods.at(-1)?.id;
+        if (typeof next !== 'string' || next === cursor) throw new Error('Invalid card pagination');
+        cursor = next;
+      }
+    } catch (error) {
+      if ((error as { statusCode?: number } | null)?.statusCode === 403)
+        throw new Error('Check the Stripe permission for Payment Methods', { cause: error });
+      throw error;
+    }
   }
   /** Deletes every tax ID of the customer, a page at a time (a deleted one leaves the list). */
   async #deleteTaxIds(customerPath: string): Promise<void> {

@@ -10,12 +10,13 @@ import { FakeJobs, PostgresJobs } from '../../infra/jobs/index.js';
 import { billingEmailDigest, FakePayments } from '../../infra/payments/index.js';
 import { createMembersService } from './members.js';
 import { createErasureJobs } from './members.routes.js';
-import { clearBillingEmailJob } from './erasure-redaction.js';
+import { billingEmailClearedAction, clearBillingEmailJob, queueEarlierRedactions, redactEarlierJob } from './erasure-redaction.js';
 
 const database = useTestDatabase(), factory = createFactories(database), gymId = uuidv7(), otherGym = uuidv7();
 const clock = new TestClock('2026-11-14T12:00:00Z');
 const context = { gymId, actor: { kind: 'system' as const } };
-const service = createMembersService({ scope: database.forGym, clock });
+const billingEmailSecret = 'fixture-member-email-erasure-secret';
+const service = createMembersService({ scope: database.forGym, clock, billingEmailSecret });
 beforeAll(async () => { await factory('gyms', gymId); await factory('gyms', otherGym); });
 
 async function fixture(email: string | null = ' PAYER@EXAMPLE.INVALID ', customer = true, cardPrefix = 'pm_') {
@@ -44,7 +45,7 @@ function handler(payments: FakePayments) {
     expect(gym).toBe(gymId);
     await payments.clearCustomerEmail(customerId, options);
   });
-  const job = createErasureJobs({ clearBillingEmail: clear, scope: database.forGym }).find(job => job.id === clearBillingEmailJob)!;
+  const job = createErasureJobs({ clearBillingEmail: clear, billingEmailSecret, scope: database.forGym }).find(job => job.id === clearBillingEmailJob)!;
   return { clear, run: (payload: unknown, gym = gymId) => job.handler(payload, { gymId: gym, jobId: 'clear-email', timezone: 'UTC', attempt: 1, clock }) };
 }
 
@@ -53,10 +54,12 @@ describe.each(['fake', 'postgres'] as const)('%s payer email erasure', kind => {
   it('queues once, audits the email clear and runs idempotently without erasing the remaining household', async () => {
     const { home, person, remaining, customerId, card, payments } = await fixture(), jobs = queue();
     const result = await service.eraseMember(context, person.id, { revision: 1 }, { jobs, timezone: 'UTC' });
-    const expected = { householdId: home.id, customerId, paymentMethodId: card.processorId, emailDigest: billingEmailDigest('payer@example.invalid') };
+    const payload = (await jobPayload(jobs, customerId))[0]!.payload as { erasureId: string };
+    const expected = { householdId: home.id, customerId, erasureId: payload.erasureId, paymentMethodIds: [card.processorId], emailDigest: billingEmailDigest('payer@example.invalid', billingEmailSecret) };
     expect(await jobPayload(jobs, customerId)).toEqual([{ payload: expected,
-      key: kind === 'fake' ? `clear-billing-email:${person.id}` : expect.stringMatching(/^[a-f0-9]{64}$/), attempts: 12 }]);
+      key: kind === 'fake' ? `clear-billing-email:${payload.erasureId}` : expect.stringMatching(/^[a-f0-9]{64}$/), attempts: 12 }]);
     expect(JSON.stringify(await jobPayload(jobs, customerId))).not.toContain('payer@example.invalid');
+    expect(JSON.stringify(await jobPayload(jobs, customerId))).not.toContain(billingEmailSecret);
     expect(result).toMatchObject({ householdErased: false, erasedCustomerId: null, revokedCards: [] });
     const stored = await database.forGym(gymId, async tx => ({
       home: (await tx.select().from(households).where(eq(households.id, home.id)))[0],
@@ -73,16 +76,23 @@ describe.each(['fake', 'postgres'] as const)('%s payer email erasure', kind => {
     expect(payments.billingDetails(card.processorId)).toMatchObject({ email: null, name: 'Card holder' });
     expect(await payments.readPaymentObject({ kind: 'payment_method', id: card.processorId })).toMatchObject({ status: 'found' });
     await expect(service.eraseMember(context, person.id, { revision: 1 }, { jobs, timezone: 'UTC' })).rejects.toThrow();
-    // Another erased member still leaves a third member, but the household has no erased address to clear again.
+    const completed = await database.forGym(gymId, tx => tx.select().from(auditEvents).where(and(eq(auditEvents.action, billingEmailClearedAction), eq(auditEvents.targetId, home.id))));
+    expect(completed).toHaveLength(2);
+    expect(completed[0]).toMatchObject({ actorKind: 'system', after: { stripeCustomerId: customerId, erasure: payload.erasureId }, occurredAt: clock.now() });
+    expect(JSON.stringify(completed)).not.toContain(expected.emailDigest);
+    // Every erased email is checked at the provider even when no local billing email remains.
     await factory('members', gymId, { householdId: home.id });
     await service.eraseMember(context, remaining.id, { revision: 1 }, { jobs, timezone: 'UTC' });
-    expect(await jobPayload(jobs, customerId)).toHaveLength(1);
+    expect(await jobPayload(jobs, customerId)).toHaveLength(2);
   });
-  it.each(['remaining@example.invalid', null])('queues nothing for a different or absent household email: %s', async email => {
-    const { home, person, customerId } = await fixture(email), jobs = queue();
+  it.each(['remaining@example.invalid', null])('clears provider leftovers despite a different or absent household email: %s', async email => {
+    const { home, person, customerId, payments } = await fixture(email), jobs = queue();
     await service.eraseMember(context, person.id, { revision: 1 }, { jobs, timezone: 'UTC' });
-    expect(await jobPayload(jobs, customerId)).toEqual([]);
-    const [audit] = await database.forGym(gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, home.id)));
+    const [queued] = await jobPayload(jobs, customerId);
+    expect(queued).toBeDefined();
+    await handler(payments).run(queued!.payload);
+    expect(payments.customer(customerId!)!.email).toBeNull();
+    const [audit] = await database.forGym(gymId, tx => tx.select().from(auditEvents).where(and(eq(auditEvents.targetId, home.id), eq(auditEvents.action, 'household.pin.cleared'))));
     expect(audit?.after ?? {}).not.toHaveProperty('billingEmailCleared');
   });
   it('audits the local clear without queuing when the customer is absent', async () => {
@@ -100,7 +110,7 @@ describe.each(['fake', 'postgres'] as const)('%s payer email erasure', kind => {
         .some(row => JSON.stringify(row.payload).includes(customerId!))).toBe(true);
       throw new Error('fail before commit');
     });
-    await expect(createMembersService({ scope, clock }).eraseMember(context, person.id, { revision: 1 }, { jobs, timezone: 'UTC' })).rejects.toThrow('fail before commit');
+    await expect(createMembersService({ scope, clock, billingEmailSecret }).eraseMember(context, person.id, { revision: 1 }, { jobs, timezone: 'UTC' })).rejects.toThrow('fail before commit');
     expect(await jobPayload(jobs, customerId)).toEqual([]);
     const stored = await database.forGym(gymId, async tx => ({
       home: (await tx.select().from(households).where(eq(households.id, home.id)))[0],
@@ -139,7 +149,7 @@ it('clears an imported default card that keeps a legacy card ID', async () => {
   const { person, customerId, card, payments } = await fixture(undefined, true, 'card_'), jobs = new FakeJobs(clock);
   await service.eraseMember(context, person.id, { revision: 1 }, { jobs, timezone: 'UTC' });
   const [queued] = await jobPayload(jobs, customerId);
-  expect(queued!.payload).toMatchObject({ paymentMethodId: card.processorId });
+  expect(queued!.payload).toMatchObject({ paymentMethodIds: [card.processorId] });
   await handler(payments).run(queued!.payload);
   expect(payments.customer(customerId!)!.email).toBeNull();
   expect(payments.billingDetails(card.processorId)).toMatchObject({ email: null, name: 'Card holder' });
@@ -151,7 +161,58 @@ it('propagates a provider failure so the queue retries, and refuses an unwired c
   const payload = (await jobPayload(jobs, customerId))[0]!.payload;
   const clear = vi.fn(async () => { throw new Error('provider unavailable'); });
   const ctx = { gymId, jobId: 'retry', timezone: 'UTC', attempt: 1, clock };
-  const failing = createErasureJobs({ clearBillingEmail: clear, scope: database.forGym }).find(job => job.id === clearBillingEmailJob)!;
+  const failing = createErasureJobs({ clearBillingEmail: clear, billingEmailSecret, scope: database.forGym }).find(job => job.id === clearBillingEmailJob)!;
   await expect(failing.handler(payload, ctx)).rejects.toThrow('provider unavailable');
+  expect(await database.forGym(gymId, tx => tx.select().from(auditEvents).where(and(eq(auditEvents.action, billingEmailClearedAction),
+    eq(auditEvents.targetId, (payload as { householdId: string }).householdId))))).toEqual([]);
   await expect(createErasureJobs({}).find(job => job.id === clearBillingEmailJob)!.handler(payload, ctx)).rejects.toThrow('not configured');
+});
+
+it('queues every unrevoked card and clears non-default email copies without changing the cards', async () => {
+  const { home, person, card, payments, customerId } = await fixture('replacement@example.invalid');
+  const extra = await factory('paymentMethods', gymId, { householdId: home.id, isDefault: false, processorId: 'pm_extra_' + uuidv7().replaceAll('-', '') });
+  const revoked = await factory('paymentMethods', gymId, { householdId: home.id, isDefault: false, revokedAt: clock.now() });
+  const foreign = await factory('paymentMethods', otherGym);
+  payments.recordPaymentMethod({ id: extra.processorId, customerId: customerId!, brand: 'visa', last4: '4242', expiresMonth: 12, expiresYear: 2030 });
+  payments.setBillingDetails(extra.processorId, { email: 'payer@example.invalid', name: 'Second card holder' });
+  const jobs = new PostgresJobs({ database, clock });
+  await service.eraseMember(context, person.id, { revision: 1 }, { jobs, timezone: 'UTC' });
+  const [queued] = await jobPayload(jobs, customerId), payload = queued!.payload as { paymentMethodIds: string[] };
+  expect(payload.paymentMethodIds.sort()).toEqual([card.processorId, extra.processorId].sort());
+  expect(payload.paymentMethodIds).not.toContain(revoked.processorId);
+  expect(payload.paymentMethodIds).not.toContain(foreign.processorId);
+  await handler(payments).run(payload);
+  expect(payments.billingDetails(extra.processorId)).toEqual({ email: null, name: 'Second card holder' });
+  const stored = await database.forGym(gymId, tx => tx.select().from(households).where(eq(households.id, home.id)));
+  expect(stored[0]!.email).toBe('replacement@example.invalid');
+});
+
+it('recovers an exhausted email clear in the daily sweep, scoped to its gym, then audits completion', async () => {
+  const { home, person, customerId, payments } = await fixture();
+  const jobs = new PostgresJobs({ database, clock });
+  await service.eraseMember(context, person.id, { revision: 1 }, { jobs, timezone: 'UTC' });
+  const [queued] = await jobPayload(jobs, customerId);
+  const exhausted = await database.forGym(gymId, tx => tx.update(jobRows).set({ status: 'failed', attempts: 12 })
+    .where(and(eq(jobRows.name, clearBillingEmailJob), eq(jobRows.idempotencyKey, queued!.key!))).returning({ id: jobRows.id }));
+  expect(exhausted).toHaveLength(1);
+  expect(await queueEarlierRedactions({ gymId: otherGym, timezone: 'UTC', jobs, clock, scope: database.forGym })).toBe(0);
+  const daily = createErasureJobs({ jobs, scope: database.forGym }).find(job => job.id === redactEarlierJob)!;
+  await daily.handler({}, { gymId, timezone: 'UTC', jobId: 'daily', attempt: 1, clock });
+  const [retried] = await database.forGym(gymId, tx => tx.select().from(jobRows).where(eq(jobRows.id, exhausted[0]!.id)));
+  expect(retried).toMatchObject({ status: 'pending', attempts: 0 });
+  expect(await queueEarlierRedactions({ gymId, timezone: 'UTC', jobs, clock, scope: database.forGym })).toBe(0);
+  await handler(payments).run(queued!.payload);
+  const completed = await database.forGym(gymId, tx => tx.select().from(auditEvents).where(and(eq(auditEvents.action, billingEmailClearedAction), eq(auditEvents.targetId, home.id))));
+  expect(completed).toHaveLength(1);
+  expect(completed[0]!.occurredAt).toEqual(clock.now());
+  // Even a stale failed queue row must not revive an operation whose provider clear completed.
+  await database.forGym(gymId, tx => tx.update(jobRows).set({ status: 'failed', attempts: 12 }).where(eq(jobRows.id, exhausted[0]!.id)));
+  expect(await queueEarlierRedactions({ gymId, timezone: 'UTC', jobs, clock, scope: database.forGym })).toBe(0);
+});
+
+it('fails closed and rolls erasure back when its HMAC secret is missing', async () => {
+  const { person } = await fixture();
+  await expect(createMembersService({ scope: database.forGym, clock }).eraseMember(context, person.id, { revision: 1 },
+    { jobs: new FakeJobs(clock), timezone: 'UTC' })).rejects.toMatchObject({ code: 'unavailable' });
+  expect((await service.getMember(gymId, person.id)).anonymizedAt).toBeNull();
 });

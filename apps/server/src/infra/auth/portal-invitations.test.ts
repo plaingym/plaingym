@@ -23,6 +23,9 @@ import { createAuthService } from './service.js';
 import { sessionMiddleware } from './middleware.js';
 import { passwordAdapter } from './password.js';
 import { createPortalClaimCodes } from './portal-invitations.js';
+import { createMembersService } from '../../areas/members/members.js';
+import { createMembersRoutes } from '../../areas/members/members.routes.js';
+import { FakeJobs } from '../jobs/index.js';
 
 const db = useTestDatabase(), factory = createFactories(db), clock = new TestClock('2026-10-28T12:00:00Z'), mail = new FakeEmail();
 const config = authConfig({ AUTH_SECRET: 'portal-test-secret-at-least-32-characters', AUTH_PASSWORD_LOGIN: 'on' }, false), password = 'member-test-password-123';
@@ -39,14 +42,15 @@ async function fixture(role: StaffRole = 'owner') {
   const gymId = uuidv7(), otherGymId = uuidv7(); await factory('gyms', gymId); await factory('gyms', otherGymId);
   const actor = await factory('staffRoles', gymId, { role }), home = await factory('households', gymId), other = await factory('households', gymId), foreign = await factory('households', otherGymId);
   const member = await factory('members', gymId, { householdId: home.id });
+  await factory('members', gymId, { householdId: other.id });
   const origin = `https://${gymId}.example.test`;
   return { gymId, otherGymId, actor, home, other, foreign, member, origin, role };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
-function app(f: Fixture, service = invitations, principal?: Principal, gymId = f.gymId) {
+function app(f: Fixture, service = invitations, principal?: Principal, gymId = f.gymId, extraRoutes: ReturnType<typeof createMembersRoutes> = []) {
   const app = new OpenAPIHono<RequestEnvironment>({ defaultHook: (result, ctx) => { if (!result.success) return respondError(ctx, result.error); } });
   app.use('*', async (ctx, next) => { ctx.set('context', { principal: principal ?? { kind: 'staff', gymId, userId: f.actor.userId, roles: [f.role] }, gym: { gymId, timezone: 'UTC', enabledModules: new Set() }, clock, requestId: 'portal-invite-test' }); await next(); });
-  app.onError(errorHandler); createServerRegistry({ routes: createPortalInvitationRoutes({ service, origin: () => f.origin }) }).mount(app, createPortalAuthorization(householdContext), new Set()); return app;
+  app.onError(errorHandler); createServerRegistry({ routes: [...createPortalInvitationRoutes({ service, origin: () => f.origin }), ...extraRoutes] }).mount(app, createPortalAuthorization(householdContext), new Set()); return app;
 }
 const send = (server: ReturnType<typeof app>, path: string, body: unknown) => server.request(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 const input = (email = uuidv7() + '@example.test') => ({ email, scope: 'payer' as const, delivery: 'print' as const });
@@ -61,6 +65,22 @@ const lastClaim = () => sent.at(-1)!.claim;
 const onboardingLink = (f: Fixture, overrides: Record<string, unknown> = {}) => factory('signedLinks', f.gymId, { householdId: f.home.id, purpose: 'onboarding', invoiceId: null, memberId: null, expiresAt: new Date('2026-11-01T00:00:00Z'), ...overrides });
 
 describe('portal invitations', () => {
+  it('refuses a payer invitation after last-member erasure even when post-commit revocation fails', async () => {
+    const f = await fixture(), issued = await invite(f);
+    let revocationFailed = false;
+    const members = createMembersService({ scope: db.forGym, clock });
+    const routes = createMembersRoutes(members, undefined, { jobs: new FakeJobs(clock), clock, invitations: { async revokeFor() {
+      revocationFailed = true;
+      throw new Error('invitation store unavailable');
+    } } });
+    const erased = await send(app(f, invitations, undefined, f.gymId, routes), `/api/members/${f.member.id}/anonymize`, { revision: 1 });
+    expect(erased.status).toBe(200);
+    expect(revocationFailed).toBe(true);
+    expect((await members.getMember(f.gymId, f.member.id)).anonymizedAt).not.toBeNull();
+    const accepted = await send(app(f, invitations, { kind: 'anonymous' }), '/api/portal/invitations/accept', { token: issued.token, password });
+    expect(accepted.status).toBe(404);
+    expect(await links(f.gymId, issued.userId)).toEqual([]);
+  });
   it.each(staffRoles)('checks invite and password-reset permissions for %s', async role => {
     const f = await fixture(role), server = app(f), allowed = role !== 'coach';
     expect((await send(server, `/api/households/${f.home.id}/portal-invitations`, input())).status).toBe(allowed ? 200 : 403);

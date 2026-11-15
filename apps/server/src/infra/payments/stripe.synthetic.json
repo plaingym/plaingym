@@ -2204,6 +2204,22 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
+            "path": "/v1/payment_methods",
+            "params": {
+              "customer": "cus_1",
+              "type": "card",
+              "limit": 100
+            }
+          },
+          "output": {
+            "data": [],
+            "has_more": false
+          }
+        },
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "GET",
             "path": "/v1/customers/cus_1/tax_ids",
             "params": {
               "limit": 100
@@ -2235,6 +2251,22 @@
             "address": null,
             "shipping": null,
             "description": null
+          }
+        },
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "GET",
+            "path": "/v1/payment_methods",
+            "params": {
+              "customer": "cus_1",
+              "type": "card",
+              "limit": 100
+            }
+          },
+          "output": {
+            "data": [],
+            "has_more": false
           }
         },
         {

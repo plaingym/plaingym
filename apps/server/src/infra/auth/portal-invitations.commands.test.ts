@@ -21,6 +21,7 @@ async function fixture() {
   await factory('gyms', gymId);
   const owner = await factory('staffRoles', gymId, { role: 'owner' }), coach = await factory('staffRoles', gymId, { role: 'coach' });
   const home = await factory('households', gymId);
+  await factory('members', gymId, { householdId: home.id });
   const service = createPortalInvitationService({ config, database: () => db.system.db, scope: db.forGym, householdScope: db.forHousehold,
     smtpConfigured: async () => true, mailer: async () => fake, loginLink: async input => { logins.push(input); } });
   const email = uuidv7() + '@example.test', actor = { gymId, userId: owner.userId, clock };

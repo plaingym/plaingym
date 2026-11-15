@@ -51,6 +51,12 @@ Nodemailer reports a lost socket or a timeout as command `CONN` in every phase, 
 injected clock and stale-in-flight classification as `state(gymId, key)`. Announcements
 use it while holding their reservation lock, without opening a nested transaction.
 The `(gym_id, command_digest)` index supports duplicate-destination checks.
+Member erasure computes shared-address announcement digests once per announcement
+from that member's recipient rows and clears matching delivery digests through
+this index. Cancellation notices retain their bounded key-range update.
+The separate billing-email erasure queue uses a versioned HMAC under a key derived
+from `AUTH_SECRET`, passed through `configureMembers`; its payload never holds the
+address or the secret, and its completion audit holds identifiers only.
 
 `createEmailDeliveries({ scope, clock }).send(gymId, key, email, message)` sends at most one message per gym and idempotency key. It first commits the key as `sending` in `email_deliveries` (gym-scoped, forced row-level security), then calls the transport outside any transaction, then records `accepted` (sent), `not_accepted` (suppressed, or a `not_accepted` DeliveryError) or `unknown` (any other failure) in a new short transaction. A later call returns `{ status: 'skipped', state }` without sending when the key is `accepted` or `unknown`, and sends again only after `not_accepted`; a compare-and-set on the attempt count keeps a stale attempt from overwriting a newer one. `state(gymId, key)` reads the current state.
 

@@ -12,6 +12,7 @@ it('delivers portal invitations to the demo outbox on the canonical gym origin',
   const sandbox = app.sandbox, ownerCookie = await app.login('owner');
   const send = vi.spyOn(SmtpEmail.prototype, 'sendEmail').mockRejectedValue(new Error('SMTP must not run'));
   const home = await factory('households', sandbox.gymId), email = 'portal.invite@example.invalid';
+  await factory('members', sandbox.gymId, { householdId: home.id });
   const response = await app.post(`/api/households/${home.id}/portal-invitations`, {
     email, scope: 'payer', delivery: 'email', sendGeneration: uuidv7(),
   }, sandbox.origin, { cookie: ownerCookie });

@@ -10,7 +10,7 @@ import type { RequestContext } from '../../core/context.js';
 import { createMembersService, type MembersService } from './members.js';
 import { createMemberPhotoService, type MemberUploads } from './photos.js';
 import type { HouseholdPinSecret } from './pin.js';
-import type { Jobs } from '../../infra/jobs/index.js';
+import type { JobRecovery, Jobs } from '../../infra/jobs/index.js';
 import { promoteWaitlist } from '../bookings/bookings.js';
 import type { DetachOptions } from '../../infra/payments/index.js';
 import { releaseFiles } from '../../infra/storage/release.js';
@@ -37,20 +37,23 @@ function jsonRoute(contract: c.EndpointContract, handler: (context: RequestConte
 }
 
 type ErasureOptions = { clock?: Clock; detachCard?: (gymId: string, processorId: string, options?: DetachOptions) => Promise<void>;
+  /** AUTH_SECRET; the payments helper derives a separate HMAC key. Never queued. */
+  billingEmailSecret?: string;
   invitations?: Pick<ReturnType<typeof createPortalInvitationStore>, 'revokeFor'>;
   /** Payments.redactCustomer for the gym: the erased household's provider customer keeps no name or email. */
   redactCustomer?: (gymId: string, customerId: string) => Promise<void>;
   /** Gym-scoped Payments.clearCustomerEmail; the job checks the local household link before calling it. */
   clearBillingEmail?: ClearBillingEmail;
   /** Erasure commits its cleanup jobs with it: without a queue the erasure route refuses (`unavailable`) before erasing. */
-  jobs?: Pick<Jobs, 'enqueue'> };
+  jobs?: Pick<Jobs, 'enqueue'> & Partial<JobRecovery> };
 export { redactCustomerJob, releaseErasedFilesJob };
 const redactPayload = z.object({ customerId: z.string().regex(/^cus_[A-Za-z0-9_]+$/) });
 type Composition = ErasureOptions & { service: MembersService; photos: ReturnType<typeof createMemberPhotoService> | undefined; uploadsFor?: MemberUploads };
 let configured: Composition | undefined;
 /** Runtime supplies the gym key for household PINs, file storage for photos and the job queue for erasure before serving requests. */
 export function configureMembers(options: ErasureOptions & { pinSecret: HouseholdPinSecret; uploadsFor: MemberUploads; jobs: Pick<Jobs, 'enqueue'>; clock?: Clock }) {
-  const service = createMembersService({ pinSecret: options.pinSecret, ...(options.clock ? { clock: options.clock } : {}) });
+  const service = createMembersService({ pinSecret: options.pinSecret, ...(options.billingEmailSecret ? { billingEmailSecret: options.billingEmailSecret } : {}),
+    ...(options.clock ? { clock: options.clock } : {}) });
   configured = { ...options, service, photos: createMemberPhotoService(service, options.uploadsFor) };
 }
 /**
@@ -58,7 +61,7 @@ export function configureMembers(options: ErasureOptions & { pinSecret: Househol
  * cleared) and the release of the erased member's files (the payload carries their keys). Card detaches use the billing
  * area's `billing.payments.detach` job.
  */
-export function createErasureJobs(supplied?: Pick<ErasureOptions, 'redactCustomer' | 'clearBillingEmail' | 'jobs'> & { scope?: typeof forGym; uploadsFor?: MemberUploads }): readonly JobRegistration[] {
+export function createErasureJobs(supplied?: Pick<ErasureOptions, 'redactCustomer' | 'clearBillingEmail' | 'billingEmailSecret' | 'jobs'> & { scope?: typeof forGym; uploadsFor?: MemberUploads }): readonly JobRegistration[] {
   return [{ id: redactCustomerJob, async handler(payload, ctx) {
     const { customerId } = redactPayload.parse(payload);
     const redact = (supplied ?? configured)?.redactCustomer;
@@ -66,9 +69,9 @@ export function createErasureJobs(supplied?: Pick<ErasureOptions, 'redactCustome
     await redact(ctx.gymId, customerId);
   } },
   { id: clearBillingEmailJob, async handler(payload, ctx) {
-    const clear = (supplied ?? configured)?.clearBillingEmail;
+    const { clearBillingEmail: clear, billingEmailSecret: secret } = (supplied ?? configured) ?? {};
     if (!clear) throw new Error('Billing email erasure is not configured');
-    await clearErasedBillingEmail(payload, ctx.gymId, clear, supplied?.scope);
+    await clearErasedBillingEmail(payload, ctx.gymId, clear, { secret: secret ?? '', clock: ctx.clock, ...(supplied?.scope ? { scope: supplied.scope } : {}) });
   } },
   { id: releaseErasedFilesJob, async handler(payload, ctx) {
     const uploadsFor = (supplied ?? configured)?.uploadsFor;

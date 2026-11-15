@@ -12,7 +12,7 @@ import { clock as defaultClock } from '../../core/clock.js';
 import { hashHouseholdPin, type HouseholdPinSecret } from './pin.js';
 import { withJobTransaction, type Jobs, type JobTransaction } from '../../infra/jobs/index.js';
 import { logError } from '../../core/log.js';
-import { clearBillingEmailJob, eraseCreditReasons, redactCustomerJob, releaseErasedFilesJob } from './erasure-redaction.js';
+import { billingEmailQueuedAction, clearBillingEmailJob, eraseCreditReasons, redactCustomerJob, releaseErasedFilesJob } from './erasure-redaction.js';
 import { billingEmailDigest } from '../../infra/payments/index.js';
 import { detachJob } from '../billing/payments.mutations.js';
 import { unscheduled } from '../billing/memberships.plan-change.js';
@@ -61,7 +61,7 @@ async function queueReleasedFiles(transaction: JobTransaction, cleanup: ErasureQ
   }, transaction);
 }
 /** `pinSecret` resolves the gym's random key (`areas/settings/gym-keys.ts`); without it, setting a PIN fails closed. */
-export interface MembersOptions { scope?: typeof forGym; clock?: Clock; pinSecret?: HouseholdPinSecret }
+export interface MembersOptions { scope?: typeof forGym; clock?: Clock; pinSecret?: HouseholdPinSecret; billingEmailSecret?: string }
 export function createMembersService(options: MembersOptions = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const audit = (tx: Transaction, context: MutationContext, action: string, targetType: string, targetId: string, before?: Record<string, string>, after?: Record<string, string | boolean>) =>
@@ -220,12 +220,14 @@ export function createMembersService(options: MembersOptions = {}) {
         if (last && billing?.customerId) await cleanup.jobs.enqueue(redactCustomerJob, { customerId: billing.customerId }, {
           ...queued, idempotencyKey: `redact:${erasure.id}`, runAt: new Date(now.getTime() + 60_000),
         }, transaction);
-        if (!last && erasedBillingAddress && billing?.customerId) {
-          const [card] = await tx.select({ processorId: paymentMethods.processorId }).from(paymentMethods)
-            .where(and(eq(paymentMethods.householdId, home.id), eq(paymentMethods.isDefault, true), isNull(paymentMethods.revokedAt))).limit(1);
+        if (!last && before.emailAddress && billing?.customerId) {
+          if (!options.billingEmailSecret) throw new AppError('unavailable', 'Billing email erasure is not configured');
+          const cards = await tx.select({ processorId: paymentMethods.processorId }).from(paymentMethods)
+            .where(and(eq(paymentMethods.householdId, home.id), isNull(paymentMethods.revokedAt))).orderBy(asc(paymentMethods.id));
           await cleanup.jobs.enqueue(clearBillingEmailJob, { householdId: home.id, customerId: billing.customerId,
-            emailDigest: billingEmailDigest(before.emailAddress!), ...(card ? { paymentMethodId: card.processorId } : {}) },
-          { ...queued, idempotencyKey: `clear-billing-email:${id}` }, transaction);
+            erasureId: erasure.id, emailDigest: billingEmailDigest(before.emailAddress, options.billingEmailSecret), paymentMethodIds: cards.map(card => card.processorId) },
+          { ...queued, idempotencyKey: `clear-billing-email:${erasure.id}` }, transaction);
+          await audit(tx, context, billingEmailQueuedAction, 'household', home.id, undefined, { erasure: erasure.id });
         }
         // Each card's billing details are cleared before it is detached (a staff card removal leaves them).
         for (const card of revokedCards) await cleanup.jobs.enqueue(detachJob, { paymentMethodId: card.id, redactBillingDetails: true },

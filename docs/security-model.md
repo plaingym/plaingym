@@ -554,27 +554,35 @@ Old versions and documents referenced by signatures remain retained after retire
   members remain. Household mail stops until staff enter a new billing address.
   When other members remain and the household has a Stripe Customer, the same
   transaction queues `members.erasure.clear_billing_email` once for the erased
-  member. Its retry payload holds the household, customer and default card IDs
-  and an address digest, never the plaintext email; the digest is personal data
+  member with an email, even if its local billing email was already replaced. Its retry payload holds the household,
+  customer, erasure audit and every unrevoked card ID, and a versioned HMAC of the
+  normalized address under a separate key derived from `AUTH_SECRET`, never the
+  plaintext email or secret; the digest is personal data
   retained only under the job queue's retention policy. The household audit records
   `billingEmailCleared: true`, without the address or digest. Before calling out,
   the job rechecks that only this household links the customer. A replacement local
   email does not prevent clearing the erased address at Stripe. The adapter checks customer gym and household metadata and
-  card ownership, then clears only matching customer and default card emails,
+  card ownership, then clears only matching customer and specified card emails,
   preserving replacement addresses, other billing details and the attached card.
   Stripe reads and writes cannot be atomic with concurrent external edits.
+  A completed provider clear is audited with identifiers only. The daily
+  `members.erasure.redact_earlier` sweep resets exhausted clear jobs through the
+  queue's recovery API, excluding clears with a completion audit.
   Erasure and deletion unlink staff profiles and advance their revisions, so stale
   staff forms cannot restore the member link. After commit the auth store revokes
   the member's pending portal invitations; with the household's last member it
   also removes every household invitation and onboarding claim hold. A failure
   is logged and those rows expire. Meanwhile an invitation for a deleted or erased
   member, or a deleted household, is refused; a payer invitation for a household
-  whose last member was erased can still be accepted.
+  whose last member was erased is also refused: every payer target requires a
+  non-anonymized member, regardless of whether invitation revocation succeeded.
   Erasing a household's last member also
   revokes its cards, clears each card's billing name, email, phone and address at
   Stripe before detaching it, and clears the Stripe Customer's name, email, phone,
   address, shipping details, description, individual and business names and invoice
-  custom fields, and deletes its tax IDs. Every retry job of an erasure (each
+  custom fields, and deletes its tax IDs. It also lists every attached card and
+  clears its billing name, email, phone and address, including cards with no active
+  local row, while leaving those cards attached. Every retry job of an erasure (each
   revoked card's detach, the release of the erased photo and signature images, and
   the customer redaction) commits in the same transaction as the erasure, so a
   crash or a later failure cannot lose a retry between clearing the local data and

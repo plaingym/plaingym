@@ -10,6 +10,8 @@ import { needsGuardian } from '../waivers/snapshot.js';
 
 export async function assertPortalLoginTarget(tx: Transaction, householdId: string, memberId: string | null, scope: 'payer' | 'member', clock: Clock, timezone = 'UTC') {
   if (!(await tx.select({ id: households.id }).from(households).where(eq(households.id, householdId)).for('update'))[0]) notFound();
+  if (scope === 'payer' && !(await tx.select({ id: households.id }).from(households).where(and(eq(households.id, householdId),
+    exists(tx.select({ id: members.id }).from(members).where(and(eq(members.householdId, households.id), isNull(members.anonymizedAt)))))))[0]) notFound();
   if (memberId) {
     const [member] = await tx.select({ dateOfBirth: members.dateOfBirth }).from(members).where(and(eq(members.id, memberId), eq(members.householdId, householdId), isNull(members.anonymizedAt)));
     if (!member) notFound();

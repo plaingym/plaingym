@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import { FakePayments, billingEmailDigest } from './index.js';
 import { StripePayments } from './stripe.js';
 import { StripeFixtures } from './stripe-fixtures.js';
@@ -9,7 +10,17 @@ import type { PaymentTransport } from './transport.js';
 
 const gymId = '00000000-0000-7000-8000-000000000001', householdId = '00000000-0000-7000-8000-000000000002';
 const customerId = 'cus_email', paymentMethodId = 'pm_email';
-const options = { householdId, paymentMethodId, emailDigest: billingEmailDigest('payer@example.invalid') };
+const secret = 'fixture-email-erasure-secret';
+const options = { householdId, paymentMethodId, secret, emailDigest: billingEmailDigest('payer@example.invalid', secret) };
+
+it('keys and normalizes the digest using a distinct derived key', () => {
+  const digest = billingEmailDigest(' PAYER@Example.invalid ', secret);
+  expect(digest).toBe(options.emailDigest);
+  expect(digest).toMatch(/^k1:[a-f0-9]{64}$/);
+  expect(digest).not.toContain(createHash('sha256').update('payer@example.invalid').digest('hex'));
+  expect(digest).not.toBe(billingEmailDigest('payer@example.invalid', 'another-fixture-secret'));
+  expect(() => billingEmailDigest('payer@example.invalid', '')).toThrow('secret');
+});
 function stripe(fixture: EmailErasureFixture = {}) {
   const transport = new StripeFixtures(gymId);
   transport.objects.set(customerId, { id: customerId, object: 'customer', name: 'Household', email: fixture.customerEmail ?? 'payer@example.invalid',
@@ -64,5 +75,25 @@ it('records and replays the new payments operation', async () => {
   const recorder = new FixtureRecorder(gymId), payments = recorder.wrap(new FakePayments(gymId));
   await payments.clearCustomerEmail('cus_missing', options);
   expect(recorder.tape.exchanges).toHaveLength(1);
+  expect(JSON.stringify(recorder.tape)).not.toContain(secret);
   await replayPayments(recorder.tape, gymId).clearCustomerEmail('cus_missing', options);
+});
+
+it.each(['StripePayments', 'FakePayments'])('clears matching emails on every specified card with %s', async name => {
+  const fake = new FakePayments(gymId), provider = stripe(), payments = name === 'StripePayments' ? provider.payments : fake;
+  fake.seedCustomer({ id: customerId, email: 'payer@example.invalid', householdId });
+  const ids = ['pm_one', 'pm_two', 'pm_replacement'];
+  for (const methodId of ids) {
+    const email = methodId === 'pm_replacement' ? 'replacement@example.invalid' : 'payer@example.invalid';
+    provider.transport.objects.set(methodId, { id: methodId, object: 'payment_method', created: provider.transport.now, customer: customerId,
+      card: { brand: 'visa', last4: '4242', exp_month: 12, exp_year: 2030 }, billing_details: { email, name: 'Card holder' } });
+    fake.recordPaymentMethod({ id: methodId, customerId, brand: 'visa', last4: '4242', expiresMonth: 12, expiresYear: 2030 });
+    fake.setBillingDetails(methodId, { email, name: 'Card holder' });
+  }
+  await payments.clearCustomerEmail(customerId, { ...options, paymentMethodId: undefined, paymentMethodIds: ids });
+  for (const methodId of ids) {
+    const details = name === 'StripePayments' ? provider.transport.objects.get(methodId)!.billing_details : fake.billingDetails(methodId);
+    expect(details).toEqual({ name: 'Card holder', email: methodId === 'pm_replacement' ? 'replacement@example.invalid' : null });
+    expect(await payments.readPaymentObject({ kind: 'payment_method', id: methodId })).toMatchObject({ status: 'found' });
+  }
 });

@@ -216,11 +216,14 @@ empty string clears each) when it holds any. A failed clearing is raised before 
 detach, so the retry still finds the card attached; a card that is already detached
 keeps what it holds, since it can no longer be updated.
 
-`clearCustomerEmail(id, { householdId, emailDigest, paymentMethodId? })` handles
+`clearCustomerEmail(id, { householdId, emailDigest, secret, paymentMethodIds })` handles
 erasing a payer while other household members remain. It clears only the customer
-email and the specified default card's billing email that match the digest of the
+email and every specified card's billing email that match the digest of the
 trimmed, lowercased erased address. It preserves names and other billing fields,
-and keeps the card attached. Before any write it refuses customer metadata naming
+and keeps the cards attached. The digest is a versioned HMAC under a key derived
+from `AUTH_SECRET`; `secret` is supplied only during execution, never in a job or
+audit, and fixture recording redacts it. Legacy jobs with a plain digest and
+`paymentMethodId` still drain. Before any write it refuses customer metadata naming
 another gym or household, a card naming another gym, or a card attached to another
 customer. Untagged imported customers require the caller's checked local household
 link. Missing and deleted customers, missing cards and detached cards are harmless;
@@ -247,7 +250,12 @@ deleted and already redacted customers (name, email and all other details cleare
 safe to repeat. Erasing a household's last member commits first, then calls it
 with the customer ID the erasure cleared; a durable `members.erasure.redact_customer`
 job carries that ID and retries when Stripe is unreachable. It uses the Customers
-**Write** permission that customer creation already needs.
+**Write** permission that customer creation already needs. It also
+[lists attached cards](https://docs.stripe.com/api/payment_methods/list), 100 per page,
+and clears each card's billing name, email, phone and address without detaching it,
+using the existing Payment Methods **Write** permission. This covers dashboard-added
+cards and revoked cards whose detach has not succeeded. A card failure is retried;
+already cleared details cause no further write, and other customers' cards are left alone.
 
 `adoptCustomer(id)` raises `CustomerDeleted` (exported from `index.ts`; the fake raises it
 for a customer seeded as `deleted`) when Stripe reports the customer deleted, so callers

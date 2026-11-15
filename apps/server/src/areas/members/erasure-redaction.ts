@@ -3,11 +3,11 @@ import { and, eq } from 'drizzle-orm';
 import { classCreditEntries, forGym, households, writeAudit, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { z } from 'zod';
-import type { Jobs } from '../../infra/jobs/index.js';
+import type { JobRecovery, Jobs } from '../../infra/jobs/index.js';
 import type { Uploads } from '../../infra/storage/index.js';
 import type { ClearCustomerEmail } from '../../infra/payments/index.js';
 import { logError, logInfo } from '../../core/log.js';
-import { customerRedactedAction, erasuresToRedact, redactionQueuedAction } from './erasure-redaction.query.js';
+import { billingEmailClearedAction, billingEmailErasuresToRetry, billingEmailQueuedAction, customerRedactedAction, erasuresToRedact, redactionQueuedAction } from './erasure-redaction.query.js';
 
 /** The sole ledger update: erase free text while preserving the append-only credit history. */
 export async function eraseCreditReasons(tx: Transaction, memberId: string) {
@@ -17,23 +17,30 @@ export async function eraseCreditReasons(tx: Transaction, memberId: string) {
 
 /** Queues the provider redaction of the customer an erased household had. */
 export const redactCustomerJob = 'members.erasure.redact_customer';
-/** Clears the erased payer's email while the household keeps its customer and default card. */
+/** Clears the erased payer's email while the household keeps its customer and cards. */
 export const clearBillingEmailJob = 'members.erasure.clear_billing_email';
 const billingEmailPayload = z.object({ householdId: z.uuid(), customerId: z.string().regex(/^cus_[A-Za-z0-9_]+$/),
-  emailDigest: z.string().regex(/^[a-f0-9]{64}$/), paymentMethodId: z.string().regex(/^(?:pm|card|ba|src)_[A-Za-z0-9_]+$/).optional() }); // Imported cards keep legacy IDs.
+  erasureId: z.uuid().optional(), emailDigest: z.string().regex(/^(?:k1:)?[a-f0-9]{64}$/),
+  paymentMethodIds: z.array(z.string().regex(/^(?:pm|card|ba|src)_[A-Za-z0-9_]+$/)).optional(),
+  paymentMethodId: z.string().regex(/^(?:pm|card|ba|src)_[A-Za-z0-9_]+$/).optional() }); // Imported cards and already queued jobs keep legacy IDs.
 export type ClearBillingEmail = (gymId: string, customerId: string, options: ClearCustomerEmail) => Promise<void>;
 
 /** Recheck the local customer link before calling out; a reassigned customer is left alone. */
-export async function clearErasedBillingEmail(payload: unknown, gymId: string, clear: ClearBillingEmail, scope = forGym): Promise<void> {
-  const { customerId, ...options } = billingEmailPayload.parse(payload);
+export async function clearErasedBillingEmail(payload: unknown, gymId: string, clear: ClearBillingEmail,
+  config: { secret: string; clock: Clock; scope?: typeof forGym }): Promise<void> {
+  const { customerId, erasureId, ...options } = billingEmailPayload.parse(payload);
+  if (options.emailDigest.startsWith('k1:') && !config.secret) throw new Error('Billing email erasure is not configured');
+  const scope = config.scope ?? forGym;
   const linked = await scope(gymId, tx => tx.select({ id: households.id }).from(households)
     .where(eq(households.stripeCustomerId, customerId)));
   if (linked.length !== 1 || linked[0]!.id !== options.householdId) {
     logInfo('members.erasure.billing_email_skipped_linked', { gymId, householdId: options.householdId });
     return;
   }
-  await clear(gymId, customerId, { householdId: options.householdId, emailDigest: options.emailDigest,
-    ...(options.paymentMethodId ? { paymentMethodId: options.paymentMethodId } : {}) });
+  await clear(gymId, customerId, { ...options, secret: config.secret });
+  await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: billingEmailClearedAction,
+    targetType: 'household', targetId: options.householdId, after: { stripeCustomerId: customerId, ...(erasureId ? { erasure: erasureId } : {}) },
+    occurredAt: config.clock.now() }));
 }
 /** Marks deleted the photo and signature images an erasure released; committed with the erasure, under `release:<member ID>`. */
 export const releaseErasedFilesJob = 'members.erasure.release_files';
@@ -50,8 +57,8 @@ export async function releaseErasedFiles(payload: unknown, gymId: string, upload
 }
 /** Daily check that every erased household's provider customer has a redaction queued (see `queueEarlierRedactions`). */
 export const redactEarlierJob = 'members.erasure.redact_earlier';
-export { customerRedactedAction, redactionQueuedAction };
-/** One run queues at most this many erasures; the next daily run continues. */
+export { billingEmailClearedAction, billingEmailQueuedAction, customerRedactedAction, redactionQueuedAction };
+/** Each run queues at most this many customer redactions and retries this many exhausted email clears. */
 export const redactEarlierBatch = 200;
 
 /**
@@ -65,9 +72,10 @@ export const redactEarlierBatch = 200;
  * none. The redaction itself is idempotent, so a crash between the job and its marker only repeats it. A customer that a
  * household of the gym links today is skipped (and not marked): the gym has since reused it, and redacting it would erase
  * a live customer (`guardRedaction` checks again when the job runs). The selection and the batch limit run in SQL
- * (`erasuresToRedact`). Returns the number of erasures queued, at most `redactEarlierBatch`.
+ * (`erasuresToRedact`). Also resets exhausted billing email clears without a completion audit, through JobRecovery.
+ * Returns the number of customer redactions queued plus email clears reset (each capped at `batch`).
  */
-export async function queueEarlierRedactions(options: { gymId: string; timezone: string; jobs: Pick<Jobs, 'enqueue'>; clock: Clock; scope?: typeof forGym; batch?: number }): Promise<number> {
+export async function queueEarlierRedactions(options: { gymId: string; timezone: string; jobs: Pick<Jobs, 'enqueue'> & Partial<JobRecovery>; clock: Clock; scope?: typeof forGym; batch?: number }): Promise<number> {
   const { gymId, timezone, jobs, clock, scope = forGym, batch = redactEarlierBatch } = options;
   const pending = await scope(gymId, tx => erasuresToRedact(tx, gymId, batch));
   for (const { id, householdId, customerId } of pending) {
@@ -76,7 +84,19 @@ export async function queueEarlierRedactions(options: { gymId: string; timezone:
     await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: redactionQueuedAction, targetType: 'household',
       targetId: householdId, after: { stripeCustomerId: customerId, erasure: id }, occurredAt: clock.now() }));
   }
-  return pending.length;
+  let retried = 0;
+  if (jobs.failedJobs && jobs.retryFailed) {
+    let afterId: string | undefined;
+    for (;;) {
+      const emails = await scope(gymId, tx => billingEmailErasuresToRetry(tx, gymId, batch, afterId));
+      const failed = await jobs.failedJobs(clearBillingEmailJob, emails.map(row => `clear-billing-email:${row.erasureId}`), { gymId });
+      for (const job of failed.slice(0, batch - retried)) if (await jobs.retryFailed(job.jobId, { gymId, runAt: clock.now() })) retried++;
+      // Pending or deliberately skipped jobs must not hide exhausted jobs on a later page.
+      if (emails.length < batch || retried >= batch) break;
+      afterId = emails.at(-1)!.id;
+    }
+  }
+  return pending.length + retried;
 }
 
 /**

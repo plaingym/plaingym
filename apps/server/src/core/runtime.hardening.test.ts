@@ -2,6 +2,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { afterAll, afterEach, expect, it, vi } from 'vitest';
 import '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
@@ -10,7 +11,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { PostgresJobs } from '../infra/jobs/postgres.js';
 import type { JobHandler } from '../infra/jobs/index.js';
-import { ERASED_CUSTOMER_NAME, FakePayments, billingEmailDigest } from '../infra/payments/index.js';
+import { ERASED_CUSTOMER_NAME, FakePayments } from '../infra/payments/index.js';
 import type { StripePayments } from '../infra/payments/stripe.js';
 import * as stripeStep from '../areas/setup/stripe-step.js';
 import { redactCustomerJob } from '../areas/members/members.routes.js';
@@ -60,7 +61,7 @@ it('redacts an erased household\'s Stripe customer through the runtime\'s paymen
   expect(await redactions()).toHaveLength(1);
 });
 
-it('clears an erased payer\'s email at the gym\'s provider through the runtime\'s payments wiring', async () => {
+it('drains a legacy payer email erasure through the runtime\'s payments wiring', async () => {
   vi.restoreAllMocks(); // the first test's spy on handle would otherwise call itself
   vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
   const handlers = new Map<string, JobHandler>(), register = PostgresJobs.prototype.handle;
@@ -76,7 +77,7 @@ it('clears an erased payer\'s email at the gym\'s provider through the runtime\'
   vi.spyOn(stripeStep, 'createPaymentsResolver').mockReturnValue(async () => fake as unknown as StripePayments);
   runtime = await startRuntime(env(directory));
   // The job the erasure queues reaches the gym's own provider, and the household keeps its customer and name.
-  await handlers.get(clearBillingEmailJob)!({ householdId: home.id, customerId: 'cus_payer', emailDigest: billingEmailDigest('payer@example.invalid') },
+  await handlers.get(clearBillingEmailJob)!({ householdId: home.id, customerId: 'cus_payer', emailDigest: createHash('sha256').update('payer@example.invalid').digest('hex') },
     { gymId, clock, timezone: 'UTC', jobId: uuidv7(), attempt: 1 });
   expect(fake.customer('cus_payer')).toMatchObject({ email: null, name: 'Payer' });
 });

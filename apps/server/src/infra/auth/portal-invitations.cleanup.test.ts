@@ -28,7 +28,10 @@ beforeAll(() => initializeDatabase(db.appUrl)); afterAll(() => closeDatabase());
 async function gym() {
   const gymId = uuidv7(), { revision } = await factory('gyms', gymId);
   const owner = await factory('staffRoles', gymId, { role: 'owner' });
-  return { gymId, revision, actor: { gymId, userId: owner.userId, clock }, home: await factory('households', gymId), other: await factory('households', gymId) };
+  const home = await factory('households', gymId), other = await factory('households', gymId);
+  await factory('members', gymId, { householdId: home.id });
+  await factory('members', gymId, { householdId: other.id });
+  return { gymId, revision, actor: { gymId, userId: owner.userId, clock }, home, other };
 }
 type Gym = Awaited<ReturnType<typeof gym>>;
 async function invite(g: Gym, email = `${uuidv7()}@example.test`, householdId = g.home.id, service = invitations, at = clock) {

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, not, notExists } from 'drizzle-orm';
+import { and, asc, eq, gt, not, notExists } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- The scoped erasure query needs isolated JSON extraction and one aliased audit anti-join.
 import { sql } from 'drizzle-orm';
 import { auditEvents, households, type Transaction } from '@plaingym/db';
@@ -8,6 +8,20 @@ import { auditEvents, households, type Transaction } from '@plaingym/db';
 export const redactionQueuedAction = 'members.erasure.redaction_queued';
 /** Audited (target: the gym) when a customer redaction succeeded (`after.stripeCustomerId`). */
 export const customerRedactedAction = 'members.erasure.customer_redacted';
+/** Identifier-only markers for narrow billing email cleanup and its completion. */
+export const billingEmailQueuedAction = 'members.erasure.billing_email_queued';
+export const billingEmailClearedAction = 'members.erasure.billing_email_cleared';
+
+export function billingEmailErasuresToRetry(tx: Transaction, gymId: string, limit: number, afterId?: string) {
+  const erasure = sql<string>`${auditEvents.after}->>'erasure'`;
+  return tx.select({ id: auditEvents.id, erasureId: erasure }).from(auditEvents).where(and(eq(auditEvents.gymId, gymId),
+    eq(auditEvents.action, billingEmailQueuedAction),
+    afterId ? gt(auditEvents.id, afterId) : undefined,
+    sql`${erasure} ~ '^[a-f0-9-]{36}$'`,
+    sql`not exists (select 1 from audit_events completed where completed.gym_id = ${gymId}
+      and completed.action = ${billingEmailClearedAction} and completed.after->>'erasure' = ${erasure})`))
+    .orderBy(asc(auditEvents.id)).limit(limit);
+}
 
 /**
  * Called inside forGym: the oldest erasures (`household.anonymized` audits that recorded a Stripe customer ID) whose

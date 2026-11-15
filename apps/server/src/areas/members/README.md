@@ -47,14 +47,16 @@ member-specific signed links, cancels the member's memberships (in the same
 transaction, so an erased member is never billed again; any plan switch scheduled
 on them is dropped), and clears the household
 PIN. When the household
-keeps other members and has a Stripe Customer, clearing a billing email that matches
-the erased member's address also queues `members.erasure.clear_billing_email` in that transaction
-(key `clear-billing-email:<member ID>`, 12 attempts). The household audit carries
+keeps other members and has a Stripe Customer, every erased member with an email
+queues `members.erasure.clear_billing_email` in that transaction, even if staff already
+changed the local billing email (key `clear-billing-email:<erasure audit ID>`, 12 attempts). The household audit carries
 `after.billingEmailCleared: true` whenever erasure clears its email, including the
-last member's erasure. A different member's billing address queues no email clear.
-The job carries the household and customer IDs, the default card's processor ID
-when present, and a SHA-256 digest of the trimmed, lowercased erased address rather
-than its plaintext. The digest remains personal data and lives only in the retry
+last member's erasure.
+The job carries the household, customer and erasure audit IDs, every unrevoked card's
+processor ID, and a versioned HMAC of the trimmed, lowercased erased address rather
+than its plaintext. `billingEmailSecret` receives `AUTH_SECRET` through `configureMembers`;
+the payments helper derives a separate key with HKDF. The secret is never queued.
+The digest remains personal data and lives only in the retry
 queue, under its normal retention; it is never added to the audit or logs.
 Before calling Stripe the job checks that exactly this household still links the
 customer. Entering a new local billing email does not prevent clearing the old
@@ -66,7 +68,15 @@ and preserves any replacement address. As with other provider operations, the
 link check and external call cannot be one transaction; an external edit during
 the call cannot be made atomic with erasure. `configureMembers` accepts the
 gym-scoped `clearBillingEmail(gymId, customerId, options)` callback backed by
-`Payments.clearCustomerEmail`; an absent callback fails the job so it retries.
+`Payments.clearCustomerEmail`; an absent callback or HMAC secret fails the job so it retries.
+Already queued jobs with an unkeyed digest and one card ID still drain. A successful
+provider clear writes `members.erasure.billing_email_cleared` with customer and erasure
+IDs only; a failure writes no completion audit. The erasure also writes the ID-only
+`members.erasure.billing_email_queued` marker. The daily `members.erasure.redact_earlier`
+sweep uses these markers and the queue's `JobRecovery` API to reset exhausted email
+clear jobs, retaining their payload and key. Completed clears are excluded. The sweep
+pages outstanding markers 200 at a time and resets at most 200 jobs per gym per run; it requires the queue's
+`failedJobs` and `retryFailed` methods for this recovery.
 When the household
 has no remaining identifiable members, its contact details and remaining portal
 and signed-link access are also removed. Other household members remain intact.
@@ -104,7 +114,10 @@ deleted again is harmless. The
 `household.anonymized` audit event records the cleared customer ID. The Stripe
 Customer is kept for the books: its name
 becomes `Erased member` and its email, phone, address, shipping details, description, individual and business names and invoice
-custom fields are cleared and its tax IDs deleted. The detach jobs carry `redactBillingDetails: true`, so each card's billing
+custom fields are cleared and its tax IDs deleted. Customer redaction also lists and clears
+the billing name, email, phone and address of every attached card, including cards
+added in the provider dashboard and previously revoked cards still awaiting detach.
+It paginates and leaves the cards attached. The detach jobs carry `redactBillingDetails: true`, so each card's billing
 name, email, phone and address are cleared before the card is detached (Stripe updates only an attached card). A failed attempt
 is logged with identifiers only and the erasure still succeeds, since its committed job retries it.
 
@@ -152,12 +165,16 @@ deleted after commit as a head start. The `member.deleted` and `household.delete
 After either erasure or deletion commits, the route revokes the member's pending portal invitations through the auth
 store. With the last member it revokes every invitation and onboarding claim hold for the household. A cleanup failure
 is logged as `members.cleanup.invitations_failed` and those rows expire normally. Until then an invitation for a deleted
-or erased member, or for a deleted household, is refused when accepted; a payer invitation for a household whose last
-member was erased is not, because the anonymized household still exists.
+or erased member, or for a deleted household, is refused when accepted. A payer
+target also requires at least one member without `anonymizedAt`, checked with an
+indexed existence query while holding the household lock. A payer invitation for
+a household whose last member was erased therefore fails even if revocation failed.
 Tests can inject the store through the `invitations` option; production uses the auth store directly without extra runtime wiring.
 Delivery cleanup clears the member's own announcement and cancellation digests, shared-address announcement digests
 for announcements they were a recipient of, and shared-address cancellation digests. SQL computes the sender's exact
-JSON/sha256 digest over the indexed delivery key ranges; no notice history is loaded into JavaScript.
+JSON/sha256 digest once per known announcement and updates through the command-digest
+index; cancellation notices retain their indexed delivery key range update. No
+notice history is loaded into JavaScript.
 
 `hashHouseholdPin` and `verifyHouseholdPin` take the per-gym secret, gym ID,
 household ID and the PIN. They preserve leading zeros, use a domain-separated
@@ -188,7 +205,7 @@ Actual deletion remains the storage subsystem's backup-aware sweep.
 
 ## Composition
 
-The runtime calls `configureMembers({ pinSecret, uploadsFor, clock, detachCard, redactCustomer, clearBillingEmail, jobs })` and registers
+The runtime calls `configureMembers({ pinSecret, uploadsFor, clock, detachCard, redactCustomer, clearBillingEmail, billingEmailSecret, jobs })` and registers
 `createMemberPhotoJobs(uploadsFor)` with the worker, using its gym-scoped uploads
 resolver. Until `configureMembers` runs (or when a test passes its own service without
 storage), photo operations and setting a nonempty PIN fail closed. The web feature

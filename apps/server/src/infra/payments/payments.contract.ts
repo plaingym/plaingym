@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { paymentsContract } from '../../core/registry-infra-contracts.js';
 import type { Payments, CreateCharge, CheckoutRequest } from './index.js';
-import { billingEmailDigest, type ClearCustomerEmail } from './email-erasure.js';
+import type { ClearCustomerEmail } from './email-erasure.js';
 import { runInTransaction } from '@plaingym/shared/transaction';
 
 export interface EmailErasureFixture {
@@ -49,7 +49,7 @@ export function customerEmailErasureContract(name: string, create: (fixture?: Em
       await deleted.payments.clearCustomerEmail(deleted.customerId, deleted.options);
       expect(deleted.state()).toMatchObject({ email: 'payer@example.invalid' });
       const noCard = create();
-      await noCard.payments.clearCustomerEmail(noCard.customerId, { householdId: noCard.options.householdId, emailDigest: billingEmailDigest('payer@example.invalid') });
+      await noCard.payments.clearCustomerEmail(noCard.customerId, { ...noCard.options, paymentMethodId: undefined, paymentMethodIds: [] });
       expect(noCard.state()).toMatchObject({ email: null, cardEmail: 'payer@example.invalid' });
     });
     it('rejects network work inside a transaction and invalid processor IDs', async () => {
@@ -57,6 +57,29 @@ export function customerEmailErasureContract(name: string, create: (fixture?: Em
       await runInTransaction(async () => { await expect(payments.clearCustomerEmail(customerId, options)).rejects.toThrow('transaction'); });
       await expect(payments.clearCustomerEmail('../cus_bad', options)).rejects.toThrow('Invalid processor ID');
       await expect(payments.clearCustomerEmail(customerId, { ...options, paymentMethodId: '../pm_bad' })).rejects.toThrow('Invalid processor ID');
+    });
+  });
+}
+/** Provider and fake must erase cards the application has never stored, while keeping them attached. */
+interface CustomerCardRedactionFixture {
+  payments: Payments; customerId: string;
+  cards(): { id: string; attached: boolean; details: { name?: string | null; email?: string | null; phone?: string | null; address?: unknown } }[];
+}
+export function customerCardRedactionContract(name: string, create: () => CustomerCardRedactionFixture | Promise<CustomerCardRedactionFixture>) {
+  describe(name + ' attached card redaction', () => {
+    it('clears every attached card without touching another customer or detaching cards, including on retry', async () => {
+      const { payments, customerId, cards } = await create(), before = cards();
+      await payments.redactCustomer(customerId);
+      await payments.redactCustomer(customerId);
+      const after = cards();
+      expect(after.map(card => ({ id: card.id, attached: card.attached }))).toEqual(before.map(card => ({ id: card.id, attached: card.attached })));
+      expect(after).toHaveLength(104);
+      for (const card of after.slice(0, 102)) {
+        expect(Object.values(card.details).every(value => value == null)).toBe(true);
+        expect(card.attached).toBe(true);
+        expect(await payments.readPaymentObject({ kind: 'payment_method', id: card.id })).toMatchObject({ status: 'found' });
+      }
+      expect(after.slice(102)).toEqual(before.slice(102));
     });
   });
 }
