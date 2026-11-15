@@ -305,15 +305,25 @@ export function createSignedLinksService(options: {
         return result;
       } };
       let disclosed: boolean;
+      async function cleanup() {
+        // The link was never disclosed. Even if revocation fails, release this definite non-send for a safe retry.
+        const errors: unknown[] = [];
+        try { await revoke(context, created.link.id); } catch (error) { errors.push(error); }
+        try { await deliveries.release(reservation); } catch (error) { errors.push(error); }
+        if (errors.length) throw new AggregateError(errors, 'Signed link cleanup failed');
+      }
       try {
         disclosed = await deliverSignedLink({ scope, context, link: created.link, token: created.token, delivery: { ...prepared, email },
           manualPayment: created.link.revokedAt !== null });
       } catch (error) {
         // A definite non-send can't leave an undisclosed credential active, and a retry mints a new one. A possibly
         // delivered link stays usable: a replay returns it and never sends another.
-        if (!entered || suppressed || deliveryAcceptance(error) === 'not_accepted') await revoke(context, created.link.id);
-        if (!entered) await deliveries.release(reservation);
-        throw new AppError('unavailable', 'Signed link email was not delivered');
+        let cause = error;
+        if (!entered || suppressed || deliveryAcceptance(error) === 'not_accepted') {
+          try { await cleanup(); }
+          catch (cleanupError) { cause = new AggregateError([error, cleanupError], 'Signed link delivery and cleanup failed'); }
+        }
+        throw Object.assign(new AppError('unavailable', 'Signed link email was not delivered'), { cause });
       }
       // The email was delivered, so a failure here must not report otherwise.
       if (!disclosed) await revoke(context, created.link.id);

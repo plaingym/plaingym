@@ -12,7 +12,7 @@ import { Button } from '../../../components/ui/button.js';
 import { Pager } from '../../../components/ui/pager.js';
 import { useDialogOperation, useDialogSaved } from '../../../components/ui/dialog.js';
 import { t } from '../../../lib/i18n.js';
-import { createSendGeneration } from '../../../lib/send-generation.js';
+import { useSendGeneration } from '../../../lib/send-generation.js';
 import { Label } from '../../../components/ui/label.js';
 import { Input } from '../../../components/ui/input.js';
 import { Select } from '../../../components/ui/select.js';
@@ -31,8 +31,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
   const [action, setAction] = useState<Action | null>(null), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const [message, setMessage] = useState(''), [url, setUrl] = useState(''), [cardOffset, setCardOffset] = useState(0);
   const actionTitle = useId(), heading = useRef<HTMLHeadingElement>(null), trigger = useRef<HTMLElement | null>(null);
-  const [uncertain, setUncertain] = useState(false);
-  const linkSend = useRef(createSendGeneration('invoice-link'));
+  const linkSend = useSendGeneration('invoice-link'), { uncertain } = linkSend;
   const [draft, setDraft] = useState(false), [discard, setDiscard] = useState(false), keep = useRef<HTMLButtonElement>(null);
   const markSaved = useDialogSaved();
   useDialogOperation(busy);
@@ -43,7 +42,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
   const household = useQuery({ queryKey: ['billing', gymId, 'household', homeId], queryFn: () => client.household(homeId!), enabled: !!homeId });
   const cards = useQuery({ queryKey: ['billing', gymId, 'cards', homeId, cardOffset], queryFn: () => client.cards(homeId!, cardOffset), enabled: !!homeId });
   const allCards = useQuery({ queryKey: ['billing', gymId, 'activeCards', homeId], queryFn: () => client.activeDefaultCard(homeId!), enabled: !!homeId });
-  function open(next: Action) { setUncertain(false); trigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setError(''); setMessage(''); setUrl(''); setDraft(false); setDiscard(false); setAction(next); }
+  function open(next: Action) { linkSend.reset(); trigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setError(''); setMessage(''); setUrl(''); setDraft(false); setDiscard(false); setAction(next); }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!detail.data || !action || busy) return;
     const form = new FormData(event.currentTarget), invoice = detail.data.invoice;
@@ -77,13 +76,12 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
         { householdId: invoice.householdId, paymentMethodId: action.card.id });
       if (action.kind === 'receipt') { await client.call('resendReceipt', {}, { invoiceId }); setMessage(text('receiptQueued')); }
       if (action.kind === 'link') {
-        if (uncertain && form.get('delivery') === 'email') { linkSend.current.sent(); setUncertain(false); }
-        const sendGeneration = form.get('delivery') === 'email' ? linkSend.current.for({ gymId, invoiceId }) : undefined;
+        if (uncertain && form.get('delivery') === 'email') linkSend.resend();
+        const sendGeneration = form.get('delivery') === 'email' ? linkSend.generation({ gymId, invoiceId }) : undefined;
         const result = await client.link({ purpose: 'pay_invoice', householdId: invoice.householdId, invoiceId,
           expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString() }, sendGeneration);
-        const unknown = 'outcome' in result.data && result.data.outcome === 'unknown';
-        setUncertain(unknown);
-        if (sendGeneration && !unknown) linkSend.current.sent();
+        const unknown = sendGeneration ? linkSend.settle(result.data) : false;
+        if (!sendGeneration) linkSend.reset();
         if ('token' in result.data) { setUrl(new URL('/l/' + result.data.token, location.origin).href); }
         else setMessage(text(unknown ? 'sendUncertain' : cardChargeIssue(invoice.amountCents, invoice.currency) ? 'manualNoticeSent' : 'linkSent'));
       }

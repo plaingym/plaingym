@@ -95,11 +95,19 @@ export function createEmailDeliveries(options: { scope?: typeof forGym; clock?: 
       .where(eq(emailDeliveries.id, row.id));
     return { id: row.id, attempts: row.attempts + 1 };
   }
-  /** Only this attempt's reservation may be resolved. Failed writes are visible to the caller. */
-  const record = (reservation: EmailReservation, next: Exclude<EmailDeliveryState, 'sending'>) =>
-    scope(reservation.gymId, tx => tx.update(emailDeliveries).set({ state: next, updatedAt: clock.now() })
-      .where(and(eq(emailDeliveries.id, reservation.id), eq(emailDeliveries.attempts, reservation.attempts),
-        eq(emailDeliveries.state, 'sending'))));
+  /** Retry only the outcome transaction, never the transport. The attempt guard also makes a lost commit reply safe. */
+  async function record(reservation: EmailReservation, next: Exclude<EmailDeliveryState, 'sending'>): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await scope(reservation.gymId, tx => tx.update(emailDeliveries).set({ state: next, updatedAt: clock.now() })
+          .where(and(eq(emailDeliveries.id, reservation.id), eq(emailDeliveries.attempts, reservation.attempts),
+            eq(emailDeliveries.state, 'sending'))));
+        return;
+      } catch (error) {
+        if (attempt === 2) throw error;
+      }
+    }
+  }
   /** Calls the transport for a committed reservation and records the outcome. A message builder that throws releases the
    * reservation, since nothing reached the transport. */
   async function attempt(reservation: EmailReservation, email: Email,
@@ -109,7 +117,10 @@ export function createEmailDeliveries(options: { scope?: typeof forGym; clock?: 
     try {
       built = typeof message === 'function' ? await message() : message;
     } catch (error) {
-      await release(reservation);
+      try { await release(reservation); }
+      catch (cause) { throw new DeliveryError('not_accepted', 'Email message could not be built or released', {
+        cause: new AggregateError([error, cause], 'Message building and reservation release failed'),
+      }); }
       throw error;
     }
     let result: EmailResult;
@@ -117,7 +128,9 @@ export function createEmailDeliveries(options: { scope?: typeof forGym; clock?: 
       result = await email.sendEmail(built);
     } catch (error) {
       try { await record(reservation, deliveryAcceptance(error) === 'not_accepted' ? 'not_accepted' : 'unknown'); }
-      catch (cause) { throw new DeliveryError(deliveryAcceptance(error), 'Email delivery outcome could not be recorded', { cause }); }
+      catch (cause) { throw new DeliveryError(deliveryAcceptance(error), 'Email delivery outcome could not be recorded', {
+        cause: new AggregateError([error, cause], 'Transport and outcome recording failed'),
+      }); }
       throw error;
     }
     try { await record(reservation, result.status === 'sent' ? 'accepted' : 'not_accepted'); }

@@ -14,9 +14,10 @@ export interface HostCheck {
 
 const lookupLimitMs = 10_000;
 /** Query both families outside the shared worker pool; use answers even when the sibling query fails or stalls. */
-async function resolveAddresses(host: string, resolver: Resolver): Promise<readonly string[]> {
+async function resolveAddresses(host: string, resolver: Resolver, families: ReadonlySet<4 | 6>): Promise<readonly string[]> {
   return new Promise((resolve, reject) => {
     const answers: string[][] = [[], []], failures: unknown[] = [];
+    const absent = (error: unknown) => error instanceof Error && 'code' in error && ['ENODATA', 'ENOTFOUND'].includes(String(error.code));
     let pending = 2, finished = false, grace: NodeJS.Timeout | undefined;
     const finish = () => {
       if (finished) return;
@@ -24,7 +25,8 @@ async function resolveAddresses(host: string, resolver: Resolver): Promise<reado
       clearTimeout(deadline); clearTimeout(grace);
       const addresses = answers.flat();
       if (addresses.length) resolve(addresses);
-      else reject(failures[0] ?? Object.assign(new Error('SMTP host lookup timed out'), { code: 'ETIMEDOUT' }));
+      else reject(failures.find(error => !absent(error)) ?? failures[0]
+        ?? Object.assign(new Error('SMTP host lookup timed out'), { code: 'ETIMEDOUT' }));
     };
     const deadline = setTimeout(finish, lookupLimitMs);
     const settled = (family: number, addresses: string[], error?: unknown) => {
@@ -32,7 +34,7 @@ async function resolveAddresses(host: string, resolver: Resolver): Promise<reado
       answers[family] = addresses;
       if (error !== undefined) failures.push(error);
       if (--pending === 0) finish();
-      else if (addresses.length) grace = setTimeout(finish, 250);
+      else if (addresses.length && families.has(family === 0 ? 4 : 6)) grace = setTimeout(finish, 250);
     };
     void resolver.resolve4(host).then((addresses) => settled(0, addresses), (error: unknown) => settled(0, [], error));
     void resolver.resolve6(host).then((addresses) => settled(1, addresses), (error: unknown) => settled(1, [], error));
@@ -89,6 +91,7 @@ export function machineFamilies(): ReadonlySet<4 | 6> {
 export async function publicAddresses(host: string, check: HostCheck = {}): Promise<readonly string[]> {
   // Only gym-named servers in multi mode use this check. Single mode keeps Nodemailer's system lookup.
   const literal = isIP(host) !== 0;
+  const families = (check.families ?? machineFamilies)();
   const resolver = literal || check.lookup ? undefined : new Resolver({ timeout: lookupLimitMs, tries: 1 });
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_, reject) => {
@@ -96,10 +99,9 @@ export async function publicAddresses(host: string, check: HostCheck = {}): Prom
   });
   try {
     const addresses = await Promise.race([literal ? Promise.resolve([host])
-      : check.lookup ? check.lookup(host) : resolveAddresses(host, resolver!), timeout]);
+      : check.lookup ? check.lookup(host) : resolveAddresses(host, resolver!, families), timeout]);
     const allowed = check.isPublic ?? isPublicAddress;
     if (!addresses.length || !addresses.every(allowed)) throw new SmtpHostRefusedError();
-    const families = (check.families ?? machineFamilies)();
     const reachable = addresses.filter((address) => families.has(isIP(address) as 4 | 6));
     return reachable.length ? reachable : addresses;
   } finally {

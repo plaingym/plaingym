@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { members, signedLinks, uuidv7 } from '@plaingym/db';
+import { emailDeliveries, members, signedLinks, uuidv7, type forGym } from '@plaingym/db';
 import { createTranslator } from '@plaingym/shared';
+import { sendSignedLinkResponseSchema, signedLinkPurposeSchema, signedLinkSchema } from '@plaingym/shared/contracts';
 import { locales } from '@plaingym/shared/locales';
 import { eq } from 'drizzle-orm';
 import { useTestDatabase } from '../../../../../packages/db/src/testing/database.js';
@@ -12,7 +13,7 @@ import { emailInFlightMs } from '../../infra/email/deliveries.js';
 import { createSignedLinksService } from './service.js';
 
 const db = useTestDatabase(), factory = createFactories(db), t = createTranslator(locales.en ?? {});
-async function fixture(amountCents?: number, currency?: string) {
+async function fixture(amountCents?: number, currency?: string, scope: typeof forGym = db.forGym) {
   const gymId = uuidv7(), clock = new TestClock('2026-11-06T12:00:00Z'), fake = new FakeEmail();
   await factory('gyms', gymId, { memberEmailsEnabled: true, ...(currency ? { currency } : {}) });
   const household = await factory('households', gymId, { email: 'payer@example.test' });
@@ -20,7 +21,7 @@ async function fixture(amountCents?: number, currency?: string) {
   const invoice = await factory('invoices', gymId, { householdId: household.id, status: 'open', number: 1, ...(amountCents ? { amountCents } : {}), ...(currency ? { currency } : {}) });
   const other = await factory('invoices', gymId, { householdId: household.id });
   const holder: { email: Email } = { email: fake };
-  const links = createSignedLinksService({ scope: db.forGym, clock, delivery: { prepare: async () => ({ gymId, gymName: 'Gym',
+  const links = createSignedLinksService({ scope, clock, delivery: { prepare: async () => ({ gymId, gymName: 'Gym',
     origin: 'https://gym.example.test', email: holder.email, memberEmailsEnabled: true, t }) } });
   const context = { gymId, actor: { kind: 'system' } } as const;
   const fields = { householdId: household.id, expiresAt: '2026-11-20T12:00:00.000Z' };
@@ -32,6 +33,60 @@ async function fixture(amountCents?: number, currency?: string) {
 }
 
 describe('one-off signed link send commands', () => {
+  it('parses every signed-link purpose in send responses, including uncertain responses', () => {
+    for (const purpose of signedLinkPurposeSchema.options) {
+      const link = signedLinkSchema.parse({ id: uuidv7(), householdId: uuidv7(), campaignId: null, purpose,
+        memberId: purpose === 'unsubscribe' || purpose === 'sign_waiver' ? uuidv7() : null,
+        invoiceId: purpose === 'pay_invoice' ? uuidv7() : null, usedAt: null, revokedAt: null, createdBy: null,
+        createdAt: '2026-11-06T12:00:00.000Z', expiresAt: '2026-11-20T12:00:00.000Z' });
+      expect(sendSignedLinkResponseSchema.parse({ data: link }).data).toEqual(link);
+      expect(sendSignedLinkResponseSchema.parse({ data: { ...link, outcome: 'unknown' } }).data).toEqual({ ...link, outcome: 'unknown' });
+    }
+  });
+  it('recovers refused outcome writes, revokes the link and safely reuses the same generation', async () => {
+    let failures = 0;
+    const f = await fixture(undefined, undefined, (gymId, fn) => db.forGym(gymId, async tx => {
+      const result = await fn(tx);
+      if (failures > 0) { failures--; throw new Error('Outcome transaction failed'); }
+      return result;
+    })), generation = uuidv7();
+    f.holder.email = { async sendEmail() { failures = 2; throw new DeliveryError('not_accepted', 'SMTP refused'); } };
+    await expect(f.links.send(f.context, f.update(generation))).rejects.toMatchObject({ code: 'unavailable' });
+    expect((await db.forGym(f.gymId, tx => tx.select().from(signedLinks))).every(link => link.revokedAt !== null)).toBe(true);
+    expect((await db.forGym(f.gymId, tx => tx.select().from(emailDeliveries)))[0]!.state).toBe('not_accepted');
+    f.holder.email = f.fake;
+    await f.links.send(f.context, f.update(generation));
+    await f.links.send(f.context, f.update(generation));
+    expect(f.fake.messages).toHaveLength(1);
+  });
+  it.each(['revoke', 'release'] as const)('maps a failed %s cleanup to unavailable and still attempts release', async failure => {
+    let failCleanup = true, revokeFailures = 0, releaseFailures = 0;
+    const f = await fixture(undefined, undefined, (gymId, fn) => db.forGym(gymId, async tx => {
+      const result = await fn(tx);
+      const links = await tx.select().from(signedLinks), rows = await tx.select().from(emailDeliveries);
+      if (failCleanup && failure === 'revoke' && links.some(link => link.revokedAt !== null)) {
+        revokeFailures++; throw new Error('Revocation transaction failed');
+      }
+      if (failCleanup && failure === 'release' && rows.some(row => row.state === 'not_accepted')) {
+        releaseFailures++; throw new Error('Release transaction failed');
+      }
+      return result;
+    })), generation = uuidv7();
+    await db.forGym(f.gymId, tx => tx.update(members).set({ emailOptOut: true }).where(eq(members.id, f.member.id)));
+    await expect(f.links.send(f.context, f.update(generation))).rejects.toMatchObject({ code: 'unavailable' });
+    expect(f.fake.messages).toHaveLength(0);
+    const [row] = await db.forGym(f.gymId, tx => tx.select().from(emailDeliveries));
+    expect(row!.state).toBe(failure === 'revoke' ? 'not_accepted' : 'sending');
+    expect(revokeFailures).toBe(failure === 'revoke' ? 1 : 0);
+    expect(releaseFailures).toBe(failure === 'release' ? 3 : 0);
+    failCleanup = false;
+    if (failure === 'revoke') {
+      await db.forGym(f.gymId, tx => tx.update(members).set({ emailOptOut: false }).where(eq(members.id, f.member.id)));
+      await f.links.send(f.context, f.update(generation));
+      await f.links.send(f.context, f.update(generation));
+      expect(f.fake.messages).toHaveLength(1);
+    }
+  });
   it.each(['onboarding', 'pay_invoice', 'update_card', 'sign_waiver'] as const)('%s: a replay sends once and a new generation sends again', async purpose => {
     const f = await fixture();
     const request = (sendGeneration: string) => {

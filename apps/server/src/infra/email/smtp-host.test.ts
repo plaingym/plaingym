@@ -107,6 +107,38 @@ describe('publicAddresses', () => {
     expect(cancel).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(0);
   });
+  it.each([4, 6] as const)('waits beyond grace for a usable family on an IPv%s-only machine', async family => {
+    vi.useFakeTimers();
+    const v4Answer = family === 4 ? new Promise<string[]>(resolve => setTimeout(() => resolve([v4]), 800)) : Promise.resolve([v4]);
+    const v6Answer = family === 6 ? new Promise<string[]>(resolve => setTimeout(() => resolve([v6]), 800)) : Promise.resolve([v6]);
+    vi.spyOn(Resolver.prototype, 'resolve4').mockReturnValue(v4Answer);
+    vi.spyOn(Resolver.prototype, 'resolve6').mockReturnValue(v6Answer);
+    const cancel = vi.spyOn(Resolver.prototype, 'cancel');
+    const result = expect(publicAddresses('mail.example.test', { families: () => new Set([family]) }))
+      .resolves.toEqual([family === 4 ? v4 : v6]);
+    await vi.advanceTimersByTimeAsync(799);
+    expect(cancel).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await result;
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it.each(['ENODATA', 'ENOTFOUND'])('prefers a DNS server failure over %s regardless of family or completion order', async absentCode => {
+    vi.useFakeTimers();
+    const absent = Object.assign(new Error('No address'), { code: absentCode });
+    const failure = Object.assign(new Error('DNS server failed'), { code: 'ESERVFAIL' });
+    const query4 = vi.spyOn(Resolver.prototype, 'resolve4'), query6 = vi.spyOn(Resolver.prototype, 'resolve6');
+    for (const [v4Error, v6Error] of [[absent, failure], [failure, absent]]) {
+      for (const first of [4, 6]) {
+        query4.mockImplementation(() => new Promise((_resolve, reject) => setTimeout(() => reject(v4Error), first === 4 ? 0 : 100)));
+        query6.mockImplementation(() => new Promise((_resolve, reject) => setTimeout(() => reject(v6Error), first === 6 ? 0 : 100)));
+        const result = expect(publicAddresses('mail.example.test', { families: both })).rejects.toBe(failure);
+        await vi.advanceTimersByTimeAsync(100);
+        await result;
+        expect(vi.getTimerCount()).toBe(0);
+      }
+    }
+  });
   it('checks a private sibling answer received within the short wait', async () => {
     vi.useFakeTimers();
     vi.spyOn(Resolver.prototype, 'resolve4').mockResolvedValue([v4]);

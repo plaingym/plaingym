@@ -7,8 +7,11 @@ With `publicHostOnly`, for a server a tenant named, each session resolves the ho
 
 This check is used for gym-supplied servers in `multi` mode. It queries A and AAAA
 with a per-session `dns.promises.Resolver`, outside the shared worker pool, and
-cancels outstanding queries at the ten-second deadline. Once one family answers,
-it waits at most 250 ms for the other, then cancels any remaining query. Every
+cancels outstanding queries at the ten-second deadline. Once a family the machine
+can reach answers, it waits at most 250 ms for the other, then cancels any remaining
+query. An answer from a family without a usable interface waits for the sibling
+up to the deadline. If both queries fail, a DNS server error takes precedence over
+an absent-address error (`ENODATA` or `ENOTFOUND`), regardless of completion order. Every
 returned address is still checked, and only checked addresses can be connected to.
 One answering family is enough even when the other returns a DNS error; when
 neither answers, the DNS error remains the delivery error's cause. Address
@@ -72,7 +75,24 @@ A send command that issues a credential (a one-off signed link, a staff or porta
 
 Persisted billing notices use `reserve(tx, gymId, key)` without a command digest: an accepted or uncertain notice returns no reservation, an in-flight one conflicts, and a definite non-send can try again. Dunning reserves its key, creates both links and remembers their IDs in one transaction, before rendering or calling SMTP. A failure before that transaction commits rolls back both links and the key. A definite non-send revokes the links; a possibly delivered one retains them and never mints another pair for the same notice. The reservation also covers a crash after commit but before SMTP: that attempt ages into uncertain and a retry conservatively keeps its links, since it cannot prove whether the email was delivered.
 
-Outcome writes are not swallowed. `release` rejects on a failed write so the caller can report or retry it. `attempt` preserves the transport acceptance classification when recording fails: an accepted email with an unrecorded outcome reports `unknown`, and a proven non-send still reports `not_accepted`.
+Outcome writes, including `release`, get up to three attempts in separate scoped
+transactions; these retries never call the transport again. The attempt-count and
+state guards also make a retry safe after a lost commit acknowledgement. Exhausted
+writes are not swallowed: `release` rejects so the caller can report or retry it.
+`attempt` preserves the transport acceptance classification when recording fails:
+an accepted email with an unrecorded outcome reports `unknown`, and a proven
+non-send still reports `not_accepted`. When both transport and recording fail, the
+`DeliveryError` cause is an `AggregateError` retaining both errors.
+
+Billing and signed-link cleanup attempt every revocation and still release a
+definite non-send if revocation fails: the credential was never disclosed, so a
+fresh attempt cannot duplicate a notice. A possibly delivered link remains usable
+and is never released. Signed-link cleanup failures report `unavailable` to the
+caller. Billing resolves SMTP and validates its origin lazily after the first
+recipient reservation, once per notice, so settled notices need no SMTP settings.
+The invoice, portal and staff send forms share `useSendGeneration` beside the
+generation helper to settle responses, reset stale warnings and start deliberate
+resends while retaining pending generations across dialog resets.
 
 Member notifications must use `new MemberEmail({ gymId, memberId, email, settings })`, which implements the same `Email` interface. Inject the gym-settings accessor and, in tests, scoped `forGym`. It reloads the go-live switch and member flags before each send and finishes both reads before SMTP. Suppression priority is disabled, opted out, then undeliverable. The frozen schema represents undeliverability as `emailDeliverable === false`. Missing/cross-gym members or mismatched recipients fail closed. The recipient is the member's stored email (one plain address). Staff login and setup test messages use the unwrapped transport, so the member switch cannot prevent account recovery.
 

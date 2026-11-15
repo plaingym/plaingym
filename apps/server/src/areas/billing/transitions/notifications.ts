@@ -70,14 +70,9 @@ export function createTransitionNotifications(options: {
     // notice has one recipient and no address in its key: an erased member's address leaves nothing behind, and an address
     // changed between retries gets no second notice.
     const keyFor = (to: string) => staff ? `${base}:${recipientDigest(to)}` : base;
-    const prepared = await options.prepare(gymId);
-    const t: Translator = (key, values) => {
-      const translated = prepared.t?.(key, values);
-      return translated && translated !== key ? translated : defaultTranslator(key, values);
-    };
-    const origin = new URL(prepared.origin);
-    if (!['https:', 'http:'].includes(origin.protocol) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash)
-      throw new Error('Invalid billing notification origin');
+    // Cache the promise, including a failure, so one notice resolves SMTP at most once and settled notices need none.
+    let preparation: Promise<Awaited<ReturnType<typeof options.prepare>>> | undefined;
+    const prepare = () => preparation ??= options.prepare(gymId);
     const context = { gymId, actor: { kind: 'system' as const } };
     const manualPayment = (kind === 'action' || kind === 'failed') && !!cardChargeIssue(invoice.amountCents, invoice.currency);
     let failure: unknown;
@@ -97,8 +92,26 @@ export function createTransitionNotifications(options: {
           return { reservation, created };
         });
         if (!pending) continue;
-        let attempted = false;
+        const { created, reservation } = pending;
+        let attempted = false, cleaned = false;
+        async function cleanup() {
+          cleaned = true;
+          const errors: unknown[] = [];
+          for (const item of created) {
+            try { await links.revoke(context, item.link.id); } catch (error) { errors.push(error); }
+          }
+          // No credential was disclosed. A failed revoke must not turn a definite non-send into an uncertain notice.
+          try { await deliveries.release(reservation); } catch (error) { errors.push(error); }
+          if (errors.length) throw new AggregateError(errors, 'Billing email cleanup failed');
+        }
         try {
+          const prepared = await prepare(), origin = new URL(prepared.origin);
+          if (!['https:', 'http:'].includes(origin.protocol) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash)
+            throw new Error('Invalid billing notification origin');
+          const t: Translator = (key, values) => {
+            const translated = prepared.t?.(key, values);
+            return translated && translated !== key ? translated : defaultTranslator(key, values);
+          };
           const payUrl = pending.created[0] ? new URL(`/l/${pending.created[0].token}`, origin).href : '';
           const updateUrl = pending.created[1] ? new URL(`/l/${pending.created[1].token}`, origin).href : '';
           const values = { number: invoice.number, amount: formatMoney(amountCents ?? notice.payment?.amountCents ?? invoice.amountCents, invoice.currency),
@@ -108,8 +121,7 @@ export function createTransitionNotifications(options: {
           const creditsNote = credits && (kind === 'refundFailed' || kind === 'refundReversed') ? '\n\n' + t('billing/transitions:creditsReversedNote', values) : '';
           const text = t(`billing/transitions:${message}Body`, values) + creditsNote;
           if (!staff && !(await options.settings.get(gymId)).memberEmailsEnabled) {
-            for (const item of pending.created) await links.revoke(context, item.link.id);
-            await deliveries.release(pending.reservation);
+            await cleanup();
             return;
           }
           attempted = true;
@@ -117,10 +129,11 @@ export function createTransitionNotifications(options: {
           if (sent.status === 'suppressed' && (staff || pending.created.length))
             throw new DeliveryError('not_accepted', staff ? 'Staff notice was suppressed' : 'Dunning email was suppressed');
         } catch (error) {
-          // Revoke before a release write: a failed outcome write must not leave a known undisclosed link active.
-          if (!attempted || deliveryAcceptance(error) === 'not_accepted')
-            for (const item of pending.created) await links.revoke(context, item.link.id);
-          if (!attempted) await deliveries.release(pending.reservation);
+          // A cleanup that already ran (member email turned off) reports its own failure; don't run it twice.
+          if (!cleaned && (!attempted || deliveryAcceptance(error) === 'not_accepted')) {
+            try { await cleanup(); }
+            catch (cause) { throw new AggregateError([error, cause], 'Billing email and cleanup failed', { cause }); }
+          }
           throw error;
         }
       } catch (error) {

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { canStaff, type StaffRole } from '@plaingym/shared';
 import type { StaffProfile, StaffRoleRecord, StaffProfileListResponse, AssignableStaffRole } from '@plaingym/shared/contracts';
 import { Input } from '../../components/ui/input.js';
@@ -13,7 +13,7 @@ import { CheckboxField, Select, Textarea } from '../../components/ui/select.js';
 import { EmptyState, LoadingState } from '../../components/ui/states.js';
 import { Badge, StackedItem, StackedList } from '../../components/ui/table.js';
 import { t } from '../../lib/i18n.js';
-import { createSendGeneration } from '../../lib/send-generation.js';
+import { useSendGeneration } from '../../lib/send-generation.js';
 import { ApiError } from '../../lib/api.js';
 import { createStaffClient, StaffRequestError, type StaffClient } from './client.js';
 import { resizeStaffPhoto } from './photo.js';
@@ -40,8 +40,7 @@ export function StaffManagement({ roles: actorRoles, passwordEnabled, services =
   const [totalRoles, setTotalRoles] = useState(0), [offset, setOffset] = useState(0), [roleOffset, setRoleOffset] = useState(0), [search, setSearch] = useState('');
   const [editing, setEditing] = useState<StaffProfile | null>(null), [creating, setCreating] = useState(false);
   const [message, setMessage] = useState(''), [busy, setBusy] = useState(false), [invitationUrl, setInvitationUrl] = useState('');
-  const [uncertain, setUncertain] = useState(false);
-  const inviteSend = useRef(createSendGeneration('staff-invitation'));
+  const inviteSend = useSendGeneration('staff-invitation'), { uncertain } = inviteSend;
   const [revoking, setRevoking] = useState<string | null>(null);
   const [grantUserId, setGrantUserId] = useState(''), [grantPicker, setGrantPicker] = useState(0);
   const allowed = canStaff(actorRoles, 'staff.manage');
@@ -59,7 +58,7 @@ export function StaffManagement({ roles: actorRoles, passwordEnabled, services =
     return () => { active = false; };
   }, [allowed, offset, roleOffset, search, services]);
   async function action(work: () => Promise<void>) {
-    setBusy(true); setMessage(''); setUncertain(false);
+    setBusy(true); setMessage(''); inviteSend.reset();
     try { await work(); await load(); setMessage(label('saved')); } catch (e) { error(e); }
     finally { setBusy(false); }
   }
@@ -78,11 +77,9 @@ export function StaffManagement({ roles: actorRoles, passwordEnabled, services =
       <form className="print:hidden" onSubmit={(event) => submit(event, async (data) => {
         setInvitationUrl(''); const request = { email: value(data, 'email'), role: value(data, 'role') as AssignableStaffRole };
         const email = value(data, 'delivery') === 'email';
-        if (uncertain) { inviteSend.current.sent(); setUncertain(false); }
-        const result = await services.invite(email ? { ...request, delivery: 'email', sendGeneration: inviteSend.current.for(request) } : { ...request, delivery: 'print' });
-        const unknown = result.delivery === 'email' && result.outcome === 'unknown';
-        setUncertain(unknown);
-        if (email && !unknown) inviteSend.current.sent();
+        if (uncertain && email) inviteSend.resend();
+        const result = await services.invite(email ? { ...request, delivery: 'email', sendGeneration: inviteSend.generation(request) } : { ...request, delivery: 'print' });
+        if (result.delivery === 'email') inviteSend.settle(result);
         if (result.delivery === 'print') setInvitationUrl(result.invitationUrl);
       })}><fieldset disabled={busy} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[2fr_1fr_1fr_auto] lg:items-end">
         <Field text={label('email')}><Input name="email" type="email" required autoComplete="email"/></Field><RoleSelect/>

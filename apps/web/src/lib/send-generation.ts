@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { useRef, useState } from 'react';
+
 /**
  * Pending requests keep their generation across reloads in this tab. Pass request identity, never credentials.
  * `sent` clears a confirmed send, or starts a deliberate resend after an uncertain outcome.
@@ -24,5 +26,25 @@ export function createSendGeneration(namespace = 'send', storage?: Pick<Storage,
       if (current) { try { session().removeItem(current.key); } catch { /* Storage may be disabled. */ } }
       current = null;
     },
+  };
+}
+
+/** Share the send forms' uncertain response and deliberate resend steps. Reset a dialog without losing its pending key. */
+export function useSendGeneration(namespace: string) {
+  const [uncertain, setUncertain] = useState(false);
+  const sends = useRef<ReturnType<typeof createSendGeneration> | null>(null);
+  sends.current ??= createSendGeneration(namespace);
+  const reset = () => setUncertain(false);
+  return {
+    uncertain,
+    generation: (request: unknown) => sends.current!.for(request),
+    settle(result: object): boolean {
+      const unknown = 'outcome' in result && result.outcome === 'unknown';
+      setUncertain(unknown);
+      if (!unknown) sends.current!.sent();
+      return unknown;
+    },
+    resend() { sends.current!.sent(); reset(); },
+    reset,
   };
 }

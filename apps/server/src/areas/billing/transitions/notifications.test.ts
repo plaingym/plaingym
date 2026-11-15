@@ -56,6 +56,39 @@ describe('keyed billing notices', () => {
     await f.notifications.dunning({ ...notice, actionRequired: true });
     expect(f.fake.messages).toHaveLength(1);
   });
+  it.each(senders)('%s: skips preparation after every recipient has already been accepted', async (_name, _minted, send) => {
+    const staff = ['first@example.invalid', 'second@example.invalid'], f = await fixture(staff), notice = await f.notice(uuidv7());
+    await send(f.notifications, notice);
+    let preparations = 0;
+    const retried = createTransitionNotifications({ scope: db.forGym, clock: f.clock,
+      settings: createGymSettingsAccessor({ scope: db.forGym }), staffRecipients: async () => staff,
+      prepare: async () => { preparations++; throw new Error('SMTP settings removed'); } });
+    await send(retried, notice);
+    expect(preparations).toBe(0);
+  });
+  it('prepares once for multiple reserved staff recipients', async () => {
+    const f = await fixture(), notice = await f.notice(uuidv7());
+    let preparations = 0;
+    const notifications = createTransitionNotifications({ scope: db.forGym, clock: f.clock,
+      settings: createGymSettingsAccessor({ scope: db.forGym }), staffRecipients: async () => ['first@example.invalid', 'second@example.invalid'],
+      prepare: async () => { preparations++; return { email: f.fake, origin: 'https://gym.example.invalid' }; } });
+    await notifications.staffNotice(notice);
+    expect(preparations).toBe(1);
+    expect(f.fake.messages).toHaveLength(2);
+  });
+  it('releases all reserved staff recipients after one shared preparation failure', async () => {
+    const f = await fixture(), notice = await f.notice(uuidv7());
+    let preparations = 0;
+    const notifications = createTransitionNotifications({ scope: db.forGym, clock: f.clock,
+      settings: createGymSettingsAccessor({ scope: db.forGym }), staffRecipients: async () => ['first@example.invalid', 'second@example.invalid'],
+      prepare: async () => { preparations++; throw new Error('SMTP settings removed'); } });
+    await expect(notifications.staffNotice(notice)).rejects.toThrow('SMTP settings removed');
+    expect(preparations).toBe(1);
+    const rows = await db.forGym(f.gymId, tx => tx.select().from(emailDeliveries));
+    expect(rows).toHaveLength(2);
+    expect(rows.every(row => row.state === 'not_accepted')).toBe(true);
+    expect(f.fake.messages).toHaveLength(0);
+  });
   it('keeps possibly delivered dunning links usable, and neither sends nor mints again', async () => {
     const f = await fixture(), notice = await f.notice(uuidv7());
     f.fake.respondNext(new DeliveryError('unknown', 'Reply lost'));
@@ -147,6 +180,73 @@ describe('keyed billing notices', () => {
     await run(uuidv7());
     expect(f.fake.messages).toHaveLength(2);
   });
+});
+
+it('recovers a refused dunning outcome after two rolled-back writes and retries only the non-send', async () => {
+  const f = await fixture(), notice = { ...await f.notice(uuidv7()), actionRequired: false };
+  let failures = 0, writes = 0;
+  f.holder.email = { async sendEmail() { failures = 2; throw new DeliveryError('not_accepted', 'SMTP refused'); } };
+  const notifications = createTransitionNotifications({ clock: f.clock,
+    scope: (gymId, fn) => db.forGym(gymId, async tx => {
+      const result = await fn(tx);
+      if (failures > 0) { failures--; writes++; throw new Error('Outcome transaction failed'); }
+      return result;
+    }), settings: createGymSettingsAccessor({ scope: db.forGym }), staffRecipients: async () => [],
+    prepare: async () => ({ email: f.holder.email, origin: 'https://gym.example.invalid' }) });
+  await expect(notifications.dunning(notice)).rejects.toThrow('SMTP refused');
+  expect(writes).toBe(2);
+  expect((await f.links()).every(link => link.revokedAt !== null)).toBe(true);
+  const [row] = await db.forGym(f.gymId, tx => tx.select().from(emailDeliveries));
+  expect(row!.state).toBe('not_accepted');
+  f.holder.email = f.fake;
+  await notifications.dunning(notice);
+  await notifications.dunning(notice);
+  expect(f.fake.messages).toHaveLength(1);
+});
+
+it('releases a never-sent dunning reservation even when both link revocations fail', async () => {
+  const f = await fixture(), notice = { ...await f.notice(uuidv7()), actionRequired: false };
+  let revocations = 0;
+  const notifications = createTransitionNotifications({ clock: f.clock,
+    scope: (gymId, fn) => db.forGym(gymId, async tx => {
+      const result = await fn(tx);
+      if ((await tx.select().from(signedLinks)).some(link => link.revokedAt !== null)) {
+        revocations++; throw new Error('Revocation transaction failed');
+      }
+      return result;
+    }), settings: createGymSettingsAccessor({ scope: db.forGym }), staffRecipients: async () => [],
+    prepare: async () => { throw new Error('SMTP unavailable'); } });
+  await expect(notifications.dunning(notice)).rejects.toThrow('Billing email and cleanup failed');
+  expect(revocations).toBe(2);
+  const [row] = await db.forGym(f.gymId, tx => tx.select().from(emailDeliveries));
+  expect(row!.state).toBe('not_accepted');
+  expect((await f.links()).every(link => link.revokedAt === null)).toBe(true);
+  expect(f.fake.messages).toHaveLength(0);
+  await f.notifications.dunning(notice);
+  await f.notifications.dunning(notice);
+  expect(f.fake.messages).toHaveLength(1);
+});
+
+it('runs the cleanup once when member email is turned off before sending and a revocation fails', async () => {
+  const f = await fixture(), notice = { ...await f.notice(uuidv7()), actionRequired: false };
+  const settings = createGymSettingsAccessor({ scope: db.forGym });
+  let reads = 0, revocations = 0;
+  const notifications = createTransitionNotifications({ clock: f.clock,
+    scope: (gymId, fn) => db.forGym(gymId, async tx => {
+      const result = await fn(tx);
+      if ((await tx.select().from(signedLinks)).some(link => link.revokedAt !== null)) {
+        revocations++; throw new Error('Revocation transaction failed');
+      }
+      return result;
+    }),
+    // Recipients and the loop's check see email on; the check before sending sees it turned off.
+    settings: { get: async gymId => ({ ...await settings.get(gymId), memberEmailsEnabled: ++reads < 3 }) },
+    staffRecipients: async () => [], prepare: async () => ({ email: f.fake, origin: 'https://gym.example.invalid' }) });
+  await expect(notifications.dunning(notice)).rejects.toThrow('Billing email cleanup failed');
+  expect(revocations).toBe(2);
+  const [row] = await db.forGym(f.gymId, tx => tx.select().from(emailDeliveries));
+  expect(row!.state).toBe('not_accepted');
+  expect(f.fake.messages).toHaveLength(0);
 });
 
 it('rolls dunning links and the reservation back together if the worker fails before commit', async () => {

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { dateLabel } from '../../../lib/instant.js';
-import { useRef, useState, type FormEvent } from 'react';
+import { useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { memberResponseSchema, membersContracts, portalAccessContracts, type HouseholdUser, type PortalOutstandingInvitation as OutstandingInvitation } from '@plaingym/shared/contracts';
 import { useBootstrap } from '../../../app/context.js';
 import type { ExtensionViewProps } from '../../../lib/registries.js';
 import { t } from '../../../lib/i18n.js';
-import { createSendGeneration } from '../../../lib/send-generation.js';
+import { useSendGeneration } from '../../../lib/send-generation.js';
 import { memberRequest } from '../../members/api.js';
 import { Button } from '../../../components/ui/button.js';
 import { Pager } from '../../../components/ui/pager.js';
@@ -28,18 +28,16 @@ export function PortalAccessTab({ memberId }: ExtensionViewProps) {
     queryFn: ({ signal }) => memberRequest(portalAccessContracts.logins.response, `/api/households/${householdId}/portal-logins?offset=${offset}&limit=20`, 'GET', undefined, signal) });
   const pending = useQuery({ queryKey: [...key, 'invitations'], enabled: !!householdId,
     queryFn: ({ signal }) => memberRequest(portalAccessContracts.invitations.response, `/api/households/${householdId}/portal-invitations`, 'GET', undefined, signal) });
-  const [uncertain, setUncertain] = useState(false);
-  const inviteSend = useRef(createSendGeneration('portal-invitation'));
+  const inviteSend = useSendGeneration('portal-invitation'), { uncertain } = inviteSend;
   const operation = useMutation({ mutationFn: async () => {
     if (!householdId || !edit) return;
     if (edit === 'invite') {
       const request = { email, scope, memberId: scope === 'member' ? memberId : null };
-      if (uncertain) { inviteSend.current.sent(); setUncertain(false); }
+      if (uncertain && delivery === 'email') inviteSend.resend();
       const result = await memberRequest(portalAccessContracts.invite.response, `/api/households/${householdId}/portal-invitations`, 'POST',
-        delivery === 'email' ? { ...request, delivery, sendGeneration: inviteSend.current.for({ householdId, ...request }) } : { ...request, delivery });
-      const unknown = result.data.delivery === 'email' && result.data.outcome === 'unknown';
-      setUncertain(unknown);
-      if (delivery === 'email' && !unknown) inviteSend.current.sent();
+        delivery === 'email' ? { ...request, delivery, sendGeneration: inviteSend.generation({ householdId, ...request }) } : { ...request, delivery });
+      const unknown = result.data.delivery === 'email' ? inviteSend.settle(result.data) : false;
+      if (result.data.delivery === 'print') inviteSend.reset();
       if (result.data.delivery === 'print') setInvitation(result.data.invitationUrl);
       return unknown;
     } else if (edit.kind === 'withdraw') await memberRequest(portalAccessContracts.revokeInvitation.response, `/api/households/${householdId}/portal-invitations/${edit.invitation.id}`, 'DELETE');
@@ -47,7 +45,7 @@ export function PortalAccessTab({ memberId }: ExtensionViewProps) {
     else await memberRequest(portalAccessContracts.resetPassword.response, `/api/households/${householdId}/users/${edit.login.id}/password`, 'POST', { newPassword: password });
   }, onSuccess: async (unknown) => { if (!unknown) setEdit(null); setPassword(''); await cache.invalidateQueries({ queryKey: key }); }, onError: () => setPassword('') });
   // Every dialog starts from member-only access, so a payer grant is always a deliberate choice.
-  const open = (value: typeof edit) => { operation.reset(); setUncertain(false); setInvitation(null); setEdit(value); setEmail(person.data?.data.email ?? ''); setScope('member'); setDelivery('print'); setPassword(''); };
+  const open = (value: typeof edit) => { operation.reset(); inviteSend.reset(); setInvitation(null); setEdit(value); setEmail(person.data?.data.email ?? ''); setScope('member'); setDelivery('print'); setPassword(''); };
   // A password-mode join: after checking the person, staff issue the printed payer invitation for the household's address.
   const confirm = (address: string | null) => { open('invite'); setEmail(address ?? ''); setScope('payer'); setDelivery('print'); };
   const awaiting = users.data?.awaitingConfirmation;

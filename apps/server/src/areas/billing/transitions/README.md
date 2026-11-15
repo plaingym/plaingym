@@ -3,7 +3,10 @@
 Dunning notices use the shared card minimum and currency-step check. If an invoice
 cannot be charged, its email asks the payer to contact the gym for a manual payment,
 without minting pay or card-update links. Receipts and staff notices keep their usual
-behavior.
+behavior. SMTP preparation and origin validation happen only after a recipient
+gets a reservation, once per notice; already accepted or uncertain recipients
+need no SMTP lookup. Definite non-send cleanup tries both revocations and releases
+the reservation even if a revocation fails, since no credential was disclosed.
 
 Every notice sends through `createEmailDeliveries`, under the key
 `billing.<purpose>:<object>:<generation>`, and a staff notice under one key per recipient,
