@@ -209,14 +209,14 @@ describe('campaign sends and reminders', () => {
     expect(audits.map(row => row.action)).not.toContain('link_campaign.delivery_sent');
     f.clock.advance(86400000); expect(await f.service.remindCampaign(f.context, c.campaign.id)).toEqual({ queued: 0 });
   });
-  it.each(['paid', 'void'])('skips an invoice made %s after campaign creation', async status => {
+  it.each(['paid', 'void'])('completes without email when an invoice is made %s after campaign creation', async status => {
     const f = await fixture();
     const invoice = await factory('invoices', f.gymId, { householdId: f.household.id, status: 'open', number: 1, amountCents: 30 });
     const c = await f.service.create(f.context, { ...f.input(), purpose: 'pay_invoice', recipients: [{ householdId: f.household.id, invoiceId: invoice.id }] });
     await db.forGym(f.gymId, tx => tx.update(invoices).set({ status }).where(eq(invoices.id, invoice.id)));
     await f.drain();
     expect(f.email.messages).toEqual([]);
-    expect((await f.service.get(f.gymId, c.campaign.id)).progress).toMatchObject({ pending: 0, revoked: 1 });
+    expect((await f.service.get(f.gymId, c.campaign.id)).progress).toMatchObject({ pending: 0, completed: 1, revoked: 0 });
   });
   it('persists completion when the final two recipients finish concurrently, isolated to their campaign and gym', async () => {
     const f = await fixture(), other = await factory('households', f.gymId);
@@ -848,6 +848,54 @@ describe('campaign completion and production registrations', () => {
       expect(format).toContain(messages['footer']);
       expect(format.indexOf(notice)).toBeLessThan(format.indexOf(messages['footer']!));
     }
+  });
+  it.each(['paid', 'void'] as const)('completes a pending pay-link request for an invoice closed elsewhere (%s)', async status => {
+    for (const disclosed of [true, false]) {
+      const f = await fixture();
+      const invoice = await factory('invoices', f.gymId, { householdId: f.household.id, status: 'open', number: 1, amountCents: 1000 });
+      const c = await f.service.create(f.context, { ...f.input(), purpose: 'pay_invoice',
+        recipients: [{ householdId: f.household.id, invoiceId: invoice.id }] });
+      if (disclosed) await f.drain();
+      const link = (await f.service.recipients(f.gymId, c.campaign.id)).data[0]!.link;
+      if (status === 'paid') await createInvoiceTransitions({ scope: db.forGym, clock: f.clock }).manualPayment(f.context, {
+        invoiceId: invoice.id, paymentId: uuidv7(), amountCents: invoice.amountCents, currency: invoice.currency,
+        method: 'cash', reference: 'paid at desk', paidAt: f.clock.now().toISOString() });
+      else await db.forGym(f.gymId, tx => tx.update(invoices).set({ status }).where(eq(invoices.id, invoice.id)));
+      const matching = vi.spyOn(f.provider, 'findCustomerByEmail');
+      matching.mockClear(); f.paymentsFor.mockClear(); f.prepare.mockClear();
+      const before = f.email.messages.length;
+      f.clock.advance(86400000);
+      if (disclosed) await f.service.remindCampaign(f.context, c.campaign.id);
+      await f.drain();
+      expect(matching).not.toHaveBeenCalled(); expect(f.paymentsFor).not.toHaveBeenCalled(); expect(f.prepare).not.toHaveBeenCalled();
+      expect(f.email.messages).toHaveLength(before);
+      expect((await f.service.get(f.gymId, c.campaign.id))).toMatchObject({
+        campaign: { completedAt: f.clock.now().toISOString() }, progress: { total: 1, completed: 1, pending: 0, revoked: 0 } });
+      const records = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, link.id)));
+      expect(records.filter(record => record.action === 'link_campaign.delivery_reserved')).toHaveLength(disclosed ? 1 : 0);
+      expect(records.some(record => record.action === 'signed_link.used' && (record.after as { reason?: string })?.reason === 'invoice_closed')).toBe(true);
+      expect(await f.service.remindCampaign(f.context, c.campaign.id)).toEqual({ queued: 0 });
+      await f.service.scan(f.gymId); await f.drain();
+      expect(f.email.messages).toHaveLength(before);
+    }
+  });
+  it('completes a pay-link invoice closed during delivery preparation without reserving a send', async () => {
+    const f = await fixture();
+    const invoice = await factory('invoices', f.gymId, { householdId: f.household.id, status: 'open', number: 1, amountCents: 1000 });
+    const c = await f.service.create(f.context, { ...f.input(), purpose: 'pay_invoice',
+      recipients: [{ householdId: f.household.id, invoiceId: invoice.id }] });
+    const prepare = f.prepare.getMockImplementation()!;
+    f.prepare.mockImplementationOnce(async id => {
+      const delivery = await prepare(id);
+      await db.forGym(f.gymId, tx => tx.update(invoices).set({ status: 'paid', paidAt: f.clock.now() }).where(eq(invoices.id, invoice.id)));
+      return delivery;
+    });
+    await f.drain();
+    expect(f.email.messages).toHaveLength(0);
+    expect((await f.service.get(f.gymId, c.campaign.id)).progress).toMatchObject({ completed: 1, pending: 0, revoked: 0 });
+    const [link] = (await f.service.recipients(f.gymId, c.campaign.id)).data;
+    const records = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, link!.link.id)));
+    expect(records.some(record => record.action === 'link_campaign.delivery_reserved')).toBe(false);
   });
   it.each([[32, 'CAD'], [1255, 'KWD']] as const)('omits link replacement guidance from a manual-payment campaign for %s %s', async (amountCents, currency) => {
     const f = await fixture(currency);

@@ -5,7 +5,7 @@ import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { cardBrand } from '../../../lib/card-brand.js';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { refundReleased, type InvoiceDetail, type MaskedPaymentMethod, type Payment } from '@plaingym/shared/contracts';
-import { AmountInputError } from '@plaingym/shared/money';
+import { AmountInputError, cardChargeIssue } from '@plaingym/shared/money';
 import { invoiceClient, invoiceError, type InvoiceClient } from './api.js';
 import { text, money, minorUnitsToInput, parseMinorUnits } from './format.js';
 import { Button } from '../../../components/ui/button.js';
@@ -85,7 +85,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
         setUncertain(unknown);
         if (sendGeneration && !unknown) linkSend.current.sent();
         if ('token' in result.data) { setUrl(new URL('/l/' + result.data.token, location.origin).href); }
-        else setMessage(text(unknown ? 'sendUncertain' : result.data.revokedAt ? 'manualNoticeSent' : 'linkSent'));
+        else setMessage(text(unknown ? 'sendUncertain' : cardChargeIssue(invoice.amountCents, invoice.currency) ? 'manualNoticeSent' : 'linkSent'));
       }
       if (creditChanged) onCreditChange?.();
       await cache.invalidateQueries({ queryKey: ['billing', gymId] });

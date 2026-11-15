@@ -37,10 +37,11 @@ optional UTF-8 charset is accepted), or `multipart/form-data` with that one fiel
 and value and nothing else. Its separate route budget is 10,000 requests per gym
 and client per minute, so junk from other addresses cannot spend a provider's
 budget. `POST /l/<token>` is exempt from the app's general flood limit, allowing a
-provider to unsubscribe more than 300 members from one address. A token that doesn't
-resolve, or that the route's parameter check refuses, is also charged to
+provider to unsubscribe more than 300 members from one address. An unknown token,
+or one that the route's parameter check refuses, is also charged to
 `oneClickGuessBudget` (a fixed 300 per gym and client per minute, the flood limit's default),
-which refuses that address before any token lookup once spent. Link scripts show
+which refuses that address before any token lookup once spent. Known expired,
+revoked, used and wrong-purpose links do not spend this guess budget. Link scripts show
 their busy text only for a 429 with the `busy` reason and `limited` for any other. The preference
 button/API keeps its 30-request per gym/client/minute budget and general flood limit.
 It returns the same 404 for unknown, expired,
@@ -76,9 +77,12 @@ projections exclude contacts, medical data and unrelated invoices or members;
 requests cannot add resource selectors. A used credential displays only the
 friendly completion page; used, revoked and expired credentials cannot call the
 APIs. Pages and responses use `no-store`, no-referrer and noindex headers.
-A waiver or onboarding answer's `signatures` are the link's members' signatures of
-the current templates only, newest first and at most 100; the checks before an
-upload, signature, document or Checkout read the members and templates without them.
+A waiver or onboarding answer's `signatures` contain the newest signature for each
+member and current template, newest first. A distinct member/template lookup and
+one bounded signature read per signed pair keep repeated signatures from hiding
+another signed template. All reads stay within the link's household or member grant.
+Checks before an upload, signature, document or onboarding Checkout read members
+and templates without signatures or payment methods they do not use.
 
 Waiver uploads and signatures call the additive `uploadSignedLink` and
 `signSignedLink` methods on the waiver service. Each of that service's short

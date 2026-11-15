@@ -9,7 +9,7 @@ import type { CreateLinkCampaignRequest, CreateSignedLinkRequest } from '@plaing
 import { TestClock } from '../../core/clock.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
 import { createCampaignsService } from './campaigns.js';
-import { createSignedLinksService } from './service.js';
+import { createSignedLinksService, signedLinkExpiryDays } from './service.js';
 
 // Campaign creation batches its links and audits; these tests hold it to the rows one-by-one creation stores.
 const db = useTestDatabase(), factory = createFactories(db);
@@ -39,6 +39,16 @@ async function bulkHouseholds(gymId: string, count: number) {
   return db.forGym(gymId, tx => tx.insert(households).values(Array.from({ length: count }, (_, i) => ({ gymId, name: 'Bulk ' + i })))
     .returning({ id: households.id }));
 }
+
+it.each(['onboarding', 'update_card', 'pay_invoice', 'sign_waiver'] as const)('shares the signed-link expiry boundary for %s campaigns', async purpose => {
+  const f = await fixture(), limit = f.clock.now().getTime() + signedLinkExpiryDays * 86400_000;
+  await expect(f.service.create(f.context, { ...f.input(purpose), expiresAt: new Date(limit + 1).toISOString() }))
+    .rejects.toMatchObject({ code: 'invalid_request', details: { expiresAt: expect.any(Array) } });
+  expect(await f.stored()).toEqual({ campaigns: [], links: [], audits: [] });
+  expect(f.jobs.jobs).toEqual([]);
+  const created = await f.service.create(f.context, { ...f.input(purpose), expiresAt: new Date(limit).toISOString() });
+  expect((await f.service.recipients(f.gymId, created.campaign.id)).data.every(recipient => recipient.link.expiresAt === new Date(limit).toISOString())).toBe(true);
+});
 
 it.each(['onboarding', 'update_card', 'pay_invoice', 'sign_waiver'] as const)('rejects mixed-case duplicate %s recipients atomically', async purpose => {
   const f = await fixture(), recipient = f.requests[purpose][0]!;

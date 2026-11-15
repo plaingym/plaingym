@@ -47,6 +47,23 @@ it('replays the invoice reservation by its exact expiry when another link has a 
   expect(replay.session.id).toBe(lost!.id);
   expect(spy.mock.calls.map(([request]) => request.linkId)).toEqual([f.linkId, f.linkId]);
 });
+it.each(['time', 'id'] as const)('orders same-expiry Checkout reservations by %s before selecting their link', async order => {
+  const f = await fixture('pay_invoice');
+  const other = await f.links.create(f.context, { purpose: 'pay_invoice', householdId: f.household.id,
+    invoiceId: f.invoice.id, expiresAt: f.created.link.expiresAt });
+  const expiresAt = new Date(f.clock.now().getTime() + 23 * 3600000);
+  await db.forGym(f.gymId, async tx => {
+    await tx.update(invoices).set({ checkoutExpiresAt: expiresAt }).where(eq(invoices.id, f.invoice.id));
+    await writeAudit(tx, { id: uuidv7(), gymId: f.gymId, actorKind: 'system', targetType: 'signed_link',
+      targetId: f.linkId, action: 'billing.checkout.reserved', occurredAt: f.clock.now(), after: { expiresAt: expiresAt.toISOString() } });
+    await writeAudit(tx, { id: uuidv7(), gymId: f.gymId, actorKind: 'system', targetType: 'signed_link',
+      targetId: other.link.id, action: 'billing.checkout.reservation_renewed', occurredAt: new Date(f.clock.now().getTime() - (order === 'time' ? 1000 : 0)),
+      after: { expiresAt: expiresAt.toISOString() } });
+  });
+  const create = vi.spyOn(f.fake, 'createCheckout');
+  await f.checkout.start(f.gymId, f.linkId);
+  expect(create.mock.calls[0]![0].linkId).toBe(order === 'time' ? f.linkId : other.link.id);
+});
 it('replays short card setup with a persisted expiry after a lost response, and renews expired setup', async () => {
   const f = await fixture('update_card'), flow = { successPath: '/join/return', cancelPath: '/join/cancelled', lifetimeMs: 3_600_000 };
   const create = f.provider.createCheckout.bind(f.provider);

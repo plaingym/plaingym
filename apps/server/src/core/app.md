@@ -130,9 +130,10 @@ The flood limit is mounted with `skip` set to the one-click unsubscribe contract
 10,000/minute per-gym/client budget instead of the general flood budget; a route's own
 limiter never skips anything. GETs, other `/l/` paths and the preference API retain
 general flood protection. This permits one mail provider to unsubscribe many members
-without sharing a budget with junk requests from other addresses, while a token that
-doesn't resolve is charged to a 300/minute per-gym/client `failureBudget` that refuses
-the address before any lookup once spent.
+without sharing a budget with junk requests from other addresses, while an unknown or
+malformed token is charged to a 300/minute per-gym/client `failureBudget` that refuses
+the address before any lookup once spent. Known expired, revoked, used and
+wrong-purpose links are not charged.
 
 A 429 sets `Retry-After: 1` only for a refusal carrying the `busy` reason
 (`details.reason`, `busyReason` in `errors.ts`): a queue full for the moment, such

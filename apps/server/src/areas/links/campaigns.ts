@@ -3,7 +3,7 @@ import { and, asc, count, desc, eq, gt, isNull, ne, notExists } from 'drizzle-or
 import { auditEvents, forGym, households, linkCampaigns, paymentMethods, signedLinks, writeAudit } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
-import { campaignLimits, campaignRecipientListQuerySchema, createLinkCampaignRequestSchema, householdsNeedingCardQuerySchema, linkCampaignListQuerySchema,
+import { campaignRecipientListQuerySchema, createLinkCampaignRequestSchema, householdsNeedingCardQuerySchema, linkCampaignListQuerySchema,
   type CreateLinkCampaignRequest, type CreateSignedLinkRequest } from '@plaingym/shared/contracts';
 import { z } from 'zod';
 import { clock as defaultClock } from '../../core/clock.js';
@@ -14,7 +14,7 @@ import { createGymSettingsAccessor } from '../settings/settings.js';
 import { createSignedLinksIn } from './service.js';
 import type { SignedLinkDelivery } from './service.delivery.js';
 import { campaignDetail, campaignRecipient, campaignTallies, recipientState } from './campaigns.model.js';
-import { deliverCampaignLink } from './campaigns.delivery.js';
+import { completeClosedCampaignInvoice, deliverCampaignLink } from './campaigns.delivery.js';
 import { campaignCustomerHolds, matchCampaignCustomer } from './campaigns.customers.js';
 import { checkoutInProgress, deliveryBlocked, deliveryHistory } from './campaigns.attempts.js';
 
@@ -106,9 +106,6 @@ export function createCampaignsService(options: CampaignsOptions) {
       const parsed = createLinkCampaignRequestSchema.safeParse(input);
       if (!parsed.success) throw new AppError('invalid_request', 'Invalid campaign request');
       const request = parsed.data;
-      // Relative expiry uses the injected clock; static limits are enforced by the shared schema.
-      if (new Date(request.expiresAt).getTime() > clock.now().getTime() + campaignLimits.expiryDays * 86400000)
-        throw new AppError('invalid_request', `Campaign expiry must be within ${campaignLimits.expiryDays} days`);
       // The campaign and its recipient set are one atomic definition. External work is per-link in jobs.
       const id = await scope(context.gymId, async tx => {
         const [row] = await tx.insert(linkCampaigns).values({ gymId: context.gymId, name: request.name,
@@ -221,6 +218,7 @@ export function createCampaignsService(options: CampaignsOptions) {
       const [row] = await scope(gymId, tx => tx.select().from(signedLinks).where(and(
         eq(signedLinks.id, work.linkId), eq(signedLinks.campaignId, work.campaignId))));
       if (!row || row.purpose === 'unsubscribe' || campaignRecipient(row, clock.now()).state !== 'pending') return;
+      if (row.purpose === 'pay_invoice' && await completeClosedCampaignInvoice({ scope, clock }, gymId, work.campaignId, row.id)) return;
       if (!gym.memberEmailsEnabled) {
         await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'link_campaign.delivery_skipped',
           targetType: 'signed_link', targetId: row.id, after: { campaignId: work.campaignId, occurrence: work.occurrence,

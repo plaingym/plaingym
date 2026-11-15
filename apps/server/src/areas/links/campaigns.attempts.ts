@@ -13,12 +13,22 @@ export function deliveryHistory(tx: Transaction, gymId: string, linkIds: string[
   return tx.select({ targetId: auditEvents.targetId, action: auditEvents.action, after: auditEvents.after, occurredAt: auditEvents.occurredAt })
     .from(auditEvents).where(and(eq(auditEvents.gymId, gymId), inArray(auditEvents.action, [...campaignDeliveryActions]), inArray(auditEvents.targetId, linkIds)));
 }
+const reservation = (row: DeliveryHistory[number]) => (row.after as { reservation?: string } | null)?.reservation;
+function releasedReservations(history: DeliveryHistory, linkId: string) {
+  return new Set(history.filter(row => row.targetId === linkId && row.action === 'link_campaign.delivery_released')
+    .map(reservation).filter(Boolean));
+}
+/** An interrupted, unreleased link send may have reached SMTP even without a recorded outcome. */
+export function credentialDisclosed(history: DeliveryHistory, linkId: string) {
+  const released = releasedReservations(history, linkId);
+  return history.some(row => row.targetId === linkId && (row.action === 'link_campaign.delivery_sent'
+    || row.action === 'link_campaign.delivery_uncertain' || (row.action === 'link_campaign.delivery_reserved'
+      && !released.has(reservation(row)) && !['manual', 'skip'].includes((row.after as { mode?: string } | null)?.mode ?? 'link'))));
+}
 export function deliveryBlocked(history: DeliveryHistory, linkId: string, occurrence: string, now: Date, timezone: string, includeQueued = false) {
   const today = localDate(now, timezone);
-  const reservation = (row: DeliveryHistory[number]) => (row.after as { reservation?: string } | null)?.reservation;
   // A reservation released after a definite non-send no longer blocks its occurrence or the day.
-  const released = new Set(history.filter(row => row.targetId === linkId && row.action === 'link_campaign.delivery_released')
-    .map(reservation).filter(Boolean));
+  const released = releasedReservations(history, linkId);
   return history.some(row => {
     if (row.targetId !== linkId || row.action === 'link_campaign.delivery_released') return false;
     if (row.action === 'link_campaign.delivery_reserved' && released.has(reservation(row))) return false;

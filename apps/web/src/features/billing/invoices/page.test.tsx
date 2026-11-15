@@ -218,7 +218,7 @@ describe('invoice and household payment UI', () => {
     const sent = f.fetcher.mock.calls.find(([path]) => String(path) === '/api/links/send');
     expect(JSON.parse(String(sent?.[1]?.body))).toMatchObject({ purpose: 'pay_invoice', invoiceId: invoice.id, householdId: home });
   });
-  it('describes a revoked send record as manual-payment instructions', async () => {
+  it('describes a below-minimum invoice send as manual-payment instructions', async () => {
     const f = transport({ invoice: { ...invoice, amountCents: 32 } });
     vi.spyOn(f.client, 'link').mockResolvedValue({ data: { id: id(9), createdAt, householdId: home, campaignId: null,
       purpose: 'pay_invoice', invoiceId: invoice.id, memberId: null, expiresAt: '2026-11-01T12:00:00Z',
@@ -228,6 +228,17 @@ describe('invoice and household payment UI', () => {
     fireEvent.click(within(screen.getByRole('region')).getByRole('button', { name: 'Confirm' }));
     await screen.findByText('Manual-payment instructions sent to the household.');
     expect(screen.queryByText('Pay link sent to the household.')).toBeNull();
+  });
+  it('describes a card-payable send replay as a pay link even after its credential was revoked', async () => {
+    const f = transport();
+    vi.spyOn(f.client, 'link').mockResolvedValue({ data: { id: id(9), createdAt, householdId: home, campaignId: null,
+      purpose: 'pay_invoice', invoiceId: invoice.id, memberId: null, expiresAt: '2026-11-01T12:00:00Z',
+      usedAt: null, revokedAt: createdAt, createdBy: id(10) } });
+    start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={desk} client={f.client}/>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Send or share pay link' }));
+    fireEvent.click(within(screen.getByRole('region')).getByRole('button', { name: 'Confirm' }));
+    await screen.findByText('Pay link sent to the household.');
+    expect(screen.queryByText('Manual-payment instructions sent to the household.')).toBeNull();
   });
   it('offers no pay-link action for a zero invoice', async () => {
     const f = transport({ invoice: { ...invoice, amountCents: 0 } });

@@ -286,11 +286,35 @@ describe('signed-link pages through production registrations', () => {
     const context = { gym: { gymId: f.gymId, timezone: 'UTC', enabledModules: new Set() }, clock: f.clock,
       principal: { kind: 'signed_link', gymId: f.gymId, linkId: f.link.link.id, link: { purpose: 'onboarding' } } } as unknown as RequestContext;
     await pages.read(context);
-    expect(calls.map(call => call.name)).toEqual(['members', 'waiverTemplates', 'signaturePage', 'paymentMethods']);
-    expect(calls[2]!.args[2]).toEqual([current.id]);
+    expect(calls.map(call => call.name)).toEqual(['members', 'waiverTemplates', 'signedTemplates', 'signaturePage', 'paymentMethods']);
+    expect(calls[2]!.args).toEqual([expect.arrayContaining([f.member.id, f.sibling.id]), [current.id]]);
+    expect(calls[3]!.args).toEqual([[f.sibling.id], { limit: 1, offset: 0 }, [current.id]]);
     calls.length = 0;
     await expect(pages.document(context, uuidv7())).rejects.toMatchObject({ code: 'not_found' });
-    expect(calls.map(call => call.name)).toEqual(['members', 'waiverTemplates', 'paymentMethods']);
+    expect(calls.map(call => call.name)).toEqual(['members', 'waiverTemplates']);
+  });
+  it.each(['onboarding', 'sign_waiver'] as const)('keeps every signed current template visible past 100 repeated signatures (%s)', async purpose => {
+    const f = await fixture(purpose);
+    const older = await factory('waiverSignatures', f.gymId, { memberId: f.member.id, templateId: f.template.id,
+      signedAt: new Date('2026-10-24T12:00:00Z') });
+    const second = await factory('waiverTemplates', f.gymId, { name: 'Second waiver', body: 'Other terms.' });
+    let newest = '';
+    for (let i = 0; i < 101; i++) {
+      const signature = await factory('waiverSignatures', f.gymId, { memberId: f.member.id, templateId: second.id,
+        signedAt: new Date(f.clock.now().getTime() + i) });
+      newest = signature.id;
+    }
+    if (purpose === 'onboarding') for (const template of [f.template, second])
+      await factory('waiverSignatures', f.gymId, { memberId: f.sibling.id, templateId: template.id });
+    await factory('waiverSignatures', f.gymId, { memberId: f.other.id, templateId: second.id });
+    const response = await f.request();
+    expect(response.status).toBe(200);
+    const data = contracts[purpose === 'onboarding' ? 'onboarding' : 'waiver'].response.parse(await response.json()).data;
+    expect(data.signatures.map(signature => signature.id)).toEqual(expect.arrayContaining([older.id, newest]));
+    expect(data.signatures).toHaveLength(purpose === 'onboarding' ? 4 : 2);
+    expect(data.signatures.some(signature => signature.memberId === f.other.id)).toBe(false);
+    const html = await (await f.app().request('/l/' + f.link.token)).text();
+    expect(html).not.toContain('data-waiver=');
   });
   for (const state of ['used', 'revoked', 'expired'] as const) it(`${state} links cannot read or write; used pages are friendly and private`, async () => {
     const f = await fixture('sign_waiver');

@@ -1,14 +1,35 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash, randomBytes } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
-import { signedLinks, type forGym, uuidv7, writeAudit } from '@plaingym/db';
+import { invoices, signedLinks, type forGym, type Transaction, uuidv7, writeAudit } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { deliveryAcceptance, type Email } from '../../infra/email/index.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
-import { checkoutInProgress, deliveryBlocked, deliveryHistory } from './campaigns.attempts.js';
-import { campaignRecipient } from './campaigns.model.js';
+import { checkoutInProgress, credentialDisclosed, deliveryBlocked, deliveryHistory } from './campaigns.attempts.js';
+import { campaignRecipient, completeCampaignIn } from './campaigns.model.js';
 import { deliverSignedLink, validateSignedLinkDelivery, type SignedLinkDelivery } from './service.delivery.js';
 import { revokeSignedLinkIn } from './service.js';
+
+/** The request is fulfilled when its invoice no longer needs payment, including payment outside this link. */
+async function completeClosedInvoiceIn(tx: Transaction, gymId: string, row: typeof signedLinks.$inferSelect, now: Date) {
+  if (row.purpose !== 'pay_invoice') return false;
+  const [invoice] = await tx.select({ status: invoices.status }).from(invoices).where(and(
+    eq(invoices.id, row.invoiceId!), eq(invoices.householdId, row.householdId))).for('update');
+  if (!invoice || ['open', 'past_due'].includes(invoice.status)) return false;
+  await tx.update(signedLinks).set({ usedAt: now }).where(eq(signedLinks.id, row.id));
+  await writeAudit(tx, { gymId, actorKind: 'system', action: 'signed_link.used', targetType: 'signed_link', targetId: row.id,
+    after: { reason: 'invoice_closed', status: invoice.status }, occurredAt: now });
+  await completeCampaignIn(tx, gymId, row.campaignId, now);
+  return true;
+}
+/** Recheck under the link lock before customer matching or any delivery preparation. */
+export function completeClosedCampaignInvoice(options: { scope: typeof forGym; clock: Clock }, gymId: string, campaignId: string, linkId: string) {
+  return options.scope(gymId, async tx => {
+    const [row] = await tx.select().from(signedLinks).where(and(eq(signedLinks.id, linkId), eq(signedLinks.campaignId, campaignId))).for('update');
+    if (!row || campaignRecipient(row, options.clock.now()).state !== 'pending') return true;
+    return completeClosedInvoiceIn(tx, gymId, row, options.clock.now());
+  });
+}
 
 /** Reissue the existing recipient credential; reminders never add recipients or extend their expiry. */
 export async function deliverCampaignLink(options: { scope: typeof forGym; clock: Clock; delivery: SignedLinkDelivery },
@@ -35,6 +56,7 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
   const reserve = (mode: 'link' | 'manual' | 'skip') => scope(gymId, async tx => {
     const [row] = await tx.select().from(signedLinks).where(and(eq(signedLinks.id, linkId), eq(signedLinks.campaignId, campaignId))).for('update');
     if (!row || row.purpose === 'unsubscribe' || campaignRecipient(row, clock.now()).state !== 'pending') return;
+    if (await completeClosedInvoiceIn(tx, gymId, row, clock.now())) return;
     const history = await deliveryHistory(tx, gymId, [linkId]);
     if (checkoutInProgress(history, linkId, clock.now())) {
       await writeAudit(tx, { gymId, actorKind: 'system', action: 'link_campaign.delivery_deferred',
@@ -45,13 +67,7 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
     let revokeUndisclosed = false;
     if (mode === 'link') await tx.update(signedLinks).set({ tokenHash }).where(eq(signedLinks.id, linkId));
     else {
-      // An unreleased link reservation may have reached SMTP before a crash. Preserve that credential, too.
-      const released = new Set(history.filter(event => event.action === 'link_campaign.delivery_released')
-        .map(event => (event.after as { reservation?: string } | null)?.reservation));
-      const disclosed = history.some(event => event.action === 'link_campaign.delivery_sent' || event.action === 'link_campaign.delivery_uncertain'
-        || (event.action === 'link_campaign.delivery_reserved'
-          && !released.has((event.after as { reservation?: string } | null)?.reservation)
-          && !['manual', 'skip'].includes((event.after as { mode?: string } | null)?.mode ?? 'link')));
+      const disclosed = credentialDisclosed(history, linkId);
       if (!disclosed && mode === 'skip') await revokeSignedLinkIn(tx, { gymId, actor: { kind: 'system' } }, linkId, clock.now());
       revokeUndisclosed = !disclosed && mode === 'manual';
     }

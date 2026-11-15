@@ -24,7 +24,7 @@ import unsubscribeMessages from '../../../../../locales/en/links/unsubscribe.jso
 const t = createTranslator({ 'public/links': messages, 'waivers/waivers': waiverMessages, 'links/unsubscribe': unsubscribeMessages });
 const settings = createSettingsService();
 export const receiptCookie = 'plaingym_link_checkout';
-/** One-click POSTs whose token doesn't resolve, per client and gym each minute: the flood limit's default. */
+/** One-click POSTs with unknown or malformed tokens, per client and gym each minute. */
 export const oneClickGuessBudget = 300;
 const stylesheet = cachedLinkAsset('./public/links.css'), browserScript = cachedLinkAsset('./public/links.js');
 /** Signed-link pages load their script, styles and images (`data:` QR codes) from the app only. */
@@ -142,7 +142,7 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
     })),
   ];
   // The app's flood limit skips this POST (RFC 8058 providers share source addresses). Valid one-clicks share a large
-  // budget (repeating one is harmless); a token that doesn't resolve is also charged to a per-client budget the size
+  // budget (repeating one is harmless); an unknown token is also charged to a per-client budget the size
   // of the flood limit, which refuses that client before any database work once it is spent.
   const oneClick = contracts.oneClickUnsubscribe;
   // A token the contract refuses can't resolve either: charge it and answer the same 404 before the shared counter's
@@ -159,7 +159,7 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
     const ctx = c.get('context'), config = options();
     const resolved = await config.links.resolve(ctx.gym.gymId, c.req.valid('param').token);
     if (resolved.status !== 'active' || resolved.principal.link.purpose !== 'unsubscribe') {
-      unknownOneClicks.charge(c);
+      if (resolved.status === 'not_found') unknownOneClicks.charge(c);
       throw new AppError('not_found', 'Link not found');
     }
     // RFC 8058: mail clients send the one field as multipart/form-data (SHOULD) or URL-encoded (MAY).

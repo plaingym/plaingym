@@ -102,10 +102,11 @@ pages.
   excluded from staff link lists, resends and revocation. Preference writes lock
   and recheck the link and member, with their audit in the same transaction.
   The one-click POST has a separate 10,000/minute per gym/client budget and is
-  exempt from the general flood limit. A token that doesn't resolve (or that the
-  route's parameter check refuses) is also charged to a fixed 300/minute per
-  gym/client budget, the flood limit's default, which refuses that address before
-  any token lookup or counter write once spent.
+  exempt from the general flood limit. An unknown token (or one that the route's
+  parameter check refuses) is also charged to a fixed 300/minute per gym/client
+  budget, the flood limit's default, which refuses that address before any token
+  lookup or counter write once spent. Known expired, revoked, used and
+  wrong-purpose links answer the same 404 without spending that budget.
   Junk from other client addresses cannot spend a provider's budget. The page button/API keeps 30/minute per gym/client
   and the app's general flood protection.
 * **Kiosk.** A kiosk authenticates with a revocable device token (256 random bits,

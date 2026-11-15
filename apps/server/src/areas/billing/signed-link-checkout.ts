@@ -216,7 +216,7 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
           eq(signedLinks.householdId, link.householdId),
           eq(auditEvents.after, { expiresAt: invoice.checkoutExpiresAt!.toISOString() }),
           inArray(auditEvents.action, ['billing.checkout.reserved', 'billing.checkout.reservation_renewed'])))
-        .limit(1) : [];
+        .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1) : [];
       return { link, customerId: household.stripeCustomerId, invoice, savesCard, reservationLinkId: reservation?.linkId, replaying };
     });
     await checkBilling(gymId, !!prepared.invoice);

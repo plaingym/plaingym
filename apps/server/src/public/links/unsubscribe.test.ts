@@ -38,6 +38,27 @@ it.each(['single', 'multi'] as const)('opts out 301 different members from one p
   expect((await f.request('POST', { optedOut: true })).status).toBe(429);
   expect((await f.click()).status).toBe(200);
 });
+it.each(['expired', 'revoked', 'used', 'wrong-purpose'] as const)('301 known %s links do not spend the one-click guess budget', async state => {
+  const f = await fixture(), tokens: string[] = [];
+  resetLimits = configureSharedRateLimits(createIntakeRateLimitStore(db.forSystem));
+  await db.forGym(f.gymId, async tx => {
+    for (let i = 0; i < 301; i++) {
+      const token = await issueUnsubscribeLink(tx, f.gymId, f.member.id, state === 'expired'
+        ? new Date(f.clock.now().getTime() - 91 * 86400_000) : f.clock.now());
+      tokens.push(token);
+    }
+    // Preserve the original, valid link in the same household.
+    for (const row of await tx.select().from(signedLinks)) {
+      if (row.id === f.row.id) continue;
+      if (state === 'revoked') await tx.update(signedLinks).set({ revokedAt: f.clock.now() }).where(eq(signedLinks.id, row.id));
+      if (state === 'used') await tx.update(signedLinks).set({ usedAt: f.clock.now() }).where(eq(signedLinks.id, row.id));
+      if (state === 'wrong-purpose') await tx.update(signedLinks).set({ purpose: 'sign_waiver' }).where(eq(signedLinks.id, row.id));
+    }
+  });
+  for (const token of tokens) expect((await f.click(oneClickBody, token)).status).toBe(404);
+  expect((await f.click()).status).toBe(200);
+  expect((await db.forGym(f.gymId, tx => tx.select().from(announcementOptOuts))).map(row => row.memberId)).toEqual([f.member.id]);
+});
 it('junk POSTs from 34 addresses cannot spend another provider address\'s one-click budget', async () => {
   const f = await fixture(), counters = new Map<string, number>();
   // Exercise the registered shared-store path without 10,200 database counter writes.
