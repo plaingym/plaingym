@@ -12,6 +12,7 @@
   "smtpGym": "Email uses this gym's own SMTP settings.",
   "smtpInstall": "Email uses the install's SMTP settings.",
   "smtpMissing": "Email is not configured.",
+  "smtpUnreadable": "The gym's stored SMTP settings could not be read. Replace or remove them in Settings → Email.",
   "smtpDemo": "Demo emails are captured in the in-app outbox; no email is sent.",
   "smtpTestFailed": "The latest test of submitted email settings failed. The saved settings were kept.",
   "diskMissing": "The uploads directory must be configured to check free space.",

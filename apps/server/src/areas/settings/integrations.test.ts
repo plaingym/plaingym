@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { eq } from 'drizzle-orm';
+import { desc, eq } from 'drizzle-orm';
 import { auditEvents, gyms, households, invoices, paymentAttempts, paymentMethods, payments, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -577,6 +577,18 @@ describe('Settings → Backups', () => {
 });
 
 describe('integration settings in a sandbox and in logs', () => {
+  it('does not record a successful SMTP test when another save wins during delivery', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId);
+    const userId = (await factory('authUser', gymId)).id;
+    const racing = createIntegrationsService({ ...base, sendTest: async () => {
+      await database.forGym(gymId, tx => tx.update(gyms).set({ revision: 2 }).where(eq(gyms.id, gymId)));
+    } });
+    await expect(racing.saveEmail({ gymId, actor: { kind: 'user', userId } }, { revision: 1,
+      host: 'smtp.gym.invalid', port: 465, secure: true, username: 'user', password: 'password', from: 'desk@gym.invalid', testTo: 'owner@gym.invalid',
+    })).rejects.toThrow();
+    expect((await row(gymId)).smtpConfig).toBeNull();
+    expect(await database.forGym(gymId, tx => tx.select().from(auditEvents))).toHaveLength(0);
+  });
   it('logs an unreadable SMTP value once across settings reads, and retries changed values and keys', async () => {
     const original = (await row(gymB)).smtpConfig;
     const lines: string[] = [], previous = setLogSink((line) => lines.push(line));
@@ -587,7 +599,10 @@ describe('integration settings in a sandbox and in logs', () => {
     try {
       const value = corrupt();
       await database.forGym(gymB, (tx) => tx.update(gyms).set({ smtpConfig: value }).where(eq(gyms.id, gymB)));
-      for (let i = 0; i < 3; i++) expect((await read(server({ gymId: gymB }))).email.host).toBeNull();
+      for (let i = 0; i < 3; i++) expect((await read(server({ gymId: gymB }))).email)
+        .toMatchObject({ source: 'none', unreadable: true, host: null, removeBlocked: false });
+      expect((await read(server({ gymId: gymB, routesService: createIntegrationsService({ ...base, env: installEnv }) }))).email)
+        .toMatchObject({ source: 'install', unreadable: true, host: null });
       expect(lines.filter((line) => line.includes('settings.smtp_config_unreadable'))).toHaveLength(1);
       const decrypting = createIntegrationsService({ ...base, key: otherKey });
       expect((await read(server({ gymId: gymB, routesService: decrypting }))).email.host).toBe('smtp.example.test');
@@ -596,6 +611,12 @@ describe('integration settings in a sandbox and in logs', () => {
       expect(lines.filter((line) => line.includes('settings.smtp_config_unreadable'))).toHaveLength(2);
       expect(lines.join('')).not.toContain(smtpPassword);
       expect(lines.join('')).not.toContain(value);
+      // Removing an unreadable value takes no sign-in method away, and its audit still names the stored gym value.
+      const { revision } = await read(server({ gymId: gymB }));
+      expect((await call(server({ gymId: gymB }), 'DELETE', '/email', { revision })).status).toBe(200);
+      const [removal] = await database.forGym(gymB, (tx) => tx.select().from(auditEvents)
+        .where(eq(auditEvents.action, 'integrations.email_removed')).orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1));
+      expect(removal).toMatchObject({ before: { source: 'gym', host: null }, after: { source: 'none' } });
     } finally {
       setLogSink(previous);
       await database.forGym(gymB, (tx) => tx.update(gyms).set({ smtpConfig: original }).where(eq(gyms.id, gymB)));

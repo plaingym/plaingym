@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { formatCount } from '../../lib/count.js';
-import { parseResponse } from '../../lib/response.js';
 import { useEffect, useState } from 'react';
-import { goLiveChecklistResponseSchema, type GoLiveSwitches, type GymSettings } from '@plaingym/shared/contracts';
+import { useQueryClient } from '@tanstack/react-query';
+import { type GoLiveSwitches, type GymSettings } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
 import { SaveTimeoutError, useGymSettings, type SaveResult } from './gym-settings.js';
 import { t } from '../../lib/i18n.js';
@@ -12,13 +12,9 @@ import { LoadingState } from '../../components/ui/states.js';
 import { Badge } from '../../components/ui/table.js';
 import { Dialog } from '../../components/ui/dialog.js';
 import { CheckboxField } from '../../components/ui/select.js';
+import { goLiveKey, parseChecklist, useGoLiveChecklist, type Checklist } from './go-live-query.js';
+import { hasRestoreModeNote } from './restore-mode-note.js';
 
-type WireChecklist = ReturnType<typeof goLiveChecklistResponseSchema.parse>['data'];
-type Checklist = WireChecklist & { pastDueMemberships: NonNullable<WireChecklist['pastDueMemberships']> };
-function parseChecklist(response: unknown): Checklist {
-  const data = parseResponse(goLiveChecklistResponseSchema, response).data;
-  return { ...data, pastDueMemberships: data.pastDueMemberships ?? [] };
-}
 const label = (key: string, values?: Record<string, string>) => t('settings/go-live:' + key, values);
 const statusTone = { ready: 'success', needs_attention: 'warning', not_applicable: 'muted' } as const;
 /**
@@ -34,14 +30,22 @@ const checkRunning = (body: unknown) => {
 
 /** Shows the billing and member-email switches with the readiness checklist from the go-live contract. */
 export function GoLiveSettings() {
-  const [checklist, setChecklist] = useState<Checklist | null>(null);
-  const [busy, setBusy] = useState(false), [message, setMessage] = useState<'error' | 'timeout' | 'changed' | 'justSaved' | null>(null);
-  const [readError, setReadError] = useState(false);
-  const [reload, setReload] = useState(0);
+  const cache = useQueryClient();
+  const [lastChecklist, rememberChecklist] = useState<Checklist | null>(null);
+  const [saving, setBusy] = useState(false), [message, setMessage] = useState<'error' | 'timeout' | 'changed' | 'justSaved' | null>(null);
   const [confirmBilling, setConfirmBilling] = useState(false), [confirmed, setConfirmed] = useState(false);
   const [checking, setChecking] = useState(false), [checkError, setCheckError] = useState<'reconcileError' | 'reconcileTimeout' | 'reconcileBusy' | null>(null);
   // The switches save the gym revision that every section of the page shares, so another section's save doesn't stale them.
   const gym = useGymSettings(), settings = gym.settings;
+  const query = useGoLiveChecklist(settings?.revision, gym.epoch);
+  // Retain the displayed controls while a new revision is loading or failed; they stay locked until it answers.
+  const checklist = query.data ?? lastChecklist, readError = query.isError, busy = saving || query.isFetching;
+  useEffect(() => { if (query.data) rememberChecklist(query.data); }, [query.data]);
+  const reloadChecklist = () => { void query.refetch(); };
+  const setChecklist = (next: ReturnType<typeof parseChecklist>) => {
+    cache.setQueryData(goLiveKey(settings?.revision, gym.epoch), next);
+    cache.setQueryData(goLiveKey(next.revision, gym.epoch), next);
+  };
   const adopt = (data: unknown, current: GymSettings): GymSettings => {
     const { revision, billingEnabled, memberEmailsEnabled } = parseChecklist(data);
     return { ...current, revision, billingEnabled, memberEmailsEnabled };
@@ -54,18 +58,7 @@ export function GoLiveSettings() {
   const checklistFailed = readError, readFailed = gym.failed || checklistFailed;
   // A refusal whose follow-up read failed says why the switch didn't change, in the read failure's own alert.
   const refusedUnread = readFailed && (message === 'changed' || message === 'justSaved') ? message : null;
-  useEffect(() => { if (behind) setReload((value) => value + 1); }, [behind, settings?.revision]);
-  useEffect(() => {
-    let active = true;
-    setBusy(true);
-    void api.GET('/api/settings/go-live').then((result) => {
-      if (!result.response.ok) throw new Error();
-      const next = parseChecklist(result.data);
-      if (active) { setChecklist(next); setReadError(false); }
-    }).catch(() => { if (active) setReadError(true); })
-      .finally(() => { if (active) setBusy(false); });
-    return () => { active = false; };
-  }, [reload]);
+  useEffect(() => { if (behind) void query.refetch(); }, [behind, settings?.revision, query.refetch]);
   /**
    * A refused or conflicting save. A shared revision past the checklist's refetches it through `behind`, once; when the
    * settings did not move past it (their reload failed, or the server's revision went back), nothing else will.
@@ -74,13 +67,13 @@ export function GoLiveSettings() {
     setConfirmBilling(false); setConfirmed(false);
     // A save refused unsent because another section of this page saved first is not another user's change.
     setMessage(result.refused === 'saved' ? 'justSaved' : 'changed');
-    if (result.settings.revision <= read) setReload((value) => value + 1);
+    if (result.settings.revision <= read) reloadChecklist();
   }
   /** Retries every read that failed: the shared settings, and the checklist. */
   function retry() {
-    setMessage(null); setReadError(false);
+    setMessage(null);
     if (gym.failed) gym.reload();
-    if (checklistFailed) setReload((value) => value + 1);
+    if (checklistFailed) reloadChecklist();
   }
   async function toggle(name: keyof GoLiveSwitches, confirmDates = false) {
     if (!checklist || !settings || locked) return;
@@ -107,13 +100,13 @@ export function GoLiveSettings() {
       const result = await gym.check((revision, signal) => api.POST('/api/settings/go-live/reconciliation', { signal, body: { revision, restoreId } }),
         { readAt: checklist.revision, timeoutMs: reconcileTimeoutMs });
       // A check already running for this restore (another tab, or one this page stopped waiting for) is left to finish.
-      if (result.status === 409 && checkRunning(result.error)) { setCheckError('reconcileBusy'); setReload((value) => value + 1); return; }
+      if (result.status === 409 && checkRunning(result.error)) { setCheckError('reconcileBusy'); reloadChecklist(); return; }
       if (result.status === 409) { conflict(result, checklist.revision); return; }
       if (result.status >= 300) throw new Error();
       setChecklist(parseChecklist(result.data));
     } catch (error) {
       // A check the page stopped waiting for may still be running on the server: say so rather than that it failed.
-      setCheckError(error instanceof SaveTimeoutError ? 'reconcileTimeout' : 'reconcileError'); setReload((value) => value + 1);
+      setCheckError(error instanceof SaveTimeoutError ? 'reconcileTimeout' : 'reconcileError'); reloadChecklist();
     }
     finally { setBusy(false); setChecking(false); }
   }
@@ -136,7 +129,7 @@ export function GoLiveSettings() {
       {busy && <p role="status" className="text-sm text-muted-foreground">{label(checking ? 'reconcileRunning' : 'saving')}</p>}
       <h3 className="font-semibold">{label('checklist')}</h3>
       <ul className="divide-y divide-border rounded-lg border border-border">{checklist.items.map((item) => <li key={item.id} className="flex flex-col items-start gap-2 p-3 sm:flex-row sm:justify-between sm:gap-3">
-        <span className="min-w-0"><span className="block font-medium">{label('item.' + item.id)}</span><span role={item.id === 'reconciliation_complete' ? 'note' : undefined} className="block break-words text-sm text-muted-foreground">{item.message}</span></span>
+        <span className="min-w-0"><span className="block font-medium">{label('item.' + item.id)}</span><span role={item.id === 'reconciliation_complete' && hasRestoreModeNote(item.message) ? 'note' : undefined} className="block break-words text-sm text-muted-foreground">{item.message}</span></span>
         <Badge tone={statusTone[item.status]} className="shrink-0">{label('status.' + item.status)}</Badge>
       </li>)}</ul>
       {checklist.restoreReconciliation && <div className="space-y-3 rounded-lg border border-border p-3" aria-label={label('reconcileTitle')}>

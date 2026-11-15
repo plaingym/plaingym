@@ -7,6 +7,20 @@ paths audit their mode in the save transaction, which the billing gate reads
 under the gym lock. Saving a mode the last clear report did not read also pauses
 enabled billing in that transaction. Re-saving the checked mode keeps it on.
 The adapter does not expose an account ID, so the report identifies only its mode.
+Go live keeps the standard pending-attempt and refund guidance when it appends a
+mode-change notice. The notice asks for a check before enabling billing without
+claiming billing was previously enabled. Payments shows that same server message;
+both sections share a checklist read, and a rerun updates both without a revision change.
+
+Unreadable stored SMTP settings fall back to the install's service, or none.
+The Email response reports that active source, `unreadable`, and `googleConfigured`;
+the Google removal guidance appears only while a client is configured. Health names
+the unreadable SMTP value and retains one parsed encryption key across polls, logging
+each unreadable value once. Successful SMTP test audits commit with the settings save;
+a revision conflict records no success. Failed tests still record their failure.
+
+Settings hash navigation follows delayed section changes for at most four seconds,
+and stops as soon as the user interacts, including a click.
 
 Malformed install Google variables are returned as `installProblem` only in single
 mode. A stored gym client remains in use and Health warns about the ignored
@@ -16,9 +30,11 @@ SMTP resolution also treats unreadable stored credentials as unconfigured, with
 the same redacted logging; login and Google removal then use install SMTP if
 available. Email removal still counts Google for the gym rather than checking the
 owner's linked identity. The Email section states this and asks the owner to try
-Google first. Each submitted Settings test writes `integrations.email_tested` with
-`test: 'sent' | 'failed'`, without credentials or recipients, even when it fails
-and the saved settings stay unchanged. Operator-managed refusals reload the
+Google first. Each submitted Settings test writes `integrations.email_tested`
+without credentials or recipients: `test: 'failed'` when it fails and the saved
+settings stay unchanged, and `test: 'sent'` only with the save that stores them.
+Removing an unreadable stored value is never refused, since it takes no sign-in
+method away; its audit still records `source: 'gym'` for the stored value. Operator-managed refusals reload the
 integrations and show the operator notice in place of the editable forms.
 
 `checkIntegrationsEnvironment(mode, env)` exports the policy validation for early

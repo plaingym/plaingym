@@ -22,12 +22,12 @@ for (const width of [360, 1280]) test(`settings sections and an empty dashboard 
       : { status: 500, json: { error: { code: 'internal_error' } } });
     if (path === '/api/settings/go-live') return route.fulfill({ json: { data: { revision: 3, billingEnabled: false, memberEmailsEnabled: false,
       items: [{ id: 'members_imported', status: rosterReady ? 'ready' : 'needs_attention', message: 'Add your first members.' },
-        { id: 'reconciliation_complete', status: 'needs_attention', message: 'The last check read Stripe test mode. Billing is paused. Check restored payments again in live mode before turning billing back on.' }],
+        { id: 'reconciliation_complete', status: 'needs_attention', message: 'Resolve pending payment attempts or refunds. The last check read Stripe test mode. Check restored payments again in live mode before turning billing on.' }],
       restoreReconciliation: { restoreId: '00000000-0000-7000-8000-000000000003', snapshotAt: '2026-11-01T12:00:00Z',
         checkedAt: '2026-11-02T12:00:00Z', inspected: 0, unresolved: 0, stripeConfigured: true, stripeMode: 'test' },
     } } });
     if (path === '/api/settings/integrations') return route.fulfill({ json: { data: { revision: 3, sandbox: false, integrationsEditable: true,
-      email: { source: 'none', host: null, port: null, security: null, from: null,
+      email: { source: 'none', unreadable: false, googleConfigured: false, host: null, port: null, security: null, from: null,
         signIn: { password: true, magicLink: false }, signInAfterSave: { password: false, magicLink: true }, signInAfterRemove: null, removeBlocked: false },
       payments: { configured: true, mode: 'live', webhookRegistered: true, accountLocked: false, testData: null, importedCustomersOnly: false },
       backups: null,
@@ -49,7 +49,8 @@ for (const width of [360, 1280]) test(`settings sections and an empty dashboard 
   await expect(page.locator('input[type="color"]')).toHaveCount(1);
   const modeNote = page.getByRole('note').filter({ hasText: 'The last check read Stripe test mode.' });
   await expect(modeNote).toHaveCount(2);
-  await expect(modeNote.first()).toContainText('again in live mode before turning billing back on');
+  await expect(modeNote.first()).toContainText('again in live mode before turning billing on');
+  await expect(modeNote.first()).toContainText('Resolve pending payment attempts or refunds.');
   await expect(page.getByLabel('Logo storage key')).toBeHidden();
   await page.getByText('Advanced logo settings', { exact: true }).click();
   await expect(page.getByLabel('Logo storage key')).toBeVisible();

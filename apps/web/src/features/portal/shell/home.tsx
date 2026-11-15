@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { formatCount } from '../../../lib/count.js';
+import { useEffect } from 'react';
 import { dateFormatter } from '../../../lib/instant.js';
 import { Link } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
@@ -45,6 +46,20 @@ export function PortalHome({ client = portalClient }: { client?: PortalClient })
       return pages.reduce((total, page) => total + page.pagination.total, 0);
     }, staleTime: 0 });
   const next = schedule.data;
+  useEffect(() => {
+    if (!next) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const startsAt = Date.parse(next.startsAt);
+    const wait = () => {
+      // A booking can be 30 days away, beyond the browser's maximum delay. Re-arm until it actually starts.
+      timer = setTimeout(() => {
+        if (Date.now() <= startsAt) wait();
+        else void schedule.refetch();
+      }, Math.min(2_147_483_647, Math.max(0, startsAt - Date.now() + 1)));
+    };
+    wait();
+    return () => clearTimeout(timer);
+  }, [next, schedule.refetch]);
   const date = dateFormatter('instant', bootstrap.data?.gym.timezone ?? 'UTC');
   const waiting = (query: { isPending: boolean; data: unknown }) => query.isPending || (query.data === undefined && scope.settling);
   return <Page className="max-w-3xl"><PortalRecovery moving={scope.moving}>

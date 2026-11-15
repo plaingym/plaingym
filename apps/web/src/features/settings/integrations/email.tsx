@@ -62,14 +62,15 @@ export function EmailIntegrationSection({ email, editable, state }: { email: Ema
   }
   return <div className="grid min-w-0 gap-4">
     <h3 className="text-base font-semibold">{label('title')}</h3>
+    {email.unreadable && <p role="alert" className="break-words text-sm">{label('unreadable')}</p>}
     <p className="text-sm [overflow-wrap:anywhere]">{email.source === 'gym'
       ? text('email.sourceGym', { host: email.host ?? '', port: email.port ?? '', security: label('security_' + (email.security ?? 'starttls')), from: email.from ?? '' })
       : label(email.source === 'install' ? 'sourceInstall' : 'sourceNone')}</p>
     <p className="text-sm text-muted-foreground">{text('email.signIn', { methods: methods(email.signIn) })}</p>
-    {editable && email.source === 'gym' && <p className="text-sm text-muted-foreground">{label('googleRemovalRule')}</p>}
+    {editable && email.source === 'gym' && email.googleConfigured && <p className="text-sm text-muted-foreground">{label('googleRemovalRule')}</p>}
     <FormMessage message={message}/>
     {editable && <>
-      {email.source === 'gym' && <div className="grid min-w-0 gap-2">
+      {(email.source === 'gym' || email.unreadable) && <div className="grid min-w-0 gap-2">
         {email.removeBlocked ? <p className="text-sm text-muted-foreground">{label('onlySignIn')}</p>
           : removeChangesSignIn && <p className="text-sm">{text('email.signInChangesOnRemove', { methods: methods(email.signInAfterRemove!) })}</p>}
         <div><Button type="button" variant="outline" disabled={busy !== null || email.removeBlocked} onClick={() => void remove()}>

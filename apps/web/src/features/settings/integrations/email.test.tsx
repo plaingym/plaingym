@@ -11,7 +11,7 @@ import { holdTimeouts, stalledRequests } from '../save-timeout.test-helper.js';
 const client = vi.hoisted(() => ({ GET: vi.fn(), PUT: vi.fn(), POST: vi.fn(), DELETE: vi.fn() }));
 vi.mock('../../../lib/api.js', async original => ({ ...await original<typeof import('../../../lib/api.js')>(), api: client, createApiClient: () => client }));
 
-const gymEmail: Integrations = { ...integrations, revision: 4, email: { source: 'gym', host: 'smtp.gym.test', port: 465, security: 'tls', from: 'desk@gym.test',
+const gymEmail: Integrations = { ...integrations, revision: 4, email: { source: 'gym', unreadable: false, googleConfigured: false, host: 'smtp.gym.test', port: 465, security: 'tls', from: 'desk@gym.test',
   signIn: { password: false, magicLink: true }, signInAfterSave: { password: false, magicLink: true },
   signInAfterRemove: { password: true, magicLink: false }, removeBlocked: false } };
 let current: Integrations;
@@ -29,6 +29,19 @@ async function fill(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe('Settings → Email', () => {
+  it('names unreadable stored settings while showing the actual fallback', async () => {
+    current = { ...integrations, email: { ...integrations.email, unreadable: true, source: 'install' } };
+    renderSection();
+    expect((await screen.findByRole('alert')).textContent).toContain('stored SMTP settings could not be read');
+    expect(screen.getByText(/Uses this install’s email settings/)).toBeDefined();
+    expect(screen.queryByText(/Sends through your own SMTP/)).toBeNull();
+  });
+  it.each([false, true])('shows the Google removal guidance only with a client: %s', async googleConfigured => {
+    current = { ...gymEmail, email: { ...gymEmail.email, googleConfigured } };
+    renderSection();
+    await screen.findByText(/Sends through your own SMTP/);
+    expect(screen.queryByText(/The removal check counts Google/) !== null).toBe(googleConfigured);
+  });
   it('registers one owner-only section for email, payments and backups', () => {
     const section = createRegistries().settingsSections.all().find((entry) => entry.id === 'settingsSections.settings.integrations');
     expect(section).toMatchObject({ enabled: true, permission: { kind: 'staff', capability: 'integrations.manage' }, component: IntegrationsSettings });
@@ -80,7 +93,7 @@ describe('Settings → Email', () => {
     expect(screen.queryByRole('form', { name: 'Use your own SMTP service' })).toBeNull();
   });
   it('removes the gym’s settings after saying how sign-in changes', async () => {
-    current = gymEmail;
+    current = { ...gymEmail, email: { ...gymEmail.email, googleConfigured: true } };
     client.DELETE.mockResolvedValue(reply(200, { data: { ...integrations, revision: 5, email: { ...integrations.email, source: 'none' } } }));
     const user = userEvent.setup(); renderSection();
     expect(await screen.findByText('Removing changes sign-in to: passwords.')).toBeDefined();

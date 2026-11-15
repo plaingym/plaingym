@@ -46,6 +46,22 @@ const request = (server: ReturnType<typeof app>, contract: { path: string; metho
   method: contract.method.toUpperCase(), headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
 });
 describe('setup owner authorization and tenant isolation', () => {
+  it('does not record a sent email test when the setup revision changes during delivery', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId);
+    const userId = (await factory('authUser', gymId)).id;
+    await database.forGym(gymId, tx => tx.update(gyms).set({ settings: { setup: {
+      ownerId: userId, completed: false, completedSteps: [0, 1, 2, 3, 4],
+    } } }).where(eq(gyms.id, gymId)));
+    const racing = createSetupService({ key: parseEncryptionKey('ab'.repeat(32)), env: {}, origin: 'http://gym.localhost',
+      scope: database.forGym, system: database.forSystem, clock, sendTest: async () => {
+        await database.forGym(gymId, tx => tx.update(gyms).set({ revision: 2 }).where(eq(gyms.id, gymId)));
+      } });
+    await expect(racing.smtp({ gymId, actor: { kind: 'user', userId } }, { choice: 'configure', revision: 1,
+      host: 'smtp.gym.example', port: 465, secure: true, username: 'user', password: 'password', from: 'gym@example.org', testTo: 'owner@example.org',
+    })).rejects.toBeInstanceOf(RevisionConflictError);
+    expect(await database.forGym(gymId, tx => tx.select().from(auditEvents))).toHaveLength(0);
+    expect((await database.forGym(gymId, tx => tx.select().from(gyms)))[0]?.smtpConfig).toBeNull();
+  });
   it('finishes without S3 only after an explicit skip, and keeps stale attempts atomic', async () => {
     const gymId = uuidv7();
     await factory('gyms', gymId, { settings: { setup: { ownerId: userA, completed: false, completedSteps: [0, 1, 2, 3, 4, 5, 6] } } });

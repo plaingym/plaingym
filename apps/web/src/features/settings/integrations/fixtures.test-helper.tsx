@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { ShellServicesContext } from '../../../app/context.js';
+import type { ReactNode } from 'react';
 import { render } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { GymSettings, Integrations } from '@plaingym/shared/contracts';
@@ -10,7 +11,7 @@ export const settings: GymSettings = { id: '01900000-0000-7000-8000-000000000001
   bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false, billingEnabled: false,
   memberEmailsEnabled: false, retryDays: [3, 7], dropInChargeTypeId: null, revision: 3, createdAt: '2026-11-01T12:00:00Z', updatedAt: '2026-11-01T12:00:00Z' };
 export const integrations: Integrations = {
-  email: { source: 'none', host: null, port: null, security: null, from: null, signIn: { password: true, magicLink: false },
+  email: { source: 'none', unreadable: false, googleConfigured: false, host: null, port: null, security: null, from: null, signIn: { password: true, magicLink: false },
     signInAfterSave: { password: false, magicLink: true }, signInAfterRemove: null, removeBlocked: false },
   payments: { configured: false, mode: null, webhookRegistered: false, accountLocked: false, testData: null, importedCustomersOnly: false },
   backups: { configured: false, destination: null, publicKey: null, pending: null, retentionBudgetBytes: 8_000_000_000 },
@@ -25,7 +26,7 @@ export const health = (lastReceivedAt: string | null, latestRestorableAt: string
 export const reply = (status: number, body?: unknown) => ({ response: { ok: status < 300, status }, ...(status < 300 ? { data: body } : { error: body }) });
 export const refusal = (status: number, field: string, code: string) => reply(status, { error: { code: 'conflict', message: 'private server text', details: { [field]: [code] } }, requestId: 'r' });
 /** The section under a fresh query cache, as the settings page renders it. */
-export const renderSection = () => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><ShellServicesContext.Provider value={({ signInWithPassword: async () => {}, requestMagicLink: async () => {}, signOut: async () => {}, loadBootstrap: async () => ({ gym: { id: 'gym', name: 'Gym', timezone: 'America/Los_Angeles', currency: 'USD', enabledModules: [] }, session: null, login: { password: true, magicLink: false } }) })}><IntegrationsSettings/></ShellServicesContext.Provider></QueryClientProvider>);
+export const renderSection = (children?: ReactNode) => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><ShellServicesContext.Provider value={({ signInWithPassword: async () => {}, requestMagicLink: async () => {}, signOut: async () => {}, loadBootstrap: async () => ({ gym: { id: 'gym', name: 'Gym', timezone: 'America/Los_Angeles', currency: 'USD', enabledModules: [] }, session: null, login: { password: true, magicLink: false } }) })}><IntegrationsSettings/>{children}</ShellServicesContext.Provider></QueryClientProvider>);
 /** Answers GETs for the settings, the integrations and the health checks. */
 export function serve(GET: { mockImplementation(fn: (path: string) => Promise<unknown>): unknown }, current: () => Integrations, tiles = health(null, null)) {
   GET.mockImplementation(async (path: string) => path === '/api/settings' ? reply(200, { data: settings })

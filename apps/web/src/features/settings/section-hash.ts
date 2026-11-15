@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useEffect } from 'react';
 
+export const sectionHashLifetimeMs = 4_000;
+
 /** Keep a hash target in view while sibling sections finish loading. The first user interaction
  * hands scrolling and focus back to the user; a new hash starts another navigation. */
 export function useSectionHash(id: string, listed: boolean) {
@@ -28,15 +30,17 @@ export function useSectionHash(id: string, listed: boolean) {
       sizes?.observe(container);
       const focusChanged = (event: FocusEvent) => { if (event.target !== section) schedule(); };
       container.addEventListener('focusin', focusChanged);
-      const interactions = ['pointerdown', 'keydown', 'wheel', 'touchstart'] as const;
+      const interactions = ['pointerdown', 'keydown', 'wheel', 'touchstart', 'click'] as const;
       const stop = () => {
         following = false;
+        clearTimeout(lifetime);
         mutations.disconnect(); sizes?.disconnect();
         container.removeEventListener('focusin', focusChanged);
         if (frame !== null) window.cancelAnimationFrame(frame);
         for (const event of interactions) window.removeEventListener(event, stop, true);
       };
       stopFollowing = stop;
+      const lifetime = setTimeout(stop, sectionHashLifetimeMs);
       for (const event of interactions) window.addEventListener(event, stop, { capture: true, passive: true });
       reveal(); schedule();
     };

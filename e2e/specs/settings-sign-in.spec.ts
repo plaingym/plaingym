@@ -9,7 +9,7 @@ const settings = { ...gym, slug: 'settings-test', address: {}, branding: {}, web
   bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false, billingEnabled: false, memberEmailsEnabled: false,
   retryDays: [3, 7], dropInChargeTypeId: null, revision: 3, createdAt: '2026-11-01T12:00:00Z', updatedAt: '2026-11-01T12:00:00Z' };
 const google = { source: 'none', editable: true, unreadable: false, clientId: null, clientSecretSet: false, removeBlocked: false, revision: 3 };
-const integrations = { email: { source: 'gym', host: 'smtp.example.invalid', port: 587, security: 'starttls', from: 'owner@example.invalid',
+const integrations = { email: { source: 'gym', unreadable: false, googleConfigured: true, host: 'smtp.example.invalid', port: 587, security: 'starttls', from: 'owner@example.invalid',
   signIn: { password: false, magicLink: true }, signInAfterSave: { password: false, magicLink: true }, signInAfterRemove: login, removeBlocked: false },
   payments: { configured: false, mode: null, webhookRegistered: false, accountLocked: false, testData: null, importedCustomersOnly: false },
   backups: null, sandbox: false, integrationsEditable: true, revision: 3 };
@@ -17,6 +17,28 @@ const rejected = { error: { code: 'invalid_request', message: 'Client refused', 
 
 // API fixtures exercise both Google forms in the production bundle without contacting Google or storing credentials.
 for (const width of [360, 1280]) {
+  test(`unreadable email settings name the fallback at ${width}px`, async ({ page }, info) => {
+    await page.setViewportSize({ width, height: 800 });
+    await page.route('**/api/**', async route => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === '/api/demo') return route.fulfill({ json: { data: { mode: 'disabled' } } });
+      if (path === '/api/auth/bootstrap') return route.fulfill({ json: { data: { gym, session, login } } });
+      if (path === '/api/settings') return route.fulfill({ json: { data: settings } });
+      if (path === '/api/settings/integrations/google') return route.fulfill({ json: { data: google } });
+      if (path === '/api/settings/integrations') return route.fulfill({ json: { data: { ...integrations, email: {
+        ...integrations.email, source: 'install', unreadable: true, googleConfigured: false, host: null, port: null, security: null, from: null,
+        signInAfterRemove: integrations.email.signIn,
+      } } } });
+      return route.fulfill({ status: 404, json: { error: { code: 'not_found' } } });
+    });
+    await page.goto(gymOrigin + '/admin/settings');
+    await expect(page.getByRole('alert').filter({ hasText: 'stored SMTP settings could not be read' })).toBeVisible();
+    await expect(page.getByText(/Uses this install’s email settings/)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Remove and use the install’s settings' })).toBeVisible();
+    await expect(page.getByText(/The removal check counts Google/)).toHaveCount(0);
+    await accessibleLayout(page, info, 'settings-email-unreadable-' + width);
+    await page.screenshot({ path: info.outputPath('settings-email-unreadable-' + width + '.png'), fullPage: true });
+  });
   test(`settings clears Google refusal and reloads operator-managed payments at ${width}px`, async ({ page }, info) => {
     await page.setViewportSize({ width, height: 800 });
     let editable = true;

@@ -111,7 +111,8 @@ export function createGoLiveService(options: {
         item('backup_ready', ready(gym.backupPublicKey && gym.backupDestination)),
         item('webhook_ready', !stripe ? 'not_applicable'
           : ready(webhook.lastProcessedAt && !webhook.pendingCount && !webhook.failedCount)),
-        item('reconciliation_complete', !stripe && recovery.empty ? 'not_applicable' : ready(recovery.ready), recovery.modeMessage),
+        item('reconciliation_complete', !stripe && recovery.empty ? 'not_applicable' : ready(recovery.ready), recovery.modeMessage
+          ? t('settings/go-live:check.reconciliation_complete.needs_attention') + ' ' + recovery.modeMessage : undefined),
         item('past_due_dates', ready(!pastDueMemberships.length)),
       ] });
       return { ...result, pastDueMemberships };

@@ -9,7 +9,7 @@ import {
 
 const signIn = { password: false, magicLink: true };
 const integrations = {
-  email: { source: 'gym', host: 'smtp.example.test', port: 587, security: 'starttls', from: 'desk@example.test',
+  email: { source: 'gym', unreadable: false, googleConfigured: false, host: 'smtp.example.test', port: 587, security: 'starttls', from: 'desk@example.test',
     signIn, signInAfterSave: signIn, signInAfterRemove: { password: true, magicLink: false }, removeBlocked: true },
   payments: { configured: true, mode: 'test', webhookRegistered: true, accountLocked: true,
     testData: { customers: 2, cards: 1, checkouts: 0, payments: 3, importedCustomers: 1, importedCards: 0, disputes: 0 }, importedCustomersOnly: false },

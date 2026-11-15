@@ -15,7 +15,9 @@ import { authorize } from '../staff/auth.permissions.js';
 import { encryptSmtpConfig } from '../settings/smtp.js';
 import { encryptGoogleConfig } from '../settings/google-login.js';
 import { PostgresJobStatsQuery } from '../../infra/jobs/postgres.js';
-import { createStatusProviders, lastEmailTest } from './status.providers.js';
+import { createStatusProviders } from './status.providers.js';
+import { setLogSink } from '../../core/log.js';
+import * as secrets from '../../core/secrets.js';
 import { createHealthService, healthProvider } from './status.js';
 import { createStatusRoutes } from './status.routes.js';
 
@@ -71,6 +73,23 @@ describe('health permissions and isolation against PostgreSQL', () => {
 });
 
 describe('built-in providers', () => {
+  it('names unreadable SMTP settings, parses the key once and logs once across polls', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId, { smtpConfig: 'corrupt-smtp' });
+    const lines: string[] = [], previous = setLogSink(line => lines.push(line));
+    const parse = vi.spyOn(secrets, 'parseEncryptionKey');
+    try {
+      const list = providers();
+      expect(parse).not.toHaveBeenCalled();
+      for (let poll = 0; poll < 3; poll++) {
+        expect(await list.find(provider => provider.id === 'smtp')!.read(context(gymId))).toMatchObject({
+          status: 'warning', details: { configured: false, lastTestAt: null },
+          message: expect.stringContaining('stored SMTP settings could not be read') });
+        await list.find(provider => provider.id === 'google_login')!.read(context(gymId));
+      }
+      expect(parse).toHaveBeenCalledTimes(1);
+      expect(lines.filter(line => line.includes('settings.smtp_config_unreadable'))).toHaveLength(1);
+    } finally { parse.mockRestore(); setLogSink(previous); }
+  });
   it('reports the demo outbox as ready without requiring SMTP', async () => {
     expect(await tile('smtp', gymB, { env: { ...env, DEMO_MODE: 'true', SMTP_HOST: '', SMTP_FROM: '' } }))
       .toMatchObject({ status: 'healthy', details: { configured: true, lastTestAt: null }, message: expect.stringContaining('in-app outbox') });
@@ -101,10 +120,8 @@ describe('built-in providers', () => {
     expect(await tile('smtp', id)).toMatchObject({ status: 'healthy', details: { lastTestAt: '2026-10-21T12:00:00.000Z' } });
     // Another gym's test says nothing about this one.
     expect(await tile('smtp', gymA)).toMatchObject({ details: { lastTestAt: null } });
-    expect(lastEmailTest([{ action: 'integrations.email_removed', after: null, occurredAt: new Date('2026-10-22T10:00:00Z') },
-      { action: 'integrations.email_saved', after: null, occurredAt: new Date('2026-10-21T10:00:00Z') }], true)).toBeNull();
-    // The install's own SMTP settings are never tested by the gym.
-    expect(lastEmailTest([{ action: 'setup.step_completed', after: { step: 5 }, occurredAt: new Date('2026-10-20T09:00:00Z') }], false)).toBeNull();
+    await audit('integrations.email_removed', '2026-10-22T10:00:00Z');
+    expect(await tile('smtp', id)).toMatchObject({ details: { lastTestAt: null } });
     // A failed test of settings that were never saved says nothing about the install's settings in use.
     const bare = uuidv7(); await factory('gyms', bare);
     await database.forGym(bare, (tx) => writeAudit(tx, { gymId: bare, actorKind: 'system', action: 'integrations.email_tested', targetType: 'gym', targetId: bare,
@@ -136,7 +153,8 @@ describe('built-in providers', () => {
   it('counts corrupt encrypted SMTP as unconfigured without leaking its contents', async () => {
     const id = uuidv7(); await factory('gyms', id, { smtpConfig: 'sensitive-invalid-ciphertext' });
     const result = await createHealthService(providers()).get(context(id));
-    expect(result.data.tiles.find((t) => t.id === 'smtp')).toMatchObject({ status: 'not_configured', details: { configured: false } });
+    expect(result.data.tiles.find((t) => t.id === 'smtp')).toMatchObject({ status: 'warning', details: { configured: false },
+      message: expect.stringContaining('stored SMTP settings could not be read') });
     expect(JSON.stringify(result)).not.toContain('sensitive-invalid');
   });
   it('checks free space in both directories, including a low staging disk and a full uploads disk', async () => {

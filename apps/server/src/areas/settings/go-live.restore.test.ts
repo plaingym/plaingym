@@ -223,7 +223,9 @@ describe('restore checks belong to the Stripe mode they read', () => {
       expect((await service.checklist(gymId)).billingEnabled).toBe(false);
       expect((await service.checklist(gymId)).restoreReconciliation).toMatchObject({ stripeMode: 'test', stripeConfigured: true, unresolved: 0 });
       expect((await service.checklist(gymId)).items.find(item => item.id === 'reconciliation_complete')?.message)
-        .toContain('The last check read Stripe test mode. Billing is paused. Check restored payments again in live mode');
+        .toContain('The last check read Stripe test mode. Check restored payments again in live mode');
+      expect((await service.checklist(gymId)).items.find(item => item.id === 'reconciliation_complete')?.message)
+        .toContain('Resolve pending payment attempts or refunds.');
       expect(await item(gymId)).toBe('needs_attention');
       expect((await enable(app, gymId)).status).toBe(409);
       expect((await rerun(app, gymId, restoreId)).status).toBe(200);
@@ -253,6 +255,10 @@ describe('restore checks belong to the Stripe mode they read', () => {
       await saveStripe('live');
       release(); expect((await checking).status).toBe(200);
       expect(await item(gymId)).toBe('needs_attention');
+      const message = (await service.checklist(gymId)).items.find(item => item.id === 'reconciliation_complete')?.message;
+      expect(message).toContain('Resolve pending payment attempts or refunds.');
+      expect(message).toContain('The last check read Stripe test mode.');
+      expect(message).not.toContain('Billing is paused');
       expect((await enable(app, gymId)).status).toBe(409);
     } finally { release(); await checking; connected.delete(gymId); }
   });

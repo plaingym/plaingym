@@ -82,7 +82,10 @@ the install's configured backup gym to match the requester.
 No bucket names, filesystem paths, job errors, or SMTP credentials enter responses.
 
 The SMTP check validates configuration rather than attempting a send. It uses
-`SmtpResolver.source(gymId)` to report gym versus install configuration. In demo mode
+`SmtpResolver.status(gymId)`, one read and decrypt, to report gym versus install
+configuration; stored gym settings that can't be read give a warning that names
+them, while the message describes the install's settings or none that mail then
+uses. The providers parse `APP_ENCRYPTION_KEY` once, on first use. In demo mode
 (`DEMO_MODE=true`) it reports the in-app outbox as ready without consulting SMTP, since
 demo gyms send no email.
 `lastTestAt` is the latest submitted SMTP test, sent or failed, read from the gym's

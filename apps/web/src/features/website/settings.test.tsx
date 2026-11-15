@@ -77,6 +77,22 @@ describe('website settings', () => {
     expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'These settings changed elsewhere. They have been reloaded; check them and save again.');
     expect(client.PUT.mock.calls[0]![1].body.photos).toEqual([{ id: id(11), alt: 'Class' }]);
   });
+  it('reads a later settings reload even when it returns the revision of the last website save', async () => {
+    client.PUT.mockImplementation(async () => {
+      stored = { ...stored, revision: 5, tagline: 'Saved line' };
+      return reply(200, { data: stored });
+    });
+    const user = userEvent.setup(); start();
+    await screen.findByRole('textbox', { name: 'Tagline' });
+    const epoch = cache.getQueryData<{ epoch: number }>(gymSettingsKey)?.epoch;
+    await user.click(screen.getByRole('button', { name: 'Save website' }));
+    await screen.findByDisplayValue('Saved line');
+    await waitFor(() => expect(cache.getQueryData<{ epoch: number }>(gymSettingsKey)?.epoch).not.toBe(epoch));
+    stored = { ...stored, tagline: 'Restored line', photos: [{ id: id(10), alt: 'Restored mats' }] };
+    await act(() => cache.refetchQueries({ queryKey: gymSettingsKey }));
+    await screen.findByDisplayValue('Restored line');
+    expect(screen.getByDisplayValue('Restored mats')).toBeDefined();
+  });
 
   it('refreshes a color another section saved and saves unsaved text on the first try', async () => {
     const user = userEvent.setup();

@@ -40,12 +40,12 @@ function latestEmailTest(rows: readonly { action: string; after: unknown; occurr
   }
   return null;
 }
-export function lastEmailTest(rows: readonly { action: string; after: unknown; occurredAt: Date }[], ownSettings: boolean): string | null {
-  return latestEmailTest(rows, ownSettings)?.at ?? null;
-}
 export function createStatusProviders(options: StatusOptions = {}) {
   const env = options.env ?? process.env, scope = options.scope ?? forGym;
   const jobs = options.jobs ?? new PostgresJobStatsQuery(), disk = options.disk ?? statfs;
+  let key: Buffer | undefined;
+  const encryptionKey = () => key ??= parseEncryptionKey(env.APP_ENCRYPTION_KEY ?? '');
+  let smtp: ReturnType<typeof createSmtpResolver> | undefined;
   return [createBackupHealthProvider({ env }), createUpdateAvailableProvider({ env }),
     healthProvider('failed_jobs', async (context) => {
       const stats = await jobs.get(context.gymId);
@@ -57,21 +57,22 @@ export function createStatusProviders(options: StatusOptions = {}) {
     healthProvider('smtp', async (context) => {
       if (env.DEMO_MODE === 'true') return { id: 'smtp', status: 'healthy', checkedAt: context.clock.now().toISOString(),
         details: { configured: true, lastTestAt: null }, message: statusMessage('smtpDemo') };
-      const resolver = createSmtpResolver({ key: parseEncryptionKey(env.APP_ENCRYPTION_KEY ?? ''), env, scope });
-      const configured = await resolver.configured(context.gymId);
-      const source = await resolver.source(context.gymId);
+      const resolver = smtp ??= createSmtpResolver({ key: encryptionKey(), env, scope });
+      const { source, unreadable } = await resolver.status(context.gymId);
+      const configured = source !== null;
       // The wizard writes a handful of step rows; the latest email row is among the newest of these few actions.
       const rows = await scope(context.gymId, (tx) => tx.select({ action: auditEvents.action, after: auditEvents.after, occurredAt: auditEvents.occurredAt })
         .from(auditEvents).where(inArray(auditEvents.action, emailTestActions)).orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(50));
       const test = latestEmailTest(rows, source === 'gym');
       const message = statusMessage(configured ? source === 'gym' ? 'smtpGym' : 'smtpInstall' : 'smtpMissing');
-      return { id: 'smtp', status: test?.failed ? 'warning' : configured ? 'healthy' : 'not_configured', checkedAt: context.clock.now().toISOString(),
-        details: { configured, lastTestAt: test?.at ?? null }, message: test?.failed ? message + ' ' + statusMessage('smtpTestFailed') : message };
+      return { id: 'smtp', status: unreadable || test?.failed ? 'warning' : configured ? 'healthy' : 'not_configured', checkedAt: context.clock.now().toISOString(),
+        details: { configured, lastTestAt: test?.at ?? null }, message: message
+          + (unreadable ? ' ' + statusMessage('smtpUnreadable') : '') + (test?.failed ? ' ' + statusMessage('smtpTestFailed') : '') };
     }),
     // A malformed GOOGLE_* variable no longer stops the app: this tile says which one and why, until it is fixed.
     healthProvider('google_login', async (context) => {
       const tenancy = (env.TENANCY ?? 'single') === 'multi' ? 'multi' : 'single';
-      const resolver = createGoogleClientResolver({ key: parseEncryptionKey(env.APP_ENCRYPTION_KEY ?? ''), env, tenancy, scope });
+      const resolver = createGoogleClientResolver({ key: encryptionKey(), env, tenancy, scope });
       const checkedAt = context.clock.now().toISOString();
       const configured = await resolver.credentials(context.gymId) !== null;
       if (resolver.problem && tenancy === 'single') return { id: 'google_login', status: configured ? 'warning' : 'error', checkedAt,

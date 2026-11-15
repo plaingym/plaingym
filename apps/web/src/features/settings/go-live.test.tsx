@@ -43,12 +43,13 @@ describe('go-live settings', () => {
     const savedMode = checkedMode === 'test' ? 'live' : 'test', response = restored(0);
     live.mockResolvedValue(reply(200, { data: { ...response.data,
       items: response.data.items.map(item => item.id === 'reconciliation_complete' ? { ...item, status: 'needs_attention',
-        message: `The last check read Stripe ${checkedMode} mode. Billing is paused. Check restored payments again in ${savedMode} mode before turning billing back on.` } : item),
+        message: `Resolve pending payment attempts or refunds. The last check read Stripe ${checkedMode} mode. Check restored payments again in ${savedMode} mode before turning billing on.` } : item),
       restoreReconciliation: { ...response.data.restoreReconciliation, stripeConfigured: true, stripeMode: checkedMode } } }));
     start();
     const note = await screen.findByRole('note');
     expect(note.textContent).toContain(`last check read Stripe ${checkedMode} mode`);
-    expect(note.textContent).toContain(`again in ${savedMode} mode before turning billing back on`);
+    expect(note.textContent).toContain(`again in ${savedMode} mode before turning billing on`);
+    expect(note.textContent).toContain('Resolve pending payment attempts or refunds.');
     expect(screen.getByText(/Objects checked: 1,200. Unresolved: 0/)).toBeDefined();
   });
   it('registers an enabled section for go-live managers', () => {
@@ -60,6 +61,7 @@ describe('go-live settings', () => {
     expect(await screen.findByText('Message for smtp_ready')).toBeDefined();
     expect(live).toHaveBeenCalledWith('/api/settings/go-live');
     for (const id of ids) expect(screen.getByText('Message for ' + id)).toBeDefined();
+    expect(screen.queryByRole('note')).toBeNull();
     expect(screen.getByText('Email delivery').closest('li')!.textContent).toContain('Needs attention');
     expect(screen.getByText('Saved cards').closest('li')!.textContent).toContain('Not applicable');
     const billing = screen.getByRole('button', { name: 'Turn on: Billing' });

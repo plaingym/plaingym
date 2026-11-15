@@ -109,23 +109,27 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     return readStoredSecret(options.key, 'smtp_config', gym.id, gym.smtpConfig, () =>
       readSmtpSchema.parse(JSON.parse(decryptSecret(options.key, { secretClass: 'smtp_config', owner: gym.id }, gym.smtpConfig!))));
   }
-  /** The email settings an audit records: never the username or password. */
-  function emailAudit(gym: Gym) {
-    const smtp = gymSmtp(gym);
+  /** The email settings an audit records: never the username or password. Its source describes the stored value, readable or not. */
+  function emailAudit(gym: Gym, smtp = gymSmtp(gym)) {
     return { source: gym.smtpConfig ? 'gym' : installSmtp ? 'install' : 'none',
       host: smtp?.host ?? null, port: smtp?.port ?? null, security: smtp?.security ?? null, from: smtp?.from ?? null };
   }
   const signIn = (emailConfigured: boolean) => ({ password: passwordLogin(options.config, emailConfigured), magicLink: emailConfigured });
   async function email(gym: Gym, userId: string): Promise<EmailIntegration> {
-    const { source, host, port, security, from } = emailAudit(gym);
+    const smtp = gymSmtp(gym);
+    const { host, port, security, from } = emailAudit(gym, smtp);
+    // The section reports the settings mail actually goes through: an unreadable stored value falls back.
+    const source = smtp ? 'gym' : installSmtp ? 'install' : 'none';
+    const googleConfigured = await google.credentials(gym.id) !== null;
     // A sandbox signs in through the demo outbox, whatever is stored.
-    const now = signIn(sandbox || gymSmtp(gym) !== null || installSmtp);
-    const afterRemove = source === 'gym' && !sandbox ? signIn(installSmtp) : null;
+    const now = signIn(sandbox || smtp !== null || installSmtp);
+    const afterRemove = gym.smtpConfig && !sandbox ? signIn(installSmtp) : null;
     // Removing the gym's email leaves the install's, the owner's password and the gym's Google client (the install's or a stored one).
-    const removeBlocked = afterRemove !== null && !afterRemove.magicLink && !(afterRemove.password && await options.hasPassword(userId))
-      && !await google.credentials(gym.id);
-    return { source: source as EmailIntegration['source'], host, port, security, from, signIn: now, signInAfterSave: signIn(true),
-      signInAfterRemove: afterRemove, removeBlocked };
+    // Removing an unreadable value takes no sign-in method away, so it is never blocked.
+    const removeBlocked = afterRemove !== null && now.magicLink && !afterRemove.magicLink
+      && !(afterRemove.password && await options.hasPassword(userId)) && !googleConfigured;
+    return { source, host, port, security, from, signIn: now, signInAfterSave: signIn(true),
+      signInAfterRemove: afterRemove, removeBlocked, unreadable: !!gym.smtpConfig && !smtp, googleConfigured };
   }
   /** Card payments recorded through Stripe that no switch marked as test mode. */
   const liveCardPayments = and(or(isNotNull(payments.paymentIntentId), isNotNull(payments.chargeId)),
@@ -395,7 +399,8 @@ export function createIntegrationsService(options: IntegrationsOptions) {
   }
   /** One short transaction: lock the gym, check the revision, apply the change and write its audit. */
   async function save(context: MutationContext, revision: number,
-    change: (gym: Gym, tx: Transaction) => Promise<{ set: Partial<Gym>; action: string; before: Record<string, unknown>; after: (gym: Gym) => Record<string, unknown> }>) {
+    change: (gym: Gym, tx: Transaction) => Promise<{ set: Partial<Gym>; action: string; before: Record<string, unknown>; after: (gym: Gym) => Record<string, unknown> }>,
+    options: { emailTestSent?: boolean } = {}) {
     const userId = userOf(context);
     return scope(context.gymId, async (tx) => {
       const [before] = await readGym(tx, context.gymId).for('update');
@@ -407,6 +412,8 @@ export function createIntegrationsService(options: IntegrationsOptions) {
         .where(and(eq(gyms.id, context.gymId), guard.matches)).returning());
       await writeAudit(tx, { gymId: context.gymId, actorKind: 'user', actorUserId: userId, action: plan.action, targetType: 'gym',
         targetId: context.gymId, before: plan.before, after: { ...plan.after(after), revision: after.revision }, occurredAt: clock.now() });
+      if (options.emailTestSent) await writeAudit(tx, { gymId: context.gymId, actorKind: 'user', actorUserId: userId,
+        action: 'integrations.email_tested', targetType: 'gym', targetId: context.gymId, after: { test: 'sent' }, occurredAt: clock.now() });
       return after;
     });
   }
@@ -487,13 +494,13 @@ export function createIntegrationsService(options: IntegrationsOptions) {
       await assertCurrent(context.gymId, input.revision);
       const stored = storedSmtpFromRequest(input);
       const sent = await sendSmtpTest(stored, setupTestMessage(input.testTo), options.sendTest, !single);
-      await scope(context.gymId, (tx) => writeAudit(tx, { gymId: context.gymId, actorKind: 'user', actorUserId: userId,
+      if (!sent) await scope(context.gymId, (tx) => writeAudit(tx, { gymId: context.gymId, actorKind: 'user', actorUserId: userId,
         action: 'integrations.email_tested', targetType: 'gym', targetId: context.gymId,
-        after: { test: sent ? 'sent' : 'failed' }, occurredAt: clock.now() }));
+        after: { test: 'failed' }, occurredAt: clock.now() }));
       if (!sent)
         return { test: 'failed', integrations: await present(context.gymId, userId) };
       await save(context, input.revision, async (gym) => ({ set: { smtpConfig: encryptSmtpConfig(options.key, context.gymId, stored) },
-        action: 'integrations.email_saved', before: emailAudit(gym), after: emailAudit }));
+        action: 'integrations.email_saved', before: emailAudit(gym), after: emailAudit }), { emailTestSent: true });
       return { test: 'sent', integrations: await present(context.gymId, userId) };
     },
 

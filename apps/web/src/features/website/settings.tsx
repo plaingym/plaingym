@@ -36,7 +36,8 @@ function Field({ label, help, children }: { label: string; help?: string; childr
  */
 export function WebsiteSettings() {
   const cache = useQueryClient(), gym = useGymSettings();
-  const reading = useRef<AbortController | null>(null), savedRevision = useRef<number | null>(null);
+  const reading = useRef<AbortController | null>(null);
+  const savedRevision = useRef<{ revision: number; epoch: number | undefined; reload: boolean } | null>(null);
   const [state, setState] = useState<{ data: WebsiteSettingsData; draft: Draft; dirty: boolean } | null>(null);
   const [failed, setFailed] = useState(false), [busy, setBusy] = useState(false), [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
   const shown = useMemo(() => message && { kind: message.error ? 'alert' as const : 'status' as const, text: message.text }, [message]);
@@ -77,12 +78,14 @@ export function WebsiteSettings() {
   // Other sections' saves also advance the revision: refresh the colors while preserving unsaved website text.
   useEffect(() => {
     // A successful save already supplied this revision, including after the shared settings reload.
-    if (savedRevision.current !== gym.settings?.revision) void load();
+    const saved = savedRevision.current;
+    if (!saved || saved.revision !== gym.settings?.revision) void load();
+    else if (!saved.reload || saved.epoch !== gym.epoch) savedRevision.current = null;
     return () => reading.current?.abort();
   }, [gym.epoch, gym.settings?.revision]);
-  const adopt = (body: unknown, current: GymSettings): GymSettings => {
+  const adopt = (body: unknown, current: GymSettings, reload: boolean): GymSettings => {
     const { revision } = parseResponse(websiteSettingsResponseSchema, body).data;
-    savedRevision.current = revision;
+    savedRevision.current = { revision, epoch: gym.epoch, reload };
     reading.current?.abort();
     return { ...current, revision };
   };
@@ -92,7 +95,8 @@ export function WebsiteSettings() {
     try {
       // The text and colors were read with this section's settings: a save from another section since (General's primary
       // color) is refused rather than overwritten. Uploads carry no values read earlier.
-      const result = await gym.save(send, kind === 'content' && state ? { adopt, readAt: state.data.revision } : { adopt });
+      const adoptSaved = (body: unknown, current: GymSettings) => adopt(body, current, kind !== 'photo');
+      const result = await gym.save(send, kind === 'content' && state ? { adopt: adoptSaved, readAt: state.data.revision } : { adopt: adoptSaved });
       if (result.status >= 300) {
         // A 403 here is an install that refuses uploads (a demo sandbox); the section itself needs settings access to show.
         setMessage({ text: text(result.status === 409 ? 'conflict' : result.status === 400 ? 'invalid' : result.status === 403 ? 'uploadsOff' : 'error'), error: true });

@@ -53,6 +53,8 @@ export function smtpFromEnvironment(env: NodeJS.ProcessEnv = process.env): SmtpC
 }
 
 export interface SmtpResolver {
+  /** Reads the gym value once, including whether a stored value could not be read. */
+  status(gymId: string): Promise<{ source: 'gym' | 'install' | null; unreadable: boolean }>;
   /** The gym's own SMTP settings when saved, otherwise the install's, otherwise null. */
   config(gymId: string): Promise<SmtpConfig | null>;
   configured(gymId: string): Promise<boolean>;
@@ -72,6 +74,11 @@ export function createSmtpResolver(options: { key: Buffer; env?: NodeJS.ProcessE
     const own = await ownConfig(gymId);
     return own ? fromStored(own, tenantHosts) : fallback;
   }
-  return { config, async configured(gymId) { return (await config(gymId)) !== null; },
+  return { config, async status(gymId) {
+    const stored = await storedConfig(gymId);
+    const own = readStoredSecret(options.key, 'smtp_config', gymId, stored ?? null, () =>
+      readSmtpSchema.parse(JSON.parse(decryptSecret(options.key, { secretClass: 'smtp_config', owner: gymId }, stored!))));
+    return { source: own ? 'gym' : fallback ? 'install' : null, unreadable: !!stored && !own };
+  }, async configured(gymId) { return (await config(gymId)) !== null; },
     async source(gymId) { return await ownConfig(gymId) ? 'gym' : fallback ? 'install' : null; } };
 }

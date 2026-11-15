@@ -11,7 +11,7 @@ import { PortalHome } from './home.js';
 vi.mock('../../../app/context.js', () => ({ useBootstrap: () => ({ data: { gym: { id: 'gym', timezone: 'UTC' }, session: { userId: 'user' } } }) }));
 vi.mock('@tanstack/react-router', async importOriginal => ({ ...await importOriginal<object>(),
   Link: ({ to, children }: { to: string; children: ReactNode }) => <a href={to}>{children}</a> }));
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 const memberId = '00000000-0000-7000-8000-000000000001';
 const householdId = '00000000-0000-7000-8000-000000000002';
 const answer = <T,>(data: T) => ({ data, householdId });
@@ -50,6 +50,24 @@ it('shows the next booked class, check-in shortcut, pending work and selected me
   const [from, to] = f.client.schedule.mock.calls[0] as unknown as [string, string];
   expect(Date.parse(to) - Date.parse(from)).toBe(7 * 86_400_000);
   expect(f.fetcher.mock.calls.every(([, init]) => new Headers((init as RequestInit | undefined)?.headers).get('X-Portal-Household') === householdId)).toBe(true);
+});
+it.each([1_000, 29 * 86_400_000])('moves to the next booked class after %s ms without a focus or cache event', async untilStart => {
+  vi.useFakeTimers();
+  const f = fixture(), now = Date.now();
+  f.client.schedule.mockResolvedValue(answer([
+    { id: 'first', name: 'Starting class', startsAt: new Date(now + untilStart).toISOString(), status: 'scheduled', bookings: [{ id: 'a', memberId, status: 'booked' }] },
+    { id: 'next', name: 'Next booking', startsAt: new Date(now + untilStart + 60_000).toISOString(), status: 'scheduled', bookings: [{ id: 'b', memberId, status: 'booked' }] },
+  ]));
+  f.view();
+  await act(() => vi.advanceTimersByTimeAsync(50));
+  expect(screen.getByText('Starting class')).toBeDefined();
+  await act(() => vi.advanceTimersByTimeAsync(untilStart - 51));
+  expect(screen.getByText('Starting class')).toBeDefined();
+  expect(f.client.schedule).toHaveBeenCalledTimes(1);
+  await act(() => vi.advanceTimersByTimeAsync(101));
+  expect(screen.queryByText('Starting class')).toBeNull();
+  expect(screen.getByText('Next booking')).toBeDefined();
+  expect(f.client.schedule).toHaveBeenCalledTimes(2);
 });
 it('never requests or renders invoice summaries for a non-payer', async () => {
   const f = fixture('member'); f.view(); await screen.findByText('Unsigned waivers: 2,400');

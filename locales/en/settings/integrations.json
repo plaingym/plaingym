@@ -11,6 +11,7 @@
   "sandbox": "This sandbox sends email to the demo outbox and takes payments through the demo’s Stripe test account. They can’t be changed here.",
   "operatorManaged": "Whoever runs this install manages email and payments, so they can’t be changed here. Ask them if either needs to change.",
   "email.title": "Email",
+  "email.unreadable": "Your stored SMTP settings could not be read. Replace or remove them. Email uses the fallback shown below.",
   "email.sourceGym": "Sends through your own SMTP service: {host}, port {port} ({security}), from {from}.",
   "email.sourceInstall": "Uses this install’s email settings (the SMTP_* values on the server).",
   "email.sourceNone": "No email service is set up: the gym can’t send email.",

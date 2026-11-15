@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, screen, within } from '@testing-library/react';
+import { cleanup, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { Integrations } from '@plaingym/shared/contracts';
 import { health, integrations, refusal, renderSection, reply, serve } from './fixtures.test-helper.js';
 import { holdTimeouts, stalledRequests } from '../save-timeout.test-helper.js';
+import { GoLiveSettings } from '../go-live.js';
 const client = vi.hoisted(() => ({ GET: vi.fn(), PUT: vi.fn(), POST: vi.fn(), DELETE: vi.fn() }));
 vi.mock('../../../lib/api.js', () => ({ api: client, createApiClient: () => client }));
 
@@ -24,11 +25,44 @@ async function submit(user: ReturnType<typeof userEvent.setup>, key: string) {
 }
 
 describe('Settings → Payments', () => {
+  it.each([true, false])('shares the checklist and clears mode notices after a rerun, with Payments configured: %s', async configured => {
+    current = configured ? live : integrations;
+    const get = client.GET.getMockImplementation()!;
+    const modeMessage = 'Resolve pending payment attempts or refunds. The last check read Stripe test mode. Check restored payments again in live mode before turning billing on.';
+    const checklist = { revision: 3, billingEnabled: false, memberEmailsEnabled: false,
+      items: [{ id: 'reconciliation_complete', status: 'needs_attention', message: modeMessage }],
+      restoreReconciliation: { restoreId: '00000000-0000-7000-8000-000000000003', snapshotAt: '2026-11-01T12:00:00Z',
+        checkedAt: '2026-11-02T12:00:00Z', inspected: 0, unresolved: 0, stripeConfigured: true, stripeMode: 'test' } };
+    client.GET.mockImplementation((path: string) => path === '/api/settings/go-live' ? Promise.resolve(reply(200, { data: checklist })) : get(path));
+    client.POST.mockResolvedValue(reply(200, { data: { ...checklist, items: [{ id: 'reconciliation_complete', status: 'ready', message: 'All clear' }],
+      restoreReconciliation: { ...checklist.restoreReconciliation, stripeMode: 'live' } } }));
+    renderSection(<GoLiveSettings/>);
+    await waitFor(() => expect(screen.getAllByRole('note')).toHaveLength(configured ? 2 : 1));
+    expect(client.GET.mock.calls.filter(([path]) => path === '/api/settings/go-live')).toHaveLength(1);
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Check restored payments again' }));
+    await screen.findByText('All clear');
+    expect(screen.queryByRole('note')).toBeNull();
+    expect(client.GET.mock.calls.filter(([path]) => path === '/api/settings/go-live')).toHaveLength(1);
+  });
+  it('does not infer a mode warning when the server has no saved-mode audit', async () => {
+    current = live;
+    const get = client.GET.getMockImplementation()!;
+    client.GET.mockImplementation((path: string) => path === '/api/settings/go-live' ? Promise.resolve(reply(200, { data: {
+      revision: 3, billingEnabled: false, memberEmailsEnabled: false,
+      items: [{ id: 'reconciliation_complete', status: 'needs_attention', message: 'Resolve pending payment attempts or refunds.' }],
+      restoreReconciliation: { restoreId: '00000000-0000-7000-8000-000000000003', snapshotAt: '2026-11-01T12:00:00Z',
+        checkedAt: '2026-11-02T12:00:00Z', inspected: 0, unresolved: 0, stripeConfigured: true, stripeMode: 'test' },
+    } })) : get(path));
+    renderSection(); await screen.findByText('Stripe is connected in live mode.');
+    await waitFor(() => expect(client.GET).toHaveBeenCalledWith('/api/settings/go-live'));
+    expect(screen.queryByRole('note')).toBeNull();
+  });
   it.each(['test', 'live'] as const)('names the %s-mode restore check after a mode switch', async checkedMode => {
     current = checkedMode === 'test' ? live : connected;
     const get = client.GET.getMockImplementation()!;
     client.GET.mockImplementation((path: string) => path === '/api/settings/go-live' ? Promise.resolve(reply(200, { data: {
-      revision: current.revision, billingEnabled: false, memberEmailsEnabled: false, items: [], restoreReconciliation: {
+      revision: current.revision, billingEnabled: false, memberEmailsEnabled: false, items: [{ id: 'reconciliation_complete', status: 'needs_attention',
+        message: `Resolve pending payment attempts or refunds. The last check read Stripe ${checkedMode} mode. Check restored payments again in ${current.payments.mode} mode before turning billing on.` }], restoreReconciliation: {
         restoreId: '00000000-0000-7000-8000-000000000003', snapshotAt: '2026-11-01T12:00:00Z',
         checkedAt: '2026-11-02T12:00:00Z', inspected: 0, unresolved: 0, stripeConfigured: true, stripeMode: checkedMode,
       },
@@ -36,7 +70,7 @@ describe('Settings → Payments', () => {
     renderSection();
     const note = await screen.findByRole('note');
     expect(note.textContent).toContain(`last check read Stripe ${checkedMode} mode`);
-    expect(note.textContent).toContain(`again in ${current.payments.mode} mode before turning billing back on`);
+    expect(note.textContent).toContain(`again in ${current.payments.mode} mode before turning billing on`);
   });
   it('reloads an operator-managed refusal and hides the payment form', async () => {
     renderSection();

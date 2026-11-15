@@ -20,6 +20,7 @@ export const signInMethodsSchema = z.strictObject({ password: z.boolean(), magic
  */
 export const emailIntegrationSchema = z.strictObject({
   source: z.enum(['gym', 'install', 'none']),
+  unreadable: z.boolean(), googleConfigured: z.boolean(),
   host: z.string().nullable(), port: z.int32().min(1).max(65535).nullable(),
   security: z.enum(['starttls', 'tls', 'plain']).nullable(), from: z.string().nullable(),
   signIn: signInMethodsSchema, signInAfterSave: signInMethodsSchema, signInAfterRemove: signInMethodsSchema.nullable(),
