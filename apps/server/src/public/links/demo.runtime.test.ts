@@ -10,7 +10,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { startRuntime } from '../../core/runtime.js';
 import { clock } from '../../core/clock.js';
-import { PostgresJobs } from '../../infra/jobs/postgres.js';
+import { PostgresJobs, PostgresJobStatsQuery } from '../../infra/jobs/postgres.js';
 import * as stripeAdapter from '../../infra/payments/stripe.js';
 import { StripeFixtures } from '../../infra/payments/stripe-fixtures.js';
 import { s3Server } from '../../infra/storage/s3-server.test-helper.js';
@@ -64,6 +64,50 @@ it('completes card and waiver onboarding through the demo production runtime wit
     expect(await db.forGym(gymId, tx => tx.$count(waiverSignatures, eq(waiverSignatures.memberId, member.id)))).toBe(1);
     expect(await db.forGym(gymId, tx => tx.$count(paymentMethods, eq(paymentMethods.householdId, household.id)))).toBe(1);
     expect(await db.forGym(gymId, tx => tx.$count(auditEvents, eq(auditEvents.action, demoSignatureReservation)))).toBe(1);
+  } finally {
+    await runtime?.stop(); payments.mockRestore(); worker.mockRestore();
+    await storage.close(); await rm(directory, { recursive: true, force: true });
+  }
+});
+it('wires the demo job policy, one-query gym enumeration and the post-limiter guard into the runtime', async () => {
+  const future = new Date(clock.now().getTime() + 86_400_000).toISOString();
+  const make = async (demo: Record<string, unknown>) => {
+    const id = uuidv7();
+    await factory('gyms', id, { settings: { setupComplete: true, demo: { sandbox: true, expiresAt: future, ...demo } } });
+    await factory('gymDomains', id, { hostname: id + '.demo.example.test', kind: 'default' });
+    return id;
+  };
+  const ready = await make({ ready: true }), seeding = await make({ kind: 'pool', ready: false }), showcase = await make({ kind: 'showcase', ready: true });
+  const queues: PostgresJobs[] = [];
+  const worker = vi.spyOn(PostgresJobs.prototype, 'start').mockImplementation(function (this: PostgresJobs) { queues.push(this); return { async stop() {} }; });
+  const transport = new StripeFixtures(ready, Math.floor(clock.now().getTime() / 1000));
+  const payments = vi.spyOn(stripeAdapter, 'stripeTransport').mockReturnValue(transport);
+  const storage = await s3Server(), directory = await mkdtemp(join(tmpdir(), 'plaingym-demo-jobs-runtime-'));
+  let runtime: Awaited<ReturnType<typeof startRuntime>> | undefined;
+  try {
+    runtime = await startRuntime({ DATABASE_URL: db.appUrl, APP_ENCRYPTION_KEY: 'ab'.repeat(32),
+      AUTH_SECRET: 'runtime-secret-with-at-least-32-characters', TENANCY: 'multi', DEMO_MODE: 'true',
+      DEMO_DOMAIN: 'demo.example.test', PUBLIC_ORIGIN: 'https://demo.example.test', NODE_ENV: 'production',
+      DEMO_STRIPE_TEST_KEY: 'rk_test_runtime', DEMO_STRIPE_WEBHOOK_SECRET: 'whsec_runtime',
+      UPLOADS_S3_BUCKET: 'demo', UPLOADS_S3_ENDPOINT: storage.endpoint, UPLOADS_S3_REGION: 'us-east-1',
+      UPLOADS_S3_ACCESS_KEY_ID: 'test', UPLOADS_S3_SECRET_ACCESS_KEY: 'test',
+      BACKUP_STAGING_DIR: directory, BACKUP_STATE_DIR: directory });
+    expect(queues).toHaveLength(1);
+    const jobs = queues[0]!, ran: string[] = [], stats = new PostgresJobStatsQuery({ forSystem: db.forSystem });
+    jobs.handle('r249.probe', async (_payload, context) => { ran.push(context.gymId); });
+    const enqueue = (gymId: string) => jobs.enqueue('r249.probe', {}, { gymId, timezone: 'UTC', idempotencyKey: gymId });
+    await enqueue(ready); await enqueue(seeding); await enqueue(showcase);
+    while (await jobs.runNext()) { /* drain what is due */ }
+    // A ready copy runs its job, a gym still seeding keeps it for later, and the showcase never runs one.
+    expect(ran).toEqual([ready]);
+    expect((await stats.get(seeding)).pending).toBe(1);
+    expect((await stats.get(showcase)).pending).toBe(0);
+    // The scheduler lists only eligible gyms: the runtime's schedules enqueue for the ready copy and for no other.
+    const before = (await stats.get(ready)).pending;
+    await jobs.scheduleDue();
+    expect((await stats.get(ready)).pending).toBeGreaterThan(before);
+    expect((await stats.get(seeding)).pending).toBe(1);
+    expect((await stats.get(showcase)).pending).toBe(0);
   } finally {
     await runtime?.stop(); payments.mockRestore(); worker.mockRestore();
     await storage.close(); await rm(directory, { recursive: true, force: true });
