@@ -18,6 +18,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 IMAGE = r"[a-zA-Z0-9][a-zA-Z0-9._:/-]*(?::v?\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?|@sha256:[a-f0-9]{64})"
@@ -47,6 +48,15 @@ def read_env(path):
 
 def validate(config):
     local = config["DEMO_LOCAL_TEST"] == "true"
+    if config.get("DEMO_AUTO_UPDATE", "on") not in ("on", "off"):
+        raise ValueError("DEMO_AUTO_UPDATE must be on or off")
+    try:
+        ZoneInfo(config.get("DEMO_UPDATE_TIMEZONE", "America/New_York"))
+    except (ValueError, ZoneInfoNotFoundError):
+        raise ValueError("DEMO_UPDATE_TIMEZONE must be an IANA timezone") from None
+    repository = config.get("RELEASE_REPOSITORY", "plaingym/plaingym")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) or any(set(part) == {"."} for part in repository.split("/")):
+        raise ValueError("RELEASE_REPOSITORY must be owner/repository")
     domain = config["GYM_HOSTNAME"]
     if len(domain) > 253 or not re.fullmatch(HOST, domain):
         raise ValueError("Use a lowercase DNS hostname without a URL or port.")
@@ -311,6 +321,9 @@ def main():
     config.setdefault("UPLOADS_S3_REGION", os.environ.get("UPLOADS_S3_REGION", "auto"))
     config.setdefault("ACME_CA", os.environ.get("ACME_CA", "https://acme-v02.api.letsencrypt.org/directory"))
     config.setdefault("DEMO_SNAPSHOT_RETENTION", os.environ.get("DEMO_SNAPSHOT_RETENTION", "3"))
+    for name, default in (("DEMO_AUTO_UPDATE", "on"), ("DEMO_UPDATE_TIMEZONE", "America/New_York"),
+                          ("RELEASE_REPOSITORY", "plaingym/plaingym")):
+        config.setdefault(name, os.environ.get(name, default))
     for name, default in (("DEMO_MAX_SANDBOXES", "50"), ("DEMO_POOL_SIZE", "5"), ("DEMO_IDLE_HOURS", "2")):
         config.setdefault(name, os.environ.get(name, default))
     # The required inputs are validated and checked before the optional billing question, so a mistake in

@@ -69,7 +69,7 @@ fi
 inputs=$(mktemp)
 backup=
 refreshing=false
-deploy_paths='compose.yaml base-lib.sh postgres/01-roles.sh demo.compose.yaml lib.sh update.sh snapshots.py Caddyfile'
+deploy_paths='compose.yaml base-lib.sh postgres/01-roles.sh demo.compose.yaml lib.sh update.sh auto-update.sh deploy-files.py snapshots.py Caddyfile caddy.Dockerfile release-signing.pem systemd/plaingym-demo-update.service systemd/plaingym-demo-update.timer'
 cleanup() {
   result=$?
   trap - EXIT HUP INT TERM
@@ -103,11 +103,13 @@ if [ "$DEMO_LOCAL_TEST" != true ] && [ ! -f "$ROOT/.env" ]; then sh "$SOURCE/hos
 install -d -m 0700 "$ROOT"
 exec 9>"$ROOT/.install.lock"
 flock -n 9 || fail 'Another demo installation is running.'
+# Finish an interrupted update's host-file journal first, so a later update.sh can't undo this refresh with it.
+if [ -d "$ROOT/.demo-deploy-update" ]; then python3 "$ROOT/deploy-files.py" recover "$ROOT"; fi
 if [ ! -f "$ROOT/.env" ]; then
   install -m 0600 "$inputs" "$ROOT/.env"
 else
   backup=$(mktemp -d "$ROOT/.deploy.XXXXXXXX")
-  install -d -m 0700 "$backup/postgres"
+  install -d -m 0700 "$backup/postgres" "$backup/systemd"
   for file in $deploy_paths .env; do
     if [ -f "$ROOT/$file" ]; then cp -p "$ROOT/$file" "$backup/$file"; fi
   done
@@ -130,13 +132,21 @@ docker run --rm --entrypoint caddy "$desired_caddy" list-modules | grep -qx dns.
 copy_deploy() {
   if ! cmp -s "$1" "$ROOT/$2"; then install -m "$3" "$1" "$ROOT/$2"; fi
 }
-install -d -m 0755 "$ROOT/postgres"
+install -d -m 0755 "$ROOT/postgres" "$ROOT/systemd"
 copy_deploy "$DEPLOY/compose.yaml" compose.yaml 0644
 copy_deploy "$DEPLOY/lib.sh" base-lib.sh 0644
 copy_deploy "$DEPLOY/postgres/01-roles.sh" postgres/01-roles.sh 0644
 copy_deploy "$SOURCE/compose.yaml" demo.compose.yaml 0644
 copy_deploy "$SOURCE/lib.sh" lib.sh 0644
 copy_deploy "$SOURCE/update.sh" update.sh 0700
+copy_deploy "$SOURCE/auto-update.sh" auto-update.sh 0700
+copy_deploy "$SOURCE/deploy-files.py" deploy-files.py 0700
+copy_deploy "$SOURCE/Dockerfile" caddy.Dockerfile 0644
+for unit in plaingym-demo-update.service plaingym-demo-update.timer; do
+  copy_deploy "$SOURCE/systemd/$unit" "systemd/$unit" 0644
+done
+# Existing trust belongs to the operator; a routine bundle refresh never rotates it.
+if [ ! -f "$ROOT/release-signing.pem" ]; then copy_deploy "$DEPLOY/release-signing.pem" release-signing.pem 0644; fi
 copy_deploy "$SOURCE/snapshots.py" snapshots.py 0700
 if [ "$DEMO_LOCAL_TEST" = true ]; then caddyfile=Caddyfile.local.conf; else caddyfile=Caddyfile; fi
 copy_deploy "$SOURCE/$caddyfile" Caddyfile 0644
@@ -162,4 +172,6 @@ if [ "$desired_caddy" != "$(read_env CADDY_IMAGE)" ]; then
   commit_env_next
 fi
 refreshing=false
+python3 "$ROOT/deploy-files.py" units "$ROOT"
+systemctl enable --now plaingym-demo-update.timer
 demo_link

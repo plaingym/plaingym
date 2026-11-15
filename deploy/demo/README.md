@@ -131,7 +131,71 @@ certificate is intentionally not accepted as public deployment success.
 
 ## Updates
 
-For a published app image, one command on the server is sufficient:
+### Automatic release updates
+
+The installer installs `release-signing.pem` and enables
+`plaingym-demo-update.timer`. Existing demos receive these through the bootstrap
+refresh described below. The timer fires hourly with up to 50 minutes of random
+delay; it acts once between 02:00 and 05:00 in `DEMO_UPDATE_TIMEZONE` (default
+`America/New_York`). It does not catch up outside that window.
+
+The demo follows the newest published stable patch **or minor** release with
+the running image's major version. A new major requires an explicit operator
+update. Images without a stable release version label, including development
+builds, are skipped. Set these host-only options in the root-only installed `.env`:
+
+| Setting | Default | Meaning |
+| :--- | :--- | :--- |
+| `DEMO_AUTO_UPDATE` | `on` | `off` disables automatic updates, including `--now`. |
+| `DEMO_UPDATE_TIMEZONE` | `America/New_York` | IANA timezone for the nightly window. |
+| `RELEASE_REPOSITORY` | `plaingym/plaingym` | Repository publishing releases, including for forks. |
+
+Only the installed public key can authorize a release. The updater reuses the
+self-hosted manifest/signature and deploy-archive checks; it pulls the manifest's
+`IMAGE:vX.Y.Z@sha256:DIGEST` and checks the registry digest and version label
+before stopping the app. Invalid signatures, manifests, digests, labels and
+archives are refused permanently for that tag, even with `--now`. A newer tag
+can be considered. Network failures can be tried on a later night. As on
+self-hosted installs, a release whose signed `rollback_floor` is above the
+running version is skipped with `rollback_floor_above_running`, since the
+running image couldn't restart on its migrated database; install it explicitly.
+Failed update attempts are limited to two per release, counting interrupted
+attempts; after that the demo waits for a newer release. A night when the app
+isn't running is skipped with `app_not_running` and uses no attempt. `--now`
+bypasses the clock, but keeps these trust checks and attempt limits.
+
+The install/update lock prevents concurrent changes. A busy lock skips that
+night. Updates send SIGTERM and wait up to 30 minutes for the worker's in-flight
+seed to finish; they never force-kill it. If draining times out, the pin and
+deploy files stay unchanged; the next hourly updater run, at any time of day,
+waits for the drain, restarts the pin and proxy and reports recovery. An
+explicit `update.sh IMAGE` does the same recovery first, then installs `IMAGE`.
+
+Changed demo scripts, Compose files, systemd units and Caddy configuration come
+only from the verified release archive. Credentials, the app pin and the Caddy
+image stay in place until the normal update health checks commit the new app
+pin. Failed refreshes restore the preceding files and proxy configuration before
+restarting the old image. A host-file journal recovers interrupted refreshes.
+The signing key is retained, never automatically rotated. If the archive's demo
+Caddy Dockerfile differs from the installed build recipe, the release is skipped
+with `caddy_image_required`: releases do not publish the custom demo proxy image.
+Refresh the bundle and its Caddy image explicitly, then install that app release
+explicitly or wait for a newer tag.
+
+```sh
+sudo /opt/plaingym-demo/update.sh --auto --now
+sudo /opt/plaingym-demo/update.sh --status
+sudo journalctl -u plaingym-demo-update.service
+sudo systemctl list-timers plaingym-demo-update.timer
+```
+
+Each nightly action writes a summary (up to date, updated from/to, rolled back,
+or skipped with its reason) to the journal and `auto-update.status`. Off-window,
+already-checked and disabled runs are quiet. No gym email configuration is needed.
+
+### Explicit updates
+
+For an explicit published app image, one command on the server is sufficient:
 
 ```sh
 sudo /opt/plaingym-demo/update.sh ghcr.io/plaingym/app:v0.2.1
@@ -141,7 +205,7 @@ For another unpublished build, use the same bootstrap command with the **new**
 bundle URL and SHA256, adding `--update plaingym:v0.0.1-local`. No manual image
 upload or `docker load` is needed. The maintainer must use a different app tag for
 each bundle update; bundle preparation supports `-AppTag` for this purpose.
-The command loads/pulls the target before downtime, stops writers, captures a
+The command loads/pulls the target before downtime, drains the worker and stops writers, captures a
 private pre-update database snapshot, applies migrations with the one-shot
 `migrate` service, starts the new app, and publishes its image pin only after health checks. Failure restarts the
 previous image by ID; the old pin stays in place. Snapshot files remain in the
@@ -272,7 +336,10 @@ It runs preflight failure tests, starts a pinned local Moto S3 service, runs the
 real installer in `--local-test` mode (skips public DNS and host OS provisioning,
 requires `.test`/`.localhost`, uses Caddy's local CA), and checks sandbox creation,
 owner/coach login, rerun idempotence, verified deploy-file refresh, plaintext
-snapshot permissions, default/custom retention, update and rollback. The browser client
+snapshot permissions, default/custom retention, timer installation, update and rollback.
+The release fixtures use a fake clock, fake Docker/release responses and real
+Ed25519 signatures to cover selection, refusal, retries and deploy-file recovery.
+The browser client
 trusts the exported local CA and uses actual HTTPS through the proxy. No public
 API credentials are used. Test installations and logs use a private
 `/tmp/plaingym-demo-test-*` directory so Linux permissions are tested even when

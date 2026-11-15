@@ -155,6 +155,11 @@ manifest_verify() { # PUBLIC_KEY MANIFEST SIGNATURE
   [ "$(wc -c < "$3")" -eq 64 ] || return 1
   openssl pkeyutl -verify -pubin -inkey "$1" -rawin -in "$2" -sigfile "$3" >/dev/null 2>&1
 }
+# Bounded HTTPS downloads shared by the self-hosted and demo release updaters.
+download() { # URL FILE [MAX_BYTES]
+  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 60 \
+    --max-filesize "${3:-65536}" -H 'User-Agent: plaingym-update' "$1" -o "$2"
+}
 manifest_value() { # MANIFEST KEY; missing or repeated keys have no value.
   read_env "$2" "$1" true
 }

@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+[Unit]
+Description=PlainGym demo release update, checked each hour
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=50min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

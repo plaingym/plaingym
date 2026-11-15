@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+[Unit]
+Description=PlainGym demo signed release update
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+ConditionPathExists=@ROOT@/.env
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash "@ROOT@/update.sh" --auto
+TimeoutStartSec=90min
+TimeoutStopSec=5min
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

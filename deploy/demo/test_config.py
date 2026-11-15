@@ -74,6 +74,15 @@ def inputs():
 
 
 class PreflightTests(unittest.TestCase):
+    def test_auto_update_settings_validate_without_interpolation(self):
+        config.validate({**inputs(), "DEMO_AUTO_UPDATE": "off", "DEMO_UPDATE_TIMEZONE": "UTC",
+                         "RELEASE_REPOSITORY": "example/fork"})
+        for key, value in (("DEMO_AUTO_UPDATE", "maybe"), ("DEMO_UPDATE_TIMEZONE", "not/a-zone"),
+                           ("DEMO_UPDATE_TIMEZONE", "../etc/passwd"), ("RELEASE_REPOSITORY", "../fork"),
+                           ("RELEASE_REPOSITORY", "example/fork\nAPP_IMAGE=evil")):
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                config.validate({**inputs(), key: value})
+
     def test_validation_rejects_interpolation_live_test_domains_and_unpinned_images(self):
         config.validate(inputs())
         for key, value in (("APP_IMAGE", "example:latest"), ("CADDY_IMAGE", "example:edge"),

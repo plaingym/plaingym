@@ -508,10 +508,6 @@ prune_host_history() { # After prune_images, which keeps saved pins only for ima
 }
 valid_timezone() { printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$' && [ -f "/usr/share/zoneinfo/$1" ]; }
 in_window() { hour=$(TZ="$1" date +%H); hour=${hour#0}; [ "$hour" -ge 2 ] && [ "$hour" -lt 5 ]; }
-download() { # URL FILE [MAX_BYTES]
-  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 60 \
-    --max-filesize "${3:-65536}" -H 'User-Agent: plaingym-update' "$1" -o "$2"
-}
 
 rotation_check
 trap cleanup EXIT

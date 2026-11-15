@@ -18,9 +18,11 @@ original = read_env(installed / ".env")
 with tempfile.TemporaryDirectory() as temporary:
     directory = Path(temporary)
     staged = directory / "staged"
-    files = ["compose.yaml", "lib.sh", "host.sh", "install.sh", "cloudflare-ranges.txt", "postgres/01-roles.sh"]
+    files = ["compose.yaml", "lib.sh", "host.sh", "install.sh", "cloudflare-ranges.txt", "postgres/01-roles.sh", "release-signing.pem"]
     files += ["demo/" + file for file in ("install.sh", "config.py", "lib.sh", "update.sh", "snapshots.py",
-                                         "host.sh", "compose.yaml", "Caddyfile", "Caddyfile.local.conf")]
+                                         "host.sh", "compose.yaml", "Caddyfile", "Caddyfile.local.conf", "auto-update.sh",
+                                         "deploy-files.py", "Dockerfile", "systemd/plaingym-demo-update.service",
+                                         "systemd/plaingym-demo-update.timer")]
     for file in files:
         target = staged / "deploy" / file
         target.parent.mkdir(parents=True, exist_ok=True)

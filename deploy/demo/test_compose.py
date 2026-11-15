@@ -296,6 +296,7 @@ class ReinstallRestoreTests(unittest.TestCase):
         self.root.mkdir()
         stub(self.bin / "python3", "exit 0")
         stub(self.bin / "flock", "exit 0")
+        stub(self.bin / "systemctl", "exit 0")
         stub(self.bin / "id", "echo 0")
         stub(self.bin / "docker",
              f'printf \'%s\\n\' "$*" >> \'{self.calls}\'\n'

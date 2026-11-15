@@ -6,7 +6,7 @@ SOURCE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 [ "$(id -u)" -eq 0 ] || { echo 'Run the local smoke as root.' >&2; exit 1; }
 export PYTHONDONTWRITEBYTECODE=1
 cd "$SOURCE"
-python3 -m unittest -v test_config.py test_bootstrap.py test_snapshots.py test_compose.py
+python3 -m unittest -v test_config.py test_bootstrap.py test_snapshots.py test_compose.py test_auto_update.py
 grep -q 'export DEBIAN_FRONTEND=noninteractive' ../host.sh
 # shellcheck disable=SC2016
 grep -q 'install -d -m 0700 "$ROOT"' ../install.sh
@@ -17,6 +17,12 @@ export APP_IMAGE="${DEMO_TEST_APP_IMAGE:-plaingym:e2e}"
 export CADDY_IMAGE="${DEMO_TEST_CADDY_IMAGE:-plaingym-caddy:v2.11.7-cf0.2.4}"
 # Linux filesystem permissions must be real even when the checkout is on NTFS.
 ROOT=$(mktemp -d "/tmp/$COMPOSE_PROJECT_NAME.XXXXXXXX")
+export SYSTEMD_UNIT_DIR="$ROOT/units"
+mkdir "$ROOT/test-bin"
+# Install real rendered timer files without scheduling a temporary smoke stack on the host.
+printf '#!/bin/sh\nexit 0\n' > "$ROOT/test-bin/systemctl"
+chmod 0700 "$ROOT/test-bin/systemctl"
+export PATH="$ROOT/test-bin:$PATH"
 s3_name="$COMPOSE_PROJECT_NAME-s3"
 cleanup() {
   result=$?
@@ -77,6 +83,9 @@ assert all(not policy.get("on_demand") for policy in policies)
 assert policies[0]["issuers"][0]["challenges"]["dns"]["provider"]["name"] == "cloudflare"
 PY
 sh "$SOURCE/install.sh" --local-test --directory "$ROOT"
+[ -f "$ROOT/release-signing.pem" ]
+grep -q 'OnCalendar=hourly' "$SYSTEMD_UNIT_DIR/plaingym-demo-update.timer"
+grep -q -- '--auto' "$SYSTEMD_UNIT_DIR/plaingym-demo-update.service"
 # shellcheck source=/dev/null
 . "$ROOT/lib.sh"
 before=$(sha256sum "$ROOT/.env")

@@ -5,6 +5,9 @@
 The separate [demo deployment](demo/README.md) provides a read-only showcase and
 private copies from a serialized seed pool. Its default pool size is five and
 private copies expire after two idle hours, with a hard 24-hour lifetime.
+The demo follows signed patch and minor releases of its running major version
+each night, using its own timer and the same release verification helpers as
+self-hosted installs. See [demo automatic updates](demo/README.md#automatic-release-updates).
 
 This stack serves the application and setup wizard over HTTPS. The installer
 prints a private first-boot setup link after the health check succeeds.
