@@ -144,7 +144,8 @@ export function GoLiveSettings() {
         <p className="text-sm text-muted-foreground">{label('reconcileHelp')}</p>
         <p role="status" className="break-words text-sm">{checklist.restoreReconciliation.checkedAt
           ? label(checklist.restoreReconciliation.stripeConfigured === false ? 'reconcileStoredResult' : 'reconcileResult', { at: checklist.restoreReconciliation.checkedAt,
-            inspected: formatCount(checklist.restoreReconciliation.inspected ?? 0), unresolved: formatCount(checklist.restoreReconciliation.unresolved ?? 0) })
+            inspected: checklist.restoreReconciliation.inspected === null ? label('unknown') : formatCount(checklist.restoreReconciliation.inspected),
+            unresolved: checklist.restoreReconciliation.unresolved === null ? label('unknown') : formatCount(checklist.restoreReconciliation.unresolved) })
           : label('reconcilePending')}</p>
         {checklist.restoreReconciliation.stripeConfigured === false && <p className="break-words text-sm">
           {label(checklist.items.find(item => item.id === 'stripe_ready')?.status === 'ready' ? 'reconcileStripeConnected' : 'reconcileWithoutStripe')}</p>}

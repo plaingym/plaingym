@@ -36,7 +36,7 @@ total including tax; it never adds currencies together. Amounts use
 `views.tsx` memoizes tables, program choices and chart series by report data and
 program selection. `DataTable` renders those columns and rows and
 passes the same object to `csv.ts` for browser downloads. Count columns and count
-charts use browser-locale digit grouping on screen;
+charts use fixed English digit grouping on screen;
 the table model retains plain numeric strings for CSV downloads. Currency values
 and text columns retain their existing representation.
 CSV includes a UTF-8 BOM, quoted fields, CRLF records, readable calendar dates and formula-prefix neutralization

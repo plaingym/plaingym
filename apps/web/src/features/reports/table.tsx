@@ -5,6 +5,11 @@ import { TableContainer } from '../../components/ui/table.js';
 import { downloadCsv } from './csv.js';
 import { text, type ReportTable } from './data.js';
 
+function countCell(cell: string): string {
+  const value = Number(cell);
+  return cell.trim() && Number.isFinite(value) ? formatCount(value) : cell;
+}
+
 export function DataTable({ table, title, filename }: { table: ReportTable; title: string; filename: string }) {
   return <div className="min-w-0 space-y-3">
     <Button variant="outline" onClick={() => downloadCsv(table, filename)} aria-label={text('downloadNamed', { name: title })}>{text('download')}</Button>
@@ -16,7 +21,7 @@ export function DataTable({ table, title, filename }: { table: ReportTable; titl
           {row.map((cell, column) => column === 0
             ? <th key={column} scope="row" className="whitespace-nowrap px-4 py-3 font-normal">{cell}</th>
             : <td key={column} className={'px-4 py-3 ' + (table.textColumns?.includes(column)
-              ? 'min-w-48 max-w-64 whitespace-pre-wrap wrap-anywhere' : 'whitespace-nowrap')}>{table.countColumns?.includes(column) ? formatCount(Number(cell)) : cell}</td>)}
+              ? 'min-w-48 max-w-64 whitespace-pre-wrap wrap-anywhere' : 'whitespace-nowrap')}>{table.countColumns?.includes(column) ? countCell(cell) : cell}</td>)}
         </tr>)}</tbody>
       </table>
     </TableContainer>

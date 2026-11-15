@@ -6,7 +6,7 @@ test.use({ locale: 'de-DE' });
 const id = (n: number) => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
 const householdId = id(3), memberId = id(4), sessionId = id(5), invoiceId = id(6);
 for (const width of [360, 1280]) {
-  test(`groups portal display counts at ${width}px`, async ({ page }, info) => {
+  test(`keeps portal counts English in a German browser at ${width}px`, async ({ page }, info) => {
     await page.setViewportSize({ width, height: 900 });
     const startsAt = new Date(Date.now() + 86_400_000).toISOString();
     const invoice = { id: invoiceId, number: 1200, kind: 'one_off', status: 'paid', dueOn: '2026-11-01', amountCents: 2500,
@@ -41,19 +41,20 @@ for (const width of [360, 1280]) {
     });
     for (const path of ['', '/schedule', '/billing', '/progress']) {
       await page.goto(gymOrigin + '/portal' + path);
-      if (path === '') await expect(page.getByText('Unsigned waivers: 4.800')).toBeVisible();
+      if (path === '') await expect(page.getByText('Unsigned waivers: 4,800')).toBeVisible();
       if (path === '/schedule') {
-        await expect(page.getByText('Places left: 1.200')).toBeVisible();
-        await expect(page.getByText('Waitlist — position 2.400')).toBeVisible();
+        await expect(page.getByText('Places left: 1,200')).toBeVisible();
+        await expect(page.getByText('Waitlist — position 2,400')).toBeVisible();
       }
       if (path === '/billing') {
-        await expect(page.getByText('3.600 classes left')).toBeVisible();
+        await expect(page.getByText('3,600 classes left')).toBeVisible();
         await expect(page.getByText('Invoice #1200')).toBeVisible();
         await expect(page.getByText(/1200/).filter({ hasText: '••••' })).toBeVisible();
         await page.getByRole('button', { name: 'Details', exact: true }).click();
-        await expect(page.getByText(/Quantity 5.600/)).toBeVisible();
+        await expect(page.getByText(/Quantity 5,600/)).toBeVisible();
+        await expect(page.getByText('$25.00', { exact: true }).first()).toBeVisible();
       }
-      if (path === '/progress') await expect(page.getByText('Visits: 6.800')).toBeVisible();
+      if (path === '/progress') await expect(page.getByText('Visits: 6,800')).toBeVisible();
       await accessibleLayout(page, info, 'display-counts-' + (path.slice(1) || 'home') + '-' + width);
       await info.attach('display-counts-' + (path.slice(1) || 'home') + '-' + width, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
     }

@@ -51,11 +51,11 @@ export default defineConfig({
     testTimeout: 30_000,
     hookTimeout: 30_000,
     clearMocks: true,
-    setupFiles: ['./apps/server/test/quiet-logs.ts'],
+    setupFiles: ['./apps/server/test/quiet-logs.ts', './apps/web/test/locale.ts'],
     // Changes that tests read without importing them. In `pnpm verify`, any of these runs every test.
     // Locale JSON isn't one: `pnpm generate` validates it, and CI runs the tests that assert its text.
     forceRerunTriggers: [
-      '**/package.json', '**/pnpm-lock.yaml', '**/{vitest,vite}.config.*', '**/apps/server/test/**',
+      '**/package.json', '**/pnpm-lock.yaml', '**/{vitest,vite}.config.*', '**/apps/server/test/**', '**/apps/web/test/locale.ts',
       '**/packages/db/src/migrations/**', '**/locales/*.ts', '**/scripts/generate*.mjs', '**/compose.{dev,test}.yaml', '**/dev/postgres/**',
     ],
     projects: [

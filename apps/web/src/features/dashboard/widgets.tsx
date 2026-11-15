@@ -22,7 +22,7 @@ export function CountWidget({ widget, help, footer }: { widget: DashboardWidget;
   if (!('count' in widget)) return null;
   const items = 'items' in widget ? widget.items : undefined;
   return <>
-    <p className="mt-3 text-4xl font-semibold tabular-nums">{widget.count.toLocaleString()}</p>
+    <p className="mt-3 text-4xl font-semibold tabular-nums">{formatCount(widget.count)}</p>
     {help && <div className="mt-3 text-sm text-muted-foreground">{help}</div>}
     {items && items.length > 0 && <ul className="mt-3 divide-y divide-border">{items.map(item => <li key={item.href}>
       <a className="flex min-h-11 items-center font-medium underline underline-offset-4" href={item.href}>{item.label}</a>

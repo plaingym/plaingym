@@ -15,6 +15,11 @@ export function defaultRange(timezone: string, now = new Date()): ReportRangeQue
 /** A churn ratio as a percentage with two decimals; the same text on screen and in the CSV file. */
 const churnPercent = new Intl.NumberFormat('en-US', { style: 'percent', minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const periodColumns = () => [text('start'), text('end'), text('periodStatus')];
+/** Find count cells by stable column keys, independent of column order or labels. */
+export const countColumns = (columns: readonly string[], counts: readonly string[]) =>
+  columns.flatMap((key, index) => counts.includes(key) ? [index] : []);
+const memberCounts = ['activeAtStart', 'new', 'imported', 'cancelled', 'netChange', 'activeAtEnd', 'frozenAtEnd'] as const;
+const attendanceCounts = ['checkIns', 'uniqueMembers'];
 const currentPeriod = (buckets: readonly ReportBucket[]) => buckets.find(bucket => bucket.inProgress)?.startDate;
 const period = (bucket: ReportBucket, current: string | undefined) => {
   const status = bucket.inProgress ? 'inProgress' : current && bucket.startDate > current ? 'upcoming' : bucket.partial ? 'partial' : 'complete';
@@ -22,9 +27,9 @@ const period = (bucket: ReportBucket, current: string | undefined) => {
 };
 export function membersTable(data: MembersReportResponse['data']): ReportTable {
   const current = currentPeriod(data.buckets);
-  return { columns: [...periodColumns(), ...['activeAtStart', 'new', 'imported', 'cancelled', 'netChange', 'activeAtEnd', 'frozenAtEnd', 'churn'].map(key => text(key))], countColumns: [3, 4, 5, 6, 7, 8, 9],
-    rows: data.buckets.map(bucket => [...period(bucket, current), ...[bucket.activeAtStart, bucket.new, bucket.imported, bucket.cancelled,
-      bucket.netChange, bucket.activeAtEnd, bucket.frozenAtEnd].map(String), bucket.churn
+  const keys = ['start', 'end', 'periodStatus', ...memberCounts, 'churn'];
+  return { columns: keys.map(key => text(key)), countColumns: countColumns(keys, memberCounts),
+    rows: data.buckets.map(bucket => [...period(bucket, current), ...memberCounts.map(key => String(bucket[key])), bucket.churn
       ? churnPercent.format(bucket.churn.numerator / bucket.churn.denominator) : text('notAvailable')]) };
 }
 export const allPrograms = 'all';
@@ -33,7 +38,8 @@ export const programKey = (programId: string | null) => programId ?? unassignedP
 export function attendanceTable(data: AttendanceReportResponse['data'], selected = allPrograms): ReportTable {
   const current = currentPeriod(data.buckets);
   const selectedName = data.buckets.flatMap(bucket => bucket.programs).find(program => programKey(program.programId) === selected)?.programName ?? text('unassigned');
-  return { columns: [...periodColumns(), text('program'), text('checkIns'), text('uniqueMembers')], textColumns: [3], countColumns: [4, 5],
+  const keys = ['start', 'end', 'periodStatus', 'program', ...attendanceCounts];
+  return { columns: keys.map(key => text(key)), textColumns: [keys.indexOf('program')], countColumns: countColumns(keys, attendanceCounts),
     rows: data.buckets.flatMap(bucket => {
       const programs = bucket.programs.filter(program => selected === allPrograms || programKey(program.programId) === selected);
       if (selected !== allPrograms) {

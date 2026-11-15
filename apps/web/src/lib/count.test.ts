@@ -1,16 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { formatMinorUnits } from '@plaingym/shared/money';
 import { formatCount } from './count.js';
 
 describe('display counts', () => {
   it.each([
-    ['en-US', 1200, '1,200'], ['de-DE', 1200, '1.200'],
-    ['en-IN', 1234567, '12,34,567'], ['en-US', -1200, '-1,200'],
-    ['de-DE', 0, '0'], ['de-DE', 1, '1'],
-  ])('formats %s count %s', (locale, count, expected) => {
-    expect(formatCount(count, locale)).toBe(expected);
+    [1200, '1,200'], [1234567, '1,234,567'], [-1200, '-1,200'], [0, '0'], [1, '1'],
+  ])('formats count %s in English', (count, expected) => {
+    expect(formatCount(count)).toBe(expected);
   });
-  it('uses the browser locale by default', () => {
-    expect(formatCount(1234567)).toBe(new Intl.NumberFormat().format(1234567));
+  it('keeps English counts beside English money in a German browser', () => {
+    const NativeNumberFormat = Intl.NumberFormat;
+    const numbers = vi.spyOn(Intl, 'NumberFormat').mockImplementation(function (locale, options) {
+      return new NativeNumberFormat(locale ?? 'de-DE', options);
+    });
+    try {
+      expect(new Intl.NumberFormat().format(1234)).toBe('1.234');
+      expect(`${formatCount(1234)} × ${formatMinorUnits(123400, 'USD')}`).toBe('1,234 × $1,234.00');
+    } finally { numbers.mockRestore(); }
   });
 });

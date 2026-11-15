@@ -132,3 +132,7 @@ jobs:
           echo "TEST_DATABASE_ADMIN_URL=postgres://postgres:$bootstrap_password@127.0.0.1:5432/postgres" >> "$GITHUB_ENV"
       - run: pnpm install --frozen-lockfile
       - run: pnpm test --shard=${{ matrix.shard }}/4
+        # Exercise locale-independent display assertions under a non-English system locale.
+        env:
+          LANG: de_DE.UTF-8
+          LC_ALL: de_DE.UTF-8

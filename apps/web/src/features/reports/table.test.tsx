@@ -3,11 +3,26 @@
 import { afterEach, expect, it } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import { DataTable } from './table.js';
-import { attendanceTable, membersTable } from './data.js';
+import { attendanceTable, countColumns, membersTable } from './data.js';
 import { attendanceFixture, membersFixture } from './fixtures.js';
 import { reportCsv } from './csv.js';
 
 afterEach(cleanup);
+it('finds a new count column by key after inserting text columns', () => {
+  const keys = ['period', 'notes', 'addedCount', 'name', 'checkIns'];
+  const counts = countColumns(keys, ['checkIns', 'addedCount']);
+  expect(counts).toEqual([2, 4]);
+  render(<DataTable title="Counts" filename="counts.csv" table={{ columns: keys, countColumns: counts,
+    rows: [['October', '1200', '2400', 'Club', '1200']] }}/>);
+  expect(screen.getByText('2,400')).toBeDefined();
+  expect(screen.getByText('1,200')).toBeDefined();
+  expect(screen.getByText('1200')).toBeDefined();
+});
+
+it.each(['Unknown', 'NaN', 'Infinity', '', ' '])('preserves nonnumeric count cell %s', cell => {
+  const { container } = render(<DataTable title="Counts" filename="counts.csv" table={{ columns: ['Period', 'Count'], countColumns: [1], rows: [['October', cell]] }}/>);
+  expect(container.querySelector('td')?.textContent).toBe(cell);
+});
 it.each(['attendance', 'members'])('groups %s counts for display and preserves plain CSV numbers', kind => {
   const table = kind === 'attendance' ? attendanceTable({ ...attendanceFixture, buckets: attendanceFixture.buckets.map(bucket => ({ ...bucket,
     totals: { checkIns: 1200, uniqueMembers: 2400 } })) }) : membersTable({ ...membersFixture,

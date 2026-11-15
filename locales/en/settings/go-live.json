@@ -71,6 +71,7 @@
   "timeout": "The save took too long to answer and may still have gone through. Check the switches shown before trying again.",
   "retry": "Try again",
   "reconcileTitle": "Restored payments",
+  "unknown": "Unknown",
   "reconcileHelp": "After resolving payment issues, check again before turning billing on. This check never turns billing on.",
   "reconcileRerun": "Check restored payments again",
   "reconcileRunning": "Checking restored payments…",

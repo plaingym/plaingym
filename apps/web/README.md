@@ -18,10 +18,13 @@ the same identity. See [versioning](../../docs/versioning.md).
 ## UI conventions
 
 **Display counts.** Format numeric counts with `src/lib/count.ts` before passing
-them to `t()` or rendering them. It uses the browser's number locale. Keep form
+them to `t()` or rendering them. It uses the fixed `en` locale, like money and dates. Keep form
 values, keypad digits, identifiers (including invoice numbers and card digits),
 and legal-record timestamps unchanged. Choose singular/plural messages using
 the numeric value before formatting.
+
+Vitest pins the default number and date locale to `en` in `test/locale.ts`; CI runs the
+suite with a German system locale to catch accidental locale dependencies.
 
 **Mobile-first.** Build every screen for a 360 px wide phone first, then scale
 up: Tailwind base classes are the phone layout, and `sm:` / `md:` / `lg:` add

@@ -37,7 +37,7 @@ function weekRange(today: string, week: number, timezone: string) {
   return { start, from: zonedInstant(start, '00:00', timezone, { gap: 'shift' })!.toISOString(), to: zonedInstant(end, '00:00', timezone, { gap: 'shift' })!.toISOString() };
 }
 function status(booking: MemberBooking) {
-  return booking.status === 'waitlisted' ? text('waitlisted', { rank: formatCount(booking.queueRank ?? 0) }) : text('booked');
+  return booking.status === 'waitlisted' ? text(booking.queueRank === null ? 'waitlistedUnknown' : 'waitlisted', { rank: booking.queueRank === null ? '' : formatCount(booking.queueRank) }) : text('booked');
 }
 
 export function PortalSchedulePage({ client = portalClient, now = () => new Date() }: { client?: PortalClient; now?: () => Date }) {
@@ -51,7 +51,7 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
       scope.run(() => input.action === 'book' ? client.book(input.context, input.member.id, input.session.id, scope.key[4]!) : client.cancel(input.context, input.member.id, input.booking!.id, scope.key[4]!)),
     onMutate: () => setMessage(undefined),
     onSuccess: (row, input) => setMessage({ tone: 'success', text: row.status === 'cancelled' ? text('cancelledSaved', { name: input.member.name })
-      : row.status === 'waitlisted' ? text('waitlistSaved', { name: input.member.name, rank: formatCount(row.queueRank ?? 0) }) : text('bookedSaved', { name: input.member.name }) }),
+      : row.status === 'waitlisted' ? text(row.queueRank === null ? 'waitlistSavedUnknown' : 'waitlistSaved', { name: input.member.name, rank: row.queueRank === null ? '' : formatCount(row.queueRank) }) : text('bookedSaved', { name: input.member.name }) }),
     onError: error => setMessage({ tone: 'error', text: error instanceof BookingConflictError ? error.message : text(error instanceof ApiError && error.status === 409 ? 'conflict' : 'error') }),
     onSettled: () => cache.invalidateQueries({ queryKey: [...scope.key, 'schedule'] }),
   });

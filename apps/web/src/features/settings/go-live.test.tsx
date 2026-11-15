@@ -132,6 +132,14 @@ describe('go-live settings', () => {
     await user.click(screen.getByRole('button', { name: 'Check restored payments again' }));
     expect(await screen.findByText(/Unresolved: 0/)).toBeDefined();
   });
+  it('shows unknown restore counts without turning them into zero', async () => {
+    const response = restored(null);
+    live.mockResolvedValue(reply(200, { data: { ...response.data, restoreReconciliation: {
+      ...response.data.restoreReconciliation, checkedAt: '2026-10-26T12:00:00Z',
+    } } }));
+    start();
+    expect(await screen.findByText(/Objects checked: Unknown. Unresolved: Unknown/)).toBeDefined();
+  });
   it('shows a safe rerun failure, reloads its persisted result and permits retry', async () => {
     live.mockResolvedValueOnce(reply(200, restored(0))).mockResolvedValue(reply(200, restored(1)));
     client.POST.mockResolvedValueOnce(reply(503, { error: { message: 'secret provider data' } })).mockResolvedValue(reply(200, restored(0)));
