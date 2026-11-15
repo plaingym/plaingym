@@ -56,12 +56,14 @@ it('resets a failed webhook dispatch job when Stripe redelivers its event, throu
     await app.restart(demoStripeEnv);
     expect((await app.deliverStripeEvent('evt_runtime_recovery')).status).toBe(200);
     const dispatch = () => database.forSystem(tx => tx.select().from(jobs).where(eq(jobs.name, 'billing.webhooks.dispatch')));
-    const [queued] = (await dispatch()).filter(job => job.gymId === sandbox.gymId);
+    // Another test in this file left a dispatch job for its own event: pick this event's.
+    const ofEvent = async () => (await dispatch()).find(job => (job.payload as { value: { eventId?: string } }).value.eventId === 'evt_runtime_recovery');
+    const queued = await ofEvent();
     expect(queued).toBeDefined();
     await database.forSystem(tx => tx.update(jobs).set({ status: 'failed', attempts: queued!.maxAttempts, lastError: 'down' })
       .where(eq(jobs.id, queued!.id)));
     expect((await app.deliverStripeEvent('evt_runtime_recovery')).status).toBe(200);
-    expect(await dispatch()).toEqual(expect.arrayContaining([expect.objectContaining({ id: queued!.id, status: 'pending', attempts: 0 })]));
+    expect(await ofEvent()).toMatchObject({ id: queued!.id, status: 'pending', attempts: 0, lastError: null });
   } finally { provider.mockRestore(); await app.restart(); }
 });
 it('defers a suspended gym\'s due jobs on the runtime worker queue until the gym is active again', async () => {
