@@ -28,7 +28,9 @@ export default defineConfig({
   expect: { timeout: 15_000 },
   forbidOnly: true,
   outputDir: './coverage/results',
-  reporter: [['list'], ['html', { open: 'never', outputFolder: './coverage/report' }]],
+  reporter: process.env.E2E_BLOB_REPORT === '1'
+    ? [['list'], ['blob', { outputDir: './coverage/blob' }]]
+    : [['list'], ['html', { open: 'never', outputFolder: './coverage/report' }]],
   use: {
     browserName: 'chromium',
     actionTimeout: 15_000,

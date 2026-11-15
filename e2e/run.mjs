@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, rm } from 'node:fs/promises';
 import { buildInfo } from '../scripts/release/version.mjs';
 
 const directory = fileURLToPath(new URL('./', import.meta.url));
@@ -65,15 +65,24 @@ try {
   await command('docker', [...compose, 'up', '-d', '--wait', '--wait-timeout', '180']);
   await command(process.execPath, ['./node_modules/@playwright/test/cli.js', 'test', ...process.argv.slice(2)]);
 } catch (error) {
-  // Container diagnostics are useful even when the browser never starts.
-  const log = spawn('docker', [...compose, 'logs', '--no-color'], { cwd: directory, env, windowsHide: true });
-  const output = [];
-  for await (const chunk of log.stdout) output.push(chunk);
-  await writeFile(new URL('./coverage/containers.log', import.meta.url), Buffer.concat(output));
   console.error(error.message);
   process.exitCode = 1;
 } finally {
-  await command('docker', [...compose, 'down', '--volumes', '--remove-orphans']);
-  await rm(new URL('./coverage/fixtures.json', import.meta.url), { force: true });
-  await rm(caDirectory, { recursive: true, force: true });
+  // Container diagnostics are useful even when the browser never starts.
+  try {
+    const log = await open(new URL('./coverage/containers.log', import.meta.url), 'w');
+    try {
+      await command('docker', [...compose, 'logs', '--no-color'], { stdio: ['ignore', log.fd, 'inherit'], timeout: 120_000 });
+    } finally { await log.close(); }
+  } catch (error) {
+    // Diagnostics never decide the result: a passing run stays green if its logs can't be collected.
+    console.error('Could not collect container logs: ' + error.message);
+  } finally {
+    try {
+      await command('docker', [...compose, 'down', '--volumes', '--remove-orphans'], { timeout: 120_000 });
+    } finally {
+      await rm(new URL('./coverage/fixtures.json', import.meta.url), { force: true });
+      await rm(caDirectory, { recursive: true, force: true });
+    }
+  }
 }

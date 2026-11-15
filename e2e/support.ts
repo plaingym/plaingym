@@ -206,7 +206,13 @@ export function createCspGuard(): CspGuard {
   } };
 }
 
-export const test = base.extend<{ cspGuard: CspGuard; cspViolations: string[] }, { install: Install; sandboxes: Sandbox[] }>({
+export const test = base.extend<{ cspGuard: CspGuard; cspViolations: string[] }, { readyInstall: void; install: Install; sandboxes: Sandbox[] }>({
+  // A shard or changed-spec run can start with a browser-only test that never requests `install`.
+  // Finish setup before every members-mat worker, while leaving the wizard and opt-in projects fresh.
+  readyInstall: [async ({ browserName: _browserName }, use, info) => {
+    if (info.project.name === 'members-mat') await cached('install', initialize);
+    await use();
+  }, { scope: 'worker', auto: true, timeout: 90_000 }],
   /**
    * Fails any test whose pages log a Content-Security-Policy violation: the pages of the default context, when the test
    * uses it, and of every context the test opens itself (`browser.newContext`, `browser.newPage`), each frame included.

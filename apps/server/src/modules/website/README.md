@@ -21,6 +21,8 @@ Every page links to the core public pages (`/trial`, `/drop-in`, `/join`), the
 member portal and `/source`. With the website off, core's `GET /` handler
 (`public/pages/pages.routes.ts`, `createRootRedirect`) sends `/` to `/portal`; it
 is mounted first and hands the request on while the website is on.
+The home page's program labels wrap long names, including text without spaces,
+so a program added in the admin cannot widen the phone layout.
 
 Supporting routes: `/website/theme.css` (the brand color, validated
 as `#rrggbb` before it reaches CSS, and its light tint, with black or white text chosen for contrast;

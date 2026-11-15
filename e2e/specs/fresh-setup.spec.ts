@@ -112,6 +112,9 @@ test('phone-first fresh wizard completes with disabled discovery, reachable acti
   await expect(page.getByText('Setup is complete. Billing and member emails are off until you turn them on.', { exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Setup complete', exact: true })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Open admin', exact: true })).toHaveAttribute('href', '/admin');
+  // The shard's later fixtures must see a completed install rather than initialize it again.
+  const completed = await guest.request('/api/setup');
+  expect(completed.status, completed.text).toBe(404);
   for (const { width, height } of sizes) {
     await page.setViewportSize({ width, height });
     await accessibleLayout(page, info, 'setup-complete-' + width);

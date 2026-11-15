@@ -31,6 +31,8 @@ async function open(page: Page, sandbox: Sandbox, path: string) {
 test('the website pages load under their own policy and fit a 360 px phone and a desktop', async ({ page, sandboxes }, info) => {
   test.setTimeout(180_000);
   const sandbox = sandboxes[1]!, owner = await demoClient(sandbox, 'owner');
+  // Shards can run this after other specs add unbroken program names. Cover that data on a single stack too.
+  await owner.json('/api/programs', 'POST', { name: 'Websiteprogram'.padEnd(56, 'x'), rankSystemId: null, active: true });
   await setWebsite(owner, true);
   try {
     await customize(owner);
@@ -39,6 +41,7 @@ test('the website pages load under their own policy and fit a 360 px phone and a
       for (const path of pages) {
         await open(page, sandbox, path);
         await accessibleLayout(page, info, `website${path === '/' ? '-home' : path.replace('/', '-')}-${size.width}`);
+        if (path === '/') await page.screenshot({ path: info.outputPath('website-home-' + size.width + '.png'), fullPage: true });
         const footerBottom = await page.locator('footer').evaluate(element => element.getBoundingClientRect().bottom + window.scrollY);
         expect(footerBottom).toBeGreaterThanOrEqual(size.height);
         if (path === '/contact') await info.attach('website-footer-' + size.width, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });

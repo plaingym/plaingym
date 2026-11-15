@@ -20,14 +20,37 @@ pnpm --dir e2e test
 ```
 
 CI runs this suite in the **End-to-end** workflow on every task and integration branch, nightly,
-and on demand, keeping `coverage/` (the report, and traces of failed tests) as an artifact for
-seven days. The suite includes portal recovery fixtures at 360 px and 1280 px that
+and on demand. Four independent stacks run `pnpm --dir e2e test --shard=N/4 --no-deps`,
+with one worker per stack and whole files assigned to shards (`fullyParallel: false`).
+The local command above still runs the entire suite on one stack. The suite includes portal recovery fixtures at 360 px and 1280 px that
 check notices in the page and editor, preserved drafts, and the shell's availability
 during recovery. The hosted Ubuntu runner already has Chromium's system libraries, so the workflow
 installs only the browser (`playwright install chromium`), skipping the `apt-get` step of
 `--with-deps`, which can stall for many minutes on a slow package mirror. On Windows use
 `pnpm.cmd` if PowerShell blocks unsigned command shims. Set `E2E_BROWSER_CHANNEL=msedge` to
 use an installed Edge instead of bundled Chromium.
+
+Each shard uploads `e2e-shard-N`, containing its blob report, traces, screenshots,
+and `containers.log` (also on success). After all shards finish, including a failed
+shard, the report job merges their blobs into one HTML report. Download
+`e2e-coverage` for the entire run: `report/` is the merged HTML report,
+`results.json` is its machine-readable result, and `shards/e2e-shard-N/` holds
+each stack's diagnostics. All artifacts expire after seven days. Test failures
+can be retried with **Re-run all jobs**; uploads replace the same
+named artifacts so the merged report reflects the new attempt. Collection or
+stack-startup failures can leave a shard without a blob; the merge job fails and
+still uploads the available diagnostics. Shard 1 checks the single-stack test
+inventory against all four shard selections, rejecting missing and duplicate
+tests, and the report job checks the merged result against that inventory.
+
+On `task/**` pushes, an independent `changed-specs-test` job runs only new or
+changed default-suite specs against the merge base with `main`, on its own fresh
+stack. It does not delay the shards and is skipped when there are no such specs
+(deleted files and the opt-in VM/UX specs are excluded). Its separate artifact is
+`e2e-changed-specs`. A `ux_pass` dispatch runs one UX stack, including its browser
+projects, in its own concurrency group so it and a push run can finish together.
+On `main`, a successful **push** run of this workflow on the same commit allows
+the suite to be reused; a UX dispatch never qualifies.
 
 The runner archives **committed HEAD** and builds it with `deploy/Dockerfile`.
 Commit application fixes before running. `E2E_IMAGE=<tag-or-digest>` reuses an
@@ -68,6 +91,14 @@ project, checking each owned step at 360, 768, and 1280 px: no sideways scrollin
 restore form and exercises the import choice; the payment step uses its existing
 skip action. The `members-mat` project depends on it, so test-file order cannot
 cause the install fixture to initialize first.
+
+Sharded runs disable dependency expansion with `--no-deps`: Playwright 1.64 would
+otherwise add the wizard to every shard containing `members-mat` tests. With the
+configured project order and one worker, the wizard runs first on shard 1 only;
+the other shards' single-gym fixtures complete setup through the API before use.
+An automatic worker fixture ensures even browser-only `members-mat` tests start
+with a completed install, without requiring an earlier test to request `install`.
+The CI inventory check guards that ordering and the wizard's single occurrence.
 
 The single-gym fixture reuses the browser's completed setup (or goes through the
 setup API when run without dependencies) and accepts printed staff invitations. It uses
@@ -308,8 +339,9 @@ specs, and use another staff account for checks that only need a successful sign
 So no spec waits for a limiter's window. The browser's requests carry no
 such header and share the runner's one address, so the stack sets `RATE_LIMIT_PER_MINUTE=20000`
 instead of the default 300 for page loads; the limiter itself is covered by unit tests. A full
-run takes a few minutes. Failed runs
-retain screenshots, traces, the HTML report and container logs in `e2e/coverage/`
+run takes a few minutes. Runs
+retain container logs in `e2e/coverage/`; failed tests also retain screenshots and
+traces, alongside the HTML report
 (ignored by Git and lint). Open the
 report with `pnpm --dir e2e exec playwright show-report coverage/report`.
 

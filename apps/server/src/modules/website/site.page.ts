@@ -161,7 +161,7 @@ function home(input: SitePageInput) {
     site.content.about ? section(text('about'), h('p', { class: 'whitespace-pre-line break-words' }, site.content.about)) : null,
     site.programs.length ? section(text('nav.programs'),
       h('ul', { class: 'flex flex-wrap gap-2' }, ...site.programs.map((program) =>
-        h('li', { class: 'break-words rounded-full bg-secondary px-4 py-2 text-secondary-foreground' }, program.name))),
+        h('li', { class: 'wrap-anywhere rounded-full bg-secondary px-4 py-2 text-secondary-foreground' }, program.name))),
       h('p', null, h('a', { href: '/schedule', class: 'inline-flex min-h-11 items-center underline' }, text('seeSchedule')))) : null,
     gallery.length ? section(text('photos'), h('ul', { class: 'grid grid-cols-2 gap-3 sm:grid-cols-3' }, ...gallery.map((photo) =>
       h('li', { class: 'min-w-0' }, h('img', { src: photoUrl(photo.id), alt: photo.alt, width: 400, height: 300, loading: 'lazy', class: 'aspect-[4/3] h-auto w-full rounded-lg object-cover' }))))) : null,
