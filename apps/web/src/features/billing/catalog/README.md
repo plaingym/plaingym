@@ -16,7 +16,10 @@ the visible list, never the selection. Phones show cards; desktop tables scroll
 inside their own container. A truncated preview disables All.
 
 Changing the price together with the billing interval or currency offers only **New members only**,
-with an explanation that existing memberships retain their current terms and price.
+with an explanation that existing memberships retain their current terms and price. This path opens
+without fetching a membership preview. The apply step shows only the price-change service's own
+refusals (an invalid request, a passed date, a price off the currency's step, a missing plan or
+membership); route validation, sign-in, permission and rate-limit errors use the generic error message.
 
 The effective date starts 30 days ahead in the gym's timezone. A changed date
 requires a fresh preview. Email is checked by default and disabled with its

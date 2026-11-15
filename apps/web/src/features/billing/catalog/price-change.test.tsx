@@ -90,7 +90,7 @@ describe('plan price change step', () => {
   it('shows the server reason for an invalid apply date and keeps retry and reload available', async () => {
     const f = start();
     f.call.mockResolvedValueOnce({ data: { ...plan, revision: 5 } })
-      .mockRejectedValueOnce(new PriceChangeError(400, 'The price change must start on or after today', []));
+      .mockRejectedValueOnce(new PriceChangeError(400, 'invalid_request', 'The price change must start on or after today', []));
     choose(); review(); apply();
     expect((await screen.findByRole('alert')).textContent).toContain('The price change must start on or after today');
     expect(screen.getByRole('button', { name: 'Retry this price change' })).toBeTruthy();

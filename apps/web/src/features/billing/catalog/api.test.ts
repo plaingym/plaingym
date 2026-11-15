@@ -7,14 +7,36 @@ const id = '019a0af0-9c00-7000-8000-000000000001';
 const plan = { id, createdAt: '2026-10-23T12:00:00Z', name: 'Plan', currency: 'CAD', amountCents: 9999,
   interval: 'monthly', signupFeeCents: 0, trialDays: 0, commitmentMonths: null, active: true, revision: 1, taxRateIds: [] };
 describe('billing contract transport', () => {
-  it('preserves bounded client refusal messages for price apply, without exposing server errors', async () => {
+  it.each([
+    { status: 400, code: 'invalid_request', message: 'The price change must start on or after today' },
+    { status: 400, code: 'invalid_request', message: 'Invalid price change request' },
+    { status: 400, code: 'invalid_request', message: 'Amounts in KWD must be a multiple of 10 minor units.' },
+    { status: 400, code: 'invalid_request', message: 'Amounts in ISK must be a multiple of 100 minor units.' },
+    { status: 404, code: 'not_found', message: 'Plan not found' },
+    { status: 404, code: 'not_found', message: 'Membership not found' },
+  ])('preserves the apply service refusal and code: $message', async ({ status, code, message }) => {
     const request = { requestKey: id, planRevision: 2, amountCents: 12000, effectiveOn: '2026-12-13', notify: true, memberships: [{ id, revision: 1 }] };
-    for (const status of [400, 404, 409, 500]) {
-      const client = createBillingClient(async () => Response.json({ error: { code: 'invalid_request',
-        message: 'The price change must start on or after today' } }, { status }));
-      await expect(applyPriceChange(client, id, request)).rejects.toMatchObject({ status,
-        message: status === 400 || status === 404 ? 'The price change must start on or after today' : 'Request failed' });
-    }
+    const client = createBillingClient(async () => Response.json({ error: { code, message } }, { status }));
+    await expect(applyPriceChange(client, id, request)).rejects.toMatchObject({ status, code, message });
+    // The same message on another catalog endpoint still uses the generic error.
+    await expect(client.call('getPlan', undefined, { planId: id })).rejects.toMatchObject({ message: 'Request failed' });
+  });
+  it.each([
+    { status: 400, code: 'invalid_request', message: 'Request body must be JSON' },
+    { status: 400, code: 'invalid_request', message: 'Request too large' },
+    { status: 400, code: 'invalid_request', message: 'Amounts in CAD must be a multiple of 100 minor units.' },
+    { status: 400, code: 'invalid_request', message: 'Amounts in KWD must be a multiple of 100 minor units.' },
+    { status: 404, code: 'not_found', message: 'Resource not found' },
+    { status: 404, code: 'invalid_request', message: 'The price change must start on or after today' },
+    { status: 401, code: 'unauthenticated', message: 'Sign in first' },
+    { status: 403, code: 'forbidden', message: 'Permission denied' },
+    { status: 429, code: 'rate_limited', message: 'Too many requests' },
+    { status: 409, code: 'conflict', message: 'Plan not found' },
+    { status: 500, code: 'invalid_request', message: 'The price change must start on or after today' },
+  ])('keeps other price-apply errors generic: $status $message', async ({ status, code, message }) => {
+    const request = { requestKey: id, planRevision: 2, amountCents: 12000, effectiveOn: '2026-12-13', notify: true, memberships: [{ id, revision: 1 }] };
+    const client = createBillingClient(async () => Response.json({ error: { code, message } }, { status }));
+    await expect(applyPriceChange(client, id, request)).rejects.toMatchObject({ status, message: 'Request failed' });
   });
   it('validates a price preview including suppressed reach and counts', async () => {
     const preview = { plan, amountCents: 12000, effectiveOn: '2026-12-13', today: '2026-11-13', change: 'increase', memberships: [],

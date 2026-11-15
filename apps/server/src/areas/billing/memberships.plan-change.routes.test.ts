@@ -81,6 +81,60 @@ async function expectOneCharge(f: Setup, invoiceId: string, amountCents: number,
 }
 
 describe('switch a plan now through the routes', () => {
+  it.each(['open', 'paid', 'refunded', 'void', 'draft'] as const)('counts a usable cycle-conflict bill as the period bill: %s', async status => {
+    const f = await setup();
+    const added = await factory('memberships', f.gymId, { householdId: f.home.id, memberId: f.membership.memberId,
+      planId: f.plan.id, status: 'active', currency: 'CAD', amountCents: 10_000, interval: 'monthly',
+      startsOn: '2028-01-01', nextDueOn: '2028-03-01' });
+    await f.dailyOn('2028-03-01');
+    const conflict = (await f.read()).invoices.find(invoice => invoice.kind === 'one_off')!;
+    expect(conflict).toMatchObject({ status: 'open', needsReview: true, dueOn: '2028-03-01', amountCents: 10_000 });
+    expect((await f.read()).audits).toContainEqual(expect.objectContaining({ action: 'billing.runner.cycle_conflict', targetId: conflict.id }));
+    if (status === 'paid' || status === 'refunded') {
+      await db.forGym(f.gymId, tx => tx.update(invoices).set({ needsReview: false }).where(eq(invoices.id, conflict.id)));
+      await f.runner.charge(f.gymId, conflict.id, { mode: 'staff', context: f.staff });
+      expect((await f.read()).invoices.find(invoice => invoice.id === conflict.id)).toMatchObject({ status: 'paid' });
+    }
+    if (status !== 'paid' && status !== 'open') await db.forGym(f.gymId, tx => tx.update(invoices)
+      .set({ status, ...(status === 'draft' ? { number: null } : {}) }).where(eq(invoices.id, conflict.id)));
+    f.clock.set('2028-03-16T17:00:00Z');
+    const premium = await f.newPlan({ amountCents: 13_000 });
+    if (status !== 'paid' && status !== 'open') {
+      refused(await f.preview(premium.id, 'now', added.id), 'period_not_billed');
+      refused(await f.switchNow(premium.id, {}, added.id), 'period_not_billed');
+      expect(await f.switchInvoices()).toHaveLength(1);
+      return;
+    }
+    expect((await f.preview(premium.id, 'now', added.id)).body.data).toMatchObject({
+      proration: { periodStartsOn: '2028-03-01', periodEndsOn: '2028-04-01', totalCents: 1_548 } });
+    const charges = vi.spyOn(f.provider, 'createCharge');
+    const body = await f.switchBody(premium.id, {}, added.id), path = f.path(added.id) + '/switch';
+    const switched = await f.call('POST', path, body);
+    expect(switched.status, JSON.stringify(switched.body)).toBe(200);
+    expect(await f.call('POST', path, body)).toEqual(switched);
+    expect((await f.read()).invoices.find(invoice => invoice.id === switched.body.data!.invoiceId)).toMatchObject({ status: 'paid', amountCents: 1_548 });
+    expect(charges).toHaveBeenCalledTimes(1);
+    expect(charges).toHaveBeenCalledWith(expect.objectContaining({ invoiceId: switched.body.data!.invoiceId, amount: 1_548 }));
+  });
+
+  it('uses a conflict bill as the original cycle anchor after a month-end billing-day edit', async () => {
+    const f = await setup({ now: '2026-01-31T17:00:00Z', on: '2026-01-31T17:00:00Z', dueOn: '2026-01-31', startsOn: '2026-01-01', bill: false });
+    await db.forGym(f.gymId, tx => tx.update(households).set({ billingDay: 31 }).where(eq(households.id, f.home.id)));
+    await f.dailyOn('2026-01-31');
+    const added = await factory('memberships', f.gymId, { householdId: f.home.id, memberId: f.membership.memberId,
+      planId: f.plan.id, status: 'active', currency: 'CAD', amountCents: 10_000, interval: 'monthly',
+      startsOn: '2026-01-01', nextDueOn: '2026-01-31' });
+    await f.dailyOn('2026-01-31');
+    f.clock.set('2026-02-14T17:00:00Z');
+    await db.forGym(f.gymId, tx => tx.update(households).set({ billingDay: 15 }).where(eq(households.id, f.home.id)));
+    const premium = await f.newPlan({ amountCents: 12_800 });
+    expect((await f.preview(premium.id, 'now', added.id)).body.data).toMatchObject({
+      proration: { periodStartsOn: '2026-01-31', periodEndsOn: '2026-02-28', periodDays: 28, billedDays: 14, totalCents: 1_400 } });
+    const switched = await f.switchNow(premium.id, {}, added.id);
+    expect(switched.status, JSON.stringify(switched.body)).toBe(200);
+    expect((await f.read()).invoices.find(invoice => invoice.id === switched.body.data!.invoiceId)).toMatchObject({ status: 'paid', amountCents: 1_400 });
+  });
+
   it.each([
     { cycleOn: '2026-01-28', day: 28, nextDueOn: '2026-02-28', changeOn: '2026-02-14', period: 31, days: 14 },
     { cycleOn: '2026-01-29', day: 29, nextDueOn: '2026-02-28', changeOn: '2026-02-14', period: 30, days: 14 },

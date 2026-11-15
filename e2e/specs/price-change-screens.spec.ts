@@ -72,6 +72,10 @@ for (const width of [360, 1280]) test('plan price selection, summary, warning an
     const preview = (await owner.json<{ data: { memberships: (RecordId & { scheduled: { amountCents: number } | null })[] } }>(
       '/api/billing/plans/' + plan.id + '/price-change?amountCents=12000&effectiveOn=' + today)).data;
     for (const id of membershipIds) expect(preview.memberships.find(row => row.id === id)?.scheduled?.amountCents).toBe(12000);
+    const termsPreviews: string[] = [];
+    page.on('request', request => {
+      if (request.method() === 'GET' && new URL(request.url()).pathname === '/api/billing/plans/' + plan.id + '/price-change') termsPreviews.push(request.url());
+    });
     await page.getByRole('button', { name: 'Edit ' + name, exact: true }).click();
     await page.getByLabel('Amount (' + settings.currency + ')').fill('130.00');
     await page.getByLabel('Billing interval').selectOption('annual');
@@ -83,6 +87,7 @@ for (const width of [360, 1280]) test('plan price selection, summary, warning an
     await capture(page, info, 'terms-summary-' + width);
     await dialog.getByRole('button', { name: 'Apply price change', exact: true }).click();
     await expect(dialog).not.toBeVisible();
+    expect(termsPreviews).toEqual([]);
     const updated = (await owner.json<{ data: { amountCents: number; interval: string } }>('/api/billing/plans/' + plan.id)).data;
     expect(updated).toMatchObject({ amountCents: 13000, interval: 'annual' });
     const afterTerms = (await owner.json<{ data: { memberships: { id: string; scheduled: { amountCents: number; interval: string } | null }[] } }>(

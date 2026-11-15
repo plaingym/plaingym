@@ -184,7 +184,12 @@ the due date's own day a month earlier, as described in `invoicing/README.md`.
   before any full-cycle allowance is consumed. Replacing, removing or completing
   that discount later cannot alter the credit side of an upgrade. A previous
   switch invoice supplies updated terms but cannot establish a billed period by
-  itself. The upgrade line's description names the current discounted per-period
+  itself. A usable one-off invoice audited as `billing.runner.cycle_conflict` does
+  establish the period: it bills a membership added or moved to a due date the
+  household already billed. It also supplies the cycle's original date for a
+  month-end proration. Draft, void and fully refunded conflict bills do not count.
+  Switch audits are read only from the earliest usable current-period bill's issuance.
+  The upgrade line's description names the current discounted per-period
   credit before proration; its named discount line still applies to the prorated
   new price. Migration `0034` fills older lines from their issuance audits and
   leaves unavailable terms null; unknown terms require the next billing date

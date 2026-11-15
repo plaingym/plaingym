@@ -35,9 +35,11 @@ members get; it changes no membership. Two owner and admin routes (`plans.manage
   step and the date, and that every listed membership is the gym's (404 before any write). Under
   a gym-and-key advisory lock, then the plan's row lock, it looks for a `billing.plan.price_changed` audit with the key: the same
   price, date, flag and list (a digest of the sorted IDs) resume, or return the recorded result;
-  anything else is a conflict (`request_reused`). An unfinished resume rechecks the gym-local date;
-  a completed request replays its recorded result even after that date. Audit lookups filter the
-  request key in SQL and return at most one row. A new request changes the plan's price
+  anything else is a conflict (`request_reused`). An unfinished resume after the gym-local date
+  finishes with memberships not yet scheduled skipped as `changed`; it never schedules them late.
+  A completed request replays its recorded result even after that date. Request and result lookups
+  filter the request key in SQL and return at most one row; membership lookups filter both key and plan.
+  A new request changes the plan's price
   (revision-checked) with that audit. Then, a few households per short transaction, it locks each
   household and then its memberships (the cycle build's order) and sets the price-only scheduled
   change on each listed membership that can move (`scheduled_plan_id` the plan, the new price, the
@@ -45,7 +47,10 @@ members get; it changes no membership. Two owner and admin routes (`plans.manage
   `billing.membership.price_change_scheduled` with the key. A membership the key already scheduled
   is found by that audit before its revision is checked, so a retry, a concurrent request with the
   key or a resume after a failed chunk schedules nothing twice. It counts as scheduled on a resume
-  only while its pending price, plan, interval, date and origin still match. One that changed, was cancelled or
+  while its pending price, plan, interval, date and origin still match, or when the cycle already applied
+  those terms and its application is still the membership's latest price change, switch or
+  membership edit audit. The latter keeps
+  its household in the notice count without queueing another notice. One that changed, was cancelled or
   left the plan since the preview is skipped (`changed`). A household is never split. With
   `notify`, each household with a membership scheduled gets the price notice job
   (`billing.memberships.price_notice`, key `plan-price:<requestKey>:<householdId>`), enqueued in

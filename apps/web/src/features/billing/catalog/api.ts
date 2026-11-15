@@ -1,13 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { billingContracts, settingsContracts, membersContracts, type ApplyPlanPriceChangeRequest, type EndpointContract, type ListResponse } from '@plaingym/shared/contracts';
+import { minorUnitStep } from '@plaingym/shared/money';
 import { ApiError, readApiError } from '../../../lib/api.js';
 import { parseResponse } from '../../../lib/response.js';
 
 /** Only the price-change endpoint's bounded, expected client errors may display its message. */
 export class PriceChangeError extends ApiError {
-  constructor(status: number, message: string, reasons: readonly string[]) {
-    super(status, 'invalid_request', reasons); this.message = message;
+  constructor(status: number, code: string, message: string, reasons: readonly string[]) {
+    super(status, code, reasons); this.message = message;
   }
+}
+
+/** The apply service's refusals, excluding middleware and route validation messages. */
+function priceChangeRefusal(status: number, message: string): string | undefined {
+  if (status === 404 && ['Plan not found', 'Membership not found'].includes(message)) return 'not_found';
+  if (status !== 400) return;
+  if (['Invalid price change request', 'The price change must start on or after today'].includes(message)) return 'invalid_request';
+  const step = /^Amounts in ([A-Z]{3}) must be a multiple of (10|100) minor units\.$/.exec(message);
+  if (step && minorUnitStep(step[1]!) === Number(step[2])) return 'invalid_request';
 }
 
 export async function billingRequest<C extends EndpointContract>(contract: C,
@@ -23,11 +33,9 @@ export async function billingRequest<C extends EndpointContract>(contract: C,
   if (!response.ok) {
     const error = await readApiError(response, contract.path === billingContracts.applyPlanPriceChange.path
       && contract.method === billingContracts.applyPlanPriceChange.method
-      && response.status >= 400 && response.status < 500 && response.status !== 409
-      ? [{ status: response.status, code: 'invalid_request' }, { status: response.status, code: 'not_found' },
-        { status: response.status, code: 'forbidden' }, { status: response.status, code: 'unauthenticated' },
-        { status: response.status, code: 'rate_limited' }] : []);
-    if (error.message) throw new PriceChangeError(response.status, error.message, error.reasons);
+      ? [{ status: 400, code: 'invalid_request' }, { status: 404, code: 'not_found' }] : []);
+    const code = error.message && priceChangeRefusal(response.status, error.message);
+    if (code && error.message) throw new PriceChangeError(response.status, code, error.message, error.reasons);
     throw new ApiError(response.status, response.status === 409 ? 'conflict' : 'request_failed',
       error.reasons);
   }

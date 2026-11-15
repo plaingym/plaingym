@@ -303,21 +303,49 @@ describe('plan price change apply', () => {
     expect(f.notices()).toHaveLength(3);
     expect(await f.apply(input)).toEqual(result);
   });
-  it('refuses an unfinished resume after its date, but replays a finished result after the date', async () => {
+  it('finishes a resume after its date, counting earlier schedules and skipping unscheduled members', async () => {
+    const f = await setup();
+    const second = await f.join(), input = await f.request([f.membership.id, second.id]);
+    let calls = 0;
+    const scope: typeof db.forGym = (gymId, fn) => db.forGym(gymId, async tx => {
+      const result = await fn(tx); if (++calls === 3) throw new Error('Chunk rolled back'); return result;
+    });
+    await expect(f.apply(input, f.make({ scope, chunk: { households: 1, memberships: 10 } }))).rejects.toThrow('Chunk rolled back');
+    f.clock.set('2028-04-16T17:00:00Z');
+    const result = await f.apply(input);
+    expect(result).toMatchObject({ scheduled: [f.membership.id], skipped: [{ id: second.id, reason: 'changed' }], householdsNotified: 1 });
+    expect(await f.row(second.id)).toMatchObject({ amountCents: 10_000, scheduledPlanId: null });
+    expect(await f.audits(priceChangeScheduledAction)).toHaveLength(1); expect(f.notices()).toHaveLength(1);
+    expect(await f.audits(planPriceChangeAppliedAction)).toMatchObject([{ after: { requestKey: input.requestKey, result } }]);
+    f.clock.set('2028-04-17T17:00:00Z'); expect(await f.apply(input)).toEqual(result);
+    expect(await f.audits(planPriceChangeAppliedAction)).toHaveLength(1);
+  });
+  it.each(['unchanged', 'repriced', 'restored'] as const)('recognizes a cycle-applied keyed change only while its terms remain current: %s', async kind => {
     const f = await setup();
     const input = await f.request([f.membership.id]);
     let calls = 0;
     const scope: typeof db.forGym = (gymId, fn) => db.forGym(gymId, async tx => {
-      const result = await fn(tx); if (++calls === 2) throw new Error('Chunk rolled back'); return result;
+      const result = await fn(tx); if (++calls === 3) throw new Error('Result rolled back'); return result;
     });
-    await expect(f.apply(input, f.make({ scope }))).rejects.toThrow('Chunk rolled back');
-    f.clock.set('2028-04-16T17:00:00Z');
-    await expect(f.apply(input)).rejects.toEqual(failure('invalid_request'));
-    expect(await f.row(f.membership.id)).toMatchObject({ scheduledPlanId: null });
-    expect(await f.audits(priceChangeScheduledAction)).toHaveLength(0); expect(f.notices()).toHaveLength(0);
-    f.clock.set('2028-04-15T17:00:00Z');
+    await expect(f.apply(input, f.make({ scope }))).rejects.toThrow('Result rolled back');
+    await f.dailyOn('2028-05-01');
+    expect(await f.row(f.membership.id)).toMatchObject({ amountCents: 12_000, scheduledPlanId: null });
+    if (kind !== 'unchanged') {
+      // Later instants, so the edits' audits never tie with the cycle's application.
+      f.clock.advance(1_000);
+      await f.lifecycle.update(f.staff, { membershipId: f.membership.id, revision: (await f.row(f.membership.id)).revision,
+        price: { amountCents: 11_000, currency: 'CAD' } });
+      f.clock.advance(1_000);
+      if (kind === 'restored') await f.lifecycle.update(f.staff, { membershipId: f.membership.id,
+        revision: (await f.row(f.membership.id)).revision, price: { amountCents: 12_000, currency: 'CAD' } });
+    }
     const result = await f.apply(input);
-    f.clock.set('2028-04-16T17:00:00Z'); expect(await f.apply(input)).toEqual(result);
+    expect(result).toMatchObject(kind === 'unchanged'
+      ? { scheduled: [f.membership.id], skipped: [], householdsNotified: 1 }
+      : { scheduled: [], skipped: [{ id: f.membership.id, reason: 'changed' }], householdsNotified: 0 });
+    expect(await f.audits(priceChangeScheduledAction)).toHaveLength(1); expect(f.notices()).toHaveLength(1);
+    expect(await f.apply(input)).toEqual(result);
+    expect(await f.audits(planPriceChangeAppliedAction)).toHaveLength(1);
   });
   it.each(['price', 'switch', 'cancel', 'interval', 'date', 'origin'] as const)('does not count a keyed schedule replaced by a %s edit on resume', async kind => {
     const f = await setup();

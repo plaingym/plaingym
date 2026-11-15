@@ -35,27 +35,33 @@ function start(view: React.ReactNode) {
 }
 afterEach(cleanup);
 describe('catalog and member billing screens', () => {
-  it('previews against the old terms when price and interval change, then offers only new members', async () => {
+  it.each(['interval', 'currency'] as const)('offers only new members without a preview when the price and %s change', async term => {
     const api = client();
-    vi.mocked(api.call).mockResolvedValueOnce({ data: { plan, total: 1, memberships: [], amountCents: plan.amountCents,
-      effectiveOn: '2026-12-13', today: '2026-11-13', change: 'none', households: 1, householdsWithoutAddress: 0,
-      householdsPayerErased: 0, householdsSuppressed: 0, switchesToPlan: 0, canEmail: true } });
+    if (term === 'currency') api.settings.mockResolvedValue({ ...settings, currency: 'USD' });
     start(<CatalogWorkspace gymId={id(1)} client={api}/>);
     fireEvent.click(await screen.findByRole('button', { name: 'Edit Unlimited' }));
-    fireEvent.change(screen.getByLabelText('Amount (CAD)'), { target: { value: '120.00' } });
-    fireEvent.change(screen.getByLabelText('Billing interval'), { target: { value: 'annual' } });
+    const currency = term === 'currency' ? 'USD' : 'CAD';
+    fireEvent.change(screen.getByLabelText(`Amount (${currency})`), { target: { value: '120.00' } });
+    if (term === 'interval') fireEvent.change(screen.getByLabelText('Billing interval'), { target: { value: 'annual' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     const dialog = await screen.findByRole('dialog', { name: 'Change plan price' });
-    expect(api.call).toHaveBeenCalledWith('previewPlanPriceChange', undefined, { planId: plan.id },
-      expect.objectContaining({ amountCents: plan.amountCents }));
+    expect(api.call).not.toHaveBeenCalled();
     expect(within(dialog).getAllByRole('radio')).toHaveLength(1);
     expect(within(dialog).getByRole('note').textContent).toContain('Existing memberships keep their current terms and price');
     expect(within(dialog).getByText(/new price.*120/)).toBeTruthy();
     expect(screen.getAllByRole('dialog')).toHaveLength(1);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     expect(screen.getByRole('dialog', { name: 'Edit plan' })).toBeDefined();
-    expect((screen.getByLabelText('Amount (CAD)') as HTMLInputElement).value).toBe('120.00');
-    expect((screen.getByLabelText('Billing interval') as HTMLSelectElement).value).toBe('annual');
+    expect((screen.getByLabelText(`Amount (${currency})`) as HTMLInputElement).value).toBe('120.00');
+    expect((screen.getByLabelText('Billing interval') as HTMLSelectElement).value).toBe(term === 'interval' ? 'annual' : 'monthly');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    const reopened = await screen.findByRole('dialog', { name: 'Change plan price' });
+    fireEvent.click(within(reopened).getByRole('button', { name: 'Review change' }));
+    fireEvent.click(within(reopened).getByRole('button', { name: 'Apply price change' }));
+    await waitFor(() => expect(api.call).toHaveBeenCalledWith('updatePlan', expect.objectContaining({
+      amountCents: 12000, currency, interval: term === 'interval' ? 'annual' : 'monthly', revision: plan.revision,
+    }), { planId: plan.id }));
+    expect(api.call).toHaveBeenCalledTimes(1);
   });
   it('registers the catalog and membership tab', () => {
     expect(catalogRegistration.adminNav?.[0]).toMatchObject({ enabled: true, href: '/admin/billing/plans' });

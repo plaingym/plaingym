@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, count, eq, inArray, isNull, ne } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, inArray, isNull, ne } from 'drizzle-orm';
 import { assertRevised, auditEvents, forGym, households, members, memberships, plans, revisionGuard,
   type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
@@ -14,9 +14,9 @@ import { withJobTransaction, type Jobs, type JobTransaction } from '../../infra/
 import { gymSettingsAccessor } from '../settings/settings.js';
 import type { SmtpResolver } from '../settings/smtp.js';
 import { catalogAudit, catalogMissing } from './catalog.js';
-import { refuse } from './memberships.plan-change.js';
+import { planSwitchedAction, refuse, switchCancelledAction, switchScheduledAction } from './memberships.plan-change.js';
 import { priceNoticeJob, priceNoticePayload, priceNoticeReach } from './memberships.price-notice.js';
-import { lockPriceRequest, priceRequestKey, priceResultKey } from './catalog.price-change.query.js';
+import { lockPriceRequest, priceRequestKey, priceResultKey, priceSchedulePlan } from './catalog.price-change.query.js';
 
 type Row = typeof memberships.$inferSelect;
 type Plan = typeof plans.$inferSelect;
@@ -114,31 +114,47 @@ export function createPriceChangeService(options: PriceChangeOptions) {
       .orderBy(asc(households.id)).for('update');
     const rows = await tx.select().from(memberships).where(inArray(memberships.id, chunk.membershipIds))
       .orderBy(asc(memberships.id)).for('update');
+    // One gym-local date per chunk, so a run across midnight treats each chunk's memberships alike.
+    const late = request.effectiveOn < localDate(clock.now(), timezone);
     const plan = catalogMissing((await tx.select().from(plans).where(eq(plans.id, planId)))[0], 'Plan not found');
     const erased = new Set((await tx.select({ id: members.id, anonymizedAt: members.anonymizedAt }).from(members)
       .where(inArray(members.id, rows.map(row => row.memberId)))).filter(member => member.anonymizedAt).map(member => member.id));
     // Checked before the revision: a membership this request already scheduled has moved on since its listed revision.
-    const keyed = new Map((await tx.select({ targetId: auditEvents.targetId, after: auditEvents.after }).from(auditEvents)
-      .where(and(eq(auditEvents.action, priceChangeScheduledAction), inArray(auditEvents.targetId, chunk.membershipIds))))
-      .filter(event => {
-        const after = event.after as { requestKey?: string; planId?: string } | null;
-        return after?.requestKey === request.requestKey && after.planId === planId;
-      }).map(event => [event.targetId, event.after as Terms]));
+    const events = await tx.select({ targetId: auditEvents.targetId, after: auditEvents.after, occurredAt: auditEvents.occurredAt }).from(auditEvents)
+      .where(and(eq(auditEvents.action, priceChangeScheduledAction), inArray(auditEvents.targetId, chunk.membershipIds),
+        eq(priceResultKey(), request.requestKey), eq(priceSchedulePlan(), planId)));
+    const keyed = new Map(events.map(event => [event.targetId, event.after as Terms]));
+    // A cycle may already have cleared the scheduled columns. Only its still-current change audit proves the move.
+    const earliest = events.reduce<Date | undefined>((value, event) => !value || event.occurredAt < value ? event.occurredAt : value, undefined);
+    const changes = earliest ? await tx.selectDistinctOn([auditEvents.targetId], {
+      targetId: auditEvents.targetId, action: auditEvents.action, after: auditEvents.after,
+    }).from(auditEvents).where(and(inArray(auditEvents.targetId, [...keyed.keys()]), gte(auditEvents.occurredAt, earliest),
+      inArray(auditEvents.action, [priceChangeScheduledAction, planSwitchedAction, switchScheduledAction, switchCancelledAction, 'billing.membership.updated'])))
+      .orderBy(asc(auditEvents.targetId), desc(auditEvents.occurredAt), desc(auditEvents.id)) : [];
+    const latest = new Map(changes.map(event => [event.targetId, event]));
     const outcome: Outcome = { scheduled: [], skipped: [], notified: 0, reach: [] };
     const fresh = new Map<string, string[]>(), moved = new Set<string>();
     const lockedHouseholds = new Set(chunk.householdIds);
     for (const row of rows) {
       if (keyed.has(row.id)) {
+        const interval = keyed.get(row.id)!.scheduledInterval;
+        const pending = row.scheduledPlanId === planId && row.scheduledAmountCents === request.amountCents
+          && row.scheduledInterval === interval && row.scheduledOn === request.effectiveOn && row.scheduledOrigin === 'price_change';
+        const event = latest.get(row.id);
+        const applied = event?.after as { planId?: string; amountCents?: number; interval?: string; scheduledOn?: string; dueOn?: string } | null;
+        const billed = row.scheduledPlanId === null && row.amountCents === request.amountCents && row.interval === interval
+          && event?.action === planSwitchedAction && applied?.planId === planId && applied.amountCents === request.amountCents
+          && applied.interval === interval && applied.scheduledOn === request.effectiveOn
+          && applied.dueOn !== undefined && applied.dueOn >= request.effectiveOn;
         if (row.planId === planId && row.status !== 'cancelled' && row.cancelledAt === null && !erased.has(row.memberId)
-          && row.scheduledPlanId === planId && row.scheduledAmountCents === request.amountCents
-          && row.scheduledInterval === keyed.get(row.id)!.scheduledInterval
-          && row.scheduledOn === request.effectiveOn && row.scheduledOrigin === 'price_change' && lockedHouseholds.has(row.householdId)) {
+          && (pending || billed) && lockedHouseholds.has(row.householdId)) {
           outcome.scheduled.push(row.id); moved.add(row.householdId);
         } else outcome.skipped.push({ id: row.id, reason: 'changed' });
         continue;
       }
       const changed = row.planId !== planId || row.status === 'cancelled' || row.cancelledAt !== null || erased.has(row.memberId)
-        || row.revision !== revisions.get(row.id) || !lockedHouseholds.has(row.householdId);
+        || row.revision !== revisions.get(row.id) || !lockedHouseholds.has(row.householdId)
+        || late;
       const reason: Reason | null = changed ? 'changed' : blocked(row, plan);
       if (reason) { outcome.skipped.push({ id: row.id, reason }); continue; }
       const guard = revisionGuard(memberships.revision, row.revision);
@@ -238,7 +254,6 @@ export function createPriceChangeService(options: PriceChangeOptions) {
         if (prior) {
           if (!sameRequest(prior, recorded)) refuse('request_reused', 'Request key reused with different parameters');
           const result = await recordedResult(tx, planId, request.requestKey);
-          if (!result) checkDate(request.effectiveOn, localDate(clock.now(), gym.timezone));
           return result ? { result } : { listed };
         }
         checkPrice(plan, request.amountCents);

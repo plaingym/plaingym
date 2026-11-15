@@ -30,7 +30,7 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
   const [busy, setBusy] = useState(false), [message, setMessage] = useState('');
   const [archive, setArchive] = useState<Archive | null>(null);
   const [stale, setStale] = useState(false);
-  const [priceChange, setPriceChange] = useState<{ plan: Plan; input: Record<string, unknown>; initial: PlanPriceChangePreview } | null>(null);
+  const [priceChange, setPriceChange] = useState<{ plan: Plan; input: Record<string, unknown>; initial?: PlanPriceChangePreview } | null>(null);
   const dialogBody = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const controls = dialogBody.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)');
@@ -54,10 +54,10 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
     if (stale) return;
     const record = editor === 'new' ? undefined : editor;
     if (kind === 'plans' && record && isPlan(record) && input.amountCents !== record.amountCents && data.data) {
+      if (planTermsChanged(record, input)) { setPriceChange({ plan: record, input }); return; }
       const effectiveOn = addDays(localDate(new Date(), data.data.settings.timezone), 30);
       let initial: PlanPriceChangePreview;
-      try { initial = await previewPriceChange(client, record.id,
-        planTermsChanged(record, input) ? record.amountCents : Number(input.amountCents), effectiveOn); }
+      try { initial = await previewPriceChange(client, record.id, Number(input.amountCents), effectiveOn); }
       catch (error) {
         if (error instanceof ApiError && error.status === 409) { setStale(true); await cache.invalidateQueries({ queryKey: key }); }
         throw error;

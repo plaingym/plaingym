@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, desc, eq, gt, gte, lt } from 'drizzle-orm';
+import { and, desc, eq, gt, gte, inArray, lt } from 'drizzle-orm';
 import { auditEvents, type households, invoiceLineItems, invoices, memberships, plans, type Transaction } from '@plaingym/db';
 import type * as c from '@plaingym/shared/contracts';
 import { addDays, monthStart, nextMonth } from '@plaingym/shared/time';
@@ -29,7 +29,7 @@ type PriceSnapshot = { amountCents?: unknown } | null;
 /**
  * The upgrade's proration for the days left in the current period, or null when none are left (the switch falls on the
  * due date). The current period must have been billed to the membership at its current price: a membership line for
- * it on a cycle or first-period invoice that isn't void or fully refunded, with no staff price edit since billing.
+ * it on a cycle, cycle-conflict or first-period invoice that isn't void or fully refunded, with no staff price edit since billing.
  * An earlier switch supplies updated terms, but cannot establish that the period was billed. Otherwise (a freeze resumed early, a trial
  * activated early, a first period left to the next billing date, an imported membership, a refunded period, a price
  * edited mid-period) the days left weren't paid at the current price, and the switch is refused rather than charging
@@ -58,20 +58,25 @@ export async function prorateNow(tx: Transaction, home: Household, row: Row, mem
     .orderBy(desc(invoices.dueOn), desc(invoices.createdAt), desc(invoices.id));
   const usable = candidates.filter(bill => !['draft', 'void', 'refunded'].includes(bill.status));
   if (!usable.length) notBilled();
+  const earliestBill = usable.reduce((earliest, bill) => bill.issuedAt < earliest ? bill.issuedAt : earliest, usable[0]!.issuedAt);
   const switches = await tx.select({ after: auditEvents.after, occurredAt: auditEvents.occurredAt }).from(auditEvents).where(and(
-    eq(auditEvents.action, planSwitchedAction), eq(auditEvents.targetId, row.id)));
+    eq(auditEvents.action, planSwitchedAction), eq(auditEvents.targetId, row.id), gte(auditEvents.occurredAt, earliestBill)));
   const recorded = switches.map(event => ({ ...event, after: event.after as PlanSwitchedNowAudit | null }));
   const switchInvoices = new Set(recorded.map(event => event.after?.invoiceId).filter(id => id !== null && id !== undefined));
-  // Only a cycle bill identifies the original anchor; an earlier switch's one-off invoice doesn't. A cycle bill
+  const conflicts = new Set((await tx.select({ id: auditEvents.targetId }).from(auditEvents).where(and(
+    eq(auditEvents.action, 'billing.runner.cycle_conflict'), inArray(auditEvents.targetId, usable.map(bill => bill.id)))))
+    .map(event => event.id));
+  const cycleBill = (bill: typeof usable[number]) => bill.kind === 'cycle' || conflicts.has(bill.id);
+  // A cycle or conflict bill identifies the original anchor; an earlier switch's one-off invoice doesn't. A cycle bill
   // after the previous month-end (a due date edited mid-period) names no anchor, so the own-day rule applies.
   const ambiguous = row.interval === 'monthly' && isOffDay(row.nextDueOn, home.billingDay)
     && addDays(row.nextDueOn, 1) === nextMonth(monthStart(row.nextDueOn));
   const previousEnd = addDays(monthStart(row.nextDueOn), -1);
   const billedPeriodStartsOn = ambiguous
-    ? usable.find(bill => bill.kind === 'cycle' && bill.dueOn <= previousEnd)?.dueOn : undefined;
+    ? usable.find(bill => cycleBill(bill) && bill.dueOn <= previousEnd)?.dueOn : undefined;
   const periodStartsOn = currentPeriodStart(terms, item, billedPeriodStartsOn);
   const bills = usable.filter(bill => bill.dueOn >= periodStartsOn);
-  if (!bills.some(bill => bill.kind === 'cycle' || (bill.dueOn === row.startsOn && !switchInvoices.has(bill.id)))) notBilled();
+  if (!bills.some(bill => cycleBill(bill) || (bill.dueOn === row.startsOn && !switchInvoices.has(bill.id)))) notBilled();
   const from = today > membership.startsOn ? today : membership.startsOn;
   // Only this precondition denotes an unbilled period (for example, a freeze resumed early).
   // Other engine errors are invariant failures and must reach the error handler.

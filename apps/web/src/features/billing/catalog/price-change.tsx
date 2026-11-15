@@ -14,7 +14,7 @@ import { applyPriceChange, PriceChangeError, previewPriceChange, type BillingCli
 import { money, say, selectClass, text } from './format.js';
 
 type Choice = 'new' | 'all' | 'chosen';
-type Props = { plan: Plan; input: Record<string, unknown>; initial: PlanPriceChangePreview; client: BillingClient;
+type Props = { plan: Plan; input: Record<string, unknown>; initial?: PlanPriceChangePreview; client: BillingClient;
   cancel: () => void; reload: () => Promise<void>; done: () => Promise<void>; embedded?: boolean };
 
 export const planTermsChanged = (plan: Plan, input: Record<string, unknown>) =>
@@ -50,9 +50,13 @@ export function priceChangeCounts(rows: readonly PlanPriceChangeMembership[]) {
 
 export function PriceChange({ plan, input, initial, client, cancel, reload, done, embedded = false }: Props) {
   const newOnly = planTermsChanged(plan, input);
-  const [preview, setPreview] = useState(initial), [date, setDate] = useState(initial.effectiveOn);
+  if (!initial && !newOnly) throw new Error('An existing-member price change requires a preview');
+  // A terms edit offers only a plan save, so it needs no membership preview or effective date.
+  const opening = initial ?? { amountCents: Number(input.amountCents), effectiveOn: '', today: '', memberships: [],
+    total: 0, change: 'none', canEmail: false, switchesToPlan: 0 };
+  const [preview, setPreview] = useState(opening), [date, setDate] = useState(opening.effectiveOn);
   const [choice, setChoice] = useState<Choice>('new'), [include, setInclude] = useState(false);
-  const [ticks, setTicks] = useState(() => new Set(initial.memberships.filter(row => row.tickedByDefault).map(row => row.id)));
+  const [ticks, setTicks] = useState(() => new Set(opening.memberships.filter(row => row.tickedByDefault).map(row => row.id)));
   const [notify, setNotify] = useState(true), [confirmed, setConfirmed] = useState(false), [review, setReview] = useState(false);
   const [search, setSearch] = useState(''), [status, setStatus] = useState(''), [commitment, setCommitment] = useState(false), [custom, setCustom] = useState(false);
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [conflict, setConflict] = useState(false);
@@ -89,7 +93,7 @@ export function PriceChange({ plan, input, initial, client, cancel, reload, done
   async function refreshDate() {
     setBusy(true); setError('');
     try {
-      const fresh = await previewPriceChange(client, plan.id, initial.amountCents, date);
+      const fresh = await previewPriceChange(client, plan.id, opening.amountCents, date);
       if (fresh.plan.revision !== plan.revision) { setConflict(true); setError(text('pcConflict')); return; }
       setPreview(fresh); setConfirmed(false);
       // Keep explicit choices; newly eligible rows use their default tick.
@@ -110,7 +114,7 @@ export function PriceChange({ plan, input, initial, client, cancel, reload, done
       if (!command.current) {
         // Save other edits first, keeping the current price until the apply endpoint changes it.
         const updated = await savePlan(client, plan, { ...input, amountCents: plan.amountCents });
-        command.current = { requestKey: requestKey.current, planRevision: updated.revision, amountCents: initial.amountCents,
+        command.current = { requestKey: requestKey.current, planRevision: updated.revision, amountCents: opening.amountCents,
           effectiveOn: date, notify: sendNotice, memberships: selected.map(row => ({ id: row.id, revision: row.revision })) };
       }
       setResult(await applyPriceChange(client, plan.id, command.current));
@@ -128,7 +132,7 @@ export function PriceChange({ plan, input, initial, client, cancel, reload, done
   const name = (id: string) => preview.memberships.find(row => row.id === id)?.memberName ?? id;
   const content = <div className="min-w-0 space-y-4 wrap-anywhere">
       {embedded && result && <h3 className="text-lg font-semibold">{text('pcResult')}</h3>}
-      <p>{say('pcPrice', { name: plan.name, amount: money(Number(input.amountCents ?? initial.amountCents), String(input.currency ?? plan.currency)) })}</p>
+      <p>{say('pcPrice', { name: plan.name, amount: money(Number(input.amountCents ?? opening.amountCents), String(input.currency ?? plan.currency)) })}</p>
       {newOnly && !result && <p role="note">{text('pcTermsNewOnly')}</p>}
       {error && <Alert variant="error" focusOnReveal role="alert" className="space-y-3"><p>{error}</p>{(conflict || attempted) && <Button disabled={busy} onClick={() => void reloadPlan()}>{text('pcReload')}</Button>}</Alert>}
       {result ? <>
