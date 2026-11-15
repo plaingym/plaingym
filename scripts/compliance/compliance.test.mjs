@@ -9,10 +9,19 @@ import test from 'node:test';
 import { hasHeader, headerSyntax, checkHeaders } from './headers.mjs';
 import { allowed, evaluate, licenseAllowed, noticeFiles, packageLicense, validateApprovals } from './license.mjs';
 import { generateNotices, graphPaths, json, sha256 } from './inventory.mjs';
+import { shellRequests } from '../check-shell-requests.mjs';
 
 const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
 const cache = join(root, 'scripts/compliance/.cache');
 const require = createRequire(import.meta.url);
+
+test('shell request budget exempts assets but reserves room for runtime requests', () => {
+  const assets = Array.from({ length: 60 }, (_, i) => `<link rel="modulepreload" href="/assets/chunk-${i}.js">`).join('');
+  assert.deepEqual(shellRequests(assets), { resources: 60, counted: 1 });
+  const counted = Array.from({ length: 24 }, (_, i) => `<script src="/other/chunk-${i}.js"></script>`).join('');
+  assert.throws(() => shellRequests(counted), /25 Cloudflare-counted requests/);
+  assert.deepEqual(shellRequests('<script src="/assets/main.js"></script><link rel="stylesheet" href="/styles.css">'), { resources: 2, counted: 2 });
+});
 
 function temporary(t) {
   mkdirSync(cache, { recursive: true });
@@ -239,17 +248,48 @@ function claFixture(options = {}) {
         issue_url: 'https://api.github.com/repos/plaingym/plaingym/issues/1',
       } }),
       createComment: async (value) => {
-        const comment = { ...value, id: 5, user: { login: 'github-actions[bot]', type: 'Bot' }, updated_at: '2026-01-01T00:00:00Z' };
+        const comment = { ...value, id: Math.max(4, ...comments.map((comment) => comment.id)) + 1, user: { login: 'github-actions[bot]', type: 'Bot' }, updated_at: '2026-01-01T00:00:00Z' };
         comments.push(comment);
         return { data: comment };
       },
       updateComment: async (value) => { comments.find((comment) => comment.id === value.comment_id).body = value.body; },
+      deleteComment: async (value) => {
+        const index = comments.findIndex((comment) => comment.id === value.comment_id);
+        if (index < 0) return notFound();
+        comments.splice(index, 1);
+      },
     },
   };
   return {
     hash, statuses, failures, writes, comments, context,
     ledger: () => ledger,
-    run: () => execute(require, context, { rest: api, paginate: async () => comments }, { setFailed: (message) => failures.push(message) }),
+    run: (hooks = {}) => execute(require, { ...context, ...hooks.context }, {
+      rest: {
+        ...api,
+        repos: { ...api.repos, createCommitStatus: async (value) => {
+          await hooks.beforeStatus?.(value);
+          return api.repos.createCommitStatus(value);
+        }, getContent: async (value) => {
+          let result;
+          try { result = await api.repos.getContent(value); }
+          catch (error) {
+            if (value.path === 'signatures/cla.json') await hooks.afterLedgerRead?.();
+            throw error;
+          }
+          if (value.path === 'signatures/cla.json') await hooks.afterLedgerRead?.();
+          return result;
+        } },
+        issues: { ...api.issues, createComment: async (value) => {
+          await hooks.beforeCreateComment?.();
+          return api.issues.createComment(value);
+        } },
+      },
+      paginate: async () => {
+        const snapshot = structuredClone(comments);
+        await hooks.afterListComments?.();
+        return snapshot;
+      },
+    }, { setFailed: (message) => failures.push(message) }),
   };
 }
 
@@ -315,6 +355,55 @@ test('author signs once; record includes identity, comment, timestamp and agreem
     claVersion: '1.0', claSha256: fixture.hash, claBlobSha: 'blob',
   });
   await fixture.run();
+  assert.equal(fixture.writes.length, 1);
+});
+
+test('an unsigned run rechecks a stale ledger after an interleaved signing run succeeds', async () => {
+  const fixture = claFixture();
+  await fixture.run();
+  const failedBefore = fixture.failures.length;
+  let reads = 0;
+  await fixture.run({ afterLedgerRead: async () => {
+    if (++reads === 1) {
+      await fixture.run({ context: { eventName: 'issue_comment', runId: 101 } });
+      assert.equal(fixture.statuses.at(-1).state, 'success');
+    }
+  } });
+  assert.equal(fixture.statuses.at(-1).state, 'success');
+  assert.equal(fixture.failures.length, failedBefore);
+  assert.equal(fixture.writes.length, 1);
+});
+
+test('an unsigned run reuses a prompt posted after its first comment snapshot', async () => {
+  const fixture = claFixture();
+  let lists = 0;
+  await fixture.run({ afterListComments: async () => {
+    if (++lists === 1) await fixture.run({ context: { runId: 101 } });
+  } });
+  assert.equal(fixture.comments.length, 1);
+});
+
+test('a signing success during an in-flight failure status is restored as the final status', async () => {
+  const fixture = claFixture();
+  await fixture.run();
+  const failedBefore = fixture.failures.length;
+  await fixture.run({ beforeStatus: async (value) => {
+    if (value.state === 'failure') {
+      await fixture.run({ context: { eventName: 'issue_comment', runId: 101 } });
+      assert.equal(fixture.statuses.at(-1).state, 'success');
+    }
+  } });
+  assert.equal(fixture.statuses.at(-1).state, 'success');
+  assert.equal(fixture.failures.length, failedBefore);
+});
+
+test('racing unsigned creates leave only the earliest prompt and still allow signing', async () => {
+  const fixture = claFixture();
+  await fixture.run({ beforeCreateComment: () => fixture.run({ context: { runId: 101 } }) });
+  assert.equal(fixture.comments.length, 1);
+  assert.equal(fixture.comments[0].id, 5);
+  await fixture.run({ context: { eventName: 'issue_comment' } });
+  assert.equal(fixture.statuses.at(-1).state, 'success');
   assert.equal(fixture.writes.length, 1);
 });
 

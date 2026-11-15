@@ -20,12 +20,20 @@ a DNS-only record: any other proxy fails the installer's DNS check.
    Cloudflare's published ranges. Rate limits and sign-in limits then count real visitors,
    not Cloudflare's edge.
 3. **Add a rate-limiting rule in Cloudflare** (Security → WAF → Rate limiting rules; the
-   free plan includes one): match your hostname (expression
-   `(http.host eq "gym.example.org")`), count requests per IP, and block an address that
-   sends more than 50 requests in 10 seconds, for 10 seconds. The proxy alone passes a
-   single noisy client on to your server; this rule refuses it at the edge. 50 in 10
-   seconds matches the app's own limit (`RATE_LIMIT_PER_MINUTE`, 300 a minute by default);
-   don't set it lower. Members on the gym's Wi-Fi share one address, so if they get
+   free plan includes one): match your hostname and exclude static assets (expression
+   `(http.host eq "gym.example.org" and not starts_with(http.request.uri.path, "/assets/"))`),
+   count requests per IP, and block an address that sends more than 50 matching requests
+   in 10 seconds, for 10 seconds. Path matching works on the free plan. The proxy alone
+   passes a single noisy client on to your server; this rule refuses it at the edge.
+   Keep the `/assets/` exclusion: a cold load after an update fetches new hashed files.
+   The current build serves the same HTML for admin, portal and kiosk: each shell loads
+   32 declared resources (entry script, preloaded chunks and stylesheet), all under
+   `/assets/`. Including the HTML, that is 33 requests, of which this rule counts only
+   1, before API calls, route imports, PWA files and browser icons. The web build prints
+   these counts and fails if HTML plus declared resources outside `/assets/` reach 25,
+   leaving room below the 50-request limit for runtime traffic. This is a shell budget,
+   not a measurement of every request made during a visit.
+   Members on the gym's Wi-Fi share one address, so if they get
    blocked before a busy class, raise it (100 in 10 seconds, say). A blocked visitor gets
    Cloudflare's plain `error code: 1015` page (HTTP 429) until the block ends; in the app,
    the screen shows its usual error and works again when retried.

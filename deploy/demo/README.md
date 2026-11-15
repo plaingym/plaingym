@@ -55,8 +55,15 @@ free edge certificate covers a zone and one level below it, which is why the dem
 domain should be the zone itself: sandboxes one level further down (under
 `demo.example.org`) need a paid edge certificate. Add a rate-limiting rule for both
 names, for example
-`(http.host eq "demo-example.org" or ends_with(http.host, ".demo-example.org"))`, 50
-requests per 10 seconds per IP ([Cloudflare page](../../docs/cloudflare.md)).
+`((http.host eq "demo-example.org" or ends_with(http.host, ".demo-example.org")) and not starts_with(http.request.uri.path, "/assets/"))`,
+50 matching requests per 10 seconds per IP, blocked for 10 seconds
+([Cloudflare page](../../docs/cloudflare.md)). The free plan supports this path
+exclusion. Keep it so cold loads after updates can fetch hashed static files.
+Admin, portal and kiosk share one built HTML shell: each loads 32 declared
+resources under `/assets/`, for 33 requests including HTML; only the HTML counts
+against this rule. API calls, route imports, PWA files and browser icons are extra.
+The web build reports the shell counts and fails if HTML plus declared resources
+outside `/assets/` reach 25, reserving room below the limit for runtime traffic.
 The installer recognizes Cloudflare's addresses (`deploy/cloudflare-ranges.txt`)
 and writes `TRUST_CLOUDFLARE=true`, so sandbox rate limits count real visitors.
 With the proxy, the DNS check can't see which server is behind it; the HTTPS check

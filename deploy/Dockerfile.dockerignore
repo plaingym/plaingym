@@ -10,6 +10,7 @@
 !scripts/
 !scripts/generate.mjs
 !scripts/generate-api.mjs
+!scripts/check-shell-requests.mjs
 !scripts/release/
 !scripts/release/version.mjs
 !packs/

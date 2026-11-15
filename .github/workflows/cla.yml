@@ -138,13 +138,31 @@ jobs:
               }
               if (!signed) {
                 const body = `${marker}\n@${pr.user.login}, please read [Contributor License Agreement v${version}](${context.serverUrl}/${owner}/${repo}/blob/${defaultSha}/CLA.md).\n\nReply with this exact comment to sign:\n\n> ${phrase}\n\nYou keep your copyright. Your signature records this agreement's SHA-256: \`${hash}\`.`;
+                // Another run may have posted the prompt since our initial read.
+                const latestComments = await github.paginate(api.issues.listComments, { owner, repo, issue_number: issueNumber, per_page: 100 });
+                prompt = latestComments.filter(isOurPrompt).sort((a, b) => a.id - b.id)[0];
                 if (!prompt) prompt = (await api.issues.createComment({ owner, repo, issue_number: issueNumber, body })).data;
                 else if (prompt.body !== body) await api.issues.updateComment({ owner, repo, comment_id: prompt.id, body });
-                await status('failure', 'CLA signature required; see the signing comment');
-                core.setFailed('The pull request author must sign CLA.md');
-              } else {
-                await status('success', 'Contributor agreement signed');
+                // If two creates raced, keep the earliest prompt (and its signing timestamp).
+                const prompts = (await github.paginate(api.issues.listComments, { owner, repo, issue_number: issueNumber, per_page: 100 }))
+                  .filter(isOurPrompt).sort((a, b) => a.id - b.id);
+                for (const duplicate of prompts.slice(1)) {
+                  try {
+                    await api.issues.deleteComment({ owner, repo, comment_id: duplicate.id });
+                  } catch (error) {
+                    if (error.status !== 404) throw error; // Another run already removed it.
+                  }
+                }
+                // A signing run may have completed while we were preparing the prompt.
+                signed = (await readLedger()).ledger.signatures.some((entry) => entry.userId === pr.user.id && entry.claSha256 === hash);
               }
+              if (!signed) {
+                await status('failure', 'CLA signature required; see the signing comment');
+                // Also repair a failure request that was in flight when signing succeeded.
+                signed = (await readLedger()).ledger.signatures.some((entry) => entry.userId === pr.user.id && entry.claSha256 === hash);
+                if (!signed) core.setFailed('The pull request author must sign CLA.md');
+              }
+              if (signed) await status('success', 'Contributor agreement signed');
             } catch (error) {
               await status('failure', 'CLA check needs maintainer attention');
               core.setFailed(error.message);
