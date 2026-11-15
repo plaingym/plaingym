@@ -254,13 +254,14 @@ export const siteThemeVersion = (primary: string | null, accent: string | null) 
   shortHash(siteThemeCss(primary, accent));
 
 /** Validated colors only: nothing a gym types can reach the stylesheet except a `#rrggbb` value. */
-export function siteThemeCss(primary: string | null, accent: string | null) {
+export function siteThemeCss(primary: string | null, _accent: string | null) {
   const valid = (color: string | null): color is string => !!color && /^#[0-9a-f]{6}$/i.test(color);
   const foreground = (color: string) => {
     const [r, g, b] = [1, 3, 5].map((i) => parseInt(color.slice(i, i + 2), 16) / 255).map((c) => c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4) as [number, number, number];
     return r * 0.2126 + g * 0.7152 + b * 0.0722 > 0.179 ? '#000000' : '#ffffff';
   };
-  const rules = [...valid(primary) ? [`--color-primary:${primary}`, `--color-primary-foreground:${foreground(primary)}`] : [],
-    ...valid(accent) ? [`--color-secondary:${accent}`, `--color-secondary-foreground:${foreground(accent)}`] : []];
+  const tint = valid(primary) ? '#' + [1, 3, 5].map((i) => Math.round(parseInt(primary.slice(i, i + 2), 16) * 0.1 + 255 * 0.9).toString(16).padStart(2, '0')).join('') : null;
+  const rules = valid(primary) && tint ? [`--color-primary:${primary}`, `--color-primary-foreground:${foreground(primary)}`,
+    `--color-secondary:${tint}`, `--color-secondary-foreground:${foreground(tint)}`] : [];
   return rules.length ? `:root{${rules.join(';')}}` : '';
 }

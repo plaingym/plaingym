@@ -12,7 +12,7 @@ describe('failure alerts', () => {
     const original = HTMLElement.prototype.scrollIntoView;
     HTMLElement.prototype.scrollIntoView = scroll;
     try {
-      render(<form><Alert variant="error" ref={ref}>Unable to save</Alert></form>);
+      render(<form><Alert variant="error" focusOnReveal ref={ref}>Unable to save</Alert></form>);
       expect(document.activeElement).toBe(ref.current);
       expect(scroll).toHaveBeenCalledWith({ block: 'center' });
       expect(ref.current?.dataset.variant).toBe('error');
@@ -31,6 +31,21 @@ describe('failure alerts', () => {
   it('switches a status into a focused failure without remounting', () => {
     const view = render(<Alert role="status">Saved</Alert>);
     view.rerender(<Alert variant="error" focusOnReveal>Unable to save</Alert>);
+    expect(document.activeElement).toBe(screen.getByRole('alert'));
+  });
+  it('keeps focus on the plan select when a preview read fails inside a form', () => {
+    const view = render(<form><select aria-label="Plan"><option>Monthly</option></select></form>);
+    screen.getByRole('combobox').focus();
+    view.rerender(<form><select aria-label="Plan"><option>Monthly</option></select><Alert variant="error">Preview failed</Alert></form>);
+    expect(document.activeElement).toBe(screen.getByRole('combobox'));
+  });
+  it('reveals changed error text, including nested markup, without focusing on an unrelated rerender', () => {
+    const content = (message: string) => <><Alert variant="error" focusOnReveal><p>{message}</p></Alert><button>Retry</button></>;
+    const view = render(content('Timed out'));
+    screen.getByRole('button').focus();
+    view.rerender(content('Timed out'));
+    expect(document.activeElement).toBe(screen.getByRole('button'));
+    view.rerender(content('Unable to save'));
     expect(document.activeElement).toBe(screen.getByRole('alert'));
   });
   it('keeps success neutral and focuses the next failed form message', () => {

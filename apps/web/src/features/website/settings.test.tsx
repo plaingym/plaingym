@@ -41,7 +41,8 @@ describe('website settings', () => {
     expect(sections.forModules(new Set(['website'])).some((entry) => entry.id === 'settingsSections.website')).toBe(true);
   });
 
-  it('saves the text, colors and photo order with the current gym revision', async () => {
+  it('saves text and photo order with the current gym revision and clears a stored accent', async () => {
+    stored = { ...website, accentColor: '#abcdef' };
     const user = userEvent.setup();
     client.PUT.mockImplementation(async (_path: string, { body }: { body: Record<string, unknown> }) => {
       stored = { ...website, ...body, revision: 5, logo: false } as WebsiteSettingsData;
@@ -74,7 +75,7 @@ describe('website settings', () => {
     expect(client.PUT.mock.calls[0]![1].body.photos).toEqual([{ id: id(11), alt: 'Class' }]);
   });
 
-  it('refuses to save over a color another section saved since, and keeps the unsaved text', async () => {
+  it('refreshes a color another section saved and saves unsaved text on the first try', async () => {
     const user = userEvent.setup();
     client.PUT.mockImplementation(async (_path: string, { body }: { body: Record<string, unknown> }) => {
       stored = { ...stored, ...body, revision: stored.revision + 1 } as WebsiteSettingsData;
@@ -86,15 +87,28 @@ describe('website settings', () => {
     // General saves a new primary color: the shared settings move to revision 5 without a reload.
     stored = { ...stored, revision: 5, primaryColor: '#ff0000', photos: [{ id: id(10), alt: 'Mats on the floor' }, { id: id(11), alt: 'Class' }] };
     cache.setQueryData<{ settings: GymSettings; epoch: number }>(gymSettingsKey, (old) => old && { epoch: old.epoch, settings: { ...old.settings, revision: 5, branding: { primaryColor: '#ff0000' } } });
-    await user.click(screen.getByRole('button', { name: 'Save website' }));
-    expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'These settings changed elsewhere. They have been reloaded; check them and save again.');
-    expect(client.PUT).not.toHaveBeenCalled();
     await screen.findByDisplayValue('Mats on the floor');
     expect((screen.getByRole('textbox', { name: 'Tagline' }) as HTMLInputElement).value).toBe('Unsaved line');
     await user.click(screen.getByRole('button', { name: 'Save website' }));
     await screen.findByText('Website saved.');
+    expect(client.PUT).toHaveBeenCalledTimes(1);
     expect(client.PUT).toHaveBeenCalledWith('/api/website', expect.objectContaining({ body: expect.objectContaining({ revision: 5, tagline: 'Unsaved line',
       primaryColor: '#ff0000', photos: [{ id: id(10), alt: 'Mats on the floor' }, { id: id(11), alt: 'Class' }] }) }));
+  });
+
+  it('still saves, and explains the conflict, when the website read is newer than the shared settings', async () => {
+    const user = userEvent.setup();
+    // Another tab saved between the two reads: the website answers revision 6 while the shared settings hold 4.
+    stored = { ...website, revision: 6 };
+    client.GET.mockImplementation(async (path: string) => path === '/api/website' ? reply(200, { data: stored }) : reply(200, { data: gym }));
+    client.PUT.mockResolvedValue(reply(409, { error: { code: 'conflict' } }));
+    start();
+    await screen.findByRole('textbox', { name: 'Tagline' });
+    const save = screen.getByRole('button', { name: 'Save website' }) as HTMLButtonElement;
+    await waitFor(() => expect(save.disabled).toBe(false));
+    await user.click(save);
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'These settings changed elsewhere. They have been reloaded; check them and save again.');
+    expect(client.PUT).toHaveBeenCalledTimes(1);
   });
 
   it('uploads a photo without losing unsaved text, and uploads and removes the logo', async () => {

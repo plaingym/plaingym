@@ -187,7 +187,7 @@ export function createWebsiteService(options: WebsiteOptions = {}) {
         const photos = input.photos.map(({ id, alt }) => ({ ...(content.photos.find((photo) => photo.id === id) ?? missing('Photo not found')), alt }));
         removed = content.photos.filter((photo) => !photos.some((kept) => kept.id === photo.id)).map((photo) => photo.key);
         return { value: { ...content, tagline: input.tagline || null, about: input.about || null, phone: input.phone || null,
-          email: input.email, accentColor: input.accentColor, photos }, branding: withPrimaryColor(branding, input.primaryColor) };
+          email: input.email, accentColor: null, photos }, branding: withPrimaryColor(branding, input.primaryColor) };
       });
       // Storage calls run after the save commits: a removed photo stays readable until the uploads sweep.
       await release(context.gymId, removed);

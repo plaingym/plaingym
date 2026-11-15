@@ -241,6 +241,18 @@ it('retries a preview that failed', async () => {
   expect(await dialog.findByText(/starts on Nov 1, 2026/)).toBeDefined();
   expect((dialog.getByRole('button', { name: 'Change plan' }) as HTMLButtonElement).disabled).toBe(false);
 });
+it('keeps the plan select focused when a background preview fails inside the dialog form', async () => {
+  let failed = false;
+  const { cache } = start({ preview: () => { if (failed) throw new ApiError(500, 'request_failed'); return upgrade; } });
+  const dialog = await openDialog();
+  await dialog.findByText(/starts on Nov 1, 2026/);
+  const select = dialog.getByRole('combobox');
+  select.focus();
+  failed = true;
+  await cache.invalidateQueries({ predicate: query => query.queryKey.includes('switch-preview') });
+  await dialog.findByText('Could not check the change. Please try again.');
+  expect(document.activeElement).toBe(select);
+});
 it('shows a scheduled plan change on the card and cancels it after a confirmation', async () => {
   const row = { ...membership, scheduledPlanId: premium.id, scheduledAmountCents: 15000, scheduledInterval: 'monthly' as const, scheduledOn: '2026-11-01' };
   const { call } = start({ row });

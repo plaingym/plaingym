@@ -241,7 +241,7 @@ describe('the pages', () => {
     const robots = await (await get('/robots.txt')).text();
     expect(robots).toContain(`Sitemap: ${origin}/sitemap.xml`); expect(robots).toContain('Disallow: /admin');
     const theme = await (await get('/website/theme.css')).text();
-    expect(theme).toBe(':root{--color-primary:#ffcc00;--color-primary-foreground:#000000;--color-secondary:#112233;--color-secondary-foreground:#ffffff}');
+    expect(theme).toBe(':root{--color-primary:#ffcc00;--color-primary-foreground:#000000;--color-secondary:#fffae6;--color-secondary-foreground:#000000}');
   });
 
   it('serve photos, and a coach photo only while the profile is public', async () => {
@@ -289,14 +289,15 @@ describe('the customization API', () => {
   it('reads content a newer release added keys to, and a save keeps those keys', async () => {
     const gymId = uuidv7(), photoId = uuidv7();
     const photo = { id: photoId, key: `${gymId}/website/photos/mat.jpg`, contentType: 'image/jpeg', alt: 'Mat', newerKey: 'kept' };
-    const content = { tagline: 'Old', about: null, phone: null, email: null, accentColor: null, photos: [photo], newerKey: 'kept' };
+    const content = { tagline: 'Old', about: null, phone: null, email: null, accentColor: '#112233', photos: [photo], newerKey: 'kept' };
     await factory('gyms', gymId, { settings: { modules: { website: content } } });
     const before = await service.settings(gymId);
     expect(before).toMatchObject({ tagline: 'Old', photos: [{ id: photoId, alt: 'Mat' }] });
     expect(JSON.stringify(before)).not.toContain('newerKey');
-    await service.update({ gymId, actor: { kind: 'system' } }, { revision: before.revision, tagline: 'New', about: '', phone: '', email: null, accentColor: null,
+    await service.update({ gymId, actor: { kind: 'system' } }, { revision: before.revision, tagline: 'New', about: '', phone: '', email: null, accentColor: '#112233',
       primaryColor: null, photos: [{ id: photoId, alt: 'Mats' }] });
-    expect((await createModuleSettings({ scope: db.forGym }).get(gymId, 'website')).value).toEqual({ ...content, tagline: 'New', photos: [{ ...photo, alt: 'Mats' }] });
+    expect((await service.settings(gymId)).accentColor).toBeNull();
+    expect((await createModuleSettings({ scope: db.forGym }).get(gymId, 'website')).value).toEqual({ ...content, accentColor: null, tagline: 'New', photos: [{ ...photo, alt: 'Mats' }] });
   });
   it('lets only owners and admins read and change the website', async () => {
     for (const role of staffRoles) {

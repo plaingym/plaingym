@@ -59,16 +59,21 @@ export function WebsiteSettings() {
       return { data: loaded, draft: { ...draft, photos }, dirty: true };
     });
   }
-  async function load() {
+  async function load(signal?: AbortSignal) {
     setFailed(false);
     try {
-      const result = await api.GET('/api/website');
+      const result = await api.GET('/api/website', { signal: signal ?? null });
+      if (signal?.aborted) return;
       if (!result.response.ok || !result.data) throw new Error('The website settings request failed');
       show(parseResponse(websiteSettingsResponseSchema, result.data).data, true);
-    } catch { setFailed(true); }
+    } catch { if (!signal?.aborted) setFailed(true); }
   }
-  // Read again whenever the gym settings come from the server: a reload, a conflict, or this section's own save.
-  useEffect(() => { void load(); }, [gym.epoch]);
+  // Other sections' saves also advance the revision: refresh the colors while preserving unsaved website text.
+  useEffect(() => {
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => controller.abort();
+  }, [gym.epoch, gym.settings?.revision]);
   const adopt = (body: unknown, current: GymSettings): GymSettings => ({ ...current, revision: parseResponse(websiteSettingsResponseSchema, body).data.revision });
   /** `kind` says what the save changed: the text (which resends the colors it read), a photo, or the logo. */
   async function run(send: (revision: number, signal: AbortSignal) => Promise<Sent>, done: string, kind: 'content' | 'photo' | 'logo') {
@@ -101,7 +106,7 @@ export function WebsiteSettings() {
     event.preventDefault();
     if (!state) return;
     const { draft } = state;
-    await run((revision, signal) => api.PUT('/api/website', { body: { revision, ...draft,
+    await run((revision, signal) => api.PUT('/api/website', { body: { revision, ...draft, accentColor: null,
       tagline: draft.tagline?.trim() || null, about: draft.about?.trim() || null, phone: draft.phone?.trim() || null, email: draft.email?.trim() || null }, signal }), 'saved', 'content');
   }
   if (!state) return failed
@@ -164,7 +169,8 @@ export function WebsiteSettings() {
         {draft.photos.length !== data.photos.length && <p className="text-sm text-muted-foreground">{text('removedHelp')}</p>}
       </fieldset>
       <div className="flex flex-col gap-3 sm:flex-row">
-        <Button type="submit" disabled={busy}>{text('save')}</Button>
+        {/* Wait only for the refresh another section's save started; a read newer than the shared settings saves and answers 409. */}
+        <Button type="submit" disabled={busy || (gym.settings?.revision ?? data.revision) > data.revision}>{text('save')}</Button>
         <Button type="button" variant="outline" disabled={busy} onClick={() => { setMessage(null); gym.reload(); }}>{text('reload')}</Button>
       </div>
     </form>

@@ -22,8 +22,8 @@ member portal and `/source`. With the website off, core's `GET /` handler
 (`public/pages/pages.routes.ts`, `createRootRedirect`) sends `/` to `/portal`; it
 is mounted first and hands the request on while the website is on.
 
-Supporting routes: `/website/theme.css` (the primary and accent colors, validated
-as `#rrggbb` before they reach CSS, with black or white text chosen for contrast;
+Supporting routes: `/website/theme.css` (the brand color, validated
+as `#rrggbb` before it reaches CSS, and its light tint, with black or white text chosen for contrast;
 the pages link it as `?v=<color content hash>`, and a request whose `v` matches is cached
 as immutable, any other revalidates),
 `/website/photos/{photoId}` and `/website/coaches/{staffProfileId}/photo` (streamed
@@ -71,10 +71,11 @@ share one helper, `serveGymImage`: the gym's own key, a PNG, JPEG or WebP, at mo
 ## Storage
 
 The admin edits the brand color in Settings → Gym details. Website links there
-and keeps any saved accent color when saving its text and photos; the admin has
-one brand-color control. Logo uploads remain in the Website section.
+and refreshes after another section saves, keeping unsaved text. The theme ignores
+legacy accent colors and uses a light tint of the brand color instead. A Website
+text save clears any stored accent. Logo uploads remain in the Website section.
 
-The text, accent color and photo list live in the gym's settings under
+The text and photo list live in the gym's settings under
 `modules.website`, through `areas/settings/module-settings.ts`. Each save takes the
 gym revision (a stale one answers 409) and writes a `settings.module.updated` audit
 event. The logo key and primary color stay in `gyms.branding`, so the core public

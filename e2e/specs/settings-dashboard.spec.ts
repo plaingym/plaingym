@@ -59,3 +59,47 @@ for (const width of [360, 1280]) test(`settings sections and an empty dashboard 
   await expect(page.getByRole('heading', { name: 'Active members' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Get your gym ready' })).toHaveCount(0);
 });
+
+for (const width of [360, 1280]) test(`website saves after a brand color change at ${width}px`, async ({ page }, info) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width, height: 800 });
+  let current = { ...settings }, saves = 0;
+  let website = { revision: current.revision, tagline: 'Train together', about: null, phone: null, email: null,
+    primaryColor: current.branding.primaryColor, accentColor: '#112233' as string | null, logo: false, logoVersion: null, photos: [] };
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/demo') return route.fulfill({ json: { data: { mode: 'disabled' } } });
+    if (path === '/api/auth/bootstrap') return route.fulfill({ json: { data: { gym, session, login: { password: true, magicLink: false } } } });
+    if (path === '/api/settings') {
+      if (route.request().method() !== 'GET') {
+        current = { ...current, ...route.request().postDataJSON(), revision: current.revision + 1 };
+        website = { ...website, primaryColor: current.branding.primaryColor, revision: current.revision };
+      }
+      return route.fulfill({ json: { data: current } });
+    }
+    if (path === '/api/website') {
+      if (route.request().method() === 'PUT') {
+        saves++;
+        const body = route.request().postDataJSON();
+        expect(body).toMatchObject({ revision: current.revision, primaryColor: '#123456', accentColor: null, tagline: 'Unsaved website text' });
+        current = { ...current, revision: current.revision + 1 };
+        website = { ...website, ...body, revision: current.revision };
+      }
+      return route.fulfill({ json: { data: website } });
+    }
+    return route.fulfill({ status: 404, json: { error: { code: 'not_found' } } });
+  });
+  await page.goto(gymOrigin + '/admin/settings');
+  await page.getByRole('textbox', { name: 'Tagline' }).fill('Unsaved website text');
+  await page.getByRole('link', { name: 'Change your brand color in Gym details' }).click();
+  await page.locator('input[type="color"]').fill('#123456');
+  await page.getByRole('form', { name: 'Gym details', exact: true }).getByRole('button', { name: 'Save changes' }).click();
+  await expect(page.getByText('Changes saved.', { exact: true })).toBeVisible();
+  await page.getByRole('navigation', { name: 'Settings sections' }).getByRole('link', { name: 'Website', exact: true }).click();
+  const save = page.getByRole('button', { name: 'Save website', exact: true });
+  await expect(save).toBeEnabled();
+  await save.click();
+  await expect(page.getByText('Website saved.', { exact: true })).toBeVisible();
+  expect(saves).toBe(1);
+  await accessibleThemes(page, info, 'website-after-brand-save-' + width);
+});

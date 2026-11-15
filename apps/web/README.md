@@ -39,15 +39,16 @@ Omitting it lists the section by default. The empty state appears only when no s
 The section menu uses the same availability hooks, wraps on phones, and links to
 each section. Gym details comes first; go-live comes after the configuration sections.
 Gym details owns the one brand-color control. The Website section links there
-and preserves saved website accent values. The raw logo reference is under an
+and clears legacy website accents on save; the website uses a tint of the brand color.
+The raw logo reference is under an
 explained advanced control; the Website section provides the logo upload.
 
 An empty gym's dashboard offers links to classes, plans, member entry or import,
 and the go-live checklist for staff allowed to manage go-live. It uses the existing
 readiness read and disappears when the roster has members, including inactive ones.
-Failure `Alert`s use `variant="error"`; form errors scroll into view and receive
-focus. Set `focusOnReveal` for an error summary outside the form; without it, an
-error outside a form leaves focus alone. Neutral status messages leave focus alone.
+Failure `Alert`s use `variant="error"`. Set `focusOnReveal` on submit errors to
+scroll into view and receive focus when the rendered message changes; without it, an
+error leaves focus alone, including background read failures inside forms. Neutral status messages leave focus alone.
 
 **Layout.** The admin shell supplies the header, the navigation (a menu on
 phones, a sidebar from `md`), and the page gutters. A page renders its content
