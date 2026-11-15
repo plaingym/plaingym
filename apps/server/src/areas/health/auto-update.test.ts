@@ -14,7 +14,7 @@ import {
   type AutoUpdateAttempt, type AutoUpdateState,
 } from './auto-update.js';
 import { createAutoUpdateCommand } from './auto-update.cli.js';
-import { createAutoUpdateNotices, PermanentAutoUpdateNoticeError } from './auto-update.notices.js';
+import { createAutoUpdateNotices } from './auto-update.notices.js';
 import { createHealthService } from './status.js';
 import { createUpdateAvailableProvider } from './updates.js';
 
@@ -360,10 +360,9 @@ describe('gym-app auto-update', () => {
     const rows = await db.forGym(f.gymId, tx => tx.select({ id: auditEvents.id }).from(auditEvents).where(eq(auditEvents.action, autoUpdateAttemptAction)));
     expect(rows).toHaveLength(2);
   });
-  it('logs permanent notice errors and uncertain sends without keeping the stored result pending', async () => {
+  it('logs unexpected transport errors and uncertain sends without keeping the stored result pending', async () => {
     const f = await fixture();
-    for (const error of [new PermanentAutoUpdateNoticeError('SMTP settings cannot be decrypted'),
-      new PermanentAutoUpdateNoticeError('Notice cannot be rendered'), new DeliveryError('unknown', 'Lost reply')]) {
+    for (const error of [new Error('Custom transport is misconfigured'), new DeliveryError('unknown', 'Lost reply')]) {
       const out = f.io();
       expect(await f.command({ notify: async () => { throw error; } }).run(['record', '--at', '2026-11-03T16:05:00Z',
         '--result', 'failed', '--reason', 'rollback_failed', '--from', 'v1.2.3', '--to', 'v1.2.4'], out.io)).toBe(0);
@@ -373,7 +372,7 @@ describe('gym-app auto-update', () => {
     expect(await f.attempts.latest(f.gymId)).toMatchObject({ result: 'failed' });
   });
   it.each(['smtp', 'owners', 'settings'] as const)('keeps a notice after a temporary %s lookup failure and delivers it on retry', async (lookup) => {
-    const f = await fixture(), out = f.io(), unavailable = new Error('Database connection temporarily unavailable');
+    const f = await fixture(), out = f.io(), unavailable = Object.assign(new Error('Database connection temporarily unavailable'), { code: 'CONNECTION_CLOSED' });
     let reads = 0;
     const notify = createAutoUpdateNotices({ env: { APP_ENCRYPTION_KEY: '07'.repeat(32), SMTP_HOST: 'smtp.example.org' },
       clock: f.clock, scope: async (gymId, fn) => {

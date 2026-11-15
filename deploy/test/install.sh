@@ -23,10 +23,10 @@ export PATH="$temporary/bin:$PATH" CALLS="$temporary/calls" HOSTS="$temporary/ho
 # The update timer's units go here instead of /etc/systemd/system.
 export SYSTEMD_UNIT_DIR="$temporary/units"
 mkdir "$STATE" "$SYSTEMD_UNIT_DIR"
-# 203.0.113.5 is this fixture server; 192.0.2.10 is someone else's.
-printf '203.0.113.5 gym.localhost other.localhost\n192.0.2.10 elsewhere.localhost\n127.0.0.1 loopback.invalid\n203.0.113.6 nat.invalid\n2001:db8::6 nat6.invalid\n2001:db8::10 elsewhere6.invalid\n' > "$HOSTS"
-printf '2001:db8::20 api64.ipify.org\n2a01:4f8::1 mixed.invalid\n49.12.0.9 mixed.invalid\n2001:db8::10 mixed-reverse.invalid\n192.0.2.10 mixed-reverse.invalid\n' >> "$HOSTS"
-printf '203.0.113.6 multi4.invalid\n192.0.2.10 multi4.invalid\n2001:db8::6 multi6.invalid\n2001:db8::10 multi6.invalid\n192.0.2.10 foreign4.invalid\n192.0.2.11 foreign4.invalid\n2001:db8::10 foreign6.invalid\n2001:db8::11 foreign6.invalid\n2001:db8:0:1:2:3:4:6 full6.invalid\n' >> "$HOSTS"
+# 8.8.8.5 is this fixture server; 9.9.9.10 is someone else's.
+printf '8.8.8.5 gym.localhost other.localhost\n9.9.9.10 elsewhere.localhost\n127.0.0.1 loopback.invalid\n8.8.8.6 nat.invalid\n2a01:4f8:100::6 nat6.invalid\n2a01:4f8:100::10 elsewhere6.invalid\n' > "$HOSTS"
+printf '2a01:4f8:100::20 api64.ipify.org\n2a01:4f8::1 mixed.invalid\n49.12.0.9 mixed.invalid\n2a01:4f8:100::10 mixed-reverse.invalid\n9.9.9.10 mixed-reverse.invalid\n' >> "$HOSTS"
+printf '8.8.8.6 multi4.invalid\n9.9.9.10 multi4.invalid\n2a01:4f8:100::6 multi6.invalid\n2a01:4f8:100::10 multi6.invalid\n9.9.9.10 foreign4.invalid\n9.9.9.11 foreign4.invalid\n2a01:4f8:100::10 foreign6.invalid\n2a01:4f8:100::11 foreign6.invalid\n2a01:4f8:100:1:2:3:4:6 full6.invalid\n' >> "$HOSTS"
 stub() { printf '#!/bin/sh\n%s\n' "$2" > "$temporary/bin/$1"; chmod 0700 "$temporary/bin/$1"; }
 for command in apt-get systemctl ufw fallocate mkswap; do stub "$command" "printf '$command %s\n' \"\$*\" >> \"\$CALLS\""; done
 # Cloudflare proxy addresses (deploy/cloudflare-ranges.txt) for a proxied hostname.
@@ -38,13 +38,13 @@ stub sleep ':'
 real_openssl=$(command -v openssl)
 stub openssl "case \"\$1\" in genpkey|pkey|pkeyutl) exec '$real_openssl' \"\$@\" ;; esac; echo 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 # shellcheck disable=SC2016
-stub ip 'echo "1: lo    inet 127.0.0.1/8 scope host lo"; echo "2: eth0    inet 203.0.113.5/24 brd 203.0.113.255 scope global eth0"; echo "2: eth0    inet6 fe80::5/64 scope link"; echo "2: eth0    inet6 fd00::5/64 scope global eth0"; echo "2: eth0    inet6 20::5/64 scope global eth0"; if [ "${GLOBAL6:-false}" = true ]; then echo "2: eth0    inet6 2001:db8::5/64 scope global eth0"; fi'
+stub ip 'echo "1: lo    inet 127.0.0.1/8 scope host lo"; echo "2: eth0    inet 8.8.8.5/24 brd 8.8.8.255 scope global eth0"; echo "2: eth0    inet6 fe80::5/64 scope link"; echo "2: eth0    inet6 fd00::5/64 scope global eth0"; echo "2: eth0    inet6 20::5/64 scope global eth0"; if [ "${GLOBAL6:-false}" = true ]; then echo "2: eth0    inet6 2a01:4f8:100::5/64 scope global eth0"; fi'
 # The stub's own variables expand when it runs, not here.
 # shellcheck disable=SC2016
 stub getent '[ "$1" != -s ] || shift 2; status=0; awk -v name="$2" '"'"'{ for (i = 2; i <= NF; i++) if ($i == name) { print $1 "  STREAM " name; found=1 } } END { if (!found) exit 2 }'"'"' "$HOSTS" || status=$?; exit "${DNS_STATUS:-$status}"'
 # Keep the response-code cases independent of which DNS tools the host has installed.
 # shellcheck disable=SC2016
-stub dig 'code=${DNS_CODE:-NXDOMAIN}; for argument in "$@"; do [ "$argument" != AAAA ] || code=${DNS_CODE6:-$code}; done; [ "${DNS_STATUS:-0}" = 0 ] || code=SERVFAIL; printf ";; ->>HEADER<<- opcode: QUERY, status: %s, id: 1\n" "$code"'
+stub dig 'code=${DNS_CODE:-NXDOMAIN}; type=A; for argument in "$@"; do [ "$argument" != AAAA ] || { code=${DNS_CODE6:-$code}; type=AAAA; }; done; printf ";; ->>HEADER<<- opcode: QUERY, status: %s, id: 1\n;; flags: qr rd ra; QUERY: 1, ANSWER: %s, AUTHORITY: 0, ADDITIONAL: 0\n" "$code" "${DNS_ANSWERS:-0}"; [ "${DNS_ANSWERS:-0}" = 0 ] || printf "\n;; ANSWER SECTION:\nname.invalid.\t300\tIN\t%s\t%s\n\n" "${DNS_ANSWER_TYPE:-$type}" "${DNS_ANSWER_VALUE:-answer}"'
 cat > "$temporary/bin/curl" <<'MOCK'
 #!/bin/sh
 for argument in "$@"; do last=$argument; done
@@ -55,8 +55,8 @@ case "$last" in
     file="$RELEASES/${last#https://github.com/release-test/plaingym/releases/download/}"
     [ -f "$file" ] || exit 22
     cp "$file" "$out" ;;
-  https://api.ipify.org) echo 'public lookup 4' >> "$CALLS"; printf '%s' "${PUBLIC4-203.0.113.6}"; exit "${PUBLIC4_STATUS:-0}" ;;
-  https://api6.ipify.org) echo 'public lookup 6' >> "$CALLS"; printf '%s' "${PUBLIC6-2001:db8::6}"; exit "${PUBLIC6_STATUS:-0}" ;;
+  https://api.ipify.org) echo 'public lookup 4' >> "$CALLS"; printf '%s' "${PUBLIC4-8.8.8.6}"; exit "${PUBLIC4_STATUS:-0}" ;;
+  https://api6.ipify.org) echo 'public lookup 6' >> "$CALLS"; printf '%s' "${PUBLIC6-2a01:4f8:100::6}"; exit "${PUBLIC6_STATUS:-0}" ;;
   */api/setup) printf '%s' "${SETUP_STATUS:-200}" ;;
   # The openssl stub makes every install's origin value this one; WRONG_ORIGIN is a hostname fronting another server.
   # The installer asks for the body and then the status on its own line; ORIGIN_STATUS is a Cloudflare challenge.
@@ -100,6 +100,9 @@ expect_dns_refusal() {
 expect_dns_refusal does-not-exist.invalid 'does not resolve yet'
 expect_dns_refusal missing.localhost 'does not resolve yet'
 DNS_CODE=NOERROR expect_dns_refusal does-not-exist.invalid 'does not resolve yet'
+# A CNAME without an address record (dangling, or to a name with no A/AAAA) is still a missing record.
+DNS_ANSWERS=1 DNS_ANSWER_TYPE=CNAME DNS_ANSWER_VALUE=target.invalid. expect_dns_refusal does-not-exist.invalid 'does not resolve yet'
+DNS_CODE=NOERROR DNS_ANSWERS=1 DNS_ANSWER_TYPE=CNAME DNS_ANSWER_VALUE=target.invalid. expect_dns_refusal does-not-exist.invalid 'does not resolve yet'
 expect_dns_refusal elsewhere.localhost 'which is not this server'
 expect_dns_refusal loopback.invalid 'resolves to a loopback address'
 expect_lookup_refusal() {
@@ -116,12 +119,13 @@ expect_lookup_refusal() {
   [ ! -e "$root" ]
 }
 # Nonzero getent status must survive, even if it printed an address first.
-DNS_STATUS=2 expect_lookup_refusal does-not-exist.invalid 'This server could not query DNS'
-DNS_STATUS=2 expect_lookup_refusal gym.localhost 'This server could not query DNS'
+DNS_STATUS=2 DNS_CODE=NOERROR DNS_ANSWERS=1 expect_lookup_refusal does-not-exist.invalid 'This server could not query DNS'
+DNS_STATUS=2 DNS_CODE=NOERROR DNS_ANSWERS=1 expect_lookup_refusal gym.localhost 'This server could not query DNS'
 DNS_CODE=SERVFAIL expect_lookup_refusal does-not-exist.invalid 'This server could not query DNS'
 DNS_CODE=REFUSED expect_lookup_refusal does-not-exist.invalid 'This server could not query DNS'
 DNS_CODE=NOERROR DNS_CODE6=SERVFAIL expect_lookup_refusal does-not-exist.invalid 'This server could not query DNS'
 DNS_CODE=unreadable expect_lookup_refusal does-not-exist.invalid 'This server could not query DNS'
+DNS_CODE=NOERROR DNS_ANSWERS=1 expect_lookup_refusal does-not-exist.invalid 'This server could not query DNS'
 PUBLIC4_STATUS=22 expect_lookup_refusal nat.invalid 'The public-address lookup failed'
 GLOBAL6=true PUBLIC6_STATUS=22 expect_lookup_refusal nat6.invalid 'The public-address lookup failed'
 PUBLIC6_STATUS=22 expect_lookup_refusal elsewhere6.invalid 'Remove the AAAA record or configure working public IPv6'
@@ -131,10 +135,10 @@ PUBLIC4='' expect_lookup_refusal nat.invalid 'The public-address lookup failed'
 # HTTP 200 pages from a proxy, malformed or repeated addresses, and the wrong family do not
 # confirm a public address or turn a lookup failure into a DNS mismatch.
 twice() { printf '%s\n%s' "$1" "$1"; }
-for body in '<html>proxy login</html>' '999.0.113.6' '2001:db8::6' '203.000.113.006' '0.0.0.0' '127.0.0.1' '10.0.0.1' '169.254.1.2' '172.16.1.2' '192.168.1.2' '100.64.0.1' '224.0.0.1' "$(twice 203.0.113.6)"; do
+for body in '<html>proxy login</html>' '999.0.113.6' '2a01:4f8:100::6' '203.000.113.006' '0.0.0.0' '127.0.0.1' '10.0.0.1' '169.254.1.2' '172.16.1.2' '192.168.1.2' '100.64.0.1' '224.0.0.1' '198.18.0.1' '198.19.255.254' '192.0.0.8' '192.0.2.1' '198.51.100.1' '203.0.113.1' "$(twice 8.8.8.6)"; do
   PUBLIC4="$body" expect_lookup_refusal nat.invalid 'The public-address lookup failed'
 done
-for body in '<html>proxy login</html>' '2001::db8::6' '203.0.113.6' '2001:DB8::6' '2001:db8:0:0:0:0:0:6' '::' '::1' 'fe80::1' 'fd00::1' 'ff02::1' '2001:db8::6%eth0' "$(twice 2001:db8::6)"; do
+for body in '<html>proxy login</html>' '2001::db8::6' '8.8.8.6' '2A01:4F8:100::6' '2a01:4f8:100:0:0:0:0:6' '::' '::1' 'fe80::1' 'fd00::1' 'fec0::1' '64:ff9b::808:808' 'ff02::1' '2001:db8::6' '2a01:4f8:100::6%eth0' "$(twice 2a01:4f8:100::6)"; do
   GLOBAL6=true PUBLIC6="$body" expect_lookup_refusal nat6.invalid 'The public-address lookup failed'
 done
 # Multiple nonlocal answers reuse the same family lookup, including a mismatch
@@ -146,14 +150,14 @@ expect_dns_refusal multi6.invalid 'which is not this server'
 # Two answers that both miss the lookup's result still make one request, and so
 # does a failed lookup: neither is retried for the family's next answer.
 expect_dns_refusal foreign4.invalid 'which is not this server'
-grep -qF '192.0.2.10' "$temporary/output"
-grep -qF '192.0.2.11' "$temporary/output"
+grep -qF '9.9.9.10' "$temporary/output"
+grep -qF '9.9.9.11' "$temporary/output"
 [ "$(cat "$CALLS")" = 'public lookup 4' ]
 PUBLIC4_STATUS=22 expect_lookup_refusal foreign4.invalid 'The public-address lookup failed'
 [ "$(cat "$CALLS")" = 'public lookup 4' ]
 expect_dns_refusal foreign6.invalid 'which is not this server'
-grep -qF '2001:db8::10' "$temporary/output"
-grep -qF '2001:db8::11' "$temporary/output"
+grep -qF '2a01:4f8:100::10' "$temporary/output"
+grep -qF '2a01:4f8:100::11' "$temporary/output"
 [ "$(cat "$CALLS")" = 'public lookup 6' ]
 GLOBAL6=true PUBLIC6_STATUS=22 expect_lookup_refusal foreign6.invalid 'The public-address lookup failed'
 grep -qF 'lookup failed for IPv6' "$temporary/output"
@@ -170,23 +174,32 @@ if PATH="$temporary/no-curl" /bin/sh -c 'set -eu; . "$1"; check_dns missing.inva
 grep -qF 'does not resolve yet' "$temporary/output"
 # resolvectl is used when it is the only response-code tool.
 ln -s "$temporary/bin/resolvectl" "$temporary/no-curl/resolvectl"
-# A missing name or record is "not found" or "no RR" for the name itself; any other failure, including
-# systemd-resolved not running ("Unit ... not found"), is the resolver's.
+# A missing name or record belongs to the name itself. An unavailable systemd-resolved uses the getent probe.
 for response in "missing.invalid: resolve call failed: 'missing.invalid' not found=does not resolve yet" \
   "missing.invalid: resolve call failed: 'missing.invalid' does not have any RR of the requested type=does not resolve yet" \
   "missing.invalid: resolve call failed: Could not resolve 'missing.invalid', server or network returned error SERVFAIL=could not query DNS" \
-  "missing.invalid: resolve call failed: Unit dbus-org.freedesktop.resolve1.service not found.=could not query DNS"; do
+  "missing.invalid: resolve call failed: Unit dbus-org.freedesktop.resolve1.service not found.=does not resolve yet" \
+  "Failed to connect to bus: No such file or directory=does not resolve yet" \
+  "Could not activate remote peer: activation request failed=does not resolve yet"; do
   stub resolvectl "echo \"${response%=*}\" >&2; exit 1"
   if PATH="$temporary/no-curl" /bin/sh -c 'set -eu; . "$1"; check_dns missing.invalid' sh "$source_dir/lib.sh" > "$temporary/output" 2>&1; then exit 1; fi
   grep -qF "${response##*=}" "$temporary/output"
 done
+# If the fallback probe fails too, this is a resolver failure rather than a missing name.
+stub resolvectl 'echo "Unit dbus-org.freedesktop.resolve1.service not found." >&2; exit 1'
+if DNS_STATUS=2 PATH="$temporary/no-curl" /bin/sh -c 'set -eu; . "$1"; check_dns missing.invalid' sh "$source_dir/lib.sh" > "$temporary/output" 2>&1; then exit 1; fi
+grep -qF 'could not query DNS' "$temporary/output"
+# A successful second resolver cannot establish a missing record after getent failed.
+stub resolvectl 'echo "missing.invalid: 8.8.8.8"'
+if PATH="$temporary/no-curl" /bin/sh -c 'set -eu; . "$1"; check_dns missing.invalid' sh "$source_dir/lib.sh" > "$temporary/output" 2>&1; then exit 1; fi
+grep -qF 'could not query DNS' "$temporary/output"
 rm "$temporary/no-curl/resolvectl"
 # A failed lookup in the other address family must not hide a confirmed mismatch.
 PUBLIC6_STATUS=22 expect_dns_refusal elsewhere.localhost 'which is not this server'
 PUBLIC4_STATUS=22 expect_dns_refusal elsewhere6.invalid 'which is not this server'
 # Both answers belong to the same name; the unconfirmed IPv6 answer sorts first.
 GLOBAL6=true PUBLIC6_STATUS=22 expect_dns_refusal mixed.invalid '49.12.0.9, which is not this server'
-GLOBAL6=true PUBLIC4_STATUS=22 expect_dns_refusal mixed-reverse.invalid '2001:db8::10, which is not this server'
+GLOBAL6=true PUBLIC4_STATUS=22 expect_dns_refusal mixed-reverse.invalid '2a01:4f8:100::10, which is not this server'
 # With no confirmed mismatch, an unconfirmed address still explains the lookup failure.
 GLOBAL6=true PUBLIC4_STATUS=22 PUBLIC6_STATUS=22 expect_lookup_refusal mixed.invalid 'The public-address lookup failed'
 # Public addresses behind NAT and local addresses with failed public lookups still pass.
@@ -198,7 +211,7 @@ check_dns_only nat.invalid
 GLOBAL6=true check_dns_only nat6.invalid
 [ "$(cat "$CALLS")" = 'public lookup 6' ]
 # An uncompressed eight-group address is the usual form on a real server.
-PUBLIC6=2001:db8:0:1:2:3:4:6 check_dns_only full6.invalid
+PUBLIC6=2a01:4f8:100:1:2:3:4:6 check_dns_only full6.invalid
 : > "$CALLS"
 PUBLIC4_STATUS=22 PUBLIC6_STATUS=22 check_dns_only gym.localhost
 [ ! -s "$CALLS" ]
@@ -258,7 +271,7 @@ grep -q 'use update.sh' "$temporary/output"
 ranges="$source_dir/cloudflare-ranges.txt"
 in_ranges() { sh -c 'set -eu; . "$1"; in_cloudflare_ranges "$2" "$3"' sh "$source_dir/lib.sh" "$1" "$ranges"; }
 for address in 173.245.48.1 173.245.63.255 104.16.0.0 104.23.255.255 2606:4700::1 2a06:98c7:ffff::1 2c0f:f248::; do in_ranges "$address"; done
-for address in 173.245.64.0 104.32.0.0 192.0.2.1 203.0.113.5 2a06:98c8::1 2001:db8::1 not-an-address 2606:4700::zz 2606:4700::12345 ::ffff:104.16.0.1 104.16.0.256; do
+for address in 173.245.64.0 104.32.0.0 192.0.2.1 8.8.8.5 2a06:98c8::1 2a01:4f8:100::1 not-an-address 2606:4700::zz 2606:4700::12345 ::ffff:104.16.0.1 104.16.0.256; do
   if in_ranges "$address"; then echo "In Cloudflare's ranges by mistake: $address" >&2; exit 1; fi
 done
 # A DNS-only install carries its origin value and doesn't trust Cloudflare.
@@ -396,6 +409,8 @@ expect_bootstrap_refusal() { # MESSAGE BOOTSTRAP [ARGS]
 }
 # A copy that isn't a release's has no key to check with; a release's copy refuses an image of the owner's choosing.
 expect_bootstrap_refusal 'is not a release' "$source_dir/bootstrap.sh"
+grep -qF 'docs/install-reference.md' "$temporary/output"
+grep -qF 'docs/cloudflare.md' "$source_dir/.env.example"
 expect_bootstrap_refusal 'leave out --image' "$release/bootstrap.sh" --image plaingym:v0.0.0-local
 expect_bootstrap_refusal 'leave out --repository' "$release/bootstrap.sh" --repository another/repo
 # Another key than the one that signed the release.

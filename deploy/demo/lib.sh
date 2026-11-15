@@ -6,6 +6,7 @@
 # helpers itself (it also repairs a lost copy), which defines a dedicated marker function.
 # Every other caller needs the copy beside this file, and a missing one is named. This checks
 # the shell's own functions for that marker, not an environment variable or a `read_env` command.
+# The installed update.sh clears an inherited Bash marker before loading this file.
 if [ -f "$ROOT/base-lib.sh" ]; then
   . "$ROOT/base-lib.sh"
 elif ! type plaingym_shared_helpers_loaded 2>/dev/null | grep -q '^plaingym_shared_helpers_loaded is a .*function'; then

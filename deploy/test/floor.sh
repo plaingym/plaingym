@@ -235,7 +235,7 @@ for app_state in stopped restarting; do
   outcomes 'install starting failed starting abandoned '
   [ "$(floor)" = v2.0.0 ]
   if grep -q "up -d .* IMAGE=$PREVIOUS_ID" "$CALLS"; then echo 'Started incompatible code during recovery.' >&2; exit 1; fi
-  grep -q -- "--entrypoint node app /app/maintenance.mjs snapshot manual IMAGE=$digest" "$CALLS"
+  grep -q -- "snapshot node /app/maintenance.mjs snapshot manual IMAGE=$digest" "$CALLS"
   update 0 APP_STATE="$app_state"
   pinned "ghcr.io/example/app:$TARGET@$digest"
   cmp "$case_dir/schema-compatibility.yaml" "$temporary/recovery_guard"
@@ -294,7 +294,7 @@ for app_state in stopped restarting; do
   if grep -q "up -d .* IMAGE=$PREVIOUS_ID" "$CALLS"; then echo 'Restarted incompatible code after another migration.' >&2; exit 1; fi
   update 0 APP_STATE="$app_state" MIGRATED_STATE='22|3000'
   pinned "ghcr.io/example/app:$TARGET@$newer_id"
-  grep -q -- "--entrypoint node app /app/maintenance.mjs snapshot manual IMAGE=$digest" "$CALLS"
+  grep -q -- "snapshot node /app/maintenance.mjs snapshot manual IMAGE=$digest" "$CALLS"
   grep -q "SCHEMA_ROLLBACK_FLOOR: 'v1.11.0'" "$case_dir/schema-compatibility.yaml"
   grep -q "SCHEMA_SNAPSHOT: '$snapshot'" "$case_dir/schema-compatibility.yaml"
   [ "$(floor)" = v1.11.0 ]

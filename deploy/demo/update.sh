@@ -12,6 +12,7 @@ if [ -d "$ROOT/.demo-deploy-update" ]; then
   python3 "$ROOT/deploy-files.py" recover "$ROOT"
   exec bash "$ROOT/update.sh" "$@" 9>&-
 fi
+unset -f plaingym_shared_helpers_loaded
 # shellcheck source=/dev/null
 . "$ROOT/lib.sh"
 if [ "${1:-}" = --status ] && [ "$#" -eq 1 ]; then

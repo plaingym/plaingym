@@ -3,7 +3,7 @@
 # One command on a fresh Ubuntu server. Nothing is installed until every check passes, only the installed files
 # remain afterwards, and it is safe to re-run.
 #
-# Release mode (docs/install.md, Route 1): the bootstrap.sh asset of a GitHub release carries that release's version,
+# Release mode (docs/install-reference.md): the bootstrap.sh asset of a GitHub release carries that release's version,
 # repository and signing public key. It downloads the release manifest and its signature, verifies them with that
 # key, downloads the deploy archive the manifest lists and checks its SHA-256, then runs the archive's install.sh
 # with the manifest's image digest. Options other than its own go to install.sh.
@@ -85,7 +85,7 @@ fi
 # Release mode.
 [ -z "$expected" ] || fail "$usage"
 if [ -z "$release_version" ] || [ -z "$release_repository" ] || [ -z "$release_key" ]; then
-  fail "This copy of bootstrap.sh is not a release's, so it has no signing key to check one with. Download bootstrap.sh from the release you are installing (docs/install.md, Route 1). Nothing was changed."
+  fail "This copy of bootstrap.sh is not a release's, so it has no signing key to check one with. Download bootstrap.sh from the release you are installing (docs/install-reference.md). Nothing was changed."
 fi
 version=$release_version
 printf '%s\n' "$version" | grep -Eq '^v(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$' \

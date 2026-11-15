@@ -7,10 +7,9 @@ import { clock as defaultClock } from '../../core/clock.js';
 import { restoreStagingDirectory } from '../../core/maintenance-credentials.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
 import { listGyms, singleGymId, tenancyMode } from '../../core/tenancy.js';
-import { DeliveryError } from '../../infra/email/index.js';
 import { createAutoUpdateSettings, type AutoUpdateSettings } from '../settings/auto-update.js';
 import { autoUpdateAttemptSchema, createAutoUpdateAttempts, type AutoUpdateAttempt } from './auto-update.js';
-import { createAutoUpdateNotices, PermanentAutoUpdateNoticeError } from './auto-update.notices.js';
+import { createAutoUpdateNotices, retryableAutoUpdateNoticeError } from './auto-update.notices.js';
 import { backupsConfigured } from './restore.config.js';
 import { RestoreGate } from './restore.gate.js';
 
@@ -90,11 +89,10 @@ export function createAutoUpdateCommand(options: AutoUpdateCommandOptions = {}):
           try {
             await (options.notify ?? createAutoUpdateNotices({ env, ...options.scope ? { scope: options.scope } : {}, clock: options.clock ?? defaultClock }))(gymId, attempt.data);
           } catch (error) {
-            // Delivery keys prevent resending accepted or uncertain mail. Lookup and database failures can clear;
-            // keep their notice queued without holding back later results. Local settings/rendering cannot clear.
+            // Delivery keys prevent resending accepted or uncertain mail. Retry only known temporary failures;
+            // unexpected configuration, stored-data and custom-transport errors cannot clear unchanged.
             io.stderr(error instanceof Error ? error.message : 'Automatic update notice failed');
-            if (!(error instanceof PermanentAutoUpdateNoticeError) &&
-              (!(error instanceof DeliveryError) || error.acceptance === 'not_accepted')) return 3;
+            if (retryableAutoUpdateNoticeError(error)) return 3;
           }
         }
         return 0;

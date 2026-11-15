@@ -90,15 +90,23 @@ def validate(config):
         raise ValueError("Invalid demo capacity, pool size or idle hours.")
 
 
-def validate_billing(config):
+def validate_billing_key(config):
     """Same patterns as the app's demo boot check (apps/server/src/demo/config.ts). Never echoes a value."""
     key, secret = config.get(BILLING_KEY, ""), config.get(BILLING_SECRET, "")
-    if any(re.search(r"(?:sk|rk|pk)_live_", value, re.IGNORECASE) for value in (key, secret)):
+    if re.search(r"(?:sk|rk|pk)_live_", key, re.IGNORECASE):
         raise ValueError("Demo billing refuses live Stripe keys; use a test-mode key")
     if not key and not secret:
         return
     if not re.fullmatch(r"(?:sk|rk)_test_[A-Za-z0-9]+", key):
         raise ValueError(f"{BILLING_KEY} requires a Stripe test-mode secret or restricted key (sk_test_ or rk_test_)")
+
+
+def validate_billing_secret(config):
+    key, secret = config.get(BILLING_KEY, ""), config.get(BILLING_SECRET, "")
+    if re.search(r"(?:sk|rk|pk)_live_", secret, re.IGNORECASE):
+        raise ValueError("Demo billing refuses live Stripe keys; use a test-mode key")
+    if not key and not secret:
+        return
     if not re.fullmatch(r"whsec_[A-Za-z0-9]+", secret):
         raise ValueError(f"{BILLING_SECRET} must be the endpoint's whsec_ signing secret, set together with the key")
 
@@ -332,19 +340,26 @@ def main():
     validate(config)
     # Validate supplied values before any network calls; keep optional interactive setup after the checks.
     billing_inputs(config, ask=False)
-    if config.get(BILLING_KEY) and not config.get(BILLING_SECRET) and not args.check_only \
-            and not any(name in os.environ for name in (BILLING_KEY, BILLING_SECRET)) and has_terminal():
-        # A saved key can still be completed at the later hidden prompt; validate the supplied key now.
-        validate_billing({**config, BILLING_SECRET: "whsec_validation"})
-    else:
-        validate_billing(config)
+    supplied_billing = (config.get(BILLING_KEY), config.get(BILLING_SECRET))
+    pending_secret = config.get(BILLING_KEY) and not config.get(BILLING_SECRET) and not args.check_only \
+        and not any(name in os.environ for name in (BILLING_KEY, BILLING_SECRET)) and has_terminal()
+    validate_billing_key(config)
+    if not pending_secret:
+        validate_billing_secret(config)
     proxied = False
     if config["DEMO_LOCAL_TEST"] != "true":
         proxied = dns_check(config) is True
         cloudflare_check(config)
     s3_check(config)
     billing_inputs(config, ask=not args.check_only)
-    validate_billing(config)
+    # Check newly entered values once, without inventing a secret for the earlier preflight. A change to either
+    # value checks both, since each check also requires its partner (saved empty values can stay unchanged);
+    # a pending secret completes a key the preflight already checked.
+    changed = (config.get(BILLING_KEY), config.get(BILLING_SECRET)) != supplied_billing
+    if changed and not pending_secret:
+        validate_billing_key(config)
+    if changed or pending_secret:
+        validate_billing_secret(config)
     # A proxied demo trusts Cloudflare's visitor header (on requests from Cloudflare's addresses only). A saved
     # value, even false, is the operator's and stays; install.sh adds this one to an older install's .env.
     if proxied and "TRUST_CLOUDFLARE" not in config:

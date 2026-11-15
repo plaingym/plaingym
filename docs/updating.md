@@ -28,6 +28,11 @@ updater tries it once more the next night. If it fails again, automatic updates 
 newer patch release instead of trying every night, and the tile and the owner notice say
 so. With email set up, each owner gets one notice for each rolled-back or failed attempt.
 
+A temporary database lookup failure or a definite email non-send is retried on the hourly
+check. Invalid local settings and rendering errors are logged without retrying the notice.
+If saved SMTP settings cannot be read, the install's SMTP settings are used; without either,
+no notice is sent. Accepted or possibly accepted email is never sent again.
+
 To run the check now rather than tonight, for example after setting up backups, log in to
 the server over SSH ([how](install.md#3-log-in-to-the-server)) and run:
 

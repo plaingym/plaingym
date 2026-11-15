@@ -382,12 +382,13 @@ try:
     address = ipaddress.ip_address(text)
     if address.version != family or str(address) != text or "%" in text:
         sys.exit(1)
-    # Documentation ranges are valid spellings (and useful in offline host tests).
-    blocked = ("0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
-               "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16", "224.0.0.0/3")
-    if family == 4:
-        sys.exit(any(address in ipaddress.ip_network(net) for net in blocked))
-    sys.exit(address not in ipaddress.ip_network("2000::/3"))
+    # Python before 3.13 labels most of this special-purpose /24 global; retain only its public anycast pair.
+    if family == 4 and address in ipaddress.ip_network("192.0.0.0/24") and text not in ("192.0.0.9", "192.0.0.10"):
+        sys.exit(1)
+    # is_global also passes IPv6 outside global unicast (fec0::/10, 64:ff9b::/96), which check_dns never treats as public.
+    if family == 6 and address not in ipaddress.ip_network("2000::/3"):
+        sys.exit(1)
+    sys.exit(not address.is_global or address.is_multicast)
 except ValueError:
     sys.exit(1)
 ' "$1" "$2"
@@ -397,17 +398,23 @@ except ValueError:
 dns_response_code() { # HOSTNAME
   if command -v dig >/dev/null 2>&1; then
     for record_type in A AAAA; do
-      code=$(dig +time=5 +tries=1 "$1" "$record_type" 2>/dev/null | sed -n 's/.*status: \([A-Z]*\),.*/\1/p')
+      response=$(dig +time=5 +tries=1 "$1" "$record_type" 2>/dev/null) || { echo FAILED; return; }
+      code=$(printf '%s\n' "$response" | sed -n 's/.*status: \([A-Z]*\),.*/\1/p')
       case "$code" in NOERROR|NXDOMAIN) ;; *) echo FAILED; return ;; esac
+      # getent failed: address records from a second resolver mean disagreement, not a missing record.
+      # A CNAME alone (a dangling one answers NXDOMAIN) still leaves the name without an address.
+      answers=$(printf '%s\n' "$response" | awk -v type="$record_type" '/^;; ANSWER SECTION:/ { section = 1; next } /^$/ { section = 0 } section && $4 == type { count++ } END { print count + 0 }')
+      [ "$answers" = 0 ] || { echo FAILED; return; }
     done
     echo "$code"
   elif command -v resolvectl >/dev/null 2>&1; then
-    if response=$(LC_ALL=C resolvectl query "$1" 2>&1); then echo NOERROR
+    if response=$(LC_ALL=C resolvectl query "$1" 2>&1); then echo FAILED
     else
-      # Match the name itself: "Unit dbus-org.freedesktop.resolve1.service not found" is a resolver failure.
+      # If the local service is unavailable, leave classification to the getent probe below.
       case "$response" in
         *"'$1' not found"*) echo NXDOMAIN ;;
         *"'$1' does not have any RR"*) echo NOERROR ;;
+        *'Unit dbus-org.freedesktop.resolve1.service not found'*|*'Failed to connect to bus'*|*'Could not activate remote peer'*|*'Connection refused'*) ;;
         *) echo FAILED ;;
       esac
     fi

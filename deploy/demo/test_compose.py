@@ -212,7 +212,8 @@ class ComposeVersionTests(unittest.TestCase):
                 self.assertNotIn("not found", update.stderr)
         # Neither an executable on PATH nor an exported Bash function supplies the shared helper library.
         stub(self.bin / "read_env", "echo spoofed")
-        for script in ('exec bash "$1"', 'read_env() { echo spoofed; }; export -f read_env; exec bash "$1"'):
+        for script in ('exec bash "$1"', 'read_env() { echo spoofed; }; export -f read_env; exec bash "$1"',
+                       'plaingym_shared_helpers_loaded() { :; }; export -f plaingym_shared_helpers_loaded; exec bash "$1"'):
             result = subprocess.run(["bash", "-c", script, "sh", str(self.install_root / "update.sh")],
                                     capture_output=True, text=True, env=self.env())
             self.assertNotEqual(result.returncode, 0)

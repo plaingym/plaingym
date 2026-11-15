@@ -192,6 +192,18 @@ cleanup() {
   [ -z "$snapshot_file" ] || rm -f -- "$snapshot_file"
   exit "$exit_status"
 }
+# Both snapshot paths bypass the normal entrypoint, which may be why the app cannot start.
+# Keep its database checks and verified restore resumption, but never migrate before the snapshot.
+maintenance_snapshot() { # KIND
+  # shellcheck disable=SC2016
+  compose run --rm --no-deps -T --entrypoint sh app -ec '
+    /app/deploy/database.sh wait
+    /app/deploy/database.sh roles
+    node ${PLAINGYM_NODE_FLAGS:-} /app/maintenance.mjs resume
+    shift
+    exec node ${PLAINGYM_NODE_FLAGS:-} "$@"
+  ' snapshot node /app/maintenance.mjs snapshot "$1"
+}
 # Stop the app, snapshot, start the target, check it, and pin it. The manual path pulls first.
 swap_image() { # TARGET
   swap_pin=$1
@@ -221,19 +233,18 @@ swap_image() { # TARGET
   # Its own message above says why it failed, such as backups that aren't set up yet (Settings → Email, payments and backups).
   snapshot_file=$(mktemp "$ROOT/.snapshot.XXXXXX")
   if [ -n "$recovery_version" ]; then
-    # The pinned image is below the floor. Use the recorded compatible image's maintenance command directly:
-    # its ordinary entrypoint would run migrations before the snapshot. No server or migrations start here.
+    # The pinned image is below the floor. Use the recorded compatible image without migrating first.
     recovery_image=$(cut -f4 "$RECOVERY")
     if [ "$(image_version "$recovery_image")" != "$recovery_version" ] || ! version_at_least "$recovery_version" "$(schema_floor)"; then
       fail 'The recovery image is missing or incompatible. Restore the pre-upgrade snapshot; see docs/restoring.md.'
     fi
     # Keep retries out of the two pre-upgrade slots, so they cannot evict the pre-migration restore point.
-    APP_IMAGE="$recovery_image" compose run --rm --no-deps -T --entrypoint node app /app/maintenance.mjs snapshot manual > "$snapshot_file" \
+    APP_IMAGE="$recovery_image" maintenance_snapshot manual > "$snapshot_file" \
       || fail 'The pre-upgrade snapshot failed (reason above). The app stays stopped; retry the recovery update.'
   else
     snapshot_failure='The pre-upgrade snapshot failed (reason above). Nothing was changed; the app stays stopped.'
     [ "$was_running" = false ] || snapshot_failure='The pre-upgrade snapshot failed (reason above). Nothing was changed; the current version is restarting.'
-    compose run --rm --no-deps -T app node /app/maintenance.mjs snapshot pre-upgrade > "$snapshot_file" \
+    maintenance_snapshot pre-upgrade > "$snapshot_file" \
       || fail "$snapshot_failure"
   fi
   snapshot_output=$(cat "$snapshot_file")
@@ -633,10 +644,10 @@ if [ "$patch" = false ]; then
     work=$(mktemp -d)
     repository=$(read_env RELEASE_REPOSITORY); [ -n "$repository" ] || repository=plaingym/plaingym
     valid_repository "$repository" || fail 'Invalid release repository.'
-    [ -f "$ROOT/release-signing.pem" ] || fail 'Install the release signing public key before updating a release. For forks, set RELEASE_REPOSITORY to the repository publishing its signed releases; see docs/updating.md. Nothing was changed.'
+    [ -f "$ROOT/release-signing.pem" ] || fail 'Install the release signing public key before updating a release. For forks, set RELEASE_REPOSITORY to the repository publishing its signed releases; see docs/update-reference.md#the-release-signing-key. Nothing was changed.'
     { download "https://github.com/$repository/releases/download/$to_version/release-manifest.txt" "$work/manifest" \
       && download "https://github.com/$repository/releases/download/$to_version/release-manifest.txt.sig" "$work/manifest.sig"; } \
-      || fail "Could not download the signed release manifest and signature for $to_version from $repository. Check network access and that the release exists; for forks set RELEASE_REPOSITORY to their release repository (docs/updating.md), then retry. Nothing was changed."
+      || fail "Could not download the signed release manifest and signature for $to_version from $repository. Check network access and that the release exists; for forks set RELEASE_REPOSITORY to their release repository (docs/update-reference.md#the-release-signing-key), then retry. Nothing was changed."
     if ! manifest_verify "$ROOT/release-signing.pem" "$work/manifest" "$work/manifest.sig" || ! manifest_check "$work/manifest" "$to_version"; then fail 'Invalid signed release manifest.'; fi
     manifest_image=$(manifest_value "$work/manifest" image); manifest_digest=$(manifest_value "$work/manifest" digest)
     docker image inspect "$target" --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep -qxF "$manifest_image@$manifest_digest" || fail 'The requested image does not match its signed release digest.'

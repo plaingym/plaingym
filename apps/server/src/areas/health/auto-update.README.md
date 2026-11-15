@@ -36,8 +36,10 @@ The app never holds the Docker socket. This area reports update status and sends
   `--notice deferred`, drains results, then runs `gym-app auto-update notice` with the same attempt flags.
   Retrying a notice never writes an attempt or changes the tile. An unsent failed-rollback notice is
   superseded by the recovery notice for the same outage before any notice is sent. Other notice errors
-  from temporary database, connection, owner or settings lookups exit 3 for retry. Invalid local settings,
-  unreadable SMTP secrets and rendering errors are logged without retrying; uncertain sends exit 0.
+  exit 3 for retry only when an SMTP, owner or settings lookup fails with a temporary database or connection
+  error. Invalid local settings, corrupt gym settings, transport construction and rendering errors are logged
+  without retrying; uncertain sends exit 0. Unreadable gym SMTP settings fall back to the install's SMTP, or
+  skip sending if neither is available.
   The host attempts each queued notice once per run after recording results. These staff notices are exempt from
   `memberEmailsEnabled`, as classified in the go-live inventory. No SMTP means no email. Times in a notice,
   including a recovery's outage, use the gym's timezone.

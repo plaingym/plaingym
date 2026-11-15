@@ -28,7 +28,8 @@ cleanup() {
   rm -rf -- "$temporary"
 }
 trap cleanup EXIT
-mkdir -p "$ROOT" "$temporary/build"
+mkdir -p "$ROOT" "$temporary/build" "$temporary/state"
+export TEST_STATE="$temporary/state"
 cp "$source_dir/update.sh" "$source_dir/lib.sh" "$ROOT/"
 cat > "$temporary/build/Dockerfile" <<'DOCKERFILE'
 FROM python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72
@@ -36,19 +37,42 @@ ARG VERSION
 LABEL org.opencontainers.image.version=$VERSION
 RUN mkdir -p /www && printf '%s\n' "$VERSION" > /www/index.html
 COPY node /usr/local/bin/node
-RUN chmod 755 /usr/local/bin/node
+COPY database.sh entrypoint.sh /app/deploy/
+RUN chmod 755 /usr/local/bin/node /app/deploy/*.sh
 WORKDIR /www
+ENTRYPOINT ["/app/deploy/entrypoint.sh"]
 CMD ["timeout", "300", "nice", "-n", "10", "python", "-m", "http.server", "3000", "--bind", "0.0.0.0"]
 DOCKERFILE
 cat > "$temporary/build/node" <<'COMMAND'
 #!/bin/sh
 set -eu
 case "$1" in
-  /app/maintenance.mjs) echo 'Snapshot: 00000000-0000-4000-8000-000000000001' ;;
+  /app/maintenance.mjs)
+    printf '%s\n' "$2" >> /state/calls
+    case "$2" in
+      resume) [ ! -f /state/restore-incomplete ] || { echo 'Restore could not be resumed' >&2; exit 1; } ;;
+      snapshot) echo 'Snapshot: 00000000-0000-4000-8000-000000000001' ;;
+      *) exit 1 ;;
+    esac ;;
   /app/deploy/healthcheck.mjs) wget -qO- http://127.0.0.1:3000/ >/dev/null ;;
   *) exit 1 ;;
 esac
 COMMAND
+cat > "$temporary/build/database.sh" <<'COMMAND'
+#!/bin/sh
+set -eu
+printf '%s\n' "$1" >> /state/calls
+case "$1" in
+  wait) rm -f /state/database-starting ;;
+  roles) [ ! -f /state/unsafe-roles ] || { echo 'Unsafe roles' >&2; exit 1; } ;;
+  migrate) : ;;
+  *) exit 1 ;;
+esac
+COMMAND
+# The crash is inside the image entrypoint, before database checks or the supplied command.
+# shellcheck disable=SC2016
+sed '/^umask 077$/a [ "$(cat /state/crash-entrypoint 2>/dev/null || true)" != "$(cat /www/index.html)" ] || exit 1' \
+  "$source_dir/container/entrypoint.sh" > "$temporary/build/entrypoint.sh"
 docker build -q --build-arg VERSION=1.1.0 -t "$run_id:oldest" "$temporary/build" >/dev/null
 docker build -q --build-arg VERSION=1.2.0 -t "$run_id:old" "$temporary/build" >/dev/null
 docker build -q --build-arg VERSION=1.3.0 -t "$run_id:new" "$temporary/build" >/dev/null
@@ -61,6 +85,8 @@ services:
     image: ${APP_IMAGE}
     cpus: 0.25
     restart: on-failure:20
+    volumes:
+      - '${TEST_STATE}:/state'
     command: ['sh', '-c', '${APP_COMMAND:-exec timeout 300 nice -n 10 python -m http.server 3000 --bind 0.0.0.0}']
     ports:
       - '${TEST_LOOPBACK:-127.0.0.1}:0:3000'
@@ -93,15 +119,39 @@ grep -qx 'COMPOSE_FILE=compose.yaml:schema-compatibility.yaml' "$ROOT/.env"
 compose up -d --wait --wait-timeout 30 > "$temporary/output" 2>&1
 # A stopped app can be rolled back; the snapshot runs independently of it.
 compose stop app > "$temporary/output" 2>&1
+# Snapshot startup still refuses unsafe roles and an unfinished restore, without changing the pin.
+for failure in unsafe-roles restore-incomplete; do
+  : > "$TEST_STATE/calls"
+  touch "$TEST_STATE/$failure"
+  if sh "$ROOT/update.sh" --rollback > "$temporary/output" 2>&1; then echo "Skipped $failure before snapshot." >&2; exit 1; fi
+  [ "$(read_env APP_IMAGE)" = "$run_id:new" ]
+  if grep -qx snapshot "$TEST_STATE/calls"; then echo 'Snapshot ran after a failed prerequisite.' >&2; exit 1; fi
+  rm "$TEST_STATE/$failure"
+done
+: > "$TEST_STATE/calls"
+touch "$TEST_STATE/database-starting"
 sh "$ROOT/update.sh" --rollback > "$temporary/output" 2>&1
+[ ! -f "$TEST_STATE/database-starting" ]
+[ "$(head -n 4 "$TEST_STATE/calls")" = "$(printf 'wait\nroles\nresume\nsnapshot')" ]
 grep -q 'Rollback: updated' "$temporary/output"
 [ "$(read_env APP_IMAGE)" = "$old_id" ]
 port=$(compose port app 3000 | sed 's/.*://')
 [ "$(curl --fail --silent "http://$TEST_LOOPBACK:$port/")" = 1.2.0 ]
 tail -n 1 "$ROOT/version-history.tsv" | grep -q "$(printf '\trollback\t')"
 # A second rollback keeps walking back, and never forward to the version just left; at the bottom there is nowhere to go.
-crash_loop
+printf '1.2.0\n' > "$TEST_STATE/crash-entrypoint"
+compose up -d --no-deps --force-recreate app > "$temporary/output" 2>&1
+container=$(compose ps -aq app)
+for _ in $(seq 20); do
+  app_status=$(docker inspect "$container" --format '{{.State.Status}}')
+  [ "$app_status" != restarting ] || break
+  sleep 0.1
+done
+[ "$app_status" = restarting ]
+: > "$TEST_STATE/calls"
 sh "$ROOT/update.sh" --rollback > "$temporary/output" 2>&1
+[ "$(head -n 4 "$TEST_STATE/calls")" = "$(printf 'wait\nroles\nresume\nsnapshot')" ]
+rm "$TEST_STATE/crash-entrypoint"
 [ "$(read_env APP_IMAGE)" = "$oldest_id" ]
 port=$(compose port app 3000 | sed 's/.*://')
 [ "$(curl --fail --silent "http://$TEST_LOOPBACK:$port/")" = 1.1.0 ]
@@ -164,4 +214,4 @@ compose up -d --wait --wait-timeout 60 > "$temporary/output" 2>&1
 port=$(compose port app 3000 | sed 's/.*://')
 [ "$(curl --fail --silent "http://$TEST_LOOPBACK:$port/")" = 1.2.0 ]
 
-echo 'PASS: rollback from stopped and restarting apps serves the previous digest, walks back, records history, still refuses below the floor, and pins a registry image by name, tag and digest so it starts again after a prune.'
+echo 'PASS: rollback from stopped apps and entrypoint crashes checks database readiness, roles and restore resumption before snapshot; serves the previous digest, walks back, refuses below the floor, and restarts a registry pin after a prune.'

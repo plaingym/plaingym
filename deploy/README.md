@@ -401,7 +401,12 @@ nothing. It verifies a release image against its signed
 manifest and digest, then stops any running app and runs
 `node /app/maintenance.mjs snapshot pre-upgrade` in a one-off app container: a
 coordinated, encrypted install snapshot to the gym's backup destination, ordinarily kept
-under the backup retention's pre-upgrade rule. Forward-recovery retries use `snapshot manual`
+under the backup retention's pre-upgrade rule. Updates, requested rollbacks and forward
+recovery share a shell command that waits for the database, checks its roles and resumes
+verified restore state before taking the snapshot. It bypasses the image's normal
+entrypoint and never runs migrations, so a crash in that entrypoint cannot prevent a safe
+rollback. A failed role check or restore resumption still blocks the snapshot.
+Forward-recovery retries use `snapshot manual`
 and its hourly/daily/weekly retention tiers, so they cannot displace the original snapshot
 from the two pre-upgrade slots
 (`apps/server/src/areas/health/backups.protocol.md`). Nothing is written between
@@ -474,7 +479,8 @@ accepted or uncertain email. A definite SMTP refusal leaves only the notice in `
 each run retries each notice once after recording the queued results, so later results and notices still
 go through. `record` without deferral, and `notice`, exit 3 for a definite non-send or a temporary
 database, owner, or settings lookup failure; result storage errors exit 1 and invalid input exits 2.
-Invalid local settings, unreadable SMTP secrets and rendering errors are logged without retrying the notice;
+Invalid local settings, corrupt gym settings, transport construction and rendering errors are logged without retrying the notice.
+Unreadable gym SMTP settings fall back to the install's SMTP, or skip sending if neither is available;
 accepted or uncertain sends also exit 0. The health tile keeps stale errors visible and formats the last check in
 the gym's timezone. A never-run install becomes stale 50 hours after its first
 health read; transient skips raise the update banner after two consecutive

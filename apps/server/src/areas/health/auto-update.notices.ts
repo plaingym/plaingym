@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { forGym } from '@plaingym/db';
+import { databaseCode, forGym, isConnectionError } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { clock as defaultClock } from '../../core/clock.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
@@ -20,6 +20,21 @@ export interface AutoUpdateNoticeOptions {
 }
 /** Retrying unchanged local settings or rendering cannot make this notice sendable. */
 export class PermanentAutoUpdateNoticeError extends Error {}
+class TemporaryAutoUpdateNoticeLookupError extends Error {}
+async function lookup<T>(read: () => Promise<T>): Promise<T> {
+  try { return await read(); }
+  catch (error) {
+    if (isConnectionError(error) || ['40001', '40P01', '55P03', '57014', '53100', '53200'].includes(databaseCode(error) ?? '')) {
+      throw new TemporaryAutoUpdateNoticeLookupError(error instanceof Error ? error.message : 'Automatic update notice lookup failed', { cause: error });
+    }
+    throw error;
+  }
+}
+/** Only a definite non-send or a database failure that can clear warrants another hourly attempt. */
+export function retryableAutoUpdateNoticeError(error: unknown): boolean {
+  if (error instanceof DeliveryError) return error.acceptance === 'not_accepted';
+  return error instanceof TemporaryAutoUpdateNoticeLookupError;
+}
 /** Called by the host's record command. A replay uses the same durable per-attempt, per-owner delivery key. */
 export function createAutoUpdateNotices(options: AutoUpdateNoticeOptions = {}) {
   const env = options.env ?? process.env, scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
@@ -28,10 +43,10 @@ export function createAutoUpdateNotices(options: AutoUpdateNoticeOptions = {}) {
     let smtp;
     try { smtp = createSmtpResolver({ key: parseEncryptionKey(env.APP_ENCRYPTION_KEY ?? ''), env, scope }); }
     catch (error) { throw new PermanentAutoUpdateNoticeError('Automatic update notice settings are invalid', { cause: error }); }
-    const config = await smtp.config(gymId);
+    const config = await lookup(() => smtp.config(gymId));
     if (!config) return;
     const owners = options.owners ?? ((id: string) => createAccountService(authConfig(env)).staffEmails(id, ['owner']));
-    const [recipients, gym] = await Promise.all([owners(gymId), createSettingsService({ scope, clock }).get(gymId)]);
+    const [recipients, gym] = await Promise.all([lookup(() => owners(gymId)), lookup(() => createSettingsService({ scope, clock }).get(gymId))]);
     let rendered;
     try {
       rendered = await renderAutoUpdateNotice({ gymName: gym.name, timezone: gym.timezone,
@@ -49,6 +64,6 @@ export function createAutoUpdateNotices(options: AutoUpdateNoticeOptions = {}) {
       }
     } finally { email.close?.(); }
     // A definite non-send wins, so the host retries it; the delivery keys skip owners already sent to.
-    if (errors.length) throw errors.find(error => !(error instanceof DeliveryError) || error.acceptance === 'not_accepted') ?? errors[0];
+    if (errors.length) throw errors.find(retryableAutoUpdateNoticeError) ?? errors[0];
   };
 }

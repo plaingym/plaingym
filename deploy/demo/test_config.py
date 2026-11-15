@@ -514,6 +514,40 @@ class BillingInputTests(unittest.TestCase):
                 self.assertEqual((written["DEMO_STRIPE_TEST_KEY"], written["DEMO_STRIPE_WEBHOOK_SECRET"]), (KEY, SECRET))
                 self.assertEqual([secret for _, secret in asked], [True] * len(answers))
 
+    def test_billing_validation_checks_only_real_values_once(self):
+        for saved_key in (False, True):
+            with self.subTest(saved_key=saved_key), tempfile.TemporaryDirectory() as directory:
+                if saved_key:
+                    (Path(directory) / ".env").write_text("DEMO_INSTALL=1\nDEMO_LOCAL_TEST=false\n"
+                                                        + f"DEMO_STRIPE_TEST_KEY={KEY}\n")
+                checked_keys, checked_secrets = [], []
+                validate_key, validate_secret = config.validate_billing_key, config.validate_billing_secret
+
+                def key_check(values):
+                    checked_keys.append(values.get(config.BILLING_KEY))
+                    return validate_key(values)
+
+                def secret_check(values):
+                    checked_secrets.append(values.get(config.BILLING_SECRET))
+                    return validate_secret(values)
+
+                supplied = {} if saved_key else {config.BILLING_KEY: KEY, config.BILLING_SECRET: SECRET}
+                with patch.object(config, "validate_billing_key", side_effect=key_check), \
+                        patch.object(config, "validate_billing_secret", side_effect=secret_check):
+                    self.run_main(directory, env=supplied, answers=[SECRET] if saved_key else [])
+                self.assertEqual(checked_keys, [KEY])
+                self.assertEqual(checked_secrets, [SECRET])
+
+    def test_half_a_pair_entered_over_saved_empty_billing_values_is_refused(self):
+        for answers in (["y", KEY, ""], ["y", "", SECRET]):
+            with self.subTest(key=bool(answers[1])), tempfile.TemporaryDirectory() as directory:
+                (Path(directory) / ".env").write_text("DEMO_INSTALL=1\nDEMO_LOCAL_TEST=false\n"
+                                                    "DEMO_STRIPE_TEST_KEY=\nDEMO_STRIPE_WEBHOOK_SECRET=\n")
+                with self.assertRaises(ValueError):
+                    self.run_main(directory, answers=answers)
+                self.assertFalse((Path(directory) / "next").exists())
+                self.assertQuiet()
+
     def test_an_empty_billing_variable_answers_the_secret_prompt_so_a_scripted_run_never_waits(self):
         for name in ("DEMO_STRIPE_WEBHOOK_SECRET", "DEMO_STRIPE_TEST_KEY"):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:

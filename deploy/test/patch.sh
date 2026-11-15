@@ -6,6 +6,32 @@
 set -eu
 umask 077
 source_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+# Recovery must work before lib.sh is safe to source; keep both self-contained copies and inventories aligned.
+# shellcheck disable=SC2016
+python3 -c '
+import fnmatch, pathlib, re, sys
+root = pathlib.Path(sys.argv[1])
+scripts = [(root / name).read_text() for name in ("update.sh", "rotate-key.sh")]
+blocks = [re.search(r"(?ms)^bootstrap_recover\(\) \{.*?(?=^# shellcheck source=deploy/lib.sh)", text).group() for text in scripts]
+assert blocks[0].replace("$ROOT/update.sh", "$ROOT/SCRIPT") == blocks[1].replace("$ROOT/rotate-key.sh", "$ROOT/SCRIPT"), "Bootstrap recovery copies differ"
+lib = (root / "lib.sh").read_text()
+files = re.search(r"(?m)^host_files=\x27([^\x27]+)\x27", lib).group(1).split()
+units = re.search(r"(?m)^host_units=\x27([^\x27]+)\x27", lib).group(1).split()
+block = blocks[0]
+assert re.search(r"for bootstrap_file in (.*?); do", block).group(1).split() == [f for f in files if f != "release-signing.pem"], "Bootstrap host files differ"
+assert re.search(r"for bootstrap_unit in (.*?); do", block).group(1).split() == units, "Bootstrap units differ"
+def modes(text):
+    return re.findall(r"([^\s;)]+)\) (?:echo |bootstrap_mode=)(0[0-7]{3})", text)
+def mode(entries, name):
+    return next(value for patterns, value in entries if any(fnmatch.fnmatchcase(name, p) for p in patterns.split("|")))
+canonical = modes(re.search(r"(?m)^host_mode\(\).*", lib).group())
+bootstrap = modes(re.search(r"case \"\$bootstrap_file\".*?esac", block).group())
+for name in files:
+    if name != "release-signing.pem":
+        assert mode(canonical, name) == mode(bootstrap, name), "Bootstrap mode differs: " + name
+unit_mode = re.search(r"install -m (0[0-7]{3}) .*?/before/units/", block).group(1)
+assert all(mode(canonical, "systemd/" + name) == unit_mode for name in units), "Bootstrap unit modes differ"
+' "$source_dir"
 [ "$(id -u)" -eq 0 ] || { echo 'Run this test as root in a disposable environment.' >&2; exit 1; }
 [ -f /usr/share/zoneinfo/America/Denver ] || { echo 'Install tzdata first.' >&2; exit 1; }
 temporary=$(mktemp -d)
@@ -211,6 +237,17 @@ line_of() { grep -n -- "$1" "$CALLS" | head -n 1 | cut -d: -f1; }
 never() { if grep -q -- "$1" "$CALLS"; then echo "Unexpected call: $1" >&2; cat "$CALLS" >&2; exit 1; fi; }
 no_secret() { if grep -q private-test-value "$temporary/output"; then echo 'A secret reached the output.' >&2; exit 1; fi; }
 target="ghcr.io/example/app:v1.2.5@$digest"
+
+# Manual release failures point directly at the signing-key reference, including the fork instructions.
+make_install manual-missing-key
+rm "$case_dir/release-signing.pem"
+expect_status 1 "$target"
+grep -qF 'docs/update-reference.md#the-release-signing-key' "$temporary/output"
+never ' stop app'
+make_install manual-manifest-unavailable
+expect_status 1 FAIL_AT=manifest "$target"
+grep -qF 'docs/update-reference.md#the-release-signing-key' "$temporary/output"
+never ' stop app'
 
 # The newest patch of the running minor, never a newer minor or major, verified, then applied with a snapshot.
 make_install success
