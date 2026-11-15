@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../../lib/count.js';
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ClassPack } from '@plaingym/shared/contracts';
@@ -32,8 +33,8 @@ export function PackCatalog({ gymId, client = packClient }: { gymId: string; cli
       {!rows?.length && <EmptyState title={text('noPacks')} description={text('noPacksHelp')}/>}
       <ul className="grid min-w-0 gap-3 lg:grid-cols-2">{rows?.map(pack => <li key={pack.id} className="min-w-0 space-y-2 rounded-lg border p-4">
         <h3 className="font-semibold">{pack.name}</h3><p className="text-sm text-muted-foreground">{text(pack.active ? 'active' : 'archived')}</p>
-        <p>{formatMinorUnits(pack.amountCents, pack.currency)} · {text('creditCount', { count: pack.credits })}</p>
-        <p>{pack.expiryDays === null ? text('neverExpires') : text('expiresDays', { days: pack.expiryDays })}</p>
+        <p>{formatMinorUnits(pack.amountCents, pack.currency)} · {text('creditCount', { count: formatCount(pack.credits) })}</p>
+        <p>{pack.expiryDays === null ? text('neverExpires') : text('expiresDays', { days: formatCount(pack.expiryDays) })}</p>
         <Button variant="outline" className="w-full wrap-anywhere sm:w-auto" onClick={() => setEditor(pack)}>{text('editNamed', { name: pack.name })}</Button>
       </li>)}</ul>
       {editor && <PackEditor {...(editor === 'new' ? {} : { record: editor })} currency={data.data.currency} taxes={data.data.taxes} client={client} close={refresh} saved={refresh}/>}

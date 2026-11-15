@@ -20,7 +20,7 @@ const generatedAt = '2026-10-22T12:00:00Z';
 const memberId = '01900000-0000-7000-8000-000000000010';
 const widgets: MatDashboardWidget[] = [
   { id: 'active_members', titleKey: 'dashboard/dashboard:widget.active_members', status: 'ready', count: 12 },
-  { id: 'not_seen', titleKey: 'dashboard/dashboard:widget.not_seen', status: 'ready', days: 14, count: 2,
+  { id: 'not_seen', titleKey: 'dashboard/dashboard:widget.not_seen', status: 'ready', days: 14, count: 1200,
     members: [{ memberId, firstName: 'Alex', lastName: 'River', lastSeenAt: null }] },
   { id: 'promotion_ready', titleKey: 'dashboard/dashboard:widget.promotion_ready', status: 'ready', count: 0, members: [] },
 ];
@@ -53,7 +53,7 @@ describe('dashboard page', () => {
     await screen.findByRole('heading', { name: 'Active members' });
     expect(screen.getByText('12')).toBeDefined();
     expect(screen.getByRole('link', { name: 'Alex River' }).getAttribute('href')).toBe('/admin/members/' + memberId);
-    expect(screen.getByText('Showing 1 of 2 members.')).toBeDefined();
+    expect(screen.getByText('Showing 1 of 1,200 members.')).toBeDefined();
     expect(screen.getByText('No members are ready for promotion yet.')).toBeDefined();
     expect(document.body.textContent).not.toContain('dashboard/dashboard:');
     expect(api.GET).toHaveBeenCalledWith('/api/dashboard', expect.objectContaining({ cache: 'no-store', signal: expect.any(AbortSignal) }));

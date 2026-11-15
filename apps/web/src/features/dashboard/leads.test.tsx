@@ -16,11 +16,11 @@ const mount = (widget: DashboardWidget, roles: readonly StaffRole[] = ['front_de
 
 describe('follow-ups due tile', () => {
   it('shows the count, each due lead linking to its lead page, how many are shown and a link to the list', () => {
-    mount(tile(21, [{ label: 'Ada Alpha', href: '/admin/leads/' + id(1) }, { label: 'Ben Beta', href: '/admin/leads/' + id(2) }]));
+    mount(tile(1200, [{ label: 'Ada Alpha', href: '/admin/leads/' + id(1) }, { label: 'Ben Beta', href: '/admin/leads/' + id(2) }]));
     const card = screen.getByRole('region', { name: 'Follow-ups due' });
-    expect(within(card).getByText('21')).toBeDefined();
+    expect(within(card).getByText('1,200')).toBeDefined();
     expect(within(card).getByRole('link', { name: 'Ada Alpha' }).getAttribute('href')).toBe('/admin/leads/' + id(1));
-    expect(within(card).getByText('Showing 2 of 21.')).toBeDefined();
+    expect(within(card).getByText('Showing 2 of 1,200.')).toBeDefined();
     expect(within(card).getByRole('link', { name: 'Open the leads list' }).getAttribute('href')).toBe('/admin/leads');
   });
   it.each(['owner', 'admin', 'front_desk'] as const)('shows for %s', role => {

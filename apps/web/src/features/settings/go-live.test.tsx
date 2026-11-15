@@ -25,7 +25,7 @@ const overdue = () => ({ ...checklist(), data: { ...checklist().data, pastDueMem
 }] } });
 const restored = (unresolved: number | null = 2, billingEnabled = false) => ({ data: { ...checklist(3, billingEnabled).data,
   restoreReconciliation: { restoreId: '00000000-0000-7000-8000-000000000003', snapshotAt: '2026-10-20T12:00:00Z',
-    checkedAt: unresolved === null ? null : '2026-10-26T12:00:00Z', inspected: unresolved === null ? null : 4, unresolved },
+    checkedAt: unresolved === null ? null : '2026-10-26T12:00:00Z', inspected: unresolved === null ? null : 1200, unresolved },
 } });
 const gymSettings = (revision: number): GymSettings => ({ id: '01900000-0000-7000-8000-000000000001', name: 'Gym', slug: 'gym', timezone: 'America/Vancouver',
   currency: 'CAD', address: {}, branding: {}, websiteEnabled: false, existingSiteUrl: null, bookingWindowDays: 14, cancellationCutoffMinutes: 60,
@@ -88,7 +88,7 @@ describe('go-live settings', () => {
     client.POST.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
     const user = userEvent.setup(); start();
     const rerun = await screen.findByRole('button', { name: 'Check restored payments again' });
-    expect(screen.getByText(/Objects checked: 4. Unresolved: 2/)).toBeDefined();
+    expect(screen.getByText(/Objects checked: 1,200. Unresolved: 2/)).toBeDefined();
     await user.click(rerun);
     expect(client.POST).toHaveBeenCalledWith('/api/settings/go-live/reconciliation', { signal: expect.any(AbortSignal), body: {
       revision: 3, restoreId: restored().data.restoreReconciliation.restoreId,
@@ -96,7 +96,7 @@ describe('go-live settings', () => {
     expect(screen.getByText('Checking restored payments…')).toBeDefined();
     expect((rerun as HTMLButtonElement).disabled).toBe(true);
     finish(reply(200, restored(0)));
-    expect(await screen.findByText(/Objects checked: 4. Unresolved: 0/)).toBeDefined();
+    expect(await screen.findByText(/Objects checked: 1,200. Unresolved: 0/)).toBeDefined();
     expect((rerun as HTMLButtonElement).disabled).toBe(false);
     expect(screen.getByRole('button', { name: 'Turn on: Billing' })).toBeDefined();
     expect(client.PATCH).not.toHaveBeenCalled();
@@ -108,7 +108,7 @@ describe('go-live settings', () => {
       restoreReconciliation: { ...response.data.restoreReconciliation, stripeConfigured: false },
     } }));
     start();
-    expect(await screen.findByText(/Stored references: 4. Unresolved: 0/)).toBeDefined();
+    expect(await screen.findByText(/Stored references: 1,200. Unresolved: 0/)).toBeDefined();
     expect(screen.queryByText(/Objects checked:/)).toBeNull();
     expect(screen.getByText(connected ? /last restore check ran without Stripe/ : /last check ran without Stripe and only read restored records/).textContent)
       .toContain('Check restored payments again');

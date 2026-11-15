@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../lib/count.js';
 import { Button } from '../../components/ui/button.js';
 import { TableContainer } from '../../components/ui/table.js';
 import { downloadCsv } from './csv.js';
@@ -15,7 +16,7 @@ export function DataTable({ table, title, filename }: { table: ReportTable; titl
           {row.map((cell, column) => column === 0
             ? <th key={column} scope="row" className="whitespace-nowrap px-4 py-3 font-normal">{cell}</th>
             : <td key={column} className={'px-4 py-3 ' + (table.textColumns?.includes(column)
-              ? 'min-w-48 max-w-64 whitespace-pre-wrap wrap-anywhere' : 'whitespace-nowrap')}>{cell}</td>)}
+              ? 'min-w-48 max-w-64 whitespace-pre-wrap wrap-anywhere' : 'whitespace-nowrap')}>{table.countColumns?.includes(column) ? formatCount(Number(cell)) : cell}</td>)}
         </tr>)}</tbody>
       </table>
     </TableContainer>

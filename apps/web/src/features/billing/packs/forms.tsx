@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../../lib/count.js';
 import { useId, useRef, useState, type FormEvent } from 'react';
 import { adjustClassCreditsRequestSchema, sellClassPackRequestSchema, type ClassPack } from '@plaingym/shared/contracts';
 import { formatMinorUnits } from '@plaingym/shared/money';
@@ -32,7 +33,7 @@ export function SaleForm({ memberId, packs, today, client, close, sold }: {
     <form className="min-w-0 space-y-4 wrap-anywhere" onSubmit={event => void submit(event)}>
       <p>{text('saleHelp')}</p>{error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
       {!active.length ? <p>{text('noActivePacks')}</p> : <fieldset disabled={busy} className="min-w-0 space-y-4">
-        <div className="min-w-0"><Label htmlFor={packField}>{text('pack')}</Label><Select id={packField} name="packId" required>{active.map(pack => <option key={pack.id} value={pack.id}>{pack.name} · {formatMinorUnits(pack.amountCents, pack.currency)} · {text('creditCount', { count: pack.credits })}</option>)}</Select></div>
+        <div className="min-w-0"><Label htmlFor={packField}>{text('pack')}</Label><Select id={packField} name="packId" required>{active.map(pack => <option key={pack.id} value={pack.id}>{pack.name} · {formatMinorUnits(pack.amountCents, pack.currency)} · {text('creditCount', { count: formatCount(pack.credits) })}</option>)}</Select></div>
         <Label className="block min-w-0">{text('dueOn')}<Input name="dueOn" type="date" required defaultValue={today}/></Label>
         <Button type="submit" className="w-full sm:w-auto">{text(busy ? 'working' : 'sell')}</Button>
       </fieldset>}

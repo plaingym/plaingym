@@ -10,6 +10,7 @@ import { createWebRegistries } from '@plaingym/shared';
 import type { ExtensionView } from '../../lib/registries.js';
 import { MemberProfile, MemberTabs } from './profile.js';
 import { MemberForm } from './member-form.js';
+import { MembersPage } from './page.js';
 import { HouseholdDetails, HouseholdForm } from './households.js';
 import { memberRequest } from './api.js';
 import { ApiError } from '../../lib/api.js';
@@ -179,5 +180,12 @@ describe('member admin UI', () => {
       expect(screen.queryByRole('button', { name: 'Delete member' })).toBeNull();
       cleanup();
     }
+  });
+  it('groups the member list range and total', async () => {
+    const fallback = vi.mocked(memberRequest).getMockImplementation()!;
+    vi.mocked(memberRequest).mockImplementation(async (schema, path, ...rest) => path.startsWith('/api/members?')
+      ? { data: [member], pagination: { limit: 50, offset: 0, total: 2400 } } : fallback(schema, path, ...rest));
+    view(<MembersPage/>);
+    expect(await screen.findByText('1–1 of 2,400 members')).toBeDefined();
   });
 });

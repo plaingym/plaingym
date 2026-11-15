@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../lib/count.js';
 import { timeLabel } from '../../lib/instant.js';
 import { parseResponse } from '../../lib/response.js';
 import { useCallback, useState, type FormEvent, type ReactNode } from 'react';
@@ -28,9 +29,9 @@ export function sessionTimes(session: ClassSession, timezone: string) {
 }
 /** "Booked 4 of 5 · 2 waitlisted · 3 checked in"; without a capacity, "Booked 4 · …". */
 function countsSummary(counts: SessionCounts, capacity: number | null) {
-  const text = (key: string, values: Record<string, number>) => t('schedule/schedule:' + key, values);
-  const booked = capacity === null ? text('bookedOnly', { booked: counts.booked }) : text('bookedOf', { booked: counts.booked, capacity });
-  return [booked, text('waitlistedCount', { count: counts.waitlisted }), text('checkedInCount', { count: counts.checkedIn })].join(' · ');
+  const text = (key: string, values: Record<string, string>) => t('schedule/schedule:' + key, values);
+  const booked = capacity === null ? text('bookedOnly', { booked: formatCount(counts.booked) }) : text('bookedOf', { booked: formatCount(counts.booked), capacity: formatCount(capacity) });
+  return [booked, text('waitlistedCount', { count: formatCount(counts.waitlisted) }), text('checkedInCount', { count: formatCount(counts.checkedIn) })].join(' · ');
 }
 export function SessionPanels({ sessionId, roles, enabledModules = [], registries = createRegistries() }:
   { sessionId: string; roles: readonly StaffRole[]; enabledModules?: readonly string[]; registries?: ReturnType<typeof createRegistries> }) {

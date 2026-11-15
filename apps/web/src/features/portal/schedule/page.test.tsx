@@ -58,6 +58,22 @@ describe('portal schedule actions', () => {
   });
 });
 describe('portal schedule page', () => {
+  it('groups places and both waitlist messages in the browser number locale', async () => {
+    const NativeNumberFormat = Intl.NumberFormat;
+    const numbers = vi.spyOn(Intl, 'NumberFormat').mockImplementation(function (locale, options) {
+      return new NativeNumberFormat(locale ?? 'de-DE', options);
+    });
+    try {
+      const waiting = { ...booking, memberId: parent, status: 'waitlisted', queueRank: 2400 };
+      client.schedule.mockResolvedValue(answer([{ ...session, placesLeft: 1200, bookings: [waiting] }, { ...session, id: 'full', name: 'Full class', placesLeft: 0 }]));
+      client.book.mockResolvedValue({ ...waiting, queueRank: 3600 });
+      page();
+      expect(await screen.findByText('Places left: 1.200')).toBeDefined();
+      expect(screen.getByText('Waitlist — position 2.400')).toBeDefined();
+      await userEvent.setup().click(screen.getByRole('button', { name: 'Join the waitlist: Full class for Pat Parent' }));
+      expect(await screen.findByText('Pat Parent is on the waitlist at position 3.600.')).toBeDefined();
+    } finally { numbers.mockRestore(); }
+  });
   it('a parent books a place for a child and sees the household places', async () => {
     const user = userEvent.setup(); page();
     await screen.findByText('Fundamentals');

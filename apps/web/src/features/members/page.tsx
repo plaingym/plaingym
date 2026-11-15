@@ -5,6 +5,7 @@ import { Link } from '@tanstack/react-router';
 import { canStaff } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { useBootstrap } from '../../app/context.js';
+import { formatCount } from '../../lib/count.js';
 import { t } from '../../lib/i18n.js';
 import { Alert } from '../../components/ui/alert.js';
 import { Button } from '../../components/ui/button.js';
@@ -56,7 +57,7 @@ function Roster({ gymId, manage }: { gymId: string; manage: boolean }) {
         action={filtered ? <Button variant="outline" onClick={clear}>{text('clearFilters')}</Button>
           : manage ? <Button onClick={() => setCreating(true)}>{text('addMember')}</Button> : undefined}/>
       : <div className="space-y-3">
-        <p className="text-sm text-muted-foreground" aria-live="polite">{t('members/members:showing', { from: offset + 1, to: offset + rows.length, total })}</p>
+        <p className="text-sm text-muted-foreground" aria-live="polite">{t('members/members:showing', { from: formatCount(offset + 1), to: formatCount(offset + rows.length), total: formatCount(total) })}</p>
         <ul className="divide-y divide-border rounded-xl border border-border md:hidden" aria-label={text('title')}>{rows.map((member) => <li key={member.id}>
           <Link to="/admin/members/$memberId" params={{ memberId: member.id }} className="flex min-h-11 items-center justify-between gap-3 p-4 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
             <span className="min-w-0"><span className="block font-medium">{member.firstName} {member.lastName}</span>

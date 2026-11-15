@@ -41,6 +41,15 @@ const card = (name: string) => screen.getByRole('heading', { name }).closest('ar
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
 describe('leads board', () => {
+  it('groups stage totals independently of the loaded page size', async () => {
+    const client = fixture(sample()), list = client.list.getMockImplementation()!;
+    client.list.mockImplementation(async query => {
+      const result = await list(query);
+      return { ...result, pagination: { ...result.pagination, total: 1200 } };
+    });
+    mount(client);
+    expect(await screen.findByRole('heading', { name: /New.*1,200/ })).toBeDefined();
+  });
   it('includes every visible action label in its accessible name, including lost leads', async () => {
     const client = fixture(sample()); const { container } = mount(client);
     await screen.findByText('Lead No1');

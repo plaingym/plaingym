@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../../lib/count.js';
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { canStaff } from '@plaingym/shared';
@@ -149,7 +150,7 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
             <Button variant="outline" className="w-full wrap-anywhere sm:w-auto" disabled={busy} onClick={() => void removeArchived(priced, archived)}>{say('removeArchived', { name: record.name })}</Button>
           </Alert>}
           {carriers > 0 && 'rateMillionths' in record && <Alert role="note" className="mt-3 space-y-2">
-            <p>{say('archivedRate', { count: carriers })}</p>
+            <p>{say('archivedRate', { count: formatCount(carriers) })}</p>
             <Button variant="outline" className="w-full wrap-anywhere sm:w-auto" disabled={busy} onClick={() => void removeEverywhere(record)}>{say('removeEverywhere', { name: record.name })}</Button>
           </Alert>}
           <Button className="mt-3 w-full wrap-anywhere sm:w-auto" variant="outline" onClick={() => { setEditor(record); setArchive(null); setMessage(''); setStale(false); }} disabled={busy || (editor !== 'new' && editor?.id === record.id)}>{text('edit')} {record.name}</Button>

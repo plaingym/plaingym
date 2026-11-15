@@ -24,7 +24,7 @@ const row: Membership = { id: id(4), createdAt, memberId: id(5), householdId: id
   interval: 'monthly', startsOn: '2026-11-01', nextDueOn: '2026-12-01', trialEndsOn: null, frozenAt: null, resumesOn: null, cancelledAt: null,
   commitmentEndsOn: null, scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null, revision: 7,
   discount: { id: id(7), discountId: discount.id, name: discount.name, percentBasisPoints: 1250, amountCents: null, currency: 'USD', waivesSignupFee: true,
-    duration: 'cycles', cyclesLeft: 2, planIds: [plan.id] } };
+    duration: 'cycles', cyclesLeft: 1200, planIds: [plan.id] } };
 function clients() {
   const discounts: DiscountClient = { list: vi.fn(async () => [discount]), create: vi.fn(async () => ({ data: discount })), update: vi.fn(async () => ({ data: discount })) };
   const billing = { ...billingClient, plans: vi.fn(async () => [plan]), settings: vi.fn(async () => ({ currency: 'USD' })),
@@ -124,11 +124,21 @@ it.each([true, false])('replaces or adds the card discount with its revision (ex
   await waitFor(() => expect(api.billing.call).toHaveBeenCalledWith('setMembershipDiscount', { revision: 7, discount: { code: 'FAMILY' } }, { membershipId: row.id }));
 });
 it('shows cycles left and confirms removal without returning a use', async () => {
-  const api = panel(); expect(await screen.findByText('Billing cycles left: 2')).toBeDefined();
+  const api = panel(); expect(await screen.findByText('Billing cycles left: 1,200')).toBeDefined();
   fireEvent.click(screen.getByRole('button', { name: 'Remove discount' }));
   expect(screen.getByText(/use is not returned/)).toBeDefined();
   fireEvent.submit(screen.getByRole('button', { name: 'Remove discount' }).closest('form')!);
   await waitFor(() => expect(api.billing.call).toHaveBeenCalledWith('removeMembershipDiscount', { revision: 7 }, { membershipId: row.id }));
+});
+
+it('groups discount cycles and use counts, preserving the unlimited label', async () => {
+  const api = clients();
+  vi.mocked(api.discounts.list).mockResolvedValue([{ ...discount, cycles: 1200, uses: 2400, maxUses: 3600 },
+    { ...discount, id: id(99), name: 'Unlimited use', uses: 4800, maxUses: null }]);
+  start(<DiscountCatalog gymId={id(1)} client={api.discounts} billing={api.billing}/>);
+  expect(await screen.findByText('Uses: 2,400 / 3,600')).toBeDefined();
+  expect(screen.getByText(/1,200/)).toBeDefined();
+  expect(screen.getByText(/Uses: 4,800/).textContent).toContain('unlimited');
 });
 it.each(['discount_used_up', 'discount_ended', 'discount_plan'])('shows a clear %s refusal in the assignment flow', async reason => {
   const api = panel(); vi.mocked(api.billing.call).mockRejectedValue(new ApiError(409, 'conflict', [reason]));

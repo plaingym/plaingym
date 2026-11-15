@@ -42,7 +42,7 @@ async function fixture(currency = 'USD') {
   const open = await factory('invoices', f.gymId, { householdId: f.household.id, number: 7, status: 'open', amountCents: 2500, dueOn: '2026-10-20' });
   await factory('invoiceLineItems', f.gymId, { householdId: f.household.id, invoiceId: open.id, description: 'Mat fee', amountCents: 2500 });
   const paid = await factory('invoices', f.gymId, { householdId: f.household.id, number: 6, status: 'paid', amountCents: 1000, dueOn: '2026-09-20', paidAt: new Date('2026-09-21T10:00:00Z') });
-  await factory('invoiceLineItems', f.gymId, { householdId: f.household.id, invoiceId: paid.id, description: 'Seminar', amountCents: 1000 });
+  await factory('invoiceLineItems', f.gymId, { householdId: f.household.id, invoiceId: paid.id, description: 'Seminar', amountCents: 1000, quantity: 1200 });
   const draft = await factory('invoices', f.gymId, { householdId: f.household.id, status: 'draft', amountCents: 500, dueOn: '2026-11-20' });
   const other = await factory('invoices', f.gymId, { householdId: f.otherHousehold.id, number: 8, status: 'open', amountCents: 900, dueOn: '2026-10-21' });
   const card = await factory('paymentMethods', f.gymId, { householdId: f.household.id, isDefault: true, expiryMonth: 4, expiryYear: 2029 });
@@ -244,7 +244,7 @@ describe('portal billing routes', () => {
     const text = input.blocks.map(block => block.kind === 'text' ? block.text : '');
     expect(text[0]).toBe('Test Gym');
     expect(input.footer).toBe('Test Gym · Invoice #6');
-    expect(text).toEqual(expect.arrayContaining(['Receipt for invoice #6', 'Paid on Sep 21, 2026', 'Seminar × 1: $10.00', 'Total: $10.00', 'Partially refunded']));
+    expect(text).toEqual(expect.arrayContaining(['Receipt for invoice #6', 'Paid on Sep 21, 2026', 'Seminar × 1,200: $10.00', 'Total: $10.00', 'Partially refunded']));
   });
   it('renders a receipt only for paid invoices', async () => {
     const f = await fixture(), server = f.app(payerPrincipal(f));

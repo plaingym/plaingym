@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../lib/count.js';
 import { calendarDateLabel as calendarDate } from '../../lib/instant.js';
 import { parseResponse } from '../../lib/response.js';
 import { canStaff, type StaffRole } from '@plaingym/shared';
@@ -18,8 +19,8 @@ function BillingMetric({ widget }: { widget: DashboardWidget }) {
   if (!('money' in widget)) return null;
   return <div className="min-w-0 space-y-3 pt-3">
     <p className="break-words text-3xl font-semibold tabular-nums">{money(widget.money.amountCents, widget.money.currency)}</p>
-    {'invoiceCount' in widget && <p className="text-sm text-muted-foreground">{label(widget.id === 'upcoming_charges' ? 'chargeCount' : 'invoiceCount', { count: widget.invoiceCount })}</p>}
-    {widget.id === 'disputes' && <p className="text-sm text-muted-foreground">{label('disputeCount', { count: widget.count })}</p>}
+    {'invoiceCount' in widget && <p className="text-sm text-muted-foreground">{label(widget.id === 'upcoming_charges' ? 'chargeCount' : 'invoiceCount', { count: formatCount(widget.invoiceCount) })}</p>}
+    {widget.id === 'disputes' && <p className="text-sm text-muted-foreground">{label('disputeCount', { count: formatCount(widget.count) })}</p>}
     {widget.id === 'upcoming_charges' && <p className="text-sm text-muted-foreground">{label('range', { from: calendarDate(widget.from), through: calendarDate(widget.through) })}</p>}
     <p className="text-sm text-muted-foreground">{label('help.' + widget.id)}</p>
   </div>;

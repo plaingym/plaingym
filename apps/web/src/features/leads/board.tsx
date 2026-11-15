@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../lib/count.js';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { LeadSource, LeadStage } from '@plaingym/shared/contracts';
 import { ApiError } from '../../lib/api.js';
@@ -62,7 +63,7 @@ export function StageColumn({ stage, filters, version, client, timezone, onDone 
     } catch { if (started === generation.current) setFailed(true); } finally { setMore(false); }
   }
   return <section aria-label={text('stage.' + stage)} className="min-w-0 space-y-3 rounded-xl border border-border bg-muted/30 p-3">
-    <h2 className="text-base font-semibold">{loading ? text('stage.' + stage) : text('count', { stage: text('stage.' + stage), count: total })}</h2>
+    <h2 className="text-base font-semibold">{loading ? text('stage.' + stage) : text('count', { stage: text('stage.' + stage), count: formatCount(total) })}</h2>
     {failed && <Alert variant="error" role="alert">{text('loadError')}</Alert>}
     {loading && <LoadingState />}
     {!loading && rows.length === 0 && !failed && <p className="text-sm text-muted-foreground">{text('empty')}</p>}

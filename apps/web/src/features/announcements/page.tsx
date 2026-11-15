@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../lib/count.js';
 import { instantLabel } from '../../lib/instant.js';
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -43,7 +44,7 @@ export function AnnouncementWorkspace({ gymId, gymName, timezone, owner = false,
           <dl className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6">
             <div><dt className="text-sm text-muted-foreground">{text('date')}</dt><dd>{instantLabel(item.createdAt, timezone)}</dd></div>
             <div className="min-w-0 lg:col-span-2"><dt className="text-sm text-muted-foreground">{text('sender')}</dt><dd>{names.get(item.createdBy) ?? text('senderId', { id: item.createdBy })}</dd></div>
-            {(['sent', 'failed', 'skipped'] as const).map(count => <div key={count}><dt className="text-sm text-muted-foreground">{text(count)}</dt><dd>{item[count]}</dd></div>)}
+            {(['sent', 'failed', 'skipped'] as const).map(count => <div key={count}><dt className="text-sm text-muted-foreground">{text(count)}</dt><dd>{formatCount(item[count])}</dd></div>)}
           </dl>
           <p className="text-sm text-muted-foreground">{text(item.status + 'Status')}</p>
         </Card></li>)}</ul>

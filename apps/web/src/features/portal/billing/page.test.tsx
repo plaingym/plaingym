@@ -12,7 +12,7 @@ import { registration } from './registrations.js';
 
 const id = (n: number) => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
 const gymId = id(1), userId = id(2), householdId = id(3);
-const row = { memberId: id(4), firstName: 'Alex', lastName: 'Rivera', balance: 7, soonestExpiry: '2026-11-12T08:00:00Z' };
+const row = { memberId: id(4), firstName: 'Alex', lastName: 'Rivera', balance: 1200, soonestExpiry: '2026-11-12T08:00:00Z' };
 function mount({ data = [row], role = 'payer', answeredFor = householdId, fail = false, contextResponse }: {
   data?: (typeof row | Omit<typeof row, 'soonestExpiry'> & { soonestExpiry: null })[];
   role?: 'payer' | 'member'; answeredFor?: string; fail?: boolean; contextResponse?: () => Promise<Response>;
@@ -55,7 +55,7 @@ it('waits for the role before showing either billing layout, and retries a faile
 
 it('shows each balance and the soonest expiry in the gym timezone beside payer billing', async () => {
   mount({ data: [row, { ...row, memberId: id(5), firstName: 'Kim', balance: 1, soonestExpiry: null }] });
-  expect(await screen.findByText('7 classes left')).toBeTruthy();
+  expect(await screen.findByText('1,200 classes left')).toBeTruthy();
   expect(screen.getByText('Alex Rivera')).toBeTruthy();
   expect(screen.getByText('Kim Rivera')).toBeTruthy();
   expect(screen.getByText('1 class left')).toBeTruthy();
@@ -67,7 +67,7 @@ it('shows each balance and the soonest expiry in the gym timezone beside payer b
 
 it('lets adult members read credits without fetching or showing invoices, cards or payment actions', async () => {
   const f = mount({ role: 'member' });
-  expect(await screen.findByText('7 classes left')).toBeTruthy();
+  expect(await screen.findByText('1,200 classes left')).toBeTruthy();
   expect(f.fetcher.mock.calls.map(([path]) => String(path))).toEqual(expect.arrayContaining(['/api/portal/credits', '/api/portal/context']));
   expect(screen.queryByRole('heading', { name: 'Invoices' })).toBeNull();
   expect(screen.queryByRole('heading', { name: 'Saved cards' })).toBeNull();
@@ -99,7 +99,7 @@ it('offers retry for a failed balance read', async () => {
 it('never displays or caches a balance answered for another household', async () => {
   const f = mount({ role: 'member', answeredFor: id(99) });
   await waitFor(() => expect(f.fetcher.mock.calls.some(([path]) => path === '/api/portal/households')).toBe(true));
-  expect(screen.queryByText('7 classes left')).toBeNull();
+  expect(screen.queryByText('1,200 classes left')).toBeNull();
   expect(f.cache.getQueryData(['portal', gymId, userId, 'household', householdId, 'billing', 'credits'])).toBeUndefined();
 });
 
@@ -111,7 +111,7 @@ it.each(['2026-03-09T07:00:00Z', '2026-11-02T08:00:00Z'])('names the last usable
 it('uses the current context role while the household list still caches a payer role', async () => {
   const f = mount({ role: 'member' });
   f.cache.setQueryData(portalHouseholdsKey(portalLoginKey(gymId, userId)), { current: householdId, households: [{ householdId, name: 'Rivera', role: 'payer' }] });
-  await screen.findByText('7 classes left');
+  await screen.findByText('1,200 classes left');
   await waitFor(() => expect(f.cache.getQueryData(['portal', gymId, userId, 'household', householdId, 'context'])).toMatchObject({ role: 'member' }));
   expect(screen.queryByRole('heading', { name: 'Invoices' })).toBeNull();
   expect(f.fetcher.mock.calls.some(([path]) => String(path).startsWith('/api/portal/invoices'))).toBe(false);

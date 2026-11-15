@@ -18,13 +18,13 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 const id = '01900000-0000-7000-8000-000000000001', senderId = '01900000-0000-7000-8000-000000000002';
 const program = { id, gymId: id, name: 'Adults', rankSystemId: null, active: true, revision: 1, createdAt: '2026-11-10T00:00:00Z' };
 const announcement: Announcement = { id, createdBy: senderId, subject: 'Winter classes', body: 'Classes resume Monday.',
-  audience: { statuses: ['active', 'trial', 'frozen'], programIds: [] }, recipientCount: 3, status: 'sent',
-  createdAt: '2026-11-10T00:00:00Z', completedAt: '2026-11-10T00:01:00Z', sent: 1, failed: 1, skipped: 1 };
+  audience: { statuses: ['active', 'trial', 'frozen'], programIds: [] }, recipientCount: 1200, status: 'sent',
+  createdAt: '2026-11-10T00:00:00Z', completedAt: '2026-11-10T00:01:00Z', sent: 2400, failed: 3600, skipped: 4800 };
 function client(): AnnouncementClient {
   return { list: vi.fn(async () => ({ data: [announcement], pagination: { total: 1, offset: 0, limit: 20 } })),
     programs: vi.fn(async () => [program]), senders: vi.fn(async () => [{ id, userId: senderId, memberId: null, displayName: 'Jo Owner',
       bio: null, photoKey: null, rank: null, isPublic: false, revision: 1, createdAt: announcement.createdAt }]),
-    preview: vi.fn(async () => ({ recipientCount: 3 })), test: vi.fn(async () => ({ sent: true as const })), send: vi.fn(async () => announcement) };
+    preview: vi.fn(async () => ({ recipientCount: 1200 })), test: vi.fn(async () => ({ sent: true as const })), send: vi.fn(async () => announcement) };
 }
 function provider(content: React.ReactNode) {
   return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })}>{content}</QueryClientProvider>);
@@ -42,7 +42,7 @@ async function compose() {
 }
 async function confirm() {
   await userEvent.click(await screen.findByRole('button', { name: 'Continue to confirmation' }));
-  return screen.getByRole('button', { name: 'Send to 3 members' });
+  return screen.getByRole('button', { name: 'Send to 1,200 members' });
 }
 
 describe('announcement screens', () => {
@@ -50,6 +50,7 @@ describe('announcement screens', () => {
     const service = client(); mount(service);
     await waitFor(() => expect((screen.getByRole('button', { name: 'New announcement' }) as HTMLButtonElement).disabled).toBe(false));
     expect(await screen.findByText('Jo Owner')).toBeDefined();
+    for (const count of ['2,400', '3,600', '4,800']) expect(screen.getByText(count)).toBeDefined();
     expect(screen.getByText(/Nov 9, 2026/)).toBeDefined();
     await userEvent.click(screen.getByRole('button', { name: 'New announcement' }));
     expect((screen.getByRole('checkbox', { name: 'Active' }) as HTMLInputElement).checked).toBe(true);
@@ -79,7 +80,7 @@ describe('announcement screens', () => {
     reject(new Error('private database error'));
     expect((await screen.findByRole('alert')).textContent).toContain('Retry this same announcement');
     expect(screen.getByRole('alert').textContent).not.toContain('private'); expect(screen.queryByRole('button', { name: 'Edit message' })).toBeNull();
-    vi.mocked(service.send).mockResolvedValue(announcement); fireEvent.click(screen.getByRole('button', { name: 'Send to 3 members' }));
+    vi.mocked(service.send).mockResolvedValue(announcement); fireEvent.click(screen.getByRole('button', { name: 'Send to 1,200 members' }));
     await waitFor(() => expect(service.send).toHaveBeenCalledTimes(2));
     expect(vi.mocked(service.send).mock.calls[1]![0]).toEqual(vi.mocked(service.send).mock.calls[0]![0]);
   });
@@ -89,7 +90,7 @@ describe('announcement screens', () => {
     service.test = vi.fn(() => new Promise<{ sent: true }>(result => { resolve = result; }));
     editor(service); await compose(); await confirm();
     fireEvent.click(screen.getByRole('button', { name: 'Send me a test' }));
-    expect((screen.getByRole('button', { name: 'Send to 3 members' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Send to 1,200 members' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByRole('button', { name: 'Sending…' })).toBeNull();
     expect(service.send).not.toHaveBeenCalled();
     resolve({ sent: true });
@@ -150,7 +151,7 @@ describe('announcement screens', () => {
       await userEvent.click(screen.getByRole('button', { name: 'Discard changes' }));
       await userEvent.click(screen.getByRole('button', { name: 'New announcement' }));
       expect(screen.queryByRole('button', { name: 'Edit message' })).toBeNull();
-      await userEvent.click(screen.getByRole('button', { name: 'Send to 3 members' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Send to 1,200 members' }));
       if (retry === 0) {
         expect((await screen.findByRole('alert')).textContent).toContain('Retry this same announcement');
         expect(screen.getByRole('alert').textContent).not.toContain('announcement was not accepted');
@@ -173,7 +174,7 @@ describe('announcement screens', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Preview announcement' }));
     await userEvent.click(await confirm());
     expect((await screen.findByRole('alert')).textContent).toContain('Retry this same announcement');
-    await userEvent.click(screen.getByRole('button', { name: 'Send to 3 members' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Send to 1,200 members' }));
     expect((await screen.findByRole('alert')).textContent).toContain('Retry this same announcement');
     expect(screen.queryByRole('button', { name: 'Edit message' })).toBeNull();
     const calls = vi.mocked(service.send).mock.calls;
@@ -200,7 +201,7 @@ describe('announcement screens', () => {
     await userEvent.click(screen.getByRole('button', { name: 'New announcement' }));
     expect(screen.getByRole('region', { name: 'Member message preview' }).textContent).toContain('Winter classes');
     expect(screen.queryByRole('button', { name: 'Edit message' })).toBeNull();
-    await userEvent.click(screen.getByRole('button', { name: 'Send to 3 members' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Send to 1,200 members' }));
     await waitFor(() => expect(service.send).toHaveBeenCalledTimes(2));
     expect(vi.mocked(service.send).mock.calls[1]![0]).toEqual(vi.mocked(service.send).mock.calls[0]![0]);
   });
@@ -250,7 +251,7 @@ describe('announcement screens', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Edit message' }));
     fireEvent.change(screen.getByLabelText('Subject'), { target: { value: 'New subject' } });
     await userEvent.click(screen.getByRole('button', { name: 'Preview announcement' }));
-    expect(await screen.findByText('3 members will receive this announcement')).toBeDefined();
+    expect(await screen.findByText('1,200 members will receive this announcement')).toBeDefined();
     expect(service.preview).toHaveBeenLastCalledWith(expect.objectContaining({ subject: 'New subject' }));
   });
 

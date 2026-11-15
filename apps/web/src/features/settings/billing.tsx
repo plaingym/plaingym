@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../lib/count.js';
 import { useEffect, useId, useMemo, useState, type FormEvent } from 'react';
 import { billingRulesSchema } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
@@ -50,7 +51,7 @@ export function BillingSettings() {
         </div>
         <p className="text-sm text-muted-foreground">{text('scheduleHelp')}</p>
         <p className="text-sm text-muted-foreground">{text('emailsHelp')}</p>
-        {rules.success && <p className="text-sm text-muted-foreground">{t('settings/billing:emailCount', { count: rules.data.retryDays.length + 1 })}</p>}
+        {rules.success && <p className="text-sm text-muted-foreground">{t('settings/billing:emailCount', { count: formatCount(rules.data.retryDays.length + 1) })}</p>}
         <div className="flex flex-col gap-3 sm:flex-row">
           <Button type="submit">{text('save')}</Button>
           <Button type="button" variant="outline" onClick={() => { setMessage(''); gym.reload(); }}>{text('reload')}</Button>

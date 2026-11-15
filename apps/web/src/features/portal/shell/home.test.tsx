@@ -31,7 +31,7 @@ function fixture(role: 'payer' | 'member' = 'payer', empty = false) {
   const fetcher = vi.fn(async (path: string, _init?: RequestInit) => {
     const url = new URL(path, 'http://localhost');
     return Response.json({ householdId, data: [], pagination: { limit: 1, offset: 0,
-      total: empty ? 0 : url.pathname === '/api/portal/invoices' ? 1 : 2 } });
+      total: empty ? 0 : url.pathname === '/api/portal/invoices' ? 1200 : 2400 } });
   });
   vi.stubGlobal('fetch', fetcher);
   const cache = portalTestCache('gym', 'user', householdId, { defaultOptions: { queries: { retry: false } } });
@@ -42,14 +42,14 @@ it('shows the next booked class, check-in shortcut, pending work and selected me
   const f = fixture(); f.view();
   await screen.findByText('Evening fundamentals');
   expect(screen.queryByText('Waitlisted class')).toBeNull(); expect(screen.queryByText('Cancelled class')).toBeNull();
-  expect(await screen.findByText('Unsigned waivers: 2')).toBeDefined();
-  expect(await screen.findByText('Unpaid invoices: 2')).toBeDefined();
+  expect(await screen.findByText('Unsigned waivers: 2,400')).toBeDefined();
+  expect(await screen.findByText('Unpaid invoices: 2,400')).toBeDefined();
   expect(await screen.findByText('Current: First')).toBeDefined(); expect(screen.getByText('Next: Second')).toBeDefined();
   expect(screen.getByRole('link', { name: 'Show check-in code' }).getAttribute('href')).toBe('/portal/checkin');
   expect(f.fetcher.mock.calls.every(([, init]) => new Headers((init as RequestInit | undefined)?.headers).get('X-Portal-Household') === householdId)).toBe(true);
 });
 it('never requests or renders invoice summaries for a non-payer', async () => {
-  const f = fixture('member'); f.view(); await screen.findByText('Unsigned waivers: 2');
+  const f = fixture('member'); f.view(); await screen.findByText('Unsigned waivers: 2,400');
   expect(f.fetcher.mock.calls.some(([path]) => path.includes('/invoices'))).toBe(false);
   expect(screen.queryByRole('link', { name: 'View invoices' })).toBeNull();
   expect(f.fetcher.mock.calls.some(([path]) => path.startsWith('/api/portal/waivers/pending'))).toBe(true);

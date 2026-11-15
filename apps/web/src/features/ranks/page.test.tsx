@@ -7,10 +7,18 @@ import { createWebRegistries } from '@plaingym/shared';
 import { rankReadSchema, type Member, type Rank, type RankSystem, type Program, type PromotionEligibility, type Promotion } from '@plaingym/shared/contracts';
 import { ApiError } from '../../lib/api.js';
 import type { RanksClient } from './api.js';
-import { RanksWorkspace } from './page.js';
+import { Criteria, RanksWorkspace } from './page.js';
 import { RankEditor } from './rank-editor.js';
 import { MemberRanksPanel, MemberRanksTab } from './member-tab.js';
 import { registration } from './registrations.js';
+
+it('groups criterion counts while preserving numeric progress attributes', () => {
+  render(<Criteria criteria={[{ labelKey: 'ranks/ranks:classes', current: 1200, target: 2400 }]}/>);
+  expect(screen.getByText('1,200 / 2,400')).toBeDefined();
+  const progress = screen.getByRole('progressbar') as HTMLProgressElement;
+  expect(progress.value).toBe(1200);
+  expect(progress.max).toBe(2400);
+});
 
 const id = (value: number) => '019a0af0-9c00-7000-8000-' + String(value).padStart(12, '0');
 const gymId = id(1), memberId = id(5), secondMemberId = id(6), createdAt = '2026-09-01T12:00:00.000Z';

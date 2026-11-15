@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../lib/count.js';
 import { instantLabel } from '../../lib/instant.js';
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { localDate } from '@plaingym/shared/time';
@@ -19,7 +20,7 @@ import { bookingClient } from './client.js';
 
 const REFETCH_MS = 45_000;
 const text = (key: string, values?: Record<string, string | number>) => t('bookings/bookings:' + key, values);
-const status = (booking: ClassBooking) => text(booking.status, { rank: booking.queueRank ?? 0 });
+const status = (booking: ClassBooking) => text(booking.status, { rank: formatCount(booking.queueRank ?? 0) });
 const errorText = (error: unknown) => text(error instanceof ApiError && error.status === 409 ? 'conflict' : 'error');
 const sessionLabel = (session: ClassSession, timezone: string) => `${session.name} · ${instantLabel(session.startsAt, timezone)}`;
 
@@ -89,7 +90,8 @@ function Bookings({ memberId, sessionId }: ExtensionViewProps) {
   return <section className="min-w-0 space-y-4" aria-label={text(sessionId ? 'roster' : 'title')}>
     <div className="flex flex-wrap items-center justify-between gap-2"><div className="min-w-0">
       <h3 className="text-lg font-semibold">{text(sessionId ? 'roster' : 'title')}</h3>
-      {sessionId && counts && <p className="text-sm text-muted-foreground" data-testid="roster-counts">{text('counts', counts)}</p>}</div>
+      {sessionId && counts && <p className="text-sm text-muted-foreground" data-testid="roster-counts">{text('counts', {
+        booked: formatCount(counts.booked), waitlisted: formatCount(counts.waitlisted), checkedIn: formatCount(counts.checkedIn) })}</p>}</div>
       <Button variant="outline" disabled={busy || refreshing} onClick={() => { fullLoad.current = rows.length === 0 && counts === null; setActionError(''); setRefreshing(true); setReload(value => value + 1); }}>{text('refresh')}</Button></div>
     {actionError && <Alert variant="error" focusOnReveal>{actionError}</Alert>}
     {(loadError || bootstrap.isError) && <Alert variant="error">{loadError || text('error')}</Alert>}
@@ -105,7 +107,7 @@ function Bookings({ memberId, sessionId }: ExtensionViewProps) {
     </li>)}</ul>
     <Pager offset={shownOffset} total={total} limit={50} disabled={busy} onChange={value => { fullLoad.current = true; setOffset(value); setReload(value => value + 1); }} previousLabel={text('previous')} nextLabel={text('next')}/>
     {timezone && <BookingForm {...(memberId ? { memberId } : {})} {...(sessionId ? { sessionId } : {})} timezone={timezone} disabled={busy}
-      onSaved={booking => { setNotice(booking.status === 'waitlisted' ? text('waitlistSaved', { rank: booking.queueRank! }) : text('bookingSaved')); fullLoad.current = true; setOffset(0); setReload(value => value + 1); }}/ >}
+      onSaved={booking => { setNotice(booking.status === 'waitlisted' ? text('waitlistSaved', { rank: formatCount(booking.queueRank!) }) : text('bookingSaved')); fullLoad.current = true; setOffset(0); setReload(value => value + 1); }}/ >}
   </section>;
 }
 

@@ -7,8 +7,8 @@ import { ImportStep } from './import-step.js';
 import { registration } from './import-step.registrations.js';
 
 const uploadId = '019aa4a0-0000-7000-8000-000000000010', dryId = '019aa4a0-0000-7000-8000-000000000011', runId = '019aa4a0-0000-7000-8000-000000000012';
-const job = (id: string, dryRun: boolean, status: string, committedRows = 0) => ({ id, uploadId, mapper: 'people', dryRun, status, totalRows: 2,
-  processedRows: status === 'pending' ? 0 : 2, committedRows, errorCount: 0, createdAt: '2026-10-22T12:00:00Z',
+const job = (id: string, dryRun: boolean, status: string, committedRows = 0) => ({ id, uploadId, mapper: 'people', dryRun, status, totalRows: 1200,
+  processedRows: status === 'pending' ? 0 : 1200, committedRows, errorCount: 0, createdAt: '2026-10-22T12:00:00Z',
   completedAt: status === 'succeeded' ? '2026-10-22T12:01:00Z' : null });
 function server(options: { finish?: number; failProgressOnce?: boolean; dryFails?: boolean; partialCommit?: boolean; errorPages?: boolean; deferredBackups?: boolean } = {}) {
   const polls = new Map<string, number>();
@@ -38,7 +38,7 @@ function server(options: { finish?: number; failProgressOnce?: boolean; dryFails
     polls.set(id, count);
     if (options.dryFails && id === dryId) return Response.json({ data: { ...job(id, true, 'failed'), errorCount: 1 } });
     if (options.partialCommit && id === runId && policy === 'error') return Response.json({ data: { ...job(id, false, 'failed', 1), errorCount: 1 } });
-    return Response.json({ data: job(id, id === dryId, count > 1 ? 'succeeded' : 'running', id === runId && count > 1 ? 2 : 0) });
+    return Response.json({ data: job(id, id === dryId, count > 1 ? 'succeeded' : 'running', id === runId && count > 1 ? 1200 : 0) });
   });
   return fetcher;
 }
@@ -73,6 +73,7 @@ describe('setup step 8: import or start fresh', () => {
     expect((screen.getByRole('button', { name: 'Commit import' }) as HTMLButtonElement).disabled).toBe(true);
     await user.click(screen.getByRole('button', { name: 'Dry run' }));
     expect(await screen.findByText(/This was a dry run/)).toBeDefined();
+    expect(screen.getByText(/Processed: 1,200\/1,200/)).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Finish with this import' })).toBeNull();
     await waitFor(() => expect((screen.getByRole('button', { name: 'Commit import' }) as HTMLButtonElement).disabled).toBe(false));
     await user.click(screen.getByRole('button', { name: 'Commit import' }));
@@ -110,6 +111,7 @@ describe('setup step 8: import or start fresh', () => {
     await user.click(await screen.findByRole('button', { name: 'Dry run' }));
     await user.click(await screen.findByRole('button', { name: 'Try checking progress again' }));
     expect(await screen.findByText(/This was a dry run/)).toBeDefined();
+    expect(screen.getByText(/Processed: 1,200\/1,200/)).toBeDefined();
     expect(fetcher.mock.calls.filter(([path]) => path === '/api/imports')).toHaveLength(1);
     expect(screen.queryByRole('button', { name: 'Finish with this import' })).toBeNull();
     expect(document.body.textContent).not.toContain('private provider');

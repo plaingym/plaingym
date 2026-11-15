@@ -131,14 +131,14 @@ describe('staff booking panels', () => {
     const counts = (booked: number, waitlisted: number, checkedIn: number) => ({ booked, waitlisted, checkedIn });
     const row = { displayName: 'River Lee', booking, attendance: null };
     // The page holds one row of 51; the counts still describe the whole session.
-    client.roster.mockResolvedValueOnce({ data: [row], pagination: { total: 51 }, counts: counts(4, 2, 3) })
+    client.roster.mockResolvedValueOnce({ data: [row], pagination: { total: 51 }, counts: counts(1200, 2400, 3600) })
       .mockResolvedValue({ data: [row], pagination: { total: 50 }, counts: counts(3, 1, 3) });
     const Probe = () => { const [seen, setSeen] = useState<SessionCounts | null>(null);
       return <><p data-testid="top">{seen ? `${seen.booked}/${seen.waitlisted}/${seen.checkedIn}` : 'none'}</p>
         <SessionCountsProvider publish={setSeen}><BookingRosterPanel sessionId={sessionId}/></SessionCountsProvider></>; };
     const user = userEvent.setup(); render(<Probe/>);
-    expect((await screen.findByTestId('roster-counts')).textContent).toBe('Booked 4 · 2 waitlisted · 3 checked in');
-    await waitFor(() => expect(screen.getByTestId('top').textContent).toBe('4/2/3'));
+    expect((await screen.findByTestId('roster-counts')).textContent).toBe('Booked 1,200 · 2,400 waitlisted · 3,600 checked in');
+    await waitFor(() => expect(screen.getByTestId('top').textContent).toBe('1200/2400/3600'));
     await user.click(screen.getByRole('button', { name: 'Cancel booking for River Lee' }));
     await waitFor(() => expect(screen.getByTestId('roster-counts').textContent).toBe('Booked 3 · 1 waitlisted · 3 checked in'));
     await waitFor(() => expect(screen.getByTestId('top').textContent).toBe('3/1/3'));
@@ -345,14 +345,14 @@ describe('staff booking panels', () => {
     expect(screen.queryByTestId('roster-counts')).toBeNull(); expect(publish).not.toHaveBeenCalledWith(expect.objectContaining({ booked: expect.anything() }));
   });
   it('searches a member, books on their behalf and reports their waitlist rank', async () => {
-    client.book.mockResolvedValue({ ...booking, status: 'waitlisted', queueRank: 3 });
+    client.book.mockResolvedValue({ ...booking, status: 'waitlisted', queueRank: 1200 });
     const user = userEvent.setup(); render(<BookingRosterPanel sessionId={sessionId}/>);
     await screen.findByText('River Lee');
     await user.type(screen.getByLabelText('Member name'), 'River');
     await user.click(screen.getByRole('button', { name: 'Search members' }));
     await user.selectOptions(screen.getByLabelText('Member', { exact: true }), memberId);
     await user.click(screen.getByRole('button', { name: 'Book a place' }));
-    await screen.findByText('Added to the waitlist at position 3.');
+    await screen.findByText('Added to the waitlist at position 1,200.');
     expect(client.members).toHaveBeenCalledWith('River');
     expect(client.book).toHaveBeenCalledWith({ memberId, sessionId, allowWaitlist: true });
   });

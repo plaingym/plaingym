@@ -13,6 +13,7 @@ import { packClient, type PackClient } from './api.js';
 import { PackCatalog } from './catalog.js';
 import { PackEditor } from './editor.js';
 import { AdjustmentForm } from './forms.js';
+import { SaleForm } from './forms.js';
 import { PackPanel, PacksTab } from './member-tab.js';
 
 vi.mock('../invoices/detail.js', () => ({ InvoiceDetails: ({ invoiceId, onCreditChange }: { invoiceId: string; onCreditChange?: () => void }) => <><p>Opened invoice {invoiceId}</p><button onClick={onCreditChange}>Change invoice</button></> }));
@@ -20,9 +21,9 @@ const id = (n: number) => '019a0af0-9c00-7000-8000-' + String(n).padStart(12, '0
 const createdAt = '2026-11-10T00:00:00Z';
 const pack: ClassPack = { id: id(2), name: 'Ten classes', currency: 'CAD', amountCents: 12050, credits: 10,
   expiryDays: 90, active: true, taxRateIds: [], revision: 4, createdAt };
-const ledger = { data: { memberId: id(3), balance: 8,
-  lots: [{ id: id(5), remaining: 8, createdAt, expiresAt: '2027-02-08T08:00:00Z', saleId: id(6), invoiceId: id(9), invoiceNumber: 42 }],
-  entries: [{ id: id(7), memberId: id(3), kind: 'adjust' as const, credits: -2, lotId: id(5), saleId: null,
+const ledger = { data: { memberId: id(3), balance: 1200,
+  lots: [{ id: id(5), remaining: 1200, createdAt, expiresAt: '2027-02-08T08:00:00Z', saleId: id(6), invoiceId: id(9), invoiceNumber: 42 }],
+  entries: [{ id: id(7), memberId: id(3), kind: 'adjust' as const, credits: -2400, lotId: id(5), saleId: null,
     attendanceId: null, expiresAt: null, reason: 'Correction', adjustmentId: id(8), createdBy: id(4), createdAt, invoiceId: id(9), invoiceNumber: 42 }] },
   pagination: { limit: 25, offset: 0, total: 1 } };
 function client() {
@@ -43,6 +44,18 @@ function editor(api: PackClient, record?: ClassPack) {
 const field = (label: string | RegExp, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
 const submit = () => fireEvent.submit(screen.getByRole('button', { name: 'Save' }).closest('form')!);
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
+
+it('groups pack catalog and sale option credits without changing the option value', async () => {
+  const api = client(), large = { ...pack, credits: 1200, expiryDays: 2400 };
+  vi.mocked(api.packs).mockResolvedValue([large]);
+  const catalog = start(<PackCatalog gymId={id(1)} client={api}/>);
+  expect(await screen.findByText(/Credits: 1,200/)).toBeDefined();
+  expect(screen.getByText(/2,400/)).toBeDefined();
+  catalog.unmount();
+  start(<SaleForm memberId={id(3)} packs={[large]} today="2026-11-14" client={api} close={vi.fn()} sold={vi.fn()}/>);
+  const option = screen.getByRole('option', { name: /Credits: 1,200/ }) as HTMLOptionElement;
+  expect(option.value).toBe(pack.id);
+});
 
 it.each(['0', '101', '1.5'])('rejects invalid catalog credit count %s before calling the API', async value => {
   const api = client(); editor(api);
@@ -136,7 +149,8 @@ it('keeps an adjustment ID for values retried after other values were tried', as
 });
 it('renders balance, lot expiry, history reason and an invoice action', async () => {
   const api = client(); start(<PackPanel gymId={id(1)} memberId={id(3)} timezone="America/Vancouver" access={{ record: false, links: false, refund: false }} client={api}/>);
-  await screen.findByText('Available credits: 8'); expect(screen.getByText('Credits remaining: 8')).toBeDefined();
+  await screen.findByText('Available credits: 1,200'); expect(screen.getByText('Credits remaining: 1,200')).toBeDefined();
+  expect(screen.getByText(/Credits: -2,400/)).toBeDefined();
   expect(screen.getByText('Correction')).toBeDefined(); expect(screen.getByText(/^Expires /)).toBeDefined();
   expect(screen.queryByRole('button', { name: 'Sell a pack' })).toBeNull(); expect(screen.queryByRole('button', { name: 'Adjust credits' })).toBeNull();
   expect(api.packs).not.toHaveBeenCalled();
@@ -156,7 +170,7 @@ it('keeps the balance and pager on screen while the next history page loads', as
   start(<PackPanel gymId={id(1)} memberId={id(3)} timezone="UTC" access={{ record: false, links: false, refund: false }} client={api}/>);
   fireEvent.click(await screen.findByRole('button', { name: 'Next' }));
   await waitFor(() => expect(api.ledger).toHaveBeenLastCalledWith(id(3), 25));
-  expect(screen.getByText('Available credits: 8')).toBeDefined();
+  expect(screen.getByText('Available credits: 1,200')).toBeDefined();
   expect(screen.getByRole('button', { name: 'Next' })).toHaveProperty('disabled', true);
   expect(screen.getByRole('button', { name: 'Previous' })).toHaveProperty('disabled', true);
   finish({ ...first, pagination: { limit: 25, offset: 25, total: 26 } });
@@ -181,7 +195,7 @@ it.each(['owner', 'admin', 'front_desk', 'coach'] as const)('registers and rende
   const load = vi.spyOn(packClient, 'ledger').mockResolvedValue(ledger);
   start(<PacksTab memberId={id(3)}/>, role);
   if (canStaff([role], 'billing.read')) {
-    await screen.findByText('Available credits: 8'); expect(load).toHaveBeenCalledWith(id(3), 0);
+    await screen.findByText('Available credits: 1,200'); expect(load).toHaveBeenCalledWith(id(3), 0);
     expect(screen.queryByRole('button', { name: 'Sell a pack' }) !== null).toBe(canStaff([role], 'payments.record'));
     expect(screen.queryByRole('button', { name: 'Adjust credits' }) !== null).toBe(canStaff([role], 'payments.record'));
   } else { await screen.findByText('You do not have access to class packs'); expect(load).not.toHaveBeenCalled(); }

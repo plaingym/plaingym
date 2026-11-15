@@ -110,15 +110,15 @@ describe('schedule calendar and session detail', () => {
     expect(screen.getAllByText('Extension panel')).toHaveLength(3);
   });
   it('shows the booking counts a session panel publishes beside the capacity, and clears them when the panel goes', () => {
-    let counts: { booked: number; waitlisted: number; checkedIn: number; stale?: boolean } | null = { booked: 4, waitlisted: 2, checkedIn: 3 };
+    let counts: { booked: number; waitlisted: number; checkedIn: number; stale?: boolean } | null = { booked: 1200, waitlisted: 2400, checkedIn: 3600 };
     const Panel = () => { usePublishSessionCounts(counts); return <p>Counting panel</p>; };
     const entry = { id: 'test.counts', labelKey: 'schedule/schedule:notes', permission: { kind: 'staff' as const, capability: 'attendance.manage' as const }, enabled: true, component: Panel };
     const registries = createRegistries([{ sessionPanels: [entry] }]);
     const detail = (capacity: number | null) => <SessionDetail session={{ ...session, capacity, notes: null }} options={options} roles={['coach']} enabledModules={[]} onSaved={vi.fn()} registries={registries}/>;
-    const view = render(detail(5));
-    expect(screen.getByTestId('session-counts').textContent).toBe('Booked 4 of 5 · 2 waitlisted · 3 checked in');
+    const view = render(detail(4800));
+    expect(screen.getByTestId('session-counts').textContent).toBe('Booked 1,200 of 4,800 · 2,400 waitlisted · 3,600 checked in');
     view.rerender(detail(null));
-    expect(screen.getByTestId('session-counts').textContent).toBe('Booked 4 · 2 waitlisted · 3 checked in');
+    expect(screen.getByTestId('session-counts').textContent).toBe('Booked 1,200 · 2,400 waitlisted · 3,600 checked in');
     counts = { booked: 5, waitlisted: 0, checkedIn: 1, stale: true }; view.rerender(detail(5));
     expect(screen.getByTestId('session-counts').textContent).toBe('Booked 5 of 5 · 0 waitlisted · 1 checked in');
     expect(screen.getByText('These counts may be out of date. Refresh the roster to try again.')).toBeDefined();

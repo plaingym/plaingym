@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../../lib/count.js';
 import { useState, type FormEvent } from 'react';
 import type { ChargeType, Plan, TaxRate, TaxRateUsage } from '@plaingym/shared/contracts';
 import { Button } from '../../../components/ui/button.js';
@@ -23,10 +24,10 @@ export function ArchiveConfirmation({ rate, usage, busy, confirm, cancel }: {
     {usage.chargeTypes.length > 0 && <div><h3 className="font-medium">{text('charges')}</h3>
       <ul className="list-disc pl-5">{usage.chargeTypes.map(item => <li key={item.id}>{item.name}{status(item.active)}</li>)}</ul></div>}
     {usage.plans.length > 0 && <div><h3 className="font-medium">{text('plans')}</h3>
-      <ul className="list-disc pl-5">{usage.plans.map(item => <li key={item.id}>{say('archivePlan', { name: item.name, count: item.memberships })}{status(item.active)}</li>)}</ul></div>}
-    {usage.plans.length > 0 && <p role="note" className="font-medium">{say('archiveMemberships', { count: usage.memberships })}</p>}
+      <ul className="list-disc pl-5">{usage.plans.map(item => <li key={item.id}>{say('archivePlan', { name: item.name, count: formatCount(item.memberships) })}{status(item.active)}</li>)}</ul></div>}
+    {usage.plans.length > 0 && <p role="note" className="font-medium">{say('archiveMemberships', { count: formatCount(usage.memberships) })}</p>}
     <div className="flex flex-col gap-2 sm:flex-row">
-      <Button disabled={busy} onClick={() => void confirm()}>{say(rate.active ? 'archiveConfirm' : 'detachConfirm', { count: items })}</Button>
+      <Button disabled={busy} onClick={() => void confirm()}>{say(rate.active ? 'archiveConfirm' : 'detachConfirm', { count: formatCount(items) })}</Button>
       <Button variant="outline" disabled={busy} onClick={cancel}>{text('cancel')}</Button>
     </div>
   </section>;

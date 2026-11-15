@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../lib/count.js';
 import { parseResponse } from '../../lib/response.js';
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -81,7 +82,7 @@ function ImportPanel({ gymId }: { gymId: string }) {
     {(otherFailure || previewRows.isError) && <Alert variant="error" focusOnReveal>{!otherFailure && previewRows.error instanceof PreviewError
       ? previewRows.error.message : label('requestFailed')}</Alert>}
     {upload && <>
-      <p className="break-all text-sm"><span className="font-medium">{upload.filename}</span> · {label('rows')}: {upload.rowCount}</p>
+      <p className="break-all text-sm"><span className="font-medium">{upload.filename}</span> · {label('rows')}: {formatCount(upload.rowCount)}</p>
       <div className="grid gap-4 sm:grid-cols-2">
         <Label className="grid gap-2">{label('mapper')}<Select value={mapper} disabled={!!busy} onChange={(event) => { setMapper(event.target.value as ImportMapper); setPreview(undefined); previewRows.reset(); }}>
           {(['people', 'mat', 'memberships'] as const).map((id) => <option key={id} value={id}>{label('mapper.' + id)}</option>)}
@@ -108,8 +109,8 @@ function ImportPanel({ gymId }: { gymId: string }) {
     </>}
     {preview && <div className="space-y-3">
       <ul className="flex flex-wrap gap-2" aria-label={label('summary')}>
-        {(['create', 'update', 'skip'] as const).map((key) => <li key={key}><Badge tone={summaryTone[key]}>{label(key)}: {preview.summary[key]}</Badge></li>)}
-        <li><Badge tone={preview.summary.errors ? 'destructive' : 'muted'}>{label('errors')}: {preview.summary.errors}</Badge></li>
+        {(['create', 'update', 'skip'] as const).map((key) => <li key={key}><Badge tone={summaryTone[key]}>{label(key)}: {formatCount(preview.summary[key])}</Badge></li>)}
+        <li><Badge tone={preview.summary.errors ? 'destructive' : 'muted'}>{label('errors')}: {formatCount(preview.summary.errors)}</Badge></li>
       </ul>
       <TableContainer label={label('previewTable')}><table className="w-full min-w-[32rem] text-left text-sm">
         <thead className="bg-muted"><tr><th scope="col" className="p-2">{label('row')}</th><th scope="col" className="p-2">{label('action')}</th>{columns.map(field => <th scope="col" className="p-2" key={field}>{importTargetFieldSchema.safeParse(field).success ? label('field.' + field) : field}</th>)}</tr></thead>
@@ -119,7 +120,7 @@ function ImportPanel({ gymId }: { gymId: string }) {
     </div>}
     {progress.data && <div role="status" className="space-y-2 rounded-lg border border-border bg-muted p-3 text-sm">
       <p className="font-medium">{label(progress.data.dryRun ? 'dryRun' : 'import')}: {label('status.' + progress.data.status)}</p>
-      <p>{label('processed')}: {progress.data.processedRows}/{progress.data.totalRows} · {label('committed')}: {progress.data.committedRows} · {label('errors')}: {progress.data.errorCount}</p>
+      <p>{label('processed')}: {formatCount(progress.data.processedRows)}/{formatCount(progress.data.totalRows)} · {label('committed')}: {formatCount(progress.data.committedRows)} · {label('errors')}: {formatCount(progress.data.errorCount)}</p>
       {progress.data.totalRows > 0 && <progress className="block h-2 w-full accent-primary" aria-label={label('processed')} max={progress.data.totalRows} value={progress.data.processedRows}/>}
     </div>}
     {errors.data && <div className="space-y-2"><h3 className="font-semibold">{label('errorReport')}</h3>

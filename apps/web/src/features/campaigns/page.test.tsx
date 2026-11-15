@@ -33,6 +33,13 @@ function mount(service: CampaignClient) {
   return render(<QueryClientProvider client={cache}><CampaignWorkspace gymId={id} timezone="America/Los_Angeles" client={service} /></QueryClientProvider>);
 }
 describe('campaign admin screens', () => {
+  it('groups campaign progress counts', async () => {
+    const service = client();
+    vi.mocked(service.list).mockResolvedValue({ data: [{ ...detail, progress: { total: 12000, pending: 1200, completed: 2400, expired: 3600, revoked: 4800 } }],
+      pagination: { total: 1, limit: 20, offset: 0 } });
+    mount(service);
+    for (const count of ['12,000', '1,200', '2,400', '3,600', '4,800']) expect(await screen.findByText(count)).toBeDefined();
+  });
   it('interpolates every limit from the shared values', () => {
     for (const [key, value] of [['nameLimit', campaignLimits.name], ['recipientLimit', campaignLimits.recipients],
       ['scheduleLimit', campaignLimits.reminders], ['dayLimit', campaignLimits.reminderDay], ['expiryLimit', campaignLimits.expiryDays],

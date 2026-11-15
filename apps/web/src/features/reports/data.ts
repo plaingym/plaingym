@@ -6,7 +6,7 @@ import type { AttendanceReportResponse, MembersReportResponse, RevenueReportResp
 import { t } from '../../lib/i18n.js';
 
 export const text = (key: string, values?: Record<string, string | number>) => t('reports/screens:' + key, values);
-export interface ReportTable { columns: string[]; rows: string[][]; textColumns?: number[] }
+export interface ReportTable { columns: string[]; rows: string[][]; textColumns?: number[]; countColumns?: number[] }
 export function defaultRange(timezone: string, now = new Date()): ReportRangeQuery {
   const to = localDate(now, timezone).slice(0, 7);
   const month = Number(to.slice(0, 4)) * 12 + Number(to.slice(5)) - 1 - 11;
@@ -22,7 +22,7 @@ const period = (bucket: ReportBucket, current: string | undefined) => {
 };
 export function membersTable(data: MembersReportResponse['data']): ReportTable {
   const current = currentPeriod(data.buckets);
-  return { columns: [...periodColumns(), ...['activeAtStart', 'new', 'imported', 'cancelled', 'netChange', 'activeAtEnd', 'frozenAtEnd', 'churn'].map(key => text(key))],
+  return { columns: [...periodColumns(), ...['activeAtStart', 'new', 'imported', 'cancelled', 'netChange', 'activeAtEnd', 'frozenAtEnd', 'churn'].map(key => text(key))], countColumns: [3, 4, 5, 6, 7, 8, 9],
     rows: data.buckets.map(bucket => [...period(bucket, current), ...[bucket.activeAtStart, bucket.new, bucket.imported, bucket.cancelled,
       bucket.netChange, bucket.activeAtEnd, bucket.frozenAtEnd].map(String), bucket.churn
       ? churnPercent.format(bucket.churn.numerator / bucket.churn.denominator) : text('notAvailable')]) };
@@ -33,7 +33,7 @@ export const programKey = (programId: string | null) => programId ?? unassignedP
 export function attendanceTable(data: AttendanceReportResponse['data'], selected = allPrograms): ReportTable {
   const current = currentPeriod(data.buckets);
   const selectedName = data.buckets.flatMap(bucket => bucket.programs).find(program => programKey(program.programId) === selected)?.programName ?? text('unassigned');
-  return { columns: [...periodColumns(), text('program'), text('checkIns'), text('uniqueMembers')], textColumns: [3],
+  return { columns: [...periodColumns(), text('program'), text('checkIns'), text('uniqueMembers')], textColumns: [3], countColumns: [4, 5],
     rows: data.buckets.flatMap(bucket => {
       const programs = bucket.programs.filter(program => selected === allPrograms || programKey(program.programId) === selected);
       if (selected !== allPrograms) {

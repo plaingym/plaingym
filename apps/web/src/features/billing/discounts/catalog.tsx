@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../../lib/count.js';
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Discount } from '@plaingym/shared/contracts';
@@ -30,8 +31,8 @@ export function DiscountCatalog({ gymId, client = discountClient, billing = bill
       {!rows?.length && <EmptyState title={text('empty')} description={text('emptyHelp')}/>}
       <ul className="grid min-w-0 gap-3 lg:grid-cols-2">{rows?.map(row => <li key={row.id} className="min-w-0 space-y-2 rounded-lg border p-4">
         <h3 className="font-semibold">{row.name}</h3><p>{text(row.active ? 'active' : 'inactive')}</p>
-        <p>{benefit(row)}</p><p>{row.duration === 'cycles' ? text('forCycles', { count: row.cycles! }) : row.duration ? text(row.duration) : text('feeOnly')}</p>
-        <p>{text('uses', { count: row.uses, max: row.maxUses ?? text('unlimited') })}</p>
+        <p>{benefit(row)}</p><p>{row.duration === 'cycles' ? text('forCycles', { count: formatCount(row.cycles!) }) : row.duration ? text(row.duration) : text('feeOnly')}</p>
+        <p>{text('uses', { count: formatCount(row.uses), max: row.maxUses === null ? text('unlimited') : formatCount(row.maxUses) })}</p>
         <p>{row.termsLocked ? text('locked') : text('termsHelp')}</p>
         {row.code && <p>{text('code')}: {row.code}</p>}{row.endsOn && <p>{text('endsOn')}: {row.endsOn}</p>}
         <p>{row.planIds.length ? text('selectedPlans', { names: row.planIds.map(id => data.data.plans.find(plan => plan.id === id)?.name ?? text('unavailablePlan')).join(', ') }) : text('allPlans')}</p>

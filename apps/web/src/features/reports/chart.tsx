@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../lib/count.js';
 import { calendarDateLabel } from '../../lib/instant.js';
 import { useId } from 'react';
 import { text } from './data.js';
 
 export interface ChartSeries { label: string; values: number[]; line?: boolean }
 /** Small SVG chart; the immediately following table is the full text alternative. */
-export function ReportChart({ title, periods, series, format = String }: {
+export function ReportChart({ title, periods, series, format = formatCount }: {
   title: string; periods: string[]; series: ChartSeries[]; format?: (value: number) => string;
 }) {
   const id = useId();

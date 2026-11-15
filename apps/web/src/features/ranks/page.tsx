@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../lib/count.js';
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { canStaff } from '@plaingym/shared';
@@ -28,7 +29,7 @@ export function Swatch({ color }: { color: string }) {
 }
 export function Criteria({ criteria, name }: { criteria: { labelKey: string; current: number; target: number }[]; name?: string }) {
   return <div className="space-y-2">{criteria.map((criterion, index) => <div key={index} className="space-y-1">
-    <p className="flex justify-between gap-3 text-sm"><span>{t(criterion.labelKey)}</span><span className="tabular-nums">{criterion.current} / {criterion.target}</span></p>
+    <p className="flex justify-between gap-3 text-sm"><span>{t(criterion.labelKey)}</span><span className="tabular-nums">{formatCount(criterion.current)} / {formatCount(criterion.target)}</span></p>
     <progress className="block h-2 w-full accent-primary" aria-label={t(criterion.labelKey) + (name ? ' ' + name : '')} max={criterion.target || 1} value={criterion.target === 0 ? 1 : Math.min(criterion.current, criterion.target)}/>
   </div>)}</div>;
 }
@@ -132,7 +133,7 @@ export function RanksWorkspace({ gymId, configure, promote, client = ranksClient
             <Field label={text('notes')}><Input name="notes"/></Field>
           </div>
           <p className="text-sm text-muted-foreground">{text('bulkHelp')}</p>
-          <Button type="submit" className="w-full sm:w-auto" disabled={!selected.length || !programId || !rankId}>{text('bulkPromote')} ({selected.length})</Button>
+          <Button type="submit" className="w-full sm:w-auto" disabled={!selected.length || !programId || !rankId}>{text('bulkPromote')} ({formatCount(selected.length)})</Button>
         </>}
       </fieldset></form>
     </div></PageSection>}

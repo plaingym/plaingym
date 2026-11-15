@@ -11,9 +11,9 @@ import { DashboardWidgets } from './widgets.js';
 vi.mock('../../lib/api.js', () => ({ api: { GET: vi.fn() } }));
 const widgets = [
   { id: 'mrr', titleKey: 'dashboard/billing:mrr', status: 'ready', money: { currency: 'CAD', amountCents: 12345 } },
-  { id: 'past_due', titleKey: 'dashboard/billing:past_due', status: 'ready', money: { currency: 'CAD', amountCents: 500 }, invoiceCount: 2 },
-  { id: 'upcoming_charges', titleKey: 'dashboard/billing:upcoming_charges', status: 'ready', money: { currency: 'CAD', amountCents: 10000 }, invoiceCount: 1, from: '2026-10-26', through: '2026-11-01' },
-  { id: 'disputes', titleKey: 'dashboard/billing:disputes', status: 'ready', money: { currency: 'CAD', amountCents: 2500 }, count: 1 },
+  { id: 'past_due', titleKey: 'dashboard/billing:past_due', status: 'ready', money: { currency: 'CAD', amountCents: 500 }, invoiceCount: 1200 },
+  { id: 'upcoming_charges', titleKey: 'dashboard/billing:upcoming_charges', status: 'ready', money: { currency: 'CAD', amountCents: 10000 }, invoiceCount: 3600, from: '2026-10-26', through: '2026-11-01' },
+  { id: 'disputes', titleKey: 'dashboard/billing:disputes', status: 'ready', money: { currency: 'CAD', amountCents: 2500 }, count: 2400 },
 ] as const;
 function start(roles: readonly StaffRole[] = ['owner']) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -29,9 +29,9 @@ describe('billing dashboard panel', () => {
     start();
     await screen.findByRole('heading', { name: 'Monthly recurring revenue' });
     expect(screen.getByText(/123.45/)).toBeDefined();
-    expect(screen.getByText('Invoices: 2')).toBeDefined();
-    expect(screen.getByText('Disputes: 1')).toBeDefined();
-    expect(screen.getByText('Charges: 1')).toBeDefined();
+    expect(screen.getByText('Invoices: 1,200')).toBeDefined();
+    expect(screen.getByText('Disputes: 2,400')).toBeDefined();
+    expect(screen.getByText('Charges: 3,600')).toBeDefined();
     expect(screen.getByText('Oct 26, 2026 through Nov 1, 2026')).toBeDefined();
     expect(document.body.textContent).not.toContain('dashboard/billing:');
     fireEvent.click(screen.getByRole('button', { name: 'Refresh billing' }));

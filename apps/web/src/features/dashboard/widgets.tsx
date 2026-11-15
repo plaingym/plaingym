@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../lib/count.js';
 import { dateLabel } from '../../lib/instant.js';
 import type { ReactNode } from 'react';
 import { canStaff, type StaffPermission, type StaffRole } from '@plaingym/shared';
@@ -26,7 +27,7 @@ export function CountWidget({ widget, help, footer }: { widget: DashboardWidget;
     {items && items.length > 0 && <ul className="mt-3 divide-y divide-border">{items.map(item => <li key={item.href}>
       <a className="flex min-h-11 items-center font-medium underline underline-offset-4" href={item.href}>{item.label}</a>
     </li>)}</ul>}
-    {items && widget.count > items.length && <p className="mt-4 text-sm text-muted-foreground">{t('dashboard/dashboard:showingItems', { shown: items.length, total: widget.count })}</p>}
+    {items && widget.count > items.length && <p className="mt-4 text-sm text-muted-foreground">{t('dashboard/dashboard:showingItems', { shown: formatCount(items.length), total: formatCount(widget.count) })}</p>}
     {footer && <div className="mt-3">{footer}</div>}
   </>;
 }
@@ -52,7 +53,7 @@ export function DashboardWidgets({ widgets, roles, views = [], timezone = 'UTC' 
                 <p className="text-sm text-muted-foreground">{label('lastSeen')}: {member.lastSeenAt
                   ? <time dateTime={member.lastSeenAt}>{dateLabel(member.lastSeenAt, timezone)}</time> : label('neverSeen')}</p>
               </li>)}</ul>}
-            {widget.count > widget.members.length && <p className="mt-4 text-sm text-muted-foreground">{t('dashboard/dashboard:showing', { shown: widget.members.length, total: widget.count })}</p>}
+            {widget.count > widget.members.length && <p className="mt-4 text-sm text-muted-foreground">{t('dashboard/dashboard:showing', { shown: formatCount(widget.members.length), total: formatCount(widget.count) })}</p>}
           </>}
         </>}
     </Card>;

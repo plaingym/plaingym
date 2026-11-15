@@ -18,7 +18,7 @@ beforeEach(() => {
   client.checkedIn.mockResolvedValue([]);
   client.record.mockResolvedValue({ id: 'visit', memberId, source: 'coach' });
   client.undo.mockResolvedValue({ id: 'visit', memberId, source: 'coach' });
-  client.totals.mockResolvedValue({ memberId, total: 3, classes: 2, openMat: 1, byProgram: [{ programId, count: 3 }], byTag: [{ tagId, count: 2 }] });
+  client.totals.mockResolvedValue({ memberId, total: 1200, classes: 1200, openMat: 1200, byProgram: [{ programId, count: 1200 }], byTag: [{ tagId, count: 1200 }] });
   client.labels.mockResolvedValue({ programs: [{ id: programId, name: 'Fundamentals', active: true }], tags: [{ id: tagId, name: 'Practice' }] });
 });
 afterEach(cleanup);
@@ -111,9 +111,11 @@ describe('registered attendance panels', () => {
   });
   it('renders program/tag totals and records an open-mat visit without a session', async () => {
     const user = userEvent.setup(); render(<MemberAttendancePanel memberId={memberId}/>);
-    await screen.findByText('Total visits: 3');
+    await screen.findByText('Total visits: 1,200');
     expect(screen.getByRole('rowheader', { name: 'Fundamentals' })).toBeDefined();
     expect(screen.getByRole('rowheader', { name: 'Practice' })).toBeDefined();
+    expect(screen.getAllByText('1,200')).toHaveLength(5);
+    expect(screen.getByText('Classes attended: 1,200')).toBeDefined();
     await user.selectOptions(screen.getByLabelText('Program'), programId);
     await user.click(screen.getByRole('button', { name: 'Record open-mat visit' }));
     await screen.findByText('Open-mat visit recorded.');
@@ -122,13 +124,13 @@ describe('registered attendance panels', () => {
   });
   it('can record unclassified open mat, and clears prior member/session state when extension IDs change', async () => {
     const user = userEvent.setup(), view = render(<MemberAttendancePanel memberId={memberId}/>);
-    await screen.findByText('Total visits: 3');
+    await screen.findByText('Total visits: 1,200');
     await user.click(screen.getByRole('button', { name: 'Record open-mat visit' }));
     await screen.findByText('Open-mat visit recorded.');
     expect(client.record).toHaveBeenCalledWith({ memberId, sessionId: null, programId: null });
     client.totals.mockReturnValue(new Promise(() => undefined));
     view.rerender(<MemberAttendancePanel memberId="another-member"/>);
-    expect(screen.queryByText('Total visits: 3')).toBeNull();
+    expect(screen.queryByText('Total visits: 1,200')).toBeNull();
     expect(screen.queryByText('Open-mat visit recorded.')).toBeNull();
   });
 });

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../../lib/count.js';
 import { dateFormatter } from '../../../lib/instant.js';
 import { useState } from 'react';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -36,21 +37,21 @@ export function PackPanel({ gymId, memberId, timezone, access, client = packClie
     <h2 className="text-lg font-semibold">{text('tabTitle')}</h2>
     {ledger.isPending && <LoadingState/>}{ledger.isError && <ErrorState onRetry={() => void ledger.refetch()}/>}
     {ledger.data && <>
-      <div className="space-y-3"><p className="text-xl font-semibold">{text('balance', { count: ledger.data.data.balance })}</p>
+      <div className="space-y-3"><p className="text-xl font-semibold">{text('balance', { count: formatCount(ledger.data.data.balance) })}</p>
         <p className="text-sm text-muted-foreground">{text('refreshHelp')}</p>
         <Button variant="outline" disabled={ledger.isFetching} onClick={() => void ledger.refetch()}>{text('refresh')}</Button>
       </div>
       <div className="space-y-3"><h3 className="font-semibold">{text('lots')}</h3>
         {!ledger.data.data.lots.length && <p className="text-muted-foreground">{text('noLots')}</p>}
         <ul className="grid min-w-0 gap-3 lg:grid-cols-2">{ledger.data.data.lots.map(lot => <li key={lot.id} className="min-w-0 space-y-2 rounded-lg border p-4">
-          <p className="font-medium">{text('remaining', { count: lot.remaining })}</p>
+          <p className="font-medium">{text('remaining', { count: formatCount(lot.remaining) })}</p>
           <p>{lot.expiresAt ? text('expiresAt', { date: date(lot.expiresAt) }) : text('neverExpires')}</p>{invoice(lot.invoiceId, lot.invoiceNumber)}
         </li>)}</ul>
       </div>
       <div className="space-y-3"><h3 className="font-semibold">{text('ledger')}</h3>
         {!ledger.data.data.entries.length && <p className="text-muted-foreground">{text('noEntries')}</p>}
         <ul className="space-y-3">{ledger.data.data.entries.map(entry => <li key={entry.id} className="min-w-0 space-y-2 rounded-lg border p-4">
-          <div className="flex flex-col gap-2 sm:flex-row sm:justify-between"><p className="font-medium">{text('kind.' + entry.kind)} · {text('creditCount', { count: entry.credits })}</p><p className="text-sm text-muted-foreground">{date(entry.createdAt)}</p></div>
+          <div className="flex flex-col gap-2 sm:flex-row sm:justify-between"><p className="font-medium">{text('kind.' + entry.kind)} · {text('creditCount', { count: formatCount(entry.credits) })}</p><p className="text-sm text-muted-foreground">{date(entry.createdAt)}</p></div>
           {entry.reason && <p className="whitespace-pre-wrap">{entry.reason}</p>}{invoice(entry.invoiceId, entry.invoiceNumber)}
         </li>)}</ul>
         <Pager offset={offset} total={ledger.data.pagination.total} limit={25} disabled={ledger.isPlaceholderData} onChange={setOffset} previousLabel={text('previous')} nextLabel={text('next')}>

@@ -6,6 +6,12 @@ import { ReportChart } from './chart.js';
 
 afterEach(cleanup);
 describe('ReportChart legend', () => {
+  it('groups count axes, ranges and data point titles', () => {
+    const { container } = render(<ReportChart title="Visits" periods={['2026-10-01']} series={[{ label: 'Visits', values: [1200] }]}/>);
+    expect(container.textContent).toContain('1,200');
+    expect(container.querySelector('rect title')?.textContent).toContain('Visits: 1,200');
+    expect(container.querySelector('rect')?.getAttribute('height')).toBe('145');
+  });
   it('gives each swatch its tone and its bar or line shape as separate classes', () => {
     const { container } = render(<ReportChart title="Chart" periods={['2026-10-01', '2026-11-01']} series={[
       { label: 'New', values: [1, 2] }, { label: 'Active', values: [3, 4], line: true },

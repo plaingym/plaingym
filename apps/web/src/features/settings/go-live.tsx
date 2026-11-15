@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../lib/count.js';
 import { parseResponse } from '../../lib/response.js';
 import { useEffect, useState } from 'react';
 import { goLiveChecklistResponseSchema, type GoLiveSwitches, type GymSettings } from '@plaingym/shared/contracts';
@@ -143,7 +144,7 @@ export function GoLiveSettings() {
         <p className="text-sm text-muted-foreground">{label('reconcileHelp')}</p>
         <p role="status" className="break-words text-sm">{checklist.restoreReconciliation.checkedAt
           ? label(checklist.restoreReconciliation.stripeConfigured === false ? 'reconcileStoredResult' : 'reconcileResult', { at: checklist.restoreReconciliation.checkedAt,
-            inspected: String(checklist.restoreReconciliation.inspected), unresolved: String(checklist.restoreReconciliation.unresolved) })
+            inspected: formatCount(checklist.restoreReconciliation.inspected ?? 0), unresolved: formatCount(checklist.restoreReconciliation.unresolved ?? 0) })
           : label('reconcilePending')}</p>
         {checklist.restoreReconciliation.stripeConfigured === false && <p className="break-words text-sm">
           {label(checklist.items.find(item => item.id === 'stripe_ready')?.status === 'ready' ? 'reconcileStripeConnected' : 'reconcileWithoutStripe')}</p>}

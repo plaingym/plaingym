@@ -118,7 +118,7 @@ describe('CSV admin workflow', () => {
     expect(screen.getByRole('alert').textContent).toContain('do not have permission'); expect(request).not.toHaveBeenCalled();
   });
   it('uploads, previews escaped values, and requires a successful dry run for the current mapping before commit', async () => {
-    const job = { id: runId, uploadId: id, mapper: 'people', dryRun: true, status: 'succeeded', totalRows: 1, processedRows: 1,
+    const job = { id: runId, uploadId: id, mapper: 'people', dryRun: true, status: 'succeeded', totalRows: 1200, processedRows: 1200,
       committedRows: 0, errorCount: 0, createdAt, completedAt: createdAt };
     request.mockImplementation(async (path: string) => {
       if (path === '/api/imports') return { data: { ...job, status: 'pending', processedRows: 0, completedAt: null } };
@@ -141,6 +141,9 @@ describe('CSV admin workflow', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Dry run' }));
     await waitFor(() => expect((screen.getByRole('button', { name: 'Commit import' }) as HTMLButtonElement).disabled).toBe(false));
     expect(request).toHaveBeenCalledWith('/api/imports', expect.objectContaining({ dryRun: true, uploadId: id }));
+    expect(screen.getByText(/Processed: 1,200\/1,200/)).toBeDefined();
+    expect((screen.getByRole('progressbar') as HTMLProgressElement).value).toBe(1200);
+    expect((screen.getByRole('progressbar') as HTMLProgressElement).max).toBe(1200);
     fireEvent.change(screen.getByLabelText('Import type'), { target: { value: 'mat' } });
     expect((screen.getByRole('button', { name: 'Commit import' }) as HTMLButtonElement).disabled).toBe(true);
   });

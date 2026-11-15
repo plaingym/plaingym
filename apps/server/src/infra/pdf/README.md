@@ -3,6 +3,10 @@
 
 Validation and rendering diagnostics use the `pdf/pdf` locale namespace through `messages.ts`.
 
+Receipt builders format quantities with `count.ts` before creating text blocks,
+using the same explicit locale as receipt money and dates (currently English).
+The renderer accepts prepared text and does not reinterpret numbers or identifiers.
+
 `document.ts` validates uploaded static waiver PDFs and appends generated signing
 pages without painting or reflowing the original pages. It uses
 `@cantoo/pdf-lib` 2.11.1 (MIT) for parsing and page copying; PDFKit still generates

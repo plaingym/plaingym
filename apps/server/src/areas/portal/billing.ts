@@ -12,6 +12,7 @@ import { clock as defaultClock } from '../../core/clock.js';
 import { formatMoney } from '../../core/money.js';
 import type { Uploads } from '../../infra/storage/index.js';
 import { renderPdf } from '../../infra/pdf/index.js';
+import { formatCount } from '../../infra/pdf/count.js';
 import type { CheckoutSession } from '../../infra/payments/index.js';
 import { createMemberHouseholdContext } from '../members/household-users.context.js';
 import { householdReader, type HouseholdQueries } from './household.js';
@@ -105,7 +106,7 @@ export function createPortalBillingService(options: PortalBillingOptions) {
           { kind: 'text', text: gym, size: 14 },
           { kind: 'text', text: t('portal/billing:receiptTitle', { number: row.number }), size: 18 },
           { kind: 'text', text: t('portal/billing:receiptPaid', { date: new Intl.DateTimeFormat(receiptLocale, { timeZone: timezone, dateStyle: 'medium' }).format(paidAt) }) },
-          ...lines.map(item => ({ kind: 'text' as const, text: `${item.description} × ${item.quantity}: ${money(item.amountCents)}` })),
+          ...lines.map(item => ({ kind: 'text' as const, text: `${item.description} × ${formatCount(item.quantity, receiptLocale)}: ${money(item.amountCents)}` })),
           { kind: 'text', text: t('portal/billing:receiptTotal', { amount: money(row.amountCents) }), size: 14 },
           ...(row.status === 'paid' ? [] : [{ kind: 'text' as const, text: t('portal/billing:status_' + row.status) }]),
         ] });

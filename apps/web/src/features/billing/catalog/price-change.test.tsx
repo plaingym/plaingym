@@ -39,6 +39,16 @@ const apply = () => fireEvent.click(screen.getByRole('button', { name: 'Apply pr
 afterEach(cleanup);
 
 describe('plan price change step', () => {
+  it('groups preview and result counts while submitting numeric membership revisions', async () => {
+    const f = start({ switchesToPlan: 1200 }, { revision: plan.revision, amountCents: 12000, name: plan.name, taxRateIds: [] });
+    choose(); review();
+    expect(screen.getByText(/1,200/)).toBeDefined();
+    f.call.mockResolvedValueOnce({ data: { ...result, householdsNotified: 2400, householdsWithoutAddress: 3600,
+      householdsPayerErased: 4800, householdsSuppressed: 5600 } });
+    apply();
+    await screen.findByRole('heading', { name: 'Price change result' });
+    for (const count of ['2,400', '3,600', '4,800', '5,600']) expect(screen.getByText(new RegExp(count))).toBeDefined();
+  });
   it.each([{ interval: 'annual' }, { currency: 'USD' }])('offers only new members when the price and terms change: %j', async terms => {
     const f = start({}, { ...input, ...terms });
     expect(screen.getAllByRole('radio')).toHaveLength(1);

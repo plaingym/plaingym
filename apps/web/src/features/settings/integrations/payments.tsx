@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../../lib/count.js';
 import { useGymTime } from '../../../lib/instant.js';
 import { goLiveChecklistResponseSchema, restrictedKeyPattern } from '@plaingym/shared/contracts';
 import { useQuery } from '@tanstack/react-query';
@@ -90,18 +91,18 @@ export function PaymentsIntegrationSection({ payments, editable, lastEventAt, st
         <div className="grid gap-1">
           <p className="text-sm font-medium">{label('switchCleared')}</p>
           <ul className="list-disc space-y-1 pl-5 text-sm">
-            <li>{text('payments.switchCustomers', { count: counts?.customers ?? '–' })}</li>
-            <li>{text('payments.switchCards', { count: counts?.cards ?? '–' })}</li>
-            <li>{text('payments.switchCheckouts', { count: counts?.checkouts ?? '–' })}</li>
-            <li>{text('payments.switchDisputes', { count: counts?.disputes ?? '–' })}</li>
+            <li>{text('payments.switchCustomers', { count: counts ? formatCount(counts.customers) : '–' })}</li>
+            <li>{text('payments.switchCards', { count: counts ? formatCount(counts.cards) : '–' })}</li>
+            <li>{text('payments.switchCheckouts', { count: counts ? formatCount(counts.checkouts) : '–' })}</li>
+            <li>{text('payments.switchDisputes', { count: counts ? formatCount(counts.disputes) : '–' })}</li>
           </ul>
         </div>
         <div className="grid gap-1">
           <p className="text-sm font-medium">{label('switchKept')}</p>
           <ul className="list-disc space-y-1 pl-5 text-sm">
-            <li>{text('payments.switchPayments', { count: counts?.payments ?? '–' })}</li>
+            <li>{text('payments.switchPayments', { count: counts ? formatCount(counts.payments) : '–' })}</li>
             {counts && counts.importedCustomers + counts.importedCards > 0 && <li>{text('payments.switchImported',
-              { customers: counts.importedCustomers, cards: counts.importedCards })}</li>}
+              { customers: formatCount(counts.importedCustomers), cards: formatCount(counts.importedCards) })}</li>}
             <li>{label('switchBooks')}</li>
           </ul>
         </div>

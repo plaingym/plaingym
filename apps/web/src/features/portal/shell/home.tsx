@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../../lib/count.js';
 import { dateFormatter } from '../../../lib/instant.js';
 import { useState } from 'react';
 import { Link } from '@tanstack/react-router';
@@ -61,11 +62,11 @@ export function PortalHome({ client = portalClient }: { client?: PortalClient })
       <PageSection className={card} title={text('waiting')}>
         {context.isError && !waiting(context) && <ErrorState onRetry={() => void context.refetch()} />}
         {(waiting(context) || (!!context.data && waiting(pending))) && <LoadingState />}
-        {pending.isError && !waiting(pending) ? <ErrorState onRetry={() => void pending.refetch()} /> : pending.data !== undefined && <p>{text(pending.data ? 'pendingWaivers' : 'noPendingWaivers', { count: pending.data })}</p>}
+        {pending.isError && !waiting(pending) ? <ErrorState onRetry={() => void pending.refetch()} /> : pending.data !== undefined && <p>{text(pending.data ? 'pendingWaivers' : 'noPendingWaivers', { count: formatCount(pending.data) })}</p>}
         <Button asChild variant="outline"><Link to="/portal/waivers">{text('viewWaivers')}</Link></Button>
         {payer && <>
           {waiting(invoices) ? <LoadingState /> : invoices.isError ? <ErrorState onRetry={() => void invoices.refetch()} />
-            : <p>{text(invoices.data ? 'unpaidInvoices' : 'noUnpaidInvoices', { count: invoices.data ?? 0 })}</p>}
+            : <p>{text(invoices.data ? 'unpaidInvoices' : 'noUnpaidInvoices', { count: formatCount(invoices.data ?? 0) })}</p>}
           <Button asChild variant="outline"><Link to="/portal/billing">{text('viewInvoices')}</Link></Button>
         </>}
       </PageSection>

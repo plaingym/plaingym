@@ -24,10 +24,16 @@ const card: MaskedPaymentMethod = { id: id(5), createdAt, householdId: home, bra
 const settings: GymSettings = { id: gymId, name: 'Gym', slug: 'gym', currency: 'USD', timezone: 'America/Vancouver', address: {}, branding: {}, websiteEnabled: false, existingSiteUrl: null,
   bookingWindowDays: 7, cancellationCutoffMinutes: 0, openMatCountsAsClass: false, billingEnabled: true, memberEmailsEnabled: true, retryDays: [3, 7], dropInChargeTypeId: null, revision: 1, createdAt, updatedAt: createdAt };
 const desk = { record: true, refund: false, links: true }, admin = { ...desk, refund: true };
+
+it('groups invoice line quantities while keeping invoice identifiers unchanged', async () => {
+  const f = transport();
+  start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} client={f.client} access={desk}/>);
+  expect(await screen.findByText(/1,200 ×/)).toBeDefined();
+});
 function transport(initial: Partial<InvoiceDetail> = {}) {
   const detail: InvoiceDetail = { invoice, lineItems: [{ id: id(7), createdAt, householdId: home, invoiceId: invoice.id, kind: 'charge', description: 'Drop-in',
     membershipId: null, chargeTypeId: null, planId: null, billedUnitAmountCents: null, billedDiscount: null,
-    amountCents: 2500, currency: 'USD', quantity: 1, taxRateId: null, taxRateMillionths: null, taxInclusive: null }], payments: [], refunds: [], ...initial };
+    amountCents: 2500, currency: 'USD', quantity: 1200, taxRateId: null, taxRateMillionths: null, taxInclusive: null }], payments: [], refunds: [], ...initial };
   const page = (data: unknown[], total = data.length) => ({ data, pagination: { limit: 25, offset: 0, total } });
   const fetcher = vi.fn(async (path: string | URL | Request, options?: RequestInit) => {
     const url = new URL(String(path), 'http://gym.test'), method = options?.method ?? 'GET';

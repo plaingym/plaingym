@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../lib/count.js';
 import { instantLabel } from '../../lib/instant.js';
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -19,7 +20,7 @@ import { CampaignEditor, text } from './editor.js';
 
 function Progress({ detail }: { detail: LinkCampaignDetail }) {
   return <dl className="grid grid-cols-2 gap-2 sm:grid-cols-5">{(['pending', 'completed', 'expired', 'revoked', 'total'] as const).map(key =>
-    <div key={key}><dt className="text-sm text-muted-foreground">{text(key)}</dt><dd className="font-semibold">{detail.progress[key]}</dd></div>)}</dl>;
+    <div key={key}><dt className="text-sm text-muted-foreground">{text(key)}</dt><dd className="font-semibold">{formatCount(detail.progress[key])}</dd></div>)}</dl>;
 }
 export function CampaignWorkspace({ gymId, timezone, client = campaignClient }: { gymId: string; timezone: string; client?: CampaignClient }) {
   const cache = useQueryClient(), key = ['campaigns', gymId];

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../lib/count.js';
 import { parseResponse } from '../../lib/response.js';
 import { useEffect, useState } from 'react';
 import { importsContracts, importJobSchema, importTargetFieldSchema, importUploadSchema, type ImportColumnMapping, type ImportJob,
@@ -91,7 +92,7 @@ export function ImportStep({ fetcher = fetch, pollMs = 1500 }: { fetcher?: typeo
           onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadFile(file); }}/></div>
       {upload && <fieldset disabled={active} className="min-w-0 space-y-3">
         <legend className="font-medium">{pipeline('mapping')}</legend>
-        <p className="break-words">{upload.filename} · {pipeline('rows')}: {upload.rowCount}</p>
+        <p className="break-words">{upload.filename} · {pipeline('rows')}: {formatCount(upload.rowCount)}</p>
         <Label className="grid gap-2">{pipeline('mapper')}<Select value={mapper}
           onChange={(event) => { setMapper(event.target.value as ImportMapper); setJob(undefined); }}>
           {(['people', 'mat', 'memberships'] as const).map((id) => <option key={id} value={id}>{pipeline('mapper.' + id)}</option>)}</Select></Label>
@@ -107,7 +108,7 @@ export function ImportStep({ fetcher = fetch, pollMs = 1500 }: { fetcher?: typeo
             {importTargetFieldSchema.options.map((field) => <option key={field} value={field}>{pipeline('field.' + field)}</option>)}</Select></Label>)}
       </fieldset>}
       {job && <div role="status"><p>{label('status', { status: label('status.' + job.status) })}</p>
-        <p>{pipeline('processed')}: {job.processedRows}/{job.totalRows} · {label('committed', { count: job.committedRows })} · {pipeline('errors')}: {job.errorCount}</p>
+        <p>{pipeline('processed')}: {formatCount(job.processedRows)}/{formatCount(job.totalRows)} · {label('committed', { count: formatCount(job.committedRows) })} · {pipeline('errors')}: {formatCount(job.errorCount)}</p>
         {job.dryRun && job.status === 'succeeded' && <p>{label('dryRunOnly')}</p>}</div>}
       {job?.status === 'failed' && job.committedRows > 0 && <Alert variant="error" focusOnReveal>{label('partialImport')}</Alert>}
       {job && finished && job.errorCount > 0 && <ImportIssues key={job.id} id={job.id} fetcher={fetcher}/>}

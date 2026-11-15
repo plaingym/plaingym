@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../../lib/count.js';
 import { dateFormatter } from '../../../lib/instant.js';
 import { PortalRecovery } from '../household/recovery.js';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
@@ -75,7 +76,7 @@ export function PortalProgressPage({ client = portalClient }: { client?: PortalC
       {attendance.isPending || (!attendance.data && scope.settling) ? <LoadingState label={text('loading')} />
         : attendance.isError ? <ErrorState message={text('error')} onRetry={() => void attendance.refetch()} />
           : !visits.length ? <EmptyState title={text('noAttendance')} />
-            : <><p className="text-sm text-muted-foreground">{text('attendanceTotal', { count: attendance.data.pages[0]!.pagination.total })}</p>
+            : <><p className="text-sm text-muted-foreground">{text('attendanceTotal', { count: formatCount(attendance.data.pages[0]!.pagination.total) })}</p>
               <ul className="divide-y divide-border rounded-xl border border-border">{visits.map(visit => <li key={visit.id} className="flex flex-col gap-1 p-3 text-sm sm:flex-row sm:justify-between">
                 <span className="break-words">{visit.sessionName ?? text(visit.kind === 'open_mat' ? 'openMat' : 'class')}{programName(visit.programId) ? ' · ' + programName(visit.programId) : ''}</span>
                 <span className="text-muted-foreground">{dateTime.format(new Date(visit.occurredAt))}</span></li>)}</ul>

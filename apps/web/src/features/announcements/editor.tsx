@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../lib/count.js';
 import { useRef, useState } from 'react';
 import { announcementDraftSchema, type AnnouncementDraft, type Program } from '@plaingym/shared/contracts';
 import { Button } from '../../components/ui/button.js';
@@ -78,7 +79,7 @@ export function AnnouncementEditor({ gymName, programs, client, close, sent, own
           </DialogActions>
         </fieldset>
       </form> : <>
-        <p className="font-medium">{text('recipients', { count: preview.count })}</p>
+        <p className="font-medium">{text('recipients', { count: formatCount(preview.count) })}</p>
         <p className="text-sm text-muted-foreground">{text('audienceHelp')}</p>
         <section aria-label={text('messagePreview')} className="min-w-0 space-y-4 rounded-xl border border-border p-4">
           <h3 className="font-semibold">{preview.draft.subject}</h3>
@@ -110,7 +111,7 @@ export function AnnouncementEditor({ gymName, programs, client, close, sent, own
               }
               rememberAttempt?.(undefined);
               sent(result);
-            }, 'sendError')}>{text(pending === 'sendError' ? 'sending' : 'confirm', { count: preview.count })}</Button>}
+            }, 'sendError')}>{text(pending === 'sendError' ? 'sending' : 'confirm', { count: formatCount(preview.count) })}</Button>}
         </DialogActions>
       </>}
       {testSent && <Alert role="status">{text('testSent')}</Alert>}

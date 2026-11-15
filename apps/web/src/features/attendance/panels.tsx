@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../lib/count.js';
 import { useEffect, useId, useState, type FormEvent } from 'react';
 import type { Attendance, AttendanceTotals, Member } from '@plaingym/shared/contracts';
 import type { ExtensionViewProps } from '../../lib/registries.js';
@@ -67,7 +68,7 @@ function Roster({ sessionId }: { sessionId: string }) {
   return <section className="space-y-4" aria-label={text('roster')}>
     <div className="flex flex-wrap items-baseline justify-between gap-2">
       <h3 className="text-lg font-semibold">{text('roster')}</h3>
-      {roster && <p className="text-sm text-muted-foreground" aria-live="polite">{text('checkedCount', { count: checked.size })}</p>}
+      {roster && <p className="text-sm text-muted-foreground" aria-live="polite">{text('checkedCount', { count: formatCount(checked.size) })}</p>}
     </div>
     <form role="search" className="grid grid-cols-[1fr_auto] items-end gap-2 sm:flex" onSubmit={(event) => {
       event.preventDefault(); setQuery(search.trim()); setOffset(0); setReload((value) => value + 1);
@@ -113,7 +114,7 @@ function Breakdown({ caption, heading, rows }: { caption: string; heading: strin
   return <TableContainer label={caption} className="px-3"><table className="w-full text-left text-sm"><caption className="pb-2 text-left font-semibold">{caption}</caption>
     <thead className="sr-only sm:not-sr-only"><tr className="text-muted-foreground"><th scope="col" className="py-2 font-medium">{heading}</th><th scope="col" className="py-2 text-right font-medium">{text('count')}</th></tr></thead>
     <tbody className="divide-y divide-border border-y border-border">{rows.length ? rows.map((row) => <tr key={row.id}>
-      <th scope="row" className="py-2 font-normal">{row.name}</th><td className="py-2 text-right tabular-nums">{row.count}</td>
+      <th scope="row" className="py-2 font-normal">{row.name}</th><td className="py-2 text-right tabular-nums">{formatCount(row.count)}</td>
     </tr>) : <tr><td colSpan={2} className="py-2 text-muted-foreground">{text('none')}</td></tr>}</tbody></table></TableContainer>;
 }
 function MemberAttendance({ memberId }: { memberId: string }) {
@@ -154,8 +155,8 @@ function MemberAttendance({ memberId }: { memberId: string }) {
     <div className="grid items-start gap-6 lg:grid-cols-2">
       {totals && <div className="min-w-0 space-y-4">
         <ul className="grid grid-cols-3 gap-2 text-center">{([['total', totals.total], ['classes', totals.classes], ['openMatTotal', totals.openMat]] as const).map(([key, count]) =>
-          <li key={key} className="rounded-xl border border-border p-3"><span className="sr-only">{text(key, { count })}</span>
-            <span aria-hidden="true" className="block text-2xl font-semibold tabular-nums">{count}</span>
+          <li key={key} className="rounded-xl border border-border p-3"><span className="sr-only">{text(key, { count: formatCount(count) })}</span>
+            <span aria-hidden="true" className="block text-2xl font-semibold tabular-nums">{formatCount(count)}</span>
             <span aria-hidden="true" className="block text-xs text-muted-foreground">{text(key + 'Label')}</span></li>)}</ul>
         <Breakdown caption={text('byProgram')} heading={text('program')} rows={totals.byProgram.map((row) => ({ id: row.programId, count: row.count,
           name: labels?.programs.find((program) => program.id === row.programId)?.name ?? text('unknownProgram') }))}/>

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../../lib/count.js';
 import { calendarDateLabel, useGymTime } from '../../../lib/instant.js';
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { cardBrand } from '../../../lib/card-brand.js';
@@ -177,7 +178,7 @@ function refundable(data: InvoiceDetail, payment: Payment) {
 }
 function LineItems({ data }: { data: InvoiceDetail }) {
   return <StackedList>{data.lineItems.map(line => <StackedItem key={line.id}>
-    <p className="font-medium">{line.description}</p><p>{line.quantity} × {money(line.amountCents, line.currency)}</p>
+    <p className="font-medium">{line.description}</p><p>{formatCount(line.quantity)} × {money(line.amountCents, line.currency)}</p>
     {line.kind === 'tax' && <p className="text-sm text-muted-foreground">{text(line.taxInclusive ? 'inclusive' : 'exclusive')}</p>}
   </StackedItem>)}</StackedList>;
 }

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../../lib/count.js';
 import { calendarDateLabel as date, dateLabel } from '../../../lib/instant.js';
 import { PortalRecovery } from '../household/recovery.js';
 import { cardBrand } from '../../../lib/card-brand.js';
@@ -55,7 +56,7 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
       {credits.data?.length === 0 && <EmptyState title={text('noCredits')} />}
       {!!credits.data?.length && <StackedList>{credits.data.map(row => <StackedItem key={row.memberId} className="gap-1">
         <p className="min-w-0 break-words font-semibold">{row.firstName} {row.lastName}</p>
-        <p>{text(row.balance === 1 ? 'classLeft' : 'classesLeft', { count: row.balance })}</p>
+        <p>{text(row.balance === 1 ? 'classLeft' : 'classesLeft', { count: formatCount(row.balance) })}</p>
         {row.soonestExpiry && <p className="text-sm text-muted-foreground">{text('creditsExpiry', { date: instant(new Date(Date.parse(row.soonestExpiry) - 1).toISOString()) })}</p>}
       </StackedItem>)}</StackedList>}
     </PageSection>}
@@ -111,7 +112,7 @@ function InvoiceLines({ invoiceId, scope }: { invoiceId: string; scope: PortalSc
   if (detail.isError) return <ErrorState onRetry={() => void detail.refetch()} />;
   return <dl className="space-y-1 rounded-lg bg-muted/50 p-3 text-sm">
     {detail.data.lines.map(line => <div key={line.id} className="flex flex-wrap justify-between gap-2">
-      <dt className="min-w-0 break-words">{line.description}{line.quantity > 1 && <span className="text-muted-foreground"> · {text('quantity', { quantity: line.quantity })}</span>}</dt>
+      <dt className="min-w-0 break-words">{line.description}{line.quantity > 1 && <span className="text-muted-foreground"> · {text('quantity', { quantity: formatCount(line.quantity) })}</span>}</dt>
       <dd className="tabular-nums">{money(line.amountCents, line.currency)}</dd></div>)}
     <div className="flex justify-between gap-2 border-t border-border pt-1 font-semibold"><dt>{text('total')}</dt>
       <dd className="tabular-nums">{money(detail.data.invoice.amountCents, detail.data.invoice.currency)}</dd></div>

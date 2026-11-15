@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../../lib/count.js';
 import { PortalRecovery } from '../household/recovery.js';
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -36,7 +37,7 @@ function weekRange(today: string, week: number, timezone: string) {
   return { start, from: zonedInstant(start, '00:00', timezone, { gap: 'shift' })!.toISOString(), to: zonedInstant(end, '00:00', timezone, { gap: 'shift' })!.toISOString() };
 }
 function status(booking: MemberBooking) {
-  return booking.status === 'waitlisted' ? text('waitlisted', { rank: booking.queueRank }) : text('booked');
+  return booking.status === 'waitlisted' ? text('waitlisted', { rank: formatCount(booking.queueRank ?? 0) }) : text('booked');
 }
 
 export function PortalSchedulePage({ client = portalClient, now = () => new Date() }: { client?: PortalClient; now?: () => Date }) {
@@ -50,7 +51,7 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
       scope.run(() => input.action === 'book' ? client.book(input.context, input.member.id, input.session.id, scope.key[4]!) : client.cancel(input.context, input.member.id, input.booking!.id, scope.key[4]!)),
     onMutate: () => setMessage(undefined),
     onSuccess: (row, input) => setMessage({ tone: 'success', text: row.status === 'cancelled' ? text('cancelledSaved', { name: input.member.name })
-      : row.status === 'waitlisted' ? text('waitlistSaved', { name: input.member.name, rank: row.queueRank }) : text('bookedSaved', { name: input.member.name }) }),
+      : row.status === 'waitlisted' ? text('waitlistSaved', { name: input.member.name, rank: formatCount(row.queueRank ?? 0) }) : text('bookedSaved', { name: input.member.name }) }),
     onError: error => setMessage({ tone: 'error', text: error instanceof BookingConflictError ? error.message : text(error instanceof ApiError && error.status === 409 ? 'conflict' : 'error') }),
     onSettled: () => cache.invalidateQueries({ queryKey: [...scope.key, 'schedule'] }),
   });
@@ -94,7 +95,7 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
                     {session.status === 'cancelled' ? <Badge tone="destructive">{text('sessionCancelled')}</Badge>
                       : session.capacity === null ? <Badge tone="muted">{text('dropIn')}</Badge>
                         : session.placesLeft === 0 ? <Badge tone="warning">{text('full')}</Badge>
-                          : <Badge tone="muted">{text('placesLeft', { count: session.placesLeft ?? 0 })}</Badge>}
+                          : <Badge tone="muted">{text('placesLeft', { count: formatCount(session.placesLeft ?? 0) })}</Badge>}
                   </div>
                 </div>
                 {session.bookings.length > 0 && <ul className="space-y-1 text-sm" aria-label={text('householdPlaces')}>

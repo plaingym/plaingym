@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../../lib/count.js';
 import { useRef, useState } from 'react';
 import type { ApplyPlanPriceChangeRequest, Plan, PlanPriceChangeMembership, PlanPriceChangePreview, PlanPriceChangeResult } from '@plaingym/shared/contracts';
 import { addDays, isCalendarDate } from '@plaingym/shared/time';
@@ -131,12 +132,12 @@ export function PriceChange({ plan, input, initial, client, cancel, reload, done
       {newOnly && !result && <p role="note">{text('pcTermsNewOnly')}</p>}
       {error && <Alert variant="error" focusOnReveal role="alert" className="space-y-3"><p>{error}</p>{(conflict || attempted) && <Button disabled={busy} onClick={() => void reloadPlan()}>{text('pcReload')}</Button>}</Alert>}
       {result ? <>
-        <p role="status">{say('pcScheduled', { count: result.scheduled.length, date: result.effectiveOn })}</p>
+        <p role="status">{say('pcScheduled', { count: formatCount(result.scheduled.length), date: result.effectiveOn })}</p>
         <p>{text('pcCycles')}</p>
-        <p>{say('pcNoticesQueued', { count: result.householdsNotified })}</p>
-        <p>{say('pcNoAddress', { count: result.householdsWithoutAddress })}</p>
-        <p>{say('pcSuppressed', { count: result.householdsSuppressed })}</p>
-        <p>{say('pcErased', { count: result.householdsPayerErased })}</p>
+        <p>{say('pcNoticesQueued', { count: formatCount(result.householdsNotified) })}</p>
+        <p>{say('pcNoAddress', { count: formatCount(result.householdsWithoutAddress) })}</p>
+        <p>{say('pcSuppressed', { count: formatCount(result.householdsSuppressed) })}</p>
+        <p>{say('pcErased', { count: formatCount(result.householdsPayerErased) })}</p>
         {!command.current?.notify && <p>{text('pcNoNotices')}</p>}
         <h3 className="font-semibold">{text('pcMoved')}</h3>
         <ul className="list-disc pl-5">{result.scheduled.map(id => <li key={id}>{name(id)}</li>)}</ul>
@@ -160,9 +161,9 @@ export function PriceChange({ plan, input, initial, client, cancel, reload, done
                 onChange={event => { setNotify(event.target.checked); setConfirmed(false); }}/>{text('pcNotify')}</Label>
               {!preview.canEmail && <p role="note">{text('pcEmailOff')}</p>}
               {choice === 'all' && <>
-                <p>{say('pcFrozen', { count: selected.filter(row => row.status === 'frozen').length })}</p>
-                <p>{say('pcExceptions', { commitments: preview.memberships.filter(row => !row.skipReason && row.inCommitment).length,
-                  custom: preview.memberships.filter(row => !row.skipReason && row.customPrice).length })}</p>
+                <p>{say('pcFrozen', { count: formatCount(selected.filter(row => row.status === 'frozen').length) })}</p>
+                <p>{say('pcExceptions', { commitments: formatCount(preview.memberships.filter(row => !row.skipReason && row.inCommitment).length),
+                  custom: formatCount(preview.memberships.filter(row => !row.skipReason && row.customPrice).length) })}</p>
                 <Label className="flex min-h-11 items-center gap-3"><input type="checkbox" className="size-5 shrink-0" checked={include} onChange={event => setInclude(event.target.checked)}/>{text('pcInclude')}</Label>
               </>}
             </fieldset>
@@ -174,7 +175,7 @@ export function PriceChange({ plan, input, initial, client, cancel, reload, done
               <Label className="flex min-h-11 items-center gap-3"><input type="checkbox" className="size-5" checked={commitment} onChange={event => setCommitment(event.target.checked)}/>{text('pcCommitment')}</Label>
               <Label className="flex min-h-11 items-center gap-3"><input type="checkbox" className="size-5" checked={custom} onChange={event => setCustom(event.target.checked)}/>{text('pcCustom')}</Label>
             </fieldset>
-            <p>{say('pcSelection', { count: selected.length, visible: visible.length })}</p>
+            <p>{say('pcSelection', { count: formatCount(selected.length), visible: formatCount(visible.length) })}</p>
             <StackedList className="md:hidden">{visible.map(row => <StackedItem key={row.id}>{selection(row)}{details(row)}</StackedItem>)}</StackedList>
             <TableContainer label={text('pcMembers')} className="hidden md:block"><table className="w-full text-left text-sm"><thead><tr>
               {['pcMember', 'pcCurrent', 'pcCommitmentEnd', 'pcCustom', 'pcStatus'].map(key => <th key={key} className="p-3">{text(key)}</th>)}
@@ -187,16 +188,16 @@ export function PriceChange({ plan, input, initial, client, cancel, reload, done
         {review && <section aria-label={text('pcSummary')} className="space-y-3">
           <h3 className="text-lg font-semibold">{text('pcSummary')}</h3>
           {choice === 'new' ? <p>{text('pcNewSummary')}</p> : <>
-            <p>{say('pcScheduled', { count: selected.length, date })}</p><p>{text('pcCycles')}</p>
-            <p>{say('pcNoticeCount', { count: sendNotice ? counts.reachable : 0 })}</p>
-            <p>{say('pcNoAddress', { count: counts.noAddress })}</p><p>{say('pcSuppressed', { count: counts.suppressed })}</p><p>{say('pcErased', { count: counts.erased })}</p>
+            <p>{say('pcScheduled', { count: formatCount(selected.length), date })}</p><p>{text('pcCycles')}</p>
+            <p>{say('pcNoticeCount', { count: formatCount(sendNotice ? counts.reachable : 0) })}</p>
+            <p>{say('pcNoAddress', { count: formatCount(counts.noAddress) })}</p><p>{say('pcSuppressed', { count: formatCount(counts.suppressed) })}</p><p>{say('pcErased', { count: formatCount(counts.erased) })}</p>
             {!sendNotice && <p>{text('pcNoNotices')}</p>}
             {choice === 'all' && <>
-              <p>{say('pcFrozen', { count: selected.filter(row => row.status === 'frozen').length })}</p>
-              <p>{say('pcStaying', { commitments: preview.memberships.filter(row => !row.skipReason && row.inCommitment && !include).length,
-                custom: preview.memberships.filter(row => !row.skipReason && row.customPrice && !include).length })}</p>
+              <p>{say('pcFrozen', { count: formatCount(selected.filter(row => row.status === 'frozen').length) })}</p>
+              <p>{say('pcStaying', { commitments: formatCount(preview.memberships.filter(row => !row.skipReason && row.inCommitment && !include).length),
+                custom: formatCount(preview.memberships.filter(row => !row.skipReason && row.customPrice && !include).length) })}</p>
             </>}
-            {preview.switchesToPlan > 0 && <p>{say('pcIncoming', { count: preview.switchesToPlan })}</p>}
+            {preview.switchesToPlan > 0 && <p>{say('pcIncoming', { count: formatCount(preview.switchesToPlan) })}</p>}
             {warning && <Alert role="note"><p>{text('pcWarning')}</p><Label className="flex min-h-11 items-center gap-3"><input type="checkbox" className="size-5 shrink-0" checked={confirmed}
               disabled={locked} onChange={event => setConfirmed(event.target.checked)}/>{text('pcConfirmWarning')}</Label></Alert>}
           </>}

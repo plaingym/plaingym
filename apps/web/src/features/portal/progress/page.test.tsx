@@ -32,6 +32,11 @@ const page = () => render(<QueryClientProvider client={portalTestCache('gym', 'u
   <PortalProgressPage client={client as unknown as PortalClient} /></QueryClientProvider>);
 
 describe('portal progress', () => {
+  it('groups the attendance total without changing pagination offsets', async () => {
+    client.attendance.mockResolvedValue({ data: [visit(1)], pagination: { limit: 20, offset: 0, total: 1200 }, householdId: 'household' });
+    page();
+    expect(await screen.findByText('Visits: 1,200')).toBeDefined();
+  });
   it('renders the class name returned with a session attendance', async () => {
     client.attendance.mockResolvedValue({ data: [{ ...visit(1), sessionId: first, sessionName: 'Evening fundamentals' }], pagination: { limit: 20, offset: 0, total: 1 }, householdId: 'household' });
     page(); expect(await screen.findByText('Evening fundamentals')).toBeDefined();

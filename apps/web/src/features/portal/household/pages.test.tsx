@@ -207,7 +207,7 @@ describe('portal billing page', () => {
   const invoice = (invoiceId: string, number: number, status: string, paidAt: string | null) => ({ id: invoiceId, number, kind: 'one_off', status, dueOn: '2026-10-20', amountCents: 2500, currency: 'USD', paidAt });
   const handle: Handler = (path, init) => {
     if (path.startsWith('/api/portal/invoices?')) return page([invoice(ids.invoice, 7, 'past_due', null), invoice(ids.paid, 6, 'paid', '2026-09-21T10:00:00.000Z')]);
-    if (path === `/api/portal/invoices/${ids.invoice}`) return { data: { invoice: invoice(ids.invoice, 7, 'past_due', null), lines: [{ id: id(20), kind: 'charge', description: 'Mat fee', amountCents: 2500, currency: 'USD', quantity: 1, taxRateMillionths: null, taxInclusive: null }] } };
+    if (path === `/api/portal/invoices/${ids.invoice}`) return { data: { invoice: invoice(ids.invoice, 7, 'past_due', null), lines: [{ id: id(20), kind: 'charge', description: 'Mat fee', amountCents: 2500, currency: 'USD', quantity: 1200, taxRateMillionths: null, taxInclusive: null }] } };
     if (path === `/api/portal/invoices/${ids.invoice}/checkout` && init?.method === 'POST') return { data: { url: 'https://checkout.example.test/pay', expiresAt: '2026-10-30T00:00:00.000Z' } };
     if (path === `/api/portal/invoices/${ids.paid}/receipt`) return { data: { url: 'https://files.example.test/receipt.pdf', expiresAt: '2026-10-30T00:00:00.000Z' } };
     if (path === '/api/portal/payment-methods') return { data: [{ id: ids.card, brand: 'visa', last4: '4242', expiryMonth: 4, expiryYear: 2029, isDefault: true }] };
@@ -222,6 +222,7 @@ describe('portal billing page', () => {
     expect(screen.getAllByRole('button', { name: 'Download receipt' })).toHaveLength(1);
     await user.click(screen.getAllByRole('button', { name: 'Details' })[0]!);
     expect(await screen.findByText('Mat fee')).toBeDefined();
+    expect(screen.getByText(/Quantity 1,200/)).toBeDefined();
     await user.click(screen.getByRole('button', { name: 'Pay now' }));
     await waitFor(() => expect(navigate).toHaveBeenCalledWith('https://checkout.example.test/pay'));
     expect(view.calls('POST', `/api/portal/invoices/${ids.invoice}/checkout`)).toHaveLength(1);

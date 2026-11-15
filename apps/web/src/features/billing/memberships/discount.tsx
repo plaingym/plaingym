@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { formatCount } from '../../../lib/count.js';
 import { useRef, useState, type FormEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { Membership, MembershipDiscountSelection } from '@plaingym/shared/contracts';
@@ -33,7 +34,7 @@ export function MembershipDiscount({ row, gymId, client, discounts, reload }: {
   return <div className="min-w-0 space-y-3 border-t pt-3 wrap-anywhere">
     {row.discount && <div className="space-y-1 text-sm"><p className="font-medium">{text('current', { name: row.discount.name })}</p>
       <p>{benefit(row.discount)}</p>
-      {row.discount.duration && <p>{row.discount.cyclesLeft === null ? text('forever') : text('cyclesLeft', { count: row.discount.cyclesLeft })}</p>}
+      {row.discount.duration && <p>{row.discount.cyclesLeft === null ? text('forever') : text('cyclesLeft', { count: formatCount(row.discount.cyclesLeft) })}</p>}
     </div>}
     {row.status !== 'cancelled' && !action && <div className="flex flex-col gap-2 sm:flex-row">
       <Button variant="outline" onClick={() => open('edit')}>{text(row.discount ? 'change' : 'add')}</Button>

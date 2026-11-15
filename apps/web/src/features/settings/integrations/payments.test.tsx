@@ -10,7 +10,7 @@ const client = vi.hoisted(() => ({ GET: vi.fn(), PUT: vi.fn(), POST: vi.fn(), DE
 vi.mock('../../../lib/api.js', () => ({ api: client, createApiClient: () => client }));
 
 const connected: Integrations = { ...integrations, revision: 4, payments: { configured: true, mode: 'test', webhookRegistered: true, accountLocked: true,
-  testData: { customers: 3, cards: 2, checkouts: 1, payments: 4, importedCustomers: 5, importedCards: 6, disputes: 7 }, importedCustomersOnly: false } };
+  testData: { customers: 1200, cards: 2400, checkouts: 3600, payments: 4800, importedCustomers: 6800, importedCards: 7200, disputes: 5600 }, importedCustomersOnly: false } };
 const live: Integrations = { ...connected, revision: 5, payments: { ...connected.payments, mode: 'live', accountLocked: false, testData: null } };
 let current: Integrations;
 beforeEach(() => { for (const fn of Object.values(client)) fn.mockReset(); current = integrations; serve(client.GET, () => current, health('2026-11-02T11:00:00Z', null)); });
@@ -91,11 +91,11 @@ describe('Settings → Payments', () => {
     await submit(user, 'rk_live_abc123');
     const confirm = await screen.findByRole('form', { name: 'Switch to live mode' });
     expect(screen.queryByRole('form', { name: 'Payments' })).toBeNull();
-    for (const line of ['Households’ test Stripe customers: 3.', 'Saved test cards: 2.', 'Open Stripe payment and card pages: 1.', 'Open test disputes: 7.', 'Test card payments: 4.'])
+    for (const line of ['Households’ test Stripe customers: 1,200.', 'Saved test cards: 2,400.', 'Open Stripe payment and card pages: 3,600.', 'Open test disputes: 5,600.', 'Test card payments: 4,800.'])
       expect(within(confirm).getByText(new RegExp(line.replace('.', '\\.')))).toBeDefined();
     expect(within(confirm).getByText(/marked “Stripe test mode”/)).toBeDefined();
     // Imported references are listed as kept: they may be the gym's live customers and cards.
-    expect(within(confirm).getByText(/Imported Stripe customers: 5, and imported cards: 6\./)).toBeDefined();
+    expect(within(confirm).getByText(/Imported Stripe customers: 6,800, and imported cards: 7,200\./)).toBeDefined();
     expect(document.body.textContent).not.toContain('rk_live_abc123');
     // Nothing is sent until the owner ticks the confirmation.
     await user.click(within(confirm).getByRole('button', { name: 'Clear test data and switch to live' }));
