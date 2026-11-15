@@ -70,7 +70,7 @@ export function createMembersService(options: MembersOptions = {}) {
       action, targetType, targetId, occurredAt: clock.now(), ...(before ? { before } : {}), ...(after ? { after } : {}) }); // No PII or PINs in the append-only log.
   const getMemberRow = async (tx: Transaction, id: string) => missing((await tx.select(memberFields).from(members).where(eq(members.id, id)))[0]);
   const getHouseholdRow = async (tx: Transaction, id: string) => missing((await tx.select(householdFields).from(households).where(eq(households.id, id)).for('update'))[0]);
-  async function freeUpcomingPlaces(tx: Transaction, memberId: string, now: Date, context: MutationContext) {
+  async function freeUpcomingPlaces(tx: Transaction, memberId: string, now: Date, context: MutationContext, mode: 'cancel' | 'delete' = 'cancel') {
     const sessions = await tx.selectDistinct({ id: classBookings.sessionId }).from(classBookings)
       .innerJoin(classSessions, and(eq(classSessions.gymId, classBookings.gymId), eq(classSessions.id, classBookings.sessionId)))
       .where(and(eq(classBookings.memberId, memberId), inArray(classBookings.status, ['booked', 'waitlisted']), gt(classSessions.startsAt, now)))
@@ -80,6 +80,8 @@ export function createMembersService(options: MembersOptions = {}) {
       const [upcoming] = await tx.select({ id: classSessions.id }).from(classSessions)
         .where(and(eq(classSessions.id, session.id), gt(classSessions.startsAt, now))).for('update');
       if (!upcoming) continue;
+      // Deletion removes the bookings below; no cancellation event should refer to a removed booking.
+      if (mode === 'delete') { freedSessionIds.push(session.id); continue; }
       const cancelled = await tx.update(classBookings).set({ status: 'cancelled', waitlistPosition: null, cancelledAt: now })
         .where(and(eq(classBookings.sessionId, session.id), eq(classBookings.memberId, memberId),
           inArray(classBookings.status, ['booked', 'waitlisted']))).returning({ id: classBookings.id });
@@ -197,6 +199,8 @@ export function createMembersService(options: MembersOptions = {}) {
           ...(last ? { name: 'Anonymized household', email: null, phone: null, address: {}, stripeCustomerId: null } : {}) }).where(eq(households.id, home.id));
         const revokedCards: { id: string; processorId: string }[] = [];
         if (last) {
+          // Checkout locks its signed link before its invoice. Revoke household links in that order too.
+          await tx.update(signedLinks).set({ revokedAt: now }).where(and(eq(signedLinks.householdId, home.id), isNull(signedLinks.revokedAt)));
           revokedCards.push(...await tx.update(paymentMethods).set({ revokedAt: now, isDefault: false })
             .where(and(eq(paymentMethods.householdId, home.id), isNull(paymentMethods.revokedAt)))
             .returning({ id: paymentMethods.id, processorId: paymentMethods.processorId }));
@@ -207,7 +211,6 @@ export function createMembersService(options: MembersOptions = {}) {
           for (const invoice of held) await audit(tx, context, 'billing.invoice.held', 'invoice', invoice.id,
             undefined, { reason: 'household_anonymized' });
           await tx.delete(householdUsers).where(eq(householdUsers.householdId, home.id));
-          await tx.update(signedLinks).set({ revokedAt: now }).where(and(eq(signedLinks.householdId, home.id), isNull(signedLinks.revokedAt)));
         }
         await audit(tx, context, 'member.anonymized', 'member', id);
         if (waivers.length) await audit(tx, context, 'member.waivers.deleted', 'member', id);
@@ -240,7 +243,7 @@ export function createMembersService(options: MembersOptions = {}) {
     /**
      * Deletes a member added by mistake, with everything that is theirs alone, and their household with its last member.
      * Refused (`conflict`, reason `billing_records`) once the member has any billing record: Cancel or Erase stay for those.
-     * The member, household and membership rows are locked first, so a charge, sale or card that starts at the same moment
+     * The household, member and membership rows are locked first, so a charge, sale or card that starts at the same moment
      * either commits first and refuses the delete, or waits and then fails its own reference to the deleted rows.
      * The released files are queued in the same transaction, like an erasure's.
      */
@@ -249,10 +252,13 @@ export function createMembersService(options: MembersOptions = {}) {
       try {
         return await withJobTransaction(scope, context.gymId, async (transaction) => {
           const { tx } = transaction;
+          const found = missing((await tx.select({ householdId: members.householdId }).from(members).where(eq(members.id, id)))[0]);
+          const home = await getHouseholdRow(tx, found.householdId);
           const before = missing((await tx.select({ householdId: members.householdId, email: members.emailAddress, photoKey: members.photoKey, revision: members.revision })
             .from(members).where(eq(members.id, id)).for('update'))[0]);
+          if (before.householdId !== home.id) throw new AppError('conflict', 'The member changed households while waiting to delete');
           if (before.revision !== revision) throw new AppError('conflict', 'The record changed since it was read.');
-          const home = await getHouseholdRow(tx, before.householdId), now = clock.now();
+          const now = clock.now();
           const owned = await tx.select({ id: memberships.id }).from(memberships).where(eq(memberships.memberId, id)).orderBy(asc(memberships.id)).for('update');
           const membershipIds = owned.map((row) => row.id);
           const last = !(await tx.select({ id: members.id }).from(members).where(and(eq(members.householdId, home.id), ne(members.id, id))).limit(1)).length;
@@ -266,7 +272,7 @@ export function createMembersService(options: MembersOptions = {}) {
               || await any(tx.select({ id: households.id }).from(households).where(and(eq(households.id, home.id), isNotNull(households.stripeCustomerId)))));
           if (billed) throw new AppError('conflict', 'Members with billing records cannot be deleted', { reason: [c.memberDeleteBlockedReason] });
           // Each upcoming place is freed under its session's lock, in session order, like any other booking change.
-          const freedSessionIds = await freeUpcomingPlaces(tx, id, now, context);
+          const freedSessionIds = await freeUpcomingPlaces(tx, id, now, context, 'delete');
           await tx.delete(classBookings).where(eq(classBookings.memberId, id));
           await tx.delete(attendances).where(eq(attendances.memberId, id));
           await tx.delete(memberTagLinks).where(eq(memberTagLinks.memberId, id));

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, ilike } from 'drizzle-orm';
-import { forGym, staffProfiles, staffRoles, householdUsers, members, writeAudit, revisionGuard, assertRevised, type Transaction } from '@plaingym/db';
+import { forGym, staffProfiles, staffRoles, householdUsers, writeAudit, revisionGuard, assertRevised, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import type { CreateStaffProfileRequest, UpdateStaffProfileRequest, StaffProfileListQuery, GrantStaffRoleRequest, UpdateStaffRoleRequest, Pagination } from '@plaingym/shared/contracts';
+import { lockMemberForWrite, memberWriteScope } from '../members/member-write.js';
 
 export interface StaffActor { gymId: string; actorUserId: string; clock: Clock; }
 /** Serialize management changes with role revocation, and recheck the caller in the write transaction. */
@@ -22,15 +23,15 @@ function profileRecord(row: typeof staffProfiles.$inferSelect) {
 export async function staffAudit(tx: Transaction, actor: StaffActor, action: string, targetType: string, targetId: string) {
   await writeAudit(tx, { gymId: actor.gymId, actorKind: 'user', actorUserId: actor.actorUserId, action, targetType, targetId, occurredAt: actor.clock.now() });
 }
-export function createStaffProfileService(scope = forGym) {
+export function createStaffProfileService(baseScope = forGym) {
+  const scope = memberWriteScope(baseScope);
   async function links(tx: Transaction, input: Pick<CreateStaffProfileRequest, 'userId' | 'memberId'>) {
     if (input.userId) {
       const [role] = await tx.select({ id: staffRoles.id }).from(staffRoles).where(eq(staffRoles.userId, input.userId));
       if (!role) throw new AppError('not_found', 'Staff account not found');
     }
     if (input.memberId) {
-      const [member] = await tx.select({ id: members.id }).from(members).where(eq(members.id, input.memberId));
-      if (!member) throw new AppError('not_found', 'Member not found');
+      await lockMemberForWrite(tx, input.memberId, 'share');
     }
   }
   // Only attachPhoto passes a new key; requests may at most clear one, which is rechecked here for direct callers.

@@ -149,16 +149,19 @@ member in one transaction: memberships that were never invoiced, attendance and 
 history and promotion notes, signed waivers, tag links, the lead and its contacts, announcement recipients and opt-outs
 (the delivery records lose their address digests, as on erasure), member logins and member links; a staff profile
 linked to the member is unlinked and its revision advances. With the household's last member the household goes too, with its portal logins and
-signed links. The member row is locked first (`FOR UPDATE`), then the household and the member's memberships, before
+signed links. The household is locked first, then the member (`FOR UPDATE`) and the member's memberships, before
 the checks, so a charge, sale or card that starts at the same moment either commits first and the delete is refused,
-or waits and then fails its own reference to the deleted rows. Bookings, check-ins, tags, promotions and pack sales
-report a conflicting reference as 409 and log the constraint name. In bookings, tags, promotions and pack sales a member
+or waits and then fails its own reference to the deleted rows. Bookings, check-ins, tags, promotions, pack sales
+and staff profile links report a conflicting reference as 409 and log the constraint name. In bookings, tags, promotions,
+pack sales and staff profile links a member
 visible before waiting for its lock but deleted meanwhile also produces 409; a check-in that waited answers 404, as for
 a member that is gone. A missing or foreign-gym member still produces 404. A delete that loses such a race answers with a conflict and logs
 `members.delete.foreign_key` for a failed foreign key. The delete test checks the database's foreign-key catalog by name,
 so adding a reference to members, households or memberships requires an explicit cleanup or refusal decision.
-Upcoming places are freed under each session's row lock and the route promotes their waitlists after commit. The
-release of the photo and signature images commits with the delete as a `members.erasure.release_files` job (key
+Upcoming places are freed under each session's row lock and the route promotes their waitlists after commit. A
+delete removes bookings without cancellation audits; erasure cancels and audits the bookings it retains.
+Last-member erasure revokes household signed links before holding invoices, matching Checkout's link-before-invoice order.
+The release of the photo and signature images commits with the delete as a `members.erasure.release_files` job (key
 `release-deleted:<member ID>`), so the route needs the job queue like erasure does, and the route marks the files
 deleted after commit as a head start. The `member.deleted` and `household.deleted` audit events carry IDs only.
 

@@ -440,8 +440,7 @@ describe('unpaid submitted joins', () => {
     const before = await f.state(join.householdId), person = before.members[0]!;
     expect(before.invoices[0]).toMatchObject({ status: 'open', needsReview: runnerFirst });
     expect(count(before.audits, 'billing.runner.overdue_held', join.invoiceId)).toBe(runnerFirst ? 1 : 0);
-    // Distinct instants make the later anonymization audit unambiguous.
-    f.clock.advance(1);
+    // The runner and erasure can write their holds at the exact same instant.
     await createMembersService({ scope: db.forGym, clock: f.clock }).eraseMember(system(f.gymId), person.id,
       { revision: person.revision }, { jobs: new FakeJobs(f.clock), timezone });
     const erased = await f.state(join.householdId);
@@ -466,6 +465,31 @@ describe('unpaid submitted joins', () => {
     expect(count(after.audits, 'public.join.voided', join.householdId)).toBe(0);
     expect(await f.run()).toBe(0);
     expect(count((await f.state(join.householdId)).audits, 'public.join.retained', join.householdId)).toBe(1);
+  });
+
+  it.each([true, false])('keeps a same-instant erasure hold regardless of UUID ordering (runner ID sorts last: %s)', async runnerSortsLast => {
+    const f = await fixture(), join = await f.submit('tied-holds@example.invalid');
+    const prefix = uuidv7().slice(0, -12), low = prefix + '000000000000', high = prefix + 'ffffffffffff';
+    await db.forGym(f.gymId, async tx => {
+      await tx.update(invoices).set({ needsReview: true }).where(eq(invoices.id, join.invoiceId));
+      for (const [action, id] of [['billing.runner.overdue_held', runnerSortsLast ? high : low],
+        ['billing.invoice.held', runnerSortsLast ? low : high]] as const) {
+        await writeAudit(tx, { id, gymId: f.gymId, actorKind: 'system', action, targetType: 'invoice', targetId: join.invoiceId,
+          occurredAt: f.clock.now(), ...(action === 'billing.invoice.held' ? { after: { reason: 'household_anonymized' } } : {}) });
+      }
+    });
+    f.clock.set(seventhDay);
+    // Memberships remain pending, so only the hold prevents cleanup here.
+    expect(await db.forGym(f.gymId, async tx => {
+      await tx.select().from(households).where(eq(households.id, join.householdId)).for('update');
+      return checkSubmittedJoin(tx, join, new Set(), f.clock);
+    })).toEqual({ outcome: 'keep' });
+    expect(await f.run()).toBe(0);
+    const after = await f.state(join.householdId);
+    expect(after.invoices).toMatchObject([{ status: 'open', needsReview: true }]);
+    expect(after.memberships).toMatchObject([{ status: 'pending' }]);
+    expect(count(after.audits, 'billing.invoice.voided', join.invoiceId)).toBe(0);
+    expect(count(after.audits, 'public.join.retained', join.householdId)).toBe(1);
   });
 
   it.each([['billing.runner.overdue_held', 'billing.invoice.held', false], ['billing.invoice.held', 'billing.runner.overdue_held', true]] as const)(

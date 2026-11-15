@@ -65,7 +65,7 @@ describe('member deletion', () => {
     const past = await factory('classSessions', gymA), upcoming = await factory('classSessions', gymA,
       { startsAt: new Date('2026-11-01T18:00:00Z'), endsAt: new Date('2026-11-01T19:00:00Z') });
     await factory('classBookings', gymA, { memberId: person.id, sessionId: past.id, bookedBy: userId });
-    await factory('classBookings', gymA, { memberId: person.id, sessionId: upcoming.id, bookedBy: userId });
+    const removedBooking = await factory('classBookings', gymA, { memberId: person.id, sessionId: upcoming.id, bookedBy: userId });
     const kept = await factory('classBookings', gymA, { memberId: sibling.id, sessionId: upcoming.id, bookedBy: userId });
     await factory('memberRanks', gymA, { memberId: person.id, notes: 'Promotion note' });
     const signatureKey = gymA + '/waivers/' + uuidv7();
@@ -115,6 +115,7 @@ describe('member deletion', () => {
     // The audit event names the deleted member by ID only, as an erasure's does.
     const deleted = left.audits.find((event) => event.action === 'member.deleted')!;
     expect(deleted).toMatchObject({ targetType: 'member', before: null, after: null });
+    expect(await database.forGym(gymA, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, removedBooking.id)))).toEqual([]);
     // The photo and signature image are released by the job the delete committed.
     const release = createErasureJobs({ uploadsFor }).find((job) => job.id === releaseErasedFilesJob)!;
     const queued = jobs.jobs.filter((job) => job.name === releaseErasedFilesJob);

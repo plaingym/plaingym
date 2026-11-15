@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, desc, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, or } from 'drizzle-orm';
 import { auditEvents, households, invoices, paymentAttempts, paymentMethods, payments, signedLinks, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { revokeSignedLinkIn } from '../../links/service.js';
@@ -66,7 +66,8 @@ export async function checkSubmittedJoin(tx: Transaction, join: SubmittedJoin, c
   if (invoice.needsReview) {
     const [hold] = await tx.select({ action: auditEvents.action }).from(auditEvents).where(and(eq(auditEvents.targetId, invoice.id),
       inArray(auditEvents.action, ['billing.runner.overdue_held', 'billing.invoice.held'])))
-      .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1);
+      // UUIDs are random within a millisecond: a tied staff or erasure hold must protect the join.
+      .orderBy(desc(auditEvents.occurredAt), asc(eq(auditEvents.action, 'billing.runner.overdue_held')), desc(auditEvents.id)).limit(1);
     if (hold?.action !== 'billing.runner.overdue_held') return keep;
   } else if (await audited('billing.invoice.review_released')) return keep;
   // An unconfirmed reservation never disclosed a URL, but it must have ended.
