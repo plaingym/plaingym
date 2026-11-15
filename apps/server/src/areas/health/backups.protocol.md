@@ -7,6 +7,7 @@ The maintenance bundle runs independently of the HTTP server:
 node maintenance.mjs migrate
 node maintenance.mjs snapshot
 node maintenance.mjs snapshot pre-upgrade
+node maintenance.mjs snapshot-check SNAPSHOT_UUID
 node maintenance.mjs restore SNAPSHOT_UUID --config /private/restore.json
 node maintenance.mjs resume
 node maintenance.mjs rotate-key
@@ -24,6 +25,11 @@ refusal that changed nothing in this run, 4 a refusal whose check found no value
 under the new key (so no run committed anything), 1 anything else.
 `restore-connect` lifts the fence (grants `CONNECT` back to `app`; `PUBLIC` stays
 revoked); the host script decides when that is safe.
+
+`snapshot-check` reads the configured bucket's authenticated inventory and reports
+whether the named snapshot is complete, without taking a snapshot or migrating.
+It uses the app-role pool for configuration and run history. Bucket inspection
+times out after 30 seconds; an error means availability could not be checked.
 
 The bundle reads `MAINTENANCE_DATABASE_URL`, `APP_ENCRYPTION_KEY`, `BACKUP_STAGING_DIR`,
 `UPLOADS_DIR`, and the `UPLOADS_S3_*` settings when uploads live in S3: snapshots
@@ -69,7 +75,10 @@ Publishing this list commits a snapshot. Multipart failures abort and retry from
 the encrypted staging file. Install-level jobs use durable occurrence keys.
 
 Retention shares snapshots between 24 hourly, 7 daily, and 4 weekly buckets,
-plus two pre-upgrade snapshots no older than 30 days. Pruning first validates all
+plus two pre-upgrade snapshots no older than 30 days. An active schema guard's
+`SCHEMA_SNAPSHOT` is kept in addition, without an age limit, until a later update
+replaces or clears it. Its blobs and source uploads stay protected and its bytes
+count toward the same budget. Pruning first validates all
 reference lists and referenced blob sizes. Each run is recorded in `backup_runs`
 before anything is uploaded, and runs hold the backup lock, so a prefix with no
 reference list whose run never succeeded is an abandoned publication: pruning

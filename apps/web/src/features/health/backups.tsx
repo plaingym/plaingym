@@ -30,9 +30,9 @@ export function BackupActions({ gymId, owner, onConfirmed }: { gymId: string; ow
   const now = useMutation({ mutationFn: async () => {
     const id = requestId ?? crypto.randomUUID(); setRequestId(id);
     const result = await api.POST(backupControlContracts.now.path, { body: { requestId: id } });
+    if (result.response.status < 500) setRequestId(null);
     if (!result.response.ok) throw new Error('Backup request failed');
     cache.setQueryData(key, parseResponse(backupControlResponseSchema, result.data).data);
-    setRequestId(null);
   }, onSettled: refresh });
   const confirm = useMutation({ mutationFn: async () => {
     if (confirming === null) return;

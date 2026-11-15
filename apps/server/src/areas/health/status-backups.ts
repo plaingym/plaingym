@@ -49,7 +49,9 @@ export function createBackupHealthProvider(options: {
       const nextSnapshotBytes = newestSnapshot ? newestSnapshot.database.size + newestSnapshot.manifest.size : 0;
       const capacity = retainedBytes + nextSnapshotBytes + 128 * 1024 * 1024 > settings.budgetBytes;
       return { id: 'last_backup', status: overdue || capacity || settings.pruningHeld ? 'warning' : 'healthy', checkedAt,
-        message: statusMessage(capacity ? 'backupCapacity' : !latest ? 'backupNoneUnderKey' : overdue ? 'backupOverdue' : 'backupHealthy'),
+        // The hold message names the budget, so it explains capacity too; it never hides a missing or overdue snapshot.
+        message: statusMessage(capacity ? (settings.pruningHeld ? 'backupPruningHeld' : 'backupCapacity') : !latest ? 'backupNoneUnderKey'
+          : overdue ? 'backupOverdue' : settings.pruningHeld ? 'backupPruningHeld' : 'backupHealthy'),
         details: { latestRestorableAt: latest?.startedAt.toISOString() ?? null, ageSeconds, overdue,
           noneUnderCurrentKey: !latest, retainedBytes, retentionBudgetBytes: settings.budgetBytes, pruningStopped: false,
           pruningHeld: settings.pruningHeld ?? false, keyReminder: true } };

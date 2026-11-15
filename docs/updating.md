@@ -64,6 +64,17 @@ server's.
 An install set up by hand with Docker Compose has no timer until you
 [add it](install-reference.md#adding-the-update-timer).
 
+The pre-upgrade snapshot named by `schema-compatibility.yaml` is kept for as long as
+the schema guard names it, even beyond the normal two-snapshot, 30-day pre-upgrade
+retention limit. A later update that replaces or clears that restore point releases
+the old snapshot to normal retention. It still counts toward the retention budget;
+if protected backups fill the budget, new snapshots stop until there is room.
+Keep the guard with the database. Removing it also removes this retention protection.
+When `update.sh --rollback` refuses an older release below the schema floor, it checks
+the named snapshot at the configured backup destination and reports if it is missing
+or incomplete, or if availability could not be checked. Startup refuses incompatible
+code before opening the database and directs you to that check.
+
 ## When a patch doesn't install by itself
 
 A newer patch release raises no banner while the nightly update is expected to install it.

@@ -7,6 +7,7 @@ import { parseEncryptionKey } from '../core/secrets.js';
 import { createS3Client, S3BackupObjectStore } from '../infra/storage/index.js';
 import { createRuntimeUploads } from '../infra/storage/runtime.js';
 import { readIdentityFile } from '../areas/health/backups.js';
+import { inventory } from '../areas/health/backups.retention.js';
 import { snapshotPrefix } from '../areas/health/backups.format.js';
 import { PostgresMaintenance } from '../areas/health/backups.database.js';
 import { BackupsNotConfiguredError, configuredBackup, loadBackupConfig } from '../areas/health/restore.config.js';
@@ -82,6 +83,19 @@ export class BackupsNotSetUpError extends Error {
   constructor() { super('Backups are not set up: set them up in Settings → Email, payments and backups, then run the update again'); this.name = 'BackupsNotSetUpError'; }
 }
 async function maintenance(args: readonly string[], environment: ReturnType<typeof maintenanceEnvironment>): Promise<void> {
+  if (args[0] === 'snapshot-check') {
+    if (args.length !== 2 || !z.uuid().safeParse(args[1]).success) throw new RestoreFailure('Usage: snapshot-check SNAPSHOT');
+    const config = await loadBackupConfig(environment.appEncryptionKey);
+    const backup = configuredBackup(config, environment.database, clock, environment.stagingDirectory, environment.uploads.forGym);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const state = await Promise.race([inventory(backup.store, config.blobKey, backup.service.runs),
+        new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error('Snapshot availability check timed out')), 30_000); })]);
+      const found = state.snapshots.some(snapshot => snapshot.id === args[1]);
+      process.stdout.write(found ? 'Snapshot availability: available\n' : 'Snapshot availability: missing or incomplete\n');
+    } finally { clearTimeout(timer); backup.client.destroy(); }
+    return;
+  }
   if (args[0] === 'snapshot') {
     const config = await loadBackupConfig(environment.appEncryptionKey).catch((error: unknown) => {
       throw error instanceof BackupsNotConfiguredError ? new BackupsNotSetUpError() : error;

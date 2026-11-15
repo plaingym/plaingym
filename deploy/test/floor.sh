@@ -55,6 +55,10 @@ case "$*" in
     case "$3" in "$OLDER_ID") echo "$OLDER_ID" ;; *:v1.9.0|"$PREVIOUS_ID") echo "$PREVIOUS_ID" ;; *"$INITIAL_ID") echo "$INITIAL_ID" ;; *) echo "$DIGEST" ;; esac ;;
   'image inspect '*'org.opencontainers.image.version'*) version_of "$3" ;;
   'image inspect '*RepoDigests*) echo "ghcr.io/example/app@$DIGEST" ;;
+  *' snapshot-check '*)
+    for argument in "$@"; do checked_snapshot=$argument; done
+    if [ -f "$SNAPSHOTS/$checked_snapshot" ]; then echo 'Snapshot availability: available'
+    else echo 'Snapshot availability: missing or incomplete'; fi ;;
   *' snapshot pre-upgrade'|*' snapshot manual')
     compatible "${APP_IMAGE:-$PREVIOUS_ID}"
     case "${FAIL_AT:-}" in snapshot|snapshot_rollback) exit 1 ;; esac
@@ -278,6 +282,7 @@ for app_state in stopped restarting; do
       echo 'Rolled back below the migrated floor after an unchanged retry.' >&2; exit 1
     fi
     said "Restore pre-upgrade snapshot $snapshot;"
+    said 'The named snapshot is available'
   done
   update 1 APP_STATE="$app_state" FAIL_AT=after_migrating MIGRATED_STATE='22|3000'
   said 'Retry v1.12.0'
@@ -450,6 +455,17 @@ make_install placeholder_snapshot v1.11.0 v1.10.0
 installed history_record v1.11.0 "$digest" starting v1.10.0 "$snapshot"
 installed write_schema_guard v1.10.0 v1.11.0 -
 [ "$(installed floor_snapshot v1.10.0)" = "$snapshot" ]
+
+# A named restore point can be removed outside the app; the refusal must say it is gone.
+make_install missing_restore_point v2.0.0 v2.0.0
+update 0
+rm -f "$SNAPSHOTS/$snapshot"
+before=$(cat "$case_dir/.env" "$case_dir/version-history.tsv" | sha256sum)
+if sh "$case_dir/update.sh" --rollback > "$temporary/output" 2>&1; then
+  echo 'Accepted rollback with a missing floor snapshot.' >&2; exit 1
+fi
+said "The named snapshot $snapshot is missing or incomplete"
+[ "$before" = "$(cat "$case_dir/.env" "$case_dir/version-history.tsv" | sha256sum)" ]
 
 # With no floor recorded, as with development builds, nothing bounds a rollback.
 make_install no_floor v2.0.0 v2.0.0

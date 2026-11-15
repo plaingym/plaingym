@@ -38,7 +38,13 @@ describe('last-backup health', () => {
   it('reports a restore pruning hold without treating a complete snapshot as damaged', async () => {
     const complete = await snapshot();
     expect(await read({ ...settings, pruningHeld: true })).toMatchObject({ status: 'warning',
+      message: expect.stringMatching(/pruning is on hold.*retention budget/),
       details: { pruningHeld: true, pruningStopped: false, latestRestorableAt: complete.startedAt } });
+  });
+  it('keeps the overdue message while the pruning hold is on', async () => {
+    await snapshot(new Date(clock.now().getTime() - 3 * 3_600_000));
+    expect(await read({ ...settings, pruningHeld: true })).toMatchObject({ status: 'warning',
+      message: expect.stringMatching(/overdue/), details: { pruningHeld: true, overdue: true } });
   });
   it('does not call an old-key or legacy snapshot restorable under a replacement key', async () => {
     await snapshot(new Date('2026-10-22T11:00:00Z'));

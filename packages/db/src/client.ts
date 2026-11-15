@@ -50,7 +50,7 @@ export function assertSchemaCompatibility(env: NodeJS.ProcessEnv = process.env):
   if (comparison < 0) {
     const migratedBy = parse(env.SCHEMA_RELEASE)?.every(Number.isSafeInteger) ? env.SCHEMA_RELEASE : env.SCHEMA_ROLLBACK_FLOOR;
     const snapshot = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(env.SCHEMA_SNAPSHOT ?? '') ? env.SCHEMA_SNAPSHOT : '(see version-history.tsv)';
-    throw new SchemaCompatibilityError(`Cannot start ${env.APP_VERSION}: the database was upgraded by ${migratedBy} and requires at least ${env.SCHEMA_ROLLBACK_FLOOR}. Retry ${migratedBy} or update to a compatible release, or run update.sh --rollback within that floor. To go back below it, restore pre-upgrade snapshot ${snapshot} using docs/restoring.md; a restore loses changes made since the upgrade.`);
+    throw new SchemaCompatibilityError(`Cannot start ${env.APP_VERSION}: the database was upgraded by ${migratedBy} and requires at least ${env.SCHEMA_ROLLBACK_FLOOR}. Retry ${migratedBy} or update to a compatible release, or run update.sh --rollback within that floor. To go back below it, restore pre-upgrade snapshot ${snapshot} using docs/restoring.md, if still available; update.sh --rollback checks its availability. A restore loses changes made since the upgrade.`);
   }
 }
 /**

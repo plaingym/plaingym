@@ -237,7 +237,10 @@ they leave the server, so neither the server nor the bucket's provider can read
 them; only your private key can.
 
 Retention keeps 24 hourly, 7 nightly and 4 weekly snapshots, plus up to two
-pre-upgrade snapshots from the last 30 days, within an 8 GB budget. Files that
+pre-upgrade snapshots from the last 30 days, within an 8 GB budget. The snapshot
+named by the schema guard is also kept until a later update replaces or clears
+that restore point, regardless of age; it counts toward the same budget.
+See [updating](updating.md) for the protection and rollback availability check. Files that
 didn't change are stored once and shared between snapshots. The **Health** page
 in the admin shows the last successful backup and any failure.
 

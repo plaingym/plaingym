@@ -596,9 +596,20 @@ if [ "$requested_rollback" = true ]; then
   target_floor=$(schema_floor)
   if [ -n "$target_floor" ] && ! version_at_least "$to_version" "$target_floor"; then
     restore_snapshot=$(floor_snapshot "$target_floor")
+    # Use the current image's maintenance entry only: no migrations, snapshot, or service changes.
+    snapshot_availability='Snapshot availability could not be checked; verify the backup destination before restoring.'
+    if printf '%s\n' "$restore_snapshot" | grep -Eq '^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$'; then
+      check_image=$current
+      [ -z "$recovery_version" ] || check_image=$(cut -f4 "$RECOVERY")
+      snapshot_check=$(APP_IMAGE="$check_image" compose run --rm --no-deps -T --entrypoint node app /app/maintenance.mjs snapshot-check "$restore_snapshot" 2>/dev/null) || snapshot_check=
+      case "$snapshot_check" in
+        'Snapshot availability: available') snapshot_availability='The named snapshot is available at the configured backup destination.' ;;
+        'Snapshot availability: missing or incomplete') snapshot_availability="The named snapshot $restore_snapshot is missing or incomplete at the configured backup destination; choose another verified backup or retry a compatible release." ;;
+      esac
+    fi
     forward=
     [ -z "$recovery_version" ] || forward=" Or retry $recovery_version with ./update.sh IMAGE, or update to a newer compatible signed release, which keeps the data written since that snapshot."
-    fail "Cannot roll back to $to_version: the schema requires $target_floor. Restore pre-upgrade snapshot ${restore_snapshot:-listed in version-history.tsv}; see docs/restoring.md.$forward Nothing was changed."
+    fail "Cannot roll back to $to_version: the schema requires $target_floor. Restore pre-upgrade snapshot ${restore_snapshot:-listed in version-history.tsv}; see docs/restoring.md. $snapshot_availability$forward Nothing was changed."
   fi
   printf '%s\n' "$target" | grep -Eq '^sha256:[a-f0-9]{64}$' || fail 'The previous image digest is invalid.'
   if ! target_id=$(docker image inspect "$target" --format '{{.Id}}' 2>/dev/null); then

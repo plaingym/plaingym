@@ -408,7 +408,12 @@ entrypoint and never runs migrations, so a crash in that entrypoint cannot preve
 rollback. A failed role check or restore resumption still blocks the snapshot.
 Forward-recovery retries use `snapshot manual`
 and its hourly/daily/weekly retention tiers, so they cannot displace the original snapshot
-from the two pre-upgrade slots
+from the two pre-upgrade slots. The snapshot named by the active schema guard is
+kept for as long as the guard names it, beyond the normal two-snapshot, 30-day limit.
+A later update that replaces or clears the named restore point releases the old one
+to normal retention. Its objects and referenced uploads remain protected, and it
+counts toward the retention budget; a full budget stops new snapshots. Keep the guard
+with the database to preserve this protection
 (`apps/server/src/areas/health/backups.protocol.md`). Nothing is written between
 the snapshot and the start of the target image. Without configured backups the
 snapshot exits with "Backups are not set up: set them up in Settings → Email,
@@ -432,6 +437,13 @@ failed migration, even if another attempt raises the floor. Failure and rollback
 messages name that original restore point. Keep that image locally. Restore a
 pre-upgrade snapshot like any other, from the setup wizard on a fresh install or
 with `gym-app restore`.
+
+A refusal from `--rollback` checks the named snapshot's authenticated inventory at
+the configured destination using the current image's `snapshot-check` maintenance
+command. It says when the snapshot is missing or incomplete, or the check could not
+finish (including an older image without that command). The check does not migrate
+the database, take a snapshot, or change the running services. Startup checks schema
+compatibility before opening the database and points to this availability check.
 
 `restore.sh SNAPSHOT_ID CONFIG_JSON KEY_FILE` takes host file paths, streams them
 to the maintenance CLI, and removes its app-owned 0600 copies after the restore

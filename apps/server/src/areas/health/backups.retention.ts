@@ -5,7 +5,8 @@ import { protectedName, readReferences, snapshotPrefix, verifyReferences } from 
 import type { Snapshot } from './backups.format.js';
 
 /** Distinct UTC buckets; one snapshot can satisfy hourly, daily, and weekly tiers. */
-export function retainedSnapshots(snapshots: readonly Snapshot[], now: Date): ReadonlySet<string> {
+export function retainedSnapshots(snapshots: readonly Snapshot[], now: Date,
+  floorSnapshot = process.env.SCHEMA_ROLLBACK_FLOOR ? process.env.SCHEMA_SNAPSHOT : undefined): ReadonlySet<string> {
   const ordered = [...snapshots].sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   const keep = new Set<string>();
   const tiers: [number, number][] = [[3_600_000, 24], [86_400_000, 7], [604_800_000, 4]];
@@ -19,6 +20,8 @@ export function retainedSnapshots(snapshots: readonly Snapshot[], now: Date): Re
   }
   for (const snapshot of ordered.filter((s) => s.kind === 'pre_upgrade' &&
     now.getTime() - new Date(s.startedAt).getTime() <= 30 * 86_400_000).slice(0, 2)) keep.add(snapshot.id);
+  // The guard's restore point also protects its blobs and deleted source uploads, without an age limit.
+  if (floorSnapshot && snapshots.some(s => s.id === floorSnapshot)) keep.add(floorSnapshot);
   return keep;
 }
 export interface BackupInventory {

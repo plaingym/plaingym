@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import '@hono/zod-openapi';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { backupRuns, uuidv7 } from '@plaingym/db';
 import { inventory } from './backups.retention.js';
 import { snapshotPrefix } from './backups.format.js';
@@ -10,6 +10,25 @@ const f = useRestoreFixture();
 const { gymId, clock, blobKey } = f;
 
 describe('install snapshot retention and publication with real Postgres and S3', () => {
+  it('keeps the guard snapshot and its blobs until a later guard releases them', async () => {
+    const first = await f.backup().snapshot('pre_upgrade');
+    vi.stubEnv('SCHEMA_ROLLBACK_FLOOR', 'v1.2.0'); vi.stubEnv('SCHEMA_SNAPSHOT', first.id);
+    try {
+      await f.uploads.markDeleted(gymId + '/photo');
+      clock.advance(61 * 86_400_000);
+      await f.backup().snapshot('pre_upgrade');
+      clock.advance(3_600_000);
+      await f.backup().snapshot('pre_upgrade');
+      await f.backup().prune();
+      expect((await inventory(f.store, blobKey)).snapshots.some(s => s.id === first.id)).toBe(true);
+      expect(await f.store.headObject(first.uploads[0]!.blob)).not.toBeNull();
+      expect(await f.uploads.get(gymId + '/photo')).not.toBeNull();
+      vi.stubEnv('SCHEMA_SNAPSHOT', '-');
+      await f.backup().prune();
+      expect((await inventory(f.store, blobKey)).snapshots.some(s => s.id === first.id)).toBe(false);
+      expect(await f.store.headObject(first.uploads[0]!.blob)).toBeNull();
+    } finally { vi.unstubAllEnvs(); }
+  });
   it('reuses immutable upload blobs and protects them across retention and tombstone sweeping', async () => {
     const first = await f.backup().snapshot('hourly');
     clock.advance(3_600_000);

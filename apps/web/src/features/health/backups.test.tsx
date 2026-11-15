@@ -24,6 +24,41 @@ function start(owner = true, onConfirmed = vi.fn()) {
   return { cache, onConfirmed };
 }
 describe('backup actions shared by Settings and Health', () => {
+  it.each([200, 409, 500])('retains an uncertain request only until a definite HTTP answer (%s)', async status => {
+    POST.mockImplementationOnce(async () => ({ response: new Response(null, { status }), data: {} }));
+    POST.mockImplementationOnce(async (_path: string, input: { body: { requestId: string } }) => {
+      state = { ...state, manual: { requestId: input.body.requestId, status: 'queued', requestedAt: now, completedAt: null, snapshotId: null } };
+      return ok({ data: state });
+    });
+    start();
+    fireEvent.click(await screen.findByRole('button', { name: 'Back up now' }));
+    await screen.findByText(/Unable to confirm the backup request/);
+    fireEvent.click(screen.getByRole('button', { name: 'Back up now' }));
+    await screen.findByText('Your backup is queued.');
+    const first = POST.mock.calls[0]?.[1].body.requestId, second = POST.mock.calls[1]?.[1].body.requestId;
+    if (status === 500) expect(second).toBe(first);
+    else expect(second).not.toBe(first);
+  });
+  it('releases a stale retained ID after another admin replaced it and the retry gets 409', async () => {
+    POST.mockRejectedValueOnce(new Error('network error'));
+    POST.mockImplementationOnce(async () => ({ response: new Response(null, { status: 409 }) }));
+    POST.mockImplementationOnce(async (_path: string, input: { body: { requestId: string } }) => {
+      state = { ...state, manual: { requestId: input.body.requestId, status: 'queued', requestedAt: now, completedAt: null, snapshotId: null } };
+      return ok({ data: state });
+    });
+    const { cache } = start();
+    fireEvent.click(await screen.findByRole('button', { name: 'Back up now' }));
+    await screen.findByText(/Unable to confirm the backup request/);
+    state.manual = { requestId: uuid(8), status: 'failed', requestedAt: now, completedAt: now, snapshotId: null };
+    await cache.invalidateQueries({ queryKey: ['health', uuid(1)] });
+    fireEvent.click(screen.getByRole('button', { name: 'Back up now' }));
+    await waitFor(() => expect(POST).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Back up now' }).hasAttribute('disabled')).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: 'Back up now' }));
+    await screen.findByText('Your backup is queued.');
+    expect(POST.mock.calls[0]?.[1]).toEqual(POST.mock.calls[1]?.[1]);
+    expect(POST.mock.calls[2]?.[1]).not.toEqual(POST.mock.calls[1]?.[1]);
+  });
   it('queues one request, disables while queued, and shows the completed snapshot ID and time', async () => {
     const { cache } = start();
     POST.mockImplementation(async (_path: string, input: { body: { requestId: string } }) => {

@@ -20,8 +20,12 @@ type Row = typeof gyms.$inferSelect;
 const settingsOf = (row: Row) => row.settings as Record<string, unknown>;
 const manualOf = (row: Row): ManualBackup | null => {
   const value = settingsOf(row).manualBackup;
-  // Invalid stored state must not admit a second backup over an unknown first one.
-  return value === undefined || value === null ? null : manualBackupSchema.parse(value);
+  if (typeof value !== 'object' || value === null) return null;
+  const stored = value as Record<string, unknown>;
+  // Rollbacks can leave fields or finished statuses this release does not know.
+  const status = ['queued', 'running', 'succeeded', 'failed'].includes(String(stored.status)) ? stored.status : 'failed';
+  const parsed = manualBackupSchema.strip().safeParse({ ...stored, status });
+  return parsed.success ? parsed.data : null;
 };
 export function createBackupControl(options: {
   scope?: typeof forGym; clock?: Clock; queue?: Jobs & Pick<JobRecovery, 'failedJobs'>; available?: () => boolean;
@@ -44,8 +48,16 @@ export function createBackupControl(options: {
   const present = (row: Row, configured: boolean): BackupControl => ({ available: available(), configured,
     pruningHeld: settingsOf(row).backupPruningHeld === true, revision: row.revision, manual: manualOf(row) });
   const ready = async (gymId: string) => available() && await configuredGym() === gymId;
-  const recoverFailure = async (gymId: string) => {
-    const pending = await scope(gymId, async tx => manualOf(await read(tx, gymId)));
+  let configuredCache: { gymId: string; revision: number; until: number; value: Promise<string | null> } | undefined;
+  const pollConfigured = (gymId: string, revision: number) => {
+    if (!configuredCache || configuredCache.gymId !== gymId || configuredCache.revision !== revision || clock.now().getTime() >= configuredCache.until) {
+      const value = configuredGym();
+      configuredCache = { gymId, revision, until: clock.now().getTime() + 60_000, value };
+      void value.catch(() => { if (configuredCache?.value === value) configuredCache = undefined; });
+    }
+    return configuredCache.value;
+  };
+  const recoverFailure = async (gymId: string, pending: ManualBackup | null) => {
     if (!pending || !['queued', 'running'].includes(pending.status)) return;
     const failed = await queue.failedJobs(manualBackupJob, [pending.requestId], { gymId });
     if (!failed.length) return;
@@ -60,14 +72,19 @@ export function createBackupControl(options: {
   };
   return {
     async get(gymId: string): Promise<BackupControl> {
-      await recoverFailure(gymId);
-      const configured = await ready(gymId);
-      return scope(gymId, async tx => present(await read(tx, gymId), configured));
+      let row = await scope(gymId, tx => read(tx, gymId));
+      const pending = manualOf(row);
+      if (pending && ['queued', 'running'].includes(pending.status)) {
+        await recoverFailure(gymId, pending);
+        row = await scope(gymId, tx => read(tx, gymId));
+      }
+      const configured = available() && await pollConfigured(gymId, row.revision) === gymId;
+      return present(row, configured);
     },
     async request(actor: Actor, requestId: string): Promise<BackupControl> {
       if (await isRestoring()) throw new AppError('conflict', t('health/backups:restoring'));
       if (!await ready(actor.gymId)) throw new AppError('conflict', t('health/backups:notConfigured'));
-      await recoverFailure(actor.gymId);
+      await recoverFailure(actor.gymId, await scope(actor.gymId, async tx => manualOf(await read(tx, actor.gymId))));
       return withJobTransaction(scope, actor.gymId, async transaction => {
         const { tx } = transaction, row = await read(tx, actor.gymId, true), previous = manualOf(row);
         if (previous?.requestId === requestId) return present(row, true);
@@ -111,11 +128,14 @@ export function createBackupControl(options: {
         return true;
       });
       if (!await update('running')) return;
+      let result: { id: string };
       try {
         if (await isRestoring() || !await ready(gymId)) throw new Error('Backups unavailable or restore in progress');
-        const result = await snapshot(); await update('succeeded', result.id);
+        result = await snapshot();
       }
       catch (error) { await update('failed'); throw error; }
+      // Publication succeeded. A bookkeeping failure belongs to job recovery, not snapshot failure handling.
+      await update('succeeded', result.id);
     },
   };
 }

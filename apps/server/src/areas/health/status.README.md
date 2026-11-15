@@ -51,12 +51,27 @@ After a restore, `gyms.settings.backupPruningHeld` holds both snapshot pruning
 and explicit pruning (including its upload sweep) while new snapshots continue,
 until the bucket reaches the retention budget and the snapshot's budget check fails.
 The Last backup tile reports `pruningHeld` separately from an inventory failure.
+Its warning names the hold and explains that new snapshots stop at the retention budget;
+it replaces the healthy and capacity messages but not the missing or overdue snapshot ones.
+The snapshot named by an active `SCHEMA_ROLLBACK_FLOOR` / `SCHEMA_SNAPSHOT` guard
+is retained without an age limit, including its referenced blobs and uploads, until
+a later guard replaces or clears it. Normal pre-upgrade retention still keeps two
+snapshots for up to 30 days; the guard's extra snapshot counts toward the same budget.
 Settings and Health share the backup actions: `GET /api/health/backups` reads the
 state and `POST /api/health/backups/now` queues `health.backup.manual` in the batch
 lane so a slow snapshot doesn't block the gym's regular jobs; both endpoints require
 `settings.manage` (owners/admins). The request UUID, job and audit commit in one
 short gym transaction. Pending/running requests refuse a second UUID, retries of
 the current UUID return its state, and a failed job is reflected back into that state.
+Stored manual state strips unknown fields and treats unknown statuses as finished;
+unreadable manual state cannot block the owner's hold release. Idle polls read the
+gym once and skip failed-job recovery; configuration is cached for the normal
+one-minute health interval across two-second progress polls, invalidated by gym
+revision changes (requests and workers validate it afresh). A success-state write
+failure fails the job without the snapshot-failure write; job recovery then records the request
+as interrupted (`failed`, no snapshot ID, `backup.failed` audit), though the snapshot was published.
+The browser keeps a request UUID only after a network error or 5xx response and
+clears it after any definite 2xx or 4xx response, including a stale-request conflict.
 The existing backup advisory lock serializes snapshots. No snapshot I/O runs in
 the route's transaction. The response shows completion time and snapshot ID.
 `POST /api/health/backups/confirm-old-server-gone` requires `integrations.manage`
