@@ -11,8 +11,9 @@ export function fixture(tables, key) {
   const hash = argon2Sync('argon2id', { message: password, nonce: salt, memory: 19456, passes: 2, parallelism: 1, tagLength: 32 });
   const passwordHash = `$argon2id$v=19$m=19456,t=2,p=1$${salt.toString('base64').replace(/=+$/, '')}$${hash.toString('base64').replace(/=+$/, '')}`;
   const secrets = [];
-  const encrypted = (version, secretClass, column) => {
-    const plaintext = randomBytes(32).toString('base64url'), iv = randomBytes(12);
+  const encrypted = (version, secretClass, column, plaintext = randomBytes(32).toString('base64url')) => {
+    assert.ok(tables.find(table => table.name === 'gyms').columns[column], `Historical secret column ${column} exists`);
+    const iv = randomBytes(12);
     const cipher = createCipheriv('aes-256-gcm', Buffer.from(key, 'hex'), iv);
     cipher.setAAD(Buffer.from(version === 'v1' ? secretClass : JSON.stringify(['plaingym-secret-v2', secretClass, 'gyms', column, ids.gyms])));
     const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
@@ -26,6 +27,12 @@ export function fixture(tables, key) {
   const overrides = {
     gyms: { name: 'Upgrade Gym', slug: 'upgrade', settings: { setup: { completed: true } },
       qr_key_encrypted: encrypted('v1', 'qr_key', 'qr_key_encrypted'),
+      smtp_config_encrypted: encrypted('v1', 'smtp_config', 'smtp_config_encrypted', JSON.stringify({
+        host: 'smtp.example.test', port: 587, security: 'starttls', from: 'gym@example.test',
+        username: 'upgrade', password: randomBytes(24).toString('hex') })),
+      stripe_config_encrypted: encrypted('v1', 'stripe_config', 'stripe_config_encrypted', JSON.stringify({
+        apiKey: 'rk_test_' + randomBytes(24).toString('hex'), endpointId: 'we_upgrade',
+        webhookSecret: 'whsec_' + randomBytes(24).toString('hex'), mode: 'test' })),
       backup_blob_key_encrypted: encrypted('v2', 'backup_blob_key', 'backup_blob_key_encrypted') },
     gym_domains: { hostname: 'gym.localhost' },
     auth_user: { name: 'Upgrade Owner', email: 'owner@example.test', email_verified: true },

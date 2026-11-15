@@ -7,14 +7,16 @@ Run from a full clone using the pinned Node version, Docker Compose and Chromium
 pnpm install --frozen-lockfile
 pnpm --dir e2e install --frozen-lockfile
 pnpm --dir e2e exec playwright install chromium
-node --test e2e/upgrade/history.test.mjs
+node --test e2e/upgrade/*.test.mjs
 node scripts/release/build-image.mjs plaingym:upgrade-check
 node e2e/upgrade/run.mjs plaingym:upgrade-check
 docker image rm plaingym:upgrade-check
 ```
 
-The Upgrade workflow runs on release tags, manually, and when this suite or the
-migration chain changes. Results, dump sizes, per-table counts and SHA-256 checksums,
+The Upgrade workflow runs on release tags, manually, and when this suite, database
+code, the migrate command (`apps/server/src/cli/restore*`), container scripts, the
+Dockerfile, Postgres role setup, production Compose configuration, secret reader, or
+health providers change. Results, dump sizes, per-table counts and SHA-256 checksums,
 timings, and phone/desktop screenshots are in `e2e/coverage/upgrade/`.
 
 | Internal gate | Commit | Migrations |
@@ -36,18 +38,29 @@ in artifacts. Every gate's source Postgres and volume are removed before restori
 into a fresh cluster. Current production migrations, catalog checks and RLS setup
 run twice. Original columns and row counts must survive unchanged, including
 members, households, invoices, payments, signatures and audit events. The one
-intentional change is the migration command's `v1` to `v2` secret rewrite: the QR
-key's ciphertext is excluded from row checksums, and the production secret reader
+intentional change is the migration command's `v1` to `v2` secret rewrite: the QR,
+SMTP and Stripe configurations' ciphertext is excluded from row checksums, and the production secret reader
 must prove identical plaintext and the expected envelope version before and after
-migration. An existing `v2` envelope must remain byte-for-byte unchanged. A second
-migration must preserve the rewritten envelope too. The current image
+migration at every gate. SMTP and Stripe contain valid configuration objects with
+random test credentials; the SMTP hostname is deliberately unreachable. Its health
+tile reads configuration and test history without contacting the host, and must be
+healthy. An existing `v2` envelope must remain byte-for-byte unchanged. A second
+migration must preserve every envelope too. The report names each verified column
+and checksum exclusion without retaining plaintext or ciphertext. The current image
 then starts and an owner reads the dashboard, member, invoice, waiver signature and
-health pages at 360 and 1280 px; `/healthz` must be green. Optional, unconfigured
+health pages at 360 and 1280 px; `/healthz` must be green. Health tiles must be present
+and none may report `error`; there is no fixed tile count. Optional, unconfigured
 integrations can report their normal health-page setup notices.
 
 The expand check reviews every migration since G3. Drops, renames, truncation,
 deletion, and column type changes fail; constraint and index replacement and
-additive backfills are allowed. No contract exception is allowed in this chain.
+additive backfills are allowed, including `ON CONFLICT DO NOTHING/UPDATE` and
+triggers with `EXECUTE FUNCTION/PROCEDURE`. Procedural `DO` blocks and dynamic
+`EXECUTE` remain rejected. Reviewed contract steps are listed by exact migration
+tag in `contractExceptions` in `history.mjs`, with the full SQL file's SHA-256 and
+a review reason explaining the compatibility window. The list starts empty:
+no migration in this chain needs an exception. A changed file hash fails closed;
+an exception for one tag cannot authorize another migration.
 The runner appends a column-dropping migration to a temporary copy and proves the
 same check rejects it. This guard supplements the real data checks; it does not
 prove old application code accepts every new value or constraint. The release
@@ -61,8 +74,12 @@ Origin equal to the production single-gym origin.
 The visitor request budget is raised to the End-to-end stack's value for repeated
 page walks; every page API request must still succeed.
 Chromium can invalidate connections when Docker creates a bridge. Explicit fixture
-GETs and page loads retry `ERR_NETWORK_CHANGED` at most twice; page reloads are
-allowed only when every new failure is that GET transport error. Each failed URL
+GETs (including the initial `/healthz` navigation), sign-in and page loads share
+one helper and retry `ERR_NETWORK_CHANGED` at most twice. It checks both rejection
+text and request events, including events delivered just after a fetch rejects.
+Sign-in is the only POST allowed to retry; page reloads are allowed only when
+every new failure is an eligible transport error. All page assertions wait up to
+15 seconds. Each failed URL and method
 must subsequently succeed, and the report records recovered requests.
 An HTTP error, timeout, another transport error, or an unrecovered request fails.
 The runner removes its containers, volumes and networks on success or failure and

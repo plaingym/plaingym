@@ -60,6 +60,7 @@ try {
     try {
       const { migrations, tables } = history(gate);
       const seed = fixture(tables, env.APP_ENCRYPTION_KEY);
+      const rewrittenColumns = new Set(seed.secrets.filter(secret => secret.version === 'v1').map(secret => secret.column));
       const readGym = () => JSON.parse(sql(`SELECT row_to_json(g) FROM gyms g WHERE id=${quote(seed.ids.gyms)};`));
       const verifySecrets = afterMigration => {
         const row = readGym(), secretsFile = join(temporary, `${gate.gate}-secrets.json`);
@@ -81,7 +82,7 @@ try {
       const fingerprint = () => Object.fromEntries(sql(tables.map(table => {
         // The production migrate command intentionally re-envelopes v1 under v2 with a fresh IV.
         // Its plaintext and version are checked with the production reader before and after migration.
-        const columns = Object.keys(table.columns).filter(column => table.name !== 'gyms' || column !== 'qr_key_encrypted').sort().map(ident).join(',');
+        const columns = Object.keys(table.columns).filter(column => table.name !== 'gyms' || !rewrittenColumns.has(column)).sort().map(ident).join(',');
         return `SELECT json_build_array(${quote(table.name)}, json_build_object('rows', count(*), 'sha256', encode(sha256(convert_to(coalesce(string_agg(row_to_json(t)::text, E'\\n' ORDER BY id), ''), 'UTF8')), 'hex'))) FROM (SELECT ${columns} FROM ${ident(table.name)}) t;`;
       }).join('\n')).trim().split('\n').map(line => JSON.parse(line)));
       const before = fingerprint();
@@ -105,13 +106,17 @@ try {
       // A second migration must be a no-op, including historical data.
       compose(['run', '--rm', '--no-deps', '-T', '--entrypoint', '/app/deploy/database.sh', 'app', 'migrate']);
       assert.deepEqual(fingerprint(), before, `${gate.gate}: migrate is idempotent`);
-      assert.equal(readGym().qr_key_encrypted, upgradedGym.qr_key_encrypted, 'second migration does not rewrite the v2 envelope');
+      const repeatedGym = verifySecrets(true);
+      for (const secret of seed.secrets) {
+        assert.equal(repeatedGym[secret.column], upgradedGym[secret.column], `second migration does not rewrite ${secret.column}`);
+      }
       compose(['up', '-d', '--wait', '--wait-timeout', '120']);
       const port = Number(compose(['port', 'caddy', '443']).trim().split(':').at(-1));
       const browser = await readPages({ loopback, port, ids: seed.ids, password: seed.password, signatureHash: seed.signatureHash, output, gate: gate.gate });
       const result = { ...gate, project, tables: tables.length, dumpBytes: dump.length, dumpSha256: digest(dump), fingerprints: before,
-        secrets: ['v1 upgraded to v2 with identical plaintext', 'v2 unchanged'],
-        checksumExclusions: ['gyms.qr_key_encrypted: separately verified plaintext and envelope upgrade'], browser, seconds: Math.round((Date.now() - started) / 1000) };
+        secrets: seed.secrets.map(({ column, version }) => ({ column, before: version, after: 'v2', plaintextPreserved: true, secondMigrationUnchanged: true })),
+        checksumExclusions: [...rewrittenColumns].map(column => `gyms.${column}: separately verified plaintext and envelope upgrade`),
+        browser, seconds: Math.round((Date.now() - started) / 1000) };
       report.snapshots.push(result);
       console.log(`PASS ${gate.gate} v${gate.version}: ${tables.length} tables, ${dump.length} dump bytes, ${result.seconds}s`);
     } catch (error) {

@@ -21,6 +21,10 @@ const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8', tim
 export const historical = (commit, path) => git(['show', `${commit}:${path}`]);
 export const currentJournal = () => JSON.parse(readFileSync(new URL('../../' + migrationPath + '/meta/_journal.json', import.meta.url), 'utf8'));
 
+// Reviewed contract steps only: exact journal tag -> { sha256: digest of the entire SQL file, reason }.
+// Keep empty until a named contract step has been reviewed; changed SQL must be reviewed again.
+export const contractExceptions = Object.freeze({});
+
 export function history(gate) {
   const journal = JSON.parse(historical(gate.commit, `${migrationPath}/meta/_journal.json`));
   assert.equal(journal.entries.length, gate.count, `${gate.gate}: migration count`);
@@ -39,29 +43,40 @@ export function history(gate) {
 
 /** Conservative SQL review: ignore comments and strings, but retain quoted identifiers and punctuation.
  * Constraint/index replacement is allowed; removing a stored column, table, type, or schema is not.
- * There are no approved contract steps in the recorded chain. Unknown destructive DDL fails closed.
+ * Exact, reviewed contract steps can be exempted. Unknown destructive DDL fails closed.
  */
-export function assertExpandOnly(sql, label) {
+export function assertExpandOnly(sql, label, exceptions = contractExceptions) {
+  if (Object.hasOwn(exceptions, label)) {
+    const exception = exceptions[label];
+    assert.ok(exception.reason?.trim(), `${label}: contract exception needs a review reason`);
+    assert.equal(exception.sha256, digest(sql), `${label}: reviewed contract SQL changed`);
+    return;
+  }
   const ddl = sql.replace(/'(?:''|[^'])*'|--[^\n]*|\/\*[\s\S]*?\*\//g, token => token.startsWith("'") ? "''" : ' ');
   for (const statement of ddl.split(';')) {
+    // DO in an upsert and EXECUTE FUNCTION/PROCEDURE in a trigger are static, additive SQL.
+    // Keep every other token for the destructive-DDL checks, including procedural DO and dynamic EXECUTE.
+    const procedural = statement.replace(/\bON\s+CONFLICT\b[\s\S]*?\bDO\s+(?:NOTHING|UPDATE)\b/gi,
+      clause => clause.replace(/\bDO(?=\s+(?:NOTHING|UPDATE)\b)/gi, '  '))
+      .replace(/\bEXECUTE\s+(?:FUNCTION|PROCEDURE)\b/gi, ' ');
     const unsafeDrop = [...statement.matchAll(/\bDROP\s+(?=([\s\S]+))/gi)].some(([, tail]) => !/^(?:CONSTRAINT|INDEX|POLICY|DEFAULT|NOT\s+NULL)\b/i.test(tail));
     if (/\b(?:TRUNCATE|DELETE\s+FROM|RENAME)\b/i.test(statement)
       || unsafeDrop
       || /\bALTER\s+(?:COLUMN\s+)?["\w.]+\s+(?:SET\s+DATA\s+)?TYPE\b/i.test(statement)
-      || /\b(?:DO|EXECUTE)\b/i.test(statement)) {
+      || /\b(?:DO|EXECUTE)\b/i.test(procedural)) {
       throw new Error(`${label}: non-expand migration: ${statement.trim()}`);
     }
   }
 }
 
-export function checkChain(directory = new URL('../../' + migrationPath + '/', import.meta.url)) {
+export function checkChain(directory = new URL('../../' + migrationPath + '/', import.meta.url), exceptions = contractExceptions) {
   const journal = JSON.parse(readFileSync(new URL('meta/_journal.json', directory), 'utf8'));
   let timestamp = 0;
   for (const [index, entry] of journal.entries.entries()) {
     assert.equal(entry.idx, index + 1, 'migration order');
     assert.ok(entry.when > timestamp, 'migration timestamps must increase');
     timestamp = entry.when;
-    if (index >= gates[0].count) assertExpandOnly(readFileSync(new URL(entry.tag + '.sql', directory), 'utf8'), entry.tag);
+    if (index >= gates[0].count) assertExpandOnly(readFileSync(new URL(entry.tag + '.sql', directory), 'utf8'), entry.tag, exceptions);
   }
   return journal.entries.length - gates[0].count;
 }

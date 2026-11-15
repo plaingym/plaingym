@@ -4,9 +4,9 @@ on:
   push:
     branches: [main, 'task/**', 'integration/**']
     tags: ['v*']
-    paths: ['e2e/upgrade/**', 'packages/db/src/migrations/**', '.github/workflows/upgrade.yml']
+    paths: ['e2e/upgrade/**', 'packages/db/**', 'deploy/container/**', 'deploy/compose.yaml', 'apps/server/src/core/secrets*', 'apps/server/src/cli/restore*', 'deploy/postgres/**', 'deploy/Dockerfile', 'apps/server/src/areas/health/**', '.github/workflows/upgrade.yml']
   pull_request:
-    paths: ['e2e/upgrade/**', 'packages/db/src/migrations/**', '.github/workflows/upgrade.yml']
+    paths: ['e2e/upgrade/**', 'packages/db/**', 'deploy/container/**', 'deploy/compose.yaml', 'apps/server/src/core/secrets*', 'apps/server/src/cli/restore*', 'deploy/postgres/**', 'deploy/Dockerfile', 'apps/server/src/areas/health/**', '.github/workflows/upgrade.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -32,7 +32,7 @@ jobs:
       - run: pnpm --dir e2e install --frozen-lockfile
       - run: pnpm --dir e2e exec playwright install chromium
         timeout-minutes: 5
-      - run: node --test e2e/upgrade/history.test.mjs
+      - run: node --test e2e/upgrade/*.test.mjs
       - run: node scripts/release/build-image.mjs "$IMAGE"
       - run: node e2e/upgrade/run.mjs "$IMAGE"
       - if: ${{ always() }}
