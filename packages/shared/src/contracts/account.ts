@@ -38,7 +38,7 @@ export const accountContracts = {
     description: 'The signed-in login\'s own account. Answers 401 without a staff or portal session.',
     response: z.strictObject({ data: accountSummarySchema }) },
   requestEmailChange: { method: 'post', path: '/api/account/email', permission: signedIn,
-    description: 'Sends a link to the new address; the change applies only when that link is opened. Answers 401 without a staff or portal session, 409 when another login uses the address.',
+    description: 'Sends a link to a free address, or an in-use notice instead when another login uses it, with the same response. Notifies the old address at request time with the new address masked. The change applies only when the link is opened; an address in use is refused then. Answers 401 without a staff or portal session.',
     body: requestEmailChangeSchema,
     response: z.strictObject({ data: z.strictObject({ email: z.string().min(1), expiresAt: instantSchema }) }) },
   confirmEmailChange: { method: 'post', path: '/api/account/email/confirm', permission: { kind: 'public' },

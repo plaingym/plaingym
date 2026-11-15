@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { authAccount, authSession, authUser, authVerification, auditEvents, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
@@ -42,8 +42,13 @@ describe('sign-in email change', () => {
     // Nothing changes on request: the login keeps its address, sessions and Google link.
     expect((await emailOf(f.userId)).email).toBe(f.email);
     expect(await sessionsOf(f.userId)).toHaveLength(2);
-    expect(email.messages).toHaveLength(1);
+    expect(email.messages).toHaveLength(2);
     expect(email.messages[0]).toMatchObject({ to: 'new.owner@example.test', subject: expect.stringContaining('Test Gym') });
+    expect(email.messages[1]).toMatchObject({ to: f.email, subject: expect.stringContaining('was requested') });
+    for (const content of [email.messages[1]!.text, email.messages[1]!.html]) {
+      expect(content).toContain('n***@example.test');
+      expect(content).not.toContain('new.owner@example.test');
+    }
     const link = new URL(/https?:\/\/\S+/.exec(email.messages[0]!.text)![0]);
     expect(link.origin + link.pathname).toBe('https://gym.example.test/account-email');
     // The row holds a hash under the gym's prefix, never the token.
@@ -57,9 +62,9 @@ describe('sign-in email change', () => {
     // The requesting session stays; every other session of the login in the gym ends.
     expect((await sessionsOf(f.userId)).map(row => row.id)).toEqual([f.current.id]);
     expect(await db.system.db.select().from(authAccount).where(and(eq(authAccount.userId, f.userId), eq(authAccount.providerId, 'google')))).toEqual([]);
-    expect(email.messages[1]).toMatchObject({ to: f.email, subject: expect.stringContaining('was changed') });
-    expect(email.messages[1]!.text).toContain(maskAddress('new.owner@example.test'));
-    expect(email.messages[1]!.text).not.toContain('new.owner@example.test');
+    expect(email.messages[2]).toMatchObject({ to: f.email, subject: expect.stringContaining('was changed') });
+    expect(email.messages[2]!.text).toContain(maskAddress('new.owner@example.test'));
+    expect(email.messages[2]!.text).not.toContain('new.owner@example.test');
     expect((await audits(f.gymId)).filter(row => row.action.startsWith('auth.email_change')).sort((a, b) => a.action < b.action ? -1 : 1).map(row => ({ action: row.action, actor: row.actorUserId, after: row.after })))
       .toEqual([{ action: 'auth.email_change_requested', actor: f.userId, after: null },
         { action: 'auth.email_changed', actor: f.userId, after: { googleUnlinked: true, sessionsEnded: 1 } }]);
@@ -82,18 +87,35 @@ describe('sign-in email change', () => {
     expect((await emailOf(f.userId)).email).toBe(f.email);
     expect(await sessionsOf(f.userId)).toHaveLength(2);
     expect(await changes.summary(f.gymId, f.userId, clock)).toMatchObject({ pendingEmail: null });
+    expect(email.messages.at(-1)).toMatchObject({ to: f.email, subject: expect.stringContaining('was requested') });
   });
 
-  it('refuses an address another login uses, on request and when the link is opened', async () => {
+  it('keeps the requested link usable if the old-address notice fails', async () => {
+    const f = await fixture(), clock = new TestClock('2026-11-12T10:00:00Z'), { email, mail } = mailer(), changes = service();
+    const originalSend = email.sendEmail.bind(email);
+    vi.spyOn(email, 'sendEmail').mockImplementation(async (message) => {
+      if (message.to === f.email) throw new Error('old mailbox refused the notice');
+      return originalSend(message);
+    });
+    await expect(changes.request({ gymId: f.gymId, userId: f.userId, sessionId: null, newEmail: 'usable@example.test', clock, mail }))
+      .resolves.toMatchObject({ email: 'usable@example.test' });
+    await expect(changes.confirm({ gymId: f.gymId, token: tokenOf(email.messages[0]!), sessionUserId: null, clock }))
+      .resolves.toMatchObject({ to: 'usable@example.test' });
+  });
+
+  it('sends an in-use notice on request and still refuses an address taken before confirmation', async () => {
     const f = await fixture(), clock = new TestClock('2026-11-12T10:00:00Z'), { email, mail } = mailer(), changes = service();
     const member = await factory('householdUsers', f.gymId), memberEmail = (await emailOf(member.userId)).email;
-    await expect(changes.request({ gymId: f.gymId, userId: f.userId, sessionId: null, newEmail: memberEmail.toUpperCase(), clock, mail })).rejects.toMatchObject({ code: 'conflict' });
+    await expect(changes.request({ gymId: f.gymId, userId: f.userId, sessionId: null, newEmail: memberEmail.toUpperCase(), clock, mail })).resolves.toMatchObject({ email: memberEmail });
+    expect(email.messages[0]).toMatchObject({ to: memberEmail, text: expect.stringContaining('already has a login') });
+    expect(email.messages[0]!.html).not.toContain('<a');
+    expect(email.messages[0]!.text).not.toContain('/account-email');
+    expect(await changes.summary(f.gymId, f.userId, clock)).toMatchObject({ pendingEmail: { email: memberEmail } });
     await expect(changes.request({ gymId: f.gymId, userId: f.userId, sessionId: null, newEmail: f.email, clock, mail })).rejects.toMatchObject({ code: 'invalid_request' });
-    expect(email.messages).toEqual([]);
     await changes.request({ gymId: f.gymId, userId: f.userId, sessionId: null, newEmail: 'contested@example.test', clock, mail });
     // Another login takes the address before the link is opened.
     await factory('authUser', f.gymId, { email: 'contested@example.test' });
-    await expect(changes.confirm({ gymId: f.gymId, token: tokenOf(email.messages[0]!), sessionUserId: null, clock })).rejects.toMatchObject({ code: 'conflict' });
+    await expect(changes.confirm({ gymId: f.gymId, token: tokenOf(email.messages[2]!), sessionUserId: null, clock })).rejects.toMatchObject({ code: 'conflict' });
     expect((await emailOf(f.userId)).email).toBe(f.email);
   });
 
@@ -102,7 +124,8 @@ describe('sign-in email change', () => {
     const member = await factory('householdUsers', f.gymId);
     await changes.request({ gymId: f.gymId, userId: f.userId, sessionId: null, newEmail: 'race@example.test', clock, mail });
     await changes.request({ gymId: f.gymId, userId: member.userId, sessionId: null, newEmail: 'race@example.test', clock, mail });
-    const results = await Promise.allSettled(email.messages.map(message => changes.confirm({ gymId: f.gymId, token: tokenOf(message), sessionUserId: null, clock })));
+    const results = await Promise.allSettled(email.messages.filter(message => message.to === 'race@example.test')
+      .map(message => changes.confirm({ gymId: f.gymId, token: tokenOf(message), sessionUserId: null, clock })));
     expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
     expect(results.filter(result => result.status === 'rejected').map(result => (result as PromiseRejectedResult).reason)).toEqual([expect.objectContaining({ code: 'conflict' })]);
     const winner = results[0]!.status === 'fulfilled' ? f.userId : member.userId;
@@ -118,6 +141,7 @@ describe('sign-in email change', () => {
     await expect(changes.request({ gymId: f.gymId, userId: f.userId, sessionId: null, newEmail: 'third@example.test', clock, mail })).rejects.toMatchObject({ code: 'unavailable' });
     // The failed request replaced the second link and was withdrawn itself, so nothing is pending.
     expect(await changes.summary(f.gymId, f.userId, clock)).toMatchObject({ pendingEmail: null });
+    expect(email.messages.at(-1)).toMatchObject({ to: f.email, subject: expect.stringContaining('was requested') });
   });
 
   it('limits change requests per login', async () => {

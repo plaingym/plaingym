@@ -366,3 +366,8 @@ commands on a Linux Docker runner and retain `e2e/coverage/` as its artifact.
 360 px and 1280 px. It checks Google refusals clear on credential edits in Settings
 and setup, the Email removal rule stays visible, and an operator-managed payment
 refusal reloads the integrations and hides the form. It retains layout screenshots.
+
+`account-email.spec.ts` uses API fixtures the same way on the account page at
+360 px and 1280 px. It checks that a pending email change stays visible beside the
+local invalid-address message and a refused request, and that a new request's
+success notice replaces it. It retains layout screenshots.

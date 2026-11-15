@@ -18,7 +18,6 @@ export const accountKey = (userId: string) => ['account', userId] as const;
 
 function errorText(error: unknown) {
   if (error instanceof AccountRequestError) {
-    if (error.details?.newEmail?.includes('email_in_use')) return text('errorInUse');
     if (error.details?.newEmail?.includes('same_email')) return text('errorSame');
     if (error.status === 429) return text('errorRateLimited');
     if (error.status === 503) return text('unavailableNoEmail');
@@ -44,22 +43,26 @@ function ChangeEmail({ account, client, userId }: { account: AccountSummary; cli
       setMessage({ kind: 'status', text: text('pending', { email: sent.email, time: formatTime(sent.expiresAt) }) });
       await cache.invalidateQueries({ queryKey: accountKey(userId) });
     },
-    onError: (error) => setMessage({ kind: 'alert', text: errorText(error) }),
+    // A request that fails after it was recorded (503) has withdrawn the earlier link too, so read the summary again.
+    onError: async (error) => {
+      setMessage({ kind: 'alert', text: errorText(error) });
+      await cache.invalidateQueries({ queryKey: accountKey(userId) });
+    },
   });
   if (account.emailChange !== 'available') return <Alert>{text(account.emailChange === 'several_gyms' ? 'unavailableSeveralGyms' : 'unavailableNoEmail')}</Alert>;
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const parsed = accountEmailSchema.safeParse(value.trim());
-    if (!parsed.success) { setMessage({ kind: 'alert', text: errorText(null) }); return; }
+    if (!parsed.success) { setMessage({ kind: 'alert', text: text('invalidEmail') }); return; }
     setMessage(null);
     change.mutate(parsed.data);
   };
   return <div className="space-y-3">
     <p className="text-sm text-muted-foreground">{text('changeHelp')}</p>
     {account.googleLinked && <p className="text-sm text-muted-foreground">{text('changeGoogle')}</p>}
-    {account.pendingEmail && !message && <p role="status" className="rounded-md border border-border p-3 text-sm">
+    {account.pendingEmail && message?.kind !== 'status' && <p role="status" className="break-words rounded-md border border-border p-3 text-sm">
       {text('pending', { email: account.pendingEmail.email, time: formatTime(account.pendingEmail.expiresAt) })}</p>}
-    <FormMessage message={message} />
+    <FormMessage message={message} className="break-words" />
     <form className="flex flex-col gap-3 sm:flex-row sm:items-end" onSubmit={submit} noValidate>
       <div className="min-w-0 flex-1 space-y-1">
         <Label htmlFor="account-new-email">{text('newEmail')}</Label>

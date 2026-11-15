@@ -9,7 +9,7 @@ import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { z } from 'zod';
 import { logError } from '../../core/log.js';
 import type { Email } from '../email/index.js';
-import { renderEmailChangeLink, renderEmailChangedNotice } from '../../emails/staff/account.js';
+import { renderEmailChangeLink, renderEmailChangedNotice, renderEmailChangeRequestedNotice, renderEmailInUseNotice } from '../../emails/staff/account.js';
 import { consumeAccountAttempt, type SignInRule } from './account-limit.js';
 import type { AuthConfig } from './config.js';
 
@@ -103,7 +103,8 @@ export function createEmailChangeService(options: EmailChangeOptions) {
       });
     },
     /**
-     * Records the change and sends its link to the new address. Asking again replaces the outstanding link. The caller's
+     * Records the change and sends its link to a free address, or an in-use notice to an occupied one. Both answers and
+     * pending summaries are identical so neither reveals another login. Asking again replaces the outstanding link. The caller's
      * session survives the change; the login's other sessions in the gym end when it applies.
      */
     async request(input: { gymId: string; userId: string; sessionId: string | null; newEmail: string; clock: Clock; mail: EmailChangeMail }) {
@@ -114,29 +115,33 @@ export function createEmailChangeService(options: EmailChangeOptions) {
       if (wait !== null) throw new AppError('rate_limited', 'Too many email change requests. Try again later.');
       const mail = await input.mail(input.gymId);
       const token = randomBytes(32).toString('hex'), expiresAt = new Date(input.clock.now().getTime() + emailChangeLifetimeMs);
-      const from = await forGym(input.gymId, async (tx) => {
+      const { from, taken } = await forGym(input.gymId, async (tx) => {
         const [user] = await tx.select({ id: authUser.id, email: authUser.email }).from(authUser).where(eq(authUser.id, input.userId)).for('update');
         if (!user) throw new AppError('unauthenticated', 'Sign in again');
         if (user.email === to) throw new AppError('invalid_request', 'This is already your sign-in email', { newEmail: ['same_email'] });
         const [taken] = await tx.select({ id: authUser.id }).from(authUser).where(eq(authUser.email, to));
-        if (taken) throw inUse();
         await tx.delete(authVerification).where(pendingOf(input.gymId, user.id));
         const value: Binding = { userId: user.id, sessionId: input.sessionId, from: user.email, to };
         await tx.insert(authVerification).values({ identifier: identifier(input.gymId, token), value: JSON.stringify(bindingSchema.parse(value)),
           expiresAt, createdAt: input.clock.now(), updatedAt: input.clock.now() });
         await writeAudit(tx, { gymId: input.gymId, actorKind: 'user', actorUserId: user.id, action: 'auth.email_change_requested',
           targetType: 'user', targetId: user.id, occurredAt: input.clock.now() });
-        return user.email;
+        return { from: user.email, taken: Boolean(taken) };
       });
       const url = new URL(emailChangePagePath, mail.origin);
       url.hash = token;
       try {
-        await mail.email.sendEmail({ to, ...renderEmailChangeLink(url.href, mail.gymName, mail.t) });
+        await mail.email.sendEmail({ to, ...taken ? renderEmailInUseNotice(mail.gymName, mail.t) : renderEmailChangeLink(url.href, mail.gymName, mail.t) });
       } catch (error) {
         // A link nobody received can't be opened; withdraw it, so the page shows no pending change.
         await database().delete(authVerification).where(eq(authVerification.identifier, identifier(input.gymId, token)));
         logError('auth.email_change_link_failed', { gymId: input.gymId }, error);
         throw new AppError('unavailable', 'The confirmation email was not sent');
+      } finally {
+        // Alert the old mailbox on every recorded request, even if delivery to the typed address failed.
+        try {
+          await mail.email.sendEmail({ to: from, ...renderEmailChangeRequestedNotice(maskAddress(to), mail.gymName, mail.t) });
+        } catch (error) { logError('auth.email_change_request_notice_failed', { gymId: input.gymId }, error); }
       }
       return { from, email: to, expiresAt: expiresAt.toISOString() };
     },

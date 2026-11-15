@@ -100,7 +100,9 @@ describe('your account routes', () => {
 
     const asked = await request(app, f, f.gymId, '/api/account/email', current, { newEmail: 'owner.moved@example.test' });
     expect(asked.status).toBe(200);
-    expect(f.email.messages.map(message => message.to)).toEqual(['owner.moved@example.test']);
+    expect(f.email.messages.map(message => message.to)).toEqual(['owner.moved@example.test', f.owner.email]);
+    expect(f.email.messages[1]!.text).toContain('o***@example.test');
+    expect(f.email.messages[1]!.text).not.toContain('owner.moved@example.test');
     // Asking changes nothing yet: both sessions still work, and the old address still signs in.
     expect(await emailOf(f.owner.id)).toBe(f.owner.email);
     expect((await summary(app, f, other)).body).toMatchObject({ email: f.owner.email, pendingEmail: { email: 'owner.moved@example.test' } });
@@ -111,7 +113,7 @@ describe('your account routes', () => {
     // The session that asked stays signed in; the other one ended. The old address got the notice.
     expect((await summary(app, f, current)).body).toMatchObject({ email: 'owner.moved@example.test', pendingEmail: null });
     expect((await summary(app, f, other)).status).toBe(401);
-    expect(f.email.messages[1]).toMatchObject({ to: f.owner.email });
+    expect(f.email.messages[2]).toMatchObject({ to: f.owner.email, subject: expect.stringContaining('was changed') });
     const audit = await database.forGym(f.gymId, tx => tx.select().from(auditEvents));
     expect(audit.filter(row => row.action.startsWith('auth.email_change')).sort((a, b) => a.action < b.action ? -1 : 1).map(row => [row.action, row.actorUserId, row.targetId]))
       .toEqual([['auth.email_change_requested', f.owner.id, f.owner.id], ['auth.email_changed', f.owner.id, f.owner.id]]);
@@ -119,14 +121,36 @@ describe('your account routes', () => {
     expect((await request(app, f, f.gymId, '/api/account/email/confirm', '', { token: tokenOf(f.email.messages[0]!) })).status).toBe(404);
   });
 
-  it('refuses an address another login in the gym uses, and a body that names another login', async () => {
+  it('answers an in-use address like a free one, sends a notice instead of a link, and refuses a body naming another login', async () => {
     const f = await fixture(), app = routeApp(f), cookie = await f.signIn(f.gymId, f.payerA.email);
     const taken = await request(app, f, f.gymId, '/api/account/email', cookie, { newEmail: f.payerB.email });
-    expect(taken.status).toBe(409);
-    expect(await taken.json()).toMatchObject({ error: { code: 'conflict', details: { newEmail: ['email_in_use'] } } });
+    const takenBody = await taken.json();
+    const takenSummary = (await summary(app, f, cookie)).body;
+    expect(f.email.messages.map(message => message.to)).toEqual([f.payerB.email, f.payerA.email]);
+    expect(f.email.messages[0]!.text).toContain('already has a login');
+    expect(f.email.messages[0]!.html).not.toContain('<a');
+    expect(f.email.messages[0]!.text).not.toContain('/account-email');
+    expect(f.email.messages[1]!.text).toContain('Someone asked to change');
+    const free = await request(app, f, f.gymId, '/api/account/email', cookie, { newEmail: 'free@example.test' });
+    expect(taken.status).toBe(free.status);
+    expect(taken.status).toBe(200);
+    const freeBody = await free.json();
+    expect(takenBody).toEqual({ data: { ...freeBody.data, email: f.payerB.email } });
+    // Reading the account summary must not reveal whether the destination is occupied either.
+    expect(takenSummary).toEqual({ ...(await summary(app, f, cookie)).body,
+      pendingEmail: { email: f.payerB.email, expiresAt: freeBody.data.expiresAt } });
     expect((await request(app, f, f.gymId, '/api/account/email', cookie, { newEmail: 'x@example.test', userId: f.payerB.id })).status).toBe(400);
-    expect(f.email.messages).toEqual([]);
     expect(await emailOf(f.payerB.id)).toBe(f.payerB.email);
+  });
+
+  it('refuses confirmation if another login has since taken the address', async () => {
+    const f = await fixture(), app = routeApp(f), cookie = await f.signIn(f.gymId, f.payerA.email);
+    await request(app, f, f.gymId, '/api/account/email', cookie, { newEmail: 'contested.route@example.test' });
+    await factory('authUser', f.gymId, { email: 'contested.route@example.test' });
+    const confirmed = await request(app, f, f.gymId, '/api/account/email/confirm', cookie, { token: tokenOf(f.email.messages[0]!) });
+    expect(confirmed.status).toBe(409);
+    expect(await confirmed.json()).toMatchObject({ error: { details: { newEmail: ['email_in_use'] } } });
+    expect(await emailOf(f.payerA.id)).toBe(f.payerA.email);
   });
 
   it('refuses cross-household requests: one household\'s login can\'t complete another\'s change', async () => {

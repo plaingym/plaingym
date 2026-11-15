@@ -85,7 +85,7 @@ export function createAccountRoutes(options?: AccountRouteOptions) {
   }), route({
     method: requestEmailChange.method, path: requestEmailChange.path, permission: requestEmailChange.permission, description: requestEmailChange.description,
     request: { body: { required: true, content: { 'application/json': { schema: requestEmailChange.body } } } },
-    responses: { 200: { description: 'Link sent to the new address', content: { 'application/json': { schema: requestEmailChange.response } } } },
+    responses: { 200: { description: 'Email sent to the new address', content: { 'application/json': { schema: requestEmailChange.response } } } },
   }, async (context) => {
     const userId = login(context), { gym, clock } = context.get('context');
     context.header('Cache-Control', 'no-store');

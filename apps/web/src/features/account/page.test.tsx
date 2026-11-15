@@ -47,16 +47,49 @@ describe('your account page', () => {
     await userEvent.type(input, 'moved@example.test');
     await userEvent.click(screen.getByRole('button', { name: 'Send link' }));
     await waitFor(() => expect(client.requestEmailChange).toHaveBeenCalledWith('moved@example.test'));
-    expect(await screen.findByText(/A link was sent to moved@example.test/)).toBeTruthy();
+    expect(await screen.findByText(/An email was sent to moved@example.test/)).toBeTruthy();
+    expect(screen.getAllByText(/An email was sent/)).toHaveLength(1);
     // The address shown as the sign-in email is still the old one until the link is opened.
     expect(screen.getByText('owner@example.test')).toBeTruthy();
   });
 
-  it('says when another login uses the address', async () => {
-    start({}, undefined, async () => { throw new AccountRequestError(409, 'conflict', { newEmail: ['email_in_use'] }); });
+  it('uses the same neutral success message for an address already in use', async () => {
+    start();
     await userEvent.type(await screen.findByLabelText('New email'), 'taken@example.test');
     await userEvent.click(screen.getByRole('button', { name: 'Send link' }));
-    expect((await screen.findByRole('alert')).textContent).toContain('Another login uses this address.');
+    expect(await screen.findByText(/An email was sent to taken@example.test/)).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it.each([400, 429])('keeps a pending notice beside a failed second request (%s)', async (status) => {
+    start({ pendingEmail: { email: 'pending@example.test', expiresAt: '2026-11-12T11:00:00.000Z' } }, undefined,
+      async () => { throw new AccountRequestError(status, 'failed'); });
+    await userEvent.type(await screen.findByLabelText('New email'), 'another@example.test');
+    await userEvent.click(screen.getByRole('button', { name: 'Send link' }));
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.getByText(/An email was sent to pending@example.test/)).toBeTruthy();
+  });
+
+  it('drops a pending notice whose link a failed send withdrew (503)', async () => {
+    let withdrawn = false;
+    const client = start({ pendingEmail: { email: 'pending@example.test', expiresAt: '2026-11-12T11:00:00.000Z' } }, undefined,
+      async () => { withdrawn = true; throw new AccountRequestError(503, 'unavailable'); });
+    const summary = client.summary as ReturnType<typeof vi.fn>;
+    summary.mockImplementation(async () => ({ ...base, pendingEmail: withdrawn ? null
+      : { email: 'pending@example.test', expiresAt: '2026-11-12T11:00:00.000Z' } }));
+    await userEvent.type(await screen.findByLabelText('New email'), 'another@example.test');
+    await userEvent.click(screen.getByRole('button', { name: 'Send link' }));
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText(/An email was sent to pending@example.test/)).toBeNull());
+  });
+
+  it('explains an invalid typed address locally and preserves the pending notice', async () => {
+    const client = start({ pendingEmail: { email: 'pending@example.test', expiresAt: '2026-11-12T11:00:00.000Z' } });
+    await userEvent.type(await screen.findByLabelText('New email'), 'invalid');
+    await userEvent.click(screen.getByRole('button', { name: 'Send link' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Enter a valid email address.');
+    expect(screen.getByText(/An email was sent to pending@example.test/)).toBeTruthy();
+    expect(client.requestEmailChange).not.toHaveBeenCalled();
   });
 
   it('explains why the change is unavailable, without a form', async () => {

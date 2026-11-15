@@ -17,3 +17,16 @@ export function renderEmailChangedNotice(maskedNewEmail: string, gymName: string
   const description = t('auth/account:noticeDescription', { gym: gymName, email: maskedNewEmail }), help = t('auth/account:noticeHelp', { gym: gymName });
   return { subject, html: `<p>${escape(description)}</p><p>${escape(help)}</p>`, text: `${description}\n\n${help}` };
 }
+/** Sent to the typed address instead of a confirmation link when it already has a login. */
+export function renderEmailInUseNotice(gymName: string, t: Translator): RenderedEmail {
+  const subject = t('auth/account:inUseSubject', { gym: gymName });
+  const description = t('auth/account:inUseDescription', { gym: gymName });
+  return { subject, html: `<p>${escape(description)}</p>`, text: description };
+}
+/** Sent to the old address when the change is requested, before any confirmation. */
+export function renderEmailChangeRequestedNotice(maskedNewEmail: string, gymName: string, t: Translator): RenderedEmail {
+  const subject = t('auth/account:requestNoticeSubject', { gym: gymName });
+  const description = t('auth/account:requestNoticeDescription', { gym: gymName, email: maskedNewEmail });
+  const help = t('auth/account:requestNoticeHelp', { gym: gymName });
+  return { subject, html: `<p>${escape(description)}</p><p>${escape(help)}</p>`, text: `${description}\n\n${help}` };
+}

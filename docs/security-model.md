@@ -325,8 +325,12 @@ by setup, the gym CLI, staff and portal invitations, and the join flow.
   new address, stored hashed under the issuing gym for one hour and one use, and
   the change applies only when that link is opened, on that gym's hostname; a link
   opened while another login is signed in on the browser is refused. An address
-  another login uses is refused, when asked and again when the link is opened. A
-  login may ask five times an hour. Applying the change marks the new address
+  another login uses gets a short in-use notice instead of a link, with the same
+  request response and pending summary as a free address; opening a link still
+  refuses an address in use. At request time the old address gets a notice naming
+  the new address only masked, even if delivery to the new address fails. Failed
+  notices to the old address are logged. A login may ask five times an hour.
+  Applying the change marks the new address
   verified, ends the login's other sessions (the session that asked stays signed
   in), writes an audit event without either address, and sends the old address a
   notice that names the new one only masked.
