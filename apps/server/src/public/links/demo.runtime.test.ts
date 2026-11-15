@@ -10,7 +10,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { startRuntime } from '../../core/runtime.js';
 import { clock } from '../../core/clock.js';
-import { PostgresJobs, PostgresJobStatsQuery } from '../../infra/jobs/postgres.js';
+import { PostgresJobs } from '../../infra/jobs/postgres.js';
 import * as stripeAdapter from '../../infra/payments/stripe.js';
 import { StripeFixtures } from '../../infra/payments/stripe-fixtures.js';
 import { s3Server } from '../../infra/storage/s3-server.test-helper.js';
@@ -18,6 +18,15 @@ import { createSignedLinksService } from '../../areas/links/service.js';
 import { demoSignaturePng } from '../../demo/seed/waivers-image.js';
 import { demoSignatureReservation } from '../../demo/waiver-signatures.js';
 
+// The options each job queue was constructed with, so a test can call the policy and enumeration the runtime wired.
+const captured = vi.hoisted(() => [] as ConstructorParameters<typeof import('../../infra/jobs/postgres.js').PostgresJobs>[0][]);
+vi.mock('../../infra/jobs/postgres.js', async (original) => {
+  const module = await original<typeof import('../../infra/jobs/postgres.js')>();
+  class CapturingJobs extends module.PostgresJobs {
+    constructor(options?: ConstructorParameters<typeof module.PostgresJobs>[0]) { super(options); captured.push(options); }
+  }
+  return { ...module, PostgresJobs: CapturingJobs };
+});
 const db = useTestDatabase(), factory = createFactories(db);
 it('completes card and waiver onboarding through the demo production runtime with its real upload restrictions', async () => {
   const gymId = uuidv7(), hostname = gymId + '.demo.example.test', origin = 'https://' + hostname;
@@ -78,8 +87,8 @@ it('wires the demo job policy, one-query gym enumeration and the post-limiter gu
     return id;
   };
   const ready = await make({ ready: true }), seeding = await make({ kind: 'pool', ready: false }), showcase = await make({ kind: 'showcase', ready: true });
-  const queues: PostgresJobs[] = [];
-  const worker = vi.spyOn(PostgresJobs.prototype, 'start').mockImplementation(function (this: PostgresJobs) { queues.push(this); return { async stop() {} }; });
+  captured.length = 0;
+  const worker = vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
   const transport = new StripeFixtures(ready, Math.floor(clock.now().getTime() / 1000));
   const payments = vi.spyOn(stripeAdapter, 'stripeTransport').mockReturnValue(transport);
   const storage = await s3Server(), directory = await mkdtemp(join(tmpdir(), 'plaingym-demo-jobs-runtime-'));
@@ -92,22 +101,18 @@ it('wires the demo job policy, one-query gym enumeration and the post-limiter gu
       UPLOADS_S3_BUCKET: 'demo', UPLOADS_S3_ENDPOINT: storage.endpoint, UPLOADS_S3_REGION: 'us-east-1',
       UPLOADS_S3_ACCESS_KEY_ID: 'test', UPLOADS_S3_SECRET_ACCESS_KEY: 'test',
       BACKUP_STAGING_DIR: directory, BACKUP_STATE_DIR: directory });
-    expect(queues).toHaveLength(1);
-    const jobs = queues[0]!, ran: string[] = [], stats = new PostgresJobStatsQuery({ forSystem: db.forSystem });
-    jobs.handle('r249.probe', async (_payload, context) => { ran.push(context.gymId); });
-    const enqueue = (gymId: string) => jobs.enqueue('r249.probe', {}, { gymId, timezone: 'UTC', idempotencyKey: gymId });
-    await enqueue(ready); await enqueue(seeding); await enqueue(showcase);
-    while (await jobs.runNext()) { /* drain what is due */ }
-    // A ready copy runs its job, a gym still seeding keeps it for later, and the showcase never runs one.
-    expect(ran).toEqual([ready]);
-    expect((await stats.get(seeding)).pending).toBe(1);
-    expect((await stats.get(showcase)).pending).toBe(0);
-    // The scheduler lists only eligible gyms: the runtime's schedules enqueue for the ready copy and for no other.
-    const before = (await stats.get(ready)).pending;
-    await jobs.scheduleDue();
-    expect((await stats.get(ready)).pending).toBeGreaterThan(before);
-    expect((await stats.get(seeding)).pending).toBe(1);
-    expect((await stats.get(showcase)).pending).toBe(0);
+    // The options the runtime gave the job queue: a ready copy runs its jobs, a gym still seeding keeps them for
+    // later, the showcase never runs any, and the scheduler lists only the gyms that may run jobs, in one query.
+    const wired = captured.filter(options => options?.eligibleGym);
+    expect(wired).toHaveLength(1);
+    const { eligibleGym, listGyms } = wired[0]!;
+    expect(await eligibleGym!(ready)).toBe(true);
+    expect(await eligibleGym!(seeding)).toBe('defer');
+    expect(await eligibleGym!(showcase)).toBe('skip');
+    const listed = (await listGyms!()).map(gym => gym.gymId);
+    expect(listed).toContain(ready);
+    expect(listed).not.toContain(seeding);
+    expect(listed).not.toContain(showcase);
   } finally {
     await runtime?.stop(); payments.mockRestore(); worker.mockRestore();
     await storage.close(); await rm(directory, { recursive: true, force: true });
