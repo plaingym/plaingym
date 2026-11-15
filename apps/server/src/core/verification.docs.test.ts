@@ -22,6 +22,7 @@ const fixtureReaders = new Set([
   'apps/server/src/areas/health/restore.failure.test.ts',
   'apps/server/src/areas/health/restore.gate.test.ts',
   'apps/server/src/areas/health/restore.gate-process.test.ts',
+  'apps/server/src/areas/health/restore.gate-monitor.test.ts',
   'apps/server/src/areas/health/restore.resume.test.ts',
   'apps/server/src/areas/links/campaigns.scale.test.ts',
   'apps/server/src/areas/links/campaigns.test.ts',

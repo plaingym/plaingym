@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { randomUUID } from 'node:crypto';
-import { readFile, readdir, rm } from 'node:fs/promises';
+import { readFile, readdir, rm, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
@@ -8,8 +8,9 @@ import type { MiddlewareHandler } from 'hono';
 import { AppError, createTranslator, errorResponse } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import type { RequestEnvironment } from '../../core/context.js';
-import { atomicJson, exists, MetadataSizeLimitError, missing, readJson } from './backups.files.js';
-import { RestoreFailure } from './restore.failure.js';
+import { logError, logInfo } from '../../core/log.js';
+import { atomicJson, exists, malformedJson, missing, readJson } from './backups.files.js';
+import { RestoreFailure, safeName } from './restore.failure.js';
 
 /** Every journal phase before `complete`: a restore is staged and `resume` can finish it. */
 export const unfinishedRestorePhases = ['verified', 'database_restored', 'migrated', 'rekeyed', 'moving_old', 'moving_new', 'uploads_switched'] as const;
@@ -31,31 +32,76 @@ const activities = new Map<string, ProcessActivity>();
 class ProcessActivity {
   count = 0;
   drains = 0;
-  #lease: Promise<void> | undefined;
+  #registered = false;
+  #registration: Promise<void> | undefined;
   #retiring: Promise<void> | undefined;
   #timer: NodeJS.Timeout | undefined;
+  #idle = new Set<() => void>();
+  #reported = new Set<string>();
+  #journal: { mtimeNs: bigint; ctimeNs: bigint; size: bigint; ino: bigint; closed: boolean } | undefined;
   readonly path: string;
   constructor(readonly directory: string, readonly statePath: string) {
     this.path = join(directory, randomUUID() + '.json');
   }
   async register(): Promise<void> {
     await this.#retiring;
-    if (!this.#lease) {
-      this.#lease = (async () => {
-        await atomicJson(this.path, { pid: process.pid, started: await processStart(process.pid) });
+    if (!this.count && (!this.#registered || this.drains)) return;
+    if (!this.#registration) {
+      this.#registration = (async () => {
+        if (!this.#registered || !await exists(this.path)) {
+          await atomicJson(this.path, { pid: process.pid, started: await processStart(process.pid) });
+          this.#registered = true;
+        }
         this.#monitor();
-      })().catch(error => { this.#lease = undefined; throw error; });
+      })().finally(() => { this.#registration = undefined; });
     }
-    await this.#lease;
+    await this.#registration;
+  }
+  leave(): void {
+    if (--this.count === 0) for (const resolve of this.#idle) resolve();
+  }
+  async whenIdle(signal: AbortSignal): Promise<void> {
+    if (!this.count) return;
+    await new Promise<void>((resolve, reject) => {
+      const cleanup = () => { this.#idle.delete(done); signal.removeEventListener('abort', aborted); };
+      const done = () => { cleanup(); resolve(); };
+      const aborted = () => { cleanup(); reject(signal.reason); };
+      if (signal.aborted) aborted();
+      else { this.#idle.add(done); signal.addEventListener('abort', aborted, { once: true }); }
+    });
   }
   async retire(): Promise<void> {
     if (this.#retiring) return this.#retiring;
     this.#retiring = (async () => {
-      await this.#lease;
+      await this.#registration;
       await rm(this.path, { force: true });
-      this.#lease = undefined;
+      this.#registered = false;
     })();
     try { await this.#retiring; } finally { this.#retiring = undefined; }
+  }
+  async #monitorClosed(): Promise<boolean> {
+    let metadata;
+    try { metadata = await stat(this.statePath, { bigint: true }); }
+    catch (error) { if (missing(error)) { this.#journal = undefined; return false; } throw error; }
+    const cached = this.#journal;
+    if (cached && cached.mtimeNs === metadata.mtimeNs && cached.ctimeNs === metadata.ctimeNs &&
+        cached.size === metadata.size && cached.ino === metadata.ino) return cached.closed;
+    let closed: boolean;
+    try { closed = await journalClosed(this.statePath); }
+    catch (error) {
+      // Malformed metadata refuses admission too; release an idle lease so the CLI can report it.
+      if (!(error instanceof RestoreFailure)) throw error;
+      closed = true;
+    }
+    this.#journal = { mtimeNs: metadata.mtimeNs, ctimeNs: metadata.ctimeNs, size: metadata.size, ino: metadata.ino, closed };
+    return closed;
+  }
+  #report(operation: string, error: unknown): void {
+    const kind = operation + ':' + (safeName((error as NodeJS.ErrnoException)?.code) ??
+      safeName(error instanceof Error ? error.name : null) ?? 'unknown');
+    if (this.#reported.has(kind)) return;
+    this.#reported.add(kind);
+    logError('restore.activity_monitor_failed', { pid: process.pid, operation }, error);
   }
   #monitor(): void {
     if (this.#timer) return;
@@ -64,19 +110,18 @@ class ProcessActivity {
     this.#timer = setTimeout(() => {
       this.#timer = undefined;
       void (async () => {
-        if (this.count || this.drains) return;
+        if (!this.#registered || this.drains) return;
+        if (this.count) { await this.register(); return; }
         let closed: boolean;
-        try { closed = await journalClosed(this.statePath); }
-        catch (error) {
-          // A malformed journal also refuses every admission; let the CLI drain and report it.
-          if (!(error instanceof RestoreFailure)) throw error;
-          closed = true;
-        }
+        try { closed = await this.#monitorClosed(); }
+        catch (error) { this.#report('journal', error); return; }
         // Admission may have begun while the journal read was pending.
         const removed = !closed && !await exists(this.directory);
+        if (!this.#registered || this.drains) return;
         if (!this.count && (closed || removed)) await this.retire();
-      })().catch(() => { /* Keep the lease on a read/remove failure: the CLI must not skip us. */ })
-        .finally(() => { if (this.#lease) this.#monitor(); });
+        else await this.register();
+      })().catch(error => { this.#report('lease', error); /* Keep retrying: the CLI must not skip us. */ })
+        .finally(() => { if (this.#registered) this.#monitor(); });
     }, 100);
     this.#timer.unref();
   }
@@ -95,7 +140,7 @@ export class RestoreGate {
   readonly statePath: string;
   readonly activityDirectory: string;
   readonly #activity: ProcessActivity;
-  constructor(readonly dataDirectory: string) {
+  constructor(readonly dataDirectory: string, readonly options: { onDrainWait?: (pid: number) => void } = {}) {
     this.statePath = join(dataDirectory, 'restore-state.json');
     this.activityDirectory = join(dataDirectory, 'restore-activity');
     const key = resolve(this.activityDirectory);
@@ -127,23 +172,38 @@ export class RestoreGate {
       if (await this.isClosed() || this.#closing || activity.drains)
         throw new AppError('unavailable', t('health/restore:inProgress'));
       return await action();
-    } finally { activity.count--; }
+    } finally { activity.leave(); }
   }
   async close(): Promise<void> {
     this.#closing = true;
     this.#activity.drains++;
+    const controller = new AbortController(), waiting = new Set<number>();
+    if (this.#activity.count) waiting.add(process.pid);
+    const timeout = setTimeout(() => controller.abort(new RestoreFailure(
+      'Timed out waiting for restore activity to drain; stop the app, then retry resume')), 300_000);
+    const progress = setInterval(() => {
+      for (const pid of waiting) {
+        if (this.options.onDrainWait) this.options.onDrainWait(pid);
+        else logInfo('restore.drain_waiting', { pid });
+      }
+    }, 5_000);
     try {
-      while (this.#activity.count) await delay(25);
+      await this.#activity.whenIdle(controller.signal);
+      waiting.clear();
       await this.#activity.retire();
-      await this.#drain();
-    } finally { this.#activity.drains--; }
+      await this.#drain(controller.signal, waiting);
+    } catch (error) {
+      if (controller.signal.aborted) throw controller.signal.reason;
+      throw error;
+    } finally { clearTimeout(timeout); clearInterval(progress); this.#activity.drains--; }
   }
-  async #drain(): Promise<void> {
+  async #drain(signal: AbortSignal, waiting: Set<number>): Promise<void> {
     for (;;) {
+      signal.throwIfAborted();
       let names: string[];
       try { names = await readdir(this.activityDirectory); }
       catch (error) { if (missing(error)) return; throw error; }
-      let active = 0;
+      const active = new Set<number>();
       for (const name of names) {
         if (!/^[a-f0-9-]+[.]json$/.test(name)) continue;
         const path = join(this.activityDirectory, name);
@@ -152,7 +212,7 @@ export class RestoreGate {
           try {
             process.kill(lease.pid, 0);
             if (lease.started !== await processStart(lease.pid)) await rm(path, { force: true });
-            else active++;
+            else active.add(lease.pid);
           } catch (error) {
             if (missing(error) || (error as NodeJS.ErrnoException).code === 'ESRCH') await rm(path, { force: true });
             else throw error;
@@ -161,8 +221,11 @@ export class RestoreGate {
           if (!missing(error)) throw error;
         }
       }
-      if (!active) return;
-      await delay(25);
+      signal.throwIfAborted();
+      waiting.clear();
+      for (const pid of active) waiting.add(pid);
+      if (!waiting.size) return;
+      await delay(25, undefined, { signal });
     }
   }
   reopen(): void { this.#closing = false; }
@@ -183,22 +246,24 @@ export class RestoreGate {
 export async function readRestoreJournal(path: string): Promise<unknown> {
   try { return await readJson(path); }
   catch (error) {
-    if (error instanceof SyntaxError || error instanceof MetadataSizeLimitError)
+    if (malformedJson(error))
       throw new RestoreFailure('The restore journal is not in a format this version reads', { cause: error });
     throw error;
   }
 }
 
 async function readLease(path: string): Promise<z.infer<typeof leaseSchema>> {
+  let value: unknown;
   try {
-    const parsed = leaseSchema.safeParse(await readActivity(path));
-    if (parsed.success) return parsed.data;
-    throw parsed.error;
+    value = await readActivity(path);
   } catch (error) {
-    if (error instanceof SyntaxError || error instanceof MetadataSizeLimitError || error instanceof z.ZodError)
+    if (malformedJson(error))
       throw new RestoreFailure(invalidLease, { cause: error });
     throw error;
   }
+  const parsed = leaseSchema.safeParse(value);
+  if (!parsed.success) throw new RestoreFailure(invalidLease, { cause: parsed.error });
+  return parsed.data;
 }
 
 /** Windows can temporarily deny a read while a worker removes its lease. Never skip a live lease. */

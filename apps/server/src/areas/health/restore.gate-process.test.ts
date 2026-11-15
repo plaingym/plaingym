@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { fork, type ChildProcess } from 'node:child_process';
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,16 +24,19 @@ function message(child: ChildProcess, expected: string): Promise<void> {
     child.on('message', received); child.on('exit', exited); child.on('error', failed);
   });
 }
-async function processGate() {
+async function processGate(onDrainWait?: (pid: number) => void) {
   const root = await mkdtemp(join(tmpdir(), 'restore-process-')); directories.push(root);
   const child = fork(fileURLToPath(new URL('./restore.gate-process.test-helper.ts', import.meta.url)), [root], {
     execArgv: ['--import', import.meta.resolve('tsx')], windowsHide: true, timeout: 15_000, killSignal: 'SIGKILL',
-    stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+    stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
   });
+  let stderr = '';
+  child.stderr!.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
   const exited = new Promise<void>(resolve => { child.once('exit', () => resolve()); });
   children.push({ child, exited });
   await message(child, 'ready');
-  return { root, child, exited, gate: new RestoreGate(root), async command(command: string, expected = command) {
+  return { root, child, exited, stderr: () => stderr,
+    gate: new RestoreGate(root, onDrainWait ? { onDrainWait } : {}), async command(command: string, expected = command) {
     const answer = message(child, expected); child.send(command); await answer;
   } };
 }
@@ -87,3 +90,22 @@ it('drains an idle process with a malformed journal so the CLI can report the jo
   expect(await readdir(p.gate.activityDirectory)).toEqual([]);
   await expect(new RestoreGate(p.root).isClosed()).rejects.toThrow('The restore journal is not in a format this version reads');
 });
+
+it('names the PID a CLI drain waits on and logs a persistent idle monitor read error once', async () => {
+  const progress = vi.fn(), p = await processGate(progress);
+  await p.command('idle');
+  // A directory in place of the journal reliably fails reads, including when CI runs as root.
+  await mkdir(p.gate.statePath);
+  const closing = p.gate.close();
+  try {
+    await vi.waitFor(() => { expect(progress).toHaveBeenCalledWith(p.child.pid); }, { timeout: 7_000 });
+    const lines = p.stderr().trim().split('\n').map((line: string) => JSON.parse(line) as unknown);
+    expect(lines).toEqual([expect.objectContaining({ event: 'restore.activity_monitor_failed', pid: p.child.pid, operation: 'journal' })]);
+    expect(await readdir(p.gate.activityDirectory)).toHaveLength(1);
+  } finally {
+    await rm(p.gate.statePath, { recursive: true });
+    await files.atomicJson(p.gate.statePath, { phase: 'verified' });
+    await closing;
+  }
+  await p.command('try', 'refused');
+}, 12_000);

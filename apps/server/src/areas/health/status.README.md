@@ -21,11 +21,17 @@ manifest, and the backup runner's 128 MiB reserve. A failed inventory stops prun
 
 Restore admission uses `restore-state.json` and one durable lease per app process in
 `restore-activity/`, shared by requests and job executions. Activity counts stay in memory;
-ordinary requests do not write or delete leases. The gate checks the journal before
+ordinary requests check their lease still exists and rewrite it only if lost. The gate checks the journal before
 admission and again after registering the process lease, and counts pending admissions
-while closing. A local close waits for its count to reach zero. A separate maintenance
-CLI drains the same process leases: an idle process checks the journal every 100 ms and
-removes its lease once admission is closed and its count is zero. Linux leases include
+while closing. A local close waits on a promise resolved when its count reaches zero. A separate maintenance
+CLI drains the same process leases. Every 100 ms the monitor checks for a lost lease, including while busy;
+when idle it also checks the journal and removes its lease once admission is closed and its count is zero.
+The monitor caches the journal by file identity, timestamps and size; request admission always reads it afresh.
+Read and lease-maintenance errors are logged once per operation and error kind as
+`restore.activity_monitor_failed`, with the PID and a redacted cause. Failed reads or removals keep the
+lease registered for retry. A drain reports each waiting PID every five seconds (`restore.drain_waiting`
+in server logs, a plain progress line in the CLI) and fails after five minutes, keeping admission closed.
+Linux leases include
 the PID's start ticks so a crashed process or a reused PID cannot block the drain.
 After restore completes, new activity registers a fresh lease. All participating processes
 must share the data volume and the app container's PID namespace.
@@ -33,7 +39,10 @@ must share the data volume and the app container's PID namespace.
 Only typed snapshot-content failures produce earlier-snapshot advice before activation.
 Checksum, reference authentication, JSON and decryption failures retain their causes for
 structured logging. Unexpected storage or programming failures keep their own identity;
-schema compatibility and age key errors keep their existing diagnostics. Snapshot creation
+schema compatibility and age key errors keep their existing diagnostics. The age wrapper validates
+identity checksums before decrypting: an invalid key gets `InvalidAgeIdentityError` and the existing key
+diagnostic. Only typed `AgeDecryptionError` header/payload failures become snapshot-content errors;
+the transaction guard keeps its original error. Snapshot creation
 and pruning retain the same validation rules and refusal messages.
 
 After a restore, `gyms.settings.backupPruningHeld` holds both snapshot pruning

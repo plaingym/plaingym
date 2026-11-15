@@ -56,6 +56,13 @@ field, a code or an error name, never a path, key, credential or field value. It
 "A verified restore can be resumed with the maintenance CLI" only if an unfinished restore is
 staged.
 
+While draining active requests and jobs, the CLI prints the PID it is waiting on every
+five seconds. After five minutes it stops with the timeout below; it does not continue
+to overwrite the database. Check that PID's app logs for `restore.activity_monitor_failed`
+(the operation and error code identify a journal read or lease-maintenance failure).
+Resolve the failure, stop the app, then resume the staged restore. Keep the journal and
+staging files. All app and maintenance processes must share the data volume and PID namespace.
+
 | Reason | What to check |
 | :--- | :--- |
 | `Cannot read the restore configuration file (CODE)` | The path, and that the file is inside the container (`ENOENT` is a missing file, `EACCES` a file the app can't read). |
@@ -68,7 +75,7 @@ staged.
 | `Cannot reach the backup bucket (CODE)` | The `endpoint` and the server's network connection; `ECONNREFUSED` and `ENOTFOUND` mean nothing answered at that address. |
 | `Snapshot not found in the bucket` | The snapshot ID, and the `bucket` name: a bucket that doesn't exist reads the same as a snapshot that doesn't. |
 | `The key doesn't open this snapshot` | That the key file is the private key for the backup key the snapshot was made with. |
-| `The key file doesn't hold an age private key`, `The key file must hold exactly one age private key` | The key file's content. |
+| `The key file doesn't hold an age private key`, `The key file must hold exactly one age private key` | The key file's content, including a mistyped character that breaks its checksum. |
 | `A snapshot object is missing from the bucket` | The snapshot was damaged or deleted in the bucket; try an earlier one. |
 | `A verified restore is already staged; resume it first` | See [If a restore is interrupted](#if-a-restore-is-interrupted). |
 | `Missing NAME` | The environment variable the app container needs. |
@@ -92,6 +99,7 @@ staged.
 | `The staged restore failed: the uploads bucket answered with error CODE; preserve the restore state, fix the uploads bucket, then retry resume` | An install that keeps uploads in S3: its uploads bucket (`UPLOADS_S3_*`, not the backup bucket) refused to take the restored files, with that error code (such as `AccessDenied`, or `HTTP` and a status). Fix its access keys or policy, then resume. |
 | `The staged restore failed: cannot reach the uploads bucket (CODE); preserve the restore state, fix the uploads bucket, then retry resume` | The uploads bucket's endpoint didn't answer (`ECONNREFUSED`, `ENOTFOUND` or a timeout). Check `UPLOADS_S3_ENDPOINT` and the network, then resume. |
 | `The restore activity lease is invalid; stop the app, delete the restore-activity folder on its data volume, then start the app` | A process lease file on the data volume is invalid or oversized. Each process keeps one lease while requests and jobs are counted in memory; with the app stopped none is live and the folder can go: `sudo docker compose stop app`, then `sudo docker compose run --rm --no-deps --entrypoint rm app -rf /var/lib/plaingym/restore-activity`, then `sudo docker compose up -d`. Leave `restore-state.json` and `staging/` alone: a staged restore resumes when the app starts. |
+| `Timed out waiting for restore activity to drain; stop the app, then retry resume` | The PIDs printed during the drain and their app logs. Stop the app before resuming; keep `restore-state.json` and staging. |
 | `Unexpected error (NAME)` | Any other failure, with only the error's name. |
 
 Fix what the reason names. If the resume hint appeared, a restore is staged and a new

@@ -35,7 +35,9 @@ export function maintenanceEnvironment() {
   const uploads = createRuntimeUploads(process.env, appEncryptionKey, async () => 'https://maintenance.invalid');
   return { database: new PostgresMaintenance(required('MAINTENANCE_DATABASE_URL')),
     appEncryptionKey, stagingDirectory, uploadsDirectory, uploads,
-    gate: new RestoreGate(dirname(stagingDirectory)), clock };
+    gate: new RestoreGate(dirname(stagingDirectory), {
+      onDrainWait: pid => process.stderr.write('Waiting for restore activity in PID ' + pid + ' to finish\n'),
+    }), clock };
 }
 function restoreOptions(environment: ReturnType<typeof maintenanceEnvironment>) {
   const { uploads, ...options } = environment;

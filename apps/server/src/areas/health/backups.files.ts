@@ -46,6 +46,7 @@ export async function readJson(path: string, limit = 16 * 1024 * 1024): Promise<
 export class MetadataSizeLimitError extends Error {
   constructor() { super('Metadata exceeds size limit'); this.name = 'MetadataSizeLimitError'; }
 }
+export const malformedJson = (error: unknown): boolean => error instanceof SyntaxError || error instanceof MetadataSizeLimitError;
 /** Sync the new file and rename it before syncing its parent (Linux data volumes). */
 /** Windows refuses to replace a file that another handle (a reader, an antivirus scan) has open; retry briefly. */
 async function replaceFile(from: string, to: string): Promise<void> {

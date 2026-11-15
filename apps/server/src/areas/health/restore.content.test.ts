@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
+import { runInTransaction } from '@plaingym/shared/transaction';
 import * as age from '../../infra/age/index.js';
 import { SnapshotContentError } from './backups.content.js';
 import { bytesStream, MetadataSizeLimitError, readJson } from './backups.files.js';
@@ -34,9 +35,24 @@ it('types an authenticated age payload failure during streaming', async () => {
   const plaintext = await decryptSnapshot(identity, bytesStream(ciphertext));
   await expect(new Response(plaintext).arrayBuffer()).rejects.toBeInstanceOf(SnapshotContentError);
 });
-it.each([new TypeError('Code defect'), Object.assign(new Error('Disk failure'), { code: 'EIO' })])('preserves a decryption-path error outside content verification: %s', async failure => {
+it.each([new Error('Code defect'), new TypeError('Code defect'), Object.assign(new Error('Disk failure'), { code: 'EIO' })])('preserves a decryption-path error outside content verification: %s', async failure => {
   vi.spyOn(age, 'decrypt').mockRejectedValueOnce(failure);
   await expect(decryptSnapshot('unused', bytesStream('unused'))).rejects.toBe(failure);
+});
+it('reports a broken identity checksum as a key error before reading snapshot content', async () => {
+  const identity = await age.generateIdentity();
+  const broken = identity.slice(0, -1) + (identity.endsWith('Q') ? 'P' : 'Q');
+  const failure: unknown = await decryptSnapshot(broken, bytesStream('unused')).catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(age.InvalidAgeIdentityError);
+  expect(ageKeyReason(failure)).toBe("The key file doesn't hold an age private key");
+  expect(failure).not.toBeInstanceOf(SnapshotContentError);
+});
+it('preserves the transaction guard error instead of reporting snapshot damage', async () => {
+  const failure: unknown = await runInTransaction(() => decryptSnapshot('unused', bytesStream('unused'))).catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(Error);
+  expect(failure).toHaveProperty('message', 'age.decrypt cannot run inside a transaction');
+  expect(failure).not.toBeInstanceOf(SnapshotContentError);
+  expect(failure).not.toBeInstanceOf(age.InvalidAgeIdentityError);
 });
 it.each([
   ['Invalid age private key', "The key file doesn't hold an age private key"],

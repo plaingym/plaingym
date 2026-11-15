@@ -2,7 +2,7 @@
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { runInTransaction } from '@plaingym/shared/transaction';
-import { decrypt, encrypt, generateIdentity, identityToRecipient, validateRecipient } from './index.js';
+import { decrypt, encrypt, generateIdentity, identityToRecipient, InvalidAgeIdentityError, validateRecipient } from './index.js';
 const stream = (bytes: Uint8Array) => new ReadableStream<Uint8Array>({ start(c) { c.enqueue(bytes); c.close(); } });
 describe('age streaming wrapper', () => {
   it('round trips across multiple authenticated age chunks', async () => {
@@ -33,5 +33,12 @@ describe('age streaming wrapper', () => {
     const identity = await generateIdentity(), recipient = await identityToRecipient(identity);
     await expect(runInTransaction(() => encrypt(recipient, stream(new Uint8Array())))).rejects.toThrow();
     await expect(runInTransaction(() => decrypt(identity, stream(new Uint8Array())))).rejects.toThrow();
+  });
+  it('types an identity with a broken checksum and keeps the decoder cause', async () => {
+    const identity = await generateIdentity();
+    const broken = identity.slice(0, -1) + (identity.endsWith('Q') ? 'P' : 'Q');
+    const failure: unknown = await decrypt(broken, stream(new Uint8Array())).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(InvalidAgeIdentityError);
+    expect(failure).toMatchObject({ message: 'Invalid age private key', cause: expect.any(Error) });
   });
 });

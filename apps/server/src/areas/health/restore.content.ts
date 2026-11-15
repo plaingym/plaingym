@@ -1,21 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { decrypt } from '../../infra/age/index.js';
+import { AgeDecryptionError, decrypt } from '../../infra/age/index.js';
 import { SnapshotContentError } from './backups.content.js';
-import { MetadataSizeLimitError, readJson } from './backups.files.js';
-import { ageKeyReason } from './restore.failure.js';
+import { malformedJson, readJson } from './backups.files.js';
 
 export async function readSnapshotJson(path: string): Promise<unknown> {
   try { return await readJson(path); }
   catch (error) {
-    if (error instanceof SyntaxError || error instanceof MetadataSizeLimitError)
+    if (malformedJson(error))
       throw new SnapshotContentError('Invalid snapshot metadata', { cause: error });
     throw error;
   }
 }
 
-/** Scope the untyped age errors to decryption, never to the storage writing its output. */
+/** Only the age wrapper's header/payload failures are damaged snapshot content. */
 function decryptionFailure(error: unknown): unknown {
-  if (error instanceof Error && error.constructor === Error && !('code' in error) && !ageKeyReason(error))
+  if (error instanceof AgeDecryptionError)
     return new SnapshotContentError('Snapshot decryption failed', { cause: error });
   return error;
 }
