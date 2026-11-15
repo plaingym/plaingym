@@ -84,6 +84,37 @@ const count = (audits: { action: string; targetId: string }[], action: string, t
   audits.filter(a => a.action === action && (targetId === undefined || a.targetId === targetId)).length;
 
 describe('unpaid submitted joins', () => {
+  it.each(['code exhausted', 'waivers changed'] as const)('retains an interrupted submission that assigned nothing after %s, without counting a void', async reason => {
+    const f = await fixture(), code = await factory('discounts', f.gymId, { code: 'ONE-USE', percentBasisPoints: 2000, duration: 'forever', maxUses: 1 });
+    const body = await f.admit('empty-interrupted@example.invalid', 1, code.code!);
+    const memberId = body.members[0]!.waivers[0]!.signatureImageKey.split('/')[2]!;
+    const [member] = await db.forGym(f.gymId, tx => tx.select().from(members).where(eq(members.id, memberId)));
+    const sign = f.waivers.sign.bind(f.waivers);
+    vi.spyOn(f.waivers, 'sign').mockImplementationOnce(async (...args) => {
+      // Both races happen after public.join.submitting, but before the assignment transaction.
+      if (reason === 'code exhausted') await db.forGym(f.gymId, tx => tx.update(discounts).set({ uses: 1, revision: 2 }).where(eq(discounts.id, code.id)));
+      else await factory('waiverTemplates', f.gymId, { name: 'New terms', body: 'Review these new terms.' });
+      return sign(...args);
+    });
+    await expect(f.join.join(f.gymId, body, timezone, '127.0.0.1')).rejects.toMatchObject({ code: reason === 'code exhausted' ? 'invalid_request' : 'conflict' });
+    const before = await f.state(member!.householdId);
+    expect(count(before.audits, 'public.join.submitting', member!.householdId)).toBe(1);
+    expect(before.memberships).toEqual([]);
+    expect(count(before.audits, 'public.join.discounted', member!.householdId)).toBe(0);
+    const reserved = await f.discount(code.id);
+    f.clock.set(seventhDay);
+    expect(await Promise.all([f.run(), f.run()])).toEqual([0, 0]);
+    expect(await f.run()).toBe(0);
+    const after = await f.state(member!.householdId);
+    expect(count(after.audits, 'public.join.retained', member!.householdId)).toBe(1);
+    expect(count(after.audits, 'public.join.voided', member!.householdId)).toBe(0);
+    expect(count(after.audits, 'public.join.discount_released', member!.householdId)).toBe(0);
+    expect(after.home).toEqual(before.home);
+    expect(after.members).toEqual(before.members);
+    expect(after.memberships).toEqual([]);
+    expect(await f.discount(code.id)).toEqual(reserved);
+  });
+
   it('replays an admission whose stored address has newer keys, while still rejecting a different known address', async () => {
     const f = await fixture(), body = await f.admit('address@example.invalid');
     const memberId = body.members[0]!.waivers[0]!.signatureImageKey.split('/')[2]!;

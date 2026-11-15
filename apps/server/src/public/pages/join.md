@@ -22,11 +22,16 @@ source link, and posts as a native multipart form when JavaScript is unavailable
 the page says to contact the gym, while billing is off, no payment provider is
 configured, or the gym has no current document or more than eight.
 
-A refused native submission redisplays the form with typed contact, member and
-signer details and any discount code. It names missing signature images and consent
-per member and document, and identifies invalid fields reported by validation.
+A native submission refused before its admission is stored redisplays the form
+with typed contact, member and signer details and any discount code. It names
+missing signature images and consent per member and document, invalid or unsupported PNGs, future birth dates and
+guardian requirements, and identifies invalid fields reported by validation.
+The refusal summary takes focus on page load. Its messages come from the original
+validation or service refusal; redisplay does not validate the fields again.
 Signature files must be selected again. If a document has changed, its signer
 details and consent are reset so the new version is reviewed.
+A failure after the admission is stored shows the generic failed page rather
+than a ready-to-resubmit form, because the household has already been created.
 
 ## Submission
 
@@ -97,7 +102,9 @@ The same nightly job then voids a submitted join whose first invoice is still un
 on the seventh calendar day after submission in the gym's timezone (submitted on
 March 1, it is payable through March 7 and voided from March 8), across daylight
 saving changes. It reads submissions in pages of 100, skipping completed, voided and
-retained or stalled joins. Submissions interrupted before their first invoice are
+retained or stalled joins. An interrupted submission with no assigned memberships
+and no recorded discount reservation is marked `public.join.retained` without
+counting a void. Submissions interrupted before their first invoice are
 also checked: with no invoice, link, saved card, login or started membership, their
 pending memberships are cancelled and reserved uses returned once. An interrupted
 submission with other billing or access records is retained for staff.

@@ -135,6 +135,7 @@ test('a refused native join keeps typed details and names missing signature file
       }
       await page.getByRole('button', { name: 'Continue to payment', exact: true }).click();
       await expect(page.getByRole('alert')).toContainText('choose a PNG signature image');
+      await expect(page.getByRole('alert')).toBeFocused();
       await expect(page.getByLabel('Email', { exact: true })).toHaveValue(visitor.email);
       await expect(page.getByLabel('First name', { exact: true })).toHaveValue(visitor.firstName);
       await expect(page.getByLabel('Last name', { exact: true })).toHaveValue(visitor.lastName);

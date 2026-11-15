@@ -95,7 +95,7 @@ export function joinFormPage(input: JoinPageInput & { plan: PublicPlan; count: n
     ...['failed', 'conflict', 'signatureRequired', 'busy', 'unavailable', 'tooLarge', 'retry', 'limited', 'intakeLimited', 'codeRefused'].map(key => h('span', { hidden: true, 'data-message': key }, text(key))));
   const summary = h('section', { class: panel }, ...price(input, plan), h('p', null, text('formHelp')),
     h('p', { class: 'text-sm text-muted-foreground' }, text(plan.amountCents === 0 ? 'dueTodayFree' : plan.trialDays > 0 ? 'dueTodayTrial' : 'dueToday')));
-  const feedback = input.errors?.length ? h('section', { role: 'alert', class: panel }, h('p', null, text('checkDetails')),
+  const feedback = input.errors?.length ? h('section', { role: 'alert', tabindex: -1, autofocus: true, class: panel }, h('p', null, text('checkDetails')),
     h('ul', { class: 'list-disc space-y-2 pl-5' }, ...input.errors.map(message => h('li', null, message))), h('p', null, text('selectSignaturesAgain'))) : null;
   return layout(input, text('formTitle', { plan: plan.name }), h('div', { class: 'space-y-6' }, feedback, summary, counter, form), true);
 }

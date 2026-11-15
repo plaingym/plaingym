@@ -37,32 +37,34 @@ export function createJoinCleanup(options: JoinCleanupOptions) {
   const scope = options.scope ?? forGym, clock = options.clock;
   const audit = (tx: Transaction, gymId: string, action: string, householdId: string) =>
     writeAudit(tx, { gymId, actorKind: 'system', action, targetType: 'household', targetId: householdId, occurredAt: clock.now() });
-  /** Caller holds the household lock. The release and its marker always commit together. */
-  async function releaseUses(tx: Transaction, gymId: string, householdId: string) {
+  async function readDiscount(tx: Transaction, householdId: string) {
     const records = await tx.select({ action: auditEvents.action, after: auditEvents.after }).from(auditEvents)
       .where(and(eq(auditEvents.targetId, householdId), inArray(auditEvents.action,
         ['public.join.discounted', 'public.join.discount_released', 'public.join.voided'])));
     const taken = records.find(r => r.action === 'public.join.discounted');
-    if (!taken || records.some(r => r.action !== 'public.join.discounted')) return {};
-    const discounted = discountedRecord.parse(taken.after);
+    return { discounted: taken ? discountedRecord.parse(taken.after) : null,
+      released: records.some(r => r.action !== 'public.join.discounted') };
+  }
+  /** Caller holds the household lock. The release and its marker always commit together. */
+  async function releaseUses(tx: Transaction, gymId: string, householdId: string, reservation: Awaited<ReturnType<typeof readDiscount>>) {
+    const { discounted, released } = reservation;
+    if (!discounted || released) return {};
     const usesReleased = await releaseDiscountUses(tx, { gymId, actor: { kind: 'system' } }, clock, discounted.discountId, discounted.uses);
     const after = { discountId: discounted.discountId, usesReleased };
     await writeAudit(tx, { gymId, actorKind: 'system', action: 'public.join.discount_released', targetType: 'household',
       targetId: householdId, occurredAt: clock.now(), after });
     return after;
   }
-  async function cancelPending(tx: Transaction, gymId: string, householdId: string, rows: (typeof memberships.$inferSelect)[]) {
+  async function cancelPending(tx: Transaction, gymId: string, householdId: string, rows: (typeof memberships.$inferSelect)[], reservation: Awaited<ReturnType<typeof readDiscount>>) {
     const context = { gymId, actor: { kind: 'system' as const } };
-    const [record] = await tx.select({ after: auditEvents.after }).from(auditEvents)
-      .where(and(eq(auditEvents.action, 'public.join.discounted'), eq(auditEvents.targetId, householdId))).limit(1);
-    const discounted = record ? discountedRecord.parse(record.after) : null;
+    const { discounted } = reservation;
     const live = discounted ? await liveDiscounts(tx, rows.map(m => m.id)) : new Map();
     const within = createMembershipService({ scope: async (_gymId, work) => work(tx), clock });
     for (const membership of rows) {
       if (discounted && live.get(membership.id)?.discountId === discounted.discountId) await endDiscount(tx, context, clock, membership.id, 'released');
       await within.cancel(context, { membershipId: membership.id, revision: membership.revision });
     }
-    return releaseUses(tx, gymId, householdId);
+    return releaseUses(tx, gymId, householdId, reservation);
   }
   async function remove(gymId: string, householdId: string) {
     const uploads = await options.uploadsFor(gymId);
@@ -132,12 +134,15 @@ export function createJoinCleanup(options: JoinCleanupOptions) {
       const ids = record.extend({ membershipIds: z.array(idSchema).min(1).max(6) }).parse(admitted.after);
       const rows = await tx.select().from(memberships).where(eq(memberships.householdId, householdId)).for('update');
       const retain = async () => { await audit(tx, gymId, 'public.join.retained', householdId); return false; };
+      const reservation = await readDiscount(tx, householdId);
+      // Nothing was assigned or reserved: settle without claiming a void that changed nothing.
+      if (!rows.length && !reservation.discounted) return retain();
       if (rows.some(m => !ids.membershipIds.includes(m.id) || m.status !== 'pending')
         || (await tx.select({ id: invoices.id }).from(invoices).where(eq(invoices.householdId, householdId)).limit(1)).length
         || (await tx.select({ id: signedLinks.id }).from(signedLinks).where(eq(signedLinks.householdId, householdId)).limit(1)).length
         || (await tx.select({ id: paymentMethods.id }).from(paymentMethods).where(eq(paymentMethods.householdId, householdId)).limit(1)).length
         || (await tx.select({ id: householdUsers.id }).from(householdUsers).where(eq(householdUsers.householdId, householdId)).limit(1)).length) return retain();
-      const released = await cancelPending(tx, gymId, householdId, rows);
+      const released = await cancelPending(tx, gymId, householdId, rows, reservation);
       await writeAudit(tx, { gymId, actorKind: 'system', action: 'public.join.voided', targetType: 'household', targetId: householdId,
         occurredAt: clock.now(), after: { membershipIds: rows.map(m => m.id), ...released } });
       return true;
@@ -156,7 +161,7 @@ export function createJoinCleanup(options: JoinCleanupOptions) {
       if (!event || (await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.targetId, householdId),
         inArray(auditEvents.action, settledActions))).limit(1)).length) return null;
       if (!unpaidJoinExpired(localDate(event.occurredAt, timezone), clock.now(), timezone)) return null;
-      const join: SubmittedJoin & z.infer<typeof submitted> = { ...submitted.parse(event.after), householdId };
+      const join: SubmittedJoin & z.infer<typeof submitted> & { receivedAt: Date } = { ...submitted.parse(event.after), householdId, receivedAt: event.occurredAt };
       return join;
     };
     const found = await scope(gymId, async tx => {
@@ -166,17 +171,15 @@ export function createJoinCleanup(options: JoinCleanupOptions) {
     });
     if (!found) return voidIncomplete(gymId, householdId, timezone);
     // Wait at most fourteen more local days after the first cleanup day. The marker is visible in the staff audit log.
-    const stall = async (tx: Transaction) => {
-      const join = await read(tx);
-      const [event] = await tx.select({ occurredAt: auditEvents.occurredAt }).from(auditEvents)
-        .where(and(eq(auditEvents.action, 'public.join.received'), eq(auditEvents.targetId, householdId))).limit(1);
-      if (join && event && addDays(localDate(event.occurredAt, timezone), 21) <= localDate(clock.now(), timezone))
+    const stall = async (tx: Transaction, join: NonNullable<Awaited<ReturnType<typeof read>>>) => {
+      if (addDays(localDate(join.receivedAt, timezone), 21) <= localDate(clock.now(), timezone))
         await audit(tx, gymId, 'public.join.void_stalled', householdId);
       return false;
     };
     const wait = () => scope(gymId, async tx => {
       await tx.select({ id: households.id }).from(households).where(eq(households.id, householdId)).for('update');
-      return stall(tx);
+      const join = await read(tx);
+      return join ? stall(tx, join) : false;
     });
     // Each session the join's link started must be confirmed closed by the provider, outside any transaction. A completed
     // one may hold a payment not yet recorded: the join waits for it.
@@ -199,7 +202,7 @@ export function createJoinCleanup(options: JoinCleanupOptions) {
       if (!join) return false;
       const check = await checkSubmittedJoin(tx, join, closed, clock);
       const retain = async () => { await audit(tx, gymId, 'public.join.retained', householdId); return false; };
-      if (check.outcome !== 'ready') return check.outcome === 'keep' ? retain() : stall(tx);
+      if (check.outcome !== 'ready') return check.outcome === 'keep' ? retain() : stall(tx, join);
       const rows = await tx.select().from(memberships).where(eq(memberships.householdId, householdId)).for('update');
       // Staff added or started a membership, or linked a login: the household is theirs to follow up.
       if (rows.length !== join.membershipIds.length || rows.some(m => !join.membershipIds.includes(m.id) || m.status !== 'pending')
@@ -207,7 +210,7 @@ export function createJoinCleanup(options: JoinCleanupOptions) {
         return retain();
       await voidSubmittedJoin(tx, gymId, join, check.invoice, clock);
       // The membership service runs in this transaction, so the void, the cancellations and the release commit together.
-      const released = await cancelPending(tx, gymId, householdId, rows);
+      const released = await cancelPending(tx, gymId, householdId, rows, await readDiscount(tx, householdId));
       await writeAudit(tx, { gymId, actorKind: 'system', action: 'public.join.voided', targetType: 'household', targetId: householdId,
         occurredAt: clock.now(), after: { invoiceId: join.invoiceId, linkId: join.linkId, membershipIds: join.membershipIds,
           ...released } });

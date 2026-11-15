@@ -657,6 +657,7 @@ describe('public join pages through the production registrations', () => {
     const html = await response.text();
     expect(response.status).toBe(400);
     expect(html).toContain('role="alert"');
+    expect(html).toContain('tabindex="-1" autofocus');
     expect(html).toContain(f.templates[0]!.name + ': choose a PNG signature image');
     expect(html).toContain(f.templates[0]!.name + ': agree to the document');
     for (const value of ['Pat &lt;Payer&gt;', 'draft@example.invalid', '555-0123', 'Avery', 'Native', '1990-01-02', 'Parent', 'TRYAGAIN']) expect(html).toContain('value="' + value + '"');
@@ -664,6 +665,54 @@ describe('public join pages through the production registrations', () => {
     expect(html).toContain('signature files must be selected again');
     expect(html).not.toContain('<Payer>'); expect(html).not.toContain(pngBase64);
     expect((await f.joined()).some(home => home.email === 'draft@example.invalid')).toBe(false);
+  });
+  it.each([
+    ['not a PNG', 'waiver-0-0-image', 'not an image', 'choose a valid, supported PNG'],
+    ['corrupt PNG', 'waiver-0-0-image', png.subarray(0, 40), 'choose a valid, supported PNG'],
+    ['oversized image', 'waiver-0-0-image', Buffer.alloc(256 * 1024 + 1), 'choose a PNG signature image'],
+    ['missing consent', 'waiver-0-0-consent', '', 'agree to the document'],
+    ['minor self-signing', 'member-0-dateOfBirth', '2016-05-06', 'a parent or legal guardian must sign'],
+    ['future birth date', 'member-0-dateOfBirth', '2099-01-01', 'date of birth must not be in the future'],
+    ['invalid email', 'email', 'invalid', 'Check Email.'],
+    ['missing signer', 'waiver-0-0-name', '', 'Check Person 1: Signer full name.'],
+    ['long signer', 'waiver-0-0-name', 'x'.repeat(201), 'Check Person 1: Signer full name.'],
+    ['missing guardian relationship', 'waiver-0-0-relationship', '', 'Relationship to participant'],
+  ] as const)('explains the native refusal for %s without creating an admission', async (_reason, field, value, message) => {
+    const f = await fixture(), form = nativeForm(f, f.plan.id, 'bad-form@example.invalid');
+    if (field.endsWith('-image')) form.set(field, new File([value], 'signature.png', { type: 'image/png' }));
+    else form.set(field, String(value));
+    if (field.endsWith('-relationship')) form.set('waiver-0-0-kind', 'guardian');
+    const response = await f.server.request(await requestWithLength(origin + '/join', { method: 'POST', headers: { origin }, body: form }));
+    const html = await response.text();
+    expect(response.status).toBe(400);
+    expect(html).toContain('role="alert"');
+    expect(html).toContain(message);
+    expect(html).toContain('data-join-form');
+    expect(await f.joined()).toHaveLength(0);
+  });
+  it.each(['', 'March 3'])('names only the birth date field when it is %j, without age-based problems', async dateOfBirth => {
+    const f = await fixture(), form = nativeForm(f, f.plan.id, 'no-birth-date@example.invalid');
+    form.set('member-0-dateOfBirth', dateOfBirth);
+    const response = await f.server.request(await requestWithLength(origin + '/join', { method: 'POST', headers: { origin }, body: form }));
+    const html = await response.text();
+    expect(response.status).toBe(400);
+    expect(html).toContain('Check Person 1: Date of birth.');
+    expect(html).not.toContain('a parent or legal guardian must sign for anyone under 18');
+    expect(html).not.toContain('date of birth must not be in the future');
+    expect(await f.joined()).toHaveLength(0);
+  });
+  it.each(['join', 'state', 'firstInvoice'] as const)('keeps the failed page after admission when %s refuses', async step => {
+    const f = await fixture(), form = nativeForm(f, f.plan.id, 'already-admitted@example.invalid');
+    const admit = vi.spyOn(f.join, 'admit');
+    vi.spyOn(f.join, step).mockRejectedValueOnce(new AppError('conflict', 'Interrupted after admission'));
+    const response = await f.server.request(await requestWithLength(origin + '/join', { method: 'POST', headers: { origin }, body: form }));
+    const html = await response.text();
+    expect(response.status).toBe(400);
+    expect(html).toContain('We could not save your details');
+    expect(html).not.toContain('data-join-form');
+    expect(html).not.toContain('role="alert"');
+    expect(admit).toHaveBeenCalledTimes(1);
+    expect(await f.joined()).toHaveLength(1);
   });
   it('explains a changed document set on a native refusal that also names the missing signatures', async () => {
     const f = await fixture(), form = nativeForm(f, f.plan.id, 'changed-set@example.invalid');

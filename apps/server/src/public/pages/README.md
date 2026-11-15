@@ -15,6 +15,12 @@ Owner setup guidance lives in the admin Website section. `/api/public/config` in
 fields in its gym branding projection; it never returns the rest of the website
 settings. The join pages use the same projection.
 
+Native join refusals before admission preserve typed details and show the original
+field or service problems in a focused summary; failures after admission keep the
+generic failed page. Join cleanup settles interrupted submissions that assigned
+no memberships and reserved no discount uses without counting them as voids.
+See [join.md](join.md) for the submission and cleanup rules.
+
 `configurePublicPages` supplies the real waiver service, gym uploads, a staff
 notifier and an optional `dropInFeeFor(gymId, tx)` projection: `createDropInFee()`
 (`areas/settings/drop-in-fee.ts`) reads the gym's chosen drop-in charge type at its

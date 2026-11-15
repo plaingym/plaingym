@@ -4,10 +4,11 @@ import type { Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { getCookie, setCookie } from 'hono/cookie';
 import { AppError, createTranslator, type Translator } from '@plaingym/shared';
-import { idSchema, maxJoinDocuments, maxJoinMembers, paginationSchema, publicContracts as contracts, publicSubmissionResponseSchema } from '@plaingym/shared/contracts';
+import { idSchema, maxJoinMembers, paginationSchema, publicContracts as contracts, publicSubmissionResponseSchema } from '@plaingym/shared/contracts';
 import { route, type RouteRegistration } from '../../core/registry.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import { rateLimit } from '../../core/rate-limit.js';
+import { logError } from '../../core/log.js';
 import { publicIntakeRefusal, reservePublicIntake } from '../../core/rate-limit-intake.js';
 import { setPolicy } from '../../core/csp.js';
 import { publicPageDirectives } from './page.js';
@@ -16,6 +17,7 @@ import { createJoinService, joinBodyBytes, type JoinOptions,
 import { joinContinuations, joinCookie, joinCookieLifetimeMs, type JoinContinuations } from './join.continuation.js';
 import { joinFormPage, joinPlansPage, joinStatusPage, type JoinPageState } from './join.page.js';
 import { joinBrowserScript } from './join.browser.js';
+import { JoinFormError, joinRefusalProblems, readJoinForm } from './join.form.js';
 import { configureJoinCleanup } from './join.jobs.js';
 import pages from '../../../../../locales/en/public/pages.json' with { type: 'json' };
 import messages from '../../../../../locales/en/public/join.json' with { type: 'json' };
@@ -86,8 +88,6 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
     } catch (error) { throw publicIntakeRefusal(error, ctx, (options().t ?? translator)('public/join:intakeLimited')) ?? error; }
   }
   const settledOrGone = (error: unknown) => error instanceof AppError && ['conflict', 'not_found', 'forbidden'].includes(error.code);
-  const signer = (value: (name: string) => string, prefix: string) => value(prefix + '-kind') === 'guardian'
-    ? { kind: 'guardian' as const, name: value(prefix + '-name'), relationship: value(prefix + '-relationship') } : { kind: 'self' as const, name: value(prefix + '-name') };
   const result: RouteRegistration[] = [
     route({ ...contracts.plans, request: { query: paginationSchema }, responses: json(contracts.plans.response) }, async ctx =>
       ctx.json(await options().service.plans(gymOf(ctx), ctx.req.valid('query')), 200)),
@@ -123,76 +123,47 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
     route({ method: 'post', path: '/join', permission: { kind: 'public' }, middleware: [submissions, boundedForm], responses: html }, async ctx => {
       const context = ctx.get('context'), service = options().service, gymId = context.gym.gymId;
       let fields: FormData | undefined;
+      let admitted = false;
       try {
         const contentType = ctx.req.header('content-type')?.split(';')[0]?.trim().toLowerCase();
         if (contentType !== 'multipart/form-data') throw new AppError('invalid_request', 'Expected a form submission');
         const submitted = await ctx.req.raw.formData().catch(() => { throw new AppError('invalid_request', 'Invalid form submission'); });
         fields = submitted;
-        const value = (name: string) => { const field = submitted.get(name); return typeof field === 'string' ? field : ''; };
-        const count = Number(value('members'));
-        if (!Number.isInteger(count) || count < 1 || count > maxJoinMembers) throw new AppError('invalid_request', 'Invalid member count');
-        const contact = { name: value('contactName'), email: value('email'), ...(value('phone') ? { phone: value('phone') } : {}) };
-        const people = Array.from({ length: count }, (_, i) => ({ firstName: value(`member-${i}-firstName`), lastName: value(`member-${i}-lastName`),
-          dateOfBirth: value(`member-${i}-dateOfBirth`) }));
-        const common = { planId: value('planId'), contact, honeypot: value('honeypot'), ...(value('code').trim() ? { code: value('code') } : {}) };
-        // The documents the page rendered; the admission checks them against the current set.
-        const documents = Array.from({ length: maxJoinDocuments }, (_, j) => j).filter(j => value(`waiver-0-${j}-template`));
-        const signatures = await Promise.all(people.map((_, i) => Promise.all(documents.map(async j => {
-          const prefix = `waiver-${i}-${j}`, file = submitted.get(prefix + '-image');
-          if (!(file instanceof File) || !file.size || file.size > 256 * 1024 || value(prefix + '-consent') !== 'on') throw new AppError('invalid_request', 'Signature and consent required');
-          return { templateId: value(prefix + '-template'), templateVersion: Number(value(prefix + '-version')),
-            pngBase64: Buffer.from(await file.arrayBuffer()).toString('base64'), signer: signer(value, prefix) };
-        }))));
-        const admission = contracts.joinAdmission.body.parse({ ...common, members: people.map((member, i) => ({ member, signatures: signatures[i]! })) });
+        const admission = await readJoinForm(submitted, await service.ready(gymId), options().t ?? translator, context.clock.now(), context.gym.timezone);
         await reserve(ctx, admission);
         const images = await service.admit(gymId, admission, context.gym.timezone);
-        const { linkId } = await service.join(gymId, { ...common, members: people.map((member, i) => ({ member,
-          waivers: images.data[i]!.map((image, j) => ({ ...image, consent: true, signer: signer(value, `waiver-${i}-${j}`) })) })) },
+        admitted = true;
+        const { members, ...common } = admission;
+        const { linkId } = await service.join(gymId, { ...common, members: members.map(({ member, signatures }, i) => ({ member,
+          waivers: images.data[i]!.map((image, j) => ({ ...image, consent: true, signer: signatures[j]!.signer })) })) },
         context.gym.timezone, context.clientIp ?? 'unknown');
         remember(ctx, linkId);
         const state = await service.state(gymId, linkId), status = state.status;
         if (status === 'active') return ctx.redirect('/join/return', 303);
-        return page(ctx, status === 'manual' ? 'manual' : 'cardOnly' in state && state.cardOnly ? 'card' : 'continue', 200, linkId);
+        return await page(ctx, status === 'manual' ? 'manual' : 'cardOnly' in state && state.cardOnly ? 'card' : 'continue', 200, linkId);
       } catch (error) {
+        // Admission has persisted: a fresh form here could create a second household on resubmission.
+        if (admitted) {
+          logError('public.join.native_failed', { gymId }, error);
+          return page(ctx, 'failed', 400);
+        }
         if (publicIntakeRefusal(error, ctx, (options().t ?? translator)('public/join:intakeLimited'))) return page(ctx, 'limited', 429);
         if (error instanceof AppError && error.code === 'unavailable') return page(ctx, 'unavailable', 503);
-        if (fields && (error instanceof z.ZodError || error instanceof AppError && ['invalid_request', 'not_found', 'conflict'].includes(error.code))) {
+        if (fields && (error instanceof JoinFormError || error instanceof z.ZodError || error instanceof AppError && ['invalid_request', 'not_found', 'conflict'].includes(error.code))) {
           const values = Object.fromEntries([...fields].filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
           const count = Number(values.members);
           if (idSchema.safeParse(values.planId).success && Number.isInteger(count) && count >= 1 && count <= maxJoinMembers) {
             try {
-              const plan = await service.joinablePlan(gymId, values.planId!), templates = await service.ready(gymId);
-              const t = options().t ?? translator, text = (key: string, args?: Record<string, string | number>) => t('public/join:' + key, args);
-              const errors: string[] = [];
-              const labels = { contactName: text('contactName'), email: text('email'), phone: text('phone'), firstName: text('firstName'), lastName: text('lastName'),
-                dateOfBirth: text('dateOfBirth'), name: text('signerName'), relationship: text('relationship') };
-              for (const name of ['contactName', 'email'] as const) if (!values[name]?.trim()) errors.push(text('checkField', { field: labels[name] }));
-              for (let i = 0; i < count; i++) {
-                const member = text('member', { number: i + 1 });
-                for (const name of ['firstName', 'lastName', 'dateOfBirth'] as const) if (!values[`member-${i}-${name}`]?.trim()) errors.push(text('checkField', { field: member + ': ' + labels[name] }));
-                templates.forEach((template, j) => {
-                  const prefix = `waiver-${i}-${j}`, file = fields!.get(prefix + '-image');
-                  const document = member + ': ' + template.name;
-                  if (!(file instanceof File) || !file.size || file.size > 256 * 1024) errors.push(text('checkSignature', { document }));
-                  if (values[prefix + '-consent'] !== 'on') errors.push(text('checkConsent', { document }));
-                });
-              }
-              if (error instanceof z.ZodError) for (const issue of error.issues) {
-                const name = issue.path.at(-1), label = issue.path[0] === 'contact' && name === 'name' ? labels.contactName : typeof name === 'string' ? labels[name as keyof typeof labels] : undefined;
-                if (label) errors.push(text('checkField', { field: issue.path[0] === 'members' ? text('member', { number: Number(issue.path[1]) + 1 }) + ': ' + label : label }));
-              }
-              // A changed document set leads, so missing signatures for a document the visitor never saw are explained.
-              if (codeRefused(error)) errors.push(text('codeRefused'));
-              else if (error instanceof AppError && error.code === 'conflict') errors.unshift(text('conflict'));
-              else if (!errors.length) errors.push(text('checkApplicants'));
-              return ctx.html(joinFormPage({ gym: await service.branding(gymId), t, plan, count, templates, values, errors: [...new Set(errors)] }), 400);
+              const [plan, templates, gym] = await Promise.all([service.joinablePlan(gymId, values.planId!), service.ready(gymId), service.branding(gymId)]);
+              const t = options().t ?? translator;
+              return ctx.html(joinFormPage({ gym, t, plan, count, templates, values, errors: joinRefusalProblems(error, t) }), 400);
             } catch (retryError) {
               if (!(retryError instanceof AppError && ['not_found', 'unavailable'].includes(retryError.code))) throw retryError;
             }
           }
         }
         if (codeRefused(error)) return page(ctx, 'codeRefused', 400);
-        if (error instanceof z.ZodError || error instanceof AppError && ['invalid_request', 'not_found', 'conflict'].includes(error.code)) return page(ctx, 'failed', 400);
+        if (error instanceof JoinFormError || error instanceof z.ZodError || error instanceof AppError && ['invalid_request', 'not_found', 'conflict'].includes(error.code)) return page(ctx, 'failed', 400);
         throw error;
       }
     }),
