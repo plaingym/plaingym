@@ -43,25 +43,42 @@ first period that bills a whole period, consume a `once` or `cycles` allowance,
 while prorations, trials and frozen skipped periods do not. A zero first invoice settles and activates through the normal runner and
 transition jobs. Catalog edits leave existing application terms unchanged.
 
-## Lead conversion
+## Member status
 
-After activation or cancellation, a member becomes `active` if their status is
-still `trial`, they have not been erased, they have an active membership, and no
-unfinished trial remains. A frozen trial that has never activated counts as
-unfinished; resuming it or cancelling the last trial rechecks the member. This
-applies to online joins and staff-set trials. The member update
-uses a revision guard and writes `billing.member.activated` in the membership's
-transaction. Other member statuses stay as set by staff. Household locks serialize
-sibling activations, cancellations and assignments, so concurrent trial endings
-promote once. Erasure locks the household before the member, matching activation.
+Membership assignment and edits (including activation, freeze, resume and
+cancellation) derive the member's status from all their memberships, in order:
+`active` if any is active, otherwise `trial` if any is trial, otherwise `frozen`
+if any is frozen, otherwise `cancelled` if all are cancelled. Pending-only live
+memberships keep the staff-set status, including a mix of pending and cancelled
+memberships. A member with no memberships (such as a prospect, visitor or
+pack-only member) also keeps the staff-set status. A staff edit stands until the
+next membership change. An active membership takes priority over an unfinished
+or frozen trial.
+
+Cancelling the last live membership makes the member `cancelled` even when pack
+credits remain; the kiosk sends them to the front desk. Cancelling a frozen
+membership clears `frozen_at` and `resumes_on`; the freeze audit retains its history.
+The daily `billing.memberships.dates` job uses the same activation path for trial
+endings and scheduled resumes.
+
+Only a changed member status advances its revision and writes an audit:
+`billing.member.activated`, `billing.member.trial_started`, `billing.member.frozen`
+or `billing.member.cancelled`. The audit names the causing membership ID and
+membership action. The update uses the member's revision guard in the membership
+transaction, under the household lock. Concurrent changes to sibling memberships
+therefore derive one consistent status. Erased members are never revived.
+Erasure locks the household before the member, matching membership changes.
+
+## Lead conversion
 
 Activating a pending or trial membership marks its member's lead `won` in the
 same transaction, including activations from a paid invoice's effect. An
 assignment that starts active does the same. This includes previously lost
 leads, increments the lead revision and audits the caller's actor once. A
 prospect or trial member without lead details gains a null-source lead; other
-members without a lead gain none. Repeated effects, trial assignments and frozen
-resumes leave lead stages unchanged. Direct membership imports change no stage.
+members without a lead gain none. Resuming a never-active frozen trial also marks
+its lead won. Repeated effects, trial assignments and resumes of previously active
+memberships leave lead stages unchanged. Direct membership imports change no stage.
 
 ## Anniversary dates
 

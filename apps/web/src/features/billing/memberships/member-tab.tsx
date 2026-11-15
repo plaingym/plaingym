@@ -38,11 +38,14 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
     const [household, billing] = await Promise.all([client.memberships({ householdId: member.householdId }), client.householdBilling(member.householdId)]);
     return { member, household, billingDay: billing.billingDay };
   } });
+  async function reload() {
+    await Promise.all([cache.invalidateQueries({ queryKey: key }), cache.invalidateQueries({ queryKey: ['members', gymId] })]);
+  }
   async function mutate(operation: Action | 'assignMembership', input: unknown, membershipId?: string) {
     setBusy(true); setMessage(''); setReminder(false);
     try {
       await client.call(operation, input, membershipId ? { membershipId } : {});
-      await cache.invalidateQueries({ queryKey: key });
+      await reload();
       setMessage(text('saved')); return true;
     } catch (error) {
       setMessage(error instanceof ApiError && error.reason.includes('switch_scheduled') ? text('reason_switch_scheduled')
@@ -51,7 +54,6 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
     }
     finally { setBusy(false); }
   }
-  const reload = () => cache.invalidateQueries({ queryKey: key });
   return <section className="min-w-0 space-y-4" aria-label={text('title')}>
     <h2 className="text-lg font-semibold">{text('title')}</h2>
     {message && <Alert variant={message === text('saved') || reminder ? 'info' : 'error'} focusOnReveal>{message}{reminder && <span className="mt-1 block">{text('agreementReminder')}</span>}</Alert>}

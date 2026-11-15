@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import type { FormEvent } from 'react';
+import { useId, type FormEvent } from 'react';
 import * as c from '@plaingym/shared/contracts';
 import { Button } from '../../components/ui/button.js';
 import { Label } from '../../components/ui/label.js';
@@ -8,6 +8,7 @@ import { memberRequest } from './api.js';
 import { ErrorMessage, Field, text, useDraft, useMemberSave } from './common.js';
 
 export function MemberForm({ member, householdId, onSaved }: { member?: c.Member; householdId: string; onSaved?: (member: c.Member) => void }) {
+  const statusHelpId = useId();
   const draft = useDraft({ firstName: member?.firstName ?? '', lastName: member?.lastName ?? '', email: member?.email ?? '',
     phone: member?.phone ?? '', dateOfBirth: member?.dateOfBirth ?? '', status: member?.status ?? ('prospect' as c.MemberStatus),
     emailOptOut: member?.emailOptOut ?? false, emergencyContacts: member?.emergencyContacts ?? ([] as c.EmergencyContact[]) });
@@ -29,7 +30,8 @@ export function MemberForm({ member, householdId, onSaved }: { member?: c.Member
   return <form className="space-y-4" onSubmit={submit}><ErrorMessage error={state.error}/>
     <div className="grid gap-3 sm:grid-cols-2"><Field name="firstName" value={values.firstName} onChange={(value) => set('firstName', value)} required/><Field name="lastName" value={values.lastName} onChange={(value) => set('lastName', value)} required/>
       <Field name="email" type="email" value={values.email} onChange={(value) => set('email', value)}/><Field name="phone" value={values.phone} onChange={(value) => set('phone', value)}/><Field name="dateOfBirth" type="date" value={values.dateOfBirth} onChange={(value) => set('dateOfBirth', value)}/>
-      <Label className="grid gap-2">{text('status')}<Select value={values.status} onChange={(event) => set('status', c.memberStatusSchema.parse(event.target.value))}>{c.memberStatusSchema.options.map((value) => <option key={value} value={value}>{text('status.' + value)}</option>)}</Select></Label>
+      <div className="min-w-0 space-y-2"><Label className="grid gap-2">{text('status')}<Select aria-describedby={statusHelpId} value={values.status} onChange={(event) => set('status', c.memberStatusSchema.parse(event.target.value))}>{c.memberStatusSchema.options.map((value) => <option key={value} value={value}>{text('status.' + value)}</option>)}</Select></Label>
+        <p id={statusHelpId} className="text-sm text-muted-foreground">{text('statusHelp')}</p></div>
     </div><CheckboxField label={text('emailOptOut')} checked={values.emailOptOut} onChange={(event) => set('emailOptOut', event.target.checked)}/>
     <fieldset className="min-w-0 space-y-3"><legend className="font-medium">{text('emergencyContacts')}</legend>{contacts.map((contact, index) => {
       const change = (key: keyof c.EmergencyContact, value: string) => set('emergencyContacts', contacts.map((entry, position) => position === index ? { ...entry, [key]: value || (key === 'name' || key === 'phone' ? '' : null) } : entry));

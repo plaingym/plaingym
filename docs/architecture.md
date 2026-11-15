@@ -204,7 +204,7 @@ source of truth; Stripe is the processor. In outline:
   the payment provider confirms its Checkout sessions expired: its invoice voided
   (lines kept), its link revoked and its pending memberships cancelled, and its
   uses given back exactly once, including a submission interrupted before its
-  invoice; the prospects, waivers, leads and household stay
+  invoice; the people, waivers, leads and household stay
   for staff follow-up (see the
   [join README](../apps/server/src/public/pages/join.md)). A join still waiting
   for payment confirmation on its 21st local day is marked stalled for staff
@@ -218,6 +218,14 @@ source of truth; Stripe is the processor. In outline:
   were billed, even after a later discount edit or its final cycle. An upgrade
   requires a current-period cycle or first-period bill; a previous switch invoice
   supplies updated terms but cannot replace a voided or refunded period bill.
+  Membership changes also derive member status: any active membership, then any
+  trial, then any frozen membership, then cancelled if all are cancelled. Only
+  pending live memberships, or no memberships, preserve the staff-set status.
+  Staff edits stand until the next membership change. The daily trial-end and
+  resume-date job uses the same transaction and member revision guard; changes
+  audit their causing membership. Even with pack credits left, a member whose
+  memberships are all cancelled goes to the kiosk's front desk. See the
+  [membership status rule](../apps/server/src/areas/billing/memberships.README.md#member-status).
 * **Invoicing** (`areas/billing/invoicing/`): pure calculation of invoice lines and tax.
 * **Charge runner** (`areas/billing/runner/`): the daily run charges saved cards in
   two steps (create, then confirm) with idempotency keys, retries on the gym's

@@ -2,7 +2,7 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
 import { canStaff, type StaffRole } from '@plaingym/shared';
 import type { Membership, Plan, ShellBootstrap } from '@plaingym/shared/contracts';
 import { ShellServicesContext } from '../../../app/context.js';
@@ -32,6 +32,24 @@ function start(role: StaffRole, options: { plans?: Plan[]; row?: Membership; cal
   return client;
 }
 afterEach(cleanup);
+it('refreshes an open member profile and the member list after membership changes, within its gym', async () => {
+  const cache = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  const profileKey = ['members', id(1), membership.memberId], listKey = ['members', id(1), 'list'], foreignKey = ['members', id(99), 'list'];
+  const before = { status: 'visitor', revision: 1 }, after = { status: 'active', revision: 2 };
+  for (const key of [profileKey, listKey, foreignKey]) cache.setQueryData(key, before);
+  const observer = new QueryObserver(cache, { queryKey: profileKey, queryFn: async () => after });
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    start('admin', { cache });
+    const form = await openEdit();
+    fireEvent.change(form.price, { target: { value: '120' } });
+    save();
+    await screen.findByText('Membership saved.');
+    await waitFor(() => expect(cache.getQueryData(profileKey)).toEqual(after));
+    expect(cache.getQueryState(listKey)?.isInvalidated).toBe(true);
+    expect(cache.getQueryState(foreignKey)?.isInvalidated).toBe(false);
+  } finally { unsubscribe(); cache.clear(); }
+});
 it('shows front desk the plan name with billing.read and hides assignment controls', async () => {
   const client = start('front_desk');
   expect(await screen.findByRole('heading', { name: plan.name })).toBeDefined();

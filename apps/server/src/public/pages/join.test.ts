@@ -1095,7 +1095,7 @@ describe('public join pages through the production registrations', () => {
     await f.join.afterCheckout(f.gymId, state.links.find(l => l.invoiceId === bill.id)!.id);
     state = await f.rows();
     expect(state.audits.filter(a => a.action === 'public.join.completed')).toHaveLength(1);
-    expect(state.audits.filter(a => a.action === 'public.join.member_activated')).toHaveLength(2);
+    expect(state.audits.filter(a => a.action === 'billing.member.activated')).toHaveLength(2);
     expect(f.sent).toHaveLength(1);
     // Another household's paid invoice is not a join.
     const other = await factory('invoices', f.gymId, { householdId: f.existingHome.id, number: 98, status: 'paid' });

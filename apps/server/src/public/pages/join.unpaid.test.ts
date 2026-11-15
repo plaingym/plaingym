@@ -245,9 +245,11 @@ describe('unpaid submitted joins', () => {
     expect(after.lines.length).toBeGreaterThan(0);
     expect(after.links.map(l => [l.id, l.revokedAt])).toEqual([[join.linkId, f.clock.now()]]);
     expect(after.memberships.map(m => [m.status, m.cancelledAt])).toEqual([['cancelled', f.clock.now()]]);
-    // The prospects, their signed waivers and leads and the household stay for staff follow-up.
+    // The people, their signed waivers and leads and the household stay for staff follow-up.
     expect(after.home).toBeDefined();
-    expect(after.members.map(m => m.status)).toEqual(['prospect']);
+    expect(after.members.map(m => m.status)).toEqual(['cancelled']);
+    expect(after.audits.find(a => a.action === 'billing.member.cancelled')).toMatchObject({
+      targetId: memberIds[0], after: { cause: 'billing.membership.cancelled', membershipId: after.memberships[0]!.id } });
     expect(await f.signatures(memberIds)).toHaveLength(1);
     expect(await f.leadRows(memberIds)).toHaveLength(1);
     expect(count(after.audits, 'billing.invoice.voided', join.invoiceId)).toBe(1);

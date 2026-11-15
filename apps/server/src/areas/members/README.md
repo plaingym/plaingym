@@ -19,6 +19,18 @@ medical notes and credentials so anonymization does not leave copies in the
 append-only log. Normal member projections exclude medical notes and check-in
 credentials. Medical writes require both `members.manage` and `medical.read`.
 
+Staff can set a member's status, and that edit stands until their next membership
+change. Assignment, any staff edit of a membership (such as its discount, due date
+or plan), activation, freeze, resume and cancellation (including the daily
+trial-end and resume-date job) then derive it: any active membership wins,
+then any trial, then any frozen membership, then cancelled if all are cancelled.
+Only pending live memberships, or no memberships at all, leave the staff-set
+status unchanged. This preserves prospect, visitor and pack-only members. A
+member with all memberships cancelled is cancelled even with pack credits left
+and must go to the front desk to check in. See the
+[membership lifecycle](../billing/memberships.README.md#member-status) for audit
+and transaction details.
+
 Anonymization erases a member's personal data on request; ordinary off-boarding sets
 the status to `cancelled` instead. It keeps member, household, invoice and attendance
 identifiers. It

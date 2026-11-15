@@ -114,6 +114,7 @@ for (const { name: size, viewport, hasTouch } of viewports) {
         await page.getByLabel('Search members', { exact: true }).fill(last);
         await page.getByRole('link', { name: new RegExp(`Casey ${last}`) }).click();
         await expect(page.getByRole('heading', { level: 1, name: `Casey ${last}` })).toBeVisible();
+        await expect(page.getByRole('combobox', { name: 'Status', exact: true })).toHaveAccessibleDescription(/Membership changes reset this status/);
         await check(page, info, `${size}-member-profile`);
 
         // Promotion from the profile's ranks tab.

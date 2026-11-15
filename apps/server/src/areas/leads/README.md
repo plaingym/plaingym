@@ -113,8 +113,8 @@ and skips lead staging for ordinary members without a lead row.
 
 `markLeadWon` runs when a pending or trial membership activates (including a
 paid invoice's activation effect), an assignment starts active, a frozen
-membership that was never active resumes (its latest freeze froze a pending or
-trial membership), or a class pack's credits are granted on payment. It advances
+membership that was never active resumes (its latest freeze froze a trial
+membership; a frozen member counts as on trial for this), or a class pack's credits are granted on payment. It advances
 any stage except `won`, including `lost`, and clears a lost lead's reason and
 time as reopening does. Trial assignments and the resume of a membership that was
 active do not call it. Imports insert their rows directly and change no stage.

@@ -19,7 +19,7 @@ async function fixture(initialStatus: 'pending' | 'trial' | 'active' = 'pending'
   const gymId = uuidv7(); await factory('gyms', gymId, { currency: 'CAD', timezone: 'America/Vancouver' });
   const clock = new TestClock('2028-01-15T12:00:00Z'), context = { gymId, actor: { kind: 'system' as const } };
   const home = await factory('households', gymId, { billingDay: 31 });
-  const member = await factory('members', gymId, { householdId: home.id });
+  const member = await factory('members', gymId, { householdId: home.id, status: initialStatus === 'pending' ? 'prospect' : initialStatus });
   const plan = await factory('plans', gymId, { commitmentMonths: 1, signupFeeCents: 2500 });
   const options = { scope: db.forGym, clock, settings: createGymSettingsAccessor({ scope: db.forGym }) };
   const service = createMembershipService(options);
@@ -135,7 +135,7 @@ describe('membership lifecycle against PostgreSQL', () => {
     expect(events).toMatchObject([{ action: 'billing.member.activated', actorKind: 'system', occurredAt: f.clock.now(),
       before: { status: 'trial', revision: 4 }, after: { status: 'active', revision: 5 } }]);
   });
-  it('keeps a member trial until their last trial ends, ignoring another member and gym', async () => {
+  it('makes a member active when any trial ends, ignoring another member and gym', async () => {
     const f = await fixture('trial'), foreign = await fixture('trial');
     await db.forGym(f.gymId, tx => tx.update(members).set({ status: 'trial' }).where(eq(members.id, f.member.id)));
     const second = await f.service.assign(f.context, { ...f.request, id: uuidv7(), trialEndsOn: '2028-02-10' });
@@ -144,7 +144,7 @@ describe('membership lifecycle against PostgreSQL', () => {
     f.clock.set('2028-02-07T08:00:00Z');
     expect(await f.service.processDates(f.gymId, 'America/Vancouver')).toBe(1);
     expect((await db.forGym(f.gymId, tx => tx.select().from(members).where(eq(members.id, f.member.id))))[0])
-      .toMatchObject({ status: 'trial', revision: 1 });
+      .toMatchObject({ status: 'active', revision: 2 });
     expect((await f.service.get(f.gymId, second.id)).status).toBe('trial');
     f.clock.set('2028-02-10T08:00:00Z');
     expect(await f.service.processDates(f.gymId, 'America/Vancouver')).toBe(1);
@@ -162,13 +162,13 @@ describe('membership lifecycle against PostgreSQL', () => {
     expect((await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, f.member.id)))))
       .toMatchObject([{ action: 'billing.member.activated' }]);
   });
-  it('promotes a trial member when their frozen trial resumes', async () => {
+  it('makes a frozen member active when their trial resumes', async () => {
     const f = await fixture('trial');
     await db.forGym(f.gymId, tx => tx.update(members).set({ status: 'trial' }).where(eq(members.id, f.member.id)));
     const frozen = await f.service.freeze(f.context, { membershipId: f.membership.id, revision: 1 });
     await f.service.activate(f.context, { membershipId: frozen.id, revision: frozen.revision });
     expect((await db.forGym(f.gymId, tx => tx.select().from(members).where(eq(members.id, f.member.id))))[0])
-      .toMatchObject({ status: 'active', revision: 2 });
+      .toMatchObject({ status: 'active', revision: 3 });
   });
   it.each(['trial', 'frozen'] as const)('cancelling the last %s promotes a member with another active membership', async status => {
     const f = await fixture('trial');
@@ -176,19 +176,19 @@ describe('membership lifecycle against PostgreSQL', () => {
     let second = await f.service.assign(f.context, { ...f.request, id: uuidv7() });
     if (status === 'frozen') second = await f.service.freeze(f.context, { membershipId: second.id, revision: second.revision });
     await f.service.activate(f.context, { membershipId: f.membership.id, revision: 1 });
-    expect((await db.forGym(f.gymId, tx => tx.select().from(members).where(eq(members.id, f.member.id))))[0]!.status).toBe('trial');
+    expect((await db.forGym(f.gymId, tx => tx.select().from(members).where(eq(members.id, f.member.id))))[0]!.status).toBe('active');
     await f.service.cancel(f.context, { membershipId: second.id, revision: second.revision });
     expect((await db.forGym(f.gymId, tx => tx.select().from(members).where(eq(members.id, f.member.id))))[0])
       .toMatchObject({ status: 'active', revision: 2 });
     expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, f.member.id))))
       .toMatchObject([{ action: 'billing.member.activated' }]);
   });
-  it('does not promote a member when cancellation leaves no active membership', async () => {
+  it('cancels a member when cancellation leaves only cancelled memberships', async () => {
     const f = await fixture('trial');
     await db.forGym(f.gymId, tx => tx.update(members).set({ status: 'trial' }).where(eq(members.id, f.member.id)));
     await f.service.cancel(f.context, { membershipId: f.membership.id, revision: 1 });
     expect((await db.forGym(f.gymId, tx => tx.select().from(members).where(eq(members.id, f.member.id))))[0])
-      .toMatchObject({ status: 'trial', revision: 1 });
+      .toMatchObject({ status: 'cancelled', revision: 2 });
   });
   it('a frozen previously active trial does not hold back another activation', async () => {
     const f = await fixture('trial');
@@ -247,13 +247,13 @@ describe('membership lifecycle against PostgreSQL', () => {
     await people.eraseMember(f.context, person.id, { revision: person.revision }, cleanup);
     expect(await f.service.get(f.gymId, f.membership.id)).toMatchObject({ status: 'cancelled' });
   });
-  it.each(['prospect', 'active', 'frozen', 'cancelled', 'visitor'])('preserves a member status of %s at trial end', async status => {
+  it.each(['prospect', 'active', 'frozen', 'cancelled', 'visitor'])('reconciles a staff-set member status of %s at trial end', async status => {
     const f = await fixture('trial');
     await db.forGym(f.gymId, tx => tx.update(members).set({ status }).where(eq(members.id, f.member.id)));
     f.clock.set('2028-02-07T08:00:00Z');
     expect(await f.service.processDates(f.gymId, 'America/Vancouver')).toBe(1);
     expect((await db.forGym(f.gymId, tx => tx.select().from(members).where(eq(members.id, f.member.id))))[0])
-      .toMatchObject({ status, revision: 1 });
+      .toMatchObject({ status: 'active', revision: status === 'active' ? 1 : 2 });
   });
   it('rolls back the membership, member promotion and audits together', async () => {
     const f = await fixture('trial');

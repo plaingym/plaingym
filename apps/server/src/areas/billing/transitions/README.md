@@ -114,9 +114,11 @@ called. No HTTP route is added by this service.
 Activation uses MembershipLifecycle after committing a payment or zero-value settlement. It activates
 pending/trial memberships on membership line items, and skips active, frozen and
 cancelled memberships; a sign-up fee alone does not end a trial. Revision checks
-protect concurrent membership edits. A trial activation also promotes a member
-whose status is `trial` and who has no other trial membership, in the same audited
-transaction. Replaying a partially completed activation
+protect concurrent membership edits. Activation derives the member's status from
+all their memberships in the same revision-guarded, audited transaction: any
+active membership takes priority, even while another trial remains. See the
+[membership status rule](../memberships.README.md#member-status).
+Replaying a partially completed activation
 does not activate a membership twice. When its loaded invoice has a pack sale,
 the effect then calls the packs grant directly,
 which grants a paid or partially refunded pack sale once, including zero settlements.

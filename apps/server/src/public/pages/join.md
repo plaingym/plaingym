@@ -139,10 +139,15 @@ with reason `released` and gives the uses back under the discount's row lock
 memberships, and the discount and uses released) in the same transaction, so a
 replay, a second run or a concurrent one finds the record and releases nothing.
 
-The prospects, their signed waivers and leads, and the household stay for staff
-follow-up, as a retained admission's do. The join page then shows the closed page,
+The people, their signed waivers and leads, and the household stay for staff
+follow-up, as a retained admission's do. Cancelling their last pending membership
+sets their member status to `cancelled` under the
+[membership status rule](../../areas/billing/memberships.README.md#member-status).
+The join page then shows the closed page,
 Checkout can't start, and a replayed submission returns the same link without taking
-a use or starting anything. A payment recorded after the void is refused like any
+a use or starting anything. Recorded submissions still replay after the member
+becomes frozen or cancelled; erased members and mismatched identity details are
+refused. A payment recorded after the void is refused like any
 payment on a void invoice (`Void invoice cannot accept payment`, 409); staff take it
 on a new invoice.
 
@@ -220,9 +225,10 @@ any sign-up fee, with no membership lines that could activate a trial early. Joi
 completion moves a pending trial membership and its prospective member to `trial`;
 other prospective members become `active`. The membership date job activates the
 trial at `trialEndsOn`, when the runner bills its first full period. At that
-activation a member whose status is still `trial` also becomes `active` if they
-have no other trial membership; the member update is audited in the same
-transaction. The join
+activation the member becomes `active` even if another trial remains; any active
+membership takes priority under the
+[membership status rule](../../areas/billing/memberships.README.md#member-status).
+The member update is revision-guarded and audited in the same transaction. The join
 completes once, writing `public.join.completed`, and in
 passwordless mode the sign-in link goes out. The webhook's `afterCheckout(gymId, linkId)`
 does the same for any recorded Checkout of the joined household once the invoice is paid.

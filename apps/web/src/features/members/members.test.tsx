@@ -103,6 +103,8 @@ describe('member admin UI', () => {
   });
   it('submits member changes with the revision and validates emergency contacts', async () => {
     view(<MemberForm member={member} householdId={homeId}/>);
+    const help = screen.getByText(/Membership changes reset this status/);
+    expect(screen.getByLabelText('Status').getAttribute('aria-describedby')).toBe(help.id);
     fireEvent.change(screen.getByLabelText('First name'), { target: { value: 'Changed' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add emergency contact' }));
     fireEvent.change(screen.getByLabelText('Contact name'), { target: { value: 'Guardian' } });

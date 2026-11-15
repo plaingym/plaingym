@@ -5,6 +5,13 @@ The membership tab requires `billing.read`. Owners and admins can assign plans,
 edit a membership, and change its plan. Coach and front desk sessions have no
 discount details, selectors or controls; discount management requires `plans.manage`.
 
+Membership changes refresh the gym's member profile and list caches as well as
+the membership tab, so a derived status and its new revision appear immediately.
+The member's status follows any active membership, then trial, then frozen, or
+cancelled when all are cancelled. Pending-only live memberships and members without
+memberships keep the staff-set status. See the
+[membership status rule](../../../../../server/src/areas/billing/memberships.README.md#member-status).
+
 Assignment optionally selects a named active discount for the plan or accepts a
 code. Codes ignore letter case. Changing the plan clears the selection. Saving
 checks availability on the server and displays ended, used-up and wrong-plan

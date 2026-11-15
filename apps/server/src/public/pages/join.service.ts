@@ -188,9 +188,12 @@ export function createJoinService(options: JoinOptions) {
       // A leaked staff image key cannot enroll, edit, or sign for an existing member.
       if (!home || !record || record.planId !== input.planId || record.memberIds.length !== ids.length || home.email !== input.contact.email
         || home.name !== input.contact.name || home.phone !== (input.contact.phone ?? null) || !isDeepStrictEqual(c.householdAddressReadSchema.parse(home.address), input.contact.address ?? {})) missing();
+      // A submitted join replays even after its memberships were frozen or cancelled.
+      const statuses = await marked(tx, 'public.join.received', householdId)
+        ? ['prospect', 'trial', 'active', 'frozen', 'cancelled'] : ['prospect', 'trial', 'active'];
       const membershipIds = ids.map((id, i) => {
         const index = record.memberIds.indexOf(id), person = people.find(p => p.id === id)!, requested = input.members[i]!.member;
-        if (index < 0 || person.anonymizedAt || !['prospect', 'trial', 'active'].includes(person.status) || person.firstName !== requested.firstName
+        if (index < 0 || person.anonymizedAt || !statuses.includes(person.status) || person.firstName !== requested.firstName
           || person.lastName !== requested.lastName || person.dateOfBirth !== requested.dateOfBirth) missing();
         return record.membershipIds[index]!;
       });
