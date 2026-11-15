@@ -10,6 +10,7 @@ import { logError } from '../../../core/log.js';
 import { readBillingRules } from '../../settings/settings.js';
 import { pastRefundWindow } from './lapsed-refunds.js';
 import { createInvoiceVoid } from './void.js';
+import { stripeWriteScope } from '../stripe-writes.js';
 import { accepted, audit, canceledAttempt, confirmAbandoned, effect, lockInvoice, paymentRecorded, recorded, result, snapshot, terminal,
   type InvoiceRow } from './store.js';
 
@@ -21,7 +22,7 @@ export interface TransitionOptions {
 }
 type PaymentRow = typeof payments.$inferSelect;
 export function createInvoiceTransitions(options: TransitionOptions = {}): InvoiceTransitions {
-  const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
+  const scope = stripeWriteScope(options.scope ?? forGym), clock = options.clock ?? defaultClock;
   async function attempt(tx: Transaction, invoice: InvoiceRow, intentId: string, attemptId?: string) {
     const row = (await tx.select().from(paymentAttempts).where(attemptId === undefined
       ? eq(paymentAttempts.paymentIntentId, intentId) : eq(paymentAttempts.id, attemptId)))[0];

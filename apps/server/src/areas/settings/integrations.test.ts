@@ -442,6 +442,29 @@ describe('Settings → Payments: test to live', () => {
     const rotated = await saveTo(appE(), 'rk_test_gymerotated');
     expect(rotated.status, JSON.stringify(rotated.json)).toBe(200);
   });
+  it('a second switch marks payments and closes action-needed attempts whose IDs sort before the first switch audit', async () => {
+    const gym = uuidv7();
+    await factory('gyms', gym);
+    const userId = (await factory('authUser', gym)).id, app = () => server({ gymId: gym, userId });
+    // Reserve the IDs before either switch, as if another process's clock ran behind this one.
+    const paymentId = uuidv7(), attemptId = uuidv7();
+    expect((await saveTo(app(), 'rk_test_second')).status).toBe(200);
+    expect((await saveTo(app(), 'rk_live_second', { clearTestData: true })).status).toBe(200);
+    const [first] = await audits(gym, 'integrations.stripe_test_cleared');
+    expect(paymentId < first!.id && attemptId < first!.id).toBe(true);
+    expect((await saveTo(app(), 'rk_test_second')).status).toBe(200);
+    const bill = await factory('invoices', gym, { status: 'paid', number: 1, disputeId: 'dp_second', disputeStatus: 'needs_response' });
+    await factory('payments', gym, { id: paymentId, invoiceId: bill.id, method: 'card', paymentIntentId: 'pi_second', chargeId: 'ch_second' });
+    await factory('paymentAttempts', gym, { id: attemptId, invoiceId: bill.id, status: 'requires_action', paymentIntentId: 'pi_action_second' });
+    expect((await read(app())).payments.testData).toMatchObject({ payments: 1, disputes: 1 });
+    expect((await saveTo(app(), 'rk_live_second', { clearTestData: true })).status).toBe(200);
+    const state = await snapshot(gym);
+    expect(state.payments).toMatchObject([{ id: paymentId, reference: stripeTestPaymentReference }]);
+    expect(state.attempts).toMatchObject([{ id: attemptId, status: 'failed', declineCode: 'test_cleared' }]);
+    expect(state.invoices).toMatchObject([{ id: bill.id, disputeStatus: 'closed' }]);
+    // The marked test intent must not bind a subsequent live key to its old account.
+    expect((await saveTo(app(), 'rk_live_secondforeign')).status).toBe(200);
+  });
   it('after a switch, counts a live card payment and a kept imported card whatever their IDs sort as', async () => {
     const gymF = uuidv7();
     await factory('gyms', gymF, { name: 'Gym F' });

@@ -3,7 +3,7 @@ import '@hono/zod-openapi';
 import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- Integration tests inspect persistent delivery keys and change the gym email switch in their isolated database.
-import { auditEvents, emailDeliveries, gyms, invoices, jobs, members, memberships, paymentAttempts, paymentMethods, staffRoles as staffRoleTable, uuidv7 } from '@plaingym/db';
+import { auditEvents, emailDeliveries, gyms, invoices, jobs, members, memberships, paymentAttempts, paymentMethods, payments, staffRoles as staffRoleTable, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError, staffRoles, type StaffRole } from '@plaingym/shared';
@@ -299,6 +299,27 @@ describe('billing alerts with the real PostgreSQL queue and RLS', () => {
     expect(enqueue).toHaveBeenCalledTimes(1);
     expect(enqueue).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ disputeId: 'dp_live_won' }), expect.anything());
     expect(f.email.messages).toHaveLength(1);
+  });
+  it('neither scans nor sends a final test dispute on a mixed invoice, using its latest recorded payment', async () => {
+    const f = await fixture();
+    const invoice = await factory('invoices', f.gymId, { disputeId: 'dp_final_test', disputeStatus: 'won' });
+    const test = await factory('payments', f.gymId, { invoiceId: invoice.id, method: 'card', paymentIntentId: 'pi_final_test' });
+    const cash = await factory('payments', f.gymId, { invoiceId: invoice.id, method: 'cash' });
+    // An older audit naming cash must not beat the latest audit naming the disputed test card payment.
+    await factory('auditEvents', f.gymId, { action: 'billing.invoice.disputed', targetType: 'invoice', targetId: invoice.id,
+      after: { disputeId: 'dp_final_test', paymentId: cash.id }, createdAt: new Date(f.clock.now().getTime() - 1000) });
+    await factory('auditEvents', f.gymId, { action: 'billing.invoice.disputed', targetType: 'invoice', targetId: invoice.id,
+      after: { disputeId: 'dp_final_test', paymentId: test.id }, createdAt: f.clock.now() });
+    const enqueue = vi.spyOn(f.queue, 'enqueue');
+    await f.alerts.disputes(f.gymId);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    // A final dispute is left final by the switch; only its payment receives the test marker.
+    await db.forGym(f.gymId, tx => tx.update(payments).set({ reference: stripeTestPaymentReference }).where(eq(payments.id, test.id)));
+    await drain(f.queue);
+    expect(f.email.messages).toHaveLength(0);
+    enqueue.mockClear();
+    await f.alerts.disputes(f.gymId);
+    expect(enqueue).not.toHaveBeenCalled();
   });
   it('schedules dispute scans hourly at minute 41', () => {
     expect(createBillingAlertJobs().find(job => job.id === 'billing.alerts.disputes')?.cron).toBe('41 * * * *');

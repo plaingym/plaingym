@@ -39,7 +39,9 @@ which a settings save holds for its whole transaction, so it waits for a switch 
 progress. A creation reserved after the switch looked for reservations, with the
 provider resolved before the switch committed, is abandoned the same way when the
 gym's latest `integrations.stripe_test_cleared` audit changed meanwhile: the service
-writes the unlink audit itself, then starts once more. Card setup starts record their customer, so a session made
+writes the unlink audit itself, then starts once more. The lock and audit comparison
+use `stripeWriteCurrent` in `stripe-writes.ts`, shared with the runner, refunds and
+webhook writes. Card setup starts record their customer, so a session made
 for an earlier customer is never reused (`signed-link-checkout.ts`).
 
 The service first reads the household in a short gym-scoped transaction. Existing

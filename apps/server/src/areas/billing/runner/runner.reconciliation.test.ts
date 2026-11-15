@@ -2,7 +2,8 @@
 import '@hono/zod-openapi';
 import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { allocateInvoiceNumber, invoices, paymentAttempts, uuidv7 } from '@plaingym/db';
+import { allocateInvoiceNumber, invoices, paymentAttempts, payments, uuidv7 } from '@plaingym/db';
+import { stripeTestPaymentReference } from '@plaingym/shared/contracts';
 import { AppError } from '@plaingym/shared';
 import type { FakePayments } from '../../../infra/payments/index.js';
 import { createChargeRunner } from './index.js';
@@ -153,6 +154,29 @@ describe('charge crashes and reconciliation races', () => {
 });
 
 describe('post-restore reconciliation', () => {
+  it('shares the alert rule for a recorded test dispute on a mixed invoice, using the latest dispute audit', async () => {
+    const f = await fixture(); await f.runner.daily(f.gymId);
+    const state = await f.read(), paid = state.payments[0]!, bill = state.invoices[0]!;
+    const cash = await factory('payments', f.gymId, { invoiceId: bill.id, method: 'cash' });
+    f.provider.recordDispute({ id: 'dp_mixed_test', chargeId: paid.paymentIntentId!, amount: 10000, status: 'open' });
+    await db.forGym(f.gymId, async tx => {
+      await tx.update(invoices).set({ disputeId: 'dp_mixed_test', disputeStatus: 'open' }).where(eq(invoices.id, bill.id));
+      await tx.update(payments).set({ reference: stripeTestPaymentReference }).where(eq(payments.id, paid.id));
+    });
+    await factory('auditEvents', f.gymId, { action: 'billing.invoice.disputed', targetType: 'invoice', targetId: bill.id,
+      after: { disputeId: 'dp_mixed_test', paymentId: cash.id }, createdAt: new Date(f.clock.now().getTime() - 1000) });
+    await factory('auditEvents', f.gymId, { action: 'billing.invoice.disputed', targetType: 'invoice', targetId: bill.id,
+      after: { disputeId: 'dp_mixed_test', paymentId: paid.id }, createdAt: f.clock.now() });
+    f.clock.advance(10 * 86400000); await f.enable(false);
+    const read = vi.spyOn(f.provider, 'readPaymentObject');
+    expect((await f.runner.postRestore(f.gymId, f.clock.now())).readyForOwnerReview).toBe(true);
+    expect(read).not.toHaveBeenCalledWith({ kind: 'dispute', id: 'dp_mixed_test' });
+    // If a newer audit identifies the unmarked payment, the marked sibling no longer suppresses the dispute.
+    await factory('auditEvents', f.gymId, { action: 'billing.invoice.disputed', targetType: 'invoice', targetId: bill.id,
+      after: { disputeId: 'dp_mixed_test', paymentId: cash.id }, createdAt: f.clock.now() });
+    await f.runner.postRestore(f.gymId, f.clock.now());
+    expect(read).toHaveBeenCalledWith({ kind: 'dispute', id: 'dp_mixed_test' });
+  });
   it('refreshes only unpaid stored Checkouts, retaining open disputes on paid invoices and post-snapshot session changes', async () => {
     const f = await fixture(); await f.runner.daily(f.gymId);
     const paid = (await f.read()).invoices[0]!, intentId = (await f.read()).attempts[0]!.paymentIntentId!;

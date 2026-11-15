@@ -58,6 +58,13 @@ processed with a `billing.webhook.test_event_skipped` audit (target: the stored
 event). An event stored without `livemode` counts as test mode when it arrived
 before the gym's latest `integrations.stripe_test_cleared` audit.
 
+Dispatch reads the switch audit before resolving its provider. For a test provider,
+`stripe-writes.ts` carries that snapshot through the handler's separate transactions.
+Each takes the gym settings lock before invoice or household locks and checks the
+latest switch again. A switch committed meanwhile rolls back the stale transaction
+and finishes the event with the same skipped-event audit. Live events keep their
+normal write path.
+
 A failed handler records only `handler_failed`, preserves any existing
 `processed_at` (a failed replay cannot erase a prior successful dispatch), and
 rethrows to the queue. Dispatch jobs allow ten attempts with the queue's backoff.

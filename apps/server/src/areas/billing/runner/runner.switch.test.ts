@@ -4,13 +4,13 @@ import { describe, expect, it, vi } from 'vitest';
 // eslint-disable-next-line database/system-tables -- One test reads backend PIDs to see a reservation wait on the gym row lock.
 import { eq, sql } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- One test holds the gym row the way a settings save does.
-import { auditEvents, gyms, invoices, type Transaction } from '@plaingym/db';
+import { auditEvents, gyms, households, invoices, paymentAttempts, paymentMethods, type Transaction } from '@plaingym/db';
 import { FakePayments } from '../../../infra/payments/index.js';
 import { stripeTestClearedAction } from '../customers.js';
 import { createChargeRunner } from './index.js';
 import { useRunnerFixture, type Fixture } from './runner.fixture.test-helper.js';
 
-const { db, fixture, invoice } = useRunnerFixture();
+const { db, factory, fixture, invoice } = useRunnerFixture();
 
 /** A switch's audit, written as the switch's save writes it (target: the gym). */
 const switchAudit = (f: Fixture) => ({ gymId: f.gymId, actorKind: 'system' as const, action: stripeTestClearedAction,
@@ -110,6 +110,30 @@ describe('a charge run across a switch from Stripe test mode to live', () => {
     expect(expire).not.toHaveBeenCalled();
     expect(read).not.toHaveBeenCalledWith(expect.objectContaining({ id: session.id }));
     expect((await f.read()).attempts).toMatchObject([{ attemptNumber: 1, status: 'succeeded' }]);
+  });
+  it('does not apply a test success returned while releasing action-needed work across a switch', async () => {
+    const f = await fixture(), bill = await invoice(f);
+    f.provider.keyMode = 'test';
+    f.provider.respondNextConfirmation('authentication_required');
+    expect((await f.runner.charge(f.gymId, bill.id)).status).toBe('action_required');
+    const cancel = vi.spyOn(f.provider, 'cancelCharge').mockImplementationOnce(async id => {
+      // Confirmation won cancellation just as the owner committed the switch.
+      const outcome = await f.provider.confirmCharge(id, { idempotencyKey: 'confirmation-race' });
+      await db.forGym(f.gymId, async tx => {
+        await tx.select({ id: gyms.id }).from(gyms).where(eq(gyms.id, f.gymId)).for('update');
+        await tx.update(households).set({ stripeCustomerId: null });
+        await tx.update(paymentMethods).set({ revokedAt: f.clock.now(), isDefault: false });
+        await tx.update(paymentAttempts).set({ status: 'failed', declineCode: 'test_cleared', resolvedAt: f.clock.now() });
+        await tx.insert(auditEvents).values(switchAudit(f));
+      });
+      return outcome;
+    });
+    const user = await factory('authUser', f.gymId);
+    expect((await f.runner.charge(f.gymId, bill.id, { mode: 'staff',
+      context: { gymId: f.gymId, actor: { kind: 'user', userId: user.id } } })).status).toBe('skipped');
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect((await f.read()).payments).toEqual([]);
+    expect((await f.read()).attempts).toMatchObject([{ status: 'failed', declineCode: 'test_cleared' }]);
   });
   it('charges as before when no switch commits during the run', async () => {
     const f = await fixture(), bill = await invoice(f);

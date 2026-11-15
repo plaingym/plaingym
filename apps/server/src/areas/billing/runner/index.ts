@@ -10,9 +10,8 @@ import type { JobContext, Jobs } from '../../../infra/jobs/index.js';
 import type { Payments } from '../../../infra/payments/index.js';
 import type { MutationContext } from '../../../core/interfaces/common.js';
 import { logError, logInfo } from '../../../core/log.js';
-import { holdGymSettings } from '../../settings/settings.js';
 import { assignmentInvoices, audit, generateCycle, latestAttempt, system } from './store.js';
-import { latestTestSwitchId } from '../customers.js';
+import { latestTestSwitchId, stripeWriteCurrent, stripeWriteScope, StripeTestModeSwitched, withStripeTestWrites } from '../stripe-writes.js';
 import { createReconciliation } from './reconciliation.js';
 import type { DisputeRefundOptions } from '../disputes-refunds.js';
 import { assignmentInvoiceCondition, eligibility, isAssignmentInvoice, retryAt, retryDeadlines, skipped, type ChargeMode,
@@ -50,7 +49,7 @@ export interface RunnerOptions {
   staleAfterMs?: number;
 }
 export function createChargeRunner(options: RunnerOptions) {
-  const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
+  const scope = stripeWriteScope(options.scope ?? forGym), clock = options.clock ?? defaultClock;
   const reconciliation = createReconciliation({ ...options, scope, clock });
   /**
    * `switched` is the gym's latest switch from test to live as read before the provider was resolved. A switch holds the
@@ -63,8 +62,7 @@ export function createChargeRunner(options: RunnerOptions) {
     const gym = await options.settings.get(gymId);
     return scope(gymId, async tx => {
       // Before the invoice lock: the switch locks the gym row first, then the payable invoices.
-      await holdGymSettings(tx, gymId);
-      if (await latestTestSwitchId(tx, gymId) !== switched) return { status: 'switched' as const };
+      if (!await stripeWriteCurrent(tx, gymId, switched)) return { status: 'switched' as const };
       const check = await eligibility(tx, gym, clock, invoiceId, mode, true);
       if (check.status === 'skipped') return check;
       const { invoice, latest, payment } = check;
@@ -101,75 +99,83 @@ export function createChargeRunner(options: RunnerOptions) {
       return result.outcome === 'applied' ? { status: 'settled_zero' } : skipped('not_payable');
     }
     const provider = await options.payments(gymId);
-    // A switch that committed between the reads above and resolving the provider cleared the test session or action-needed
-    // intent read above, and the provider may hold the live key, which can't release them: start again, as `reserve` does.
-    if ((latest?.status === 'requires_action' || invoice.checkoutSessionId)
-      && await scope(gymId, tx => latestTestSwitchId(tx, gymId)) !== switched)
-      return resolvedAgain ? skipped('collection_changed') : charge(gymId, invoiceId, request, true);
-    if (latest?.status === 'requires_action') {
-      if (!latest.paymentIntentId) throw new Error('Action-needed attempt has no PaymentIntent ID');
-      if (await releaseActionNeeded(gymId, latest.paymentIntentId, provider, reconciliation, context) === 'paid') return skipped('not_payable');
-    }
-    if (invoice.checkoutSessionId) {
-      const released = await releaseCheckout(gymId, invoiceId, invoice.checkoutSessionId, provider, reconciliation, scope, context);
-      if (released === 'paid') return skipped('not_payable');
-      if (released === 'changed') return skipped('checkout_changed');
-    }
-    const reservation = await reserve(context, invoiceId, mode, null, request.mode === 'retry' ? request.jobId : undefined, switched);
-    if (reservation.status === 'switched')
-      return resolvedAgain ? skipped('collection_changed') : charge(gymId, invoiceId, request, true);
-    if (reservation.status === 'skipped') return reservation;
-    const { attempt } = reservation;
-    let createStarted = false;
     try {
-      // Adoption is idempotent and refuses a stored customer belonging to another gym.
-      await provider.adoptCustomer(attempt.stripeCustomerId);
-      if (!(await options.settings.get(gymId)).billingEnabled) return skipped('billing_disabled');
-      createStarted = true;
-    } finally {
-      if (!createStarted) await scope(gymId, async tx => {
-        const changed = await tx.update(paymentAttempts).set({ status: 'failed', declineCode: createAbandoned, resolvedAt: clock.now() })
-          .where(and(eq(paymentAttempts.id, attempt.id), eq(paymentAttempts.status, 'pending'),
-            isNull(paymentAttempts.paymentIntentId), isNull(paymentAttempts.resolvedAt))).returning();
-        if (changed.length) await audit(tx, context, clock, 'billing.runner.create_abandoned', 'payment_attempt', attempt.id, { invoiceId });
+      return await (provider.keyMode === 'test' ? withStripeTestWrites(gymId, switched, collectResolved) : collectResolved());
+    } catch (error) {
+      if (!(error instanceof StripeTestModeSwitched)) throw error;
+      return resolvedAgain ? skipped('collection_changed') : charge(gymId, invoiceId, request, true);
+    }
+    async function collectResolved(): Promise<ChargeResult> {
+      // A switch that committed between the reads above and resolving the provider cleared the test session or action-needed
+      // intent read above, and the provider may hold the live key, which can't release them: start again, as `reserve` does.
+      if ((latest?.status === 'requires_action' || invoice.checkoutSessionId)
+        && await scope(gymId, tx => latestTestSwitchId(tx, gymId)) !== switched)
+        return resolvedAgain ? skipped('collection_changed') : charge(gymId, invoiceId, request, true);
+      if (latest?.status === 'requires_action') {
+        if (!latest.paymentIntentId) throw new Error('Action-needed attempt has no PaymentIntent ID');
+        if (await releaseActionNeeded(gymId, latest.paymentIntentId, provider, reconciliation, context) === 'paid') return skipped('not_payable');
+      }
+      if (invoice.checkoutSessionId) {
+        const released = await releaseCheckout(gymId, invoiceId, invoice.checkoutSessionId, provider, reconciliation, scope, context);
+        if (released === 'paid') return skipped('not_payable');
+        if (released === 'changed') return skipped('checkout_changed');
+      }
+      const reservation = await reserve(context, invoiceId, mode, null, request.mode === 'retry' ? request.jobId : undefined, switched);
+      if (reservation.status === 'switched')
+        return resolvedAgain ? skipped('collection_changed') : charge(gymId, invoiceId, request, true);
+      if (reservation.status === 'skipped') return reservation;
+      const { attempt } = reservation;
+      let createStarted = false;
+      try {
+        // Adoption is idempotent and refuses a stored customer belonging to another gym.
+        await provider.adoptCustomer(attempt.stripeCustomerId);
+        if (!(await options.settings.get(gymId)).billingEnabled) return skipped('billing_disabled');
+        createStarted = true;
+      } finally {
+        if (!createStarted) await scope(gymId, async tx => {
+          const changed = await tx.update(paymentAttempts).set({ status: 'failed', declineCode: createAbandoned, resolvedAt: clock.now() })
+            .where(and(eq(paymentAttempts.id, attempt.id), eq(paymentAttempts.status, 'pending'),
+              isNull(paymentAttempts.paymentIntentId), isNull(paymentAttempts.resolvedAt))).returning();
+          if (changed.length) await audit(tx, context, clock, 'billing.runner.create_abandoned', 'payment_attempt', attempt.id, { invoiceId });
+        });
+      }
+      const key = `${invoiceId}:${attempt.attemptNumber}`;
+      const intent = await provider.createCharge({ amount: attempt.amountCents, currency: attempt.currency.toLowerCase(),
+        customerId: attempt.stripeCustomerId, paymentMethodId: attempt.savedPaymentMethod,
+        invoiceId, attemptId: attempt.id, idempotencyKey: `${key}:create` });
+      const saved = await scope(gymId, async tx => {
+        const changed = await tx.update(paymentAttempts).set({ paymentIntentId: intent.id }).where(and(
+          eq(paymentAttempts.id, attempt.id), eq(paymentAttempts.status, 'pending'),
+          isNull(paymentAttempts.paymentIntentId), isNull(paymentAttempts.resolvedAt))).returning();
+        if (changed.length) await audit(tx, context, clock, 'billing.runner.intent_saved', 'payment_attempt', attempt.id,
+          { invoiceId, paymentIntentId: intent.id });
+        return changed.length > 0;
       });
+      if (!saved) {
+        // A reconciler invalidated this reservation. This worker must NEVER confirm it.
+        const current = await scope(gymId, async tx => (await tx.select().from(paymentAttempts).where(eq(paymentAttempts.id, attempt.id)))[0]);
+        if (current?.paymentIntentId !== intent.id) await provider.cancelCharge(intent.id);
+        return skipped('reservation_lost');
+      }
+      const stillEligible = await scope(gymId, async tx => {
+        const row = (await tx.select().from(invoices).where(eq(invoices.id, invoiceId)))[0];
+        if (!row || !['open', 'past_due'].includes(row.status) || row.checkoutSessionId || row.needsReview) return false;
+        const home = (await tx.select().from(households).where(eq(households.id, row.householdId)))[0];
+        const card = (await tx.select({ id: paymentMethods.id }).from(paymentMethods).where(and(
+          eq(paymentMethods.householdId, row.householdId), eq(paymentMethods.processorId, attempt.savedPaymentMethod), isNull(paymentMethods.revokedAt))))[0];
+        return home?.stripeCustomerId === attempt.stripeCustomerId && !!card;
+      });
+      const enabled = (await options.settings.get(gymId)).billingEnabled;
+      if (!stillEligible || !enabled) {
+        await reconciliation.apply(gymId, await provider.cancelCharge(intent.id), context);
+        return skipped(enabled ? 'collection_changed' : 'billing_disabled');
+      }
+      const outcome = await provider.confirmCharge(intent.id, { idempotencyKey: `${key}:confirm` });
+      const applied = await reconciliation.apply(gymId, outcome, context);
+      if (!applied && outcome.status !== 'unknown' && outcome.status !== 'pending')
+        throw new ReconciliationRequired();
+      return { status: outcome.status };
     }
-    const key = `${invoiceId}:${attempt.attemptNumber}`;
-    const intent = await provider.createCharge({ amount: attempt.amountCents, currency: attempt.currency.toLowerCase(),
-      customerId: attempt.stripeCustomerId, paymentMethodId: attempt.savedPaymentMethod,
-      invoiceId, attemptId: attempt.id, idempotencyKey: `${key}:create` });
-    const saved = await scope(gymId, async tx => {
-      const changed = await tx.update(paymentAttempts).set({ paymentIntentId: intent.id }).where(and(
-        eq(paymentAttempts.id, attempt.id), eq(paymentAttempts.status, 'pending'),
-        isNull(paymentAttempts.paymentIntentId), isNull(paymentAttempts.resolvedAt))).returning();
-      if (changed.length) await audit(tx, context, clock, 'billing.runner.intent_saved', 'payment_attempt', attempt.id,
-        { invoiceId, paymentIntentId: intent.id });
-      return changed.length > 0;
-    });
-    if (!saved) {
-      // A reconciler invalidated this reservation. This worker must NEVER confirm it.
-      const current = await scope(gymId, async tx => (await tx.select().from(paymentAttempts).where(eq(paymentAttempts.id, attempt.id)))[0]);
-      if (current?.paymentIntentId !== intent.id) await provider.cancelCharge(intent.id);
-      return skipped('reservation_lost');
-    }
-    const stillEligible = await scope(gymId, async tx => {
-      const row = (await tx.select().from(invoices).where(eq(invoices.id, invoiceId)))[0];
-      if (!row || !['open', 'past_due'].includes(row.status) || row.checkoutSessionId || row.needsReview) return false;
-      const home = (await tx.select().from(households).where(eq(households.id, row.householdId)))[0];
-      const card = (await tx.select({ id: paymentMethods.id }).from(paymentMethods).where(and(
-        eq(paymentMethods.householdId, row.householdId), eq(paymentMethods.processorId, attempt.savedPaymentMethod), isNull(paymentMethods.revokedAt))))[0];
-      return home?.stripeCustomerId === attempt.stripeCustomerId && !!card;
-    });
-    const enabled = (await options.settings.get(gymId)).billingEnabled;
-    if (!stillEligible || !enabled) {
-      await reconciliation.apply(gymId, await provider.cancelCharge(intent.id), context);
-      return skipped(enabled ? 'collection_changed' : 'billing_disabled');
-    }
-    const outcome = await provider.confirmCharge(intent.id, { idempotencyKey: `${key}:confirm` });
-    const applied = await reconciliation.apply(gymId, outcome, context);
-    if (!applied && outcome.status !== 'unknown' && outcome.status !== 'pending')
-      throw new ReconciliationRequired();
-    return { status: outcome.status };
   }
   /** With `stopAfter`, that many consecutive provider outage errors stop the collection; the rest stays uncollected. */
   async function collect(gymId: string, due: readonly { id: string }[], stopAfter = Infinity) {

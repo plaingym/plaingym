@@ -94,7 +94,8 @@ with a null reason can resume after a crash and save the requested reason. A car
 payment marked `Stripe test mode` by a switch from test to live is refused
 (`test_payment`) before anything is reserved: it lives in the test account, which
 the gym's live key can't refund. Once the reservation commits, and before Stripe is
-called, the refund takes `holdGymSettings` and checks the payment again: a switch in
+called, the refund uses `stripeWriteCurrent` to take `holdGymSettings`, compare the
+switch audit read before resolving Stripe, and check the payment again: a switch in
 progress holds the gym row, so it either sees the pending refund (and refuses to
 run) or commits first, marking the payment; the refund is then refused
 (`test_payment`) and its reservation ends `failed`, with no processor refund. A card refund must be a whole step of its currency (whole ISK or UGX, a last

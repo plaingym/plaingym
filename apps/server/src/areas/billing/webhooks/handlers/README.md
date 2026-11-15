@@ -59,6 +59,13 @@ mode`), and leaves a dispute of a marked payment unrecorded (`unchanged`, with n
 alert): it is in the test account, and the live key could never read or answer it.
 
 Completed setup collects the attached card for the existing household customer.
+The handlers' own transactions, including card collection and invoice transitions,
+use the shared `stripeWriteScope` guard when dispatched by the inbox with a test
+provider. The gym lock and switch-audit comparison run inside each transaction,
+so a switch after matching but before a payment, refund or card write still skips
+that test event. The signed-link completion hook (`afterCheckoutRecorded`) runs
+after the payment or card is recorded, through its own service, and writes no
+Stripe reference. Stripe calls remain outside transactions.
 Payment Checkout collects only when `session.savesCard` is true; a payment that
 does not save a card can complete without an attached method. A card-saving
 session whose method has not attached remains retryable after its payment commits.

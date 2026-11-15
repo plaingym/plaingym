@@ -127,6 +127,15 @@ reads the latest switch again once the provider is resolved: a switch that commi
 since the invoice was read cleared those test objects, and the live key can't release
 them, so the charge starts again the same way.
 
+The shared `stripe-writes.ts` guard also checks each transaction that applies an
+outcome from the resolved test provider, including releasing an action-needed
+intent or Checkout before reservation. A switch committed during that work makes
+the charge resolve its provider again. Pending and restore reconciliation carry
+the same snapshot into their writes and report stale work for another check.
+Restore excludes test disputes with the same `testModeDispute` query as alerts:
+the latest matching dispute audit identifies its payment, with the invoice-level
+fallback used only when that audit has no payment ID.
+
 Each charge commits immutable amount, currency, customer and saved-method fields
 before adopting the stored customer or creating an unconfirmed PaymentIntent.
 Keys are `<invoiceId>:<attemptNumber>:create` and `:confirm`. An exit before

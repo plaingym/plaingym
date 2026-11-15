@@ -6,7 +6,8 @@ import { auditEvents, forGym, households, writeAudit, type Transaction } from '@
 import { AppError, type Clock } from '@plaingym/shared';
 import { clock as defaultClock } from '../../core/clock.js';
 import { CustomerCreationInProgress, CustomerDeleted, type Payments } from '../../infra/payments/index.js';
-import { holdGymSettings } from '../settings/settings.js';
+import { latestTestSwitchId, stripeWriteCurrent } from './stripe-writes.js';
+export { latestTestSwitch, latestTestSwitchId, stripeTestClearedAction } from './stripe-writes.js';
 
 export type CustomerUnavailableReason = 'stripe_not_configured' | 'missing_details' | 'creation_expired' | 'details_changed' | 'customer_unreadable';
 export class CustomerUnavailable extends AppError {
@@ -101,7 +102,7 @@ export function createCustomersService(options: CustomersOptions) {
     const linked = await scope(gymId, async tx => {
       // A switch from test to live holds the gym row for its whole save: a link waits for it, so the switch either
       // sees this household's customer (and clears it) or has committed before the checks below.
-      await holdGymSettings(tx, gymId);
+      const current = await stripeWriteCurrent(tx, gymId, switched);
       const [household] = await tx.select().from(households).where(eq(households.id, householdId)).for('update');
       if (!household) throw new AppError('not_found', 'Household not found');
       // An import or another opener may have linked the household while Stripe was called.
@@ -110,7 +111,7 @@ export function createCustomersService(options: CustomersOptions) {
       if ((await currentReservation(tx, householdId)).unlinked !== prepared.unlinked) return null;
       // A switch committed after the provider was resolved, without seeing this creation (reserved after it looked):
       // the customer was made with the old key. Abandon the creation as the switch does, in a new generation.
-      if (await lastSwitch(tx, gymId) !== switched) {
+      if (!current) {
         await audit(tx, gymId, householdId, customerUnlinkedAction, { customerId: null, reason: 'stripe_test_cleared' });
         return null;
       }
@@ -194,23 +195,6 @@ function householdAudits(tx: Transaction, householdId: string, action: string) {
   return tx.select().from(auditEvents).where(and(eq(auditEvents.targetType, 'household'), eq(auditEvents.targetId, householdId),
     eq(auditEvents.action, action))).orderBy(desc(auditEvents.createdAt), desc(auditEvents.id));
 }
-/**
- * Audited (target: the gym) by a switch from test to live; the latest one is the gym's test-data boundary. A creation
- * that started before it and wasn't cleared by it is abandoned when it comes to link (`ensureCustomer`).
- */
-export const stripeTestClearedAction = 'integrations.stripe_test_cleared';
-/**
- * The gym's latest switch from test to live: its audit's ID and time, or null when the gym never switched. Every reader
- * (customer creation, the charge runner, the webhook inbox and the integrations settings) uses this one query and order.
- */
-export async function latestTestSwitch(tx: Transaction, gymId: string): Promise<{ id: string; occurredAt: Date } | null> {
-  const [row] = await tx.select({ id: auditEvents.id, occurredAt: auditEvents.occurredAt }).from(auditEvents)
-    .where(and(eq(auditEvents.action, stripeTestClearedAction), eq(auditEvents.targetType, 'gym'), eq(auditEvents.targetId, gymId)))
-    .orderBy(desc(auditEvents.createdAt), desc(auditEvents.id)).limit(1);
-  return row ?? null;
-}
-/** The latest switch's audit ID (`latestTestSwitch`), or null: what a reader compares to see whether a switch committed since it last read. */
-export const latestTestSwitchId = async (tx: Transaction, gymId: string): Promise<string | null> => (await latestTestSwitch(tx, gymId))?.id ?? null;
 /** Stripe's answer for an object this account doesn't have (`resource_missing`, 404 or 400), as the payments module raises it. */
 function unreadable(error: unknown): boolean {
   const value = error as { code?: unknown; statusCode?: unknown } | null;

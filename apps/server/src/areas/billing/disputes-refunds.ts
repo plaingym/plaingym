@@ -10,7 +10,7 @@ import type { MutationContext } from '../../core/interfaces/common.js';
 import type { InvoiceTransitions } from '../../core/interfaces/invoice-transitions.js';
 import type { ChargeOutcome, Dispute, Payments, Refund } from '../../infra/payments/index.js';
 import type { BillingAlerts } from './alerts/index.js';
-import { holdGymSettings } from '../settings/settings.js';
+import { stripeWriteCurrent, stripeWriteScope } from './stripe-writes.js';
 import { audit, lockInvoice } from './transitions/store.js';
 
 type Payment = typeof payments.$inferSelect;
@@ -57,7 +57,7 @@ export interface DisputeRefundOptions {
 
 /** The one writer for processor refunds and disputes, shared by the webhook handlers and restore reconciliation. */
 export function createDisputeRefundWriter(options: DisputeRefundOptions) {
-  const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
+  const scope = stripeWriteScope(options.scope ?? forGym), clock = options.clock ?? defaultClock;
   const system = (gymId: string): MutationContext => ({ gymId, actor: { kind: 'system' } });
   /** The payment already recorded for a PaymentIntent, read without calling the processor. */
   const recordedPayment = (gymId: string, intentId: string) =>
@@ -133,7 +133,7 @@ export function createDisputeRefundWriter(options: DisputeRefundOptions) {
       // A switch from test to live holds the gym row for its whole save and closes the open disputes of the card payments
       // it marks as test: waiting for it first means it either sees this dispute or has marked the payment, whose dispute
       // is then in the test account and isn't recorded (the live key could never read or answer it).
-      await holdGymSettings(tx, gymId);
+      await stripeWriteCurrent(tx, gymId);
       const invoice = await lockInvoice(tx, payment.invoiceId);
       const [current] = await tx.select({ method: payments.method, reference: payments.reference }).from(payments).where(eq(payments.id, payment.id));
       if (current?.method === 'card' && current.reference === stripeTestPaymentReference) return 'unchanged' as const;

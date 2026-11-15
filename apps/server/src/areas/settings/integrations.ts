@@ -21,9 +21,10 @@ import { setupTestMessage } from '../../emails/setup/setup.js';
 import { createStripeConnection, readStripeConfig, restrictedKeyMode, type StripeConfig, type StripeProvisioner } from '../setup/stripe-step.js';
 import { pauseRestoredBillingForStripe } from './go-live.restore.js';
 import { backupColumns, backupKeyPair, newBlobKey, recipientOf } from '../setup/backup-key.js';
-import { customerUnlinkedAction, latestTestSwitchId, stripeTestClearedAction as testClearedAction } from '../billing/customers.js';
+import { customerUnlinkedAction } from '../billing/customers.js';
+import { latestTestSwitchId, stripeTestClearedAction as testClearedAction } from '../billing/stripe-writes.js';
 import { testCleared } from '../billing/transitions/store.js';
-import { cardImportAudits, customerLinkAudits, testCards } from './integrations.query.js';
+import { cardImportAudits, linkedCustomer, testCards } from './integrations.query.js';
 import { encryptSmtpConfig, readSmtpSchema, sendSmtpTest, smtpFromEnvironment, storedSmtpFromRequest, type SendSmtpTest } from './smtp.js';
 import { createGoogleClientResolver, encryptGoogleConfig, readGoogleConfig, requireGoogleClient, type CheckGoogle } from './google-login.js';
 import { readStoredSecret } from './unreadable-secret.js';
@@ -126,8 +127,6 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     return { source: source as EmailIntegration['source'], host, port, security, from, signIn: now, signInAfterSave: signIn(true),
       signInAfterRemove: afterRemove, removeBlocked };
   }
-  /** The latest switch from test to live (its audit's ID): the action-needed attempts and card payments it covered came before it. */
-  const testBoundary = latestTestSwitchId;
   /** Card payments recorded through Stripe that no switch marked as test mode. */
   const liveCardPayments = and(or(isNotNull(payments.paymentIntentId), isNotNull(payments.chargeId)),
     or(isNull(payments.reference), ne(payments.reference, stripeTestPaymentReference)));
@@ -144,14 +143,14 @@ export function createIntegrationsService(options: IntegrationsOptions) {
    * attempts aren't sampled after a switch (a live attempt's customer is a household's, and its payment is sampled).
    */
   async function stripeReference(tx: Transaction, gymId: string): Promise<{ paths: string[]; customersOnly: boolean } | null> {
-    const switched = await testBoundary(tx, gymId) !== null;
+    const switched = await latestTestSwitchId(tx, gymId) !== null;
     const customers = (linked: boolean) => tx.select({ id: households.stripeCustomerId }).from(households)
-      .where(and(isNotNull(households.stripeCustomerId), (linked ? exists : notExists)(customerLinkAudits(tx, gymId))))
+      .where(linkedCustomer(tx, gymId, linked))
       .orderBy(desc(households.id)).limit(3);
     const cards = (imported: boolean) => tx.select({ id: paymentMethods.processorId }).from(paymentMethods)
       .where(and(switched ? isNull(paymentMethods.revokedAt) : undefined, (imported ? exists : notExists)(cardImportAudits(tx, gymId))))
       .orderBy(desc(paymentMethods.id)).limit(1);
-    const linked = await customers(true), imported = await customers(false);
+    const linked = await customers(true);
     const attempts = switched ? [] : await tx.select({ id: paymentAttempts.stripeCustomerId }).from(paymentAttempts)
       .orderBy(desc(paymentAttempts.id)).limit(1);
     const paid = await tx.select({ intent: payments.paymentIntentId, charge: payments.chargeId }).from(payments)
@@ -160,7 +159,8 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     const own = [...linked.map((row) => '/v1/customers/' + row.id), ...attempts.map((row) => '/v1/customers/' + row.id),
       ...paid.map((row) => row.intent ? '/v1/payment_intents/' + row.intent : '/v1/charges/' + row.charge),
       ...saved.map((row) => '/v1/payment_methods/' + row.id)];
-    const paths = own.length ? own : [...imported.map((row) => '/v1/customers/' + row.id), ...importedCards.map((row) => '/v1/payment_methods/' + row.id)];
+    const paths = own.length ? own : [...(await customers(false)).map((row) => '/v1/customers/' + row.id),
+      ...importedCards.map((row) => '/v1/payment_methods/' + row.id)];
     return paths.length ? { paths: [...new Set(paths)],
       customersOnly: !attempts.length && !paid.length && !saved.length && !importedCards.length } : null;
   }
@@ -185,15 +185,15 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     }
     return [...latest.values()];
   }
-  /** Card payments a switch would mark as test: recorded through Stripe since the last switch, never marked. */
-  const unmarkedCardPayments = (boundary: string | null) => and(eq(payments.method, 'card'), isNull(payments.reference),
-    or(isNotNull(payments.paymentIntentId), isNotNull(payments.chargeId)), boundary ? gt(payments.id, boundary) : undefined);
+  /** Card payments a switch would mark as test: recorded through Stripe and never marked by an earlier switch. */
+  const unmarkedCardPayments = and(eq(payments.method, 'card'), isNull(payments.reference),
+    or(isNotNull(payments.paymentIntentId), isNotNull(payments.chargeId)));
   /**
    * The invoices whose dispute a switch would close: an open dispute (any status that isn't final) on an invoice with a
    * card payment the switch marks as test. The live key can't read or answer them.
    */
-  const testDisputes = (tx: Transaction, boundary: string | null) => and(
-    inArray(invoices.id, tx.select({ id: payments.invoiceId }).from(payments).where(unmarkedCardPayments(boundary))),
+  const testDisputes = (tx: Transaction) => and(
+    inArray(invoices.id, tx.select({ id: payments.invoiceId }).from(payments).where(unmarkedCardPayments)),
     isNotNull(invoices.disputeId), or(isNull(invoices.disputeStatus), notInArray(invoices.disputeStatus, [...terminalDisputeStatuses])));
   /**
    * What a switch from test to live would clear now, the imported references it keeps, the card payments it would mark
@@ -204,17 +204,15 @@ export function createIntegrationsService(options: IntegrationsOptions) {
    * a household whose customer is cleared is revoked whatever its source, since it belongs to that customer (`testCards`).
    */
   async function testData(tx: Transaction, gymId: string): Promise<StripeTestData> {
-    const boundary = await testBoundary(tx, gymId);
     const total = async (query: Promise<{ n: number }[]>) => (await query)[0]?.n ?? 0;
-    const withCustomer = (linked: boolean) => and(isNotNull(households.stripeCustomerId), (linked ? exists : notExists)(customerLinkAudits(tx, gymId)));
-    const customers = await total(tx.select({ n: count() }).from(households).where(withCustomer(true)));
-    const importedCustomers = await total(tx.select({ n: count() }).from(households).where(withCustomer(false)));
+    const customers = await total(tx.select({ n: count() }).from(households).where(linkedCustomer(tx, gymId, true)));
+    const importedCustomers = await total(tx.select({ n: count() }).from(households).where(linkedCustomer(tx, gymId, false)));
     const cards = await total(tx.select({ n: count() }).from(paymentMethods).where(testCards(tx, gymId)));
     const unrevoked = await total(tx.select({ n: count() }).from(paymentMethods).where(isNull(paymentMethods.revokedAt)));
     const checkouts = await total(tx.select({ n: count() }).from(invoices)
       .where(and(isNotNull(invoices.checkoutSessionId), inArray(invoices.status, payableStatuses))));
-    const paid = await total(tx.select({ n: count() }).from(payments).where(unmarkedCardPayments(boundary)));
-    const disputes = await total(tx.select({ n: count() }).from(invoices).where(testDisputes(tx, boundary)));
+    const paid = await total(tx.select({ n: count() }).from(payments).where(unmarkedCardPayments));
+    const disputes = await total(tx.select({ n: count() }).from(invoices).where(testDisputes(tx)));
     return { customers, cards, checkouts: checkouts + (await openSetups(tx)).length, payments: paid, disputes,
       importedCustomers, importedCards: unrevoked - cards };
   }
@@ -239,15 +237,15 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     const payable = await tx.select({ id: invoices.id, sessionId: invoices.checkoutSessionId, reservedUntil: invoices.checkoutExpiresAt })
       .from(invoices).where(inArray(invoices.status, payableStatuses)).for('update');
     await assertSettled(tx);
-    const boundary = await testBoundary(tx, gymId), now = clock.now();
+    const now = clock.now();
     const setups = await openSetups(tx);
     // The preview's conditions (`testData`), read before anything changes: a card on a household whose customer is
     // cleared is revoked with it.
     const testCardIds = (await tx.select({ id: paymentMethods.id }).from(paymentMethods).where(testCards(tx, gymId))).map((row) => row.id);
     const linked = await tx.select({ id: households.id, customerId: households.stripeCustomerId }).from(households)
-      .where(and(isNotNull(households.stripeCustomerId), exists(customerLinkAudits(tx, gymId)))).for('update');
+      .where(linkedCustomer(tx, gymId, true)).for('update');
     const [kept] = await tx.select({ n: count() }).from(households)
-      .where(and(isNotNull(households.stripeCustomerId), notExists(customerLinkAudits(tx, gymId))));
+      .where(linkedCustomer(tx, gymId, false));
     const [unrevoked] = await tx.select({ n: count() }).from(paymentMethods).where(isNull(paymentMethods.revokedAt));
     // A household without a customer may have a creation in flight with the test key: a new generation keeps it unlinked.
     const reserved = (await tx.selectDistinct({ id: auditEvents.targetId }).from(auditEvents)
@@ -276,7 +274,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
         .where(inArray(invoices.id, sessions.slice(index, index + 500).map((row) => row.id)));
     const actionNeeded = await tx.select({ id: paymentAttempts.id, intentId: paymentAttempts.paymentIntentId, declineCode: paymentAttempts.declineCode })
       .from(paymentAttempts)
-      .where(and(eq(paymentAttempts.status, 'requires_action'), boundary ? gt(paymentAttempts.id, boundary) : undefined))
+      .where(eq(paymentAttempts.status, 'requires_action'))
       .for('update');
     for (let index = 0; index < actionNeeded.length; index += 500) {
       const chunk = actionNeeded.slice(index, index + 500);
@@ -291,7 +289,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     // them, so they close here (a dispute's final status never reopens). The dispute writer waits for the gym row, so
     // none is attached to these invoices while the switch runs.
     const disputed = await tx.select({ id: invoices.id, disputeId: invoices.disputeId, disputeStatus: invoices.disputeStatus }).from(invoices)
-      .where(testDisputes(tx, boundary)).for('update');
+      .where(testDisputes(tx)).for('update');
     if (disputed.length) {
       await tx.update(invoices).set({ disputeStatus: closedTestDispute }).where(inArray(invoices.id, disputed.map((row) => row.id)));
       await tx.insert(auditEvents).values(disputed.map((row) => ({ gymId, actorKind: 'user', actorUserId: userId,
@@ -299,7 +297,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
         before: { disputeId: row.disputeId, disputeStatus: row.disputeStatus },
         after: { disputeId: row.disputeId, disputeStatus: closedTestDispute, reason: 'stripe_test_cleared' }, occurredAt: now })));
     }
-    const marked = await tx.update(payments).set({ reference: stripeTestPaymentReference }).where(unmarkedCardPayments(boundary))
+    const marked = await tx.update(payments).set({ reference: stripeTestPaymentReference }).where(unmarkedCardPayments)
       .returning({ id: payments.id });
     const checkouts = [...sessions.flatMap((row) => row.sessionId ? [row.sessionId] : []), ...setups];
     const cleared = { customers: linked.length, cards: cards.length, checkouts: checkouts.length, actionNeeded: actionNeeded.length,

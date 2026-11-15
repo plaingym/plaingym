@@ -9,6 +9,7 @@ import type { WebhookHandler, WebhookInbox } from '../inbox.js';
 import { applyChargeOutcome } from '../../transitions/outcomes.js';
 import { createDisputeRefundWriter, type DisputeRefundOptions } from '../../disputes-refunds.js';
 import { createCardHandlers } from './methods.js';
+import { stripeWriteScope } from '../../stripe-writes.js';
 
 export const billingWebhookTypes = [
   'payment_intent.succeeded', 'payment_intent.payment_failed', 'payment_intent.requires_action',
@@ -37,7 +38,7 @@ function successTime(outcome: Extract<ChargeOutcome, { status: 'succeeded' }>): 
 }
 /** Current objects only; a missing dependency stays retryable in the inbox. */
 export function registerBillingWebhookHandlers(inbox: Pick<WebhookInbox, 'register'>, options: HandlerOptions) {
-  const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
+  const scope = stripeWriteScope(options.scope ?? forGym), clock = options.clock ?? defaultClock;
   const system = (gymId: string) => ({ gymId, actor: { kind: 'system' as const } });
   const cards = createCardHandlers({ scope, clock });
   const writer = createDisputeRefundWriter({ ...options, scope, clock });

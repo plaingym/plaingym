@@ -7,7 +7,7 @@ import { onMinorUnitStep } from '@plaingym/shared/money';
 import { notFound, type MutationContext } from '../../core/interfaces/common.js';
 import type { InvoiceTransitions } from '../../core/interfaces/invoice-transitions.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
-import { holdGymSettings } from '../settings/settings.js';
+import { latestTestSwitchId, stripeWriteCurrent } from './stripe-writes.js';
 import { catalogAudit } from './catalog.js';
 import { processorRefundId } from './disputes-refunds.js';
 import { loadHousehold, loadInvoice, presentRefund, type PaymentOptions } from './payments.js';
@@ -99,9 +99,9 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
         const pending = open.find(row => retryable(context.gymId, row));
         if (!lapsed.length && open.length && (!pending || pending.amountCents !== request.amountCents
           || pending.reason !== null && pending.reason !== request.reason)) paymentConflict('pending_refund', 'Resolve the pending refund first');
-        return { payment, invoice, pending, lapsed };
+        return { payment, invoice, pending, lapsed, switched: await latestTestSwitchId(tx, context.gymId) };
       });
-      const { payment, invoice, pending, lapsed } = loaded;
+      const { payment, invoice, pending, lapsed, switched } = loaded;
       const provider = payment.method === 'card' ? await paymentsFor?.(context.gymId) : null;
       if (payment.method === 'card' && (!provider || !payment.paymentIntentId)) paymentUnavailable('payments_unavailable', 'Payments are not configured');
       if (provider && lapsed.length) {
@@ -119,11 +119,11 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
       // means the switch either sees this pending refund (and refuses to run) or committed first and marked the payment
       // as test, which the refund then refuses. Nothing has reached Stripe yet.
       const { released, tag, sendId } = await scope(context.gymId, async tx => {
-        await holdGymSettings(tx, context.gymId);
+        const currentMode = await stripeWriteCurrent(tx, context.gymId, provider ? switched : undefined);
         await loadInvoice(tx, invoice.id, true);
         const current = (await tx.select().from(refunds).where(eq(refunds.id, refundId)))[0] ?? notFound();
         const [paid] = await tx.select({ reference: payments.reference }).from(payments).where(eq(payments.id, paymentId));
-        if (payment.method === 'card' && paid?.reference === c.stripeTestPaymentReference)
+        if (payment.method === 'card' && (!currentMode || paid?.reference === c.stripeTestPaymentReference))
           return { released: current.status === 'pending' && current.processorId === null, tag: {}, sendId: null };
         // A webhook released the reservation after it was read: its amount is no longer held, so nothing may be sent.
         if (c.refundReleased(current)) paymentConflict('refund_released', 'The pending refund was released. Check the payment, and refund again only if it is still owed');

@@ -19,6 +19,11 @@ export function customerLinkAudits(tx: Transaction, gymId: string) {
     eq(sql<string>`${auditEvents.after}->>'customerId'`, households.stripeCustomerId)));
 }
 
+/** A household with a customer the app linked, or one imported without a matching link audit. */
+export function linkedCustomer(tx: Transaction, gymId: string, linked: boolean) {
+  return and(isNotNull(households.stripeCustomerId), (linked ? exists : notExists)(customerLinkAudits(tx, gymId)));
+}
+
 /** Called inside forGym, in a query on `payment_methods`: the audit of a card the import wrote (never saved through Stripe). */
 export function cardImportAudits(tx: Transaction, gymId: string) {
   return tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.gymId, gymId),
@@ -32,6 +37,6 @@ export function cardImportAudits(tx: Transaction, gymId: string) {
  */
 export function testCards(tx: Transaction, gymId: string) {
   const clearedHousehold = tx.select({ id: households.id }).from(households).where(and(eq(households.id, paymentMethods.householdId),
-    isNotNull(households.stripeCustomerId), exists(customerLinkAudits(tx, gymId))));
+    linkedCustomer(tx, gymId, true)));
   return and(isNull(paymentMethods.revokedAt), or(notExists(cardImportAudits(tx, gymId)), exists(clearedHousehold)));
 }

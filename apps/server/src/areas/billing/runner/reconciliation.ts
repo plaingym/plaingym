@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, desc, eq, exists, inArray, isNull, lte, ne, notExists, or } from 'drizzle-orm';
-import { stripeTestPaymentReference } from '@plaingym/shared/contracts';
+import { and, desc, eq, inArray, isNull, lte, not, or } from 'drizzle-orm';
 import { AppError } from '@plaingym/shared';
 import { auditEvents, households, invoices, paymentAttempts, payments, refunds, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import type { ChargeOutcome, PaymentObject, PaymentObjectReference, Payments } from '../../../infra/payments/index.js';
 import { applyChargeOutcome } from '../transitions/outcomes.js';
 import { createAbandoned } from '../transitions/store.js';
 import { createDisputeRefundWriter } from '../disputes-refunds.js';
+import { testModeDispute } from '../alerts/disputes.query.js';
+import { latestTestSwitchId, stripeWriteScope, StripeTestModeSwitched, withStripeTestWrites } from '../stripe-writes.js';
 import { audit, system } from './store.js';
 import type { RunnerOptions } from './index.js';
 import type { MutationContext } from '../../../core/interfaces/common.js';
@@ -23,32 +24,12 @@ type Options = Omit<RunnerOptions, 'jobs'> & Required<Pick<RunnerOptions, 'scope
  * with it (`paymentId` in its `billing.invoice.disputed` audit), so it is skipped when that payment is marked, whatever
  * else paid the invoice. One recorded without it is skipped only when every payment on its invoice is marked.
  */
-async function restorableDisputes(tx: Transaction) {
-  const open = await tx.select({ id: invoices.id, disputeId: invoices.disputeId }).from(invoices).where(eq(invoices.disputeStatus, 'open'));
-  if (!open.length) return [];
-  const fallback = new Set((await tx.select({ id: invoices.id }).from(invoices).where(and(eq(invoices.disputeStatus, 'open'),
-    or(notExists(tx.select({ id: payments.id }).from(payments).where(and(eq(payments.invoiceId, invoices.id),
-      eq(payments.reference, stripeTestPaymentReference)))),
-    exists(tx.select({ id: payments.id }).from(payments).where(and(eq(payments.invoiceId, invoices.id),
-      or(isNull(payments.reference), ne(payments.reference, stripeTestPaymentReference))))))))).map(row => row.id));
-  const recorded = new Map<string, string>();
-  const ids = open.map(row => row.id), byInvoice = new Map(open.map(row => [row.id, row]));
-  for (let index = 0; index < ids.length; index += 500)
-    for (const row of await tx.select({ invoiceId: auditEvents.targetId, after: auditEvents.after }).from(auditEvents).where(and(
-      eq(auditEvents.action, 'billing.invoice.disputed'), eq(auditEvents.targetType, 'invoice'), inArray(auditEvents.targetId, ids.slice(index, index + 500))))) {
-      const after = row.after as { disputeId?: unknown; paymentId?: unknown } | null;
-      const invoice = byInvoice.get(row.invoiceId);
-      if (invoice && after?.disputeId === invoice.disputeId && typeof after.paymentId === 'string') recorded.set(invoice.id, after.paymentId);
-    }
-  const paymentIds = [...new Set(recorded.values())];
-  const marked = new Set<string>();
-  for (let index = 0; index < paymentIds.length; index += 500)
-    for (const row of await tx.select({ id: payments.id }).from(payments).where(and(inArray(payments.id, paymentIds.slice(index, index + 500)),
-      eq(payments.reference, stripeTestPaymentReference)))) marked.add(row.id);
-  return open.filter(row => recorded.has(row.id) ? !marked.has(recorded.get(row.id)!) : fallback.has(row.id));
+async function restorableDisputes(tx: Transaction, gymId: string) {
+  return tx.select({ id: invoices.id, disputeId: invoices.disputeId }).from(invoices)
+    .where(and(eq(invoices.disputeStatus, 'open'), not(testModeDispute(tx, gymId))));
 }
 export function createReconciliation(options: Options) {
-  const { scope, clock } = options;
+  const { clock } = options, scope = stripeWriteScope(options.scope);
   const staleAfterMs = options.staleAfterMs ?? 15 * 60_000;
   if (!Number.isFinite(staleAfterMs) || staleAfterMs <= 0) throw new Error('Invalid reconciliation threshold');
   const writer = createDisputeRefundWriter({ ...options, scope, clock });
@@ -155,8 +136,10 @@ export function createReconciliation(options: Options) {
   /** `resolved` is a provider already resolved by the caller; null means the gym has none, so stored intents are listed unread. */
   async function pending(gymId: string, resolved?: Payments | null) {
     const before = new Date(clock.now().getTime() - staleAfterMs);
-    const attempts = await scope(gymId, tx => tx.select().from(paymentAttempts).where(and(
-      eq(paymentAttempts.status, 'pending'), lte(paymentAttempts.createdAt, before))));
+    const { attempts, switched } = await scope(gymId, async tx => ({
+      attempts: await tx.select().from(paymentAttempts).where(and(eq(paymentAttempts.status, 'pending'), lte(paymentAttempts.createdAt, before))),
+      switched: await latestTestSwitchId(tx, gymId),
+    }));
     if (!attempts.length) return { inspected: 0, issues: [] };
     let provider = resolved;
     const issues: ReconciliationIssue[] = [];
@@ -174,9 +157,14 @@ export function createReconciliation(options: Options) {
       try {
         if (provider === undefined) provider = await configuredProvider(gymId);
         if (!provider) { issues.push({ kind: 'charge', id: attempt.paymentIntentId, reason: notConfigured }); continue; }
-        const outcome = await provider.findCharge({ kind: 'charge', id: attempt.paymentIntentId }, { includeSuccessTime: true });
-        if (!await object(gymId, { kind: 'charge', object: outcome }, provider))
-          issues.push({ kind: 'charge', id: attempt.paymentIntentId, reason: 'unresolved' });
+        const current = provider;
+        const refresh = async () => {
+          const outcome = await current.findCharge({ kind: 'charge', id: attempt.paymentIntentId! }, { includeSuccessTime: true });
+          if (!await object(gymId, { kind: 'charge', object: outcome }, current))
+            issues.push({ kind: 'charge', id: attempt.paymentIntentId!, reason: 'unresolved' });
+        };
+        if (current.keyMode === 'test') await withStripeTestWrites(gymId, switched, refresh);
+        else await refresh();
       } catch { issues.push({ kind: 'charge', id: attempt.paymentIntentId, reason: 'provider_or_transition_error' }); }
     }
     return { inspected: attempts.length, issues };
@@ -198,75 +186,83 @@ export function createReconciliation(options: Options) {
       action: 'billing.runner.restore_check_started', targetType: restoreId ? 'restore' : 'gym', targetId: restoreId ?? gymId,
       after: { snapshotAt: snapshotAt.toISOString() }, occurredAt: clock.now() }));
     try {
+      const switched = await scope(gymId, tx => latestTestSwitchId(tx, gymId));
       const provider = await configuredProvider(gymId);
-      const stripeMode = provider?.keyMode ?? null;
-      const issues: ReconciliationIssue[] = [];
-      const references = await scope(gymId, async tx => {
-        const attempts = await tx.select({ paymentIntentId: paymentAttempts.paymentIntentId }).from(paymentAttempts)
-          .where(inArray(paymentAttempts.status, ['pending', 'requires_action']));
-        const checkouts = await tx.select({ checkoutSessionId: invoices.checkoutSessionId }).from(invoices)
-          .where(inArray(invoices.status, ['open', 'past_due']));
-        const disputes = await restorableDisputes(tx);
-        const returns = await tx.select({ processorId: refunds.processorId }).from(refunds).where(eq(refunds.status, 'pending'));
-        return [
-          ...attempts.flatMap(row => row.paymentIntentId ? [{ kind: 'charge' as const, id: row.paymentIntentId }] : []),
-          ...checkouts.flatMap(row => row.checkoutSessionId ? [{ kind: 'checkout' as const, id: row.checkoutSessionId }] : []),
-          ...disputes.flatMap(row => row.disputeId ? [{ kind: 'dispute' as const, id: row.disputeId }] : []),
-          ...returns.flatMap(row => row.processorId ? [{ kind: 'refund' as const, id: row.processorId }] : []),
-        ];
-      });
-      async function refresh(ref: PaymentObjectReference) {
-        if (!provider) { issues.push({ ...ref, reason: notConfigured }); return; }
-        try {
-          if (ref.kind === 'charge') {
-            const outcome = await provider.findCharge({ kind: 'charge', id: ref.id }, { includeSuccessTime: true });
-            if (!await object(gymId, { kind: 'charge', object: outcome }, provider))
+      return await (provider?.keyMode === 'test' ? withStripeTestWrites(gymId, switched, inspect) : inspect());
+      async function inspect(): Promise<RestoreCheck> {
+        const stripeMode = provider?.keyMode ?? null;
+        const issues: ReconciliationIssue[] = [];
+        const references = await scope(gymId, async tx => {
+          const attempts = await tx.select({ paymentIntentId: paymentAttempts.paymentIntentId }).from(paymentAttempts)
+            .where(inArray(paymentAttempts.status, ['pending', 'requires_action']));
+          const checkouts = await tx.select({ checkoutSessionId: invoices.checkoutSessionId }).from(invoices)
+            .where(inArray(invoices.status, ['open', 'past_due']));
+          const disputes = await restorableDisputes(tx, gymId);
+          const returns = await tx.select({ processorId: refunds.processorId }).from(refunds).where(eq(refunds.status, 'pending'));
+          return [
+            ...attempts.flatMap(row => row.paymentIntentId ? [{ kind: 'charge' as const, id: row.paymentIntentId }] : []),
+            ...checkouts.flatMap(row => row.checkoutSessionId ? [{ kind: 'checkout' as const, id: row.checkoutSessionId }] : []),
+            ...disputes.flatMap(row => row.disputeId ? [{ kind: 'dispute' as const, id: row.disputeId }] : []),
+            ...returns.flatMap(row => row.processorId ? [{ kind: 'refund' as const, id: row.processorId }] : []),
+          ];
+        });
+        async function refresh(ref: PaymentObjectReference) {
+          if (!provider) { issues.push({ ...ref, reason: notConfigured }); return; }
+          try {
+            if (ref.kind === 'charge') {
+              const outcome = await provider.findCharge({ kind: 'charge', id: ref.id }, { includeSuccessTime: true });
+              if (!await object(gymId, { kind: 'charge', object: outcome }, provider))
+                issues.push({ ...ref, reason: 'manual_resolution_required' });
+              return;
+            }
+            const read = await provider.readPaymentObject(ref);
+            if (read.status !== 'found' || !await object(gymId, read.value, provider))
               issues.push({ ...ref, reason: 'manual_resolution_required' });
-            return;
-          }
-          const read = await provider.readPaymentObject(ref);
-          if (read.status !== 'found' || !await object(gymId, read.value, provider))
-            issues.push({ ...ref, reason: 'manual_resolution_required' });
-        } catch { issues.push({ ...ref, reason: 'provider_or_transition_error' }); }
-      }
-      for (const ref of references) await refresh(ref);
-      // The adapter enumerates events plus creation-time lists (including refunds/disputes), with pinned-version re-fetches.
-      // List BEFORE invalidating no-ID reservations: the snapshot may precede their successful intent-ID commit.
-      const since = new Date(snapshotAt.getTime() - 5 * 60_000);
-      let cursor: string | undefined;
-      const cursors = new Set<string>();
-      let inspected = references.length;
-      // A restore keeps the gym's Stripe settings, so a gym without them had none at the snapshot and there are no
-      // changes this install can list. Connecting Stripe later and checking again reads them.
-      if (provider) do {
-        const page = await provider.listChangesSince(since, cursor ? { cursor } : {});
-        for (const change of page.changes) {
-          const id = change.kind === 'charge' && change.object.status === 'unknown' ? change.object.reference.id : 'id' in change.object ? change.object.id : '';
-          await refresh({ kind: change.kind, id });
-          inspected++;
+          } catch { issues.push({ ...ref, reason: 'provider_or_transition_error' }); }
         }
-        cursor = page.nextCursor ?? undefined;
-        if (cursor && cursors.has(cursor)) throw new Error('Repeated reconciliation cursor');
-        if (cursor) cursors.add(cursor);
-      } while (cursor);
-      const pendingResult = await pending(gymId, provider);
-      issues.push(...pendingResult.issues);
-      const remaining = await scope(gymId, tx => tx.select({ id: paymentAttempts.id }).from(paymentAttempts)
-        .where(eq(paymentAttempts.status, 'pending')));
-      issues.push(...remaining.map(row => ({ kind: 'attempt', id: row.id, reason: 'unresolved' })));
-      const pendingRefunds = await scope(gymId, tx => tx.select({ id: refunds.id }).from(refunds).where(eq(refunds.status, 'pending')));
-      issues.push(...pendingRefunds.map(row => ({ kind: 'refund', id: row.id, reason: 'unresolved' })));
-      const unique = [...new Map(issues.map(issue => [`${issue.kind}:${issue.id}`, issue])).values()];
-      await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'billing.runner.restore_checked',
-        targetType: 'restore_check', targetId: check.id, occurredAt: clock.now(),
-        after: { snapshotAt: snapshotAt.toISOString(), inspected, unresolved: unique.length, issues: unique,
-          stripeConfigured: !!provider, stripeMode } }));
-      return { inspected, readyForOwnerReview: unique.length === 0, issues: unique, stripeConfigured: !!provider, stripeMode };
+        for (const ref of references) await refresh(ref);
+        // The adapter enumerates events plus creation-time lists (including refunds/disputes), with pinned-version re-fetches.
+        // List BEFORE invalidating no-ID reservations: the snapshot may precede their successful intent-ID commit.
+        const since = new Date(snapshotAt.getTime() - 5 * 60_000);
+        let cursor: string | undefined;
+        const cursors = new Set<string>();
+        let inspected = references.length;
+        // A restore keeps the gym's Stripe settings, so a gym without them had none at the snapshot and there are no
+        // changes this install can list. Connecting Stripe later and checking again reads them.
+        if (provider) do {
+          const page = await provider.listChangesSince(since, cursor ? { cursor } : {});
+          for (const change of page.changes) {
+            const id = change.kind === 'charge' && change.object.status === 'unknown' ? change.object.reference.id : 'id' in change.object ? change.object.id : '';
+            await refresh({ kind: change.kind, id });
+            inspected++;
+          }
+          cursor = page.nextCursor ?? undefined;
+          if (cursor && cursors.has(cursor)) throw new Error('Repeated reconciliation cursor');
+          if (cursor) cursors.add(cursor);
+        } while (cursor);
+        const pendingResult = await pending(gymId, provider);
+        issues.push(...pendingResult.issues);
+        const remaining = await scope(gymId, tx => tx.select({ id: paymentAttempts.id }).from(paymentAttempts)
+          .where(eq(paymentAttempts.status, 'pending')));
+        issues.push(...remaining.map(row => ({ kind: 'attempt', id: row.id, reason: 'unresolved' })));
+        const pendingRefunds = await scope(gymId, tx => tx.select({ id: refunds.id }).from(refunds).where(eq(refunds.status, 'pending')));
+        issues.push(...pendingRefunds.map(row => ({ kind: 'refund', id: row.id, reason: 'unresolved' })));
+        const unique = [...new Map(issues.map(issue => [`${issue.kind}:${issue.id}`, issue])).values()];
+        await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'billing.runner.restore_checked',
+          targetType: 'restore_check', targetId: check.id, occurredAt: clock.now(),
+          after: { snapshotAt: snapshotAt.toISOString(), inspected, unresolved: unique.length, issues: unique,
+            stripeConfigured: !!provider, stripeMode } }));
+        return { inspected, readyForOwnerReview: unique.length === 0, issues: unique, stripeConfigured: !!provider, stripeMode };
+      }
     } catch (error) {
+      const stale = error instanceof StripeTestModeSwitched;
+      const issues = [{ kind: 'provider', id: gymId, reason: 'provider_or_transition_error' }];
       await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'billing.runner.restore_checked',
         targetType: 'restore_check', targetId: check.id, occurredAt: clock.now(),
         after: { snapshotAt: snapshotAt.toISOString(), inspected: 0, unresolved: 1,
-          issues: [{ kind: 'provider', reason: 'provider_or_transition_error' }] } }));
+          issues, ...(stale ? { stripeConfigured: true, stripeMode: 'test' } : {}) } }));
+      // A switch makes this report incomplete, not an outage: keep its original mode for the owner's restore gate.
+      if (stale) return { inspected: 0, readyForOwnerReview: false, issues, stripeConfigured: true, stripeMode: 'test' };
       throw error;
     }
   }
