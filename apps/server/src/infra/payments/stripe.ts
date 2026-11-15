@@ -9,6 +9,7 @@ import { CustomerCreationInProgress, CustomerDeleted, ERASED_CUSTOMER_NAME, norm
   type PaymentEvent, type Refund, type RefundRequest, type CustomerMatch } from './index.js';
 import type { Json, ObjectData, PaymentTransport, ProviderRequest } from './transport.js';
 import { PaymentWebhookError } from './webhook-error.js';
+import { matchesBillingEmail, type ClearCustomerEmail } from './email-erasure.js';
 
 export const STRIPE_API_VERSION = '2026-09-30.endive' as const;
 export const STRIPE_PERMISSIONS = [
@@ -390,6 +391,32 @@ export class StripePayments implements Payments {
       catch (readError) { if (absent(readError)) return; throw error; }
       if (current.customer) throw error;
     }
+  }
+  async clearCustomerEmail(customerId: string, options: ClearCustomerEmail): Promise<void> {
+    assertNoTransaction('payments.clearCustomerEmail');
+    const path = this.#path('customers', customerId);
+    const methodPath = options.paymentMethodId === undefined ? undefined : this.#path('payment_methods', options.paymentMethodId);
+    let customer: ObjectData;
+    try { customer = await this.#get(path); }
+    catch (error) { if (absent(error)) return; throw error; }
+    if (customer.deleted === true) return;
+    const metadata = data(customer.metadata ?? {});
+    if (metadata.gym_id !== undefined && metadata.gym_id !== this.gymId) throw new NotForGym('Customer belongs to another gym');
+    if (metadata.household_id !== undefined && metadata.household_id !== options.householdId) throw new Error('Customer belongs to another household');
+    // Validate both owners before the first write. Untagged imported customers are checked by the caller's local link.
+    let method: ObjectData | undefined;
+    if (methodPath) {
+      try { method = await this.#get(methodPath); }
+      catch (error) { if (!absent(error)) throw error; }
+      if (method?.customer) {
+        if (data(method.metadata ?? {}).gym_id !== undefined) this.#metadata(method);
+        if (id(method.customer) !== customerId) throw new Error('Card belongs to another customer');
+      }
+    }
+    // No idempotency key: every retry reads current fields and never replays a cached write over a replacement address.
+    if (matchesBillingEmail(customer.email, options.emailDigest)) await this.#post(path, { email: '' });
+    if (methodPath && method?.customer && matchesBillingEmail(data(method.billing_details ?? {}).email, options.emailDigest))
+      await this.#post(methodPath, { billing_details: { email: '' } });
   }
   async redactCustomer(customerId: string): Promise<void> {
     assertNoTransaction('payments.redactCustomer');

@@ -534,6 +534,17 @@ Old versions and documents referenced by signatures remain retained after retire
   attendance keep their IDs for the books. Erasure clears the household's billing
   email when it matches the member's address, ignoring case and surrounding spaces, even when other
   members remain. Household mail stops until staff enter a new billing address.
+  When other members remain and the household has a Stripe Customer, the same
+  transaction queues `members.erasure.clear_billing_email` once for the erased
+  member. Its retry payload holds the household, customer and default card IDs
+  and an address digest, never the plaintext email; the digest is personal data
+  retained only under the job queue's retention policy. The household audit records
+  `billingEmailCleared: true`, without the address or digest. Before calling out,
+  the job rechecks that only this household links the customer. A replacement local
+  email does not prevent clearing the erased address at Stripe. The adapter checks customer gym and household metadata and
+  card ownership, then clears only matching customer and default card emails,
+  preserving replacement addresses, other billing details and the attached card.
+  Stripe reads and writes cannot be atomic with concurrent external edits.
   Erasure and deletion unlink staff profiles and advance their revisions, so stale
   staff forms cannot restore the member link. After commit the auth store revokes
   the member's pending portal invitations; with the household's last member it

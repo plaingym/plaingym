@@ -216,6 +216,22 @@ empty string clears each) when it holds any. A failed clearing is raised before 
 detach, so the retry still finds the card attached; a card that is already detached
 keeps what it holds, since it can no longer be updated.
 
+`clearCustomerEmail(id, { householdId, emailDigest, paymentMethodId? })` handles
+erasing a payer while other household members remain. It clears only the customer
+email and the specified default card's billing email that match the digest of the
+trimmed, lowercased erased address. It preserves names and other billing fields,
+and keeps the card attached. Before any write it refuses customer metadata naming
+another gym or household, a card naming another gym, or a card attached to another
+customer. Untagged imported customers require the caller's checked local household
+link. Missing and deleted customers, missing cards and detached cards are harmless;
+detached cards cannot be updated. Every retry reads current addresses and only
+writes matching fields, without a cached idempotency response. Customer and card
+writes are independent, so a retry completes a partially successful clear without
+overwriting replacement emails. The fake exposes the cleared customer and billing
+fields through `customer()` and `billingDetails()`. This uses the existing Customers
+and Payment Methods **Write** permissions. Stripe edits between the read and write
+cannot be made atomic; the adapter checks ownership and values before calling.
+
 `redactCustomer(id)` serves member erasure. It refuses a customer tagged for another
 gym and, as `adoptCustomer` does, treats an untagged one (an imported ID) as the gym's; it then
 [updates the Customer](https://docs.stripe.com/api/customers/update) so its name

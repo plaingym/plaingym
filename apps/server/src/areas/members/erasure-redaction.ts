@@ -5,6 +5,7 @@ import type { Clock } from '@plaingym/shared';
 import { z } from 'zod';
 import type { Jobs } from '../../infra/jobs/index.js';
 import type { Uploads } from '../../infra/storage/index.js';
+import type { ClearCustomerEmail } from '../../infra/payments/index.js';
 import { logError, logInfo } from '../../core/log.js';
 import { customerRedactedAction, erasuresToRedact, redactionQueuedAction } from './erasure-redaction.query.js';
 
@@ -16,6 +17,24 @@ export async function eraseCreditReasons(tx: Transaction, memberId: string) {
 
 /** Queues the provider redaction of the customer an erased household had. */
 export const redactCustomerJob = 'members.erasure.redact_customer';
+/** Clears the erased payer's email while the household keeps its customer and default card. */
+export const clearBillingEmailJob = 'members.erasure.clear_billing_email';
+const billingEmailPayload = z.object({ householdId: z.uuid(), customerId: z.string().regex(/^cus_[A-Za-z0-9_]+$/),
+  emailDigest: z.string().regex(/^[a-f0-9]{64}$/), paymentMethodId: z.string().regex(/^(?:pm|card|ba|src)_[A-Za-z0-9_]+$/).optional() }); // Imported cards keep legacy IDs.
+export type ClearBillingEmail = (gymId: string, customerId: string, options: ClearCustomerEmail) => Promise<void>;
+
+/** Recheck the local customer link before calling out; a reassigned customer is left alone. */
+export async function clearErasedBillingEmail(payload: unknown, gymId: string, clear: ClearBillingEmail, scope = forGym): Promise<void> {
+  const { customerId, ...options } = billingEmailPayload.parse(payload);
+  const linked = await scope(gymId, tx => tx.select({ id: households.id }).from(households)
+    .where(eq(households.stripeCustomerId, customerId)));
+  if (linked.length !== 1 || linked[0]!.id !== options.householdId) {
+    logInfo('members.erasure.billing_email_skipped_linked', { gymId, householdId: options.householdId });
+    return;
+  }
+  await clear(gymId, customerId, { householdId: options.householdId, emailDigest: options.emailDigest,
+    ...(options.paymentMethodId ? { paymentMethodId: options.paymentMethodId } : {}) });
+}
 /** Marks deleted the photo and signature images an erasure released; committed with the erasure, under `release:<member ID>`. */
 export const releaseErasedFilesJob = 'members.erasure.release_files';
 const releasePayload = z.object({ keys: z.array(z.string().min(1)).min(1) });

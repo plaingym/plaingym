@@ -31,6 +31,27 @@ member-specific signed links, cancels the member's memberships (in the same
 transaction, so an erased member is never billed again; any plan switch scheduled
 on them is dropped), and clears the household
 PIN. When the household
+keeps other members and has a Stripe Customer, clearing a billing email that matches
+the erased member's address also queues `members.erasure.clear_billing_email` in that transaction
+(key `clear-billing-email:<member ID>`, 12 attempts). The household audit carries
+`after.billingEmailCleared: true` whenever erasure clears its email, including the
+last member's erasure. A different member's billing address queues no email clear.
+The job carries the household and customer IDs, the default card's processor ID
+when present, and a SHA-256 digest of the trimmed, lowercased erased address rather
+than its plaintext. The digest remains personal data and lives only in the retry
+queue, under its normal retention; it is never added to the audit or logs.
+Before calling Stripe the job checks that exactly this household still links the
+customer. Entering a new local billing email does not prevent clearing the old
+copy at Stripe. The payments
+adapter checks gym and household metadata and card ownership before any write,
+then clears only matching customer and card emails. Names, other contact fields,
+payment history and the card attachment stay intact. A retry rereads the fields
+and preserves any replacement address. As with other provider operations, the
+link check and external call cannot be one transaction; an external edit during
+the call cannot be made atomic with erasure. `configureMembers` accepts the
+gym-scoped `clearBillingEmail(gymId, customerId, options)` callback backed by
+`Payments.clearCustomerEmail`; an absent callback fails the job so it retries.
+When the household
 has no remaining identifiable members, its contact details and remaining portal
 and signed-link access are also removed. Other household members remain intact.
 Erasure cancels booked and waitlisted places in sessions that haven't started,
@@ -48,7 +69,7 @@ when it cleared a customer ID, `members.erasure.redact_customer` carrying that I
 (key `redact:<household erasure audit ID>`, 12 attempts, a one-minute delay). It returns `files`,
 `revokedCards` and `erasedCustomerId` (the cleared Stripe customer ID) for an
 immediate attempt after commit. The runtime passes the billing detach callback,
-the customer redaction callback (`Payments.redactCustomer`), file storage and the
+the customer redaction callback (`Payments.redactCustomer`), the billing email callback (`Payments.clearCustomerEmail`), file storage and the
 job queue (required) through `configureMembers`; without a queue the erasure route
 refuses with `unavailable` before changing anything. After commit the route
 detaches each card, redacts the customer and marks the files deleted, each attempt
@@ -148,7 +169,7 @@ Actual deletion remains the storage subsystem's backup-aware sweep.
 
 ## Composition
 
-The runtime calls `configureMembers({ pinSecret, uploadsFor, clock, detachCard, redactCustomer, jobs })` and registers
+The runtime calls `configureMembers({ pinSecret, uploadsFor, clock, detachCard, redactCustomer, clearBillingEmail, jobs })` and registers
 `createMemberPhotoJobs(uploadsFor)` with the worker, using its gym-scoped uploads
 resolver. Until `configureMembers` runs (or when a test passes its own service without
 storage), photo operations and setting a nonempty PIN fail closed. The web feature

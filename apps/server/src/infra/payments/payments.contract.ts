@@ -2,6 +2,64 @@
 import { describe, expect, it } from 'vitest';
 import { paymentsContract } from '../../core/registry-infra-contracts.js';
 import type { Payments, CreateCharge, CheckoutRequest } from './index.js';
+import { billingEmailDigest, type ClearCustomerEmail } from './email-erasure.js';
+import { runInTransaction } from '@plaingym/shared/transaction';
+
+export interface EmailErasureFixture {
+  customerEmail?: string;
+  cardEmail?: string;
+  gymId?: string;
+  householdId?: string;
+  cardCustomerId?: string;
+  deleted?: boolean;
+}
+/** Shared checks for the narrow erasure operation, including provider state rather than just successful calls. */
+export function customerEmailErasureContract(name: string, create: (fixture?: EmailErasureFixture) => {
+  payments: Payments; customerId: string; options: ClearCustomerEmail;
+  state(): { email: string | null; name: string | null; cardEmail: string | null; cardName: string | null; attached: boolean };
+}) {
+  describe(name + ' billing email erasure', () => {
+    it('clears matching emails once, preserving names and the attached card', async () => {
+      const { payments, customerId, options, state } = create({ customerEmail: ' PAYER@Example.invalid ' });
+      await payments.clearCustomerEmail(customerId, options);
+      await payments.clearCustomerEmail(customerId, options);
+      expect(state()).toEqual({ email: null, name: 'Household', cardEmail: null, cardName: 'Card holder', attached: true });
+    });
+    it.each([
+      { customerEmail: 'replacement@example.invalid', cardEmail: 'replacement@example.invalid' },
+      { customerEmail: 'payer@example.invalid', cardEmail: 'replacement@example.invalid' },
+      { customerEmail: 'replacement@example.invalid', cardEmail: 'payer@example.invalid' },
+    ])('clears each field only if its address still matches: %j', async fixture => {
+      const { payments, customerId, options, state } = create(fixture);
+      await payments.clearCustomerEmail(customerId, options);
+      expect(state()).toMatchObject({ email: fixture.customerEmail === 'payer@example.invalid' ? null : fixture.customerEmail,
+        cardEmail: fixture.cardEmail === 'payer@example.invalid' ? null : fixture.cardEmail });
+    });
+    it.each([{ gymId: 'other-gym' }, { householdId: 'other-household' }, { cardCustomerId: 'cus_other' }])('refuses foreign ownership before writing: %j', async fixture => {
+      const { payments, customerId, options, state } = create(fixture), before = state();
+      await expect(payments.clearCustomerEmail(customerId, options)).rejects.toThrow(/another/);
+      expect(state()).toEqual(before);
+    });
+    it('accepts missing or deleted customers and missing cards, and clears a customer without a card', async () => {
+      const { payments, customerId, options, state } = create();
+      await payments.clearCustomerEmail('cus_missing', options);
+      await payments.clearCustomerEmail(customerId, { ...options, paymentMethodId: 'pm_missing' });
+      expect(state()).toMatchObject({ email: null, cardEmail: 'payer@example.invalid', attached: true });
+      const deleted = create({ deleted: true });
+      await deleted.payments.clearCustomerEmail(deleted.customerId, deleted.options);
+      expect(deleted.state()).toMatchObject({ email: 'payer@example.invalid' });
+      const noCard = create();
+      await noCard.payments.clearCustomerEmail(noCard.customerId, { householdId: noCard.options.householdId, emailDigest: billingEmailDigest('payer@example.invalid') });
+      expect(noCard.state()).toMatchObject({ email: null, cardEmail: 'payer@example.invalid' });
+    });
+    it('rejects network work inside a transaction and invalid processor IDs', async () => {
+      const { payments, customerId, options } = create();
+      await runInTransaction(async () => { await expect(payments.clearCustomerEmail(customerId, options)).rejects.toThrow('transaction'); });
+      await expect(payments.clearCustomerEmail('../cus_bad', options)).rejects.toThrow('Invalid processor ID');
+      await expect(payments.clearCustomerEmail(customerId, { ...options, paymentMethodId: '../pm_bad' })).rejects.toThrow('Invalid processor ID');
+    });
+  });
+}
 export type Card = '4242' | '0341' | '3155' | '3184';
 export interface ContractHarness {
   payments: Payments; charge: CreateCharge; checkout: CheckoutRequest;

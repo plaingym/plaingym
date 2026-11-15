@@ -12,7 +12,8 @@ import { clock as defaultClock } from '../../core/clock.js';
 import { hashHouseholdPin, type HouseholdPinSecret } from './pin.js';
 import { withJobTransaction, type Jobs, type JobTransaction } from '../../infra/jobs/index.js';
 import { logError } from '../../core/log.js';
-import { eraseCreditReasons, redactCustomerJob, releaseErasedFilesJob } from './erasure-redaction.js';
+import { clearBillingEmailJob, eraseCreditReasons, redactCustomerJob, releaseErasedFilesJob } from './erasure-redaction.js';
+import { billingEmailDigest } from '../../infra/payments/index.js';
 import { detachJob } from '../billing/payments.mutations.js';
 import { unscheduled } from '../billing/memberships.plan-change.js';
 import { endDiscount } from '../billing/discounts/apply.js';
@@ -63,10 +64,10 @@ async function queueReleasedFiles(transaction: JobTransaction, cleanup: ErasureQ
 export interface MembersOptions { scope?: typeof forGym; clock?: Clock; pinSecret?: HouseholdPinSecret }
 export function createMembersService(options: MembersOptions = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
-  const audit = (tx: Transaction, context: MutationContext, action: string, targetType: string, targetId: string, before?: Record<string, string>) =>
+  const audit = (tx: Transaction, context: MutationContext, action: string, targetType: string, targetId: string, before?: Record<string, string>, after?: Record<string, boolean>) =>
     writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
       ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
-      action, targetType, targetId, occurredAt: clock.now(), ...(before ? { before } : {}) }); // No PII or PINs in the append-only log.
+      action, targetType, targetId, occurredAt: clock.now(), ...(before ? { before } : {}), ...(after ? { after } : {}) }); // No PII or PINs in the append-only log.
   const getMemberRow = async (tx: Transaction, id: string) => missing((await tx.select(memberFields).from(members).where(eq(members.id, id)))[0]);
   const getHouseholdRow = async (tx: Transaction, id: string) => missing((await tx.select(householdFields).from(households).where(eq(households.id, id)).for('update'))[0]);
   async function freeUpcomingPlaces(tx: Transaction, memberId: string, now: Date, context: MutationContext) {
@@ -186,10 +187,11 @@ export function createMembersService(options: MembersOptions = {}) {
         const remaining = await tx.select({ id: members.id }).from(members).where(and(eq(members.householdId, home.id), isNull(members.anonymizedAt))).limit(1);
         const last = remaining.length === 0;
         // The provider's copy of the payer is redacted after commit (erasure keeps the customer for the books).
-        const [billing] = last ? await tx.select({ customerId: households.stripeCustomerId }).from(households).where(eq(households.id, home.id)) : [];
+        const [billing] = await tx.select({ customerId: households.stripeCustomerId }).from(households).where(eq(households.id, home.id));
         const homeGuard = revisionGuard(households.revision, home.revision);
         // `email_address` is stored trimmed and lowercased; the household email is compared the same way.
         const erasedBillingAddress = !!before.emailAddress && home.email?.trim().toLowerCase() === before.emailAddress;
+        const billingEmailCleared = home.email !== null && (last || erasedBillingAddress);
         await tx.update(households).set({ pinHash: null, revision: homeGuard.next,
           ...(erasedBillingAddress ? { email: null } : {}),
           ...(last ? { name: 'Anonymized household', email: null, phone: null, address: {}, stripeCustomerId: null } : {}) }).where(eq(households.id, home.id));
@@ -209,18 +211,26 @@ export function createMembersService(options: MembersOptions = {}) {
         if (waivers.length) await audit(tx, context, 'member.waivers.deleted', 'member', id);
         // The cleared provider customer ID (not personal data) stays on record until its redaction is confirmed.
         const erasure = await audit(tx, context, last ? 'household.anonymized' : 'household.pin.cleared', 'household', home.id,
-          billing?.customerId ? { stripeCustomerId: billing.customerId } : undefined);
+          last && billing?.customerId ? { stripeCustomerId: billing.customerId } : undefined,
+          billingEmailCleared ? { billingEmailCleared: true } : undefined);
         // Each cleared reference and its durable provider or storage cleanup commit together; the calls stay after commit.
         const queued = { gymId: context.gymId, timezone: cleanup.timezone, maxAttempts: 12 };
-        if (billing?.customerId) await cleanup.jobs.enqueue(redactCustomerJob, { customerId: billing.customerId }, {
+        if (last && billing?.customerId) await cleanup.jobs.enqueue(redactCustomerJob, { customerId: billing.customerId }, {
           ...queued, idempotencyKey: `redact:${erasure.id}`, runAt: new Date(now.getTime() + 60_000),
         }, transaction);
+        if (!last && erasedBillingAddress && billing?.customerId) {
+          const [card] = await tx.select({ processorId: paymentMethods.processorId }).from(paymentMethods)
+            .where(and(eq(paymentMethods.householdId, home.id), eq(paymentMethods.isDefault, true), isNull(paymentMethods.revokedAt))).limit(1);
+          await cleanup.jobs.enqueue(clearBillingEmailJob, { householdId: home.id, customerId: billing.customerId,
+            emailDigest: billingEmailDigest(before.emailAddress!), ...(card ? { paymentMethodId: card.processorId } : {}) },
+          { ...queued, idempotencyKey: `clear-billing-email:${id}` }, transaction);
+        }
         // Each card's billing details are cleared before it is detached (a staff card removal leaves them).
         for (const card of revokedCards) await cleanup.jobs.enqueue(detachJob, { paymentMethodId: card.id, redactBillingDetails: true },
           { ...queued, idempotencyKey: `detach:${card.id}`, runAt: new Date(now.getTime() + 60_000) }, transaction);
         const files = [...(before.photoKey ? [before.photoKey] : []), ...waivers.map((waiver) => waiver.key)];
         await queueReleasedFiles(transaction, cleanup, files, `release:${id}`, now);
-        return { member: member(row), householdId: home.id, householdErased: last, freedSessionIds, revokedCards, erasedCustomerId: billing?.customerId ?? null, files };
+        return { member: member(row), householdId: home.id, householdErased: last, freedSessionIds, revokedCards, erasedCustomerId: last ? billing?.customerId ?? null : null, files };
       });
     },
     /**

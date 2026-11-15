@@ -14,7 +14,7 @@ import type { Jobs } from '../../infra/jobs/index.js';
 import { promoteWaitlist } from '../bookings/bookings.js';
 import type { DetachOptions } from '../../infra/payments/index.js';
 import { releaseFiles } from '../../infra/storage/release.js';
-import { queueEarlierRedactions, redactCustomerJob, redactEarlierJob, releaseErasedFiles, releaseErasedFilesJob } from './erasure-redaction.js';
+import { clearBillingEmailJob, clearErasedBillingEmail, type ClearBillingEmail, queueEarlierRedactions, redactCustomerJob, redactEarlierJob, releaseErasedFiles, releaseErasedFilesJob } from './erasure-redaction.js';
 import { createPortalInvitationStore } from '../../infra/auth/portal-invitations.js';
 
 function mutation(context: RequestContext) {
@@ -40,6 +40,8 @@ type ErasureOptions = { clock?: Clock; detachCard?: (gymId: string, processorId:
   invitations?: Pick<ReturnType<typeof createPortalInvitationStore>, 'revokeFor'>;
   /** Payments.redactCustomer for the gym: the erased household's provider customer keeps no name or email. */
   redactCustomer?: (gymId: string, customerId: string) => Promise<void>;
+  /** Gym-scoped Payments.clearCustomerEmail; the job checks the local household link before calling it. */
+  clearBillingEmail?: ClearBillingEmail;
   /** Erasure commits its cleanup jobs with it: without a queue the erasure route refuses (`unavailable`) before erasing. */
   jobs?: Pick<Jobs, 'enqueue'> };
 export { redactCustomerJob, releaseErasedFilesJob };
@@ -56,12 +58,17 @@ export function configureMembers(options: ErasureOptions & { pinSecret: Househol
  * cleared) and the release of the erased member's files (the payload carries their keys). Card detaches use the billing
  * area's `billing.payments.detach` job.
  */
-export function createErasureJobs(supplied?: Pick<ErasureOptions, 'redactCustomer' | 'jobs'> & { scope?: typeof forGym; uploadsFor?: MemberUploads }): readonly JobRegistration[] {
+export function createErasureJobs(supplied?: Pick<ErasureOptions, 'redactCustomer' | 'clearBillingEmail' | 'jobs'> & { scope?: typeof forGym; uploadsFor?: MemberUploads }): readonly JobRegistration[] {
   return [{ id: redactCustomerJob, async handler(payload, ctx) {
     const { customerId } = redactPayload.parse(payload);
     const redact = (supplied ?? configured)?.redactCustomer;
     if (!redact) throw new Error('Customer redaction is not configured');
     await redact(ctx.gymId, customerId);
+  } },
+  { id: clearBillingEmailJob, async handler(payload, ctx) {
+    const clear = (supplied ?? configured)?.clearBillingEmail;
+    if (!clear) throw new Error('Billing email erasure is not configured');
+    await clearErasedBillingEmail(payload, ctx.gymId, clear, supplied?.scope);
   } },
   { id: releaseErasedFilesJob, async handler(payload, ctx) {
     const uploadsFor = (supplied ?? configured)?.uploadsFor;

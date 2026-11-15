@@ -3,6 +3,8 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { clock as systemClock } from '../../core/clock.js';
+import { matchesBillingEmail, type ClearCustomerEmail } from './email-erasure.js';
+export { billingEmailDigest, type ClearCustomerEmail } from './email-erasure.js';
 
 export type ChargeReference = { kind: 'charge' | 'checkout'; id: string };
 export interface PaymentMetadata {
@@ -207,6 +209,8 @@ export interface Payments {
    * its metadata and its payment history stay. Idempotent; missing and deleted customers succeed; refuses another gym's customer.
    */
   redactCustomer(customerId: string): Promise<void>;
+  /** Clears only matching erased emails on this household's customer and specified default card; keeps the card attached. */
+  clearCustomerEmail(customerId: string, options: ClearCustomerEmail): Promise<void>;
   parseWebhook(body: Uint8Array, signature: string): Promise<PaymentEvent>;
 }
 
@@ -351,7 +355,7 @@ export class FakePayments implements Payments {
     else this.#uncertain.delete(id);
   }
   /** `deleted` seeds a customer the provider has deleted: reads of it raise `CustomerDeleted`. */
-  seedCustomer(customer: { id: string; email: string; gymId?: string; householdId?: string; deleted?: boolean } & CustomerDetails): void {
+  seedCustomer(customer: { id: string; email: string; name?: string; gymId?: string; householdId?: string; deleted?: boolean } & CustomerDetails): void {
     this.#customers.push({ ...customer, gymId: customer.gymId ?? this.gymId });
   }
   /** Sets what an attached card holds about its owner (its billing details), as a dashboard or Checkout would. */
@@ -778,6 +782,22 @@ export class FakePayments implements Payments {
       address: customer.address ?? null, shipping: customer.shipping ?? null, description: customer.description ?? null,
       individualName: customer.individualName ?? null, businessName: customer.businessName ?? null,
       customFields: customer.customFields ?? null, taxIds: customer.taxIds ?? [] };
+  }
+  async clearCustomerEmail(customerId: string, options: ClearCustomerEmail): Promise<void> {
+    assertNoTransaction('payments.clearCustomerEmail');
+    if (!/^[A-Za-z0-9_]+$/.test(customerId)
+      || (options.paymentMethodId !== undefined && !/^[A-Za-z0-9_]+$/.test(options.paymentMethodId))) throw new Error('Invalid processor ID');
+    const customer = this.#customers.find(item => item.id === customerId);
+    if (!customer || customer.deleted) return;
+    if (customer.gymId !== this.gymId) throw new Error('Customer belongs to another gym');
+    if (customer.householdId !== undefined && customer.householdId !== options.householdId) throw new Error('Customer belongs to another household');
+    const method = options.paymentMethodId ? this.#methods.get(options.paymentMethodId) : undefined;
+    if (method && !this.#detached.has(method.id) && method.customerId !== customerId) throw new Error('Card belongs to another customer');
+    if (matchesBillingEmail(customer.email, options.emailDigest)) customer.email = null;
+    if (method && !this.#detached.has(method.id)) {
+      const details = this.#billing.get(method.id);
+      if (details && matchesBillingEmail(details.email, options.emailDigest)) details.email = null;
+    }
   }
   async redactCustomer(customerId: string): Promise<void> {
     assertNoTransaction('payments.redactCustomer');
