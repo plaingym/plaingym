@@ -89,6 +89,8 @@ function scanVariables(sources: Map<string, string>): Set<string> {
       return ts.isIdentifier(parent.name) && parent.name.text === 'env';
     // Passing the environment to another canonical reader preserves the names that reader scans.
     if (ts.isCallExpression(parent)) {
+      // The demo safety check inspects values for forbidden credentials, without reading named settings.
+      if (parent.expression.getText() === 'Object.values') return true;
       const index = parent.arguments.indexOf(node as ts.Expression);
       const parameter = checker.getResolvedSignature(parent)?.declaration?.parameters[index];
       return !!parameter && ts.isIdentifier(parameter.name) && parameter.name.text === 'env';
@@ -97,6 +99,15 @@ function scanVariables(sources: Map<string, string>): Set<string> {
   }
   for (const file of files) visit(file, (node) => {
     // Reject destructuring and aliases instead of silently losing their subsequent reads.
+    if (ts.isIdentifier(node) && node.text === 'env') {
+      const parent = node.parent;
+      // Binding names and property names are declarations/labels, not an escaping environment value.
+      const binding = (ts.isVariableDeclaration(parent) || ts.isParameter(parent) || ts.isPropertyDeclaration(parent) || ts.isPropertySignature(parent)) && parent.name === node;
+      const property = (ts.isPropertyAccessExpression(parent) || ts.isPropertyAssignment(parent)) && parent.name === node;
+      const store = ts.isBinaryExpression(parent) && parent.right === node && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        && ts.isPropertyAccessExpression(parent.left) && parent.left.expression.kind === ts.SyntaxKind.ThisKeyword && parent.left.name.text === 'env';
+      if (!binding && !property && !store && !ts.isShorthandPropertyAssignment(parent) && !canonicalDestination(node)) unresolved(node);
+    }
     if (ts.isVariableDeclaration(node) && node.initializer && /(?:^|\.)env$/.test(node.initializer.getText().replaceAll(/\s/g, ''))
       && (!ts.isIdentifier(node.name) || node.name.text !== 'env')) unresolved(node);
     if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
@@ -181,6 +192,10 @@ describe('docs/configuration.md', () => {
     'function load(cfg: Record<string, string>) { return cfg.X; } load(process.env);',
     'const source = { ...process.env }; source.X;',
     'let source; source ??= process.env; source.X;',
+    'function load(cfg: Record<string, string>) { return cfg.X; } function read(env: Record<string, string>) { load(env); }',
+    'const env = {}; const source = { ...env }; source.X;',
+    'const env = {}; let source; source ??= env; source.X;',
+    'const env = {}; function read(source = env) { return source.X; }',
     "export function required(name: string) { return process.env[name]; } required('LOCAL');",
     "function read(name: string) { return process.env[name]; } read('LOCAL'); ['CALLBACK'].map(read);",
     "function read(name: string) { return process.env[name]; } read('LOCAL'); export { read };",
@@ -194,6 +209,7 @@ describe('docs/configuration.md', () => {
       const env = { ...process.env }; env.COPY;
       const options = { env: process.env }; options.env.OPTION;
       (options.env ?? process.env).FALLBACK;
+      Object.values(env).some(value => value === 'forbidden');
     `]]))].sort()).toEqual(['COPY', 'DEFAULT', 'FALLBACK', 'OPTION', 'STORED']);
   });
   it('rejects an exported helper even when another source calls it', () => {

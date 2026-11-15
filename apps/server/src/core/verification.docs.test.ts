@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { globSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
+import { createVitest } from 'vitest/node';
+import ts from 'typescript';
 import { documentationTests, runDocumentationTests } from '../../../../scripts/test-selection.mjs';
 
 const root = fileURLToPath(new URL('../../../../', import.meta.url));
@@ -31,21 +33,82 @@ const fixtureReaders = new Set([
   'apps/server/src/infra/storage/storage.index.test.ts',
   'apps/server/src/infra/storage/storage.test.ts',
   'apps/server/test/boot.test.ts',
-  'packages/db/src/' + 'testing/' + 'database-upgrade.test.ts',
+  'packages/db/src/testing/database-upgrade.test.ts',
 ]);
 
+/** Inspect filesystem imports, including aliases/namespaces and transitive test helpers. */
+function fileReader(file: string, readSource = read, visiting = new Set<string>()): boolean {
+  if (visiting.has(file)) return false;
+  visiting.add(file);
+  const source = ts.createSourceFile(file, readSource(file), ts.ScriptTarget.Latest, true);
+  return source.statements.some(statement => {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier) || statement.importClause?.isTypeOnly) return false;
+    const specifier = statement.moduleSpecifier.text;
+    if (/^(?:node:)?fs(?:\/promises)?$/.test(specifier)) {
+      const clause = statement.importClause;
+      if (clause?.name || clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings)) return true;
+      return clause?.namedBindings && ts.isNamedImports(clause.namedBindings)
+        ? clause.namedBindings.elements.some(binding => !binding.isTypeOnly
+          && /^(?:readFile(?:Sync)?|readdir(?:Sync)?|glob(?:Sync)?|createReadStream|open(?:Sync)?|opendir(?:Sync)?|promises)$/.test((binding.propertyName ?? binding.name).text)) : false;
+    }
+    // Runtime modules perform application I/O; only test helpers perform a test's own file reads.
+    if (!specifier.startsWith('.') || !/\.test-helper(?:\.[cm]?[jt]sx?)?$/.test(specifier)) return false;
+    const base = resolve(root, dirname(file), specifier).replace(/\.[cm]?[jt]sx?$/, '');
+    const helper = ['.ts', '.tsx', '.mjs', '.js'].map(extension => base + extension).find(existsSync);
+    return helper !== undefined && fileReader(relative(root, helper).replaceAll('\\', '/'), readSource, visiting);
+  });
+}
+
 describe('verification discovery', () => {
-  it('requires file-reading tests to declare how selected verification covers them', () => {
+  it('shares the test and compliance bodies with the public package scripts', () => {
+    const scripts = (JSON.parse(read('package.json')) as { scripts: Record<string, string> }).scripts;
+    const verify = read('scripts/verify.mjs');
+    for (const name of ['test', 'compliance']) {
+      expect(scripts[name]).toBe(`pnpm generate && pnpm ${name}:run`);
+      expect(scripts[`${name}:run`]).toBeTruthy();
+      expect(verify).toContain(`pnpm('${name}:run'`);
+    }
+  });
+  it('requires file-reading tests to declare how selected verification covers them', async () => {
     const list = /const sourceScanningTests = \[([\s\S]*?)\];/.exec(read('scripts/verify.mjs'));
     expect(list).not.toBeNull();
     const scanning = new Set([...list![1]!.matchAll(/'([^']+)'/g)].map(match => match[1]!));
-    const files = globSync(['apps/**/*.test.ts', 'apps/**/*.test.tsx', 'packages/**/*.test.ts', 'e2e/*.test.ts'],
-      { cwd: root, exclude: ['**/node_modules/**'] }).map(file => file.replaceAll('\\', '/'));
+    // A selected verify run must still check the full inventory, including other projects.
+    vi.stubEnv('PLAINGYM_TEST_FILES', undefined);
+    let vitest;
+    let specifications;
+    try {
+      vitest = await createVitest('test', { root, watch: false, run: true, reporters: [] });
+      specifications = await vitest.globTestSpecifications();
+    } finally {
+      vi.unstubAllEnvs();
+      await vitest?.close();
+    }
+    const files = [...new Set(specifications.map(spec => relative(root, spec.moduleId).replaceAll('\\', '/')))];
+    expect(specifications.find(spec => spec.moduleId.replaceAll('\\', '/').endsWith('/packages/db/src/testing/database-upgrade.test.ts'))?.project.name).toBe('integration');
+    documentationTests(specifications);
     const uncovered = files.filter(file => !/\.docs\.test\.ts$/.test(file) && !scanning.has(file) && !fixtureReaders.has(file)
-      && /\b(?:readFile(?:Sync)?|readdir(?:Sync)?)\b/.test(read(file)));
+      && fileReader(file));
     expect(uncovered, 'Add source scanners to scripts/verify.mjs; classify fixture-only reads explicitly here').toEqual([]);
     for (const file of scanning) expect(files).toContain(file);
     for (const file of fixtureReaders) expect(files).toContain(file);
+  });
+  it.each([
+    "import { globSync as files } from 'node:fs';",
+    "import { createReadStream } from 'node:fs';",
+    "import * as files from 'node:fs/promises';",
+    "import { readFile as read } from 'node:fs/promises';",
+    "import { promises as files } from 'node:fs';",
+  ])('recognizes filesystem readers: %s', source => {
+    expect(fileReader('fixture.test.ts', () => source)).toBe(true);
+  });
+  it('ignores fixture writers and reader names mentioned only as text', () => {
+    expect(fileReader('fixture.test.ts', () => "import { writeFile } from 'node:fs/promises'; const text = 'readFile';")).toBe(false);
+  });
+  it('follows file reads through test helpers', () => {
+    // This existing helper provides a real path for resolution; contents are supplied by the fixture.
+    expect(fileReader('apps/server/src/core/fixture.test.ts', file => file.endsWith('.test-helper.ts')
+      ? "import { globSync } from 'node:fs';" : "import { fixture } from './runtime.fixture.test-helper.js';")).toBe(true);
   });
   it('uses the specifications Vitest discovered, including docs outside apps and packages', () => {
     const docs = { moduleId: '/repo/e2e/example.docs.test.ts', project: { name: 'unit' } };

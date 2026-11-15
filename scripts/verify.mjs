@@ -98,7 +98,7 @@ function pnpm(script, args = [], env = process.env) {
 
 const since = full ? null : base();
 // check-types generates the shared inputs once, before discovery. The remaining commands
-// invoke their tools directly so package-script generation hooks do not repeat that work.
+// share the package-script bodies so generation does not repeat that work.
 if (!listOnly) pnpm('check-types');
 let tests = null;
 if (since) {
@@ -113,15 +113,14 @@ if (listOnly) {
   process.exit(0);
 }
 pnpm('lint');
-if (tests === null) pnpm('exec', ['vitest', 'run']);
+if (tests === null) pnpm('test:run');
 else if (tests.length) {
   const directory = mkdtempSync(join(tmpdir(), 'plaingym-verify-'));
   try {
     const list = join(directory, 'tests.txt');
     writeFileSync(list, tests.join('\n') + '\n');
-    pnpm('exec', ['vitest', 'run'], { ...process.env, PLAINGYM_TEST_FILES: list });
+    pnpm('test:run', [], { ...process.env, PLAINGYM_TEST_FILES: list });
   } finally { rmSync(directory, { recursive: true, force: true }); }
 } else console.log('No tests affected.');
-pnpm('exec', ['node', '--test', 'scripts/compliance/compliance.test.mjs']);
-pnpm('exec', ['node', 'scripts/compliance/cli.mjs']);
+pnpm('compliance:run');
 console.log('\nVerified.');

@@ -2,6 +2,7 @@
 import { existsSync, readFileSync, globSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { defineConfig } from 'vitest/config';
+import ts from 'typescript';
 
 // Tests never read the developer's .env: an existing test server is used only when named explicitly
 // (TEST_DATABASE_URL, see apps/server/test/setup-database.ts); otherwise a disposable PostgreSQL starts.
@@ -21,9 +22,19 @@ function usesDatabase(file: string, visiting = new Set<string>()): boolean {
   if (known !== undefined) return known;
   if (visiting.has(file)) return false; // A helper import cycle ends here.
   visiting.add(file);
-  const source = existsSync(file) ? readFileSync(file, 'utf8') : '';
-  const result = /@plaingym\/db\/testing|testing\/database|inject\(['"]testDatabase['"]\)/.test(source)
-    || [...source.matchAll(/from '(\.[^']*\.test-helper)(?:\.js)?'/g)].some(([, specifier]) => {
+  const source = ts.createSourceFile(file, existsSync(file) ? readFileSync(file, 'utf8') : '', ts.ScriptTarget.Latest, true);
+  const imports = source.statements.flatMap(statement => ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)
+    ? [statement.moduleSpecifier.text] : []);
+  function injectsDatabase(node: ts.Node): boolean {
+    if (ts.isCallExpression(node) && (ts.isIdentifier(node.expression) && node.expression.text === 'inject'
+      || ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'inject')
+      && node.arguments[0] && ts.isStringLiteral(node.arguments[0]) && node.arguments[0].text === 'testDatabase') return true;
+    return ts.forEachChild(node, injectsDatabase) ?? false;
+  }
+  const result = imports.some(specifier => /^@plaingym\/db\/testing(?:\/|$)|(?:^|\/)testing\/database/.test(specifier))
+    || injectsDatabase(source)
+    || imports.filter(specifier => /^\..*\.test-helper(?:\.js)?$/.test(specifier)).some(specifier => {
+      specifier = specifier.replace(/\.js$/, '');
       const helper = ['.ts', '.tsx'].map((extension) => resolve(dirname(file), specifier + extension)).find(existsSync);
       return helper !== undefined && usesDatabase(helper, visiting);
     });

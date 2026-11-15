@@ -287,6 +287,10 @@ describe('membership renewals through the durable pipeline', () => {
     expect((await source.run()).committedRows).toBe(1);
     expect((await read()).memberships.find(row => row.id === original.id)).toMatchObject({ nextDueOn: '2026-11-01',
       scheduledPlanId: next.id, scheduledOn: origin === 'price_change' ? '2026-11-15' : '2026-11-01' });
+    const event = (await read()).audits.find(event => event.action === 'billing.membership.import_updated' && event.targetId === original.id)!;
+    if (origin === 'price_change') expect(event.after).not.toHaveProperty('rescheduledSwitch');
+    else expect(event.after).toMatchObject({ rescheduledSwitch: { scheduledPlanId: next.id,
+      previousScheduledOn: '2026-11-15', scheduledOn: '2026-11-01' } });
   });
   it.each(['switch', 'price_change', null])('moves a later chunk scheduled %s with an earlier household anchor', async origin => {
     const family = await spanningFamily(), next = await factory('plans', gymId, { amountCents: 15000 });
@@ -299,6 +303,10 @@ describe('membership renewals through the durable pipeline', () => {
     expect(await batch.commit(batch.planned.slice(0, 100).map(row => row.duplicateIds.length ? { ...row, action: 'update' } : row))).toBe(100);
     expect((await read()).memberships.find(row => row.id === family.later.id)).toMatchObject({ nextDueOn: '2026-11-01',
       scheduledPlanId: next.id, scheduledOn: origin === 'price_change' ? '2026-11-15' : '2026-11-01', amountCents: 10000, revision: 2 });
+    const event = (await read()).audits.find(event => event.action === 'billing.membership.import_schedule_updated' && event.targetId === family.later.id)!;
+    if (origin === 'price_change') expect(event.after).not.toHaveProperty('rescheduledSwitch');
+    else expect(event.after).toMatchObject({ rescheduledSwitch: { scheduledPlanId: next.id,
+      previousScheduledOn: '2026-11-15', scheduledOn: '2026-11-01' } });
   });
   it.each(['member', 'household', 'plan', 'membership'] as const)('refuses stale %s revisions atomically', async changed => {
     const f = await fixture();

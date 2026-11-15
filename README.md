@@ -202,7 +202,10 @@ request that changes more than Markdown files, and gates landing; the **Repo com
 workflow runs the documentation tests on every push and pull request, Markdown-only ones
 included. `pnpm test:docs` generates shared inputs and runs every docs test, failing
 if one belongs to the integration project. It discovers and runs the specs on one Vitest instance.
-Verification generates shared inputs once, and includes docs specs from Vitest's own discovery
+Verification generates shared inputs once, then uses the same `test:run` and
+`compliance:run` bodies as `pnpm test` and `pnpm compliance`. Source-reader inventory
+checks also use Vitest's discovery, including database tests in the integration project.
+Verification includes docs specs from Vitest's own discovery
 in the same test run as the selected tests (or the full suite).
 End-to-end skips Markdown-only pushes too, and still runs nightly, as does the **Memory** workflow, which measures the whole
 stack against its memory budget (`deploy/test/memory/README.md`). On a push to `main`, CI reuses a passing run of the same
