@@ -22,6 +22,7 @@ import { createStripeConnection, readStripeConfig, restrictedKeyMode, type Strip
 import { pauseRestoredBillingForStripe } from './go-live.restore.js';
 import { backupColumns, backupKeyPair, newBlobKey, recipientOf } from '../setup/backup-key.js';
 import { customerUnlinkedAction, latestTestSwitchId, stripeTestClearedAction as testClearedAction } from '../billing/customers.js';
+import { testCleared } from '../billing/transitions/store.js';
 import { cardImportAudits, customerLinkAudits, testCards } from './integrations.query.js';
 import { encryptSmtpConfig, readSmtpSchema, sendSmtpTest, smtpFromEnvironment, storedSmtpFromRequest, type SendSmtpTest } from './smtp.js';
 import { createGoogleClientResolver, encryptGoogleConfig, readGoogleConfig, requireGoogleClient, type CheckGoogle } from './google-login.js';
@@ -273,9 +274,19 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     for (let index = 0; index < sessions.length; index += 500)
       await tx.update(invoices).set({ checkoutSessionId: null, checkoutExpiresAt: null })
         .where(inArray(invoices.id, sessions.slice(index, index + 500).map((row) => row.id)));
-    const actionNeeded = await tx.update(paymentAttempts).set({ status: 'failed' })
+    const actionNeeded = await tx.select({ id: paymentAttempts.id, intentId: paymentAttempts.paymentIntentId, declineCode: paymentAttempts.declineCode })
+      .from(paymentAttempts)
       .where(and(eq(paymentAttempts.status, 'requires_action'), boundary ? gt(paymentAttempts.id, boundary) : undefined))
-      .returning({ id: paymentAttempts.id, intentId: paymentAttempts.paymentIntentId });
+      .for('update');
+    for (let index = 0; index < actionNeeded.length; index += 500) {
+      const chunk = actionNeeded.slice(index, index + 500);
+      await tx.update(paymentAttempts).set({ status: 'failed', declineCode: testCleared, error: null, resolvedAt: now })
+        .where(inArray(paymentAttempts.id, chunk.map(row => row.id)));
+      await tx.insert(auditEvents).values(chunk.map(row => ({ gymId, actorKind: 'user', actorUserId: userId,
+        action: 'billing.attempt.resolved', targetType: 'payment_attempt', targetId: row.id,
+        before: { status: 'requires_action', declineCode: row.declineCode },
+        after: { status: 'failed', declineCode: testCleared }, occurredAt: now })));
+    }
     // The open disputes of the payments marked below are in the test account too: the live key can't read or answer
     // them, so they close here (a dispute's final status never reopens). The dispute writer waits for the gym row, so
     // none is attached to these invoices while the switch runs.

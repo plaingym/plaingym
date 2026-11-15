@@ -56,6 +56,11 @@ invoice is refused as a conflict.
 The cleanup stops retrying a `wait` on the 21st local day after submission and
 writes `public.join.void_stalled` for staff follow-up, leaving billing intact.
 
+Switching Stripe from test to live closes action-needed test attempts as `failed`
+with `test_cleared`, clears their error, updates `resolvedAt`, and audits each as
+`billing.attempt.resolved` in the switch's transaction. These attempts count as
+abandoned, so they never represent a card decline or consume a retry window.
+
 Failures update attempt diagnostics, but cannot reopen paid, refunded or void
 invoices, or change the invoice for an older attempt. A cancellation is a decline
 only when the member could have acted on the payment. Cancelling a still-`pending`

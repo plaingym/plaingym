@@ -172,7 +172,7 @@ export async function revokeSignedLinkIn(tx: Transaction, context: MutationConte
     eq(signedLinks.gymId, context.gymId), eq(signedLinks.id, linkId),
   )).for('update');
   if (!before || before.purpose === 'unsubscribe') missing();
-  if (before.revokedAt !== null) return metadata(before);
+  if (before.revokedAt !== null || before.usedAt !== null) return metadata(before);
   const [row] = await tx.update(signedLinks).set({ revokedAt: now }).where(and(
     eq(signedLinks.gymId, context.gymId), eq(signedLinks.id, linkId),
   )).returning();

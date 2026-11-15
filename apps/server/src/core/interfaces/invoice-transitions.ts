@@ -10,7 +10,7 @@ export interface InvoiceSnapshot extends Money {
   readonly householdId: Id;
   readonly number: number;
   readonly kind: 'cycle' | 'one_off';
-  readonly status: 'open' | 'processing' | 'past_due' | 'paid' | 'void' | 'partially_refunded' | 'refunded';
+  readonly status: 'open' | 'past_due' | 'paid' | 'void' | 'partially_refunded' | 'refunded';
   readonly paidAt: IsoInstant | null;
 }
 export interface CardSuccess extends Money {

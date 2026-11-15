@@ -7,6 +7,7 @@ import { createServerRegistry } from '../../../core/registry.js';
 import { PostgresJobs, PostgresJobStatsQuery } from '../../../infra/jobs/index.js';
 import { chargeFailuresJob, createChargeRunner, dailyRunJob } from './index.js';
 import { createRunnerJobs } from './runner.jobs.js';
+import { reportChargeFailures } from './failures.js';
 import { webhookDispatchJob } from '../webhooks/inbox.js';
 import { setLogSink } from '../../../core/log.js';
 import { createChargeRunHealthProvider, monitorChargeRunner } from '../../health/charge-run.js';
@@ -123,6 +124,19 @@ describe('daily run lane and circuit breaker', () => {
     expect(await f.runner.chargeFailures(f.gymId)).toEqual([]);
     expect(await stats.get(f.gymId)).toMatchObject({ failed: 0, succeeded: 2, pending: 0 });
     expect(await tile(f)).toMatchObject({ status: 'healthy' });
+  });
+  it.each(['create_abandoned', 'confirm_abandoned', 'test_cleared'])('keeps a failure report after a later %s attempt', async declineCode => {
+    const f = await fixture(), bill = await invoice(f), runId = uuidv7();
+    const context = { gymId: f.gymId, actor: { kind: 'system' } } as const;
+    await db.forGym(f.gymId, tx => reportChargeFailures(tx, context, f.clock, runId, '2028-03-01',
+      [{ invoiceId: bill.id, cause: 'unexpected' }]));
+    f.clock.advance(60_000);
+    await factory('paymentAttempts', f.gymId, { invoiceId: bill.id, status: 'failed', declineCode, resolvedAt: f.clock.now() });
+    expect(await f.runner.chargeFailures(f.gymId)).toMatchObject([{ runId, failures: [{ invoiceId: bill.id }] }]);
+    // A real decline still answers the charge and removes the invoice from its report.
+    await factory('paymentAttempts', f.gymId, { invoiceId: bill.id, attemptNumber: 2, status: 'failed',
+      declineCode: 'insufficient_funds', resolvedAt: f.clock.now() });
+    expect(await f.runner.chargeFailures(f.gymId)).toEqual([]);
   });
   it('keeps both reports of two stopped runs on one local day', async () => {
     const f = await fixture(); await addHouseholds(f, 4);

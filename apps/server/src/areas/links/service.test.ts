@@ -229,6 +229,20 @@ describe('token lifecycle', () => {
     expect(audits[0]).toMatchObject({ actorKind: 'user', actorUserId: userId, occurredAt: clock.now() });
     await expect(database.forHousehold({ kind: 'signed_link', gymId: gymA, linkId: created.link.id, now: clock.now() }, (q) => q.paymentMethods())).rejects.toThrow();
   });
+  it('returns a used link unchanged on repeated revocation without an audit', async () => {
+    const created = await service.create(mutation, request());
+    await service.markUsed({ gymId: gymA, linkId: created.link.id });
+    const before = await service.get(gymA, created.link.id);
+    const stored = await database.forGym(gymA, tx => tx.select().from(signedLinks).where(eq(signedLinks.id, created.link.id)));
+    const audits = () => database.forGym(gymA, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, created.link.id)).orderBy(asc(auditEvents.id)));
+    const beforeAudits = await audits();
+    const actor = { gymId: gymA, actor: { kind: 'user', userId } } as const;
+    expect(await Promise.all([service.revoke(actor, created.link.id), service.revoke(actor, created.link.id)]))
+      .toEqual([before, before]);
+    expect(await service.resolve(gymA, created.token)).toEqual({ status: 'used' });
+    expect(await database.forGym(gymA, tx => tx.select().from(signedLinks).where(eq(signedLinks.id, created.link.id)))).toEqual(stored);
+    expect(await audits()).toEqual(beforeAudits);
+  });
   it('serializes a revoke/use race so revoked links cannot subsequently be used', async () => {
     const created = await service.create(mutation, request());
     await Promise.allSettled([service.revoke(mutation, created.link.id), service.markUsed({ gymId: gymA, linkId: created.link.id })]);

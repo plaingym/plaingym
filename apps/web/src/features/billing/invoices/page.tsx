@@ -30,7 +30,7 @@ export function InvoiceList({ gymId, householdId, access, custom, catalog, clien
   return <div className="min-w-0 space-y-4">
     <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
       <Label className="block min-w-0 sm:w-56">{text('status')}<Select value={status} onChange={event => { setStatus(event.target.value as InvoiceStatus | ''); setOffset(0); }}>
-        <option value="">{text('all')}</option>{(['draft', 'open', 'processing', 'past_due', 'paid', 'void', 'partially_refunded', 'refunded'] as const).map(value => <option value={value} key={value}>{text(value)}</option>)}
+        <option value="">{text('all')}</option>{(['draft', 'open', 'past_due', 'paid', 'void', 'partially_refunded', 'refunded'] as const).map(value => <option value={value} key={value}>{text(value)}</option>)}
       </Select></Label>
       {access.record && <Button onClick={() => setCreate(true)}>{text('create')}</Button>}
     </div>

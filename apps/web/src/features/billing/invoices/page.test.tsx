@@ -139,6 +139,8 @@ describe('invoice and household payment UI', () => {
     const f = transport(); start(<InvoiceList gymId={gymId} householdId={home} access={desk} custom={false} catalog={false} client={f.client}/>);
     await screen.findByRole('button', { name: 'View invoice 42' });
     expect(f.fetcher.mock.calls[0]?.[0]).toContain('householdId=' + home);
+    expect(within(screen.getByLabelText('Status')).getAllByRole('option').map(option => (option as HTMLOptionElement).value))
+      .toEqual(['', 'draft', 'open', 'past_due', 'paid', 'void', 'partially_refunded', 'refunded']);
     // The due date reads as a date, not as YYYY-MM-DD.
     expect(screen.getByText(/Oct 25, 2026/)).toBeDefined();
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));

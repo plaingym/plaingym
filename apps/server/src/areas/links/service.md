@@ -5,6 +5,8 @@
 token resolution, and single-use completion. Inject `scope` and `clock` for tests.
 Every mutation and its redacted audit commit in one short gym transaction. Concurrent
 completion and revocation lock the same link row; a second completion fails.
+Revoking a used or already revoked link returns its metadata unchanged, without
+writing another audit. A used link keeps its `used` state.
 
 Creation returns a fresh 256-bit URL-safe token once. Only its SHA-256 digest is
 stored. Get, list, revoke, and send return metadata without the token or digest.

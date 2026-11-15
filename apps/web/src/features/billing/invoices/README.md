@@ -13,6 +13,9 @@ the follow-up callback only sets that read window. Failed or pending processor
 answers do not start it. Releasing a hold or sending a pay link may settle much
 later; use Refresh credits after those actions to read the latest balance.
 
+The invoice status filter lists only statuses the app writes. The API still accepts
+the unused `processing` filter value for compatibility.
+
 The registered member profile tab resolves the member's household and requests
 that household's invoices. Cache keys include gym, household/member, filters and
 pagination. A created one-off invoice opens its detail so staff can choose cash or

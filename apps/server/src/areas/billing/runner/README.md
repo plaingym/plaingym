@@ -184,8 +184,8 @@ Retries read the anchor and saved `retryDays` from `billing.invoice.dunning_star
 The gym chooses 0 to 4 increasing days from 1 to 28, defaulting to `[3, 7]`.
 Only legacy audits without saved days fall back to `[3, 7]`; an empty schedule
 never permits an automatic retry. Later settings edits do not change an invoice's windows.
-The invoice lock and the creation times of attempts that weren't abandoned (`create_abandoned` or
-`confirm_abandoned`) consume each retry window once. If
+The invoice lock and the creation times of attempts that weren't abandoned (`create_abandoned`,
+`confirm_abandoned` or `test_cleared`) consume each retry window once. If
 several retry jobs arrive late, only the latest due window is charged.
 Failure never resets the anchor. Other Checkout
 creators must honor pending attempts under the same invoice lock. A changed
@@ -282,7 +282,9 @@ reconciliation) go in the run's failure report (`failures.ts`): one
 with `{ day, failures: [{ invoiceId, number, cause }] }`. A replayed run keeps its
 first report, and a second stopped run on the same day (a rerun) has its own. An
 invoice leaves its report once it is no longer open or past due, or once a later
-charge of it gets the provider's answer (paid, declined or awaiting authentication);
+charge of it gets the provider's answer (paid, declined or awaiting authentication).
+Abandoned attempts, including `test_cleared` from switching Stripe to live, do not
+count as an answer and cannot clear a report;
 `dismissChargeFailures` dismisses what is left (`billing.runner.charge_failures.dismissed`), and a report
 older than 90 days drops off, as the failed jobs that listed these before did. While a
 report lists an invoice, the charge-run health tile is an error naming the invoices

@@ -20,6 +20,7 @@ import { StripeFixtures } from '../../infra/payments/stripe-fixtures.js';
 import { StripePayments } from '../../infra/payments/stripe.js';
 import { stripeProvisioner } from '../../infra/payments/setup.js';
 import { createInvoiceTransitions } from '../billing/transitions/index.js';
+import { abandonedAttempt } from '../billing/transitions/store.js';
 import { createLapsedRefundJobs } from '../billing/payments.jobs.js';
 import type { StripeConfig } from '../setup/stripe-step.js';
 import { createIntegrationsService, type IntegrationsOptions } from './integrations.js';
@@ -301,7 +302,8 @@ describe('Settings → Payments: test to live', () => {
     const pastDue = await factory('invoices', gymC, { householdId: payer.id, kind: 'one_off', status: 'past_due', number: 3 });
     const intent = await test.request({ method: 'POST', path: '/v1/payment_intents', params: { amount: 10000, currency: 'usd', customer: customer.id, metadata: { gym_id: gymC } } });
     const actionNeeded = await factory('paymentAttempts', gymC, { invoiceId: pastDue.id, status: 'requires_action', paymentIntentId: String(intent.id),
-      stripeCustomerId: customer.id, savedPaymentMethod: 'pm_4242', declineCode: 'authentication_required', resolvedAt: clock.now() });
+      stripeCustomerId: customer.id, savedPaymentMethod: 'pm_4242', declineCode: 'authentication_required',
+      error: 'Authentication required in test mode', resolvedAt: new Date(clock.now().getTime() - 60_000) });
     // Another gym's Stripe references are never read or touched.
     const other = await factory('households', gymB, { stripeCustomerId: 'cus_GymB' });
     // A household whose customer creation may still be in flight with the test key.
@@ -355,7 +357,12 @@ describe('Settings → Payments: test to live', () => {
       before: audit.before, after: audit.after })))
       .toEqual([{ actorUserId: ownerC, targetId: paid.id, before: { disputeId: 'dp_test', disputeStatus: 'needs_response' },
         after: { disputeId: 'dp_test', disputeStatus: 'closed', reason: 'stripe_test_cleared' } }]);
-    expect(after.attempts.find((attempt) => attempt.id === actionNeeded.id)).toMatchObject({ status: 'failed', declineCode: 'authentication_required' });
+    const clearedAttempt = after.attempts.find((attempt) => attempt.id === actionNeeded.id)!;
+    expect(clearedAttempt).toEqual({ ...actionNeeded, status: 'failed', declineCode: 'test_cleared', error: null, resolvedAt: clock.now() });
+    expect(abandonedAttempt(clearedAttempt)).toBe(true);
+    expect(await audits(gymC, 'billing.attempt.resolved')).toMatchObject([{ actorKind: 'user', actorUserId: ownerC,
+      targetType: 'payment_attempt', targetId: actionNeeded.id, occurredAt: clock.now(),
+      before: { status: 'requires_action', declineCode: 'authentication_required' }, after: { status: 'failed', declineCode: 'test_cleared' } }]);
     // The test card payment stays in the books, marked as test; the cash payment is untouched.
     expect(after.payments.find((payment) => payment.id === cardPayment.id)).toEqual({ ...cardPayment, reference: stripeTestPaymentReference });
     expect(after.payments.find((payment) => payment.id === cash.id)).toEqual(cash);

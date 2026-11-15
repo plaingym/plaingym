@@ -24,8 +24,9 @@ export interface TransitionEffect {
 }
 /** The app gave up on these attempts before the member's card was charged: neither a decline nor a collection. */
 export const createAbandoned = 'create_abandoned', confirmAbandoned = 'confirm_abandoned';
+export const testCleared = 'test_cleared';
 export const abandonedAttempt = (row: { declineCode: string | null }) =>
-  row.declineCode === createAbandoned || row.declineCode === confirmAbandoned;
+  row.declineCode === createAbandoned || row.declineCode === confirmAbandoned || row.declineCode === testCleared;
 /** A cancelled intent never pays, whether or not its cancellation was a decline. */
 export const canceledAttempt = (row: { declineCode: string | null }) =>
   row.declineCode === 'intent_canceled' || row.declineCode === confirmAbandoned;
