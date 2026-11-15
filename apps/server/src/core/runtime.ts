@@ -77,6 +77,7 @@ import { configureCancellationNotice, createCancellationNotice } from '../areas/
 import { configurePriceNotice, createPriceNotice } from '../areas/billing/memberships.price-notice.js';
 import { configurePriceChanges, createPriceChangeService } from '../areas/billing/catalog.price-change.js';
 import { configureAnnouncements, createAnnouncementsService } from '../areas/announcements/send.js';
+import { createAnnouncementRecoveryJobs } from '../areas/announcements/recovery.js';
 import { registerBackupJobs } from '../areas/health/backups.jobs.js';
 import { PostgresMaintenance } from '../areas/health/backups.database.js';
 import { backupsConfigured, configuredBackup, loadBackupConfig } from '../areas/health/restore.config.js';
@@ -424,7 +425,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
       ...createPipelineRoutes(importPipeline), ...createExportRoutes(exportService),
       createUploadDownloadRoute({ uploadsFor: uploads.forGym, origin: originFor })],
     jobs: [...areaContributions.jobs ?? [], ...createPipelineJobs(importPipeline), ...createExportJobs(exportService), ...createMemberPhotoJobs(uploads.forGym),
-      ...createPortalInvitationExpiryJobs(), ...createEmailDeliveryJobs(),
+      ...createPortalInvitationExpiryJobs(), ...createEmailDeliveryJobs(), ...createAnnouncementRecoveryJobs({ jobs: queue, clock }),
       // Default lane: the per-gym cap of 1 keeps this sweep apart from the duplicate-refund workers.
       ...createLapsedRefundJobs({ clock, transitions: billing.transitions, payments: requirePayments }),
       ...createImportRetentionJobs(createImportRetention({ uploadsFor: uploads.forGym, clock })),

@@ -172,6 +172,11 @@ it('isolates every registered batch job from webhook dispatch, including new reg
     expect(await claimBeside(name), name).toEqual({ waiting: 'pending', dispatch: 'succeeded' });
   }
 });
+it('registers the announcement recovery sweep and runs it for the gym without error', async () => {
+  const handler = app.handlers.get('announcements.recover');
+  expect(handler, 'announcements.recover').toBeDefined();
+  await handler!({}, { gymId: app.sandbox.gymId, timezone: 'UTC', clock, jobId: uuidv7(), attempt: 1 });
+});
 it('runs a job registered without a lane in the default lane, where it holds up the gym\'s webhook dispatch', async () => {
   // The hourly reconcile sits in the charge runner's registrations beside the daily run, but names no lane.
   expect(app.handlers.has('billing.runner.reconcile')).toBe(true);
