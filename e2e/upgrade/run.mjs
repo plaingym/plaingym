@@ -6,7 +6,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } f
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { gates, history, currentJournal, checkChain, digest, ident, quote, root, migrationPath } from './history.mjs';
+import { gates, history, currentJournal, checkChain, contractExceptions, contractRemovals, fingerprintSql, remainingColumnsSql, digest, ident, quote, root, migrationPath } from './history.mjs';
 import { fixture } from './fixture.mjs';
 import { readPages } from './browser.mjs';
 
@@ -32,9 +32,14 @@ try {
   const journal = currentJournal(), last = journal.entries.at(-1);
   journal.entries.push({ ...last, idx: last.idx + 1, when: last.when + 1, tag: '9999_destructive_probe' });
   writeFileSync(join(scratch, 'meta/_journal.json'), JSON.stringify(journal));
-  writeFileSync(join(scratch, '9999_destructive_probe.sql'), 'ALTER TABLE "members" DROP COLUMN "first_name";\n');
+  const probeSql = 'ALTER TABLE "members" DROP COLUMN "first_name";\n';
+  writeFileSync(join(scratch, '9999_destructive_probe.sql'), probeSql);
   assert.throws(() => checkChain(pathToFileURL(scratch + '/')), /non-expand migration/);
   report.destructiveProbe = 'members.first_name drop rejected in scratch copy';
+  const probeExceptions = { ...contractExceptions, '9999_destructive_probe': { sha256: digest(probeSql), reason: 'Disposable contract probe only.',
+    removedColumns: [{ table: 'members', column: 'first_name' }] } };
+  checkChain(pathToFileURL(scratch + '/'), probeExceptions);
+  const probeRemovals = contractRemovals(journal.entries.slice(-1), probeExceptions);
   for (const gate of gates) {
     const started = Date.now();
     const project = `plaingym-upgrade-${gate.gate.toLowerCase()}-${randomUUID()}`;
@@ -70,6 +75,34 @@ try {
         return row;
       };
       compose(['up', '-d', '--wait', '--wait-timeout', '120', 'postgres']);
+      // One psql session keeps this probe in a temporary table, outside the gate dataset.
+      // Exercise the reviewed chain entry and actual SQL used for both fingerprint stages.
+      const probeTables = [{ name: 'members', columns: { id: {}, first_name: {}, label: {} } }];
+      const fullProbe = fingerprintSql(probeTables), retainedProbe = fingerprintSql(probeTables, new Set(), probeRemovals);
+      const remainingProbe = remainingColumnsSql(probeRemovals);
+      const probeRows = sql(`CREATE TEMP TABLE members(id integer, first_name text, label text);
+        INSERT INTO members VALUES (1, 'Retired', 'Kept'), (2, 'Old', 'Also kept');
+        ${fullProbe}
+        ${retainedProbe}
+        UPDATE members SET first_name='Changed' WHERE id=1;
+        ${fullProbe}
+        ${retainedProbe}
+        ${remainingProbe}
+        ${probeSql}
+        ${remainingProbe}
+        ${retainedProbe}
+        UPDATE members SET label='Changed' WHERE id=1;
+        ${retainedProbe}
+        DELETE FROM members WHERE id=2;
+        ${retainedProbe}`).trim().split('\n').map(line => JSON.parse(line));
+      assert.equal(probeRows.length, 9, 'contract probe fingerprint count');
+      assert.notDeepEqual(probeRows[0], probeRows[2], 'removed column is checksummed before migration');
+      assert.deepEqual(probeRows[1], probeRows[3], 'comparable fingerprint leaves out only the listed column');
+      assert.deepEqual(probeRows[4], ['members.first_name'], 'listed column is reported while it exists');
+      assert.deepEqual(probeRows[5], [], 'listed column is gone after the contract step');
+      assert.deepEqual(probeRows[3], probeRows[6], 'listed column removal preserves retained data');
+      assert.notDeepEqual(probeRows[6], probeRows[7], 'retained column mutation still fails');
+      assert.equal(probeRows[8][1].rows, 1, 'row removal stays visible');
       sql('SET ROLE maintenance; CREATE SCHEMA drizzle; CREATE TABLE drizzle.__drizzle_migrations (id SERIAL PRIMARY KEY, hash text NOT NULL, created_at bigint);');
       for (const migration of migrations) {
         sql(`BEGIN; SET LOCAL ROLE maintenance;\n${migration.sql}\nINSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES (${quote(migration.hash)},${migration.when}); COMMIT;`);
@@ -79,13 +112,13 @@ try {
       sql(seed.sql);
       const catalog = JSON.parse(sql("SELECT json_agg(tablename ORDER BY tablename) FROM pg_tables WHERE schemaname='public';"));
       assert.deepEqual(catalog, tables.map(table => table.name).sort(), `${gate.gate}: every historical table is inventoried`);
-      const fingerprint = () => Object.fromEntries(sql(tables.map(table => {
-        // The production migrate command intentionally re-envelopes v1 under v2 with a fresh IV.
-        // Its plaintext and version are checked with the production reader before and after migration.
-        const columns = Object.keys(table.columns).filter(column => table.name !== 'gyms' || !rewrittenColumns.has(column)).sort().map(ident).join(',');
-        return `SELECT json_build_array(${quote(table.name)}, json_build_object('rows', count(*), 'sha256', encode(sha256(convert_to(coalesce(string_agg(row_to_json(t)::text, E'\\n' ORDER BY id), ''), 'UTF8')), 'hex'))) FROM (SELECT ${columns} FROM ${ident(table.name)}) t;`;
-      }).join('\n')).trim().split('\n').map(line => JSON.parse(line)));
+      // Secret plaintext/version are checked separately; contract exclusions apply only to
+      // migrations after this gate. Dump/restore still checks every original column.
+      const removals = contractRemovals(currentJournal().entries.slice(gate.count));
+      const fingerprint = (excluded = []) => Object.fromEntries(sql(fingerprintSql(tables, rewrittenColumns, excluded))
+        .trim().split('\n').map(line => JSON.parse(line)));
       const before = fingerprint();
+      const upgradeBefore = removals.length ? fingerprint(removals) : before;
       for (const [table, value] of Object.entries(before)) assert.ok(value.rows > 0, `${table} must not be empty`);
       const dump = compose(['exec', '-T', 'postgres', 'pg_dump', '-U', 'postgres', '-d', 'plaingym', '-Fc', '--no-owner'], { encoding: 'buffer' });
       assert.ok(dump.length < 3 * 1024 * 1024, 'gate dump must stay below 3 MiB');
@@ -98,14 +131,15 @@ try {
       assert.deepEqual(fingerprint(), before, `${gate.gate}: dump/restore preserves all rows`);
       verifySecrets(false);
       compose(['run', '--rm', '--no-deps', '-T', '--entrypoint', '/app/deploy/database.sh', 'app', 'migrate']);
-      assert.deepEqual(fingerprint(), before, `${gate.gate}: all historical columns and counts survive the upgrade`);
+      assert.deepEqual(JSON.parse(sql(remainingColumnsSql(removals))), [], `${gate.gate}: every listed contract removal dropped its column`);
+      assert.deepEqual(fingerprint(removals), upgradeBefore, `${gate.gate}: all retained historical columns and counts survive the upgrade`);
       const upgradedGym = verifySecrets(true);
       const applied = JSON.parse(sql('SELECT json_agg(json_build_object(\'hash\',hash,\'when\',created_at) ORDER BY id) FROM drizzle.__drizzle_migrations;'));
       const expected = currentJournal().entries.map(entry => ({ hash: digest(readFileSync(join(root, migrationPath, entry.tag + '.sql'))), when: entry.when }));
       assert.deepEqual(applied, expected, `${gate.gate}: complete ordered migration journal`);
       // A second migration must be a no-op, including historical data.
       compose(['run', '--rm', '--no-deps', '-T', '--entrypoint', '/app/deploy/database.sh', 'app', 'migrate']);
-      assert.deepEqual(fingerprint(), before, `${gate.gate}: migrate is idempotent`);
+      assert.deepEqual(fingerprint(removals), upgradeBefore, `${gate.gate}: migrate is idempotent`);
       const repeatedGym = verifySecrets(true);
       for (const secret of seed.secrets) {
         assert.equal(repeatedGym[secret.column], upgradedGym[secret.column], `second migration does not rewrite ${secret.column}`);
@@ -114,6 +148,8 @@ try {
       const port = Number(compose(['port', 'caddy', '443']).trim().split(':').at(-1));
       const browser = await readPages({ loopback, port, ids: seed.ids, password: seed.password, signatureHash: seed.signatureHash, output, gate: gate.gate });
       const result = { ...gate, project, tables: tables.length, dumpBytes: dump.length, dumpSha256: digest(dump), fingerprints: before,
+        upgradeFingerprints: upgradeBefore, contractExclusions: removals,
+        contractProbe: 'reviewed column drop accepted; retained-column mutation and row removal detected',
         secrets: seed.secrets.map(({ column, version }) => ({ column, before: version, after: 'v2', plaintextPreserved: true, secondMigrationUnchanged: true })),
         checksumExclusions: [...rewrittenColumns].map(column => `gyms.${column}: separately verified plaintext and envelope upgrade`),
         browser, seconds: Math.round((Date.now() - started) / 1000) };

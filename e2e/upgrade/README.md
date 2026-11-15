@@ -36,9 +36,10 @@ dataset covering every historical table with constraints enabled. It generates a
 custom-format dump below 3 MiB; no binary dump or credentials are committed or kept
 in artifacts. Every gate's source Postgres and volume are removed before restoring
 into a fresh cluster. Current production migrations, catalog checks and RLS setup
-run twice. Original columns and row counts must survive unchanged, including
-members, households, invoices, payments, signatures and audit events. The one
-intentional change is the migration command's `v1` to `v2` secret rewrite: the QR,
+run twice. Original columns and row counts must survive unchanged (except explicitly
+reviewed contract removals described below), including
+members, households, invoices, payments, signatures and audit events. The migration
+command also intentionally rewrites `v1` secrets to `v2`: the QR,
 SMTP and Stripe configurations' ciphertext is excluded from row checksums, and the production secret reader
 must prove identical plaintext and the expected envelope version before and after
 migration at every gate. SMTP and Stripe contain valid configuration objects with
@@ -58,11 +59,32 @@ additive backfills are allowed, including `ON CONFLICT DO NOTHING/UPDATE` and
 triggers with `EXECUTE FUNCTION/PROCEDURE`. Procedural `DO` blocks and dynamic
 `EXECUTE` remain rejected. Reviewed contract steps are listed by exact migration
 tag in `contractExceptions` in `history.mjs`, with the full SQL file's SHA-256 and
-a review reason explaining the compatibility window. The list starts empty:
+a review reason explaining the compatibility window. Comments and ordinary and
+`E''` escape strings are tokenized; dollar-quoted bodies remain visible to the
+destructive checks without letting their apostrophes hide later statements.
+A line comment ends at a newline or carriage return, as in PostgreSQL, and quoted
+identifiers are kept with their non-word characters replaced, so a space or
+semicolon in a name can't hide a statement from the checks.
+Unbalanced quotes or block comments fail closed, including in listed exceptions.
+The list starts empty:
 no migration in this chain needs an exception. A changed file hash fails closed;
 an exception for one tag cannot authorize another migration.
+A contract entry can also declare `removedColumns: [{ table: 'members', column:
+'retired_label' }]`. Only entries applied after the gate exclude those exact
+table/column pairs from the upgrade and second-migration checksums. All gate
+columns are still checksummed before migration and checked through dump/restore;
+retained columns and every table's row count are checked before and after the
+upgrade, and each listed column must be gone after the migration, so a wrong
+entry can't silently hide a retained column. The report keeps the full `fingerprints`, the comparable
+`upgradeFingerprints`, and `contractExclusions` with each migration tag and review
+reason. A removed column not named here still fails the upgrade check; other
+contract changes (such as dropping a table) need a separate fixture/check review.
 The runner appends a column-dropping migration to a temporary copy and proves the
-same check rejects it. This guard supplements the real data checks; it does not
+same check rejects it. A disposable reviewed exception also exercises the real
+fingerprint SQL against a temporary table at each gate: the named column is
+checksummed before the step and reported until it is dropped, the drop passes, and
+retained-column mutations and row removals remain detectable.
+This guard supplements the real data checks; it does not
 prove old application code accepts every new value or constraint. The release
 workflow's previous-minor image smoke test covers that separate promise. Before the
 first published release, that smoke test reports that there is no previous image.

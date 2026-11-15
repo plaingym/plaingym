@@ -21,7 +21,7 @@ const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8', tim
 export const historical = (commit, path) => git(['show', `${commit}:${path}`]);
 export const currentJournal = () => JSON.parse(readFileSync(new URL('../../' + migrationPath + '/meta/_journal.json', import.meta.url), 'utf8'));
 
-// Reviewed contract steps only: exact journal tag -> { sha256: digest of the entire SQL file, reason }.
+// Reviewed contract steps only: exact journal tag -> { sha256, reason, removedColumns: [{ table, column }] }.
 // Keep empty until a named contract step has been reviewed; changed SQL must be reviewed again.
 export const contractExceptions = Object.freeze({});
 
@@ -41,18 +41,78 @@ export function history(gate) {
   return { migrations, tables: Object.values(schema.tables) };
 }
 
-/** Conservative SQL review: ignore comments and strings, but retain quoted identifiers and punctuation.
+// Dollar bodies stay visible to the destructive checks, without interpreting their apostrophes
+// as outer SQL strings. This is deliberately conservative even for text inside a function.
+function reviewSql(sql, label) {
+  let ddl = '', index = 0;
+  const identifier = /[\w$\u0080-\uffff]/;
+  const unbalanced = kind => { throw new Error(`${label}: unbalanced ${kind}`); };
+  while (index < sql.length) {
+    if (sql.startsWith('--', index)) {
+      // PostgreSQL ends a line comment at either newline character.
+      const end = sql.slice(index + 2).search(/[\n\r]/);
+      index = end < 0 ? sql.length : index + 2 + end;
+      ddl += ' ';
+    } else if (sql.startsWith('/*', index)) {
+      let depth = 1;
+      index += 2;
+      while (index < sql.length && depth) {
+        if (sql.startsWith('/*', index)) { depth++; index += 2; }
+        else if (sql.startsWith('*/', index)) { depth--; index += 2; }
+        else index++;
+      }
+      if (depth) unbalanced('comment');
+      ddl += ' ';
+    } else {
+      const delimiter = sql[index] === '$' && !identifier.test(sql[index - 1] ?? '')
+        ? sql.slice(index).match(/^\$(?:[a-z_\u0080-\uffff][\w\u0080-\uffff]*)?\$/i)?.[0] : undefined;
+      const escapeString = /[eE]/.test(sql[index]) && sql[index + 1] === "'" && !identifier.test(sql[index - 1] ?? '');
+      if (delimiter) {
+        const start = index + delimiter.length, end = sql.indexOf(delimiter, start);
+        if (end < 0) unbalanced('dollar quote');
+        ddl += ' ' + sql.slice(start, end) + ' ';
+        index = end + delimiter.length;
+      } else if (escapeString || sql[index] === "'" || sql[index] === '"') {
+        const start = index;
+        if (escapeString) index++;
+        const quote = sql[index++];
+        let closed = false;
+        while (index < sql.length) {
+          if (escapeString && sql[index] === '\\') { index += 2; }
+          else if (sql[index] === quote) {
+            index++;
+            if (sql[index] === quote) index++;
+            else { closed = true; break; }
+          } else index++;
+        }
+        if (!closed) unbalanced(quote === '"' ? 'identifier quote' : 'string quote');
+        // A quoted identifier is only a name: keep it readable in errors, but replace non-word
+        // characters so spaces or semicolons in a name can't hide or split a statement.
+        ddl += quote === '"' ? `"${sql.slice(start + 1, index - 1).replace(/\W/g, '_')}"` : "''";
+      } else ddl += sql[index++];
+    }
+  }
+  return ddl;
+}
+
+/** Conservative SQL review: ignore comments and ordinary/escape strings, retain dollar bodies
+ * and punctuation, and keep quoted identifiers with non-word characters replaced. Unbalanced quotes and comments fail closed.
  * Constraint/index replacement is allowed; removing a stored column, table, type, or schema is not.
  * Exact, reviewed contract steps can be exempted. Unknown destructive DDL fails closed.
  */
 export function assertExpandOnly(sql, label, exceptions = contractExceptions) {
+  const ddl = reviewSql(sql, label);
   if (Object.hasOwn(exceptions, label)) {
     const exception = exceptions[label];
     assert.ok(exception.reason?.trim(), `${label}: contract exception needs a review reason`);
     assert.equal(exception.sha256, digest(sql), `${label}: reviewed contract SQL changed`);
+    assert.ok(Array.isArray(exception.removedColumns ?? []), `${label}: removedColumns must be an array`);
+    for (const removed of exception.removedColumns ?? []) {
+      assert.ok(typeof removed?.table === 'string' && removed.table.trim() && typeof removed.column === 'string' && removed.column.trim(),
+        `${label}: removedColumns needs table and column names`);
+    }
     return;
   }
-  const ddl = sql.replace(/'(?:''|[^'])*'|--[^\n]*|\/\*[\s\S]*?\*\//g, token => token.startsWith("'") ? "''" : ' ');
   for (const statement of ddl.split(';')) {
     // DO in an upsert and EXECUTE FUNCTION/PROCEDURE in a trigger are static, additive SQL.
     // Keep every other token for the destructive-DDL checks, including procedural DO and dynamic EXECUTE.
@@ -67,6 +127,30 @@ export function assertExpandOnly(sql, label, exceptions = contractExceptions) {
       throw new Error(`${label}: non-expand migration: ${statement.trim()}`);
     }
   }
+}
+
+// Only migrations applied after this gate can exclude columns from its upgrade comparison.
+export function contractRemovals(entries, exceptions = contractExceptions) {
+  return entries.flatMap(({ tag }) => Object.hasOwn(exceptions, tag)
+    ? (exceptions[tag].removedColumns ?? []).map(column => ({ ...column, migration: tag, reason: exceptions[tag].reason })) : []);
+}
+
+// One JSON array naming each listed removal whose column still exists (resolved through
+// search_path), so a wrong removedColumns entry can't silently hide a retained column.
+export function remainingColumnsSql(removedColumns) {
+  if (!removedColumns.length) return "SELECT '[]'::json;";
+  const rows = removedColumns.map(({ table, column }) => `(${quote(`${table}.${column}`)},${quote(ident(table))},${quote(column)})`);
+  return `SELECT coalesce(json_agg(r.name ORDER BY r.name), '[]'::json) FROM (VALUES ${rows.join(',')}) r(name, rel, col) WHERE EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = to_regclass(r.rel) AND a.attname = r.col AND a.attnum > 0 AND NOT a.attisdropped);`;
+}
+
+export function fingerprintSql(tables, rewrittenColumns = new Set(), removedColumns = []) {
+  return tables.map(table => {
+    const columns = Object.keys(table.columns).filter(column => (table.name !== 'gyms' || !rewrittenColumns.has(column))
+      && !removedColumns.some(removed => removed.table === table.name && removed.column === column)).sort().map(ident);
+    // Sorting the projected rows also supports a contract that removes the historical id.
+    // A table with no surviving gate columns still has its row count checked.
+    return `SELECT json_build_array(${quote(table.name)}, json_build_object('rows', count(*), 'sha256', encode(sha256(convert_to(coalesce(string_agg(row_to_json(t)::text, E'\\n' ORDER BY row_to_json(t)::text), ''), 'UTF8')), 'hex'))) FROM (SELECT ${columns.join(',') || '1 AS "__upgrade_row"'} FROM ${ident(table.name)}) t;`;
+  }).join('\n');
 }
 
 export function checkChain(directory = new URL('../../' + migrationPath + '/', import.meta.url), exceptions = contractExceptions) {
