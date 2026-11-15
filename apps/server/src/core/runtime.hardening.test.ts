@@ -11,7 +11,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { PostgresJobs } from '../infra/jobs/postgres.js';
 import type { JobHandler } from '../infra/jobs/index.js';
-import { ERASED_CUSTOMER_NAME, FakePayments } from '../infra/payments/index.js';
+import { billingEmailDigest, ERASED_CUSTOMER_NAME, FakePayments } from '../infra/payments/index.js';
 import type { StripePayments } from '../infra/payments/stripe.js';
 import * as stripeStep from '../areas/setup/stripe-step.js';
 import { redactCustomerJob } from '../areas/members/members.routes.js';
@@ -80,6 +80,28 @@ it('drains a legacy payer email erasure through the runtime\'s payments wiring',
   await handlers.get(clearBillingEmailJob)!({ householdId: home.id, customerId: 'cus_payer', emailDigest: createHash('sha256').update('payer@example.invalid').digest('hex') },
     { gymId, clock, timezone: 'UTC', jobId: uuidv7(), attempt: 1 });
   expect(fake.customer('cus_payer')).toMatchObject({ email: null, name: 'Payer' });
+});
+
+it('drains a keyed payer email erasure with the install secret from the runtime wiring', async () => {
+  vi.restoreAllMocks();
+  vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
+  const handlers = new Map<string, JobHandler>(), register = PostgresJobs.prototype.handle;
+  vi.spyOn(PostgresJobs.prototype, 'handle').mockImplementation(function (this: PostgresJobs, name, handler, options) {
+    handlers.set(name, handler); register.call(this, name, handler, options);
+  });
+  directory ??= await mkdtemp(join(tmpdir(), 'plaingym-hardening-runtime-'));
+  const gymId = uuidv7(); await factory('gyms', gymId);
+  const home = await factory('households', gymId);
+  await db.forGym(gymId, tx => tx.update(households).set({ stripeCustomerId: 'cus_keyed' }).where(eq(households.id, home.id)));
+  const settings = env(directory);
+  const fake = new FakePayments(gymId, clock, 'synthetic-runtime-secret');
+  fake.seedCustomer({ id: 'cus_keyed', email: 'payer@example.invalid', name: 'Payer', gymId, householdId: home.id });
+  vi.spyOn(stripeStep, 'createPaymentsResolver').mockReturnValue(async () => fake as unknown as StripePayments);
+  runtime = await startRuntime(settings);
+  // The digest is keyed with AUTH_SECRET, which only the runtime's members wiring hands to the job.
+  await handlers.get(clearBillingEmailJob)!({ householdId: home.id, customerId: 'cus_keyed', emailDigest: billingEmailDigest('payer@example.invalid', settings.AUTH_SECRET) },
+    { gymId, clock, timezone: 'UTC', jobId: uuidv7(), attempt: 1 });
+  expect(fake.customer('cus_keyed')).toMatchObject({ email: null, name: 'Payer' });
 });
 
 it('allows images from the uploads bucket\'s origin under the enforced policy', async () => {

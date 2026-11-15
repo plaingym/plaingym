@@ -397,7 +397,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   // detaches a household's revoked cards through the same callback and durable job as card removal, and
   // redacts the erased household's Stripe customer (name and email) with its own retrying job. The guard skips a
   // customer a household of the gym links again and audits each redaction.
-  configureMembers({ pinSecret: gymKey, uploadsFor: uploads.forGym, clock, detachCard, jobs: queue,
+  configureMembers({ pinSecret: gymKey, billingEmailSecret: config.secret, uploadsFor: uploads.forGym, clock, detachCard, jobs: queue,
     redactCustomer: guardRedaction(async (gymId, customerId) => (await requirePayments(gymId)).redactCustomer(customerId), { clock }),
     clearBillingEmail: async (gymId, customerId, options) => (await requirePayments(gymId)).clearCustomerEmail(customerId, options) });
   const payments = createPaymentService({ settings, clock, jobs: queue, paymentsFor,
