@@ -43,14 +43,17 @@ Isolation is enforced in the database, not only in application code.
   with exactly the gym policy or a system access kind's policies, forced, for the
   `app` role alone, and no more than ordinary table privileges. The schema declares
   no views, materialized views, foreign tables or functions, so the check also
-  refuses any in `public` the `app` role could use to read past row-level
+  refuses any in `public` or `drizzle` the `app` role could use to read past row-level
   security: a view not owned by `maintenance` or without `security_invoker`, a
   materialized view or foreign table the `app` role can use, and a
   `SECURITY DEFINER` function it can run or a trigger uses. CI runs the same check.
   The check also refuses schemas usable by `app` or `maintenance` outside `public`,
-  `drizzle`, `pg_catalog`, `information_schema` and `pg_toast*`, all persistent
+  `drizzle`, `pg_catalog`, `information_schema` and `pg_toast*`, any `app` USAGE or CREATE on
+  `drizzle`, all persistent
   settings for the current database (including per-role settings), and global
-  defaults for `app`, `maintenance` or all roles. Bootstrap creates no persistent settings.
+  defaults for `app`, `maintenance` or all roles. Bootstrap creates no persistent settings
+  and gives `app` no access to `drizzle`. Settings errors identify each setting and
+  database/role scope without its value.
   A restore trusts its snapshot: its SQL runs as `maintenance`. These catalog
   checks run before restore activates secrets or uploads and keep a failed restore
   gated, but they do not sandbox arbitrary SQL. Authentication and integrity checks

@@ -108,8 +108,15 @@ after it fails, the staging it names is kept for `resume`.
 A service using the gate must never initiate restore from inside its own activity
 lease: the setup coordinator calls the service outside the wrapped request.
 
-After activation, the restore resets the owned schemas, runs transactional
-pg_restore, migrates forward, and applies the same security/catalog check as boot.
+After activation, the restore resets `public` and `drizzle`, drops any extra schemas
+owned by `maintenance`, and resets database-wide defaults before transactional
+pg_restore. Its connection overrides stored read-only and timeout defaults at
+startup, so a refused snapshot's defaults can't block their own reset. Schemas owned by other roles and role defaults are left for administrator
+recovery (`docs/restoring.md`); a failed catalog check still keeps admission closed.
+It then migrates forward and applies the same security/catalog check as boot,
+including refusing app `USAGE` or `CREATE` on `drizzle` and checking its views and functions
+as it checks `public`. Settings errors name every setting and its database/role
+scope without exposing values.
 One short transaction re-encrypts every field in the encrypted-field registry
 from the key the snapshot carries to this install's, as `v2` envelopes bound to
 their rows (`v1` ones from older snapshots included), preserves QR key

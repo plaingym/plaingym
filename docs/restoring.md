@@ -16,9 +16,48 @@ schemas usable by `app` or `maintenance` (only `public`, `drizzle`, `pg_catalog`
 `information_schema` and `pg_toast*` are allowed), any persistent settings for the
 current database, and global role settings for `app`, `maintenance` or all roles.
 Bootstrap sets none of these defaults. Every database pool the server opens uses
-`search_path=public`, including maintenance and authentication connections. A failed check keeps the restore gated
+`search_path=public`, including maintenance and authentication connections. The `app`
+role must have no `USAGE` or `CREATE` on `drizzle`. Views and functions in `drizzle` receive the
+same isolation checks as those in `public`. A failed check keeps the restore gated
 before secrets or uploads are activated. These checks limit known isolation risks;
 they do not sandbox arbitrary snapshot SQL or replace trust in the backup source.
+
+Before each database load, restore drops `public`, `drizzle`, and extra schemas
+owned by `maintenance`, and resets all database-wide defaults. This removes those
+leftovers from an earlier refused restore. It leaves schemas owned by other roles
+and role defaults in place; the catalog check still refuses unsafe leftovers.
+
+## Recovering from a catalog refusal
+
+The catalog error names each stored setting, its database and role, or the extra
+schema. Setting values are omitted. If the leftover is a role default or another
+role's schema, a PostgreSQL administrator must repair it before startup or restore
+can pass. On the affected install, stop the app and open the database console:
+
+```sh
+cd /opt/plaingym
+sudo docker compose stop app
+sudo docker compose exec postgres sh -c 'psql -U postgres -d "$POSTGRES_DB"'
+```
+
+Reset only the scope named by the error. For example, for a setting on role `app`
+in database `plaingym`, run `ALTER ROLE app IN DATABASE plaingym RESET ALL;`.
+Replace those names with the reported database and role. For a global role default
+(reported as `all databases`), use `ALTER ROLE app RESET ALL;`; for global defaults
+on `all roles`, use `ALTER ROLE ALL RESET ALL;`. A database-wide default (reported
+as `database plaingym, role all roles`) is cleared by the next restore; to start the
+app without one, use `ALTER DATABASE plaingym RESET ALL;`.
+
+For an extra schema, inspect its owner with `SELECT nspname,
+pg_get_userbyid(nspowner) FROM pg_namespace;`. Preserve any data and dependencies
+you need before the administrator removes the unwanted schema. Restore does not
+automatically drop schemas it does not own.
+
+Exit with `\q`, then start the app with `sudo docker compose up -d`. A staged
+restore resumes the same verified snapshot. If that snapshot recreates the refused
+objects or defaults, restore a trusted snapshot onto another fresh install instead;
+keep the failed install's journal and staging for investigation. A new snapshot
+cannot replace an active staged restore ([interrupted restores](restore-reference.md#if-a-restore-is-interrupted)).
 
 ## Before you start
 

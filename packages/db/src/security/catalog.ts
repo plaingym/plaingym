@@ -21,7 +21,7 @@ function expectedSystemPolicies(access: string) {
 }
 const accessKinds = ['system', 'gym', 'gym-config'];
 /**
- * This image declares no views, materialized views, foreign tables or functions, so any in `public` comes from a
+ * This image declares no views, materialized views, foreign tables or functions, so any in `public` or `drizzle` comes from a
  * newer release (after a rollback) or from outside the app. Each is accepted only if the app can't use it to read
  * past row-level security: a view runs its queries as its owner unless it is `security_invoker`, and `maintenance`
  * bypasses row-level security; a materialized view or foreign table has no row-level security at all; and a
@@ -31,16 +31,16 @@ const accessKinds = ['system', 'gym', 'gym-config'];
 async function viewFailures(sql: Sql): Promise<string[]> {
   const failures: string[] = [];
   const relations = await sql`
-    select c.relname, c.relkind, pg_get_userbyid(c.relowner) as owner,
+    select n.nspname, c.relname, c.relkind, pg_get_userbyid(c.relowner) as owner,
       coalesce((select o.option_value::boolean from pg_options_to_table(c.reloptions) o
         where o.option_name = 'security_invoker'), false) as security_invoker,
       has_any_column_privilege('app', c.oid, 'SELECT, INSERT, UPDATE') or has_table_privilege('app', c.oid, 'DELETE') as usable,
       has_table_privilege('app', c.oid, 'TRUNCATE, TRIGGER') or has_any_column_privilege('app', c.oid, 'REFERENCES') as other_privileges
     from pg_class c join pg_namespace n on n.oid = c.relnamespace
-    where n.nspname = 'public' and c.relkind in ('v', 'm', 'f') order by c.relname
+    where n.nspname in ('public', 'drizzle') and c.relkind in ('v', 'm', 'f') order by n.nspname, c.relname
   `;
   for (const relation of relations) {
-    const name = String(relation.relname);
+    const name = (relation.nspname === 'public' ? '' : String(relation.nspname) + '.') + String(relation.relname);
     if (relation.owner !== 'maintenance') failures.push(name + ': wrong owner');
     if (relation.other_privileges) failures.push(name + ': unexpected view privileges');
     if (relation.relkind === 'v') {
@@ -48,11 +48,11 @@ async function viewFailures(sql: Sql): Promise<string[]> {
     } else if (relation.usable) failures.push(name + ': ' + (relation.relkind === 'm' ? 'materialized view' : 'foreign table') + ' without row-level security');
   }
   const definers = await sql`
-    select p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-    where n.nspname = 'public' and p.prosecdef and (has_function_privilege('app', p.oid, 'EXECUTE')
-      or exists (select 1 from pg_trigger t where t.tgfoid = p.oid)) order by p.proname
+    select n.nspname, p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname in ('public', 'drizzle') and p.prosecdef and (has_function_privilege('app', p.oid, 'EXECUTE')
+      or exists (select 1 from pg_trigger t where t.tgfoid = p.oid)) order by n.nspname, p.proname
   `;
-  for (const definer of definers) failures.push(String(definer.proname) + ': security definer function');
+  for (const definer of definers) failures.push((definer.nspname === 'public' ? '' : String(definer.nspname) + '.') + String(definer.proname) + ': security definer function');
   return failures;
 }
 /**
@@ -67,13 +67,27 @@ export async function assertCatalog(sql: Sql) {
   // Bootstrap installs no persistent settings. Inspect stored defaults, not just
   // this session: connection startup parameters deliberately override search_path.
   const settings = await sql`
-    select s.setdatabase, s.setrole from pg_catalog.pg_db_role_setting s
+    select case when s.setdatabase = 0 then 'all databases' else d.datname end as database_name,
+      case when s.setrole = 0 then 'all roles' else r.rolname end as role_name,
+      split_part(config.setting, '=', 1) as setting_name
+    from pg_catalog.pg_db_role_setting s
+    left join pg_catalog.pg_database d on d.oid = s.setdatabase
+    left join pg_catalog.pg_roles r on r.oid = s.setrole
+    cross join lateral unnest(s.setconfig) as config(setting)
     where cardinality(s.setconfig) > 0 and (
       s.setdatabase = (select oid from pg_catalog.pg_database where datname = current_database())
       or (s.setdatabase = 0 and (s.setrole = 0 or s.setrole in
         (select oid from pg_catalog.pg_roles where rolname in ('app', 'maintenance')))))
+    order by database_name, role_name, setting_name
   `;
-  if (settings.length) failures.push('Unexpected database or role settings');
+  for (const setting of settings) failures.push('Unexpected database or role settings: database ' +
+    String(setting.database_name) + ', role ' + String(setting.role_name) + ': ' + String(setting.setting_name));
+  const [drizzle] = await sql`
+    select has_schema_privilege('app', oid, 'USAGE') as usage, has_schema_privilege('app', oid, 'CREATE') as create
+    from pg_catalog.pg_namespace where nspname = 'drizzle'
+  `;
+  if (drizzle?.usage) failures.push('drizzle: unexpected app schema USAGE');
+  if (drizzle?.create) failures.push('drizzle: unexpected app schema CREATE');
   const schemas = await sql`
     select nspname from pg_catalog.pg_namespace
     where nspname not in ('public', 'drizzle', 'pg_catalog', 'information_schema')

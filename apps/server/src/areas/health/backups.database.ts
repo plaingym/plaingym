@@ -154,11 +154,26 @@ export class PostgresMaintenance {
   }
   async restore(path: string): Promise<void> {
     assertNoTransaction('restore.pg_restore');
-    const connection = openConnection(this.url, 1);
+    // Startup parameters outrank stored defaults, so a refused snapshot's database
+    // defaults (read-only, timeouts) can't block the reset that removes them.
+    const resetUrl = new URL(this.url);
+    for (const [name, value] of Object.entries({ default_transaction_read_only: 'off', statement_timeout: '0', lock_timeout: '0',
+      idle_in_transaction_session_timeout: '0', transaction_timeout: '0' })) resetUrl.searchParams.set(name, value);
+    const connection = openConnection(resetUrl.toString(), 1);
     try {
       await connection.sql.begin(async (tx) => {
+        // A refused snapshot can leave schemas and database defaults behind. Only
+        // remove extra schemas owned by maintenance; other owners need recovery.
+        const schemas = await tx<{ nspname: string }[]>`
+          select nspname from pg_catalog.pg_namespace
+          where nspowner = (select oid from pg_catalog.pg_roles where rolname = 'maintenance')
+            and nspname not in ('public', 'drizzle', 'pg_catalog', 'information_schema')
+            and nspname !~ '^pg_' order by nspname
+        `;
+        for (const schema of schemas) await tx`drop schema if exists ${tx(schema.nspname)} cascade`;
         await tx`drop schema if exists public cascade`;
         await tx`drop schema if exists drizzle cascade`;
+        await tx`alter database ${tx(this.databaseName)} reset all`;
       });
     } finally { await connection.close(); }
     const output = await this.tool('pg_restore', ['--dbname=' + this.databaseName,

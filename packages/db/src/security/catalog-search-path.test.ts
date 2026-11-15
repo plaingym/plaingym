@@ -46,7 +46,11 @@ it.each(['database', 'app', 'maintenance'])('refuses persistent %s settings even
   try {
     if (target === 'database') await admin.sql`alter database ${admin.sql(database.name)} set statement_timeout to '5s'`;
     else await admin.sql`alter role ${admin.sql(target)} in database ${admin.sql(database.name)} set search_path to app, public`;
-    await expect(assertCatalog(database.app.sql)).rejects.toThrow('Unexpected database or role settings');
+    if (target === 'database') await admin.sql`alter database ${admin.sql(database.name)} set lock_timeout to '1s'`;
+    else await admin.sql`alter role ${admin.sql(target)} in database ${admin.sql(database.name)} set lock_timeout to '1s'`;
+    const prefix = `Unexpected database or role settings: database ${database.name}, role ${target === 'database' ? 'all roles' : target}: `;
+    await expect(assertCatalog(database.app.sql)).rejects.toThrow(prefix + (target === 'database' ? 'statement_timeout' : 'search_path'));
+    await expect(assertCatalog(database.app.sql)).rejects.toThrow(prefix + 'lock_timeout');
     await expect(migrateDatabase(database.maintenanceUrl)).rejects.toThrow('Unexpected database or role settings');
   } finally {
     if (target === 'database') await admin.sql`alter database ${admin.sql(database.name)} reset all`;
@@ -64,7 +68,7 @@ it.each(['app', 'maintenance', 'all'])('refuses global %s role defaults', async 
     await admin.sql`begin`;
     if (role === 'all') await admin.sql`alter role all set search_path to app, public`;
     else await admin.sql`alter role ${admin.sql(role)} set search_path to app, public`;
-    await expect(assertCatalog(admin.sql)).rejects.toThrow('Unexpected database or role settings');
+    await expect(assertCatalog(admin.sql)).rejects.toThrow(`Unexpected database or role settings: database all databases, role ${role === 'all' ? 'all roles' : role}: search_path`);
   } finally {
     await admin.sql`rollback`;
     await admin.close();
@@ -110,6 +114,62 @@ it('rejects an extra schema usable only by maintenance', async () => {
     await expect(assertCatalog(database.app.sql)).rejects.toThrow('other: unexpected usable schema');
   } finally {
     await maintenance.sql`drop schema if exists other cascade`;
+    await maintenance.close();
+  }
+});
+
+it('bootstrap leaves app with no privileges on drizzle', async () => {
+  const [privileges] = await database.app.sql`select has_schema_privilege('app', 'drizzle', 'USAGE') as usage,
+    has_schema_privilege('app', 'drizzle', 'CREATE') as create`;
+  expect(privileges).toEqual({ usage: false, create: false });
+  await expect(assertCatalog(database.app.sql)).resolves.toBeDefined();
+});
+
+it.each(['app', 'public'])('refuses drizzle USAGE granted through %s', async role => {
+  const maintenance = openConnection(database.maintenanceUrl, 1);
+  try {
+    if (role === 'public') await maintenance.sql`grant usage on schema drizzle to public`;
+    else await maintenance.sql`grant usage on schema drizzle to app`;
+    await expect(assertCatalog(database.app.sql)).rejects.toThrow('drizzle: unexpected app schema USAGE');
+    await expect(migrateDatabase(database.maintenanceUrl)).rejects.toThrow('drizzle: unexpected app schema USAGE');
+  } finally {
+    if (role === 'public') await maintenance.sql`revoke usage on schema drizzle from public`;
+    else await maintenance.sql`revoke usage on schema drizzle from app`;
+    await maintenance.close();
+  }
+});
+
+it('refuses drizzle CREATE granted to app without USAGE', async () => {
+  const maintenance = openConnection(database.maintenanceUrl, 1);
+  try {
+    await maintenance.sql`grant create on schema drizzle to app`;
+    await expect(assertCatalog(database.app.sql)).rejects.toThrow('drizzle: unexpected app schema CREATE');
+    await expect(migrateDatabase(database.maintenanceUrl)).rejects.toThrow('drizzle: unexpected app schema CREATE');
+  } finally {
+    await maintenance.sql`revoke create on schema drizzle from app`;
+    await maintenance.close();
+  }
+});
+
+it.each([
+  ['owner view', 'create view drizzle.catalog_probe as select * from public.households', 'view without security_invoker'],
+  ['materialized view', 'create materialized view drizzle.catalog_probe as select * from public.households; grant select (id) on drizzle.catalog_probe to app', 'materialized view without row-level security'],
+  ['executable definer', "create function drizzle.catalog_probe() returns bigint language sql security definer as 'select count(*) from public.households'", 'security definer function'],
+  ['trigger definer', `create function drizzle.catalog_probe() returns trigger language plpgsql security definer as 'begin return new; end';
+    revoke execute on function drizzle.catalog_probe() from public, app;
+    create trigger catalog_probe before insert on public.households for each row execute function drizzle.catalog_probe()`, 'security definer function'],
+])('checks a drizzle %s even without app schema access', async (_name, statements, failure) => {
+  const maintenance = openConnection(database.maintenanceUrl, 1);
+  try {
+    await maintenance.sql.unsafe(statements);
+    await expect(assertCatalog(database.app.sql)).rejects.toThrow('drizzle.catalog_probe: ' + failure);
+    await expect(migrateDatabase(database.maintenanceUrl)).rejects.toThrow('drizzle.catalog_probe: ' + failure);
+  } finally {
+    await maintenance.sql`drop trigger if exists catalog_probe on public.households`;
+    // The relation's kind differs between cases, so drop only what this case created.
+    if (_name === 'owner view') await maintenance.sql`drop view drizzle.catalog_probe`;
+    else if (_name === 'materialized view') await maintenance.sql`drop materialized view drizzle.catalog_probe`;
+    else await maintenance.sql`drop function drizzle.catalog_probe()`;
     await maintenance.close();
   }
 });
