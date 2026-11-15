@@ -226,7 +226,7 @@ for app_state in stopped restarting; do
   update 1 APP_STATE="$app_state"
   said 'Invalid signed release manifest'
   cp "$temporary/signed_manifest" "$FIXTURES/manifest"
-  if grep -q 'up -d\|maintenance.mjs snapshot' "$CALLS"; then echo 'Started an unverified recovery image.' >&2; exit 1; fi
+  if grep -q 'up -d\|maintenance.mjs snapshot ' "$CALLS"; then echo 'Started an unverified recovery image.' >&2; exit 1; fi
   update 1 APP_STATE="$app_state" FAIL_AT=snapshot
   said 'The app stays stopped'
   cmp "$case_dir/.schema-recovery" "$temporary/recovery_record"
@@ -266,7 +266,8 @@ for app_state in stopped restarting; do
   update 1 APP_STATE="$app_state"
   said 'rollback floor covers v1.11.0'
   [ "$before" = "$(cat "$case_dir/.env" "$case_dir/version-history.tsv" "$case_dir/schema-compatibility.yaml" | sha256sum)" ]
-  if grep -q 'up -d\|maintenance.mjs snapshot' "$CALLS"; then echo 'Started an image for a refused recovery.' >&2; exit 1; fi
+  # The refused rollback above checks its restore point with the read-only snapshot-check; only a snapshot is a start.
+  if grep -q 'up -d\|maintenance.mjs snapshot ' "$CALLS"; then echo 'Started an image for a refused recovery.' >&2; exit 1; fi
   write_release v1.12.0 v1.11.0 "$newer_id"
   # Several unchanged retries raise a pending floor before being abandoned. Their new snapshots must
   # neither replace the original restore point in messages nor evict it from the pre-upgrade quota.
