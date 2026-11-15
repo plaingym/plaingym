@@ -13,6 +13,7 @@
   "household": "Household", "householdName": "Household name", "chooseHousehold": "Choose a household", "createHousehold": "Create household", "searchHouseholds": "Find household",
   "line1": "Address line 1", "line2": "Address line 2", "city": "City", "region": "State or province", "postalCode": "Postal code", "countryCode": "Country code (two letters)",
   "billingDay": "Billing day (1–31)", "discount": "Family discount (%)", "saveBilling": "Save billing settings",
+  "invalidDiscount": "Enter a percentage from 0 to 100 with up to two decimal places.",
   "pin": "New household PIN (4–8 digits)", "setPin": "Set PIN", "clearPin": "Clear PIN",
   "emergencyContacts": "Emergency contacts", "contact.name": "Contact name", "contact.phone": "Contact phone", "contact.email": "Contact email", "contact.relationship": "Relationship",
   "addContact": "Add emergency contact", "removeContact": "Remove contact", "medicalNotes": "Medical notes",

@@ -66,6 +66,10 @@ export function createBillingClient(fetcher: typeof fetch = fetch) {
 }
 export const billingClient = createBillingClient();
 export type BillingClient = ReturnType<typeof createBillingClient>;
+export async function loadCatalog(client: BillingClient) {
+  const [plans, taxes, charges, settings] = await Promise.all([client.plans(), client.taxes(), client.charges(), client.settings()]);
+  return { plans, taxes, charges, settings };
+}
 export async function previewPriceChange(client: BillingClient, planId: string, amountCents: number, effectiveOn: string) {
   return (await client.call('previewPlanPriceChange', undefined, { planId }, { amountCents, effectiveOn })).data;
 }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, exists, inArray } from 'drizzle-orm';
 import { forGym, discounts, discountPlans, membershipDiscounts, plans, databaseCode, revisionGuard, assertRevised,
   RevisionConflictError, uuidv7, type Transaction } from '@plaingym/db';
 import { AppError, createTranslator } from '@plaingym/shared';
@@ -24,7 +24,7 @@ const termKeys = ['percentBasisPoints', 'amountCents', 'currency', 'waivesSignup
 async function unique<T>(operation: () => Promise<T>): Promise<T> {
   try { return await operation(); }
   catch (error) {
-    if (databaseCode(error) === '23505') throw new AppError('conflict', t('billing/discounts:duplicate'));
+    if (databaseCode(error) === '23505') throw new AppError('conflict', t('billing/discounts:duplicate'), { reason: ['discount_duplicate'] });
     throw error;
   }
 }
@@ -47,7 +47,7 @@ export function createDiscountCatalogService(options: CatalogOptions = {}) {
       ({ id: uuidv7(), gymId, discountId, planId, createdAt: clock.now() })));
   }
   async function currency(gymId: string, value: string) {
-    if ((await settings.get(gymId)).currency !== value) throw new AppError('conflict', t('billing/discounts:currencyMismatch'));
+    if ((await settings.get(gymId)).currency !== value) throw new AppError('conflict', t('billing/discounts:currencyMismatch'), { reason: ['discount_currency_mismatch'] });
   }
   return {
     async list(gymId: string, input: unknown) {
@@ -55,14 +55,12 @@ export function createDiscountCatalogService(options: CatalogOptions = {}) {
       return scope(gymId, async tx => {
         const where = query.active === undefined ? undefined : eq(discounts.active, query.active);
         const total = await tx.$count(discounts, where);
-        const rows = await tx.select().from(discounts).where(where).orderBy(asc(discounts.name), asc(discounts.id))
+        const rows = await tx.select({ discount: discounts, locked: exists(tx.select({ id: membershipDiscounts.id }).from(membershipDiscounts)
+          .where(eq(membershipDiscounts.discountId, discounts.id))).mapWith(Boolean) }).from(discounts).where(where).orderBy(asc(discounts.name), asc(discounts.id))
           .limit(query.limit).offset(query.offset);
-        const links = rows.length ? await tx.select().from(discountPlans).where(inArray(discountPlans.discountId, rows.map(row => row.id)))
+        const links = rows.length ? await tx.select().from(discountPlans).where(inArray(discountPlans.discountId, rows.map(row => row.discount.id)))
           .orderBy(asc(discountPlans.planId)) : [];
-        const history = rows.length ? await tx.selectDistinct({ id: membershipDiscounts.discountId }).from(membershipDiscounts)
-          .where(inArray(membershipDiscounts.discountId, rows.map(row => row.id))) : [];
-        const lockedIds = new Set(history.map(row => row.id));
-        return { data: rows.map(row => present(row, links.filter(link => link.discountId === row.id).map(link => link.planId), lockedIds.has(row.id))),
+        return { data: rows.map(({ discount: row, locked }) => present(row, links.filter(link => link.discountId === row.id).map(link => link.planId), locked)),
           pagination: { limit: query.limit, offset: query.offset, total } };
       });
     },
@@ -95,9 +93,9 @@ export function createDiscountCatalogService(options: CatalogOptions = {}) {
         const checked = c.createDiscountRequestSchema.safeParse({ ...editable(old), ...changes, planIds: ids ?? beforePlans });
         if (!checked.success) throw new AppError('invalid_request', checked.error.issues[0]!.message);
         const merged = checked.data;
-        if (merged.currency !== before.currency) throw new AppError('conflict', t('billing/discounts:currencyMismatch'));
-        if (merged.maxUses !== null && merged.maxUses < before.uses) throw new AppError('conflict', t('billing/discounts:maxUses'));
-        if (locked && termKeys.some(key => merged[key] !== before[key])) throw new AppError('conflict', t('billing/discounts:termsUsed'));
+        if (merged.currency !== before.currency) throw new AppError('conflict', t('billing/discounts:currencyMismatch'), { reason: ['discount_currency_mismatch'] });
+        if (merged.maxUses !== null && merged.maxUses < before.uses) throw new AppError('conflict', t('billing/discounts:maxUses'), { reason: ['discount_max_uses'] });
+        if (locked && termKeys.some(key => merged[key] !== before[key])) throw new AppError('conflict', t('billing/discounts:termsUsed'), { reason: ['discount_terms_used'] });
         if (ids !== undefined) await validatePlans(tx, ids);
         const guard = revisionGuard(discounts.revision, revision);
         const row = assertRevised(await tx.update(discounts).set({ ...changes, revision: guard.next })

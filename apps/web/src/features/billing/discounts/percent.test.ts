@@ -2,6 +2,10 @@
 import { expect, it } from 'vitest';
 import { basisPointsToPercent, percentToBasisPoints } from './percent.js';
 
+it.each([['0', 0], ['00', 0], ['.5', 50], ['0.00', 0]] as const)('allows %s with a zero minimum', (input, expected) => {
+  expect(percentToBasisPoints(input, { min: 0 })).toBe(expected);
+});
+
 it.each([['0.01', 1], ['0.1', 10], ['1', 100], ['12.5', 1250], ['99.99', 9999], ['100', 10_000]] as const)('preserves %s percent exactly', (input, expected) => {
   expect(percentToBasisPoints(input)).toBe(expected);
   expect(basisPointsToPercent(expected)).toBe(input);

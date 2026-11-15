@@ -80,14 +80,21 @@ function PinForm({ household }: { household: c.Household }) {
 }
 function BillingForm({ billing }: { billing: c.HouseholdBillingSettings }) {
   const draft = useDraft({ day: String(billing.billingDay), discount: basisPointsToPercent(billing.familyDiscountBasisPoints) }), state = useMemberSave();
+  const [discountError, setDiscountError] = useState(false);
   // The household revision also changes with contact and PIN saves; draft.changes() catches real conflicts.
-  return <form className="space-y-3 border-t border-border pt-4" onSubmit={(event) => { event.preventDefault(); void state.save(async () => {
-    const { day, discount } = { ...draft.values, ...draft.changes() };
-    const familyDiscountBasisPoints = /^0(?:\.0{1,2})?$/.test(discount) ? 0 : percentToBasisPoints(discount);
+  return <form className="space-y-3 border-t border-border pt-4" onSubmit={(event) => { event.preventDefault();
+    let familyDiscountBasisPoints: number;
+    try { familyDiscountBasisPoints = percentToBasisPoints(draft.values.discount.trim(), { min: 0 }); }
+    catch { setDiscountError(true); return; }
+    setDiscountError(false);
+    void state.save(async () => {
+    const { day } = { ...draft.values, ...draft.changes() };
     await memberRequest(c.householdBillingSettingsResponseSchema, `/api/households/${billing.id}/billing-settings`, 'PATCH', c.updateHouseholdBillingSettingsRequestSchema.parse({ revision: billing.revision, billingDay: Number(day), familyDiscountBasisPoints }));
   }, draft.reset); }}>
     <ErrorMessage error={state.error}/><Field name="billingDay" type="number" value={draft.values.day} onChange={(value) => draft.set('day', value)}/>
-    <Label className="grid gap-2">{text('discount')}<Input type="number" min="0" max="100" step="0.01" required value={draft.values.discount} onChange={event => draft.set('discount', event.target.value)}/></Label>
+    <Label className="grid gap-2">{text('discount')}<Input type="text" inputMode="decimal" required aria-invalid={discountError} aria-describedby={discountError ? `discount-error-${billing.id}` : undefined}
+      value={draft.values.discount} onChange={event => { draft.set('discount', event.target.value); setDiscountError(false); }}/></Label>
+    {discountError && <p id={`discount-error-${billing.id}`} role="alert" className="text-sm text-destructive">{text('invalidDiscount')}</p>}
     <Button type="submit" className="w-full sm:w-auto" disabled={state.busy}>{text('saveBilling')}</Button>
   </form>;
 }

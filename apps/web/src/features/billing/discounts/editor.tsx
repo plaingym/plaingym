@@ -8,13 +8,12 @@ import { Button } from '../../../components/ui/button.js';
 import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
 import { CheckboxField, Select } from '../../../components/ui/select.js';
-import { ApiError } from '../../../lib/api.js';
 import type { DiscountClient } from './api.js';
-import { failure, text } from './messages.js';
+import { failure, revisionConflict, text } from './messages.js';
 import { basisPointsToPercent, percentToBasisPoints } from './percent.js';
 
 export function DiscountEditor({ record, currency, plans, client, close, saved }: {
-  record?: Discount; currency: string; plans: Plan[]; client: DiscountClient; close(): void; saved(): void;
+  record?: Discount; currency: string; plans: Plan[]; client: DiscountClient; close(reload?: boolean): void; saved(): void;
 }) {
   const [kind, setKind] = useState(record?.percentBasisPoints !== null && record?.percentBasisPoints !== undefined ? 'percent' : record?.amountCents ? 'amount' : 'fee');
   const [duration, setDuration] = useState(record?.duration ?? 'once');
@@ -43,11 +42,11 @@ export function DiscountEditor({ record, currency, plans, client, close, saved }
       if (record) await client.update(record.id, input); else await client.create(input);
       saved();
     } catch (cause) {
-      if (record && cause instanceof ApiError && cause.status === 409) setStale(true);
+      if (record && revisionConflict(cause)) setStale(true);
       setError(failure(cause));
     } finally { inFlight.current = false; setBusy(false); }
   }
-  return <Dialog title={text(record ? 'edit' : 'create')} closeLabel={text('close')} onClose={close} dismissible={!busy}>
+  return <Dialog title={text(record ? 'edit' : 'create')} closeLabel={text('close')} onClose={() => close(stale)} dismissible={!busy}>
     <form onSubmit={event => void submit(event)} className="min-w-0 space-y-4 wrap-anywhere">
       {error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
       <fieldset disabled={busy} className="grid min-w-0 gap-4 sm:grid-cols-2">
@@ -79,7 +78,7 @@ export function DiscountEditor({ record, currency, plans, client, close, saved }
         </fieldset>
         <CheckboxField name="active" label={text('active')} defaultChecked={record?.active ?? true}/>
         <div className="flex flex-col gap-2 sm:col-span-2 sm:flex-row"><Button type="submit" disabled={stale}>{text(busy ? 'saving' : 'save')}</Button>
-          <Button variant="outline" onClick={close}>{text(stale ? 'closeReload' : 'cancel')}</Button></div>
+          <Button variant="outline" onClick={() => close(stale)}>{text(stale ? 'closeReload' : 'cancel')}</Button></div>
       </fieldset>
     </form>
   </Dialog>;

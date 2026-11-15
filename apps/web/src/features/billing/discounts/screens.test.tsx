@@ -10,7 +10,7 @@ import { createShellServices } from '../../../app/services.js';
 import { ApiError } from '../../../lib/api.js';
 import { billingClient, type BillingClient } from '../catalog/api.js';
 import { MembershipPanel } from '../memberships/member-tab.js';
-import { CatalogPage } from '../catalog/page.js';
+import { CatalogPage, CatalogWorkspace } from '../catalog/page.js';
 import { DiscountEditor } from './editor.js';
 import { DiscountCatalog } from './catalog.js';
 import type { DiscountClient } from './api.js';
@@ -27,7 +27,7 @@ const row: Membership = { id: id(4), createdAt, memberId: id(5), householdId: id
     duration: 'cycles', cyclesLeft: 1200, planIds: [plan.id] } };
 function clients() {
   const discounts: DiscountClient = { list: vi.fn(async () => [discount]), create: vi.fn(async () => ({ data: discount })), update: vi.fn(async () => ({ data: discount })) };
-  const billing = { ...billingClient, plans: vi.fn(async () => [plan]), settings: vi.fn(async () => ({ currency: 'USD' })),
+  const billing = { ...billingClient, plans: vi.fn(async () => [plan]), taxes: vi.fn(async () => []), charges: vi.fn(async () => []), settings: vi.fn(async () => ({ currency: 'USD' })),
     memberships: vi.fn(async () => [row]), member: vi.fn(async () => ({ householdId: row.householdId })),
     householdBilling: vi.fn(async () => ({ billingDay: null })), call: vi.fn(async () => ({ data: row })) } as unknown as BillingClient;
   return { discounts, billing };
@@ -44,7 +44,7 @@ function panel(role: StaffRole = 'owner', membership = row) {
   start(<MembershipPanel gymId={id(1)} memberId={row.memberId} manage={canStaff([role], 'plans.manage')} client={api.billing} discounts={api.discounts}/>, role);
   return api;
 }
-const field = (label: string | RegExp, value: string, scope = screen) => fireEvent.change(scope.getByLabelText(label), { target: { value } });
+const field = (label: string | RegExp, value: string, scope: Pick<typeof screen, 'getByLabelText'> = screen) => fireEvent.change(scope.getByLabelText(label), { target: { value } });
 const save = () => fireEvent.submit(screen.getByRole('button', { name: 'Save discount' }).closest('form')!);
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
@@ -98,10 +98,52 @@ it('gives the code fields patterns browsers compile with the v flag', async () =
   for (const pattern of found) expect(new RegExp('^(?:' + pattern + ')$', 'v').test('FAMILY-10')).toBe(true);
 });
 it('keeps a conflicted editor open and blocks resubmitting its stale revision', async () => {
-  const api = clients(); vi.mocked(api.discounts.update).mockRejectedValue(new ApiError(409, 'conflict'));
+  const api = clients(); vi.mocked(api.discounts.update).mockRejectedValue(new ApiError(409, 'conflict', ['revision_conflict']));
   start(<DiscountEditor record={discount} plans={[plan]} currency="USD" client={api.discounts} close={vi.fn()} saved={vi.fn()}/>); save();
   expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('Close and reload'));
   expect((screen.getByRole('button', { name: 'Save discount' }) as HTMLButtonElement).disabled).toBe(true);
+});
+it('keeps edits and Save available after a duplicate name refusal', async () => {
+  const api = clients(); vi.mocked(api.discounts.update).mockRejectedValueOnce(new ApiError(409, 'conflict', ['discount_duplicate']));
+  start(<DiscountEditor record={discount} plans={[plan]} currency="USD" client={api.discounts} close={vi.fn()} saved={vi.fn()}/>);
+  field('Discount name', 'Duplicate'); save();
+  expect((await screen.findByRole('alert')).textContent).toContain('name or code already exists');
+  expect((screen.getByRole('button', { name: 'Save discount' }) as HTMLButtonElement).disabled).toBe(false);
+  field('Discount name', 'Unique'); save();
+  await waitFor(() => expect(api.discounts.update).toHaveBeenLastCalledWith(discount.id, expect.objectContaining({ name: 'Unique', revision: discount.revision })));
+});
+it('words a conflict without a known reason as a refusal and leaves Save available', async () => {
+  const api = clients(); vi.mocked(api.discounts.update).mockRejectedValueOnce(new ApiError(409, 'conflict'));
+  start(<DiscountEditor record={discount} plans={[plan]} currency="USD" client={api.discounts} close={vi.fn()} saved={vi.fn()}/>); save();
+  expect((await screen.findByRole('alert')).textContent).toContain('Review your entries');
+  expect((screen.getByRole('button', { name: 'Save discount' }) as HTMLButtonElement).disabled).toBe(false);
+});
+it.each(['membership_fee_only', 'discount_scheduled_plan'])('keeps the membership form usable after %s', async reason => {
+  const api = panel(); vi.mocked(api.billing.call).mockRejectedValueOnce(new ApiError(409, 'conflict', [reason]));
+  fireEvent.click(await screen.findByRole('button', { name: 'Change discount' }));
+  const form = within(screen.getByRole('button', { name: 'Apply discount' }).closest('form')!);
+  field('Discount', 'code', form); field('Discount code', 'WAIVER', form);
+  fireEvent.submit(screen.getByRole('button', { name: 'Apply discount' }).closest('form')!);
+  expect((await screen.findByRole('alert')).textContent).toMatch(/sign-up fee|scheduled plan/);
+  expect((screen.getByRole('button', { name: 'Apply discount' }) as HTMLButtonElement).disabled).toBe(false);
+  field('Discount code', 'FAMILY', form);
+  fireEvent.submit(screen.getByRole('button', { name: 'Apply discount' }).closest('form')!);
+  await waitFor(() => expect(api.billing.call).toHaveBeenLastCalledWith('setMembershipDiscount', { revision: row.revision, discount: { code: 'FAMILY' } }, { membershipId: row.id }));
+});
+it('shares the catalog query and does not reload on Cancel, but reloads on a stale Close and on save', async () => {
+  const api = clients();
+  start(<><CatalogWorkspace gymId={id(1)} client={api.billing}/><DiscountCatalog gymId={id(1)} client={api.discounts} billing={api.billing}/></>);
+  const open = async () => fireEvent.click(await screen.findByRole('button', { name: 'Edit ' + discount.name }));
+  await open();
+  expect(api.billing.plans).toHaveBeenCalledTimes(1); expect(api.billing.settings).toHaveBeenCalledTimes(1);
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+  expect(api.discounts.list).toHaveBeenCalledTimes(1);
+  await open(); vi.mocked(api.discounts.update).mockRejectedValueOnce(new ApiError(409, 'conflict', ['revision_conflict'])); save();
+  fireEvent.click(await screen.findByRole('button', { name: 'Close and reload' }));
+  await waitFor(() => expect(api.discounts.list).toHaveBeenCalledTimes(2));
+  await open(); save();
+  await waitFor(() => expect(api.discounts.list).toHaveBeenCalledTimes(3));
+  expect(api.billing.plans).toHaveBeenCalledTimes(1); expect(api.billing.settings).toHaveBeenCalledTimes(1);
 });
 it.each(['named', 'code'])('assigns with a discount using %s selection', async mode => {
   const api = panel();

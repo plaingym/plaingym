@@ -6,8 +6,9 @@
 The list supports `active=true|false`, `limit` and `offset`. Responses include
 the plan IDs, use count, revision and read-only `termsLocked` flag. The flag is
 true after any application, even when all uses have been released and the count
-is zero. Updates require the revision read by the
-client; stale saves return 409. An update is merged with the stored terms and
+is zero. Listing checks history with one correlated `exists` per discount,
+without loading its applications. Updates require the revision read by the
+client; stale saves return 409 with `details.reason: ['revision_conflict']`. An update is merged with the stored terms and
 checked again, so a change that leaves an invalid combination (a percentage and
 an amount, say) returns 400 naming the rule. There is no delete route: use
 `active: false`.
@@ -23,6 +24,8 @@ plan list means all plans; IDs in a nonempty list must belong to the gym.
 Names are trimmed and limited to 100 characters. Optional codes contain 3–40
 ASCII letters, digits or dashes. Names and codes are unique per gym without
 regard to case; conflicts return 409. A cleared code can be reused.
+Catalog refusals carry `details.reason`: `discount_duplicate`,
+`discount_terms_used`, `discount_max_uses` or `discount_currency_mismatch`.
 
 Any `membership_discounts` history locks price, currency, waiver and duration
 terms, including the cycle count. Name, code, end date, eligible plans, maximum

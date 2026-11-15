@@ -15,7 +15,8 @@ async function check(page: Page, info: TestInfo, name: string) {
   expect(axe.violations.map(row => row.id)).toEqual([]);
   await mkdir('coverage/discounts', { recursive: true });
   const dialog = page.getByRole('dialog');
-  const screenshot = await (await dialog.count() ? dialog.screenshot() : name.startsWith('catalog-')
+  const screenshot = await (await dialog.count() ? dialog.screenshot() : name.startsWith('household-')
+    ? page.locator('form').filter({ has: page.getByRole('button', { name: 'Save billing settings', exact: true }) }).screenshot() : name.startsWith('catalog-')
     ? page.getByRole('region', { name: 'Discounts', exact: true }).screenshot()
     : page.getByRole('tabpanel', { name: 'Memberships', exact: true }).screenshot());
   await writeFile('coverage/discounts/' + name + '.png', screenshot);
@@ -36,6 +37,7 @@ for (const width of [360, 1280]) {
     const name = 'Discount ' + width + ' ' + 'Q'.repeat(55), code = 'SCREEN-' + width;
     const replacement = (await owner.json<{ data: RecordId }>('/api/billing/discounts', 'POST', { name: 'Replacement ' + width, code: 'REPLACE-' + width,
       currency, percentBasisPoints: 1000, duration: 'once', planIds: [plan.id] })).data;
+    await owner.json('/api/billing/discounts', 'POST', { name: 'Waiver ' + width, code: 'WAIVER-' + width, currency, waivesSignupFee: true });
     const context = await browser.newContext({ viewport: { width, height: 900 }, hasTouch: width === 360, ignoreHTTPSErrors: true });
     await owner.browser(context); const page = await context.newPage();
     try {
@@ -78,7 +80,12 @@ for (const width of [360, 1280]) {
       await dialog.getByRole('button', { name: 'Go back', exact: true }).click();
       await page.getByRole('button', { name: 'Change discount', exact: true }).click();
       const change = page.locator('form').filter({ has: page.getByRole('button', { name: 'Apply discount', exact: true }) });
-      await change.getByRole('combobox', { name: /^Discount/ }).selectOption('code'); await change.getByLabel('Discount code', { exact: true }).fill('replace-' + width);
+      await change.getByRole('combobox', { name: /^Discount/ }).selectOption('code'); await change.getByLabel('Discount code', { exact: true }).fill('WAIVER-' + width);
+      await change.getByRole('button', { name: 'Apply discount', exact: true }).click();
+      await expect(change.getByRole('alert')).toContainText('only waives the sign-up fee');
+      await expect(change.getByRole('button', { name: 'Apply discount', exact: true })).toBeEnabled();
+      await check(page, info, 'fee-only-refused-' + width);
+      await change.getByLabel('Discount code', { exact: true }).fill('replace-' + width);
       await check(page, info, 'replacement-' + width); await change.getByRole('button', { name: 'Apply discount', exact: true }).click();
       await expect(page.getByText('Discount: Replacement ' + width, { exact: true })).toBeVisible();
       await page.getByRole('button', { name: 'Change plan', exact: true }).click(); dialog = page.getByRole('dialog');
@@ -89,10 +96,34 @@ for (const width of [360, 1280]) {
       await page.getByRole('button', { name: 'Remove discount', exact: true }).click(); await expect(page.getByRole('button', { name: 'Add discount', exact: true })).toBeVisible();
       await page.goto(gymOrigin + '/admin/billing/plans'); await page.getByRole('button', { name: 'Edit Replacement ' + width, exact: true }).click();
       await expect(page.getByLabel('Discount type')).toBeDisabled(); await check(page, info, 'locked-' + width);
+      await page.getByLabel('Discount name').fill(name); await page.getByRole('button', { name: 'Save discount', exact: true }).click();
+      await expect(page.getByRole('dialog').getByRole('alert')).toContainText('name or code already exists');
+      await expect(page.getByRole('button', { name: 'Save discount', exact: true })).toBeEnabled();
+      await check(page, info, 'duplicate-refused-' + width);
+      await page.getByLabel('Discount name').fill('Replacement ' + width);
       await page.getByLabel('Active', { exact: true }).uncheck(); await page.getByRole('button', { name: 'Save discount', exact: true }).click();
       await expect(page.getByRole('dialog')).toHaveCount(0);
       const stored = (await owner.json<{ data: { active: boolean } }>('/api/billing/discounts/' + replacement.id)).data;
       expect(stored.active).toBe(false);
+      const tax = (await owner.json<{ data: RecordId }>('/api/billing/tax-rates', 'POST', { name: 'Conflict tax ' + width, rateMillionths: 50000, inclusive: false })).data;
+      await page.reload(); await page.getByRole('button', { name: 'Add plan', exact: true }).click();
+      const editor = page.getByRole('dialog');
+      await editor.getByLabel('Name', { exact: true }).fill('Conflict plan ' + width);
+      await editor.getByLabel(new RegExp('^Conflict tax ' + width)).check();
+      await owner.json('/api/billing/tax-rates/' + tax.id, 'PATCH', { revision: 1, active: false });
+      await editor.getByRole('button', { name: 'Save', exact: true }).click();
+      await expect(editor.getByRole('alert')).toContainText('A selected tax rate is inactive');
+      await expect(editor.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
+      await check(page, info, 'catalog-tax-refused-' + width);
+      await editor.getByRole('button', { name: 'Save', exact: true }).click();
+      await expect(editor).toHaveCount(0);
+      await page.goto(gymOrigin + '/admin/members/' + member.id);
+      const family = page.getByLabel('Family discount (%)', { exact: true });
+      await family.fill('1e1'); await page.getByRole('button', { name: 'Save billing settings', exact: true }).click();
+      await expect(family).toHaveAttribute('aria-invalid', 'true'); await check(page, info, 'household-invalid-' + width);
+      await family.fill('.5'); await page.getByRole('button', { name: 'Save billing settings', exact: true }).click();
+      await expect(family).toHaveAttribute('aria-invalid', 'false');
+      await check(page, info, 'household-decimal-' + width);
     } finally { await context.close(); }
   });
 }

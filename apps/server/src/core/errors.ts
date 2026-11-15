@@ -10,7 +10,7 @@ import { logError } from './log.js';
 
 export function normalizeError(error: unknown): AppError {
   if (error instanceof AppError) return error;
-  if (error instanceof RevisionConflictError) return new AppError('conflict', 'The record changed since it was read.');
+  if (error instanceof RevisionConflictError) return new AppError('conflict', 'The record changed since it was read.', { reason: ['revision_conflict'] });
   // Validation messages can contain submitted secrets or internal schema details.
   if (error instanceof z.ZodError) return new AppError('invalid_request', 'The request is invalid.');
   if (error instanceof HTTPException) {

@@ -47,7 +47,16 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 describe('member admin UI', () => {
-  it.each([['12.34', 1234], ['0', 0], ['100', 10000]])('saves a household discount of %s percent as %s basis points', async (percent, points) => {
+  it('shows an invalid family percentage beside the field before transport', async () => {
+    view(<HouseholdDetails householdId={homeId} gymId={homeId}/>);
+    const field = await screen.findByLabelText('Family discount (%)');
+    fireEvent.change(field, { target: { value: '1e1' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Save billing settings' }).closest('form')!);
+    expect(screen.getByRole('alert').textContent).toContain('Enter a percentage from 0 to 100');
+    expect(field.getAttribute('aria-invalid')).toBe('true');
+    expect(vi.mocked(memberRequest).mock.calls.some(call => call[2] === 'PATCH')).toBe(false);
+  });
+  it.each([['12.34', 1234], ['0', 0], ['00', 0], ['.5', 50], [' 10 ', 1000], ['100', 10000]])('saves a household discount of %s percent as %s basis points', async (percent, points) => {
     view(<HouseholdDetails householdId={homeId} gymId={homeId}/>);
     fireEvent.change(await screen.findByLabelText('Family discount (%)'), { target: { value: percent } });
     fireEvent.click(screen.getByRole('button', { name: 'Save billing settings' }));

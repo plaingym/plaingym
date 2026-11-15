@@ -215,7 +215,7 @@ it('saves a price-only edit when the membership\'s plan is inactive', async () =
   await waitFor(() => expect(client.call).toHaveBeenCalledWith('updateMembership', { revision: 1, price: { amountCents: 9000, currency: 'CAD' } }, { membershipId: membership.id }));
 });
 it('shows the usual conflict message on a 409', async () => {
-  start('admin', { call: async () => { throw new ApiError(409, 'conflict'); } });
+  start('admin', { call: async () => { throw new ApiError(409, 'conflict', ['membership_changed']); } });
   const form = await openEdit();
   fireEvent.change(form.price, { target: { value: '50' } });
   save();

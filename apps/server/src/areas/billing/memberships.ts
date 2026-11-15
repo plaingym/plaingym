@@ -244,7 +244,7 @@ export function createMembershipService(options: MembershipOptions = {}) {
         const member = catalogMissing((await tx.select({ anonymizedAt: members.anonymizedAt }).from(members).where(eq(members.id, before.memberId)))[0]);
         if (member.anonymizedAt) refuseMembership('membership_erased');
         const resolved = await resolveDiscount(tx, request.discount, {
-          planIds: [before.planId, ...(before.scheduledPlanId ? [before.scheduledPlanId] : [])], timezone: gym.timezone, clock });
+          planIds: [before.planId], ...(before.scheduledPlanId ? { scheduledPlanId: before.scheduledPlanId } : {}), timezone: gym.timezone, clock });
         // A signup-fee waiver alone applies only at assignment: it would end the live discount and take a use for nothing.
         if (resolved.row.duration === null) refuseMembership('membership_fee_only');
         await endDiscount(tx, context, clock, membershipId, 'replaced');

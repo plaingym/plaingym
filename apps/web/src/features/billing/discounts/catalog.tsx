@@ -6,24 +6,23 @@ import type { Discount } from '@plaingym/shared/contracts';
 import { Button } from '../../../components/ui/button.js';
 import { CheckboxField } from '../../../components/ui/select.js';
 import { LoadingState, ErrorState, EmptyState } from '../../../components/ui/states.js';
-import { billingClient, type BillingClient } from '../catalog/api.js';
+import { billingClient, loadCatalog, type BillingClient } from '../catalog/api.js';
 import { discountClient, type DiscountClient } from './api.js';
 import { DiscountEditor } from './editor.js';
 import { benefit, text } from './messages.js';
 
 export function DiscountCatalog({ gymId, client = discountClient, billing = billingClient }: { gymId: string; client?: DiscountClient; billing?: BillingClient }) {
   const cache = useQueryClient(), [inactive, setInactive] = useState(false), [editor, setEditor] = useState<Discount | 'new' | null>(null);
-  // Under the catalog key, so plan saves in the section above reload this section's plan names and choices.
-  const data = useQuery({ queryKey: ['billing', gymId, 'catalog', 'discounts'], queryFn: async () => {
-    const [discounts, plans, settings] = await Promise.all([client.list(), billing.plans(), billing.settings()]);
-    return { discounts, plans, currency: settings.currency };
-  } });
-  const refresh = () => { setEditor(null); void cache.invalidateQueries({ queryKey: ['billing', gymId] }); };
-  const rows = data.data?.discounts.filter(row => inactive || row.active);
+  const data = useQuery({ queryKey: ['billing', gymId, 'discounts'], queryFn: () => client.list() });
+  const options = useQuery({ queryKey: ['billing', gymId, 'catalog'], queryFn: () => loadCatalog(billing) });
+  const choices = options.data && { plans: options.data.plans, currency: options.data.settings.currency };
+  const close = (reload = false) => { setEditor(null); if (reload) void cache.invalidateQueries({ queryKey: ['billing', gymId, 'discounts'] }); };
+  const rows = data.data?.filter(row => inactive || row.active);
   return <section aria-label={text('title')} className="min-w-0 space-y-4 border-t pt-5 wrap-anywhere">
     <h2 className="text-lg font-semibold">{text('title')}</h2>
-    {data.isPending && <LoadingState/>}{data.isError && <ErrorState onRetry={() => void data.refetch()}/>}
-    {data.data && <>
+    {(data.isPending || options.isPending) && <LoadingState/>}
+    {(data.isError || options.isError) && <ErrorState onRetry={() => { void data.refetch(); void options.refetch(); }}/>}
+    {data.data && choices && <>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <CheckboxField label={text('showInactive')} checked={inactive} onChange={event => setInactive(event.target.checked)}/>
         <Button onClick={() => setEditor('new')}>{text('create')}</Button>
@@ -35,10 +34,10 @@ export function DiscountCatalog({ gymId, client = discountClient, billing = bill
         <p>{text('uses', { count: formatCount(row.uses), max: row.maxUses === null ? text('unlimited') : formatCount(row.maxUses) })}</p>
         <p>{row.termsLocked ? text('locked') : text('termsHelp')}</p>
         {row.code && <p>{text('code')}: {row.code}</p>}{row.endsOn && <p>{text('endsOn')}: {row.endsOn}</p>}
-        <p>{row.planIds.length ? text('selectedPlans', { names: row.planIds.map(id => data.data.plans.find(plan => plan.id === id)?.name ?? text('unavailablePlan')).join(', ') }) : text('allPlans')}</p>
+        <p>{row.planIds.length ? text('selectedPlans', { names: row.planIds.map(id => choices.plans.find(plan => plan.id === id)?.name ?? text('unavailablePlan')).join(', ') }) : text('allPlans')}</p>
         <Button variant="outline" className="w-full max-w-full wrap-anywhere sm:w-auto" onClick={() => setEditor(row)}>{text('editNamed', { name: row.name })}</Button>
       </li>)}</ul>
-      {editor && <DiscountEditor {...(editor === 'new' ? {} : { record: editor })} currency={data.data.currency} plans={data.data.plans} client={client} close={refresh} saved={refresh}/>}
+      {editor && <DiscountEditor {...(editor === 'new' ? {} : { record: editor })} currency={choices.currency} plans={choices.plans} client={client} close={close} saved={() => close(true)}/>}
     </>}
   </section>;
 }

@@ -52,7 +52,7 @@ describe('discount catalog service', () => {
       { percentBasisPoints: 2000 }, { percentBasisPoints: null, amountCents: 500 }, { waivesSignupFee: true },
       { duration: 'once' as const }, { duration: 'cycles' as const, cycles: 2 },
     ]) await expect(f.service.update(f.context, row.id, { revision: 1, ...changes })).rejects.toMatchObject({ code: 'conflict',
-      message: expect.stringContaining('has been used') });
+      message: expect.stringContaining('has been used'), details: { reason: ['discount_terms_used'] } });
     const edited = await f.service.update(f.context, row.id, { revision: 1, name: 'Renamed', code: 'NEW-CODE', endsOn: '2026-12-31',
       planIds: [nextPlan.id], maxUses: 10, active: false });
     expect(edited).toMatchObject({ name: 'Renamed', endsOn: '2026-12-31', planIds: [nextPlan.id], revision: 2 });
@@ -62,7 +62,7 @@ describe('discount catalog service', () => {
   it('refuses lowering max uses below reserved uses and never exposes a way to change uses', async () => {
     const f = await fixture(), row = await f.service.create(f.context, { ...f.input, maxUses: 3 });
     await db.forGym(f.gymId, tx => tx.update(discounts).set({ uses: 2 }).where(eq(discounts.id, row.id)));
-    await expect(f.service.update(f.context, row.id, { revision: 1, maxUses: 1 })).rejects.toMatchObject({ code: 'conflict' });
+    await expect(f.service.update(f.context, row.id, { revision: 1, maxUses: 1 })).rejects.toMatchObject({ code: 'conflict', details: { reason: ['discount_max_uses'] } });
     expect(await f.service.update(f.context, row.id, { revision: 1, maxUses: 2 })).toMatchObject({ maxUses: 2, uses: 2 });
     expect(await f.service.update(f.context, row.id, { revision: 2, maxUses: null })).toMatchObject({ maxUses: null, uses: 2 });
   });
@@ -110,10 +110,10 @@ describe('discount catalog service', () => {
   });
   it('enforces the gym currency and validates amount-only edits against its charge step', async () => {
     const f = await fixture('ISK');
-    await expect(f.service.create(f.context, { ...f.input, currency: 'USD' })).rejects.toMatchObject({ code: 'conflict' });
+    await expect(f.service.create(f.context, { ...f.input, currency: 'USD' })).rejects.toMatchObject({ code: 'conflict', details: { reason: ['discount_currency_mismatch'] } });
     const row = await f.service.create(f.context, { ...f.input, percentBasisPoints: null, amountCents: 100 });
     await expect(f.service.update(f.context, row.id, { revision: 1, amountCents: 101 })).rejects.toThrow();
-    await expect(f.service.update(f.context, row.id, { revision: 1, currency: 'USD' })).rejects.toMatchObject({ code: 'conflict' });
+    await expect(f.service.update(f.context, row.id, { revision: 1, currency: 'USD' })).rejects.toMatchObject({ code: 'conflict', details: { reason: ['discount_currency_mismatch'] } });
     expect(await f.service.get(f.gymId, row.id)).toEqual(row);
   });
   it('serializes concurrent saves so only one revision and one audit advance', async () => {

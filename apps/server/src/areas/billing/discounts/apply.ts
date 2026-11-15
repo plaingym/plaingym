@@ -14,10 +14,10 @@ import messages from '../../../../../../locales/en/billing/discounts.json' with 
 
 const t = createTranslator({ 'billing/discounts': messages });
 export function refuseMembership(reason: 'membership_changed' | 'membership_cancelled' | 'membership_erased' | 'membership_fee_only' | 'membership_no_discount'): never {
-  throw new AppError('conflict', t('billing/discounts:' + reason));
+  throw new AppError('conflict', t('billing/discounts:' + reason), { reason: [reason] });
 }
 type Audience = 'staff' | 'public';
-type Reason = 'discount_unknown' | 'discount_ended' | 'discount_used_up' | 'discount_plan';
+type Reason = 'discount_unknown' | 'discount_ended' | 'discount_used_up' | 'discount_plan' | 'discount_scheduled_plan';
 type Application = typeof membershipDiscounts.$inferSelect;
 export interface ResolvedDiscount {
   readonly row: typeof discounts.$inferSelect;
@@ -31,7 +31,7 @@ function refuse(reason: Reason, audience: Audience): never {
 
 /** Caller holds household and membership locks first. All checks and writes use its transaction. */
 export async function resolveDiscount(tx: Transaction, selection: MembershipDiscountSelection, options: {
-  planIds: readonly string[]; timezone: string; clock: Clock; audience?: Audience; useTaken?: boolean;
+  planIds: readonly string[]; scheduledPlanId?: string; timezone: string; clock: Clock; audience?: Audience; useTaken?: boolean;
 }): Promise<ResolvedDiscount> {
   const selected = membershipDiscountSelectionSchema.parse(selection), audience = options.audience ?? 'staff';
   // Reviewed expression: match the lower(code) unique index with a bound, case-insensitive exact code.
@@ -43,6 +43,7 @@ export async function resolveDiscount(tx: Transaction, selection: MembershipDisc
   const planIds = (await tx.select({ id: discountPlans.planId }).from(discountPlans)
     .where(eq(discountPlans.discountId, row.id)).orderBy(asc(discountPlans.planId))).map(plan => plan.id);
   if (planIds.length && options.planIds.some(id => !planIds.includes(id.toLowerCase()))) refuse('discount_plan', audience);
+  if (planIds.length && options.scheduledPlanId && !planIds.includes(options.scheduledPlanId.toLowerCase())) refuse('discount_scheduled_plan', audience);
   return { row, planIds, audience };
 }
 

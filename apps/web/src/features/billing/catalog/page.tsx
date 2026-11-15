@@ -13,10 +13,10 @@ import { EmptyState } from '../../../components/ui/states.js';
 import { userNames } from '../../../components/ui/page.js';
 import { ApiError } from '../../../lib/api.js';
 import { cn } from '../../../lib/utils.js';
-import { billingClient, previewPriceChange, type BillingClient } from './api.js';
+import { billingClient, loadCatalog, previewPriceChange, type BillingClient } from './api.js';
 import { planTermsChanged, PriceChange, type PriceChangeState } from './price-change.js';
 import { ArchiveConfirmation, CatalogEditor, type CatalogKind, type CatalogRecord } from './editor.js';
-import { money, saveError, say, text } from './format.js';
+import { money, revisionConflict, saveError, say, text } from './format.js';
 import { PackCatalog } from '../packs/catalog.js';
 import { DiscountCatalog } from '../discounts/catalog.js';
 
@@ -36,13 +36,10 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
     const controls = dialogBody.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)');
     [...controls ?? []].find(control => !control.closest('[hidden]'))?.focus();
   }, [priceChange]);
-  const data = useQuery({ queryKey: key, queryFn: async () => {
-    const [plans, taxes, charges, settings] = await Promise.all([client.plans(), client.taxes(), client.charges(), client.settings()]);
-    return { plans, taxes, charges, settings };
-  } });
+  const data = useQuery({ queryKey: key, queryFn: () => loadCatalog(client) });
   async function run(work: () => Promise<void>) {
     setBusy(true); setMessage('');
-    try { await work(); } catch (error) { setMessage(saveError(error)); } finally { setBusy(false); }
+    try { await work(); } catch (error) { setMessage(saveError(error, editor === 'new')); } finally { setBusy(false); }
   }
   /** Archiving a rate that charge types, class packs or plans carry first shows them and asks to remove it from all of them. */
   async function needsDetach(rate: TaxRate, input: Record<string, unknown>) {
@@ -59,7 +56,7 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
       let initial: PlanPriceChangePreview;
       try { initial = await previewPriceChange(client, record.id, Number(input.amountCents), effectiveOn); }
       catch (error) {
-        if (error instanceof ApiError && error.status === 409) { setStale(true); await cache.invalidateQueries({ queryKey: key }); }
+        if (error instanceof ApiError && error.status === 409) { setStale(revisionConflict(error)); await cache.invalidateQueries({ queryKey: key }); }
         throw error;
       }
       if (initial.plan.revision !== record.revision) {
@@ -75,7 +72,7 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
     try { await client.call(operation, input, params); } catch (error) {
       // Something attached the rate since the check: show what carries it now.
       if (archiving && error instanceof ApiError && error.status === 409 && error.reason.includes('tax_rate_attached') && await needsDetach(archiving, input)) return;
-      if (error instanceof ApiError && error.status === 409) { setStale(Boolean(record)); await cache.invalidateQueries({ queryKey: key }); }
+      if (error instanceof ApiError && error.status === 409) { setStale(Boolean(record) && revisionConflict(error)); await cache.invalidateQueries({ queryKey: key }); }
       throw error;
     }
     setEditor(null); await cache.invalidateQueries({ queryKey: key });
@@ -84,7 +81,7 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
     if (!archive) return;
     try { await client.call('updateTaxRate', { ...archive.input, active: false, detach: true }, { taxRateId: archive.rate.id }); } catch (error) {
       // The rate changed since the panel opened: close it and reload, so a retry starts from what is there now.
-      if (error instanceof ApiError && error.status === 409) { setArchive(null); setStale(Boolean(editor) && editor !== 'new'); await cache.invalidateQueries({ queryKey: key }); }
+      if (error instanceof ApiError && error.status === 409) { setArchive(null); setStale(Boolean(editor) && editor !== 'new' && revisionConflict(error)); await cache.invalidateQueries({ queryKey: key }); }
       throw error;
     }
     setArchive(null); setEditor(null); await cache.invalidateQueries({ queryKey: key });

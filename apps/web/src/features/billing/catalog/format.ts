@@ -18,4 +18,15 @@ export function decimalUnits(value: string, places: number) {
 }
 /** An amount in `currency`'s minor units for display. */
 export const money = (value: number, currency: string) => formatMinorUnits(value, currency);
-export const saveError = (error: unknown) => text(error instanceof ApiError && error.status === 409 ? 'conflict' : 'error');
+export const revisionConflict = (error: unknown) => error instanceof ApiError && error.status === 409
+  && error.reason.some(reason => reason === 'revision_conflict' || reason === 'membership_changed');
+export function saveError(error: unknown, creating = false) {
+  if (error instanceof ApiError && error.status === 409) {
+    if (revisionConflict(error)) return text(creating ? 'createConflict' : 'conflict');
+    if (error.reason.includes('currency_mismatch')) return text('currencyMismatch');
+    if (error.reason.includes('tax_inactive')) return text('taxInactive');
+    if (error.reason.includes('tax_rate_attached')) return text('taxAttachedConflict');
+    return text('saveRefused');
+  }
+  return text('error');
+}

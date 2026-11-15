@@ -140,6 +140,10 @@ A 429 sets `Retry-After: 1` only for a refusal carrying the `busy` reason
 as the PDF queues. Rate limits set their own `Retry-After`, and a lasting quota (the
 demo's) sends none, so clients tell "try again now" from "limited for now".
 
+A stale save (`RevisionConflictError`) becomes a 409 with `details.reason:
+['revision_conflict']`, so screens tell a changed record from a refusal that
+carries its own reason.
+
 `SOURCE_URL` is read when constructing the app, defaults to the public source
 repository, and is passed through Docker and Compose. Footers can use `/source`
 or load `/api/source` to follow a runtime override. Existing SPA footers use

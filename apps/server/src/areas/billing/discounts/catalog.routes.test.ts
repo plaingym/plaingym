@@ -73,15 +73,17 @@ describe('discount catalog routes', () => {
   it('maps stale revisions, used terms and uniqueness to clear conflicts', async () => {
     const f = await fixture(), app = server(f, staff(f, 'admin'));
     expect((await request(app, 'updateDiscount', f, { revision: 1, active: false })).status).toBe(200);
-    expect((await request(app, 'updateDiscount', f, { revision: 1, active: true })).status).toBe(409);
+    const stale = await request(app, 'updateDiscount', f, { revision: 1, active: true });
+    expect(stale.status).toBe(409);
+    expect((await stale.json()).error.details.reason).toEqual(['revision_conflict']);
     await factory('membershipDiscounts', f.gymId, { discountId: f.discount.id });
     const terms = await request(app, 'updateDiscount', f, { revision: 2, percentBasisPoints: 2000 });
     expect(terms.status).toBe(409);
-    expect(await terms.text()).toContain('has been used');
+    expect((await terms.json()).error.details.reason).toEqual(['discount_terms_used']);
     expect((await request(app, 'updateDiscount', f, { revision: 2, name: 'Renamed' })).status).toBe(200);
     const duplicate = await request(app, 'createDiscount', f, { name: 'renamed', currency: 'USD', waivesSignupFee: true });
     expect(duplicate.status).toBe(409);
-    expect(await duplicate.text()).toContain('name or code');
+    expect((await duplicate.json()).error.details.reason).toEqual(['discount_duplicate']);
   });
   it('rejects invalid merged terms, counters and foreign plans without changing revision', async () => {
     const f = await fixture(), other = await fixture(), app = server(f, staff(f, 'owner'));

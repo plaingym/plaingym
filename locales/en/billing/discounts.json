@@ -9,6 +9,7 @@
   "discount_ended": "This discount has ended.",
   "discount_used_up": "This discount has no uses left.",
   "discount_plan": "This discount does not apply to the selected plan.",
+  "discount_scheduled_plan": "This discount does not apply to the scheduled plan. Change or cancel the scheduled switch before adding this discount.",
   "membership_changed": "The membership changed; reload before saving.",
   "membership_cancelled": "Cancelled memberships cannot be edited.",
   "membership_erased": "Erased members cannot receive a discount.",

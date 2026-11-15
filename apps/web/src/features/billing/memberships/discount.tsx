@@ -3,13 +3,12 @@ import { formatCount } from '../../../lib/count.js';
 import { useRef, useState, type FormEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { Membership, MembershipDiscountSelection } from '@plaingym/shared/contracts';
-import { ApiError } from '../../../lib/api.js';
 import { Alert } from '../../../components/ui/alert.js';
 import { Button } from '../../../components/ui/button.js';
 import type { BillingClient } from '../catalog/api.js';
 import type { DiscountClient } from '../discounts/api.js';
 import { DiscountSelection } from '../discounts/selection.js';
-import { benefit, failure, text } from '../discounts/messages.js';
+import { benefit, failure, revisionConflict, text } from '../discounts/messages.js';
 
 export function MembershipDiscount({ row, gymId, client, discounts, reload }: {
   row: Membership; gymId: string; client: BillingClient; discounts?: DiscountClient | undefined; reload(): Promise<void>;
@@ -25,10 +24,10 @@ export function MembershipDiscount({ row, gymId, client, discounts, reload }: {
       if (action === 'remove') await client.call('removeMembershipDiscount', { revision: base.revision }, { membershipId: row.id });
       else await client.call('setMembershipDiscount', { revision: base.revision, discount: selection }, { membershipId: row.id });
       setAction(null);
-      await Promise.all([reload(), cache.invalidateQueries({ queryKey: ['billing', gymId, 'discounts'] }), cache.invalidateQueries({ queryKey: ['billing', gymId, 'catalog', 'discounts'] })]);
+      await Promise.all([reload(), cache.invalidateQueries({ queryKey: ['billing', gymId, 'discounts'] })]);
     } catch (cause) {
       setError(failure(cause));
-      if (cause instanceof ApiError && (cause.reason.includes('membership_changed') || (cause.status === 409 && !cause.reason.length))) setStale(true);
+      if (revisionConflict(cause)) setStale(true);
     } finally { inFlight.current = false; setBusy(false); }
   }
   return <div className="min-w-0 space-y-3 border-t pt-3 wrap-anywhere">

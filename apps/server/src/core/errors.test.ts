@@ -31,6 +31,7 @@ it.each([
   if (status === 429) expect(response.headers.get('Retry-After')).toBeNull();
   const body = await response.json();
   if (code) expect(body.error.code).toBe(code);
+  if (error instanceof RevisionConflictError) expect(body.error.details).toEqual({ reason: ['revision_conflict'] });
   expect(body.requestId).toBe(response.headers.get('x-request-id'));
   expect(JSON.stringify(body)).not.toMatch(/private SQL|credentials|private_table|password|stack/);
 });

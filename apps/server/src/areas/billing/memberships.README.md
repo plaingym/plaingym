@@ -24,7 +24,11 @@ Cancelled memberships cannot be edited, and a discount that only waives the
 signup fee is refused (it applies only at assignment). The ended applications and audit events
 retain the history.
 Adding a discount also checks any scheduled destination plan, refusing one that
-would end before it could price that plan. Removing a discount when none is live
+would end before it could price that plan. This refusal carries
+`details.reason: ['discount_scheduled_plan']`, separately from `discount_plan`
+for the current plan. Membership discount conflicts carry `membership_changed`,
+`membership_cancelled`, `membership_erased`, `membership_fee_only` or
+`membership_no_discount` in `details.reason`. Removing a discount when none is live
 is a conflict and changes neither the revision nor the audit history.
 Cancelling a membership ends its application as `removed`, without returning a
 use, and the cancelled membership's response has no live discount. Member erasure

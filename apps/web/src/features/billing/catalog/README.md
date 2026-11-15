@@ -51,8 +51,14 @@ Price benefits can be a percentage or fixed amount, once, for a number of billin
 cycles, or every cycle. A discount can also waive the signup fee, alone or with a
 price benefit. Empty plan selection means every plan. Terms are disabled when
 the catalog reports `termsLocked`, including after all historical uses
-have been released. Any edit conflict blocks saving until staff close and reload,
-and explains that changing used terms requires a new discount.
+have been released. A revision conflict blocks saving until staff close and reload.
+Duplicate names or codes, used terms, maximum uses and currency refusals show their
+own messages with Save available. Changing used terms requires a new discount.
+Cancel does not refetch billing data; a successful save or stale Close reloads only
+discount queries. This section shares the plans and settings query with the catalog.
+Membership cards explain fee-only and scheduled-plan refusals without blocking a
+corrected selection. Household family percentages allow zero and decimal values such
+as `.5`; invalid input has a field-level message.
 
 The **Class packs** section lists active packs, with an option to include archived
 packs. Its dialog creates and edits the name, price, tax rates, 1–100 credits and
@@ -79,7 +85,7 @@ The catalog and sale form share one cached pack list.
 
 The catalog edits plans, charge types and tax rates with the revision read when
 the editor opened, and only a reload moves an open editor to a newer revision. A
-save conflict on an existing record refreshes the catalog and offers **Reload
+revision conflict on an existing record refreshes the catalog and offers **Reload
 record**. Save stays disabled until that reload succeeds. Reload keeps edited
 fields, fills untouched fields from the latest record and uses its revision for
 the next save. When staff and the latest record both changed a field, its latest
@@ -87,18 +93,21 @@ value appears beside the retained draft for review. Equivalent parsed amounts, s
 tax rates do not show a clash just because their decimal formatting differs. Saves use that controlled
 draft. Tax selections merge rate by rate: the draft's own ticks and
 unticks apply to the latest list, and rates that no longer apply are removed.
+Selections are also pruned whenever tax rates change, even if the record is unchanged.
 Staff can keep editing the draft while deciding to reload, and review it before
 saving. A failed reload keeps the draft and can be retried; a record missing
 from the catalog keeps its draft visible but cannot be saved. A conflict on a
 new record refreshes the catalog and leaves Save available, because there is no
 record to reload.
+Currency, inactive-tax and attachment conflicts show their own messages; other
+refusals ask staff to review their entries. These leave Save available.
 
 Removing inactive tax rates from a plan or charge type uses the revision shown
 in the list, so a conflict there refreshes the list for the retry.
 
 Archiving an attached tax rate first lists its charge types, class packs and plans and asks
 staff to confirm removing it from them. An attachment conflict opens that
-confirmation; other conflicts use the reload flow. An archive confirmation that
+confirmation; revision conflicts use the reload flow. An archive confirmation that
 hits a revision conflict closes and refreshes the catalog, offering reload when
 the editor is still open.
 

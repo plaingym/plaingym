@@ -108,8 +108,10 @@ describe('editing a live membership discount', () => {
     const original = await f.create(), restricted = await f.create({ planIds: [f.plan.id] });
     if (replacement) await f.set(original.id);
     await f.change(plan.id, 'next_billing_date');
+    const destinationOnly = await f.create({ planIds: [plan.id] });
     const before = await f.get(), state = await f.state(), audits = (await f.read()).audits;
-    await expect(f.set(restricted.id)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['discount_plan'] } });
+    await expect(f.set(restricted.id)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['discount_scheduled_plan'] } });
+    await expect(f.set(destinationOnly.id)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['discount_plan'] } });
     expect(await f.get()).toEqual(before); expect(await f.state()).toEqual(state); expect((await f.read()).audits).toEqual(audits);
     const eligible = await f.create({ planIds: [f.plan.id, plan.id] });
     expect((await f.set(eligible.id)).discount).toMatchObject({ discountId: eligible.id });
@@ -178,7 +180,7 @@ describe('editing a live membership discount', () => {
     const f = await setup(), discount = await f.create(), waiver = await f.create({ percentBasisPoints: undefined, duration: undefined,
       cycles: undefined, waivesSignupFee: true });
     const before = await f.set(discount.id), state = await f.state();
-    await expect(f.set(waiver.id)).rejects.toMatchObject({ code: 'conflict' });
+    await expect(f.set(waiver.id)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['membership_fee_only'] } });
     expect(await f.get()).toEqual(before); expect(await f.state()).toEqual(state);
   });
 

@@ -64,6 +64,9 @@ export function CatalogEditor({ kind, record, currency, taxes, busy, locked = fa
   const [invalid, setInvalid] = useState(false);
   const [source, setSource] = useState(record), [draft, setDraft] = useState(() => catalogDraft(record, currency));
   const [clashes, setClashes] = useState<Partial<typeof draft>>({});
+  const carriedTaxes = record && 'taxRateIds' in record ? record.taxRateIds : [];
+  const validTaxes = draft.taxRateIds.filter(id => taxes.some(rate => rate.id === id && (rate.active || carriedTaxes.includes(id))));
+  if (validTaxes.length !== draft.taxRateIds.length) setDraft({ ...draft, taxRateIds: validTaxes });
   if (source !== record) {
     const before = catalogDraft(source, currency), fresh = catalogDraft(record, currency);
     const nextClashes: Partial<typeof draft> = {};

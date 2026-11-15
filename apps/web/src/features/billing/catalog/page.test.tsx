@@ -12,6 +12,7 @@ import { MembershipPanel } from '../memberships/member-tab.js';
 import { registration as catalogRegistration } from './registrations.js';
 import { registration as membershipRegistration } from '../memberships/registrations.js';
 import type { BillingClient } from './api.js';
+import { CatalogEditor } from './editor.js';
 
 const id = (n: number) => '019a0af0-9c00-7000-8000-' + String(n).padStart(12, '0'), createdAt = '2026-10-23T12:00:00Z';
 const plan: Plan = { id: id(2), createdAt, name: 'Unlimited', currency: 'CAD', amountCents: 9999, interval: 'monthly', signupFeeCents: 2500, trialDays: 0, commitmentMonths: 6, active: true, revision: 3, taxRateIds: [id(3)] };
@@ -36,6 +37,43 @@ function start(view: React.ReactNode) {
 }
 afterEach(cleanup);
 describe('catalog and member billing screens', () => {
+  it.each([
+    ['tax_inactive', 'A selected tax rate is inactive.'],
+    ['currency_mismatch', 'The currency does not match the gym.'],
+    ['tax_rate_attached', 'This tax rate is still attached to catalog items.'],
+    ['unknown', 'This change could not be saved.'],
+  ])('keeps an existing catalog draft saveable after %s', async (reason, message) => {
+    const api = client(); vi.mocked(api.call).mockRejectedValueOnce(new ApiError(409, 'conflict', [reason!]));
+    start(<CatalogWorkspace gymId={id(1)} client={api}/>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit Unlimited' }));
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Draft' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect((await screen.findByRole('alert')).textContent).toContain(message);
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.queryByRole('button', { name: 'Reload record' })).toBeNull();
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Draft');
+  });
+  it('words a create conflict without asking to reload an absent record', async () => {
+    const api = client(); vi.mocked(api.call).mockRejectedValueOnce(new ApiError(409, 'conflict', ['revision_conflict']));
+    start(<CatalogWorkspace gymId={id(1)} client={api}/>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Add plan' }));
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'New plan' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('while this record was being created');
+    expect(screen.queryByRole('button', { name: 'Reload record' })).toBeNull();
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(false));
+  });
+  it('prunes tax selections when only the tax list changes and keeps them pruned after reactivation', async () => {
+    const save = vi.fn(async () => {}), extra = { ...tax, id: id(90), name: 'Extra tax' };
+    const props = { kind: 'plans' as const, record: plan, currency: 'CAD', busy: false, save, cancel: vi.fn() };
+    const view = render(<CatalogEditor {...props} taxes={[tax, extra]}/>);
+    fireEvent.click(screen.getByLabelText('Extra tax (9.975%, Tax added)'));
+    view.rerender(<CatalogEditor {...props} taxes={[tax, { ...extra, active: false }]}/>);
+    fireEvent.submit(screen.getByRole('button', { name: 'Save' }).closest('form')!);
+    await waitFor(() => expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ taxRateIds: [tax.id] })));
+    view.rerender(<CatalogEditor {...props} taxes={[tax, extra]}/>);
+    expect((screen.getByLabelText('Extra tax (9.975%, Tax added)') as HTMLInputElement).checked).toBe(false);
+  });
   it('titles the outer dialog from the applied price-change result, and resets it on reopening', async () => {
     const api = client();
     const preview: PlanPriceChangePreview = { plan: { id: plan.id, name: plan.name, amountCents: plan.amountCents,
@@ -141,7 +179,7 @@ describe('catalog and member billing screens', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Edit Unlimited' }));
     const edit = screen.getByRole('button', { name: 'Edit Unlimited' }) as HTMLButtonElement;
     expect(edit.disabled).toBe(true);
-    vi.mocked(api.call).mockRejectedValueOnce(new ApiError(409, 'conflict'));
+    vi.mocked(api.call).mockRejectedValueOnce(new ApiError(409, 'conflict', ['revision_conflict']));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await screen.findByRole('button', { name: 'Reload record' });
     expect(edit.disabled).toBe(true);
@@ -149,7 +187,7 @@ describe('catalog and member billing screens', () => {
     expect(edit.disabled).toBe(false);
   });
   it('keeps the catalog draft visible on a conflict', async () => {
-    const api = client(); vi.mocked(api.call).mockRejectedValue(new ApiError(409, 'conflict'));
+    const api = client(); vi.mocked(api.call).mockRejectedValue(new ApiError(409, 'conflict', ['revision_conflict']));
     start(<CatalogWorkspace gymId={id(1)} client={api}/>);
     fireEvent.click(await screen.findByRole('button', { name: 'Edit Unlimited' }));
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'My changed plan' } });
@@ -164,7 +202,7 @@ describe('catalog and member billing screens', () => {
     { section: 'Tax rates', record: tax, operation: 'updateTaxRate', parameter: 'taxRateId' },
   ])('reloads a stale $section editor and saves with the fresh revision', async ({ section, record, operation, parameter }) => {
     const api = client(); api.charges.mockResolvedValue([charge]);
-    vi.mocked(api.call).mockRejectedValueOnce(new ApiError(409, 'conflict'));
+    vi.mocked(api.call).mockRejectedValueOnce(new ApiError(409, 'conflict', ['revision_conflict']));
     start(<CatalogWorkspace gymId={id(1)} client={api}/>);
     fireEvent.click(await screen.findByRole('button', { name: section }));
     fireEvent.click(screen.getByRole('button', { name: 'Edit ' + record.name }));
@@ -196,7 +234,7 @@ describe('catalog and member billing screens', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).toBeNull());
   });
   it('retains a draft and offers another reload when reloading fails', async () => {
-    const api = client(); vi.mocked(api.call).mockRejectedValueOnce(new ApiError(409, 'conflict'));
+    const api = client(); vi.mocked(api.call).mockRejectedValueOnce(new ApiError(409, 'conflict', ['revision_conflict']));
     start(<CatalogWorkspace gymId={id(1)} client={api}/>);
     fireEvent.click(await screen.findByRole('button', { name: 'Edit Unlimited' }));
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'My draft' } });
@@ -214,7 +252,7 @@ describe('catalog and member billing screens', () => {
     await waitFor(() => expect(api.call).toHaveBeenLastCalledWith('updatePlan', expect.objectContaining({ revision: 4, name: 'My draft' }), { planId: plan.id }));
   });
   it('keeps a removed record draft without allowing another stale save', async () => {
-    const api = client(); vi.mocked(api.call).mockRejectedValueOnce(new ApiError(409, 'conflict'));
+    const api = client(); vi.mocked(api.call).mockRejectedValueOnce(new ApiError(409, 'conflict', ['revision_conflict']));
     start(<CatalogWorkspace gymId={id(1)} client={api}/>);
     fireEvent.click(await screen.findByRole('button', { name: 'Edit Unlimited' }));
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'My draft' } });
@@ -229,7 +267,7 @@ describe('catalog and member billing screens', () => {
   it('drops tax selections that no longer apply, retains applicable edits and reloads untouched fields', async () => {
     const api = client(), extra = { ...tax, id: id(10), name: 'Extra tax' };
     api.taxes.mockResolvedValue([tax, extra]);
-    vi.mocked(api.call).mockRejectedValueOnce(new ApiError(409, 'conflict'));
+    vi.mocked(api.call).mockRejectedValueOnce(new ApiError(409, 'conflict', ['revision_conflict']));
     start(<CatalogWorkspace gymId={id(1)} client={api}/>);
     fireEvent.click(await screen.findByRole('button', { name: 'Edit Unlimited' }));
     fireEvent.click(screen.getByLabelText('Extra tax (9.975%, Tax added)'));
@@ -258,7 +296,7 @@ describe('catalog and member billing screens', () => {
     const api = client(), extra = { ...tax, id: id(10), name: 'Extra tax' }, third = { ...tax, id: id(11), name: 'Third tax' }, fourth = { ...tax, id: id(12), name: 'Fourth tax' };
     api.taxes.mockResolvedValue([tax, extra, third, fourth]);
     api.plans.mockResolvedValue([{ ...plan, taxRateIds: [tax.id, extra.id] }]);
-    vi.mocked(api.call).mockRejectedValueOnce(new ApiError(409, 'conflict'));
+    vi.mocked(api.call).mockRejectedValueOnce(new ApiError(409, 'conflict', ['revision_conflict']));
     start(<CatalogWorkspace gymId={id(1)} client={api}/>);
     fireEvent.click(await screen.findByRole('button', { name: 'Edit Unlimited' }));
     const box = (name: string) => screen.getByLabelText(name + ' (9.975%, Tax added)') as HTMLInputElement;
@@ -351,7 +389,7 @@ describe('catalog and member billing screens', () => {
     const api = client(); answering(api, usage); await archiveFromEditor(api);
     const confirm = await screen.findByRole('button', { name: 'Remove and archive — items: 3' });
     const loads = vi.mocked(api.taxes).mock.calls.length;
-    vi.mocked(api.call).mockRejectedValueOnce(new ApiError(409, 'conflict'));
+    vi.mocked(api.call).mockRejectedValueOnce(new ApiError(409, 'conflict', ['revision_conflict']));
     fireEvent.click(confirm);
     expect((await screen.findByRole('alert')).textContent).toContain('Reload and review before saving.');
     expect(screen.queryByRole('region', { name: 'Archive Sales tax?' })).toBeNull();
@@ -378,14 +416,15 @@ describe('catalog and member billing screens', () => {
     expect(await screen.findByRole('region', { name: 'Archive Sales tax?' })).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
   });
-  it.each([{ reason: [] }, { reason: ['tax_rate_inactive'] }])('keeps a stale or unrelated conflict out of the archive panel (reason: $reason)', async ({ reason }) => {
+  it.each([{ reason: ['revision_conflict'] }, { reason: ['tax_inactive'] }, { reason: [] }])('keeps a stale or unrelated conflict out of the archive panel (reason: $reason)', async ({ reason }) => {
     const api = client(); let found: TaxRateUsage = { chargeTypes: [], packs: [], plans: [], memberships: 0 };
     vi.mocked(api.call).mockImplementation((async (name: string) => {
       if (name === 'getTaxRateUsage') return { data: found };
       found = usage; throw new ApiError(409, 'conflict', reason);
     }) as unknown as BillingClient['call']);
     await archiveFromEditor(api);
-    expect((await screen.findByRole('alert')).textContent).toContain('Reload and review before saving.');
+    expect((await screen.findByRole('alert')).textContent).toContain(reason.includes('revision_conflict') ? 'Reload and review before saving.'
+      : reason.includes('tax_inactive') ? 'A selected tax rate is inactive.' : 'This change could not be saved.');
     expect(screen.queryByRole('region', { name: 'Archive Sales tax?' })).toBeNull();
     expect(vi.mocked(api.call).mock.calls.filter(call => call[0] === 'getTaxRateUsage')).toHaveLength(1);
     expect((screen.getByLabelText('Active') as HTMLInputElement).checked).toBe(false);
@@ -421,7 +460,7 @@ describe('catalog and member billing screens', () => {
   });
   it('refreshes the catalog when removing an archived tax rate conflicts, so a retry uses the fresh revision', async () => {
     const api = client(), archived = { ...tax, active: false, revision: 2 }; vi.mocked(api.taxes).mockResolvedValue([archived]);
-    vi.mocked(api.call).mockRejectedValueOnce(new ApiError(409, 'conflict'));
+    vi.mocked(api.call).mockRejectedValueOnce(new ApiError(409, 'conflict', ['revision_conflict']));
     start(<CatalogWorkspace gymId={id(1)} client={api}/>);
     const remove = await screen.findByRole('button', { name: 'Remove inactive tax rates from Unlimited' });
     api.plans.mockResolvedValue([{ ...plan, revision: 4 }]);
@@ -475,7 +514,7 @@ describe('catalog and member billing screens', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Add tax rate' }));
     answer({ data: usage });
     const panel = await screen.findByRole('region', { name: 'Remove Sales tax from these items?' });
-    vi.mocked(api.call).mockRejectedValueOnce(new ApiError(409, 'conflict'));
+    vi.mocked(api.call).mockRejectedValueOnce(new ApiError(409, 'conflict', ['revision_conflict']));
     fireEvent.click(within(panel).getByRole('button', { name: 'Remove from items: 3' }));
     await waitFor(() => expect(screen.queryByRole('region', { name: 'Remove Sales tax from these items?' })).toBeNull());
     expect(screen.queryByRole('button', { name: 'Reload record' })).toBeNull();
