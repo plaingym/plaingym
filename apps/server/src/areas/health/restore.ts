@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash } from 'node:crypto';
 import { RestoreFailure, s3Reason } from './restore.failure.js';
-import { mkdtemp, rename, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readdir, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import { and, desc, eq } from 'drizzle-orm';
@@ -92,12 +92,21 @@ export class RestoreService {
     if (!body) throw new RestoreFailure('A snapshot object is missing from the bucket');
     await saveStream(path, body);
   }
+  /** Under the backup lock, after the journal proves no unfinished restore needs these plaintext folders. */
+  async #sweepStaging(): Promise<void> {
+    let entries;
+    try { entries = await readdir(this.options.stagingDirectory, { withFileTypes: true }); }
+    catch (error) { if (missing(error)) return; throw error; }
+    for (const entry of entries) if (entry.isDirectory() && /^restore-[A-Za-z0-9]+$/.test(entry.name))
+      await rm(childPath(this.options.stagingDirectory, entry.name), { recursive: true, force: true });
+  }
   async restore(id: string, identity: string): Promise<void> {
     assertNoTransaction('restore.begin'); z.uuid().parse(id);
     const o = this.options;
     const verified = await o.database.locked(async () => {
       if (await o.gate.isClosed()) throw new RestoreFailure('A verified restore is already staged; resume it first');
       await privateDirectory(o.stagingDirectory);
+      await this.#sweepStaging();
       const staging = await mkdtemp(join(o.stagingDirectory, 'restore-'));
       await privateDirectory(dirname(resolve(o.uploadsDirectory)));
       if (!o.uploadsStore && (await stat(staging)).dev !== (await stat(dirname(resolve(o.uploadsDirectory)))).dev) {
@@ -154,6 +163,7 @@ export class RestoreService {
           // active and `resume` needs this staging; one that can't be read back might be, so its staging stays too.
           const published = await journalNames(o.gate.statePath, state.staging);
           activated = published !== false;
+          if (published === null) throw new RestoreFailure('A restore may be staged; preserve the restore state and run resume', { cause: error });
           if (published) throw new RestoreFailure(stagedFailure, { cause: error });
           throw error;
         }
@@ -175,7 +185,14 @@ export class RestoreService {
   }
   async resume(): Promise<void> {
     const o = this.options;
-    if (!await exists(o.gate.statePath)) return;
+    if (!await exists(o.gate.statePath)) {
+      // Recheck after taking the lock: another caller may have staged a restore while we waited.
+      const absent = await o.database.locked(async () => {
+        if (await exists(o.gate.statePath)) return false;
+        await this.#sweepStaging(); return true;
+      });
+      if (absent) return;
+    }
     await o.gate.close();
     await this.#staged(() => o.database.locked(async () => {
       const journal = stateSchema.safeParse(await readRestoreJournal(o.gate.statePath));
@@ -183,7 +200,7 @@ export class RestoreService {
       const state = journal.data;
       if (state.phase === 'complete') {
         await rm(resolve(o.uploadsDirectory) + '.previous-' + state.id, { recursive: true, force: true });
-        await rm(childPath(o.stagingDirectory, state.staging), { recursive: true, force: true });
+        await this.#sweepStaging();
         o.gate.reopen(); return;
       }
       const staging = childPath(o.stagingDirectory, state.staging);

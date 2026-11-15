@@ -11,6 +11,18 @@ import { decryptSnapshot, readSnapshotJson } from './restore.content.js';
 import { ageKeyReason } from './restore.failure.js';
 
 const directories: string[] = [];
+it('keeps a wrong key distinct from damaged authenticated payloads', async () => {
+  const identity = await age.generateIdentity(), recipient = await age.identityToRecipient(identity);
+  const encrypted = new Uint8Array(await new Response(await age.encrypt(recipient, bytesStream('snapshot'))).arrayBuffer());
+  const wrongKey = await decryptSnapshot(await age.generateIdentity(), bytesStream(encrypted)).catch((error: unknown) => error);
+  expect(wrongKey).toBeInstanceOf(age.AgeKeyMismatchError);
+  expect(ageKeyReason(wrongKey)).toBe("The key doesn't open this snapshot");
+  // Typed diagnostics are independent of the upstream library's wording.
+  expect(ageKeyReason(new age.AgeKeyMismatchError(new Error('changed library wording')))).toBe("The key doesn't open this snapshot");
+  encrypted[encrypted.length - 1]! ^= 1;
+  await expect((async () => new Response(await decryptSnapshot(identity, bytesStream(encrypted))).arrayBuffer())())
+    .rejects.toBeInstanceOf(SnapshotContentError);
+});
 afterEach(async () => { vi.restoreAllMocks(); for (const root of directories.splice(0)) await rm(root, { recursive: true, force: true }); });
 it('types the metadata size limit and wraps malformed snapshot JSON with its parser cause', async () => {
   const root = await mkdtemp(join(tmpdir(), 'restore-content-')); directories.push(root);

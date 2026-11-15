@@ -104,8 +104,8 @@ export function GoLiveSettings() {
     setBusy(true); setChecking(true); setCheckError(null); setMessage(null);
     try {
       const restoreId = checklist.restoreReconciliation.restoreId;
-      const result = await gym.save((revision, signal) => api.POST('/api/settings/go-live/reconciliation', { signal, body: { revision, restoreId } }),
-        { adopt, readAt: checklist.revision, timeoutMs: reconcileTimeoutMs });
+      const result = await gym.check((revision, signal) => api.POST('/api/settings/go-live/reconciliation', { signal, body: { revision, restoreId } }),
+        { readAt: checklist.revision, timeoutMs: reconcileTimeoutMs });
       // A check already running for this restore (another tab, or one this page stopped waiting for) is left to finish.
       if (result.status === 409 && checkRunning(result.error)) { setCheckError('reconcileBusy'); setReload((value) => value + 1); return; }
       if (result.status === 409) { conflict(result, checklist.revision); return; }

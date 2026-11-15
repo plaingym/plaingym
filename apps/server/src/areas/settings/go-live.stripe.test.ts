@@ -13,6 +13,7 @@ import { FakePayments } from '../../infra/payments/index.js';
 import { StripeFixtures } from '../../infra/payments/stripe-fixtures.js';
 import { stripeProvisioner } from '../../infra/payments/setup.js';
 import { createChargeRunner } from '../billing/runner/index.js';
+import { createRestoreCheckLease } from '../health/restore.billing-lease.js';
 import { createInvoiceTransitions } from '../billing/transitions/index.js';
 import { createStripeStep } from '../setup/stripe-step.js';
 import { createGoLiveService } from './go-live.js';
@@ -38,6 +39,7 @@ async function fixture(restored = true) {
       return provider;
     } });
   const service = createGoLiveService({ scope, clock, smtpConfigured: async () => false, paymentsConfigured: async () => connected,
+    restoreCheckLease: createRestoreCheckLease(() => database.appUrl),
     restoreCheck: (id, at, restoreId) => runner.postRestore(id, at, restoreId) });
   let restoreId: string | undefined;
   if (restored) {

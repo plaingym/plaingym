@@ -17,11 +17,14 @@ export type CheckBackupDestination = (destination: CreateBackupKeyRequest['desti
 export async function probeBackupDestination(store: BackupObjectStore): Promise<void> {
   const id = randomUUID(), name = `blobs/probe-${id}`;
   const value = new TextEncoder().encode('PlainGym backup destination check');
+  const write = () => store.putObject(name, new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(value); controller.close(); } }));
   await store.listObjects(`snapshots/${id}/`);
   await store.listObjects(name);
   try {
-    await store.putObject(name, new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(value); controller.close(); } }));
-    const body = await store.getObject(name);
+    await write();
+    let body = await store.getObject(name);
+    // Pruning can remove this unreferenced object between write and read; one fresh write/read retries that race.
+    if (!body) { await write(); body = await store.getObject(name); }
     if (!body) throw new Error('Backup probe is missing');
     let offset = 0;
     for await (const chunk of body) {

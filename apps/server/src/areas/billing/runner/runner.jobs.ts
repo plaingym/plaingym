@@ -6,6 +6,7 @@ import { chargeFailuresJob, dailyRunJob, retryJob, type ChargeRunner } from './i
 import { gymSettingsAccessor } from '../../settings/settings.js';
 import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
 import { notConfigured } from './reconciliation.js';
+import { restoreCheckLease, type RestoreCheckLease } from '../../health/restore.billing-lease.js';
 
 let configured: ChargeRunner | undefined;
 export function configureChargeRunner(runner: ChargeRunner) { configured = runner; }
@@ -15,7 +16,7 @@ export async function rerunRestoreReconciliation(gymId: string, snapshotAt: Date
   return configured.postRestore(gymId, snapshotAt, restoreId);
 }
 export function createRunnerJobs(read: () => ChargeRunner | undefined = () => configured,
-  settings: GymSettingsAccessor = gymSettingsAccessor): readonly JobRegistration[] {
+  settings: GymSettingsAccessor = gymSettingsAccessor, lease: RestoreCheckLease = restoreCheckLease): readonly JobRegistration[] {
   const required = () => { const runner = read(); if (!runner) throw new Error('Charge runner is not configured'); return runner; };
   async function scheduled(gymId: string) {
     const runner = read();
@@ -49,9 +50,10 @@ export function createRunnerJobs(read: () => ChargeRunner | undefined = () => co
       await required().retry(invoiceId, context, owner);
     } },
     { id: 'billing.runner.restore', async handler(payload, context) {
-      const result = await required().postRestore(context.gymId,
-        new Date(instantSchema.parse((payload as { snapshotAt?: unknown } | null)?.snapshotAt)),
-        idSchema.optional().parse((payload as { restoreId?: unknown } | null)?.restoreId));
+      const snapshotAt = instantSchema.parse((payload as { snapshotAt?: unknown } | null)?.snapshotAt);
+      const restoreId = idSchema.optional().parse((payload as { restoreId?: unknown } | null)?.restoreId);
+      const result = await lease(context.gymId, restoreId ?? 'legacy', () => required().postRestore(context.gymId,
+        new Date(snapshotAt), restoreId));
       // Without Stripe a retry would find the same stored references; the report lists them for the owner, who connects
       // Stripe and checks again. A check that ran with Stripe and left issues retries.
       if (!result.readyForOwnerReview && result.stripeConfigured !== false)

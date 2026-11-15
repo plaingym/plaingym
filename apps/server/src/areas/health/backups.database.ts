@@ -15,6 +15,8 @@ import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { reencryptSecret, type SecretClass } from '../../core/secrets.js';
 
 type Transaction = Parameters<Parameters<Connection['db']['transaction']>[0]>[0];
+const restoreOverrides = { default_transaction_read_only: 'off', statement_timeout: '0', lock_timeout: '0',
+  idle_in_transaction_session_timeout: '0', transaction_timeout: '0' };
 type SecretField = { readonly table: string; readonly column: string; readonly secretClass: SecretClass; readonly pending?: boolean;
   readonly read: SQL; readonly write: (value: string) => SQL };
 // Pending credentials use the same envelope context as the active S3 column when staff confirm them.
@@ -123,6 +125,7 @@ export class PostgresMaintenance {
     const env = { ...process.env, PGHOST: url.hostname, PGPORT: url.port || '5432',
       PGDATABASE: this.databaseName, PGUSER: 'maintenance',
       PGPASSWORD: decodeURIComponent(url.password), PGCONNECT_TIMEOUT: '10',
+      ...(tool === 'pg_restore' ? { PGOPTIONS: Object.entries(restoreOverrides).map(([name, value]) => `-c ${name}=${value}`).join(' ') } : {}),
       ...(url.searchParams.get('sslmode') ? { PGSSLMODE: url.searchParams.get('sslmode')! } : {}) };
     const command = this.tools(tool, env);
     const child = spawn(command.command, [...command.args, ...args], {
@@ -154,11 +157,10 @@ export class PostgresMaintenance {
   }
   async restore(path: string): Promise<void> {
     assertNoTransaction('restore.pg_restore');
-    // Startup parameters outrank stored defaults, so a refused snapshot's database
+    // Startup parameters outrank stored defaults, so a refused snapshot's database or role
     // defaults (read-only, timeouts) can't block the reset that removes them.
     const resetUrl = new URL(this.url);
-    for (const [name, value] of Object.entries({ default_transaction_read_only: 'off', statement_timeout: '0', lock_timeout: '0',
-      idle_in_transaction_session_timeout: '0', transaction_timeout: '0' })) resetUrl.searchParams.set(name, value);
+    for (const [name, value] of Object.entries(restoreOverrides)) resetUrl.searchParams.set(name, value);
     const connection = openConnection(resetUrl.toString(), 1);
     try {
       await connection.sql.begin(async (tx) => {
@@ -174,6 +176,8 @@ export class PostgresMaintenance {
         await tx`drop schema if exists public cascade`;
         await tx`drop schema if exists drizzle cascade`;
         await tx`alter database ${tx(this.databaseName)} reset all`;
+        await tx`alter role maintenance in database ${tx(this.databaseName)} reset all`;
+        await tx`alter role maintenance reset all`;
       });
     } finally { await connection.close(); }
     const output = await this.tool('pg_restore', ['--dbname=' + this.databaseName,

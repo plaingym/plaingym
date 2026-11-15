@@ -26,6 +26,12 @@ exposes the same controllable entry points used by the jobs and PostgreSQL scena
 | `dismissChargeFailures(context, runIds)` | Staff (a user actor) dismiss what the named reports still list, with an audit per report; a report written after the caller read the list is not named, so it stays open. The gym's dismissals run one at a time (a transaction-level advisory lock), so two at once write one audit per report; the lock is the gym's `chargeFailures` entry in `gymAdvisoryLocks` (`packages/db/src/locks.ts`), and the dismissal reads only the named runs under it. Another gym's, an unknown, or a report older than the 90 days listed is `not_found`, and nothing is dismissed. |
 | `onAssigned` | Inject into `createMembershipService`: issue calculated first-period proration and sign-up-fee invoices in the assignment transaction. Never call the provider there. |
 
+The restore job and go-live rerun share a per-gym PostgreSQL session lease before
+calling `postRestore`. The dedicated connection holds no transaction while checking
+the provider. A busy job retries through the queue; a busy rerun answers 409. The
+lease has no elapsed-time takeover and is released when the call finishes or its
+process exits. Abandoned audit markers do not reserve a check.
+
 Generation locks one household and its due memberships in each short transaction.
 It commits invoice lines, numbering, date advances and audits together. Membership
 lines store the full-period `billedUnitAmountCents` and named `billedDiscount`

@@ -19,6 +19,7 @@ import { authConfig } from '../../infra/auth/config.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { createChargeRunner } from '../billing/runner/index.js';
 import { createRunnerJobs } from '../billing/runner/runner.jobs.js';
+import { createRestoreCheckLease } from '../health/restore.billing-lease.js';
 import { createInvoiceTransitions } from '../billing/transitions/index.js';
 import { createGymSettingsAccessor } from './settings.js';
 import { createGoLiveService } from './go-live.js';
@@ -37,8 +38,10 @@ const payments = vi.fn(async (gymId: string) => {
 const scope = database.forGym, settings = createGymSettingsAccessor({ scope, clock });
 const runner = createChargeRunner({ scope, clock, settings, jobs: new FakeJobs(clock), payments,
   transitions: createInvoiceTransitions({ scope, clock }) });
-const restoreJob = createRunnerJobs(() => runner, settings).find((job) => job.id === 'billing.runner.restore')!;
+const lease = createRestoreCheckLease(() => database.appUrl);
+const restoreJob = createRunnerJobs(() => runner, settings, lease).find((job) => job.id === 'billing.runner.restore')!;
 const service = createGoLiveService({ scope, clock, smtpConfigured: async () => true,
+  restoreCheckLease: lease,
   paymentsConfigured: async (gymId) => connected.has(gymId),
   restoreCheck: (gymId, at, restoreId) => runner.postRestore(gymId, at, restoreId) });
 
@@ -167,6 +170,26 @@ describe('restore check without Stripe', () => {
 });
 
 describe('restore checks belong to the Stripe mode they read', () => {
+  it.each(['job', 'rerun'] as const)('serializes a %s beside the other path beyond the old check lifetime', async first => {
+    const { gymId, userId, restoreId, job } = await restoredGym(), app = server('owner', gymId, userId);
+    const provider = new FakePayments(gymId, clock); provider.keyMode = 'test'; connected.set(gymId, provider);
+    let release!: () => void, entered!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; }), began = new Promise<void>(resolve => { entered = resolve; });
+    const list = vi.spyOn(provider, 'listChangesSince').mockImplementationOnce(async () => {
+      entered(); await hold; return { changes: [], nextCursor: null };
+    });
+    const checking = first === 'job' ? job() : rerun(app, gymId, restoreId);
+    try {
+      await began;
+      clock.advance(16 * 60_000);
+      if (first === 'job') expect((await rerun(app, gymId, restoreId)).status).toBe(409);
+      else await expect(job()).rejects.toThrow('Restore reconciliation is already running');
+      expect(list).toHaveBeenCalledTimes(1);
+      release(); await checking;
+      await job();
+      expect(list).toHaveBeenCalledTimes(2);
+    } finally { release(); await checking; connected.delete(gymId); clock.advance(-16 * 60_000); }
+  });
   it('requires a new check when a legacy report does not record its Stripe mode', async () => {
     const { gymId, userId, restoreId } = await restoredGym(), app = server('owner', gymId, userId);
     await stripeSettings(gymId, userId)('test');

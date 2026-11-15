@@ -2,7 +2,7 @@
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { runInTransaction } from '@plaingym/shared/transaction';
-import { decrypt, encrypt, generateIdentity, identityToRecipient, InvalidAgeIdentityError, validateRecipient } from './index.js';
+import { AgeDecryptionError, AgeKeyMismatchError, decrypt, encrypt, generateIdentity, identityToRecipient, InvalidAgeIdentityError, mapStreamErrors, validateRecipient } from './index.js';
 const stream = (bytes: Uint8Array) => new ReadableStream<Uint8Array>({ start(c) { c.enqueue(bytes); c.close(); } });
 describe('age streaming wrapper', () => {
   it('round trips across multiple authenticated age chunks', async () => {
@@ -27,7 +27,8 @@ describe('age streaming wrapper', () => {
       const first = ciphertext.slice(header, header + width), second = ciphertext.slice(header + width, header + 2 * width);
       ciphertext.set(second, header); ciphertext.set(first, header + width);
     }
-    await expect((async () => new Response(await decrypt(mode === 'wrong-key' ? await generateIdentity() : identity, stream(ciphertext))).arrayBuffer())()).rejects.toThrow();
+    await expect((async () => new Response(await decrypt(mode === 'wrong-key' ? await generateIdentity() : identity, stream(ciphertext))).arrayBuffer())())
+      .rejects.toBeInstanceOf(mode === 'wrong-key' ? AgeKeyMismatchError : AgeDecryptionError);
   });
   it('rejects encryption and decryption inside database transactions', async () => {
     const identity = await generateIdentity(), recipient = await identityToRecipient(identity);
@@ -40,5 +41,13 @@ describe('age streaming wrapper', () => {
     const failure: unknown = await decrypt(broken, stream(new Uint8Array())).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(InvalidAgeIdentityError);
     expect(failure).toMatchObject({ message: 'Invalid age private key', cause: expect.any(Error) });
+  });
+  it('forwards cancellation through the shared stream mapper and releases its reader', async () => {
+    let reason: unknown;
+    const input = new ReadableStream<Uint8Array>({ cancel(value) { reason = value; } });
+    const wrapped = mapStreamErrors(input, error => error);
+    await wrapped.cancel('stopped');
+    expect(reason).toBe('stopped');
+    expect(input.locked).toBe(false);
   });
 });

@@ -7,6 +7,7 @@ import { AppError } from '@plaingym/shared';
 import type { FakePayments } from '../../../infra/payments/index.js';
 import { createChargeRunner } from './index.js';
 import { createRunnerJobs } from './runner.jobs.js';
+import { createRestoreCheckLease } from '../../health/restore.billing-lease.js';
 import { useRunnerFixture, gate } from './runner.fixture.test-helper.js';
 
 const { db, factory, fixture, checkout } = useRunnerFixture();
@@ -237,7 +238,7 @@ describe('post-restore reconciliation', () => {
     f.clock.advance(16 * 60_000); await f.enable(false);
     const payments = vi.fn(async (): Promise<FakePayments> => { throw new AppError('unavailable', 'Stripe is not configured for this gym'); });
     const runner = createChargeRunner({ ...f.serviceOptions, transitions: f.transitions, payments });
-    const job = createRunnerJobs(() => runner, f.settings).find(job => job.id === 'billing.runner.restore')!;
+    const job = createRunnerJobs(() => runner, f.settings, createRestoreCheckLease(() => db.appUrl)).find(job => job.id === 'billing.runner.restore')!;
     const list = vi.spyOn(f.provider, 'listChangesSince');
     expect(await runner.postRestore(f.gymId, new Date('2028-03-01T17:00:00Z'))).toMatchObject({ inspected: 1,
       readyForOwnerReview: false, stripeConfigured: false, issues: expect.arrayContaining([

@@ -6,6 +6,7 @@ import { expect, inject, it } from 'vitest';
 import { openConnection } from '@plaingym/db/client';
 import { databaseUrl } from '@plaingym/db/testing/database';
 import { saveStream } from './backups.files.js';
+import { PostgresMaintenance } from './backups.database.js';
 import { useRestoreFixture } from './restore.fixture.test-helper.js';
 
 const f = useRestoreFixture();
@@ -49,7 +50,7 @@ it.each(['app', 'drizzle usage', 'drizzle view'])('keeps a restored snapshot wit
   }
 });
 
-it.each(['extra schema', 'database settings'])('restores a good archive after refusing one that leaves %s', async variant => {
+it.each(['extra schema', 'database settings', 'maintenance settings'])('restores a good archive after refusing one that leaves %s', async variant => {
   const source = openConnection(f.source.maintenanceUrl, 1);
   const target = openConnection(f.target.maintenanceUrl, 1);
   const good = join(f.root, 'good.dump'), hostile = join(f.root, 'hostile.dump');
@@ -60,7 +61,7 @@ it.each(['extra schema', 'database settings'])('restores a good archive after re
       // A name needing quoting also exercises the reset's identifier handling.
       await source.sql`create schema "restore leftovers" authorization maintenance`;
       await source.sql`create table "restore leftovers".probe (id int)`;
-    } else {
+    } else if (variant === 'database settings') {
       // COPY evaluates CHECKs, so loading this archive installs a persistent
       // database default as maintenance, just as untrusted snapshot SQL could.
       await source.sql`create function public.restore_setting_probe() returns boolean language plpgsql as '
@@ -71,14 +72,22 @@ it.each(['extra schema', 'database settings'])('restores a good archive after re
         end'`;
       await source.sql`create table public.restore_probe (id int check (public.restore_setting_probe()))`;
       await source.sql`insert into public.restore_probe values (1)`;
+    } else {
+      await source.sql`create function public.restore_setting_probe() returns boolean language plpgsql as '
+        begin
+          execute format(''alter role maintenance in database %I set statement_timeout to %L'', current_database(), ''5s'');
+          return true;
+        end'`;
+      await source.sql`create table public.restore_probe (id int check (public.restore_setting_probe()))`;
+      await source.sql`insert into public.restore_probe values (1)`;
     }
     await saveStream(hostile, await f.sourceMaintenance.tool('pg_dump', [
       '--format=custom', '--no-owner', '--schema=public', '--schema=drizzle',
       ...(variant === 'extra schema' ? ['--schema=restore leftovers'] : []),
     ]));
     await f.targetMaintenance.restore(hostile);
-    const failure = variant === 'extra schema' ? 'restore leftovers: unexpected usable schema' :
-      `Unexpected database or role settings: database ${f.target.name}, role all roles: statement_timeout`;
+    const failure = variant === 'extra schema' ? 'restore leftovers: unexpected usable schema' : variant === 'maintenance settings'
+      ? 'role maintenance' : `Unexpected database or role settings: database ${f.target.name}, role all roles: statement_timeout`;
     await expect(f.targetMaintenance.migrate()).rejects.toThrow(failure);
     if (variant === 'database settings') await expect(f.targetMaintenance.migrate()).rejects.toThrow('role all roles: lock_timeout');
     await f.targetMaintenance.restore(good);
@@ -96,24 +105,32 @@ it.each(['extra schema', 'database settings'])('restores a good archive after re
       await connection.sql`drop function if exists public.restore_setting_probe()`;
       const name = connection === source ? f.source.name : f.target.name;
       await connection.sql`alter database ${connection.sql(name)} reset all`;
+      await connection.sql`alter role maintenance in database ${connection.sql(name)} reset all`;
       await connection.close();
     }
   }
 });
 
-it('clears a stored read-only database default that would block its own reset', async () => {
+it.each(['database', 'role'])('clears a stored read-only %s default that would block its own reset', async kind => {
   const admin = openConnection(databaseUrl(inject('testDatabase').adminUrl, f.target.name), 1);
   const good = join(f.root, 'good.dump');
   try {
     await saveStream(good, await f.sourceMaintenance.dump());
     // Snapshot SQL runs as maintenance, which owns the database, so it can store this default.
-    await admin.sql`alter database ${admin.sql(f.target.name)} set default_transaction_read_only to on`;
-    await f.targetMaintenance.restore(good);
+    if (kind === 'database') await admin.sql`alter database ${admin.sql(f.target.name)} set default_transaction_read_only to on`;
+    else await admin.sql`alter role maintenance in database ${admin.sql(f.target.name)} set default_transaction_read_only to on`;
+    let pgOptions: string | undefined;
+    const maintenance = new PostgresMaintenance(
+      f.target.maintenanceUrl, (tool, env) => { if (tool === 'pg_restore') pgOptions = env.PGOPTIONS; return f.targetMaintenance.tools(tool, env); });
+    await maintenance.restore(good);
+    expect(pgOptions).toContain('-c default_transaction_read_only=off');
+    expect(pgOptions).toContain('-c statement_timeout=0');
     await expect(f.targetMaintenance.migrate()).resolves.toBeUndefined();
     expect(await admin.sql`select 1 from pg_catalog.pg_db_role_setting
       where setdatabase = (select oid from pg_catalog.pg_database where datname = current_database())`).toHaveLength(0);
   } finally {
     await admin.sql`alter database ${admin.sql(f.target.name)} reset all`;
+    await admin.sql`alter role maintenance in database ${admin.sql(f.target.name)} reset all`;
     await admin.close();
   }
 });

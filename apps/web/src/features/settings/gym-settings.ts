@@ -183,5 +183,26 @@ export function useGymSettings() {
       }
       return { status, data: result.data, error: result.error, settings, moved };
     }), [cache, rendered]);
-  return { settings: query.data?.settings, epoch: query.data?.epoch ?? 0, loading: query.isPending, failed: query.isError, reload, save };
+  /** A reconciliation check only writes audits. Capture its revision in the queue, then wait outside it. */
+  const check = useCallback(async (send: (revision: number, signal: AbortSignal) => Promise<Sent>,
+    { readAt, timeoutMs = saveTimeoutMs }: SaveOptions = {}): Promise<SaveResult> => {
+    const prepared = await enqueue(cache, async () => {
+      const current = cached(cache);
+      if (!current || failedToLoad(cache)) throw new Error('The settings are not loaded');
+      const unsent = { status: 409, data: undefined, error: undefined, settings: current.settings, moved: false };
+      if (current.epoch !== rendered) return { refused: { ...unsent, moved: true, refused: 'reloaded' as const } };
+      if (readAt !== undefined && current.settings.revision > readAt) return { refused: { ...unsent, refused: 'saved' as const } };
+      return { current };
+    });
+    if (prepared.refused) return prepared.refused;
+    const current = prepared.current!;
+    // The check changes no settings, so a section that saved while it ran leaves the gym unmoved for this reload.
+    const reloadConflict = () => enqueue(cache, () => reloadAfterConflict(cache, cached(cache)?.settings.revision ?? current.settings.revision));
+    const result = await sendWithin(send, current.settings.revision, timeoutMs, reloadConflict);
+    if (result.response.status === 409) await reloadConflict();
+    const after = cached(cache);
+    return { status: result.response.status, data: result.data, error: result.error,
+      settings: after?.settings ?? current.settings, moved: !!after && after.epoch !== current.epoch };
+  }, [cache, rendered]);
+  return { settings: query.data?.settings, epoch: query.data?.epoch ?? 0, loading: query.isPending, failed: query.isError, reload, save, check };
 }

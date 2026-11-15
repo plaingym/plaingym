@@ -42,6 +42,29 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('the gym settings save queue', () => {
+  it('lets another section save while a reconciliation check is still running, without adopting its stale response', async () => {
+    const { result } = await mount(), started = deferred(), finish = deferred();
+    const checking = result.current.check(async () => { started.resolve(); await finish.promise; return reply(200, { oldRevision: 3 }); });
+    await started.promise;
+    try {
+      expect((await result.current.save(save({ name: 'Saved during check' }))).settings.revision).toBe(4);
+      finish.resolve();
+      expect((await checking).settings).toMatchObject({ revision: 4, name: 'Saved during check' });
+      await waitFor(() => expect(result.current.settings).toMatchObject({ revision: 4, name: 'Saved during check' }));
+    } finally { finish.resolve(); await checking; }
+  });
+  it('keeps every section\'s input when a check refused after another section saved finds only that save', async () => {
+    const { result } = await mount(), started = deferred(), finish = deferred();
+    const checking = result.current.check(async () => { started.resolve(); await finish.promise; return reply(409); });
+    await started.promise;
+    try {
+      expect((await result.current.save(save({ name: 'Saved during check' }))).settings.revision).toBe(4);
+      const epoch = result.current.epoch;
+      finish.resolve();
+      expect(await checking).toMatchObject({ status: 409, moved: false, settings: { revision: 4 } });
+      expect(result.current.epoch).toBe(epoch);
+    } finally { finish.resolve(); await checking; }
+  });
   it('runs a reload behind the saves asked for before it, so the older reply never replaces a newer saved revision', async () => {
     const { result } = await mount();
     const sending = deferred(), started = deferred();

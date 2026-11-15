@@ -10,10 +10,27 @@ export class InvalidAgeIdentityError extends Error {
 export class AgeDecryptionError extends Error {
   constructor(cause: unknown) { super('Age decryption failed', { cause }); this.name = 'AgeDecryptionError'; }
 }
+export class AgeKeyMismatchError extends Error {
+  constructor(cause: Error) { super(cause.message, { cause }); this.name = 'AgeKeyMismatchError'; }
+}
 function decryptionFailure(error: unknown): unknown {
-  if (error instanceof Error && error.constructor === Error && !('code' in error) &&
-      error.message !== "no identity matched any of the file's recipients") return new AgeDecryptionError(error);
+  if (error instanceof Error && error.constructor === Error && !('code' in error))
+    return error.message === "no identity matched any of the file's recipients" ? new AgeKeyMismatchError(error) : new AgeDecryptionError(error);
   return error;
+}
+/** Preserve pull backpressure, cancellation and error identity with one shared stream pump. */
+export function mapStreamErrors<T>(stream: ReadableStream<T>, map: (error: unknown) => unknown): ReadableStream<T> {
+  const reader = stream.getReader();
+  return new ReadableStream({
+    async pull(controller) {
+      try {
+        const result = await reader.read();
+        if (result.done) { reader.releaseLock(); controller.close(); }
+        else controller.enqueue(result.value);
+      } catch (error) { reader.releaseLock(); controller.error(map(error)); }
+    },
+    async cancel(reason) { try { await reader.cancel(reason); } finally { reader.releaseLock(); } },
+  });
 }
 /** Only native public recipients; passwords and plugins are never accepted. */
 export function validateRecipient(recipient: string): void {
@@ -38,15 +55,5 @@ export async function decrypt(identity: string, input: ReadableStream<Uint8Array
   let plaintext: ReadableStream<Uint8Array>;
   try { plaintext = await decrypter.decrypt(input); }
   catch (error) { throw decryptionFailure(error); }
-  const reader = plaintext.getReader();
-  return new ReadableStream({
-    async pull(controller) {
-      try {
-        const result = await reader.read();
-        if (result.done) { reader.releaseLock(); controller.close(); }
-        else controller.enqueue(result.value);
-      } catch (error) { reader.releaseLock(); controller.error(decryptionFailure(error)); }
-    },
-    async cancel(reason) { try { await reader.cancel(reason); } finally { reader.releaseLock(); } },
-  });
+  return mapStreamErrors(plaintext, decryptionFailure);
 }

@@ -14,12 +14,14 @@ import { authorize } from '../staff/auth.permissions.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import { TestClock } from '../../core/clock.js';
 import { encryptSecret, parseEncryptionKey } from '../../core/secrets.js';
-import { createGoLiveService, restoreCheckLifetimeMs } from './go-live.js';
+import { createGoLiveService } from './go-live.js';
+import { createRestoreCheckLease } from '../health/restore.billing-lease.js';
 import { createGoLiveRoutes } from './go-live.routes.js';
 
 const database = useTestDatabase(), factory = createFactories(database), clock = new TestClock('2026-10-22T12:00:00Z');
 const smtpConfigured = vi.fn(async (gymId: string) => { assertNoTransaction('go-live SMTP check'); return gymId === gymA; });
-const service = createGoLiveService({ scope: database.forGym, clock, smtpConfigured });
+const lease = createRestoreCheckLease(() => database.appUrl);
+const service = createGoLiveService({ scope: database.forGym, clock, smtpConfigured, restoreCheckLease: lease });
 const gymA = uuidv7(), gymB = uuidv7();
 let userId: string;
 beforeAll(async () => {
@@ -130,10 +132,11 @@ describe('restore check reruns', () => {
       const check = await start(id, restore, local.now()); await finish(id, check.id, local.now());
       return { inspected: 1, readyForOwnerReview: true, issues: [] };
     });
-    const reruns = createGoLiveService({ scope: database.forGym, clock: local, smtpConfigured, restoreCheck });
+    const reruns = createGoLiveService({ scope: database.forGym, clock: local, smtpConfigured, restoreCheck, restoreCheckLease: lease });
     const context = { gymId, actor: { kind: 'user' as const, userId } }, { revision } = await reruns.checklist(gymId);
     const first = reruns.rerunReconciliation(context, { revision, restoreId });
     await began;
+    local.advance(16 * 60_000); // A live lease has no fifteen-minute expiry.
     await expect(reruns.rerunReconciliation(context, { revision, restoreId })).rejects.toMatchObject(busy);
     release();
     expect((await first).restoreReconciliation).toMatchObject({ restoreId, unresolved: 0 });
@@ -143,28 +146,24 @@ describe('restore check reruns', () => {
     const requested = await database.forGym(gymId, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'settings.go_live.reconciliation_requested')));
     expect(requested).toHaveLength(2);
   });
-  it('allows a rerun after one that failed before its check started, and after a check that stopped without a result long ago', async () => {
+  it('allows a rerun immediately after a failed check or an abandoned audit marker', async () => {
     const { gymId, restoreId } = await restoredGym(), local = new TestClock('2026-10-22T12:00:00Z');
     const restoreCheck = vi.fn(async () => { throw new Error('Charge runner is not configured'); });
-    const reruns = createGoLiveService({ scope: database.forGym, clock: local, smtpConfigured, restoreCheck });
+    const reruns = createGoLiveService({ scope: database.forGym, clock: local, smtpConfigured, restoreCheck, restoreCheckLease: lease });
     const context = { gymId, actor: { kind: 'user' as const, userId } }, { revision } = await reruns.checklist(gymId);
     await expect(reruns.rerunReconciliation(context, { revision, restoreId })).rejects.toMatchObject({ code: 'unavailable' });
     await expect(reruns.rerunReconciliation(context, { revision, restoreId })).rejects.toMatchObject({ code: 'unavailable' });
     expect(restoreCheck).toHaveBeenCalledTimes(2);
-    // A check whose process died after it started holds reruns back until its lifetime has passed.
+    // Audit history does not hold a lease after the worker exits, even when its start/result is missing.
     await start(gymId, restoreId, local.now());
-    local.advance(restoreCheckLifetimeMs - 1000);
-    await expect(reruns.rerunReconciliation(context, { revision, restoreId })).rejects.toMatchObject(busy);
-    local.advance(1000);
     await expect(reruns.rerunReconciliation(context, { revision, restoreId })).rejects.toMatchObject({ code: 'unavailable' });
     expect(restoreCheck).toHaveBeenCalledTimes(3);
   });
   it('answers an overlapping rerun with 409 and the field code', async () => {
     const { gymId, restoreId } = await restoredGym();
-    await start(gymId, restoreId, clock.now());
     const app = server('owner', gymId), { revision } = await service.checklist(gymId);
-    const response = await app.request('/api/settings/go-live/reconciliation', { method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ revision, restoreId }) });
+    const response = await lease(gymId, restoreId, async () => app.request('/api/settings/go-live/reconciliation', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ revision, restoreId }) }));
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ error: { code: 'conflict', details: { restoreId: ['check_running'] } } });
   });

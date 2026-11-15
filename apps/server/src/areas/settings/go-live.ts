@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, desc, eq, gt, inArray, isNull, lt } from 'drizzle-orm';
 import { forGym, gyms, members, households, classTemplates, memberships, plans, paymentMethods, paymentAttempts,
-  refunds, waiverTemplates, auditEvents, revisionGuard, assertRevised, writeAudit, type Transaction } from '@plaingym/db';
+  refunds, waiverTemplates, revisionGuard, assertRevised, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { localDate } from '@plaingym/shared/time';
 import { locales } from '@plaingym/shared/locales';
@@ -12,6 +12,7 @@ import type { WebhookHealthQuery } from '../../core/interfaces/webhook-health.js
 import { createWebhookHealthQuery } from '../billing/webhooks/inbox.js';
 import { signedLinkWaiversComplete } from '../waivers/waivers.js';
 import { rerunRestoreReconciliation } from '../billing/runner/runner.jobs.js';
+import { restoreCheckLease, RestoreCheckBusyError, type RestoreCheckLease } from '../health/restore.billing-lease.js';
 import { readRestoreCheck, readSavedStripeMode, restoreCheckCoversStripe } from './go-live.restore.js';
 
 const t = createTranslator(locales.en ?? {});
@@ -64,37 +65,12 @@ async function reconciliation(tx: Transaction, stripe: boolean) {
     empty: !pending && !pendingRefund && (!restore || (clear && report.inspected === 0)) };
 }
 
-/**
- * A check that started this long ago without a result is taken to have died with its process, so a rerun may start
- * again. A live check reads every payment change since the snapshot from Stripe, which can take minutes.
- */
-export const restoreCheckLifetimeMs = 15 * 60_000;
-type Marker = { id: string; createdAt: Date; occurredAt: Date };
-const later = (a: Marker, b: Marker) => a.createdAt > b.createdAt || (a.createdAt.getTime() === b.createdAt.getTime() && a.id > b.id);
-/**
- * Whether a check for `restoreId` is still running: the latest one started without a result, or a rerun was asked for
- * and has neither started its check nor failed before it. Runs under the gym row's lock, which every rerun takes first,
- * so two reruns can't both find none running.
- */
-async function restoreCheckRunning(tx: Transaction, restoreId: string, now: Date) {
-  const latest = async (action: string, targetId: string): Promise<Marker | undefined> => (await tx
-    .select({ id: auditEvents.id, createdAt: auditEvents.createdAt, occurredAt: auditEvents.occurredAt }).from(auditEvents)
-    .where(and(eq(auditEvents.action, action), eq(auditEvents.targetId, targetId)))
-    .orderBy(desc(auditEvents.createdAt), desc(auditEvents.id)).limit(1))[0];
-  const live = (marker: Marker) => now.getTime() - marker.occurredAt.getTime() < restoreCheckLifetimeMs;
-  const started = await latest('billing.runner.restore_check_started', restoreId);
-  if (started && live(started) && !await latest('billing.runner.restore_checked', started.id)) return true;
-  const requested = await latest('settings.go_live.reconciliation_requested', restoreId);
-  if (!requested || !live(requested) || (started && later(started, requested))) return false;
-  const failed = await latest('settings.go_live.reconciliation_failed', restoreId);
-  return !failed || !later(failed, requested);
-}
-
 export function createGoLiveService(options: {
   scope?: typeof forGym; clock?: Clock; smtpConfigured: (gymId: string) => Promise<boolean>; webhooks?: WebhookHealthQuery;
   /** The runtime's payments resolver; defaults to the gym's stored Stripe settings (demo sandboxes share an install account). */
   paymentsConfigured?: (gymId: string) => Promise<boolean>;
   restoreCheck?: typeof rerunRestoreReconciliation;
+  restoreCheckLease?: RestoreCheckLease;
 }) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const webhooks = options.webhooks ?? createWebhookHealthQuery(scope);
@@ -144,32 +120,35 @@ export function createGoLiveService(options: {
   return {
     checklist,
     async rerunReconciliation(context: MutationContext, input: { revision: number; restoreId: string }): Promise<Checklist> {
-      const snapshotAt = await scope(context.gymId, async tx => {
-        const [gym] = await tx.select(projection).from(gyms).where(eq(gyms.id, context.gymId)).for('update');
-        if (!gym) throw new AppError('not_found', t('settings/go-live:notFound'));
-        if (gym.revision !== input.revision) assertRevised([]);
-        // Only the restore and its snapshot are read here; the check itself resolves the provider.
-        const recovery = await reconciliation(tx, Boolean(gym.stripeConfigured));
-        if (recovery.detail?.restoreId !== input.restoreId) throw new AppError('not_found', t('settings/go-live:notFound'));
-        if (gym.billingEnabled || !recovery.detail.snapshotAt) throw new AppError('conflict', t('settings/go-live:reconcilePause'));
-        // Two checks of one restore at once would apply the same payment changes side by side, and the one that started
-        // first could finish last; a rerun waits for the running check's result instead.
-        if (await restoreCheckRunning(tx, input.restoreId, clock.now()))
+      try {
+        return await (options.restoreCheckLease ?? restoreCheckLease)(context.gymId, input.restoreId, async () => {
+          const snapshotAt = await scope(context.gymId, async tx => {
+            const [gym] = await tx.select(projection).from(gyms).where(eq(gyms.id, context.gymId)).for('update');
+            if (!gym) throw new AppError('not_found', t('settings/go-live:notFound'));
+            if (gym.revision !== input.revision) assertRevised([]);
+            // Only the restore and its snapshot are read here; the check itself resolves the provider.
+            const recovery = await reconciliation(tx, Boolean(gym.stripeConfigured));
+            if (recovery.detail?.restoreId !== input.restoreId) throw new AppError('not_found', t('settings/go-live:notFound'));
+            if (gym.billingEnabled || !recovery.detail.snapshotAt) throw new AppError('conflict', t('settings/go-live:reconcilePause'));
+            await writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
+              ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
+              action: 'settings.go_live.reconciliation_requested', targetType: 'restore', targetId: input.restoreId, occurredAt: clock.now() });
+            return recovery.detail.snapshotAt;
+          });
+          try { await (options.restoreCheck ?? rerunRestoreReconciliation)(context.gymId, new Date(snapshotAt), input.restoreId); }
+          catch {
+            await scope(context.gymId, (tx) => writeAudit(tx, { gymId: context.gymId, actorKind: 'system',
+              action: 'settings.go_live.reconciliation_failed', targetType: 'restore', targetId: input.restoreId, occurredAt: clock.now() }))
+              .catch(() => undefined);
+            throw new AppError('unavailable', t('settings/go-live:reconcileError'));
+          }
+          return checklist(context.gymId);
+        });
+      } catch (error) {
+        if (error instanceof RestoreCheckBusyError)
           throw new AppError('conflict', t('settings/go-live:reconcileBusy'), { restoreId: ['check_running'] });
-        await writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
-          ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
-          action: 'settings.go_live.reconciliation_requested', targetType: 'restore', targetId: input.restoreId, occurredAt: clock.now() });
-        return recovery.detail.snapshotAt;
-      });
-      try { await (options.restoreCheck ?? rerunRestoreReconciliation)(context.gymId, new Date(snapshotAt), input.restoreId); }
-      catch {
-        // A check that failed before it started records nothing of its own, so the next rerun mustn't wait for it.
-        await scope(context.gymId, (tx) => writeAudit(tx, { gymId: context.gymId, actorKind: 'system',
-          action: 'settings.go_live.reconciliation_failed', targetType: 'restore', targetId: input.restoreId, occurredAt: clock.now() }))
-          .catch(() => undefined);
-        throw new AppError('unavailable', t('settings/go-live:reconcileError'));
+        throw error;
       }
-      return checklist(context.gymId);
     },
     async update(context: MutationContext, input: UpdateGoLiveRequest): Promise<Checklist> {
       const { revision, confirmedPastDueDates, ...changes } = updateGoLiveRequestSchema.parse(input);

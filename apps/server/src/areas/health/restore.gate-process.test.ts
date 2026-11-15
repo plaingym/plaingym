@@ -99,7 +99,7 @@ it('names the PID a CLI drain waits on and logs a persistent idle monitor read e
   const closing = p.gate.close();
   try {
     await vi.waitFor(() => { expect(progress).toHaveBeenCalledWith(p.child.pid); }, { timeout: 7_000 });
-    const lines = p.stderr().trim().split('\n').map((line: string) => JSON.parse(line) as unknown);
+    const lines = p.stderr().trim().split('\n').filter(line => line.startsWith('{')).map((line: string) => JSON.parse(line) as unknown);
     expect(lines).toEqual([expect.objectContaining({ event: 'restore.activity_monitor_failed', pid: p.child.pid, operation: 'journal' })]);
     expect(await readdir(p.gate.activityDirectory)).toHaveLength(1);
   } finally {

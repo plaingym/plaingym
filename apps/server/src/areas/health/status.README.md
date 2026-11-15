@@ -27,10 +27,12 @@ while closing. A local close waits on a promise resolved when its count reaches 
 CLI drains the same process leases. Every 100 ms the monitor checks for a lost lease, including while busy;
 when idle it also checks the journal and removes its lease once admission is closed and its count is zero.
 The monitor caches the journal by file identity, timestamps and size; request admission always reads it afresh.
-Read and lease-maintenance errors are logged once per operation and error kind as
+Read and lease-maintenance errors are logged once per operation and error kind during a continuous failure as
 `restore.activity_monitor_failed`, with the PID and a redacted cause. Failed reads or removals keep the
 lease registered for retry. A drain reports each waiting PID every five seconds (`restore.drain_waiting`
-in server logs, a plain progress line in the CLI) and fails after five minutes, keeping admission closed.
+in server logs, a plain progress line in the CLI) and fails after five minutes without drain progress, keeping admission closed.
+Finishing a local operation or losing a waiting PID resets that timer. A successful
+monitor check clears its error suppression, so a recurring failure logs again.
 Linux leases include
 the PID's start ticks so a crashed process or a reused PID cannot block the drain.
 After restore completes, new activity registers a fresh lease. All participating processes

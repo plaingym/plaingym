@@ -105,13 +105,19 @@ stopped, `restore-activity/` holds no live lease and can be deleted: that is the
 way out when one is unreadable (`docs/restore-reference.md`).
 The journal counts as written once its rename has landed: if the directory sync
 after it fails, the staging it names is kept for `resume`.
+If the write and read-back both fail, restore reports that activation is uncertain
+and tells the owner to run `resume`. Under the backup lock, a new restore and a
+resume with no journal or a complete journal sweep abandoned `restore-*` staging
+folders. An unfinished or unreadable journal preserves its verified plaintext.
 A service using the gate must never initiate restore from inside its own activity
 lease: the setup coordinator calls the service outside the wrapped request.
 
 After activation, the restore resets `public` and `drizzle`, drops any extra schemas
-owned by `maintenance`, and resets database-wide defaults before transactional
-pg_restore. Its connection overrides stored read-only and timeout defaults at
-startup, so a refused snapshot's defaults can't block their own reset. Schemas owned by other roles and role defaults are left for administrator
+owned by `maintenance`, and resets database-wide defaults and maintenance's global
+and database-specific role defaults before transactional pg_restore. Both reset
+and pg_restore connections override stored read-only and timeout defaults at
+startup, so a refused snapshot's defaults can't block their own reset. Schema drops
+also remove dependent objects in other schemas. Other owners' schemas and role defaults are left for administrator
 recovery (`docs/restoring.md`); a failed catalog check still keeps admission closed.
 It then migrates forward and applies the same security/catalog check as boot,
 including refusing app `USAGE` or `CREATE` on `drizzle` and checking its views and functions
@@ -137,6 +143,8 @@ The restore audit ID is the idempotency key: an interruption after enqueue and
 before journal completion reuses the existing job. The worker runs after admission
 reopens. It never enables billing. The go-live page displays the latest check and
 lets a manager rerun it after resolving issues, then explicitly enable billing.
+The job and rerun share a per-gym PostgreSQL session lease, outside transactions,
+so job retries and manual checks cannot overlap or take over a long check by age.
 
 A restart resumes without needing to retain the age private identity.
 Before the rekey receipt it repeats reset/restore/migrate/rekey from verified

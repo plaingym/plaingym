@@ -7,6 +7,21 @@ import { s3Server } from '../../infra/storage/s3-server.test-helper.js';
 import { probeBackupDestination } from './backup-destination.js';
 
 describe('backup destination probe', () => {
+  it('rewrites and reads once more when pruning removes the freshly written probe', async () => {
+    const store = new FakeBackupObjectStore(), read = store.getObject.bind(store);
+    const put = vi.spyOn(store, 'putObject');
+    vi.spyOn(store, 'getObject').mockImplementationOnce(async key => { await store.deleteObject(key); return null; }).mockImplementation(read);
+    await probeBackupDestination(store);
+    expect(put).toHaveBeenCalledTimes(2);
+    expect(await store.listObjects('')).toEqual([]);
+  });
+  it('bounds a missing-probe retry and cleans up after the second miss', async () => {
+    const store = new FakeBackupObjectStore();
+    const get = vi.spyOn(store, 'getObject').mockResolvedValue(null);
+    await expect(probeBackupDestination(store)).rejects.toThrow('Backup probe is missing');
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(await store.listObjects('')).toEqual([]);
+  });
   it('lists, writes, reads and removes a unique object under the prefixes snapshots use', async () => {
     const store = new FakeBackupObjectStore();
     const put = vi.spyOn(store, 'putObject'), get = vi.spyOn(store, 'getObject'), remove = vi.spyOn(store, 'deleteObject');

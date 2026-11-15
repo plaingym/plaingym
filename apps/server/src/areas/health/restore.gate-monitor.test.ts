@@ -103,6 +103,81 @@ it('logs a persistent lease-removal error once and retries without abandoning th
   } finally { setLogSink(sink); }
 });
 
+it('logs a journal failure again after a successful monitor tick', async () => {
+  const gate = await fixture();
+  await gate.activity(async () => undefined);
+  const original = files.readJson, lines: string[] = [];
+  let failing = true, attempts = 0;
+  vi.spyOn(files, 'readJson').mockImplementation(async path => {
+    if (path === gate.statePath) { attempts++; if (failing) throw Object.assign(new Error('Denied'), { code: 'EIO' }); }
+    return original(path);
+  });
+  const sink = setLogSink(line => { lines.push(line); });
+  try {
+    await files.atomicJson(gate.statePath, { phase: 'complete' });
+    await vi.waitFor(() => { expect(lines).toHaveLength(1); });
+    failing = false;
+    const before = attempts;
+    await vi.waitFor(() => { expect(attempts).toBeGreaterThan(before); });
+    failing = true;
+    // Replace the journal so the successful cached read must be performed again.
+    await files.atomicJson(gate.statePath, { phase: 'complete', changed: true });
+    await vi.waitFor(() => { expect(lines).toHaveLength(2); });
+  } finally { setLogSink(sink); }
+});
+
+it('resets the drain timeout as admitted local work leaves', async () => {
+  const gate = await fixture();
+  const releases: (() => void)[] = [];
+  const active = [0, 1].map(index => gate.activity(() => new Promise<void>(resolve => { releases[index] = resolve; })));
+  await vi.waitFor(() => { expect(releases.filter(Boolean)).toHaveLength(2); });
+  vi.useFakeTimers();
+  let finished = false;
+  const closing = gate.close().then(() => { finished = true; });
+  try {
+    await vi.advanceTimersByTimeAsync(240_000);
+    releases[0]!(); await active[0];
+    await vi.advanceTimersByTimeAsync(240_000);
+    expect(finished).toBe(false);
+    releases[1]!(); await Promise.all(active);
+    await closing;
+    expect(finished).toBe(true);
+  } finally { vi.useRealTimers(); for (const release of releases) release(); await Promise.all(active); await closing; }
+});
+
+it('resets the drain timeout when a waiting process leaves', async () => {
+  const gate = await fixture(), firstPid = 123_456, secondPid = 234_567;
+  const first = join(gate.activityDirectory, 'aaa.json'), second = join(gate.activityDirectory, 'bbb.json');
+  const started = process.platform === 'linux' ? '0' : null;
+  await files.atomicJson(first, { pid: firstPid, started });
+  await files.atomicJson(second, { pid: secondPid, started });
+  vi.spyOn(process, 'kill').mockReturnValue(true);
+  const original = fs.readFile;
+  vi.spyOn(fs, 'readFile').mockImplementation(async (path, options) => {
+    if (path === '/proc/' + firstPid + '/stat' || path === '/proc/' + secondPid + '/stat')
+      return '1 (worker) ' + Array<string>(20).fill('0').join(' ');
+    return original(path, options);
+  });
+  const read = vi.spyOn(files, 'readJson');
+  vi.useFakeTimers();
+  let finished = false;
+  const closing = gate.close().then(() => { finished = true; });
+  try {
+    await vi.waitFor(() => { expect(read.mock.calls.some(([path]) => path === second)).toBe(true); });
+    await vi.advanceTimersByTimeAsync(240_000);
+    await rm(first);
+    const calls = read.mock.calls.filter(([path]) => path === second).length;
+    await vi.waitFor(() => { expect(read.mock.calls.filter(([path]) => path === second).length).toBeGreaterThanOrEqual(calls + 2); });
+    await vi.advanceTimersByTimeAsync(240_000);
+    expect(finished).toBe(false);
+    await rm(second);
+    await vi.waitFor(() => { expect(finished).toBe(true); });
+    await closing;
+  } finally {
+    vi.useRealTimers(); await rm(first, { force: true }); await rm(second, { force: true }); await closing;
+  }
+});
+
 it('times out a separate live process lease without deleting it or leaving a drain loop running', async () => {
   const gate = await fixture(), lease = join(gate.activityDirectory, 'abc.json');
   const stat = process.platform === 'linux' ? await readFile('/proc/' + process.pid + '/stat', 'utf8') : null;

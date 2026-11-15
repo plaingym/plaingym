@@ -5,6 +5,7 @@ import { FakePayments } from '../../infra/payments/index.js';
 import { PostgresJobs } from '../../infra/jobs/postgres.js';
 import { createChargeRunner } from '../billing/runner/index.js';
 import { configureChargeRunner, createRunnerJobs } from '../billing/runner/runner.jobs.js';
+import { createRestoreCheckLease } from './restore.billing-lease.js';
 import { createInvoiceTransitions } from '../billing/transitions/index.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { createGoLiveService, configureGoLive } from '../settings/go-live.js';
@@ -25,8 +26,9 @@ export async function restoredBilling({ target, clock, gymId }: Pick<RestoreFixt
     transitions: createInvoiceTransitions({ scope: target.forGym, clock }),
     payments: async id => id === gymId ? provider : new FakePayments(id, clock) });
   configureChargeRunner(runner);
-  for (const job of createRunnerJobs(() => runner, settings)) queue.handle(job.id, job.handler);
-  const options = { scope: target.forGym, clock, smtpConfigured: async () => true };
+  const lease = createRestoreCheckLease(() => target.appUrl);
+  for (const job of createRunnerJobs(() => runner, settings, lease)) queue.handle(job.id, job.handler);
+  const options = { scope: target.forGym, clock, smtpConfigured: async () => true, restoreCheckLease: lease };
   configureGoLive(options);
   const service = createGoLiveService(options), context = { gymId, actor: { kind: 'system' as const } };
   const owner = await createFactories(target)('authUser', gymId), origin = 'https://gym.example.test';

@@ -37,6 +37,7 @@ class ProcessActivity {
   #retiring: Promise<void> | undefined;
   #timer: NodeJS.Timeout | undefined;
   #idle = new Set<() => void>();
+  #progress = new Set<() => void>();
   #reported = new Set<string>();
   #journal: { mtimeNs: bigint; ctimeNs: bigint; size: bigint; ino: bigint; closed: boolean } | undefined;
   readonly path: string;
@@ -58,16 +59,18 @@ class ProcessActivity {
     await this.#registration;
   }
   leave(): void {
-    if (--this.count === 0) for (const resolve of this.#idle) resolve();
+    this.count--;
+    for (const progress of this.#progress) progress();
+    if (this.count === 0) for (const resolve of this.#idle) resolve();
   }
-  async whenIdle(signal: AbortSignal): Promise<void> {
+  async whenIdle(signal: AbortSignal, progress: () => void): Promise<void> {
     if (!this.count) return;
     await new Promise<void>((resolve, reject) => {
-      const cleanup = () => { this.#idle.delete(done); signal.removeEventListener('abort', aborted); };
+      const cleanup = () => { this.#idle.delete(done); this.#progress.delete(progress); signal.removeEventListener('abort', aborted); };
       const done = () => { cleanup(); resolve(); };
       const aborted = () => { cleanup(); reject(signal.reason); };
       if (signal.aborted) aborted();
-      else { this.#idle.add(done); signal.addEventListener('abort', aborted, { once: true }); }
+      else { this.#idle.add(done); this.#progress.add(progress); signal.addEventListener('abort', aborted, { once: true }); }
     });
   }
   async retire(): Promise<void> {
@@ -103,6 +106,9 @@ class ProcessActivity {
     this.#reported.add(kind);
     logError('restore.activity_monitor_failed', { pid: process.pid, operation }, error);
   }
+  #recovered(operation: string): void {
+    for (const kind of this.#reported) if (kind.startsWith(operation + ':')) this.#reported.delete(kind);
+  }
   #monitor(): void {
     if (this.#timer) return;
     // A separate CLI cannot read our count. Once its durable journal closes admission,
@@ -115,12 +121,14 @@ class ProcessActivity {
         let closed: boolean;
         try { closed = await this.#monitorClosed(); }
         catch (error) { this.#report('journal', error); return; }
+        this.#recovered('journal');
         // Admission may have begun while the journal read was pending.
         const removed = !closed && !await exists(this.directory);
         if (!this.#registered || this.drains) return;
         if (!this.count && (closed || removed)) await this.retire();
         else await this.register();
-      })().catch(error => { this.#report('lease', error); /* Keep retrying: the CLI must not skip us. */ })
+      })().then(() => { this.#recovered('lease'); })
+        .catch(error => { this.#report('lease', error); /* Keep retrying: the CLI must not skip us. */ })
         .finally(() => { if (this.#registered) this.#monitor(); });
     }, 100);
     this.#timer.unref();
@@ -188,16 +196,17 @@ export class RestoreGate {
       }
     }, 5_000);
     try {
-      await this.#activity.whenIdle(controller.signal);
+      await this.#activity.whenIdle(controller.signal, () => { timeout.refresh(); });
       waiting.clear();
       await this.#activity.retire();
-      await this.#drain(controller.signal, waiting);
+      timeout.refresh();
+      await this.#drain(controller.signal, waiting, () => { timeout.refresh(); });
     } catch (error) {
       if (controller.signal.aborted) throw controller.signal.reason;
       throw error;
     } finally { clearTimeout(timeout); clearInterval(progress); this.#activity.drains--; }
   }
-  async #drain(signal: AbortSignal, waiting: Set<number>): Promise<void> {
+  async #drain(signal: AbortSignal, waiting: Set<number>, progress: () => void): Promise<void> {
     for (;;) {
       signal.throwIfAborted();
       let names: string[];
@@ -222,6 +231,7 @@ export class RestoreGate {
         }
       }
       signal.throwIfAborted();
+      if ([...waiting].some(pid => !active.has(pid))) progress();
       waiting.clear();
       for (const pid of active) waiting.add(pid);
       if (!waiting.size) return;

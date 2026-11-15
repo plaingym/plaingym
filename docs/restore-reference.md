@@ -57,11 +57,14 @@ field, a code or an error name, never a path, key, credential or field value. It
 staged.
 
 While draining active requests and jobs, the CLI prints the PID it is waiting on every
-five seconds. After five minutes it stops with the timeout below; it does not continue
+five seconds. After five minutes without drain progress it stops with the timeout below; it does not continue
 to overwrite the database. Check that PID's app logs for `restore.activity_monitor_failed`
 (the operation and error code identify a journal read or lease-maintenance failure).
 Resolve the failure, stop the app, then resume the staged restore. Keep the journal and
 staging files. All app and maintenance processes must share the data volume and PID namespace.
+The five-minute timer resets whenever an admitted operation in this process finishes
+or a waiting PID leaves. Repeated monitor errors are logged once while persistent
+and logged again if they recur after a successful check.
 
 | Reason | What to check |
 | :--- | :--- |
@@ -78,6 +81,7 @@ staging files. All app and maintenance processes must share the data volume and 
 | `The key file doesn't hold an age private key`, `The key file must hold exactly one age private key` | The key file's content, including a mistyped character that breaks its checksum. |
 | `A snapshot object is missing from the bucket` | The snapshot was damaged or deleted in the bucket; try an earlier one. |
 | `A verified restore is already staged; resume it first` | See [If a restore is interrupted](#if-a-restore-is-interrupted). |
+| `A restore may be staged; preserve the restore state and run resume` | Writing the journal and reading it back both failed, so activation is uncertain. Fix the filesystem error and run `resume`; it resumes a published journal or removes abandoned staging when none was published. |
 | `Missing NAME` | The environment variable the app container needs. |
 | `Restored gym receipt is missing` | The restored database's restore audit record. Keep the staged restore and investigate before retrying. |
 | `Invalid current app key` | APP_ENCRYPTION_KEY must be the destination install's key, 64 hex characters. |
@@ -111,6 +115,10 @@ A verified restore resumes by itself when the app restarts (`sudo docker compose
 container's entrypoint resumes it before migrations or any request. If the wizard says the
 restore failed, check the bucket, credentials, snapshot ID and key against the
 [errors](#restore-errors), then start it again.
+
+Under the backup lock, starting a new restore removes abandoned `restore-*` staging
+folders when no restore is active. `resume` does the same when the journal is absent
+or complete. An unfinished or unreadable journal preserves its staging for recovery.
 
 ## How `restore.sh` works
 

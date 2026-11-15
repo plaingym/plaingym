@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { AgeKeyMismatchError } from '../../infra/age/index.js';
 /**
  * A fixed, public diagnostic; never pass file contents, paths, keys or upstream error text as the message.
  * The optional cause is for the structured log, which keeps its name, code and frames and drops its message.
@@ -7,11 +8,11 @@ export class RestoreFailure extends Error {
   constructor(message: string, options?: ErrorOptions) { super(message, options); this.name = 'RestoreFailure'; }
 }
 
-/** The age library has no typed identity errors. Keep its public key diagnostics in one place. */
+/** Library text is classified once in infra/age; restore consumes the typed mismatch. */
 export function ageKeyReason(error: unknown): string | null {
+  if (error instanceof AgeKeyMismatchError) return "The key doesn't open this snapshot";
   if (!(error instanceof Error)) return null;
   switch (error.message) {
-    case "no identity matched any of the file's recipients": return "The key doesn't open this snapshot";
     case 'Invalid age private key': return "The key file doesn't hold an age private key";
     case 'Expected one age identity': return 'The key file must hold exactly one age private key';
     default: return null;

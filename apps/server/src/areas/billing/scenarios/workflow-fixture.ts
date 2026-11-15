@@ -22,6 +22,7 @@ import { createMembershipService } from '../memberships.js';
 import { createPaymentService } from '../payments.js';
 import { createChargeRunner } from '../runner/index.js';
 import { createRunnerJobs } from '../runner/runner.jobs.js';
+import { createRestoreCheckLease } from '../../health/restore.billing-lease.js';
 import { createSignedLinkCheckout } from '../signed-link-checkout.js';
 import { createTransitionJobs } from '../transitions/transitions.jobs.js';
 import { createWebhookInbox } from '../webhooks/inbox.js';
@@ -63,7 +64,8 @@ export async function workflowFixture(db: ReturnType<typeof useTestDatabase>, op
   billing.attachRetry(runner.retry);
   const lifecycle = createMembershipService({ ...common, onAssigned: runner.onAssigned });
   const service = createPaymentService({ ...common, runner, paymentsFor, transitions: billing.transitions });
-  for (const job of [...createWebhookInboxJobs(inbox), ...createTransitionJobs(() => billing.effects), ...createRunnerJobs(() => runner, settings)])
+  for (const job of [...createWebhookInboxJobs(inbox), ...createTransitionJobs(() => billing.effects),
+    ...createRunnerJobs(() => runner, settings, createRestoreCheckLease(() => db.appUrl))])
     queue.handle(job.id, job.handler);
   const app = createApp({ clock, authorize, skipSetup: true, contributions: { routes: createWebhookInboxRoutes(inbox) },
     resolveGym: async (c, next) => { c.set('context', { ...c.get('context'), gym: { gymId, timezone, enabledModules: new Set() } }); await next(); },

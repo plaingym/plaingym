@@ -23,14 +23,18 @@ before secrets or uploads are activated. These checks limit known isolation risk
 they do not sandbox arbitrary snapshot SQL or replace trust in the backup source.
 
 Before each database load, restore drops `public`, `drizzle`, and extra schemas
-owned by `maintenance`, and resets all database-wide defaults. This removes those
-leftovers from an earlier refused restore. It leaves schemas owned by other roles
-and role defaults in place; the catalog check still refuses unsafe leftovers.
+owned by `maintenance`, and resets all database-wide defaults and `maintenance`'s
+global and database-specific role defaults. Both the reset connection and
+`pg_restore` override read-only and timeout defaults so those leftovers cannot
+block recovery. Dropping a schema with `CASCADE` also drops objects in other
+schemas that depend on it, even when another role owns them. Schemas owned by
+other roles are not themselves dropped, and other roles' defaults remain in
+place; the catalog check still refuses unsafe leftovers.
 
 ## Recovering from a catalog refusal
 
 The catalog error names each stored setting, its database and role, or the extra
-schema. Setting values are omitted. If the leftover is a role default or another
+schema. Setting values are omitted. If the leftover is another role's default or another
 role's schema, a PostgreSQL administrator must repair it before startup or restore
 can pass. On the affected install, stop the app and open the database console:
 
@@ -47,6 +51,7 @@ Replace those names with the reported database and role. For a global role defau
 on `all roles`, use `ALTER ROLE ALL RESET ALL;`. A database-wide default (reported
 as `database plaingym, role all roles`) is cleared by the next restore; to start the
 app without one, use `ALTER DATABASE plaingym RESET ALL;`.
+`maintenance`'s own role defaults are also cleared before the next database load.
 
 For an extra schema, inspect its owner with `SELECT nspname,
 pg_get_userbyid(nspowner) FROM pg_namespace;`. Preserve any data and dependencies

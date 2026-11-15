@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { rm, writeFile } from 'node:fs/promises';
 import * as files from 'node:fs/promises';
+import * as backupFiles from './backups.files.js';
 import { beforeAll, expect, it, vi } from 'vitest';
 import { ZodError } from 'zod';
 import { decrypt, encrypt } from '../../infra/age/index.js';
@@ -150,6 +151,41 @@ it('rejects a missing restored gym receipt', async () => {
 
 const damaged = 'The snapshot is damaged; try an earlier one';
 const staged = 'The staged restore failed; preserve the restore state and check the server before retrying resume';
+it.each([false, true])('reports uncertain journal publication and recovers its staging (published: %s)', async published => {
+  const restore = f.restore(), { stagingDirectory } = restore.options, statePath = f.gate().statePath;
+  const original = backupFiles.atomicJson;
+  const failure = Object.assign(new Error('Private filesystem details'), { code: 'EMFILE' });
+  const write = vi.spyOn(backupFiles, 'atomicJson').mockImplementation(async (path, value) => {
+    if (path !== statePath) return original(path, value);
+    if (published) await original(path, value);
+    throw failure;
+  });
+  const read = backupFiles.readJson;
+  const reads = vi.spyOn(backupFiles, 'readJson').mockImplementation(async (path, limit) => {
+    if (path === statePath) throw failure;
+    return read(path, limit);
+  });
+  try {
+    await rejects(restore.restore(base, f.identity), 'A restore may be staged; preserve the restore state and run resume');
+    const folders = await files.readdir(stagingDirectory);
+    expect(folders.filter(name => name.startsWith('restore-'))).toHaveLength(1);
+    expect(await backupFiles.exists(join(stagingDirectory, folders[0]!, 'database.dump'))).toBe(true);
+  } finally { write.mockRestore(); reads.mockRestore(); }
+  await f.restore().resume();
+  expect((await files.readdir(stagingDirectory)).filter(name => name.startsWith('restore-'))).toEqual([]);
+});
+it('sweeps abandoned plaintext on restore start and on a completed resume, preserving unrelated folders', async () => {
+  const restore = f.restore(), { stagingDirectory } = restore.options;
+  const orphan = join(stagingDirectory, 'restore-abandoned'), unrelated = join(stagingDirectory, 'backup-keep');
+  await files.mkdir(orphan, { recursive: true }); await files.mkdir(unrelated);
+  await files.writeFile(join(orphan, 'database.dump'), 'plaintext');
+  await restore.restore(base, f.identity);
+  expect(await backupFiles.exists(orphan)).toBe(false);
+  await files.mkdir(orphan);
+  await f.restore().resume();
+  expect(await backupFiles.exists(orphan)).toBe(false);
+  expect(await backupFiles.exists(unrelated)).toBe(true);
+});
 it.each(['missing', 'oversized', 'truncated', 'authentication', 'wrong snapshot', 'duplicate'])(
   'reports damaged references: %s', async kind => {
     const key = snapshotPrefix(base) + 'references.json';

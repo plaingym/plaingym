@@ -64,16 +64,16 @@ credentials. The two pages explain the pause and the need to check again before
 explicitly turning billing back on. A gym without a restore is unaffected.
 A requested or interrupted check invalidates the prior
 success until the new check completes. A rerun is refused (409, `details`
-`{ restoreId: ["check_running"] }`) while a check of the same restore is running: one
-started without a result, or a rerun asked for whose check has neither started nor
-failed. That test runs under the gym row lock every rerun takes first, so two reruns
-can't both start. The restore job's own retries don't take this test, so a retry
-can still start beside a rerun's check. A rerun whose
-check fails before it starts records `settings.go_live.reconciliation_failed`, so
-the next one may run; a check that started more than `restoreCheckLifetimeMs` (15
-minutes) ago without a result is taken to have died with its process. The page
-waits up to five minutes for the check (other saves wait 20 seconds) and, past
-that, says the check may still be running. Provider failures record an unresolved
+`{ restoreId: ["check_running"] }`) while the gym's restore check holds its PostgreSQL
+session lease. Both manual reruns and restore-job retries take that lease, including
+older jobs without a restore ID. A check has no age-based expiry: completion or
+process exit releases its dedicated connection, and abandoned audit markers do not
+block a new check. The lease is held outside the short gym transactions; provider
+calls never run inside a transaction. A rerun whose check fails records
+`settings.go_live.reconciliation_failed`. The page waits up to five minutes for the
+check, outside the settings save queue, so another section can still save. Past that,
+it says the check may still be running. Its response does not overwrite shared settings.
+Provider failures record an unresolved
 result; managers can correct configuration or payment issues and rerun. The check
 never enables billing. Existing runtime runner configuration serves this action
 without additional wiring.

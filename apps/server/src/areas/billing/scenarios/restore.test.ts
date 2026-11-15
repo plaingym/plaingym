@@ -19,7 +19,7 @@ const db = useTestDatabase();
 const dockerTools: ToolRunner = (tool, env) => ({ command: 'docker', args: ['run', '--rm', '-i',
   '--name', `plaingym-billing-restore-${tool}-${randomBytes(6).toString('hex')}`, '--cpus', '1',
   ...(process.platform === 'linux' ? ['--network', 'host'] : []), '-e', 'PGHOST', '-e', 'PGPORT', '-e', 'PGDATABASE',
-  '-e', 'PGUSER', '-e', 'PGPASSWORD', '-e', 'PGCONNECT_TIMEOUT',
+  '-e', 'PGUSER', '-e', 'PGPASSWORD', '-e', 'PGCONNECT_TIMEOUT', '-e', 'PGOPTIONS',
   'postgres:18@sha256:1267c7e692de235fda2a50dbcdbcbca4672ea6a0298576a6bd9d07cafc319b32',
   'timeout', '60', 'nice', '-n', '10', tool], env: { ...env, PGHOST: process.platform === 'linux' ? '127.0.0.1' : 'host.docker.internal' } });
 
