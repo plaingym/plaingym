@@ -6,6 +6,7 @@ import type { MiddlewareHandler } from 'hono';
 import type { RequestEnvironment } from '../core/context.js';
 import type { DemoPool } from './pool.js';
 import { sandboxSettings } from './config.js';
+import { withDemoGym } from './request.js';
 
 export const showcaseReason = 'demo_showcase_read_only';
 const authentication = new Set(['/api/demo/login', '/api/demo/sign-in-link', '/api/auth/sign-in/email', '/api/auth/sign-out']);
@@ -22,8 +23,9 @@ export function demoRequestGuard(pool: DemoPool, scope: typeof forGym = forGym):
       const link = /^\/(?:l(?:\/|$)|api\/links(?:\/|$))/.test(c.req.path);
       if (demo.kind === 'showcase' && (link || (!read && !authentication.has(c.req.path))))
         throw new AppError('forbidden', 'This demo is shared. Make your own copy to change things.', { reason: [showcaseReason] });
-      await pool.touch(gymId);
+      await pool.touch(gymId, gym);
     }
-    await next();
+    if (gym) await withDemoGym(gym, next);
+    else await next();
   };
 }

@@ -22,6 +22,8 @@ import { requireSetupToken } from '../areas/setup/setup.token.js';
 
 export interface AppOptions {
   readonly resolveGym: MiddlewareHandler<RequestEnvironment>;
+  /** Tenant policy after flood protection, before sessions and tenant routes. */
+  readonly demoGuard?: MiddlewareHandler<RequestEnvironment>;
   readonly session: MiddlewareHandler<RequestEnvironment>;
   readonly authorize: PermissionMiddleware;
   readonly contributions?: ServerContributions;
@@ -152,6 +154,7 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
   // budget for valid tokens and, near this one, for tokens that don't resolve (public/links/links.routes.ts).
   const floodLimit = rateLimit({ ...options.rateLimit, skip: contractRequest(portalSignedLinkContracts.oneClickUnsubscribe) });
   for (const handler of mode === 'single' ? [floodLimit, options.resolveGym] : [options.resolveGym, floodLimit]) app.use('*', handler);
+  if (options.demoGuard) app.use('*', options.demoGuard);
   app.use('*', options.session);
   app.use('*', csrf(options.origin));
   const registry = createServerRegistry({ ...contributions,

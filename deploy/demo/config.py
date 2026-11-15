@@ -85,7 +85,8 @@ def validate(config):
     maximum = int(config.get("DEMO_MAX_SANDBOXES", "50"))
     pool = int(config.get("DEMO_POOL_SIZE", "5"))
     idle = float(config.get("DEMO_IDLE_HOURS", "2"))
-    if not 1 <= maximum <= 1000 or not 0 <= pool <= maximum or not 0 < idle <= 24:
+    # Matches the app's boot check: the showcase, its daily replacement and one private copy keep three slots.
+    if not 1 <= maximum <= 1000 or not 0 <= pool <= maximum - 3 or not 0 < idle <= 24:
         raise ValueError("Invalid demo capacity, pool size or idle hours.")
 
 

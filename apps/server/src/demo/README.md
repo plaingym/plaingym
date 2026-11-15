@@ -19,10 +19,15 @@ enumeration, job execution and shared payment webhooks exclude the showcase and
 pooled gyms. A ready seed replaces the fixed hostname 24 hours after promotion.
 If the cap delays replacement, the current showcase keeps serving until the swap.
 
-`DEMO_POOL_SIZE` (default 5, 0 through the sandbox cap) maintains ready gyms.
+`DEMO_POOL_SIZE` (default 5, 0 through `DEMO_MAX_SANDBOXES - 3`) maintains ready gyms.
+Startup reserves three slots for the showcase, its replacement and a private copy.
 One install job seeds at a time across processes using the worker's renewed lease.
 Reservations and creation tickets live in gym settings; claims and handoffs use
-row locks. A restart discards an interrupted seed and seeds a fresh gym instead;
+row locks. Ready pool gyms go to the oldest live ticket before a new visitor.
+Position includes unready pool seeds ahead of the ticket; expired tickets release
+their reservations without seeding them. Allocation first records a durable claim,
+then commits the private transition and its audit in that gym's transaction. A
+restart completes any unfinished claim. A restart discards an interrupted seed and seeds a fresh gym instead;
 waiting tickets move to the replacement. A durable `demo.replace-seed` job saves
 the ticket before deletion and resumes an idempotent replacement bootstrap.
 Stripe rate limits back off with the
@@ -37,16 +42,26 @@ from the destination fragment and exchanges it through `POST /api/demo/handoff`
 on that sandbox. The ten-minute, single-use token is bound to its gym, seeded role
 and allowlisted local page. Detail URLs fall back to the role's home. Tickets
 expire after an hour.
+If login fails, the handoff bearer is restored for a retry. Only a successful
+login consumes it permanently.
 
 Private copies have a random hostname, seeded content packs, identities and a kiosk.
 `DEMO_IDLE_HOURS` (default 2, greater than 0 through 24) starts on hand-out, with
 activity persisted at most every five minutes and a hard 24-hour lifetime.
 Background discovery polls do not count as activity.
+The guard shares its gym snapshot with activity updates and demo liveness checks
+for that request only. Progress looks up the ticket hash in SQL and wakes the pool
+only when no seed is in progress. `pool.listEligibleGyms()` supplies the scheduler
+with one system query; `pool.jobPolicy()` defers pooled and unfinished gyms for a
+minute without spending a job attempt, and skips the showcase and retired gyms.
+The app accepts `demoGuard` after flood protection, before session handling; the
+composition must pass the guard there rather than wrapping tenant resolution.
 Kiosk tokens are derived from the install key and gym ID; only their hash is stored.
 Ready sandboxes do not retain bootstrap email. No bootstrap email is sent.
 
 `DEMO_MODE=true` requires `TENANCY=multi`, `DEMO_DOMAIN` (a lowercase hostname with
-wildcard DNS/TLS), and optionally `DEMO_MAX_SANDBOXES` (1–1000, default 50).
+wildcard DNS/TLS), and optionally `DEMO_MAX_SANDBOXES` (up to 1000 and at least
+`DEMO_POOL_SIZE + 3`, default 50).
 `demoBootCheck` rejects live Stripe keys in the environment; `verifyDemoStoredKeys`
 also decrypts and checks existing gym Stripe configuration before startup.
 

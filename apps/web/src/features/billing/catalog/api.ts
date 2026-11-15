@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { billingContracts, settingsContracts, membersContracts, type ApplyPlanPriceChangeRequest, type EndpointContract, type ListResponse } from '@plaingym/shared/contracts';
 import { minorUnitStep } from '@plaingym/shared/money';
-import { ApiError, readApiError } from '../../../lib/api.js';
+import { ApiError, readApiError, reportApiRefusal } from '../../../lib/api.js';
 import { parseResponse } from '../../../lib/response.js';
 
 /** Only the price-change endpoint's bounded, expected client errors may display its message. */
@@ -31,6 +31,7 @@ export async function billingRequest<C extends EndpointContract>(contract: C,
     headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   if (!response.ok) {
+    await reportApiRefusal(response);
     const error = await readApiError(response, contract.path === billingContracts.applyPlanPriceChange.path
       && contract.method === billingContracts.applyPlanPriceChange.method
       ? [{ status: 400, code: 'invalid_request' }, { status: 404, code: 'not_found' }] : []);

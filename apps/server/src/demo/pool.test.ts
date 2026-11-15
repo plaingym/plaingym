@@ -18,12 +18,12 @@ beforeEach(async () => { await db.forSystem(tx => tx.delete(gyms)); });
 function fixture() {
   const config = { enabled: true, domain: 'demo.example.test', maxSandboxes: 20, poolSize: 1, idleHours: 2 };
   const clock = new TestClock('2026-11-14T12:00:00Z'), key = Buffer.alloc(32, 17);
-  const identities = { seed: vi.fn(async () => {}), login: vi.fn(async () => new Response(null, { headers: { 'set-cookie': 'session=demo; Secure; HttpOnly' } })) };
+  const identities = { seed: vi.fn(async () => {}), login: vi.fn(async () => new Response(null, { status: 303, headers: { location: '/admin', 'set-cookie': 'session=demo; Secure; HttpOnly' } })) };
   const seed = vi.fn(async (_context: GymContext) => {});
   const removeUploads = vi.fn(async (_gymId: string) => {});
   const service = createDemoService({ config, key, clock, identities, seed, scope: db.forGym, system: db.forSystem,
     deletion: createGymDeleteService({ clock, scope: db.forGym, system: db.forSystem, removeUploads }) });
-  const makePool = () => createDemoPool({ config, key, clock, service, scope: db.forGym, system: db.forSystem });
+  const makePool = (overrides: Partial<Parameters<typeof createDemoPool>[0]> = {}) => createDemoPool({ config, key, clock, service, scope: db.forGym, system: db.forSystem, ...overrides });
   const pool = makePool();
   return { config, clock, service, pool, makePool, seed, identities, removeUploads };
 }
@@ -33,6 +33,178 @@ const create = async (f: ReturnType<typeof fixture>, role = 'owner', page = '/ad
   if ('pending' in result) throw new Error('Expected a ready copy');
   return result;
 };
+
+it('gives the only ready gym to the oldest of two tickets before accepting a newcomer', async () => {
+  const f = fixture();
+  const first = await f.pool.request({ role: 'coach', page: '/admin/schedule' });
+  const second = await f.pool.request({ role: 'student', page: '/portal' });
+  if (!('pending' in first) || !('pending' in second)) throw new Error('Expected tickets');
+  const ready = await f.service.reserve('pool'); await f.service.prepare(ready.gymId);
+  const third = await f.makePool().request({});
+  expect(third).toHaveProperty('pending', true);
+  const complete = await f.pool.progress(first.ticket);
+  expect(complete).toMatchObject({ gymId: ready.gymId });
+  expect(await f.pool.progress(second.ticket)).toHaveProperty('pending', true);
+  if (!('gymId' in complete)) throw new Error('Expected allocation');
+  expect((await f.pool.handoff(complete.gymId, complete.handoffToken, '192.0.2.1')).redirect).toBe('/admin/schedule');
+  expect(f.identities.login).toHaveBeenLastCalledWith(ready.gymId, { role: 'coach' }, ready.origin, '192.0.2.1');
+});
+
+it('keeps a recovered ticket ahead of later visitors when replacement creates a newer gym row', async () => {
+  const f = fixture(), first = await f.pool.request({}), second = await f.pool.request({});
+  if (!('pending' in first) || !('pending' in second)) throw new Error('Expected tickets');
+  const original = (await rows()).find(row => sandboxSettings(row.settings)?.kind === 'queued')!;
+  const interrupted = { ...sandboxSettings(original.settings)!, seedStartedAt: f.clock.now().toISOString() };
+  await db.forGym(original.id, tx => tx.update(gyms).set({ settings: { demo: interrupted } }).where(eq(gyms.id, original.id)));
+  await f.pool.recoverSeed({ gymId: original.id, demo: interrupted });
+  const ready = await f.service.reserve('pool'); await f.service.prepare(ready.gymId);
+  await f.pool.request({});
+  expect(await f.pool.progress(first.ticket)).toMatchObject({ gymId: ready.gymId });
+  expect(await f.pool.progress(second.ticket)).toHaveProperty('pending', true);
+});
+
+it('recovers a durable allocation claim if its private transition fails after the ticket moves', async () => {
+  const f = fixture(), pending = await f.pool.request({ role: 'student', page: '/portal/schedule' });
+  if (!('pending' in pending)) throw new Error('Expected ticket');
+  const ready = await f.service.reserve('pool'); await f.service.prepare(ready.gymId);
+  const scope: typeof db.forGym = async (gymId, fn) => {
+    if (gymId === ready.gymId) throw new Error('Allocation transaction unavailable');
+    return db.forGym(gymId, fn);
+  };
+  await expect(f.makePool({ scope }).request({})).rejects.toThrow('Allocation transaction unavailable');
+  expect(sandboxSettings((await rows()).find(row => row.id === ready.gymId)?.settings)).toMatchObject({ kind: 'queued', allocationPending: true });
+  await f.pool.refill();
+  const complete = await f.pool.progress(pending.ticket);
+  expect(complete).toMatchObject({ gymId: ready.gymId });
+  if (!('gymId' in complete)) throw new Error('Expected copy');
+  expect((await f.pool.handoff(complete.gymId, complete.handoffToken, '192.0.2.1')).redirect).toBe('/portal/schedule');
+});
+
+it('keeps refilling past an expired allocation claim whose cleanup fails', async () => {
+  const f = fixture(), pending = await f.pool.request({});
+  if (!('pending' in pending)) throw new Error('Expected ticket');
+  const ready = await f.service.reserve('pool'); await f.service.prepare(ready.gymId);
+  const scope: typeof db.forGym = async (gymId, fn) => {
+    if (gymId === ready.gymId) throw new Error('Allocation transaction unavailable');
+    return db.forGym(gymId, fn);
+  };
+  await expect(f.makePool({ scope }).request({})).rejects.toThrow('Allocation transaction unavailable');
+  f.removeUploads.mockImplementation(async gymId => { if (gymId === ready.gymId) throw new Error('Storage unavailable'); });
+  f.clock.advance(3_600_000);
+  await f.pool.refill();
+  expect(sandboxSettings((await rows()).find(row => row.id === ready.gymId)?.settings)).toMatchObject({ allocationPending: true });
+  // The stuck claim is skipped, so the rest of the refill still seeds and promotes a showcase.
+  expect(await f.pool.showcase()).toContain('https://showcase.');
+});
+
+it('reserves a pool seed replacement when its recovery is retried after cleanup failed', async () => {
+  const f = fixture(), reservation = await f.service.reserve('pool');
+  const original = (await rows()).find(row => row.id === reservation.gymId)!;
+  const interrupted = { ...sandboxSettings(original.settings)!, seedStartedAt: f.clock.now().toISOString() };
+  await db.forGym(original.id, tx => tx.update(gyms).set({ settings: { demo: interrupted } }).where(eq(gyms.id, original.id)));
+  vi.spyOn(f.service, 'expire').mockRejectedValueOnce(new Error('Storage unavailable'));
+  await expect(f.pool.recoverSeed({ gymId: original.id, demo: interrupted })).rejects.toThrow('Storage unavailable');
+  f.clock.advance(60_000);
+  await f.pool.recoverSeed({ gymId: original.id, demo: interrupted });
+  expect((await rows()).filter(row => sandboxSettings(row.settings)?.replacementFor === original.id)).toHaveLength(1);
+});
+
+it('does not revive a recovery payload ticket after a ready pool gym has already taken it', async () => {
+  const f = fixture(), pending = await f.pool.request({});
+  if (!('pending' in pending)) throw new Error('Expected ticket');
+  const original = (await rows()).find(row => sandboxSettings(row.settings)?.kind === 'queued')!;
+  const interrupted = { ...sandboxSettings(original.settings)!, seedStartedAt: f.clock.now().toISOString() };
+  await db.forGym(original.id, tx => tx.update(gyms).set({ settings: { demo: interrupted } }).where(eq(gyms.id, original.id)));
+  const ready = await f.service.reserve('pool'); await f.service.prepare(ready.gymId);
+  await f.pool.request({});
+  await f.pool.recoverSeed({ gymId: original.id, demo: interrupted });
+  expect(await f.pool.progress(pending.ticket)).toMatchObject({ gymId: ready.gymId });
+  expect((await rows()).filter(row => sandboxSettings(row.settings)?.ticketHash === interrupted.ticketHash)).toHaveLength(1);
+});
+
+it('counts unready pool seeds ahead of a ticket and reclaims an expired reservation without seeding it', async () => {
+  const f = fixture(); await f.service.reserve('pool');
+  const pending = await f.pool.request({});
+  if (!('pending' in pending)) throw new Error('Expected ticket');
+  expect(pending.position).toBe(2);
+  const abandoned = (await rows()).find(gym => sandboxSettings(gym.settings)?.kind === 'queued')!;
+  f.clock.advance(3_600_000); await f.pool.refill();
+  expect((await rows()).some(gym => gym.id === abandoned.id)).toBe(false);
+  expect(f.seed.mock.calls.some(([context]) => context.gymId === abandoned.id)).toBe(false);
+  await expect(f.pool.progress(pending.ticket)).rejects.toMatchObject({ code: 'not_found' });
+});
+
+it('does not enqueue a pool wake on progress polls while a seed is in progress', async () => {
+  const f = fixture(), pending = await f.pool.request({});
+  if (!('pending' in pending)) throw new Error('Expected ticket');
+  const gym = (await rows()).find(gym => sandboxSettings(gym.settings)?.kind === 'queued')!;
+  await db.forGym(gym.id, tx => tx.update(gyms).set({ settings: { demo: { ...sandboxSettings(gym.settings)!, seedStartedAt: f.clock.now().toISOString() } } }).where(eq(gyms.id, gym.id)));
+  const wake = vi.fn(async () => {}); f.pool.setWake(wake);
+  await f.pool.progress(pending.ticket); await f.pool.progress(pending.ticket);
+  expect(wake).not.toHaveBeenCalled();
+});
+
+it('restores the handoff bearer when login fails so the same visitor can retry', async () => {
+  const f = fixture(); await f.pool.refill(); const copy = await create(f);
+  f.identities.login.mockRejectedValueOnce(new Error('Database unavailable'));
+  await expect(f.pool.handoff(copy.gymId, copy.handoffToken, '192.0.2.1')).rejects.toThrow('Database unavailable');
+  await expect(f.pool.handoff(copy.gymId, copy.handoffToken, '192.0.2.1')).resolves.toMatchObject({ redirect: '/admin' });
+  await expect(f.makePool().handoff(copy.gymId, copy.handoffToken, '192.0.2.1')).rejects.toMatchObject({ code: 'not_found' });
+});
+
+it('restores the handoff on an error response and accepts the successful login redirect on retry', async () => {
+  const f = fixture(); await f.pool.refill(); const copy = await create(f);
+  f.identities.login.mockResolvedValueOnce(new Response(null, { status: 503 }));
+  await expect(f.pool.handoff(copy.gymId, copy.handoffToken, '192.0.2.1')).rejects.toMatchObject({ code: 'unavailable' });
+  const success = await f.pool.handoff(copy.gymId, copy.handoffToken, '192.0.2.1');
+  expect(success.response.status).toBe(303);
+  expect(success.response.headers.has('set-cookie')).toBe(true);
+});
+
+it('recovers an orphaned replacement reservation without waiting for its day-long expiry', async () => {
+  const f = fixture(), reservation = await f.service.reserve('pool');
+  await db.forGym(reservation.gymId, tx => tx.update(gyms).set({ settings: {
+    bootstrapOwnerEmail: `demo-replacement.${reservation.gymId}@example.invalid`,
+  } }).where(eq(gyms.id, reservation.gymId)));
+  await f.pool.refill();
+  expect(sandboxSettings((await rows()).find(gym => gym.id === reservation.gymId)?.settings)?.ready).toBe(true);
+});
+
+it('defers pool jobs until private allocation and lists eligible gyms with one system read', async () => {
+  const f = fixture(); await f.pool.refill();
+  const before = await rows(), poolGym = before.find(gym => sandboxSettings(gym.settings)?.kind === 'pool')!;
+  const shared = before.find(gym => sandboxSettings(gym.settings)?.kind === 'showcase')!;
+  expect(await f.pool.jobPolicy(poolGym.id)).toBe('defer');
+  expect(await f.pool.jobPolicy(shared.id)).toBe('skip');
+  const copy = await create(f);
+  expect(copy.gymId).toBe(poolGym.id);
+  expect(await f.pool.jobPolicy(copy.gymId)).toBe(true);
+  const calls = vi.fn();
+  const system: typeof db.forSystem = fn => { calls(); return db.forSystem(fn); };
+  const pool = createDemoPool({ ...f, key: Buffer.alloc(32, 17), scope: db.forGym, system });
+  expect(await pool.listEligibleGyms()).toEqual([{ gymId: copy.gymId, timezone: 'UTC' }]);
+  expect(calls).toHaveBeenCalledOnce();
+});
+
+it('swaps the showcase without locking an unrelated private gym', async () => {
+  const f = fixture(); await f.pool.refill(); const copy = await create(f); await f.pool.refill();
+  const shared = (await rows()).find(gym => sandboxSettings(gym.settings)?.kind === 'showcase')!;
+  await db.forGym(shared.id, tx => tx.update(gyms).set({ settings: { demo: {
+    ...sandboxSettings(shared.settings)!, promotedAt: new Date(f.clock.now().getTime() - 86_400_000).toISOString(),
+  } } }).where(eq(gyms.id, shared.id)));
+  let release!: () => void, entered!: () => void;
+  const acquired = new Promise<void>(resolve => { entered = resolve; });
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const lock = db.forGym(copy.gymId, async tx => {
+    await tx.select().from(gyms).where(eq(gyms.id, copy.gymId)).for('update'); entered(); await held;
+  });
+  await acquired;
+  const refill = f.pool.refill(); let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([refill, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Showcase swap locked an unrelated gym')), 2000); })]);
+    expect(await f.pool.showcase()).not.toContain(f.service.kioskTokenFor(shared.id));
+  } finally { clearTimeout(timer); release(); await lock; await refill; }
+});
 
 it('keeps one showcase and a ready pool inside the cap; two processes cannot claim the same ready gym', async () => {
   const f = fixture(); await f.pool.refill();
@@ -150,7 +322,11 @@ it('keeps a queued ticket in a durable recovery job if replacement fails after d
   await f.pool.recoverSeed({ gymId: failed.id, demo: sandboxSettings(failed.settings)! });
   await f.pool.refill();
   const complete = await f.pool.progress(pending.ticket);
-  expect(complete).toMatchObject({ gymId: replacement.id });
+  // The recovered ticket may take an earlier ready pool gym instead of waiting for this replacement's seed.
+  expect(complete).toHaveProperty('gymId');
+  expect(complete).not.toMatchObject({ gymId: failed.id });
+  if (!('gymId' in complete)) throw new Error('Expected copy');
+  expect((await f.pool.handoff(complete.gymId, complete.handoffToken, '192.0.2.1')).redirect).toBe('/portal/schedule');
   await f.pool.recoverSeed({ gymId: failed.id, demo: sandboxSettings(failed.settings)! });
   expect((await rows()).filter(gym => sandboxSettings(gym.settings)?.ticketHash === sandboxSettings(failed.settings)?.ticketHash)).toHaveLength(1);
 });

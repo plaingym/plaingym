@@ -11,6 +11,7 @@ import type { GymDeleteService } from '../areas/settings/gym-delete.js';
 import { requireDemo, sandboxSettings, type DemoConfig, type SandboxSettings, type SeedRecovery } from './config.js';
 import type { DemoLoginTarget } from '@plaingym/shared/contracts';
 import type { JoinService } from '../public/pages/join.service.js';
+import { currentDemoGym } from './request.js';
 
 export function createDemoService(options: {
   config: DemoConfig; key: Buffer; clock: Clock; deletion: GymDeleteService;
@@ -23,7 +24,7 @@ export function createDemoService(options: {
   /** Private sandboxes must be live; the showcase stays readable until its replacement is swapped in. */
   async function live(gymId: string) {
     requireDemo(options.config);
-    const [gym] = await scope(gymId, (tx) => tx.select().from(gyms).where(eq(gyms.id, gymId)));
+    const gym = currentDemoGym(gymId) ?? (await scope(gymId, (tx) => tx.select().from(gyms).where(eq(gyms.id, gymId))))[0];
     const settings = sandboxSettings(gym?.settings);
     if (!gym || gym.status !== 'active' || !settings?.ready || (settings.kind !== 'showcase' && Date.parse(settings.expiresAt) <= options.clock.now().getTime()))
       throw new AppError('not_found', 'Not found');

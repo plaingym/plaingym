@@ -35,8 +35,12 @@ use a test Stripe key ([going-live.md](going-live.md#1-try-it-in-test-mode-optio
   every five minutes. Background discovery polls do not count as activity.
   Cleanup checks every five minutes.
 * **Ready copies.** `DEMO_POOL_SIZE` (default 5) keeps gyms seeded ahead, one at
-  a time. Empty-pool visitors see their place in line. `DEMO_MAX_SANDBOXES`
-  (default 50) includes the showcase, pool and queued reservations.
+  a time. It must be at most `DEMO_MAX_SANDBOXES - 3`, leaving slots for the
+  showcase, its replacement and a private copy. Empty-pool visitors see their
+  place in line, including unfinished pool seeds ahead of them. The oldest live
+  ticket receives the next ready pool gym; abandoned tickets expire after an hour
+  and release their reservations. `DEMO_MAX_SANDBOXES` (default 50) includes the
+  showcase, pool and queued reservations.
 
 The showcase uses `showcase.<DEMO_DOMAIN>`, one level below the demo domain, and
 is replaced 24 hours after promotion, remaining available until the replacement

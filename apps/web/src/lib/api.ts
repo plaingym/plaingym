@@ -1,20 +1,41 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { createApiClient } from '@plaingym/shared/api';
-export { createApiClient };
+import { createApiClient as generatedApiClient } from '@plaingym/shared/api';
+export function createApiClient(options: Parameters<typeof generatedApiClient>[0] = {}) {
+  const client = generatedApiClient(options);
+  client.use({ async onResponse({ response }) { await reportApiRefusal(response); } });
+  return client;
+}
 export type { paths } from '@plaingym/shared/api';
 
 /** Typed contract client; auth transport is separate because it is not in OpenAPI. */
-export const api = createApiClient({ credentials: 'same-origin', fetch: (...args) => fetch(...args) });
+export const api = createApiClient({ credentials: 'same-origin' });
+const errorListeners = new Set<(error: ApiError) => void>();
+export function onApiError(listener: (error: ApiError) => void) {
+  errorListeners.add(listener);
+  return () => { errorListeners.delete(listener); };
+}
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, readonly reason: readonly string[] = []) {
     super('Request failed');
     this.name = 'ApiError';
+    for (const listener of errorListeners) listener(this);
   }
 }
 /** Require a successful typed-client response before validating its data. */
-export function checked<T>(result: { response: Response; data?: T }): T {
-  if (!result.response.ok || result.data === undefined) throw new ApiError(result.response.status, 'request_failed');
+export function checked<T>(result: { response: Response; data?: T; error?: unknown }): T {
+  if (!result.response.ok || result.data === undefined) throw new ApiError(result.response.status, 'request_failed', reasonsFrom(result.error));
   return result.data;
+}
+function reasonsFrom(body: unknown): readonly string[] {
+  const reason = (body as { error?: { details?: { reason?: unknown } } } | null)?.error?.details?.reason;
+  return Array.isArray(reason) && reason.every((value: unknown) => typeof value === 'string') ? reason : [];
+}
+/** Clients with their own error classes keep their UI behavior and report structured refusals here. */
+export async function reportApiRefusal(response: Response): Promise<void> {
+  if (response.status === 403) {
+    const reason = await apiErrorReasons(response);
+    if (reason.length) new ApiError(response.status, 'forbidden', reason);
+  }
 }
 export interface ErrorMessageRule { status: number; code: string; message?: string }
 /** Read an error once, preserving the response and exposing only explicitly allowed, bounded messages. */
@@ -35,17 +56,18 @@ export async function apiErrorReasons(response: Response): Promise<readonly stri
   return (await readApiError(response)).reasons;
 }
 /** Restrict all API calls to this gym's origin, including injected auth transports. */
-export function createJsonTransport(fetcher: typeof fetch = (...args) => fetch(...args)) {
+export function createJsonTransport(fetcher?: typeof fetch) {
   return async function request<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
     if (!path.startsWith('/api/') || /[\\?#]/.test(path)) throw new Error('Expected a local API path');
-    const response = await fetcher(path, {
+    const response = await (fetcher ?? fetch)(path, {
       method: body === undefined ? 'GET' : 'POST', credentials: 'same-origin',
       redirect: 'error', headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }), ...(signal ? { signal } : {}),
     });
     if (!response.ok) {
       // Never display arbitrary server/SQL messages to the user.
-      throw new ApiError(response.status, response.status === 429 ? 'rate_limited' : 'request_failed');
+      const body: unknown = await response.json().catch(() => undefined);
+      throw new ApiError(response.status, response.status === 429 ? 'rate_limited' : 'request_failed', reasonsFrom(body));
     }
     return await response.json() as T;
   };

@@ -4,7 +4,7 @@ import { demoCopyPage, demoCreationResponse, demoRoleSchema, shellBootstrapRespo
 import { Button } from '../../components/ui/button.js';
 import { Alert } from '../../components/ui/alert.js';
 import { Dialog } from '../../components/ui/dialog.js';
-import { createJsonTransport } from '../../lib/api.js';
+import { createJsonTransport, onApiError } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 
 const request = createJsonTransport();
@@ -23,22 +23,14 @@ async function copyTarget(signal: AbortSignal) {
   } catch { if (signal.aborted) throw new DOMException('Aborted', 'AbortError'); }
   return { role, page: demoCopyPage.safeParse(location.pathname.replace(/\/$/, '') || '/').data ?? (role === 'student' ? '/portal' : '/admin') };
 }
-/** All browser API clients use the current fetch; observe only this specific refusal and leave their response intact. */
+/** Shared API errors carry structured refusal reasons; the browser transport stays untouched. */
 export function CopyPrompt({ showcase }: { showcase: boolean }) {
   const [open, setOpen] = useState(false);
   useEffect(() => {
     if (!showcase) return;
-    const original = window.fetch;
-    const observing: typeof fetch = async (...args) => {
-      const response = await original(...args);
-      if (response.status === 403) {
-        const body = await response.clone().json().catch(() => undefined) as { error?: { code?: string; details?: { reason?: string[] } } } | undefined;
-        if (body?.error?.code === 'forbidden' && body.error.details?.reason?.includes('demo_showcase_read_only')) setOpen(true);
-      }
-      return response;
-    };
-    window.fetch = observing;
-    return () => { if (window.fetch === observing) window.fetch = original; };
+    return onApiError(error => {
+      if (error.status === 403 && error.reason.includes('demo_showcase_read_only')) setOpen(true);
+    });
   }, [showcase]);
   return open ? <Dialog title={t('demo/demo:sharedTitle')} closeLabel={t('demo/demo:closeMenu')} onClose={() => setOpen(false)}>
     <div className="space-y-4"><p>{t('demo/demo:copyHelp')}</p><CreateCopyButton /></div>

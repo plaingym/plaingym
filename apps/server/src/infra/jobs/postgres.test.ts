@@ -45,6 +45,27 @@ async function until(predicate: () => Promise<boolean>) {
 
 jobsContract('Postgres Jobs contract', async () => queue());
 
+it('defers gym work without spending attempts, then executes it once eligible; skip acknowledges it', async () => {
+  let policy: boolean | 'defer' | 'skip' = 'defer';
+  const q = queue({ eligibleGym: async () => policy }), handler = vi.fn(async () => {});
+  q.handle('policy.work', handler);
+  const { jobId } = await q.enqueue('policy.work', {}, { ...options, maxAttempts: 1 });
+  expect(await q.runNext()).toBe(true);
+  expect(await row(jobId)).toMatchObject({ status: 'pending', attempts: 0, runAt: new Date('2026-01-01T00:01:00Z'), lockedUntil: null, lockToken: null });
+  expect(handler).not.toHaveBeenCalled();
+  expect(await q.runNext()).toBe(false);
+  clock.advance(60_000); policy = true;
+  expect(await q.runNext()).toBe(true);
+  expect(handler).toHaveBeenCalledOnce();
+  expect(handler.mock.calls[0]).toEqual([{}, expect.objectContaining({ gymId: gymA, attempt: 1 })]);
+  expect(await row(jobId)).toMatchObject({ status: 'succeeded', attempts: 1 });
+  policy = 'skip';
+  const skipped = await q.enqueue('policy.work', {}, options);
+  await q.runNext();
+  expect(await row(skipped.jobId)).toMatchObject({ status: 'succeeded', attempts: 1 });
+  expect(handler).toHaveBeenCalledOnce();
+});
+
 describe.each(['fake', 'postgres'] as const)('%s caller-transaction enqueue contract', kind => {
   function subject() {
     const q = kind === 'fake' ? new FakeJobs(clock) : new PostgresJobs({ clock, database: {

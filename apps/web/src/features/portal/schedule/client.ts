@@ -77,6 +77,6 @@ async function fetchJson(path: string, householdId?: string): Promise<unknown> {
   if (!path.startsWith('/api/portal/')) throw new Error('Expected a portal API path');
   const fetcher = householdId ? householdTransport(householdId) : fetch;
   const response = await fetcher(path, { credentials: 'same-origin', redirect: 'error', headers: { Accept: 'application/json' } });
-  if (!response.ok) throw new ApiError(response.status, response.status === 429 ? 'rate_limited' : 'request_failed');
+  if (!response.ok) throw new ApiError(response.status, response.status === 429 ? 'rate_limited' : 'request_failed', await apiErrorReasons(response));
   return response.json();
 }

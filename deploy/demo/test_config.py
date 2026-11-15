@@ -83,6 +83,13 @@ class PreflightTests(unittest.TestCase):
             with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                 config.validate({**inputs(), key: value})
 
+    def test_pool_size_leaves_three_slots_like_the_app_boot_check(self):
+        config.validate({**inputs(), "DEMO_MAX_SANDBOXES": "8", "DEMO_POOL_SIZE": "5"})
+        config.validate({**inputs(), "DEMO_MAX_SANDBOXES": "3", "DEMO_POOL_SIZE": "0"})
+        for maximum, pool in (("8", "6"), ("6", "5"), ("2", "0")):
+            with self.subTest(maximum=maximum, pool=pool), self.assertRaises(ValueError):
+                config.validate({**inputs(), "DEMO_MAX_SANDBOXES": maximum, "DEMO_POOL_SIZE": pool})
+
     def test_validation_rejects_interpolation_live_test_domains_and_unpinned_images(self):
         config.validate(inputs())
         for key, value in (("APP_IMAGE", "example:latest"), ("CADDY_IMAGE", "example:edge"),

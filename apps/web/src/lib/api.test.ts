@@ -1,10 +1,36 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it, vi } from 'vitest';
-import { ApiError, apiErrorReasons, createApiClient, createJsonTransport, readApiError } from './api.js';
+import { ApiError, apiErrorReasons, checked, createApiClient, createJsonTransport, onApiError, readApiError, reportApiRefusal } from './api.js';
 import { createBootstrapLoader, createShellServices, sessionDestination } from '../app/services.js';
 import { createShellTranslator } from './i18n.js';
 
 describe('API transport', () => {
+  it('reports refusals from custom typed clients and preserves their structured error bodies', async () => {
+    const body = { error: { code: 'forbidden', details: { reason: ['demo_showcase_read_only'] } } };
+    const observe = vi.fn(), stop = onApiError(observe);
+    try {
+      const client = createApiClient({ baseUrl: 'https://example.test', fetch: vi.fn<typeof fetch>().mockResolvedValue(Response.json(body, { status: 403 })) });
+      const result = await client.POST('/api/demo/login', { body: { role: 'owner' } });
+      expect(result.error).toEqual(body); expect(observe).toHaveBeenCalledOnce();
+      const custom = Response.json(body, { status: 403 });
+      await reportApiRefusal(custom);
+      expect(await custom.json()).toEqual(body); expect(observe).toHaveBeenCalledTimes(2);
+    } finally { stop(); }
+  });
+  it('reports structured API refusals from JSON and typed answers without replacing fetch', async () => {
+    const body = { error: { code: 'forbidden', details: { reason: ['demo_showcase_read_only'] } } };
+    const observe = vi.fn(), unsubscribe = onApiError(observe), original = globalThis.fetch;
+    try {
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(body, { status: 403 }));
+      await expect(createJsonTransport(fetcher)('/api/demo/login', {})).rejects.toMatchObject({ status: 403, reason: ['demo_showcase_read_only'] });
+      expect(observe).toHaveBeenCalledOnce();
+      expect(() => checked({ response: new Response(null, { status: 403 }), error: body })).toThrow(ApiError);
+      expect(observe).toHaveBeenCalledTimes(2);
+      expect(globalThis.fetch).toBe(original);
+    } finally { unsubscribe(); }
+    new ApiError(403, 'forbidden', ['demo_showcase_read_only']);
+    expect(observe).toHaveBeenCalledTimes(2);
+  });
   it('only exposes bounded messages allowed by status, code and optional exact text', async () => {
     const body = { error: { code: 'forbidden', message: 'Uploads are disabled in the demo', details: { reason: ['demo'] } } };
     const response = Response.json(body, { status: 403 });

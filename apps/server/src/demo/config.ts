@@ -22,7 +22,8 @@ export function demoBootCheck(env: NodeJS.ProcessEnv = process.env): DemoConfig 
   const maxSandboxes = Number(env.DEMO_MAX_SANDBOXES ?? 50);
   if (!Number.isSafeInteger(maxSandboxes) || maxSandboxes < 1 || maxSandboxes > 1000) throw new Error('Invalid DEMO_MAX_SANDBOXES');
   const poolSize = Number(env.DEMO_POOL_SIZE ?? 5), idleHours = Number(env.DEMO_IDLE_HOURS ?? 2);
-  if (!Number.isSafeInteger(poolSize) || poolSize < 0 || poolSize > maxSandboxes) throw new Error('Invalid DEMO_POOL_SIZE');
+  if (!Number.isSafeInteger(poolSize) || poolSize < 0 || poolSize > maxSandboxes - 3)
+    throw new Error('Invalid DEMO_POOL_SIZE: leave three slots for the showcase, its replacement and a private copy');
   if (!Number.isFinite(idleHours) || idleHours <= 0 || idleHours > 24) throw new Error('Invalid DEMO_IDLE_HOURS');
   return { enabled, domain, maxSandboxes, poolSize, idleHours, ...(testKey ? { stripe: { testKey, webhookSecret: env.DEMO_STRIPE_WEBHOOK_SECRET! } } : {}) };
 }
@@ -34,9 +35,10 @@ export interface SandboxSettings {
   kind?: 'pool' | 'queued' | 'private' | 'showcase' | 'retired';
   seededAt?: string; seedStartedAt?: string; promotedAt?: string; allocatedAt?: string; lastActivityAt?: string;
   replacementFor?: string;
-  ticketHash?: string; ticketExpiresAt?: string;
+  ticketHash?: string; ticketExpiresAt?: string; ticketOrder?: string;
   copy?: { role: 'owner' | 'coach' | 'student'; page: string };
   handoffHash?: string; handoffExpiresAt?: string;
+  allocationPending?: boolean;
 }
 export interface SeedRecovery { gymId: string; demo: SandboxSettings }
 export function sandboxSettings(value: unknown): SandboxSettings | null {

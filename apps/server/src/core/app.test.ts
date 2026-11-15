@@ -20,6 +20,19 @@ const session: MiddlewareHandler<RequestEnvironment> = async (_context, next) =>
 const allow: PermissionMiddleware = () => async (_context, next) => { await next(); };
 
 describe('server application composition', () => {
+  it('runs demo policy after the multi-gym flood limit and before sessions', async () => {
+    const calls: string[] = [];
+    const app = createApp({ clock, tenancy: 'multi', resolveGym, authorize: allow,
+      rateLimit: { limit: 1, peerAddress: () => '127.0.0.25' },
+      demoGuard: async (_c, next) => { calls.push('demo'); await next(); },
+      session: async (_c, next) => { calls.push('session'); await next(); },
+    });
+    app.get('/api/plain', c => c.json({ ok: true }));
+    expect((await app.request('/api/plain')).status).toBe(200);
+    expect(calls).toEqual(['demo', 'session']); calls.length = 0;
+    expect((await app.request('/api/plain')).status).toBe(429);
+    expect(calls).toEqual([]);
+  });
   it('runs context, limiter, tenancy, session, CSRF, authorization, validation, and handler in order (single-gym)', async () => {
     const calls: string[] = [];
     const entry = route({ method: 'post', path: '/api/fixture', permission: { kind: 'public' },

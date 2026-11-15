@@ -8,6 +8,9 @@ it('validates the ready pool and idle lifetime settings', () => {
   expect(demoBootCheck(env)).toMatchObject({ poolSize: 5, idleHours: 2, maxSandboxes: 50 });
   expect(demoBootCheck({ ...env, DEMO_POOL_SIZE: '0', DEMO_IDLE_HOURS: '0.5' })).toMatchObject({ poolSize: 0, idleHours: 0.5 });
   for (const value of ['-1', '1.5', '51', 'NaN']) expect(() => demoBootCheck({ ...env, DEMO_POOL_SIZE: value })).toThrow(/DEMO_POOL_SIZE/);
+  expect(demoBootCheck({ ...env, DEMO_MAX_SANDBOXES: '8', DEMO_POOL_SIZE: '5' }).poolSize).toBe(5);
+  for (const size of ['6', '7', '8']) expect(() => demoBootCheck({ ...env, DEMO_MAX_SANDBOXES: '8', DEMO_POOL_SIZE: size })).toThrow(/three slots/);
+  expect(() => demoBootCheck({ ...env, DEMO_MAX_SANDBOXES: '2', DEMO_POOL_SIZE: '0' })).toThrow(/DEMO_POOL_SIZE/);
   for (const value of ['0', '-1', '25', 'NaN', 'Infinity']) expect(() => demoBootCheck({ ...env, DEMO_IDLE_HOURS: value })).toThrow(/DEMO_IDLE_HOURS/);
 });
 it('accepts only test secret/restricted keys and requires the install webhook secret', () => {

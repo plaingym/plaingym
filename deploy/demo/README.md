@@ -13,11 +13,12 @@ Optional settings accepted by the installer and saved in its protected `.env`:
 | Setting | Default | Meaning |
 | :--- | :--- | :--- |
 | `DEMO_MAX_SANDBOXES` | `50` | Total cap including the showcase, ready pool and queued reservations. |
-| `DEMO_POOL_SIZE` | `5` | Gyms seeded ahead, one at a time. Empty-pool visitors see their place in line. |
+| `DEMO_POOL_SIZE` | `5` | Gyms seeded ahead, one at a time; 0 through `DEMO_MAX_SANDBOXES - 3`. Empty-pool visitors see their place in line. |
 | `DEMO_IDLE_HOURS` | `2` | Private copy lifetime without requests; activity is persisted at most every five minutes, with a hard 24-hour limit after allocation. |
 
-Keep settings identical across app processes and leave capacity for daily showcase
-replacement. Failed or interrupted seeds are discarded and replaced with fresh
+Keep settings identical across app processes. The pool-size boot check reserves
+three slots for the showcase, its daily replacement and at least one private copy
+(so the sandbox cap must be at least 3). Failed or interrupted seeds are discarded and replaced with fresh
 gyms; Stripe test rate limits back off before failing a seed. Cleanup checks every
 five minutes and logs individual failures while continuing with other gyms.
 Background discovery polls do not extend a private copy's idle lifetime.

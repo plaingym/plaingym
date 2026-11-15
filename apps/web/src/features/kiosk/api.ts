@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { followServerVersion } from '../../app/version.js';
+import { reportApiRefusal } from '../../lib/api.js';
 import {
   kioskFamilyCheckinResponseSchema, kioskLookupResponseSchema,
   type KioskCheckinResult, type KioskLookupResponse, type KioskNamePinCheckinRequest,
@@ -51,6 +52,7 @@ async function post<T>(token: string, path: string, body: unknown, schema: { par
   const response = await fetch(path, { method: 'POST', credentials: 'omit', cache: 'no-store', redirect: 'error',
     signal: AbortSignal.timeout(15_000),
     headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body: JSON.stringify(body) });
+  await reportApiRefusal(response);
   if (response.status === 401 || response.status === 403 || response.status === 404) throw new KioskAuthError('Device not authorized');
   if (!response.ok) throw new Error('Request failed');
   return schema.parse(await response.json());

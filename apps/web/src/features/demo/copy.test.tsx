@@ -2,13 +2,24 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { CreateCopyButton, rememberDemoRole } from './copy.js';
+import { CopyPrompt, CreateCopyButton, rememberDemoRole } from './copy.js';
+import { ApiError } from '../../lib/api.js';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); sessionStorage.clear(); });
 const result = { data: { gymId: '019a0000-0000-7000-8000-000000000001', origin: 'https://copy.demo.example.test',
   expiresAt: '2099-11-14T12:00:00Z', kioskToken: 'kiosk', handoffToken: 'a'.repeat(43) } };
 const bootstrap = () => Response.json({ data: { gym: { id: result.data.gymId, name: 'Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] },
   session: { userId: result.data.gymId, displayName: 'Alex Student', roles: [], member: true }, login: { password: false, magicLink: true } } });
+it('opens only for a showcase API refusal and leaves global fetch intact after mounting and unmounting', async () => {
+  const original = window.fetch;
+  const { unmount } = render(<CopyPrompt showcase />);
+  expect(window.fetch).toBe(original);
+  await act(async () => { new ApiError(403, 'forbidden', ['another_reason']); });
+  expect(screen.queryByRole('dialog')).toBeNull();
+  await act(async () => { new ApiError(403, 'forbidden', ['demo_showcase_read_only']); });
+  expect(screen.getByRole('dialog')).toBeDefined();
+  unmount(); expect(window.fetch).toBe(original);
+});
 it('creates only once and hands off the selected role and static page to the destination host', async () => {
   window.history.replaceState(null, '', '/portal'); rememberDemoRole('owner');
   let complete!: (response: Response) => void;

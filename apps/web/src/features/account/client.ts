@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { accountContracts, requestEmailChangeSchema, type AccountSummary } from '@plaingym/shared/contracts';
 import { parseResponse } from '../../lib/response.js';
+import { reportApiRefusal } from '../../lib/api.js';
 
 /** A refused account request, with the API's error code and field details when it sent them. */
 export class AccountRequestError extends Error {
   constructor(readonly status: number, readonly code?: string, readonly details?: Readonly<Record<string, readonly string[]>>) { super('Account request failed'); }
 }
 async function failure(response: Response) {
+  await reportApiRefusal(response);
   const body = await response.json().catch(() => null) as { error?: { code?: string; details?: Record<string, string[]> } } | null;
   return new AccountRequestError(response.status, body?.error?.code, body?.error?.details);
 }

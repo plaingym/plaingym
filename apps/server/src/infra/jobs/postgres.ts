@@ -37,7 +37,7 @@ export interface BatchLaneOptions {
 }
 export interface PostgresJobsOptions {
   /** Install policy checked before a gym job executes, including already queued work. */
-  readonly eligibleGym?: (gymId: string) => Promise<boolean>;
+  readonly eligibleGym?: (gymId: string) => Promise<boolean | 'skip' | 'defer'>;
   readonly database?: Scope;
   readonly clock?: Clock;
   readonly perGymConcurrency?: number;
@@ -243,12 +243,16 @@ export class PostgresJobs implements Jobs, JobRecovery {
     })();
     // Keep a rejection observed immediately; acknowledgement remains lease-fenced.
     const heartbeatResult = heartbeat.catch(() => undefined);
-    let failure: unknown, failed = false;
+    let failure: unknown, failed = false, deferred = false;
     try {
       const body = envelope(row.payload);
       const context = { jobId: row.id, timezone: body.timezone, attempt: row.attempts, clock: this.clock };
       if (row.gymId === null) await this.#systemHandlers.get(row.name)!(body.value, { ...context, gymId: null });
-      else if (!this.#eligibleGym || await this.#eligibleGym(row.gymId)) await this.#handlers.get(row.name)!(body.value, { ...context, gymId: row.gymId });
+      else {
+        const policy = this.#eligibleGym ? await this.#eligibleGym(row.gymId) : true;
+        deferred = policy === 'defer';
+        if (policy === true) await this.#handlers.get(row.name)!(body.value, { ...context, gymId: row.gymId });
+      }
     } catch (error) { failed = true; failure = error; }
     finally { heartbeatAbort.abort(); await heartbeatResult; }
     const now = this.clock.now();
@@ -256,9 +260,10 @@ export class PostgresJobs implements Jobs, JobRecovery {
     const backoff = Math.min(day, this.#retryBaseMs * 2 ** Math.min(row.attempts - 1, 30));
     await this.#database.forSystem(async (tx) => {
       await tx.update(jobs).set({
-        status: failed ? (final ? 'failed' : 'pending') : 'succeeded',
+        status: deferred ? 'pending' : failed ? (final ? 'failed' : 'pending') : 'succeeded',
+        ...(deferred ? { attempts: row.attempts - 1 } : {}),
         // A finished row's run time records when it finished: retention and failed-job lookups read it.
-        runAt: failed && !final ? new Date(now.getTime() + backoff) : now,
+        runAt: deferred ? new Date(now.getTime() + 60_000) : failed && !final ? new Date(now.getTime() + backoff) : now,
         lastError: failed ? (({ name, code }) => JSON.stringify({ name, code }))(describeError(failure)) : null,
         lockedUntil: null, lockToken: null,
       }).where(and(eq(jobs.id, row.id), eq(jobs.status, 'running'), eq(jobs.lockToken, row.lockToken!),

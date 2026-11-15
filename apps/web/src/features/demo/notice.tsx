@@ -4,7 +4,7 @@ import { parseResponse } from '../../lib/response.js';
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useRouterState } from '@tanstack/react-router';
-import { demoEntryResponse, demoMenuResponse, demoHandoffResponse, sandboxResponse, type DemoLoginTarget, type DemoRole } from '@plaingym/shared/contracts';
+import { demoEntryResponse, demoMenuResponse, demoHandoffResponse, type DemoLoginTarget, type DemoRole } from '@plaingym/shared/contracts';
 import { CopyPrompt, CreateCopyButton, rememberDemoRole } from './copy.js';
 import { Button } from '../../components/ui/button.js';
 import { Alert } from '../../components/ui/alert.js';
@@ -216,25 +216,19 @@ export function TryDemoButton({ navigate = (url: string) => window.location.assi
   const [pending, setPending] = useState(false), [error, setError] = useState('');
   const active = useRef(false), button = useRef<HTMLButtonElement>(null);
   async function start() {
+    if (discovery?.mode !== 'entry') return;
     if (discovery?.mode === 'entry' && discovery.showcase) { navigate(discovery.showcase); return; }
     if (active.current) return;
     active.current = true;
     setPending(true); setError('');
     try {
-      if (discovery?.mode === 'entry') {
-        const deadline = Date.now() + 3_600_000;
-        while (Date.now() < deadline) {
-          const result = demoEntryResponse.parse(await request('/api/demo')).data;
-          if (result.mode === 'entry' && result.showcase) { navigate(result.showcase); return; }
-          await new Promise(resolve => window.setTimeout(resolve, 2000));
-        }
-        throw new Error('Showcase preparation timed out');
+      const deadline = Date.now() + 3_600_000;
+      while (Date.now() < deadline) {
+        const result = demoEntryResponse.parse(await request('/api/demo')).data;
+        if (result.mode === 'entry' && result.showcase) { navigate(result.showcase); return; }
+        await new Promise(resolve => window.setTimeout(resolve, 2000));
       }
-      const { data } = parseResponse(sandboxResponse, await request('/api/demo/sandboxes', {}));
-      // The sandbox's start page offers every role, the join walkthrough and the kiosk.
-      const destination = new URL('/demo', data.origin);
-      destination.hash = new URLSearchParams({ kioskToken: data.kioskToken }).toString();
-      navigate(destination.href);
+      throw new Error('Showcase preparation timed out');
     } catch (error) {
       setError(t(error instanceof ApiError && error.status === 429 ? 'demo/demo:capacityError' : 'demo/demo:creationError'));
       active.current = false; setPending(false);

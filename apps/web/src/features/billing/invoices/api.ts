@@ -2,7 +2,7 @@
 import { linksContracts, membersContracts, releaseInvoiceHoldContract } from '@plaingym/shared/contracts';
 import type { CreateSignedLinkRequest, InvoiceStatus } from '@plaingym/shared/contracts';
 import { billingRequest, createBillingClient } from '../catalog/api.js';
-import { readApiError } from '../../../lib/api.js';
+import { readApiError, reportApiRefusal } from '../../../lib/api.js';
 import { text } from './format.js';
 
 export class InvoiceRequestError extends Error {
@@ -18,6 +18,7 @@ export function createInvoiceClient(fetcher: typeof fetch = fetch) {
   const checked: typeof fetch = async (...args) => {
     const response = await fetcher(...args);
     if (!response.ok) {
+      await reportApiRefusal(response);
       const { reasons } = await readApiError(response);
       const reason = reasons[0] ?? (response.status === 503 ? 'payments_unavailable' : response.status === 403 ? 'forbidden' : 'save_failed');
       throw new InvoiceRequestError(reason);

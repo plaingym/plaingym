@@ -5,7 +5,7 @@ import { accessibleLayout } from '../responsive.js';
 test.use({ trace: 'off', screenshot: 'off' });
 for (const { role, width, pagePath } of [
   { role: 'owner', width: 360, pagePath: '/admin/members' },
-  { role: 'student', width: 1280, pagePath: '/portal' },
+  { role: 'student', width: 1280, pagePath: '/portal/schedule' },
 ] as const) {
   test(`showcase ${role} makes an isolated copy on the same page at ${width}px`, async ({ page }, info) => {
     test.setTimeout(180_000);
@@ -18,8 +18,19 @@ for (const { role, width, pagePath } of [
     await page.waitForURL(url => url.pathname === (role === 'student' ? '/portal' : '/admin'));
     await page.goto('https://showcase.demo.localhost' + pagePath);
     await expect(page.getByRole('button', { name: 'Make my own copy', exact: true })).toBeVisible();
-    // This reaches the shared refusal before body validation or the route's write handler.
-    expect(await page.evaluate(async () => (await fetch('/api/members', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status)).toBe(403);
+    // Exercise each application's client error path; ordinary browser fetch is never replaced.
+    const refused = page.waitForResponse(response => response.request().method() === 'POST' && response.status() === 403);
+    if (role === 'owner') {
+      await page.getByLabel('Tag name', { exact: true }).fill('Showcase copy check');
+      await page.getByRole('button', { name: 'Create tag', exact: true }).click();
+    } else {
+      const action = page.getByRole('button', { name: /^(Book|Join the waitlist|Cancel booking|Leave the waitlist)/ }).first();
+      // Wait for this week's sessions to render before deciding the week has no bookable one.
+      const thisWeek = await action.waitFor({ state: 'visible', timeout: 10_000 }).then(() => true, () => false);
+      if (!thisWeek) await page.getByRole('button', { name: 'Next week', exact: true }).click();
+      await action.click();
+    }
+    expect((await refused).status()).toBe(403);
     const prompt = page.getByRole('dialog', { name: 'Shared demo', exact: true });
     await expect(prompt).toBeVisible();
     await accessibleLayout(page, info, 'demo-copy-' + width);

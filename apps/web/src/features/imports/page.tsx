@@ -9,7 +9,7 @@ import { importTargetFieldSchema, importUploadSchema, importPreviewResponseSchem
   type ImportPlanRequest, type ImportPreviewResponse } from '@plaingym/shared/contracts';
 import { useBootstrap } from '../../app/context.js';
 import { useDemoSandbox } from '../demo/notice.js';
-import { createJsonTransport, readApiError } from '../../lib/api.js';
+import { createJsonTransport, readApiError, reportApiRefusal } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 import { Button } from '../../components/ui/button.js';
 import { Pager } from '../../components/ui/pager.js';
@@ -41,19 +41,20 @@ function ImportPanel({ gymId }: { gymId: string }) {
   const errors = useQuery({ queryKey: ['imports', gymId, runId, 'errors', errorOffset], enabled: !!runId && !!progress.data?.errorCount,
     queryFn: async () => {
       const response = await fetch(`/api/imports/${runId}/errors?offset=${errorOffset}&limit=50`, { credentials: 'same-origin', redirect: 'error' });
-      if (!response.ok) throw new Error('Import report unavailable');
+      if (!response.ok) { await reportApiRefusal(response); throw new Error('Import report unavailable'); }
       return parseResponse(listResponseSchema(importIssueSchema), await response.json());
     }, refetchInterval: progress.data?.status === 'running' ? 1500 : false });
   const uploadFile = useMutation({ mutationFn: async (file: File) => {
     const form = new FormData(); form.set('file', file);
     const response = await fetch('/api/imports/uploads', { method: 'POST', body: form, credentials: 'same-origin', redirect: 'error' });
-    if (!response.ok) throw new Error('Upload failed');
+    if (!response.ok) { await reportApiRefusal(response); throw new Error('Upload failed'); }
     return parseResponse(importUploadSchema, (await response.json() as { data: unknown }).data);
   }, onSuccess(data) { setUpload(data); setMapping(data.suggestedMapping ?? []); setPreview(undefined); setRunId(undefined); setOffset(0); previewRows.reset(); } });
   const previewRows = useMutation({ mutationFn: async (page: number) => {
     const response = await fetch(`/api/imports/preview?offset=${page}&limit=50`, { method: 'POST', credentials: 'same-origin', redirect: 'error',
       headers: { 'content-type': 'application/json' }, body: JSON.stringify(plan) });
     if (!response.ok) {
+      await reportApiRefusal(response);
       // The API's own explanations: an expired upload, an invalid file or mapping, or a preview past its deadline.
       const { message } = await readApiError(response, [{ status: 400, code: 'invalid_request' }, { status: 404, code: 'not_found' },
         { status: 503, code: 'unavailable' }]);

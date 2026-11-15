@@ -54,9 +54,11 @@ statistics. Database statuses are `pending`, `running`, `succeeded`, and `failed
 exact job name. Internal orchestration uses it to retain polling progress while
 a failed demo seed's tenant reservation is being replaced; gym jobs are excluded.
 The optional `eligibleGym` policy is checked immediately before a gym handler.
-A false result acknowledges the queued job without calling its handler; demo
-composition uses it to exclude the shared showcase and pooled gyms, including
-jobs queued before they became shared. Ordinary installs leave it unset.
+A false or `skip` result acknowledges the queued job without calling its handler.
+`defer` returns the job to pending one minute later, with its attempt count
+unchanged; `true` runs it. This preserves work for gyms that will become eligible
+later. Demo composition can supply `pool.jobPolicy` to defer pooled and unfinished
+gyms and skip shared or retired ones. Ordinary installs leave the policy unset.
 Payloads use a versioned internal envelope to persist timezone and scheduler
 metadata; handlers receive only the caller's original JSON value. Caller
 idempotency keys are hashed together with the job name to fit the schema's
