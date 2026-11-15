@@ -111,13 +111,28 @@ export async function accessibleLayout(page: Page, info: TestInfo, name: string)
 /** Audit both OS preferences even on pages that currently share the same palette. */
 export async function accessibleThemes(page: Page, info: TestInfo, name: string) {
   const original = await page.evaluate(() => matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  // Media changes can schedule transitions after getAnimations() takes its snapshot.
+  // Audit the resting palette in each theme, including elements mounted during the scan.
+  // Modify a same-origin stylesheet through CSSOM: inline style tags are refused by the app's CSP.
+  const resting = await page.evaluateHandle(() => {
+    const sheet = [...document.styleSheets].find(sheet => !sheet.href || new URL(sheet.href).origin === location.origin);
+    if (!sheet) throw new Error('No same-origin stylesheet for the theme audit');
+    const rule = sheet.cssRules[sheet.insertRule('*, *::before, *::after { transition: none !important; }', sheet.cssRules.length)];
+    return { sheet, rule };
+  });
   try {
     for (const colorScheme of ['light', 'dark'] as const) {
       await page.emulateMedia({ colorScheme });
       await accessibleLayout(page, info, name + '-' + colorScheme);
       await info.attach(name + '-' + colorScheme, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
     }
-  } finally { await page.emulateMedia({ colorScheme: original }); }
+  } finally {
+    await page.emulateMedia({ colorScheme: original });
+    // Remove this rule by identity; a navigation that replaced the document already dropped it.
+    await resting.evaluate(({ sheet, rule }) => { const index = [...sheet.cssRules].indexOf(rule); if (index >= 0) sheet.deleteRule(index); })
+      .catch((error: unknown) => { if (!/Execution context was destroyed|Target .*closed/.test(String(error))) throw error; });
+    await resting.dispose();
+  }
 }
 
 /** Reach a control by Tab alone, with a bounded search that fails on a keyboard trap. */

@@ -91,6 +91,11 @@ export function rescheduledSwitch(row: Pick<Row, 'scheduledOn' | 'scheduledOrigi
   return nextDueOn && row.scheduledOn !== null && nextDueOn < row.scheduledOn && row.scheduledOrigin !== 'price_change'
     ? { scheduledOn: nextDueOn } : {};
 }
+/** Audit fields shared by imported due-date changes, without the switch's private override reason. */
+export function movedSwitchAudit(row: Pick<Row, 'scheduledPlanId' | 'scheduledOn'>, moved: { scheduledOn?: string }) {
+  return moved.scheduledOn ? { rescheduledSwitch: { scheduledPlanId: row.scheduledPlanId,
+    previousScheduledOn: row.scheduledOn, scheduledOn: moved.scheduledOn } } : {};
+}
 /**
  * Clears a switch that hasn't applied yet, with its override reason. A reason left with no switch scheduled records
  * the last applied switch and stays until the next switch is scheduled (or the member is erased). A price change left

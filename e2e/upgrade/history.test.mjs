@@ -14,6 +14,11 @@ test('all gate migrations are unchanged prefixes of the current journal', () => 
 for (const sql of [
   'ALTER TABLE "members" DROP COLUMN "first_name";',
   'ALTER TABLE public.members DROP first_name;',
+  'ALTER TABLE members DROP index;',
+  'ALTER TABLE members DROP policy;',
+  'ALTER TABLE members DROP CONSTRAINT old_check, DROP index;',
+  'ALTER TABLE members DROP CONSTRAINT old_check, DROP policy;',
+  'ALTER TABLE members DROP "default";',
   'ALTER TABLE members DROP CONSTRAINT old_check, DROP COLUMN first_name;',
   'ALTER TABLE members DROP CONSTRAINT old_check, DROP first_name;',
   'ALTER TABLE members RENAME COLUMN first_name TO name;',
@@ -47,6 +52,11 @@ test('permits additive DDL, backfills, and constraint replacement', () => {
     CREATE INDEX member_labels ON members(label);`, 'expand');
 });
 for (const sql of [
+  'DROP INDEX member_labels;',
+  'DROP POLICY member_read ON members;',
+  'ALTER TABLE members ALTER COLUMN label DROP DEFAULT;',
+  'ALTER TABLE members ALTER label DROP NOT NULL;',
+  'ALTER TABLE members DROP CONSTRAINT IF EXISTS previous_check;',
   'INSERT INTO members(id) VALUES (1) ON CONFLICT DO NOTHING;',
   'INSERT INTO members(id, label) VALUES (1, 2) ON CONFLICT (id) DO UPDATE SET label = excluded.label;',
   'INSERT INTO members(id) VALUES (1) ON CONFLICT ON CONSTRAINT member_id DO NOTHING;',

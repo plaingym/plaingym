@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
 import { useTestDatabase } from '@plaingym/db/testing/database';
+import { auditEvents } from '@plaingym/db';
+import { eq } from 'drizzle-orm';
 import { localDate } from '@plaingym/shared/time';
-import { demoPlans } from './billing.js';
+import { billingSeed, demoPlans } from './billing.js';
 import { demoHouseholds } from './members.js';
 import { fixture, snapshot as rowsOf } from './billing.fixture.test-helper.js';
 
@@ -33,7 +35,15 @@ describe('demo billing seed', { timeout: 90_000 }, () => {
     expect((await snapshot(f.gymId)).gym.billingEnabled).toBe(false);
   });
   it('creates plans, family invoices, paid history and two past-due households using real billing services', async () => {
-    const f = await fixture(db); await f.seed.run(f.context);
+    const f = await fixture(db), crash = new Error('Completion marker interrupted');
+    const interrupted = billingSeed({ clock: f.clock, paymentsFor: async () => f.gateway,
+      scope: (gymId, run) => db.forGym(gymId, async tx => {
+        const result = await run(tx);
+        // Roll back only the final transaction. The review hold has already committed.
+        if ((await tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.seed.completed'))).length) throw crash;
+        return result;
+      }) });
+    await expect(interrupted.run(f.context)).rejects.toBe(crash);
     const rows = await snapshot(f.gymId), today = localDate(f.clock.now(), f.context.timezone);
     expect(today).toBe('2026-10-25');
     expect(rows.plans.map(row => row.name).sort()).toEqual(demoPlans.map(row => row.name).sort());
@@ -56,9 +66,14 @@ describe('demo billing seed', { timeout: 90_000 }, () => {
     const held = rows.invoices.filter(row => row.needsReview);
     expect(held).toHaveLength(1);
     expect(held[0]).toMatchObject({ kind: 'one_off', status: 'open', amountCents: 4500, dueOn: '2026-11-24' });
+    expect(rows.audit.filter(row => row.action === 'billing.seed.completed')).toHaveLength(0);
     await f.seed.run(f.context);
-    expect((await snapshot(f.gymId)).invoices.filter(row => row.needsReview).map(row => row.id)).toEqual(held.map(row => row.id));
-    expect(new Set(rows.invoices.map(row => row.number)).size).toBe(rows.invoices.length);
+    // The rerun reopens billing and passes the hold guard, so the final state is checked after it, not before.
+    const after = await snapshot(f.gymId);
+    expect(after.invoices.filter(row => row.needsReview).map(row => row.id)).toEqual(held.map(row => row.id));
+    expect(after.audit.filter(row => row.action === 'billing.seed.completed')).toHaveLength(1);
+    expect(after.invoices.map(row => row.id).sort()).toEqual(rows.invoices.map(row => row.id).sort());
+    expect(new Set(after.invoices.map(row => row.number)).size).toBe(after.invoices.length);
     const rivera = rows.households.find(row => row.email === 'rivera@example.invalid')!;
     const family = rows.invoices.filter(row => row.householdId === rivera.id);
     expect(family).toHaveLength(3);
@@ -74,9 +89,9 @@ describe('demo billing seed', { timeout: 90_000 }, () => {
       householdId: expect.any(String), email: expect.stringMatching(/@example[.]invalid$/),
       idempotencyKey: expect.stringMatching(/^household:.*:customer$/),
     });
-    expect(rows.emails).toHaveLength(0);
-    expect(rows.gym.billingEnabled).toBe(false); expect(rows.gym.memberEmailsEnabled).toBe(false);
-    expect(rows.audit.some(row => row.action === 'settings.go_live.updated')).toBe(true);
-    expect(rows.audit.every(row => row.actorKind === 'system' && row.gymId === f.gymId)).toBe(true);
+    expect(after.emails).toHaveLength(0);
+    expect(after.gym.billingEnabled).toBe(false); expect(after.gym.memberEmailsEnabled).toBe(false);
+    expect(after.audit.some(row => row.action === 'settings.go_live.updated')).toBe(true);
+    expect(after.audit.every(row => row.actorKind === 'system' && row.gymId === f.gymId)).toBe(true);
   });
 });

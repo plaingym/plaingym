@@ -89,8 +89,6 @@ function scanVariables(sources: Map<string, string>): Set<string> {
       return ts.isIdentifier(parent.name) && parent.name.text === 'env';
     // Passing the environment to another canonical reader preserves the names that reader scans.
     if (ts.isCallExpression(parent)) {
-      // The demo safety check inspects values for forbidden credentials, without reading named settings.
-      if (parent.expression.getText() === 'Object.values') return true;
       const index = parent.arguments.indexOf(node as ts.Expression);
       const parameter = checker.getResolvedSignature(parent)?.declaration?.parameters[index];
       return !!parameter && ts.isIdentifier(parameter.name) && parameter.name.text === 'env';
@@ -106,7 +104,14 @@ function scanVariables(sources: Map<string, string>): Set<string> {
       const property = (ts.isPropertyAccessExpression(parent) || ts.isPropertyAssignment(parent)) && parent.name === node;
       const store = ts.isBinaryExpression(parent) && parent.right === node && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
         && ts.isPropertyAccessExpression(parent.left) && parent.left.expression.kind === ts.SyntaxKind.ThisKeyword && parent.left.name.text === 'env';
-      if (!binding && !property && !store && !ts.isShorthandPropertyAssignment(parent) && !canonicalDestination(node)) unresolved(node);
+      // A specifier may name env only when its own binding stays env; `env as source` would escape the scan.
+      const specifier = (ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent)) && parent.name.text === 'env'
+        || ts.isNamespaceImport(parent) || ts.isImportClause(parent) || ts.isNamespaceExport(parent);
+      const typeQuery = ts.isTypeQueryNode(parent);
+      const parameterBinding = ts.isBindingElement(parent) && parent.name === node
+        && ts.isObjectBindingPattern(parent.parent) && ts.isParameter(parent.parent.parent);
+      if (!binding && !property && !store && !specifier && !typeQuery && !parameterBinding
+        && !ts.isShorthandPropertyAssignment(parent) && !canonicalDestination(node)) unresolved(node);
     }
     if (ts.isVariableDeclaration(node) && node.initializer && /(?:^|\.)env$/.test(node.initializer.getText().replaceAll(/\s/g, ''))
       && (!ts.isIdentifier(node.name) || node.name.text !== 'env')) unresolved(node);
@@ -196,9 +201,12 @@ describe('docs/configuration.md', () => {
     'const env = {}; const source = { ...env }; source.X;',
     'const env = {}; let source; source ??= env; source.X;',
     'const env = {}; function read(source = env) { return source.X; }',
+    'const env = {}; const Object = { values(source: Record<string, string>) { return source.HIDDEN; } }; Object.values(env);',
     "export function required(name: string) { return process.env[name]; } required('LOCAL');",
     "function read(name: string) { return process.env[name]; } read('LOCAL'); ['CALLBACK'].map(read);",
     "function read(name: string) { return process.env[name]; } read('LOCAL'); export { read };",
+    "import { env as source } from 'node:process'; source.X;",
+    "import { env } from 'node:process'; export { env as source };",
   ])('rejects incomplete environment scans: %s', source => {
     expect(() => scanVariables(new Map([[resolve(root, 'scan-fixture.ts'), source]]))).toThrow('Unresolved environment variable');
   });
@@ -209,8 +217,15 @@ describe('docs/configuration.md', () => {
       const env = { ...process.env }; env.COPY;
       const options = { env: process.env }; options.env.OPTION;
       (options.env ?? process.env).FALLBACK;
-      Object.values(env).some(value => value === 'forbidden');
+      const values: (env: Record<string, string>) => string[] = Object.values;
+      values(env).some(value => value === 'forbidden');
     `]]))].sort()).toEqual(['COPY', 'DEFAULT', 'FALLBACK', 'OPTION', 'STORED']);
+  });
+  it('accepts env declarations in specifiers, destructured parameters and type queries', () => {
+    expect([...scanVariables(new Map([[resolve(root, 'scan-shapes.ts'), `
+      import { env } from 'node:process'; export { env }; type Environment = typeof env;
+      function read({ env }: { env: Environment }) { return env.PARAMETER; }
+    `]]))]).toEqual(['PARAMETER']);
   });
   it('rejects an exported helper even when another source calls it', () => {
     expect(() => scanVariables(new Map([

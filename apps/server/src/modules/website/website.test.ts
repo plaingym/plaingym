@@ -101,14 +101,19 @@ it.each(staffRoles)('checks staff permissions on all five website settings route
   const allowed = role === 'owner' || role === 'admin';
   const cases = [['GET', '/api/website'], ['PUT', '/api/website'], ['POST', '/api/website/logo'],
     ['DELETE', '/api/website/logo'], ['POST', '/api/website/photos']] as const;
-  for (const [method, path] of cases) {
-    const body = method === 'PUT' ? editable(await service.settings(gymA))
-      : method === 'DELETE' ? { revision: await revision() }
-      : { revision: await revision(), contentType: 'image/jpeg', base64: jpeg.toString('base64'), ...(path.endsWith('/photos') ? { alt: 'Role check' } : {}) };
-    const response = method === 'GET' ? await get(path, target) : await send(method, path, body, target);
-    expect(response.status, method + ' ' + path).toBe(allowed ? 200 : 403);
+  try {
+    for (const [method, path] of cases) {
+      const body = method === 'PUT' ? editable(await service.settings(gymA))
+        : method === 'DELETE' ? { revision: await revision() }
+        : { revision: await revision(), contentType: 'image/jpeg', base64: jpeg.toString('base64'), ...(path.endsWith('/photos') ? { alt: 'Role check' } : {}) };
+      const response = method === 'GET' ? await get(path, target) : await send(method, path, body, target);
+      expect(response.status, method + ' ' + path).toBe(allowed ? 200 : 403);
+    }
+  } finally {
+    const context = { gymId: gymA, actor: { kind: 'system' as const } };
+    await service.update(context, { ...before, revision: await revision() });
+    if ((await service.settings(gymA)).logo) await service.removeLogo(context, { revision: await revision() });
   }
-  await service.update({ gymId: gymA, actor: { kind: 'system' } }, { ...before, revision: await revision() });
 });
 
 describe('the module toggle', () => {

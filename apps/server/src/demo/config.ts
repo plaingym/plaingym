@@ -2,6 +2,9 @@
 import { AppError } from '@plaingym/shared';
 import { normalizeHostname } from '../core/tenancy.js';
 
+/** Enumerate values for the credential safety check without reading named configuration. */
+const environmentValues: (env: NodeJS.ProcessEnv) => (string | undefined)[] = Object.values;
+
 export interface DemoConfig {
   enabled: boolean; domain: string; maxSandboxes: number;
   poolSize?: number; idleHours?: number;
@@ -13,7 +16,7 @@ export function demoBootCheck(env: NodeJS.ProcessEnv = process.env): DemoConfig 
   const enabled = env.DEMO_MODE === 'true';
   if (!enabled) return { enabled, domain: '', maxSandboxes: 50 };
   if (env.TENANCY !== 'multi') throw new Error('DEMO_MODE requires TENANCY=multi');
-  if (Object.values(env).some((value) => value && /(?:sk|rk|pk)_live_/i.test(value))) throw new Error('Demo mode refuses live Stripe keys');
+  if (environmentValues(env).some((value) => value && /(?:sk|rk|pk)_live_/i.test(value))) throw new Error('Demo mode refuses live Stripe keys');
   const testKey = env.DEMO_STRIPE_TEST_KEY;
   if (testKey && !/^(sk|rk)_test_[A-Za-z0-9]+$/.test(testKey)) throw new Error('DEMO_STRIPE_TEST_KEY requires a Stripe test-mode secret or restricted key');
   if (testKey && !/^whsec_[A-Za-z0-9]+$/.test(env.DEMO_STRIPE_WEBHOOK_SECRET ?? '')) throw new Error('Set DEMO_STRIPE_WEBHOOK_SECRET for the shared test endpoint');

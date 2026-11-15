@@ -119,7 +119,15 @@ export function assertExpandOnly(sql, label, exceptions = contractExceptions) {
     const procedural = statement.replace(/\bON\s+CONFLICT\b[\s\S]*?\bDO\s+(?:NOTHING|UPDATE)\b/gi,
       clause => clause.replace(/\bDO(?=\s+(?:NOTHING|UPDATE)\b)/gi, '  '))
       .replace(/\bEXECUTE\s+(?:FUNCTION|PROCEDURE)\b/gi, ' ');
-    const unsafeDrop = [...statement.matchAll(/\bDROP\s+(?=([\s\S]+))/gi)].some(([, tail]) => !/^(?:CONSTRAINT|INDEX|POLICY|DEFAULT|NOT\s+NULL)\b/i.test(tail));
+    const unsafeDrop = [...statement.matchAll(/\bDROP\s+(?=([\s\S]+))/gi)].some(match => {
+      const before = statement.slice(0, match.index), tail = match[1];
+      // INDEX and POLICY are also legal bare column names. Only a statement's own
+      // DROP command may use them; ALTER TABLE accepts its subcommands alone.
+      if (!before.trim()) return !/^(?:INDEX|POLICY)\b/i.test(tail);
+      if (!/^\s*ALTER\s+TABLE\b/i.test(statement)) return true;
+      if (/^CONSTRAINT\s+(?:IF\s+EXISTS\s+)?["\w.]+/i.test(tail)) return false;
+      return !(/\bALTER\s+(?:COLUMN\s+)?["\w.]+\s*$/i.test(before) && /^(?:DEFAULT|NOT\s+NULL)\b/i.test(tail));
+    });
     if (/\b(?:TRUNCATE|DELETE\s+FROM|RENAME)\b/i.test(statement)
       || unsafeDrop
       || /\bALTER\s+(?:COLUMN\s+)?["\w.]+\s+(?:SET\s+DATA\s+)?TYPE\b/i.test(statement)

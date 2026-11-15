@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, relative, resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { createVitest } from 'vitest/node';
-import ts from 'typescript';
+import { isFile, parseTestImports, resolveTestImport, testSupport, usesDatabase } from '../../../../scripts/test-imports.js';
 import { documentationTests, runDocumentationTests } from '../../../../scripts/test-selection.mjs';
 
 const root = fileURLToPath(new URL('../../../../', import.meta.url));
@@ -38,25 +38,13 @@ const fixtureReaders = new Set([
 ]);
 
 /** Inspect filesystem imports, including aliases/namespaces and transitive test helpers. */
-function fileReader(file: string, readSource = read, visiting = new Set<string>()): boolean {
+function fileReader(file: string, readSource = read, visiting = new Set<string>(), exists: (file: string) => boolean = isFile): boolean {
   if (visiting.has(file)) return false;
   visiting.add(file);
-  const source = ts.createSourceFile(file, readSource(file), ts.ScriptTarget.Latest, true);
-  return source.statements.some(statement => {
-    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier) || statement.importClause?.isTypeOnly) return false;
-    const specifier = statement.moduleSpecifier.text;
-    if (/^(?:node:)?fs(?:\/promises)?$/.test(specifier)) {
-      const clause = statement.importClause;
-      if (clause?.name || clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings)) return true;
-      return clause?.namedBindings && ts.isNamedImports(clause.namedBindings)
-        ? clause.namedBindings.elements.some(binding => !binding.isTypeOnly
-          && /^(?:readFile(?:Sync)?|readdir(?:Sync)?|glob(?:Sync)?|createReadStream|open(?:Sync)?|opendir(?:Sync)?|promises)$/.test((binding.propertyName ?? binding.name).text)) : false;
-    }
-    // Runtime modules perform application I/O; only test helpers perform a test's own file reads.
-    if (!specifier.startsWith('.') || !/\.test-helper(?:\.[cm]?[jt]sx?)?$/.test(specifier)) return false;
-    const base = resolve(root, dirname(file), specifier).replace(/\.[cm]?[jt]sx?$/, '');
-    const helper = ['.ts', '.tsx', '.mjs', '.js'].map(extension => base + extension).find(existsSync);
-    return helper !== undefined && fileReader(relative(root, helper).replaceAll('\\', '/'), readSource, visiting);
+  return parseTestImports(file, readSource(file)).references.some(({ specifier, readsFiles }) => {
+    if (readsFiles) return true;
+    const helper = testSupport(specifier) ? resolveTestImport(resolve(root, file), specifier, exists) : undefined;
+    return helper !== undefined && fileReader(relative(root, helper).replaceAll('\\', '/'), readSource, visiting, exists);
   });
 }
 
@@ -100,6 +88,9 @@ describe('verification discovery', () => {
     "import * as files from 'node:fs/promises';",
     "import { readFile as read } from 'node:fs/promises';",
     "import { promises as files } from 'node:fs';",
+    "const files = await import('node:fs');",
+    "const { readFile } = await import('node:fs/promises');",
+    "export { readFile as read } from 'node:fs/promises';",
   ])('recognizes filesystem readers: %s', source => {
     expect(fileReader('fixture.test.ts', () => source)).toBe(true);
   });
@@ -110,6 +101,28 @@ describe('verification discovery', () => {
     // This existing helper provides a real path for resolution; contents are supplied by the fixture.
     expect(fileReader('apps/server/src/core/fixture.test.ts', file => file.endsWith('.test-helper.ts')
       ? "import { globSync } from 'node:fs';" : "import { fixture } from './runtime.fixture.test-helper.js';")).toBe(true);
+  });
+  it.each(['.js', '.mjs', '.ts'])('follows database re-exports through %s helpers', extension => {
+    const file = resolve(root, 'fixture.test.ts'), helper = resolve(root, 'nested.test-helper.ts');
+    const sources = new Map([[file, `export * from './nested.test-helper${extension}';`],
+      [helper, "export { useTestDatabase } from '@plaingym/db/testing/database';"]]);
+    expect(usesDatabase(file, path => sources.get(path)!, path => sources.has(path))).toBe(true);
+  });
+  it('ignores type-only helper and database imports', () => {
+    expect(usesDatabase('fixture.test.ts', () => "export type { X } from '@plaingym/db/testing/database'; import { type Y } from '@plaingym/db/testing/database';")).toBe(false);
+    expect(fileReader('fixture.test.ts', () => "import type { readFile } from 'node:fs';")).toBe(false);
+  });
+  it('resolves JavaScript fixture modules without a test-helper suffix', () => {
+    const sources = new Map([['example.test.ts', "import { read } from './fixture.mjs';"],
+      ['fixture.mjs', "const fs = await import('node:fs/promises');"]]);
+    expect(fileReader('example.test.ts', file => sources.get(file)!, new Set(),
+      file => sources.has(relative(root, file).replaceAll('\\', '/')))).toBe(true);
+  });
+  it('traverses helper cycles without losing database use on either side', () => {
+    const a = resolve(root, 'a.test-helper.ts'), b = resolve(root, 'b.test-helper.ts');
+    const sources = new Map([[a, "export * from './b.test-helper.js'; export * from '@plaingym/db/testing/database';"],
+      [b, "export * from './a.test-helper.js';"]]);
+    for (const file of [a, b]) expect(usesDatabase(file, path => sources.get(path)!, path => sources.has(path))).toBe(true);
   });
   it('uses the specifications Vitest discovered, including docs outside apps and packages', () => {
     const docs = { moduleId: '/repo/e2e/example.docs.test.ts', project: { name: 'unit' } };

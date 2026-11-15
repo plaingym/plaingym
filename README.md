@@ -205,6 +205,10 @@ if one belongs to the integration project. It discovers and runs the specs on on
 Verification generates shared inputs once, then uses the same `test:run` and
 `compliance:run` bodies as `pnpm test` and `pnpm compliance`. Source-reader inventory
 checks also use Vitest's discovery, including database tests in the integration project.
+Database discovery follows runtime imports and re-exports through `*.test-helper` modules;
+type-only imports do not require a database. The source-reader guard also recognizes literal
+dynamic filesystem imports and reads through helper and fixture modules. Both checks share
+the import parser and source-extension resolver in `scripts/test-imports.ts`.
 Verification includes docs specs from Vitest's own discovery
 in the same test run as the selected tests (or the full suite).
 End-to-end skips Markdown-only pushes too, and still runs nightly, as does the **Memory** workflow, which measures the whole

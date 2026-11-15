@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it } from 'vitest';
-import { uuidv7 } from '@plaingym/db';
+import { auditEvents, uuidv7 } from '@plaingym/db';
+import { eq } from 'drizzle-orm';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
@@ -10,7 +11,7 @@ import { FakeEmail, DeliveryError } from '../../infra/email/index.js';
 import { encryptSmtpConfig } from '../settings/smtp.js';
 import { createAutoUpdateNotices } from './auto-update.notices.js';
 import { createAutoUpdateCommand } from './auto-update.cli.js';
-import type { AutoUpdateAttempt } from './auto-update.js';
+import { autoUpdateAttemptAction, type AutoUpdateAttempt } from './auto-update.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 const clock = new TestClock('2026-11-03T16:30:00Z');
@@ -97,9 +98,14 @@ it('sends through the host record command and deduplicates concurrent replays', 
   const errors: string[] = [], io = { stdout: () => {}, stderr: (message: string) => { errors.push(message); } };
   const args = ['record', '--at', attempt.attemptedAt, '--result', 'rolled_back', '--reason', 'health_check_failed', '--from', 'v1.2.3', '--to', 'v1.2.4'];
   const results = await Promise.all([command.run(args, io), command.run(args, io)]);
-  expect(results).toContain(0);
+  // Each invocation can reserve a different owner and see the other's in-flight send.
+  // Exit 3 asks the host to replay; neither concurrent invocation has to return 0.
+  expect(results.every(code => code === 0 || code === 3), errors.join('\n')).toBe(true);
+  expect(errors.every(message => message === 'Another attempt is sending this email'), errors.join('\n')).toBe(true);
   expect(await command.run(args, io)).toBe(0);
   expect(f.email.messages).toHaveLength(2);
+  expect(new Set(f.email.messages.map(message => message.to)).size).toBe(2);
+  expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, autoUpdateAttemptAction)))).toHaveLength(1);
 });
 it('stores a deferred failure and its recovery, then sends only the recovery notice with per-owner replay protection', async () => {
   const f = await fixture(), command = createAutoUpdateCommand({ env, clock, scope: db.forGym, resolveGymId: async () => f.gymId,

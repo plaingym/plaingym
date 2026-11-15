@@ -9,7 +9,7 @@ import { minorUnitStep, onMinorUnitStep } from '@plaingym/shared/money';
 import { isCalendarDate, localDate } from '@plaingym/shared/time';
 import { householdDateOnOrAfter } from '../../billing/invoicing/calendar.js';
 import { reconcileMemberStatus } from '../../billing/memberships.js';
-import { clearedSwitch, rescheduledSwitch } from '../../billing/memberships.plan-change.js';
+import { clearedSwitch, movedSwitchAudit, rescheduledSwitch } from '../../billing/memberships.plan-change.js';
 import { markLeadWon } from '../../leads/stages.js';
 import type { CsvRow } from '../pipeline.csv.js';
 import type { CsvMapper, MapperContext, PlannedRow } from './registry.js';
@@ -266,8 +266,7 @@ async function commit(tx: Transaction, rows: readonly PlannedRow[], context: Map
             .where(and(eq(memberships.gymId, gymId), eq(memberships.id, update.id), eq(memberships.nextDueOn, update.oldDueOn), guard.matches)).returning());
           await audit('billing.membership.import_schedule_updated', 'membership', before.id,
             { memberId: before.memberId, planId: before.planId, previousDueOn: update.oldDueOn, nextDueOn: after.nextDueOn,
-              ...(movedSwitch.scheduledOn ? { rescheduledSwitch: { scheduledPlanId: before.scheduledPlanId,
-                previousScheduledOn: before.scheduledOn, scheduledOn: movedSwitch.scheduledOn } } : {}) });
+              ...movedSwitchAudit(before, movedSwitch) });
           await reconcile(before.memberId, before.id, before.status, 'billing.membership.import_schedule_updated');
           Object.assign(before, after);
         }
@@ -305,8 +304,7 @@ async function commit(tx: Transaction, rows: readonly PlannedRow[], context: Map
       { memberId: item.memberId, planId: item.planId, nextDueOn: item.nextDueOn, anniversaryOn,
         ...(before?.scheduledPlanId && replacedTerms
           ? { clearedSwitch: { scheduledPlanId: before.scheduledPlanId, scheduledOn: before.scheduledOn } } : {}),
-        ...(before && movedSwitch.scheduledOn ? { rescheduledSwitch: { scheduledPlanId: before.scheduledPlanId,
-          previousScheduledOn: before.scheduledOn, scheduledOn: movedSwitch.scheduledOn } } : {}) });
+        ...(before ? movedSwitchAudit(before, movedSwitch) : {}) });
     await reconcile(item.memberId, id, before?.status ?? 'active', cause);
     count++;
   }

@@ -19,6 +19,10 @@ const refusedWith200: Record<string, unknown> = {
   'POST /api/kiosk/checkin/qr': { data: { status: 'see_front_desk' } },
 };
 interface SignatureImage { signatureImageKey: string; signatureImageHash: string }
+interface WebsiteSettings {
+  revision: number; tagline: string | null; about: string | null; phone: string | null; email: string | null;
+  primaryColor: string | null; accentColor: string | null; logo: boolean; logoVersion: string | null; photos: { id: string; alt: string }[];
+}
 type Images = Record<'link' | 'household' | 'staff' | 'onboarding', SignatureImage>;
 
 test('public record-ID routes isolate waiver documents and website images on both gym hosts', async () => {
@@ -26,6 +30,8 @@ test('public record-ID routes isolate waiver documents and website images on bot
   const gyms = await multiGyms();
   const originals: { gym: Context; enabled: boolean }[] = [];
   const records: { gym: Context; profileId: string; photoId: string; token: string }[] = [];
+  const profiles: { gym: Context; id: string }[] = [];
+  const photos: { gym: Context; id: string }[] = [];
   try {
     for (const gym of gyms) {
       const settings = (await gym.owner.json<{ data: { revision: number; websiteEnabled: boolean } }>('/api/settings')).data;
@@ -33,11 +39,13 @@ test('public record-ID routes isolate waiver documents and website images on bot
       if (!settings.websiteEnabled) await gym.owner.json('/api/settings', 'PATCH', { revision: settings.revision, websiteEnabled: true });
       const profile = (await gym.owner.json<{ data: { id: string; revision: number } }>('/api/staff/profiles', 'POST',
         { displayName: gym.name + ' public coach', isPublic: true })).data;
+      profiles.push({ gym, id: profile.id });
       const image = { contentType: 'image/png', base64: signaturePng().toString('base64') };
       await gym.owner.json(`/api/staff/profiles/${profile.id}/photo`, 'POST', { revision: profile.revision, ...image });
       const website = (await gym.owner.json<{ data: { revision: number } }>('/api/website')).data;
       const photo = (await gym.owner.json<{ data: { photos: { id: string }[] } }>('/api/website/photos', 'POST',
         { revision: website.revision, ...image, alt: gym.name + ' mats' })).data.photos.at(-1)!;
+      photos.push({ gym, id: photo.id });
       const link = (await gym.owner.json<{ data: { token: string } }>('/api/links', 'POST', { purpose: 'sign_waiver',
         householdId: gym.householdId, memberId: gym.student.id, expiresAt: new Date(Date.now() + 3600000).toISOString() })).data;
       records.push({ gym, profileId: profile.id, photoId: photo.id, token: link.token });
@@ -57,9 +65,26 @@ test('public record-ID routes isolate waiver documents and website images on bot
       }
     }
   } finally {
-    for (const { gym, enabled } of originals) {
-      const settings = (await gym.owner.json<{ data: { revision: number; websiteEnabled: boolean } }>('/api/settings')).data;
-      if (settings.websiteEnabled !== enabled) await gym.owner.json('/api/settings', 'PATCH', { revision: settings.revision, websiteEnabled: enabled });
+    // Register each resource immediately, so a later setup/assertion failure still cleans it.
+    try {
+      await Promise.all(profiles.map(async ({ gym, id }) => {
+        const profile = (await gym.owner.json<{ data: { revision: number } }>(`/api/staff/profiles/${id}`)).data;
+        await gym.owner.json(`/api/staff/profiles/${id}`, 'PATCH', { revision: profile.revision, isPublic: false, photoKey: null });
+      }));
+    } finally {
+      try {
+        await Promise.all(photos.map(async ({ gym, id }) => {
+          const website = (await gym.owner.json<{ data: WebsiteSettings }>('/api/website')).data;
+          const { revision, tagline, about, phone, email, accentColor, primaryColor } = website;
+          await gym.owner.json('/api/website', 'PUT', { revision, tagline, about, phone, email, accentColor, primaryColor,
+            photos: website.photos.filter(photo => photo.id !== id) });
+        }));
+      } finally {
+        for (const { gym, enabled } of originals) {
+          const settings = (await gym.owner.json<{ data: { revision: number; websiteEnabled: boolean } }>('/api/settings')).data;
+          if (settings.websiteEnabled !== enabled) await gym.owner.json('/api/settings', 'PATCH', { revision: settings.revision, websiteEnabled: enabled });
+        }
+      }
     }
   }
 });

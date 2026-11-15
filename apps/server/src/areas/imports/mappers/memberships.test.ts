@@ -271,7 +271,9 @@ describe('membership renewals through the durable pipeline', () => {
       ? { scheduledPlanId: next.id, scheduledAmountCents: 15000, scheduledInterval: 'monthly', scheduledOn: '2026-11-01', scheduledOrigin: 'switch' }
       : { scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null, scheduledOrigin: null, switchOverrideReason: null });
     expect(after).toMatchObject({ amountCents: change === 'price' ? 8000 : 10000, interval: change === 'interval' ? 'annual' : 'monthly' });
-    const event = state.audits.find(event => event.action === 'billing.membership.import_updated' && event.targetId === original.id)!;
+    const event = state.audits.find(event => event.action === 'billing.membership.import_updated' && event.targetId === original.id);
+    expect(event).toBeDefined();
+    if (!event) throw new Error('Missing membership update audit');
     expect(event.after).toMatchObject(change === 'unchanged' ? { importId: job.id }
       : { clearedSwitch: { scheduledPlanId: next.id, scheduledOn: '2026-11-01' } });
     expect(JSON.stringify(event)).not.toContain('Approved change');
@@ -287,7 +289,9 @@ describe('membership renewals through the durable pipeline', () => {
     expect((await source.run()).committedRows).toBe(1);
     expect((await read()).memberships.find(row => row.id === original.id)).toMatchObject({ nextDueOn: '2026-11-01',
       scheduledPlanId: next.id, scheduledOn: origin === 'price_change' ? '2026-11-15' : '2026-11-01' });
-    const event = (await read()).audits.find(event => event.action === 'billing.membership.import_updated' && event.targetId === original.id)!;
+    const event = (await read()).audits.find(event => event.action === 'billing.membership.import_updated' && event.targetId === original.id);
+    expect(event).toBeDefined();
+    if (!event) throw new Error('Missing membership update audit');
     if (origin === 'price_change') expect(event.after).not.toHaveProperty('rescheduledSwitch');
     else expect(event.after).toMatchObject({ rescheduledSwitch: { scheduledPlanId: next.id,
       previousScheduledOn: '2026-11-15', scheduledOn: '2026-11-01' } });
@@ -303,7 +307,9 @@ describe('membership renewals through the durable pipeline', () => {
     expect(await batch.commit(batch.planned.slice(0, 100).map(row => row.duplicateIds.length ? { ...row, action: 'update' } : row))).toBe(100);
     expect((await read()).memberships.find(row => row.id === family.later.id)).toMatchObject({ nextDueOn: '2026-11-01',
       scheduledPlanId: next.id, scheduledOn: origin === 'price_change' ? '2026-11-15' : '2026-11-01', amountCents: 10000, revision: 2 });
-    const event = (await read()).audits.find(event => event.action === 'billing.membership.import_schedule_updated' && event.targetId === family.later.id)!;
+    const event = (await read()).audits.find(event => event.action === 'billing.membership.import_schedule_updated' && event.targetId === family.later.id);
+    expect(event).toBeDefined();
+    if (!event) throw new Error('Missing membership schedule audit');
     if (origin === 'price_change') expect(event.after).not.toHaveProperty('rescheduledSwitch');
     else expect(event.after).toMatchObject({ rescheduledSwitch: { scheduledPlanId: next.id,
       previousScheduledOn: '2026-11-15', scheduledOn: '2026-11-01' } });
