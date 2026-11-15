@@ -7,6 +7,7 @@ import { announcementDraftSchema } from '@plaingym/shared/contracts';
 import { isInTransaction } from '@plaingym/shared/transaction';
 import { TestClock } from '../../core/clock.js';
 import { FakeEmail } from '../../infra/email/index.js';
+import { commandDigest } from '../../infra/email/deliveries.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
 import { createAnnouncementsService } from './send.js';
 import { createCancellationNotice } from './cancellation.js';
@@ -37,15 +38,16 @@ function recording(reads: Read[]): typeof db.forGym {
   } })));
 }
 
-it('bounds recovered cancellation decision reads even with unrelated session history', async () => {
+it.each([false, true])('bounds recovered cancellation decision reads even with unrelated session history (shared address %s)', async shared => {
   const gymId = uuidv7(), clock = new TestClock('2026-11-10T12:00:00Z'), size = 25;
   await factory('gyms', gymId, { memberEmailsEnabled: true });
   const household = await factory('households', gymId), session = await factory('classSessions', gymId, { status: 'cancelled' });
   const people = await db.forGym(gymId, tx => tx.insert(members).values(Array.from({ length: size }, (_, i) => ({
-    gymId, householdId: household.id, firstName: 'Bulk', lastName: String(i), email: `member${i}@example.test`,
+    gymId, householdId: household.id, firstName: 'Bulk', lastName: String(i), email: `member${shared ? 0 : i}@example.test`,
   }))).returning({ id: members.id }));
-  await db.forGym(gymId, tx => tx.insert(emailDeliveries).values(people.map(person => ({
+  await db.forGym(gymId, tx => tx.insert(emailDeliveries).values(people.map((person, i) => ({
     gymId, key: `schedule-cancel-notice:${session.id}:${person.id}`, state: 'not_accepted', updatedAt: clock.now(),
+    commandDigest: commandDigest([session.id, `member${shared ? 0 : i}@example.test`]),
   }))));
   await db.forGym(gymId, tx => tx.insert(auditEvents).values(Array.from({ length: size * 5 }, (_, i) => ({
     gymId, actorKind: 'system', action: 'schedule.cancellation_notice_decided', targetType: 'class_session', targetId: session.id,
@@ -57,8 +59,8 @@ it('bounds recovered cancellation decision reads even with unrelated session his
   const payload = { sessionId: session.id, memberIds: people.map(person => person.id), note: '' };
   await service.run(payload, gymId); await service.run(payload, gymId);
   const decisions = reads.filter(read => read.sql.includes('from "audit_events"'));
-  expect(decisions).toHaveLength(size * 2);
-  expect(decisions.every(read => read.rows === 1 && read.sql.includes("->>'memberId'") && read.sql.includes(' limit '))).toBe(true);
+  expect(decisions).toHaveLength(shared ? 2 : size * 2);
+  expect(decisions.every(read => read.rows === (shared ? size : 1) && read.sql.includes("->>'memberId'") && read.sql.includes(' in ('))).toBe(true);
   expect(email.messages).toHaveLength(0);
   expect(await db.forGym(gymId, tx => tx.$count(auditEvents))).toBe(size * 5);
 });

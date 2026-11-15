@@ -15,6 +15,7 @@ export function Failure({ error, fallback, owner = false, retrySame = false }: {
     ? error.reason.find(value => value === 'disabled' || value === 'no_smtp' || value === 'no_origin') : undefined;
   return <Alert variant="error" focusOnReveal role="alert" className="space-y-3">
     <p>{text(retrySame ? 'sendError' : reason ?? (fallback === 'sendError' && definiteRefusal(error) ? 'sendRefused' : fallback))}</p>
+    {retrySame && reason && <p>{text(reason)}</p>}
     {(reason === 'disabled' || (owner && (reason === 'no_smtp' || reason === 'no_origin'))) &&
       <Button asChild variant="outline"><a href="/admin/settings" target="_blank" rel="noopener noreferrer">{text(reason === 'disabled' ? 'goLiveSettings' : reason === 'no_origin' ? 'addressSettings' : 'emailSettings')}</a></Button>}
   </Alert>;

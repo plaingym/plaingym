@@ -16,14 +16,19 @@ generation, including when the response was lost and the dialog was closed and
 reopened in this workspace. A definite refusal restores Edit with refusal guidance
 only if no earlier request in that attempt had an uncertain outcome. Once a
 response is lost or a replay conflicts, later refusals keep the same attempt and
-retry guidance until the server confirms acceptance.
+retry guidance until the server confirms acceptance or staff choose Start over.
+Start over requires a separate confirmation to check history first and warns
+that sending a new announcement could mail members twice. Confirming clears the
+saved retry and returns to compose with the same message and filters; the next
+preview uses a new send generation. Cancelling keeps the original retry.
 The retained attempt lasts until the workspace is left or reloaded; the dialog
 warns to check history before leaving. Edit before confirming to
 refresh the preview. The server rechecks eligibility at delivery time.
 
 Member-email, SMTP and missing canonical HTTPS origin refusals explain the
-required configuration. Settings links open in a separate tab to preserve the
-draft; only owners see SMTP and address settings links. SMTP credentials are
+required configuration alongside retry guidance for a retained attempt. Settings
+links open in a separate tab to preserve the draft; only owners see SMTP and
+address settings links. SMTP credentials are
 owner-managed. History refreshes every five seconds while a
 shown announcement is still delivering, shows
 newest announcements first and includes the gym-local date, sender and sent,

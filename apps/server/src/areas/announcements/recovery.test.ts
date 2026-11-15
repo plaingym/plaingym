@@ -28,7 +28,7 @@ async function fixture() {
 it('backs off across restarts to a daily cap, with only one reset per failure under concurrent sweeps', async () => {
   const f = await fixture(), row = await factory('announcements', f.gymId);
   const queued = await f.queue(row.id);
-  expect(createAnnouncementRecoveryJobs(f.options)).toMatchObject([{ id: 'announcements.recover', cron: '*/15 * * * *' }]);
+  expect(createAnnouncementRecoveryJobs(f.options)).toMatchObject([{ id: 'announcements.recover', cron: '*/15 * * * *', lane: 'batch' }]);
   for (let recovery = 0; recovery < 9; recovery++) {
     expect(await f.jobs.runNext()).toBe(true);
     const failed = f.jobs.jobs.find(job => job.id === queued.jobId)!;
@@ -66,6 +66,25 @@ it('ignores other gyms, completed announcements and scheduled sessions, and does
     expect(a.jobs.jobs.find(job => job.id === jobId)!.status).toBe('failed');
   expect(a.jobs.jobs).toHaveLength(4);
   expect(await db.forGym(b.gymId, tx => tx.$count(auditEvents))).toBe(0);
+});
+
+it('only looks up and resets cancelled sessions that have not started, including the exact start boundary', async () => {
+  const f = await fixture(), jobs = [];
+  // The sweep runs fifteen minutes after exhaustion. Only the final session will still be in the future.
+  for (const offset of [-24 * 60 * minute, 15 * minute - 1, 15 * minute, 15 * minute + 1]) {
+    const startsAt = new Date(f.clock.now().getTime() + offset);
+    const row = await factory('classSessions', f.gymId, { status: 'cancelled', startsAt,
+      endsAt: new Date(startsAt.getTime() + 60 * minute) });
+    jobs.push(await f.queue(row.id, cancellationNoticeJob, cancellationNoticeKeyPrefix + row.id));
+    expect(await f.jobs.runNext()).toBe(true);
+  }
+  f.clock.advance(15 * minute);
+  const lookup = vi.spyOn(f.jobs, 'failedJobs');
+  expect(await f.run()).toEqual({ recovered: 1 });
+  expect(f.jobs.jobs.map(job => job.status)).toEqual(['failed', 'failed', 'failed', 'queued']);
+  expect(lookup).toHaveBeenCalledExactlyOnceWith(cancellationNoticeJob,
+    [f.jobs.jobs.at(-1)!.options.idempotencyKey], { gymId: f.gymId });
+  expect(f.jobs.jobs.at(-1)!.id).toBe(jobs.at(-1)!.jobId);
 });
 
 it('pages candidates and bounds key lookups without transactions around queue calls', async () => {

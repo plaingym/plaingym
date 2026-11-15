@@ -59,18 +59,25 @@ export function createCancellationNotice(options: CancellationNoticeOptions) {
       if (previous.some(row => row.state === 'sending' && row.updatedAt.getTime() > clock.now().getTime() - emailInFlightMs))
         throw new AppError('conflict', 'Cancellation notice is in flight');
       if (previous.length) {
-        // A crash can release a reservation before its outcome audit commits. Recover that decision without resending.
-        for (const row of previous) {
-          const prefix = `${cancellationNoticeKeyPrefix}${notice.sessionId}:`;
-          if (row.state !== 'not_accepted' || !row.key.startsWith(prefix)) continue;
+        // Any stored outcome can precede a crash before its audit. Recover the original member's decision without resending.
+        const prefix = `${cancellationNoticeKeyPrefix}${notice.sessionId}:`;
+        const recoverable = previous.flatMap(row => {
+          if (!row.key.startsWith(prefix)) return [];
           const memberId = idSchema.safeParse(row.key.slice(prefix.length));
-          if (!memberId.success) continue;
-          const [decision] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
+          return memberId.success ? [{ memberId: memberId.data, state: row.state }] : [];
+        });
+        if (recoverable.length) {
+          const decisions = await tx.select({ memberId: cancellationDecisionMemberId }).from(auditEvents).where(and(
             eq(auditEvents.gymId, gymId), eq(auditEvents.targetId, notice.sessionId),
             eq(auditEvents.action, 'schedule.cancellation_notice_decided'),
-            eq(cancellationDecisionMemberId, memberId.data))).limit(1);
-          if (!decision)
-            await decide(tx, gymId, notice.sessionId, memberId.data, { status: 'failed', reason: 'not_accepted' });
+            inArray(cancellationDecisionMemberId, recoverable.map(row => row.memberId))));
+          const decided = new Set(decisions.map(row => row.memberId));
+          for (const row of recoverable) {
+            if (decided.has(row.memberId)) continue;
+            await decide(tx, gymId, notice.sessionId, row.memberId, row.state === 'accepted' ? { status: 'sent' }
+              : { status: 'failed', reason: row.state === 'not_accepted' ? 'not_accepted' : 'unknown' });
+            decided.add(row.memberId);
+          }
         }
         return;
       }

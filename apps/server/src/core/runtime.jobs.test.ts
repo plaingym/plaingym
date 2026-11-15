@@ -176,7 +176,7 @@ it('runs a webhook dispatch while a daily charge run holds the gym\'s batch lane
 });
 // Known long-running jobs must keep declaring their lane, even if a registration accidentally loses it.
 const knownBatchJobs = ['billing.runner.daily', 'imports.pipeline', 'imports.export',
-  'links.campaigns.scan', 'links.campaigns.publish', 'links.campaigns.send'];
+  'links.campaigns.scan', 'links.campaigns.publish', 'links.campaigns.send', 'announcements.recover'];
 /** A pending or leased job of the sandbox gym; due at `runAt`, so the earliest ones are claimed first. */
 function leaseOf(name: string, runAt: Date, running: boolean) {
   return { id: uuidv7(), gymId: app.sandbox.gymId, name, status: running ? 'running' : 'pending', attempts: running ? 1 : 0, maxAttempts: 3,

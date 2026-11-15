@@ -56,7 +56,8 @@ export function createAnnouncementRecovery(options: AnnouncementRecoveryOptions)
       cursor = undefined;
       for (;;) {
         const rows = await scope(gymId, tx => tx.select({ id: classSessions.id }).from(classSessions).where(and(
-          eq(classSessions.status, 'cancelled'), cursor ? gt(classSessions.id, cursor) : undefined))
+          eq(classSessions.status, 'cancelled'), gt(classSessions.startsAt, clock.now()),
+          cursor ? gt(classSessions.id, cursor) : undefined))
           .orderBy(asc(classSessions.id)).limit(batchSize));
         if (!rows.length) break;
         // The original job holds the roster and note. Never reconstruct them from current bookings.
@@ -72,7 +73,7 @@ export function createAnnouncementRecovery(options: AnnouncementRecoveryOptions)
 /** Register alongside the announcement jobs with the runtime's queue, gym scope and clock. */
 export function createAnnouncementRecoveryJobs(options: AnnouncementRecoveryOptions): readonly JobRegistration[] {
   const recovery = createAnnouncementRecovery(options);
-  return [{ id: announcementRecoveryJob, cron: '*/15 * * * *', async handler(_payload, context) {
+  return [{ id: announcementRecoveryJob, cron: '*/15 * * * *', lane: 'batch', async handler(_payload, context) {
     await recovery.run(context.gymId);
   } }];
 }

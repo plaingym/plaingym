@@ -155,6 +155,8 @@ describe('announcement screens', () => {
       if (retry === 0) {
         expect((await screen.findByRole('alert')).textContent).toContain('Retry this same announcement');
         expect(screen.getByRole('alert').textContent).not.toContain('announcement was not accepted');
+        const reasonText = { disabled: 'Member email is switched off', no_smtp: 'The owner sets up SMTP', no_origin: 'canonical HTTPS gym address' };
+        for (const reason of reasons) expect(screen.getByRole('alert').textContent).toContain(reasonText[reason]);
         expect(screen.queryByRole('button', { name: 'Edit message' })).toBeNull();
       }
     }
@@ -162,6 +164,38 @@ describe('announcement screens', () => {
     const calls = vi.mocked(service.send).mock.calls;
     expect(calls).toHaveLength(3);
     expect(calls[1]![0]).toEqual(calls[0]![0]); expect(calls[2]![0]).toEqual(calls[0]![0]);
+  });
+
+  it('confirms starting over, clears the saved attempt across reopening, and sends with a new generation', async () => {
+    const service = client();
+    vi.mocked(service.send).mockRejectedValueOnce(new Error('Response lost'));
+    mount(service);
+    await waitFor(() => expect((screen.getByRole('button', { name: 'New announcement' }) as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(screen.getByRole('button', { name: 'New announcement' }));
+    await compose(); await userEvent.click(await confirm());
+    await screen.findByRole('alert');
+    await userEvent.click(screen.getByRole('button', { name: 'Start over' }));
+    expect(screen.getByText(/Check announcement history first/).textContent).toContain('could mail members twice');
+    expect(screen.queryByRole('button', { name: 'Send to 1,200 members' })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Keep saved retry' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Keep saved retry' }));
+    expect(screen.getByRole('button', { name: 'Send to 1,200 members' })).toBeDefined();
+    expect(service.send).toHaveBeenCalledTimes(1);
+    await userEvent.click(screen.getByRole('button', { name: 'Start over' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Clear retry and compose' }));
+    expect((screen.getByLabelText('Subject') as HTMLInputElement).value).toBe(' Winter classes ');
+    expect((screen.getByLabelText('Message') as HTMLTextAreaElement).value).toContain('Bring water. <script>plain text</script>');
+    expect(screen.queryByText(/This send may already have been accepted/)).toBeNull();
+    // Reopening proves the workspace's retained attempt was also cleared.
+    await userEvent.click(screen.getByRole('button', { name: 'Close announcement' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Discard changes' }));
+    await userEvent.click(screen.getByRole('button', { name: 'New announcement' }));
+    expect((screen.getByLabelText('Subject') as HTMLInputElement).value).toBe('');
+    await compose(); await userEvent.click(await confirm());
+    expect(await screen.findByText('Announcement accepted. Delivery progress appears in history.')).toBeDefined();
+    const calls = vi.mocked(service.send).mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[1]![0].sendGeneration).not.toBe(calls[0]![0].sendGeneration);
   });
 
   it('allows editing after a first refusal, then retains a new attempt once its outcome is uncertain', async () => {

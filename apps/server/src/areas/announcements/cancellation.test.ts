@@ -26,7 +26,7 @@ import { cancellationNoticeJob, configureCancellationNotice, createCancellationN
 import { createAnnouncementJobs } from './jobs.js';
 import * as audience from './audience.js';
 import * as template from '../../emails/announcements/cancellation.js';
-import { commandDigest } from '../../infra/email/deliveries.js';
+import { commandDigest, emailInFlightMs } from '../../infra/email/deliveries.js';
 import { announcementRecoveryJob, createAnnouncementRecoveryJobs } from './recovery.js';
 
 const db = useTestDatabase(), factory = createFactories(db), origin = 'https://gym.example.test';
@@ -35,10 +35,13 @@ afterAll(async () => { await closeDatabase(); });
 afterEach(() => { vi.restoreAllMocks(); });
 it('recovers a cancellation after twelve failures using its original roster and accepted delivery key', async () => {
   const f = await fixture(); await f.booked(); await f.booked();
-  let broken = true;
+  let broken = true, outcomeRecorded = false;
   const scope: typeof db.forGym = (gymId, fn) => {
     // Crash after SMTP accepts the first message, before its outcome audit commits.
-    if (broken && f.email.messages.length) return Promise.reject(new Error('Database unavailable'));
+    if (broken && f.email.messages.length) {
+      if (outcomeRecorded) return Promise.reject(new Error('Database unavailable'));
+      outcomeRecorded = true; // Let deliveries.attempt persist accepted, then lose the decision audit.
+    }
     return db.forGym(gymId, fn);
   };
   const interrupted = createCancellationNotice({ ...f.options, scope });
@@ -66,6 +69,9 @@ it('recovers a cancellation after twelve failures using its original roster and 
   expect(f.email.messages).toHaveLength(2);
   expect(new Set(f.email.messages.map(message => message.to)).size).toBe(2);
   expect(f.email.messages.some(message => message.to === late.email)).toBe(false);
+  const decisions = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'schedule.cancellation_notice_decided')));
+  expect(decisions).toHaveLength(2);
+  expect(decisions.every(row => (row.after as { status: string }).status === 'sent')).toBe(true);
 });
 async function fixture(role: StaffRole = 'owner', assigned = true) {
   const gymId = uuidv7(), clock = new TestClock('2026-11-10T12:00:00Z');
@@ -271,14 +277,29 @@ it('returns a conflict without queuing or changing a session already cancelled w
   expect(await f.service.getSession(f.gymId, f.session.id)).toMatchObject({ revision: cancelled.revision });
 });
 
-it('records a released reservation as failed once on replay without sending it', async () => {
+it.each(['not_accepted', 'accepted', 'unknown', 'sending'] as const)('recovers a stored %s reservation once on replay without sending it', async state => {
   const f = await fixture(), member = await f.booked(); await f.cancel();
   await factory('emailDeliveries', f.gymId, { key: `schedule-cancel-notice:${f.session.id}:${member.id}`,
-    commandDigest: commandDigest([f.session.id, member.email]), state: 'not_accepted' });
+    commandDigest: commandDigest([f.session.id, member.email]), state,
+    updatedAt: new Date(f.clock.now().getTime() - emailInFlightMs) });
   await f.run(); await f.run();
   const decisions = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'schedule.cancellation_notice_decided')));
   expect(decisions).toHaveLength(1);
-  expect(decisions[0]!.after).toMatchObject({ memberId: member.id, status: 'failed', reason: 'not_accepted' });
+  expect(decisions[0]!.after).toEqual({ memberId: member.id, ...(state === 'accepted' ? { status: 'sent' }
+    : { status: 'failed', reason: state === 'not_accepted' ? 'not_accepted' : 'unknown' }) });
+  expect(f.email.messages).toHaveLength(0);
+});
+
+it('defers a live reservation and recovers it as unknown at the in-flight boundary', async () => {
+  const f = await fixture(), member = await f.booked(); await f.cancel();
+  await factory('emailDeliveries', f.gymId, { key: `schedule-cancel-notice:${f.session.id}:${member.id}`,
+    commandDigest: commandDigest([f.session.id, member.email]), state: 'sending', updatedAt: f.clock.now() });
+  f.clock.advance(emailInFlightMs - 1);
+  await expect(f.run()).rejects.toMatchObject({ code: 'conflict' });
+  expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents, eq(auditEvents.action, 'schedule.cancellation_notice_decided')))).toBe(0);
+  f.clock.advance(1); await f.run(); await f.run();
+  const decisions = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'schedule.cancellation_notice_decided')));
+  expect(decisions.map(row => row.after)).toEqual([{ memberId: member.id, status: 'failed', reason: 'unknown' }]);
   expect(f.email.messages).toHaveLength(0);
 });
 

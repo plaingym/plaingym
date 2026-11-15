@@ -14,6 +14,7 @@ for (const width of [360, 1280]) {
   test(`announcement tests before go-live and send recovery at ${width}px`, async ({ page }, info) => {
     await page.setViewportSize({ width, height: 900 });
     let previewReason: string | null = 'disabled', sendOutcome: 'unknown' | 'refused' | 'accepted' = 'unknown';
+    let sendReason: string | null = null;
     const generations: string[] = [];
     await page.route('**/api/**', async route => {
       const path = new URL(route.request().url()).pathname;
@@ -28,6 +29,7 @@ for (const width of [360, 1280]) {
       if (path.endsWith('/test')) return route.fulfill({ json: { data: { sent: true } } });
       if (path.endsWith('/send')) {
         generations.push(route.request().postDataJSON().sendGeneration);
+        if (sendReason) return route.fulfill({ status: 409, json: { error: { code: 'conflict', details: { reason: [sendReason] } } } });
         if (sendOutcome === 'unknown') return route.abort('failed');
         if (sendOutcome === 'refused') return route.fulfill({ status: 503, json: { error: { code: 'unavailable' } } });
         return route.fulfill({ json: { data: announcement } });
@@ -111,5 +113,36 @@ for (const width of [360, 1280]) {
     await page.getByRole('button', { name: 'Send to 3 members' }).click();
     await expect(page.getByRole('status').filter({ hasText: 'Announcement accepted' })).toBeVisible();
     expect(generations).toHaveLength(5); expect(generations[4]).not.toBe(generations[3]);
+
+    sendOutcome = 'unknown';
+    await page.getByRole('button', { name: 'New announcement' }).click();
+    await page.getByLabel('Subject', { exact: true }).fill('Recovery notice');
+    await page.getByLabel('Message', { exact: true }).fill('Classes resume Monday.');
+    await page.getByRole('button', { name: 'Preview announcement', exact: true }).click();
+    await page.getByRole('button', { name: 'Continue to confirmation' }).click();
+    await page.getByRole('button', { name: 'Send to 3 members' }).click();
+    await expect(page.getByRole('alert')).toContainText('Retry this same announcement');
+    sendReason = 'disabled';
+    await page.getByRole('button', { name: 'Send to 3 members' }).click();
+    await expect(page.getByRole('alert')).toContainText('Member email is switched off');
+    await expect(page.getByRole('alert')).toContainText('Retry this same announcement');
+    expect(generations[6]).toBe(generations[5]);
+    await check('retained-configuration');
+    await page.getByRole('button', { name: 'Start over', exact: true }).click();
+    await expect(page.getByText(/Check announcement history first/)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Keep saved retry' })).toBeFocused();
+    await check('start-over-confirmation');
+    await page.getByRole('button', { name: 'Keep saved retry' }).click();
+    await expect(page.getByRole('button', { name: 'Start over', exact: true })).toBeFocused();
+    await page.getByRole('button', { name: 'Start over', exact: true }).click();
+    await page.getByRole('button', { name: 'Clear retry and compose' }).click();
+    await expect(page.getByLabel('Subject', { exact: true })).toHaveValue('Recovery notice');
+    await check('start-over-compose');
+    sendReason = null; sendOutcome = 'accepted';
+    await page.getByRole('button', { name: 'Preview announcement', exact: true }).click();
+    await page.getByRole('button', { name: 'Continue to confirmation' }).click();
+    await page.getByRole('button', { name: 'Send to 3 members' }).click();
+    await expect(page.getByRole('status').filter({ hasText: 'Announcement accepted' })).toBeVisible();
+    expect(generations).toHaveLength(8); expect(generations[7]).not.toBe(generations[6]);
   });
 }

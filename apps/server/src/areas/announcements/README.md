@@ -83,8 +83,9 @@ describe its outcomes. Every decision and completion is audited without message
 content, addresses, or tokens.
 
 `createAnnouncementRecoveryJobs` (`recovery.ts`) exports the per-gym
-`announcements.recover` schedule for runtime registration, every 15 minutes. It
-scans sending announcements and cancelled sessions in pages of 100 and asks the
+`announcements.recover` schedule for runtime registration, every 15 minutes in the
+batch lane. It scans sending announcements and cancelled sessions whose start is
+still in the future in pages of 100 and asks the
 queue for their exhausted send jobs. It resets only failed jobs through
 `retryFailed`, keeping the original job ID, key, payload, recipient snapshot and
 note. A sending announcement with no pending recipients is also eligible, so an
@@ -98,7 +99,10 @@ prevents concurrent sweeps from resetting the same failure twice. Reset audits
 contain identifiers and the delay, without content or addresses. Recipient
 decisions and durable email delivery keys remain unchanged, so accepted, unknown,
 failed and skipped recipients are not mailed again. The same recovery policy
-applies to class-cancellation notices, retaining their original roster and note.
+applies to class-cancellation notices, retaining their original roster and note,
+but notices for sessions that have started are never reset. The reset and audit
+are separate commits: if the audit write fails, that reset does not increase the
+next backoff delay.
 
 Database checks keep `sent` paired with a completion timestamp and require reasons
 only for failed/skipped recipients. The expansion migration normalizes unchecked
@@ -148,10 +152,12 @@ or converge. No SMTP runs inside a transaction. Live reservations defer to a job
 retry. Accepted, unknown and definitely rejected attempts are not resent by this
 notice; a setup failure before reservation can be retried. A send outcome writes
 an audit without the address or message content.
-Replaying a released, definitely rejected reservation repairs its missing failure
-audit without resending it. Recovery uses the member ID in each original delivery
-key even if the address group's first member has since changed. It checks for an
-existing decision with a member-filtered SQL lookup limited to one row.
+Replaying a stored reservation repairs its missing decision: accepted becomes
+sent; unknown or a stale sending reservation becomes failed with reason unknown;
+definitely rejected (including a suppressed attempt) becomes failed with reason
+not_accepted. Recovery uses the member ID in each original delivery key even if
+the address group's first member has since changed. It checks for existing
+decisions with one member-filtered SQL lookup for the matching reservations.
 
 `core/runtime.ts` calls
 `configureCancellationNotice(createCancellationNotice({ jobs, mailer, origin, ... }))`.

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { formatCount } from '../../lib/count.js';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { announcementDraftSchema, type AnnouncementDraft, type Program } from '@plaingym/shared/contracts';
 import { Button } from '../../components/ui/button.js';
 import { Input } from '../../components/ui/input.js';
@@ -27,6 +27,10 @@ export function AnnouncementEditor({ gymName, programs, client, close, sent, own
   const [error, setError] = useState<{ cause: unknown; fallback: string } | null>(null);
   const busy = pending !== null;
   const [testSent, setTestSent] = useState(false);
+  const [startingOver, setStartingOver] = useState(false);
+  const subjectInput = useRef<HTMLInputElement>(null);
+  const keepAttempt = useRef<HTMLButtonElement>(null), startOver = useRef<HTMLButtonElement>(null);
+  useEffect(() => { if (startingOver) keepAttempt.current?.focus(); }, [startingOver]);
   const inFlight = useRef(false), generation = useRef<string | null>(attempt?.generation ?? null);
   const uncertain = useRef(attempt?.uncertain ?? false);
   function draft() {
@@ -41,9 +45,21 @@ export function AnnouncementEditor({ gymName, programs, client, close, sent, own
     finally { inFlight.current = false; setPending(null); }
   }
   function toggle<T>(values: T[], value: T, checked: boolean) { return checked ? [...values, value] : values.filter(item => item !== value); }
-  return <Dialog title={text(confirming ? 'confirmTitle' : preview ? 'previewTitle' : 'compose')} closeLabel={text('close')}
+  return <Dialog title={text(startingOver ? 'startOverTitle' : confirming ? 'confirmTitle' : preview ? 'previewTitle' : 'compose')} closeLabel={text('close')}
     onClose={close} dismissible={!busy} unsavedChanges={!!subject || !!body}>
     <div className="min-w-0 space-y-4 wrap-anywhere">
+      {startingOver ? <>
+        <Alert role="note">{text('startOverHelp')}</Alert>
+        <DialogActions>
+          <Button ref={keepAttempt} variant="outline" onClick={() => { setStartingOver(false); requestAnimationFrame(() => startOver.current?.focus()); }}>{text('keepAttempt')}</Button>
+          <Button variant="destructive" onClick={() => {
+            rememberAttempt?.(undefined);
+            uncertain.current = false; generation.current = null;
+            setPreview(null); setConfirming(false); setAttempted(false); setError(null); setTestSent(false); setStartingOver(false);
+            requestAnimationFrame(() => subjectInput.current?.focus());
+          }}>{text('confirmStartOver')}</Button>
+        </DialogActions>
+      </> : <>
       {!preview ? <form className="space-y-4" onSubmit={event => {
         event.preventDefault();
         const parsed = draft();
@@ -56,7 +72,7 @@ export function AnnouncementEditor({ gymName, programs, client, close, sent, own
       }}>
         <fieldset disabled={busy} className="min-w-0 space-y-4">
           <div><Label htmlFor="announcement-subject">{text('subject')}</Label>
-            <Input id="announcement-subject" value={subject} maxLength={150} required aria-describedby="subject-count" onChange={event => setSubject(event.target.value)} />
+            <Input ref={subjectInput} id="announcement-subject" value={subject} maxLength={150} required aria-describedby="subject-count" onChange={event => setSubject(event.target.value)} />
             <p id="subject-count" className="text-sm text-muted-foreground">{text('characters', { count: subject.length.toLocaleString(), max: (150).toLocaleString() })}</p></div>
           <div><Label htmlFor="announcement-body">{text('body')}</Label>
             <Textarea id="announcement-body" rows={8} value={body} maxLength={10000} required aria-describedby="body-count" onChange={event => setBody(event.target.value)} />
@@ -115,8 +131,12 @@ export function AnnouncementEditor({ gymName, programs, client, close, sent, own
         </DialogActions>
       </>}
       {testSent && <Alert role="status">{text('testSent')}</Alert>}
-      {attempted && !busy && <Alert role="note">{text('retainedAttempt')}</Alert>}
+      {attempted && !busy && <Alert role="note" className="space-y-3">
+        <p>{text('retainedAttempt')}</p>
+        <Button ref={startOver} variant="outline" onClick={() => setStartingOver(true)}>{text('startOver')}</Button>
+      </Alert>}
       {error && <Failure error={error.cause} fallback={error.fallback} owner={owner} retrySame={error.fallback === 'sendError' && uncertain.current} />}
+      </>}
     </div>
   </Dialog>;
 }
