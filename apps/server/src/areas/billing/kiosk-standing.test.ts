@@ -2,6 +2,9 @@
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { attendances, invoices, uuidv7 } from '@plaingym/db';
+// Test-only app-role pool, matching the shipped eight-connection configuration.
+// eslint-disable-next-line no-restricted-imports, database/system-tables
+import { openConnection, scopedDatabase } from '@plaingym/db/client';
 import type { Principal } from '../../core/context.js';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -18,9 +21,31 @@ import { createBillingStanding, createCreditsStanding } from './kiosk-standing.j
 import { isOverdueInvoice, overdueInvoiceCondition } from './kiosk-standing.rules.js';
 import { readBillingTotals } from '../dashboard/billing.query.js';
 import { createInvoiceTransitions } from './transitions/index.js';
+import { createStandingChecks, inactiveStanding, waiverStanding } from '../kiosk/standing/standing.js';
 
 const database = useTestDatabase(), factory = createFactories(database), clock = new TestClock('2026-10-26T12:00:00Z');
 const secret = new Uint8Array(32).fill(3), standing = createBillingStanding(database.forGym);
+
+it('measures all four standing providers under a burst with the shipped pool budget', async () => {
+  const f = await fixture();
+  await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1, expiresAt: clock.now() });
+  const connection = openConnection(database.appUrl, 8), { forGym: scope } = scopedDatabase(connection.db);
+  const occupied = new Set<number>();
+  let peak = 0, transactions = 0;
+  connection.sql.options.debug = (id, query) => {
+    if (/^begin/i.test(query)) { transactions++; occupied.add(id); peak = Math.max(peak, occupied.size); }
+    if (/^(commit|rollback)/i.test(query)) occupied.delete(id);
+  };
+  try {
+    const checks = createStandingChecks([inactiveStanding(scope), waiverStanding(scope), createBillingStanding(scope), createCreditsStanding(scope)]);
+    const start = performance.now(), burst = 12;
+    const results = await Promise.all(Array.from({ length: burst }, () => checks.evaluate({ gymId: f.gymId, memberId: f.member.id, clock })));
+    expect(results).toEqual(Array.from({ length: burst }, () => ({ status: 'front_desk', reasons: ['past_due', 'no_credits'] })));
+    expect(transactions).toBe(burst * 5); // Billing reads settings, then invoices; each other provider opens one transaction.
+    expect(peak).toBeGreaterThan(1); expect(peak).toBeLessThanOrEqual(8); expect(occupied.size).toBe(0);
+    console.info(JSON.stringify({ surface: 'standing_burst', burst, transactions, peak, ms: Math.round(performance.now() - start) }));
+  } finally { await connection.close(); }
+}, 30_000);
 async function fixture(options: { timezone?: string; invoice?: Partial<typeof invoices.$inferInsert> } = {}) {
   const gymId = uuidv7(); await factory('gyms', gymId, { timezone: options.timezone ?? 'UTC' });
   const id = uuidv7();

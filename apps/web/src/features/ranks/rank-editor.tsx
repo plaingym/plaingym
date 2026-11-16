@@ -2,7 +2,7 @@
 import { useState, type FormEvent } from 'react';
 import type { Rank, CreateRankRequest } from '@plaingym/shared/contracts';
 import { t } from '../../lib/i18n.js';
-import { same, useDraft } from '../../lib/use-draft.js';
+import { useDraft } from '../../lib/use-draft.js';
 import { Button } from '../../components/ui/button.js';
 import { Dialog, DialogActions } from '../../components/ui/dialog.js';
 import { Input } from '../../components/ui/input.js';
@@ -40,7 +40,7 @@ export function RankEditor({ rank, rankSystemId, nextPosition, busy, create, upd
   }
   const title = text(rank ? 'editRank' : 'addRank');
   return <Dialog title={title} description={rank?.name} closeLabel={text('closeDialog')} dismissible={!busy}
-    unsavedChanges={!same(subRanks, rank?.subRanks ?? [])} onClose={cancel}>
+    unsavedChanges={draft.dirty} onClose={cancel}>
     <form onSubmit={(event) => void submit(event)} className="space-y-6" aria-label={title}>
       {message && <p role="status" className="rounded-md border border-border bg-muted p-3 text-sm">{message}</p>}
       <fieldset disabled={busy} className="min-w-0 space-y-6">
@@ -75,7 +75,10 @@ export function RankEditor({ rank, rankSystemId, nextPosition, busy, create, upd
           {(rank?.criteria ?? []).filter((criterion) => !coreCriteria.some((core) => core.id === criterion.providerId)).map((criterion, index) =>
             <p key={index} className="text-sm">{text('moduleCriterion')}: {criterion.providerId}</p>)}
         </fieldset>
-        <DialogActions><Button type="submit">{text('save')}</Button><Button variant="outline" onClick={cancel}>{text('cancel')}</Button></DialogActions>
+        <DialogActions><Button type="submit">{text('save')}</Button><Button variant="outline" onClick={event => {
+          // Use the dialog's guarded cancellation path, just like Escape and its close button.
+          event.currentTarget.closest('dialog')?.dispatchEvent(new Event('cancel', { cancelable: true }));
+        }}>{text('cancel')}</Button></DialogActions>
       </fieldset>
     </form>
   </Dialog>;

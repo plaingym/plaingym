@@ -268,12 +268,13 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
     attendedPrograms: async (memberId: string) => {
       requireAccess(grant.memberActivity);
       const own = and(eq(attendances.gymId, grant.gymId), inArray(attendances.memberId, memberIds), eq(attendances.memberId, memberId));
-      const direct = await tx.selectDistinct({ programId: attendances.programId }).from(attendances)
+      // Match attendanceFilterPredicate's direct-or-session program rule in one read.
+      const direct = tx.selectDistinct({ programId: attendances.programId }).from(attendances)
         .where(and(own, isNotNull(attendances.programId)));
-      const linked = await tx.selectDistinct({ programId: classSessionPrograms.programId }).from(attendances)
+      const linked = tx.selectDistinct({ programId: classSessionPrograms.programId }).from(attendances)
         .innerJoin(classSessionPrograms, and(eq(classSessionPrograms.gymId, grant.gymId), eq(classSessionPrograms.sessionId, attendances.sessionId)))
         .where(own);
-      return [...new Set([...direct, ...linked].map(row => row.programId!))];
+      return (await direct.union(linked)).map(row => row.programId!);
     },
     /** One member's promotions. Promotion notes and the promoting coach are never selected. */
     rankHistory: async (memberId: string) => {

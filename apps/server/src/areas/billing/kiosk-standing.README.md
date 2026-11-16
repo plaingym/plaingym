@@ -20,6 +20,23 @@ standing. A household member's credits do not cover siblings.
 The kiosk's default standing compositions (name and PIN, and QR) pass their own
 database scope to both factories, alongside the inactive-member and waiver checks.
 
+The standing evaluator runs all four providers in parallel, including credits
+when billing reports `past_due`, so staff get every reason in one answer. Each
+provider owns its short `forGym` transaction; billing first reads gym settings in
+another transaction. One evaluation therefore opens five transactions in total,
+with up to four held at once. The separate credits connection is intentional;
+there is no shared transaction across extension providers. The shipped 1 GB
+configuration uses an eight-connection app pool. `kiosk-standing.test.ts` measures
+a burst of 12 evaluations using that pool budget, reports duration and peak pool
+use in CI, and checks that all 60 transactions finish and return their connections.
+This measures pool use, not whole-host memory under a 1 GB cap.
+
+The staff profile reads standing when its tab opens and refreshes it each time
+the tab is reopened, so a credit or billing change made in another tab appears
+without a page reload. A hash change that names a profile tab
+(`#memberTabs.kiosk-standing`) also selects it; other in-page anchors keep the
+open tab.
+
 `kiosk-standing.rules.ts` exports `isOverdueInvoice` for the dashboard and the
 matching `overdueInvoiceCondition` for SQL. A PostgreSQL parity test checks every
 invoice status across date and amount boundaries so the two forms stay aligned.

@@ -9,6 +9,13 @@ const ranks = [
 ];
 const held = (rankId: string, subRank: number, position: number) => ({ rankId, subRank, position });
 
+it('selects the first rank without history and prefers the current sub-rank when positions tie', () => {
+  expect(nextPromotion(undefined, [])).toBeNull();
+  expect(nextPromotion(undefined, ranks)).toMatchObject({ rank: { id: 'a' }, subRank: 0 });
+  const tied = [{ id: 'a', position: 0, subRanks: [] }, { id: 'z', position: 0, subRanks: [{}] }];
+  expect(nextPromotion(held('z', 0, 0), tied)).toMatchObject({ rank: { id: 'z' }, subRank: 1 });
+});
+
 it('moves through sub-ranks before the next rank, and stops at the top', () => {
   expect(nextPromotion(held('a', 0, 0), ranks)).toMatchObject({ rank: { id: 'a' }, subRank: 1 });
   expect(nextPromotion(held('a', 2, 0), ranks)).toMatchObject({ rank: { id: 'b' }, subRank: 0 });

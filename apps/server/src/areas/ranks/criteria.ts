@@ -5,18 +5,40 @@ import { localDate } from '@plaingym/shared/time';
 import type { PromotionCriterion, CriterionProgress } from '@plaingym/shared/contracts';
 import type { AttendanceQueries } from '../../core/interfaces/attendance.js';
 import type { CriterionContext, PromotionCriterionProvider } from '../../core/interfaces/extensions.js';
+import type { forGym } from '@plaingym/db';
+import { countPromotionAttendance, promotionAttendanceKey } from '../attendance/promotion.query.js';
 
 const targetSchema = z.strictObject({ target: z.int32().nonnegative() });
 const progress = (current: number, target: number) => ({ current, target, met: current >= target });
+interface BatchReads { scope: typeof forGym; gymId: string; until: string; openMatCountsAsClass: boolean; }
+/** Optional optimization local to ranks; the public provider interface stays unchanged. */
+export interface BatchCriterionProvider extends PromotionCriterionProvider {
+  prepareBatch?(contexts: readonly CriterionContext[], reads: BatchReads): Promise<PromotionCriterionProvider['evaluate']>;
+}
+const attendanceRequest = (context: CriterionContext) => ({ memberId: context.memberId, programId: context.programId,
+  since: context.promotedAt ?? '1970-01-01T00:00:00.000Z' });
 
 /** Providers are injected by modules; unavailable providers fail closed. */
-export class PromotionCriteria extends Registry<PromotionCriterionProvider> {
-  override register(provider: PromotionCriterionProvider): void {
+export class PromotionCriteria extends Registry<BatchCriterionProvider> {
+  override register(provider: BatchCriterionProvider): void {
     // Registry stores a frozen copy; retain prototype methods and private state.
     super.register({ id: provider.id, labelKey: provider.labelKey, configSchema: provider.configSchema,
       ...(provider.order === undefined ? {} : { order: provider.order }),
       ...(provider.moduleId === undefined ? {} : { moduleId: provider.moduleId }),
-      evaluate: provider.evaluate.bind(provider) });
+      evaluate: provider.evaluate.bind(provider),
+      ...(provider.prepareBatch ? { prepareBatch: provider.prepareBatch.bind(provider) } : {}) });
+  }
+  async prepareBatch(candidates: readonly { context: CriterionContext; rank: { criteria: readonly PromotionCriterion[] } }[],
+    enabled: ReadonlySet<string>, reads: BatchReads): Promise<PromotionCriteria> {
+    // Fail closed before any provider starts its batch reads, including disabled module criteria.
+    for (const candidate of candidates) this.validate(candidate.rank.criteria, enabled);
+    const batch = new PromotionCriteria();
+    for (const provider of this.forModules(enabled)) {
+      const contexts = candidates.filter(candidate => candidate.rank.criteria.some(item => item.providerId === provider.id)).map(candidate => candidate.context);
+      batch.register({ ...provider, evaluate: contexts.length && provider.prepareBatch
+        ? await provider.prepareBatch(contexts, reads) : provider.evaluate });
+    }
+    return batch;
   }
   validate(criteria: readonly PromotionCriterion[], enabled?: ReadonlySet<string>): void {
     const providers = enabled ? this.forModules(enabled) : this.all();
@@ -42,11 +64,14 @@ export class PromotionCriteria extends Registry<PromotionCriterionProvider> {
 export function createPromotionCriteria(attendance: AttendanceQueries): PromotionCriteria {
   const registry = new PromotionCriteria();
   registry.register({ id: 'classes-since-promotion', labelKey: 'ranks/ranks:classes', configSchema: targetSchema,
+    async prepareBatch(contexts, reads) {
+      const counts = await countPromotionAttendance(reads.scope, reads.gymId, contexts.map(attendanceRequest), reads.until, reads.openMatCountsAsClass);
+      return async (context, value) => progress(counts.get(promotionAttendanceKey(attendanceRequest(context))) ?? 0, targetSchema.parse(value).target);
+    },
     async evaluate(context, value) {
       const { target } = targetSchema.parse(value);
       const current = await attendance.countSince(context.attendanceScope, {
-        memberId: context.memberId, programId: context.programId, classesOnly: true,
-        since: context.promotedAt ?? '1970-01-01T00:00:00.000Z', until: context.clock.now().toISOString(),
+        ...attendanceRequest(context), classesOnly: true, until: context.clock.now().toISOString(),
       });
       return progress(current, target);
     },

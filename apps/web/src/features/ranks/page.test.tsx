@@ -47,6 +47,22 @@ function start(view: React.ReactNode) {
 afterEach(cleanup);
 
 describe('rank management', () => {
+  it.each(['Cancel', 'Close dialog'])('asks before discarding a renamed rank through %s, including after a conflicting refetch', label => {
+    const cancel = vi.fn(), save = vi.fn(async () => {});
+    const props = { rankSystemId: system.id, nextPosition: 1, busy: false, create: save, update: save, cancel };
+    const view = render(<RankEditor {...props} rank={rank}/>);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Our foundation' } });
+    view.rerender(<RankEditor {...props} rank={{ ...rank, name: 'Another save', revision: 4 }}/>);
+    fireEvent.click(screen.getByRole('button', { name: label }));
+    expect(screen.getByText('Discard your unsaved changes?')).toBeDefined();
+    expect(cancel).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Our foundation');
+    fireEvent.click(screen.getByRole('button', { name: label }));
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }));
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(save).not.toHaveBeenCalled();
+  });
   it('edits names, belt colors and sub-ranks, preserving module criteria and stable sub-rank IDs', async () => {
     const save = vi.fn(async () => {});
     render(<RankEditor rank={rank} rankSystemId={system.id} nextPosition={1} busy={false} create={save} update={save} cancel={() => {}}/>);

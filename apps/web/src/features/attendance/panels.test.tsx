@@ -23,6 +23,11 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 describe('registered attendance panels', () => {
+  it('explains that repeat open-mat check-ins reuse the gym-local day visit', async () => {
+    render(<MemberAttendancePanel memberId={memberId}/>);
+    expect(await screen.findByText(/Repeat check-ins on the same gym-local day return the existing visit/)).toBeDefined();
+    expect(screen.queryByText(/Each submission records a separate visit/)).toBeNull();
+  });
   it('confirms an undo, removes the checked state, and refreshes session counts', async () => {
     client.checkedIn.mockResolvedValue([{ id: 'visit', memberId, source: 'kiosk' }]);
     const notify = vi.fn(), user = userEvent.setup();

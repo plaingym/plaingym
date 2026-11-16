@@ -23,6 +23,8 @@ extensions on unrelated edits. Rank update audits use the stored row for both
 before and after, while responses still strip unknown entry keys. Provider configuration is
 still validated by its provider: a compatible minor cannot add configuration keys
 or provider IDs that the previous minor cannot evaluate (`docs/versioning.md`).
+Closing or cancelling an edited rank asks before discarding any changed field,
+including its name, position, color, sub-ranks and criterion targets.
 
 Eligibility uses active, non-anonymized members. Attendance and elapsed time start
 at the most recent promotion in the selected program, or the member's creation
@@ -38,6 +40,16 @@ next sub-rank first). Eligibility, the promotion check, the promotion list and
 `memberProgress` all sort promotions in application code with `promotionOrder`; none
 orders them in SQL. The promotion check reads the member's history in that program
 after locking the member row, then sorts it.
+
+Eligibility uses `nextPromotion` for its requested rank; member progress and the
+dashboard use it across the program's ranks, including when no previous rank
+exists. The dashboard reads latest promotions with `DISTINCT ON`, ordered by the
+same date, position, sub-rank, creation and ID rules, joining the active roster
+instead of binding every member ID. It consumes those rows without sorting again.
+Its criterion registry supports an optional local `prepareBatch` provider hook;
+providers without a hook retain their normal evaluator and all validation. The
+classes provider batches through the shared attendance predicate in
+`attendance/promotion.query.ts`, rather than a dashboard-specific counting rule.
 
 `memberProgress` applies the ordering to one member's history, supplied by the caller
 from its own scope. It returns each program's current rank, the next step and the

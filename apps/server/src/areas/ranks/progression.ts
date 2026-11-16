@@ -21,9 +21,9 @@ export function nextSubRank(previous: Pick<RankedPromotion, 'rankId' | 'subRank'
   return previous?.rankId === target.id ? previous.subRank + 1 : 0;
 }
 /** The first step the member can still receive, in rank-system order; the current rank's next sub-rank comes first. */
-export function nextPromotion<T extends RankStep>(previous: Pick<RankedPromotion, 'rankId' | 'subRank' | 'position'>, ranks: readonly T[]) {
+export function nextPromotion<T extends RankStep>(previous: Pick<RankedPromotion, 'rankId' | 'subRank' | 'position'> | undefined, ranks: readonly T[]) {
   const ordered = [...ranks].sort((a, b) => a.position - b.position
-    || Number(b.id === previous.rankId) - Number(a.id === previous.rankId) || a.id.localeCompare(b.id));
+    || Number(b.id === previous?.rankId) - Number(a.id === previous?.rankId) || a.id.localeCompare(b.id));
   const rank = ordered.find(item => canReceive(previous, item));
   return rank ? { rank, subRank: nextSubRank(previous, rank) } : null;
 }

@@ -80,6 +80,12 @@ for (const width of [360, 1280]) {
     await page.getByRole('button', { name: 'Edit Foundation', exact: true }).click();
     const dialog = page.getByRole('dialog');
     await dialog.getByLabel('Name', { exact: true }).fill('Renamed');
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(dialog.getByText('Discard your unsaved changes?')).toBeVisible();
+    await accessibleLayout(page, info, 'rank-discard');
+    await info.attach('rank-discard-' + width, { body: await page.screenshot(), contentType: 'image/png' });
+    await dialog.getByRole('button', { name: 'Keep editing', exact: true }).click();
+    await expect(dialog.getByLabel('Name', { exact: true })).toHaveValue('Renamed');
     await accessibleLayout(page, info, 'rank-form');
     await info.attach('rank-' + width, { body: await dialog.screenshot(), contentType: 'image/png' });
     await dialog.getByRole('button', { name: 'Save', exact: true }).click();

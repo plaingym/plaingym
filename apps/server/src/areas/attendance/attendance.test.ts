@@ -132,6 +132,18 @@ describe('attendance credits and undo with PostgreSQL', () => {
     expect(visitor.memberId).toBe(f.sibling.id);
     expect(visitor).not.toHaveProperty('needsCredits');
   });
+  it.each([false, true])('replays the original staff credit notice after a top-up without spending again; open mat = %s', async openMat => {
+    const f = await fixture(), input = { ...f.input, sessionId: openMat ? null : f.input.sessionId };
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1, expiresAt: clock.now() });
+    const visit = await service.record(f.context, input);
+    expect(visit).toHaveProperty('needsCredits', true);
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 5 });
+    expect(await service.record(f.context, input)).toEqual(visit);
+    const state = await snapshot(f.gymId);
+    expect(state.rows).toHaveLength(1);
+    expect(state.audits.filter(row => row.action === 'attendance.recorded')).toHaveLength(1);
+    expect((await ledger(f.gymId)).filter(row => row.kind === 'use')).toHaveLength(0);
+  });
   it('undo restores the same lot, audits the full deleted row, and permits a new visit with a different ID', async () => {
     const f = await fixture();
     const lot = await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1 });

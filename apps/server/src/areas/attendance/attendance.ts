@@ -61,7 +61,7 @@ function rowFilter(filter: Filter): AttendanceRowFilter {
   return { memberId: filter.memberId, programId: filter.programId, tagId: filter.tagId, kind: filter.kind, classesOnly: filter.excludeOpenMat,
     since: filter.since ? new Date(filter.since) : undefined, until: filter.until ? new Date(filter.until) : undefined };
 }
-function predicate(tx: Transaction, gymId: string, filter: Filter) {
+export function predicate(tx: Transaction, gymId: string, filter: Filter) {
   return and(attendanceFilterPredicate(tx, gymId, rowFilter(filter)),
     filter.sessionId ? eq(attendances.sessionId, filter.sessionId) : undefined,
     filter.source ? eq(attendances.source, filter.source) : undefined,

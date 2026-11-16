@@ -20,7 +20,12 @@ not. Imports never spend. Session replays return before drawing, and a partial
 unique ledger index allows one use per attendance. Staff can record a visit with
 no usable credits; a new staff record response then includes `needsCredits: true`,
 and the roster or open-mat form displays a notice. Staff retries preserve the
-notice from the recording audit. This flag is absent from kiosk responses.
+notice from the recording audit's `after.needsCredits === true`, even if credits
+have since been bought. This is a historical notice, not a fresh balance check:
+an absent or redacted recording audit, or one written without that flag (such as
+an import), cannot reproduce it and returns no notice. This dependency affects
+only the staff response; attendance deduplication and credit spending do not
+depend on the audit row. This flag is absent from kiosk responses.
 `attendance.recorded.after.creditSpent` states whether a live
 visit spent a credit. A kiosk pack holder with no usable credits and no active
 membership is refused atomically, with only `see_front_desk` reaching the shared
@@ -71,6 +76,14 @@ program links. Tags come only from materialized session links. A visit counts on
 the total and once per distinct program/tag, even when its direct program also appears
 on the session. Template edits cannot reclassify attendance. Intervals include `since`
 and exclude `until`; history sorts newest first, then ID ascending.
+
+`promotion.query.ts` batches dashboard promotion windows in one scoped read,
+using `attendance.ts`'s `predicate` for program links, open-mat inclusion and the
+exclusive upper bound. Its bound JSON candidate rows correlate each member's
+inclusive lower bound; direct and session links still count a visit only once.
+The filtered rows are materialized once per program before joining candidate
+windows, avoiding repeated scans caused by the program-link predicate's subquery.
+This optimization leaves `AttendanceQueries` unchanged.
 
 Household activity is read only with `forHousehold`, reloading grants on every call.
 Its `attendancePage` and `attendanceCount` queries filter, order, page and count in

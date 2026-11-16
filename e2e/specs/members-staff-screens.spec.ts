@@ -21,6 +21,23 @@ for (const width of [360, 1280]) {
     await info.attach('member-profile-' + width, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 
+    let standingReads = 0;
+    await page.route('**/api/kiosk/standing/*', route => {
+      standingReads++;
+      return route.fulfill({ json: { data: { memberId: member.id, status: standingReads === 1 ? 'front_desk' : 'ok',
+        reasons: standingReads === 1 ? ['no_credits'] : [] } } });
+    });
+    // A hash-only deep link switches the mounted profile; returning after a credit change reloads standing.
+    await page.evaluate(() => { window.location.hash = 'memberTabs.kiosk-standing'; });
+    await expect(page.getByRole('tab', { name: 'Kiosk check-in', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByText('The member needs an unexpired class credit or an active or trial membership.')).toBeVisible();
+    await page.getByRole('tab', { name: 'Profile', exact: true }).click();
+    await page.getByRole('tab', { name: 'Kiosk check-in', exact: true }).click();
+    await expect(page.getByText('This member can check in at the kiosk.')).toBeVisible();
+    expect(standingReads).toBe(2);
+    await info.attach('standing-refreshed-' + width, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+
     await page.goto(gymOrigin + '/admin/staff');
     await expect(page.getByRole('heading', { name: 'QA Owner Owner', exact: true })).toBeVisible();
     const grant = page.getByRole('button', { name: 'Grant role', exact: true });

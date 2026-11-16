@@ -35,7 +35,7 @@
   "unknownProgram": "Unavailable program",
   "unknownTag": "Unavailable tag",
   "openMat": "Open-mat check-in",
-  "openMatHelp": "Record a visit without a scheduled class. Each submission records a separate visit. Open mat counts toward classes attended only if the gym setting is on.",
+  "openMatHelp": "Record a visit without a scheduled class. Repeat check-ins on the same gym-local day return the existing visit. Open mat counts toward classes attended only if the gym setting is on.",
   "noProgram": "No program",
   "recordOpenMat": "Record open-mat visit",
   "recorded": "Open-mat visit recorded.",

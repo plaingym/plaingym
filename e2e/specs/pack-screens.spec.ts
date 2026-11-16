@@ -1,17 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import AxeBuilder from '@axe-core/playwright';
 import { test, expect, gymOrigin, type Person, type RecordId } from '../support.js';
 import type { Page, TestInfo } from '@playwright/test';
+import { accessibleLayout } from '../responsive.js';
 
 async function check(page: Page, info: TestInfo, name: string) {
   await expect(page.locator('[role=status]').filter({ hasText: /Loading/ })).toHaveCount(0);
-  const sizes = await page.evaluate(() => ({ width: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth,
-    small: [...document.querySelectorAll('#main-content :is(button, select, input:not([type=checkbox]):not([type=hidden])), dialog[open] :is(button, select, input:not([type=checkbox]), textarea)')]
-      .filter(element => { const box = element.getBoundingClientRect(); return box.width > 0 && (box.height < 44 || (element.matches('button, select') && box.width < 44)); })
-      .map(element => element.getAttribute('name') || element.textContent) }));
-  expect(sizes.scroll).toBeLessThanOrEqual(sizes.width); expect(sizes.small).toEqual([]);
-  const axe = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
-  expect(axe.violations.map(row => row.id)).toEqual([]);
+  // The shared audit waits for finite tab-color transitions before measuring contrast.
+  await accessibleLayout(page, info, name);
   const dialog = page.getByRole('dialog');
   const screenshot = await (await dialog.count() ? dialog.screenshot() : name.startsWith('member-')
     ? page.getByRole('tabpanel', { name: 'Packs', exact: true }).screenshot() : page.screenshot({ fullPage: true }));
@@ -71,8 +66,7 @@ for (const width of [360, 1280]) {
       await owner.json('/api/billing/credits/adjust', 'POST', { memberId: member.id, credits: -8,
         reason: 'Remaining credits used', adjustmentId: crypto.randomUUID() });
       await page.goto(gymOrigin + '/admin/members/' + member.id + '#memberTabs.kiosk-standing');
-      // The profile reads its initial tab from the hash on mount; a hash-only navigation keeps the mounted tab.
-      await page.reload();
+      // Hash-only navigation selects the standing tab and refreshes it after the credit adjustment.
       await expect(page.getByRole('tab', { name: 'Kiosk check-in', exact: true })).toHaveAttribute('aria-selected', 'true');
       await expect(page.getByText('The member needs an unexpired class credit or an active or trial membership.')).toBeVisible();
       await check(page, info, 'standing-' + width);

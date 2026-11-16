@@ -5,11 +5,13 @@ import { kioskStandingResponseSchema } from '@plaingym/shared/contracts';
 import type { ExtensionViewProps } from '../../lib/registries.js';
 import { t } from '../../lib/i18n.js';
 import { Alert } from '../../components/ui/alert.js';
+import { useMemberTabActive } from '../members/tab-activity.js';
 
 const known = new Set(['missing_waiver', 'inactive', 'past_due', 'no_credits']);
 /** Staff see why the kiosk sends a member to the front desk; the kiosk itself never shows a reason. */
 export function KioskStandingTab({ memberId }: ExtensionViewProps) {
-  const query = useQuery({ queryKey: ['kiosk-standing', memberId], enabled: !!memberId, queryFn: async ({ signal }) => {
+  const active = useMemberTabActive();
+  const query = useQuery({ queryKey: ['kiosk-standing', memberId], enabled: !!memberId && active, staleTime: 0, queryFn: async ({ signal }) => {
     const response = await fetch(`/api/kiosk/standing/${memberId}`, { credentials: 'same-origin', cache: 'no-store', signal, headers: { Accept: 'application/json' } });
     if (!response.ok) throw new Error('Request failed');
     return parseResponse(kioskStandingResponseSchema, await response.json()).data;

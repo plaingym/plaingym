@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, or } from 'drizzle-orm';
-// eslint-disable-next-line database/system-tables -- Isolated parameterized batch of attendance criteria under forGym.
-import { sql } from 'drizzle-orm';
 import {
   forGym, programs, rankSystems, ranks, memberRanks, members, staffProfiles,
   databaseCode, uuidv7, writeAudit, revisionGuard, assertRevised, RevisionConflictError,
@@ -23,7 +21,7 @@ import { createGymSettingsAccessor } from '../settings/settings.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import type { AttendanceScope } from '../../core/interfaces/attendance.js';
 import type { CriterionContext } from '../../core/interfaces/extensions.js';
-import { canReceive, nextPromotion, nextSubRank, promotionOrder } from './progression.js';
+import { nextPromotion, promotionOrder } from './progression.js';
 import { lockMemberForWrite, memberWriteScope } from '../members/member-write.js';
 
 type PromotionRow = typeof memberRanks.$inferSelect;
@@ -33,6 +31,7 @@ const ranked = (row: { promotion: PromotionHistoryEntry; position: number }) => 
   id: row.promotion.id, memberId: row.promotion.memberId, rankId: row.promotion.rankId, subRank: row.promotion.subRank,
   promotedAt: row.promotion.promotedAt, createdAt: row.promotion.createdAt, position: row.position,
 });
+const activeRoster = (gymId: string) => and(eq(members.gymId, gymId), eq(members.status, 'active'), isNull(members.anonymizedAt));
 
 const present = <T extends { createdAt: Date }>(row: T) => ({ ...row, createdAt: row.createdAt.toISOString() });
 const presentPromotion = (row: typeof memberRanks.$inferSelect) => promotionSchema.parse({
@@ -112,59 +111,32 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
           .orderBy(asc(ranks.position), asc(ranks.id));
         const roster = await tx.select({ id: members.id, firstName: members.firstName, lastName: members.lastName,
           createdAt: members.createdAt, dateOfBirth: members.dateOfBirth }).from(members)
-          .where(and(eq(members.status, 'active'), isNull(members.anonymizedAt)));
+          .where(activeRoster(gymId));
         // Match promotionOrder in SQL; only the current step of each active member/program comes back.
         const history = await tx.selectDistinctOn([memberRanks.programId, memberRanks.memberId], { promotion: memberRanks, position: ranks.position }).from(memberRanks)
-          .innerJoin(ranks, eq(memberRanks.rankId, ranks.id)).where(and(lte(memberRanks.promotedAt, now),
-            inArray(memberRanks.programId, programRows.map(program => program.id)), inArray(memberRanks.memberId, roster.map(member => member.id))))
+          .innerJoin(ranks, eq(memberRanks.rankId, ranks.id)).innerJoin(members, eq(memberRanks.memberId, members.id))
+          .where(and(lte(memberRanks.promotedAt, now), activeRoster(gymId),
+            inArray(memberRanks.programId, programRows.map(program => program.id))))
           .orderBy(asc(memberRanks.programId), asc(memberRanks.memberId), desc(memberRanks.promotedAt), desc(ranks.position),
             desc(memberRanks.subRank), desc(memberRanks.createdAt), desc(memberRanks.id));
         return { programRows, rankRows: rankRows.map(row => rankReadSchema.parse(present(row))), roster,
-          history: history.map(row => ({ ...ranked(row), programId: row.promotion.programId })).sort(promotionOrder) };
+          history: history.map(row => ({ ...ranked(row), programId: row.promotion.programId })) };
       });
-      const latest = new Map<string, (typeof snapshot.history)[number]>();
-      for (const entry of snapshot.history) {
-        const key = entry.programId + ':' + entry.memberId;
-        if (!latest.has(key)) latest.set(key, entry);
-      }
+      const latest = new Map(snapshot.history.map(entry => [entry.programId + ':' + entry.memberId, entry]));
       const candidates = snapshot.programRows.flatMap(program => {
         const ordered = snapshot.rankRows.filter(rank => rank.rankSystemId === program.rankSystemId);
         return snapshot.roster.flatMap(member => {
-          const previous = latest.get(program.id + ':' + member.id), rank = ordered.find(rank => canReceive(previous, rank));
-          if (!rank) return [];
+          const previous = latest.get(program.id + ':' + member.id), target = nextPromotion(previous, ordered);
+          if (!target) return [];
+          const { rank } = target;
           const context: CriterionContext = { attendanceScope: { kind: 'gym', gymId }, gymId, memberId: member.id,
             programId: program.id, rankId: rank.id, promotedAt: (previous?.promotedAt ?? member.createdAt).toISOString(),
             dateOfBirth: member.dateOfBirth, timezone: gym.timezone, clock: { now: () => new Date(now) } };
           return [{ member, rank, context }];
         });
       });
-      // Validate every next step, including unavailable module criteria, before reading counts.
-      for (const candidate of candidates) criteria.validate(candidate.rank.criteria, enabledModules);
-      const counted = candidates.filter(candidate => candidate.rank.criteria.some(item => item.providerId === 'classes-since-promotion'));
-      // eslint-disable-next-line database/system-tables -- Reviewed batch counts only this gym's attendance, with bound candidate IDs and dates.
-      const counts = counted.length ? await scope(gymId, async tx => tx.execute<{ member_id: string; program_id: string; total: number }>(sql`
-        select c.member_id, c.program_id, count(a.id)::integer as total
-        from jsonb_to_recordset(${JSON.stringify(counted.map(({ context }) => ({
-          member_id: context.memberId, program_id: context.programId, since: context.promotedAt,
-        })))}::jsonb) as c(member_id uuid, program_id uuid, since timestamptz)
-        left join attendances a on a.gym_id = ${gymId} and a.member_id = c.member_id
-          and a.occurred_at >= c.since and a.occurred_at < ${now.toISOString()}::timestamptz
-          and (${gym.openMatCountsAsClass} or a.kind = 'class')
-          and (a.program_id = c.program_id or exists (
-            select 1 from class_session_programs p where p.gym_id = ${gymId}
-              and p.session_id = a.session_id and p.program_id = c.program_id
-          ))
-        group by c.member_id, c.program_id
-      `)) : [];
-      const totals = new Map(counts.map(row => [row.program_id + ':' + row.member_id, row.total]));
-      const batch = new PromotionCriteria();
-      for (const provider of criteria.all()) batch.register(provider.id === 'classes-since-promotion' ? {
-        ...provider, async evaluate(context, value) {
-          const { target } = provider.configSchema.parse(value) as { target: number };
-          const current = totals.get(context.programId + ':' + context.memberId) ?? 0;
-          return { current, target, met: current >= target };
-        },
-      } : provider);
+      const batch = await criteria.prepareBatch(candidates, enabledModules, { scope, gymId,
+        until: now.toISOString(), openMatCountsAsClass: gym.openMatCountsAsClass });
       const ready = new Map<string, { memberId: string; firstName: string; lastName: string; programId: string; rankId: string }>();
       for (const { member, rank, context } of candidates) {
         const evaluated = await batch.evaluate(context, rank.criteria, enabledModules);
@@ -309,7 +281,7 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
       const snapshot = await scope(gymId, async (tx) => {
         const { program, rank } = await references(tx, query.programId, query.rankId);
         const roster = await tx.select({ id: members.id, createdAt: members.createdAt, dateOfBirth: members.dateOfBirth })
-          .from(members).where(and(eq(members.gymId, gymId), isNull(members.anonymizedAt), eq(members.status, 'active')))
+          .from(members).where(activeRoster(gymId))
           .orderBy(asc(members.id));
         const history = await tx.select({ promotion: memberRanks, position: ranks.position }).from(memberRanks)
           .innerJoin(ranks, eq(memberRanks.rankId, ranks.id))
@@ -321,13 +293,15 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
       if (!snapshot.program.active) return page(results, query);
       const latest = new Map<string, (typeof snapshot.history)[number]>();
       for (const entry of snapshot.history) if (!latest.has(entry.memberId)) latest.set(entry.memberId, entry);
-      const candidates = snapshot.roster.filter((member) => canReceive(latest.get(member.id), snapshot.rank));
+      const candidates = snapshot.roster.flatMap(member => {
+        const target = nextPromotion(latest.get(member.id), [snapshot.rank]);
+        return target ? [{ member, subRank: target.subRank }] : [];
+      });
       // An unfiltered page's total is known without evaluating criteria. Ready-only
       // pages must evaluate every candidate before filtering and paginating.
       const selected = query.readyOnly ? candidates : candidates.slice(query.offset, query.offset + query.limit);
-      for (const member of selected) {
+      for (const { member, subRank } of selected) {
         const previous = latest.get(member.id);
-        const subRank = nextSubRank(previous, snapshot.rank);
         const evaluated = await criteria.evaluate({ attendanceScope: { kind: 'gym', gymId }, gymId, memberId: member.id,
           programId: snapshot.program.id, rankId: snapshot.rank.id,
           promotedAt: (previous?.promotedAt ?? member.createdAt).toISOString(), dateOfBirth: member.dateOfBirth, timezone,
@@ -377,9 +351,7 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
         const systemRanks = snapshot.rankRows.filter((rank) => rank.rankSystemId === program.rankSystemId);
         // Inactive programs and programs without a rank system offer no promotion, as in eligibility.
         // Without a rank, the first rank comes next, as eligibility offers it to a member with no history.
-        const target = !program.active || !program.rankSystemId ? null
-          : latest ? nextPromotion(latest, systemRanks)
-          : [...systemRanks].sort((a, b) => a.position - b.position || a.id.localeCompare(b.id)).map((rank) => ({ rank, subRank: 0 }))[0] ?? null;
+        const target = !program.active || !program.rankSystemId ? null : nextPromotion(latest, systemRanks);
         // A program the member holds no rank in, whose system has no ranks yet, has nothing to show.
         if (!latest && !target) continue;
         result.push({ id: program.id, name: program.name, current: latest ? { rankId: latest.rankId, subRank: latest.subRank } : null,

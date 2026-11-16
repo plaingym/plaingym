@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { canStaff, type StaffRole } from '@plaingym/shared';
@@ -20,18 +20,27 @@ import { memberRequest, resizeMemberPhoto } from './api.js';
 import { ErrorMessage, Panel, StatusBadge, text, useDraft, useMemberSave } from './common.js';
 import { MemberForm } from './member-form.js';
 import { HouseholdDetails } from './households.js';
+import { MemberTabActivity } from './tab-activity.js';
+
+function tabFromHash() {
+  try { return decodeURIComponent(window.location.hash.slice(1)) || undefined; } catch { return undefined; }
+}
 
 export function MemberTabs({ memberId, roles, enabledModules, overview, registries = createRegistries() }: { memberId: string; roles: readonly StaffRole[]; enabledModules: ReadonlySet<string>; overview?: ReactNode; registries?: ReturnType<typeof createRegistries> }) {
   const entries = [...(overview ? [{ id: 'memberTabs.profile', labelKey: 'members/members:profile', component: () => null }] : []),
     ...registries.memberTabs.forModules(enabledModules).filter((entry) => entry.enabled && entry.permission.kind === 'staff' && canStaff(roles, entry.permission.capability))];
   // A link may name the tab to open (`#memberTabs.portal-access`), such as the dashboard's confirmation shortlist.
-  const [activeId, setActive] = useState<string | undefined>(() => {
-    try { return decodeURIComponent(window.location.hash.slice(1)) || undefined; } catch { return undefined; }
-  });
+  const [activeId, setActive] = useState<string | undefined>(tabFromHash);
+  useEffect(() => {
+    // Other in-page anchors, such as the skip link, keep the open tab.
+    const followHash = () => { const id = tabFromHash(); if (id?.startsWith('memberTabs.')) setActive(id); };
+    window.addEventListener('hashchange', followHash);
+    return () => window.removeEventListener('hashchange', followHash);
+  }, []);
   const active = entries.some((entry) => entry.id === activeId) ? activeId : entries[0]?.id;
   if (!entries.length) return null;
   return <div className="space-y-4"><div role="tablist" aria-label={text('profileTabs')} className="flex flex-wrap gap-2 border-b border-border pb-3">{entries.map((entry) => <Button type="button" key={entry.id} role="tab" id={'tab-' + entry.id} aria-controls={'panel-' + entry.id} aria-selected={active === entry.id} variant={active === entry.id ? 'default' : 'outline'} onClick={() => setActive(entry.id)}>{t(entry.labelKey)}</Button>)}</div>
-    {entries.map((entry) => { const Component = entry.component; return <section role="tabpanel" id={'panel-' + entry.id} aria-labelledby={'tab-' + entry.id} hidden={active !== entry.id} key={entry.id} className="min-w-0">{entry.id === 'memberTabs.profile' ? overview : <Component memberId={memberId}/>}</section>; })}</div>;
+    {entries.map((entry) => { const Component = entry.component; return <section role="tabpanel" id={'panel-' + entry.id} aria-labelledby={'tab-' + entry.id} hidden={active !== entry.id} key={entry.id} className="min-w-0"><MemberTabActivity value={active === entry.id}>{entry.id === 'memberTabs.profile' ? overview : <Component memberId={memberId}/>}</MemberTabActivity></section>; })}</div>;
 }
 export function MemberProfile({ memberId }: { memberId: string }) {
   const bootstrap = useBootstrap();

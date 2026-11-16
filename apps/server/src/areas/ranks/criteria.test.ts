@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { describe, expect, it } from 'vitest';
-import { uuidv7 } from '@plaingym/db';
+import { describe, expect, it, vi } from 'vitest';
+import { forGym, uuidv7 } from '@plaingym/db';
 import { FakeAttendanceQueries } from '../../core/interfaces/attendance.js';
 import { FakePromotionCriterionProvider, type CriterionContext } from '../../core/interfaces/extensions.js';
 import { TestClock } from '../../core/clock.js';
@@ -12,6 +12,22 @@ const context: CriterionContext = { gymId, memberId, programId, rankId,
   timezone: 'UTC', clock: new TestClock('2026-10-22T12:00:00Z') };
 const criterion = (providerId: string, target: number) => ({ providerId, config: { target } });
 describe('promotion criterion providers', () => {
+  it('uses an optional batch hook by capability and keeps normal fallback providers and validation', async () => {
+    const registry = createPromotionCriteria(new FakeAttendanceQueries());
+    const evaluate = vi.fn(async () => ({ current: 3, target: 2, met: true }));
+    const prepareBatch = vi.fn(async () => evaluate);
+    registry.register({ id: 'custom-batch', moduleId: 'custom', labelKey: 'custom:batch', configSchema: new FakePromotionCriterionProvider('config', 'config').configSchema,
+      evaluate: async () => { throw new Error('Batch hook was lost'); }, prepareBatch });
+    const candidates = [{ context, rank: { criteria: [criterion('custom-batch', 2), criterion('time-at-rank', 21)] } }];
+    const reads = { scope: forGym, gymId, until: context.clock.now().toISOString(), openMatCountsAsClass: false };
+    await expect(registry.prepareBatch(candidates, new Set(), reads)).rejects.toMatchObject({ code: 'conflict' });
+    expect(prepareBatch).not.toHaveBeenCalled();
+    const batch = await registry.prepareBatch(candidates, new Set(['custom']), reads);
+    expect(prepareBatch).toHaveBeenCalledExactlyOnceWith([context], reads);
+    expect(await batch.evaluate(context, candidates[0]!.rank.criteria, new Set(['custom'])))
+      .toMatchObject([{ current: 3, target: 2, met: true }, { current: 21, target: 21, met: true }]);
+    expect(evaluate).toHaveBeenCalledOnce();
+  });
   it('counts only this gym, member, program and promotion window through AttendanceQueries', async () => {
     const attendance = new FakeAttendanceQueries([
       ['2026-09-30T12:00:00Z', gymId, memberId, programId],

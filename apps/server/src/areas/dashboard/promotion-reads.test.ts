@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it } from 'vitest';
-import { uuidv7, type members } from '@plaingym/db';
+import { memberRanks, uuidv7, type members } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { targetCriterionSchema } from '../../core/interfaces/extensions.js';
@@ -84,5 +84,19 @@ it.each([false, true])('matches paginated eligibility for next steps, linked pro
   expect(result.find(row => row.memberId === roster[2]!.id)).toHaveProperty('rankId', second.id);
   expect(result.every(row => row.programId === programs[0]!.id)).toBe(true);
   expect(JSON.stringify(result)).not.toContain(foreign.id);
+  const history = await database.forGym(gymId, tx => tx.select().from(memberRanks));
+  for (const member of roster.filter(member => member.status === 'active')) {
+    const progress = await ranks.memberProgress(gymId, { memberId: member.id, dateOfBirth: member.dateOfBirth,
+      createdAt: member.createdAt, history, attendedProgramIds: programs.map(program => program.id), attendanceScope: { kind: 'gym', gymId } }, modules);
+    for (const program of progress.programs) {
+      if (!program.next) continue;
+      const eligibility = await ranks.eligibility(gymId, { programId: program.id, rankId: program.next.rankId, limit: 100, offset: 0 }, modules);
+      const own = eligibility.data.find(row => row.memberId === member.id)!;
+      expect(own.subRank).toBe(program.next.subRank);
+      expect(progress.criteria.filter(row => row.programId === program.id).map(row => ({ current: row.current, target: row.required, met: row.eligible })))
+        .toEqual(own.criteria.map(({ current, target, met }) => ({ current, target, met })));
+      expect(result.some(row => row.memberId === member.id)).toBe(own.eligible);
+    }
+  }
   await expect(ranks.dashboardEligibility(gymId)).rejects.toMatchObject({ code: 'conflict' });
 });

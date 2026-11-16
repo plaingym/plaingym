@@ -94,6 +94,16 @@ describe('member admin UI', () => {
     const open = (hash: string) => { window.location.hash = hash; cleanup(); view(<MemberTabs memberId={memberId} roles={['front_desk']} enabledModules={new Set()} registries={registries}/>); };
     try {
       open('#memberTabs.two'); expect(screen.getByRole('tab', { name: 'Tags', selected: true })).toBeDefined();
+      window.history.replaceState(null, '', '#memberTabs.one');
+      fireEvent(window, new HashChangeEvent('hashchange'));
+      expect(screen.getByRole('tab', { name: 'Profile', selected: true })).toBeDefined();
+      window.history.replaceState(null, '', '#memberTabs.two');
+      fireEvent(window, new HashChangeEvent('hashchange'));
+      expect(screen.getByRole('tab', { name: 'Tags', selected: true })).toBeDefined();
+      // An in-page anchor that names no tab, such as the skip link, keeps the open tab.
+      window.history.replaceState(null, '', '#main-content');
+      fireEvent(window, new HashChangeEvent('hashchange'));
+      expect(screen.getByRole('tab', { name: 'Tags', selected: true })).toBeDefined();
       open('#memberTabs.missing'); expect(screen.getByRole('tab', { name: 'Profile', selected: true })).toBeDefined();
       open('#%'); expect(screen.getByRole('tab', { name: 'Profile', selected: true })).toBeDefined();
     } finally { window.location.hash = ''; }
