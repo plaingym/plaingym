@@ -40,3 +40,43 @@ for (const viewport of viewports) {
     } finally { await page.unrouteAll({ behavior: 'wait' }); await context.close(); }
   });
 }
+
+for (const viewport of viewports) {
+  test(`health failure time and separate disk volumes at ${viewport.name} width`, async ({ browser, install }, info) => {
+    const [context, page] = await open(browser, install, 'owner', viewport);
+    const now = new Date().toISOString(), oldest = '2026-08-01T00:30:00.000Z';
+    let staging = true;
+    try {
+      const body = await install.clients.owner.json<{ data: { tiles: { id: string }[] } }>('/api/health');
+      await page.route('**/api/health', route => route.fulfill({ json: { data: { ...body.data,
+        tiles: body.data.tiles.map(tile => tile.id === 'failed_jobs' ? {
+          id: 'failed_jobs', status: 'error', checkedAt: now, message: '2 background jobs failed.',
+          details: { failed: 2, pending: 1, running: 0, oldestFailureAt: oldest },
+        } : tile.id === 'disk' ? {
+          id: 'disk', status: staging ? 'warning' : 'healthy', checkedAt: now,
+          message: staging ? 'Free space: uploads 10 GB; backup staging 0.5 GB.' : 'Free space: uploads 10 GB.',
+          details: { uploads: { totalBytes: 20_000_000_000, availableBytes: 10_000_000_000 },
+            backupStaging: staging ? { totalBytes: 8_000_000_000, availableBytes: 500_000_000 } : null },
+        } : { ...tile, status: 'not_configured', checkedAt: now, details: null, message: 'Not set up' }),
+      } } }));
+      await page.goto(gymOrigin + '/admin/health');
+      const jobs = page.locator('section, article').filter({ has: page.getByRole('heading', { name: 'Background jobs', exact: true }) });
+      await expect(jobs.getByText('Problem detected', { exact: true })).toBeVisible();
+      await expect(jobs.locator(`time[datetime="${oldest}"]`)).toBeVisible();
+      const disk = page.locator('section, article').filter({ has: page.getByRole('heading', { name: 'Disk space', exact: true }) });
+      for (const [label, value] of [['Uploads volume capacity', '20 GB'], ['Uploads volume available', '10 GB'],
+        ['Backup staging volume capacity', '8 GB'], ['Backup staging volume available', '500 MB']]) {
+        const row = disk.locator('dl > div').filter({ has: page.getByText(label!, { exact: true }) });
+        await expect(row.locator('dd')).toHaveText(value!);
+      }
+      await expect(page.getByText('[object Object]', { exact: true })).toHaveCount(0);
+      await check(page, info, `${viewport.name}-health-volumes`);
+      staging = false;
+      await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+      await expect(disk.getByText('Backup staging volume capacity', { exact: true })).toHaveCount(0);
+      await expect(disk.getByText('Healthy', { exact: true })).toBeVisible();
+      await expect(jobs.getByText('Problem detected', { exact: true })).toBeVisible();
+      await check(page, info, `${viewport.name}-health-without-staging`);
+    } finally { await page.unrouteAll({ behavior: 'wait' }); await context.close(); }
+  });
+}

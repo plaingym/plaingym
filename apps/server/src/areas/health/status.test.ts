@@ -33,7 +33,7 @@ beforeAll(async () => {
   await factory('gyms', gymA, { smtpConfig: encryptSmtpConfig(key, gymA, { host: 'private.host', port: 587, security: 'starttls', from: 'owner@example.test', username: 'private-user', password: 'private-password' }) });
   await factory('gyms', gymB);
   userId = (await factory('authUser', gymA)).id;
-  await factory('jobs', gymB, { status: 'failed' });
+  await factory('jobs', gymB, { status: 'failed', runAt: new Date('2026-10-20T10:00:00Z') });
 });
 function server(principal: Principal, gymId = gymA) {
   const app = new OpenAPIHono<RequestEnvironment>();
@@ -65,7 +65,7 @@ describe('health permissions and isolation against PostgreSQL', () => {
     const a = healthResponseSchema.parse(await (await server(owner()).request('/api/health?gymId=' + gymB)).json()).data;
     const b = healthResponseSchema.parse(await (await server(owner(gymB), gymB).request('/api/health')).json()).data;
     expect(a.tiles.find((t) => t.id === 'failed_jobs')).toMatchObject({ status: 'healthy', details: { failed: 0 } });
-    expect(b.tiles.find((t) => t.id === 'failed_jobs')).toMatchObject({ status: 'error', details: { failed: 1, oldestFailureAt: null } });
+    expect(b.tiles.find((t) => t.id === 'failed_jobs')).toMatchObject({ status: 'error', details: { failed: 1, oldestFailureAt: '2026-10-20T10:00:00.000Z' } });
     expect(a.tiles.find((t) => t.id === 'smtp')).toMatchObject({ status: 'healthy', message: expect.stringContaining('own SMTP') });
     expect(b.tiles.find((t) => t.id === 'smtp')).toMatchObject({ status: 'not_configured' });
     expect(JSON.stringify(a)).not.toMatch(/private.host|private-user|private-password|v1\./);
@@ -73,6 +73,15 @@ describe('health permissions and isolation against PostgreSQL', () => {
 });
 
 describe('built-in providers', () => {
+  it('keeps an old failure in error and reports the oldest failure independently of pending jobs', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId);
+    expect(await tile('failed_jobs', gymId)).toMatchObject({ status: 'healthy', details: { failed: 0, oldestFailureAt: null } });
+    await factory('jobs', gymId, { status: 'failed', runAt: new Date('2026-09-01T00:00:00Z') });
+    expect(await tile('failed_jobs', gymId)).toMatchObject({ status: 'error', details: { failed: 1, oldestFailureAt: '2026-09-01T00:00:00.000Z' } });
+    await factory('jobs', gymId, { status: 'failed', runAt: new Date('2026-08-01T00:00:00Z') });
+    await factory('jobs', gymId, { status: 'pending', runAt: new Date('2026-07-01T00:00:00Z') });
+    expect(await tile('failed_jobs', gymId)).toMatchObject({ status: 'error', details: { failed: 2, pending: 1, oldestFailureAt: '2026-08-01T00:00:00.000Z' } });
+  });
   it('names unreadable SMTP settings, parses the key once and logs once across polls', async () => {
     const gymId = uuidv7(); await factory('gyms', gymId, { smtpConfig: 'corrupt-smtp' });
     const lines: string[] = [], previous = setLogSink(line => lines.push(line));
@@ -161,8 +170,14 @@ describe('built-in providers', () => {
     // UPDATE_CHECK=off: reading every tile of a single-gym install would otherwise ask GitHub for the latest release.
     const single = { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' };
     const check = vi.fn(async (path: string) => ({ blocks: 20_000_000, bsize: 1024, bavail: path === '/staging' ? 500_000 : 10_000_000 }));
-    expect(await tile('disk', gymA, { env: single })).toMatchObject({ status: 'healthy', details: { availableBytes: 10_240_000_000 } });
-    expect(await tile('disk', gymA, { env: single, disk: check })).toMatchObject({ status: 'warning', details: { availableBytes: 512_000_000 }, message: expect.stringContaining('staging 0.51 GB') });
+    expect(await tile('disk', gymA, { env: single })).toMatchObject({ status: 'healthy', details: {
+      uploads: { totalBytes: 20_480_000_000, availableBytes: 10_240_000_000 },
+      backupStaging: { totalBytes: 20_480_000_000, availableBytes: 10_240_000_000 },
+    } });
+    expect(await tile('disk', gymA, { env: single, disk: check })).toMatchObject({ status: 'warning', details: {
+      uploads: { totalBytes: 20_480_000_000, availableBytes: 10_240_000_000 },
+      backupStaging: { totalBytes: 20_480_000_000, availableBytes: 512_000_000 },
+    }, message: expect.stringContaining('staging 0.51 GB') });
     expect(check.mock.calls.map(([path]) => path).sort()).toEqual(['/staging', '/uploads']);
     expect(await tile('disk', gymA, { env: single, disk: async () => ({ blocks: 1000, bsize: 1024, bavail: 0 }) })).toMatchObject({ status: 'error' });
     const result = await createHealthService(createStatusProviders({ env: single, disk: async () => { throw new Error('/private/path secret'); } })).get(context());
@@ -173,7 +188,7 @@ describe('built-in providers', () => {
     const multi = { ...env, BACKUP_STAGING_DIR: undefined };
     const check = vi.fn(async (_path: string) => ({ blocks: 20_000_000, bsize: 1024, bavail: 500_000 }));
     const result = await tile('disk', gymA, { env: multi, disk: check });
-    expect(result).toMatchObject({ status: 'warning', details: { availableBytes: 512_000_000 }, message: 'Free space: uploads 0.51 GB.' });
+    expect(result).toMatchObject({ status: 'warning', details: { uploads: { totalBytes: 20_480_000_000, availableBytes: 512_000_000 }, backupStaging: null }, message: 'Free space: uploads 0.51 GB.' });
     expect(check.mock.calls.map(([path]) => path)).toEqual(['/uploads']);
     // A nearly full disk still shows its figure rather than rounding to 0 GB.
     expect(await tile('disk', gymA, { env: multi, disk: async () => ({ blocks: 20_000_000, bsize: 1024, bavail: 4_000 }) }))
@@ -185,7 +200,17 @@ describe('built-in providers', () => {
     await tile('disk', gymA, { env, disk: handSet });
     expect(handSet.mock.calls.map(([path]) => path)).toEqual(['/uploads']);
     // A single-gym install without staging reports the uploads volume alone too.
-    expect(await tile('disk', gymA, { env: { ...multi, TENANCY: 'single' } })).toMatchObject({ status: 'healthy', message: 'Free space: uploads 10.24 GB.' });
+    expect(await tile('disk', gymA, { env: { ...multi, TENANCY: 'single' } })).toMatchObject({ status: 'healthy', details: { backupStaging: null }, message: 'Free space: uploads 10.24 GB.' });
+  });
+  it('never reports healthy or fabricates free space when a configured staging directory is missing', async () => {
+    const check = vi.fn(async (path: string) => {
+      if (path === '/staging') throw Object.assign(new Error('ENOENT /private/staging'), { code: 'ENOENT' });
+      return { blocks: 20_000_000, bsize: 1024, bavail: 10_000_000 };
+    });
+    const result = await createHealthService(createStatusProviders({ env: { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' }, disk: check })).get(context());
+    expect(result.data.tiles.find(t => t.id === 'disk')).toMatchObject({ status: 'unavailable', details: null });
+    expect(check.mock.calls.map(([path]) => path).sort()).toEqual(['/staging', '/uploads']);
+    expect(JSON.stringify(result)).not.toContain('/private/staging');
   });
   it('reports missing disk paths and invalid disk statistics safely', async () => {
     expect(await tile('disk', gymA, { env: { ...env, UPLOADS_DIR: '' } })).toMatchObject({ status: 'not_configured' });
@@ -200,7 +225,7 @@ describe('built-in providers', () => {
 const examples: Record<HealthTile['id'], NonNullable<HealthTile['details']>> = {
   last_backup: { latestRestorableAt: clock.now().toISOString(), ageSeconds: 0, overdue: false, noneUnderCurrentKey: false, pruningHeld: false, retainedBytes: 1, retentionBudgetBytes: 1000, pruningStopped: false, keyReminder: true },
   failed_jobs: { failed: 0, pending: 0, running: 0, oldestFailureAt: null }, smtp: { configured: true, lastTestAt: null },
-  disk: { totalBytes: 100, availableBytes: 50 }, version: { version: '0.1.0', sourceUrl: 'https://example.test/source' },
+  disk: { uploads: { totalBytes: 100, availableBytes: 50 }, backupStaging: null }, version: { version: '0.1.0', sourceUrl: 'https://example.test/source' },
   stripe_webhooks: { lastReceivedAt: null, lastProcessedAt: null, pending: 0, failed: 0 },
   last_charge_run: { lastStartedAt: null, lastCompletedAt: null, result: 'succeeded', invoicesProcessed: 1, failures: 0 },
   automatic_updates: { enabled: true, lastAttemptAt: null, result: 'up_to_date', fromVersion: null, toVersion: null },

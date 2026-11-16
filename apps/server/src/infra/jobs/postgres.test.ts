@@ -327,7 +327,7 @@ describe('Postgres enqueue and execution', () => {
     expect(await q.enqueueSystem('backup', {}, { timezone: 'UTC', idempotencyKey: 'once' })).toEqual(a);
     expect(await q.runNext()).toBe(true); expect(called).toBe(true);
     expect(await new PostgresJobStatsQuery(database).get(gymA)).toEqual({
-      pending: 0, running: 0, succeeded: 0, failed: 0, oldestPendingAt: null,
+      pending: 0, running: 0, succeeded: 0, failed: 0, oldestPendingAt: null, oldestFailureAt: null,
     });
     expect(await database.forGym(gymA, (tx) => tx.select().from(jobs))).toEqual([]);
   });
@@ -519,7 +519,7 @@ describe('timezone scheduling and health statistics', () => {
     expect([...cronOccurrences('0 0 * * *', 'UTC', new Date('2026-01-01Z'), new Date('2026-01-03Z'))])
       .toEqual([new Date('2026-01-02Z'), new Date('2026-01-03Z')]);
   });
-  it('returns only scoped counts and oldest pending time without payloads or errors', async () => {
+  it('returns only scoped counts and oldest pending and failure times without payloads or errors', async () => {
     const q = queue();
     await q.enqueue('a', { private: 'payload' }, options);
     clock.advance(1000); await q.enqueue('b', {}, options);
@@ -532,10 +532,32 @@ describe('timezone scheduling and health statistics', () => {
     await q.enqueueSystem('install', {}, { timezone: 'UTC' });
     const stats = new PostgresJobStatsQuery(database);
     expect(await stats.get(gymA)).toEqual({ pending: 2, running: 0, succeeded: 1, failed: 1,
-      oldestPendingAt: '2026-01-01T00:00:00.000Z' });
+      oldestPendingAt: '2026-01-01T00:00:00.000Z', oldestFailureAt: '2026-01-01T00:00:01.000Z' });
     expect(await stats.get(gymB)).toMatchObject({ pending: 1, succeeded: 0, failed: 0 });
-    expect(await stats.get(uuidv7())).toEqual({ pending: 0, running: 0, succeeded: 0, failed: 0, oldestPendingAt: null });
+    expect(await stats.get(uuidv7())).toEqual({ pending: 0, running: 0, succeeded: 0, failed: 0, oldestPendingAt: null, oldestFailureAt: null });
     expect((await database.forGym(gymA, (tx) => tx.select().from(jobs))).every((r) => r.gymId === gymA)).toBe(true);
+  });
+  it('finds the earliest retained final failure for the gym and clears it when none remain', async () => {
+    const q = queue();
+    q.handle('failure', async () => { clock.advance(1000); throw new Error('private failure'); });
+    const stats = new PostgresJobStatsQuery(database);
+    const failed: string[] = [];
+    for (let n = 0; n < 3; n++) {
+      failed.push((await q.enqueue('failure', {}, { ...options, maxAttempts: 1, idempotencyKey: String(n) })).jobId);
+      await q.runNext();
+    }
+    await q.enqueue('pending', {}, { ...options, runAt: new Date('2025-01-01Z') });
+    await database.forSystem(async (tx) => {
+      await tx.insert(jobs).values([
+        { gymId: gymB, name: 'foreign', status: 'failed', runAt: new Date('2024-01-01Z'), idempotencyKey: 'foreign' },
+        { gymId: null, name: 'install', status: 'failed', runAt: new Date('2023-01-01Z'), idempotencyKey: 'install' },
+      ]);
+    });
+    expect(await stats.get(gymA)).toMatchObject({ failed: 3, oldestFailureAt: '2026-01-01T00:00:01.000Z' });
+    await database.forSystem(tx => tx.delete(jobs).where(eq(jobs.id, failed[0]!)));
+    expect(await stats.get(gymA)).toMatchObject({ failed: 2, oldestFailureAt: '2026-01-01T00:00:02.000Z' });
+    await database.forSystem(tx => tx.delete(jobs).where(inArray(jobs.id, failed)));
+    expect(await stats.get(gymA)).toMatchObject({ failed: 0, oldestFailureAt: null });
   });
 });
 

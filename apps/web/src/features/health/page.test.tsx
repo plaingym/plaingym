@@ -84,12 +84,46 @@ const report = (n: number, day: string, failures: { number: number | null; cause
 const failuresRegion = () => screen.findByRole('region', { name: 'Failed charges' });
 const dismissed = (...ids: string[]) => ok({ data: { dismissed: ids } });
 describe('disk sizes', () => {
+  it('shows each volume with its own figures and hides unconfigured staging', () => {
+    const tile = (backupStaging: { totalBytes: number; availableBytes: number } | null) => healthTileSchema.parse({
+      id: 'disk', status: 'warning', checkedAt, message: 'Free space checked.',
+      details: { uploads: { totalBytes: 20_000_000_000, availableBytes: 10_000_000_000 }, backupStaging },
+    });
+    const view = render(<HealthTiles tiles={[tile({ totalBytes: 8_000_000_000, availableBytes: 500_000_000 })]}/>);
+    for (const [label, value] of [['Uploads volume capacity', '20 GB'], ['Uploads volume available', '10 GB'],
+      ['Backup staging volume capacity', '8 GB'], ['Backup staging volume available', '500 MB']]) {
+      expect(screen.getByText(label!).parentElement!.querySelector('dd')!.textContent).toBe(value);
+    }
+    expect(document.body.textContent).not.toContain('[object Object]');
+    expect(document.body.textContent).not.toContain('health/status:');
+    view.rerender(<HealthTiles tiles={[tile(null)]}/>);
+    expect(screen.queryByText('Backup staging volume capacity')).toBeNull();
+    expect(screen.queryByText('Unknown')).toBeNull();
+  });
   it('moves to the next unit instead of showing 1,000 of one', () => {
     expect(bytesLabel(999)).toBe('999 B');
     expect(bytesLabel(999_950)).toBe('1 MB');
     expect(bytesLabel(999_600_000)).toBe('1 GB');
     expect(bytesLabel(12_345_678_901)).toBe('12.3 GB');
   });
+});
+
+it('shows an old failed-job timestamp in the gym timezone while keeping the problem status', () => {
+  const oldest = '2026-08-01T00:30:00Z';
+  render(<HealthTiles timezone="America/Vancouver" tiles={[healthTileSchema.parse({ id: 'failed_jobs', status: 'error', checkedAt,
+    message: '2 background jobs failed.', details: { failed: 2, pending: 1, running: 0, oldestFailureAt: oldest } })]}/>);
+  expect(screen.getByText('Problem detected')).toBeDefined();
+  const value = screen.getByText('Oldest failure').parentElement!.querySelector('time')!;
+  expect(value.getAttribute('datetime')).toBe(oldest);
+  expect(value.textContent).toContain('Jul 31, 2026');
+  expect(screen.queryByText('Unknown')).toBeNull();
+});
+it('leaves out the oldest failure row when no failed jobs remain', () => {
+  render(<HealthTiles tiles={[healthTileSchema.parse({ id: 'failed_jobs', status: 'healthy', checkedAt,
+    message: 'No background jobs failed.', details: { failed: 0, pending: 1, running: 0, oldestFailureAt: null } })]}/>);
+  expect(screen.getByText('Healthy')).toBeDefined();
+  expect(screen.queryByText('Oldest failure')).toBeNull();
+  expect(screen.queryByText('Unknown')).toBeNull();
 });
 describe('charge failure reports on the charge-run tile', () => {
   const reports = () => [report(1, '2026-10-24', [{ number: 41, cause: 'needs_reconciliation' }, { number: null, cause: 'unexpected' }]),

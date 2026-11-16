@@ -51,8 +51,7 @@ export function createStatusProviders(options: StatusOptions = {}) {
       const stats = await jobs.get(context.gymId);
       return { id: 'failed_jobs', status: stats.failed ? 'error' : 'healthy', checkedAt: context.clock.now().toISOString(),
         message: statusMessage(stats.failed ? 'jobsFailed' : 'jobsHealthy', { failed: stats.failed }),
-        // TODO: add oldestFailureAt to JobStatsQuery. Never substitute oldestPendingAt.
-        details: { failed: stats.failed, pending: stats.pending, running: stats.running, oldestFailureAt: null } };
+        details: { failed: stats.failed, pending: stats.pending, running: stats.running, oldestFailureAt: stats.oldestFailureAt } };
     }),
     healthProvider('smtp', async (context) => {
       if (env.DEMO_MODE === 'true') return { id: 'smtp', status: 'healthy', checkedAt: context.clock.now().toISOString(),
@@ -92,9 +91,8 @@ export function createStatusProviders(options: StatusOptions = {}) {
       }));
       const critical = (bytes: number) => bytes < 128 * 1024 * 1024;
       const low = (volume: typeof volumes[number]) => volume.availableBytes / volume.totalBytes < 0.1 || volume.availableBytes < 1024 * 1024 * 1024;
-      // TODO: expose separate volumes in the contract. Details carry the volume with least available space;
-      // the message includes each configured directory, without exposing filesystem paths.
-      const details = [...volumes].sort((a, b) => a.availableBytes - b.availableBytes)[0]!;
+      // Keep each volume's capacity and free space together, even when both directories share a filesystem.
+      const details = { uploads: volumes[0]!, backupStaging: volumes[1] ?? null };
       return { id: 'disk', checkedAt: context.clock.now().toISOString(), details,
         status: volumes.some((v) => critical(v.availableBytes)) ? 'error' : volumes.some(low) ? 'warning' : 'healthy',
         message: statusMessage(volumes[1] ? 'diskFree' : 'diskFreeUploads', {

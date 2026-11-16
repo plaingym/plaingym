@@ -31,8 +31,19 @@ describe('Operational read interfaces', () => {
       { gymId: null, status: 'failed', runAt: '2026-10-21T12:00:00Z' },
       { gymId: otherGym, status: 'failed', runAt: '2026-10-21T12:00:00Z' },
     ]);
-    expect(await fake.get(gym)).toEqual({ pending: 2, running: 1, succeeded: 0, failed: 1, oldestPendingAt: '2026-10-21T13:00:00+02:00' });
-    expect(await new FakeJobStatsQuery().get(gym)).toEqual({ pending: 0, running: 0, succeeded: 0, failed: 0, oldestPendingAt: null });
+    expect(await fake.get(gym)).toEqual({ pending: 2, running: 1, succeeded: 0, failed: 1, oldestPendingAt: '2026-10-21T13:00:00+02:00', oldestFailureAt: '2026-10-21T12:00:00Z' });
+    expect(await new FakeJobStatsQuery().get(gym)).toEqual({ pending: 0, running: 0, succeeded: 0, failed: 0, oldestPendingAt: null, oldestFailureAt: null });
+  });
+  it('chooses the oldest failed instant across offsets, independently of earlier pending and foreign jobs', async () => {
+    const fake = new FakeJobStatsQuery([
+      { gymId: gym, status: 'failed', runAt: '2026-10-21T11:30:00Z' },
+      { gymId: gym, status: 'failed', runAt: '2026-10-21T13:00:00+02:00' },
+      { gymId: gym, status: 'failed', runAt: '2026-10-21T10:00:00-02:00' },
+      { gymId: gym, status: 'pending', runAt: '2026-10-20T00:00:00Z' },
+      { gymId: otherGym, status: 'failed', runAt: '2026-10-19T00:00:00Z' },
+      { gymId: null, status: 'failed', runAt: '2026-10-18T00:00:00Z' },
+    ]);
+    expect(await fake.get(gym)).toMatchObject({ failed: 3, oldestFailureAt: '2026-10-21T13:00:00+02:00' });
   });
   it('aggregates only the current gym webhook timestamps and mutually exclusive counts', async () => {
     const fake = new FakeWebhookHealthQuery([

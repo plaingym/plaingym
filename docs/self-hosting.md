@@ -349,7 +349,7 @@ email from **Settings → Website**, even with the website off. With the website
 | :--- | :--- |
 | App logs | `sudo docker compose logs app` (one JSON object per line, rotated by Docker) |
 | Access log | Off by default; `CADDY_ACCESS_LOG=stderr` in `.env` turns it on (`deploy/README.md`, "Access log") |
-| Health | The admin's **Health** page: last backup, email, Stripe webhooks, charge runs, disk space, failed jobs, the running version, the last automatic update, available updates and Google sign-in (which names a malformed `GOOGLE_*` variable) |
+| Health | The admin's **Health** page: last backup, email, Stripe webhooks, charge runs, disk capacity and free space separately for uploads and backup staging, failed jobs with their oldest failure time, the running version, the last automatic update, available updates and Google sign-in (which names a malformed `GOOGLE_*` variable) |
 | Automatic updates | On by default; owners switch them in **Settings → Updates**. The timer's log: `journalctl -u plaingym-update` |
 | Restart | `sudo docker compose up -d` in `/opt/plaingym` |
 | Replay a Stripe event | `sudo docker compose exec -T app gym-app replay --gym <gym-id> <event-id>` |

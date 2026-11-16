@@ -8,6 +8,8 @@ export interface JobStats {
   readonly succeeded: number;
   readonly failed: number;
   readonly oldestPendingAt: IsoInstant | null;
+  /** Final failure time of the oldest retained failed job, or null when none remain. */
+  readonly oldestFailureAt: IsoInstant | null;
 }
 /** Implemented by the jobs module; callers never read jobs rows. */
 export interface JobStatsQuery { get(gymId: Id): Promise<JobStats>; }
@@ -21,13 +23,15 @@ export class FakeJobStatsQuery implements JobStatsQuery {
   constructor(jobs: readonly JobStatsFixture[] = []) { this.#jobs = structuredClone(jobs); }
   async get(gymId: Id): Promise<JobStats> {
     const result: { -readonly [K in keyof JobStats]: JobStats[K] } = {
-      pending: 0, running: 0, succeeded: 0, failed: 0, oldestPendingAt: null,
+      pending: 0, running: 0, succeeded: 0, failed: 0, oldestPendingAt: null, oldestFailureAt: null,
     };
     for (const job of this.#jobs) {
       if (job.gymId !== gymId) continue;
       result[job.status]++;
       if (job.status === 'pending' && (result.oldestPendingAt === null || instant(job.runAt) < instant(result.oldestPendingAt)))
         result.oldestPendingAt = job.runAt;
+      if (job.status === 'failed' && (result.oldestFailureAt === null || instant(job.runAt) < instant(result.oldestFailureAt)))
+        result.oldestFailureAt = job.runAt;
     }
     return result;
   }

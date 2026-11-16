@@ -24,9 +24,15 @@ export const failedJobsHealthDetailsSchema = z.strictObject({
   failed: count, pending: count, running: count, oldestFailureAt: instantSchema.nullable(),
 });
 export const smtpHealthDetailsSchema = z.strictObject({ configured: z.boolean(), lastTestAt: instantSchema.nullable() });
-export const diskHealthDetailsSchema = z.strictObject({
+const diskVolumeDetailsSchema = z.strictObject({
   totalBytes: count.positive(), availableBytes: count,
 }).refine((value) => value.availableBytes <= value.totalBytes, 'Available space exceeds total space');
+/** Filesystem capacity, not directory sizes. Volumes may share a filesystem; never add their figures. */
+export const diskHealthDetailsSchema = z.strictObject({
+  uploads: diskVolumeDetailsSchema,
+  /** Null when this install has no backup staging directory configured. */
+  backupStaging: diskVolumeDetailsSchema.nullable(),
+});
 export const versionHealthDetailsSchema = z.strictObject({ version: z.string().min(1), sourceUrl: z.url({ protocol: /^https?$/ }) });
 export const webhookHealthDetailsSchema = z.strictObject({
   lastReceivedAt: instantSchema.nullable(), lastProcessedAt: instantSchema.nullable(), pending: count, failed: count,

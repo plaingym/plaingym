@@ -11,7 +11,7 @@ const details = {
     retentionBudgetBytes: 1000, pruningStopped: false, keyReminder: true },
   failed_jobs: { failed: 0, pending: 2, running: 1, oldestFailureAt: null },
   smtp: { configured: true, lastTestAt: now },
-  disk: { totalBytes: 1000, availableBytes: 800 },
+  disk: { uploads: { totalBytes: 1000, availableBytes: 800 }, backupStaging: null },
   version: { version: '0.1.0', sourceUrl: 'https://example.com/source' },
   stripe_webhooks: { lastReceivedAt: now, lastProcessedAt: now, pending: 0, failed: 0 },
   last_charge_run: { lastStartedAt: now, lastCompletedAt: now, result: 'succeeded', invoicesProcessed: 1, failures: 0 },
@@ -39,13 +39,26 @@ describe('health contracts', () => {
   });
   it('rejects details for the wrong provider, impossible disk statistics, or secret configuration', () => {
     expect(healthTileSchema.safeParse({ ...tiles[0], details: details.smtp }).success).toBe(false);
-    expect(healthTileSchema.safeParse({ ...tiles[3], details: { totalBytes: 100, availableBytes: 101 } }).success).toBe(false);
+    expect(healthTileSchema.safeParse({ ...tiles[3], details: { uploads: { totalBytes: 100, availableBytes: 101 }, backupStaging: null } }).success).toBe(false);
     expect(healthTileSchema.safeParse({ ...tiles[1], details: { ...details.failed_jobs, failed: -1 } }).success).toBe(false);
     expect(healthTileSchema.safeParse({ ...tiles[2], details: { ...details.smtp, password: 'hidden' } }).success).toBe(false);
     expect(healthTileSchema.safeParse({ ...tiles[5], details: { ...details.stripe_webhooks, payload: {} } }).success).toBe(false);
   });
   it('limits the system health page to managers', () => {
     for (const role of staffRoles) expect(canStaff([role], healthContracts.get.permission.capability)).toBe(['owner', 'admin'].includes(role));
+  });
+  it('keeps disk volumes separate, allows unconfigured staging, and validates both volumes', () => {
+    const disk = (uploads: unknown, backupStaging: unknown) => healthTileSchema.safeParse({ ...tiles[3], details: { uploads, backupStaging } }).success;
+    const volume = { totalBytes: 1000, availableBytes: 800 };
+    expect(disk(volume, null)).toBe(true);
+    expect(disk(volume, { totalBytes: 2000, availableBytes: 500 })).toBe(true);
+    for (const invalid of [{ totalBytes: 0, availableBytes: 0 }, { totalBytes: 1000, availableBytes: -1 },
+      { totalBytes: 1000, availableBytes: 1001 }, { ...volume, path: '/private' }]) {
+      expect(disk(invalid, null)).toBe(false);
+      expect(disk(volume, invalid)).toBe(false);
+    }
+    expect(disk(volume, undefined)).toBe(false);
+    expect(disk(null, volume)).toBe(false);
   });
   it('limits the charge failure reports and their dismissal to managers, like the page that shows them', () => {
     for (const contract of [healthContracts.listChargeFailures, healthContracts.dismissChargeFailures]) {

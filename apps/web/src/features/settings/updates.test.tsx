@@ -95,9 +95,9 @@ describe('Settings → Updates', () => {
   });
   it('shows disk sizes with units, not byte counts', () => {
     const tile = healthTileSchema.parse({ id: 'disk', status: 'healthy', checkedAt: '2026-11-12T00:30:00Z', message: 'Free space.',
-      details: { totalBytes: 269_427_478_528, availableBytes: 999 } });
+      details: { uploads: { totalBytes: 269_427_478_528, availableBytes: 999 }, backupStaging: null } });
     render(<HealthTiles tiles={[tile]}/>);
-    expect(screen.getByText('Disk capacity')).toBeDefined();
+    expect(screen.getByText('Uploads volume capacity')).toBeDefined();
     expect(screen.getByText('269 GB')).toBeDefined();
     expect(screen.getByText('999 B')).toBeDefined();
     expect(document.body.textContent).not.toContain('269,427,478,528');

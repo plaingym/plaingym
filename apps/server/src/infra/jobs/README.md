@@ -134,6 +134,11 @@ more than 90 days ago, for every gym and the install. It never deletes pending o
 jobs, jobs named in `keep` (their idempotency keys must stay unique for good), or
 a schedule's cron occurrence rows before that gym has a cursor for it, since those
 rows are then still its watermark. Job statistics count only retained rows.
+`PostgresJobStatsQuery` reports the oldest pending scheduled time and the oldest
+final failure time separately, scoped to the requested gym and excluding install
+jobs. Each time is null when no matching rows remain. Final failures use `runAt`,
+which the worker sets when the final attempt finishes or its expired lease is
+marked failed; pending schedules never stand in for failure times.
 Producers must not rely on a pruned job's key: a later enqueue with that key
 creates a new job. Today's producers dedupe through durable state of their own
 (signed-link and campaign audits, `email_deliveries`, stored webhook events) or

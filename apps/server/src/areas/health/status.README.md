@@ -102,9 +102,19 @@ working stored client the Google tile reports that client in use and warns about
 the ignored variables; without one it reports an error. Multi-gym owners see only
 their effective Google configuration; the malformed variables stay in startup logs.
 
-TODO: add an oldest failure timestamp to `JobStatsQuery`; the response uses null rather
-than the pending-job timestamp. Disk details hold the volume with least free space; the
-message reports both uploads and staging (the uploads volume alone when `BACKUP_STAGING_DIR` isn't set, as in multi-gym mode). TODO: allow separate volume details. Disk warning
+`JobStatsQuery.oldestFailureAt` is the oldest final failure time among this gym's
+retained failed jobs, or null when none remain. The worker records final completion
+in `runAt`; pending jobs, install jobs and other gyms never affect this time.
+The tile stays in error while any failed jobs remain, however old the failure is;
+with none, the page leaves out the oldest failure row rather than showing it as unknown.
+Disk details report `uploads` and `backupStaging` separately, each with filesystem
+`totalBytes` and `availableBytes`. These are volume figures, not directory sizes:
+directories on the same filesystem show the same capacity and must not be added.
+`backupStaging` is null when no staging directory is configured, including multi-gym
+mode, which ignores `BACKUP_STAGING_DIR`. The page omits staging rows in that case.
+A configured directory that is missing or unreadable makes the check unavailable;
+it never substitutes zero or reports a healthy upload volume as the whole check.
+Neither filesystem paths nor job payloads or errors are returned. Disk warning
 means less than 10% or 1 GiB available; error means less than the backup reserve (128 MiB).
 The available-update tile and `GET /api/health/update` (the admin banner's own route, also
 `settings.manage`) come from `updates.ts`: one process-wide `ReleaseCheck` per repository reads

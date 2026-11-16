@@ -473,10 +473,12 @@ export class PostgresJobStatsQuery implements JobStatsQuery {
         succeeded: sql<number>`count(*) filter (where ${jobs.status} = 'succeeded')::int`,
         failed: sql<number>`count(*) filter (where ${jobs.status} = 'failed')::int`,
         oldest: sql<string | null>`min(${jobs.runAt}) filter (where ${jobs.status} = 'pending')`,
+        oldestFailure: sql<string | null>`min(${jobs.runAt}) filter (where ${jobs.status} = 'failed')`,
       }).from(jobs).where(eq(jobs.gymId, gymId));
       if (!row) throw new Error('Missing job statistics');
       return { pending: row.pending, running: row.running, succeeded: row.succeeded, failed: row.failed,
-        oldestPendingAt: row.oldest === null ? null : instantSchema.parse(new Date(row.oldest).toISOString()) };
+        oldestPendingAt: row.oldest === null ? null : instantSchema.parse(new Date(row.oldest).toISOString()),
+        oldestFailureAt: row.oldestFailure === null ? null : instantSchema.parse(new Date(row.oldestFailure).toISOString()) };
     });
   }
 }

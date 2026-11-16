@@ -39,9 +39,19 @@ function detailValue(key: string, value: unknown, timezone?: string) {
  */
 function detailRows(tile: HealthTile): [key: string, label: string, value: unknown][] {
   if (!tile.details) return [];
+  if (tile.id === 'disk') return [
+    ['uploadsTotalBytes', label('field.uploadsTotalBytes'), tile.details.uploads.totalBytes],
+    ['uploadsAvailableBytes', label('field.uploadsAvailableBytes'), tile.details.uploads.availableBytes],
+    ...(tile.details.backupStaging ? [
+      ['backupStagingTotalBytes', label('field.backupStagingTotalBytes'), tile.details.backupStaging.totalBytes],
+      ['backupStagingAvailableBytes', label('field.backupStagingAvailableBytes'), tile.details.backupStaging.availableBytes],
+    ] as [string, string, unknown][] : []),
+  ];
   const versions = tile.id === 'automatic_updates' ? tile.details : null;
+  // A null oldest failure means no failed jobs remain, not an unknown time, so the row is left out.
   return Object.entries(tile.details).filter(([key, value]) => key !== 'keyReminder' && key !== 'noneUnderCurrentKey' && key !== 'pruningHeld'
-    && !(versions && (key === 'fromVersion' || key === 'toVersion') && value === null))
+    && !(versions && (key === 'fromVersion' || key === 'toVersion') && value === null)
+    && !(tile.id === 'failed_jobs' && key === 'oldestFailureAt' && value === null))
     .map(([key, value]) => [key, label(versions && (key === 'fromVersion' || key === 'toVersion') ? `field.${key}.${versions.result}` : 'field.' + key),
       tile.id === 'last_backup' && key === 'pruningStopped' ? tile.details!.pruningStopped || tile.details!.pruningHeld : value]);
 }
