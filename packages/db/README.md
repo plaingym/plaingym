@@ -316,6 +316,12 @@ excludes medical notes, check-in hashes and household PIN hashes and includes th
 revision. Emergency contacts are included for logged-in household users only.
 The caller supplies `userId` and `gymId` from authenticated request context.
 
+`invoiceRefundedAmount(invoiceId)` sums successful refunds through their payments
+and the granted invoice. It returns zero for no successful refunds or an invoice
+outside the grant, excludes pending, failed and canceled refunds, and exposes no
+processor IDs or refund reasons. Adult non-payers are refused. A pay-invoice link
+can read only its one invoice's total, including when the household has other invoices.
+
 `classCredits(now)` returns only visible members with a positive usable balance:
 member ID, first and last name, balance and soonest expiry. It sums each lot's
 remainder after every movement, excluding exhausted lots and lots expiring at or

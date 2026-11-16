@@ -99,7 +99,7 @@ describe('signed-link household grants', () => {
         }
       } else {
         for (const query of [() => queries.invoicePage({}, { limit: 10, offset: 0 }), () => queries.invoice(data.invoice.id),
-          () => queries.invoiceLines(data.invoice.id)]) await expect(query()).rejects.toThrow('Payer access required');
+          () => queries.invoiceLines(data.invoice.id), () => queries.invoiceRefundedAmount(data.invoice.id)]) await expect(query()).rejects.toThrow('Payer access required');
       }
       if (purpose === 'update_card' || purpose === 'onboarding') {
         expect(await queries.paymentMethods()).toEqual([{

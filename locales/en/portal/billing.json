@@ -47,5 +47,6 @@
   "receiptTitle": "Receipt for invoice #{number}",
   "receiptPaid": "Paid on {date}",
   "receiptTotal": "Total: {amount}",
+  "receiptRefunded": "Refunded: {amount}",
   "receiptFooter": "{gym} · Invoice #{number}"
 }

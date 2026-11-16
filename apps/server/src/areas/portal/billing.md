@@ -9,7 +9,7 @@ name the current household and use `Cache-Control: no-store`.
 | `GET /api/portal/credits` | `profile.read`: payers see household members with usable credits; adult non-payers see only their own. Returns member ID, first and last name, positive balance and soonest expiry, with no ledger, sale, invoice or money fields. |
 | `GET /api/portal/invoices` | `billing.manage` (payers): issued invoices, filtered and paged; no drafts. |
 | `GET /api/portal/invoices/{invoiceId}` | Payers: one household invoice and its lines. |
-| `GET /api/portal/invoices/{invoiceId}/receipt` | Payers: a short-lived receipt download for a paid invoice. |
+| `GET /api/portal/invoices/{invoiceId}/receipt` | Payers: a five-minute PDF download for a paid, partially refunded or refunded invoice, including its successful refunded amount. Works in demo sandboxes. |
 | `GET /api/portal/payment-methods` | Payers: masked, current saved cards. |
 
 Credit balances sum only positive lot remainders with no expiry or an expiry
@@ -26,3 +26,9 @@ Payers can start Stripe Checkout with
 household header and the existing signed-link Checkout runtime configuration.
 Credit reads require no additional runtime wiring and offer no purchase or
 adjustment action.
+
+Refund totals use the household invoice grant and sum only successful refunds
+across that invoice's payments. Other invoices and households cannot contribute.
+Receipt money and dates use English formatting; dates use the gym's timezone.
+Demo receipts use a dedicated generated-PDF path, capped at 1 MiB, and reuse a
+content-keyed copy until sandbox cleanup. A refund changes the content key.

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, count, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, min, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, min, ne, or, sql, sum, type SQL } from 'drizzle-orm';
 import { alias, type AnyPgColumn, type PgTable } from 'drizzle-orm/pg-core';
 import type { Transaction } from './client.js';
 import { writeAudit } from './audit.js';
 import {
   attendances, classBookings, classSessions, classSessionPrograms, classSessionTags, householdUsers, households, invoiceLineItems, invoices,
-  announcementOptOuts, classCreditEntries, memberRanks, members, memberships, paymentMethods, signedLinks, waiverSignatures, waiverTemplates,
+  announcementOptOuts, classCreditEntries, memberRanks, members, memberships, paymentMethods, payments, refunds, signedLinks, waiverSignatures, waiverTemplates,
 } from './schema/index.js';
 
 /** User identity or a verified link ID comes from request context. now is supplied by the request clock. */
@@ -360,6 +360,15 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
         eq(invoiceLineItems.gymId, grant.gymId), eq(invoiceLineItems.householdId, grant.householdId),
         resourcePredicate(invoiceLineItems.invoiceId, grant.invoices), eq(invoiceLineItems.invoiceId, invoiceId),
       ));
+    },
+    /** Only completed refunds of this grant's invoice; processor IDs and reasons stay private. */
+    invoiceRefundedAmount: async (invoiceId: string) => {
+      requireAccess(grant.invoices.kind !== 'none', 'payer_access_required');
+      const [row] = await tx.select({ amountCents: sum(refunds.amountCents).mapWith(Number) }).from(refunds)
+        .innerJoin(payments, and(eq(payments.gymId, refunds.gymId), eq(payments.id, refunds.paymentId)))
+        .innerJoin(invoices, and(eq(invoices.gymId, payments.gymId), eq(invoices.id, payments.invoiceId)))
+        .where(and(invoicePredicate, eq(invoices.id, invoiceId), eq(refunds.status, 'succeeded')));
+      return row?.amountCents ?? 0;
     },
     paymentMethods: async () => {
       requireAccess(grant.cards, 'payer_access_required');

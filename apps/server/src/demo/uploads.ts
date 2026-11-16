@@ -14,7 +14,7 @@ function pdfKey(key: string): string | undefined {
   return match ? `${match.gymId}/waivers/${match.memberId}/pdf/${match.imageId}.pdf` : undefined;
 }
 
-/** Narrow waiver operations; the shared Uploads interface refuses general visitor puts. */
+/** Narrow waiver and receipt operations; the shared Uploads interface refuses general visitor puts. */
 export class DemoUploads implements Uploads {
   constructor(private readonly source: Uploads) {}
   async put(): ReturnType<Uploads['put']> {
@@ -27,6 +27,43 @@ export class DemoUploads implements Uploads {
     if (!parseSignatureImageKey(key)) throw new AppError('not_found', 'Resource not found');
     validateSignatureImage(bytes);
     return this.source.put(key, bytes, 'image/png');
+  }
+  /** Called only after household invoice authorization, with a digest of the server-generated receipt. */
+  async receiptPdf(key: string, render: () => Promise<Uint8Array>, freshKey: () => string): Promise<string> {
+    assertNoTransaction('storage.put');
+    if (!/^[0-9a-f-]{36}\/receipts\/[0-9a-f-]{36}\/[0-9a-f]{64}\.pdf$/.test(key))
+      throw new AppError('not_found', 'Resource not found');
+    let work = pending.get(key);
+    if (!work) {
+      work = (async () => {
+        const cached = await this.source.head(key);
+        if (cached) {
+          if (cached.deletedAt || cached.contentType !== 'application/pdf') throw new AppError('not_found', 'Resource not found');
+          return key;
+        }
+        const bytes = await render();
+        if (bytes.length > 1024 * 1024 || new TextDecoder().decode(bytes.subarray(0, 5)) !== '%PDF-')
+          throw new AppError('unavailable', 'Receipt is not available');
+        try { await this.source.put(key, bytes, 'application/pdf'); }
+        catch (error) {
+          const winner = await this.source.head(key);
+          if (winner && !winner.deletedAt && winner.contentType === 'application/pdf') return key;
+          if (winner) throw error;
+          // A failed durable reservation never releases its key. Serve a swept copy, like waiver PDFs.
+          const fallback = freshKey();
+          if (!/^[0-9a-f-]{36}\/receipts\/[0-9a-f-]{36}\/[0-9a-f-]{36}\.pdf$/.test(fallback)
+            || fallback.slice(0, fallback.lastIndexOf('/')) !== key.slice(0, key.lastIndexOf('/')))
+            throw new AppError('not_found', 'Resource not found');
+          await this.source.put(fallback, bytes, 'application/pdf');
+          await this.source.markDeleted(fallback);
+          return fallback;
+        }
+        return key;
+      })();
+      pending.set(key, work);
+    }
+    try { return await work; }
+    finally { if (pending.get(key) === work) pending.delete(key); }
   }
   get: Uploads['get'] = (key, options) => this.source.get(key, options);
   head: Uploads['head'] = (key, options) => this.source.head(key, options);

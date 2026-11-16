@@ -164,3 +164,36 @@ it('refuses with a typed code at the grant and at each query', async () => {
     await expect(queries.invoicePage({}, page)).rejects.toMatchObject({ code: 'payer_access_required' });
   });
 });
+it('limits successful refund totals to the granted gym, household and invoice, including single-invoice links', async () => {
+  const first = await factory('households', gym), second = await factory('households', gym), foreign = await factory('households', otherGym);
+  const payer = await factory('authUser', gym), adult = await factory('authUser', gym);
+  const member = await factory('members', gym, { householdId: first.id });
+  await factory('householdUsers', gym, { householdId: first.id, userId: payer.id, scope: 'payer' });
+  await factory('householdUsers', gym, { householdId: first.id, userId: adult.id, scope: 'member', memberId: member.id });
+  const bills = [];
+  for (const home of [first, first, second, foreign]) {
+    const bill = await factory('invoices', home.gymId, { householdId: home.id });
+    const payment = await factory('payments', home.gymId, { invoiceId: bill.id });
+    for (const status of ['succeeded', 'pending', 'failed', 'canceled'])
+      await factory('refunds', home.gymId, { paymentId: payment.id, status, amountCents: 250 });
+    bills.push(bill);
+  }
+  const own = bills[0]!, sibling = bills[1]!, other = bills[2]!, crossGym = bills[3]!;
+  await database.forHousehold({ kind: 'user', gymId: gym, householdId: first.id, userId: payer.id }, async queries => {
+    expect(await queries.invoiceRefundedAmount(own.id)).toBe(250);
+    expect(await queries.invoiceRefundedAmount(sibling.id)).toBe(250);
+    for (const id of [other.id, crossGym.id, uuidv7()]) expect(await queries.invoiceRefundedAmount(id)).toBe(0);
+  });
+  await database.forHousehold({ kind: 'user', gymId: gym, householdId: first.id, userId: adult.id }, async queries => {
+    await expect(queries.invoiceRefundedAmount(own.id)).rejects.toMatchObject({ code: 'payer_access_required' });
+  });
+  const link = await factory('signedLinks', gym, { householdId: first.id, invoiceId: own.id, purpose: 'pay_invoice', expiresAt: new Date('2030-01-01Z') });
+  await database.forHousehold({ kind: 'signed_link', gymId: gym, linkId: link.id, now: new Date('2026-01-01Z') }, async queries => {
+    expect(await queries.invoiceRefundedAmount(own.id)).toBe(250);
+    for (const id of [sibling.id, other.id, crossGym.id]) expect(await queries.invoiceRefundedAmount(id)).toBe(0);
+  });
+  const empty = await factory('invoices', gym, { householdId: first.id });
+  await database.forHousehold({ kind: 'user', gymId: gym, householdId: first.id, userId: payer.id }, async queries => {
+    expect(await queries.invoiceRefundedAmount(empty.id)).toBe(0);
+  });
+});

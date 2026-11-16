@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { createHash } from 'node:crypto';
 import { forHousehold, uuidv7 } from '@plaingym/db';
 import { AppError, createTranslator, type Clock, type Translator } from '@plaingym/shared';
 import { cardChargeIssue } from '@plaingym/shared/money';
@@ -11,7 +12,8 @@ import { notFound } from '../../core/interfaces/common.js';
 import { clock as defaultClock } from '../../core/clock.js';
 import { formatMoney } from '../../core/money.js';
 import type { Uploads } from '../../infra/storage/index.js';
-import { renderPdf } from '../../infra/pdf/index.js';
+import { renderPdf, type PdfInput } from '../../infra/pdf/index.js';
+import { DemoUploads } from '../../demo/uploads.js';
 import { formatCount } from '../../infra/pdf/count.js';
 import type { CheckoutSession } from '../../infra/payments/index.js';
 import { createMemberHouseholdContext } from '../members/household-users.context.js';
@@ -94,27 +96,37 @@ export function createPortalBillingService(options: PortalBillingOptions) {
       return { data: rows.map(invoice), pagination: { limit: query.limit, offset: query.offset, total } };
     },
     get: detail,
-    /** A short-lived PDF for a paid invoice, stored like waiver PDFs: deleted on write and swept later. */
+    /** A five-minute receipt link; ordinary copies are swept and demo copies are cached. */
     async receipt(identity: PortalIdentity, invoiceId: string, timezone: string) {
       const { invoice: row, lines } = await detail(identity, invoiceId);
       if (!row.paidAt || !receiptStatuses.has(row.status)) throw new AppError('conflict', 'Invoice has no receipt yet');
       const money = (cents: number) => formatMoney(cents, row.currency, receiptLocale);
       const paidAt = new Date(row.paidAt), gym = await gymName(identity.gymId);
-      // A refunded receipt shows its status; the refunded amount isn't in the household's invoice queries.
-      const bytes = await (options.render ?? renderPdf)({ title: t('portal/billing:receiptTitle', { number: row.number }), createdAt: paidAt,
+      const refundedCents = await read(identity, queries => queries.invoiceRefundedAmount(row.id));
+      const input: PdfInput = { title: t('portal/billing:receiptTitle', { number: row.number }), createdAt: paidAt,
         footer: t('portal/billing:receiptFooter', { gym, number: row.number }), blocks: [
           { kind: 'text', text: gym, size: 14 },
           { kind: 'text', text: t('portal/billing:receiptTitle', { number: row.number }), size: 18 },
           { kind: 'text', text: t('portal/billing:receiptPaid', { date: new Intl.DateTimeFormat(receiptLocale, { timeZone: timezone, dateStyle: 'medium' }).format(paidAt) }) },
           ...lines.map(item => ({ kind: 'text' as const, text: `${item.description} × ${formatCount(item.quantity, receiptLocale)}: ${money(item.amountCents)}` })),
           { kind: 'text', text: t('portal/billing:receiptTotal', { amount: money(row.amountCents) }), size: 14 },
+          ...(refundedCents > 0 ? [{ kind: 'text' as const, text: t('portal/billing:receiptRefunded', { amount: money(refundedCents) }) }] : []),
           ...(row.status === 'paid' ? [] : [{ kind: 'text' as const, text: t('portal/billing:status_' + row.status) }]),
-        ] });
-      const uploads = await options.uploadsFor()(identity.gymId), key = `${identity.gymId}/receipts/${row.id}/${uuidv7(clock.now().getTime())}.pdf`;
-      // Demo sandboxes refuse general uploads, so receipts are unavailable there.
-      try { await uploads.put(key, bytes, 'application/pdf'); }
-      catch (error) { if (error instanceof AppError && error.code === 'forbidden') throw new AppError('unavailable', 'Receipts are not available'); throw error; }
-      await uploads.markDeleted(key);
+        ] };
+      const uploads = await options.uploadsFor()(identity.gymId), render = () => (options.render ?? renderPdf)(input);
+      const freshKey = () => `${identity.gymId}/receipts/${row.id}/${uuidv7(clock.now().getTime())}.pdf`;
+      let key: string;
+      if (uploads instanceof DemoUploads) {
+        // One immutable copy per receipt content, shared by repeated requests and changed after a refund.
+        const digest = createHash('sha256').update(JSON.stringify(input)).digest('hex');
+        key = await uploads.receiptPdf(`${identity.gymId}/receipts/${row.id}/${digest}.pdf`, render, freshKey);
+      } else {
+        key = freshKey();
+        const bytes = await render();
+        try { await uploads.put(key, bytes, 'application/pdf'); }
+        catch (error) { if (error instanceof AppError && error.code === 'forbidden') throw new AppError('unavailable', 'Receipts are not available'); throw error; }
+        await uploads.markDeleted(key);
+      }
       const url = await uploads.signedUrl(key, 300);
       if (!url) throw new AppError('unavailable', 'Receipt is not available');
       return { url, expiresAt: new Date(clock.now().getTime() + 300_000).toISOString() };

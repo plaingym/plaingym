@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { expect, demoClient, test, createClass, localDate, showPortalClass, type RecordId } from '../support.js';
 import { accessibleThemes, keyboardActivate, tabTo } from '../responsive.js';
 import { stripeOrigin } from '../portal.js';
@@ -7,6 +9,25 @@ import { viewports } from './mobile-screens.js';
 // Device and signed-link credentials stay out of traces.
 test.use({ trace: 'off', screenshot: 'off' });
 test.beforeEach(() => { test.setTimeout(270_000); });
+
+/** The demo fixture's S3 hostname is internal; pass the bearer URL on stdin, keeping it out of errors. */
+async function receiptBytes(href: string) {
+  expect(new URL(href).origin).toBe('http://demo-s3:7070');
+  const code = "try { let href = ''; for await (const chunk of process.stdin) href += chunk; "
+    + "const response = await fetch(href, { signal: AbortSignal.timeout(15000) }); const bytes = Buffer.from(await response.arrayBuffer()); "
+    + "console.log(JSON.stringify({ status: response.status, contentType: response.headers.get('content-type'), pdf: bytes.subarray(0, 5).toString() === '%PDF-' })); "
+    + "} catch { process.exitCode = 1; }";
+  return new Promise<{ status: number; contentType: string; pdf: boolean }>((resolve, reject) => {
+    const child = execFile('docker', ['compose', '--project-name', process.env.E2E_COMPOSE_PROJECT!, '--file', 'compose.yaml',
+      'exec', '-T', 'demo', 'node', '--input-type=module', '--eval', code],
+    { cwd: fileURLToPath(new URL('../', import.meta.url)), windowsHide: true, timeout: 30_000, maxBuffer: 4096 }, (error, stdout) => {
+      if (error) { reject(new Error('Internal receipt download failed')); return; }
+      try { resolve(JSON.parse(stdout)); } catch { reject(new Error('Invalid receipt download evidence')); }
+    });
+    child.stdin!.on('error', () => reject(new Error('Internal receipt download input failed')));
+    child.stdin!.end(href);
+  });
+}
 
 for (const { name: size, viewport } of viewports) {
   test(`portal booking, payment and dialog focus by keyboard alone at ${size} width`, async ({ page, context, sandboxes }, info) => {
@@ -52,6 +73,15 @@ for (const { name: size, viewport } of viewports) {
     await expect(page.locator('main h1')).toBeVisible();
     await accessibleThemes(page, info, size + '-keyboard-payment-return');
     await page.goto(sandbox.origin + '/portal/billing');
+    // Fake Checkout does not dispatch payment webhooks here; use an already paid sandbox invoice.
+    await keyboardActivate(page, page.getByRole('button', { name: 'Download receipt', exact: true }).first());
+    const receipt = page.getByRole('link', { name: 'Open receipt', exact: true });
+    await expect(receipt).toBeVisible();
+    const pdf = await receiptBytes((await receipt.getAttribute('href'))!);
+    expect(pdf.status).toBe(200);
+    expect(pdf.contentType).toContain('application/pdf');
+    expect(pdf.pdf).toBe(true);
+    await accessibleThemes(page, info, size + '-keyboard-receipt');
     await keyboardActivate(page, page.getByRole('button', { name: /^(Add a card|Update card)$/ }));
     await page.waitForURL(url => url.origin === stripeOrigin);
   });

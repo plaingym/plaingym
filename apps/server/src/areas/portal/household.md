@@ -58,12 +58,13 @@ the invoice transitions; cards are written by the shared idempotent card writer.
 `GET /api/portal/invoices/{invoiceId}/receipt` renders a PDF receipt for a paid,
 partially refunded or refunded invoice and returns a five-minute link. It names the
 gym, the invoice number, the payment date in the gym's timezone, each line and the
-total, and marks a refunded invoice with its status. The household invoice queries
-don't expose refund amounts, so the receipt doesn't show one. Gyms have no locale
-setting, so money and dates use English formatting, as the signed-link pages do. The PDF is
-stored under `<gymId>/receipts/` and marked deleted at once, like waiver PDFs, so
-the upload sweep removes it. Demo sandboxes refuse general uploads, so receipts
-answer 503 (unavailable) there.
+total, and shows the successful refunded amount and refund status. Refund totals
+join payments to the household's invoice through `forHousehold`; pending, failed
+and canceled refunds do not count. Gyms have no locale setting, so money and dates
+use English formatting, as the signed-link pages do. The PDF is stored under
+`<gymId>/receipts/` and marked deleted at once, like waiver PDFs, so the upload
+sweep removes it. Demo sandboxes instead cache one generated PDF per receipt
+content, capped at 1 MiB, until sandbox cleanup. General uploads stay disabled.
 
 ## Waivers
 

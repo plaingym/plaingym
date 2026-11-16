@@ -17,6 +17,7 @@ import { FakeJobs } from '../../infra/jobs/index.js';
 import { FakeEmail } from '../../infra/email/index.js';
 import { FakePayments, type CheckoutSession } from '../../infra/payments/index.js';
 import { FakeUploads } from '../../infra/storage/index.js';
+import { demoUploads } from '../../demo/uploads.js';
 import type { PdfInput } from '../../infra/pdf/index.js';
 import { checkoutReceipts } from '../../public/links/receipt.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
@@ -233,9 +234,19 @@ describe('portal billing routes', () => {
     const server = portalApp(db, f, payerPrincipal(f), createPortalBillingRoutes(service, () => receipts), f.clock);
     expect((await server.request(`/api/portal/invoices/${f.paid.id}/receipt`)).status).toBe(503);
   });
-  it('names the gym on the receipt and marks a refund', async () => {
+  it.each([['partially_refunded', 400, '$4.00', 'Partially refunded'], ['refunded', 1000, '$10.00', 'Refunded']])('names the gym and totals successful refunds on a %s receipt', async (status, amountCents, amount, label) => {
     const f = await fixture(), render = vi.fn(async (_input: PdfInput) => new Uint8Array([37, 80, 68, 70]));
-    await db.forGym(f.gymId, tx => tx.update(invoices).set({ status: 'partially_refunded' }).where(eq(invoices.id, f.paid.id)));
+    await db.forGym(f.gymId, tx => tx.update(invoices).set({ status }).where(eq(invoices.id, f.paid.id)));
+    for (const cents of [100, Number(amountCents) - 100]) {
+      const payment = await factory('payments', f.gymId, { invoiceId: f.paid.id, amountCents: cents });
+      await factory('refunds', f.gymId, { paymentId: payment.id, amountCents: cents, status: 'succeeded' });
+    }
+    const payment = await factory('payments', f.gymId, { invoiceId: f.paid.id });
+    for (const status of ['pending', 'failed', 'canceled']) await factory('refunds', f.gymId, { paymentId: payment.id, status, amountCents: 99 });
+    for (const invoice of [f.open, f.other]) {
+      const payment = await factory('payments', f.gymId, { invoiceId: invoice.id });
+      await factory('refunds', f.gymId, { paymentId: payment.id, amountCents: 999, status: 'succeeded' });
+    }
     const service = createPortalBillingService({ households: createMemberHouseholdContext(db.forGym), householdScope: db.forHousehold, clock: f.clock,
       checkout: () => f.checkout, uploadsFor: () => async () => f.uploads, render });
     const server = portalApp(db, f, payerPrincipal(f), createPortalBillingRoutes(service, () => receipts), f.clock);
@@ -244,7 +255,28 @@ describe('portal billing routes', () => {
     const text = input.blocks.map(block => block.kind === 'text' ? block.text : '');
     expect(text[0]).toBe('Test Gym');
     expect(input.footer).toBe('Test Gym · Invoice #6');
-    expect(text).toEqual(expect.arrayContaining(['Receipt for invoice #6', 'Paid on Sep 21, 2026', 'Seminar × 1,200: $10.00', 'Total: $10.00', 'Partially refunded']));
+    expect(text).toEqual(expect.arrayContaining(['Receipt for invoice #6', 'Paid on Sep 21, 2026', 'Seminar × 1,200: $10.00', 'Total: $10.00', String(label), `Refunded: ${amount}`]));
+    expect((await server.request(`/api/portal/invoices/${f.other.id}/receipt`)).status).toBe(404);
+    expect(render).toHaveBeenCalledOnce();
+  });
+  it('downloads a real PDF through the production routes in a demo sandbox and reuses its bounded copy', async () => {
+    const f = await fixture(), uploads = demoUploads(f.uploads);
+    configurePortalBilling({ checkout: f.checkout, receiptKey, uploadsFor: async () => uploads });
+    const server = portalApp(db, f, payerPrincipal(f), areaContributions.routes ?? [], f.clock);
+    const download = await json(await server.request(`/api/portal/invoices/${f.paid.id}/receipt`), contracts.receipt.response);
+    const again = await json(await server.request(`/api/portal/invoices/${f.paid.id}/receipt`), contracts.receipt.response);
+    expect(again.data.url).toBe(download.data.url);
+    const key = decodeURIComponent(new URL(download.data.url).pathname.slice(1));
+    const bytes = new Uint8Array(await new Response(await uploads.get(key)).arrayBuffer());
+    expect(new TextDecoder().decode(bytes.subarray(0, 5))).toBe('%PDF-');
+    expect(await f.uploads.list()).toHaveLength(1);
+    await expect(uploads.put(`${f.gymId}/photo.png`, bytes, 'application/pdf')).rejects.toMatchObject({ code: 'forbidden' });
+    await db.forGym(f.gymId, tx => tx.update(invoices).set({ status: 'refunded' }).where(eq(invoices.id, f.paid.id)));
+    const payment = await factory('payments', f.gymId, { invoiceId: f.paid.id, amountCents: 1000 });
+    await factory('refunds', f.gymId, { paymentId: payment.id, amountCents: 1000, status: 'succeeded' });
+    const refunded = await json(await server.request(`/api/portal/invoices/${f.paid.id}/receipt`), contracts.receipt.response);
+    expect(refunded.data.url).not.toBe(download.data.url);
+    expect(await f.uploads.list()).toHaveLength(2);
   });
   it('renders a receipt only for paid invoices', async () => {
     const f = await fixture(), server = f.app(payerPrincipal(f));

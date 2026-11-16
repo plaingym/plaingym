@@ -80,6 +80,10 @@ module is off) and sign in.
 To install the portal, a member uses the browser's *Add to home screen* / *Install
 app* option.
 
+Paid, partially refunded and fully refunded invoices offer **Download receipt**.
+The PDF includes the total successfully refunded amount when there is one;
+pending or unsuccessful refunds do not count. Receipts also work in demo sandboxes.
+
 ## How booking works
 
 * A member who has held class credits needs an unexpired credit or an active or
