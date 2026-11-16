@@ -71,6 +71,9 @@ import { configurePortalWaivers } from '../areas/portal/waivers.routes.js';
 import { createSignedLinkCheckout } from '../areas/billing/signed-link-checkout.js';
 import { createMemberPhotoJobs } from '../areas/members/members.jobs.js';
 import { createSmsResolver } from '../areas/settings/sms.js';
+import { createSmsPhoneDigest } from '../infra/sms/index.js';
+import { createTransitionSmsNotifications } from '../areas/billing/transitions/notifications.sms.js';
+import { createCardExpirySms } from '../areas/billing/alerts/sms.js';
 import { createSmtpResolver } from '../areas/settings/smtp.js';
 import { configureSignedLinkDelivery } from '../areas/links/service.js';
 import { configureCampaigns, createCampaignsService } from '../areas/links/campaigns.js';
@@ -266,7 +269,13 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   // The public forms' named limits are counted in the database, so every process shares one window; each process remembers
   // the budgets it saw refused, and one job an hour removes expired counters.
   const intakeLimits = registerIntakeRateLimits(queue, clock);
-  const bookingDelivery = createBookingDelivery({ jobs: queue, settings, clock,
+  // The member SMS switch needs a saved, readable provider; a sandbox's outbox stands in for one.
+  const smsResolver = createSmsResolver({ key, tenancy: mode, demo: Boolean(demo), clock });
+  // Class and billing texts key their sends on a keyed digest of the phone, never the number itself.
+  const phoneDigest = createSmsPhoneDigest(config.secret);
+  // Billing texts need only the gym's own origin, not its SMTP settings.
+  const smsPrepare = async (gymId: string) => ({ origin: await gymOrigin(gymId), t });
+  const bookingDelivery = createBookingDelivery({ jobs: queue, settings, clock, sms: { resolver: smsResolver, phoneDigest },
     mailer: async gymId => demo ? demo.emailFor(gymId) : smtpMailer(smtp!)(gymId) });
   configureBookingJobs(bookingDelivery);
   configureBookingRoutes(bookingDelivery);
@@ -276,7 +285,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   // A login changes its own sign-in email through a link sent to the new address, in the gym's own mail and origin.
   configureAccount({ service: createEmailChangeService({ config }), smtpConfigured, mail: gymMail });
   // Webhooks and restore reconciliation publish a recorded dispute's alert through the same service as the hourly scan.
-  const alerts = createBillingAlerts({ jobs: queue, settings: createGymSettingsAccessor(), accounts, clock, prepare: gymMail });
+  const alerts = createBillingAlerts({ jobs: queue, settings: createGymSettingsAccessor(), accounts, clock, prepare: gymMail,
+    sms: createCardExpirySms({ settings: createGymSettingsAccessor(), resolver: smsResolver, prepare: smsPrepare, clock }) });
   configureBillingAlerts(alerts);
   // Ranks read attendance through the frozen interface; imports and exports need storage and the queue.
   const attendance = createAttendanceQueries({ clock });
@@ -319,8 +329,6 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   configureImportStep({ imports: importPipeline, clock });
   // Normal installs use stored gym credentials; sandboxes resolve the shared test account.
   const paymentsFor = demo?.payments.paymentsFor ?? createPaymentsResolver({ key, clock });
-  // The member SMS switch needs a saved, readable provider; a sandbox's outbox stands in for one.
-  const smsResolver = createSmsResolver({ key, tenancy: mode, demo: Boolean(demo), clock });
   configureGoLive({ clock, smtpConfigured, smsConfigured: gymId => smsResolver.configured(gymId), paymentsConfigured: async gymId => Boolean(await paymentsFor(gymId)) });
   // Settings → Integrations (Email, SMS, Payments and Backups) reuses the setup steps' services with the runtime's key, auth rules and gym origins.
   // A confirmed backup change queues one snapshot through the backup job registered below (installs that take snapshots).
@@ -356,6 +364,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
     } }));
   // Cancelling a session with the notice option queues one job that emails its booked and waitlisted members.
   configureCancellationNotice(createCancellationNotice({ jobs: queue, clock, origin: gymOrigin, demoMode: Boolean(demo),
+    sms: { resolver: smsResolver, phoneDigest },
     mailer: async gymId => demo ? demo.emailFor(gymId) : smtpMailer(smtp!)(gymId),
     ...(demo ? { demoEmailFor: demo.emailFor } : {}) }));
   // The price change notice job emails a household's payer about a scheduled plan price change.
@@ -376,6 +385,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
     key: new Uint8Array(hkdfSync('sha256', key, new Uint8Array(0), 'plaingym public join v1', 32)) });
   demo?.service.setJoinReadiness(join);
   const billing = composeBillingWebhooks({ inbox, jobs: queue, recovery: queue, settings, paymentsFor, clock, prepare: gymMail, disputeAlerts: alerts,
+    sms: createTransitionSmsNotifications({ settings, resolver: smsResolver, prepare: smsPrepare, clock }),
     async afterCheckoutRecorded(gymId, linkId, sessionId) {
       try { await checkout.complete(gymId, linkId, sessionId); }
       // Revoked/expired links refuse completion without retrying an already-recorded card or payment.
