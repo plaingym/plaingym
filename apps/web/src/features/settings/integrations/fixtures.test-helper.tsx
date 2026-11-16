@@ -9,7 +9,7 @@ import { IntegrationsSettings } from './section.js';
 export const settings: GymSettings = { id: '01900000-0000-7000-8000-000000000001', name: 'Gym', slug: 'gym',
   timezone: 'America/Vancouver', currency: 'CAD', address: {}, branding: {}, websiteEnabled: false, existingSiteUrl: null,
   bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false, billingEnabled: false,
-  memberEmailsEnabled: false, retryDays: [3, 7], dropInChargeTypeId: null, revision: 3, createdAt: '2026-11-01T12:00:00Z', updatedAt: '2026-11-01T12:00:00Z' };
+  memberEmailsEnabled: false, memberSmsEnabled: false, smsDailyCap: 1000, retryDays: [3, 7], dropInChargeTypeId: null, revision: 3, createdAt: '2026-11-01T12:00:00Z', updatedAt: '2026-11-01T12:00:00Z' };
 export const integrations: Integrations = {
   sms: { configured: false, provider: 'twilio', unreadable: false, accountSid: null, authKind: null, from: null, messagingServiceSid: null, baseUrl: 'https://api.twilio.com' },
   email: { source: 'none', unreadable: false, googleConfigured: false, host: null, port: null, security: null, from: null, signIn: { password: true, magicLink: false },
@@ -22,7 +22,7 @@ export const health = (lastReceivedAt: string | null, latestRestorableAt: string
   { id: 'last_backup', status: 'healthy', checkedAt: '2026-11-02T12:00:00Z', message: 'ok', details: { latestRestorableAt, ageSeconds: 60, overdue: false,
     retainedBytes: 1, retentionBudgetBytes: 8_000_000_000, pruningStopped: false, keyReminder: true } },
   { id: 'stripe_webhooks', status: 'healthy', checkedAt: '2026-11-02T12:00:00Z', message: 'ok', details: { lastReceivedAt, lastProcessedAt: lastReceivedAt, pending: 0, failed: 0 } },
-  ...['failed_jobs', 'smtp', 'disk', 'version', 'last_charge_run', 'automatic_updates', 'update_available', 'google_login'].map((id) => ({ id, status: 'unavailable', checkedAt: null, message: 'n/a', details: null })),
+  ...['failed_jobs', 'smtp', 'disk', 'version', 'last_charge_run', 'automatic_updates', 'update_available', 'google_login', 'sms'].map((id) => ({ id, status: 'unavailable', checkedAt: null, message: 'n/a', details: null })),
 ] } });
 export const reply = (status: number, body?: unknown) => ({ response: { ok: status < 300, status }, ...(status < 300 ? { data: body } : { error: body }) });
 export const refusal = (status: number, field: string, code: string) => reply(status, { error: { code: 'conflict', message: 'private server text', details: { [field]: [code] } }, requestId: 'r' });

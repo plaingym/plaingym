@@ -60,6 +60,11 @@ Email, Stripe and backups after setup (`integrations.ts`, `/api/settings/integra
 On a multi-gym install email, SMS and payments are read-only for gym owners unless `GYM_INTEGRATIONS=gym` (`gymIntegrationsEditable` in `core/tenancy.ts`): GET reports it as `integrationsEditable`, and saving or removing email or SMS and saving a Stripe key answer 403 (`operator_managed`). Single-gym installs ignore the variable, and `integrationsEditable` is always true there.
 
 SMS provider settings (`integrations.sms.ts`, PUT/DELETE `/api/settings/integrations/sms`)
+also supply PATCH `/api/settings/integrations/sms/cap`: an integer from 1 to
+100,000, default 1,000, using `integrations.manage`, the gym revision and an
+`integrations.sms_daily_cap_updated` audit with the old and new cap only. This
+route is mounted by `createIntegrationsRoutes` and returns the shared gym settings.
+Provider changes
 share `integrations.manage`, the gym revision, sandbox refusal and operator policy.
 GET returns only configured/unreadable status, account SID, auth kind and sender;
 the provider base URL is included only in single-gym mode. Tokens and API key

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, desc, eq, lt } from 'drizzle-orm';
-import { emailOutbox, forGym } from '@plaingym/db';
+import { emailOutbox, smsOutbox, forGym } from '@plaingym/db';
 import { AppError, createTranslator } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import { demoSignInLinkPath, outboxQuery } from '@plaingym/shared/contracts';
@@ -11,6 +11,9 @@ const signInSubject = createTranslator(locales.en ?? {})('demo/demo:loginSubject
 export function createOutboxQuery(scope: typeof forGym = forGym) {
   // Email bodies are read only for the preview.
   const metadata = { id: emailOutbox.id, recipient: emailOutbox.recipient, subject: emailOutbox.subject, text: emailOutbox.text, sentAt: emailOutbox.sentAt };
+  const smsMetadata = { id: smsOutbox.id, recipient: smsOutbox.recipient, text: smsOutbox.body, sentAt: smsOutbox.sentAt };
+  const emailMessage = <Row extends object>(row: Row) => ({ ...row, channel: 'email' as const });
+  const smsMessage = <Row extends object>(row: Row) => ({ ...row, channel: 'sms' as const, subject: '' });
   const present = <Row extends { sentAt: Date }>(row: Row) => ({ ...row, sentAt: row.sentAt.toISOString() });
   const message = (gymId: string, id: string) => and(eq(emailOutbox.gymId, gymId), eq(emailOutbox.id, id));
   const found = <Row>([row]: Row[]) => {
@@ -20,13 +23,23 @@ export function createOutboxQuery(scope: typeof forGym = forGym) {
   return {
     async list(gymId: string, input: unknown) {
       const { before, limit } = outboxQuery.parse(input);
-      const rows = await scope(gymId, (tx) => tx.select(metadata).from(emailOutbox)
-        .where(and(eq(emailOutbox.gymId, gymId), ...(before ? [lt(emailOutbox.id, before)] : [])))
-        .orderBy(desc(emailOutbox.id)).limit(limit + 1));
+      const rows = await scope(gymId, async tx => {
+        const emails = await tx.select(metadata).from(emailOutbox)
+          .where(and(eq(emailOutbox.gymId, gymId), ...(before ? [lt(emailOutbox.id, before)] : [])))
+          .orderBy(desc(emailOutbox.id)).limit(limit + 1);
+        const texts = await tx.select(smsMetadata).from(smsOutbox)
+          .where(and(eq(smsOutbox.gymId, gymId), ...(before ? [lt(smsOutbox.id, before)] : [])))
+          .orderBy(desc(smsOutbox.id)).limit(limit + 1);
+        return [...emails.map(emailMessage), ...texts.map(smsMessage)].sort((a, b) => b.id.localeCompare(a.id));
+      });
       return { data: rows.slice(0, limit).map(present), next: rows.length > limit ? rows[limit - 1]!.id : null };
     },
     async get(gymId: string, id: string) {
-      return present(found(await scope(gymId, (tx) => tx.select(metadata).from(emailOutbox).where(message(gymId, id)))));
+      return scope(gymId, async tx => {
+        const [email] = await tx.select(metadata).from(emailOutbox).where(message(gymId, id));
+        if (email) return present(emailMessage(email));
+        return present(smsMessage(found(await tx.select(smsMetadata).from(smsOutbox).where(and(eq(smsOutbox.gymId, gymId), eq(smsOutbox.id, id))))));
+      });
     },
     async preview(gymId: string, id: string) {
       return found(await scope(gymId, (tx) => tx.select({ html: emailOutbox.html }).from(emailOutbox).where(message(gymId, id)))).html;

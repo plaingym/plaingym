@@ -161,7 +161,11 @@ and separate notices consent on household billing phones. Normalization uses
 `@plaingym/shared/phone` with the gym country. `sms_deliveries` retains at-most-once
 send state, `sms_daily_usage` bounds attempts per gym-local day, and `sms_outbox`
 captures demo texts. These tables have forced gym RLS. The switch defaults off;
-this infrastructure has no sending routes or jobs.
+Go-live requires a readable provider before enabling it. The owner sets a daily
+cap from 1 to 100,000 (default 1,000); the SMS Health tile reports attempts and
+cap refusals for the gym-local day without phone numbers. Demo texts share the
+email outbox and never contact a provider. This infrastructure has no member
+sending routes or jobs.
 
 ## Background jobs
 

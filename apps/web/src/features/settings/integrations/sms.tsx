@@ -9,6 +9,7 @@ import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
 import { Select } from '../../../components/ui/select.js';
 import { failedText, integrationsOf, refusedText, text, type useIntegrations } from './state.js';
+import { useGymSettings } from '../gym-settings.js';
 
 const label = (key: string) => text('sms.' + key);
 function Field({ name, type = 'text', value = '', required = true }: { name: string; type?: string; value?: string; required?: boolean }) {
@@ -19,6 +20,7 @@ function Field({ name, type = 'text', value = '', required = true }: { name: str
   </div>;
 }
 export function SmsIntegrationSection({ sms, editable, state }: { sms: SmsIntegration; editable: boolean; state: ReturnType<typeof useIntegrations> }) {
+  const gym = useGymSettings();
   const [busy, setBusy] = useState(false), [open, setOpen] = useState(false);
   const [authKind, setAuthKind] = useState(sms.authKind ?? 'token');
   const [senderKind, setSenderKind] = useState(sms.messagingServiceSid ? 'service' : 'from');
@@ -51,6 +53,15 @@ export function SmsIntegrationSection({ sms, editable, state }: { sms: SmsIntegr
     } catch (error) { setMessage({ kind: 'alert', text: failedText(error) }); }
     finally { setBusy(false); }
   }
+  async function saveCap(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setBusy(true); setMessage(null);
+    const smsDailyCap = Number(new FormData(event.currentTarget).get('smsDailyCap'));
+    try {
+      const result = await gym.save((revision, signal) => api.PATCH('/api/settings/integrations/sms/cap', { signal, body: { revision, smsDailyCap } }));
+      setMessage({ kind: result.status < 300 ? 'status' : 'alert', text: result.status < 300 ? label('capSaved') : refusedText(result) });
+    } catch (error) { setMessage({ kind: 'alert', text: failedText(error) }); }
+    finally { setBusy(false); }
+  }
   return <section aria-label={label('title')} className="min-w-0 space-y-3">
     <h3 className="font-semibold">{label('title')}</h3>
     {sms.unreadable && <p role="alert" className="text-sm">{label('unreadable')}</p>}
@@ -58,6 +69,15 @@ export function SmsIntegrationSection({ sms, editable, state }: { sms: SmsIntegr
     {sms.configured && <p className="text-sm text-muted-foreground">{label('stored')}</p>}
     <FormMessage message={message}/>
     {editable && <>
+      {gym.settings && <form aria-label={label('capForm')} onSubmit={event => void saveCap(event)}>
+        <fieldset disabled={busy || gym.failed} className="grid min-w-0 gap-3">
+          <Label htmlFor="integrations-sms-cap">{label('dailyCap')}</Label>
+          <Input key={gym.settings.revision} id="integrations-sms-cap" name="smsDailyCap" type="number" min={1} max={100000} step={1}
+            required defaultValue={gym.settings.smsDailyCap} aria-describedby="integrations-sms-cap-help"/>
+          <p id="integrations-sms-cap-help" className="text-sm text-muted-foreground">{label('capHelp')}</p>
+          <div><Button type="submit">{label('saveCap')}</Button></div>
+        </fieldset>
+      </form>}
       <p className="text-sm text-muted-foreground">{label('hint')}</p>
       <div className="flex flex-col gap-3 sm:flex-row">
         {!open && <Button variant="outline" onClick={() => { setOpen(true); setMessage(null); }}>{label(sms.configured ? 'change' : 'connect')}</Button>}

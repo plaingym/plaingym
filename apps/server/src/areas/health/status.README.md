@@ -6,6 +6,16 @@ including providers that are not configured. Each provider uses the frozen
 `HealthTileProvider` interface; failures and malformed payloads become an unavailable
 tile without exposing exception messages. Responses are not cached.
 
+The SMS tile reads `SmsResolver.status`, the gym's switch and cap, and its
+`sms_daily_usage` for today in the gym timezone. `sentToday` counts reserved send
+attempts, including failures or uncertain outcomes; `refusedToday` counts cap
+refusals. It is healthy with a readable provider and the switch on, warning when
+off, when settings are unreadable, the last owner test failed, or any attempts
+were refused today, and not configured without a provider. Counts and the last
+test time/result are returned, never numbers, bodies or credentials. Removing
+the provider clears older test history. Demo mode reports the outbox as its
+provider and never reads the stored SMS credentials.
+
 The default route uses `createStatusProviders()` with the process environment.
 `configureHealthStatus({ env, providers })` lets runtime supply its explicit environment
 and additional providers. `createHealthService` and `createStatusRoutes` support isolated

@@ -4,12 +4,15 @@ import { assertRevised, forGym, gyms, revisionGuard, writeAudit } from '@plaingy
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import { normalizePhone } from '@plaingym/shared/phone';
-import { saveSmsIntegrationRequestSchema, type SaveSmsIntegrationRequest, type SmsIntegration } from '@plaingym/shared/contracts';
+import { saveSmsIntegrationRequestSchema, updateSmsDailyCapRequestSchema, settingsContracts, type UpdateSmsDailyCapRequest, type SaveSmsIntegrationRequest, type SmsIntegration } from '@plaingym/shared/contracts';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { decryptSecret } from '../../core/secrets.js';
 import { TwilioSms, type Sms } from '../../infra/sms/index.js';
 import { encryptSmsConfig, storedSmsSchema, twilioBaseUrl, type StoredSmsConfig } from './sms.js';
 import { readStoredSecret } from './unreadable-secret.js';
+import { readGymSettings } from './settings.js';
+import { route, type RouteRegistration } from '../../core/registry.js';
+import type { IntegrationsService } from './integrations.js';
 
 type Gym = typeof gyms.$inferSelect;
 const t = createTranslator(locales.en ?? {});
@@ -70,6 +73,23 @@ export function createSmsIntegration(options: SmsIntegrationOptions) {
     });
   }
   return { present,
+    async updateDailyCap(context: MutationContext, input: UpdateSmsDailyCapRequest) {
+      const userId = actor(context);
+      const { revision, smsDailyCap } = updateSmsDailyCapRequestSchema.parse(input);
+      return scope(context.gymId, async tx => {
+        const [before] = await tx.select({ revision: gyms.revision, smsDailyCap: gyms.smsDailyCap }).from(gyms)
+          .where(eq(gyms.id, context.gymId)).for('update');
+        if (!before) throw new AppError('not_found', t('settings/go-live:notFound'));
+        assertRevised(before.revision === revision ? [before] : []);
+        const guard = revisionGuard(gyms.revision, revision);
+        assertRevised(await tx.update(gyms).set({ smsDailyCap, revision: guard.next, updatedAt: clock.now() })
+          .where(and(eq(gyms.id, context.gymId), guard.matches)).returning({ id: gyms.id }));
+        await writeAudit(tx, { gymId: context.gymId, actorKind: 'user', actorUserId: userId,
+          action: 'integrations.sms_daily_cap_updated', targetType: 'gym', targetId: context.gymId,
+          before: { smsDailyCap: before.smsDailyCap }, after: { smsDailyCap }, occurredAt: clock.now() });
+        return readGymSettings(tx, context.gymId);
+      });
+    },
     async save(context: MutationContext, input: SaveSmsIntegrationRequest): Promise<'sent' | 'failed'> {
       const userId = actor(context);
       const parsed = saveSmsIntegrationRequestSchema.parse(input);
@@ -104,4 +124,16 @@ export function createSmsIntegration(options: SmsIntegrationOptions) {
     },
     async remove(context: MutationContext, revision: number) { await update(context, revision, null); },
   };
+}
+
+export function createSmsDailyCapRoutes(current: () => Pick<IntegrationsService, 'updateSmsDailyCap'>): RouteRegistration[] {
+  const contract = settingsContracts.updateSmsDailyCap;
+  return [route({ ...contract,
+    request: { body: { required: true, content: { 'application/json': { schema: contract.body } } } },
+    responses: { 200: { description: 'Updated SMS daily cap', content: { 'application/json': { schema: contract.response } } } },
+  }, async c => {
+    const { gym, principal } = c.get('context');
+    if (principal.kind !== 'staff' || principal.gymId !== gym.gymId) throw new AppError('not_found', t('settings/go-live:notFound'));
+    return c.json({ data: await current().updateSmsDailyCap({ gymId: gym.gymId, actor: { kind: 'user', userId: principal.userId } }, c.req.valid('json')) }, 200);
+  })];
 }

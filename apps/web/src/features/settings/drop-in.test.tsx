@@ -15,7 +15,7 @@ vi.mock('../billing/catalog/api.js', async (original) => ({ ...await original<ty
 const id = (n: number) => '01900000-0000-7000-8000-' + String(n).padStart(12, '0');
 const settings: GymSettings = { id: id(1), name: 'Gym', slug: 'gym', timezone: 'America/Vancouver', currency: 'CAD', address: {}, branding: {},
   websiteEnabled: false, existingSiteUrl: null, bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false,
-  billingEnabled: false, memberEmailsEnabled: false, retryDays: [3, 7], dropInChargeTypeId: null, revision: 3,
+  billingEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: false, smsDailyCap: 1000, retryDays: [3, 7], dropInChargeTypeId: null, revision: 3,
   createdAt: '2026-10-26T12:00:00Z', updatedAt: '2026-10-26T12:00:00Z' };
 const charge = (n: number, name: string, amountCents: number, active = true): ChargeType =>
   ({ id: id(n), createdAt: '2026-10-26T12:00:00Z', name, amountCents, currency: 'CAD', active, revision: 1, taxRateIds: [] });

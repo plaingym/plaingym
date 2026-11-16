@@ -29,7 +29,7 @@ const restored = (unresolved: number | null = 2, billingEnabled = false) => ({ d
 } });
 const gymSettings = (revision: number): GymSettings => ({ id: '01900000-0000-7000-8000-000000000001', name: 'Gym', slug: 'gym', timezone: 'America/Vancouver',
   currency: 'CAD', address: {}, branding: {}, websiteEnabled: false, existingSiteUrl: null, bookingWindowDays: 14, cancellationCutoffMinutes: 60,
-  openMatCountsAsClass: false, billingEnabled: false, memberEmailsEnabled: false, retryDays: [3, 7], dropInChargeTypeId: null, revision,
+  openMatCountsAsClass: false, billingEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: false, smsDailyCap: 1000, retryDays: [3, 7], dropInChargeTypeId: null, revision,
   createdAt: '2026-10-26T12:00:00Z', updatedAt: '2026-10-26T12:00:00Z' });
 const start = () => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } })}><GoLiveSettings/></QueryClientProvider>);
 beforeEach(() => {
@@ -56,7 +56,7 @@ describe('go-live settings', () => {
     expect(registration.settingsSections?.[0]).toMatchObject({ enabled: true,
       permission: { kind: 'staff', capability: 'go_live.manage' }, component: GoLiveSettings });
   });
-  it('renders both switches off and every checklist item from the contract', async () => {
+  it('renders all switches off and every checklist item from the contract', async () => {
     start();
     expect(await screen.findByText('Message for smtp_ready')).toBeDefined();
     expect(live).toHaveBeenCalledWith('/api/settings/go-live');
@@ -68,6 +68,13 @@ describe('go-live settings', () => {
     expect(billing.getAttribute('aria-pressed')).toBe('false');
     expect(within(billing.closest('li')!).getByText('Off')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Turn on: Member emails' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Turn on: Member texts' })).toBeDefined();
+  });
+  it('explains a missing SMS provider instead of reporting a revision change', async () => {
+    const user = userEvent.setup(); start();
+    client.PATCH.mockResolvedValue({ response: { ok: false, status: 409 }, error: { error: { code: 'conflict', details: { memberSmsEnabled: ['no_provider'] } } } });
+    await user.click(await screen.findByRole('button', { name: 'Turn on: Member texts' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Save a working SMS provider');
   });
   it('sends the revision with one switch and shows the saved state', async () => {
     client.PATCH.mockResolvedValue(reply(200, checklist(4, false, true)));

@@ -9,6 +9,9 @@ const source = (file: string) => readFileSync(resolve(root, 'apps/server/src', f
 
 /** Each production boundary is deliberately classified. New outbound call sites require review. */
 const boundaries = {
+  'infra/sms/member.ts': 'memberSmsEnabled, readable gym provider, consent and daily cap rechecked before member SMS delivery',
+  'infra/sms/deliveries.ts': 'durable at-most-once delivery boundary whose member callers choose MemberSms for consent, switch and cap checks',
+  'areas/settings/integrations.sms.ts': 'owner-initiated test to the submitted number is exempt from member switches, consent and the cap; sandbox changes are refused',
   'areas/health/auto-update.notices.ts': 'staff-only owner update notices are exempt from memberEmailsEnabled; gym SMTP and durable per-attempt delivery reservations',
   'areas/bookings/bookings.delivery.ts': 'memberEmailsEnabled and recipient preferences reloaded by MemberEmail immediately before gym SMTP delivery',
   'areas/billing/runner/index.ts': 'billingEnabled: before reservation, create and confirm',
@@ -66,11 +69,14 @@ describe('go-live switch test inventory', () => {
     const found = globSync('apps/server/src/**/*.ts', { cwd: root, exclude: ['**/*.test.ts', '**/*.test-helper.ts', '**/infra/payments/**'] })
       .map(file => file.replaceAll('\\', '/').replace('apps/server/src/', ''))
       .filter(file => file !== 'core/registry-infra-contracts.ts')
-      .filter(file => /\.(?:createCharge|confirmCharge|createCheckout|createCustomer|sendEmail)\s*\(|\bdeliveries\.(?:send|attempt)\s*\(/.test(source(file)));
+      .filter(file => /\.(?:createCharge|confirmCharge|createCheckout|createCustomer|sendEmail|sendSms)\s*\(|\bdeliveries\.(?:send|attempt)\s*\(/.test(source(file)));
     expect(found.sort()).toEqual(Object.keys(boundaries).sort());
     expect(Object.values(boundaries).every(reason => reason.length > 20)).toBe(true);
   });
-  it.each([...chargePaths, ...emailPaths])('tracks %s with executable regression coverage', (_path, file, evidence) => {
+  it.each([...chargePaths, ...emailPaths,
+    ['member SMS switch and cap', 'areas/settings/go-live.sms.test.ts', 'enforces it through MemberSms'],
+    ['demo SMS capture', 'demo/outbox.sms.test.ts', 'without ever contacting a saved provider'],
+  ] as const)('tracks %s with executable regression coverage', (_path, file, evidence) => {
     expect(source(file)).toContain(evidence);
   });
 });

@@ -410,6 +410,21 @@ left together with the old key, also replace the credentials themselves: a new
 Stripe restricted key, a new email password, new backup storage keys and a new
 Google client secret.
 
+## Turning on member texts
+
+In **Settings → Integrations → SMS**, save a provider by sending a test to your
+own number. Set the **Daily text cap** from 1 to 100,000 (default 1,000), then
+turn on **Member texts** in **Settings → Go-live**. The switch requires a saved,
+readable provider; each recipient must also have consent for that number and
+message kind. You can turn it off at any time without a provider.
+
+The cap counts send attempts per calendar day in the gym's timezone, including
+failed or uncertain attempts. Further member texts are refused and counted;
+**System health → SMS** shows today's attempts, refusals, cap, switch and last
+owner test. Owner test texts bypass the switch, consent and cap. Restoring keeps
+the SMS switch as saved in the snapshot, so shut down the old server first.
+Demo texts stay in the demo outbox and never contact a provider.
+
 ## Running several gyms
 
 `TENANCY=multi` serves several gyms, each on its own hostname, from one install.

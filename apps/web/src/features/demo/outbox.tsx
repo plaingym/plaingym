@@ -37,12 +37,12 @@ export function OutboxPage() {
     {loading && <LoadingState label={t('demo/demo:loading')} />}
     {!loading && !error && messages.length === 0 && <EmptyState title={t('demo/demo:empty')} description={t('demo/demo:emptyHelp')} />}
     {messages.map((message) => <Card key={message.id}>
-      <h2 className="text-lg font-semibold">{message.subject}</h2>
+      <h2 className="text-lg font-semibold wrap-anywhere">{message.channel === 'sms' ? t('demo/demo:sms') : message.subject}</h2>
       <div className="space-y-3">
-        <p>{t('demo/demo:recipient')}: {message.recipient}</p>
+        <p className="wrap-anywhere">{t('demo/demo:recipient')}: {message.recipient}</p>
         <p>{t('demo/demo:sent')}: <time dateTime={message.sentAt}>{instantLabel(message.sentAt)}</time></p>
-        <pre className="whitespace-pre-wrap font-sans">{message.text}</pre>
-        <Button type="button" variant="outline" onClick={() => setPreview(message.id)}>{t('demo/demo:html')}</Button>
+        <pre className="whitespace-pre-wrap wrap-anywhere font-sans">{message.text}</pre>
+        {message.channel === 'email' && <Button type="button" variant="outline" onClick={() => setPreview(message.id)}>{t('demo/demo:html')}</Button>}
       </div>
     </Card>)}
     {next && <Button type="button" disabled={loading} onClick={() => setCursor(next)}>{t('demo/demo:more')}</Button>}

@@ -24,11 +24,11 @@ const item = (id: GoLiveChecklistItem['id'], status: Status, message?: string): 
 const ready = (value: unknown): Status => value ? 'ready' : 'needs_attention';
 /** Credentials and opaque settings are read here, never returned or audited. */
 const projection = {
-  revision: gyms.revision, timezone: gyms.timezone, billingEnabled: gyms.billingEnabled, memberEmailsEnabled: gyms.memberEmailsEnabled,
+  revision: gyms.revision, timezone: gyms.timezone, billingEnabled: gyms.billingEnabled, memberEmailsEnabled: gyms.memberEmailsEnabled, memberSmsEnabled: gyms.memberSmsEnabled,
   settings: gyms.settings, stripeConfigured: gyms.stripeConfig, backupPublicKey: gyms.backupPublicKey, backupDestination: gyms.backupDestination,
 };
-const switches = (row: { billingEnabled: boolean; memberEmailsEnabled: boolean }) =>
-  ({ billingEnabled: row.billingEnabled, memberEmailsEnabled: row.memberEmailsEnabled });
+const switches = (row: { billingEnabled: boolean; memberEmailsEnabled: boolean; memberSmsEnabled: boolean }) =>
+  ({ billingEnabled: row.billingEnabled, memberEmailsEnabled: row.memberEmailsEnabled, memberSmsEnabled: row.memberSmsEnabled });
 const dates = (rows: readonly { id: string; revision: number; nextDueOn: string }[]) =>
   rows.map(({ id, revision, nextDueOn }) => ({ id, revision, nextDueOn })).sort((a, b) => a.id.localeCompare(b.id));
 
@@ -69,15 +69,21 @@ export function createGoLiveService(options: {
   scope?: typeof forGym; clock?: Clock; smtpConfigured: (gymId: string) => Promise<boolean>; webhooks?: WebhookHealthQuery;
   /** The runtime's payments resolver; defaults to the gym's stored Stripe settings (demo sandboxes share an install account). */
   paymentsConfigured?: (gymId: string) => Promise<boolean>;
+  /** The SMS resolver's configured check; demo composition supplies its outbox resolver. Absent means unavailable. */
+  smsConfigured?: (gymId: string) => Promise<boolean>;
   restoreCheck?: typeof rerunRestoreReconciliation;
   restoreCheckLease?: RestoreCheckLease;
 }) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const webhooks = options.webhooks ?? createWebhookHealthQuery(scope);
+  const smsConfigured = async (gymId: string) => {
+    try { return Boolean(await options.smsConfigured?.(gymId)); }
+    catch { return false; }
+  };
   async function checklist(gymId: string): Promise<Checklist> {
     // These accessors open their own short transactions, so run outside our scope.
-    const [smtp, webhook, payments] = await Promise.all([options.smtpConfigured(gymId), webhooks.get(gymId),
-      options.paymentsConfigured?.(gymId)]);
+    const [smtp, webhook, payments, sms] = await Promise.all([options.smtpConfigured(gymId), webhooks.get(gymId),
+      options.paymentsConfigured?.(gymId), smsConfigured(gymId)]);
     return scope(gymId, async (tx) => {
       const [gym] = await tx.select(projection).from(gyms).where(eq(gyms.id, gymId));
       if (!gym) throw new AppError('not_found', t('settings/go-live:notFound'));
@@ -108,6 +114,7 @@ export function createGoLiveService(options: {
         item('waivers_signed', !people.length || !currentWaivers.some(w => !w.retiredAt) ? 'not_applicable'
           : ready(await signedLinkWaiversComplete(tx, people.map(p => p.id)))),
         item('smtp_ready', ready(smtp)),
+        item('sms_ready', ready(sms)),
         item('backup_ready', ready(gym.backupPublicKey && gym.backupDestination)),
         item('webhook_ready', !stripe ? 'not_applicable'
           : ready(webhook.lastProcessedAt && !webhook.pendingCount && !webhook.failedCount)),
@@ -155,12 +162,15 @@ export function createGoLiveService(options: {
       const { revision, confirmedPastDueDates, ...changes } = updateGoLiveRequestSchema.parse(input);
       // Opens its own transaction, so resolve it first; only turning billing on reads it.
       const payments = changes.billingEnabled ? await options.paymentsConfigured?.(context.gymId) : undefined;
+      const sms = changes.memberSmsEnabled ? await smsConfigured(context.gymId) : undefined;
       await scope(context.gymId, async (tx) => {
         const [before] = await tx.select(projection).from(gyms).where(eq(gyms.id, context.gymId)).for('update');
         if (!before) throw new AppError('not_found', t('settings/go-live:notFound'));
         const guard = revisionGuard(gyms.revision, revision);
         // Check revisions first, even if the stale request also needs a date confirmation.
         if (before.revision !== revision) assertRevised([]);
+        if (changes.memberSmsEnabled && !sms)
+          throw new AppError('conflict', t('settings/go-live:smsProviderRequired'), { memberSmsEnabled: ['no_provider'] });
         let confirmed: ReturnType<typeof dates> | undefined;
         if (!before.billingEnabled && changes.billingEnabled) {
           // `payments` was read before the lock: settings stored since then also count, so a Stripe save that commits

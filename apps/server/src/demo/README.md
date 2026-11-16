@@ -294,7 +294,12 @@ Runtime and shared composition use these exports:
   runtime exposes it and the server runtime passes it to `configureJoin`, so the
   join page shows the note on its `continue` and `cancelled` steps.
 - `createSeedCommand()` for the CLI registry and a root `pnpm seed <gym-uuid>` script.
-  `runSeeds(context)` applies foundation, members, billing, waivers, mat, portal and website seeds.
+  `runSeeds(context)` applies foundation, members, billing, waivers, mat, portal, website and SMS seeds.
+  The SMS seed enables the sample gym's SMS switch, gives three active members
+  fictional numbers and consent, and captures example texts once. It constructs
+  no provider transport. The outbox lists email and SMS together in descending
+  ID order with a shared cursor; only email has an HTML preview. Detail and
+  preview reads remain scoped to the requesting gym.
   The website seed uploads a fictional academy photo and logo through the trusted
   seed upload resolver, keeping existing images on retries and leaving the public
   website toggle unchanged. Visitor uploads remain disabled.

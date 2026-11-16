@@ -15,7 +15,7 @@ vi.mock('../../lib/api.js', async (original) => ({ ...await original<typeof impo
 const id = (n: number) => '01900000-0000-7000-8000-' + String(n).padStart(12, '0');
 const gym: GymSettings = { id: id(1), name: 'Gym', slug: 'gym', timezone: 'America/Vancouver', currency: 'CAD', address: {}, branding: {},
   websiteEnabled: true, existingSiteUrl: null, bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false,
-  billingEnabled: false, memberEmailsEnabled: false, retryDays: [3, 7], dropInChargeTypeId: null, revision: 4,
+  billingEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: false, smsDailyCap: 1000, retryDays: [3, 7], dropInChargeTypeId: null, revision: 4,
   createdAt: '2026-11-03T12:00:00Z', updatedAt: '2026-11-03T12:00:00Z' };
 const website: WebsiteSettingsData = { revision: 4, tagline: 'Train with friends', about: 'Since 2010', phone: null, email: null,
   accentColor: null, primaryColor: '#123456', logo: false, logoVersion: null, photos: [{ id: id(10), alt: 'Mats' }, { id: id(11), alt: 'Class' }] };

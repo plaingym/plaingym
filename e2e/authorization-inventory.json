@@ -835,6 +835,7 @@
     }
   },
   {"method": "PUT", "path": "/api/settings/integrations/sms", "permission": {"kind": "staff", "capability": "integrations.manage"}},
+  {"method": "PATCH", "path": "/api/settings/integrations/sms/cap", "permission": {"kind": "staff", "capability": "integrations.manage"}},
   {"method": "DELETE", "path": "/api/settings/integrations/sms", "permission": {"kind": "staff", "capability": "integrations.manage"}},
   {
     "method": "GET",

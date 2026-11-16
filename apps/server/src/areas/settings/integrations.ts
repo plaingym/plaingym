@@ -7,7 +7,7 @@ import { AppError, type Clock } from '@plaingym/shared';
 import { backupDestinationSchema, type BackupsIntegration, type ConfirmBackupKeyRequest, type CreateBackupKeyRequest, type EmailIntegration,
   type Integrations, type RemoveEmailIntegrationRequest, type SaveEmailIntegrationRequest, type SaveStripeIntegrationRequest, type StripeTestData,
   type GoogleLogin, type RemoveGoogleLoginRequest, type SaveGoogleLoginRequest,
-  type SaveSmsIntegrationRequest, type RemoveSmsIntegrationRequest,
+  type SaveSmsIntegrationRequest, type RemoveSmsIntegrationRequest, type UpdateSmsDailyCapRequest,
   stripeTestPaymentReference, terminalDisputeStatuses } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
@@ -448,6 +448,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
   }
 
   return {
+    updateSmsDailyCap(context: MutationContext, input: UpdateSmsDailyCapRequest) { return sms.updateDailyCap(context, input); },
     async saveSms(context: MutationContext, input: SaveSmsIntegrationRequest) {
       const test = await sms.save(context, input);
       return { test, integrations: await present(context.gymId, userOf(context)) };

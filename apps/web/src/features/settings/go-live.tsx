@@ -32,7 +32,7 @@ const checkRunning = (body: unknown) => {
 export function GoLiveSettings() {
   const cache = useQueryClient();
   const [lastChecklist, rememberChecklist] = useState<Checklist | null>(null);
-  const [saving, setBusy] = useState(false), [message, setMessage] = useState<'error' | 'timeout' | 'changed' | 'justSaved' | null>(null);
+  const [saving, setBusy] = useState(false), [message, setMessage] = useState<'error' | 'timeout' | 'changed' | 'justSaved' | 'smsProviderRequired' | null>(null);
   const [confirmBilling, setConfirmBilling] = useState(false), [confirmed, setConfirmed] = useState(false);
   const [checking, setChecking] = useState(false), [checkError, setCheckError] = useState<'reconcileError' | 'reconcileTimeout' | 'reconcileBusy' | null>(null);
   // The switches save the gym revision that every section of the page shares, so another section's save doesn't stale them.
@@ -47,8 +47,8 @@ export function GoLiveSettings() {
     cache.setQueryData(goLiveKey(next.revision, gym.epoch), next);
   };
   const adopt = (data: unknown, current: GymSettings): GymSettings => {
-    const { revision, billingEnabled, memberEmailsEnabled } = parseChecklist(data);
-    return { ...current, revision, billingEnabled, memberEmailsEnabled };
+    const { revision, billingEnabled, memberEmailsEnabled, memberSmsEnabled } = parseChecklist(data);
+    return { ...current, revision, billingEnabled, memberEmailsEnabled, memberSmsEnabled };
   };
   // The readiness items follow the settings: fetch the checklist again when another section's save moved the revision.
   // Until it arrives the switches and past-due dates on screen are older than the revision they would save, so they wait.
@@ -85,6 +85,10 @@ export function GoLiveSettings() {
       const result = await gym.save((revision, signal) => api.PATCH('/api/settings/go-live', { signal, body: { revision, [name]: !checklist[name],
         ...(confirmDates ? { confirmedPastDueDates: checklist.pastDueMemberships.map(({ id, revision, nextDueOn }) => ({ id, revision, nextDueOn })) } : {}),
       } }), { adopt, readAt: checklist.revision });
+      const reasons = (result.error as { error?: { details?: { memberSmsEnabled?: unknown } } } | undefined)?.error?.details?.memberSmsEnabled;
+      if (result.status === 409 && Array.isArray(reasons) && reasons.includes('no_provider')) {
+        setMessage('smsProviderRequired'); reloadChecklist(); return;
+      }
       if (result.status === 409) { conflict(result, checklist.revision); return; }
       if (result.status >= 300) throw new Error();
       setChecklist(parseChecklist(result.data));
@@ -117,11 +121,11 @@ export function GoLiveSettings() {
       <Button variant="outline" className="mt-3 sm:ml-3 sm:mt-0" onClick={retry}>{label('retry')}</Button></Alert>
       : message && <Alert variant="error" focusOnReveal={!confirmBilling}>{label(message)}</Alert>}
     {!checklist || !settings ? (busy || gym.loading) && <LoadingState label={label('loading')}/> : <>
-      <ul className="space-y-3">{(['billingEnabled', 'memberEmailsEnabled'] as const).map((name) => {
+      <ul className="space-y-3">{(['billingEnabled', 'memberEmailsEnabled', 'memberSmsEnabled'] as const).map((name) => {
         const on = checklist[name], action = label(on ? 'turnOff' : 'turnOn');
         return <li key={name} className="flex flex-col gap-3 rounded-lg border border-border p-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0"><p className="font-medium">{label(name)}: <span>{label(on ? 'on' : 'off')}</span></p>
-            <p className="text-sm text-muted-foreground">{label(name === 'billingEnabled' ? 'billingHelp' : 'memberEmailsHelp')}</p></div>
+            <p className="text-sm text-muted-foreground">{label(name === 'billingEnabled' ? 'billingHelp' : name === 'memberEmailsEnabled' ? 'memberEmailsHelp' : 'memberSmsHelp')}</p></div>
           <Button className="shrink-0" variant={on ? 'outline' : 'default'} disabled={locked} aria-pressed={on}
             aria-label={label('toggleNamed', { action, name: label(name) })} onClick={() => void toggle(name)}>{action}</Button>
         </li>;

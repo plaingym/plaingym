@@ -39,7 +39,7 @@ prefixed body over 1,600 characters, then sends after these checks commit:
   same number check. Its consent covers supplied members of that household even
   if they have no phone. Household consent never authorizes announcements.
 * A slot under a row lock on `sms_daily_usage` for the gym's local calendar day.
-  The positive cap defaults to 1,000. `sent` counts reserved provider attempts;
+  The cap is owner-editable from 1 to 100,000 and defaults to 1,000. `sent` counts reserved provider attempts;
   failures and unknown outcomes retain their slots conservatively. `refused`
   counts attempts suppressed by the cap. Retries of accepted delivery keys do
   not enter this wrapper or consume another slot.

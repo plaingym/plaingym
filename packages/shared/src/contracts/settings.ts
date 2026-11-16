@@ -55,14 +55,16 @@ export const billingRulesSchema = z.strictObject({
 export const dropInSettingsSchema = z.strictObject({
   dropInChargeTypeId: idSchema.nullable().describe('One of the gym\'s own charge types, or null for no listed drop-in fee.'),
 });
-export const goLiveSwitchesSchema = z.strictObject({ billingEnabled: z.boolean(), memberEmailsEnabled: z.boolean() });
+export const goLiveSwitchesSchema = z.strictObject({ billingEnabled: z.boolean(), memberEmailsEnabled: z.boolean(), memberSmsEnabled: z.boolean().default(false) });
+export const smsDailyCapSchema = z.int().min(1).max(100_000);
+export const updateSmsDailyCapRequestSchema = z.strictObject({ revision: revisionSchema, smsDailyCap: smsDailyCapSchema });
 /** An allowlist projection: credentials, PIN/QR keys, and opaque settings never leave the service. */
 export const gymSettingsSchema = z.strictObject({
   id: idSchema, name, slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/), timezone: storedTimezoneSchema,
   address: gymAddressSchema, branding: gymBrandingSchema,
   websiteEnabled: z.boolean(), existingSiteUrl: z.url({ protocol: /^https?$/ }).nullable(),
   currency: currencySchema, ...bookingRulesSchema.shape, ...billingRulesSchema.shape, ...dropInSettingsSchema.shape,
-  ...goLiveSwitchesSchema.shape, revision: revisionSchema, createdAt: instantSchema, updatedAt: instantSchema,
+  ...goLiveSwitchesSchema.shape, smsDailyCap: smsDailyCapSchema.default(1000), revision: revisionSchema, createdAt: instantSchema, updatedAt: instantSchema,
 });
 /** A change names the new timezone under the shared rule; leave `timezone` out to keep a stored zone as it is. */
 export const updateGymSettingsRequestSchema = gymSettingsSchema.pick({
@@ -79,10 +81,10 @@ export const updateGymCurrencyRequestSchema = z.strictObject({ revision: revisio
 /** A confirmation binds the reviewed dates to the membership revisions the owner saw. */
 export const goLivePastDueDateSchema = z.strictObject({ id: idSchema, revision: revisionSchema, nextDueOn: z.iso.date() });
 export const updateGoLiveRequestSchema = goLiveSwitchesSchema.partial().extend({
-  revision: revisionSchema, confirmedPastDueDates: z.array(goLivePastDueDateSchema).optional(),
-}).refine((value) => value.billingEnabled !== undefined || value.memberEmailsEnabled !== undefined, 'Supply at least one change');
+  memberSmsEnabled: z.boolean().optional(), revision: revisionSchema, confirmedPastDueDates: z.array(goLivePastDueDateSchema).optional(),
+}).refine((value) => value.billingEnabled !== undefined || value.memberEmailsEnabled !== undefined || value.memberSmsEnabled !== undefined, 'Supply at least one change');
 export const goLiveChecklistItemSchema = z.strictObject({
-  id: z.enum(['gym_details', 'members_imported', 'schedule_ready', 'stripe_ready', 'cards_collected', 'waivers_signed', 'smtp_ready', 'backup_ready', 'webhook_ready', 'reconciliation_complete', 'past_due_dates']),
+  id: z.enum(['gym_details', 'members_imported', 'schedule_ready', 'stripe_ready', 'cards_collected', 'waivers_signed', 'smtp_ready', 'sms_ready', 'backup_ready', 'webhook_ready', 'reconciliation_complete', 'past_due_dates']),
   status: z.enum(['ready', 'needs_attention', 'not_applicable']), message: z.string(),
 });
 export const goLiveChecklistResponseSchema = z.strictObject({ data: z.strictObject({
@@ -100,6 +102,8 @@ export const gymSettingsResponseSchema = z.strictObject({ data: gymSettingsSchem
 export const deleteGymRequestSchema = z.strictObject({ revision: revisionSchema, confirmation: z.literal('DELETE') });
 export const deleteGymResponseSchema = z.strictObject({ data: z.strictObject({ deleted: z.literal(true) }) });
 export const settingsContracts = {
+  updateSmsDailyCap: { method: 'patch', path: '/api/settings/integrations/sms/cap', permission: { kind: 'staff', capability: 'integrations.manage' },
+    body: updateSmsDailyCapRequestSchema, response: gymSettingsResponseSchema },
   deleteGym: { method: 'delete', path: '/api/settings/gym', permission: { kind: 'staff', capability: 'ownership.transfer' },
     body: deleteGymRequestSchema, response: deleteGymResponseSchema },
   get: { method: 'get', path: '/api/settings', permission: manage, response: gymSettingsResponseSchema },
@@ -134,4 +138,5 @@ export type UpdateGymCurrencyRequest = z.infer<typeof updateGymCurrencyRequestSc
 export type DropInSettings = z.infer<typeof dropInSettingsSchema>;
 export type UpdateDropInSettingsRequest = z.infer<typeof updateDropInSettingsRequestSchema>;
 export type UpdateGoLiveRequest = z.infer<typeof updateGoLiveRequestSchema>;
+export type UpdateSmsDailyCapRequest = z.infer<typeof updateSmsDailyCapRequestSchema>;
 export type GoLiveChecklistItem = z.infer<typeof goLiveChecklistItemSchema>;

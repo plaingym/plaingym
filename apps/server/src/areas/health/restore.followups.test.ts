@@ -14,7 +14,7 @@ const f = useRestoreFixture({ shared: true });
 let snapshotId: string;
 beforeAll(async () => {
   snapshotId = (await f.prepare(async () => {
-    await f.source.forGym(f.gymId, tx => tx.update(gyms).set({ memberEmailsEnabled: true,
+    await f.source.forGym(f.gymId, tx => tx.update(gyms).set({ memberEmailsEnabled: true, memberSmsEnabled: true,
       settings: { kept: true, manualBackup: { requestId: uuidv7(), status: 'running',
         requestedAt: f.clock.now().toISOString(), completedAt: null, snapshotId: null } } }).where(eq(gyms.id, f.gymId)));
     return f.backup().snapshot();
@@ -24,7 +24,7 @@ describe('restore follow-up safety', () => {
   it('turns member emails off with billing, clears old jobs, and Go live explicitly enables emails again', async () => {
     await f.restore().restore(snapshotId, f.identity);
     const { gym } = await f.secretRows();
-    expect(gym).toMatchObject({ billingEnabled: false, memberEmailsEnabled: false,
+    expect(gym).toMatchObject({ billingEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: true,
       settings: { backupPruningHeld: true, kept: true } });
     expect(gym.settings).not.toHaveProperty('manualBackup');
     const b = await restoredBilling(f);

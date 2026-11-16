@@ -1,11 +1,11 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Going live with billing
 
-A new install starts with **billing and member emails off**, so you can import
+A new install starts with **billing, member emails and member texts off**, so you can import
 members, set up plans and check everything while your old system keeps running. A
 restored install also starts with both off. Shut down the old server before turning
 either back on, and confirm it is gone in the backups section to release the
-pruning hold ([restoring.md](restoring.md#what-to-check-afterwards)). This guide takes you from there to charging members. The two switches
+pruning hold ([restoring.md](restoring.md#what-to-check-afterwards)). Member texts keep their restored switch, so shut down the old server first. This guide takes you from there to charging members. The three switches
 are on **Settings → Go live**.
 
 ## What each switch does
@@ -14,6 +14,7 @@ are on **Settings → Go live**.
 | :--- | :--- | :--- |
 | **Billing** | No new card charges: no automatic collection, no retries, no staff card charges, no pay links. Cash and check payments and refunds are still recorded. Payments already started at Stripe still finish. | The daily charge run collects what is due, retries failures and staff can charge cards. |
 | **Member emails** | No receipts, payment reminders, card-expiry notices, campaign links or other emails to members. Staff invitations, sign-in links and security emails to owners continue. | Those emails go out. |
+| **Member texts** | No member texts. Owner provider tests still work. | Texts require a saved provider, consent and a slot under the daily cap; see [turning on member texts](self-hosting.md#turning-on-member-texts). |
 
 Turning billing off later pauses new charges at once; it is the emergency brake.
 

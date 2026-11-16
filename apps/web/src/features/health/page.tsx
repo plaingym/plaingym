@@ -29,6 +29,7 @@ function detailValue(key: string, value: unknown, timezone?: string) {
   if (typeof value === 'boolean') return label(value ? 'yes' : 'no');
   if (typeof value === 'number') return key.endsWith('Bytes') ? bytesLabel(value) : value.toLocaleString();
   if (key === 'result') return label('result.' + String(value));
+  if (key === 'lastTestResult') return label('sms.test.' + String(value));
   if (key.endsWith('At') && typeof value === 'string') return <time dateTime={value}>{instantLabel(value, timezone)}</time>;
   if (key.endsWith('Url') && typeof value === 'string') return <a href={value} className="underline" target="_blank" rel="noreferrer">{label('field.' + key)}</a>;
   return String(value);
@@ -39,6 +40,7 @@ function detailValue(key: string, value: unknown, timezone?: string) {
  */
 function detailRows(tile: HealthTile): [key: string, label: string, value: unknown][] {
   if (!tile.details) return [];
+  if (tile.id === 'sms') return Object.entries(tile.details).map(([key, value]) => [key, label('sms.field.' + key), value]);
   if (tile.id === 'disk') return [
     ['uploadsTotalBytes', label('field.uploadsTotalBytes'), tile.details.uploads.totalBytes],
     ['uploadsAvailableBytes', label('field.uploadsAvailableBytes'), tile.details.uploads.availableBytes],

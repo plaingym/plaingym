@@ -2,11 +2,19 @@
 
 # Go-live switches
 
-`createGoLiveService({ smtpConfigured, scope, clock, webhooks })` supplies the go-live
+`createGoLiveService({ smtpConfigured, smsConfigured, scope, clock, webhooks })` supplies the go-live
 GET and PATCH contracts. Runtime composition calls `configureGoLive` with the gym's
 SMTP resolver (or the demo transport's configured check). Until configured, routes
 return 503. Route generation can discover both endpoints without opening a database
 or loading credentials.
+
+`memberSmsEnabled` is separate from member email and defaults off. Enabling it
+requires the requesting gym's saved, readable SMS provider (`SmsResolver.configured`);
+demo composition supplies its outbox resolver. An absent or failed configured
+check refuses enabling. Disabling needs no provider. The gym revision guards the
+change and `settings.go_live.updated` audits all three switches. `sms_ready`
+reports provider readiness independently of the switch and individual consent.
+Restore keeps the saved SMS switch; shut down the old server before resuming work.
 
 Reads return only switches, revision, and the contract's complete readiness checklist.
 Readiness checks are scoped to the gym: setup completion, non-erased members, class

@@ -7,7 +7,7 @@ import type { RoutePermission } from '../permissions.js';
 /** Every built-in tile is present even while its provider is not configured. */
 export const healthTileIds = [
   'last_backup', 'failed_jobs', 'smtp', 'disk', 'version', 'stripe_webhooks',
-  'last_charge_run', 'automatic_updates', 'update_available', 'google_login',
+  'last_charge_run', 'automatic_updates', 'update_available', 'google_login', 'sms',
 ] as const;
 export const healthTileIdSchema = z.enum(healthTileIds);
 export const healthStatusSchema = z.enum(['healthy', 'warning', 'error', 'not_configured', 'unavailable']);
@@ -24,6 +24,10 @@ export const failedJobsHealthDetailsSchema = z.strictObject({
   failed: count, pending: count, running: count, oldestFailureAt: instantSchema.nullable(),
 });
 export const smtpHealthDetailsSchema = z.strictObject({ configured: z.boolean(), lastTestAt: instantSchema.nullable() });
+export const smsHealthDetailsSchema = z.strictObject({
+  configured: z.boolean(), memberSmsEnabled: z.boolean(), sentToday: count, refusedToday: count,
+  smsDailyCap: count.positive(), lastTestAt: instantSchema.nullable(), lastTestResult: z.enum(['sent', 'failed']).nullable(),
+});
 const diskVolumeDetailsSchema = z.strictObject({
   totalBytes: count.positive(), availableBytes: count,
 }).refine((value) => value.availableBytes <= value.totalBytes, 'Available space exceeds total space');
@@ -62,6 +66,7 @@ export const healthTileSchema = z.discriminatedUnion('id', [
   z.strictObject({ ...common, id: z.literal('last_backup'), details: backupHealthDetailsSchema.nullable() }),
   z.strictObject({ ...common, id: z.literal('failed_jobs'), details: failedJobsHealthDetailsSchema.nullable() }),
   z.strictObject({ ...common, id: z.literal('smtp'), details: smtpHealthDetailsSchema.nullable() }),
+  z.strictObject({ ...common, id: z.literal('sms'), details: smsHealthDetailsSchema.nullable() }),
   z.strictObject({ ...common, id: z.literal('disk'), details: diskHealthDetailsSchema.nullable() }),
   z.strictObject({ ...common, id: z.literal('version'), details: versionHealthDetailsSchema.nullable() }),
   z.strictObject({ ...common, id: z.literal('stripe_webhooks'), details: webhookHealthDetailsSchema.nullable() }),

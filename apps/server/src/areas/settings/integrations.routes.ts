@@ -6,6 +6,7 @@ import type { RequestEnvironment } from '../../core/context.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { route, type RouteRegistration } from '../../core/registry.js';
 import { integrationsService, type IntegrationsService } from './integrations.js';
+import { createSmsDailyCapRoutes } from './integrations.sms.js';
 
 /** The signed-in owner of the resolved gym; `route()` has already checked `integrations.manage`. */
 function owner(c: Context<RequestEnvironment>): MutationContext & { actor: { kind: 'user'; userId: string } } {
@@ -21,6 +22,7 @@ export function createIntegrationsRoutes(service?: IntegrationsService): RouteRe
   const current = () => service ?? integrationsService();
   const { get, saveEmail, removeEmail, saveSms, removeSms, saveStripe, createBackupKey, confirmBackupKey, getGoogle, saveGoogle, removeGoogle } = integrationsContracts;
   return [
+    ...createSmsDailyCapRoutes(current),
     route({ ...get, responses: response(get.response, 'Email, SMS, payments and backups') }, async (c) => {
       const context = owner(c);
       return c.json({ data: await current().get(context.gymId, context.actor.userId) }, 200);

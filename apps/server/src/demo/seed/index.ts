@@ -11,6 +11,7 @@ import type { BillingSeedProvider } from './billing-payments.js';
 import { portalSeed } from './portal.js';
 import { waiversSeed } from './waivers.js';
 import { websiteSeed } from './website.js';
+import { smsSeed } from './sms.js';
 import type { WaiverOptions } from '../../areas/waivers/waivers.js';
 import { createRuntimeUploads } from '../../infra/storage/runtime.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
@@ -29,7 +30,7 @@ export function createSeeds(options: SeedOptions): readonly SeedStep[] {
       (options.log ?? (line => process.stderr.write(line + '\n')))('Demo billing seed skipped: DEMO_STRIPE_TEST_KEY is not configured; sandbox billing is not configured.');
     },
   };
-  return [foundationSeed(options), membersSeed(options), billing, waiversSeed(options), matSeed(options), portalSeed(options), websiteSeed(options)];
+  return [foundationSeed(options), membersSeed(options), billing, waiversSeed(options), matSeed(options), portalSeed(options), websiteSeed(options), smsSeed(options)];
 }
 /** Each step owns its transactions and must tolerate retrying the seed. */
 export async function runSeeds(context: GymContext, steps?: readonly SeedStep[], options: Partial<SeedOptions> & { env?: NodeJS.ProcessEnv } = {}): Promise<void> {

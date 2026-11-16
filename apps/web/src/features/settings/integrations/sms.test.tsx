@@ -4,9 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { Integrations } from '@plaingym/shared/contracts';
-import { integrations, renderSection, reply, serve } from './fixtures.test-helper.js';
+import { integrations, settings, renderSection, reply, serve } from './fixtures.test-helper.js';
 
-const client = vi.hoisted(() => ({ GET: vi.fn(), PUT: vi.fn(), DELETE: vi.fn() }));
+const client = vi.hoisted(() => ({ GET: vi.fn(), PUT: vi.fn(), DELETE: vi.fn(), PATCH: vi.fn() }));
 vi.mock('../../../lib/api.js', async original => ({ ...await original<typeof import('../../../lib/api.js')>(), api: client, createApiClient: () => client }));
 const accountSid = 'AC' + '1'.repeat(32), apiKey = 'SK' + '2'.repeat(32), messagingServiceSid = 'MG' + '3'.repeat(32);
 const configured: Integrations = { ...integrations, revision: 4, sms: { ...integrations.sms, configured: true, accountSid,
@@ -24,6 +24,18 @@ async function fill(user: ReturnType<typeof userEvent.setup>) {
   return form;
 }
 describe('SMS integration form', () => {
+  it('saves the cap through the shared settings revision, without sending a provider test', async () => {
+    const user = userEvent.setup(); renderSection();
+    const field = await screen.findByRole('spinbutton', { name: 'Daily text cap' });
+    expect((field as HTMLInputElement).value).toBe('1000');
+    expect(field.getAttribute('min')).toBe('1'); expect(field.getAttribute('max')).toBe('100000');
+    await user.clear(field); await user.type(field, '12');
+    client.PATCH.mockResolvedValue(reply(200, { data: { ...settings, revision: 4, smsDailyCap: 12 } }));
+    await user.click(screen.getByRole('button', { name: 'Save daily text cap' }));
+    expect(client.PATCH).toHaveBeenCalledExactlyOnceWith('/api/settings/integrations/sms/cap', { signal: expect.any(AbortSignal), body: { revision: 3, smsDailyCap: 12 } });
+    expect((await screen.findByRole('status')).textContent).toContain('daily text cap is saved');
+    expect(client.PUT).not.toHaveBeenCalled();
+  });
   it('sends the typed recipient and clears the secret after saving', async () => {
     const user = userEvent.setup(); renderSection(); const form = await fill(user);
     client.PUT.mockResolvedValue(reply(200, { data: { test: 'sent', integrations: configured } }));

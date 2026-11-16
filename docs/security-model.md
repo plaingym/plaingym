@@ -652,6 +652,13 @@ Old versions and documents referenced by signatures remain retained after retire
   texts are captured only in the scoped outbox, whose body is excluded from exports.
   SMS adapter errors and suppression logs never include phone numbers, bodies,
   provider replies or credentials (`apps/server/src/infra/sms/README.md`).
+  The go-live SMS switch requires `go_live.manage` and a readable provider before
+  enabling; disabling requires no provider. Cap edits require `integrations.manage`,
+  use the gym revision and audit only the old and new cap (1–100,000, default 1,000).
+  Health exposes only configuration status, switch, cap, local-day counts and last
+  test metadata, never recipients. Outbox list/detail/preview require `settings.manage`
+  in the requesting demo gym; texts have no HTML preview. Restore preserves the
+  SMS switch from the snapshot.
 * **Delivery records.** `email_deliveries`, the record that keeps each email from
   being sent twice, holds no plain hash of a member's address once the member is
   erased, so nobody holding the database or a backup, without the install's

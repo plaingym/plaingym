@@ -1,4 +1,9 @@
 {
+  "sms.capForm": "SMS daily cap",
+  "sms.dailyCap": "Daily text cap",
+  "sms.capHelp": "From 1 to 100,000 send attempts per day in the gym's timezone (default 1,000). Failed or uncertain attempts also count. Further member texts are refused and counted in System health. Owner test texts are exempt.",
+  "sms.saveCap": "Save daily text cap",
+  "sms.capSaved": "The daily text cap is saved.",
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
   "title": "Integrations",
   "intro": "Only owners can change these. Saved passwords and keys are never shown again.",

@@ -15,7 +15,7 @@ const projection = {
   websiteEnabled: gyms.websiteEnabled, existingSiteUrl: gyms.existingSiteUrl, currency: gyms.currency,
   bookingWindowDays: gyms.bookingWindowDays, cancellationCutoffMinutes: gyms.cancellationCutoffMinutes,
   openMatCountsAsClass: gyms.openMatCountsAsClass,
-  billingEnabled: gyms.billingEnabled, memberEmailsEnabled: gyms.memberEmailsEnabled,
+  billingEnabled: gyms.billingEnabled, memberEmailsEnabled: gyms.memberEmailsEnabled, memberSmsEnabled: gyms.memberSmsEnabled, smsDailyCap: gyms.smsDailyCap,
   retryDays: gyms.retryDays, dropInChargeTypeId: gyms.dropInChargeTypeId,
   revision: gyms.revision, createdAt: gyms.createdAt, updatedAt: gyms.updatedAt,
 };
@@ -111,8 +111,7 @@ export function createGymSettingsAccessor(options: Parameters<typeof createSetti
     const { value, memberSmsEnabled, smsDailyCap } = await scope(gymId, async tx => {
       const [row] = await tx.select({ ...projection, memberSmsEnabled: gyms.memberSmsEnabled, smsDailyCap: gyms.smsDailyCap }).from(gyms).where(eq(gyms.id, gymId));
       if (!row) throw new AppError('not_found', 'Gym not found');
-      const { memberSmsEnabled, smsDailyCap, ...publicFields } = row;
-      return { value: present(publicFields), memberSmsEnabled, smsDailyCap };
+      return { value: present(row), memberSmsEnabled: row.memberSmsEnabled, smsDailyCap: row.smsDailyCap };
     });
     return { gymId: value.id, timezone: value.timezone, currency: value.currency,
       memberSmsEnabled, smsDailyCap, country: value.address.country ?? null,

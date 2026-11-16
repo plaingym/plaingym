@@ -231,6 +231,7 @@ const examples: Record<HealthTile['id'], NonNullable<HealthTile['details']>> = {
   automatic_updates: { enabled: true, lastAttemptAt: null, result: 'up_to_date', fromVersion: null, toVersion: null },
   update_available: { currentVersion: '0.1.0', latestVersion: '0.1.0', available: false, releaseUrl: null },
   google_login: { configured: true },
+  sms: { configured: true, memberSmsEnabled: true, sentToday: 0, refusedToday: 0, smsDailyCap: 1000, lastTestAt: null, lastTestResult: null },
 };
 describe('generic provider composition', () => {
   it.each(healthTileIds)('accepts healthy and failing states for %s through the frozen provider interface', async (id) => {
@@ -251,7 +252,7 @@ describe('generic provider composition', () => {
     expect(result.data.tiles.map((t) => t.id)).toEqual(healthTileIds);
     expect(result.data.tiles.find((t) => t.id === 'smtp')).toMatchObject({ status: 'unavailable' });
     expect(result.data.tiles.find((t) => t.id === 'disk')).toMatchObject({ status: 'unavailable' });
-    expect(result.data.tiles.filter((t) => t.status === 'not_configured')).toHaveLength(8);
+    expect(result.data.tiles.filter((t) => t.status === 'not_configured')).toHaveLength(healthTileIds.length - 2);
     expect(JSON.stringify(result)).not.toContain('SMTP credentials');
   });
   it('does not call providers for a denied role and rejects duplicate registration', async () => {

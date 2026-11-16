@@ -12,13 +12,13 @@ import { canStaff, staffRoles } from '../permissions.js';
 const settings = {
   id: '019a08bf-1234-7000-8000-000000000001', name: 'The Gym', slug: 'the-gym', timezone: 'America/Vancouver',
   address: {}, branding: {}, websiteEnabled: false, existingSiteUrl: null, currency: 'CAD',
-  bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false, billingEnabled: false, memberEmailsEnabled: false, retryDays: [3, 7], dropInChargeTypeId: null,
+  bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false, billingEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: false, smsDailyCap: 1000, retryDays: [3, 7], dropInChargeTypeId: null,
   revision: 1, createdAt: '2026-10-21T20:00:00Z', updatedAt: '2026-10-21T20:00:00Z',
 };
 
 describe('gym settings contracts', () => {
   it('returns the same go-live checklist after reads and saves, including billing readiness', () => {
-    const response = { data: { revision: 2, billingEnabled: false, memberEmailsEnabled: true,
+    const response = { data: { revision: 2, billingEnabled: false, memberEmailsEnabled: true, memberSmsEnabled: false,
       items: [{ id: 'webhook_ready', status: 'ready', message: 'Ready' },
         { id: 'reconciliation_complete', status: 'needs_attention', message: 'Resolve pending items' }] } };
     expect(settingsContracts.updateGoLive.response).toBe(settingsContracts.goLiveChecklist.response);
@@ -30,7 +30,7 @@ describe('gym settings contracts', () => {
     expectTypeOf<Omit<GymSettings, 'createdAt' | 'updatedAt'>>().toExtend<
       Pick<Row, Exclude<keyof GymSettings, 'createdAt' | 'updatedAt'>>>();
     expectTypeOf<BookingRules>().toEqualTypeOf<Pick<Row, 'bookingWindowDays' | 'cancellationCutoffMinutes' | 'openMatCountsAsClass'>>();
-    expectTypeOf<GoLiveSwitches>().toEqualTypeOf<Pick<Row, 'billingEnabled' | 'memberEmailsEnabled'>>();
+    expectTypeOf<GoLiveSwitches>().toEqualTypeOf<Pick<Row, 'billingEnabled' | 'memberEmailsEnabled' | 'memberSmsEnabled'>>();
   });
   it.each(['stripeConfig', 'smtpConfig', 's3Config', 'qrKey', 'backupBlobKey', 'settings', 'pinHash', 'tokenHash'])(
     'rejects secret or opaque field %s instead of returning it', (field) => {
@@ -100,8 +100,9 @@ describe('gym settings contracts', () => {
     expect(updateGymSettingsRequestSchema.parse({ revision: 1, name: 'New' })).toEqual({ revision: 1, name: 'New' });
     expect(gymSettingsSchema.parse({ ...settings, timezone: 'CET' }).timezone).toBe('CET');
   });
-  it.each(Object.entries(settingsContracts))('%s allows managers and denies coaches/front desk', (_operation, contract) => {
-    for (const role of staffRoles) expect(canStaff([role], contract.permission.capability)).toBe((contract.permission.capability === 'ownership.transfer' ? ['owner'] : ['owner', 'admin']).includes(role));
+  it.each(Object.entries(settingsContracts))('%s applies its declared staff capability', (_operation, contract) => {
+    const ownerOnly = contract.permission.capability === 'ownership.transfer' || contract.permission.capability === 'integrations.manage';
+    for (const role of staffRoles) expect(canStaff([role], contract.permission.capability)).toBe((ownerOnly ? ['owner'] : ['owner', 'admin']).includes(role));
   });
 });
 

@@ -42,7 +42,7 @@ it('starts a sandbox with one-click roles, the test-card join walkthrough and th
   expect(screen.queryByRole('heading', { name: 'Members who joined' })).toBeNull();
   const notice = screen.getByText(/Using it moves that time later/);
   expect(notice.textContent).toContain(instantLabel('2099-11-15T16:12:00.000Z'));
-  expect(notice.textContent).toContain('Email stays in the demo outbox and uploads are disabled.');
+  expect(notice.textContent).toContain('Emails and texts stay in the demo outbox and uploads are disabled.');
   expect(notice).toBe(document.querySelector('main')?.firstElementChild?.lastElementChild);
   expect(notice.textContent).not.toContain('after 24 hours');
 });

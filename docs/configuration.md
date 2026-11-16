@@ -112,6 +112,14 @@ Integrations**, take precedence over these install-wide values; removing
 them there falls back to these. Use a sending service (Postmark, Brevo, Amazon SES or
 similar): mail sent directly from a server usually lands in spam.
 
+Member SMS is a separate **Settings → Go-live** switch, off by default and
+enabled only with a saved readable provider. **Settings → Integrations → SMS**
+sets a daily cap from 1 to 100,000 attempts (default 1,000). The cap uses the gym's
+timezone and includes failed or uncertain attempts. **System health → SMS**
+reports the switch, cap, today's attempts and refusals, and the last owner test.
+Owner test texts bypass member switches, consent and the cap. Demo texts are
+captured beside emails in the demo outbox without contacting a provider.
+
 In multi-gym mode gym owners change email, SMS and payments only when
 `GYM_INTEGRATIONS=gym`; see [Tenancy and demo](#tenancy-and-demo). A gym's own SMTP server there must
 resolve only to public addresses, whichever way the variable is set. The check uses

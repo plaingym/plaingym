@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { statfs } from 'node:fs/promises';
-import { desc, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { runningVersion } from './version.js';
-import { auditEvents, forGym } from '@plaingym/db';
+import { auditEvents, forGym, smsDailyUsage } from '@plaingym/db';
+import { localDate } from '@plaingym/shared/time';
 import { PostgresJobStatsQuery } from '../../infra/jobs/postgres.js';
 import type { JobStatsQuery } from '../../core/interfaces/job-stats.js';
 import { sourceUrl } from '../../core/source-link.js';
 import { restoreStagingDirectory } from '../../core/maintenance-credentials.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
 import { createSmtpResolver } from '../settings/smtp.js';
+import { createSmsResolver } from '../settings/sms.js';
+import { createGymSettingsAccessor } from '../settings/settings.js';
 import { createGoogleClientResolver } from '../settings/google-login.js';
 import { healthProvider, statusMessage } from './status.js';
 import { createBackupHealthProvider } from './status-backups.js';
@@ -46,6 +49,8 @@ export function createStatusProviders(options: StatusOptions = {}) {
   let key: Buffer | undefined;
   const encryptionKey = () => key ??= parseEncryptionKey(env.APP_ENCRYPTION_KEY ?? '');
   let smtp: ReturnType<typeof createSmtpResolver> | undefined;
+  let sms: ReturnType<typeof createSmsResolver> | undefined;
+  const settings = createGymSettingsAccessor({ scope });
   return [createBackupHealthProvider({ env }), createUpdateAvailableProvider({ env }),
     healthProvider('failed_jobs', async (context) => {
       const stats = await jobs.get(context.gymId);
@@ -67,6 +72,34 @@ export function createStatusProviders(options: StatusOptions = {}) {
       return { id: 'smtp', status: unreadable || test?.failed ? 'warning' : configured ? 'healthy' : 'not_configured', checkedAt: context.clock.now().toISOString(),
         details: { configured, lastTestAt: test?.at ?? null }, message: message
           + (unreadable ? ' ' + statusMessage('smtpUnreadable') : '') + (test?.failed ? ' ' + statusMessage('smtpTestFailed') : '') };
+    }),
+    healthProvider('sms', async context => {
+      const gym = await settings.get(context.gymId), now = context.clock.now();
+      const resolver = sms ??= createSmsResolver({ key: env.DEMO_MODE === 'true' ? Buffer.alloc(32) : encryptionKey(),
+        tenancy: env.TENANCY === 'multi' ? 'multi' : 'single', demo: env.DEMO_MODE === 'true', scope });
+      const { source, unreadable } = await resolver.status(context.gymId), configured = source !== null;
+      const { usage, test } = await scope(context.gymId, async tx => {
+        const [usage] = await tx.select({ sent: smsDailyUsage.sent, refused: smsDailyUsage.refused }).from(smsDailyUsage)
+          .where(and(eq(smsDailyUsage.gymId, context.gymId), eq(smsDailyUsage.day, localDate(now, gym.timezone))));
+        const rows = await tx.select({ action: auditEvents.action, after: auditEvents.after, occurredAt: auditEvents.occurredAt }).from(auditEvents)
+          .where(inArray(auditEvents.action, ['integrations.sms_tested', 'integrations.sms_removed']))
+          .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1);
+        const row = rows[0], after = row?.after as { test?: unknown } | null;
+        const test: { at: string; result: 'sent' | 'failed' } | null = source === 'demo' || row?.action !== 'integrations.sms_tested' || (after?.test !== 'sent' && after?.test !== 'failed')
+          ? null : { at: row.occurredAt.toISOString(), result: after.test };
+        return { usage, test };
+      });
+      const refused = usage?.refused ?? 0;
+      const warning = unreadable || refused > 0 || test?.result === 'failed';
+      return { id: 'sms', status: warning ? 'warning' : !configured ? 'not_configured' : gym.memberSmsEnabled ? 'healthy' : 'warning',
+        checkedAt: now.toISOString(), details: { configured, memberSmsEnabled: gym.memberSmsEnabled,
+          sentToday: usage?.sent ?? 0, refusedToday: refused, smsDailyCap: gym.smsDailyCap,
+          lastTestAt: test?.at ?? null, lastTestResult: test?.result ?? null },
+        message: statusMessage(source === 'demo' ? 'smsDemo' : configured ? 'smsConfigured' : 'smsMissing')
+          + (!gym.memberSmsEnabled ? ' ' + statusMessage('smsOff') : '')
+          + (unreadable ? ' ' + statusMessage('smsUnreadable') : '')
+          + (refused ? ' ' + statusMessage('smsCapReached') : '')
+          + (test?.result === 'failed' ? ' ' + statusMessage('smsTestFailed') : '') };
     }),
     // A malformed GOOGLE_* variable no longer stops the app: this tile says which one and why, until it is fixed.
     healthProvider('google_login', async (context) => {

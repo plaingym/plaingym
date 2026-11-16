@@ -69,6 +69,33 @@ const input = (revision: number, overrides: Record<string, unknown> = {}) => ({ 
 const save = async (app = server(), overrides: Record<string, unknown> = {}) => call(app, 'PUT', input((await row()).revision, overrides));
 
 describe('SMS integration settings', () => {
+  it.each(staffRoles)('allows only the owner to change the SMS daily cap: %s', async role => {
+    const result = await call(server({ role }), 'PATCH', { revision: (await row()).revision, smsDailyCap: 12 }, '/sms/cap');
+    expect(result.status).toBe(role === 'owner' ? 200 : 403);
+    expect((await row()).smsDailyCap).toBe(role === 'owner' ? 12 : 1000);
+    expect(send).not.toHaveBeenCalled();
+  });
+  it('validates cap bounds, checks the gym revision, and audits only the saved cap', async () => {
+    const app = server(), revision = (await row()).revision;
+    for (const smsDailyCap of [0, -1, 1.5, 100001, '12', null])
+      expect((await call(app, 'PATCH', { revision, smsDailyCap }, '/sms/cap')).status).toBe(400);
+    expect((await call(app, 'PATCH', { revision, smsDailyCap: 1 }, '/sms/cap')).status).toBe(200);
+    expect((await call(app, 'PATCH', { revision, smsDailyCap: 10 }, '/sms/cap')).status).toBe(409);
+    expect((await call(app, 'PATCH', { revision: revision + 1, smsDailyCap: 100000 }, '/sms/cap')).status).toBe(200);
+    const audits = await database.forGym(gymId, tx => tx.select().from(auditEvents));
+    expect(audits.map(audit => ({ action: audit.action, before: audit.before, after: audit.after }))).toEqual([
+      { action: 'integrations.sms_daily_cap_updated', before: { smsDailyCap: 1000 }, after: { smsDailyCap: 1 } },
+      { action: 'integrations.sms_daily_cap_updated', before: { smsDailyCap: 1 }, after: { smsDailyCap: 100000 } },
+    ]);
+  });
+  it('keeps another gym cap isolated, ignores a query gym ID and refuses a mismatched principal', async () => {
+    const other = uuidv7(); await factory('gyms', other, { smsDailyCap: 99 });
+    const before = await row(other);
+    expect((await call(server({ resolvedGym: other }), 'PATCH', { revision: before.revision, smsDailyCap: 5 }, '/sms/cap')).status).toBe(403);
+    expect((await call(server(), 'PATCH', { revision: (await row()).revision, smsDailyCap: 5 }, '/sms/cap?gymId=' + other)).status).toBe(200);
+    expect((await row(other)).smsDailyCap).toBe(99);
+    expect((await row()).smsDailyCap).toBe(5);
+  });
   it.each(staffRoles)('permits only integrations.manage for read, save and remove: %s', async role => {
     const app = server({ role }), allowed = role === 'owner';
     expect((await call(app, 'GET', undefined, '')).status).toBe(allowed ? 200 : 403);
