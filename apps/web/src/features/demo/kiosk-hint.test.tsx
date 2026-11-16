@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 const fetcher = vi.fn();
+vi.mock('../../app/context.js', () => ({ useBootstrap: () => ({ data: { gym: { timezone: 'America/Los_Angeles' } } }) }));
 vi.mock('@tanstack/react-router', () => ({ useRouterState: () => '/kiosk' }));
 vi.mock('../kiosk/api.js', async (original) => ({ ...await original<typeof import('../kiosk/api.js')>(), readToken: vi.fn(), saveToken: vi.fn() }));
 vi.stubGlobal('fetch', fetcher);

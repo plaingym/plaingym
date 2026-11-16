@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { KioskCheckinResult } from '@plaingym/shared/contracts';
 import { t } from '../../lib/i18n.js';
+import { useGymTime } from '../../lib/instant.js';
 import { Alert } from '../../components/ui/alert.js';
 import { Button } from '../../components/ui/button.js';
 import { KioskAuthError } from './api.js';
@@ -14,6 +15,7 @@ const big = 'h-auto min-h-12 whitespace-normal p-3 text-lg sm:min-h-16 sm:text-x
 const hasCamera = () => typeof navigator !== 'undefined' && typeof navigator.mediaDevices?.getUserMedia === 'function';
 /** The page owns idle and whether the flow is open; scan/response progress rearms its timer. Its device token grants only check-in endpoints. */
 export function QrCheckin({ token, onUnauthorized, onClose, onNamePin, onProgress }: { token: string; onUnauthorized: () => void; onClose: () => void; onNamePin: () => void; onProgress: (result?: KioskCheckinResult) => void }) {
+  const { timeLabel } = useGymTime();
   const [scanning, setScanning] = useState(hasCamera), [busy, setBusy] = useState(false), [result, setResult] = useState<KioskCheckinResult>(), [message, setMessage] = useState(() => hasCamera() ? '' : 'noCamera');
   const video = useRef<HTMLVideoElement>(null), camera = useRef<CameraScan | undefined>(undefined);
   const code = useRef<string | undefined>(undefined), generation = useRef(0), pending = useRef<number | undefined>(undefined);
@@ -46,7 +48,8 @@ export function QrCheckin({ token, onUnauthorized, onClose, onNamePin, onProgres
     void (async () => {
       const devices = await navigator.mediaDevices.enumerateDevices().catch(() => undefined);
       if (cancelled || started !== generation.current) return;
-      if (!devices?.some((device) => device.kind === 'videoinput')) {
+      if (!devices) { setScanning(false); setMessage('cameraError'); return; }
+      if (!devices.some((device) => device.kind === 'videoinput')) {
         setScanning(false); setMessage('noCamera'); return;
       }
       return scanQrCamera(element, (value) => {
@@ -71,7 +74,7 @@ export function QrCheckin({ token, onUnauthorized, onClose, onNamePin, onProgres
       <p className="text-xl font-semibold">{text(result.status)}</p>
       {result.status === 'see_front_desk' && <p className="text-sm">{t('kiosk/kiosk:frontDeskHelp')}</p>}
       {result.status === 'select_session' && <div className="grid gap-3 sm:grid-cols-2">{result.sessions.map((session) =>
-        <Button className={big + ' wrap-anywhere'} disabled={busy} key={session.id} onClick={() => { if (code.current) void submit(code.current, session.id); }}>{session.name} · {new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(new Date(session.startsAt))}</Button>)}
+        <Button className={big + ' wrap-anywhere'} disabled={busy} key={session.id} onClick={() => { if (code.current) void submit(code.current, session.id); }}>{session.name} · {timeLabel(session.startsAt)}</Button>)}
         <Button variant="outline" className={big} disabled={busy} onClick={() => { if (code.current) void submit(code.current, null); }}>{text('openMat')}</Button>
       </div>}
     </div>}

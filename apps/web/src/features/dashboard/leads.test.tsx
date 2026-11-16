@@ -12,7 +12,7 @@ const id = (n: number) => `0194a000-0000-7000-8000-${String(n).padStart(12, '0')
 const tile = (count: number, items: { label: string; href: string }[]): DashboardWidget => ({
   id: 'leads.follow-ups-due', titleKey: 'leads/screens:tile.title', status: 'ready', kind: 'count', count, items });
 const mount = (widget: DashboardWidget, roles: readonly StaffRole[] = ['front_desk']) =>
-  render(<DashboardWidgets widgets={[widget]} roles={roles} views={leadsWidgetViews} />);
+  render(<DashboardWidgets timezone="UTC" widgets={[widget]} roles={roles} views={leadsWidgetViews} />);
 
 describe('follow-ups due tile', () => {
   it('shows the count, each due lead linking to its lead page, how many are shown and a link to the list', () => {

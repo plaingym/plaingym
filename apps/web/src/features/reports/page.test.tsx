@@ -52,7 +52,7 @@ describe('report tables and CSV downloads', () => {
     await waitFor(() => expect(screen.getByLabelText('Program', { exact: true })).toHaveProperty('value', 'all'));
     expect(renderedCells(screen.getByRole('table'))[1]!.slice(-3)).toEqual(['All programs', '9', '4']);
   });
-  it.each(['attendance', 'members', 'revenue'] as const)('%s downloads exactly the displayed rows and columns, with formula neutralization only', async name => {
+  it.each(['attendance', 'members', 'revenue'] as const)('%s downloads ISO dates alongside the displayed rows and formula neutralization', async name => {
     const downloads: { value: string; filename: string }[] = [];
     vi.spyOn(csv, 'downloadCsv').mockImplementation((table, filename) => { downloads.push({ value: csv.reportCsv(table), filename }); });
     mount(); await choose(name);
@@ -62,7 +62,11 @@ describe('report tables and CSV downloads', () => {
       await userEvent.click(screen.getByRole('button', { name: 'Download CSV: ' + title }));
       const download = downloads.at(-1)!;
       const rendered = renderedCells(table);
-      expect(csvCells(download.value, rendered[0]!.length)).toEqual(rendered.map(row => row.map(cell => /^[=+\-@\t\r]/.test(cell) && !/^-?\d+(\.\d+)?$/.test(cell) ? "'" + cell : cell)));
+      const exported = csvCells(download.value, rendered[0]!.length);
+      for (const row of exported.slice(1)) expect(row.slice(0, 2).every(cell => /^\d{4}-\d{2}-\d{2}$/.test(cell))).toBe(true);
+      expect(exported.map((row, index) => index === 0 ? row : row.map((cell, column) => column < 2
+        ? new Intl.DateTimeFormat('en', { timeZone: 'UTC', dateStyle: 'medium' }).format(new Date(cell + 'T00:00:00Z')) : cell)))
+        .toEqual(rendered.map(row => row.map(cell => /^[=+\-@\t\r]/.test(cell) && !/^-?\d+(\.\d+)?$/.test(cell) ? "'" + cell : cell)));
       expect(download.filename).toMatch(new RegExp('^' + name + '-\\d{4}-\\d{2}-\\d{4}-\\d{2}.*\\.csv$'));
     }
     if (name === 'attendance') {

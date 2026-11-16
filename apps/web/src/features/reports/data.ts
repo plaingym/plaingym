@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { calendarDateLabel } from '../../lib/instant.js';
 import { minorUnitsToInput } from '@plaingym/shared/money';
 import { localDate } from '@plaingym/shared/time';
 import type { AttendanceReportResponse, MembersReportResponse, RevenueReportResponse, ReportRangeQuery, ReportBucket } from '@plaingym/shared/contracts';
 import { t } from '../../lib/i18n.js';
 
 export const text = (key: string, values?: Record<string, string | number>) => t('reports/screens:' + key, values);
-export interface ReportTable { columns: string[]; rows: string[][]; textColumns?: number[]; countColumns?: number[] }
+export interface ReportTable { columns: string[]; rows: string[][]; textColumns?: number[]; countColumns?: number[]; dateColumns?: number[] }
 export function defaultRange(timezone: string, now = new Date()): ReportRangeQuery {
   const to = localDate(now, timezone).slice(0, 7);
   const month = Number(to.slice(0, 4)) * 12 + Number(to.slice(5)) - 1 - 11;
@@ -23,12 +22,12 @@ const attendanceCounts = ['checkIns', 'uniqueMembers'];
 const currentPeriod = (buckets: readonly ReportBucket[]) => buckets.find(bucket => bucket.inProgress)?.startDate;
 const period = (bucket: ReportBucket, current: string | undefined) => {
   const status = bucket.inProgress ? 'inProgress' : current && bucket.startDate > current ? 'upcoming' : bucket.partial ? 'partial' : 'complete';
-  return [calendarDateLabel(bucket.startDate), calendarDateLabel(bucket.endDate), text(bucket.partial && (status === 'inProgress' || status === 'upcoming') ? status + 'Partial' : status)];
+  return [bucket.startDate, bucket.endDate, text(bucket.partial && (status === 'inProgress' || status === 'upcoming') ? status + 'Partial' : status)];
 };
 export function membersTable(data: MembersReportResponse['data']): ReportTable {
   const current = currentPeriod(data.buckets);
   const keys = ['start', 'end', 'periodStatus', ...memberCounts, 'churn'];
-  return { columns: keys.map(key => text(key)), countColumns: countColumns(keys, memberCounts),
+  return { dateColumns: [0, 1], columns: keys.map(key => text(key)), countColumns: countColumns(keys, memberCounts),
     rows: data.buckets.map(bucket => [...period(bucket, current), ...memberCounts.map(key => String(bucket[key])), bucket.churn
       ? churnPercent.format(bucket.churn.numerator / bucket.churn.denominator) : text('notAvailable')]) };
 }
@@ -39,7 +38,7 @@ export function attendanceTable(data: AttendanceReportResponse['data'], selected
   const current = currentPeriod(data.buckets);
   const selectedName = data.buckets.flatMap(bucket => bucket.programs).find(program => programKey(program.programId) === selected)?.programName ?? text('unassigned');
   const keys = ['start', 'end', 'periodStatus', 'program', ...attendanceCounts];
-  return { columns: keys.map(key => text(key)), textColumns: [keys.indexOf('program')], countColumns: countColumns(keys, attendanceCounts),
+  return { dateColumns: [0, 1], columns: keys.map(key => text(key)), textColumns: [keys.indexOf('program')], countColumns: countColumns(keys, attendanceCounts),
     rows: data.buckets.flatMap(bucket => {
       const programs = bucket.programs.filter(program => selected === allPrograms || programKey(program.programId) === selected);
       if (selected !== allPrograms) {
@@ -53,7 +52,7 @@ export function attendanceTable(data: AttendanceReportResponse['data'], selected
 export function revenueTable(data: RevenueReportResponse['data']['currencies'][number]): ReportTable {
   const current = currentPeriod(data.buckets);
   const amount = (value: number) => minorUnitsToInput(value, data.currency);
-  return { columns: [...periodColumns(), text('currency'), text('groupType'), text('group'), text('payments'), text('refunds'), text('net')], textColumns: [5],
+  return { dateColumns: [0, 1], columns: [...periodColumns(), text('currency'), text('groupType'), text('group'), text('payments'), text('refunds'), text('net')], textColumns: [5],
     rows: data.buckets.flatMap(bucket => [
       ...bucket.groups.map(group => [...period(bucket, current), data.currency, text(group.kind), group.name ?? text(group.kind),
         amount(group.payments), amount(group.refunds), amount(group.net)]),

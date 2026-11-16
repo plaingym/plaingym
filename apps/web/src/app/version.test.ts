@@ -13,6 +13,53 @@ describe('the shared navigation version check', () => {
     return { built, destination: navigation.location.href, request: vi.fn(async () => Response.json(remote)) as unknown as typeof fetch,
       reload: vi.fn(), storage: { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } } };
   }
+  it('shares the navigation throttle with kiosk checks and supports an explicit forced check', async () => {
+    const { checkServerVersion } = await import('./version.js');
+    const now = vi.spyOn(Date, 'now').mockReturnValue(100_000);
+    const f = fixture(built);
+    await checkOnNavigation(navigation, { ...f, development: false });
+    now.mockReturnValue(159_999);
+    await checkServerVersion(f);
+    expect(f.request).toHaveBeenCalledOnce();
+    await checkServerVersion({ ...f, force: true });
+    expect(f.request).toHaveBeenCalledTimes(2);
+    now.mockReturnValue(219_999);
+    await checkServerVersion(f);
+    expect(f.request).toHaveBeenCalledTimes(3);
+  });
+  it('announces a stale bundle after an unsuccessful reload and clears the notice when versions match', async () => {
+    const { checkServerVersion, isStaleVersion, subscribeToStaleVersion } = await import('./version.js');
+    const f = fixture({ ...built, version: '1.4.0' }), changed = vi.fn();
+    const unsubscribe = subscribeToStaleVersion(changed);
+    await checkServerVersion(f);
+    // The ordinary reload after a release is not announced.
+    expect(f.reload).toHaveBeenCalledOnce();
+    expect(isStaleVersion()).toBe(false);
+    expect(changed).not.toHaveBeenCalled();
+    await expect(checkServerVersion(f)).rejects.toThrow('could not load');
+    expect(isStaleVersion()).toBe(true);
+    expect(changed).toHaveBeenCalled();
+    await checkServerVersion({ ...f, force: true, request: vi.fn(async () => Response.json(built)) });
+    expect(isStaleVersion()).toBe(false);
+    unsubscribe();
+  });
+  it('announces a stale bundle when blocked storage stops the reload', async () => {
+    const { checkServerVersion, isStaleVersion, isVersionReloadPending } = await import('./version.js');
+    const f = fixture({ ...built, version: '1.4.0' });
+    f.storage.getItem = () => { throw new Error('blocked'); };
+    await expect(checkServerVersion(f)).rejects.toThrow('blocked');
+    expect(f.reload).not.toHaveBeenCalled();
+    expect(isStaleVersion()).toBe(true);
+    expect(isVersionReloadPending()).toBe(false);
+  });
+  it.each(['/kiosk', '/kiosk?mode=pin', '/kiosk/'])('lets the tablet render its stale notice after a reload fails at %s', async href => {
+    const f = fixture({ ...built, version: '1.4.0' });
+    f.storage.setItem('plaingym-version-reload', '1.4.0:' + built.commit);
+    await expect(checkOnNavigation({ preload: false, location: { href } }, { ...f, development: false })).resolves.toBeUndefined();
+    const { isStaleVersion } = await import('./version.js');
+    expect(isStaleVersion()).toBe(true);
+    expect(f.reload).not.toHaveBeenCalled();
+  });
   it('checks a real navigation, but neither a hovered link\'s preload nor the development server', async () => {
     const stale = { version: '1.4.0', commit: '4'.repeat(40) };
     const hovered = fixture(stale); await checkOnNavigation({ ...navigation, preload: true }, { ...hovered, development: false });

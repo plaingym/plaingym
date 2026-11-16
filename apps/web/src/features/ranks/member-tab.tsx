@@ -15,8 +15,8 @@ import { ranksClient, type RanksClient } from './api.js';
 import { Criteria, Field } from './page.js';
 import { text } from './rank-editor.js';
 
-export function MemberRanksPanel({ gymId, memberId, promote, client = ranksClient, timezone = 'UTC' }: {
-  timezone?: string; gymId: string; memberId: string; promote: boolean; client?: RanksClient;
+export function MemberRanksPanel({ gymId, memberId, promote, client = ranksClient, timezone }: {
+  timezone: string; gymId: string; memberId: string; promote: boolean; client?: RanksClient;
 }) {
   const cache = useQueryClient(), key = ['ranks', gymId];
   const [programChoice, setProgram] = useState(''), [rankChoice, setRank] = useState('');

@@ -5,6 +5,14 @@ import { defaultRange, attendanceTable, membersTable, revenueTable } from './dat
 import { attendanceFixture, membersFixture, revenueFixture, fixtureId } from './fixtures.js';
 
 describe('report CSV', () => {
+  it('exports ISO period boundaries for members, attendance and every revenue currency', () => {
+    for (const table of [membersTable(membersFixture), attendanceTable(attendanceFixture),
+      ...revenueFixture.currencies.map(revenueTable)]) {
+      const csv = reportCsv(table);
+      expect(csv).toContain('"2026-10-01","2026-11-01"');
+      expect(csv).not.toContain('Oct 1, 2026');
+    }
+  });
   it('uses a UTF-8 BOM, RFC 4180 quotes, embedded newlines and CRLF records', () => {
     expect(reportCsv({ columns: ['Name', 'Amount'], rows: [['A, "quoted"\nname', '1.00']] }))
       .toBe('\uFEFF"Name","Amount"\r\n"A, ""quoted""\nname","1.00"\r\n');
@@ -32,7 +40,7 @@ it('defaults to twelve inclusive gym-local months across a year boundary', () =>
 });
 it('keeps zero periods in a filtered attendance table', () => {
   const table = attendanceTable(attendanceFixture, fixtureId);
-  expect(table.rows[0]!.slice(0, 2)).toEqual(['Oct 1, 2026', 'Nov 1, 2026']);
+  expect(table.rows[0]!.slice(0, 2)).toEqual(['2026-10-01', '2026-11-01']);
   expect(table.rows).toHaveLength(2);
   expect(table.rows[1]!.slice(-2)).toEqual(['0', '0']);
 });

@@ -93,18 +93,18 @@ describe('dashboard page', () => {
   });
   it('lists an extension widget\'s items as links, says how many more there are, and hides it once nothing is waiting', () => {
     const waiting = { id: 'sample.waiting', kind: 'count' as const, titleKey: 'portal/access:waitingTitle', status: 'ready' as const };
-    const view = render(<DashboardWidgets roles={['owner']} widgets={[{ ...waiting, count: 25, items: [{ label: 'Adams household', href: '/admin/members/m1#memberTabs.portal-access' }] }]}/>);
+    const view = render(<DashboardWidgets timezone="UTC" roles={['owner']} widgets={[{ ...waiting, count: 25, items: [{ label: 'Adams household', href: '/admin/members/m1#memberTabs.portal-access' }] }]}/>);
     expect(screen.getByRole('heading', { name: 'Households awaiting portal confirmation' })).toBeDefined();
     expect(screen.getByRole('link', { name: 'Adams household' }).getAttribute('href')).toBe('/admin/members/m1#memberTabs.portal-access');
     expect(screen.getByText('Showing 1 of 25.')).toBeDefined();
-    view.rerender(<DashboardWidgets roles={['owner']} widgets={[{ ...waiting, count: 0, items: [] }]}/>);
+    view.rerender(<DashboardWidgets timezone="UTC" roles={['owner']} widgets={[{ ...waiting, count: 0, items: [] }]}/>);
     expect(screen.queryByRole('heading', { name: 'Households awaiting portal confirmation' })).toBeNull();
     // A count-only extension widget (no items) still shows with a zero.
-    view.rerender(<DashboardWidgets roles={['owner']} widgets={[{ ...waiting, count: 0 }]}/>);
+    view.rerender(<DashboardWidgets timezone="UTC" roles={['owner']} widgets={[{ ...waiting, count: 0 }]}/>);
     expect(screen.getByRole('heading', { name: 'Households awaiting portal confirmation' })).toBeDefined();
   });
   it('renders unavailable status without false zeroes and accepts extension renderers', () => {
-    render(<DashboardWidgets roles={['owner']} widgets={[
+    render(<DashboardWidgets timezone="UTC" roles={['owner']} widgets={[
       { id: 'active_members', titleKey: widgets[0]!.titleKey, status: 'unavailable', count: 0 },
       { id: 'sample.count', kind: 'count', titleKey: 'dashboard/dashboard:title', status: 'ready', count: 5 },
       { id: 'mrr', titleKey: 'dashboard/dashboard:title', status: 'ready', money: { currency: 'USD', amountCents: 12345 } },

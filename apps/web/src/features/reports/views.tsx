@@ -49,7 +49,7 @@ export function AttendanceReport({ gymId, userId, range, client, granularity, se
       </div>
       <p className="text-sm text-muted-foreground">{text('attendanceHelp')}</p>
       {periods.length === 0 ? empty() : values.every(value => value === 0) && <p className="text-sm text-muted-foreground">{text('zeroHelp')}</p>}
-      {periods.length > 0 && <ReportChart title={text('attendanceChart')} periods={periods} series={series} />}
+      {periods.length > 0 && <ReportChart title={text('attendanceChart')} monthly={granularity === 'month'} periods={periods} series={series} />}
       <DataTable title={text('attendanceTable')} table={table} filename={filename('attendance', range, '-' + granularity)} />
     </PageSection>;
   }}</Result>;
@@ -66,7 +66,7 @@ export function MembersReport({ gymId, userId, range, client }: ReportViewProps)
     <p className="text-sm text-muted-foreground">{text('membersHelp')}</p>
     {data.buckets.length === 0 ? empty() : data.buckets.every(bucket => bucket.activeAtStart === 0 && bucket.activeAtEnd === 0 && bucket.frozenAtEnd === 0
       && bucket.new === 0 && bucket.imported === 0 && bucket.cancelled === 0) && <p className="text-sm text-muted-foreground">{text('zeroHelp')}</p>}
-    {data.buckets.length > 0 && <ReportChart title={text('membersChart')} periods={model!.periods} series={model!.series} />}
+    {data.buckets.length > 0 && <ReportChart title={text('membersChart')} monthly periods={model!.periods} series={model!.series} />}
     <DataTable title={text('membersTable')} table={model!.table} filename={filename('members', range)} />
   </PageSection>}</Result>;
 }
@@ -80,7 +80,7 @@ export function RevenueReport({ gymId, userId, range, client }: ReportViewProps)
     <p className="text-sm text-muted-foreground">{text('revenueHelp')}</p>
     {data.currencies.length === 0 && empty()}
     {currencies!.map(currency => <PageSection key={currency.currency} title={text('revenueCurrency', { currency: currency.currency })}>
-      <ReportChart title={text('revenueChart', { currency: currency.currency })} periods={currency.periods}
+      <ReportChart title={text('revenueChart', { currency: currency.currency })} monthly periods={currency.periods}
         series={currency.series} format={value => minorUnitsToInput(value, currency.currency)} />
       <DataTable title={text('revenueTable', { currency: currency.currency })} table={currency.table} filename={filename('revenue', range, '-' + currency.currency)} />
     </PageSection>)}

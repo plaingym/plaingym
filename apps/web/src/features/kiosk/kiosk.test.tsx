@@ -9,7 +9,11 @@ import { qrCheckin } from './qr.api.js';
 import { scanQrCamera } from './qr.scanner.js';
 import { KioskApp } from './kiosk.js';
 import { breaksAnywhere } from '../../components/ui/wrap.test-helper.js';
+import { isStaleVersion } from '../../app/version.js';
 
+vi.mock('../../app/version.js', async original => ({ ...await original<typeof import('../../app/version.js')>(), isStaleVersion: vi.fn(() => false) }));
+const bootstrap = vi.hoisted(() => ({ calls: 0 }));
+vi.mock('../../app/context.js', () => ({ useBootstrap: () => { bootstrap.calls += 1; return { data: { gym: { timezone: 'America/Los_Angeles' } } }; } }));
 vi.mock('./api.js', async (original) => ({ ...await original<typeof import('./api.js')>(),
   kioskApi: { lookup: vi.fn(), checkin: vi.fn() }, readToken: vi.fn(), saveToken: vi.fn(), forgetToken: vi.fn() }));
 vi.mock('./qr.api.js', () => ({ qrCheckin: vi.fn() }));
@@ -21,6 +25,7 @@ const session = { id: '00000000-0000-7000-8000-000000000003', name: 'Fundamental
 const credentials = { name: 'Rivera', pin: '0042' };
 const setCamera = (value: unknown) => Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value });
 beforeEach(() => {
+  vi.mocked(isStaleVersion).mockReturnValue(false);
   setCamera({ getUserMedia: vi.fn(), enumerateDevices: vi.fn().mockResolvedValue([{ kind: 'videoinput' }]) });
   vi.mocked(readToken).mockReturnValue('device-token');
   vi.mocked(saveToken).mockReturnValue(true);
@@ -30,7 +35,7 @@ beforeEach(() => {
     { status: 'select_session', member: child, sessions: [session] },
   ]);
 });
-afterEach(() => { cleanup(); setCamera(undefined); vi.restoreAllMocks(); vi.resetAllMocks(); vi.useRealTimers(); vi.unstubAllGlobals(); localStorage.clear(); window.history.replaceState(null, '', '/'); });
+afterEach(() => { cleanup(); setCamera(undefined); vi.restoreAllMocks(); vi.resetAllMocks(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); localStorage.clear(); window.history.replaceState(null, '', '/'); });
 function choosePin() { const choice = screen.queryByRole('button', { name: 'Name and PIN' }); if (choice) fireEvent.click(choice); }
 function fill() {
   choosePin();
@@ -46,6 +51,27 @@ async function submit() {
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Check in' })); });
 }
 describe('kiosk check-in screen', () => {
+  it('asks staff to reload an older bundle while leaving check-in available', () => {
+    vi.mocked(isStaleVersion).mockReturnValue(true);
+    render(<KioskApp/>);
+    expect(screen.getByRole('status').textContent).toContain('Reload this tablet');
+    expect(screen.getByRole('button', { name: 'Name and PIN' })).toBeDefined();
+  });
+  it('starts loading the gym timezone before any class list is shown', () => {
+    bootstrap.calls = 0;
+    render(<KioskApp/>);
+    expect(bootstrap.calls).toBeGreaterThan(0);
+  });
+  it('shows gym session times when the device is on the following calendar day', async () => {
+    vi.stubEnv('TZ', 'Asia/Tokyo');
+    const startsAt = '2026-11-02T00:30:00Z';
+    expect(new Intl.DateTimeFormat('en', { dateStyle: 'medium' }).format(new Date(startsAt))).toBe('Nov 2, 2026');
+    vi.mocked(kioskApi.checkin).mockResolvedValue([{ status: 'select_session', member: parent,
+      sessions: [{ ...session, startsAt }] }]);
+    render(<KioskApp/>); await submit();
+    expect(screen.getByRole('button', { name: /Fundamentals.*4:30 PM/ })).toBeDefined();
+    vi.unstubAllEnvs();
+  });
   it('preserves the new tab token when a revoked old tab fails before its storage event arrives', async () => {
     const actual = await vi.importActual<typeof import('./api.js')>('./api.js');
     vi.mocked(readToken).mockImplementation(actual.readToken);

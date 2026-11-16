@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { formatCount } from '../../../lib/count.js';
 import { useEffect } from 'react';
-import { dateFormatter } from '../../../lib/instant.js';
+import { instantLabel } from '../../../lib/instant.js';
 import { Link } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import { portalContracts as contracts } from '@plaingym/shared/contracts';
@@ -60,14 +60,14 @@ export function PortalHome({ client = portalClient }: { client?: PortalClient })
     wait();
     return () => clearTimeout(timer);
   }, [next, schedule.refetch]);
-  const date = dateFormatter('instant', bootstrap.data?.gym.timezone ?? 'UTC');
+  const date = (value: string) => instantLabel(value, bootstrap.data?.gym.timezone ?? 'UTC');
   const waiting = (query: { isPending: boolean; data: unknown }) => query.isPending || (query.data === undefined && scope.settling);
   return <Page className="max-w-3xl"><PortalRecovery moving={scope.moving}>
     <PageHeader title={text('welcome')} description={text('homeDescription')} />
     <div className="grid gap-4 sm:grid-cols-2">
       <PageSection className={card} title={text('nextClass')}>
         {waiting(schedule) ? <LoadingState /> : schedule.isError ? <ErrorState onRetry={() => void schedule.refetch()} />
-          : next ? <><p className="break-words font-semibold">{next.name}</p><p>{date.format(new Date(next.startsAt))}</p>
+          : next ? <><p className="break-words font-semibold">{next.name}</p><p>{date(next.startsAt)}</p>
             <ul className="text-sm text-muted-foreground">{next.bookings.filter(booking => booking.status === 'booked').flatMap(booking => {
               const name = members.data?.find(member => member.id === booking.memberId)?.name;
               return name ? [<li key={booking.id}>{name}</li>] : [];

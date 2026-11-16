@@ -12,7 +12,7 @@ import {
   type Attendance, type AttendanceListQuery, type AttendanceSource, type AttendanceTotals, type ClassKind,
   type AttendanceTotalsQuery, type Pagination, type RecordAttendanceRequest,
 } from '@plaingym/shared/contracts';
-import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
+import { addDays, localDate, localMidnight } from '@plaingym/shared/time';
 import { clock as defaultClock } from '../../core/clock.js';
 import type { AttendanceFilter, AttendanceQueries, AttendanceScope } from '../../core/interfaces/attendance.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
@@ -185,8 +185,8 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
           const [existing] = await tx.select().from(attendances).where(and(eq(attendances.gymId, gymId),
             eq(attendances.memberId, value.memberId), isNull(attendances.sessionId), eq(attendances.kind, 'open_mat'),
             inArray(attendances.source, ['kiosk', 'coach']),
-            gte(attendances.occurredAt, zonedInstant(day, '00:00', timezone, { gap: 'shift' })!),
-            lt(attendances.occurredAt, zonedInstant(addDays(day, 1), '00:00', timezone, { gap: 'shift' })!))).limit(1);
+            gte(attendances.occurredAt, localMidnight(day, timezone)),
+            lt(attendances.occurredAt, localMidnight(addDays(day, 1), timezone)))).limit(1);
           if (existing) return replay(existing);
         }
         await requireReferences(tx, gymId, { ...(value.programId ? { programId: value.programId } : {}) });

@@ -28,7 +28,7 @@ function BillingMetric({ widget }: { widget: DashboardWidget }) {
 export const billingWidgetViews: readonly DashboardView[] = ['mrr', 'past_due', 'upcoming_charges', 'disputes'].map(id => ({
   id, permission: 'billing.read', render: widget => <BillingMetric widget={widget}/>,
 }));
-function BillingPanel({ gymId, roles }: { gymId: string; roles: readonly StaffRole[] }) {
+function BillingPanel({ gymId, roles, timezone }: { gymId: string; roles: readonly StaffRole[]; timezone: string }) {
   const query = useQuery({ queryKey: ['dashboard-billing', gymId, [...roles].sort()], queryFn: async ({ signal }) => {
     const result = await api.GET(dashboardContracts.billing.path, { signal, cache: 'no-store' });
     return parseResponse(billingDashboardResponseSchema, result.data).data;
@@ -37,9 +37,9 @@ function BillingPanel({ gymId, roles }: { gymId: string; roles: readonly StaffRo
     onClick={() => void query.refetch()}>{label('refresh')}</Button>}>
     {query.isPending ? <LoadingState label={label('loading')}/> : query.isError ? <ErrorState message={label('loadFailed')} onRetry={() => void query.refetch()}/>
       : query.data.widgets.length === 0 ? <EmptyState title={label('empty')}/>
-        : <DashboardWidgets widgets={query.data.widgets} roles={roles} views={billingWidgetViews}/>}
+        : <DashboardWidgets timezone={timezone} widgets={query.data.widgets} roles={roles} views={billingWidgetViews}/>}
   </PageSection>;
 }
-export function BillingDashboardPanel(props: { gymId: string; roles: readonly StaffRole[] }) {
+export function BillingDashboardPanel(props: { gymId: string; roles: readonly StaffRole[]; timezone: string }) {
   return canStaff(props.roles, 'billing.read') ? <BillingPanel key={props.gymId + ':' + [...props.roles].sort().join(',')} {...props}/> : null;
 }

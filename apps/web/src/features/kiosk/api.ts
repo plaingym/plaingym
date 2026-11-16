@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { followServerVersion } from '../../app/version.js';
+import { checkServerVersion, isVersionReloadPending } from '../../app/version.js';
 import { reportApiRefusal } from '../../lib/api.js';
 import {
   kioskFamilyCheckinResponseSchema, kioskLookupResponseSchema,
@@ -10,10 +10,11 @@ export const tokenKey = 'plaingym.kioskToken';
 /** The device token lives only in this browser's storage; the URL fragment form (`#token=…`) is never sent to the server. */
 export function readToken(onSaveError?: () => void): string | null {
   try {
-    const fragment = new URLSearchParams(window.location.hash.slice(1)).get('token')?.trim();
+    const params = new URLSearchParams(window.location.hash.slice(1));
+    const fragment = params.get('token')?.trim();
+    if (params.has('token')) window.history.replaceState(null, '', window.location.pathname + window.location.search);
     if (fragment) {
       const saved = saveToken(fragment);
-      window.history.replaceState(null, '', window.location.pathname + window.location.search);
       if (!saved) { onSaveError?.(); return null; }
     }
     return window.localStorage.getItem(tokenKey);
@@ -35,11 +36,10 @@ export class KioskReloadError extends Error {}
 export async function checkKioskVersion() {
   if (import.meta.env.DEV) return;
   try {
-    await followServerVersion({ reload: (destination) => {
-      window.location.assign(destination);
-      // Navigation is asynchronous: do not send a request from the old bundle meanwhile.
-      throw new KioskReloadError('Loading the current kiosk');
-    } });
+    if (isVersionReloadPending()) throw new KioskReloadError('Loading the current kiosk');
+    await checkServerVersion({ reload: () => window.location.reload() });
+    // Navigation is asynchronous: do not send credentials from the old bundle meanwhile.
+    if (isVersionReloadPending()) throw new KioskReloadError('Loading the current kiosk');
   } catch (error) {
     // A guard that cannot act (blocked session storage, a reload that did not fix the mismatch) must not
     // stop check-in: the strict response parsing still protects the device.

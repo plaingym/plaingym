@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { dateFormatter } from '../../../lib/instant.js';
+import { dateLabel } from '../../../lib/instant.js';
 import { PortalRecovery } from '../household/recovery.js';
 import { useRef, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -44,7 +44,7 @@ function PortalWaiversPage({ context, scope }: { context: PortalContext; scope: 
   const gym = bootstrap.data?.gym;
   if (!gym) return null;
   const name = (memberId: string) => { const person = people.data?.find(row => row.id === memberId); return person ? `${person.firstName} ${person.lastName}` : ''; };
-  const date = dateFormatter('date', gym.timezone), today = gymToday(gym.timezone);
+  const date = (value: string) => dateLabel(value, gym.timezone), today = gymToday(gym.timezone);
   const failed = people.isError || pending.isError || signed.isError;
   const settling = scope.settling && (!people.data || !pending.data || !signed.data);
   return <Page className="max-w-3xl"><PortalRecovery moving={scope.moving}>
@@ -72,7 +72,7 @@ function PortalWaiversPage({ context, scope }: { context: PortalContext; scope: 
           return <StackedItem key={row.id} className="gap-2">
             <p className="break-words font-semibold">{details.template.name} · {text('version', { version: details.template.version })}</p>
             <p className="break-words text-sm">{name(row.memberId)} · {text(details.signer.kind === 'guardian' ? 'signedByGuardian' : 'signedBy', { name: details.signer.name })}</p>
-            <p className="text-sm text-muted-foreground"><time dateTime={row.signedAt}>{date.format(new Date(row.signedAt))}</time></p>
+            <p className="text-sm text-muted-foreground"><time dateTime={row.signedAt}>{date(row.signedAt)}</time></p>
             <div><Button variant="outline" disabled={pdf.isPending} onClick={() => pdf.mutate(row.id)}>{text('pdf')}</Button></div>
           </StackedItem>;
         })}</StackedList>}

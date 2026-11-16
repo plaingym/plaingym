@@ -32,6 +32,30 @@ test('login at phone, tablet and desktop widths supports errors and password sig
   expect((await page.context().cookies(gymOrigin)).some((cookie) => cookie.name.includes('session_token'))).toBe(true);
 });
 
+test('a stale tablet stays usable after one reload at phone and desktop widths', async ({ page, sandboxes }, info) => {
+  const sandbox = sandboxes[0]!;
+  let releaseChecks = 0;
+  await page.route('**/healthz', async route => {
+    releaseChecks++;
+    await route.fulfill({ json: { version: '0.0.0-stale-fixture', commit: 'f'.repeat(40) } });
+  });
+  await page.goto(sandbox.origin + '/kiosk#token=' + sandbox.kioskToken);
+  await expect(page.getByText('This tablet is running an older version. Reload this tablet to get the latest version.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Name and PIN', exact: true })).toBeVisible();
+  expect(releaseChecks).toBe(2);
+  for (const size of sizes) {
+    await page.setViewportSize(size);
+    await accessibleLayout(page, info, 'kiosk-stale-' + size.width);
+    await page.screenshot({ path: info.outputPath('kiosk-stale-' + size.width + '.png'), fullPage: true });
+  }
+  await page.getByRole('button', { name: 'Name and PIN', exact: true }).click();
+  await page.getByLabel('Your name', { exact: true }).fill('Marcus Rivera');
+  await page.getByLabel('Household PIN', { exact: true }).fill('2468');
+  await page.getByRole('button', { name: 'Find me', exact: true }).click();
+  await expect(page.getByRole('heading', { name: "Who's checking in?", exact: true })).toBeVisible();
+  expect(releaseChecks).toBe(2);
+});
+
 test('demo entry opens the showcase, private copy menu and kiosk work at every size', async ({ page }, info) => {
   test.setTimeout(180_000);
   await page.goto('https://demo.localhost/');
@@ -89,11 +113,9 @@ test('demo entry opens the showcase, private copy menu and kiosk work at every s
       } });
     }, enumerationFails);
     await page.getByRole('button', { name: 'Scan a QR code', exact: true }).click();
-    await expect(page.getByText(enumerationFails ? /This device can't scan/ : /Allow camera access/)).toBeVisible();
-    if (!enumerationFails) {
-      await page.getByRole('button', { name: 'Try again', exact: true }).click();
-      await expect(page.getByText(/Allow camera access/)).toBeVisible();
-    }
+    await expect(page.getByText(/Allow camera access/)).toBeVisible();
+    await page.getByRole('button', { name: 'Try again', exact: true }).click();
+    await expect(page.getByText(/Allow camera access/)).toBeVisible();
     for (const size of sizes) {
       await page.setViewportSize(size);
       await accessibleLayout(page, info, 'kiosk-camera-' + enumerationFails + '-' + size.width);
@@ -218,6 +240,7 @@ test('demo entry opens the showcase, private copy menu and kiosk work at every s
   await page.goto(sandbox.origin + '/demo#kioskToken=blocked-demo-device');
   await expect(page.getByRole('alert')).toContainText("couldn't save");
   expect(new URL(page.url()).hash).toContain('kioskToken=blocked-demo-device');
+  await expect(page.getByRole('button', { name: 'Try again', exact: true })).toBeVisible();
   for (const size of sizes) {
     await page.setViewportSize(size);
     await accessibleLayout(page, info, 'demo-token-save-error-' + size.width);

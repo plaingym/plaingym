@@ -8,6 +8,12 @@ import { attendanceFixture, membersFixture } from './fixtures.js';
 import { reportCsv } from './csv.js';
 
 afterEach(cleanup);
+it('formats period dates in the table while keeping ISO boundaries for export', () => {
+  const table = membersTable(membersFixture);
+  render(<DataTable title="Members" filename="members.csv" table={table}/>);
+  expect(screen.getByText('Oct 1, 2026')).toBeDefined();
+  expect(reportCsv(table)).toContain('"2026-10-01","2026-11-01"');
+});
 it('finds a new count column by key after inserting text columns', () => {
   const keys = ['period', 'notes', 'addedCount', 'name', 'checkIns'];
   const counts = countColumns(keys, ['checkIns', 'addedCount']);

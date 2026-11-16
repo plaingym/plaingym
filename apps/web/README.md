@@ -7,10 +7,12 @@ described in [`src/app/README.md`](src/app/README.md).
 
 Vite embeds the Git version and commit. The root route checks `/healthz` before
 navigation in admin, portal and kiosk; a different server identity reloads the page.
-A second mismatch stops navigation rather than repeatedly reloading stale assets.
+A second mismatch stops admin and portal navigation rather than repeatedly reloading stale assets.
 A link's preload doesn't run the check, and `pnpm dev` turns it off.
-Successful checks are shared for a minute; after a failed or timed-out check,
-the next attempt waits ten seconds. A fragment-only destination also reloads the bundle;
+Navigation and kiosk requests share successful checks for a minute; after a failed or timed-out check,
+the next attempt waits ten seconds. A pending reload blocks kiosk credentials.
+If reloading leaves the tablet on an older bundle, check-in remains available
+with a notice asking staff to reload the tablet. A fragment-only destination also reloads the bundle;
 removing a fragment replaces the URL before reloading, without leaving a trailing `#`.
 The portal worker keeps no offline page or API cache. Settings → Updates displays
 the same identity. See [versioning](../../docs/versioning.md).
@@ -169,3 +171,7 @@ Formatters are cached by style, zone and locale. Calendar dates use
 cannot move them to another day. Admin schedule labels use the same locale clock
 as the portal (`6:30 AM` in English), including weekly-class summaries through
 `wallTimeLabel`; time inputs still use `HH:MM`.
+Kiosk class pickers also use the bootstrap gym zone and English locale, including
+when the tablet is set to a different day. Failed camera enumeration offers
+Try again and Name and PIN; demo device-token save failures offer Try again
+without reopening the link.

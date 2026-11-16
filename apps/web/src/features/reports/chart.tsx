@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { formatCount } from '../../lib/count.js';
-import { calendarDateLabel } from '../../lib/instant.js';
+import { calendarDateLabel, monthLabel } from '../../lib/instant.js';
 import { useId } from 'react';
 import { text } from './data.js';
 
 export interface ChartSeries { label: string; values: number[]; line?: boolean }
 /** Small SVG chart; the immediately following table is the full text alternative. */
-export function ReportChart({ title, periods, series, format = formatCount }: {
-  title: string; periods: string[]; series: ChartSeries[]; format?: (value: number) => string;
+export function ReportChart({ title, periods, series, monthly = false, format = formatCount }: {
+  title: string; periods: string[]; series: ChartSeries[]; monthly?: boolean; format?: (value: number) => string;
 }) {
   const id = useId();
-  const labels = periods.map(value => calendarDateLabel(value));
+  const labels = periods.map(value => monthly ? monthLabel(value.slice(0, 7)) : calendarDateLabel(value));
   const values = series.flatMap(item => item.values), min = Math.min(0, ...values), max = Math.max(1, ...values);
   const y = (value: number) => 170 - (value - min) / (max - min) * 145;
   const step = 540 / Math.max(periods.length, 1), x = (index: number) => 50 + (index + 0.5) * step;
+  const labelStep = Math.max(1, Math.ceil(periods.length / 4));
   const bars = series.filter(item => !item.line), width = Math.min(28, step / (bars.length + 1));
   const tones = ['text-primary', 'text-muted-foreground', 'text-foreground'];
   return <figure className="min-w-0 space-y-2 rounded-xl border border-border p-3">
@@ -33,8 +34,8 @@ export function ReportChart({ title, periods, series, format = formatCount }: {
           <title>{labels[index]}: {item.label}: {format(value)}</title>
         </rect>)}
       </g>)}
-      {labels.map((label, index) => (index === 0 || index === periods.length - 1 || index % Math.max(1, Math.ceil(periods.length / 4)) === 0)
-        && <text key={index} x={x(index)} y="210" textAnchor="middle" className="hidden fill-muted-foreground text-[12px] sm:block">{label}</text>)}
+      {labels.map((label, index) => (index === 0 || index === periods.length - 1 || (index % labelStep === 0 && periods.length - 1 - index >= labelStep))
+        && <text key={index} x={x(index)} y="210" textAnchor={index === periods.length - 1 ? 'end' : 'middle'} className="hidden fill-muted-foreground text-[12px] sm:block">{label}</text>)}
     </svg>
     <p className="text-sm text-muted-foreground">{text('chartRange', { from: labels[0] ?? '', to: labels.at(-1) ?? '', min: format(min), max: format(max) })}</p>
     <ul className="flex flex-wrap gap-3 text-sm">{series.map((item, index) => <li key={item.label} className="flex items-center gap-2">

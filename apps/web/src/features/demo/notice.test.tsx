@@ -51,13 +51,33 @@ function start(client = new QueryClient({ defaultOptions: { queries: { retry: fa
 }
 it('keeps a failed kiosk handoff in the fragment and explains blocked storage before mounting a route', async () => {
   window.history.replaceState(null, '', '/demo#kioskToken=demo-device');
-  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
+  const storage = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
   fetcher.mockResolvedValue(Response.json({ data: { mode: 'sandbox', expiresAt: '2099-01-01T00:00:00.000Z', join: false } }));
   start();
   expect((await screen.findByRole('alert')).textContent).toContain('save');
   expect(window.location.hash).toContain('kioskToken=demo-device');
   expect(screen.queryByText('Login screen')).toBeNull();
   expect(screen.queryByText('Sandbox consumer')).toBeNull();
+  storage.mockRestore();
+  fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+  await screen.findByText('Sandbox consumer');
+  expect(localStorage.getItem('plaingym.kioskToken')).toBe('demo-device');
+  expect(window.location.hash).toBe('');
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+it('retries saving a private-copy token without consuming its handoff again', async () => {
+  window.history.replaceState(null, '', '/demo#copyToken=' + 'a'.repeat(43));
+  const storage = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
+  fetcher.mockImplementation(async path => Response.json({ data: path === '/api/demo/handoff'
+    ? { kioskToken: 'copy-device', redirect: '/demo' } : { mode: 'disabled' } }));
+  start();
+  // The link worked; only this browser's storage failed, so the visitor is not sent to make another copy.
+  expect((await screen.findByRole('alert')).textContent).toContain('Allow browser storage, then try again');
+  expect(screen.queryByText(/expired or was already used/)).toBeNull();
+  expect(storage).toHaveBeenCalledOnce();
+  fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+  await waitFor(() => expect(storage).toHaveBeenCalledTimes(2));
+  expect(fetcher.mock.calls.filter(([path]) => path === '/api/demo/handoff')).toHaveLength(1);
 });
 it('shares one successful disabled discovery across navigation, focus, reconnect and root remounts', async () => {
   fetcher.mockResolvedValue(Response.json({ data: { mode: 'disabled' } }));

@@ -17,7 +17,7 @@ const widgets = [
 ] as const;
 function start(roles: readonly StaffRole[] = ['owner']) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const renderPanel = (gymId: string, nextRoles = roles) => <QueryClientProvider client={client}><BillingDashboardPanel gymId={gymId} roles={nextRoles}/></QueryClientProvider>;
+  const renderPanel = (gymId: string, nextRoles = roles) => <QueryClientProvider client={client}><BillingDashboardPanel timezone="UTC" gymId={gymId} roles={nextRoles}/></QueryClientProvider>;
   return { ...render(renderPanel('gym-a')), client, renderPanel };
 }
 beforeEach(() => {
@@ -40,7 +40,7 @@ describe('billing dashboard panel', () => {
   });
   it('does not fetch for a coach or portal identity and hides stale billing payloads', () => {
     start(['coach']); expect(api.GET).not.toHaveBeenCalled();
-    render(<DashboardWidgets widgets={[...widgets]} views={billingWidgetViews} roles={['coach']}/>);
+    render(<DashboardWidgets timezone="UTC" widgets={[...widgets]} views={billingWidgetViews} roles={['coach']}/>);
     expect(screen.queryByRole('heading', { name: 'Monthly recurring revenue' })).toBeNull();
   });
   it('renders a safe error and retries', async () => {

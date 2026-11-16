@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { formatCount } from '../../../lib/count.js';
-import { dateFormatter } from '../../../lib/instant.js';
+import { instantLabel, dateLabel } from '../../../lib/instant.js';
 import { PortalRecovery } from '../household/recovery.js';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import type { PortalMemberProgress } from '@plaingym/shared/contracts';
@@ -34,8 +34,8 @@ export function PortalProgressPage({ client = portalClient }: { client?: PortalC
   const attendance = useInfiniteQuery({ queryKey: [...scope.key, 'attendance', memberId], enabled: !!memberId, initialPageParam: 0, staleTime: 0,
     queryFn: async ({ pageParam }) => scope.own(await scope.run(() => client.attendance(memberId, pageParam, scope.key[4]!))),
     getNextPageParam: last => last.pagination.offset + last.data.length < last.pagination.total ? last.pagination.offset + last.data.length : undefined });
-  const date = dateFormatter('date', timezone);
-  const dateTime = dateFormatter('instant', timezone);
+  const date = (value: string) => dateLabel(value, timezone);
+  const dateTime = (value: string) => instantLabel(value, timezone);
   if (!members.data) return members.isPending || scope.settling ? <LoadingState /> : <ErrorState message={text('error')} onRetry={() => void members.refetch()} />;
   const data = progress.data, programName = (id: string | null) => data?.programs.find(item => item.id === id)?.name;
   const visits = attendance.data?.pages.flatMap(page => page.data) ?? [];
@@ -69,7 +69,7 @@ export function PortalProgressPage({ client = portalClient }: { client?: PortalC
           {data.history.length > 0 && <PageSection title={text('history')}>
             <ul className="divide-y divide-border rounded-xl border border-border">{data.history.map(row => <li key={row.id} className="flex flex-col gap-1 p-3 text-sm sm:flex-row sm:justify-between">
               <span className="break-words">{programName(row.programId) ?? text('program')} · {rankLabel(data.ranks, row.rankId, row.subRank)}</span>
-              <span className="text-muted-foreground">{date.format(new Date(row.promotedAt))}</span></li>)}</ul>
+              <span className="text-muted-foreground">{date(row.promotedAt)}</span></li>)}</ul>
           </PageSection>}
         </>}
     <PageSection title={text('attendance')}>
@@ -79,7 +79,7 @@ export function PortalProgressPage({ client = portalClient }: { client?: PortalC
             : <><p className="text-sm text-muted-foreground">{text('attendanceTotal', { count: formatCount(attendance.data.pages[0]!.pagination.total) })}</p>
               <ul className="divide-y divide-border rounded-xl border border-border">{visits.map(visit => <li key={visit.id} className="flex flex-col gap-1 p-3 text-sm sm:flex-row sm:justify-between">
                 <span className="break-words">{visit.sessionName ?? text(visit.kind === 'open_mat' ? 'openMat' : 'class')}{programName(visit.programId) ? ' · ' + programName(visit.programId) : ''}</span>
-                <span className="text-muted-foreground">{dateTime.format(new Date(visit.occurredAt))}</span></li>)}</ul>
+                <span className="text-muted-foreground">{dateTime(visit.occurredAt)}</span></li>)}</ul>
               {attendance.hasNextPage && <Button variant="outline" disabled={attendance.isFetchingNextPage} onClick={() => void attendance.fetchNextPage()}>{text('more')}</Button>}</>}
     </PageSection>
   </PortalRecovery></Page>;

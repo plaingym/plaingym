@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { dateFormatter } from '../../../lib/instant.js';
 import { formatCount } from '../../../lib/count.js';
 import { PortalRecovery } from '../household/recovery.js';
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
+import { addDays, localDate, localMidnight } from '@plaingym/shared/time';
 import type { MemberBooking, PortalContext, PortalScheduleMember, PortalScheduleSession } from '@plaingym/shared/contracts';
 import { useBootstrap } from '../../../app/context.js';
 import { ApiError } from '../../../lib/api.js';
@@ -35,7 +36,7 @@ export function sessionAction(session: PortalScheduleSession, memberId: string, 
 }
 function weekRange(today: string, week: number, timezone: string) {
   const start = addDays(weekStart(today), week * 7), end = addDays(start, 7);
-  return { start, from: zonedInstant(start, '00:00', timezone, { gap: 'shift' })!.toISOString(), to: zonedInstant(end, '00:00', timezone, { gap: 'shift' })!.toISOString() };
+  return { start, from: localMidnight(start, timezone).toISOString(), to: localMidnight(end, timezone).toISOString() };
 }
 function status(booking: MemberBooking) {
   return booking.status === 'waitlisted' ? text(booking.queueRank === null ? 'waitlistedUnknown' : 'waitlisted', { rank: booking.queueRank === null ? '' : formatCount(booking.queueRank) }) : text('booked');
@@ -61,9 +62,9 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
     onError: error => setMessage({ tone: 'error', text: error instanceof BookingConflictError ? error.message : text(error instanceof ApiError && error.status === 409 ? 'conflict' : 'error') }),
     onSettled: () => cache.invalidateQueries({ queryKey: [...scope.key, 'schedule'] }),
   });
-  const dateLabel = new Intl.DateTimeFormat(undefined, { timeZone: timezone, weekday: 'long', month: 'long', day: 'numeric' });
-  const timeLabel = new Intl.DateTimeFormat(undefined, { timeZone: timezone, hour: 'numeric', minute: '2-digit' });
-  const whenLabel = new Intl.DateTimeFormat(undefined, { timeZone: timezone, dateStyle: 'medium', timeStyle: 'short' });
+  const dateLabel = dateFormatter('day', timezone);
+  const timeLabel = dateFormatter('time', timezone);
+  const whenLabel = dateFormatter('instant', timezone);
   const names = new Map(members.data?.map(row => [row.id, row.name]));
   if (!context.data || !members.data) return context.isPending || members.isPending || scope.settling ? <LoadingState />
     : <ErrorState message={text('error')} onRetry={() => { void context.refetch(); void members.refetch(); }} />;

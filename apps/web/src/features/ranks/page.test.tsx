@@ -141,7 +141,7 @@ describe('rank management', () => {
     expect(registries.memberTabs.all()[0]).toMatchObject({ enabled: true, component: MemberRanksTab });
     const client = makeClient(); client.history.mockResolvedValue([{ id: id(10), gymId, memberId, programId: program.id, rankId: rank.id,
       rankSystemId: system.id, subRank: 1, promotedAt: createdAt, promotedBy: null, notes: 'Excellent work', createdAt }]);
-    start(<MemberRanksPanel gymId={gymId} memberId={memberId} promote={false} client={client}/>);
+    start(<MemberRanksPanel timezone="UTC" gymId={gymId} memberId={memberId} promote={false} client={client}/>);
     await screen.findByText('Adults — Foundation Tip');
     expect(screen.getByText('Rank system: Adult progression').closest('li')?.getAttribute('data-rank-system')).toBe(system.id);
     expect(screen.getByText('Excellent work')).toBeDefined();
@@ -149,7 +149,7 @@ describe('rank management', () => {
     expect(client.eligibility).not.toHaveBeenCalled();
   });
   it('records a single promotion from the member profile with the selected sub-rank', async () => {
-    const client = makeClient(); start(<MemberRanksPanel gymId={gymId} memberId={memberId} promote client={client}/>);
+    const client = makeClient(); start(<MemberRanksPanel timezone="UTC" gymId={gymId} memberId={memberId} promote client={client}/>);
     await screen.findByText('No promotions recorded yet.');
     fireEvent.change(screen.getByLabelText('Sub-rank'), { target: { value: '1' } });
     fireEvent.change(screen.getByLabelText('Promotion date and time'), { target: { value: '2026-10-22T12:00' } });

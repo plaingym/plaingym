@@ -11,6 +11,7 @@ describe('kiosk device transport', () => {
     const failed = vi.fn();
     expect(readToken(failed)).toBe(stored);
     expect(failed).not.toHaveBeenCalled();
+    expect(window.location.hash).toBe('');
   });
   it('takes a device token out of the fragment and never puts credentials or rosters in the URL', () => {
     window.history.replaceState(null, '', '/kiosk#token=new-device');

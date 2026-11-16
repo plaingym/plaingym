@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { parseResponse } from '../../lib/response.js';
 import { bookingsContracts, membersContracts, scheduleContracts, type CreateBookingRequest } from '@plaingym/shared/contracts';
-import { addDays, zonedInstant } from '@plaingym/shared/time';
+import { addDays, localMidnight } from '@plaingym/shared/time';
 import { ApiError, apiErrorReasons } from '../../lib/api.js';
 
 async function request(path: string, query: Record<string, string | number> = {}, body?: unknown) {
@@ -24,8 +24,8 @@ export const bookingClient = {
   },
   async session(id: string) { return parseResponse(scheduleContracts.getSession.response, await request(`/api/schedule/sessions/${id}`)).data; },
   async sessions(date: string, timezone: string) {
-    const from = zonedInstant(date, '00:00', timezone, { gap: 'shift' })!.toISOString();
-    const until = zonedInstant(addDays(date, 1), '00:00', timezone, { gap: 'shift' })!.toISOString();
+    const from = localMidnight(date, timezone).toISOString();
+    const until = localMidnight(addDays(date, 1), timezone).toISOString();
     const rows = [];
     for (let offset = 0; ; offset += 100) {
       const page = parseResponse(scheduleContracts.listSessions.response, await request('/api/schedule/sessions', { from, until, status: 'scheduled', limit: 100, offset }));

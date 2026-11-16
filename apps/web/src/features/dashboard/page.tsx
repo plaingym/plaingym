@@ -18,7 +18,7 @@ import { GettingStarted } from './getting-started.js';
 
 const label = (key: string) => t('dashboard/dashboard:' + key);
 function DashboardPanel({ gymId, roles }: { gymId: string; roles: readonly StaffRole[] }) {
-  const timezone = useBootstrap().data?.gym.timezone;
+  const timezone = useBootstrap().data?.gym.timezone ?? 'UTC';
   const query = useQuery({ queryKey: ['dashboard', gymId, [...roles].sort()], queryFn: async ({ signal }) => {
     const result = await api.GET(dashboardContracts.mat.path, { signal, cache: 'no-store' });
     if (!result.response.ok) throw new Error('Dashboard request failed');
@@ -30,8 +30,8 @@ function DashboardPanel({ gymId, roles }: { gymId: string; roles: readonly Staff
     {query.data && !query.isError && (query.data.widgets.length === 0 || query.data.widgets.some(widget => widget.id === 'active_members' && widget.status === 'ready' && 'count' in widget && widget.count === 0)) && <GettingStarted gymId={gymId} roles={roles}/>}
     {query.isPending ? <LoadingState label={label('loading')}/> : query.isError ? <ErrorState message={label('loadFailed')} onRetry={() => void query.refetch()}/>
       : query.data.widgets.length === 0 ? <EmptyState title={label('empty')} description={label('emptyHelp')}/>
-      : <DashboardWidgets timezone={timezone ?? 'UTC'} widgets={query.data.widgets} roles={roles} views={[...billingWidgetViews, ...leadsWidgetViews]}/>}
-    {canStaff(roles, 'billing.read') && <BillingDashboardPanel gymId={gymId} roles={roles}/>}
+      : <DashboardWidgets timezone={timezone} widgets={query.data.widgets} roles={roles} views={[...billingWidgetViews, ...leadsWidgetViews]}/>}
+    {canStaff(roles, 'billing.read') && <BillingDashboardPanel timezone={timezone} gymId={gymId} roles={roles}/>}
   </Page>;
 }
 export function DashboardPage() {

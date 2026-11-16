@@ -32,8 +32,8 @@ export function CountWidget({ widget, help, footer }: { widget: DashboardWidget;
   </>;
 }
 /** Data and renderer extensions are independent of the page framework. */
-export function DashboardWidgets({ widgets, roles, views = [], timezone = 'UTC' }: {
-  timezone?: string; widgets: readonly DashboardWidget[]; roles: readonly StaffRole[]; views?: readonly DashboardView[];
+export function DashboardWidgets({ widgets, roles, views = [], timezone }: {
+  timezone: string; widgets: readonly DashboardWidget[]; roles: readonly StaffRole[]; views?: readonly DashboardView[];
 }) {
   return <div className="grid items-start gap-4 sm:grid-cols-2 xl:grid-cols-3">{widgets.map((widget) => {
     const view = views.find((entry) => entry.id === widget.id);

@@ -8,6 +8,7 @@ import { KioskAuthError } from './api.js';
 import { scanQrCamera } from './qr.scanner.js';
 import { breaksAnywhere } from '../../components/ui/wrap.test-helper.js';
 
+vi.mock('../../app/context.js', () => ({ useBootstrap: () => ({ data: { gym: { timezone: 'America/Los_Angeles' } } }) }));
 vi.mock('./qr.api.js', () => ({ qrCheckin: vi.fn() }));
 vi.mock('./qr.scanner.js', () => ({ scanQrCamera: vi.fn() }));
 vi.mock('./feedback.js', () => ({ playTone: vi.fn() }));
@@ -21,7 +22,15 @@ beforeEach(() => {
   vi.mocked(scanQrCamera).mockImplementation(async (_video, onCode) => { found = onCode; return { stop }; });
   vi.mocked(qrCheckin).mockResolvedValue({ status: 'select_session', member, sessions: [] });
 });
-afterEach(() => { cleanup(); vi.resetAllMocks(); vi.useRealTimers(); setCamera(undefined); });
+afterEach(() => { cleanup(); vi.resetAllMocks(); vi.useRealTimers(); vi.unstubAllEnvs(); setCamera(undefined); });
+it('shows the QR class picker in the gym zone when the device is a day ahead', async () => {
+  vi.stubEnv('TZ', 'Asia/Tokyo');
+  vi.mocked(qrCheckin).mockResolvedValue({ status: 'select_session', member,
+    sessions: [{ id: '00000000-0000-7000-8000-000000000003', name: 'Evening class', startsAt: '2026-11-02T00:30:00Z', endsAt: '2026-11-02T01:30:00Z' }] });
+  render(<QrCheckin {...flow()}/>); await start(); await scan();
+  expect(screen.getByRole('button', { name: 'Evening class · 4:30 PM' })).toBeDefined();
+  vi.unstubAllEnvs();
+});
 /** The page mounts the flow already open, so the camera starts without a tap. */
 async function start() { await act(async () => { await Promise.resolve(); }); }
 async function scan() { await act(async () => { found(code); }); }
@@ -34,13 +43,14 @@ it('retries camera access directly after permission is allowed', async () => {
   await scan();
   expect(screen.getByText('Dana P.')).toBeDefined();
 });
-it('uses the unavailable-camera wording when device enumeration fails', async () => {
+it('offers a working retry when device enumeration fails', async () => {
   setCamera({ getUserMedia: vi.fn(), enumerateDevices: vi.fn().mockRejectedValue(new Error('unavailable')) });
   render(<QrCheckin {...flow()}/>); await start();
-  expect(screen.getByText(/This device can't scan/)).toBeDefined();
-  expect(screen.queryByText(/Allow camera access/)).toBeNull();
+  expect(screen.getByText(/Allow camera access/)).toBeDefined();
   expect(screen.getByRole('button', { name: 'Use name and PIN' })).toBeDefined();
-  expect(scanQrCamera).not.toHaveBeenCalled();
+  setCamera({ getUserMedia: vi.fn(), enumerateDevices: vi.fn().mockResolvedValue([{ kind: 'videoinput' }]) });
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Try again' })); });
+  expect(scanQrCamera).toHaveBeenCalledOnce();
 });
 it('scans, prompts for a class or open mat, then clears the person and code', async () => {
   const props = flow();
@@ -116,7 +126,8 @@ it('does not start scanning when enumeration finds only audio devices', async ()
 it('handles failed enumeration and ignores enumeration after unmount', async () => {
   setCamera({ getUserMedia: vi.fn(), enumerateDevices: vi.fn().mockRejectedValue(new Error('denied')) });
   const view = render(<QrCheckin {...flow()}/>); await start();
-  expect(screen.getByText(/This device can't scan/)).toBeDefined();
+  expect(screen.getByText(/Allow camera access/)).toBeDefined();
+  expect(screen.getByRole('button', { name: 'Try again' })).toBeDefined();
   expect(scanQrCamera).not.toHaveBeenCalled(); view.unmount();
   let finish!: (value: { kind: string }[]) => void;
   setCamera({ getUserMedia: vi.fn(), enumerateDevices: () => new Promise((resolve) => { finish = resolve; }) });

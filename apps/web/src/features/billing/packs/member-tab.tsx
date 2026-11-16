@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { formatCount } from '../../../lib/count.js';
-import { dateFormatter } from '../../../lib/instant.js';
+import { instantLabel } from '../../../lib/instant.js';
 import { useState } from 'react';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { canStaff } from '@plaingym/shared';
@@ -31,7 +31,7 @@ export function PackPanel({ gymId, memberId, timezone, access, client = packClie
     refetchInterval: () => Date.now() < refreshUntil ? 2000 : false });
   const packs = useQuery({ queryKey: packCatalogKey(gymId), queryFn: () => client.packs(), enabled: access.record && action === 'sale' });
   function changed() { setAction(null); setOffset(0); void cache.invalidateQueries({ queryKey: ['billing', gymId] }); }
-  const date = (value: string) => dateFormatter('instant', timezone).format(new Date(value));
+  const date = (value: string) => instantLabel(value, timezone);
   const invoice = (id: string | null, number: number | null) => id === null || number === null ? null : <Button variant="link" className="w-full sm:w-auto" onClick={() => setInvoiceId(id)}>{text('invoiceNumber', { number })}</Button>;
   return <section aria-label={text('tabTitle')} className={'min-w-0 space-y-5 ' + userNames}>
     <h2 className="text-lg font-semibold">{text('tabTitle')}</h2>

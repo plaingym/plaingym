@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { formatCount } from '../../lib/count.js';
-import { timeLabel } from '../../lib/instant.js';
+import { dateFormatter, timeLabel } from '../../lib/instant.js';
 import { parseResponse } from '../../lib/response.js';
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { canStaff, type StaffRole } from '@plaingym/shared';
@@ -99,7 +99,7 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
       if (kind === 'capacity' || kind === 'cancel') setChanged((value) => value + 1);
     } catch (error) { setNotice(message(error)); } finally { setBusy(false); }
   }
-  const when = new Intl.DateTimeFormat(undefined, { timeZone: options.timezone, dateStyle: 'full' }).format(new Date(session.startsAt));
+  const when = dateFormatter('fullDate', options.timezone).format(new Date(session.startsAt));
   if (editing) return <SessionForm session={session} options={options} tags={tags} siblings={siblings}
     onCancel={() => setEditing(false)} onSaved={(next) => { setEditing(false); setNotice(text(Date.parse(next.startsAt) === Date.parse(session.startsAt) ? 'saved' : 'moved')); onSaved(next); }}/>;
   return <div className="space-y-6">

@@ -26,9 +26,12 @@ export function DemoShell({ children }: { children: ReactNode }) {
   // Capture before a child route's login guard can redirect and discard the fragment.
   const [kioskToken, setKioskToken] = useState(() => new URLSearchParams(window.location.hash.slice(1)).get('kioskToken'));
   const [tokenSaveFailed, setTokenSaveFailed] = useState(false);
+  const [tokenSaveAttempt, setTokenSaveAttempt] = useState(0);
   const [copyToken] = useState(() => new URLSearchParams(window.location.hash.slice(1)).get('copyToken'));
   const handoff = useRef<Promise<ReturnType<typeof demoHandoffResponse.parse>> | null>(null);
   const [handoffError, setHandoffError] = useState(false);
+  const [handoffSaveFailed, setHandoffSaveFailed] = useState(false);
+  const [handoffSaveAttempt, setHandoffSaveAttempt] = useState(0);
   useEffect(() => {
     if (!copyToken) return;
     window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
@@ -36,11 +39,12 @@ export function DemoShell({ children }: { children: ReactNode }) {
     let active = true;
     void handoff.current.then(({ data }) => {
       if (!active) return;
-      if (!saveToken(data.kioskToken)) { setHandoffError(true); return; }
+      if (!saveToken(data.kioskToken)) { setHandoffSaveFailed(true); setHandoffError(true); return; }
+      setHandoffSaveFailed(false); setHandoffError(false);
       window.location.assign(data.redirect);
     }).catch(() => { if (active) setHandoffError(true); });
     return () => { active = false; };
-  }, [copyToken]);
+  }, [copyToken, handoffSaveAttempt]);
   const discovery = useQuery({
     queryKey: ['demo', 'discovery', window.location.origin],
     // Let an in-flight discovery finish across a StrictMode/root remount, so it
@@ -87,13 +91,15 @@ export function DemoShell({ children }: { children: ReactNode }) {
       window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search + (remaining ? '#' + remaining : ''));
     }
     setKioskToken(null);
-  }, [activeSandbox, kioskToken]);
+  }, [activeSandbox, kioskToken, tokenSaveAttempt]);
   return <DemoContext.Provider value={discovery.isError || expired ? undefined : mode}><LoginContext.Provider value={login}>
-    {tokenSaveFailed && <div className="p-4"><Alert variant="error" focusOnReveal role="alert">{t('kiosk/kiosk:setupSaveError')}</Alert></div>}
+    {tokenSaveFailed && <div className="space-y-3 p-4"><Alert key={tokenSaveAttempt} variant="error" focusOnReveal role="alert">{t('kiosk/kiosk:retrySaveError')}</Alert>
+      <Button type="button" onClick={() => setTokenSaveAttempt(value => value + 1)}>{t('shell/shell:retry')}</Button></div>}
     {(discovery.isError || expired) && <div className="p-4" role="alert">
       <p>{t('demo/demo:error')}</p><Button type="button" onClick={() => { void refetch(); }}>{t('shell/shell:retry')}</Button>
     </div>}
-    {copyToken ? handoffError ? <Alert variant="error">{t('demo/demo:handoffError')}</Alert> : <LoadingState />
+    {copyToken ? handoffError ? <div className="space-y-3 p-4"><Alert key={handoffSaveAttempt} variant="error" focusOnReveal={handoffSaveFailed}>{t(handoffSaveFailed ? 'kiosk/kiosk:retrySaveError' : 'demo/demo:handoffError')}</Alert>
+      {handoffSaveFailed && <Button type="button" onClick={() => setHandoffSaveAttempt(value => value + 1)}>{t('shell/shell:retry')}</Button>}</div> : <LoadingState />
       : <><CopyPrompt showcase={mode?.mode === 'showcase'} /><DemoNotice /><DemoEntry />
         {kioskToken && (discovery.isPending || activeSandbox) ? (tokenSaveFailed ? null : <LoadingState />) : children}</>}
   </LoginContext.Provider></DemoContext.Provider>;

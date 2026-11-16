@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import type { KioskCheckinResult, KioskMemberIdentity, KioskSessionChoice } from '@plaingym/shared/contracts';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
+import type { KioskCheckinResult, KioskMemberIdentity } from '@plaingym/shared/contracts';
+import { useGymTime } from '../../lib/instant.js';
+import { useBootstrap } from '../../app/context.js';
+import { isStaleVersion, subscribeToStaleVersion } from '../../app/version.js';
 import { t } from '../../lib/i18n.js';
 import { Alert } from '../../components/ui/alert.js';
 import { Button } from '../../components/ui/button.js';
@@ -33,7 +36,7 @@ export function KioskApp() {
   const { token, saveFailed } = device;
   useEffect(() => {
     const updateToken = () => {
-      if (new URLSearchParams(window.location.hash.slice(1)).get('token')) {
+      if (new URLSearchParams(window.location.hash.slice(1)).has('token')) {
         setDevice(readDevice());
       }
     };
@@ -72,6 +75,9 @@ function DeviceSetup({ saveFailed, onSaved }: { saveFailed: boolean; onSaved: (t
 }
 
 function CheckIn({ token, onUnauthorized }: { token: string; onUnauthorized: () => void }) {
+  const stale = useSyncExternalStore(subscribeToStaleVersion, isStaleVersion);
+  // Load the gym's timezone before the first class list, so its times never show in the fallback zone.
+  useBootstrap();
   const root = useRef<HTMLElement>(null);
   const [screen, setScreen] = useState<Screen>({ kind: 'search' });
   const [flow, setFlow] = useState<'choose' | 'qr' | 'pin'>('choose');
@@ -140,6 +146,7 @@ function CheckIn({ token, onUnauthorized }: { token: string; onUnauthorized: () 
     onPointerDown={() => setActivity((value) => value + 1)} onKeyDown={() => setActivity((value) => value + 1)}>
     <div className="flex flex-wrap items-center justify-between gap-3"><h1 className="text-2xl font-semibold sm:text-3xl">{text('title')}</h1>
       <Button variant="outline" onClick={() => void document.documentElement.requestFullscreen?.().catch(() => undefined)}>{text('fullscreen')}</Button></div>
+    {stale && <Alert variant="info" role="status">{text('staleVersion')}</Alert>}
     {screen.kind === 'search' && flow === 'choose' && <Choose onQr={() => setFlow('qr')} onPin={openNamePin}/>}
     {screen.kind === 'search' && flow === 'qr' && <QrCheckin token={token} onUnauthorized={onUnauthorized} onClose={reset} onNamePin={openNamePin} onProgress={qrProgress}/>}
     {screen.kind === 'search' && flow === 'pin' && <><DemoKioskHint /><Search key={generation.current} busy={busy} message={screen.message} onSearch={search}/>
@@ -202,7 +209,7 @@ function Select({ screen, busy, onChange, onSubmit, onCancel }: { screen: Extrac
 
 function Results({ screen, busy, onChoose, onDone, onMembers }: { screen: Extract<Screen, { kind: 'results' }>; busy: boolean;
   onChoose: (memberId: string, sessionId: string | null) => void; onDone: () => void; onMembers: () => void }) {
-  const time = (session: KioskSessionChoice) => new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(new Date(session.startsAt));
+  const { timeLabel } = useGymTime();
   return <section className="space-y-4" aria-live="polite">
     <h2 tabIndex={-1} data-kiosk-focus className="text-2xl">{text('resultsTitle')}</h2>
     <ul className="space-y-3">{screen.rows.map(({ member, result }) => <li key={member.id} className={'space-y-3 rounded-xl border-2 p-4 '
@@ -211,7 +218,7 @@ function Results({ screen, busy, onChoose, onDone, onMembers }: { screen: Extrac
         <span className="text-xl font-medium">{text(!result ? 'error' : result.status === 'select_session' ? 'chooseClass' : result.status)}</span></div>
       {result?.status === 'see_front_desk' && <p className="mt-2 text-sm">{text('frontDeskHelp')}</p>}
       {result?.status === 'select_session' && <div className="grid gap-3 sm:grid-cols-2">
-        {result.sessions.map((session) => <Button key={session.id} className={big + ' wrap-anywhere'} disabled={busy} onClick={() => onChoose(member.id, session.id)}>{text('session', { name: session.name, time: time(session) })}</Button>)}
+        {result.sessions.map((session) => <Button key={session.id} className={big + ' wrap-anywhere'} disabled={busy} onClick={() => onChoose(member.id, session.id)}>{text('session', { name: session.name, time: timeLabel(session.startsAt) })}</Button>)}
         <Button variant="outline" className={big} disabled={busy} onClick={() => onChoose(member.id, null)}>{text('openMat')}</Button></div>}
     </li>)}</ul>
     <div className="grid gap-3 sm:grid-cols-2"><Button variant="outline" className={big} disabled={busy} onClick={onMembers}>{text('changeMembers')}</Button>

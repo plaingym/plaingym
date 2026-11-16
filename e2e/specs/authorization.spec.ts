@@ -306,6 +306,12 @@ for (const width of [360, 1280]) test('report tabs retain their program and rece
     await page.getByRole('tab', { name, exact: true }).click();
     await page.getByRole('table').first().waitFor();
     await expect(page.getByRole('table').first()).not.toContainText(/\d{4}-\d{2}-\d{2}/);
+    await expect(page.locator('figure').first()).toContainText(/[A-Z][a-z]+ \d{4} to [A-Z][a-z]+ \d{4}/);
+    const downloadEvent = page.waitForEvent('download');
+    await page.getByRole('button', { name: /^Download CSV:/ }).first().click();
+    const download = await downloadEvent;
+    const csv = await readFile((await download.path())!, 'utf8');
+    expect(csv).toMatch(/"\d{4}-\d{2}-\d{2}","\d{4}-\d{2}-\d{2}"/);
     await expect(page.getByText(/^Showing /)).toContainText(/Showing [A-Z][a-z]+ \d{4} through [A-Z][a-z]+ \d{4}/);
     await accessibleLayout(page, info, 'reports-' + name.toLowerCase() + '-' + width);
     const path = info.outputPath('reports-' + name.toLowerCase() + '-' + width + '.png');

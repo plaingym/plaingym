@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { calendarDateLabel } from '../../lib/instant.js';
 import { formatCount } from '../../lib/count.js';
 import { Button } from '../../components/ui/button.js';
 import { TableContainer } from '../../components/ui/table.js';
@@ -19,9 +20,9 @@ export function DataTable({ table, title, filename }: { table: ReportTable; titl
         <thead className="bg-muted"><tr>{table.columns.map((column, index) => <th key={index} scope="col" className="whitespace-nowrap px-4 py-3 font-medium">{column}</th>)}</tr></thead>
         <tbody>{table.rows.map((row, index) => <tr key={index} className="border-t border-border">
           {row.map((cell, column) => column === 0
-            ? <th key={column} scope="row" className="whitespace-nowrap px-4 py-3 font-normal">{cell}</th>
+            ? <th key={column} scope="row" className="whitespace-nowrap px-4 py-3 font-normal">{table.dateColumns?.includes(column) ? calendarDateLabel(cell) : cell}</th>
             : <td key={column} className={'px-4 py-3 ' + (table.textColumns?.includes(column)
-              ? 'min-w-48 max-w-64 whitespace-pre-wrap wrap-anywhere' : 'whitespace-nowrap')}>{table.countColumns?.includes(column) ? countCell(cell) : cell}</td>)}
+              ? 'min-w-48 max-w-64 whitespace-pre-wrap wrap-anywhere' : 'whitespace-nowrap')}>{table.countColumns?.includes(column) ? countCell(cell) : table.dateColumns?.includes(column) ? calendarDateLabel(cell) : cell}</td>)}
         </tr>)}</tbody>
       </table>
     </TableContainer>
