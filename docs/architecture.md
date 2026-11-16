@@ -326,6 +326,6 @@ billing flows through the fakes and, optionally, Stripe test mode. End-to-end
 tests run the production image in Docker with a browser (`e2e/README.md`). A memory check
 runs the shipped Compose stack under load and fails over its budget (`deploy/test/memory/README.md`).
 `pnpm verify` runs types, lint, compliance and the tests a branch affects; CI runs
-the full suite. See the root `README.md`, "Checks and boundaries".
+the full suite. See [development](development.md#checks-and-boundaries).
 Verification generates shared inputs once, then calls the same `test:run` and
 `compliance:run` bodies used by the corresponding package scripts.

@@ -70,11 +70,11 @@ though visitors can't upload). The variables are in [configuration.md](configura
 ## Option 1: on your own computer
 
 For looking around, or for developing. You need Node.js, pnpm and Docker; the
-exact versions are in the root [`README.md`](../README.md#local-development).
+exact versions are in [development](development.md#local-development).
 
-1. Follow "Local development" in the root README to create your `.env`, run `pnpm install`
+1. Follow "Local development" in [development](development.md) to create your `.env`, run `pnpm install`
    and `pnpm dev:up`.
-2. Add the demo settings from "Sandbox demo over local HTTPS" in the same README
+2. Add the demo settings from ["Sandbox demo over local HTTPS"](development.md#sandbox-demo-over-local-https) on the same page
    (`TENANCY=multi`, `DEMO_MODE=true`, `DEMO_DOMAIN=demo.localhost`,
    `PUBLIC_ORIGIN=https://demo.localhost`, `AUTH_PASSWORD_LOGIN=off`) and the
    `UPLOADS_S3_*` values from `.env.example`.

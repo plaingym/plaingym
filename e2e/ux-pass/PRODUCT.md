@@ -27,7 +27,8 @@ admin/public join screens 1280×900. The Health overview is 1280×490, excluding
 variable disk and version details below the first row. Screens use actual app theme support:
 the admin currently stays light even when the device prefers dark.
 `apps/server/src/demo/screenshots.json` records dimensions and content-hashed names.
-A complete run removes obsolete captures. Review the images before committing:
+A complete run removes obsolete captures. The root `README.md` shows the 1x captures
+too: update its file names after a refresh (`readme.docs.test.ts` fails on a missing one). Review the images before committing:
 only seeded people and data belong here, never tokens, QR credentials or device
 registration screens. The waiver uses a new seeded signer; no bearer URL is pictured.
 Each file must be under 200,000 bytes. Sizes also go in `e2e/coverage/product-capture.json`.

@@ -35,6 +35,7 @@ are immutable; their journal may only append entries. See [versioning](docs/vers
 for how these commits determine release versions and upgrade notes.
 
 * Read [`AGENTS.md`](AGENTS.md). It holds the project's engineering rules (authorization, schema, billing safety, vendor modules, discipline-agnostic core) and applies to human and AI contributors alike.
+* Set up a local checkout as described in [development](docs/development.md).
 * Use conventional commit prefixes (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`) with a concise body, in commit messages and PR titles. Don't add AI session trailers or attribution links.
 * Make sure strict type checking, lint, tests, and compliance pass: `pnpm verify` runs all four, with the tests your changes affect (`pnpm verify --full` runs every test). CI runs the full suite on your pull request.
   Verification generates inputs once and shares `test:run` and `compliance:run` with `pnpm test` and `pnpm compliance`; add test or compliance steps to those shared bodies.

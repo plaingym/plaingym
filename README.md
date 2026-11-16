@@ -1,234 +1,259 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
-# PlainGym
+<div align="center">
 
-An AGPL-3.0-only gym application with members and households, ranks and promotions,
-class scheduling and kiosk attendance, imports and exports, waivers, signed links
-and campaigns, attendance and member activity reports, revenue reports by plan, Stripe billing, and encrypted backups.
-To run it for a gym, see [the self-hosting guide](docs/self-hosting.md); the
-[documentation index](docs/README.md) lists the rest, including the
-[architecture](docs/architecture.md) and the [security model](docs/security-model.md).
+<h1>PlainGym</h1>
 
-## Getting started as a gym owner
+<p><strong>Free and open source gym management for martial arts academies and boutique gyms.</strong><br>
+Run your gym on your terms, with your data on your own server.</p>
 
-1. [Install](docs/install.md) on an Ubuntu server with one command (cloud-init and
-   Docker Compose are on the [install reference](docs/install-reference.md)), and open the private setup link it prints.
-2. Walk through the [setup wizard](docs/self-hosting.md#setup-wizard); store the backup
-   key it shows once.
-3. [Import your members](docs/importing.md), [collect cards again](docs/card-recollection.md)
-   and set up the [member portal and booking](docs/member-portal.md).
-4. [Go live](docs/going-live.md) by turning on billing and member emails.
-5. Later: [what happens each night](docs/updating.md), [update by hand](docs/update-by-hand.md), [restore after losing a server](docs/restoring.md), or
-   try a [sandbox demo](docs/demo.md) first.
+<p>
+<a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square" alt="License: AGPL-3.0"></a>
+<a href="https://github.com/plaingym/plaingym/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/plaingym/plaingym/ci.yml?branch=main&label=CI&style=flat-square" alt="CI"></a>
+<a href="https://github.com/plaingym/plaingym/releases"><img src="https://img.shields.io/github/v/release/plaingym/plaingym?include_prereleases&label=release&style=flat-square" alt="Latest release"></a>
+</p>
 
-## Local development
+[Install](docs/install.md) · [Try the demo](docs/demo.md) · [Documentation](docs/README.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)
 
-Use Node **24.22.1**, pnpm **10.34.7**, and Docker with Linux containers.
+</div>
 
-1. Copy `.env.example` to `.env` (UTF-8 without BOM).
-2. Replace all three password placeholders with different random, URL-safe values.
-   Update `DATABASE_URL` and `MAINTENANCE_DATABASE_URL` to match the app and
-   maintenance passwords, database name and port.
-   Set `SOURCE_URL` to the public source URL for your checkout.
-   Generate independent `AUTH_SECRET` and `SETUP_TOKEN` values, and a 32-byte
-   `APP_ENCRYPTION_KEY` encoded as 64 hex characters (`openssl rand -hex 32`).
-3. Choose a unique `COMPOSE_PROJECT_NAME` and unused ports if another worktree is running.
-4. Run:
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/members-dark-1x-8f65a70f8f4fc5d3.webp">
+  <img src="apps/server/src/demo/screenshots/members-light-1x-8f65a70f8f4fc5d3.webp" alt="A member profile in the PlainGym admin, with household details and membership tabs" width="100%">
+</picture>
+</p>
+
+> [!NOTE]
+> PlainGym has no stable release yet. `main` is published as nightly `v0.Y.Z`
+> prereleases, and there is no compatibility promise before 1.0
+> ([versioning](docs/versioning.md)).
+
+## Why PlainGym
+
+PlainGym runs a whole gym from one install: the staff admin, members and families,
+classes and booking, ranks, a check-in kiosk, a member app, billing, waivers and an
+optional website.
+
+- **Your own data.** Member records and payments stay on a server you control.
+- **Open standards.** PostgreSQL, Docker and a documented API keep your setup portable.
+- **Open source.** Read, change and share the code under the AGPL-3.0 license.
+- **Free to self-host.** Install it on your own server at no cost. Payments go through
+  your gym's own Stripe account, and PlainGym takes no cut.
+
+## Features
+
+<table>
+<tr>
+<td width="50%" valign="top">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/members-dark-1x-8f65a70f8f4fc5d3.webp">
+  <img src="apps/server/src/demo/screenshots/members-light-1x-8f65a70f8f4fc5d3.webp" alt="A member profile with household details" width="100%">
+</picture>
+
+<h3>Members and households</h3>
+
+Families, contact details and member records in one place. One payer per household,
+statuses, tags, photos, emergency contacts and staff-only medical notes.
+</td>
+<td width="50%" valign="top">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/ranks-dark-1x-7b17494c98b99efb.webp">
+  <img src="apps/server/src/demo/screenshots/ranks-light-1x-7b17494c98b99efb.webp" alt="Rank settings and promotion readiness" width="100%">
+</picture>
+
+<h3>Ranks and promotions</h3>
+
+Belts and stripes, or kyu and dan. Set criteria for classes, time at rank and age,
+see who is ready, and promote several members together.
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/schedule-dark-1x-359d9c796482676d.webp">
+  <img src="apps/server/src/demo/screenshots/schedule-light-1x-a7eb823f78cdc407.webp" alt="A weekly class schedule" width="100%">
+</picture>
+
+<h3>Schedule and booking</h3>
+
+Weekly class templates with capacity limits, a waitlist that moves people up on its
+own, a cancellation cutoff, and attendance taken by coaches.
+</td>
+<td width="50%" valign="top">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/billing-dark-1x-7c40ce4958ce63ce.webp">
+  <img src="apps/server/src/demo/screenshots/billing-light-1x-7c40ce4958ce63ce.webp" alt="Membership plans with prices and billing periods" width="100%">
+</picture>
+
+<h3>Billing with your own Stripe</h3>
+
+Memberships, signup fees, family discounts, promo codes and class packs. Card details
+stay with Stripe; failed payments retry with a payment link.
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/reports-dark-1x-6b5463ef8cdc82a7.webp">
+  <img src="apps/server/src/demo/screenshots/reports-light-1x-6b5463ef8cdc82a7.webp" alt="Membership and attendance reports" width="100%">
+</picture>
+
+<h3>Leads and reports</h3>
+
+A leads board with sources and conversion, member activity, revenue by plan,
+attendance by program, and member emails.
+</td>
+<td width="50%" valign="top">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/join-dark-1x-f30ff74d39d8e6bc.webp">
+  <img src="apps/server/src/demo/screenshots/join-light-1x-f30ff74d39d8e6bc.webp" alt="The public join page with membership plans" width="100%">
+</picture>
+
+<h3>Join, trial, drop-in</h3>
+
+Public sign-up straight through to the member portal, trial requests sent to staff,
+and drop-in waivers signed before class.
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top" align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/portal-dark-1x-bd456f71303a99fd.webp">
+  <img src="apps/server/src/demo/screenshots/portal-light-1x-bd456f71303a99fd.webp" alt="Rank progress in the phone-sized member portal" width="55%">
+</picture>
+
+<h3>Member portal</h3>
+
+An installable app for members: book classes, show a check-in QR code, follow rank
+progress, pay invoices and manage the household.
+</td>
+<td width="50%" valign="top" align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/waivers-dark-1x-9b051ef1100b1105.webp">
+  <img src="apps/server/src/demo/screenshots/waivers-light-1x-9b051ef1100b1105.webp" alt="A waiver signing page" width="55%">
+</picture>
+
+<h3>Waivers and onboarding</h3>
+
+Waiver templates with guardian signing for minors and a PDF of each signed copy.
+One link collects a card, a waiver and the portal invite.
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top" align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/kiosk-dark-1x-819116a4607c24ce.webp">
+  <img src="apps/server/src/demo/screenshots/kiosk-light-1x-819116a4607c24ce.webp" alt="The tablet check-in screen" width="80%">
+</picture>
+
+<h3>Check-in kiosk</h3>
+
+A tablet at the front desk. Members check in with a name and PIN or a QR code,
+families together. Payment issues stay off the shared screen.
+</td>
+<td width="50%" valign="top">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/server-dark-1x-3c4fea604e5d1911.webp">
+  <img src="apps/server/src/demo/screenshots/server-light-1x-3c4fea604e5d1911.webp" alt="The Health page with service checks" width="100%">
+</picture>
+
+<h3>Your server, looked after</h3>
+
+A one-command install and setup wizard, encrypted backups with restore, nightly patch
+updates with rollback, health checks, CSV import and export, and an optional gym website.
+</td>
+</tr>
+</table>
+
+Nothing in the app assumes one martial art. [Content packs](packs/README.md) bring the
+rank systems for BJJ, judo and karate, and suggested programs and class tags for those
+and for Muay Thai and functional fitness.
+
+## Get started
+
+You need a domain name, a small Ubuntu server (2 GB of RAM recommended) and about 30
+minutes. The [install guide](docs/install.md) assumes you have never run a server before.
+
+| Step | What you do | Guide |
+| :--- | :--- | :--- |
+| 1. Install | Point a name at the server and run one command. It prints a private setup link. | [Install](docs/install.md) |
+| 2. Set up | Open the link and follow the setup wizard. Store the backup key it shows once. | [Setup wizard](docs/self-hosting.md#setup-wizard) |
+| 3. Bring your members | Import from CSV, collect cards again and invite members to the portal. | [Importing](docs/importing.md) · [Cards](docs/card-recollection.md) · [Portal](docs/member-portal.md) |
+| 4. Go live | Turn on billing and member emails. | [Going live](docs/going-live.md) |
+
+```sh
+curl -fsSL https://github.com/plaingym/plaingym/releases/download/vX.Y.Z/bootstrap.sh \
+  | sudo sh -s -- --hostname gym.example.org --email owner@example.org
+```
+
+After that the server mostly runs itself: see [what happens each night](docs/updating.md),
+[updating by hand](docs/update-by-hand.md) and [restoring after losing a server](docs/restoring.md).
+
+## Try the demo
+
+The [sandbox demo](docs/demo.md) runs a sample gym on your computer or a server. Look
+around the shared showcase, then make a private copy and switch between owner, coach and
+student without creating an account. Copies are deleted within 24 hours, and billing
+uses Stripe test mode.
+
+## How it works
+
+```mermaid
+flowchart LR
+  people["Staff, members<br>and the kiosk"] -- HTTPS --> caddy["Caddy<br>certificates"]
+  caddy --> app["PlainGym app<br>admin · portal · kiosk<br>website · API · jobs"]
+  app --> db[("PostgreSQL")]
+  app -- payments --> stripe["Your Stripe<br>account"]
+  app -- email --> smtp["Your email<br>provider"]
+  app -- encrypted backups --> s3["S3-compatible<br>bucket"]
+```
+
+- **One install, one gym.** Docker Compose runs three containers: Caddy, the app and
+  PostgreSQL. It fits in 1 GB of RAM with swap, on amd64 or arm64.
+- **Strict separation.** Every query is scoped to the gym and checked by PostgreSQL's
+  row-level security; a member only ever sees their own household.
+- **No lock-in.** Stripe, email and storage sit behind small modules, and **Export gym data**
+  downloads a ZIP with one CSV per dataset.
+
+The details are in the [architecture](docs/architecture.md) and the
+[security model](docs/security-model.md).
+
+## Documentation
+
+| For | Start with |
+| :--- | :--- |
+| Gym owners | [Install](docs/install.md), [self-hosting](docs/self-hosting.md), [importing](docs/importing.md), [member portal](docs/member-portal.md), [going live](docs/going-live.md) |
+| Operators | [Configuration](docs/configuration.md), [install reference](docs/install-reference.md), [update reference](docs/update-reference.md), [restore reference](docs/restore-reference.md), [Cloudflare](docs/cloudflare.md) |
+| Contributors | [Development](docs/development.md), [architecture](docs/architecture.md), [security model](docs/security-model.md), [versioning](docs/versioning.md) |
+
+Every page is listed in the [documentation index](docs/README.md).
+
+## Development
+
+You need Node **24.22.1**, pnpm **10.34.7** and Docker. Copy `.env.example` to `.env`,
+fill in its secrets as described in [development](docs/development.md#local-development),
+then:
 
 ```sh
 pnpm install
-pnpm dev:up
-pnpm check-types
-pnpm lint
-pnpm test
-pnpm dev
+pnpm dev:up    # PostgreSQL and Mailpit
+pnpm dev       # server on :3000, web app on :5173
+pnpm verify    # types, lint and the tests your branch affects
 ```
 
-`pnpm dev:up` starts PostgreSQL and Mailpit and then runs `pnpm db:migrate`, which
-applies migrations as the `maintenance` role (`MAINTENANCE_DATABASE_URL`).
-`pnpm dev` also runs `pnpm db:migrate` before starting the servers, so restarting
-after pulling changes applies pending migrations. The database must be running;
-if migration fails, the servers do not start. Use `pnpm db:migrate` to migrate on its own.
-On Windows use `pnpm.cmd` if PowerShell blocks `pnpm.ps1`. The server is at
-`http://127.0.0.1:3000/healthz`, Vite at `http://127.0.0.1:5173`, and Mailpit at
-`http://127.0.0.1:8025` with the example ports. Vite proxies `/healthz` to the
-server's `PORT`. SMTP capture is on port 1025. Docker's published ports bind to loopback.
+[Development](docs/development.md) covers the rest: the sandbox demo over local HTTPS,
+builds, and how the tests and checks work.
 
-On first boot, print the private setup link in another terminal and open it:
+## Contributing
 
-```sh
-pnpm cli setup-link
-```
+Pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first: you sign the
+[Contributor License Agreement](CLA.md) once, and you keep your copyright. AI agents
+follow [AGENTS.md](AGENTS.md). Please report security issues privately as described in
+[SECURITY.md](SECURITY.md), and follow the [code of conduct](CODE_OF_CONDUCT.md).
 
-The token is required to create the first owner or restore a backup. Backups
-can be deferred with **Set up later** and added in **Settings → Integrations**. Use `pnpm seed <gym-uuid>` to apply sample content.
-`pnpm cli <command>` runs any server command with the root `.env`, as `gym-app <command>`
-does in a deployed container.
+## License
 
-### Sandbox demo over local HTTPS
-
-The demo opens `https://showcase.demo.localhost/demo` and private copies under
-random hostnames, so it needs HTTPS
-on port **443** alongside `pnpm dev`. In your root `.env`, set:
-
-```dotenv
-TENANCY=multi
-DEMO_MODE=true
-DEMO_DOMAIN=demo.localhost
-PUBLIC_ORIGIN=https://demo.localhost
-AUTH_PASSWORD_LOGIN=off
-```
-
-Also configure the `UPLOADS_S3_*` values from `.env.example`: demo seeds require
-working S3-compatible storage even though visitor uploads are disabled. The
-optional Stripe test billing settings are described in the [demo guide](apps/server/src/demo/README.md).
-Start the database with `pnpm dev:up`, then run `pnpm dev`. In another terminal:
-
-```sh
-pnpm dev:proxy:up
-pnpm dev:proxy:trust
-```
-
-Trust the CA once per machine/user, then **fully quit and restart Chrome** (or
-your Chromium browser). Open **https://demo.localhost/** and click **Try the
-demo**. The showcase refuses edits; **Make my own copy** opens a private sandbox
-signed in as the selected role. Five gyms are seeded ahead, one at a time. Copies
-expire after two idle hours, at most 24 hours after allocation.
-On a demo server the demo domain's root is a server-rendered product page, and its
-old `/demo` address redirects there; under `pnpm dev` both show the SPA's entry bar
-instead. The showcase and private copies keep their `/demo` start pages.
-Use that HTTPS address instead of `localhost:5173`; sandbox redirects,
-secure cookies and Vite's HMR websocket then use the same origin on port 443.
-No DNS or hosts-file changes are needed in Chrome/Edge for `.localhost` names.
-
-`compose.dev-proxy.yaml` runs a pinned Caddy image with the same demo hostnames
-and local TLS as the browser tests. It forwards to `host.docker.internal:5173`.
-Docker Desktop can reach Vite's default loopback listener. If the proxy returns
-502 on native Linux, set `VITE_HOST=0.0.0.0` in `.env` and restart `pnpm dev`;
-this exposes the dev listener on other host interfaces, so use a trusted network.
-Vite already accepts `.localhost` hosts and detects the proxied WSS port;
-no `allowedHosts: true` or `hmr.clientPort` override is needed.
-If Vite reports a port other than 5173, free 5173 and restart it.
-
-The trust script exports **only the public root certificate** from
-`/data/caddy/pki/authorities/local/root.crt` to the ignored
-`data/dev-proxy/root.crt`, then installs it for the current user:
-
-* **Windows:** `certutil -addstore -user Root data/dev-proxy/root.crt`.
-* **macOS:** `security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db data/dev-proxy/root.crt`.
-* **Linux (Chrome/Chromium):** install your distribution's NSS `certutil` tool
-  (`libnss3-tools` on Debian/Ubuntu). The script initializes the user's NSS DB if
-  needed and imports with `certutil -d sql:<db> -A -t 'C,,' -n <nickname> -i data/dev-proxy/root.crt`.
-  It uses `~/.pki/nssdb` if that directory exists, otherwise
-  `~/.local/share/pki/nssdb`, following [Chromium's trust-store rules](https://chromium.googlesource.com/chromium/src.git/+/refs/heads/main/docs/linux/cert_management.md).
-
-For tools such as curl, `pnpm dev:proxy:trust --export` just exports the root;
-use `curl --cacert data/dev-proxy/root.crt https://demo.localhost/`.
-
-`pnpm dev:proxy:stop` removes the proxy container and network, keeping the named
-volume **`plaingym-dev-proxy-caddy-data`**. The CA survives restarts and worktree
-changes. This proxy is shared locally: only one instance can bind port 443.
-If 443 is already in use, stop the other proxy/service or this proxy before
-running browser tests. Changing the port alone does not fix demo redirects,
-which deliberately use the standard HTTPS port.
-
-To remove trust, keep the exported certificate and run `pnpm dev:proxy:untrust`
-(the container can be stopped). This deletes that CA by fingerprint on Windows
-(`certutil -delstore -user Root <SHA1>`) and macOS
-(`security delete-certificate -t -Z <SHA1> ~/Library/Keychains/login.keychain-db`),
-or by its fingerprint-based nickname in Linux NSS (`certutil -d sql:<db> -D -n <nickname>`).
-Restart Chrome again. To discard the CA entirely, stop the proxy and run
-`docker volume rm plaingym-dev-proxy-caddy-data`; the next start creates a new
-CA that must be trusted again.
-
-`pnpm build` creates `apps/server/dist/server.mjs` with its adjacent `assets/`
-and `apps/web/dist/`. Run the server with `pnpm --filter @plaingym/server start`
-and preview the web build with `pnpm --filter @plaingym/web preview`.
-Development runs the two apps separately.
-
-`pnpm dev:stop` stops PostgreSQL and Mailpit and keeps the database; `pnpm dev:up`
-starts them again. `pnpm dev:reset` removes this compose project's containers
-**and database volume**.
-Initialization runs only on an empty volume; changing passwords in `.env` does
-not alter an existing database.
-
-## Checks and boundaries
-
-The root package version is shared by all private workspace packages. Builds report
-their Git version and commit, and `CHANGELOG.md` records releases. See
-[versioning and compatibility](docs/versioning.md) and [updates and rollback](docs/update-by-hand.md).
-
-`pnpm install && pnpm test` works on a fresh clone with Node, pnpm, and Docker
-running; no `.env` or manual database startup is needed, and tests never read
-`.env` or your dev database. Tests split into two Vitest projects: `pnpm test:unit`
-runs the files that need no database, without Docker; `pnpm test:integration`
-runs the rest, and `pnpm test` runs both. For integration tests the setup starts a
-unique, disposable PostgreSQL 18 compose project on a random loopback port,
-bootstraps its roles, and removes its containers and volume after the run. It
-starts only Postgres, not Mailpit. A test file belongs to the integration
-project when it uses the `@plaingym/db/testing` helpers.
-
-To use an existing test server instead, set `TEST_DATABASE_URL` (the `app` role),
-with `TEST_MAINTENANCE_DATABASE_URL` and `TEST_DATABASE_ADMIN_URL`. CI supplies its
-service database this way. A missing or unreachable database fails the run; no
-tests silently skip. Tests silence the app's error log lines; `TEST_LOGS=1` shows
-them. The smoke test reads PostgreSQL catalogs as `app`, checking role
-privileges, ownership and DML-only defaults. It creates no tables.
-
-ESLint limits vendor SDKs to server `infra/`. Within `apps/server/src/`, database
-rules restrict raw handles outside core infrastructure and require portal/signed-link
-access to use `forHousehold`. Core cannot import feature modules. Boundary tests
-lint failing and permitted fixtures using the actual config. Schema imports and Drizzle query operators are permitted;
-raw-handle restrictions target `@plaingym/db`, `packages/db/src/index`, and
-`core/db` or `core/database`, along with the database client subpaths. Portal and
-signed-link modules cannot import `forGym` from those or any `core/` module. Ordinary service barrels,
-schema namespaces, and shared-contract namespaces remain available. Server runtime
-imports are static and cannot use `createRequire`; frontend lazy imports and test
-module reloads remain available.
-
-`pnpm verify` is the check to run before handing off a branch: types, lint,
-compliance, the documentation tests (`*.docs.test.ts`, which read files outside the
-import graph), source-scanning tests listed in `scripts/verify.mjs`, and the tests
-affected by the branch's changes since it left `main`.
-Vitest finds those by following imports. Whole-app tests (those importing the area
-registry, the runtime, or the demo seed composition) relate to almost every change,
-so they run locally only when their own folder changed. The listed source-scanning
-tests run every time, even for Markdown-only changes; a guard test requires new file-reading
-tests to join that list or declare their fixture-only reads. One scanner is a whole-app
-test and one uses the test database, so `pnpm verify` always needs Docker (or
-`TEST_DATABASE_URL`). Changes that tests read
-without importing them (migrations, test setup, the lockfile; `forceRerunTriggers`
-in `vitest.config.ts`) run every test, and `pnpm generate` validates locale files.
-`pnpm verify --list` prints the selection, and `pnpm verify --full` and `pnpm test`
-run the full suite. The disposable test database skips durable writes
-(`compose.test.yaml`). CI runs the full suite, split across four jobs, on every push and pull
-request that changes more than Markdown files, and gates landing; the **Repo compliance**
-workflow runs the documentation tests on every push and pull request, Markdown-only ones
-included. `pnpm test:docs` generates shared inputs and runs every docs test, failing
-if one belongs to the integration project. It discovers and runs the specs on one Vitest instance.
-Verification generates shared inputs once, then uses the same `test:run` and
-`compliance:run` bodies as `pnpm test` and `pnpm compliance`. Source-reader inventory
-checks also use Vitest's discovery, including database tests in the integration project.
-Database discovery follows runtime imports and re-exports through `*.test-helper` modules;
-type-only imports do not require a database. The source-reader guard also recognizes literal
-dynamic filesystem imports and reads through helper and fixture modules. Both checks share
-the import parser and source-extension resolver in `scripts/test-imports.ts`.
-Verification includes docs specs from Vitest's own discovery
-in the same test run as the selected tests (or the full suite).
-End-to-end skips Markdown-only pushes too, and still runs nightly, as does the **Memory** workflow, which measures the whole
-stack against its memory budget (`deploy/test/memory/README.md`). On a push to `main`, CI reuses a passing run of the same
-commit (from its integration branch) instead of repeating it.
-The people mapper compatibility test runs two small fixtures and a 3,000-row export by default,
-under five mapping variants each. Set `PEOPLE_COMPAT_LARGE=1` when running
-`pnpm test apps/server/src/areas/imports/mappers/people.compat.test.ts` to include the two
-100,000-row exports. Its reference hashes cover issue codes and locations, and failures
-identify the first differing 1,000-row chunk.
-Dependency lifecycle scripts are allowlisted for esbuild only.
-
-The server build copies Noto Sans and the PDF renderer's CJK, Arabic, Hebrew,
-Thai and Devanagari fonts with their [license notices](apps/server/src/infra/pdf/README.md#font-assets).
-Tests boot a relocated bundle to check asset resolution and run a bundled
-CommonJS dependency using a Node builtin. The web dev server includes React Fast Refresh.
-`pnpm compliance` checks dependency licenses, SPDX headers and `THIRD_PARTY_LICENSES`
-(see [scripts/compliance/README.md](scripts/compliance/README.md)).
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).
+PlainGym is licensed under the [GNU Affero General Public License v3.0 only](LICENSE).
+If you run a modified version for others, the AGPL asks you to offer them its source;
+every running install links to its own source code. Third-party notices are in
+[THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).

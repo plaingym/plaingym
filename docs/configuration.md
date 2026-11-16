@@ -268,5 +268,4 @@ the database ([self-hosting.md](self-hosting.md#updates)).
 development Compose file: `COMPOSE_PROJECT_NAME`, `POSTGRES_PORT`,
 `MAILPIT_SMTP_PORT` and `MAILPIT_HTTP_PORT`, and `VITE_HOST` for the local HTTPS
 proxy on native Linux. Tests read `TEST_DATABASE_URL`,
-`TEST_MAINTENANCE_DATABASE_URL`, `TEST_DATABASE_ADMIN_URL` and `TEST_LOGS` (root
-`README.md`, "Checks and boundaries").
+`TEST_MAINTENANCE_DATABASE_URL`, `TEST_DATABASE_ADMIN_URL` and `TEST_LOGS` ([development](development.md#checks-and-boundaries)).

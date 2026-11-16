@@ -1,0 +1,218 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+# Development
+
+This page is for working on PlainGym itself: running it from a checkout, the sandbox
+demo over local HTTPS, and the checks a branch passes before it lands. To run PlainGym
+for a gym, see [installing](install.md) instead. How to contribute is in
+[`CONTRIBUTING.md`](../CONTRIBUTING.md), and the rules for AI agents in [`AGENTS.md`](../AGENTS.md).
+
+## Local development
+
+Use Node **24.22.1**, pnpm **10.34.7**, and Docker with Linux containers.
+
+1. Copy `.env.example` to `.env` (UTF-8 without BOM).
+2. Replace all three password placeholders with different random, URL-safe values.
+   Update `DATABASE_URL` and `MAINTENANCE_DATABASE_URL` to match the app and
+   maintenance passwords, database name and port.
+   Set `SOURCE_URL` to the public source URL for your checkout.
+   Generate independent `AUTH_SECRET` and `SETUP_TOKEN` values, and a 32-byte
+   `APP_ENCRYPTION_KEY` encoded as 64 hex characters (`openssl rand -hex 32`).
+3. Choose a unique `COMPOSE_PROJECT_NAME` and unused ports if another worktree is running.
+4. Run:
+
+```sh
+pnpm install
+pnpm dev:up
+pnpm check-types
+pnpm lint
+pnpm test
+pnpm dev
+```
+
+`pnpm dev:up` starts PostgreSQL and Mailpit and then runs `pnpm db:migrate`, which
+applies migrations as the `maintenance` role (`MAINTENANCE_DATABASE_URL`).
+`pnpm dev` also runs `pnpm db:migrate` before starting the servers, so restarting
+after pulling changes applies pending migrations. The database must be running;
+if migration fails, the servers do not start. Use `pnpm db:migrate` to migrate on its own.
+On Windows use `pnpm.cmd` if PowerShell blocks `pnpm.ps1`. The server is at
+`http://127.0.0.1:3000/healthz`, Vite at `http://127.0.0.1:5173`, and Mailpit at
+`http://127.0.0.1:8025` with the example ports. Vite proxies `/healthz` to the
+server's `PORT`. SMTP capture is on port 1025. Docker's published ports bind to loopback.
+
+On first boot, print the private setup link in another terminal and open it:
+
+```sh
+pnpm cli setup-link
+```
+
+The token is required to create the first owner or restore a backup. Backups
+can be deferred with **Set up later** and added in **Settings → Integrations**. Use `pnpm seed <gym-uuid>` to apply sample content.
+`pnpm cli <command>` runs any server command with the root `.env`, as `gym-app <command>`
+does in a deployed container.
+
+### Sandbox demo over local HTTPS
+
+The demo opens `https://showcase.demo.localhost/demo` and private copies under
+random hostnames, so it needs HTTPS
+on port **443** alongside `pnpm dev`. In your root `.env`, set:
+
+```dotenv
+TENANCY=multi
+DEMO_MODE=true
+DEMO_DOMAIN=demo.localhost
+PUBLIC_ORIGIN=https://demo.localhost
+AUTH_PASSWORD_LOGIN=off
+```
+
+Also configure the `UPLOADS_S3_*` values from `.env.example`: demo seeds require
+working S3-compatible storage even though visitor uploads are disabled. The
+optional Stripe test billing settings are described in the [demo guide](../apps/server/src/demo/README.md).
+Start the database with `pnpm dev:up`, then run `pnpm dev`. In another terminal:
+
+```sh
+pnpm dev:proxy:up
+pnpm dev:proxy:trust
+```
+
+Trust the CA once per machine/user, then **fully quit and restart Chrome** (or
+your Chromium browser). Open **https://demo.localhost/** and click **Try the
+demo**. The showcase refuses edits; **Make my own copy** opens a private sandbox
+signed in as the selected role. Five gyms are seeded ahead, one at a time. Copies
+expire after two idle hours, at most 24 hours after allocation.
+On a demo server the demo domain's root is a server-rendered product page, and its
+old `/demo` address redirects there; under `pnpm dev` both show the SPA's entry bar
+instead. The showcase and private copies keep their `/demo` start pages.
+Use that HTTPS address instead of `localhost:5173`; sandbox redirects,
+secure cookies and Vite's HMR websocket then use the same origin on port 443.
+No DNS or hosts-file changes are needed in Chrome/Edge for `.localhost` names.
+
+`compose.dev-proxy.yaml` runs a pinned Caddy image with the same demo hostnames
+and local TLS as the browser tests. It forwards to `host.docker.internal:5173`.
+Docker Desktop can reach Vite's default loopback listener. If the proxy returns
+502 on native Linux, set `VITE_HOST=0.0.0.0` in `.env` and restart `pnpm dev`;
+this exposes the dev listener on other host interfaces, so use a trusted network.
+Vite already accepts `.localhost` hosts and detects the proxied WSS port;
+no `allowedHosts: true` or `hmr.clientPort` override is needed.
+If Vite reports a port other than 5173, free 5173 and restart it.
+
+The trust script exports **only the public root certificate** from
+`/data/caddy/pki/authorities/local/root.crt` to the ignored
+`data/dev-proxy/root.crt`, then installs it for the current user:
+
+* **Windows:** `certutil -addstore -user Root data/dev-proxy/root.crt`.
+* **macOS:** `security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db data/dev-proxy/root.crt`.
+* **Linux (Chrome/Chromium):** install your distribution's NSS `certutil` tool
+  (`libnss3-tools` on Debian/Ubuntu). The script initializes the user's NSS DB if
+  needed and imports with `certutil -d sql:<db> -A -t 'C,,' -n <nickname> -i data/dev-proxy/root.crt`.
+  It uses `~/.pki/nssdb` if that directory exists, otherwise
+  `~/.local/share/pki/nssdb`, following [Chromium's trust-store rules](https://chromium.googlesource.com/chromium/src.git/+/refs/heads/main/docs/linux/cert_management.md).
+
+For tools such as curl, `pnpm dev:proxy:trust --export` just exports the root;
+use `curl --cacert data/dev-proxy/root.crt https://demo.localhost/`.
+
+`pnpm dev:proxy:stop` removes the proxy container and network, keeping the named
+volume **`plaingym-dev-proxy-caddy-data`**. The CA survives restarts and worktree
+changes. This proxy is shared locally: only one instance can bind port 443.
+If 443 is already in use, stop the other proxy/service or this proxy before
+running browser tests. Changing the port alone does not fix demo redirects,
+which deliberately use the standard HTTPS port.
+
+To remove trust, keep the exported certificate and run `pnpm dev:proxy:untrust`
+(the container can be stopped). This deletes that CA by fingerprint on Windows
+(`certutil -delstore -user Root <SHA1>`) and macOS
+(`security delete-certificate -t -Z <SHA1> ~/Library/Keychains/login.keychain-db`),
+or by its fingerprint-based nickname in Linux NSS (`certutil -d sql:<db> -D -n <nickname>`).
+Restart Chrome again. To discard the CA entirely, stop the proxy and run
+`docker volume rm plaingym-dev-proxy-caddy-data`; the next start creates a new
+CA that must be trusted again.
+
+`pnpm build` creates `apps/server/dist/server.mjs` with its adjacent `assets/`
+and `apps/web/dist/`. Run the server with `pnpm --filter @plaingym/server start`
+and preview the web build with `pnpm --filter @plaingym/web preview`.
+Development runs the two apps separately.
+
+`pnpm dev:stop` stops PostgreSQL and Mailpit and keeps the database; `pnpm dev:up`
+starts them again. `pnpm dev:reset` removes this compose project's containers
+**and database volume**.
+Initialization runs only on an empty volume; changing passwords in `.env` does
+not alter an existing database.
+
+## Checks and boundaries
+
+The root package version is shared by all private workspace packages. Builds report
+their Git version and commit, and `CHANGELOG.md` records releases. See
+[versioning and compatibility](versioning.md) and [updates and rollback](update-by-hand.md).
+
+`pnpm install && pnpm test` works on a fresh clone with Node, pnpm, and Docker
+running; no `.env` or manual database startup is needed, and tests never read
+`.env` or your dev database. Tests split into two Vitest projects: `pnpm test:unit`
+runs the files that need no database, without Docker; `pnpm test:integration`
+runs the rest, and `pnpm test` runs both. For integration tests the setup starts a
+unique, disposable PostgreSQL 18 compose project on a random loopback port,
+bootstraps its roles, and removes its containers and volume after the run. It
+starts only Postgres, not Mailpit. A test file belongs to the integration
+project when it uses the `@plaingym/db/testing` helpers.
+
+To use an existing test server instead, set `TEST_DATABASE_URL` (the `app` role),
+with `TEST_MAINTENANCE_DATABASE_URL` and `TEST_DATABASE_ADMIN_URL`. CI supplies its
+service database this way. A missing or unreachable database fails the run; no
+tests silently skip. Tests silence the app's error log lines; `TEST_LOGS=1` shows
+them. The smoke test reads PostgreSQL catalogs as `app`, checking role
+privileges, ownership and DML-only defaults. It creates no tables.
+
+ESLint limits vendor SDKs to server `infra/`. Within `apps/server/src/`, database
+rules restrict raw handles outside core infrastructure and require portal/signed-link
+access to use `forHousehold`. Core cannot import feature modules. Boundary tests
+lint failing and permitted fixtures using the actual config. Schema imports and Drizzle query operators are permitted;
+raw-handle restrictions target `@plaingym/db`, `packages/db/src/index`, and
+`core/db` or `core/database`, along with the database client subpaths. Portal and
+signed-link modules cannot import `forGym` from those or any `core/` module. Ordinary service barrels,
+schema namespaces, and shared-contract namespaces remain available. Server runtime
+imports are static and cannot use `createRequire`; frontend lazy imports and test
+module reloads remain available.
+
+`pnpm verify` is the check to run before handing off a branch: types, lint,
+compliance, the documentation tests (`*.docs.test.ts`, which read files outside the
+import graph), source-scanning tests listed in `scripts/verify.mjs`, and the tests
+affected by the branch's changes since it left `main`.
+Vitest finds those by following imports. Whole-app tests (those importing the area
+registry, the runtime, or the demo seed composition) relate to almost every change,
+so they run locally only when their own folder changed. The listed source-scanning
+tests run every time, even for Markdown-only changes; a guard test requires new file-reading
+tests to join that list or declare their fixture-only reads. One scanner is a whole-app
+test and one uses the test database, so `pnpm verify` always needs Docker (or
+`TEST_DATABASE_URL`). Changes that tests read
+without importing them (migrations, test setup, the lockfile; `forceRerunTriggers`
+in `vitest.config.ts`) run every test, and `pnpm generate` validates locale files.
+`pnpm verify --list` prints the selection, and `pnpm verify --full` and `pnpm test`
+run the full suite. The disposable test database skips durable writes
+(`compose.test.yaml`). CI runs the full suite, split across four jobs, on every push and pull
+request that changes more than Markdown files, and gates landing; the **Repo compliance**
+workflow runs the documentation tests on every push and pull request, Markdown-only ones
+included. `pnpm test:docs` generates shared inputs and runs every docs test, failing
+if one belongs to the integration project. It discovers and runs the specs on one Vitest instance.
+Verification generates shared inputs once, then uses the same `test:run` and
+`compliance:run` bodies as `pnpm test` and `pnpm compliance`. Source-reader inventory
+checks also use Vitest's discovery, including database tests in the integration project.
+Database discovery follows runtime imports and re-exports through `*.test-helper` modules;
+type-only imports do not require a database. The source-reader guard also recognizes literal
+dynamic filesystem imports and reads through helper and fixture modules. Both checks share
+the import parser and source-extension resolver in `scripts/test-imports.ts`.
+Verification includes docs specs from Vitest's own discovery
+in the same test run as the selected tests (or the full suite).
+End-to-end skips Markdown-only pushes too, and still runs nightly, as does the **Memory** workflow, which measures the whole
+stack against its memory budget (`deploy/test/memory/README.md`). On a push to `main`, CI reuses a passing run of the same
+commit (from its integration branch) instead of repeating it.
+The people mapper compatibility test runs two small fixtures and a 3,000-row export by default,
+under five mapping variants each. Set `PEOPLE_COMPAT_LARGE=1` when running
+`pnpm test apps/server/src/areas/imports/mappers/people.compat.test.ts` to include the two
+100,000-row exports. Its reference hashes cover issue codes and locations, and failures
+identify the first differing 1,000-row chunk.
+Dependency lifecycle scripts are allowlisted for esbuild only.
+
+The server build copies Noto Sans and the PDF renderer's CJK, Arabic, Hebrew,
+Thai and Devanagari fonts with their [license notices](../apps/server/src/infra/pdf/README.md#font-assets).
+Tests boot a relocated bundle to check asset resolution and run a bundled
+CommonJS dependency using a Node builtin. The web dev server includes React Fast Refresh.
+`pnpm compliance` checks dependency licenses, SPDX headers and `THIRD_PARTY_LICENSES`
+(see [scripts/compliance/README.md](../scripts/compliance/README.md)).

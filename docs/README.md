@@ -19,6 +19,7 @@
 | [going-live.md](going-live.md) | Gym owners | Turning on billing and member emails: readiness checklist, switching over, first billing cycle. |
 | [demo.md](demo.md) | Gym owners and evaluators | Running a sandbox demo on your computer or a server. |
 | [configuration.md](configuration.md) | Operators | Every environment variable, with its default and meaning. |
+| [development.md](development.md) | Contributors | Running PlainGym from a checkout, the sandbox demo over local HTTPS, builds, and the tests and checks a branch passes. |
 | [architecture.md](architecture.md) | Contributors | How the server, web app, database and jobs fit together, and where each part lives. |
 | [security-model.md](security-model.md) | Contributors, reviewers, operators | Gym and household isolation, roles and capabilities, sign-in, request protections, secrets and personal data. |
 
@@ -31,8 +32,8 @@ task pages links to a reference page (the operator's detail) for what it leaves 
 
 These pages are overviews. The details live next to the code, in the READMEs they
 link to (`packages/db/README.md`, `apps/server/src/infra/*/README.md`, each area's
-README, `deploy/README.md`, `e2e/README.md`). Start with the root
-[`README.md`](../README.md) for local development, [`CONTRIBUTING.md`](../CONTRIBUTING.md)
+README, `deploy/README.md`, `e2e/README.md`). The root [`README.md`](../README.md) is the
+project's front page; see [development](development.md) for local development, [`CONTRIBUTING.md`](../CONTRIBUTING.md)
 for contributing, and [`SECURITY.md`](../SECURITY.md) to report a vulnerability.
 
 ## Keeping them current
