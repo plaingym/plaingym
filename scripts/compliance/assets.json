@@ -1,5 +1,23 @@
 [
   {
+    "path": "apps/server/src/assets/demo/website-photo.jpg",
+    "kind": "image",
+    "name": "Fictional demo academy photo",
+    "license": "CC0-1.0",
+    "sha256": "9c85d2ffb80696239977395f640d78250205c5b7edda72d7de8498560e42a91e",
+    "notice": "apps/server/src/assets/demo/README.md",
+    "upstream": "Original generated demo artwork; provenance and prompt in the notice"
+  },
+  {
+    "path": "apps/server/src/assets/demo/website-logo.png",
+    "kind": "image",
+    "name": "Fictional demo academy logo",
+    "license": "CC0-1.0",
+    "sha256": "647f9230ec2e8d118526b4870426d91f16533792f17a82451a8ff5ae6cf2d623",
+    "notice": "apps/server/src/assets/demo/README.md",
+    "upstream": "Original geometric demo artwork; provenance in the notice"
+  },
+  {
     "path": "apps/server/src/assets/fonts/NotoSans-Regular.ttf",
     "kind": "font",
     "name": "Noto Sans Regular",

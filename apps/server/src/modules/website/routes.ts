@@ -55,10 +55,6 @@ const image = (c: Ctx, file: { stream: ReadableStream | Uint8Array; contentType:
 export function createWebsiteRoutes(supplied?: WebsiteRouteOptions): readonly RouteRegistration[] {
   const options = () => supplied ?? configured ?? (() => { throw new AppError('unavailable', 'The website is not configured'); })();
   const originOf = (c: Ctx) => (options().origin ?? ((context: Ctx) => new URL(context.req.url).origin))(c);
-  const settingsData = async (c: Ctx, data: Promise<z.infer<typeof websiteSettingsResponseSchema>['data']>) => {
-    c.header('Cache-Control', 'no-store');
-    return c.json({ data: await data }, 200);
-  };
   return [
     ...sitePages.map((page) => route({ method: 'get', path: pagePath(page), permission: publicAccess,
       responses: { 200: { description: `Website ${page} page` } } }, async (c) => {
@@ -93,6 +89,17 @@ export function createWebsiteRoutes(supplied?: WebsiteRouteOptions): readonly Ro
       return c.body(['User-agent: *', ...['/admin', '/portal', '/kiosk', '/api/', '/l/', '/login', '/setup'].map((path) => 'Disallow: ' + path),
         'Allow: /', '', 'Sitemap: ' + originOf(c) + '/sitemap.xml', ''].join('\n'));
     }),
+  ];
+}
+
+/** Administrative preparation remains available before the public site is enabled. */
+export function createWebsiteSettingsRoutes(supplied?: WebsiteRouteOptions): readonly RouteRegistration[] {
+  const options = () => supplied ?? configured ?? (() => { throw new AppError('unavailable', 'The website is not configured'); })();
+  const settingsData = async (c: Ctx, data: Promise<z.infer<typeof websiteSettingsResponseSchema>['data']>) => {
+    c.header('Cache-Control', 'no-store');
+    return c.json({ data: await data }, 200);
+  };
+  return [
     route({ ...websiteContracts.get, responses: settingsResponses }, async (c) => {
       staff(c); return settingsData(c, options().service.settings(c.get('context').gym.gymId));
     }),
@@ -106,4 +113,5 @@ export function createWebsiteRoutes(supplied?: WebsiteRouteOptions): readonly Ro
       async (c) => settingsData(c, options().service.removeLogo(staff(c), c.req.valid('json')))),
   ];
 }
+export const settingsRoutes = createWebsiteSettingsRoutes();
 export const routes = createWebsiteRoutes();

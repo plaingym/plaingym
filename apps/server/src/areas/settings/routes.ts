@@ -4,5 +4,6 @@ import { routes as part0 } from './settings.routes.js';
 import { routes as part1 } from './gym-delete.routes.js';
 import { routes as part2 } from './go-live.routes.js';
 import { routes as part3 } from './integrations.routes.js';
+import { settingsRoutes as website } from '../../modules/website/routes.js';
 
-export const routes: readonly RouteRegistration[] = [...part0, ...part1, ...part2, ...part3];
+export const routes: readonly RouteRegistration[] = [...part0, ...part1, ...part2, ...part3, ...website];

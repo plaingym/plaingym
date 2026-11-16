@@ -334,7 +334,11 @@ schedule (with this week's cancelled, one-off and moved classes), memberships (t
 coaches (staff profiles marked **Show on the public website**) and location and
 contact, plus a sitemap and `LocalBusiness` structured data for search engines.
 **Settings → Website** sets the logo, up to eight photos, a tagline, an about text
-and a public phone number and email. Set the brand color in **Settings → Gym details**;
+and a public phone number and email, even while the site is off. Prepare the site
+there before turning on **Enable gym website** in Gym details; saving website
+settings does not publish it. Photo previews appear once it is on. General has no
+raw logo storage key input; upload the logo in Website.
+Set the brand color in **Settings → Gym details**;
 the website uses its light tint for the footer and clears legacy accent colors on save. The logo and
 primary color also brand `/join`, `/trial` and `/drop-in`, and the gym's name and
 logo head every signed-link page (`/l/*`). `/join`, `/trial` and `/drop-in` also

@@ -23,7 +23,7 @@ import { zonedInstant } from '@plaingym/shared/time';
 import { createWaiversService } from '../../areas/waivers/waivers.js';
 import { FakeUploads } from '../../infra/storage/index.js';
 import { websiteModule } from './index.js';
-import { createWebsiteRoutes } from './routes.js';
+import { createWebsiteRoutes, createWebsiteSettingsRoutes } from './routes.js';
 import { createWebsiteService } from './service.js';
 import { sitePages, pagePath } from './site.page.js';
 
@@ -75,7 +75,9 @@ beforeAll(async () => {
 /** The real composition: area routes plus the module, with each request's modules read from the gym, as the tenant resolver does. */
 function app(gymId = gymA, principal: Principal = { kind: 'anonymous' }, permissions = authorize) {
   const website = { ...websiteModule, routes: createWebsiteRoutes({ service, origin: () => origin }) };
-  return createApp({ skipSetup: true, clock, authorize: permissions, publicDirectory, contributions: { ...areaContributions, modules: [website] }, origin,
+  const routes = [...areaContributions.routes.filter(entry => !entry.definition.path.startsWith('/api/website')),
+    ...createWebsiteSettingsRoutes({ service })];
+  return createApp({ skipSetup: true, clock, authorize: permissions, publicDirectory, contributions: { ...areaContributions, routes, modules: [website] }, origin,
     rateLimit: { limit: 10_000 },
     resolveGym: async (ctx, next) => {
       const gym = await settings.get(gymId);
@@ -92,10 +94,10 @@ const editable = ({ logo: _logo, logoVersion: _logoVersion, ...rest }: Awaited<R
 async function toggle(gymId: string, on: boolean) {
   await settings.update({ gymId, actor: { kind: 'system' } }, 'general', { websiteEnabled: on, revision: await revision(gymId) });
 }
-const websitePaths = [...sitePages.map(pagePath), '/sitemap.xml', '/robots.txt', '/website/theme.css', '/api/website'];
+const websitePaths = [...sitePages.map(pagePath), '/sitemap.xml', '/robots.txt', '/website/theme.css'];
 
-it.each(staffRoles)('checks staff permissions on all five website settings routes while enabled: %s', async role => {
-  await toggle(gymA, true);
+it.each(staffRoles.flatMap(role => [true, false].map(on => ({ role, on }))))('checks all five website settings permissions: $role, enabled=$on', async ({ role, on }) => {
+  await toggle(gymA, on);
   const before = editable(await service.settings(gymA));
   const target = app(gymA, { kind: 'staff', gymId: gymA, userId: users.get(role)!, roles: [role] });
   const allowed = role === 'owner' || role === 'admin';
@@ -113,11 +115,12 @@ it.each(staffRoles)('checks staff permissions on all five website settings route
     const context = { gymId: gymA, actor: { kind: 'system' as const } };
     await service.update(context, { ...before, revision: await revision() });
     if ((await service.settings(gymA)).logo) await service.removeLogo(context, { revision: await revision() });
+    await toggle(gymA, true);
   }
 });
 
 describe('the module toggle', () => {
-  it('removes every website route when off, sends / to the portal, and leaves the core pages and the portal alone', async () => {
+  it('keeps preparation private while off and publishes the prepared text and photo only when enabled', async () => {
     const photo = await service.uploadPhoto({ gymId: gymA, actor: { kind: 'system' } }, { revision: await revision(), contentType: 'image/jpeg', base64: jpeg.toString('base64'), alt: 'Mats' });
     await toggle(gymA, false);
     try {
@@ -126,14 +129,20 @@ describe('the module toggle', () => {
       expect(root.status).toBe(302); expect(root.headers.get('location')).toBe('/portal');
       for (const path of [...websitePaths.filter((path) => path !== '/'), `/website/photos/${photo.photos[0]!.id}`, `/website/coaches/${ids.coach}/photo`])
         expect((await get(path, off)).status, path).toBe(404);
-      for (const [method, path] of [['PUT', '/api/website'], ['POST', '/api/website/photos'], ['POST', '/api/website/logo'], ['DELETE', '/api/website/logo']] as const)
-        expect((await send(method, path, {}, off)).status, path).toBe(404);
+      const draft = editable(await service.settings(gymA));
+      expect((await get('/api/website', off)).status).toBe(200);
+      expect((await send('PUT', '/api/website', { ...draft, tagline: 'Prepared before publishing' }, off)).status).toBe(200);
+      expect((await get('/api/website')).status).toBe(401);
+      expect((await get('/website/photos/' + photo.photos[0]!.id)).status).toBe(404);
       for (const path of ['/trial', '/drop-in']) expect((await get(path, off)).status, path).toBe(200);
       const portal = await get('/portal', off);
       expect(portal.status).toBe(200); expect(await portal.text()).toContain('Portal app');
     } finally { await toggle(gymA, true); }
     const on = app(gymA, owner());
-    expect((await get('/', on)).status).toBe(200);
+    const published = await get('/', on);
+    expect(published.status).toBe(200);
+    expect(await published.text()).toContain('Prepared before publishing');
+    expect((await get('/website/photos/' + photo.photos[0]!.id)).status).toBe(200);
     for (const path of websitePaths) expect((await get(path, on)).status, path).toBe(200);
     for (const path of ['/trial', '/drop-in', '/portal']) expect((await get(path, on)).status, path).toBe(200);
     await service.update({ gymId: gymA, actor: { kind: 'system' } }, { ...editable(await service.settings(gymA)), photos: [] });
@@ -315,20 +324,23 @@ describe('the customization API', () => {
     expect((await send('POST', '/api/website/photos', {}, app())).status).toBe(401);
   });
 
-  it('refuses a staff session of one gym on another gym host, and never changes that gym', async () => {
-    const before = await service.settings(gymB);
-    const requests = [['GET', '/api/website', undefined], ['PUT', '/api/website', { ...editable(before), tagline: 'Taken over' }],
-      ['POST', '/api/website/photos', { revision: before.revision, contentType: 'image/jpeg', base64: jpeg.toString('base64'), alt: '' }],
-      ['POST', '/api/website/logo', { revision: before.revision, contentType: 'image/jpeg', base64: jpeg.toString('base64') }],
-      ['DELETE', '/api/website/logo', { revision: before.revision }]] as const;
-    // The permission check denies it; behind that, each handler answers 404 for a session bound to another gym.
-    const allowAll: typeof authorize = () => async (_c, next) => { await next(); };
-    for (const [method, path, body] of requests) {
-      expect((await send(method, path, body, app(gymB, owner(gymA)))).status, path).toBe(403);
-      expect((await send(method, path, body, app(gymB, owner(gymA), allowAll))).status, path).toBe(404);
-    }
-    expect(await service.settings(gymB)).toEqual(before);
-    expect(await uploads.get(gymB)!.list(`${gymB}/website/`)).toHaveLength(0);
+  it.each([true, false])('refuses cross-gym staff sessions on every settings route, enabled=%s', async on => {
+    await toggle(gymB, on);
+    try {
+      const before = await service.settings(gymB);
+      const requests = [['GET', '/api/website', undefined], ['PUT', '/api/website', { ...editable(before), tagline: 'Taken over' }],
+        ['POST', '/api/website/photos', { revision: before.revision, contentType: 'image/jpeg', base64: jpeg.toString('base64'), alt: '' }],
+        ['POST', '/api/website/logo', { revision: before.revision, contentType: 'image/jpeg', base64: jpeg.toString('base64') }],
+        ['DELETE', '/api/website/logo', { revision: before.revision }]] as const;
+      // The permission check denies it; behind that, each handler answers 404 for a session bound to another gym.
+      const allowAll: typeof authorize = () => async (_c, next) => { await next(); };
+      for (const [method, path, body] of requests) {
+        expect((await send(method, path, body, app(gymB, owner(gymA)))).status, path).toBe(403);
+        expect((await send(method, path, body, app(gymB, owner(gymA), allowAll))).status, path).toBe(404);
+      }
+      expect(await service.settings(gymB)).toEqual(before);
+      expect(await uploads.get(gymB)!.list(`${gymB}/website/`)).toHaveLength(0);
+    } finally { await toggle(gymB, true); }
   });
 
   it('saves text and colors under the gym revision, audits the change, and refuses a stale save', async () => {

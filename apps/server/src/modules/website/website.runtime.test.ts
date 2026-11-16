@@ -35,7 +35,7 @@ const environment = (): NodeJS.ProcessEnv => ({ DATABASE_URL: db.appUrl, APP_ENC
 const request = (path: string, init: RequestInit & { cookie?: string } = {}) => runtime!.app.request(origin + path, { ...init,
   headers: { host: 'gym.example.test', origin, 'content-type': 'application/json', ...(init.cookie ? { cookie: init.cookie } : {}) } });
 
-it('sends / to the portal while the website is off, and serves it and its settings once the owner turns it on', async () => {
+it('allows authenticated preparation while off and publishes it once the owner turns the website on', async () => {
   const accounts = createAccountService(authConfig(environment()), () => db.system.db);
   const owner = await accounts.createPasswordUser(gymId, 'owner@example.test', 'Owner', 'original-owner-password', clock);
   await factory('staffRoles', gymId, { userId: owner.userId, role: 'owner' });
@@ -47,12 +47,20 @@ it('sends / to the portal while the website is off, and serves it and its settin
   const login = await request('/api/auth/sign-in/email', { method: 'POST', body: JSON.stringify({ email: 'owner@example.test', password: 'original-owner-password' }) });
   expect(login.status).toBe(200);
   const cookie = login.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
+  const draft = await request('/api/website', { cookie });
+  expect(draft.status).toBe(200);
+  const { data } = await draft.json() as { data: { revision: number } };
+  expect((await request('/api/website', { method: 'PUT', cookie, body: JSON.stringify({ revision: data.revision,
+    tagline: 'Ready before publishing', about: null, phone: null, email: null, primaryColor: null, photos: [] }) })).status).toBe(200);
+  expect((await request('/contact')).status).toBe(404);
+  expect((await request('/api/website')).status).toBe(401);
   const { data: { revision } } = await (await request('/api/settings', { cookie })).json() as { data: { revision: number } };
   expect((await request('/api/settings', { method: 'PATCH', cookie, body: JSON.stringify({ websiteEnabled: true, revision }) })).status).toBe(200);
 
   const home = await request('/');
   expect(home.status).toBe(200);
   expect(home.headers.get('content-type')).toContain('text/html');
+  expect(await home.text()).toContain('Ready before publishing');
   // Configured by the runtime: without `configureWebsite` the module's settings routes answer 503.
   expect((await request('/api/website', { cookie })).status).toBe(200);
 });

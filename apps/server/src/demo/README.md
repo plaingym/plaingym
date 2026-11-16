@@ -294,7 +294,10 @@ Runtime and shared composition use these exports:
   runtime exposes it and the server runtime passes it to `configureJoin`, so the
   join page shows the note on its `continue` and `cancelled` steps.
 - `createSeedCommand()` for the CLI registry and a root `pnpm seed <gym-uuid>` script.
-  `runSeeds(context)` applies foundation, members, billing, waivers, mat and portal seeds.
+  `runSeeds(context)` applies foundation, members, billing, waivers, mat, portal and website seeds.
+  The website seed uploads a fictional academy photo and logo through the trusted
+  seed upload resolver, keeping existing images on retries and leaving the public
+  website toggle unchanged. Visitor uploads remain disabled.
   Both sandbox creation and the seed CLI use this composition. Billing receives
   the same scope and clock as the other seeds and a shared test-account provider.
   Each step owns its short transactions. The pool replaces interrupted seeds with fresh gyms.

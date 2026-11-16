@@ -30,8 +30,8 @@ export const storedContent = (value: unknown): StoredContent => {
   return parsed.success ? parsed.data : emptyContent;
 };
 
-/** The OpenAPI document names the settings component. */
-export const websiteSettingsSchema = sharedSettingsSchema.openapi('WebsiteSettings');
+/** Build the named component after OpenAPI initialization, even when shared contracts were imported first. */
+export const websiteSettingsSchema = z.strictObject(sharedSettingsSchema.shape).openapi('WebsiteSettings');
 export const websiteSettingsResponseSchema = z.strictObject({ data: websiteSettingsSchema });
 export const photoParamsSchema = z.object({ photoId: idSchema });
 export const coachParamsSchema = z.object({ staffProfileId: idSchema });

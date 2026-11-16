@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useId, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import type { GymSettings } from '@plaingym/shared/contracts';
 import { bootstrapKey } from '../../../app/context.js';
 import { api } from '../../../lib/api.js';
-import { SaveTimeoutError, useGymSettings } from '../gym-settings.js';
+import { gymSettingsKey, SaveTimeoutError, useGymSettings } from '../gym-settings.js';
 import { t } from '../../../lib/i18n.js';
 import { FormMessage } from '../../../components/ui/alert.js';
 import { Button } from '../../../components/ui/button.js';
@@ -13,7 +14,7 @@ import { CheckboxField } from '../../../components/ui/select.js';
 import { ErrorState, LoadingState } from '../../../components/ui/states.js';
 const text = (key: string) => t('settings/settings:' + key);
 /** The general form's inputs, by the name the server's `details` end with (`address.country` is `country`). */
-const generalFields = ['name', 'timezone', 'line1', 'line2', 'city', 'region', 'postalCode', 'country', 'primaryColor', 'logoKey',
+const generalFields = ['name', 'timezone', 'line1', 'line2', 'city', 'region', 'postalCode', 'country', 'primaryColor',
   'websiteEnabled', 'existingSiteUrl'] as const;
 type GeneralField = typeof generalFields[number];
 const fieldMessages: Partial<Record<GeneralField, string>> = { name: 'nameInvalid', timezone: 'timezoneInvalid', country: 'countryInvalid',
@@ -54,8 +55,6 @@ export function GeneralSettingsForm() {
   // Refused fields belong to the general form they were typed in: a reload starts a new form, without them.
   const [refused, setRefused] = useState<{ form: string; fields: Partial<Record<GeneralField, true>> } | null>(null);
   const fieldError = (name: GeneralField) => refused?.form === generalKey && !!refused.fields[name];
-  const logoDetails = useRef<HTMLDetailsElement>(null), logoInvalid = fieldError('logoKey');
-  useEffect(() => { if (logoInvalid && logoDetails.current) logoDetails.current.open = true; }, [logoInvalid]);
   const clearField = (name: GeneralField) => setRefused((current) => current?.fields[name] ? { ...current, fields: { ...current.fields, [name]: undefined } } : current);
   /** Marks a refused input and points it at its error (and at `help`, when it has one). */
   const invalid = (name: GeneralField, help?: string) => ({ 'aria-invalid': fieldError(name), onChange: () => clearField(name),
@@ -77,7 +76,8 @@ export function GeneralSettingsForm() {
           ...(value('timezone') !== settings.timezone ? { timezone: value('timezone') } : {}),
           address: { line1: value('line1'), line2: value('line2'), city: value('city'), region: value('region'), postalCode: value('postalCode'),
             ...(value('country') ? { country: value('country').toUpperCase() } : {}) },
-          branding: { primaryColor: value('primaryColor'), logoKey: value('logoKey') || null },
+          // A queued website upload may have changed the logo since this form was submitted; without cached settings, keep the loaded logo.
+          branding: { primaryColor: value('primaryColor'), logoKey: (cache.getQueryData<{ settings: GymSettings }>(gymSettingsKey)?.settings ?? settings).branding.logoKey ?? null },
           websiteEnabled: form.has('websiteEnabled'), existingSiteUrl: value('existingSiteUrl') || null } });
         if (kind === 'booking') return api.PATCH('/api/settings/booking', { signal, body: {
           revision, bookingWindowDays: Number(value('bookingWindowDays')), cancellationCutoffMinutes: Number(value('cancellationCutoffMinutes')),
@@ -117,12 +117,6 @@ export function GeneralSettingsForm() {
           <Field key={key} label={text(key === 'line1' ? 'address' : key === 'line2' ? 'addressLine2' : key)} className={key === 'line1' || key === 'line2' ? 'sm:col-span-2' : ''} {...errorOf(key)}>
             <Input name={key} defaultValue={settings.address[key] ?? ''} {...(key === 'country' ? { maxLength: 2, autoCapitalize: 'characters' } : {})} {...invalid(key)}/></Field>)}
         <Field label={text('primaryColor')} {...errorOf('primaryColor')}><Input type="color" name="primaryColor" defaultValue={settings.branding.primaryColor ?? '#2563eb'} className="w-24 p-1" {...invalid('primaryColor')}/></Field>
-        <details ref={logoDetails} className="min-w-0 sm:col-span-2">
-          <summary className="flex min-h-11 cursor-pointer items-center underline">{text('logoAdvanced')}</summary>
-          <Field label={text('logoKey')} help={<p id={fieldId + '-logoHelp'} className="text-sm text-muted-foreground">{text('logoHelp')}</p>} {...errorOf('logoKey')}>
-            <Input name="logoKey" defaultValue={settings.branding.logoKey ?? ''} {...invalid('logoKey', fieldId + '-logoHelp')}/>
-          </Field>
-        </details>
         <Field className="sm:col-span-2" {...errorOf('websiteEnabled')}>
           <CheckboxField name="websiteEnabled" defaultChecked={settings.websiteEnabled} label={text('website')} {...invalid('websiteEnabled')}/></Field>
         <Field label={text('existingSite')} className="sm:col-span-2" {...errorOf('existingSiteUrl')}><Input type="url" name="existingSiteUrl" defaultValue={settings.existingSiteUrl ?? ''} {...invalid('existingSiteUrl')}/></Field>

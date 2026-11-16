@@ -55,8 +55,9 @@ It follows layout changes while the other sections load, then yields on the firs
 pointer, keyboard, wheel, or touch interaction so it does not interrupt editing.
 Gym details owns the one brand-color control. The Website section links there
 and clears legacy website accents on save; the website uses a tint of the brand color.
-The raw logo reference is under an
-explained advanced control; the Website section provides the logo upload.
+The Website section provides the logo upload and stays available while the site
+is off, so it can be prepared before publishing. Gym details preserves the logo
+on save and has no raw logo reference input.
 
 An empty gym's dashboard offers links to classes, plans, member entry or import,
 and the go-live checklist for staff allowed to manage go-live. It uses the existing

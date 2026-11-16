@@ -21,6 +21,7 @@ import { createDemoService } from '../service.js';
 import { createDemoIdentities } from '../identities.js';
 import { createSeeds, runSeeds } from './index.js';
 import { createWaiversService } from '../../areas/waivers/waivers.js';
+import { createWebsiteService } from '../../modules/website/service.js';
 import { configureWaivers } from '../../areas/waivers/waivers.routes.js';
 import { demoSignaturePng } from './waivers-image.js';
 import { createApp } from '../../app.js';
@@ -44,6 +45,12 @@ it('fully seeds a demo sandbox, serves PDFs, permits bounded waiver images and b
       seed: context => runSeeds(context, steps),
       deletion: createGymDeleteService({ clock, scope: db.forGym, system: db.forSystem, removeUploads: uploads.removeGym }) });
     const sandbox = await demo.create(), gymId = sandbox.gymId;
+    const website = createWebsiteService({ scope: db.forGym, clock, uploadsFor: uploads.forGym });
+    const site = await website.settings(gymId);
+    expect(site.logo).toBe(true); expect(site.photos).toHaveLength(1);
+    const photo = await website.photo(gymId, site.photos[0]!.id);
+    expect(photo.contentType).toBe('image/jpeg');
+    expect((await new Response(photo.stream).arrayBuffer()).byteLength).toBeGreaterThan(0);
     const service = configureWaivers({ scope: db.forGym, clock, uploadsFor: uploads.forGym });
     const copies = await service.listSignatures(gymId);
     // Three sample members and the one-click student (portal seed).
@@ -80,6 +87,8 @@ it('fully seeds a demo sandbox, serves PDFs, permits bounded waiver images and b
       env: { ...process.env, ...env, DATABASE_URL: db.appUrl, DATABASE_POOL_MAX: '2' },
     });
     expect(cli.stdout).toContain('Seed complete');
+    expect((await website.settings(gymId)).photos).toEqual(site.photos);
+    expect((await website.settings(gymId)).logoVersion).toBe(site.logoVersion);
     expect((await createWaiversService({ scope: db.forGym, clock, uploadsFor: uploads.forGym }).listSignatures(gymId)).pagination.total).toBe(4);
   } finally { uploads.close(); await s3.close(); }
 }, 90_000);

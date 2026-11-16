@@ -2,7 +2,7 @@
 import type { WebRegistration } from '../../lib/registries.js';
 import { WebsiteSettings } from './settings.js';
 
-/** Shown only while the gym has the website module on, like the module's routes. */
+/** Owners can prepare the website before enabling its public pages. */
 export const registration: WebRegistration = {
   settingsSections: [
     {
@@ -10,7 +10,6 @@ export const registration: WebRegistration = {
       labelKey: 'website/website:title',
       permission: { kind: 'staff', capability: 'settings.manage' },
       enabled: true,
-      moduleId: 'website',
       component: WebsiteSettings,
     },
   ],

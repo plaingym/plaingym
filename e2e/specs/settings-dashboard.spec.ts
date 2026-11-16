@@ -51,10 +51,8 @@ for (const width of [360, 1280]) test(`settings sections and an empty dashboard 
   await expect(modeNote).toHaveCount(2);
   await expect(modeNote.first()).toContainText('again in live mode before turning billing on');
   await expect(modeNote.first()).toContainText('Resolve pending payment attempts or refunds.');
-  await expect(page.getByLabel('Logo storage key')).toBeHidden();
-  await page.getByText('Advanced logo settings', { exact: true }).click();
-  await expect(page.getByLabel('Logo storage key')).toBeVisible();
-  await expect(page.getByText(/This is the storage reference/)).toBeVisible();
+  await expect(page.getByLabel('Logo storage key')).toHaveCount(0);
+  await expect(page.getByText('Advanced logo settings', { exact: true })).toHaveCount(0);
   const details = page.getByRole('form', { name: 'Gym details', exact: true });
   await details.getByRole('button', { name: 'Save changes' }).click();
   const failure = page.getByRole('alert').filter({ hasText: 'Unable to save or load settings.' }).first();

@@ -3,12 +3,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import type { ReactNode } from 'react';
 import type { GymSettings, ShellBootstrap } from '@plaingym/shared/contracts';
 import { ShellServicesContext } from '../../../app/context.js';
 import { createShellServices } from '../../../app/services.js';
 import { createInvoiceClient } from '../../billing/invoices/api.js';
 import { OneOffEditor } from '../../billing/invoices/editor.js';
 import { GeneralSettingsForm } from './form.js';
+import { useGymSettings } from '../gym-settings.js';
 const client = vi.hoisted(() => ({ GET: vi.fn(), PATCH: vi.fn() }));
 vi.mock('../../../lib/api.js', async (original) => ({ ...await original<typeof import('../../../lib/api.js')>(), api: client, createApiClient: () => client }));
 const id = (n: number) => '01900000-0000-7000-8000-' + String(n).padStart(12, '0');
@@ -20,26 +22,47 @@ const reply = (status: number, data?: unknown) => ({ response: { ok: status < 30
 const empty = { data: [], pagination: { limit: 100, offset: 0, total: 0 } };
 afterEach(cleanup);
 
-const renderForm = (stored: GymSettings) => {
+const renderForm = (stored: GymSettings, companion?: ReactNode) => {
   client.GET.mockResolvedValue(reply(200, { data: stored }));
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-    <ShellServicesContext.Provider value={createShellServices(vi.fn(async () => { throw new Error('not used'); }))}><GeneralSettingsForm/></ShellServicesContext.Provider>
+    <ShellServicesContext.Provider value={createShellServices(vi.fn(async () => { throw new Error('not used'); }))}><GeneralSettingsForm/>{companion}</ShellServicesContext.Provider>
   </QueryClientProvider>);
   return screen.findByRole('form', { name: 'Gym details' });
 };
 const refusedZone = { response: { ok: false, status: 400 }, error: { error: { code: 'invalid_request', message: 'The request is invalid.', details: { timezone: ['invalid_timezone'] } }, requestId: 'r' } };
 
 describe('general settings timezone', () => {
-  it('opens an invalid advanced logo reference and keeps it open while the owner corrects it', async () => {
+  it('omits the raw logo key input and preserves the uploaded logo when saving General', async () => {
     client.PATCH.mockReset();
-    client.PATCH.mockResolvedValue({ ...refusedZone, error: { error: { code: 'invalid_request', message: 'The request is invalid.', details: { logoKey: ['invalid'] } }, requestId: 'r' } });
-    const form = await renderForm(settings);
+    const stored = { ...settings, branding: { logoKey: `${settings.id}/website/logo/existing.png`, primaryColor: '#123456' } };
+    client.PATCH.mockResolvedValue(reply(200, { data: { ...stored, revision: 4 } }));
+    const form = await renderForm(stored);
+    expect(within(form).queryByLabelText('Logo storage key')).toBeNull();
     fireEvent.click(within(form).getByRole('button', { name: 'Save changes' }));
-    const logo = within(form).getByLabelText('Logo storage key');
-    await vi.waitFor(() => expect(logo.closest('details')?.open).toBe(true));
-    fireEvent.change(logo, { target: { value: 'existing-upload-reference' } });
-    expect(logo.getAttribute('aria-invalid')).toBe('false');
-    expect(logo.closest('details')?.open).toBe(true);
+    await vi.waitFor(() => expect(client.PATCH).toHaveBeenCalledWith('/api/settings', expect.objectContaining({ body: expect.objectContaining({ branding: stored.branding }) })));
+  });
+  it('preserves a logo upload that finishes ahead of a queued General save', async () => {
+    let finish!: () => void, started = false;
+    const pending = new Promise<void>(done => { finish = done; });
+    const logoKey = `${settings.id}/website/logo/new.png`;
+    function LogoUpload() {
+      const gym = useGymSettings();
+      return <button onClick={() => void gym.save(async revision => {
+        started = true; await pending;
+        return reply(200, { data: { ...settings, branding: { logoKey }, revision: revision + 1 } });
+      })}>Finish website logo upload</button>;
+    }
+    client.PATCH.mockReset();
+    client.PATCH.mockImplementation(async (_path: string, { body }: { body: Partial<GymSettings> }) => reply(200, { data: { ...settings, ...body, revision: 5 } }));
+    const form = await renderForm(settings, <LogoUpload/>);
+    fireEvent.click(screen.getByRole('button', { name: 'Finish website logo upload' }));
+    await vi.waitFor(() => expect(started).toBe(true));
+    fireEvent.click(within(form).getByRole('button', { name: 'Save changes' }));
+    expect(client.PATCH).not.toHaveBeenCalled();
+    finish();
+    await vi.waitFor(() => expect(client.PATCH).toHaveBeenCalledWith('/api/settings', expect.objectContaining({
+      body: expect.objectContaining({ revision: 4, branding: expect.objectContaining({ logoKey }) }),
+    })));
   });
   it('does not send a timezone that is unchanged, so a stored zone the rule refuses still saves', async () => {
     client.PATCH.mockReset();
@@ -99,13 +122,13 @@ describe('general settings timezone', () => {
   it('shows every field the server refused at its own input, and clears each one as it is edited', async () => {
     client.PATCH.mockReset();
     client.PATCH.mockResolvedValueOnce({ response: { ok: false, status: 400 }, error: { error: { code: 'invalid_request', message: 'The request is invalid.',
-      details: { name: ['invalid'], timezone: ['invalid_timezone'], 'address.country': ['invalid'], existingSiteUrl: ['invalid'], 'branding.logoKey': ['invalid'] } }, requestId: 'r' } });
+      details: { name: ['invalid'], timezone: ['invalid_timezone'], 'address.country': ['invalid'], existingSiteUrl: ['invalid'] } }, requestId: 'r' } });
     const general = await renderForm(settings);
     fireEvent.change(within(general).getByLabelText('Timezone'), { target: { value: 'PST' } });
     fireEvent.click(within(general).getByRole('button', { name: 'Save changes' }));
-    await vi.waitFor(() => expect(within(general).getAllByRole('alert')).toHaveLength(5));
+    await vi.waitFor(() => expect(within(general).getAllByRole('alert')).toHaveLength(4));
     const said = { 'Gym name': 'Enter the gym', Timezone: 'Use UTC or a region', 'Country code': 'two-letter country code',
-      'Existing website URL': 'http:// or https://', 'Logo storage key': 'This value can' };
+      'Existing website URL': 'http:// or https://' };
     for (const [label, text] of Object.entries(said)) {
       const input = within(general).getByLabelText(label);
       expect(input.getAttribute('aria-invalid'), label).toBe('true');
@@ -119,7 +142,7 @@ describe('general settings timezone', () => {
     expect(screen.queryByText('Unable to save or load settings.')).toBeNull();
     fireEvent.change(within(general).getByLabelText('Country code'), { target: { value: 'CA' } });
     expect(within(general).getByLabelText('Country code').getAttribute('aria-invalid')).toBe('false');
-    expect(within(general).getAllByRole('alert')).toHaveLength(4);
+    expect(within(general).getAllByRole('alert')).toHaveLength(3);
     expect(within(general).getByLabelText('Gym name').getAttribute('aria-invalid')).toBe('true');
   });
   it('adds the page message when a refusal also names something the form has no input for', async () => {

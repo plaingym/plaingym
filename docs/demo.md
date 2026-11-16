@@ -28,6 +28,8 @@ use a test Stripe key ([going-live.md](going-live.md#1-try-it-in-test-mode-optio
 
 * **A private gym when you edit**, at its own random hostname, seeded with sample
   households, a class schedule, promotion history and a student's portal.
+  The website has a sample academy photo and logo, uploaded by the trusted seed.
+  Its public pages stay off until an owner enables them in Gym details.
 * **One-click logins** as owner, coach and student, and as the latest members who
   joined in the sandbox, on its start page (`/demo`) and in the **Demo menu**. A slim
   bar at the top of every page shows when the sandbox expires and opens the menu,

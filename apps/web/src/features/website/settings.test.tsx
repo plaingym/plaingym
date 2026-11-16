@@ -32,13 +32,23 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('website settings', () => {
-  it('registers a settings section that shows only while the website module is on', () => {
+  it('registers a settings section even while the website module is off', () => {
     const sections = createRegistries().settingsSections;
     const section = sections.all().find((entry) => entry.id === 'settingsSections.website');
-    expect(section).toMatchObject({ enabled: true, moduleId: 'website', labelKey: 'website/website:title',
+    expect(section).toMatchObject({ enabled: true, labelKey: 'website/website:title',
       permission: { kind: 'staff', capability: 'settings.manage' }, component: WebsiteSettings });
-    expect(sections.forModules(new Set()).some((entry) => entry.id === 'settingsSections.website')).toBe(false);
+    expect(section?.moduleId).toBeUndefined();
+    expect(sections.forModules(new Set()).some((entry) => entry.id === 'settingsSections.website')).toBe(true);
     expect(sections.forModules(new Set(['website'])).some((entry) => entry.id === 'settingsSections.website')).toBe(true);
+  });
+
+  it('explains preparation while off without linking to the public site or loading gated photos', async () => {
+    client.GET.mockImplementation(async (path: string) => path === '/api/website' ? reply(200, { data: stored }) : reply(200, { data: { ...gym, websiteEnabled: false } }));
+    start();
+    expect(await screen.findByText(/Your website is off/)).toBeDefined();
+    expect(screen.queryByRole('link', { name: 'View the website' })).toBeNull();
+    expect(document.querySelector('img[src^="/website/photos/"]')).toBeNull();
+    expect(screen.getByLabelText('Tagline')).toBeDefined();
   });
 
   it('saves text and photo order without sending a stored legacy accent or rereading the website', async () => {

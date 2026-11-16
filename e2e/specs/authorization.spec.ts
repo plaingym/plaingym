@@ -52,7 +52,7 @@ const redirects = new Set(['GET /source']);
 const demoOnly = /^\/api\/demo(\/|$)/;
 // The website module's routes don't exist while a gym has it turned off (404 for everyone) and its home page then redirects to
 // the portal; other specs may turn it on meanwhile, when they answer as the rest do.
-const websiteModule = (entry: Entry) => /^\/(api\/website|website)(\/|$)|^\/(coaches|contact|plans|programs|schedule|robots\.txt|sitemap\.xml)$/.test(entry.path);
+const websiteModule = (entry: Entry) => /^\/website(\/|$)|^\/(coaches|contact|plans|programs|schedule|robots\.txt|sitemap\.xml)$/.test(entry.path);
 const websiteHome = 'GET /';
 // The Stripe webhook inbox is unavailable until the gym sets up payments, whoever calls it.
 const paymentsUnconfigured = new Set(['POST /webhooks/stripe']);
@@ -332,8 +332,8 @@ test('a household login cannot reach staff routes', async ({ sandboxes }) => {
   for (const entry of staff) {
     const path = entry.path.replace(/\{[^}]+\}/g, missingId);
     const response = await member.request(path, entry.method, entry.method === 'GET' ? undefined : 'invalid');
-    // A module's routes don't exist for a gym that has it turned off (the sandbox's website), for anyone.
-    expect.soft(entry.path.startsWith('/api/website') ? [401, 403, 404] : [401, 403], `${key(entry)}: ${response.text}`).toContain(response.status);
+    // Website preparation stays a staff operation even when the public site is off.
+    expect.soft([401, 403], `${key(entry)}: ${response.text}`).toContain(response.status);
   }
   const bootstrap = await member.json<{ data: { session: { roles: string[]; member: boolean } } }>('/api/auth/bootstrap');
   expect(bootstrap.data.session).toMatchObject({ roles: [], member: true });

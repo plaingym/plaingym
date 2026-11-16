@@ -4,7 +4,10 @@
 The optional public website: one theme, server-rendered with Hono JSX from the
 gym's own data. A gym turns it on and off with `gyms.website_enabled` (Settings →
 Gym details). The module registry checks that switch on every request, so while
-it's off every route below answers 404. Core never imports this module.
+it's off the public website routes answer 404. The authenticated settings API
+stays available so owners and admins can prepare the site before publishing.
+Core imports only those settings routes (`settingsRoutes`, listed by
+`areas/settings/routes.ts`); nothing else in core imports this module.
 
 ## Pages
 
@@ -59,7 +62,9 @@ share one helper, `serveGymImage`: the gym's own key, a PNG, JPEG or WebP, at mo
 * **Customization API** (`settings.manage`: owners and admins): `GET` and `PUT
   /api/website` (text, colors, photo order and descriptions; a photo left out is
   removed), `POST /api/website/photos`, `POST` and `DELETE /api/website/logo`. A
-  staff session bound to another gym answers 404. Images are PNG, JPEG or WebP,
+  staff session bound to another gym answers 404. These routes are registered
+  with the settings area, outside the module toggle. Saving never enables the
+  website; the owner turns it on separately in Gym details. Images are PNG, JPEG or WebP,
   checked by their bytes, at most 512 KiB (`areas/members/photos.ts`), and at most
   eight photos. Each upload is stored under a new key before the save, and marked
   deleted if the save fails; removed and replaced files are marked deleted after the
@@ -77,7 +82,11 @@ and refreshes after another section saves, keeping unsaved text. The theme ignor
 legacy accent colors and uses a light tint of the brand color instead. A Website
 text save clears any stored accent; legacy update inputs may omit it or send any
 value, which is ignored. The read still includes a nullable `accentColor`.
-Logo uploads remain in the Website section. All settings reads cancel earlier
+Logo uploads remain in the Website section; General has no raw logo key input
+and preserves the uploaded logo when saved. While the site is off the Website
+section hides the public link and photo previews; photos remain editable by
+description and order. The core public pages still show the logo and public
+contact details. All settings reads cancel earlier
 ones; a successful save supplies its own revision without another website read.
 
 Public contact pages omit missing channels. On `/contact`, a Contact card with no
@@ -102,12 +111,12 @@ data; without it they use the request's origin). Until it runs, the routes answe
 The pages share the core public stylesheet (`/public/pages/styles.css`), which
 `public/links/styles.build.mjs` compiles from every `page.ts` and `*.page.ts`
 under `public/` and `modules/`: write Tailwind classes in full in `site.page.ts`.
-The admin's customization section is `apps/web/src/features/website/`, shown only
-while the module is on. Strings are in `locales/en/website/` (`site.json` for the
+The admin's customization section is `apps/web/src/features/website/`, available
+whether the module is on or off. Strings are in `locales/en/website/` (`site.json` for the
 pages, `website.json` for the admin).
 
 `website.test.ts` runs the real area and module registrations against PostgreSQL:
-the toggle (every route 404 when off, `/` redirects, the core pages and the portal
+the toggle (public routes 404 when off, settings remain available, `/` redirects, the core pages and the portal
 unaffected), each page and its policy, the API's permissions, and cross-gym
 requests. `e2e/specs/website.spec.ts` checks the pages in a browser at 360 and
 1280 px under the enforced CSP.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { Page } from '@playwright/test';
 import { test, expect, demoClient, type Client, type Sandbox } from '../support.js';
-import { accessibleThemes as accessibleLayout } from '../responsive.js';
+import { accessibleThemes as accessibleLayout, horizontalOverflow } from '../responsive.js';
 
 // The public website in a seeded sandbox: every page under the enforced policy (the automatic CSP guard fails the test
 // on any violation), at phone and desktop widths, and the switch that takes it away again.
@@ -15,7 +15,7 @@ async function setWebsite(owner: Client, on: boolean) {
   if (settings.websiteEnabled !== on) await owner.json('/api/settings', 'PATCH', { revision: settings.revision, websiteEnabled: on });
 }
 async function customize(owner: Client) {
-  // Demo sandboxes refuse uploads, so the photo and logo are covered by the module's own tests (website.test.ts).
+  // The seed uses trusted uploads; visitors can edit the text and photo order but cannot upload files.
   const current = (await owner.json<{ data: Website }>('/api/website')).data;
   await owner.json('/api/website', 'PUT', { revision: current.revision, photos: current.photos, primaryColor: current.primaryColor, tagline: 'Classes for every level, seven days a week',
     about: 'A friendly academy for beginners and competitors alike.\nYour first class is on us.', phone: '+1 555 0100',
@@ -33,15 +33,43 @@ test('the website pages load under their own policy and fit a 360 px phone and a
   const sandbox = sandboxes[1]!, owner = await demoClient(sandbox, 'owner');
   // Shards can run this after other specs add unbroken program names. Cover that data on a single stack too.
   await owner.json('/api/programs', 'POST', { name: 'Websiteprogram'.padEnd(56, 'x'), rankSystemId: null, active: true });
-  await setWebsite(owner, true);
+  await setWebsite(owner, false);
   try {
+    const seeded = (await owner.json<{ data: Website }>('/api/website')).data;
+    expect(seeded.logo).toBe(true); expect(seeded.photos.length).toBeGreaterThan(0);
     await customize(owner);
+    await owner.browser(page.context());
+    for (const size of [phone, desktop]) {
+      await page.setViewportSize(size);
+      await page.goto(sandbox.origin + '/admin/settings');
+      const section = page.locator('section[id="settingsSections.website"]');
+      await expect(section.getByText(/Your website is off/)).toBeVisible();
+      await expect(section.getByRole('link', { name: 'View the website' })).toHaveCount(0);
+      await expect(page.getByLabel('Logo storage key')).toHaveCount(0);
+      await section.getByLabel('Tagline', { exact: true }).fill('Classes for every level, seven days a week');
+      await section.getByRole('button', { name: 'Save website', exact: true }).click();
+      await expect(section.getByText('Website saved.', { exact: true })).toBeVisible();
+      expect(await horizontalOverflow(page)).toBeUndefined();
+      const path = info.outputPath('website-preparation-' + size.width + '.png');
+      await page.screenshot({ path, fullPage: true });
+      await info.attach('website-preparation-' + size.width, { path, contentType: 'image/png' });
+    }
+    const privateRoot = await owner.request('/');
+    expect(privateRoot.status).toBe(302); expect(privateRoot.location).toBe('/portal');
+    expect((await owner.request('/website/photos/' + seeded.photos[0]!.id)).status).toBe(404);
+    await setWebsite(owner, true);
     for (const size of [phone, desktop]) {
       await page.setViewportSize(size);
       for (const path of pages) {
         await open(page, sandbox, path);
         await accessibleLayout(page, info, `website${path === '/' ? '-home' : path.replace('/', '-')}-${size.width}`);
         if (path === '/') await page.screenshot({ path: info.outputPath('website-home-' + size.width + '.png'), fullPage: true });
+        if (path === '/') {
+          for (const image of await page.locator('img').all()) {
+            await expect(image).toBeVisible();
+            expect(await image.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
+          }
+        }
         const footerBottom = await page.locator('footer').evaluate(element => element.getBoundingClientRect().bottom + window.scrollY);
         expect(footerBottom).toBeGreaterThanOrEqual(size.height);
         if (path === '/contact') await info.attach('website-footer-' + size.width, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
@@ -74,7 +102,7 @@ test('with the website off, / goes to the portal, its pages are gone and the cor
   // The portal sends a visitor without a session on to sign in.
   await page.waitForURL((url) => /^\/(?:portal|login)(?:\/|$)/.test(url.pathname));
   for (const path of pages.slice(1)) expect((await owner.request(path)).status, path).toBe(404);
-  expect((await owner.request('/api/website')).status).toBe(404);
+  expect((await owner.request('/api/website')).status).toBe(200);
   const trial = await page.goto(sandbox.origin + '/trial');
   expect(trial?.status()).toBe(200);
 });
