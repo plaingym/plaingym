@@ -20,8 +20,8 @@ Turning billing off later pauses new charges at once; it is the emergency brake.
 ## 1. Try it in test mode (optional)
 
 1. In the Stripe dashboard, create a **test-mode** restricted key with the permissions
-   in [self-hosting.md](self-hosting.md#stripe) and paste it under **Settings → Email,
-   payments and backups → Payments** (or in the wizard).
+   in [self-hosting.md](self-hosting.md#stripe) and paste it under **Settings →
+   Integrations → Payments** (or in the wizard).
 2. Add a plan, create a member and a membership, and switch **Billing** on. Use Stripe's
    test cards on a pay or card link to see a charge, a receipt and a failed payment.
 3. Check the **System health** page: webhooks processed, charge runs, no failed jobs.

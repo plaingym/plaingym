@@ -77,7 +77,7 @@ describe('Settings → Payments', () => {
     client.PUT.mockImplementation(async () => { current = { ...integrations, integrationsEditable: false };
       return refusal(403, 'integrations', 'operator_managed'); });
     await submit(userEvent.setup(), 'rk_test_candidate');
-    expect((await screen.findByRole('alert')).textContent).toMatch(/Whoever runs this install manages email and payments/);
+    expect((await screen.findByRole('alert')).textContent).toMatch(/Whoever runs this install manages email, SMS and payments/);
     expect(screen.queryByRole('form', { name: 'Payments' })).toBeNull();
     expect(document.body.textContent).not.toContain("Stripe couldn't check");
   });

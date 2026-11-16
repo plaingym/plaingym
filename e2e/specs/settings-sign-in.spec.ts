@@ -12,6 +12,7 @@ const google = { source: 'none', editable: true, unreadable: false, clientId: nu
 const integrations = { email: { source: 'gym', unreadable: false, googleConfigured: true, host: 'smtp.example.invalid', port: 587, security: 'starttls', from: 'owner@example.invalid',
   signIn: { password: false, magicLink: true }, signInAfterSave: { password: false, magicLink: true }, signInAfterRemove: login, removeBlocked: false },
   payments: { configured: false, mode: null, webhookRegistered: false, accountLocked: false, testData: null, importedCustomersOnly: false },
+  sms: { configured: false, provider: 'twilio', unreadable: false, accountSid: null, authKind: null, from: null, messagingServiceSid: null },
   backups: null, sandbox: false, integrationsEditable: true, revision: 3 };
 const rejected = { error: { code: 'invalid_request', message: 'Client refused', details: { reason: ['google_rejected'] } } };
 

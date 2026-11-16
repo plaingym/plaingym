@@ -146,7 +146,7 @@ describe('Settings → Backups', () => {
     expect(screen.queryByRole('heading', { name: 'Backups' })).toBeNull();
     cleanup();
     current = { ...integrations, backups: null, sandbox: true }; renderSection();
-    expect(await screen.findByText(/This sandbox sends email to the demo outbox/)).toBeDefined();
+    expect(await screen.findByText(/This sandbox uses the demo/)).toBeDefined();
     expect(screen.queryByRole('heading', { name: 'Email' })).toBeNull();
     expect(screen.queryByRole('form')).toBeNull();
   });

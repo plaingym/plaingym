@@ -315,7 +315,7 @@ For manual Compose installs, generate `SETUP_TOKEN` independently with
 `openssl rand -hex 32` before starting. Existing installs must add it to `.env`
 when updating their Compose file. Backups can be configured in the wizard or
 deferred with **Set up later**; the health page reports them as not configured
-until the owner adds them in **Settings → Email, payments and backups**.
+until the owner adds them in **Settings → Integrations**.
 
 `cloud-init.yaml` runs the versioned release bootstrap, including signed manifest
 and archive validation. Replace its version, hostname and email placeholders before
@@ -384,8 +384,8 @@ set `CADDY_ACCESS_LOG=discard`) and run the same command to turn it off again.
 
 ## Updates and recovery
 
-Updates need backups configured, in the setup wizard or in **Settings → Email,
-payments and backups**: the updater takes a pre-upgrade backup through them. Then
+Updates need backups configured, in the setup wizard or in **Settings →
+Integrations**: the updater takes a pre-upgrade backup through them. Then
 run:
 
 ```sh
@@ -419,8 +419,8 @@ counts toward the retention budget; a full budget stops new snapshots. Keep the 
 with the database to preserve this protection
 (`apps/server/src/areas/health/backups.protocol.md`). Nothing is written between
 the snapshot and the start of the target image. Without configured backups the
-snapshot exits with "Backups are not set up: set them up in Settings → Email,
-payments and backups, then run the update again", and the updater says nothing was changed and restarts
+snapshot exits with "Backups are not set up: set them up in Settings →
+Integrations, then run the update again", and the updater says nothing was changed and restarts
 the current image. Any other snapshot failure prints a generic line (its cause goes
 to the log without its message), with the same outcome. It then starts the target image, which applies its migrations before
 reporting healthy, runs the health check, and changes the persisted image pin

@@ -10,6 +10,12 @@ import { accessibleLayout } from '../responsive.js';
  */
 interface Entry { method: string; path: string; permission: Operation['permission']; additionalPermissions?: Operation['permission'][] }
 const inventory: Entry[] = JSON.parse(await readFile(new URL('../authorization-inventory.json', import.meta.url), 'utf8'));
+test('SMS provider routes are inventoried with owner-only integration permission', () => {
+  expect(inventory.filter(entry => entry.path === '/api/settings/integrations/sms')).toEqual([
+    { method: 'PUT', path: '/api/settings/integrations/sms', permission: { kind: 'staff', capability: 'integrations.manage' } },
+    { method: 'DELETE', path: '/api/settings/integrations/sms', permission: { kind: 'staff', capability: 'integrations.manage' } },
+  ]);
+});
 // Reviewed against the staff matrix, independently of the application's canStaff().
 const all: Role[] = ['owner', 'admin', 'coach', 'front_desk'];
 const managers: Role[] = ['owner', 'admin'];

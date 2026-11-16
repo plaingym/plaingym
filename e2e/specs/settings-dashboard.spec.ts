@@ -27,6 +27,7 @@ for (const width of [360, 1280]) test(`settings sections and an empty dashboard 
         checkedAt: '2026-11-02T12:00:00Z', inspected: 0, unresolved: 0, stripeConfigured: true, stripeMode: 'test' },
     } } });
     if (path === '/api/settings/integrations') return route.fulfill({ json: { data: { revision: 3, sandbox: false, integrationsEditable: true,
+      sms: { configured: false, provider: 'twilio', unreadable: false, accountSid: null, authKind: null, from: null, messagingServiceSid: null },
       email: { source: 'none', unreadable: false, googleConfigured: false, host: null, port: null, security: null, from: null,
         signIn: { password: true, magicLink: false }, signInAfterSave: { password: false, magicLink: true }, signInAfterRemove: null, removeBlocked: false },
       payments: { configured: true, mode: 'live', webhookRegistered: true, accountLocked: false, testData: null, importedCustomersOnly: false },

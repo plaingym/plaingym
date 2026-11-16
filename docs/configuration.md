@@ -5,7 +5,7 @@ PlainGym reads its configuration from environment variables. A self-hosted
 install keeps its values in `/opt/plaingym/.env` (mode 0600), which the installer
 writes. Gym settings are not environment variables: the owner sets email, Stripe
 and backups in the setup wizard (and changes them later in the admin's
-**Settings → Email, payments and backups**), and the gym's details, booking and
+**Settings → Integrations**), and the gym's details, booking and
 billing rules in the admin's **Settings**. They are stored in the database, encrypted where
 secret.
 
@@ -93,7 +93,7 @@ change an existing database: the roles keep the password they were created with.
 ## Backups
 
 Backups are set up in the setup wizard's backup step, or later (and changed) in
-**Settings → Email, payments and backups**, single-gym mode only: the destination
+**Settings → Integrations**, single-gym mode only: the destination
 bucket and its credentials are stored encrypted in the database, not in `.env`.
 Updates refuse to run until backups are set up, and automatic patch updates skip
 each night until then (see [self-hosting.md](self-hosting.md#updates)).
@@ -107,12 +107,12 @@ by earlier versions have an empty `BACKUP_RECIPIENT` line in `.env`; nothing rea
 
 ## Email
 
-A gym's own SMTP settings, entered in the setup wizard or in **Settings → Email,
-payments and backups**, take precedence over these install-wide values; removing
+A gym's own SMTP settings, entered in the setup wizard or in **Settings →
+Integrations**, take precedence over these install-wide values; removing
 them there falls back to these. Use a sending service (Postmark, Brevo, Amazon SES or
 similar): mail sent directly from a server usually lands in spam.
 
-In multi-gym mode gym owners change email and payments only when
+In multi-gym mode gym owners change email, SMS and payments only when
 `GYM_INTEGRATIONS=gym`; see [Tenancy and demo](#tenancy-and-demo). A gym's own SMTP server there must
 resolve only to public addresses, whichever way the variable is set. The check uses
 cancellable A and AAAA DNS queries with a ten-second deadline. After one family
@@ -197,7 +197,7 @@ restart; people then sign in another way.
 | Variable | Default | Meaning |
 | :--- | :--- | :--- |
 | `TENANCY` | `single` | `single` serves the one gym created in setup. `multi` serves several gyms, each created with `gym-app gyms create` and found by hostname; it requires S3 uploads, `SMTP_HOST` and `AUTH_PASSWORD_LOGIN=off`, and has no in-process backups. |
-| `GYM_INTEGRATIONS` | `operator` | Multi-gym only; a single-gym install ignores it. `operator` makes the email and payments parts of **Settings → Email, payments and backups** read-only for gym owners: gyms send through the install's `SMTP_*`, and the API refuses changes with a 403. `gym` lets owners set their own SMTP server and Stripe key, which is how a gym connects Stripe, since there is no install-wide Stripe key. Settings already stored stay in use under `operator`. |
+| `GYM_INTEGRATIONS` | `operator` | Multi-gym only; a single-gym install ignores it. `operator` makes the email, SMS and payments parts of **Settings → Integrations** read-only for gym owners: gyms send through the install's `SMTP_*`, and the API refuses changes with a 403. `gym` lets owners set their own SMTP server, SMS provider and Stripe key, which is how a gym connects Stripe, since there is no install-wide Stripe key. Settings already stored stay in use under `operator`. |
 | `DEMO_MODE` | `false` | `true` turns on sandbox gyms for visitors (multi-gym only). See `apps/server/src/demo/README.md`. |
 | `DEMO_DOMAIN` | none | Demo mode: the domain sandboxes are created under. |
 | `DEMO_MAX_SANDBOXES` | `50` | Demo mode: the most sandboxes that may exist at once. |

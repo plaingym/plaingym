@@ -27,7 +27,7 @@ afterAll(async () => {
   if (directory) await rm(directory, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
-it('serves Settings → Email, Payments and Backups with the runtime’s key, auth rules and account lookup', async () => {
+it('serves Settings → Integrations with the runtime’s key, auth rules and account lookup', async () => {
   vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
   directory = await mkdtemp(join(tmpdir(), 'plaingym-integrations-runtime-'));
   // The new destination is listed with its credentials before a key is made for it.

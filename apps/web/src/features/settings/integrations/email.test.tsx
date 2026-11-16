@@ -89,7 +89,7 @@ describe('Settings → Email', () => {
     client.PUT.mockImplementation(async () => { current = { ...integrations, integrationsEditable: false };
       return refusal(403, 'integrations', 'operator_managed'); });
     await user.click(within(form).getByRole('button', { name: 'Send test email and save' }));
-    expect((await screen.findByRole('alert')).textContent).toMatch(/Whoever runs this install manages email and payments/);
+    expect((await screen.findByRole('alert')).textContent).toMatch(/Whoever runs this install manages email, SMS and payments/);
     expect(screen.queryByRole('form', { name: 'Use your own SMTP service' })).toBeNull();
   });
   it('removes the gym’s settings after saying how sign-in changes', async () => {

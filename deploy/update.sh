@@ -230,7 +230,7 @@ swap_image() { # TARGET
   compose stop app
   # One coordinated install snapshot: stored age recipient, encrypted recovery bundle,
   # immutable upload references, multipart retry/abort, retention, and backup_runs.
-  # Its own message above says why it failed, such as backups that aren't set up yet (Settings → Email, payments and backups).
+  # Its own message above says why it failed, such as backups that aren't set up yet (Settings → Integrations).
   snapshot_file=$(mktemp "$ROOT/.snapshot.XXXXXX")
   if [ -n "$recovery_version" ]; then
     # The pinned image is below the floor. Use the recorded compatible image without migrating first.

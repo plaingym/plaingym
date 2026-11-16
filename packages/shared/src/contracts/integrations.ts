@@ -5,7 +5,7 @@ import { revisionSchema } from './common.js';
 import type { RoutePermission } from '../permissions.js';
 import { googleClientCheckSchema, googleClientValueSchema, googleEnvironmentProblemSchema, setupS3CredentialsSchema, setupSmtpRequestSchema, restrictedKeyPattern } from './setup.js';
 
-/** Email, Stripe and backups after setup: owners only, like the setup steps that first configure them. */
+/** Email, SMS, Stripe and backups after setup: owners only, like the setup steps that first configure them. */
 const own = { kind: 'staff', capability: 'integrations.manage' } as const satisfies RoutePermission;
 const recipientSchema = z.string().regex(/^age1[0-9a-z]+$/);
 const privateKeySchema = z.string().regex(/^AGE-SECRET-KEY-1[0-9A-Z]+$/);
@@ -26,6 +26,27 @@ export const emailIntegrationSchema = z.strictObject({
   signIn: signInMethodsSchema, signInAfterSave: signInMethodsSchema, signInAfterRemove: signInMethodsSchema.nullable(),
   removeBlocked: z.boolean(),
 });
+/** SMS credentials are write-only. Only single-gym installs expose the provider base URL. */
+export const smsIntegrationSchema = z.strictObject({
+  configured: z.boolean(), provider: z.literal('twilio'), unreadable: z.boolean(),
+  accountSid: z.string().nullable(), authKind: z.enum(['token', 'apiKey']).nullable(),
+  from: z.string().nullable(), messagingServiceSid: z.string().nullable(), baseUrl: z.string().optional(),
+});
+const smsSid = (prefix: string) => z.string().regex(new RegExp(`^${prefix}[0-9a-fA-F]{32}$`));
+export const saveSmsIntegrationRequestSchema = z.strictObject({
+  revision: revisionSchema, provider: z.literal('twilio'), accountSid: smsSid('AC'),
+  auth: z.union([z.strictObject({ token: z.string().min(1).max(1024) }),
+    z.strictObject({ apiKey: smsSid('SK'), secret: z.string().min(1).max(1024) })]),
+  sender: z.union([z.strictObject({ from: z.string().min(1).max(100) }), z.strictObject({ messagingServiceSid: smsSid('MG') })]),
+  baseUrl: z.url().max(2048).refine(value => {
+    try {
+      const url = new URL(value);
+      return url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash;
+    } catch { return false; }
+  }).optional(),
+  testTo: z.string().min(1).max(100),
+});
+export const removeSmsIntegrationRequestSchema = z.strictObject({ revision: revisionSchema });
 /**
  * What a switch from test to live clears (`clearTestData`): households holding a Stripe customer the test key made,
  * the cards saved through Stripe, and open Checkout or card-setup sessions. `disputes` counts the invoices whose open dispute it closes:
@@ -66,12 +87,12 @@ export const backupsIntegrationSchema = z.strictObject({
   retentionBudgetBytes: z.int().nonnegative(),
 });
 /**
- * `sandbox` is true in demo mode, where email and payments are the demo's own and nothing here can change.
- * `integrationsEditable` is whether the gym's owners may change email and payments: always on a single-gym install; on a
+ * `sandbox` is true in demo mode, where email, SMS and payments are the demo's own and nothing here can change.
+ * `integrationsEditable` is whether the gym's owners may change email, SMS and payments: always on a single-gym install; on a
  * multi-gym one, only when the operator allows it. When false, those changes are refused and the sections are read-only.
  */
 export const integrationsSchema = z.strictObject({
-  email: emailIntegrationSchema, payments: paymentsIntegrationSchema, backups: backupsIntegrationSchema.nullable(),
+  email: emailIntegrationSchema, sms: smsIntegrationSchema, payments: paymentsIntegrationSchema, backups: backupsIntegrationSchema.nullable(),
   sandbox: z.boolean(), integrationsEditable: z.boolean(), revision: revisionSchema,
 });
 export const integrationsResponseSchema = z.strictObject({ data: integrationsSchema });
@@ -81,6 +102,10 @@ export const integrationsResponseSchema = z.strictObject({ data: integrationsSch
 export const saveEmailIntegrationRequestSchema = setupSmtpRequestSchema.options[1].omit({ choice: true });
 /** `failed` saves nothing: the integrations are returned unchanged, with the same revision. */
 export const saveEmailIntegrationResponseSchema = z.strictObject({ data: z.strictObject({
+  test: z.enum(['sent', 'failed']), integrations: integrationsSchema,
+}) });
+/** A failed account check or test keeps the previous stored settings and revision. */
+export const saveSmsIntegrationResponseSchema = z.strictObject({ data: z.strictObject({
   test: z.enum(['sent', 'failed']), integrations: integrationsSchema,
 }) });
 export const removeEmailIntegrationRequestSchema = z.strictObject({ revision: revisionSchema });
@@ -134,6 +159,10 @@ export const integrationsContracts = {
     body: saveEmailIntegrationRequestSchema, response: saveEmailIntegrationResponseSchema },
   removeEmail: { method: 'delete', path: '/api/settings/integrations/email', permission: own,
     body: removeEmailIntegrationRequestSchema, response: integrationsResponseSchema },
+  saveSms: { method: 'put', path: '/api/settings/integrations/sms', permission: own,
+    body: saveSmsIntegrationRequestSchema, response: saveSmsIntegrationResponseSchema },
+  removeSms: { method: 'delete', path: '/api/settings/integrations/sms', permission: own,
+    body: removeSmsIntegrationRequestSchema, response: integrationsResponseSchema },
   saveStripe: { method: 'put', path: '/api/settings/integrations/stripe', permission: own,
     body: saveStripeIntegrationRequestSchema, response: integrationsResponseSchema },
   createBackupKey: { method: 'post', path: '/api/settings/integrations/backups', permission: own,
@@ -149,6 +178,9 @@ export const integrationsContracts = {
 
 export type Integrations = z.infer<typeof integrationsSchema>;
 export type EmailIntegration = z.infer<typeof emailIntegrationSchema>;
+export type SmsIntegration = z.infer<typeof smsIntegrationSchema>;
+export type SaveSmsIntegrationRequest = z.infer<typeof saveSmsIntegrationRequestSchema>;
+export type RemoveSmsIntegrationRequest = z.infer<typeof removeSmsIntegrationRequestSchema>;
 export type PaymentsIntegration = z.infer<typeof paymentsIntegrationSchema>;
 export type StripeTestData = z.infer<typeof stripeTestDataSchema>;
 export type BackupsIntegration = z.infer<typeof backupsIntegrationSchema>;

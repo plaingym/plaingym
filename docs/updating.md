@@ -21,7 +21,7 @@ looks for a newer patch release of the version you run (from 1.2.3 it takes 1.2.
 
 Owners switch it off, or on again, in **Settings → Updates**; it is on by default. It does
 nothing, and tells you why, until backups are set up
-(**Settings → Email, payments and backups**).
+(**Settings → Integrations**).
 
 If a release fails (it is rolled back, or the update and its rollback both fail), the
 updater tries it once more the next night. If it fails again, automatic updates wait for a
@@ -51,9 +51,9 @@ server's.
 
 | The tile says | What to do |
 | :--- | :--- |
-| Backups aren't set up | Set them up in **Settings → Email, payments and backups**; the next night's check installs the release. |
+| Backups aren't set up | Set them up in **Settings → Integrations**; the next night's check installs the release. |
 | The server has no release signing key | On the server, run the installer again from the current deployment files with `--image` set to the running image, or copy `release-signing.pem` into `/opt/plaingym`. |
-| The list of releases, the manifest or the image couldn't be downloaded, or the backup before the update failed | Nothing was changed; the next nightly check tries again. Check the server's network, or the bucket under **Settings → Email, payments and backups**. |
+| The list of releases, the manifest or the image couldn't be downloaded, or the backup before the update failed | Nothing was changed; the next nightly check tries again. Check the server's network, or the bucket under **Settings → Integrations**. |
 | The signature didn't verify, the image doesn't match the manifest, or the patch changes the database | Nothing was installed, on purpose. Update by hand once a fixed release is out. Don't install that release yourself. |
 | Version X was rolled back | The new version didn't start or failed its health check, and the previous one runs again. On the server, `cd /opt/plaingym` and `sudo docker compose logs app` show why. |
 | The update failed and starting the previous version failed too | `sudo docker compose ps` shows the containers. The updater tries to start the previous version again each hour until it runs. |

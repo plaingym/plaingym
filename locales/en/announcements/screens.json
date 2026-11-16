@@ -43,7 +43,7 @@
   "no_origin": "A canonical HTTPS gym address is not configured. Ask the owner to check the gym address in Settings and the install configuration before sending.",
   "addressSettings": "Open gym address settings",
   "disabled": "Member email is switched off. Enable member email in the Go-live section of Settings before sending.",
-  "no_smtp": "Email is not set up for this gym. The owner sets up SMTP under Email, payments and backups in Settings.",
+  "no_smtp": "Email is not set up for this gym. The owner sets up SMTP under Settings → Integrations.",
   "goLiveSettings": "Open Go-live settings",
   "emailSettings": "Open email settings",
   "programError": "Programs could not be loaded. Retry to compose an announcement.",

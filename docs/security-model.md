@@ -220,8 +220,8 @@ coach and front desk roles cannot grant revenue access. Its
 payments, refunds, invoice lines, payment audit markers and current catalog names
 are read in one `forGym` transaction, with no billing writes.
 
-`integrations.manage` covers Stripe, SMTP and backups: the setup wizard, and
-**Settings → Email, payments and backups** after it, whose responses and audits
+`integrations.manage` covers Stripe, SMTP, SMS and backups: the setup wizard, and
+**Settings → Integrations** after it, whose responses and audits
 never contain a password, key, signing secret or storage credential. The one
 exception is a new backup key pair: its private key is returned once, in a
 `Cache-Control: no-store` answer, and never stored or audited. It also
@@ -236,7 +236,7 @@ sign-in first. Unreadable stored SMTP credentials count as unconfigured for logi
 and Google removal; email then uses install SMTP if available. The unreadable
 value is logged without its contents and stays stored until replaced or removed.
 
-On a multi-gym install the email and payments parts are the operator's by default
+On a multi-gym install the email, SMS and payments parts are the operator's by default
 (`GYM_INTEGRATIONS=operator`): the sections are read-only and their write routes
 answer 403 even for an owner. With `GYM_INTEGRATIONS=gym` owners can name their own
 SMTP server, so a gym owner's input reaches the server's network. Ports stay limited
@@ -629,6 +629,17 @@ Old versions and documents referenced by signatures remain retained after retire
   (`apps/server/src/areas/members/README.md`).
 * **SMS.** The gym's `sms_config_encrypted` is bound to the gym and the `sms_config`
   secret class under `APP_ENCRYPTION_KEY`; restore and key rotation re-encrypt it.
+  Only `integrations.manage` can read its safe projection, save or remove it under
+  **Settings → Integrations**. Auth tokens and API key secrets are write-only:
+  they never appear in responses, errors, audits or logs. Saving checks the
+  account without sending, then sends one test only to the owner's typed,
+  normalized number through the raw adapter, outside transactions; failed checks
+  or tests leave the stored config unchanged. A revision check guards both the
+  initial check and the final encrypted write. Audits record only account SID,
+  auth kind and sender (`integrations.sms_saved` / `integrations.sms_removed`),
+  or the test outcome (`integrations.sms_tested`). Demo saves are refused before
+  any provider call. Multi-gym installs accept only Twilio's URL; single-gym
+  installs may use an HTTPS Twilio-compatible provider URL.
   Phone numbers and consent are gym-scoped personal data. Consent belongs to the
   normalized number and is checked against the current phone immediately before
   delivery. Household billing phones have separate notices consent. Member erasure

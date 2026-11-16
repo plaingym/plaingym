@@ -29,7 +29,7 @@
   "hold.wait": "Do not install this release by hand: wait for a fixed release.",
   "reason.disabled": "Automatic updates were turned off.",
   "reason.check_failed": "The app couldn't report its update setting.",
-  "reason.backups_not_configured": "Backups aren't set up, so no backup could be taken first. Set them up in Settings → Email, payments and backups.",
+  "reason.backups_not_configured": "Backups aren't set up, so no backup could be taken first. Set them up in Settings → Integrations.",
   "reason.restore_in_progress": "A restore was in progress.",
   "reason.no_signing_key": "The server has no release signing key to check releases with. Re-run install.sh from the current deployment files with --image set to the running image, or copy release-signing.pem into the install directory.",
   "reason.version_unknown": "The running version couldn't be read from its image.",

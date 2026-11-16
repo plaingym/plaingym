@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { test, expect, Client, gymOrigin, password } from '../support.js';
+import { test, expect, Client, demoClient, gymOrigin, password, type Person, type RecordId } from '../support.js';
 import { accessibleLayout, sizes } from '../responsive.js';
 import type { Request } from '@playwright/test';
 test.use({ trace: 'off' });
@@ -34,6 +34,11 @@ test('login at phone, tablet and desktop widths supports errors and password sig
 
 test('a stale tablet stays usable after one reload at phone and desktop widths', async ({ page, sandboxes }, info) => {
   const sandbox = sandboxes[0]!;
+  const owner = await demoClient(sandbox, 'owner');
+  const member = (await owner.json<{ data: Person[] }>('/api/members?search=Marcus')).data.find(person => person.firstName === 'Marcus' && person.lastName === 'Rivera')!;
+  const home = (await owner.json<{ data: RecordId }>('/api/households/' + member.householdId)).data;
+  // Another spec can change this shared household's PIN before this file runs.
+  await owner.json('/api/households/' + member.householdId + '/pin', 'PUT', { revision: home.revision, pin: '2468' });
   let releaseChecks = 0;
   await page.route('**/healthz', async route => {
     releaseChecks++;

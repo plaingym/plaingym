@@ -7,7 +7,7 @@ import { integrations, renderSection, serve } from './fixtures.test-helper.js';
 const client = vi.hoisted(() => ({ GET: vi.fn(), PUT: vi.fn(), POST: vi.fn(), DELETE: vi.fn() }));
 vi.mock('../../../lib/api.js', () => ({ api: client, createApiClient: () => client }));
 
-const reason = /Whoever runs this install manages email and payments/;
+const reason = /Whoever runs this install manages email, SMS and payments/;
 const managed: Integrations = { ...integrations, integrationsEditable: false, backups: null, revision: 4,
   email: { ...integrations.email, source: 'gym', host: 'smtp.gym.test', port: 587, security: 'starttls', from: 'desk@gym.test',
     signInAfterRemove: { password: false, magicLink: true } },
@@ -41,7 +41,7 @@ describe('Settings → Email and payments managed by the operator', () => {
     expect(screen.queryByText(reason)).toBeNull();
     cleanup();
     current = { ...managed, sandbox: true }; renderSection();
-    expect(await screen.findByText(/This sandbox sends email to the demo outbox/)).toBeDefined();
+    expect(await screen.findByText(/This sandbox uses the demo/)).toBeDefined();
     expect(screen.queryByText(reason)).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Email' })).toBeNull();
   });

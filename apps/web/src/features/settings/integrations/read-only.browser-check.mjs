@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 const { chromium, expect } = await import(pathToFileURL(resolve('e2e/node_modules/@playwright/test/index.mjs')).href);
 const { default: AxeBuilder } = await import(pathToFileURL(resolve('e2e/node_modules/@axe-core/playwright/dist/index.mjs')).href);
 const output = resolve('coverage/settings/integrations-read-only'), dist = resolve('apps/web/dist'); await mkdir(output, { recursive: true });
-const title = 'Email, payments and backups';
+const title = 'Integrations';
 const gym = { id: '00000000-0000-7000-8000-000000000001', name: 'A long gym name that must fit on a phone', timezone: 'UTC', currency: 'USD', enabledModules: [] };
 const session = { userId: '00000000-0000-7000-8000-000000000002', displayName: 'Owner', roles: ['owner'], member: false };
 const settings = { id: gym.id, name: gym.name, slug: 'gym', timezone: 'UTC', currency: 'USD', address: {}, branding: {}, websiteEnabled: false,
@@ -18,7 +18,8 @@ const settings = { id: gym.id, name: gym.name, slug: 'gym', timezone: 'UTC', cur
 const signIn = { password: false, magicLink: true };
 const installEmail = { source: 'install', host: null, port: null, security: null, from: null, signIn, signInAfterSave: signIn, signInAfterRemove: null, removeBlocked: false };
 const noStripe = { configured: false, mode: null, webhookRegistered: false, accountLocked: false, testData: null, importedCustomersOnly: false };
-const base = { email: installEmail, payments: noStripe, backups: null, sandbox: false, integrationsEditable: false, revision: 3 };
+const base = { email: installEmail, payments: noStripe, backups: null, sandbox: false, integrationsEditable: false, revision: 3,
+  sms: { configured: false, provider: 'twilio', unreadable: false, accountSid: null, authKind: null, from: null, messagingServiceSid: null } };
 const stored = { ...base,
   email: { ...installEmail, source: 'gym', host: 'a-very-long-smtp-host-name-that-has-to-wrap.mail.gym-with-a-long-domain.example', port: 587, security: 'starttls',
     from: 'front-desk-with-a-long-address@gym-with-a-long-domain.example', signInAfterRemove: signIn },
@@ -56,7 +57,7 @@ try {
     const region = page.getByRole('region', { name: title });
     const check = async (name) => {
       await page.goto(origin + '/admin/settings');
-      await expect(region.getByText(/Whoever runs this install manages email and payments/)).toBeVisible();
+      await expect(region.getByText(/Whoever runs this install manages email, SMS and payments/)).toBeVisible();
       await expect(region.getByRole('heading', { name: 'Email', exact: true })).toBeVisible();
       await expect(region.getByRole('heading', { name: 'Payments', exact: true })).toBeVisible();
       await expect(region.getByRole('textbox')).toHaveCount(0);

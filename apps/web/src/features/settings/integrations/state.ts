@@ -31,7 +31,7 @@ const reasonOf = (body: unknown) => {
 };
 
 /**
- * The gym's email, payments and backups. Every change goes through the settings page's save queue with the page's one
+ * The gym's email, SMS, payments and backups. Every change goes through the settings page's save queue with the page's one
  * gym revision, so it neither stales nor is staled by the other sections; its reply carries the new revision, which the
  * shared settings adopt, and the integrations it returns replace the ones shown. A 409 reloads both.
  */

@@ -9,6 +9,7 @@ import {
 
 const signIn = { password: false, magicLink: true };
 const integrations = {
+  sms: { configured: false, provider: 'twilio', unreadable: false, accountSid: null, authKind: null, from: null, messagingServiceSid: null },
   email: { source: 'gym', unreadable: false, googleConfigured: false, host: 'smtp.example.test', port: 587, security: 'starttls', from: 'desk@example.test',
     signIn, signInAfterSave: signIn, signInAfterRemove: { password: true, magicLink: false }, removeBlocked: true },
   payments: { configured: true, mode: 'test', webhookRegistered: true, accountLocked: true,
@@ -50,7 +51,8 @@ describe('integration settings contracts', () => {
     expect(integrationsSchema.parse({ ...integrations, payments: { ...integrations.payments, testData: null } }).payments.testData).toBeNull();
     for (const testData of [{ ...integrations.payments.testData, customers: -1 }, { ...integrations.payments.testData, apiKey: 'secret' }])
       expect(integrationsSchema.safeParse({ ...integrations, payments: { ...integrations.payments, testData } }).success).toBe(false);
-    for (const field of ['password', 'username', 'apiKey', 'restrictedKey', 'webhookSecret', 'accessKeyId', 'secretAccessKey', 'privateKey']) {
+    for (const field of ['token', 'secret', 'auth', 'password', 'username', 'apiKey', 'restrictedKey', 'webhookSecret', 'accessKeyId', 'secretAccessKey', 'privateKey']) {
+      expect(integrationsSchema.safeParse({ ...integrations, sms: { ...integrations.sms, [field]: 'secret' } }).success, field).toBe(false);
       expect(integrationsSchema.safeParse({ ...integrations, email: { ...integrations.email, [field]: 'secret' } }).success, field).toBe(false);
       expect(integrationsSchema.safeParse({ ...integrations, payments: { ...integrations.payments, [field]: 'secret' } }).success, field).toBe(false);
       expect(integrationsSchema.safeParse({ ...integrations, backups: { ...integrations.backups, [field]: 'secret' } }).success, field).toBe(false);

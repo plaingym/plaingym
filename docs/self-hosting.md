@@ -119,14 +119,14 @@ After setup, billing and member emails are still paused. Turn them on in
 file for paid memberships, current waivers signed, email and backups set up.
 
 The admin's **Settings** covers the gym's details, booking rules, billing rules,
-currency, drop-in fee, go-live and Google sign-in. Its **Email, payments and backups** section
+currency, drop-in fee, go-live and Google sign-in. Its **Integrations** section
 (owners only) changes what the wizard set up, or adds what was skipped, through
 the same steps: see [After setup](#after-setup).
 
 ## After setup
 
-Owners change email, Stripe and backups in **Settings → Email, payments and
-backups**. Saved passwords, keys and the webhook signing secret are never shown
+Owners change email, SMS, Stripe and backups in **Settings → Integrations**.
+Saved passwords, keys and the webhook signing secret are never shown
 again, and every change is recorded in the audit log without them.
 
 * **Email** shows the SMTP host, port, encryption and sender the gym uses, or that
@@ -136,6 +136,17 @@ again, and every change is recorded in the audit log without them.
   (`AUTH_PASSWORD_LOGIN=auto`: emailed links with email, passwords without); the
   page says how before you save. Removing email is refused while it is your only
   way to sign in (your account has no password and the gym has no Google client).
+* **SMS** connects your gym’s own Twilio account. Enter its Account SID and either
+  an auth token or an API key SID and secret, plus a From phone number or Messaging
+  Service SID. The account is checked without sending a message, then one test
+  text goes only to the number you enter. Credentials are saved encrypted only
+  after both succeed, and are never shown again. **Remove SMS provider** clears
+  them. Each text, including a test, is charged to your gym by the provider.
+  Register your sender with the provider before sending: for example,
+  [US A2P 10DLC registration](https://www.twilio.com/docs/messaging/compliance/a2p-10dlc)
+  or [toll-free verification](https://www.twilio.com/docs/messaging/compliance/toll-free/console-onboarding).
+  Single-gym installs can use an HTTPS base URL for a Twilio-compatible provider
+  such as SignalWire. Multi-gym installs accept only `https://api.twilio.com`.
 * **Payments** shows the Stripe mode (test or live) and whether the webhook
   endpoint is registered. A new restricted key is checked and its webhook endpoint
   kept or replaced exactly as in setup. Once any household has a Stripe customer,
@@ -191,12 +202,12 @@ Stripe dashboard, create a restricted key with:
 | Events | Read |
 | Disputes | Read |
 
-Paste it into the wizard's payment step (or, later, **Settings → Email, payments
-and backups**). The app checks each permission without
+Paste it into the wizard's payment step (or, later, **Settings → Integrations**).
+The app checks each permission without
 moving money (a missing one is named), then registers its webhook endpoint at
 `https://gym.example.org/webhooks/stripe`. Use a test key (`rk_test_…`) to try
 billing first; a live key (`rk_live_…`) takes real payments, and replaces the
-test key in **Settings → Email, payments and backups** once you confirm clearing
+test key in **Settings → Integrations** once you confirm clearing
 the test data. Members enter cards only on Stripe's hosted pages.
 
 ## Sign-in
@@ -248,7 +259,7 @@ in the admin shows the last successful backup and any failure.
 under **Settings**. Without it, the backups can't be opened by anyone.
 
 Before a risky change, choose **Back up now** on the **System health → Last backup**
-tile (owners and admins), or in **Settings → Email, payments and backups** (owners).
+tile (owners and admins), or in **Settings → Integrations** (owners).
 It queues a manual snapshot, shows progress, then the completed time and snapshot
 ID. Only one manual request can be queued or running; a restore or incomplete
 backup setup refuses the action. Manual snapshots count toward normal retention.
@@ -407,8 +418,8 @@ links only, has no in-process backups, and creates each gym with
 `gym-app gyms create`. The installer sets up single-gym installs only; the demo
 deployment (`deploy/demo/README.md`) is an example of a multi-gym install.
 
-By default gym owners can't change email or payments on a multi-gym install:
+By default gym owners can't change email, SMS or payments on a multi-gym install:
 gyms send through the install's SMTP, and there is no install-wide Stripe key, so
 a gym can't connect Stripe. `GYM_INTEGRATIONS=gym` lets every gym's owners set
-their own SMTP server and Stripe key; see
+their own SMTP server, SMS provider and Stripe key; see
 [Tenancy and demo](configuration.md#tenancy-and-demo).

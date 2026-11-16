@@ -82,7 +82,7 @@ You need four things. If you are moving on purpose, capture the latest changes f
    the wizard first:** setup closes once an owner exists.
 
 **Moving on purpose?** Owners and admins can choose **Back up now** on **System health → Last
-backup** (owners can also use it in **Settings → Email, payments and backups**) and wait for
+backup** (owners can also use it in **Settings → Integrations**) and wait for
 the completed snapshot's time and ID. Without the admin, run
 `sudo docker compose exec -T app node /app/maintenance.mjs snapshot` in `/opt/plaingym`; it
 prints the new snapshot ID.
@@ -178,7 +178,7 @@ completed setup. You work on the server over SSH.
    If you switch Stripe modes after the check, billing pauses. Go live and Payments
    name the mode the earlier check read and ask you to check again in the saved
    mode before turning billing back on; a clear test-mode check cannot clear live payments.
-3. **Stripe webhooks.** In **Settings → Email, payments and backups**, check that **Payments**
+3. **Stripe webhooks.** In **Settings → Integrations**, check that **Payments**
    shows the webhook endpoint as registered. If the hostname changed, the endpoint Stripe knows
    still points at the old address: paste the Stripe key again, which registers the endpoint at
    the new address (the same key and mode are accepted without clearing anything).
@@ -187,7 +187,7 @@ completed setup. You work on the server over SSH.
    uses **Confirm the old server is gone** in Settings or on the Last backup tile and confirms
    **Resume backup pruning**. Until then the bucket grows, and once it reaches the retention
    budget new snapshots fail. If the backup key was lost, or you want a new one, replace it
-   under **Settings → Email, payments and backups**; pruning stays held until the owner
+   under **Settings → Integrations**; pruning stays held until the owner
    confirms the old server is gone.
 5. **Only one install should run the gym.** Shut the old server down now (see above).
 

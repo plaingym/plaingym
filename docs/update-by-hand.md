@@ -11,7 +11,7 @@ You run these commands on the server over SSH ([how to log in](install.md#3-log-
 
 1. **Check backups.** The updater takes a backup first and refuses to go on without one.
    The admin's **System health** page should show a recent successful backup; if not, set
-   backups up in **Settings → Email, payments and backups**.
+   backups up in **Settings → Integrations**.
 2. **Keep your backup private key and a copy of `/opt/plaingym/.env`** somewhere off the
    server. If an update goes wrong beyond repair, they are what a [restore](restoring.md)
    needs.
@@ -61,8 +61,8 @@ database (last row), which leaves the app stopped.
 
 | What it says | What happened | What to do |
 | :--- | :--- | :--- |
-| "Backups are not set up: set them up in Settings → Email, payments and backups, then run the update again" | Nothing was changed; the current version was restarted. | Set up backups, run the command again. |
-| "The pre-upgrade snapshot failed (reason above). Nothing was changed; the current version is restarting." | The backup failed (bucket unreachable, credentials changed). The line above says why. | Check the bucket and its keys under **Settings → Email, payments and backups**, and `sudo docker compose logs app`; run again. |
+| "Backups are not set up: set them up in Settings → Integrations, then run the update again" | Nothing was changed; the current version was restarted. | Set up backups, run the command again. |
+| "The pre-upgrade snapshot failed (reason above). Nothing was changed; the current version is restarting." | The backup failed (bucket unreachable, credentials changed). The line above says why. | Check the bucket and its keys under **Settings → Integrations**, and `sudo docker compose logs app`; run again. |
 | "Update failed; restarting the previous image." | The new version didn't start or didn't pass its health check. | Unless the next line says the failed update changed the database (last row), the old version is back. Read `sudo docker compose logs app` for the reason before trying again. |
 | "An update or key rotation is running." | An update or a key rotation is in progress (it takes a lock). | Wait for it to finish, then run the command again. |
 | "The app must be running before an update." | The app is stopped. | Read `sudo docker compose logs app`. If the current release will not start, `sudo ./update.sh --rollback` (below). |

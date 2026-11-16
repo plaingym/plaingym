@@ -13,7 +13,7 @@ This is done **before** you turn billing on: saving a card charges nothing.
 * **Stripe is connected with your live key.** Cards saved while the gym uses a test
   key (`rk_test_…`) are cleared when you switch to the live key
   ([self-hosting.md](self-hosting.md#after-setup)), so collect real cards only after
-  the live key is in **Settings → Email, payments and backups**.
+  the live key is in **Settings → Integrations**.
 * **Members and memberships are imported** ([importing.md](importing.md)), so each
   household has its membership and an email address. A household without an email
   is shown as "No household email" and can't be sent a link; add the email on its

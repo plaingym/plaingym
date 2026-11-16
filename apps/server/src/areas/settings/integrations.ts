@@ -7,6 +7,7 @@ import { AppError, type Clock } from '@plaingym/shared';
 import { backupDestinationSchema, type BackupsIntegration, type ConfirmBackupKeyRequest, type CreateBackupKeyRequest, type EmailIntegration,
   type Integrations, type RemoveEmailIntegrationRequest, type SaveEmailIntegrationRequest, type SaveStripeIntegrationRequest, type StripeTestData,
   type GoogleLogin, type RemoveGoogleLoginRequest, type SaveGoogleLoginRequest,
+  type SaveSmsIntegrationRequest, type RemoveSmsIntegrationRequest,
   stripeTestPaymentReference, terminalDisputeStatuses } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
@@ -29,6 +30,7 @@ import { encryptSmtpConfig, readSmtpSchema, sendSmtpTest, smtpFromEnvironment, s
 import { createGoogleClientResolver, encryptGoogleConfig, readGoogleConfig, requireGoogleClient, type CheckGoogle } from './google-login.js';
 import { readStoredSecret } from './unreadable-secret.js';
 import { requireBackupDestination, type CheckBackupDestination } from './backup-destination.js';
+import { createSmsIntegration, type SmsIntegrationOptions } from './integrations.sms.js';
 
 /** Validates the integration policy before runtime opens the database. */
 export function checkIntegrationsEnvironment(mode: AuthConfig['tenancy'], env: NodeJS.ProcessEnv): void {
@@ -63,7 +65,7 @@ export interface IntegrationsOptions {
   origin: (gymId: string) => Promise<string>;
   /** Whether a login has a password of its own. */
   hasPassword: (userId: string) => Promise<boolean>;
-  /** Demo mode: email and payments are the demo's own, and nothing here can change. */
+  /** Demo mode: email, SMS and payments are the demo's own, and nothing here can change. */
   sandbox?: boolean;
   /**
    * Queues a snapshot with the backup settings just confirmed, so the new destination and key hold one right away.
@@ -78,10 +80,11 @@ export interface IntegrationsOptions {
   sendTest?: SendSmtpTest; provisioner?: (key: string) => StripeProvisioner; transport?: (key: string) => PaymentTransport;
   /** Tests fake Google's token endpoint; production asks it about each client before saving. */
   checkGoogle?: CheckGoogle;
+  smsFactory?: SmsIntegrationOptions['smsFactory'];
 }
 
 /**
- * Email, Stripe and backups after setup (owners only). Each change goes through the same service parts as its setup
+ * Email, SMS, Stripe and backups after setup (owners only). Each change goes through the same service parts as its setup
  * step, writes an audit without credentials, and uses the gym revision like the other settings sections. Nothing returned,
  * audited or logged here contains an SMTP password, a Stripe key or signing secret, storage credentials or a private key.
  */
@@ -89,6 +92,8 @@ export function createIntegrationsService(options: IntegrationsOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const sandbox = options.sandbox ?? false, single = options.config.tenancy === 'single';
   const integrationsEditable = gymIntegrationsEditable(options.config.tenancy, options.env);
+  const sms = createSmsIntegration({ key: options.key, scope, clock, tenancy: options.config.tenancy, sandbox,
+    editable: integrationsEditable, ...(options.smsFactory ? { smsFactory: options.smsFactory } : {}) });
   // A sandbox mails through the demo outbox and never reads the install's SMTP settings (as the runtime doesn't).
   const installSmtp = !sandbox && smtpFromEnvironment(options.env) !== null;
   const google = createGoogleClientResolver({ key: options.key, env: options.env, tenancy: options.config.tenancy, scope });
@@ -356,7 +361,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
         test: stored?.mode === 'test' && found !== null && !sandbox ? await testData(tx, gymId) : null };
     });
     const imported = importedOnly(config, reference);
-    return { email: await email(gym, userId),
+    return { email: await email(gym, userId), sms: sms.present(gym),
       payments: { configured: config !== null, mode: config?.mode ?? null, webhookRegistered: Boolean(config?.endpointId),
         accountLocked: reference !== null && !imported, testData: test, importedCustomersOnly: imported },
       backups: backups(gym), sandbox, integrationsEditable, revision: gym.revision };
@@ -443,6 +448,14 @@ export function createIntegrationsService(options: IntegrationsOptions) {
   }
 
   return {
+    async saveSms(context: MutationContext, input: SaveSmsIntegrationRequest) {
+      const test = await sms.save(context, input);
+      return { test, integrations: await present(context.gymId, userOf(context)) };
+    },
+    async removeSms(context: MutationContext, input: RemoveSmsIntegrationRequest) {
+      await sms.remove(context, input.revision);
+      return present(context.gymId, userOf(context));
+    },
     /** The gym's integrations for the signed-in owner (their own password decides whether email can be removed). */
     async get(gymId: string, userId: string): Promise<Integrations> { return present(gymId, userId); },
 

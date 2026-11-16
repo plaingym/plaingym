@@ -11,6 +11,7 @@ export const settings: GymSettings = { id: '01900000-0000-7000-8000-000000000001
   bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false, billingEnabled: false,
   memberEmailsEnabled: false, retryDays: [3, 7], dropInChargeTypeId: null, revision: 3, createdAt: '2026-11-01T12:00:00Z', updatedAt: '2026-11-01T12:00:00Z' };
 export const integrations: Integrations = {
+  sms: { configured: false, provider: 'twilio', unreadable: false, accountSid: null, authKind: null, from: null, messagingServiceSid: null, baseUrl: 'https://api.twilio.com' },
   email: { source: 'none', unreadable: false, googleConfigured: false, host: null, port: null, security: null, from: null, signIn: { password: true, magicLink: false },
     signInAfterSave: { password: false, magicLink: true }, signInAfterRemove: null, removeBlocked: false },
   payments: { configured: false, mode: null, webhookRegistered: false, accountLocked: false, testData: null, importedCustomersOnly: false },

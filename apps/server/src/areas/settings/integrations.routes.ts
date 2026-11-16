@@ -19,9 +19,9 @@ const body = <T>(schema: T) => ({ body: { required: true as const, content: { 'a
 /** Tests pass a service; otherwise the routes use the one the runtime configures. */
 export function createIntegrationsRoutes(service?: IntegrationsService): RouteRegistration[] {
   const current = () => service ?? integrationsService();
-  const { get, saveEmail, removeEmail, saveStripe, createBackupKey, confirmBackupKey, getGoogle, saveGoogle, removeGoogle } = integrationsContracts;
+  const { get, saveEmail, removeEmail, saveSms, removeSms, saveStripe, createBackupKey, confirmBackupKey, getGoogle, saveGoogle, removeGoogle } = integrationsContracts;
   return [
-    route({ ...get, responses: response(get.response, 'Email, payments and backups') }, async (c) => {
+    route({ ...get, responses: response(get.response, 'Email, SMS, payments and backups') }, async (c) => {
       const context = owner(c);
       return c.json({ data: await current().get(context.gymId, context.actor.userId) }, 200);
     }),
@@ -29,6 +29,10 @@ export function createIntegrationsRoutes(service?: IntegrationsService): RouteRe
       async (c) => c.json({ data: await current().saveEmail(owner(c), c.req.valid('json')) }, 200)),
     route({ ...removeEmail, request: body(removeEmail.body), responses: response(removeEmail.response, 'The integrations without the gym’s own email settings') },
       async (c) => c.json({ data: await current().removeEmail(owner(c), c.req.valid('json')) }, 200)),
+    route({ ...saveSms, request: body(saveSms.body), responses: response(saveSms.response, 'The SMS test result and integrations') },
+      async (c) => c.json({ data: await current().saveSms(owner(c), c.req.valid('json')) }, 200)),
+    route({ ...removeSms, request: body(removeSms.body), responses: response(removeSms.response, 'The integrations without SMS credentials') },
+      async (c) => c.json({ data: await current().removeSms(owner(c), c.req.valid('json')) }, 200)),
     route({ ...saveStripe, request: body(saveStripe.body), responses: response(saveStripe.response, 'The integrations with the new Stripe key') },
       async (c) => c.json({ data: await current().saveStripe(owner(c), c.req.valid('json')) }, 200)),
     route({ ...createBackupKey, request: body(createBackupKey.body), responses: response(createBackupKey.response, 'The new backup key, shown once') },
