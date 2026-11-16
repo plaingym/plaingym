@@ -7,6 +7,7 @@ import { AppError } from '@plaingym/shared';
 import { pdfText } from '../../infra/pdf/messages.js';
 import * as c from '@plaingym/shared/contracts';
 import { route } from '../../core/registry.js';
+import { readJsonBody } from '../../core/errors.js';
 import { rateLimit } from '../../core/rate-limit.js';
 import type { RequestContext, RequestEnvironment } from '../../core/context.js';
 import { createWaiversService, type WaiversService, type WaiverOptions } from './waivers.js';
@@ -62,7 +63,7 @@ export function createWaiverRoutes(service?: WaiversService) {
         throw new AppError('invalid_request', waiverValidation('pdfType'));
       const result = await handlers[key as keyof typeof handlers](context, ctx.req.param(), ctx.req.query(),
         key === 'uploadDocument' ? new Uint8Array(await ctx.req.arrayBuffer()) : contract.body
-          ? await ctx.req.json().catch(() => { throw new AppError('invalid_request', 'Request body must be JSON'); }) : undefined);
+          ? await readJsonBody(ctx.req) : undefined);
       ctx.header('Cache-Control', 'no-store'); return ctx.json(contract.response.parse(result) as { data: unknown }, 200);
     });
   })];

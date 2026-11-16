@@ -8,7 +8,7 @@ import type { MatWidgetServices } from './mat.js';
 type DashboardService = ReturnType<typeof createDashboardService>;
 let configured: DashboardService | undefined;
 /** Runtime supplies area services; unconfigured requests fail closed. */
-export function configureDashboard<T extends MatWidgetServices>(services: T, providers?: Parameters<typeof createDashboardService>[1]) {
+export function configureDashboard(services: MatWidgetServices, providers?: Parameters<typeof createDashboardService>[1]) {
   configured = createDashboardService(services, providers);
   return configured;
 }

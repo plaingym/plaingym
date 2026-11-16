@@ -197,6 +197,13 @@ describe.each(['fake', 'postgres'] as const)('%s caller-transaction enqueue cont
 });
 
 describe('Postgres enqueue and execution', () => {
+  it('validates enqueued timezones with the stored timezone schema, retaining supported legacy names', async () => {
+    const q = queue();
+    await expect(q.enqueue('zone', {}, { ...options, timezone: 'Invalid/Timezone' })).rejects.toThrow('Use a supported IANA timezone');
+    expect(await rows()).toHaveLength(0);
+    await q.enqueue('zone', {}, { ...options, timezone: 'CET' });
+    expect((await rows())[0]!.payload).toMatchObject({ timezone: 'CET' });
+  });
   it('retries the insert when retention deletes the conflicting row before its lookup', async () => {
     const opts = { ...options, idempotencyKey: 'retention-race' };
     const original = await queue().enqueue('work', {}, opts);

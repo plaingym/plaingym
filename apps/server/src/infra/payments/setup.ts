@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { assertNoTransaction } from '@plaingym/shared/transaction';
+import { installContracts } from '@plaingym/shared/contracts';
 import { STRIPE_API_VERSION, STRIPE_EVENTS } from './stripe.js';
 import type { Json, ObjectData, PaymentTransport, ProviderRequest } from './transport.js';
 
@@ -33,7 +34,7 @@ export interface WebhookRegistration { endpointId: string; webhookSecret: string
 export type WebhookCheck = { status: 'current' | 'updated' | 'skipped' } | { status: 'replaced' | 'recreated'; registration: WebhookRegistration };
 
 function webhookUrl(origin: string): string {
-  const url = new URL('/webhooks/stripe', origin);
+  const url = new URL(installContracts.stripeWebhook.path, origin);
   if (url.protocol !== 'https:' || url.username || url.password) throw new Error('Stripe requires an HTTPS public origin');
   return url.toString();
 }

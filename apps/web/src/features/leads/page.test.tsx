@@ -237,7 +237,6 @@ describe('leads board', () => {
 describe('book a trial class', () => {
   it.each([
     ['full', 'This class is full. Choose another class.'],
-    ['alreadyBooked', 'This lead already has a booking for this class.'],
     ['sessionClosed', 'This class has started or was cancelled. Choose another class.'],
     ['windowClosed', 'Bookings for this class are not open yet.'],
     ['noReservation', 'This class does not take bookings.'],

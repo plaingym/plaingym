@@ -6,8 +6,18 @@ import { RevisionConflictError } from '@plaingym/db';
 import { AppError } from '@plaingym/shared';
 import { createApp } from './app.js';
 import { sourceUrl } from './source-link.js';
-import { busyReason, isBusy, normalizeError } from './errors.js';
+import { busyReason, isBusy, normalizeError, readJsonBody } from './errors.js';
 import { setLogSink } from './log.js';
+
+it('maps only body JSON syntax errors to invalid_request', async () => {
+  expect(await readJsonBody(new Request('https://gym.invalid', { method: 'POST', body: '{"revision":1}' }))).toEqual({ revision: 1 });
+  await expect(readJsonBody(new Request('https://gym.invalid', { method: 'POST', body: 'not JSON' })))
+    .rejects.toMatchObject({ code: 'invalid_request', status: 400, message: 'Request body must be JSON' });
+  const failure = new Error('stream failed');
+  await expect(readJsonBody({ json: async () => { throw failure; } })).rejects.toBe(failure);
+  // A programming SyntaxError outside the body reader remains a server error.
+  expect(normalizeError(new SyntaxError('broken code')).code).toBe('internal');
+});
 
 it.each([
   [new AppError('unauthenticated', 'Sign in.'), 401, 'unauthenticated'],

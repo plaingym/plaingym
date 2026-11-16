@@ -65,7 +65,6 @@
   "booked": "Trial class booked.",
   "bookingFailed": "We could not book this class. The lead stage has not changed.",
   "bookingFull": "This class is full. Choose another class.",
-  "bookingExists": "This lead already has a booking for this class.",
   "bookingClosed": "This class has started or was cancelled. Choose another class.",
   "bookingNoReservation": "This class does not take bookings.",
   "bookingWindowClosed": "Bookings for this class are not open yet.",

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { AppError } from '@plaingym/shared';
 import { route } from '../../core/registry.js';
+import { readJsonBody } from '../../core/errors.js';
 import { checkinCodeContracts as contracts } from '@plaingym/shared/contracts';
 import { createCheckinCodeService, type CheckinCodeOptions, type CheckinCodeService } from './checkin-code.js';
 
@@ -18,8 +19,8 @@ export function createCheckinCodeRoutes(service?: CheckinCodeService) {
     const memberId = contract.params.parse(c.req.param()).memberId;
     const context = { gymId: gym.gymId, actor: { kind: 'user' as const, userId: principal.userId } };
     const data = action === 'read' ? await current().read(gym.gymId, memberId)
-      : action === 'revoke' ? await current().revoke(context, memberId, await c.req.json())
-      : await current().regenerate(context, memberId, await c.req.json());
+      : action === 'revoke' ? await current().revoke(context, memberId, await readJsonBody(c.req))
+      : await current().regenerate(context, memberId, await readJsonBody(c.req));
     return c.json(contract.response.parse({ data }), 200);
   }));
 }

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { OpenAPIHono } from '@hono/zod-openapi';
+import { installContracts } from '@plaingym/shared/contracts';
 import type { MiddlewareHandler } from 'hono';
 import type { RequestEnvironment } from '../core/context.js';
 import { errorHandler } from '../core/errors.js';
@@ -15,7 +16,7 @@ export function demoWebhookMiddleware(options: {
 }): MiddlewareHandler<RequestEnvironment> {
   return async (context, next) => {
     const dispatch = async () => {
-      if (!options.configured || context.req.method !== 'POST' || context.req.path !== '/webhooks/stripe') return next();
+      if (!options.configured || context.req.method !== 'POST' || context.req.path !== installContracts.stripeWebhook.path) return next();
       const gyms = await options.demoGyms();
       // A configured install with no active destination acknowledges and discards.
       if (!gyms.length) { context.res = context.json({ received: true }); return; }

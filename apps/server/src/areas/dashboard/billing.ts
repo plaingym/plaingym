@@ -22,7 +22,7 @@ export interface BillingDashboardServices {
 }
 
 /** Uses the dashboard's existing shortlist extension; collection and email behavior stay with billing. */
-export function createSkippedCollectionsProvider<T extends BillingDashboardServices>(services: T):
+export function createSkippedCollectionsProvider(services: BillingDashboardServices):
 DashboardWidgetProvider<ReturnType<typeof extensionDashboardWidgetSchema.parse>> {
   const t = createTranslator(locales.en ?? {});
   return { id: 'billing.skipped-collections', permission: 'billing.read', order: 45, schema: extensionDashboardWidgetSchema,

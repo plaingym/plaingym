@@ -137,8 +137,11 @@ old workers before creating new runs to avoid burning attempts while releases ov
 
 Exports select explicit safe columns, page by primary key in 500-row short
 transactions, and stream an uncompressed ZIP with one CSV per dataset. Empty
-datasets still have headers. Rows created after the request are excluded;
-individual pages are read at their query time, so the archive is not a database
+datasets still have headers. Saved manifests retain their dataset order. Dataset
+names unknown to the running release are omitted from the archive and returned
+manifest, so queued exports can finish after a rollback to a release with a
+smaller catalog. Rows created after the request are excluded; individual pages
+are read at their query time, so the archive is not a database
 snapshot. CSV string formulas are escaped for spreadsheet safety. Encrypted
 fields, credential hashes, audit before/after payloads, processor error text and
 email subject/body fields are excluded. Audit and email metadata remain present.

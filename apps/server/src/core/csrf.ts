@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { AppError } from '@plaingym/shared';
+import { installContracts } from '@plaingym/shared/contracts';
 import type { Context, MiddlewareHandler } from 'hono';
 import type { RequestEnvironment } from './context.js';
 
@@ -10,7 +11,7 @@ export function csrf(origin?: CanonicalOrigin): MiddlewareHandler<RequestEnviron
   return async (context, next) => {
     const { method } = context.req;
     const principal = context.get('context').principal;
-    const webhook = context.req.path === '/webhooks/stripe';
+    const webhook = context.req.path === installContracts.stripeWebhook.path;
     const kioskBearer = principal.kind === 'kiosk' && principal.gymId === context.get('context').gym.gymId
       && /^Bearer\s+\S+$/i.test(context.req.header('authorization') ?? '')
       && (context.req.path === '/api/kiosk' || context.req.path.startsWith('/api/kiosk/'));

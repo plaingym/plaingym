@@ -187,7 +187,10 @@ deleted or erased. Join intake records leads on submission, so unsubmitted
 admissions can still be removed by admission cleanup. A check-in or a membership
 activation advances a lead's stage in its own transaction (a prospect or trial
 member without a lead gains one with no source); its `lead.stage_changed` audit
-holds only the stage and revision. `GET /api/leads/funnel` returns only counts
+holds only the stage and revision. An earlier visit recorded after the lead
+reached `trial_attended` moves its trial time back, and its
+`lead.trial_attendance_corrected` audit holds only that time and the revision.
+`GET /api/leads/funnel` returns only counts
 per source, never member details, with `Cache-Control: no-store`.
 The staff list, read, edit, lost and reopen routes also require `leads.manage`
 and disable caching. They exclude erased members; first edits of row-less

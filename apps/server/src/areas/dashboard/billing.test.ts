@@ -61,7 +61,8 @@ describe('billing dashboard through production route composition and PostgreSQL'
       if (amountCents > 0 && issue) {
         expected.push(`/admin/billing/invoices/${invoice.id}`);
         expect(decision).toEqual({ status: 'skipped', reason: issue });
-      } else expect(decision).toHaveProperty('status', amountCents === 0 ? 'eligible' : 'skipped');
+      } else if (amountCents === 0) expect(decision).toHaveProperty('status', 'eligible');
+      else expect(decision).toEqual({ status: 'skipped', reason: 'no_saved_card' });
     }
     const widget = await createSkippedCollectionsProvider(services).read({ gymId: f.gymId, roles: ['owner'], clock });
     expect(widget?.items?.map(item => item.href).sort() ?? []).toEqual(expected.sort());

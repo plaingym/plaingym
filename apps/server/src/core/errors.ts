@@ -8,6 +8,15 @@ import type { Context, ErrorHandler } from 'hono';
 import type { RequestEnvironment } from './context.js';
 import { logError } from './log.js';
 
+/** OpenAPI validates JSON only for matching content types; wrappers also read bodies that skip that validation. */
+export async function readJsonBody(request: Pick<Request, 'json'>): Promise<unknown> {
+  try { return await request.json(); }
+  catch (error) {
+    if (error instanceof SyntaxError) throw new AppError('invalid_request', 'Request body must be JSON');
+    throw error;
+  }
+}
+
 export function normalizeError(error: unknown): AppError {
   if (error instanceof AppError) return error;
   if (error instanceof RevisionConflictError) return new AppError('conflict', 'The record changed since it was read.', { reason: ['revision_conflict'] });

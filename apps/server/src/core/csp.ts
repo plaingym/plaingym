@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { randomBytes } from 'node:crypto';
+import { installContracts } from '@plaingym/shared/contracts';
 import type { Context } from 'hono';
 
 const nonces = new WeakMap<Context, string>();
@@ -29,7 +30,7 @@ export function imageOrigins(origins: readonly string[] = []): string[] {
 }
 
 /** The same-origin route that receives violation reports (`core/csp-report.ts`). */
-export const cspReportPath = '/csp-report';
+export const cspReportPath = installContracts.cspReport.path;
 /** The `Reporting-Endpoints` name that `report-to` refers to. */
 const cspReportGroup = 'csp';
 /** Value of the `Reporting-Endpoints` header sent with the policy. */

@@ -42,7 +42,7 @@ export function BookDialog({ lead, client, timezone, onClose, onDone }: DialogPr
     try { await client.book({ memberId: lead.memberId, sessionId: session, allowWaitlist: false }); }
     catch (error) {
       const reason = error instanceof ApiError && error.status === 409 ? error.reason[0] : undefined;
-      const messages: Record<string, string> = { full: 'bookingFull', alreadyBooked: 'bookingExists', sessionClosed: 'bookingClosed',
+      const messages: Record<string, string> = { full: 'bookingFull', sessionClosed: 'bookingClosed',
         noReservation: 'bookingNoReservation', windowClosed: 'bookingWindowClosed' };
       setError(text(reason && messages[reason] || 'bookingFailed')); setSaving(false); return;
     }

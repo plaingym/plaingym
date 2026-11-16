@@ -203,6 +203,18 @@ describe('import pipeline using Postgres and immutable uploads', () => {
   });
 });
 describe('full CSV exports', () => {
+  it('skips unknown saved datasets after a catalog rollback, including inherited object names', async () => {
+    const { exports, jobs } = services(), job = await exports.create(actor, 'UTC');
+    // Simulate persisted data written by a release whose catalog is larger than this one.
+    const datasets = ['members', 'future_dataset', 'toString', '__proto__', 'households'] as typeof job.datasets;
+    await database.forGym(gymA, tx => tx.update(exportRuns).set({ datasets }).where(eq(exportRuns.id, job.id)));
+    expect(exportJobSchema.parse(await exports.get(gymA, job.id)).datasets).toEqual(['members', 'households']);
+    await jobs.runNext();
+    expect(exportJobSchema.parse(await exports.get(gymA, job.id))).toMatchObject({ status: 'succeeded', datasets: ['members', 'households'] });
+    const raw = await new Response(await (await uploadsFor(gymA)).get(`${gymA}/imports/exports/${job.id}/export.zip`)).text();
+    for (const name of ['members', 'households']) expect(raw).toContain(name + '.csv');
+    for (const name of ['future_dataset', 'toString', '__proto__']) expect(raw).not.toContain(name + '.csv');
+  });
   it('finishes a pending export with its saved manifest across a catalog upgrade', async () => {
     const { exports, jobs } = services(), job = await exports.create(actor, 'UTC');
     expect(job.datasets).toEqual([...exportDatasets]);

@@ -14,9 +14,13 @@ import { archiveStream, type ArchiveEntry } from './export.zip.js';
 export const EXPORT_JOB = 'imports.export';
 export const EXPORT_EXPIRY_JOB = 'imports.export.expire';
 const DOWNLOAD_LIFETIME = 60 * 60;
+/** A saved manifest can come from a release with a larger catalog. Keep its supported subset in manifest order. */
+function supportedJob(job: ExportJob): ExportJob {
+  return { ...job, datasets: job.datasets.filter(name => Object.hasOwn(exportCatalog, name)) };
+}
 function exportJob(row: typeof exportRuns.$inferSelect): ExportJob {
-  return { id: row.id, status: row.status, datasets: row.datasets, createdAt: row.createdAt.toISOString(),
-    completedAt: row.completedAt?.toISOString() ?? null, downloadUrl: row.downloadUrl, expiresAt: row.expiresAt?.toISOString() ?? null };
+  return supportedJob({ id: row.id, status: row.status, datasets: row.datasets, createdAt: row.createdAt.toISOString(),
+    completedAt: row.completedAt?.toISOString() ?? null, downloadUrl: row.downloadUrl, expiresAt: row.expiresAt?.toISOString() ?? null });
 }
 export function createExportService(options: { uploadsFor: UploadsFor; jobs: Jobs; scope?: typeof forGym; clock?: Clock }) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock, store = new PipelineStore(options.uploadsFor);
@@ -97,14 +101,14 @@ export function createExportService(options: { uploadsFor: UploadsFor; jobs: Job
           const job = await store.get<ExportJob>(gymId, key(gymId, id, state + '.json'));
           if (job.expiresAt && Date.parse(job.expiresAt) <= clock.now().getTime())
             throw new AppError('not_found', t('imports/export:expired'));
-          return job;
+          return supportedJob(job);
         }
       }
       throw new AppError('not_found', t('imports/pipeline:notFound'));
     },
     async run(gymId: string, id: string): Promise<void> {
       const row = await findRun(gymId, id);
-      const job = row ? exportJob(row) : await store.get<ExportJob>(gymId, key(gymId, id, 'pending.json'));
+      const job = row ? exportJob(row) : supportedJob(await store.get<ExportJob>(gymId, key(gymId, id, 'pending.json')));
       if (row) {
         const claimed = await scope(gymId, (tx) => tx.update(exportRuns).set({ status: 'running', updatedAt: clock.now() })
           .where(and(whereRun(gymId, id), eq(exportRuns.status, 'pending'))).returning({ id: exportRuns.id }));

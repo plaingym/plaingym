@@ -105,10 +105,13 @@ from the settings, it counts and lists in one statement.
 
 `advanceLeadOnCheckIn` runs after a new non-import attendance and its audit are
 inserted. It advances `new`, `contacted` and `trial_booked` to `trial_attended`,
-preserving the first `trial_attended_at`. Won and lost leads keep their stage.
+preserving the earliest `trial_attended_at`. Won and lost leads keep their stage.
 Staff, session and kiosk check-ins share this path.
 The trial timestamp uses the visit's occurrence time, including backdated staff
-visits; audits use the record time. Attendance passes its locked member status
+visits; that time is kept as recorded even when it precedes lead creation. An
+earlier visit recorded after a lead reached `trial_attended` corrects the time,
+bumps its revision and writes a `lead.trial_attendance_corrected` audit. Audits
+use the record time. Attendance passes its locked member status
 and skips lead staging for ordinary members without a lead row.
 
 `markLeadWon` runs when a pending or trial membership activates (including a

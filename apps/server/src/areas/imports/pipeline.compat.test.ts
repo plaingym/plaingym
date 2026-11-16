@@ -4,7 +4,7 @@ import { eq } from 'drizzle-orm';
 import { importRuns, importChunks, exportRuns, memberTags, uuidv7, writeAudit } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
-import { exportDatasets, type ExportJob, type ImportJob } from '@plaingym/shared/contracts';
+import { exportDatasets, exportJobSchema, type ExportJob, type ImportJob } from '@plaingym/shared/contracts';
 import { TestClock } from '../../core/clock.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
 import { FakeUploads } from '../../infra/storage/index.js';
@@ -88,4 +88,25 @@ it('runs a queued legacy export and reads completion still written by the previo
   await store.put(gymId, key(other.id, 'finished.json'), finished);
   expect(await createExportService(options).get(gymId, other.id)).toEqual(finished);
   expect(await database.forGym(gymId, (tx) => tx.select().from(exportRuns).where(eq(exportRuns.id, job.id)))).toEqual([]);
+});
+
+it('filters unknown datasets in legacy export manifests before reading or streaming them', async () => {
+  const { gymId, clock, store, storage, options } = await fixture(), id = uuidv7();
+  const job: ExportJob = { id, datasets: ['members', 'unknown_dataset', 'toString'] as ExportJob['datasets'], status: 'pending',
+    createdAt: clock.now().toISOString(), completedAt: null, downloadUrl: null, expiresAt: null };
+  const key = (file: string) => store.key(gymId, 'exports', id, file), exports = createExportService(options);
+  await store.put(gymId, key('pending.json'), job);
+  expect(exportJobSchema.parse(await exports.get(gymId, id)).datasets).toEqual(['members']);
+  await exports.run(gymId, id);
+  expect(exportJobSchema.parse(await exports.get(gymId, id))).toMatchObject({ status: 'succeeded', datasets: ['members'] });
+  const raw = await new Response(await storage.get(key('export.zip'))).text();
+  expect(raw).toContain('members.csv');
+  expect(raw).not.toContain('unknown_dataset.csv');
+  expect(raw).not.toContain('toString.csv');
+  // A finished manifest written by an older worker is filtered on read too.
+  const other = uuidv7();
+  await store.put(gymId, store.key(gymId, 'exports', other, 'finished.json'), { ...job, id: other, status: 'succeeded',
+    completedAt: clock.now().toISOString(), downloadUrl: 'https://uploads.invalid/legacy.zip',
+    expiresAt: new Date(clock.now().getTime() + 3600_000).toISOString() });
+  expect(exportJobSchema.parse(await exports.get(gymId, other)).datasets).toEqual(['members']);
 });

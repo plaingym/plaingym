@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
-import { idSchema } from '@plaingym/shared/contracts';
+import { idSchema, installContracts } from '@plaingym/shared/contracts';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { LocalUploads, S3Uploads, S3BackupObjectStore, createS3Client } from './index.js';
 import type { Uploads } from './index.js';
@@ -10,7 +10,7 @@ import { createUploadPrefixCleaner } from '../../demo/storage.js';
 import { demoUploads } from '../../demo/uploads.js';
 
 /** Local download links are served by `core/uploads-download.ts`. */
-export const uploadDownloadPath = '/api/uploads/download';
+export const uploadDownloadPath = installContracts.uploadDownload.path;
 
 export function createRuntimeUploads(env: NodeJS.ProcessEnv, key: Buffer, origin: (gymId: string) => Promise<string>) {
   const bucket = env.UPLOADS_S3_BUCKET;

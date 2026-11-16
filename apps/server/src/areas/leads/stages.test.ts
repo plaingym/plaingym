@@ -44,6 +44,28 @@ const checkIn = (f: Fixture, sessionId: string | null = null) => f.attendance.re
   { memberId: f.member.id, sessionId, programId: null });
 
 describe('automatic lead stages in real PostgreSQL transactions', () => {
+  it('corrects an attended lead to its earliest visit with a separate record-time audit and no replay audit', async () => {
+    const f = await fixture('trial'), first = new Date('2026-10-27T17:00:00Z'), earlier = new Date('2026-10-21T17:00:00Z');
+    await f.attendance.record(f.context, { memberId: f.member.id, sessionId: null, programId: null, occurredAt: first.toISOString() });
+    await f.attendance.record(f.context, { memberId: f.member.id, sessionId: null, programId: null, occurredAt: earlier.toISOString() });
+    const corrected = (await f.rows()).leads[0]!;
+    expect(corrected).toMatchObject({ stage: 'trial_attended', trialAttendedAt: earlier, createdAt: clock.now(), revision: 3 });
+    for (const occurredAt of [earlier, first, clock.now()])
+      await db.forGym(f.gymId, tx => advanceLeadOnCheckIn(tx, { ...f.context, memberId: f.member.id, now: clock.now(), occurredAt }));
+    expect((await f.rows()).leads).toEqual([corrected]);
+    expect((await f.rows()).audits).toHaveLength(1);
+    const corrections = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'lead.trial_attendance_corrected')));
+    expect(corrections).toHaveLength(1);
+    expect(corrections[0]).toMatchObject({ actorKind: 'user', actorUserId: f.context.actor.userId,
+      targetId: corrected.id, occurredAt: clock.now(), createdAt: clock.now(),
+      before: { trialAttendedAt: first.toISOString(), revision: 2 }, after: { trialAttendedAt: earlier.toISOString(), revision: 3 } });
+  });
+  it('keeps the earliest visit when a manually reset lead advances again', async () => {
+    const f = await fixture(), first = new Date('2026-10-27T17:00:00Z'), earlier = new Date('2026-10-21T17:00:00Z');
+    await factory('leads', f.gymId, { memberId: f.member.id, stage: 'contacted', trialAttendedAt: first });
+    await db.forGym(f.gymId, tx => advanceLeadOnCheckIn(tx, { ...f.context, memberId: f.member.id, now: clock.now(), occurredAt: earlier }));
+    expect((await f.rows()).leads[0]).toMatchObject({ stage: 'trial_attended', trialAttendedAt: earlier, revision: 2 });
+  });
   it('uses the visit time for a backdated trial attendance and record time for both creation audits', async () => {
     const f = await fixture('trial'), occurredAt = new Date('2026-10-21T17:00:00Z');
     await f.attendance.record(f.context, { memberId: f.member.id, sessionId: null, programId: null, occurredAt: occurredAt.toISOString() });

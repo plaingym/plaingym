@@ -32,11 +32,23 @@ async function advance(tx: Transaction, input: StageInput, stage: 'trial_attende
       after: { source: null }, occurredAt: now, createdAt: now });
     [before] = await tx.select().from(leads).where(where).for('update');
   }
-  if (!before || before.stage === stage) return;
+  if (!before) return;
+  const occurredAt = input.occurredAt ?? now;
+  const trialAttendedAt = before.trialAttendedAt && before.trialAttendedAt < occurredAt ? before.trialAttendedAt : occurredAt;
+  if (before.stage === stage) {
+    if (stage !== 'trial_attended' || before.trialAttendedAt?.getTime() === trialAttendedAt.getTime()) return;
+    await tx.update(leads).set({ trialAttendedAt, revision: before.revision + 1 }).where(where);
+    await writeAudit(tx, { gymId, ...auditActor(actor),
+      action: 'lead.trial_attendance_corrected', targetType: 'lead', targetId: before.id,
+      before: { trialAttendedAt: before.trialAttendedAt?.toISOString() ?? null, revision: before.revision },
+      after: { trialAttendedAt: trialAttendedAt.toISOString(), revision: before.revision + 1 },
+      occurredAt: now, createdAt: now });
+    return;
+  }
   if (stage === 'trial_attended' && !['new', 'contacted', 'trial_booked'].includes(before.stage)) return;
   // A lost lead that wins drops its lost reason and time, as reopening does.
   const changes = stage === 'trial_attended'
-    ? { trialAttendedAt: before.trialAttendedAt ?? input.occurredAt ?? now } : { wonAt: before.wonAt ?? now, lostReason: null, lostAt: null };
+    ? { trialAttendedAt } : { wonAt: before.wonAt ?? now, lostReason: null, lostAt: null };
   await tx.update(leads).set({ stage, ...changes, revision: before.revision + 1 }).where(where);
   await writeAudit(tx, { gymId, ...auditActor(actor),
     action: 'lead.stage_changed', targetType: 'lead', targetId: before.id,

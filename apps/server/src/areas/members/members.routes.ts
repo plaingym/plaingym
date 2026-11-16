@@ -6,6 +6,7 @@ import { AppError, type Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { route, type JobRegistration } from '../../core/registry.js';
 import { logError } from '../../core/log.js';
+import { readJsonBody } from '../../core/errors.js';
 import type { RequestContext } from '../../core/context.js';
 import { createMembersService, type MembersService } from './members.js';
 import { createMemberPhotoService, type MemberUploads } from './photos.js';
@@ -29,7 +30,7 @@ function jsonRoute(contract: c.EndpointContract, handler: (context: RequestConte
     ...(contract.body ? { body: { required: true, content: { 'application/json': { schema: contract.body } } } } : {}),
   }, responses: { 200: { description: 'Member management response', content: { 'application/json': { schema: contract.response } } } } }, async (ctx) => {
     const context = ctx.get('context'); mutation(context);
-    const body = contract.body ? await ctx.req.json().catch(() => { throw new AppError('invalid_request', 'Request body must be JSON'); }) : undefined;
+    const body = contract.body ? await readJsonBody(ctx.req) : undefined;
     const result = await handler(context, ctx.req.param(), ctx.req.query(), body);
     ctx.header('Cache-Control', 'no-store');
     return ctx.json(contract.response.parse(result) as { data: unknown }, 200);

@@ -57,6 +57,19 @@ const request = (code: string, sessionId: string | null | undefined = null) => (
   headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body: JSON.stringify({ code, sessionId }) });
 
 describe('QR check-in and revocable member codes', () => {
+  it.each(['POST', 'DELETE'])('returns invalid_request for a non-JSON %s check-in code body without mutating the member', async method => {
+    const member = await person(), issued = await issue(member);
+    const principal = { kind: 'staff' as const, userId, gymId: gymA, roles: ['owner' as const] };
+    for (const body of ['not JSON', '']) {
+      const response = await app(principal).request('/api/members/' + member.id + '/checkin-code', {
+        method, headers: { 'Content-Type': 'text/plain' }, body });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { code: 'invalid_request' } });
+    }
+    expect(await codes.read(gymA, member.id)).toEqual(issued);
+    const audits = await db.forGym(gymA, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, member.id)));
+    expect(audits).toHaveLength(1);
+  });
   it('re-derives the same code on any device, storing only lowercase SHA-256 and auditing changes without secrets', async () => {
     const member = await person(), issued = await issue(member);
     expect(issued.code).toMatch(/^pgci1_[A-Za-z0-9_-]{43}$/);

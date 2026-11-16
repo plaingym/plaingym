@@ -5,6 +5,7 @@ import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import postgres from 'postgres';
 import { runInTransaction, assertNoTransaction } from '@plaingym/shared/transaction';
 import { advisoryLockNamespace, advisoryLocks } from './locks.js';
+import { errorCauses } from './errors.js';
 import { HouseholdAccessError, householdQueries, type HouseholdScope } from './household.js';
 export type Sql = ReturnType<typeof postgres>;
 export type Database = PostgresJsDatabase;
@@ -31,12 +32,9 @@ const connectionErrorCodes = new Set([
  * so work for other gyms would fail the same way and should stop instead of logging one error per gym.
  */
 export function isConnectionError(error: unknown): boolean {
-  const seen = new Set<unknown>();
-  while (error && typeof error === 'object' && !seen.has(error)) {
-    seen.add(error);
-    const code = 'code' in error ? error.code : undefined;
+  for (const cause of errorCauses(error)) {
+    const code = 'code' in cause ? cause.code : undefined;
     if (typeof code === 'string' && (code.startsWith('08') || code.startsWith('CONNECTION_') || connectionErrorCodes.has(code))) return true;
-    error = 'cause' in error ? error.cause : undefined;
   }
   return false;
 }

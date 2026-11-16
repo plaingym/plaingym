@@ -5,6 +5,7 @@ import type { MiddlewareHandler } from 'hono';
 import { AppError } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { route } from '../../core/registry.js';
+import { readJsonBody } from '../../core/errors.js';
 import type { RequestContext, RequestEnvironment } from '../../core/context.js';
 import { createCatalogService, type CatalogService } from './catalog.js';
 import { priceChanges, type PriceChangeService } from './catalog.price-change.js';
@@ -27,7 +28,7 @@ export function billingRoute(contract: c.EndpointContract,
     const context = ctx.get('context'); billingMutation(context);
     // The request validator checks a JSON body only when the request says it sends one: a body that is missing or isn't JSON is
     // the caller's mistake, never a server error.
-    const body = contract.body ? await ctx.req.json().catch(() => { throw new AppError('invalid_request', 'Request body must be JSON'); }) : undefined;
+    const body = contract.body ? await readJsonBody(ctx.req) : undefined;
     const result = await handler(context, ctx.req.param(), ctx.req.query(), body);
     ctx.header('Cache-Control', 'no-store');
     return ctx.json(contract.response.parse(result) as { data: unknown }, status);

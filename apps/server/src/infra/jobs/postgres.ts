@@ -161,7 +161,7 @@ export class PostgresJobs implements Jobs, JobRecovery {
   async #enqueue(name: string, payload: unknown, options: SystemJobOptions, gymId: string | null,
     schedule?: Envelope['schedule'] & { name: string }, transaction?: Tx): Promise<{ jobId: string }> {
     if (!name) throw new Error('Job name is required');
-    new Intl.DateTimeFormat('en', { timeZone: options.timezone });
+    storedTimezoneSchema.parse(options.timezone);
     const maxAttempts = positive(options.maxAttempts ?? 3, 'maxAttempts');
     const now = this.clock.now(), runAt = options.runAt ?? now;
     if (!Number.isFinite(runAt.getTime())) throw new Error('Invalid job time');
