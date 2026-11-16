@@ -6,11 +6,15 @@
 #
 #   publish.sh --registry HOST[:PORT] --name OWNER/app --version vX.Y.Z --revision COMMIT --migrations DIR
 #              --archive amd64=FILE [--archive arm64=FILE] --key PRIVATE.pem --public-key PUBLIC.pem --repository OWNER/REPO
-#              --out DIR --rollback-floor vX.Y.Z [--insecure]
+#              --out DIR --rollback-floor vX.Y.Z [--insecure] [--prerelease]
 #
 # Each archive is a `docker save` of an image labelled with the version and revision. The output directory gets
 # the four assets of the GitHub release: release-manifest.txt, release-manifest.txt.sig, and from deploy-assets.sh the
 # deploy archive the manifest lists with its SHA-256 (plaingym-deploy-VERSION.tar.gz) and the release's bootstrap.sh.
+#
+# --prerelease publishes a nightly prerelease of main (deploy/README.md, "Prereleases"): a v0.Y.Z version whose signed
+# manifest says channel=prerelease. It refuses the release key (release-signing.pem), so installs that trust only
+# that key refuse the prerelease; a release, in turn, refuses the prerelease key (prerelease-signing.pem).
 set -eu
 umask 077
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -28,9 +32,11 @@ insecure=
 archives=
 rollback_floor=
 repository=
+prerelease=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --insecure) insecure=--insecure; shift ;;
+    --prerelease) prerelease=true; shift ;;
     --registry|--name|--version|--revision|--migrations|--archive|--key|--public-key|--out|--rollback-floor|--repository)
       [ "$#" -ge 2 ] || fail "Missing value for $1"
       case "$1" in
@@ -58,6 +64,15 @@ if [ -z "$out" ] || [ -z "$archives" ]; then fail 'Give --out and at least one -
 image="$registry/$name"
 valid_image_name "$image" || fail "Invalid image name: $image"
 valid_repository "$repository" || fail "Use --repository OWNER/REPO, the repository whose release gets the assets."
+# The release and prerelease keys are never interchangeable: compare the committed public keys' bodies.
+key_body() { sed '/^-----/d' "$1" | tr -d '\r\n'; }
+if [ -n "$prerelease" ]; then
+  case "${version_base#v}" in 0.*) ;; *) fail 'A prerelease is a v0.Y.Z version.' ;; esac
+  [ -f "$ROOT/release-signing.pem" ] || fail "Missing $ROOT/release-signing.pem, which a prerelease must not be signed with."
+  [ "$(key_body "$public")" != "$(key_body "$ROOT/release-signing.pem")" ] || fail 'A prerelease is never signed with the release key (release-signing.pem).'
+elif [ -f "$ROOT/prerelease-signing.pem" ] && [ "$(key_body "$public")" = "$(key_body "$ROOT/prerelease-signing.pem")" ]; then
+  fail 'A release is never signed with the prerelease key (prerelease-signing.pem); give --prerelease for a prerelease.'
+fi
 mkdir -p "$out"
 # The install assets come first, so a revision they can't be built from stops the release before any push.
 sh "$ROOT/release/deploy-assets.sh" --revision "$revision" --version "$version" --repository "$repository" --public-key "$public" --out "$out"
@@ -98,6 +113,7 @@ migrations_hash=$(cd "$migrations" && find . -type f | LC_ALL=C sort | xargs sha
 manifest="$out/release-manifest.txt"
 {
   printf 'format=plaingym-release-manifest/2\nversion=%s\nimage=%s\ndigest=%s\nrollback_floor=%s\n' "$version" "$image" "$index" "$rollback_floor"
+  [ -z "$prerelease" ] || printf 'channel=prerelease\n'
   printf '%s' "$platforms"
   printf 'deploy_archive=%s\ndeploy_archive_sha256=sha256:%s\n' "$deploy_archive" "$deploy_sha256"
   cat "$out/host-digests.txt"
@@ -105,6 +121,7 @@ manifest="$out/release-manifest.txt"
 } > "$manifest"
 openssl pkeyutl -sign -inkey "$key" -rawin -in "$manifest" -out "$manifest.sig"
 manifest_verify "$public" "$manifest" "$manifest.sig" || fail 'The signed manifest does not verify with the public key.'
+if [ -n "$prerelease" ] && manifest_verify "$ROOT/release-signing.pem" "$manifest" "$manifest.sig"; then fail 'The prerelease manifest verifies with the release key.'; fi
 manifest_check "$manifest" "$version" || fail 'The manifest is malformed.'
 [ "$(manifest_value "$manifest" deploy_archive_sha256)" = "sha256:$(sha256sum "$out/$deploy_archive" | cut -d' ' -f1)" ] || fail 'The manifest does not list the deploy archive it was written for.'
 chmod 0644 "$manifest" "$manifest.sig"

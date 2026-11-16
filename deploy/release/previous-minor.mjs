@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { compare } from '../../scripts/release/release.mjs';
 import { smokePreviousImage, removeImage, withPreviousTree } from './previous-smoke.mjs';
 import { git } from '../../scripts/release/version.mjs';
+import { chooseFloor } from '../../scripts/release/prerelease.mjs';
 
 /** Shallow release checkouts need the previous release's source tag, not its full history. */
 export function withFetchedPreviousTree(previous, operation, cwd = process.cwd(), runGit = git) {
@@ -29,6 +30,11 @@ export function previousMinor(image, tag) {
     console.log(`::notice::${tag} explicitly starts a new rollback boundary at ${floor}.`);
     return;
   }
+  smokePublished(image, previous, repository);
+}
+
+/** Pull a published release's image and run it, with its own smoke test, on the schema IMAGE migrated to. */
+function smokePublished(image, previous, repository) {
   const previousImage = `ghcr.io/${repository.split('/')[0].toLowerCase()}/app:${previous}`;
   let existed = true;
   try { execFileSync('docker', ['image', 'inspect', previousImage], { stdio: 'ignore', timeout: 30_000, killSignal: 'SIGKILL' }); } catch { existed = false; }
@@ -40,4 +46,29 @@ export function previousMinor(image, tag) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) previousMinor(...process.argv.slice(2));
+/**
+ * A prerelease's rollback floor (scripts/release/prerelease.mjs, chooseFloor): the previous prerelease when its image
+ * passes the smoke test on the schema this release migrated to, else the release itself. A failure only raises the
+ * floor, so it is reported as a warning rather than stopping the prerelease.
+ */
+export function prereleaseFloor(image, tag, previous, { smoke = smokePublished, log = console.log } = {}) {
+  if (!/^v0\.\d+\.\d+$/.test(tag ?? '') || (previous && !/^v0\.\d+\.\d+$/.test(previous))) throw new Error('Prerelease versions are v0.Y.Z');
+  if (!previous) {
+    log(`::notice::${tag} is the first prerelease; it is its own rollback floor.`);
+    return chooseFloor(tag, previous, false);
+  }
+  let passed = false;
+  try {
+    smoke(image, previous, process.env.GITHUB_REPOSITORY ?? 'plaingym/plaingym');
+    passed = true;
+  } catch (error) {
+    log(`::warning::${previous} did not pass on ${tag}'s schema (${error.message}); ${tag} is its own rollback floor.`);
+  }
+  return chooseFloor(tag, previous, passed);
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const [image, tag, mode, previous] = process.argv.slice(2);
+  if (mode === '--prerelease') console.log(`floor=${prereleaseFloor(image, tag, previous || undefined, { log: console.error })}`);
+  else previousMinor(image, tag);
+}

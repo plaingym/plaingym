@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+name: Prerelease
+# A nightly v0.Y.Z prerelease of main, built, smoke-tested and published by the Release workflow's own steps and
+# signed with the prerelease key (deploy/README.md, "Prereleases"). It publishes only when main moved since the
+# previous prerelease and CI and Repo compliance passed on that commit; otherwise it builds and publishes nothing.
+# A manual run on any other branch is a dry run that signs with a throwaway key and reaches neither signing key.
+on:
+  schedule:
+    - cron: '30 5 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: prerelease-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prerelease:
+    # The most the called jobs may use: the plan reads workflow runs, and only the publish job on main, in the
+    # prerelease-main environment, writes the tag, release and image. No secrets are passed.
+    permissions:
+      contents: write
+      packages: write
+      actions: read
+    uses: ./.github/workflows/release.yml
+    with:
+      prerelease: true

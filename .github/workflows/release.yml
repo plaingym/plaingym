@@ -2,9 +2,10 @@
 name: Release
 # A signed vX.Y.Z tag builds the image natively for amd64 and arm64, smoke-tests both, pushes one multi-arch image
 # to GHCR and creates the GitHub release with its signed release manifest, the deploy archive that manifest lists, and
-# the release's bootstrap.sh (deploy/README.md, "Releases"). Every
-# other run is a dry run of the same steps that publishes nothing: the images go to a registry on the runner and
-# the manifest is signed with a throwaway key.
+# the release's bootstrap.sh (deploy/README.md, "Releases"). The Prerelease workflow (prerelease.yml) calls this one
+# with `prerelease: true` to publish main's commit as a v0.Y.Z prerelease with the same steps, signed with the
+# prerelease key (deploy/README.md, "Prereleases"). Every other run is a dry run of the same steps that publishes
+# nothing: the images go to a registry on the runner and the manifest is signed with a throwaway key.
 on:
   push:
     tags: ['v[0-9]+.[0-9]+.[0-9]+']
@@ -16,20 +17,35 @@ on:
       - 'deploy/bootstrap.sh'
       - 'scripts/release/**'
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      prerelease:
+        description: Publish main's commit as a nightly prerelease; any other ref gets a dry run of it.
+        type: boolean
+        required: true
 permissions:
   contents: read
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.prerelease && 'prerelease-' || '' }}${{ github.ref }}
   cancel-in-progress: false
 jobs:
   prepare:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: read
+      # The prerelease plan reads the CI and Repo compliance runs of the commit.
+      actions: read
     outputs:
-      version: ${{ steps.release.outputs.version }}
-      build_version: ${{ steps.release.outputs.build_version }}
-      image_tag: ${{ steps.release.outputs.image_tag }}
+      version: ${{ steps.release.outputs.version || steps.prerelease.outputs.version }}
+      build_version: ${{ steps.release.outputs.build_version || steps.prerelease.outputs.build_version }}
+      image_tag: ${{ steps.release.outputs.image_tag || steps.prerelease.outputs.image_tag }}
+      build: ${{ steps.release.outputs.build || steps.prerelease.outputs.build }}
+      # A stable release, only from a release tag.
       publish: ${{ steps.release.outputs.publish }}
+      # A prerelease, only from main (prerelease.yml).
+      prerelease: ${{ steps.prerelease.outputs.publish }}
+      previous: ${{ steps.prerelease.outputs.previous }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -39,6 +55,7 @@ jobs:
           node-version-file: .nvmrc
       - id: release
         name: Check the release tag
+        if: ${{ !inputs.prerelease }}
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -63,16 +80,37 @@ jobs:
             echo publish=false >> "$GITHUB_OUTPUT"
           fi
           {
+            echo build=true
             echo "version=$version"
             echo "build_version=$build_version"
             echo "image_tag=${version//+/_}"
           } >> "$GITHUB_OUTPUT"
+      - id: prerelease
+        name: Plan the prerelease
+        if: ${{ inputs.prerelease }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        # The version comes from the earlier v* tags and the migrations diff; nothing is committed. Only main
+        # publishes, and only when it moved since the previous prerelease and CI and Repo compliance passed on it.
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          node scripts/release/prerelease.mjs plan > "$RUNNER_TEMP/plan.txt"
+          cat "$RUNNER_TEMP/plan.txt"
+          if grep -qx 'publish=true' "$RUNNER_TEMP/plan.txt"; then
+            sh deploy/release/check-tag.sh "$(sed -n 's/^version=//p' "$RUNNER_TEMP/plan.txt")" "$GITHUB_SHA" --prerelease
+          fi
+          cat "$RUNNER_TEMP/plan.txt" >> "$GITHUB_OUTPUT"
       - name: Test the release scripts
+        if: ${{ !inputs.prerelease || steps.prerelease.outputs.build == 'true' }}
         run: sh deploy/test/release.sh
       - name: Test compatibility smoke selection and cleanup
+        if: ${{ !inputs.prerelease || steps.prerelease.outputs.build == 'true' }}
         run: node --test deploy/release/*.test.mjs
   build:
     needs: prepare
+    if: needs.prepare.outputs.build == 'true'
     strategy:
       fail-fast: true
       matrix:
@@ -84,15 +122,16 @@ jobs:
     env:
       VERSION: ${{ needs.prepare.outputs.build_version }}
       IMAGE: plaingym:${{ needs.prepare.outputs.image_tag }}-${{ matrix.arch }}
+      PUBLISHING: ${{ needs.prepare.outputs.publish == 'true' || needs.prepare.outputs.prerelease == 'true' }}
       # The AGPL source link names the release tag; a dry run names its commit.
-      SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}/tree/${{ needs.prepare.outputs.publish == 'true' && needs.prepare.outputs.version || github.sha }}
+      SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}/tree/${{ (needs.prepare.outputs.publish == 'true' || needs.prepare.outputs.prerelease == 'true') && needs.prepare.outputs.version || github.sha }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24.22.1
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
-      # A release builds from scratch; a dry run may reuse the Image checks' layer cache.
+      # A release or prerelease builds from scratch; a dry run may reuse the Image checks' layer cache.
       - name: Build on the native CPU
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
@@ -104,8 +143,8 @@ jobs:
             VERSION=${{ env.VERSION }}
           tags: ${{ env.IMAGE }}
           load: true
-          no-cache: ${{ needs.prepare.outputs.publish == 'true' }}
-          cache-from: ${{ needs.prepare.outputs.publish != 'true' && format('type=gha,scope=image-{0}', matrix.arch) || '' }}
+          no-cache: ${{ env.PUBLISHING == 'true' }}
+          cache-from: ${{ env.PUBLISHING != 'true' && format('type=gha,scope=image-{0}', matrix.arch) || '' }}
       - name: Check the built architecture and labels
         run: |
           test "$(docker image inspect "$IMAGE" --format '{{.Architecture}}')" = "${{ matrix.arch }}"
@@ -119,6 +158,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.prepare.outputs.version }}
         run: node deploy/release/previous-minor.mjs "$IMAGE" "$RELEASE_TAG"
+      # The previous prerelease is the rollback floor only when its image runs on this one's schema.
+      - name: Run the previous prerelease on the new schema
+        if: matrix.arch == 'amd64' && inputs.prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.version }}
+          PREVIOUS: ${{ needs.prepare.outputs.previous }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/floor"
+          node deploy/release/previous-minor.mjs "$IMAGE" "$RELEASE_TAG" --prerelease "$PREVIOUS" > "$RUNNER_TEMP/floor/prerelease-floor.txt"
+          cat "$RUNNER_TEMP/floor/prerelease-floor.txt"
+      - if: matrix.arch == 'amd64' && inputs.prerelease
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: prerelease-floor
+          path: ${{ runner.temp }}/floor/prerelease-floor.txt
+          retention-days: 3
       - name: Export the tested image
         run: docker save "$IMAGE" -o "${{ runner.temp }}/release-image-${{ matrix.arch }}.tar"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -128,7 +186,7 @@ jobs:
           retention-days: 3
   dry-run:
     needs: [prepare, build]
-    if: needs.prepare.outputs.publish != 'true'
+    if: needs.prepare.outputs.publish != 'true' && needs.prepare.outputs.prerelease != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -138,11 +196,17 @@ jobs:
           pattern: release-image-*
           merge-multiple: true
           path: ${{ runner.temp }}/images
+      - if: inputs.prerelease
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: prerelease-floor
+          path: ${{ runner.temp }}/floor
       - name: Publish to a registry on this runner with a throwaway key
         # Only this runner's loopback registry receives images. No credentials, external registry
-        # writes, tags or release assets are used.
+        # writes, tags or release assets are used, and neither signing key is in reach.
         env:
-          VERSION: ${{ needs.prepare.outputs.version }}
+          VERSION: ${{ needs.prepare.outputs.build_version }}
+          PRERELEASE: ${{ inputs.prerelease && 'true' || '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -153,9 +217,17 @@ jobs:
           umask 077
           openssl genpkey -algorithm ed25519 -out "$RUNNER_TEMP/key.pem"
           openssl pkey -in "$RUNNER_TEMP/key.pem" -pubout -out "$RUNNER_TEMP/public.pem"
-          sh deploy/release/publish.sh --registry localhost:5000 --name plaingym/app --insecure \
+          if [ -n "$PRERELEASE" ]; then
+            floor=$(sed -n 's/^floor=//p' "$RUNNER_TEMP/floor/prerelease-floor.txt")
+            mode=--prerelease
+          else
+            floor=$(cat deploy/release/rollback-floor.txt)
+            mode=
+          fi
+          # shellcheck disable=SC2086
+          sh deploy/release/publish.sh --registry localhost:5000 --name plaingym/app --insecure $mode \
             --version "$VERSION" --revision "$GITHUB_SHA" --migrations packages/db/src/migrations \
-            --rollback-floor "$(cat deploy/release/rollback-floor.txt)" \
+            --rollback-floor "$floor" \
             --archive "amd64=$RUNNER_TEMP/images/release-image-amd64.tar" --archive "arm64=$RUNNER_TEMP/images/release-image-arm64.tar" \
             --key "$RUNNER_TEMP/key.pem" --public-key "$RUNNER_TEMP/public.pem" --repository "$GITHUB_REPOSITORY" --out "$RUNNER_TEMP/release"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -169,7 +241,8 @@ jobs:
           retention-days: 3
   publish:
     needs: [prepare, build]
-    if: needs.prepare.outputs.publish == 'true'
+    # Only a release tag's own run, never a prerelease or a branch run.
+    if: needs.prepare.outputs.publish == 'true' && github.ref_type == 'tag' && !inputs.prerelease
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     # The environment holds RELEASE_SIGNING_KEY and limits it to release tags (deploy/README.md, "Releases").
@@ -216,3 +289,71 @@ jobs:
           gh release create "$VERSION" -R "$GITHUB_REPOSITORY" --verify-tag --latest="$latest" --title "$VERSION" --notes-file "$RUNNER_TEMP/release/notes.md" \
             "$RUNNER_TEMP/release/release-manifest.txt" "$RUNNER_TEMP/release/release-manifest.txt.sig" \
             "$RUNNER_TEMP/release/plaingym-deploy-$VERSION.tar.gz" "$RUNNER_TEMP/release/bootstrap.sh"
+  publish-prerelease:
+    needs: [prepare, build]
+    # Only prerelease.yml's run on main, never a tag or another branch.
+    if: inputs.prerelease && needs.prepare.outputs.prerelease == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # The environment holds PRERELEASE_SIGNING_KEY and limits it to main (deploy/README.md, "Prereleases").
+    environment: prerelease-main
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          # The notes list the commits since the previous prerelease tag.
+          fetch-depth: 0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-image-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/images
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: prerelease-floor
+          path: ${{ runner.temp }}/floor
+      - name: Publish the image and the signed prerelease manifest
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PREVIOUS: ${{ needs.prepare.outputs.previous }}
+          PRERELEASE_SIGNING_KEY: ${{ secrets.PRERELEASE_SIGNING_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          floor=$(sed -n 's/^floor=//p' "$RUNNER_TEMP/floor/prerelease-floor.txt")
+          [ -n "$floor" ] || { echo '::error::The build recorded no rollback floor.'; exit 1; }
+          [ -f deploy/prerelease-signing.pem ] || { echo '::error::deploy/prerelease-signing.pem is missing.'; exit 1; }
+          [ -n "$PRERELEASE_SIGNING_KEY" ] || { echo '::error::The PRERELEASE_SIGNING_KEY secret is not set.'; exit 1; }
+          # A version already tagged or released is never pushed again.
+          if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null; then echo "::error::$VERSION is already tagged."; exit 1; fi
+          if gh release view "$VERSION" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then echo "::error::$VERSION is already released."; exit 1; fi
+          printf '%s\n' "$PRERELEASE_SIGNING_KEY" > "$RUNNER_TEMP/key.pem"
+          trap 'rm -f "$RUNNER_TEMP/key.pem"; docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+          # The secret must match the committed prerelease key, and must not be the release key, before anything is pushed.
+          printf 'key check\n' > "$RUNNER_TEMP/probe"
+          openssl pkeyutl -sign -inkey "$RUNNER_TEMP/key.pem" -rawin -in "$RUNNER_TEMP/probe" -out "$RUNNER_TEMP/probe.sig"
+          openssl pkeyutl -verify -pubin -inkey deploy/prerelease-signing.pem -rawin -in "$RUNNER_TEMP/probe" -sigfile "$RUNNER_TEMP/probe.sig"
+          if openssl pkeyutl -verify -pubin -inkey deploy/release-signing.pem -rawin -in "$RUNNER_TEMP/probe" -sigfile "$RUNNER_TEMP/probe.sig" >/dev/null 2>&1; then
+            echo '::error::PRERELEASE_SIGNING_KEY is the release key.'; exit 1
+          fi
+          printf '%s\n' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          sh deploy/release/publish.sh --prerelease --registry ghcr.io --name "$owner/app" \
+            --version "$VERSION" --revision "$GITHUB_SHA" --migrations packages/db/src/migrations \
+            --rollback-floor "$floor" \
+            --archive "amd64=$RUNNER_TEMP/images/release-image-amd64.tar" --archive "arm64=$RUNNER_TEMP/images/release-image-arm64.tar" \
+            --key "$RUNNER_TEMP/key.pem" --public-key deploy/prerelease-signing.pem --repository "$GITHUB_REPOSITORY" --out "$RUNNER_TEMP/release"
+          node scripts/release/prerelease.mjs notes "$PREVIOUS" "$GITHUB_SHA" "$floor" > "$RUNNER_TEMP/release/notes.md"
+          # Creating the prerelease creates its tag on this commit; nothing is pushed to a branch. Without bootstrap.sh,
+          # whose embedded key would install a prerelease-trusting server, and never marked latest.
+          gh release create "$VERSION" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "$VERSION (prerelease)" --notes-file "$RUNNER_TEMP/release/notes.md" \
+            "$RUNNER_TEMP/release/release-manifest.txt" "$RUNNER_TEMP/release/release-manifest.txt.sig" \
+            "$RUNNER_TEMP/release/plaingym-deploy-$VERSION.tar.gz"

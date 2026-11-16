@@ -209,6 +209,17 @@ test('real first release, signed tag, no push, explicit minor, and patch changel
   } finally { f.close(); }
 });
 
+test('the first release ignores the nightly prerelease tags, even on the commit the last one tagged', () => {
+  const f = fixture();
+  try {
+    f.run('tag', 'v0.5.0'); f.publishFixture();
+    assert.equal(release({ ...f.options, version: '1.0.0' }).version, '1.0.0');
+    const changelog = readFileSync(join(f.cwd, 'CHANGELOG.md'), 'utf8');
+    assert.match(changelog, /The first release/);
+    assert.match(changelog, /Migrations: initial schema \(fresh installation\)\./);
+  } finally { f.close(); }
+});
+
 test('preflight refusals leave the repository unchanged', () => {
   const f = fixture();
   const unchanged = (action, reason) => {

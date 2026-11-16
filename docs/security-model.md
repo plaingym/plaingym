@@ -645,7 +645,9 @@ image named by a release manifest signed with the project's Ed25519 key
 the digest and version it got, and refuses a patch whose migrations differ from
 the running image's. It reads only tag names from GitHub's list of releases; the
 signed manifest decides what is installed (`deploy/README.md`, "Automatic patch
-updates" and "Releases").
+updates" and "Releases"). Nightly prereleases of `main` are signed with a separate
+prerelease key that only `main`'s prerelease job can use, so an install that trusts
+`release-signing.pem` refuses them (`deploy/README.md`, "Prereleases").
 
 ## Demo mode
 

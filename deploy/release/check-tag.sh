@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-only
-# check-tag.sh VERSION [COMMIT] [--branches]: may COMMIT (default HEAD) of the repository in the current
+# check-tag.sh VERSION [COMMIT] [--branches | --prerelease]: may COMMIT (default HEAD) of the repository in the current
 # directory be released as VERSION? Prints the previous release of the same minor version, if any.
 #
 # * Release tags are vX.Y.Z.
@@ -8,6 +8,9 @@
 #   included) are exactly those of the latest earlier vX.Y tag. Installs apply patch releases on their own
 #   each night and roll one back by starting the previous image, so a patch must never change the database.
 # * With --branches (when publishing), vX.Y.0 must be on main and vX.Y.Z on release/X.Y, as origin has them.
+# * A release matches the root package.json version.
+# * With --prerelease (a nightly prerelease of main, deploy/README.md "Prereleases"), the version is v0.Y.Z and COMMIT
+#   is on main as origin has it; the version comes from the tags, not package.json, so that check is left out.
 set -eu
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 # shellcheck source=deploy/lib.sh
@@ -15,9 +18,14 @@ ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 version=${1:-}
 commit=${2:-HEAD}
 branches=${3:-}
-if [ "$#" -gt 3 ] || { [ -n "$branches" ] && [ "$branches" != --branches ]; }; then fail 'Usage: check-tag.sh vX.Y.Z [COMMIT] [--branches]'; fi
+case "$branches" in ""|--branches|--prerelease) ;; *) branches=invalid ;; esac
+if [ "$#" -gt 3 ] || [ "$branches" = invalid ]; then fail 'Usage: check-tag.sh vX.Y.Z [COMMIT] [--branches | --prerelease]'; fi
 valid_version "$version" || fail "Release tags are vX.Y.Z without leading zeros or a suffix: $version"
 git rev-parse --verify --quiet "$commit^{commit}" >/dev/null || fail "Unknown commit: $commit"
+if [ "$branches" = --prerelease ]; then
+  case "$version" in v0.*) ;; *) fail "Prereleases are v0.Y.Z versions: $version" ;; esac
+  git merge-base --is-ancestor "$commit" refs/remotes/origin/main || fail "The $version prerelease must be a commit on main."
+fi
 minor=${version%.*}
 patch=${version##*.}
 previous=$(git tag --list "$minor.*" | awk -F. -v want="$patch" '
@@ -34,6 +42,6 @@ if [ "$patch" != 0 ]; then
   git diff --quiet "$previous" "$commit" -- packages/db/src/migrations \
     || fail "$version is a patch release, but its migrations differ from $previous (packages/db/src/migrations). Patch releases never change the database; release it as the next minor version instead."
 fi
-[ "${version#v}" = "$(git show "$commit:package.json" | sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')" ] \
+[ "$branches" = --prerelease ] || [ "${version#v}" = "$(git show "$commit:package.json" | sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')" ] \
   || fail "$version does not match the root package.json version at $commit."
 [ -z "$previous" ] || printf '%s\n' "$previous"

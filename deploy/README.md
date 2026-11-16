@@ -751,15 +751,15 @@ ownership and plain modes, so rebuilding it from the tag gives the same bytes, a
 `bootstrap.sh` is its `bootstrap.sh` with the version, repository and public key
 filled in. The manifest lists the archive's SHA-256. The public key is
 `deploy/release-signing.pem`, and the installer copies it into the install
-directory. No release has been published yet.
+directory. No stable release has been published yet.
 
 `release/publish.sh` requires an explicit `--rollback-floor`; the workflow supplies
 the value recorded by `pnpm release` in `release/rollback-floor.txt`. The historical
 fallback for legacy format-1 manifests is retained only for reading old releases;
 publication no longer uses it to guess a previous minor.
 
-Every other run (a push that changes the workflow, `release/` or `bootstrap.sh`, or
-a manual run) is a dry run with a Git build-metadata version, also on a commit that
+Apart from these and the nightly prereleases (**Prereleases**, below), every run (a push that
+changes the workflow, `release/` or `bootstrap.sh`, or a manual run) is a dry run with a Git build-metadata version, also on a commit that
 already carries its tag (`version-cli.mjs --dry-run`): the images go to a registry
 on the runner, and a throwaway key signs the manifest and goes into the archive. It
 publishes nothing. `deploy/test/release.sh` tests both scripts, with a scratch Git
@@ -824,4 +824,53 @@ released=2026-11-03T12:00:00Z
   tag, adding a key that existing readers reject requires a new manifest format.
 * A deployment archive that can't be downloaded is skipped as `manifest_unavailable`,
   like the manifest itself.
+* `channel=prerelease` marks a nightly prerelease (**Prereleases**, below); a release has no
+  `channel` line.
 * GitHub release notes come from the matching `CHANGELOG.md` section.
+
+### Prereleases
+
+The **Prerelease** workflow (`.github/workflows/prerelease.yml`) publishes `main` as a
+nightly prerelease at 05:30 UTC, and on a manual run. It calls the Release workflow with
+`prerelease: true`, so the build on both architectures, the smoke tests, `publish.sh` and
+the GitHub release are the same steps a release runs. Prereleases exist for trying out the
+latest changes, not for a gym's live data.
+
+* **When it publishes.** Only on `main`, only when `main` moved since the previous
+  prerelease, and only when **CI** and **Repo compliance** passed on that commit (a
+  Markdown-only commit, which **CI** skips, counts from the nearest earlier commit it ran
+  on, as for `pnpm release`). Otherwise the run builds and publishes nothing and says why.
+  A manual run on any other branch is a dry run of the same version with build metadata:
+  it builds, smoke-tests and signs with a throwaway key, and publishes nothing.
+* **Versions.** Plain `v0.Y.Z`, so every release check applies unchanged.
+  `scripts/release/prerelease.mjs` takes the version from the existing tags and the
+  migrations, and commits nothing: the first prerelease is the minor after the root
+  `package.json` version, each later one the next patch when `packages/db/src/migrations`
+  is unchanged since the previous prerelease, else the next minor. `release/check-tag.sh
+  --prerelease` checks it as for a release (a patch keeps the migrations of the latest
+  earlier tag of its minor), on `main`, without the `package.json` match. After the first
+  stable release, no prerelease is published.
+* **Its own key.** `release/publish.sh --prerelease` signs the manifest with the
+  `PRERELEASE_SIGNING_KEY` secret of the `prerelease-main` environment, which only `main`
+  can use, after checking it against `deploy/prerelease-signing.pem`. It refuses the
+  release key for a prerelease and the prerelease key for a release, and writes
+  `channel=prerelease` into the signed manifest. `RELEASE_SIGNING_KEY` stays in the
+  `release` environment, which only release tags can use. Installs trust only
+  `release-signing.pem`, so they refuse a prerelease's manifest; the updater and the
+  admin's update check also skip prereleases in GitHub's list of releases. The
+  prerelease's deploy archive carries the prerelease public key as its
+  `release-signing.pem`, so a server installed from it trusts prerelease manifests only,
+  never a release's. Its automatic updates skip prereleases, so it installs a later
+  prerelease only through an explicit `update.sh ghcr.io/OWNER/app:v0.Y.Z`.
+* **Rollback floor.** The build runs the previous prerelease's image, with its own smoke
+  test, on the database the new image migrated (`release/previous-minor.mjs --prerelease`).
+  When it passes, the previous prerelease is the floor; otherwise, and for the first
+  prerelease, the prerelease itself.
+* **What is published.** `ghcr.io/OWNER/app:v0.Y.Z` (and its `-amd64` and `-arm64`
+  images), and a GitHub release marked as a prerelease, never as latest, with
+  `release-manifest.txt`, its signature and `plaingym-deploy-v0.Y.Z.tar.gz`, but no
+  `bootstrap.sh`. Creating the release creates the `v0.Y.Z` tag on the commit; nothing
+  is committed or pushed to a branch, and a version that is already tagged or released
+  is never pushed again. Its notes say what it is, its migrations and rollback floor,
+  and list the commits since the previous prerelease. A tag created this way doesn't
+  start the Release workflow's tag run.

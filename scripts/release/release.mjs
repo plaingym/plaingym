@@ -64,28 +64,30 @@ export function skippedByFilter({ paths, ignored }, changed) {
 
 const manifests = ['package.json', 'apps/server/package.json', 'apps/web/package.json', 'packages/db/package.json', 'packages/shared/package.json'];
 const requiredWorkflows = { CI: 'ci.yml', 'Repo compliance': 'compliance.yml', 'Image checks': 'image.yml' };
-const defaultGh = (args, cwd) => execFileSync('gh', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+export const defaultGh = (args, cwd) => execFileSync('gh', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000, killSignal: 'SIGKILL' });
+/** A required workflow has no passing run that covers the commit; lookup failures stay ordinary errors. */
+export class WorkflowNotPassedError extends Error {}
 /**
  * Each required workflow passed on HEAD or, when its path filters skipped HEAD, on the nearest commit it ran on. Every
  * commit in between must be one those filters skip, or the workflow never saw that change.
  */
-function assertWorkflowsPassed({ cwd, repo, head, gh, limit }) {
+export function assertWorkflowsPassed({ cwd, repo, head, gh, limit, workflows = requiredWorkflows }) {
   const run = (...args) => git(args, cwd);
   const runsOf = new Map();
   const runs = (commit) => {
     if (!runsOf.has(commit)) runsOf.set(commit, JSON.parse(gh(['run', 'list', '-R', repo, '--commit', commit, '--limit', '100', '--json', 'workflowName,conclusion,status,createdAt'], cwd)));
     return runsOf.get(commit);
   };
-  for (const [name, file] of Object.entries(requiredWorkflows)) {
+  for (const [name, file] of Object.entries(workflows)) {
     const filter = pushPathFilter(readFileSync(join(root, '.github/workflows', file), 'utf8'));
     for (let commit = head; ; commit = run('rev-parse', `${commit}^`)) {
       const latest = runs(commit).filter((item) => item.workflowName === name).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0];
       if (latest) {
-        if (latest.status !== 'completed' || latest.conclusion !== 'success') throw new Error(`${name} has not passed for ${commit}`);
+        if (latest.status !== 'completed' || latest.conclusion !== 'success') throw new WorkflowNotPassedError(`${name} has not passed for ${commit}`);
         break;
       }
       if (commit === limit || !skippedByFilter(filter, run('diff', '--name-only', `${commit}^`, commit).split('\n').filter(Boolean)))
-        throw new Error(`${name} has not passed for ${head}`);
+        throw new WorkflowNotPassedError(`${name} has not passed for ${head}`);
     }
   }
 }
@@ -107,7 +109,9 @@ export function release({ cwd = process.cwd(), version: explicit, notesFile, rol
   git(['fetch', 'origin', '--prune', '--tags'], cwd, { timeout: 600_000, interactive: true });
   const head = run('rev-parse', 'HEAD');
   if (head !== run('rev-parse', `refs/remotes/origin/${branch}`)) throw new Error(`The branch ${branch} is not level with origin`);
-  const tags = run('tag', '--merged', 'HEAD', '--list', 'v*').split('\n').filter((tag) => releasePattern.test(tag.slice(1))).sort((a, b) => compare(b, a));
+  // The nightly v0.Y.Z prereleases (deploy/README.md, "Prereleases") are not releases: 1.0.0 is the first one.
+  const tags = run('tag', '--merged', 'HEAD', '--list', 'v*').split('\n')
+    .filter((tag) => releasePattern.test(tag.slice(1)) && compare(tag, '1.0.0') >= 0).sort((a, b) => compare(b, a));
   const previous = tags[0];
   const messages = (previous ? run('log', '--format=%B%x00', `${previous}..HEAD`) : '').split('\0')
     .map((message) => message.trim()).filter((message) => message && !/^(?:docs: changelog for v|chore\(release\): v)/.test(message));
