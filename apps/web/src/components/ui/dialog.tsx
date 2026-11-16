@@ -3,6 +3,7 @@ import { createContext, useContext, useEffect, useLayoutEffect, useId, useRef, u
 import { t } from '../../lib/i18n.js';
 import { cn } from '../../lib/utils.js';
 import { Button } from './button.js';
+import { userNames } from './page.js';
 import { CloseIcon } from './icons.js';
 const OperationContext = createContext<Dispatch<SetStateAction<number>> | undefined>(undefined);
 const DraftContext = createContext<((form?: HTMLFormElement) => void) | undefined>(undefined);
@@ -98,13 +99,13 @@ export function Dialog({ title, description, closeLabel, onClose, size = 'defaul
     onPointerDown={event => { startedOutside.current = event.target === event.currentTarget && outside(event.clientX, event.clientY); }}
     onClick={event => { if (event.target === event.currentTarget && startedOutside.current && outside(event.clientX, event.clientY)) requestClose(); startedOutside.current = false; }}
     onChangeCapture={event => { if (event.target instanceof HTMLElement) dirty.current.add(event.target); }}
-    className={cn('m-0 h-dvh max-h-none w-full max-w-none overflow-hidden border-0 [&[open]]:flex [&[open]]:flex-col bg-background p-0 text-foreground backdrop:bg-foreground/40',
+    className={cn('m-0 h-dvh max-h-none w-full max-w-none overflow-hidden border-0 [&[open]]:flex [&[open]]:flex-col bg-background p-0 text-foreground', userNames, 'backdrop:bg-foreground/40',
       'sm:m-auto sm:h-fit sm:max-h-[90dvh] sm:w-[calc(100%-2rem)] sm:rounded-xl sm:border sm:border-border sm:shadow-xl',
       size === 'wide' ? 'sm:max-w-4xl' : 'sm:max-w-2xl', className)}>
     <div className="flex min-h-0 w-full flex-1 flex-col">
       <div className="flex items-start gap-3 border-b border-border px-4 py-3 sm:px-6">
         <div className="min-w-0 flex-1 space-y-1 py-2">
-          <h2 id={titleId} className="break-words text-lg font-semibold">{title}</h2>
+          <h2 id={titleId} className="wrap-anywhere text-lg font-semibold">{title}</h2>
           {description && <p id={descriptionId} className="text-sm text-muted-foreground">{description}</p>}
         </div>
         <Button variant="ghost" size="icon" aria-label={closeLabel} disabled={!dismissible || busy > 0} onClick={requestClose}><CloseIcon /></Button>

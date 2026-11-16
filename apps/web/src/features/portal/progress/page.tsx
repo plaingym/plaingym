@@ -51,14 +51,14 @@ export function PortalProgressPage({ client = portalClient }: { client?: PortalC
                 const criteria = data.criteria.filter(item => item.programId === program.id);
                 const ready = criteria.length > 0 && criteria.every(item => item.eligible);
                 return <li key={program.id} className="space-y-3 rounded-xl border border-border p-4">
-                  <h3 className="break-words font-semibold">{program.name}</h3>
+                  <h3 className="wrap-anywhere font-semibold">{program.name}</h3>
                   {/* The server picks the current rank with the same ordering it uses for the next step. */}
                   {program.current ? <p className="flex items-center gap-2 text-sm"><Swatch ranks={data.ranks} rankId={program.current.rankId} />
-                    <span className="break-words">{text('current', { rank: rankLabel(data.ranks, program.current.rankId, program.current.subRank) })}</span></p>
+                    <span className="wrap-anywhere">{text('current', { rank: rankLabel(data.ranks, program.current.rankId, program.current.subRank) })}</span></p>
                     : <p className="text-sm">{text('noCurrent')}</p>}
                   {program.next ? <div className="space-y-2">
                     <p className="flex flex-wrap items-center gap-2 text-sm"><Swatch ranks={data.ranks} rankId={program.next.rankId} />
-                      <span className="break-words">{text('next', { rank: rankLabel(data.ranks, program.next.rankId, program.next.subRank) })}</span>
+                      <span className="wrap-anywhere">{text('next', { rank: rankLabel(data.ranks, program.next.rankId, program.next.subRank) })}</span>
                       {ready && <Badge tone="success">{text('ready')}</Badge>}</p>
                     {criteria.length ? <Criteria name={program.name} criteria={criteria.map(item => ({ labelKey: item.labelKey, current: item.current, target: item.required }))} />
                       : <p className="text-sm text-muted-foreground">{text('coachDecides')}</p>}
@@ -68,7 +68,7 @@ export function PortalProgressPage({ client = portalClient }: { client?: PortalC
           </PageSection>
           {data.history.length > 0 && <PageSection title={text('history')}>
             <ul className="divide-y divide-border rounded-xl border border-border">{data.history.map(row => <li key={row.id} className="flex flex-col gap-1 p-3 text-sm sm:flex-row sm:justify-between">
-              <span className="break-words">{programName(row.programId) ?? text('program')} · {rankLabel(data.ranks, row.rankId, row.subRank)}</span>
+              <span className="wrap-anywhere">{programName(row.programId) ?? text('program')} · {rankLabel(data.ranks, row.rankId, row.subRank)}</span>
               <span className="text-muted-foreground">{date(row.promotedAt)}</span></li>)}</ul>
           </PageSection>}
         </>}
@@ -78,7 +78,7 @@ export function PortalProgressPage({ client = portalClient }: { client?: PortalC
           : !visits.length ? <EmptyState title={text('noAttendance')} />
             : <><p className="text-sm text-muted-foreground">{text('attendanceTotal', { count: formatCount(attendance.data.pages[0]!.pagination.total) })}</p>
               <ul className="divide-y divide-border rounded-xl border border-border">{visits.map(visit => <li key={visit.id} className="flex flex-col gap-1 p-3 text-sm sm:flex-row sm:justify-between">
-                <span className="break-words">{visit.sessionName ?? text(visit.kind === 'open_mat' ? 'openMat' : 'class')}{programName(visit.programId) ? ' · ' + programName(visit.programId) : ''}</span>
+                <span className="wrap-anywhere">{visit.sessionName ?? text(visit.kind === 'open_mat' ? 'openMat' : 'class')}{programName(visit.programId) ? ' · ' + programName(visit.programId) : ''}</span>
                 <span className="text-muted-foreground">{dateTime(visit.occurredAt)}</span></li>)}</ul>
               {attendance.hasNextPage && <Button variant="outline" disabled={attendance.isFetchingNextPage} onClick={() => void attendance.fetchNextPage()}>{text('more')}</Button>}</>}
     </PageSection>

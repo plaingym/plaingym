@@ -98,7 +98,7 @@ export function StaffManagement({ roles: actorRoles, passwordEnabled, services =
       {!profiles ? busy && <LoadingState label={label('loading')}/> : profiles.data.length === 0
         ? <EmptyState title={label(search ? 'empty' : 'noProfiles')} description={label(search ? 'emptyHelp' : 'noProfilesHelp')}/>
         : <StackedList>{profiles.data.map((profile) => <StackedItem key={profile.id} className="flex-row items-center justify-between gap-3">
-          <div className="min-w-0"><p className="break-words font-medium">{profile.displayName}</p>
+          <div className="min-w-0"><p className="wrap-anywhere font-medium">{profile.displayName}</p>
             <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">{profile.rank}{profile.isPublic && <Badge tone="muted">{label('public')}</Badge>}</p></div>
           <Button variant="outline" disabled={busy} aria-label={label('edit') + ' ' + profile.displayName} onClick={() => { setMessage(''); setEditing(profile); setCreating(false); }}>{label('edit')}</Button>
         </StackedItem>)}</StackedList>}
@@ -141,7 +141,7 @@ export function StaffManagement({ roles: actorRoles, passwordEnabled, services =
         className="rounded-xl border border-border bg-card p-4 sm:p-6"><fieldset disabled={busy} className="grid gap-3 sm:grid-cols-[2fr_1fr_auto] sm:items-end">
         <PersonPicker key={grantPicker} name="userId" kind="account" services={services} onChange={setGrantUserId}/><RoleSelect/><Button type="submit" disabled={!grantUserId}>{label('grantRole')}</Button></fieldset></form>
       {roles.length > 0 && <StackedList>{roles.map((role) => <StackedItem key={role.id} className="gap-3">
-        <h3 className="flex flex-wrap items-center gap-2 font-semibold"><span className="break-words">{nameFor(role)}</span><Badge>{label(role.role)}</Badge></h3>
+        <h3 className="flex flex-wrap items-center gap-2 font-semibold"><span className="wrap-anywhere">{nameFor(role)}</span><Badge>{label(role.role)}</Badge></h3>
         {role.role !== 'owner' && (role.role !== 'admin' || actorRoles.includes('owner')) && <><form key={role.revision} onSubmit={(event) => submit(event, (data) => services.changeRole(role.id, value(data, 'role') as AssignableStaffRole, role.revision))}>
           <fieldset disabled={busy} className="flex flex-col gap-2 sm:flex-row sm:items-end"><div className="sm:w-56"><RoleSelect initial={role.role}/></div><Button type="submit" variant="outline">{label('changeRole')}</Button></fieldset></form>
           {revoking !== role.id ? <Button variant="outline" className="self-start" disabled={busy} onClick={() => setRevoking(role.id)}>{label('revoke')}</Button>

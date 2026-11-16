@@ -188,7 +188,7 @@ function Person({ member }: { member: KioskMemberIdentity }) {
   return <span className="flex min-w-0 items-center gap-3 sm:gap-4">{member.photoUrl
     ? <img src={member.photoUrl} alt="" className="size-12 shrink-0 rounded-full object-cover sm:size-16"/>
     : <span aria-hidden className="flex size-12 shrink-0 items-center justify-center rounded-full bg-muted text-xl sm:size-16 sm:text-2xl">{member.firstName.slice(0, 1)}</span>}
-    <span className="min-w-0 break-words text-xl sm:text-2xl">{text('person', { first: member.firstName, initial: member.lastInitial })}</span></span>;
+    <span className="min-w-0 wrap-anywhere text-xl sm:text-2xl">{text('person', { first: member.firstName, initial: member.lastInitial })}</span></span>;
 }
 
 function Select({ screen, busy, onChange, onSubmit, onCancel }: { screen: Extract<Screen, { kind: 'select' }>; busy: boolean;
@@ -199,8 +199,8 @@ function Select({ screen, busy, onChange, onSubmit, onCancel }: { screen: Extrac
   };
   return <section className="space-y-4" aria-labelledby="kiosk-select"><h2 id="kiosk-select" tabIndex={-1} data-kiosk-focus className="text-2xl">{text('whoIsHere')}</h2>
     <ul className="space-y-3">{screen.members.map((member) => <li key={member.id}>
-      <button type="button" role="checkbox" aria-checked={screen.chosen.has(member.id)} disabled={busy} onClick={() => toggle(member.id)}
-        className={'flex w-full items-center justify-between rounded-xl border-2 p-4 text-left ' + (screen.chosen.has(member.id) ? 'border-primary bg-primary/10' : 'border-border')}>
+      <button type="button" role="checkbox" data-name-wrap="" aria-checked={screen.chosen.has(member.id)} disabled={busy} onClick={() => toggle(member.id)}
+        className={'flex w-full items-center justify-between rounded-xl border-2 p-4 text-left wrap-anywhere ' + (screen.chosen.has(member.id) ? 'border-primary bg-primary/10' : 'border-border')}>
         <Person member={member}/><span className="text-xl">{screen.chosen.has(member.id) ? '✓' : ''}</span></button></li>)}</ul>
     <div className="grid grid-cols-2 gap-3"><Button variant="outline" className={big} onClick={onCancel}>{text('cancel')}</Button>
       <Button className={big} disabled={busy || !screen.chosen.size} onClick={onSubmit}>{text('checkIn')}</Button></div>
@@ -218,7 +218,7 @@ function Results({ screen, busy, onChoose, onDone, onMembers }: { screen: Extrac
         <span className="text-xl font-medium">{text(!result ? 'error' : result.status === 'select_session' ? 'chooseClass' : result.status)}</span></div>
       {result?.status === 'see_front_desk' && <p className="mt-2 text-sm">{text('frontDeskHelp')}</p>}
       {result?.status === 'select_session' && <div className="grid gap-3 sm:grid-cols-2">
-        {result.sessions.map((session) => <Button key={session.id} className={big + ' wrap-anywhere'} disabled={busy} onClick={() => onChoose(member.id, session.id)}>{text('session', { name: session.name, time: timeLabel(session.startsAt) })}</Button>)}
+        {result.sessions.map((session) => <Button wrap key={session.id} className={big} disabled={busy} onClick={() => onChoose(member.id, session.id)}>{text('session', { name: session.name, time: timeLabel(session.startsAt) })}</Button>)}
         <Button variant="outline" className={big} disabled={busy} onClick={() => onChoose(member.id, null)}>{text('openMat')}</Button></div>}
     </li>)}</ul>
     <div className="grid gap-3 sm:grid-cols-2"><Button variant="outline" className={big} disabled={busy} onClick={onMembers}>{text('changeMembers')}</Button>

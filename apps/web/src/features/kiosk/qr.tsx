@@ -70,11 +70,11 @@ export function QrCheckin({ token, onUnauthorized, onClose, onNamePin, onProgres
       {(message === 'requestError' || message === 'cameraError') && <Button className={big + ' w-full'} onClick={() => { reset(); setScanning(true); }}>{text('retry')}</Button>}
       {(message === 'cameraError' || message === 'noCamera' || message === 'requestError') && <Button className={big + ' w-full'} onClick={() => { reset(); onNamePin(); }}>{text('usePin')}</Button>}</>}
     {result && <div aria-live="polite" className="space-y-4">
-      {result.status !== 'see_front_desk' && <p className="break-words text-2xl">{result.member.firstName} {result.member.lastInitial}.</p>}
+      {result.status !== 'see_front_desk' && <p className="wrap-anywhere text-2xl">{result.member.firstName} {result.member.lastInitial}.</p>}
       <p className="text-xl font-semibold">{text(result.status)}</p>
       {result.status === 'see_front_desk' && <p className="text-sm">{t('kiosk/kiosk:frontDeskHelp')}</p>}
       {result.status === 'select_session' && <div className="grid gap-3 sm:grid-cols-2">{result.sessions.map((session) =>
-        <Button className={big + ' wrap-anywhere'} disabled={busy} key={session.id} onClick={() => { if (code.current) void submit(code.current, session.id); }}>{session.name} · {timeLabel(session.startsAt)}</Button>)}
+        <Button wrap className={big} disabled={busy} key={session.id} onClick={() => { if (code.current) void submit(code.current, session.id); }}>{session.name} · {timeLabel(session.startsAt)}</Button>)}
         <Button variant="outline" className={big} disabled={busy} onClick={() => { if (code.current) void submit(code.current, null); }}>{text('openMat')}</Button>
       </div>}
     </div>}

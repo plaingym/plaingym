@@ -29,7 +29,7 @@ const formatTime = (instant: string) => new Intl.DateTimeFormat(undefined, { dat
 function Row({ label, children }: { label: ReactNode; children: ReactNode }) {
   return <div className="flex flex-col gap-1 border-b border-border py-3 last:border-b-0 sm:flex-row sm:gap-4">
     <dt className="text-sm font-medium sm:w-40 sm:shrink-0">{label}</dt>
-    <dd className="min-w-0 break-words text-sm text-muted-foreground">{children}</dd>
+    <dd className="min-w-0 wrap-anywhere text-sm text-muted-foreground">{children}</dd>
   </div>;
 }
 
@@ -60,9 +60,9 @@ function ChangeEmail({ account, client, userId }: { account: AccountSummary; cli
   return <div className="space-y-3">
     <p className="text-sm text-muted-foreground">{text('changeHelp')}</p>
     {account.googleLinked && <p className="text-sm text-muted-foreground">{text('changeGoogle')}</p>}
-    {account.pendingEmail && message?.kind !== 'status' && <p role="status" className="break-words rounded-md border border-border p-3 text-sm">
+    {account.pendingEmail && message?.kind !== 'status' && <p role="status" className="wrap-anywhere rounded-md border border-border p-3 text-sm">
       {text('pending', { email: account.pendingEmail.email, time: formatTime(account.pendingEmail.expiresAt) })}</p>}
-    <FormMessage message={message} className="break-words" />
+    <FormMessage message={message} className="wrap-anywhere" />
     <form className="flex flex-col gap-3 sm:flex-row sm:items-end" onSubmit={submit} noValidate>
       <div className="min-w-0 flex-1 space-y-1">
         <Label htmlFor="account-new-email">{text('newEmail')}</Label>

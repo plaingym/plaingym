@@ -145,13 +145,13 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
           {'signupFeeCents' in record && <p className="text-sm">{text('signupFee')}: {money(record.signupFeeCents, record.currency)} · {text('trialDays')}: {record.trialDays}</p>}
           {priced && archived.length > 0 && <Alert role="note" className="mt-3 space-y-2">
             <p>{say('interval' in priced ? 'archivedOnPlan' : 'archivedOnCharge', { names: archived.map(rate => rate.name).join(', ') })}</p>
-            <Button variant="outline" className="w-full wrap-anywhere sm:w-auto" disabled={busy} onClick={() => void removeArchived(priced, archived)}>{say('removeArchived', { name: record.name })}</Button>
+            <Button wrap variant="outline" className="w-full sm:w-auto" disabled={busy} onClick={() => void removeArchived(priced, archived)}>{say('removeArchived', { name: record.name })}</Button>
           </Alert>}
           {carriers > 0 && 'rateMillionths' in record && <Alert role="note" className="mt-3 space-y-2">
             <p>{say('archivedRate', { count: formatCount(carriers) })}</p>
-            <Button variant="outline" className="w-full wrap-anywhere sm:w-auto" disabled={busy} onClick={() => void removeEverywhere(record)}>{say('removeEverywhere', { name: record.name })}</Button>
+            <Button wrap variant="outline" className="w-full sm:w-auto" disabled={busy} onClick={() => void removeEverywhere(record)}>{say('removeEverywhere', { name: record.name })}</Button>
           </Alert>}
-          <Button className="mt-3 w-full wrap-anywhere sm:w-auto" variant="outline" onClick={() => { setEditor(record); setArchive(null); setMessage(''); setStale(false); }} disabled={busy || (editor !== 'new' && editor?.id === record.id)}>{text('edit')} {record.name}</Button>
+          <Button wrap className="mt-3 w-full sm:w-auto" variant="outline" onClick={() => { setEditor(record); setArchive(null); setMessage(''); setStale(false); }} disabled={busy || (editor !== 'new' && editor?.id === record.id)}>{text('edit')} {record.name}</Button>
         </li>;
       })}</ul>
     </>}

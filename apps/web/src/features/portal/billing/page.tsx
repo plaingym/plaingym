@@ -55,7 +55,7 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
       {(credits.isPending || (!credits.data && scope.settling)) ? <LoadingState /> : credits.isError && <ErrorState onRetry={() => void credits.refetch()} />}
       {credits.data?.length === 0 && <EmptyState title={text('noCredits')} />}
       {!!credits.data?.length && <StackedList>{credits.data.map(row => <StackedItem key={row.memberId} className="gap-1">
-        <p className="min-w-0 break-words font-semibold">{row.firstName} {row.lastName}</p>
+        <p className="min-w-0 wrap-anywhere font-semibold">{row.firstName} {row.lastName}</p>
         <p>{text(row.balance === 1 ? 'classLeft' : 'classesLeft', { count: formatCount(row.balance) })}</p>
         {row.soonestExpiry && <p className="text-sm text-muted-foreground">{text('creditsExpiry', { date: instant(new Date(Date.parse(row.soonestExpiry) - 1).toISOString()) })}</p>}
       </StackedItem>)}</StackedList>}
@@ -94,7 +94,7 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
       {(cards.isPending || (!cards.data && scope.settling)) ? <LoadingState /> : cards.isError && <ErrorState onRetry={() => void cards.refetch()} />}
       {cards.data?.length === 0 && <EmptyState title={text('noCards')} />}
       {!!cards.data?.length && <StackedList>{cards.data.map(card => <StackedItem key={card.id} className="flex-row flex-wrap items-center justify-between gap-2">
-        <span className="min-w-0 break-words">{card.brand ? cardBrand(card.brand) : text('card')} •••• {card.last4 ?? '????'}
+        <span className="min-w-0 wrap-anywhere">{card.brand ? cardBrand(card.brand) : text('card')} •••• {card.last4 ?? '????'}
           {card.expiryMonth && card.expiryYear && <span className="block text-sm text-muted-foreground">{text('expires', { month: String(card.expiryMonth).padStart(2, '0'), year: card.expiryYear })}</span>}</span>
         {card.isDefault && <Badge tone="success">{text('default')}</Badge>}
       </StackedItem>)}</StackedList>}
@@ -112,7 +112,7 @@ function InvoiceLines({ invoiceId, scope }: { invoiceId: string; scope: PortalSc
   if (detail.isError) return <ErrorState onRetry={() => void detail.refetch()} />;
   return <dl className="space-y-1 rounded-lg bg-muted/50 p-3 text-sm">
     {detail.data.lines.map(line => <div key={line.id} className="flex flex-wrap justify-between gap-2">
-      <dt className="min-w-0 break-words">{line.description}{line.quantity > 1 && <span className="text-muted-foreground"> · {text('quantity', { quantity: formatCount(line.quantity) })}</span>}</dt>
+      <dt className="min-w-0 wrap-anywhere">{line.description}{line.quantity > 1 && <span className="text-muted-foreground"> · {text('quantity', { quantity: formatCount(line.quantity) })}</span>}</dt>
       <dd className="tabular-nums">{money(line.amountCents, line.currency)}</dd></div>)}
     <div className="flex justify-between gap-2 border-t border-border pt-1 font-semibold"><dt>{text('total')}</dt>
       <dd className="tabular-nums">{money(detail.data.invoice.amountCents, detail.data.invoice.currency)}</dd></div>

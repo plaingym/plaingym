@@ -62,7 +62,7 @@ export function EmailIntegrationSection({ email, editable, state }: { email: Ema
   }
   return <div className="grid min-w-0 gap-4">
     <h3 className="text-base font-semibold">{label('title')}</h3>
-    {email.unreadable && <p role="alert" className="break-words text-sm">{label('unreadable')}</p>}
+    {email.unreadable && <p role="alert" className="wrap-anywhere text-sm">{label('unreadable')}</p>}
     <p className="text-sm [overflow-wrap:anywhere]">{email.source === 'gym'
       ? text('email.sourceGym', { host: email.host ?? '', port: email.port ?? '', security: label('security_' + (email.security ?? 'starttls')), from: email.from ?? '' })
       : label(email.source === 'install' ? 'sourceInstall' : 'sourceNone')}</p>

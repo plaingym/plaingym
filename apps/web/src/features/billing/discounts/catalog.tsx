@@ -35,7 +35,7 @@ export function DiscountCatalog({ gymId, client = discountClient, billing = bill
         <p>{row.termsLocked ? text('locked') : text('termsHelp')}</p>
         {row.code && <p>{text('code')}: {row.code}</p>}{row.endsOn && <p>{text('endsOn')}: {row.endsOn}</p>}
         <p>{row.planIds.length ? text('selectedPlans', { names: row.planIds.map(id => choices.plans.find(plan => plan.id === id)?.name ?? text('unavailablePlan')).join(', ') }) : text('allPlans')}</p>
-        <Button variant="outline" className="w-full max-w-full wrap-anywhere sm:w-auto" onClick={() => setEditor(row)}>{text('editNamed', { name: row.name })}</Button>
+        <Button wrap variant="outline" className="w-full sm:w-auto" onClick={() => setEditor(row)}>{text('editNamed', { name: row.name })}</Button>
       </li>)}</ul>
       {editor && <DiscountEditor {...(editor === 'new' ? {} : { record: editor })} currency={choices.currency} plans={choices.plans} client={client} close={close} saved={() => close(true)}/>}
     </>}

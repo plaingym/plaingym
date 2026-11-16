@@ -95,8 +95,8 @@ export function HouseholdPicker({ households, onChoose, pending = false, failed 
   return <Page className="max-w-md"><PageHeader title={text('chooseTitle')} description={text('chooseDescription')} />
     {failed && <Alert variant="error" focusOnReveal>{text('chooseFailed')}</Alert>}
     <ul className="space-y-3">{households.map(choice => <li key={choice.householdId}>
-      <Button variant="outline" className="h-auto min-h-11 w-full justify-start whitespace-normal py-3 text-left" disabled={pending} onClick={() => onChoose(choice.householdId)}>
-        <span className="min-w-0 break-words"><span className="block font-medium">{choice.name}</span><span className="block text-sm text-muted-foreground">{scopeLabel(choice.role)}</span></span>
+      <Button wrap variant="outline" className="h-auto min-h-11 w-full justify-start whitespace-normal py-3 text-left" disabled={pending} onClick={() => onChoose(choice.householdId)}>
+        <span className="min-w-0 wrap-anywhere"><span className="block font-medium">{choice.name}</span><span className="block text-sm text-muted-foreground">{scopeLabel(choice.role)}</span></span>
       </Button></li>)}</ul>
   </Page>;
 }

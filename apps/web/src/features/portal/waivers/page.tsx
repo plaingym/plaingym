@@ -58,7 +58,7 @@ function PortalWaiversPage({ context, scope }: { context: PortalContext; scope: 
         {pending.data.data.length === 0 ? <EmptyState title={text('allSigned')} icon={<CheckIcon className="size-8 text-success" />} /> : <StackedList>{pending.data.data.map(row => {
           const member = people.data.find(person => person.id === row.memberId);
           return <StackedItem key={row.memberId + row.template.id} className="flex-row flex-wrap items-center justify-between gap-3">
-            <div className="min-w-0 break-words"><p className="font-semibold">{row.template.name}</p>
+            <div className="min-w-0 wrap-anywhere"><p className="font-semibold">{row.template.name}</p>
               <p className="text-sm text-muted-foreground">{name(row.memberId)} · {text('version', { version: row.template.version })}</p></div>
             {member && (!payer || member.id === context.memberId || knownMinor(member.dateOfBirth, today))
               ? <Button onClick={() => setSigning({ template: row.template, member })}>{text('reviewSign')}</Button>
@@ -70,8 +70,8 @@ function PortalWaiversPage({ context, scope }: { context: PortalContext; scope: 
         {signed.data.data.length === 0 ? <EmptyState title={text('noneSigned')} /> : <StackedList>{signed.data.data.map(row => {
           const details = waiverSigningSnapshotSchema.parse(JSON.parse(row.snapshot));
           return <StackedItem key={row.id} className="gap-2">
-            <p className="break-words font-semibold">{details.template.name} · {text('version', { version: details.template.version })}</p>
-            <p className="break-words text-sm">{name(row.memberId)} · {text(details.signer.kind === 'guardian' ? 'signedByGuardian' : 'signedBy', { name: details.signer.name })}</p>
+            <p className="wrap-anywhere font-semibold">{details.template.name} · {text('version', { version: details.template.version })}</p>
+            <p className="wrap-anywhere text-sm">{name(row.memberId)} · {text(details.signer.kind === 'guardian' ? 'signedByGuardian' : 'signedBy', { name: details.signer.name })}</p>
             <p className="text-sm text-muted-foreground"><time dateTime={row.signedAt}>{date(row.signedAt)}</time></p>
             <div><Button variant="outline" disabled={pdf.isPending} onClick={() => pdf.mutate(row.id)}>{text('pdf')}</Button></div>
           </StackedItem>;
@@ -109,7 +109,7 @@ export function SignWaiver({ template, member, minor, endpoints, scope, close, s
   const reset = () => { uploaded.current = null; };
   return <Dialog title={text('reviewSign')} closeLabel={text('close')} dismissible={!busy} unsavedChanges={changed} onClose={close} size="wide">
     <form className="space-y-4" onSubmit={event => void submit(event)}>
-      <h3 className="break-words font-semibold">{template.name} · {text('version', { version: template.version })}</h3>
+      <h3 className="wrap-anywhere font-semibold">{template.name} · {text('version', { version: template.version })}</h3>
       <p className="text-sm text-muted-foreground">{text('for', { name: `${member.firstName} ${member.lastName}` })}</p>
       <WaiverDocument template={template} query={document} />
       {error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}

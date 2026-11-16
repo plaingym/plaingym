@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { randomBytes } from 'node:crypto';
 import type { Locator, Page } from '@playwright/test';
-import { test, expect, createClass, demoClient, Client, showPortalClass, type Person, type Program, type RecordId, type Sandbox } from '../support.js';
+import { test, expect, createClass, demoClient, Client, gymTimezone, showWeek, showPortalClass, type Person, type Program, type RecordId, type Sandbox } from '../support.js';
 import { accessibleLayout, horizontalOverflow } from '../responsive.js';
 import { claimPortal, outboxIds, outboxLink } from '../portal.js';
 
@@ -13,7 +13,67 @@ const unbreakable = (prefix: string) => (prefix + randomBytes(2).toString('hex')
 
 async function noSideways(page: Page, surface: string) {
   expect(await horizontalOverflow(page), surface + ': horizontal scroll at 360 px').toBeUndefined();
+  for (const control of await page.locator('[data-name-wrap]:visible').all()) {
+    await expect(control).toHaveCSS('overflow-wrap', 'anywhere');
+    expect(await control.evaluate(element => element.scrollWidth <= element.clientWidth + 1), surface + ': name control overflows').toBe(true);
+  }
 }
+async function phoneAndDesktop(page: Page, info: import('@playwright/test').TestInfo, surface: string) {
+  for (const width of [360, 1280]) {
+    await page.setViewportSize({ width, height: 800 });
+    await noSideways(page, surface);
+    await accessibleLayout(page, info, surface + ' at ' + width + ' px');
+  }
+  await page.setViewportSize({ width: 360, height: 740 });
+}
+for (const flow of ['PIN', 'QR'] as const) {
+  test('kiosk ' + flow + ' wraps member names and named class buttons', async ({ page, sandboxes }, info) => {
+    const sandbox = sandboxes[1]!, firstName = unbreakable('Kioskmember'), name = unbreakable('Kioskclass');
+    const member = { id: '01900000-0000-7000-8000-000000000011', firstName, lastInitial: 'W', photoUrl: null };
+    const result = { status: 'select_session', member, sessions: [{
+      id: '01900000-0000-7000-8000-000000000012', name, startsAt: new Date().toISOString(),
+      endsAt: new Date(Date.now() + 3600_000).toISOString(),
+    }] };
+    await page.route('**/api/kiosk/lookup', route => route.fulfill({ json: { data: { status: 'select_member', members: [member] } } }));
+    await page.route('**/api/kiosk/checkin', route => route.fulfill({ json: { data: [result] } }));
+    await page.route('**/api/kiosk/checkin/qr', route => route.fulfill({ json: { data: result } }));
+    if (flow === 'QR') await page.addInitScript(() => {
+      Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: {
+        getUserMedia: async () => new MediaStream(), enumerateDevices: async () => [{ kind: 'videoinput' }],
+      } });
+      Object.defineProperty(HTMLMediaElement.prototype, 'play', { configurable: true, value: async () => undefined });
+      for (const [property, value] of [['readyState', 4], ['videoWidth', 640], ['videoHeight', 480]] as const)
+        Object.defineProperty(HTMLVideoElement.prototype, property, { configurable: true, get: () => value });
+      Object.defineProperty(globalThis, 'BarcodeDetector', { configurable: true, value: class {
+        async detect() { return [{ rawValue: 'pgci1_' + 'x'.repeat(43) }]; }
+      } });
+    });
+    await page.goto(sandbox.origin + '/kiosk');
+    const pin = page.getByRole('button', { name: 'Name and PIN', exact: true }), token = page.getByLabel('Device token', { exact: true });
+    await expect(pin.or(token)).toBeVisible();
+    if (await token.isVisible()) {
+      await token.fill(sandbox.kioskToken);
+      await page.getByRole('button', { name: 'Save and start check-in', exact: true }).click();
+    }
+    if (flow === 'PIN') {
+      await pin.click();
+      await page.getByLabel('Your name', { exact: true }).fill('Kiosk');
+      await page.getByLabel('Household PIN', { exact: true }).fill('2468');
+      await page.getByRole('button', { name: 'Find me', exact: true }).click();
+      const choice = page.getByRole('checkbox', { name: new RegExp(firstName) });
+      await expect(choice).toHaveAttribute('data-name-wrap', '');
+      await phoneAndDesktop(page, info, 'kiosk member selection');
+      await expect(choice).toHaveAttribute('aria-checked', 'true');
+      await page.getByRole('button', { name: 'Check in', exact: true }).click();
+    } else await page.getByRole('button', { name: 'Scan a QR code', exact: true }).click();
+    const session = page.getByRole('button', { name: new RegExp(name) });
+    await expect(session).toBeVisible();
+    await expect(session).toHaveAttribute('data-name-wrap', '');
+    await expect(page.getByText(firstName + ' W.', { exact: true })).toBeVisible();
+    await phoneAndDesktop(page, info, 'kiosk ' + flow + ' class selection');
+  });
+}
+
 /** Whether a label sits on one line. A word that breaks in the middle has a line box for each piece. */
 async function onOneLine(label: Locator) {
   return label.evaluate((element) => {
@@ -48,6 +108,121 @@ test('the admin bookings panel wraps a class name with no break opportunity', as
   await expect(page.getByText(name, { exact: false })).toBeVisible();
   await noSideways(page, 'admin bookings panel');
 });
+
+for (const kind of ['class-packs', 'discounts'] as const) {
+  test('the ' + kind + ' catalog wraps its named edit button', async ({ page, sandboxes }, info) => {
+    const { sandbox, owner } = await sandboxOwner(sandboxes), name = unbreakable('Catalog');
+    const currency = (await owner.json<{ data: { currency: string }[] }>('/api/billing/plans?limit=1')).data[0]?.currency ?? 'USD';
+    await owner.json('/api/billing/' + kind, 'POST', kind === 'class-packs'
+      ? { name, currency, amountCents: 9900, credits: 10 }
+      : { name, currency, percentBasisPoints: 1000, duration: 'forever' });
+    await admin(page, sandbox, owner, '/admin/billing/plans');
+    const edit = page.getByRole('button', { name: 'Edit ' + name, exact: true });
+    await expect(edit).toBeVisible();
+    await expect(edit).toHaveAttribute('data-name-wrap', '');
+    await phoneAndDesktop(page, info, kind + ' catalog');
+    await edit.click();
+    await expect(page.getByRole('textbox', { name: kind === 'class-packs' ? 'Name' : 'Discount name', exact: true })).toHaveValue(name);
+    await phoneAndDesktop(page, info, kind + ' editor');
+  });
+}
+
+test('staff profile and account pickers wrap names, including inside the profile dialog', async ({ page, sandboxes }, info) => {
+  const { sandbox, owner } = await sandboxOwner(sandboxes), name = unbreakable('Staff');
+  const home = (await owner.json<{ data: RecordId }>('/api/households', 'POST', { name: 'Staff wrapping' })).data;
+  const member = (await owner.json<{ data: Person }>('/api/members', 'POST', { householdId: home.id,
+    firstName: 'M', lastName: name, status: 'active' })).data;
+  await owner.json('/api/staff/profiles', 'POST', { displayName: name, memberId: member.id });
+  const accountName = unbreakable('Account');
+  await page.route('**/api/staff/accounts?*', route => route.fulfill({ json: {
+    data: [{ id: home.id, displayName: accountName, email: 'wrap-account@example.invalid' }], pagination: { limit: 25, offset: 0, total: 1 },
+  } }));
+  await admin(page, sandbox, owner, '/admin/staff');
+  const account = page.getByRole('button', { name: accountName + ' wrap-account@example.invalid', exact: true });
+  await expect(account).toHaveAttribute('data-name-wrap', '');
+  await expect(page.getByText(name, { exact: true })).toBeVisible();
+  await phoneAndDesktop(page, info, 'staff accounts and profiles');
+  await account.click();
+  await page.getByRole('button', { name: 'Edit ' + name, exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByLabel('Find a member to link (optional)').fill(name);
+  const choice = dialog.getByRole('button', { name: 'M ' + name, exact: true });
+  await expect(choice).toHaveAttribute('data-name-wrap', '');
+  await choice.click();
+  await expect(dialog.getByText('M ' + name, { exact: false }).first()).toBeVisible();
+  await phoneAndDesktop(page, info, 'staff profile dialog');
+});
+
+test('admin agenda, week view and class dialog wrap class and coach names', async ({ page, sandboxes }, info) => {
+  const { sandbox, owner } = await sandboxOwner(sandboxes), name = unbreakable('Session');
+  const session = await createClass(owner, name);
+  const coachName = unbreakable('Coach');
+  const coach = (await owner.json<{ data: RecordId }>('/api/staff/profiles', 'POST', { displayName: coachName })).data;
+  await owner.json('/api/schedule/sessions/' + session.id + '/coach', 'POST', { revision: session.revision, coachId: coach.id });
+  await admin(page, sandbox, owner, '/admin/schedule');
+  await showWeek(page, await gymTimezone(owner), new Date(session.startsAt));
+  const control = page.locator('button[data-name-wrap]').filter({ hasText: name });
+  await expect(control).toBeVisible();
+  await expect(control.getByText(coachName, { exact: true })).toBeVisible();
+  await phoneAndDesktop(page, info, 'admin schedule');
+  await control.click();
+  await expect(page.getByRole('dialog').getByRole('heading', { name, exact: true })).toBeVisible();
+  await expect(page.getByRole('dialog').locator('dd').filter({ hasText: coachName })).toBeVisible();
+  await phoneAndDesktop(page, info, 'class dialog');
+});
+
+test('the portal household picker marks and wraps household names', async ({ page, sandboxes }, info) => {
+  const { sandbox, owner } = await sandboxOwner(sandboxes), name = unbreakable('Household');
+  // The picker is otherwise difficult to seed: one login must belong to two independent households.
+  await page.route('**/api/auth/bootstrap', route => route.fulfill({ json: { data: {
+    gym: { id: '01900000-0000-7000-8000-000000000001', name: 'Wrapping gym', timezone: 'UTC', currency: 'USD', enabledModules: [] },
+    session: { userId: '01900000-0000-7000-8000-000000000002', displayName: name, roles: [], member: true },
+    login: { password: true, magicLink: false },
+  } } }));
+  await page.route('**/api/portal/households', route => route.fulfill({ json: { data: { current: null, households: [
+    { householdId: '01900000-0000-7000-8000-000000000003', name, role: 'payer' },
+    { householdId: '01900000-0000-7000-8000-000000000004', name: 'Other household', role: 'payer' },
+  ] } } }));
+  await admin(page, sandbox, owner, '/portal');
+  const choice = page.getByRole('button', { name: new RegExp('^' + name) });
+  await expect(choice).toBeVisible();
+  await expect(choice).toHaveAttribute('data-name-wrap', '');
+  await phoneAndDesktop(page, info, 'portal household picker');
+});
+
+test('portal home, billing, household, check-in and waivers wrap member and document names', async ({ page, sandboxes }, info) => {
+  test.setTimeout(180_000);
+  const { sandbox, owner } = await sandboxOwner(sandboxes), name = unbreakable('Member'), document = unbreakable('Waiver');
+  const email = 'wrap-surfaces-' + randomBytes(4).toString('hex') + '@example.invalid';
+  const home = (await owner.json<{ data: RecordId }>('/api/households', 'POST', { name, email })).data;
+  const member = (await owner.json<{ data: Person }>('/api/members', 'POST', { householdId: home.id, firstName: 'M',
+    lastName: name, email, dateOfBirth: '2020-01-01', status: 'active' })).data;
+  const session = await createClass(owner, unbreakable('Class'));
+  await owner.json('/api/bookings', 'POST', { memberId: member.id, sessionId: session.id, allowWaitlist: false });
+  await owner.json('/api/waivers/templates', 'POST', { name: document, kind: 'waiver', body: unbreakable('Document') });
+  await admin(page, sandbox, owner, '/admin/waivers');
+  await expect(page.getByRole('heading', { name: document, exact: true })).toBeVisible();
+  await phoneAndDesktop(page, info, 'admin waivers');
+  await page.route('**/api/portal/credits', route => route.fulfill({ json: { householdId: home.id,
+    data: [{ memberId: member.id, firstName: 'M', lastName: name, balance: 3, soonestExpiry: null }],
+  } }));
+  await portalLogin(page, sandbox, owner, home.id, email);
+  for (const path of ['', '/billing', '/household', '/checkin', '/waivers']) {
+    await page.goto(sandbox.origin + '/portal' + path);
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+    // Wait for the data, not just the shell's page heading.
+    if (path === '/waivers') await expect(page.getByText(document, { exact: true })).toBeVisible();
+    else if (path === '') await expect(page.getByText(session.name, { exact: true })).toBeVisible();
+    else if (path === '/checkin') await expect(page.getByRole('button', { name: /Create a code|Replace this code/ })).toBeVisible();
+    else await expect(page.getByText('M ' + name, { exact: path === '/billing' }).last()).toBeVisible();
+    await phoneAndDesktop(page, info, 'portal' + (path || '/home'));
+  }
+  const review = page.getByRole('listitem').filter({ hasText: document }).getByRole('button', { name: 'Review and sign', exact: true });
+  await review.click();
+  await expect(page.getByRole('dialog').getByText(document, { exact: false }).first()).toBeVisible();
+  await phoneAndDesktop(page, info, 'portal waiver dialog');
+});
+
 
 test('the dashboard widgets wrap member names and shortlist links with no break opportunity', async ({ page, sandboxes }) => {
   const { sandbox, owner } = await sandboxOwner(sandboxes), first = unbreakable('First'), label = unbreakable('Household');
@@ -84,7 +259,9 @@ test('the billing catalog wraps a plan name with no break opportunity', async ({
   await expect(page.getByRole('heading', { name, exact: true })).toBeVisible();
   await noSideways(page, 'billing catalog');
   // The edit form lists the tax rates and prices by name too.
-  await page.getByRole('button', { name: 'Edit ' + name, exact: true }).click();
+  const edit = page.getByRole('button', { name: 'Edit ' + name, exact: true });
+  await expect(edit).toHaveAttribute('data-name-wrap', '');
+  await edit.click();
   await noSideways(page, 'billing catalog editor');
 });
 
@@ -96,7 +273,9 @@ test('the campaigns list wraps a campaign name with no break opportunity', async
   await admin(page, sandbox, owner, '/admin/campaigns');
   await expect(page.getByRole('heading', { name, exact: true })).toBeVisible();
   await noSideways(page, 'campaigns list');
-  await page.getByRole('button', { name: 'View ' + name, exact: true }).click();
+  const view = page.getByRole('button', { name: 'View ' + name, exact: true });
+  await expect(view).toHaveAttribute('data-name-wrap', '');
+  await view.click();
   await expect(page.getByRole('heading', { name, exact: true })).toBeVisible();
   await noSideways(page, 'campaign recipients');
 });

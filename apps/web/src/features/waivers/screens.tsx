@@ -30,8 +30,8 @@ export function Templates({ gymId, manage, client = waiversClient }: { gymId: st
     {query.isPending && <LoadingState />}{query.isError && <ErrorState onRetry={() => void query.refetch()} />}
     {query.data?.data.length === 0 && <EmptyState title={text('empty')} description={text('emptyHelp')} />}
     <ul className="space-y-3">{query.data?.data.map(row => <li key={row.id} className="min-w-0 space-y-3 rounded-xl border border-border p-4">
-      <h2 className="break-words text-lg font-semibold">{row.name}</h2><p>{text(row.kind)} · {text('version')} {row.version} {row.retiredAt && text('retired')}</p>
-      <p className="whitespace-pre-wrap break-words text-sm text-muted-foreground">{row.document ? text('pdfDocument') : row.body.slice(0, 240)}</p>
+      <h2 className="wrap-anywhere text-lg font-semibold">{row.name}</h2><p>{text(row.kind)} · {text('version')} {row.version} {row.retiredAt && text('retired')}</p>
+      <p className="whitespace-pre-wrap wrap-anywhere text-sm text-muted-foreground">{row.document ? text('pdfDocument') : row.body.slice(0, 240)}</p>
       {manage && <Button variant="outline" onClick={() => setEditor(row)}>{text('edit')}</Button>}
     </li>)}</ul>
     {query.data && <Pager offset={offset} total={query.data.pagination.total} onChange={setOffset} previousLabel={text('previous')} nextLabel={text('next')}/>}
@@ -113,7 +113,7 @@ export function MemberWaivers({ gymId, memberId, manage, timezone = 'UTC', local
     {download && <a className="inline-flex min-h-11 items-center break-all underline" href={download}>{text('download')}</a>}
     <h3 className="font-semibold">{text('available')}</h3>
     <ul className="space-y-3">{templates.data?.data.map((row, index) => <li key={row.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border p-4">
-      <div className="min-w-0 break-words"><p>{row.name} · {text('version')} {row.version}</p>
+      <div className="min-w-0 wrap-anywhere"><p>{row.name} · {text('version')} {row.version}</p>
         <p className="text-sm">{statuses[index]?.isSuccess ? text(statuses[index].data ? 'currentSigned' : 'needsSignature') : text('checkingSignature')}</p></div>
       {manage && <Button variant="outline" onClick={() => setSigning(row)}>{text('reviewSign')}</Button>}
     </li>)}</ul>
@@ -121,10 +121,10 @@ export function MemberWaivers({ gymId, memberId, manage, timezone = 'UTC', local
     <h3 className="font-semibold">{text('signed')}</h3>
     {signed.data?.data.length === 0 && <EmptyState title={text('unsigned')} />}
     <ul className="space-y-3">{signed.data?.data.map(row => <li key={row.id} className="space-y-2 rounded-xl border border-border p-4">
-      <h4 className="break-words font-semibold">{row.details.template.name} · {text('version')} {row.details.template.version}</h4>
-      <p className="break-words">{text(row.details.signer.kind === 'guardian' ? 'guardianSignature' : 'signer')}: {row.details.signer.name}
+      <h4 className="wrap-anywhere font-semibold">{row.details.template.name} · {text('version')} {row.details.template.version}</h4>
+      <p className="wrap-anywhere">{text(row.details.signer.kind === 'guardian' ? 'guardianSignature' : 'signer')}: {row.details.signer.name}
         {row.details.signer.kind === 'guardian' && ` (${row.details.signer.relationship})`}</p>
-      <p className="break-words">{text('signedAt')}: <time dateTime={row.details.signedAt}>{date.format(new Date(row.details.signedAt))}</time> · {timezone}</p>
+      <p className="wrap-anywhere">{text('signedAt')}: <time dateTime={row.details.signedAt}>{date.format(new Date(row.details.signedAt))}</time> · {timezone}</p>
       <p className="break-all text-sm text-muted-foreground">{row.snapshotHash}</p>
       <Button variant="outline" onClick={() => void pdf(row.id)}>{text('pdf')}</Button>
     </li>)}</ul>
@@ -153,7 +153,7 @@ function Signing({ template, memberId, client, close, saved }: { template: Waive
   }
   return <Dialog title={text('reviewSign')} closeLabel={text('close')} dismissible={!busy} unsavedChanges={signatureChanged} onClose={close} size="wide">
     <form className="space-y-4" onSubmit={event => void submit(event)}>
-      <h3 className="break-words font-semibold">{template.name} · {text('version')} {template.version}</h3>
+      <h3 className="wrap-anywhere font-semibold">{template.name} · {text('version')} {template.version}</h3>
       <WaiverDocument template={template} query={document} />
       {error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
       <p>{text('guardianNote')}</p>

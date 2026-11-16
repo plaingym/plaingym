@@ -67,7 +67,7 @@ export function PortalHome({ client = portalClient }: { client?: PortalClient })
     <div className="grid gap-4 sm:grid-cols-2">
       <PageSection className={card} title={text('nextClass')}>
         {waiting(schedule) ? <LoadingState /> : schedule.isError ? <ErrorState onRetry={() => void schedule.refetch()} />
-          : next ? <><p className="break-words font-semibold">{next.name}</p><p>{date(next.startsAt)}</p>
+          : next ? <><p className="wrap-anywhere font-semibold">{next.name}</p><p>{date(next.startsAt)}</p>
             <ul className="text-sm text-muted-foreground">{next.bookings.filter(booking => booking.status === 'booked').flatMap(booking => {
               const name = members.data?.find(member => member.id === booking.memberId)?.name;
               return name ? [<li key={booking.id}>{name}</li>] : [];
@@ -96,7 +96,7 @@ export function PortalHome({ client = portalClient }: { client?: PortalClient })
           {memberId && waiting(progress) ? <LoadingState /> : progress.isError ? <ErrorState onRetry={() => void progress.refetch()} />
             : !progress.data?.programs.length ? <p>{text('noRankProgress')}</p>
               : <ul className="space-y-4">{progress.data.programs.map(program => <li key={program.id} className="space-y-2">
-                <h3 className="break-words font-semibold">{program.name}</h3>
+                <h3 className="wrap-anywhere font-semibold">{program.name}</h3>
                 <p>{program.current ? text('currentRank', { rank: rankLabel(progress.data.ranks, program.current.rankId, program.current.subRank) }) : text('noCurrentRank')}</p>
                 {program.next && <p>{text('nextRank', { rank: rankLabel(progress.data.ranks, program.next.rankId, program.next.subRank) })}</p>}
                 <Criteria name={program.name} criteria={progress.data.criteria.filter(item => item.programId === program.id)

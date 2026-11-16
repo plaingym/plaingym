@@ -45,7 +45,7 @@ function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope
       {members.data?.length === 0 && <EmptyState title={text('noMembers')} />}
       {!!members.data?.length && <StackedList>{members.data.map(member => <StackedItem key={member.id} className="gap-3">
         <div className="flex flex-wrap items-start justify-between gap-2">
-          <div className="min-w-0 break-words">
+          <div className="min-w-0 wrap-anywhere">
             <p className="font-semibold">{member.firstName} {member.lastName}{member.id === context.memberId && <span className="font-normal text-muted-foreground"> · {text('you')}</span>}</p>
             {member.dateOfBirth && <p className="text-sm text-muted-foreground">{text('born', { date: date(member.dateOfBirth) })}</p>}
             {(member.email || member.phone) && <p className="break-all text-sm">{[member.email, member.phone].filter(Boolean).join(' · ')}</p>}
@@ -53,7 +53,7 @@ function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope
           <Badge tone={member.status === 'active' ? 'success' : 'muted'}>{text('status_' + member.status)}</Badge>
         </div>
         {member.emergencyContacts.length > 0 && <div className="text-sm"><p className="font-medium">{text('contacts')}</p>
-          <ul className="space-y-1">{member.emergencyContacts.map((item, index) => <li key={index} className="break-words">{item.name}
+          <ul className="space-y-1">{member.emergencyContacts.map((item, index) => <li key={index} className="wrap-anywhere">{item.name}
             {item.relationship && <span className="text-muted-foreground"> · {item.relationship}</span>} · {item.phone}{item.email && ` · ${item.email}`}</li>)}</ul></div>}
         <Memberships memberId={member.id} scope={scope} />
         {editable(member) && <div><Button variant="outline" onClick={() => setEditing(member)}>{text('edit')}</Button></div>}

@@ -95,14 +95,14 @@ export function ImportStep({ fetcher = fetch, pollMs = 1500 }: { fetcher?: typeo
           onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadFile(file); }}/></div>
       {upload && <fieldset disabled={active} className="min-w-0 space-y-3">
         <legend className="font-medium">{pipeline('mapping')}</legend>
-        <p className="break-words">{upload.filename} · {pipeline('rows')}: {formatCount(upload.rowCount)}</p>
+        <p className="wrap-anywhere">{upload.filename} · {pipeline('rows')}: {formatCount(upload.rowCount)}</p>
         <Label className="grid gap-2">{pipeline('mapper')}<Select value={mapper}
           onChange={(event) => { setMapper(event.target.value as ImportMapper); setJob(undefined); }}>
           {(['people', 'mat', 'memberships'] as const).map((id) => <option key={id} value={id}>{pipeline('mapper.' + id)}</option>)}</Select></Label>
         <Label className="grid gap-2">{pipeline('duplicates')}<Select value={duplicatePolicy}
           onChange={(event) => { setDuplicatePolicy(event.target.value as ImportPlanRequest['duplicatePolicy']); setJob(undefined); }}>
           {(['error', 'skip', 'update'] as const).map((policy) => <option key={policy} value={policy}>{pipeline('policy.' + policy)}</option>)}</Select></Label>
-        {upload.columns.map((column) => <Label key={column} className="grid gap-2 break-words sm:grid-cols-2 sm:items-center">{column}
+        {upload.columns.map((column) => <Label key={column} className="grid gap-2 wrap-anywhere sm:grid-cols-2 sm:items-center">{column}
           <Select value={mapping.find((item) => item.sourceColumn === column)?.targetField ?? ''} onChange={(event) => {
             const target = importTargetFieldSchema.safeParse(event.target.value);
             setMapping((previous) => [...previous.filter((item) => item.sourceColumn !== column && item.targetField !== event.target.value),

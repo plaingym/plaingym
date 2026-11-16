@@ -126,7 +126,7 @@ function ImportPanel({ gymId }: { gymId: string }) {
       {progress.data.totalRows > 0 && <progress className="block h-2 w-full accent-primary" aria-label={label('processed')} max={progress.data.totalRows} value={progress.data.processedRows}/>}
     </div>}
     {errors.data && <div className="space-y-2"><h3 className="font-semibold">{label('errorReport')}</h3>
-      <ul className="divide-y divide-border rounded-xl border border-border text-sm">{errors.data.data.map((issue, index) => <li key={index} className="break-words p-3">
+      <ul className="divide-y divide-border rounded-xl border border-border text-sm">{errors.data.data.map((issue, index) => <li key={index} className="wrap-anywhere p-3">
         <span className="font-medium">{label('row')} {issue.rowNumber}:</span> {t(issue.message)}</li>)}</ul>
       <Pager offset={errorOffset} total={errors.data.pagination.total} limit={50} onChange={setErrorOffset} previousLabel={label('previous')} nextLabel={label('next')}/>
     </div>}

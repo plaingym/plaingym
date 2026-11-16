@@ -35,11 +35,11 @@ export function StripeStep({ fetcher = fetch, onComplete }: { fetcher?: typeof f
   }
   return <section className="min-w-0 space-y-5" aria-label={label('title')}>
     {done ? <p role="status">{label('done')}</p> : <>
-      <p className="break-words">{label('intro')}</p>
+      <p className="wrap-anywhere">{label('intro')}</p>
       <h3 className="font-semibold">{label('permissions')}</h3>
       <dl className="space-y-2 rounded-md border p-3 text-sm">
         {permissions.map((resource) => <div key={resource} className="flex min-w-0 flex-wrap justify-between gap-x-4 gap-y-1">
-          <dt className="break-words">{label(resource)}</dt><dd className="font-medium">{label(['setupIntents', 'events', 'disputes'].includes(resource) ? 'read' : 'write')}</dd>
+          <dt className="wrap-anywhere">{label(resource)}</dt><dd className="font-medium">{label(['setupIntents', 'events', 'disputes'].includes(resource) ? 'read' : 'write')}</dd>
         </div>)}
       </dl><p className="text-sm">{label('other')}</p>
       {failure && <Alert variant="error" focusOnReveal>{label(failure)}</Alert>}

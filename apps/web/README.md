@@ -90,7 +90,10 @@ and tablets and beside it from `lg`. `PageSection` renders an `h2` with optional
 which its descendants inherit (tables keep their natural widths), so a long name with no break opportunity (a class, plan or member name) wraps
 instead of widening a flex or grid item; `break-words` does not shrink those, and a leftover one overrides the inherited rule, so don't repeat it per element.
 App labels stay whole: `Button` and `Badge` reset the rule with `wrap-normal` (and `Badge` is `shrink-0`), so a status badge or button beside a long name keeps
-its word. A button whose text carries a user-supplied name (such as "Edit {name}") adds `wrap-anywhere`; `Autocomplete` options set it themselves. A screen
+its word. A button whose text carries a user-supplied name (such as "Edit {name}") uses `<Button wrap>`;
+this applies `wrap-anywhere` and a `data-name-wrap` marker for layout probes, including when `asChild` renders a link.
+Use `wrap-anywhere` instead of `break-words` on name text: it also reduces flex and grid minimum widths.
+`Autocomplete` options set it themselves. A screen
 rendered outside a `Page` (the billing catalog) applies the exported `userNames` rule on its own root. Put a table in `TableContainer` so it scrolls instead of widening the page.
 
 **States.** Use the shared states so every screen reports progress the same way:

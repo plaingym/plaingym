@@ -77,9 +77,9 @@ export function PaymentsIntegrationSection({ payments, editable, lastEventAt, st
       {lastEventAt ? text('payments.lastEvent', { time: instantLabel(lastEventAt) }) : label('noEvent')}</p>}
     {editable && payments.accountLocked && <p className="text-sm text-muted-foreground">{label(payments.mode === 'test' ? 'lockedTest' : 'locked')}</p>}
     {editable && payments.importedCustomersOnly && <p className="text-sm text-muted-foreground">{label('importedOnly')}</p>}
-    {editable && payments.configured && restore?.stripeConfigured === false && <p className="break-words text-sm" role="note">
+    {editable && payments.configured && restore?.stripeConfigured === false && <p className="wrap-anywhere text-sm" role="note">
       {t('settings/go-live:reconcileStripeConnected')}</p>}
-    {editable && payments.configured && reconciliation && hasRestoreModeNote(reconciliation.message) && <p className="break-words text-sm" role="note">{reconciliation.message}</p>}
+    {editable && payments.configured && reconciliation && hasRestoreModeNote(reconciliation.message) && <p className="wrap-anywhere text-sm" role="note">{reconciliation.message}</p>}
     <FormMessage message={message}/>
     {!editable ? null : switchKey ? <form onSubmit={(event) => void confirmSwitch(event)} aria-label={label('switchTitle')}>
       <fieldset disabled={busy} className="grid min-w-0 gap-4 rounded-md border border-border p-3">

@@ -83,7 +83,7 @@ function Roster({ sessionId }: { sessionId: string }) {
     {roster && roster.data.length > 0 && <ul className="divide-y divide-border rounded-xl border border-border">{roster.data.map((member) => {
       const name = `${member.firstName} ${member.lastName}`, attendance = checked.get(member.id), done = !!attendance;
       return <li key={member.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-2">
-        <div className="min-w-0 break-words"><span className="font-medium">{name}</span>
+        <div className="min-w-0 wrap-anywhere"><span className="font-medium">{name}</span>
           {done && needsCredits.has(member.id) && <p role="status" className="text-sm text-warning">{text('needsCredits')}</p>}</div>
         <div className="flex flex-wrap items-center gap-2">
         <Button variant={done ? 'secondary' : 'default'} className={done ? 'shrink-0 bg-success/10 text-success disabled:opacity-100' : 'shrink-0'} disabled={busy || done} onClick={() => void checkIn(member.id)}

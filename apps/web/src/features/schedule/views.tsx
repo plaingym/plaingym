@@ -28,11 +28,11 @@ function days({ week, sessions, options }: ViewProps) {
 function SessionButton({ session, options, onOpen, compact = false }: { session: ClassSession; options: ScheduleOptions; onOpen: (session: ClassSession) => void; compact?: boolean }) {
   const coach = options.coaches.find((entry) => entry.id === session.coachId)?.name;
   const cancelled = session.status === 'cancelled';
-  return <button type="button" onClick={() => onOpen(session)}
-    className={cn('flex min-h-11 w-full flex-col items-start gap-1 rounded-lg border border-border bg-card p-3 text-left hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+  return <button type="button" data-name-wrap="" onClick={() => onOpen(session)}
+    className={cn('flex min-h-11 w-full flex-col items-start gap-1 rounded-lg border border-border bg-card p-3 text-left wrap-anywhere hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
       cancelled && 'bg-muted text-muted-foreground', compact && 'p-2')}>
     <span className={cn('font-medium tabular-nums', compact ? 'text-xs' : 'text-sm')}>{sessionTimes(session, options.timezone)}</span>
-    <span className={cn('break-words font-semibold', cancelled && 'line-through', compact && 'text-sm')}>{session.name}</span>
+    <span className={cn('wrap-anywhere font-semibold', cancelled && 'line-through', compact && 'text-sm')}>{session.name}</span>
     {coach && !compact && <span className="text-sm text-muted-foreground">{coach}</span>}
     <span className="flex flex-wrap gap-1"><Badge tone={cancelled ? 'destructive' : 'muted'}>{text(session.status)}</Badge>
       {session.kind === 'open_mat' && <Badge tone="muted">{text('open_mat')}</Badge>}</span>

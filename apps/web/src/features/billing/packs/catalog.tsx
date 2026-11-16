@@ -35,7 +35,7 @@ export function PackCatalog({ gymId, client = packClient }: { gymId: string; cli
         <h3 className="font-semibold">{pack.name}</h3><p className="text-sm text-muted-foreground">{text(pack.active ? 'active' : 'archived')}</p>
         <p>{formatMinorUnits(pack.amountCents, pack.currency)} · {text('creditCount', { count: formatCount(pack.credits) })}</p>
         <p>{pack.expiryDays === null ? text('neverExpires') : text('expiresDays', { days: formatCount(pack.expiryDays) })}</p>
-        <Button variant="outline" className="w-full wrap-anywhere sm:w-auto" onClick={() => setEditor(pack)}>{text('editNamed', { name: pack.name })}</Button>
+        <Button wrap variant="outline" className="w-full sm:w-auto" onClick={() => setEditor(pack)}>{text('editNamed', { name: pack.name })}</Button>
       </li>)}</ul>
       {editor && <PackEditor {...(editor === 'new' ? {} : { record: editor })} currency={data.data.currency} taxes={data.data.taxes} client={client} close={refresh} saved={refresh}/>}
     </>}

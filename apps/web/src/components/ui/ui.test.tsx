@@ -52,12 +52,21 @@ describe('shared page components', () => {
   it('keeps app labels whole beside a long name, and lets a button that carries a name wrap it', () => {
     const long = 'U'.padEnd(56, 'x');
     render(<Page><PageSection title="Programs"><ul><li><span>{long}</span><Badge tone="success">Active</Badge><Button>Save</Button>
-      <Button className="wrap-anywhere">{'Edit ' + long}</Button></li></ul></PageSection></Page>);
+      <Button wrap>{'Edit ' + long}</Button></li></ul></PageSection></Page>);
     expect(breaksAnywhere(screen.getByText(long))).toBe(true);
     expect(breaksAnywhere(screen.getByText('Active'))).toBe(false);
     expect(screen.getByText('Active').className).toContain('shrink-0');
     expect(breaksAnywhere(screen.getByRole('button', { name: 'Save' }))).toBe(false);
     expect(breaksAnywhere(screen.getByRole('button', { name: 'Edit ' + long }))).toBe(true);
+    expect(screen.getByRole('button', { name: 'Edit ' + long }).matches('[data-name-wrap]')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Save' }).hasAttribute('data-name-wrap')).toBe(false);
+  });
+  it('keeps the name marker and wrapping on an asChild link', () => {
+    render(<Button wrap asChild><a href="/member">{'M'.repeat(56)}</a></Button>);
+    const link = screen.getByRole('link');
+    expect(link.matches('[data-name-wrap]')).toBe(true);
+    expect(breaksAnywhere(link)).toBe(true);
+    expect(link.hasAttribute('wrap')).toBe(false);
   });
   it('wraps titles used outside a page', () => {
     const long = 'U'.padEnd(56, 'x');
