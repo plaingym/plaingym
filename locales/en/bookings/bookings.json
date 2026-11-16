@@ -48,6 +48,8 @@
   "capacityBelowBooked": "Capacity cannot be lower than the number already booked.",
   "gym": "Your gym",
   "promotionSubject": "Your place in {name} is confirmed",
+  "promotionSms": "A waitlist place in {name} on {date} at {time} is confirmed for {names}.",
+  "promotionMembers": "Confirmed member: {names}",
   "promotionBody": "A place opened up and you have been moved from the waitlist to booked for {name} on {date}. You can view your booking in the member portal.",
   "emailFooter": "You received this notice because you joined this class's waitlist."
 }

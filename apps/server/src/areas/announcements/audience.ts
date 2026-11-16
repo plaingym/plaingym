@@ -1,9 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, inArray, or } from 'drizzle-orm';
-import { announcementOptOuts, memberRanks, members, programs, type Transaction } from '@plaingym/db';
+import { and, asc, eq, inArray, isNull, or } from 'drizzle-orm';
+import { announcementOptOuts, households, memberRanks, members, programs, type Transaction } from '@plaingym/db';
 import { AppError } from '@plaingym/shared';
 import type { AnnouncementAudience } from '@plaingym/shared/contracts';
 import { addressEquals } from './audience.sql.js';
+import { cancellationBillingAddressEquals } from './cancellation.sql.js';
+
+/** Read only this address's fallback candidates rather than reloading the whole cancellation roster for each address. */
+export async function readCancellationFallbacks(tx: Transaction, memberIds: readonly string[], address: string) {
+  if (!memberIds.length) return [];
+  return tx.select({ id: members.id }).from(members).innerJoin(households, eq(households.id, members.householdId))
+    .where(and(inArray(members.id, [...memberIds]), or(isNull(members.emailAddress), eq(members.emailAddress, '')),
+      cancellationBillingAddressEquals(address))).orderBy(asc(members.id));
+}
 
 export type SkipReason = 'anonymized' | 'missing_email' | 'opt_out' | 'undeliverable' | 'ineligible';
 /** Shared indexed address-group read; cancellation notices ignore announcement-only preferences. */

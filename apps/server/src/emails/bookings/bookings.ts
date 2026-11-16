@@ -7,13 +7,14 @@ import { EmailHeading, EmailText, renderEmail } from '../_shared/index.js';
 
 export const templates: readonly EmailTemplate[] = [];
 
-export function renderBookingPromotion(input: { name: string; startsAt: Date; timezone: string; gymName: string }) {
+export function renderBookingPromotion(input: { name: string; startsAt: Date; timezone: string; gymName: string; memberNames?: string[] }) {
   const t = createTranslator(locales.en ?? {});
   const values = { name: input.name, date: new Intl.DateTimeFormat('en', { dateStyle: 'full', timeStyle: 'short', timeZone: input.timezone }).format(input.startsAt) };
   return renderEmail({ gymName: input.gymName.trim() || t('bookings/bookings:gym'), language: 'en', t,
     subjectKey: 'bookings/bookings:promotionSubject', subjectValues: values, footerKey: 'bookings/bookings:emailFooter',
     children: createElement('div', null,
       createElement(EmailHeading, { t, messageKey: 'bookings/bookings:promotionSubject', values }),
-      createElement(EmailText, { t, messageKey: 'bookings/bookings:promotionBody', values })),
+      createElement(EmailText, { t, messageKey: 'bookings/bookings:promotionBody', values }),
+      input.memberNames?.length ? createElement(EmailText, { t, messageKey: 'bookings/bookings:promotionMembers', values: { names: input.memberNames.join(', ') } }) : null),
   });
 }

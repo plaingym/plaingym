@@ -78,7 +78,7 @@ cutoff is allowed, after it is rejected for both staff and members. A replay of
 an already successful cancellation still succeeds. All rules use the injected
 clock and `GymSettingsAccessor`; calendar conversion uses the shared time module.
 
-## Promotion and mail
+## Promotion notices
 
 `createBookingDelivery` provides the `bookings.promote` and `bookings.notice`
 handlers and a recovery scan every five minutes. Cancellation queues promotion
@@ -91,15 +91,37 @@ the scan from recreating sent notices after job retention removes their keys. Th
 records durable send state (`infra/email/README.md`): once SMTP accepted the
 notice, or may have, a retry never sends it again, even if the process failed
 before the audit committed. Only a definite non-send is retried.
+Promotion email uses the member's own email, falling back to the household's
+billing address under `householdRecipients` suppression rules. It names the
+promoted member, and rechecks the current booking, member-email switch, erasure
+and recipient preferences immediately before SMTP.
+
+After email, the notice job independently attempts a text when the constructor
+receives `sms: { resolver, phoneDigest }`. The gym-aware resolver is the same
+`SmsResolver` used by settings; `phoneDigest` is supplied by
+`createSmsPhoneDigest(AUTH_SECRET)`. Without this injection the composition sends
+only email. `memberNoticePhones` prefers the member's own consented phone and
+otherwise uses their consented household billing phone. `MemberSms` enforces
+notices consent, current phone and household membership, the independent SMS
+switch and daily cap. Announcement consent alone is insufficient.
+The text starts with the gym name and names the promoted member, class, date and
+time in the gym's timezone. The durable key is
+`booking-promotion-sms:<bookingId>`; accepted or uncertain attempts never resend.
+Only a definite non-send retries. Texts are independent of email acceptance,
+suppression, missing SMTP and the email switch. Both channels still require a
+recent promotion, an unstarted scheduled class and a current booked participant.
+Ordinary booking confirmations and member booking cancellations send no notice.
 Unsent promotions expire after the jobs module's exported succeeded-retention
 default, so recovery stops before a completed notice job's key can be pruned.
 The notice handler logs when it skips a stale or missing promotion.
 
 `createBookingMailer` uses `createSmtpResolver` for each gym's encrypted SMTP
 settings (with its existing install fallback). The runtime may inject the demo
-outbox instead. `MemberEmail` reloads the gym's member-email switch and the
-member's delivery/opt-out settings immediately before sending. Missing member
-email, erasure, cancellation and a class that has started suppress the notice;
+outbox instead. The notice's own send guard (not `MemberEmail`, since the
+recipient may be a household billing address) reloads the gym's member-email
+switch, the booking and the recipient's delivery/opt-out settings immediately
+before sending. No usable address (neither the member's own nor an unsuppressed
+billing address), erasure, cancellation and a class that has started suppress the notice;
 they do not undo a confirmed place. SMTP failure retries delivery without
 repeating promotion. No network operation runs inside a database transaction.
 

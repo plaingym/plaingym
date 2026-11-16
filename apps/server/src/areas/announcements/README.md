@@ -135,13 +135,14 @@ outside the cancellation snapshot.
 Requesting notification for an already cancelled session returns a conflict
 without changing its revision, auditing another cancellation or queuing mail.
 
-Delivery reloads the snapshot's current addresses, groups them after trimming and
+Delivery uses a member's own email or, when absent, their household's billing
+email under `householdRecipients` suppression rules. It reloads current addresses, groups them after trimming and
 lower-casing, and sends one email per address naming all of its booked and
 waitlisted members. It never adds members outside the snapshot. Each message
 identifies the gym and class, the date and time in the gym's timezone, the escaped
 plain text note, and the portal schedule link. The group is checked again at the
-send boundary and the transport is wrapped in `MemberEmail`.
-Both reads use the same indexed address-group reader as announcements. Content
+send boundary, including the member-email switch and household billing preferences.
+Address suppression uses the same indexed address-group reader as announcements. Content
 renders once inside the final guard; a reload or render failure before transport
 is definitely not accepted, and the remaining addresses are still processed.
 
@@ -158,6 +159,26 @@ definitely rejected (including a suppressed attempt) becomes failed with reason
 not_accepted. Recovery uses the member ID in each original delivery key even if
 the address group's first member has since changed. It checks for existing
 decisions with one member-filtered SQL lookup for the matching reservations.
+
+After the email pass, the job independently attempts notices texts through
+`createCancellationSms`. Email failure, missing SMTP or an email switch being off
+does not skip the text pass. `memberNoticePhones` selects each member's consented
+phone, falling back to the consented household billing phone. One text per phone
+names every covered member from the snapshot, prefixed with the gym name and
+including the class's date and time in the gym's timezone. Announcement consent
+alone never authorizes these texts. `MemberSms` rechecks notices consent, current
+phones and household membership, the independent member-SMS switch and daily cap.
+
+`sms_deliveries` keys are `schedule-cancel-sms:<sessionId>:<firstMemberId>`.
+A session-scoped keyed phone digest also prevents another text to the same
+destination after the first member leaves the group or groups converge. Neither
+the phone nor message content is stored in those keys or digests. Live attempts
+defer to a retry; accepted and uncertain attempts never resend. Only a definite
+non-send can retry. A failure on one phone does not strand the remaining phones.
+The optional constructor `sms: { resolver, phoneDigest }` enables this pass:
+`resolver` is the gym-aware `SmsResolver` and `phoneDigest` comes from
+`createSmsPhoneDigest(AUTH_SECRET)`. Without that injection the service sends only
+email; the application composition must provide it to enable member texts.
 
 `core/runtime.ts` calls
 `configureCancellationNotice(createCancellationNotice({ jobs, mailer, origin, ... }))`.

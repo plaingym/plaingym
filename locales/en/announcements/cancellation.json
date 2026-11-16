@@ -1,6 +1,7 @@
 {
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
   "subject": "Cancelled: {name}",
+  "sms": "{name} on {date} at {time} has been cancelled. Members: {names}.",
   "when": "{name} on {date} at {time} has been cancelled.",
   "members": "Booked or waitlisted members: {names}",
   "schedule": "View the schedule",

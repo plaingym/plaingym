@@ -4,13 +4,15 @@ import { auditEvents, classBookings, classSessions, forGym, members, writeAudit 
 import { z } from 'zod';
 import { idSchema } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
-import { createEmailDeliveries, MemberEmail, SmtpEmail, type Email } from '../../infra/email/index.js';
+import { createEmailDeliveries, DeliveryError, SmtpEmail, type Email } from '../../infra/email/index.js';
 import { defaultSucceededRetentionDays, type Jobs } from '../../infra/jobs/index.js';
 import { logInfo } from '../../core/log.js';
 import { createSmtpResolver } from '../settings/smtp.js';
 import { createGymSettingsAccessor, createSettingsService } from '../settings/settings.js';
 import { renderBookingPromotion } from '../../emails/bookings/bookings.js';
 import { promoteWaitlist, type BookingOptions } from './bookings.js';
+import { readMemberNoticeEmails } from './bookings.recipients.js';
+import { createBookingSms, type ClassNoticeSmsOptions } from './bookings.sms.js';
 
 export const promotionJob = 'bookings.promote';
 export const noticeJob = 'bookings.notice';
@@ -31,11 +33,14 @@ export function createBookingMailer(options: Parameters<typeof createSmtpResolve
 export interface BookingDeliveryOptions extends BookingOptions {
   jobs: Jobs;
   mailer(gymId: string): Promise<Email | null>;
+  sms?: ClassNoticeSmsOptions;
 }
 export function createBookingDelivery(options: BookingDeliveryOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const settings = options.settings ?? createGymSettingsAccessor({ scope });
   const deliveries = createEmailDeliveries({ scope, clock });
+  const sendSms = createBookingSms({ scope, clock, settings, ...(options.sms ? { sms: options.sms } : {}),
+    load: (gymId, bookingId) => readNotice(gymId, bookingId, true) });
   const noticeKey = (bookingId: string) => `booking-promotion:${bookingId}`;
   async function enqueueNotice(gymId: string, bookingId: string) {
     const gym = await settings.get(gymId);
@@ -85,34 +90,57 @@ export function createBookingDelivery(options: BookingDeliveryOptions) {
       cursor = pending.at(-1)!.id;
     }
   }
-  async function send(gymId: string, bookingId: string) {
-    const read = () => scope(gymId, async tx => {
+  async function readNotice(gymId: string, bookingId: string, includeSent = false) {
+    return scope(gymId, async tx => {
       const [promotion] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.targetId, bookingId), recentPromotion()));
       const [sent] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.targetId, bookingId), eq(auditEvents.action, 'booking.notice_sent')));
-      if (sent) return;
+      if (sent && !includeSent) return;
       if (!promotion) {
         logInfo('bookings.notice_skipped', { gymId, bookingId, reason: 'stale_or_missing_promotion' });
         return;
       }
-      const [row] = await tx.select({ booking: classBookings, session: classSessions, email: members.email, memberId: members.id })
+      const [row] = await tx.select({ booking: classBookings, session: classSessions, memberId: members.id })
         .from(classBookings).innerJoin(classSessions, eq(classSessions.id, classBookings.sessionId))
         .innerJoin(members, eq(members.id, classBookings.memberId)).where(and(eq(classBookings.id, bookingId),
           eq(classBookings.status, 'booked'), eq(classSessions.status, 'scheduled'), gt(classSessions.startsAt, clock.now()), isNull(members.anonymizedAt)));
       return row;
     });
+  }
+  async function sendEmail(gymId: string, bookingId: string) {
+    const read = () => readNotice(gymId, bookingId);
     const gym = await settings.get(gymId);
     if (!gym.memberEmailsEnabled || !await read()) return;
     const email = await options.mailer(gymId);
     if (!email) return;
     const row = await read();
-    if (!row?.email) return;
+    if (!row) return;
+    const [recipient] = await scope(gymId, tx => readMemberNoticeEmails(tx, gymId, [row.memberId]));
+    if (!recipient) return;
     const details = await createSettingsService({ scope }).get(gymId);
-    const message = await renderBookingPromotion({ gymName: details.name, name: row.session.name, startsAt: row.session.startsAt, timezone: gym.timezone });
-    const sender = new MemberEmail({ gymId, memberId: row.memberId, email, settings, forGym: scope });
+    const sender: Email = { async sendEmail() {
+      let message: Awaited<ReturnType<typeof renderBookingPromotion>>;
+      try {
+        if (!(await settings.get(gymId)).memberEmailsEnabled) return { status: 'suppressed', reason: 'disabled' };
+        const latest = await read();
+        if (!latest) return { status: 'suppressed', reason: 'opt_out' };
+        const [current] = await scope(gymId, tx => readMemberNoticeEmails(tx, gymId, [latest.memberId]));
+        if (!current || current.address !== recipient.address) return { status: 'suppressed', reason: 'opt_out' };
+        message = await renderBookingPromotion({ gymName: details.name, name: latest.session.name,
+          startsAt: latest.session.startsAt, timezone: gym.timezone, memberNames: [`${current.firstName} ${current.lastName}`] });
+      } catch (cause) { throw new DeliveryError('not_accepted', 'Promotion notice could not be prepared', { cause }); }
+      return email.sendEmail({ to: recipient.address, ...message });
+    } };
     // The job key doubles as the send-state key: an accepted or possibly accepted notice is never resent.
-    const result = await deliveries.send(gymId, noticeKey(bookingId), sender, { to: row.email, ...message });
+    const result = await deliveries.send(gymId, noticeKey(bookingId), sender, { to: recipient.address, subject: row.session.name, text: '', html: '' });
     if (result.status === 'suppressed' || (result.status === 'skipped' && result.state === 'unknown')) return;
     await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'booking.notice_sent', targetType: 'class_booking', targetId: bookingId, occurredAt: clock.now() }));
+  }
+  async function send(gymId: string, bookingId: string) {
+    // An email failure never prevents the text; when both fail, the email's error is reported.
+    let failure: unknown;
+    try { await sendEmail(gymId, bookingId); } catch (error) { failure = error; }
+    try { await sendSms(gymId, bookingId); } catch (error) { failure ??= error; }
+    if (failure) throw failure;
   }
   return { promote, request, sweep, send, enqueueNotice };
 }

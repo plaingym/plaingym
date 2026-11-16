@@ -164,8 +164,15 @@ captures demo texts. These tables have forced gym RLS. The switch defaults off;
 Go-live requires a readable provider before enabling it. The owner sets a daily
 cap from 1 to 100,000 (default 1,000); the SMS Health tile reports attempts and
 cap refusals for the gym-local day without phone numbers. Demo texts share the
-email outbox and never contact a provider. This infrastructure has no member
-sending routes or jobs.
+email outbox and never contact a provider. Class-cancellation and waitlist-promotion
+notice handlers accept an optional gym SMS resolver and keyed phone digest. When
+supplied by the application composition, each handler attempts its text after and
+independently of email, using notices consent and durable delivery keys. They
+prefer each member's consented phone, then the household billing phone, grouping
+cancellation texts by destination and naming all covered participants. Email also
+falls back to the household billing address when the member has none. See the
+[announcements](../apps/server/src/areas/announcements/README.md#class-cancellation-notices)
+and [bookings](../apps/server/src/areas/bookings/README.md#promotion-notices) module notes.
 
 ## Background jobs
 
