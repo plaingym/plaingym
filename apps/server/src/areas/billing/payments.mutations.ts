@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, desc, eq, isNull } from 'drizzle-orm';
-import { forGym, paymentMethods, payments, refunds, uuidv7 } from '@plaingym/db';
+import { forGym, paymentMethods, payments, refunds, uuidv7, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { onMinorUnitStep } from '@plaingym/shared/money';
@@ -30,6 +30,17 @@ const masked = (r: typeof paymentMethods.$inferSelect) => c.maskedPaymentMethodS
   id: r.id, createdAt: r.createdAt.toISOString(), householdId: r.householdId, brand: r.brand, last4: r.last4,
   expiryMonth: r.expiryMonth, expiryYear: r.expiryYear, isDefault: r.isDefault, revokedAt: r.revokedAt?.toISOString() ?? null,
 });
+
+/** After revoking a default, promote the newest active card. The caller holds the household lock in this transaction. */
+export async function promoteDefaultCard(tx: Transaction, context: MutationContext, clock: Clock, householdId: string) {
+  const [replacement] = await tx.select({ id: paymentMethods.id }).from(paymentMethods)
+    .where(and(eq(paymentMethods.householdId, householdId), isNull(paymentMethods.revokedAt)))
+    .orderBy(desc(paymentMethods.createdAt), desc(paymentMethods.id)).limit(1);
+  if (replacement) {
+    await tx.update(paymentMethods).set({ isDefault: true }).where(eq(paymentMethods.id, replacement.id));
+    await catalogAudit(tx, context, clock, 'billing.card.default_changed', 'payment_method', replacement.id, undefined, { householdId });
+  }
+}
 
 export function createPaymentMutations({ scope, clock, settings, transitions, jobs, paymentsFor, detachCard }: Options) {
   return {
@@ -92,15 +103,7 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
         const changed = (await tx.update(paymentMethods).set({ isDefault: false, revokedAt: card.revokedAt ?? clock.now() })
           .where(eq(paymentMethods.id, id)).returning())[0] ?? notFound();
         if (!card.revokedAt) await catalogAudit(tx, context, clock, 'billing.card.revoked', 'payment_method', id, undefined, { householdId });
-        if (card.isDefault) {
-          const [replacement] = await tx.select({ id: paymentMethods.id }).from(paymentMethods)
-            .where(and(eq(paymentMethods.householdId, householdId), isNull(paymentMethods.revokedAt)))
-            .orderBy(desc(paymentMethods.createdAt), desc(paymentMethods.id)).limit(1);
-          if (replacement) {
-            await tx.update(paymentMethods).set({ isDefault: true }).where(eq(paymentMethods.id, replacement.id));
-            await catalogAudit(tx, context, clock, 'billing.card.default_changed', 'payment_method', replacement.id, undefined, { householdId });
-          }
-        }
+        if (card.isDefault) await promoteDefaultCard(tx, context, clock, householdId);
         return changed;
       });
       // Queue before the immediate attempt: a Stripe outage leaves a revoked local card and durable retry.

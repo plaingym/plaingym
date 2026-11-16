@@ -141,7 +141,9 @@ default promotes the household's most recently added active card, ordered by
 `createdAt` and then ID descending, in the same transaction under the household
 lock, with a `billing.card.default_changed` audit. Removing a non-default card
 leaves the default alone; removing the only active card leaves no default, so
-automatic card payments need another card. Retrying removal of a revoked card
+automatic card payments need another card. The test-to-live Stripe switch shares
+this promotion when it revokes a default and keeps an imported active card.
+Retrying removal of a revoked card
 does not change the default or repeat these audits. Removal then queues
 a detach retry and attempts detachment outside the transaction. Revoked rows
 remain visible so staff can retry removal after an outage. No processor IDs leave

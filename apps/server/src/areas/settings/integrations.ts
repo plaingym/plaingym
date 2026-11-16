@@ -23,6 +23,7 @@ import { createStripeConnection, readStripeConfig, restrictedKeyMode, type Strip
 import { pauseRestoredBillingForStripe } from './go-live.restore.js';
 import { backupColumns, backupKeyPair, newBlobKey, recipientOf } from '../setup/backup-key.js';
 import { customerUnlinkedAction } from '../billing/customers.js';
+import { promoteDefaultCard } from '../billing/payments.mutations.js';
 import { latestTestSwitchId, stripeTestClearedAction as testClearedAction } from '../billing/stripe-writes.js';
 import { testCleared } from '../billing/transitions/store.js';
 import { cardImportAudits, linkedCustomer, testCards } from './integrations.query.js';
@@ -248,9 +249,14 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     await assertSettled(tx);
     const now = clock.now();
     const setups = await openSetups(tx);
-    // The preview's conditions (`testData`), read before anything changes: a card on a household whose customer is
-    // cleared is revoked with it.
-    const testCardIds = (await tx.select({ id: paymentMethods.id }).from(paymentMethods).where(testCards(tx, gymId))).map((row) => row.id);
+    // Card removal and default selection use this same lock. Read the flags after acquiring it, since a payer may
+    // have changed their default while the switch waited. A card goes with its cleared customer, whatever its source.
+    await tx.select({ id: households.id }).from(households).where(inArray(households.id,
+      tx.select({ id: paymentMethods.householdId }).from(paymentMethods).where(testCards(tx, gymId))))
+      .orderBy(households.id).for('update');
+    const testCardRows = await tx.select({ id: paymentMethods.id, householdId: paymentMethods.householdId, isDefault: paymentMethods.isDefault })
+      .from(paymentMethods).where(testCards(tx, gymId));
+    const testCardIds = testCardRows.map(row => row.id);
     const linked = await tx.select({ id: households.id, customerId: households.stripeCustomerId }).from(households)
       .where(linkedCustomer(tx, gymId, true)).for('update');
     const [kept] = await tx.select({ n: count() }).from(households)
@@ -276,6 +282,8 @@ export function createIntegrationsService(options: IntegrationsOptions) {
       cards.push(...await tx.update(paymentMethods).set({ revokedAt: now, isDefault: false })
         .where(and(inArray(paymentMethods.id, testCardIds.slice(index, index + 500)), isNull(paymentMethods.revokedAt)))
         .returning({ id: paymentMethods.id }));
+    for (const householdId of new Set(testCardRows.filter(row => row.isDefault).map(row => row.householdId)))
+      await promoteDefaultCard(tx, { gymId, actor: { kind: 'user', userId } }, clock, householdId);
     // Paid and void invoices keep their completed session's ID as history; nothing reads it with the new key.
     const sessions = payable.filter((row) => row.sessionId || row.reservedUntil);
     for (let index = 0; index < sessions.length; index += 500)

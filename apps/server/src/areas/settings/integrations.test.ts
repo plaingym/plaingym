@@ -253,6 +253,92 @@ describe('Settings → Payments: test to live', () => {
     households: await tx.select().from(households), cards: await tx.select().from(paymentMethods), invoices: await tx.select().from(invoices),
     attempts: await tx.select().from(paymentAttempts), payments: await tx.select().from(payments) }));
 
+  it.each([0, 1, 3])('replaces a revoked test default with the newest of %i kept active cards', async count => {
+    const gymId = uuidv7();
+    await factory('gyms', gymId);
+    const user = await factory('authUser', gymId), app = server({ gymId, userId: user.id });
+    expect((await saveTo(app, 'rk_test_default')).status).toBe(200);
+    const live = new StripePayments(gymId, { transport: account('rk_live_default'), webhookSecret: 'whsec_fixture', mode: 'live' });
+    const customer = await live.createCustomer({ email: 'imported@example.test', name: 'Imported', householdId: uuidv7(), idempotencyKey: gymId });
+    const home = await factory('households', gymId, { stripeCustomerId: customer.id });
+    const removed = await factory('paymentMethods', gymId, { householdId: home.id, isDefault: true });
+    // This newer test card must be revoked before choosing a replacement.
+    const testCard = await factory('paymentMethods', gymId, { householdId: home.id, createdAt: clock.now() });
+    const kept = [];
+    for (let index = 0; index < count; index++) {
+      const card = await factory('paymentMethods', gymId, { householdId: home.id,
+        createdAt: new Date(index === 0 ? '2026-10-20T12:00:00Z' : '2026-10-21T12:00:00Z') });
+      kept.push(card);
+      await factory('auditEvents', gymId, { action: 'payment_method.created', targetType: 'payment_method', targetId: card.id });
+    }
+    const revoked = await factory('paymentMethods', gymId, { householdId: home.id, revokedAt: clock.now(), createdAt: clock.now() });
+    const sibling = await factory('households', gymId, { stripeCustomerId: 'cus_ImportedSibling' });
+    const siblingCard = await factory('paymentMethods', gymId, { householdId: sibling.id, isDefault: true, createdAt: clock.now() });
+    await factory('auditEvents', gymId, { action: 'payment_method.created', targetType: 'payment_method', targetId: siblingCard.id });
+    const otherBefore = await snapshot(gymB);
+
+    expect((await saveTo(app, 'rk_live_default', { clearTestData: true })).status).toBe(200);
+    const state = await snapshot(gymId), newest = kept.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))[0];
+    expect(state.households.find(row => row.id === home.id)?.stripeCustomerId).toBe(home.stripeCustomerId);
+    expect(state.cards.filter(row => row.householdId === home.id && row.isDefault).map(row => row.id)).toEqual(newest ? [newest.id] : []);
+    for (const card of [removed, testCard])
+      expect(state.cards.find(row => row.id === card.id)).toEqual({ ...card, isDefault: false, revokedAt: clock.now() });
+    for (const card of kept)
+      expect(state.cards.find(row => row.id === card.id)).toEqual({ ...card, isDefault: card.id === newest?.id });
+    expect(state.cards.find(row => row.id === revoked.id)).toEqual(revoked);
+    expect(state.cards.find(row => row.id === siblingCard.id)).toEqual(siblingCard);
+    const changed = await audits(gymId, 'billing.card.default_changed');
+    expect(changed).toHaveLength(newest ? 1 : 0);
+    if (newest) expect(changed[0]).toMatchObject({ targetType: 'payment_method', targetId: newest.id,
+      actorKind: 'user', actorUserId: user.id, occurredAt: clock.now(), after: { householdId: home.id } });
+    expect(await snapshot(gymB)).toEqual(otherBefore);
+    // Rotating the live key cannot repeat the promotion or its audit.
+    accounts.set('rk_live_defaultrotated', account('rk_live_default'));
+    expect((await saveTo(app, 'rk_live_defaultrotated', { clearTestData: true })).status).toBe(200);
+    expect(await snapshot(gymId)).toEqual(state);
+    expect(await audits(gymId, 'billing.card.default_changed')).toEqual(changed);
+  });
+  it('keeps an imported default when the switch revokes only a non-default card', async () => {
+    const gymId = uuidv7();
+    await factory('gyms', gymId);
+    const user = await factory('authUser', gymId), app = server({ gymId, userId: user.id });
+    expect((await saveTo(app, 'rk_test_keptdefault')).status).toBe(200);
+    const home = await factory('households', gymId, { stripeCustomerId: 'cus_ImportedKept' });
+    const kept = await factory('paymentMethods', gymId, { householdId: home.id, isDefault: true });
+    await factory('auditEvents', gymId, { action: 'payment_method.created', targetType: 'payment_method', targetId: kept.id });
+    await factory('paymentMethods', gymId, { householdId: home.id });
+    expect((await saveTo(app, 'rk_live_keptdefault', { clearTestData: true })).status).toBe(200);
+    expect((await snapshot(gymId)).cards.find(row => row.id === kept.id)).toEqual(kept);
+    expect(await audits(gymId, 'billing.card.default_changed')).toHaveLength(0);
+  });
+  it('rolls back switch revocations, default promotion and their audits together', async () => {
+    const gymId = uuidv7();
+    await factory('gyms', gymId);
+    const user = await factory('authUser', gymId), app = server({ gymId, userId: user.id });
+    expect((await saveTo(app, 'rk_test_rollbackdefault')).status).toBe(200);
+    const home = await factory('households', gymId, { stripeCustomerId: 'cus_ImportedRollback' });
+    await factory('paymentMethods', gymId, { householdId: home.id, isDefault: true });
+    const kept = await factory('paymentMethods', gymId, { householdId: home.id });
+    await factory('auditEvents', gymId, { action: 'payment_method.created', targetType: 'payment_method', targetId: kept.id });
+    const before = await snapshot(gymId), gym = await row(gymId), beforeAudits = await audits(gymId, 'billing.card.default_changed');
+    let interrupted = false;
+    const scope: typeof database.forGym = (id, fn) => database.forGym(id, async tx => {
+      const result = await fn(tx);
+      if ((await tx.select({ id: auditEvents.id }).from(auditEvents).where(eq(auditEvents.action, 'integrations.stripe_test_cleared'))).length) {
+        interrupted = true;
+        throw new Error('Commit interrupted');
+      }
+      return result;
+    });
+    const failing = createIntegrationsService({ ...base, scope });
+    const broken = server({ gymId, userId: user.id, routesService: failing });
+    expect((await saveTo(broken, 'rk_live_rollbackdefault', { clearTestData: true })).status).toBe(500);
+    expect(interrupted).toBe(true);
+    expect(await snapshot(gymId)).toEqual(before);
+    expect(await row(gymId)).toEqual(gym);
+    expect(await audits(gymId, 'billing.card.default_changed')).toEqual(beforeAudits);
+    expect(await audits(gymId, 'integrations.stripe_test_cleared')).toHaveLength(0);
+  });
   it('clears exactly the test-mode references after the live key connects, in one audited change, and keeps the books', async () => {
     expect((await saveTo(appC(), 'rk_test_gymc')).status).toBe(200);
     const test = account('rk_test_gymc'), testConfig = (await stripeOf(gymC))!;
