@@ -3,6 +3,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { ApiError, apiErrorReasons, checked, createApiClient, createJsonTransport, onApiError, readApiError, reportApiRefusal } from './api.js';
 import { createBootstrapLoader, createShellServices, sessionDestination } from '../app/services.js';
 import { createShellTranslator } from './i18n.js';
+import { createBillingClient } from '../features/billing/catalog/api.js';
+import { bookingClient } from '../features/bookings/client.js';
+import { memberRequest } from '../features/members/api.js';
+import { createRanksClient } from '../features/ranks/api.js';
+import { createSetupClient } from '../features/setup/api.js';
+import { portalClient } from '../features/portal/schedule/client.js';
+import { createWaiversClient } from '../features/waivers/api.js';
+import { membersContracts } from '@plaingym/shared/contracts';
 
 describe('API transport', () => {
   it('reports refusals from custom typed clients and preserves their structured error bodies', async () => {
@@ -12,12 +20,14 @@ describe('API transport', () => {
       const client = createApiClient({ baseUrl: 'https://example.test', fetch: vi.fn<typeof fetch>().mockResolvedValue(Response.json(body, { status: 403 })) });
       const result = await client.POST('/api/demo/login', { body: { role: 'owner' } });
       expect(result.error).toEqual(body); expect(observe).toHaveBeenCalledOnce();
+      expect(() => checked(result)).toThrow(ApiError);
+      expect(observe).toHaveBeenCalledOnce();
       const custom = Response.json(body, { status: 403 });
       await reportApiRefusal(custom);
       expect(await custom.json()).toEqual(body); expect(observe).toHaveBeenCalledTimes(2);
     } finally { stop(); }
   });
-  it('reports structured API refusals from JSON and typed answers without replacing fetch', async () => {
+  it('reports JSON refusals once while error construction and mapping have no side effects', async () => {
     const body = { error: { code: 'forbidden', details: { reason: ['demo_showcase_read_only'] } } };
     const observe = vi.fn(), unsubscribe = onApiError(observe), original = globalThis.fetch;
     try {
@@ -25,11 +35,48 @@ describe('API transport', () => {
       await expect(createJsonTransport(fetcher)('/api/demo/login', {})).rejects.toMatchObject({ status: 403, reason: ['demo_showcase_read_only'] });
       expect(observe).toHaveBeenCalledOnce();
       expect(() => checked({ response: new Response(null, { status: 403 }), error: body })).toThrow(ApiError);
-      expect(observe).toHaveBeenCalledTimes(2);
+      new ApiError(403, 'forbidden', ['demo_showcase_read_only']);
+      expect(observe).toHaveBeenCalledOnce();
       expect(globalThis.fetch).toBe(original);
     } finally { unsubscribe(); }
     new ApiError(403, 'forbidden', ['demo_showcase_read_only']);
-    expect(observe).toHaveBeenCalledTimes(2);
+    expect(observe).toHaveBeenCalledOnce();
+  });
+  it.each([
+    ['catalog', (fetcher: typeof fetch) => createBillingClient(fetcher).plans()],
+    ['bookings', () => bookingClient.members('')],
+    ['members', () => memberRequest(membersContracts.listMembers.response, '/api/members')],
+    ['ranks', (fetcher: typeof fetch) => createRanksClient(fetcher).systems()],
+    ['rank members', (fetcher: typeof fetch) => createRanksClient(fetcher).members()],
+    ['setup catalog', (fetcher: typeof fetch) => createSetupClient(fetcher).catalog()],
+    ['setup magic link', (fetcher: typeof fetch) => createSetupClient(fetcher).magicLink('owner@example.test')],
+    ['portal filtered read', () => portalClient.attendance('019a0000-0000-7000-8000-000000000001', 0, '019a0000-0000-7000-8000-000000000002')],
+  ] as const)('reports one refusal when the %s client also throws an ApiError', async (_name, call) => {
+    const reason = ['demo_showcase_read_only'];
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ error: { details: { reason } } }, { status: 403 }));
+    const observe = vi.fn(), stop = onApiError(observe);
+    vi.stubGlobal('fetch', fetcher);
+    try {
+      await expect(call(fetcher)).rejects.toMatchObject({ status: 403, reason });
+      expect(fetcher).toHaveBeenCalledOnce();
+      expect(observe).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 403, reason }));
+    } finally { stop(); vi.unstubAllGlobals(); }
+  });
+  it.each([200, 400, 409, 429, 503])('does not notify refusal listeners for HTTP %s', async status => {
+    const observe = vi.fn(), stop = onApiError(observe);
+    try {
+      await reportApiRefusal(Response.json({ error: { details: { reason: ['demo_showcase_read_only'] } } }, { status }));
+      expect(observe).not.toHaveBeenCalled();
+    } finally { stop(); }
+  });
+  it.each([undefined, 'Uploads are disabled in the demo'])('reports one refusal through the nested waiver transport (message: %s)', async message => {
+    const reason = ['demo_showcase_read_only'], observe = vi.fn(), stop = onApiError(observe);
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ error: { code: 'forbidden', message, details: { reason } } }, { status: 403 }));
+    try {
+      await expect(createWaiversClient(fetcher).call('listTemplates')).rejects.toBeInstanceOf(Error);
+      expect(fetcher).toHaveBeenCalledOnce();
+      expect(observe).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 403, reason }));
+    } finally { stop(); }
   });
   it('only exposes bounded messages allowed by status, code and optional exact text', async () => {
     const body = { error: { code: 'forbidden', message: 'Uploads are disabled in the demo', details: { reason: ['demo'] } } };

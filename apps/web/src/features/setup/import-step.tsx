@@ -11,7 +11,7 @@ import { Label } from '../../components/ui/label.js';
 import { Select } from '../../components/ui/select.js';
 import { Alert } from '../../components/ui/alert.js';
 import { t } from '../../lib/i18n.js';
-import { ApiError, apiErrorReasons, createJsonTransport } from '../../lib/api.js';
+import { ApiError, apiErrorReasons, createJsonTransport, reportApiRefusal } from '../../lib/api.js';
 import { createSetupClient } from './api.js';
 import { SetupActions, SetupSecondaryActions } from './actions.js';
 
@@ -62,7 +62,10 @@ export function ImportStep({ fetcher = fetch, pollMs = 1500 }: { fetcher?: typeo
   const uploadFile = (file: File) => run(async () => {
     const form = new FormData(); form.set('file', file);
     const response = await fetcher('/api/imports/uploads', { method: 'POST', body: form, credentials: 'same-origin', redirect: 'error' });
-    if (!response.ok) throw new ApiError(response.status, 'request_failed', await apiErrorReasons(response));
+    if (!response.ok) {
+      await reportApiRefusal(response);
+      throw new ApiError(response.status, 'request_failed', await apiErrorReasons(response));
+    }
     const data = parseResponse(importUploadSchema, (await response.json() as { data: unknown }).data);
     setUpload(data); setMapping(data.suggestedMapping ?? []); setJob(undefined);
   });
@@ -133,7 +136,10 @@ function ImportIssues({ id, fetcher }: { id: string; fetcher: typeof fetch }) {
     void fetcher(`/api/imports/${encodeURIComponent(id)}/errors?limit=50&offset=${offset}`, {
       credentials: 'same-origin', redirect: 'error', headers: { Accept: 'application/json' },
     }).then(async (response) => {
-      if (!response.ok) throw new ApiError(response.status, 'request_failed', await apiErrorReasons(response));
+      if (!response.ok) {
+        await reportApiRefusal(response);
+        throw new ApiError(response.status, 'request_failed', await apiErrorReasons(response));
+      }
       const parsed = parseResponse(importsContracts.errors.response, await response.json());
       if (active) setData(parsed);
     }).catch(() => { if (active) setFailed(true); });

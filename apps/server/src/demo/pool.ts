@@ -122,7 +122,12 @@ export function createDemoPool(options: {
     });
     // A durable claim stays inaccessible until its gym-scoped private transition and audit commit together.
     // If this process ends here, refill finishes the claim instead of allocating that ticket a second time.
-    for (const gym of allocated.changes) await finishAllocation(gym);
+    if (allocated.own) await finishAllocation(allocated.own);
+    for (const gym of allocated.changes) {
+      if (gym === allocated.own) continue;
+      try { await finishAllocation(gym); }
+      catch (error) { logError('demo.allocation_failed', { gymId: gym.id }, error); }
+    }
     return { gym: allocated.own, count: allocated.changes.length };
   }
   async function progress(ticket: string) {

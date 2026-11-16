@@ -18,8 +18,13 @@ export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, readonly reason: readonly string[] = []) {
     super('Request failed');
     this.name = 'ApiError';
-    for (const listener of errorListeners) listener(this);
   }
+}
+/** Notify once at the response boundary; constructing or mapping an error has no side effects. */
+export function notifyApiRefusal(status: number, reasons: readonly string[]): void {
+  if (status !== 403 || !reasons.length) return;
+  const error = new ApiError(status, 'forbidden', reasons);
+  for (const listener of errorListeners) listener(error);
 }
 /** Require a successful typed-client response before validating its data. */
 export function checked<T>(result: { response: Response; data?: T; error?: unknown }): T {
@@ -34,7 +39,7 @@ function reasonsFrom(body: unknown): readonly string[] {
 export async function reportApiRefusal(response: Response): Promise<void> {
   if (response.status === 403) {
     const reason = await apiErrorReasons(response);
-    if (reason.length) new ApiError(response.status, 'forbidden', reason);
+    notifyApiRefusal(response.status, reason);
   }
 }
 export interface ErrorMessageRule { status: number; code: string; message?: string }
@@ -67,7 +72,9 @@ export function createJsonTransport(fetcher?: typeof fetch) {
     if (!response.ok) {
       // Never display arbitrary server/SQL messages to the user.
       const body: unknown = await response.json().catch(() => undefined);
-      throw new ApiError(response.status, response.status === 429 ? 'rate_limited' : 'request_failed', reasonsFrom(body));
+      const reasons = reasonsFrom(body);
+      notifyApiRefusal(response.status, reasons);
+      throw new ApiError(response.status, response.status === 429 ? 'rate_limited' : 'request_failed', reasons);
     }
     return await response.json() as T;
   };

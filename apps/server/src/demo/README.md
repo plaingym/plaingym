@@ -48,7 +48,9 @@ row locks. Ready pool gyms go to the oldest live ticket before a new visitor.
 Position includes unready pool seeds ahead of the ticket; expired tickets release
 their reservations without seeding them. Allocation first records a durable claim,
 then commits the private transition and its audit in that gym's transaction. A
-restart completes any unfinished claim. A restart discards an interrupted seed and seeds a fresh gym instead;
+request finishes its own claim first. Failures finishing older visitors' claims
+are logged and left for refill to recover, so they do not fail the new request.
+A restart also completes unfinished claims. A restart discards an interrupted seed and seeds a fresh gym instead;
 waiting tickets move to the replacement. A durable `demo.replace-seed` job saves
 the ticket before deletion and resumes an idempotent replacement bootstrap.
 Stripe rate limits back off with the

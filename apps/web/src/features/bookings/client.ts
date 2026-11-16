@@ -2,14 +2,17 @@
 import { parseResponse } from '../../lib/response.js';
 import { bookingsContracts, membersContracts, scheduleContracts, type CreateBookingRequest } from '@plaingym/shared/contracts';
 import { addDays, localMidnight } from '@plaingym/shared/time';
-import { ApiError, apiErrorReasons } from '../../lib/api.js';
+import { ApiError, apiErrorReasons, reportApiRefusal } from '../../lib/api.js';
 
 async function request(path: string, query: Record<string, string | number> = {}, body?: unknown) {
   const params = new URLSearchParams(Object.entries(query).map(([key, value]) => [key, String(value)]));
   const response = await fetch(path + (params.size ? '?' + params : ''), { method: body === undefined ? 'GET' : 'POST',
     credentials: 'same-origin', redirect: 'error', headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-  if (!response.ok) throw new ApiError(response.status, 'booking_request_failed', await apiErrorReasons(response));
+  if (!response.ok) {
+    await reportApiRefusal(response);
+    throw new ApiError(response.status, 'booking_request_failed', await apiErrorReasons(response));
+  }
   return response.json() as Promise<unknown>;
 }
 export const bookingClient = {

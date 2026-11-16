@@ -238,9 +238,9 @@ describe('billing calendar', () => {
     }
   });
   it.each([
-    ['America/Vancouver', '2026-03-09T00:30:00Z', '2026-03-08', '2026-04-08'],
-    ['America/Vancouver', '2026-11-01T08:30:00Z', '2026-11-01', '2026-12-01'],
-    ['America/Vancouver', '2026-11-01T09:30:00Z', '2026-11-01', '2026-12-01'],
+    ['America/Los_Angeles', '2026-03-09T00:30:00Z', '2026-03-08', '2026-04-08'],
+    ['America/Los_Angeles', '2026-11-01T08:30:00Z', '2026-11-01', '2026-12-01'],
+    ['America/Los_Angeles', '2026-11-01T09:30:00Z', '2026-11-01', '2026-12-01'],
     ['Australia/Sydney', '2026-10-03T16:30:00Z', '2026-10-04', '2026-11-04'],
   ])('uses the gym calendar on a DST boundary in %s (%s)', (timezone, instant, dueOn, nextDueOn) => {
     const date = localDate(new Date(instant), timezone);

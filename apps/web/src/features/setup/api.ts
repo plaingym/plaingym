@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { parseResponse } from '../../lib/response.js';
 import { setupContracts, ranksContracts } from '@plaingym/shared/contracts';
-import { ApiError, apiErrorReasons } from '../../lib/api.js';
+import { ApiError, apiErrorReasons, reportApiRefusal } from '../../lib/api.js';
 
 /** The server's refusal codes (`details`), never its message. */
 async function refusalCodes(response: Response): Promise<string[]> {
@@ -31,19 +31,28 @@ export function createSetupClient(fetcher: typeof fetch = fetch) {
           ...(contract.gate === 'uninitialized_install' && name !== 'status' && token ? { 'X-Setup-Token': token } : {}) },
         ...(body ? { body: JSON.stringify(body) } : {}),
       });
-      if (!response.ok) throw new ApiError(response.status, 'request_failed', await refusalCodes(response));
+      if (!response.ok) {
+        await reportApiRefusal(response);
+        throw new ApiError(response.status, 'request_failed', await refusalCodes(response));
+      }
       if (name === 'finish') sessionStorage.removeItem('setup.token');
       return parseResponse(contract.response, await response.json()).data as ReturnType<typeof setupContracts[K]['response']['parse']>['data'];
     },
     async catalog() {
       const response = await fetcher(ranksContracts.catalog.path, { credentials: 'same-origin', redirect: 'error' });
-      if (!response.ok) throw new ApiError(response.status, 'request_failed', await apiErrorReasons(response));
+      if (!response.ok) {
+        await reportApiRefusal(response);
+        throw new ApiError(response.status, 'request_failed', await apiErrorReasons(response));
+      }
       return parseResponse(ranksContracts.catalog.response, await response.json()).data;
     },
     async magicLink(email: string) {
       const response = await fetcher('/api/auth/sign-in/magic-link', { method: 'POST', credentials: 'same-origin', redirect: 'error',
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, callbackURL: '/setup', errorCallbackURL: '/setup' }) });
-      if (!response.ok) throw new ApiError(response.status, 'request_failed', await apiErrorReasons(response));
+      if (!response.ok) {
+        await reportApiRefusal(response);
+        throw new ApiError(response.status, 'request_failed', await apiErrorReasons(response));
+      }
     },
   };
 }

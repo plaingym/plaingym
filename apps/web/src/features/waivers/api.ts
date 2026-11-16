@@ -7,18 +7,21 @@ export class WaiverRequestError extends Error {}
 export function createWaiversClient(fetcher: typeof fetch = fetch) {
   const transport: typeof fetch = async (url, init) => {
     const response = await fetcher(url, init);
-    await reportApiRefusal(response);
     if (response.status === 409 || response.status === 403 || response.status === 429 || (response.status === 400 && String(url).startsWith('/api/waivers/template'))) {
       const { message } = await readApiError(response, [
         { status: 400, code: 'invalid_request' }, { status: 409, code: 'conflict' }, { status: 429, code: 'rate_limited' },
         { status: 403, code: 'forbidden', message: t('demo/demo:uploadsDisabled') },
       ]);
-      if (message) throw new WaiverRequestError(message);
+      if (message) {
+        await reportApiRefusal(response);
+        throw new WaiverRequestError(message);
+      }
     }
     return response;
   };
   return { uploadDocument: async (file: File) => {
     const response = await transport(waiverContracts.uploadDocument.path, { method: 'POST', headers: { 'Content-Type': 'application/pdf' }, body: file });
+    await reportApiRefusal(response);
     if (!response.ok) throw new Error('Document upload failed');
     return waiverDocumentResponseSchema.parse(await response.json());
   }, call: <K extends keyof typeof waiverContracts>(name: K, input?: unknown, params: Record<string, string> = {}, query: Record<string, string | number> = {}) =>

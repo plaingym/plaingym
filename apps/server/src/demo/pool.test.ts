@@ -66,21 +66,38 @@ it('keeps a recovered ticket ahead of later visitors when replacement creates a 
   expect(await f.pool.progress(second.ticket)).toHaveProperty('pending', true);
 });
 
-it('recovers a durable allocation claim if its private transition fails after the ticket moves', async () => {
+it.each([false, true])('recovers another ticket claim without failing a visitor request (own claim: %s)', async ownClaim => {
   const f = fixture(), pending = await f.pool.request({ role: 'student', page: '/portal/schedule' });
   if (!('pending' in pending)) throw new Error('Expected ticket');
   const ready = await f.service.reserve('pool'); await f.service.prepare(ready.gymId);
+  const own = ownClaim ? await f.service.reserve('pool') : undefined;
+  if (own) await f.service.prepare(own.gymId);
+  const finished: string[] = [];
   const scope: typeof db.forGym = async (gymId, fn) => {
+    finished.push(gymId);
     if (gymId === ready.gymId) throw new Error('Allocation transaction unavailable');
     return db.forGym(gymId, fn);
   };
-  await expect(f.makePool({ scope }).request({})).rejects.toThrow('Allocation transaction unavailable');
+  const visitor = await f.makePool({ scope }).request({});
+  expect(visitor).toMatchObject(own ? { gymId: own.gymId } : { pending: true });
+  expect(demoCreationResponse.safeParse({ data: visitor }).success).toBe(true);
+  if (own) expect(finished.slice(0, 2)).toEqual([own.gymId, ready.gymId]);
   expect(sandboxSettings((await rows()).find(row => row.id === ready.gymId)?.settings)).toMatchObject({ kind: 'queued', allocationPending: true });
   await f.pool.refill();
   const complete = await f.pool.progress(pending.ticket);
   expect(complete).toMatchObject({ gymId: ready.gymId });
   if (!('gymId' in complete)) throw new Error('Expected copy');
   expect((await f.pool.handoff(complete.gymId, complete.handoffToken, '192.0.2.1')).redirect).toBe('/portal/schedule');
+  if ('pending' in visitor) expect(await f.pool.progress(visitor.ticket)).toHaveProperty('gymId');
+});
+
+it('still fails a visitor request when its own private transition fails', async () => {
+  const f = fixture(), ready = await f.service.reserve('pool'); await f.service.prepare(ready.gymId);
+  const scope: typeof db.forGym = async () => { throw new Error('Own allocation unavailable'); };
+  await expect(f.makePool({ scope }).request({})).rejects.toThrow('Own allocation unavailable');
+  expect(sandboxSettings((await rows()).find(row => row.id === ready.gymId)?.settings)).toMatchObject({ allocationPending: true });
+  await f.pool.refill();
+  expect(sandboxSettings((await rows()).find(row => row.id === ready.gymId)?.settings)).toMatchObject({ kind: 'private' });
 });
 
 it('keeps refilling past an expired allocation claim whose cleanup fails', async () => {
@@ -91,7 +108,7 @@ it('keeps refilling past an expired allocation claim whose cleanup fails', async
     if (gymId === ready.gymId) throw new Error('Allocation transaction unavailable');
     return db.forGym(gymId, fn);
   };
-  await expect(f.makePool({ scope }).request({})).rejects.toThrow('Allocation transaction unavailable');
+  await expect(f.makePool({ scope }).request({})).resolves.toHaveProperty('pending', true);
   f.removeUploads.mockImplementation(async gymId => { if (gymId === ready.gymId) throw new Error('Storage unavailable'); });
   f.clock.advance(3_600_000);
   await f.pool.refill();

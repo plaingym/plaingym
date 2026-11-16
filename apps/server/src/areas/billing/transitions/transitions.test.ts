@@ -28,6 +28,8 @@ import { effectCreated, effectCompleted, effectPublished } from './store.js';
 import { refundRetryWindowMs, refundSettleSkewMs } from './lapsed-refunds.js';
 import { invoiceTransitionsContract } from '../../../core/interfaces/invoice-transitions.contract.js';
 import type { InvoiceEffect } from '../../../core/interfaces/invoice-transitions.js';
+import { registerBillingWebhookHandlers } from '../webhooks/handlers/index.js';
+import type { WebhookHandler } from '../webhooks/inbox.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 it.each([[32, 'CAD'], [1255, 'KWD']] as const)('sends manual payment guidance for %s %s without minting pay links', async (amountCents, currency) => {
@@ -44,9 +46,9 @@ it.each([[32, 'CAD'], [1255, 'KWD']] as const)('sends manual payment guidance fo
 });
 async function fixture(kind: 'cycle' | 'one_off' = 'cycle', currency = 'CAD') {
   const gymId = uuidv7();
-  await factory('gyms', gymId, { currency, timezone: 'America/Vancouver', billingEnabled: true, memberEmailsEnabled: true });
+  await factory('gyms', gymId, { currency, timezone: 'America/Los_Angeles', billingEnabled: true, memberEmailsEnabled: true });
   const clock = new TestClock('2028-03-10T17:00:00Z'), context = { gymId, actor: { kind: 'system' as const } };
-  const household = await factory('households', gymId, { email: 'payer@example.invalid' });
+  const household = await factory('households', gymId, { email: 'payer@example.invalid', stripeCustomerId: 'cus_test' });
   const member = await factory('members', gymId, { householdId: household.id, email: household.email });
   const plan = await factory('plans', gymId, { currency });
   const membership = await factory('memberships', gymId, { householdId: household.id, memberId: member.id, planId: plan.id, currency });
@@ -325,7 +327,7 @@ describe('invoice transitions with real PostgreSQL', () => {
     f.clock.set('2028-03-10T17:00:02Z');
     const job = f.jobs.jobs.find(j => j.status === 'queued' && j.runAt <= f.clock.now())!;
     await f.effects.run((job.payload as { effectId: string }).effectId,
-      { jobId: job.id, gymId: f.gymId, timezone: 'America/Vancouver', attempt: 2, clock: f.clock });
+      { jobId: job.id, gymId: f.gymId, timezone: 'America/Los_Angeles', attempt: 2, clock: f.clock });
     expect(sent).toHaveBeenCalledTimes(1);
     expect((await f.read()).refunds).toMatchObject([{ status: 'succeeded', processorId: lost!.id, taggedAt: null }]);
   });
@@ -454,7 +456,7 @@ describe('invoice transitions with real PostgreSQL', () => {
     const job = f.jobs.jobs.find(j => j.status === 'queued' && j.runAt <= f.clock.now())!;
     const sent = vi.spyOn(f.provider, 'refund');
     await restored.run((job.payload as { effectId: string }).effectId,
-      { jobId: job.id, gymId: f.gymId, timezone: 'America/Vancouver', attempt: 2, clock: f.clock });
+      { jobId: job.id, gymId: f.gymId, timezone: 'America/Los_Angeles', attempt: 2, clock: f.clock });
     expect(sent).not.toHaveBeenCalled();
     expect((await f.read()).refunds[0]!.status).toBe('succeeded');
     const changes = await f.provider.listChangesSince(new Date('2028-03-10T00:00:00Z'));
@@ -837,7 +839,7 @@ describe('invoice transitions with real PostgreSQL', () => {
     const [effectId] = (await f.read()).audits.filter(row => row.action === effectCreated
       && (row.after as { notice?: string }).notice === 'refund_failed').map(row => row.targetId);
     // Nor run this gym's notice work.
-    await expect(stranger.effects.run(effectId!, { jobId: 'job_cross', gymId: stranger.gymId, timezone: 'America/Vancouver',
+    await expect(stranger.effects.run(effectId!, { jobId: 'job_cross', gymId: stranger.gymId, timezone: 'America/Los_Angeles',
       attempt: 1, clock: stranger.clock })).rejects.toMatchObject({ code: 'not_found' });
     const strangerSent = stranger.email.messages.length, sent = f.email.messages.length;
     await f.drain(); await stranger.drain();
@@ -854,6 +856,38 @@ describe('invoice transitions with real PostgreSQL', () => {
     const paid = await f.provider.findCharge({ kind: 'charge', id: f.success.paymentIntentId });
     await expect(applyChargeOutcome(f.transitions, { ...f.context, gymId: uuidv7() }, f.success, paid)).rejects.toMatchObject({ code: 'conflict' });
     expect((await f.read()).payments).toEqual([]);
+  });
+  it.each(['charge', 'checkout'] as const)('records and refunds a late FakePayments %s webhook after a void, including replay', async kind => {
+    const f = await fixture();
+    await f.transitions.cardFailed(f.context, f.failure);
+    const session = kind === 'checkout' ? await f.provider.createCheckout({ mode: 'payment', customerId: 'cus_test',
+      invoiceId: f.invoice.id, amount: f.invoice.amountCents, currency: 'cad', saveForOffSession: false,
+      successUrl: 'https://gym.example.invalid', cancelUrl: 'https://gym.example.invalid', idempotencyKey: 'late-checkout' }) : undefined;
+    // The checkout is paid after the void: a provider that accepts a payment on a session it should have expired.
+    await f.transitions.voidInvoice(f.context, { invoiceId: f.invoice.id, reason: 'Unpaid invoice' });
+    const voided = (await f.read()).invoice;
+    if (session) f.provider.completeCheckout(session.id);
+    else await succeed(f);
+    const handlers = new Map<string, WebhookHandler>();
+    registerBillingWebhookHandlers({ register(type, handler) { handlers.set(type, handler); } },
+      { ...f.options, transitions: f.transitions });
+    const type = session ? 'checkout.session.completed' : 'payment_intent.succeeded';
+    const event = { id: 'evt_late', type, gymId: f.gymId,
+      objectId: session?.id ?? f.success.paymentIntentId, objectKind: kind };
+    const context = { gymId: f.gymId, timezone: 'America/Los_Angeles', clock: f.clock, attempt: 1,
+      jobId: uuidv7(), payments: f.provider };
+    const refund = vi.spyOn(f.provider, 'refund');
+    await handlers.get(type)!(event, context);
+    await handlers.get(type)!({ ...event, id: 'evt_late_again' }, context);
+    await f.drain(); await f.drain();
+    const rows = await f.read();
+    expect(rows.invoice).toEqual(voided);
+    expect(rows.payments).toHaveLength(1);
+    expect(rows.attempts).toMatchObject([{ status: session ? 'failed' : 'succeeded' }]);
+    expect(rows.refunds).toMatchObject([{ status: 'succeeded', amountCents: f.invoice.amountCents, reason: 'duplicate_payment' }]);
+    expect(refund).toHaveBeenCalledOnce();
+    expect(rows.audits.find(row => row.action === 'billing.payment.recorded')?.after).toMatchObject({ accepted: false });
+    expect(f.email.messages.filter(message => message.to === 'payer@example.invalid')).toHaveLength(0);
   });
   it('rejects wrong amounts, identity reuse, mismatched attempts and cross-gym resources, and refunds void payments', async () => {
     const f = await fixture(), stranger = await fixture();

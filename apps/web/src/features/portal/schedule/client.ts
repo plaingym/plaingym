@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { bookingsContracts, portalContracts, portalScheduleContracts, type PortalContext, type PortalScheduleSession } from '@plaingym/shared/contracts';
-import { ApiError, apiErrorReasons, createJsonTransport } from '../../../lib/api.js';
+import { ApiError, apiErrorReasons, createJsonTransport, reportApiRefusal } from '../../../lib/api.js';
 import { parseResponse } from '../../../lib/response.js';
 import { householdTransport } from '../household/api.js';
 
@@ -77,6 +77,9 @@ async function fetchJson(path: string, householdId?: string): Promise<unknown> {
   if (!path.startsWith('/api/portal/')) throw new Error('Expected a portal API path');
   const fetcher = householdId ? householdTransport(householdId) : fetch;
   const response = await fetcher(path, { credentials: 'same-origin', redirect: 'error', headers: { Accept: 'application/json' } });
-  if (!response.ok) throw new ApiError(response.status, response.status === 429 ? 'rate_limited' : 'request_failed', await apiErrorReasons(response));
+  if (!response.ok) {
+    await reportApiRefusal(response);
+    throw new ApiError(response.status, response.status === 429 ? 'rate_limited' : 'request_failed', await apiErrorReasons(response));
+  }
   return response.json();
 }

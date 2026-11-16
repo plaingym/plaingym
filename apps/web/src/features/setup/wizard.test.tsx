@@ -7,7 +7,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createWebRegistries } from '@plaingym/shared';
 import { ShellServicesContext } from '../../app/context.js';
 import type { ShellServices } from '../../app/services.js';
-import { ApiError } from '../../lib/api.js';
+import { ApiError, onApiError } from '../../lib/api.js';
 import { SetupWizard } from './wizard.js';
 import { createSetupClient } from './api.js';
 import { createRegistries, type ExtensionView } from '../../lib/registries.js';
@@ -61,6 +61,14 @@ function start(step = 0, completedSteps = Array.from({ length: step }, (_, i) =>
 beforeEach(() => { sessionStorage.clear(); localStorage.clear(); vi.clearAllMocks(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 describe('setup wizard', () => {
+  it('reports a structured setup refusal once and keeps its reason codes on the thrown error', async () => {
+    const reason = ['demo_showcase_read_only'], observe = vi.fn(), stop = onApiError(observe);
+    const client = createSetupClient(async () => Response.json({ error: { details: { reason } } }, { status: 403 }));
+    try {
+      await expect(client.call('status')).rejects.toMatchObject({ status: 403, reason });
+      expect(observe).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 403, reason }));
+    } finally { stop(); }
+  });
   it('shows only the import Back action while choosing a CSV', async () => {
     start(8, [0, 1, 2, 3, 4, 5, 6], undefined, { backupsLater: true });
     await userEvent.click(await screen.findByRole('button', { name: 'Import a CSV' }));

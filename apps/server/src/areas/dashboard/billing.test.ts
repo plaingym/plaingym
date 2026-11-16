@@ -17,14 +17,14 @@ import { createBillingDashboardService, createSkippedCollectionsProvider } from 
 import { createBillingDashboardRoutes } from './billing.routes.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
-const clock = new TestClock('2026-11-01T00:30:00Z'); // Still October 31 in Vancouver, across the DST change.
+const clock = new TestClock('2026-11-01T00:30:00Z'); // Still October 31 in Los Angeles; the seven-day forecast crosses the fall clock change.
 const settings = createGymSettingsAccessor({ scope: database.forGym, clock });
 const services = { settings,
   scope: database.forGym,
 };
 const service = createBillingDashboardService(services);
 async function fixture(currency = 'CAD') {
-  const gymId = uuidv7(); await factory('gyms', gymId, { timezone: 'America/Vancouver', currency, billingEnabled: true });
+  const gymId = uuidv7(); await factory('gyms', gymId, { timezone: 'America/Los_Angeles', currency, billingEnabled: true });
   const user = await factory('authUser', gymId), household = await factory('households', gymId);
   const member = await factory('members', gymId, { householdId: household.id });
   const plan = await factory('plans', gymId);
@@ -37,7 +37,7 @@ async function fixture(currency = 'CAD') {
 }
 function app(f: Awaited<ReturnType<typeof fixture>>, roles: readonly StaffRole[] = ['owner'], principal?: Principal) {
   return createApp({ clock, authorize, skipSetup: true,
-    resolveGym: async (c, next) => { c.set('context', { ...c.get('context'), gym: { gymId: f.gymId, timezone: 'America/Vancouver', enabledModules: new Set() } }); await next(); },
+    resolveGym: async (c, next) => { c.set('context', { ...c.get('context'), gym: { gymId: f.gymId, timezone: 'America/Los_Angeles', enabledModules: new Set() } }); await next(); },
     session: async (c, next) => { c.set('context', { ...c.get('context'), principal: principal ?? { kind: 'staff', gymId: f.gymId, userId: f.user.id, roles } }); await next(); },
     contributions: { routes: createBillingDashboardRoutes(() => service) },
   });

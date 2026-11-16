@@ -30,7 +30,7 @@ const database = useTestDatabase(), factory = createFactories(database);
 const origin = 'https://settings.example.test';
 async function fixture(executeRetries = false) {
   const gymId = uuidv7();
-  await factory('gyms', gymId, { timezone: 'America/Vancouver', memberEmailsEnabled: true, billingEnabled: true });
+  await factory('gyms', gymId, { timezone: 'America/Los_Angeles', memberEmailsEnabled: true, billingEnabled: true });
   const userId = (await factory('authUser', gymId)).id;
   const household = await factory('households', gymId, { email: 'payer@example.test', ...(executeRetries ? { stripeCustomerId: 'cus_test' } : {}) });
   const clock = new TestClock('2028-03-10T17:00:00Z'), options = { scope: database.forGym, clock };
@@ -62,7 +62,7 @@ async function fixture(executeRetries = false) {
   const audits = () => database.forGym(gymId, tx => tx.select().from(auditEvents));
   function server(role: StaffRole = 'owner', principalGym = gymId) {
     return createApp({ clock, origin, authorize, contributions: { routes: createSettingsRoutes(service) },
-      resolveGym: async (c, next) => { c.set('context', { ...c.get('context'), gym: { gymId, timezone: 'America/Vancouver', enabledModules: new Set() } }); await next(); },
+      resolveGym: async (c, next) => { c.set('context', { ...c.get('context'), gym: { gymId, timezone: 'America/Los_Angeles', enabledModules: new Set() } }); await next(); },
       session: async (c, next) => { c.set('context', { ...c.get('context'), principal: { kind: 'staff', gymId: principalGym, userId, roles: [role] } }); await next(); },
     });
   }
@@ -143,7 +143,7 @@ describe('billing retry rules through real PostgreSQL and application compositio
     await f.drain();
     // Effects in one transition share a millisecond, so their audit IDs (and queue order) are unordered.
     expect(f.jobs.jobs.filter(job => job.status === 'queued').map(job => job.runAt.toISOString()).sort())
-      .toEqual(['2028-03-11T16:00:00.000Z', '2028-04-07T16:00:00.000Z']);
+      .toEqual(['2028-03-11T17:00:00.000Z', '2028-04-07T16:00:00.000Z']);
     expect(f.email.messages).toHaveLength(1);
   });
   it('keeps legacy dunning without a schedule snapshot or queued jobs unchanged', async () => {
@@ -186,14 +186,14 @@ describe('billing retry rules through real PostgreSQL and application compositio
     await f.save([3, 7]); // The runner must use the invoice snapshot, not the edited gym rule.
     const attempts = () => database.forGym(f.gymId, tx => tx.select().from(paymentAttempts));
     for (const [day, count] of [[2, 2], [3, 2], [5, 3], [7, 3]]) {
-      f.clock.set(zonedInstant(addDays('2028-03-10', day!), '09:00', 'America/Vancouver', { gap: 'shift' })!);
+      f.clock.set(zonedInstant(addDays('2028-03-10', day!), '09:00', 'America/Los_Angeles', { gap: 'shift' })!);
       if (day === 2 || day === 5) f.provider.respondNextConfirmation('declined');
       await f.drain();
       expect(await attempts()).toHaveLength(count!);
       // Replayed or unscheduled retries cannot consume a window a second time.
       expect(await f.runner.charge(f.gymId, invoice.id, { mode: 'retry' })).toEqual({ status: 'skipped', reason: 'outside_retry_window' });
     }
-    expect((await attempts()).map(row => localDate(row.createdAt, 'America/Vancouver')).sort()).toEqual(['2028-03-10', '2028-03-12', '2028-03-15']);
+    expect((await attempts()).map(row => localDate(row.createdAt, 'America/Los_Angeles')).sort()).toEqual(['2028-03-10', '2028-03-12', '2028-03-15']);
     expect(f.email.messages).toHaveLength(3);
   });
   it('executes legacy day 3/7 retries without saved days even when the current gym schedule differs', async () => {
@@ -207,12 +207,12 @@ describe('billing retry rules through real PostgreSQL and application compositio
     expect(await f.runner.charge(f.gymId, invoice.id)).toEqual({ status: 'failed' }); await f.drain();
     const attempts = () => database.forGym(f.gymId, tx => tx.select().from(paymentAttempts));
     for (const [day, count] of [[2, 1], [3, 2], [5, 2], [7, 3]]) {
-      f.clock.set(zonedInstant(addDays('2028-03-10', day!), '09:00', 'America/Vancouver', { gap: 'shift' })!);
+      f.clock.set(zonedInstant(addDays('2028-03-10', day!), '09:00', 'America/Los_Angeles', { gap: 'shift' })!);
       if (day === 3 || day === 7) f.provider.respondNextConfirmation('declined');
       await f.drain(); expect(await attempts()).toHaveLength(count!);
       expect(await f.runner.charge(f.gymId, invoice.id, { mode: 'retry' })).toEqual({ status: 'skipped', reason: 'outside_retry_window' });
     }
-    expect((await attempts()).map(row => localDate(row.createdAt, 'America/Vancouver')).sort()).toEqual(['2028-03-10', '2028-03-13', '2028-03-17']);
+    expect((await attempts()).map(row => localDate(row.createdAt, 'America/Los_Angeles')).sort()).toEqual(['2028-03-10', '2028-03-13', '2028-03-17']);
     expect(f.email.messages).toHaveLength(3);
   });
   it('never creates a retry attempt through the real runner for an explicitly empty saved schedule', async () => {
@@ -221,7 +221,7 @@ describe('billing retry rules through real PostgreSQL and application compositio
     expect(await f.runner.charge(f.gymId, invoice.id)).toEqual({ status: 'failed' }); await f.drain();
     await f.save([3, 7]);
     for (const day of [2, 3, 5, 7, 28]) {
-      f.clock.set(zonedInstant(addDays('2028-03-10', day), '09:00', 'America/Vancouver', { gap: 'shift' })!);
+      f.clock.set(zonedInstant(addDays('2028-03-10', day), '09:00', 'America/Los_Angeles', { gap: 'shift' })!);
       await f.drain();
       expect(await f.runner.charge(f.gymId, invoice.id, { mode: 'retry' })).toEqual({ status: 'skipped', reason: 'outside_retry_window' });
     }

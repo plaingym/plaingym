@@ -3,7 +3,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { CopyPrompt, CreateCopyButton, rememberDemoRole } from './copy.js';
-import { ApiError } from '../../lib/api.js';
+import { ApiError, createJsonTransport } from '../../lib/api.js';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); sessionStorage.clear(); });
 const result = { data: { gymId: '019a0000-0000-7000-8000-000000000001', origin: 'https://copy.demo.example.test',
@@ -14,9 +14,12 @@ it('opens only for a showcase API refusal and leaves global fetch intact after m
   const original = window.fetch;
   const { unmount } = render(<CopyPrompt showcase />);
   expect(window.fetch).toBe(original);
-  await act(async () => { new ApiError(403, 'forbidden', ['another_reason']); });
-  expect(screen.queryByRole('dialog')).toBeNull();
+  const refuse = (reason: string) => createJsonTransport(async () => Response.json({ error: { details: { reason: [reason] } } }, { status: 403 }))('/api/demo/login', {}).catch(() => {});
   await act(async () => { new ApiError(403, 'forbidden', ['demo_showcase_read_only']); });
+  expect(screen.queryByRole('dialog')).toBeNull();
+  await act(async () => { await refuse('another_reason'); });
+  expect(screen.queryByRole('dialog')).toBeNull();
+  await act(async () => { await refuse('demo_showcase_read_only'); });
   expect(screen.getByRole('dialog')).toBeDefined();
   unmount(); expect(window.fetch).toBe(original);
 });
