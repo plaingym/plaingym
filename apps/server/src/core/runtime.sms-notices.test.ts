@@ -11,6 +11,7 @@ const phone = '+12025550123';
 
 it('texts a cancelled class and a card expiry through the runtime composition, into the sandbox outbox', async () => {
   const sandbox = app.sandbox, gymId = sandbox.gymId;
+  const headers = { ...app.headers(sandbox, await app.login('owner')), origin: sandbox.origin, 'content-type': 'application/json' };
   const run = (name: string, payload: unknown) => {
     const handler = app.handlers.get(name);
     expect(handler, name).toBeDefined();
@@ -21,15 +22,19 @@ it('texts a cancelled class and a card expiry through the runtime composition, i
     .where(eq(gyms.id, gymId)));
 
   // The cancellation job texts a booked member's own consented phone.
-  const [booked] = await database.forGym(gymId, tx => tx.select({ sessionId: classSessions.id, memberId: classBookings.memberId })
+  const [booked] = await database.forGym(gymId, tx => tx.select({ session: classSessions, memberId: classBookings.memberId })
     .from(classBookings).innerJoin(classSessions, eq(classBookings.sessionId, classSessions.id))
     .innerJoin(members, eq(classBookings.memberId, members.id))
     .where(and(eq(classBookings.status, 'booked'), eq(classSessions.status, 'scheduled'), isNotNull(members.email))).limit(1));
   expect(booked).toBeDefined();
   await database.forGym(gymId, tx => tx.update(members).set({ phone, phoneE164: phone, smsNoticesConsentAt: clock.now(),
     smsNoticesConsentSource: 'staff' }).where(eq(members.id, booked!.memberId)));
+  const { session } = booked!;
+  const cancel = await app.runtime.app.request(`${sandbox.origin}/api/schedule/sessions/${session.id}/cancel`, {
+    method: 'POST', headers, body: JSON.stringify({ revision: session.revision, notify: true, note: '' }) });
+  expect(cancel.status, await cancel.clone().text()).toBe(200);
   const before = (await texts()).length;
-  await run('announcements.cancellation', { sessionId: booked!.sessionId, memberIds: [booked!.memberId], note: '' });
+  await run('announcements.cancellation', { sessionId: session.id, memberIds: [booked!.memberId], note: '' });
   const cancelled = (await texts()).slice(before);
   expect(cancelled).toHaveLength(1);
   expect(cancelled[0]!.recipient).toBe(phone);
