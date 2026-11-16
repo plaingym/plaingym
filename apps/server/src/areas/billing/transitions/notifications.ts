@@ -35,7 +35,7 @@ export type StaffNotice = TransitionNotice & ({ reason?: 'duplicate_payment' }
   /** A class pack paid for a member erased before it was paid: its credits weren't granted. */
   | { reason: 'credits_not_granted'; credits: number });
 export interface TransitionNotifications {
-  receipt(notice: TransitionNotice): Promise<void>;
+  receipt(notice: TransitionNotice, options?: { emailOnly?: boolean }): Promise<void>;
   dunning(notice: TransitionNotice & { actionRequired: boolean }): Promise<void>;
   staffNotice(notice: StaffNotice): Promise<void>;
 }
@@ -50,6 +50,7 @@ export function createTransitionNotifications(options: {
   settings: GymSettingsAccessor;
   prepare(gymId: string): Promise<{ email: Email; origin: string; t?: Translator }>;
   staffRecipients(gymId: string): Promise<readonly string[]>;
+  sms?: Pick<TransitionNotifications, 'receipt' | 'dunning'>;
 }): TransitionNotifications {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const links = createSignedLinksService({ scope, clock });
@@ -153,9 +154,15 @@ export function createTransitionNotifications(options: {
     });
   }
   return {
-    async receipt(notice) { await deliver(notice, 'receipt', { purpose: 'receipt', id: notice.invoice.id }); },
+    async receipt(notice, request) {
+      await deliverBillingChannels(() => deliver(notice, 'receipt', { purpose: 'receipt', id: notice.invoice.id }),
+        options.sms && !request?.emailOnly ? () => options.sms!.receipt(notice) : undefined);
+    },
     // The purpose doesn't name the wording: one failed charge gets one notice, even if its attempt's status changes.
-    async dunning(notice) { await deliver(notice, notice.actionRequired ? 'action' : 'failed', { purpose: 'dunning', id: notice.invoice.id }); },
+    async dunning(notice) {
+      await deliverBillingChannels(() => deliver(notice, notice.actionRequired ? 'action' : 'failed', { purpose: 'dunning', id: notice.invoice.id }),
+        options.sms ? () => options.sms!.dunning(notice) : undefined);
+    },
     async staffNotice(notice) {
       if (notice.reason === 'refund_failed')
         await deliver(notice, notice.reversed ? 'refundReversed' : 'refundFailed', { purpose: 'refund_failure', id: notice.refund.id }, notice.refund.amountCents,
@@ -173,4 +180,13 @@ export function createTransitionNotifications(options: {
       else await deliver(notice, 'duplicate', { purpose: 'duplicate_payment', id: notice.payment?.id ?? notice.invoice.id });
     },
   };
+}
+
+/** Each channel reaches its own durable outcome even when the other channel fails. */
+export async function deliverBillingChannels(email: () => Promise<void>, sms?: () => Promise<void>): Promise<void> {
+  const failures: unknown[] = [];
+  for (const send of [email, sms]) if (send) {
+    try { await send(); } catch (error) { failures.push(error); }
+  }
+  if (failures.length) throw failures[0];
 }

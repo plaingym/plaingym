@@ -25,6 +25,7 @@ export function composeBillingWebhooks(options: {
   disputeAlerts?: HandlerOptions['disputeAlerts'];
   prepare: Parameters<typeof createTransitionNotifications>[0]['prepare'];
   staffRecipients: Parameters<typeof createTransitionNotifications>[0]['staffRecipients'];
+  sms?: NonNullable<Parameters<typeof createTransitionNotifications>[0]['sms']>;
 }) {
   let retry: TransitionEffectOptions['retry'] | undefined;
   const notifications = createTransitionNotifications(options);

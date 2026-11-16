@@ -1,0 +1,8 @@
+{
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "receipt": "Payment of {amount} received for invoice {number}. Thank you.",
+  "failed": "Payment of {amount} for invoice {number} failed. Pay: {payUrl}\nUpdate your card: {updateUrl}",
+  "action": "Your bank requires authentication for invoice {number} ({amount}). Complete payment: {payUrl}\nUpdate your card: {updateUrl}",
+  "manual": "Invoice {number} for {amount} cannot be paid by card. Contact the gym to arrange a manual payment.",
+  "cardExpiry": "Your saved card expires before your next payment on {dueOn}. Update your card: {updateUrl}"
+}

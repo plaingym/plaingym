@@ -63,7 +63,7 @@ export function createPaymentJobs(options?: DeliveryOptions): readonly JobRegist
         // Each requested resend is its own job, so it sends again, and a retry of this job does not.
         return { gymId: ctx.gymId, generation: ctx.jobId, invoice: snapshot(invoice), ...(payment ? { payment } : {}) };
       });
-      await options.notifications.receipt(notice);
+      await options.notifications.receipt(notice, { emailOnly: true });
     } },
     { id: detachJob, async handler(payload, ctx) {
       const { paymentMethodId, redactBillingDetails } = payload as { paymentMethodId: string; redactBillingDetails?: boolean }; idSchema.parse(paymentMethodId);

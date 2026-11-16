@@ -1,6 +1,28 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Billing alerts
 
+Optional `sms: createCardExpirySms({ settings, resolver, prepare, scope?, clock? })`
+adds card-expiry texts to the existing scan and `billing.alerts.send` job. Its
+`prepare` resolves the canonical gym origin and optional translator without SMTP.
+An enabled SMS channel permits scans without member email or mail readiness;
+email's send checks and owner dispute alerts keep their existing behavior.
+Each channel reaches its own durable outcome even if the other fails.
+
+Text recipients come from `householdNoticePhones`, preferring the household's
+consented billing phone over consented members at its billing email. Three children
+on one household produce one text per phone. `MemberSms` checks the switch,
+number-bound notices consent, provider and daily cap immediately before sending.
+The card, household and due-date cycle are reloaded before reservation and again
+after preparation; a stale or replaced default card sends nothing.
+Text keys are `billing.alert.sms.card_expiry:<paymentMethodId>:<cycle>:<recipientId>`.
+The suffix follows the transition texts' rule: the household for its billing phone,
+the consented member for a fallback phone.
+A text reserves its key and creates its own update-card link in one transaction,
+remembering IDs only. The shared lifecycle in `../transitions/notifications.sms.ts`
+revokes a definite non-send's links, retains uncertain ones, and never sends or
+mints again for an accepted or unknown attempt. Links have the same seven-days-
+after-cycle expiry as email. Disputes send no text.
+
 `createBillingAlerts` accepts the job queue, gym settings, account service, and a
 `prepare(gymId)` resolver for the gym's mail transport and canonical origin, plus
 optional `gymName` and display `locale` (English by default). The runtime supplies
@@ -20,7 +42,7 @@ uses the same delivery key, so the scan, webhook replay and repeated restore pas
 send one notice. When mail isn't ready it uses no key and the hourly scan recovers;
 the writer logs a failed publish instead of failing the recorded dispute.
 
-Each enabled card scan and each dispute scan prepares mail once and validates the
+Each email-only card scan and each dispute scan prepares mail once and validates the
 origin before enqueueing anything. Preparation failure leaves delivery keys unused
 so a later scan can recover after SMTP is configured. A dispute scan also requires
 an owner email before reserving its key; recipients are reloaded at delivery.

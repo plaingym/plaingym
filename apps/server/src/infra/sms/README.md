@@ -1,7 +1,9 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # SMS
 
-This module supplies SMS delivery infrastructure; no route or job sends texts yet.
+This module supplies SMS delivery infrastructure. Billing transition effects and
+card-expiry jobs accept optional text services from `areas/billing/transitions/notifications.sms.ts`
+and `areas/billing/alerts/sms.ts`; both use `MemberSms` and durable delivery keys.
 `Sms.sendSms({ to, body })` returns `sent` with a provider message ID or `suppressed`
 with a safe reason. `verifyAccount()` sends nothing. `FakeSms` and `TwilioSms`
 share the response contract suite. All adapters reject calls inside a transaction.

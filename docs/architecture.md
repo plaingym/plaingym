@@ -173,6 +173,9 @@ cancellation texts by destination and naming all covered participants. Email als
 falls back to the household billing address when the member has none. See the
 [announcements](../apps/server/src/areas/announcements/README.md#class-cancellation-notices)
 and [bookings](../apps/server/src/areas/bookings/README.md#promotion-notices) module notes.
+Billing's optional SMS services use
+this infrastructure for receipts, failed-payment/authentication notices and card
+expiry reminders, with independent links and durable send keys.
 
 ## Background jobs
 
@@ -263,6 +266,13 @@ source of truth; Stripe is the processor. In outline:
   state; its effects (receipts, dunning, membership activation, class credit grants
   and full-refund reversals)
   run as jobs.
+  Optional SMS services send receipts and failed-payment/authentication notices
+  to the household's consented billing phone, otherwise notices-consented members
+  at its billing email, once per phone. Card-expiry texts share the existing alert
+  job. Each text reserves its key and creates its own signed links atomically;
+  definite non-sends revoke links, while accepted or uncertain sends retain them
+  and never send again. Staff receipt resends send email only. Email and SMS have
+  independent switches and outcomes.
   Owners and admins can void an open or past-due invoice with a reason once no
   card attempt is pending or awaiting authentication and no Checkout is reserved.
   Voiding revokes pay links and stops dunning and retries. A late card success is

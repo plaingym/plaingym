@@ -20,6 +20,7 @@ const boundaries = {
   'areas/billing/signed-link-checkout.ts': 'billingEnabled before payment preparation and delivery; setup is allowed while paused',
   'areas/billing/customers.ts': 'customer creation is preparatory, allowed while billing is paused',
   'areas/billing/transitions/notifications.ts': 'memberEmailsEnabled at recipient selection and immediately before sending; staff notices are exempt',
+  'areas/billing/transitions/notifications.sms.ts': 'memberSmsEnabled before reservation and delivery; MemberSms rechecks gym-bound provider, number-bound notices consent and daily cap',
   'areas/billing/alerts/index.ts': 'memberEmailsEnabled: card expiry; owner disputes are exempt',
   'areas/billing/memberships.price-notice.ts': 'memberEmailsEnabled before reservation and after SMTP preparation; household recipient preferences, payer erasure and pending changes rechecked before delivery',
   'areas/announcements/cancellation.ts': 'memberEmailsEnabled and grouped member or household billing email preferences rechecked immediately before gym SMTP delivery',
@@ -76,6 +77,7 @@ describe('go-live switch test inventory', () => {
     expect(Object.values(boundaries).every(reason => reason.length > 20)).toBe(true);
   });
   it.each([...chargePaths, ...emailPaths,
+    ['billing receipt, dunning and card-expiry texts', 'areas/billing/transitions/notifications.sms.test.ts', 'sends nothing with neither notices consent nor the member SMS switch'],
     ['member SMS switch and cap', 'areas/settings/go-live.sms.test.ts', 'enforces it through MemberSms'],
     ['demo SMS capture', 'demo/outbox.sms.test.ts', 'without ever contacting a saved provider'],
   ] as const)('tracks %s with executable regression coverage', (_path, file, evidence) => {

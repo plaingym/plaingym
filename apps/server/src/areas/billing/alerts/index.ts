@@ -15,6 +15,8 @@ import { renderBillingAlert } from '../../../emails/billing/alerts.js';
 import { createSignedLinksService } from '../../links/service.js';
 import { householdRecipient } from '../../members/household-recipient.js';
 import { testModeDispute, unalertedDisputes } from './disputes.query.js';
+import type { CardExpirySms } from './sms.js';
+import { deliverBillingChannels } from '../transitions/notifications.js';
 
 export const sendAlertJob = 'billing.alerts.send';
 // Default queue backoff: 1s doubling to a 24h cap. These budgets cover >31 days and >36 hours.
@@ -46,6 +48,7 @@ export interface BillingAlertsOptions {
   accounts: Pick<AccountService, 'staffEmails'>;
   /** Runtime supplies the gym SMTP transport or demo outbox and its trusted canonical origin. */
   prepare(gymId: string): Promise<{ email: Email; origin: string; gymName?: string; locale?: string; t?: Translator }>;
+  sms?: CardExpirySms;
 }
 
 export function createBillingAlerts(options: BillingAlertsOptions) {
@@ -62,7 +65,7 @@ export function createBillingAlerts(options: BillingAlertsOptions) {
       return false;
     }
   }
-  async function cardForCycle(gymId: string, paymentMethodId: string, timezone: string) {
+  async function cardForCycle(gymId: string, paymentMethodId: string, timezone: string, requireEmail = true) {
     return scope(gymId, async tx => {
       const [card] = await tx.select().from(paymentMethods).where(and(eq(paymentMethods.id, paymentMethodId),
         eq(paymentMethods.isDefault, true), isNull(paymentMethods.revokedAt)));
@@ -72,21 +75,21 @@ export function createBillingAlerts(options: BillingAlertsOptions) {
         gt(memberships.amountCents, 0))).orderBy(asc(memberships.nextDueOn)).limit(1);
       if (!membership || !needsCardExpiryAlert(card, membership.cycle, localDate(clock.now(), timezone))) return;
       const household = await householdRecipient(tx, gymId, card.householdId);
-      if (!household || household.suppressed) return;
-      return { card, cycle: membership.cycle, email: household.email };
+      if (requireEmail && (!household || household.suppressed)) return;
+      return { card, cycle: membership.cycle, email: household?.email ?? '' };
     });
   }
   async function cardExpiry(gymId: string) {
     const gym = await options.settings.get(gymId);
-    if (!gym.memberEmailsEnabled) return;
-    if (!await ready(gymId)) return;
+    const smsEnabled = await options.sms?.enabled(gymId) ?? false;
+    if (!smsEnabled && (!gym.memberEmailsEnabled || !await ready(gymId))) return;
     let cursor: string | undefined;
     for (;;) {
       const cards = await scope(gymId, tx => tx.select({ id: paymentMethods.id }).from(paymentMethods).where(and(
         eq(paymentMethods.isDefault, true), isNull(paymentMethods.revokedAt), cursor ? gt(paymentMethods.id, cursor) : undefined))
         .orderBy(asc(paymentMethods.id)).limit(100));
       for (const { id } of cards) {
-        const candidate = await cardForCycle(gymId, id, gym.timezone);
+        const candidate = await cardForCycle(gymId, id, gym.timezone, !smsEnabled);
         if (candidate) await options.jobs.enqueue(sendAlertJob,
           { kind: 'card_expiry', paymentMethodId: id, cycle: candidate.cycle } satisfies AlertPayload,
           { gymId, timezone: gym.timezone, idempotencyKey: cardKey(id, candidate.cycle),
@@ -140,6 +143,11 @@ export function createBillingAlerts(options: BillingAlertsOptions) {
     });
   }
   async function send(payload: unknown, context: JobContext) {
+    const work = alertPayloadSchema.parse(payload);
+    await deliverBillingChannels(() => sendEmail(work, context), work.kind === 'card_expiry' && options.sms
+      ? () => options.sms!.send(context.gymId, work.paymentMethodId, work.cycle) : undefined);
+  }
+  async function sendEmail(payload: unknown, context: JobContext) {
     const work = alertPayloadSchema.parse(payload), gymId = context.gymId;
     const gym = await options.settings.get(gymId);
     if (work.kind === 'card_expiry') {

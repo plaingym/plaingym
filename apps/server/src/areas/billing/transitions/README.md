@@ -1,7 +1,33 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 
+`createTransitionNotifications` accepts optional `sms` from
+`createTransitionSmsNotifications({ settings, resolver, prepare, scope?, clock? })`.
+Its receipt and dunning calls deliver both channels independently: one channel's
+failure does not prevent the other, and retries use each channel's durable state.
+Staff notices and staff-requested receipt resends remain email only; the resend
+job passes `{ emailOnly: true }` to `receipt`.
+
+Texts select `householdNoticePhones` for this invoice's household only: a consented
+billing phone wins (including a parent without a member record); otherwise only
+notices-consented members at the billing email are selected. A shared phone gets
+one text for the household's children. `MemberSms` rechecks notices consent, the
+phone, the gym's member-SMS switch, provider and daily cap at delivery.
+`prepare(gymId)` supplies a trusted canonical origin and optional translator
+independently of SMTP. Text amounts use shared minor-unit formatting.
+
+SMS keys are `billing.sms.<purpose>:<invoiceId>:<generation>:<recipientId>`
+(`receipt` or `dunning`). The suffix is the household's ID for its billing phone, so
+erasing or adding a covered member never changes it, and the consented member's ID
+for a fallback phone. The final check before sending supplies the covered members.
+The reservation, independent signed pay/update-card links and remembered link IDs
+commit together. No token, phone or message body goes in delivery state. Accepted
+and uncertain sends never mint or send again. Definite non-sends revoke their
+links and permit retry; a retry repairs any failed revocation before creating
+fresh links. A crash after reservation commit keeps that attempt uncertain and
+its links usable. SMS never reuses email's token.
+
 Dunning notices use the shared card minimum and currency-step check. If an invoice
-cannot be charged, its email asks the payer to contact the gym for a manual payment,
+cannot be charged, its email and text ask the payer to contact the gym for a manual payment,
 without minting pay or card-update links. Receipts and staff notices keep their usual
 behavior. SMTP preparation and origin validation happen only after a recipient
 gets a reservation, once per notice; already accepted or uncertain recipients
