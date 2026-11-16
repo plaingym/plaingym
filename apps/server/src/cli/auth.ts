@@ -3,6 +3,7 @@ import { createInterface } from 'node:readline/promises';
 import { Writable } from 'node:stream';
 import { authConfig, passwordLogin } from '../infra/auth/config.js';
 import { createAccountService, type AccountService } from '../infra/auth/accounts.js';
+import { clearAccountAttempts } from '../infra/auth/account-limit.js';
 import { createEmailChangeService, type EmailChangeService } from '../infra/auth/email-change.js';
 import { assertOwnerRecovery } from '../areas/staff/auth.reset.js';
 import { AppError } from '@plaingym/shared';
@@ -74,6 +75,9 @@ export function createAuthCommands(options: () => AuthCliOptions) : readonly Com
       const newPassword = await (dependencies.readPassword ?? readPassword)(io);
       await accounts.resetPassword({ gymId, userId: user.id, newPassword, clock, authorize: (tx) => assertOwnerRecovery(tx, gymId, user.id) });
       io.stdout('Password reset. All sessions ended.');
+      // The reset has committed, so a failure here is reported without failing the command.
+      try { await clearAccountAttempts(args[1]); }
+      catch { io.stderr('The sign-in limit was not cleared; password sign-in reopens when its ten-minute window ends.'); }
       return 0;
     } catch (error) { io.stderr(error instanceof Error ? error.message : 'Password reset failed'); return 1; }
   } }];

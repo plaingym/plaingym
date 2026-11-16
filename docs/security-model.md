@@ -322,23 +322,34 @@ by setup, the gym CLI, staff and portal invitations, and the join flow.
   both Google's address and the identity's own are verified. The app keeps the
   Google account's ID and none of its tokens.
 * **Rate limits.** Two limits, both counted in the database so every app process
-  shares them, and both answered with 429 and `Retry-After`:
+  shares them, and both answered with 429 and `Retry-After`.
+  In `multi` mode both budgets belong to the resolved gym, so traffic at one
+  gym cannot close sign-in at another. Single-gym budgets are unchanged:
   * **Per client address:** 20 attempts a minute at each of password sign-in,
     magic-link requests, magic-link verification and Google sign-in. This bounds
     one address trying many accounts, while a class signing in from the gym's Wi-Fi
     or visitors behind a carrier's shared address aren't locked out together.
-  * **Per account:** 10 attempts in each fixed ten-minute window at password
-    sign-in, and separately at magic-link requests, keyed by the normalized email
-    whether or not an account has it. This bounds guessing one account's password
-    from many addresses and the sign-in emails one address can be sent. Anyone can
-    use up an account's window, which then refuses that account until it ends;
-    Google sign-in and an already-sent link still work.
+  * **Per account:** 10 failed password attempts in each fixed ten-minute window,
+    and separately 10 magic-link requests, keyed by the normalized email whether
+    or not an account has it. Only requests admitted by the address limit count.
+    Password checks reserve a slot before verification and release it on a 200
+    response; concurrent checks therefore count while in flight, and interrupted
+    requests keep their slots. Successful sign-ins do not spend the account's
+    budget. Refusals do not extend the window. This bounds guessing one account's
+    password from many addresses and the sign-in emails one address can be sent
+    (in `multi` mode each gym counts its own window, so one address can be sent
+    up to 10 links a window from each gym of the install).
+    An attacker can still exhaust an account's window with failed passwords or
+    link requests, refusing even a correct password until the window ends;
+    Google sign-in and an already-sent link still work. The owner's CLI reset
+    clears the account windows so an owner without email has a recovery path.
 * **Resets.** Staff may reset the password only of users whose roles are all below
   their own (a member who is also staff counts as staff). Only an owner may change
   or revoke an existing admin role, so an admin cannot demote a peer to reset
   that login's password. An owner resets their
   own password with `gym-app auth reset-password <email>` on the server. A reset
-  deletes all of the user's sessions.
+  deletes all of the user's sessions. The owner's CLI reset also clears that
+  account's password and magic-link request limits; address limits still apply.
 * **Sign-in email changes.** Every staff and portal login has an account page
   (`/admin/account`, `/portal/account`) showing its sign-in email, sign-in methods
   and access in the gym, where it may change its email. The routes act only for

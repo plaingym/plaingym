@@ -11,7 +11,7 @@ import { portalClaimCodeSchema } from '@plaingym/shared/contracts';
 import type { Auth, Session } from './index.js';
 import { passwordLogin, type AuthConfig } from './config.js';
 import { passwordAdapter } from './password.js';
-import { accountLimitedPaths, consumeAccountAttempt, signInLimits, type SignInRule } from './account-limit.js';
+import { accountLimitedPaths, reserveAccountAttempt, releaseAccountAttempt, gymAddressStorage, signInLimits, type AccountReservation, type SignInRule } from './account-limit.js';
 
 export interface ResolvedAuthGym {
   readonly gymId: string;
@@ -98,8 +98,9 @@ export function createAuthService(options: AuthServiceOptions) {
       const smtpConfigured = gym.smtpConfigured ?? config.smtpConfigured;
       const passwordEnabled = gym.smtpConfigured === undefined ? config.passwordEnabled : passwordLogin(config, smtpConfigured);
       const magicLinkEnabled = Boolean(options.sendMagicLink) && (gym.smtpConfigured ?? true);
-      // Only the Google endpoints need the provider, so they build their own instance with the gym's current client.
-      const build = (google: { clientId: string; clientSecret: string } | null) => betterAuth({
+      const addressStorage = config.tenancy === 'multi' ? gymAddressStorage(database, gym.gymId) : undefined;
+      // HTTP account requests add a request-local reservation plugin; Google adds the gym's current provider.
+      const build = (google: { clientId: string; clientSecret: string } | null, accountLimit?: BetterAuthPlugin) => betterAuth({
         secret: config.secret, baseURL: origin.origin, basePath: '/api/auth', trustedOrigins: [origin.origin],
         database: drizzleAdapter(database(), { provider: 'pg', schema: {
           user: authUser, session: authSession, account: authAccount, verification: authVerification, rateLimit: authRateLimit,
@@ -132,6 +133,7 @@ export function createAuthService(options: AuthServiceOptions) {
             update: { before: async (account) => ({ data: withoutOAuthTokens(account, false) }) } },
         },
         rateLimit: { enabled: true, storage: 'database', window: 60, max: 100,
+          ...(addressStorage ? { customStorage: addressStorage } : {}),
           customRules: { '/sign-in/email': addressRule, '/sign-in/magic-link': addressRule, '/magic-link/verify': addressRule, '/sign-in/social': addressRule } },
         plugins: [magicLink({
           expiresIn: options.magicLinkTtl ?? 300, storeToken: 'hashed', disableSignUp: true,
@@ -141,7 +143,7 @@ export function createAuthService(options: AuthServiceOptions) {
             if (!options.sendMagicLink) throw new Error('Magic-link delivery is not configured');
             await options.sendMagicLink({ email: email.toLowerCase(), url, gymId: gym.gymId });
           },
-        }), ...(google ? options.google?.plugins?.(gym) ?? [] : [])],
+        }), ...(accountLimit ? [accountLimit] : []), ...(google ? options.google?.plugins?.(gym) ?? [] : [])],
       });
       const auth = build(null);
       function headers(request: Request) {
@@ -212,16 +214,13 @@ export function createAuthService(options: AuthServiceOptions) {
           const claim = path === '/magic-link/verify' ? portalClaimCallback(url.searchParams.get('callbackURL'), origin) : null;
           for (const name of ['callbackURL', 'newUserCallbackURL', 'errorCallbackURL']) if (path === '/magic-link/verify') safeUrl.searchParams.set(name, name === 'errorCallbackURL' ? new URL('/login', origin).href : claim ?? new URL('/admin', origin).href);
           let body: string | undefined;
+          let accountEmail: string | undefined;
           if (request.method === 'POST') {
             let input: unknown;
             try { input = await request.json(); } catch { return Response.json({ error: 'invalid_request' }, { status: 400 }); }
             if (typeof input !== 'object' || input === null) return new Response(null, { status: 400 });
             const fields = input as Record<string, unknown>;
-            // Each account has its own budget beside the address's (Better Auth's limiter, applied when dispatched below).
-            if (accountLimitedPaths.includes(path) && typeof fields.email === 'string') {
-              const wait = await consumeAccountAttempt(database(), path, fields.email, accountRule, now());
-              if (wait !== null) return tooManyRequests(wait);
-            }
+            if (accountLimitedPaths.includes(path) && typeof fields.email === 'string') accountEmail = fields.email;
             body = JSON.stringify({ ...fields, ...(typeof fields.email === 'string' ? { email: fields.email.toLowerCase() } : {}),
               callbackURL: new URL('/admin', origin).href, newUserCallbackURL: new URL('/admin', origin).href, errorCallbackURL: new URL('/login', origin).href });
           }
@@ -229,7 +228,22 @@ export function createAuthService(options: AuthServiceOptions) {
             // The extension owns provider state and callback parameters after validating the gym binding.
             safeUrl.search = url.search;
           }
-          const response = await (google ? build(google) : auth).handler(new Request(safeUrl, { method: request.method, headers: headers(request), ...(body ? { body } : {}) }));
+          // A holder rather than a `let`, so the release below stays type-checked (TypeScript doesn't see closure writes).
+          const held: { reservation: AccountReservation | null } = { reservation: null };
+          // Better Auth runs onRequest plugins after its atomic address check. Each HTTP call owns its plugin closure,
+          // so concurrent calls through the same binding cannot refund one another's account reservations.
+          const email = accountEmail;
+          const accountLimit: BetterAuthPlugin | undefined = email === undefined ? undefined : {
+            id: 'account-sign-in-limit',
+            async onRequest() {
+              const attempt = await reserveAccountAttempt(database(), path, email, accountRule, now(), config.tenancy === 'multi' ? gym.gymId : undefined);
+              held.reservation = attempt.reservation;
+              if (attempt.retryAfter !== null) return { response: tooManyRequests(attempt.retryAfter) };
+            },
+          };
+          const response = await (google || accountLimit ? build(google, accountLimit) : auth).handler(new Request(safeUrl, { method: request.method, headers: headers(request), ...(body ? { body } : {}) }));
+          // Best effort: the session already exists, so a failed release only leaves this success counted like a failure.
+          if (path === '/sign-in/email' && response.status === 200 && held.reservation) await releaseAccountAttempt(database(), held.reservation).catch(() => undefined);
           response.headers.set('cache-control', 'no-store');
           const retryAfter = response.status === 429 ? response.headers.get('x-retry-after') : null;
           if (retryAfter && /^\d+$/.test(retryAfter)) response.headers.set('retry-after', retryAfter);

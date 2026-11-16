@@ -210,7 +210,7 @@ The checks cover:
   sandbox deliberately forbids scripts, while the test checks its sandbox and title.
 * The production sign-in limits (`sign-in-limits.spec.ts`): one address refused with 429 and `Retry-After`
   after 20 password attempts in a minute while another address signs in, and one account refused after 10
-  attempts from different addresses while another account is still tried.
+  failed attempts from different addresses while another account is still tried.
 * The enforced Content Security Policy, in every spec that takes `test` from `support.ts`:
   the automatic `cspGuard` fixture fails a test whose pages, in the default context (when
   the test uses it) or any context the test opens itself, log a CSP violation to the
@@ -344,8 +344,8 @@ passes that address on as the only entry, and the apps run with `TRUST_PROXY=tru
 the production Caddy. The main process has a reserved 4,096-address block; each worker gets
 its own block. Allocating past a block, or beyond the 31 worker blocks, throws rather than
 reusing an address and its rate-limit buckets. Password attempts also share an account's
-10-per-ten-minute budget across addresses: keep owner sign-ins below that limit when adding
-specs, and use another staff account for checks that only need a successful sign-in.
+10-per-ten-minute failure budget across addresses; successful password sign-ins give back
+their reserved account slot. Login-link requests count every request against their own budget.
 So no spec waits for a limiter's window. The browser's requests carry no
 such header and share the runner's one address, so the stack sets `RATE_LIMIT_PER_MINUTE=20000`
 instead of the default 300 for page loads; the limiter itself is covered by unit tests. A full

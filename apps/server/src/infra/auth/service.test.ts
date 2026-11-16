@@ -350,10 +350,18 @@ describe('session middleware and atomic protected-account resets', () => {
     const cookie = cookies(await f.signIn());
     const accounts = createAccountService(config, () => database.system.db);
     const errors: string[] = [], messages: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      expect((await f.a.handler(f.request('/sign-in/email', { email: f.user.email, password: 'wrong-password-123' }))).status).toBe(401);
+      expect((await f.a.handler(f.request('/sign-in/magic-link', { email: f.user.email }))).status).toBe(200);
+    }
+    expect((await f.signIn()).status).toBe(429);
+    expect((await f.a.handler(f.request('/sign-in/magic-link', { email: f.user.email }))).status).toBe(429);
     const commands = createAuthCommands(() => ({ accounts, resolveGymId: async () => f.gymId, readPassword: async () => 'owner-new-password' }));
     expect(await commands[0]!.run(['reset-password', f.user.email.toUpperCase()], { stdout: (message) => messages.push(message), stderr: (message) => errors.push(message) })).toBe(0);
     expect(errors).toEqual([]); expect(messages.join(' ')).not.toContain('owner-new-password');
     expect(await f.a.getSession(f.request('/get-session', undefined, cookie))).toBeNull();
+    expect((await f.a.handler(f.request('/sign-in/email', { email: f.user.email, password: 'owner-new-password' }))).status).toBe(200);
+    expect((await f.a.handler(f.request('/sign-in/magic-link', { email: f.user.email }))).status).toBe(200);
     const disabled = createAccountService({ ...config, tenancy: 'multi', passwordEnabled: false }, () => database.system.db);
     await expect(disabled.resetPassword({ gymId: f.gymId, userId: f.user.id, newPassword: 'new-password-123', clock: testClock, authorize: async () => {} })).rejects.toMatchObject({ code: 'forbidden' });
   });

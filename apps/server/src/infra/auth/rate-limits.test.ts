@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
+import { eq } from 'drizzle-orm';
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
-import { uuidv7 } from '@plaingym/db';
+import { authRateLimit, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { createAuthService, type AuthServiceOptions } from './service.js';
-import { signInLimits } from './account-limit.js';
+import { clearAccountAttempts, gymAddressStorage, reserveAccountAttempt, releaseAccountAttempt, signInLimits } from './account-limit.js';
 import { authConfig } from './config.js';
 import { sessionMiddleware } from './middleware.js';
 import { passwordAdapter } from './password.js';
@@ -45,7 +46,7 @@ async function fixture(options: Partial<AuthServiceOptions> = {}) {
     method: 'POST', headers: { origin, 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
   const signIn = (clientIp: string, email = user.email, attempt = password) => from(clientIp).handler(request('/sign-in/email', { email, password: attempt }));
   const askLink = (clientIp: string, email = user.email) => from(clientIp).handler(request('/sign-in/magic-link', { email }));
-  return { gymId, origin, user, delivered, service, request, signIn, askLink, advance: (seconds: number) => { time += seconds * 1000; } };
+  return { gymId, origin, user, delivered, service, from, request, signIn, askLink, advance: (seconds: number) => { time += seconds * 1000; } };
 }
 const statuses = (responses: Response[]) => responses.map((response) => response.status);
 
@@ -53,7 +54,7 @@ describe('per-account sign-in limit', () => {
   it('limits one account tried from two addresses, says when to retry, and opens again when its fixed window ends', async () => {
     const f = await fixture({ accountRateLimit: { window: 600, max: 2 } });
     const a = address(), b = address();
-    expect(statuses([await f.signIn(a), await f.signIn(b, f.user.email.toUpperCase(), 'wrong-password-123')])).toEqual([200, 401]);
+    expect(statuses([await f.signIn(a, f.user.email, 'wrong-password-123'), await f.signIn(b, f.user.email.toUpperCase(), 'wrong-password-123')])).toEqual([401, 401]);
     const refused = await f.signIn(b);
     expect(refused.status).toBe(429);
     expect(refused.headers.get('retry-after')).toBe('600');
@@ -97,6 +98,65 @@ describe('per-account sign-in limit', () => {
     expect(refused.status).toBe(429);
     expect(refused.headers.get('retry-after')).toBe('600');
   });
+
+  it('refunds ten successful passwords in a row, but ten failures close the password window', async () => {
+    const f = await fixture();
+    for (let i = 0; i < 10; i++) expect((await f.signIn(address())).status).toBe(200);
+    for (let i = 0; i < 10; i++) expect((await f.signIn(address(), f.user.email, 'wrong-password-123')).status).toBe(401);
+    expect((await f.signIn(address())).status).toBe(429);
+  });
+
+  it('reserves in-flight password slots before verification, even through one binding', async () => {
+    const f = await fixture({ rateLimit: { window: 60, max: 100 } });
+    const bound = f.from(address());
+    let finish!: () => void;
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    const verify = vi.spyOn(passwordAdapter, 'verify').mockImplementation(async () => { await gate; return false; });
+    const attempts = Promise.all(Array.from({ length: 24 }, () => bound.handler(f.request('/sign-in/email', { email: f.user.email, password: 'wrong-password-123' }))));
+    try {
+      await vi.waitFor(() => expect(verify).toHaveBeenCalledTimes(10), { timeout: 10_000 });
+      finish();
+      const responses = await attempts;
+      expect(responses.filter(response => response.status === 401)).toHaveLength(10);
+      expect(responses.filter(response => response.status === 429)).toHaveLength(14);
+      expect(verify).toHaveBeenCalledTimes(10);
+    } finally { finish(); await attempts.finally(() => verify.mockRestore()); }
+  });
+
+  it('refusals during successful in-flight passwords do not leave a phantom failure', async () => {
+    const f = await fixture({ accountRateLimit: { window: 600, max: 2 } });
+    let finish!: () => void;
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    const verify = vi.spyOn(passwordAdapter, 'verify').mockImplementation(async () => { await gate; return true; });
+    const attempts = Promise.all([f.signIn(address()), f.signIn(address())]);
+    try {
+      await vi.waitFor(() => expect(verify).toHaveBeenCalledTimes(2), { timeout: 10_000 });
+      expect((await f.signIn(address())).status).toBe(429);
+      finish();
+      expect(statuses(await attempts)).toEqual([200, 200]);
+    } finally { finish(); await attempts.finally(() => verify.mockRestore()); }
+    expect((await f.signIn(address(), f.user.email, 'wrong-password-123')).status).toBe(401);
+    expect((await f.signIn(address(), f.user.email, 'wrong-password-123')).status).toBe(401);
+    expect((await f.signIn(address())).status).toBe(429);
+  });
+
+  it('never refunds a newer window when an old password finishes late', async () => {
+    const f = await fixture(), rule = { window: 600, max: 1 }, now = Date.now();
+    const old = await reserveAccountAttempt(database.system.db, '/sign-in/email', f.user.email, rule, now);
+    const current = await reserveAccountAttempt(database.system.db, '/sign-in/email', f.user.email, rule, now + 600_000);
+    expect(old.retryAfter).toBeNull(); expect(current.retryAfter).toBeNull();
+    await releaseAccountAttempt(database.system.db, old.reservation!);
+    expect((await reserveAccountAttempt(database.system.db, '/sign-in/email', f.user.email, rule, now + 600_000)).retryAfter).toBe(600);
+  });
+
+  it('does not refund a replacement window after recovery, even at the same clock instant', async () => {
+    const f = await fixture(), rule = { window: 600, max: 1 }, now = Date.now();
+    const old = await reserveAccountAttempt(database.system.db, '/sign-in/email', f.user.email, rule, now);
+    await clearAccountAttempts(` ${f.user.email.toUpperCase()} `);
+    expect((await reserveAccountAttempt(database.system.db, '/sign-in/email', f.user.email, rule, now)).retryAfter).toBeNull();
+    await releaseAccountAttempt(database.system.db, old.reservation!);
+    expect((await reserveAccountAttempt(database.system.db, '/sign-in/email', f.user.email, rule, now)).retryAfter).toBe(600);
+  });
 });
 
 describe('per-address sign-in limit', () => {
@@ -118,6 +178,79 @@ describe('per-address sign-in limit', () => {
     expect(signInLimits.address).toEqual({ window: 60, max: 20 });
     for (let i = 0; i < 20; i++) expect((await f.askLink(shared, `visitor-${i}-${f.gymId}@example.test`)).status).toBe(200);
     expect((await f.askLink(shared, `visitor-20-${f.gymId}@example.test`)).status).toBe(429);
+  });
+
+  it.each(['password', 'login link'])('an address refusal does not consume the account budget for a %s', async kind => {
+    const f = await fixture({ rateLimit: { window: 60, max: 1 }, accountRateLimit: { window: 600, max: 1 } }), shared = address();
+    const attempt = kind === 'password' ? (ip: string, email: string) => f.signIn(ip, email, 'wrong-password-123') : f.askLink;
+    expect((await attempt(shared, `other-${f.gymId}@example.test`)).status).toBe(kind === 'password' ? 401 : 200);
+    expect((await attempt(shared, f.user.email)).status).toBe(429);
+    expect((await attempt(address(), f.user.email)).status).toBe(kind === 'password' ? 401 : 200);
+    expect((await attempt(address(), f.user.email)).status).toBe(429);
+  });
+});
+
+describe('gym isolation of sign-in limits', () => {
+  const multi = authConfig({ AUTH_SECRET: secret, NODE_ENV: 'production', TENANCY: 'multi', AUTH_PASSWORD_LOGIN: 'off' }, true);
+
+  it('keeps one identity\'s login-link windows apart at two gyms in multi mode', async () => {
+    const options = { config: multi, accountRateLimit: { window: 600, max: 2 } };
+    const a = await fixture(options), b = await fixture(options);
+    expect(statuses([await a.askLink(address()), await a.askLink(address()), await a.askLink(address())])).toEqual([200, 200, 429]);
+    expect(statuses([await b.askLink(address(), a.user.email), await b.askLink(address(), a.user.email), await b.askLink(address(), a.user.email)])).toEqual([200, 200, 429]);
+    expect(b.delivered).toEqual([a.user.email, a.user.email]);
+  });
+
+  it('keeps the same address apart at two gyms in multi mode, including concurrent requests', async () => {
+    const options = { config: multi, rateLimit: { window: 60, max: 2 }, accountRateLimit: { window: 600, max: 100 } };
+    const a = await fixture(options), b = await fixture(options), shared = address();
+    const responses = await Promise.all(Array.from({ length: 8 }, () => a.askLink(shared)));
+    expect(responses.filter(response => response.status === 200)).toHaveLength(2);
+    expect(responses.filter(response => response.status === 429)).toHaveLength(6);
+    expect(statuses([await b.askLink(shared), await b.askLink(shared), await b.askLink(shared)])).toEqual([200, 200, 429]);
+    expect(Number(responses.find(response => response.status === 429)!.headers.get('retry-after'))).toBeGreaterThan(0);
+  });
+
+  it('retains the existing single-mode account and address keys', async () => {
+    const f = await fixture(), shared = address();
+    expect((await f.askLink(shared)).status).toBe(200);
+    const rows = await database.system.db.select({ key: authRateLimit.key }).from(authRateLimit).where(eq(authRateLimit.key, `${shared}|/sign-in/magic-link`));
+    expect(rows).toHaveLength(1);
+    // No gym scope is passed in single mode: the existing account bucket was the one consumed by the HTTP request.
+    expect((await reserveAccountAttempt(database.system.db, '/sign-in/magic-link', f.user.email, { window: 600, max: 1 }, Date.now())).retryAfter).not.toBeNull();
+  });
+
+  it('keeps Better Auth\'s address normalization and endpoint separation in multi mode', async () => {
+    const f = await fixture({ config: multi, rateLimit: { window: 60, max: 1 } });
+    expect((await f.askLink('2001:db8:1234:5678::1')).status).toBe(200);
+    // Better Auth normalizes equivalent IPv6 spellings and groups a /64 before passing the storage key.
+    expect((await f.askLink('2001:0DB8:1234:5678:0000:0000:0000:0002')).status).toBe(429);
+    expect((await f.askLink('2001:db8:1234:5679::1')).status).toBe(200);
+    const verify = f.from('2001:db8:1234:5678::1');
+    const url = new URL('/api/auth/magic-link/verify', f.origin);
+    url.searchParams.set('token', `${f.gymId}.invalid`);
+    expect((await verify.handler(new Request(url))).status).not.toBe(429);
+    expect((await verify.handler(new Request(url))).status).toBe(429);
+  });
+
+  it('retains rolling address windows and prunes expired rows without removing open account windows', async () => {
+    const gymId = uuidv7(), key = `${address()}|/sign-in/magic-link`, now = Date.now();
+    const store = gymAddressStorage(() => database.system.db, gymId), rule = { window: 60, max: 2 };
+    const time = vi.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      await reserveAccountAttempt(database.system.db, '/sign-in/magic-link', `${gymId}@example.test`, { window: 600, max: 1 }, now);
+      expect((await store.consume(key, rule)).allowed).toBe(true);
+      time.mockReturnValue(now + 30_000);
+      expect((await store.consume(key, rule)).allowed).toBe(true);
+      time.mockReturnValue(now + 60_000);
+      expect(await store.consume(key, rule)).toEqual({ allowed: false, retryAfter: 30 });
+      time.mockReturnValue(now + 90_000);
+      expect((await store.consume(key, rule)).allowed).toBe(true);
+      await database.system.db.insert(authRateLimit).values({ key: `expired|${gymId}`, count: 1, lastRequest: now - 601_000 });
+      expect((await store.consume(`${address()}|/sign-in/magic-link`, rule)).allowed).toBe(true);
+      expect(await database.system.db.select().from(authRateLimit).where(eq(authRateLimit.key, `expired|${gymId}`))).toEqual([]);
+      expect((await reserveAccountAttempt(database.system.db, '/sign-in/magic-link', `${gymId}@example.test`, { window: 600, max: 1 }, now + 90_000)).retryAfter).toBe(510);
+    } finally { time.mockRestore(); }
   });
 });
 
