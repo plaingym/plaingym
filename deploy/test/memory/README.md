@@ -26,7 +26,8 @@ build `main` with the same allocator defaults as the branch, run its existing wo
 branch's 20-page, 10 MiB uploaded PDF workload with six signed copies. Both runs must succeed and
 pass the general capped budgets below. The branch's whole-stack process-memory peak may increase
 by at most **100 MB (100,000,000 bytes)** over the baseline. This relative check does not relax any
-general ceiling, including the app's 360 MiB warm-idle limit. Repeat the pair to check reproducibility;
+general ceiling, including the app's 300 MiB PSS warm-idle limit. Both inputs must carry app PSS
+evidence; historical RSS summaries cannot be compared with PSS runs. Repeat the pair to check reproducibility;
 record requests served and p50/p95 response times alongside memory.
 
 The runtime image sets `MALLOC_MMAP_THRESHOLD_=131072` and `MALLOC_ARENA_MAX=2` for **all app
@@ -87,7 +88,7 @@ also runs `tcp-throughput.mjs` in separate disposable containers with the shippe
 Caddy image, memory cap and sysctls, using 50 ms of delay in each direction. A
 32 MiB single download must sustain at least 3 MB/s at 100 ms RTT. These containers
 are CPU-capped, lower priority, limited to 180 seconds and removed afterwards.
-The forty-reader workload, memory budgets and leak canary are unchanged.
+The forty-reader workload and leak canary are unchanged.
 
 1. **Setup** through the API: owner, gym, packs, and encrypted backups to the stand-in bucket.
 2. **Seed**: 100 households with 300 members, an uploaded 20-page, 10 MiB waiver PDF and six signatures; a 115 MB
@@ -125,8 +126,16 @@ reads the same files on a CI runner and on Docker Desktop). Every 500 ms, for ea
 
 * cgroup `memory.current`, `memory.peak`, `memory.max`, `memory.swap.current` and `memory.events`
   (`oom`, `oom_kill`);
-* the **RSS** of the service's processes (app, Caddy; the app's includes `pg_dump` and anything else in
-  its cgroup) and their **PSS** (Postgres: summing RSS would count its shared buffers once per backend).
+* both **RSS** and **PSS** of every service's processes. The budget uses **app PSS**, **Postgres PSS**
+  and **Caddy RSS**. PSS divides shared pages among their users, so two Node processes do not each
+  count the same program pages in full, and Postgres does not count its shared buffers per backend.
+  The app includes every process in its cgroup: the server, backup maintenance process, `pg_dump`,
+  and any other helper. The stack is their simultaneous sum, not the sum of independent peaks;
+* per-process PID, fixed role, RSS, PSS, anonymous/file/shared-memory PSS (when available), and
+  private/shared clean/dirty mappings from `smaps_rollup`. Arguments and environment are never retained.
+  Each service's summary records the process split at its PSS peak and per-role peak/warm-idle PSS.
+  Anonymous PSS includes V8 heap and native allocations; it cannot distinguish them or prove retained
+  JavaScript objects. File PSS describes resident mappings, not the cgroup's reclaimable page cache.
 
 It also records the host's OOM kill counter. After the run Docker's own `OOMKilled` and restart count
 for each container are read, plus the job table's status counts.
@@ -151,28 +160,32 @@ synthetic runs (a healthy run, a leak, an out-of-memory kill, a missing sampler)
 * the sampler's coverage is below 90%, it has a gap over 3 seconds, or it recorded under 60 samples,
   or the fresh-idle or warm-idle window has no samples. A run the sampler missed proves nothing.
 
-The ceilings are the largest of two full runs on 2026-11-03 plus about 20% for CI machines:
+App and stack ceilings have about 20% headroom over the largest measurements from the 2026-11-16 CI baseline
+(Memory run `43950693475`, commit `f1e7cf6483368a4ee34434cc01dd2d9b2d37b15f`),
+recalculated from its raw PSS samples, and two branch runs (`43973208220` and `43974595913`).
+The ranges below cover those three runs. Postgres and Caddy retain their existing ceilings:
 
 | MiB | Measured | Capped ceiling | Uncapped measured | Uncapped ceiling |
 | :--- | :--- | :--- | :--- | :--- |
-| App RSS, peak | 422-444 | 520 | 629 | 760 |
-| App RSS, warm idle | 287-303 | 360 | - | - |
-| Postgres PSS, peak | 194-210 | 250 | 208 | 250 |
-| Caddy RSS, peak | 54 | 70 | 55 | 70 |
-| Stack, warm idle | 519-537 | 640 | - | - |
-| Stack, peak | 662-680 | 820 | 860 | 1040 |
+| App PSS, peak | 314.4–369.3 | 450 | 481.9–511.2 | 620 |
+| App PSS, warm idle | 227.1–244.3 | 300 | - | - |
+| Postgres PSS, peak | 206.3–228.8 | 250 | 207.1–210.0 | 250 |
+| Caddy RSS, peak | 60.8–64.0 | 70 | 62.5–64.2 | 70 |
+| Stack (app PSS + Postgres PSS + Caddy RSS), warm idle | 478.1–499.6 | 600 | - | - |
+| Stack (same metrics), peak | 571.4–620.2 | 750 | 736.6–758.4 | 930 |
 
-Two capped PDF runs on 2026-11-07 with the image's allocator defaults measured app RSS peaks of
-395.0–405.8 MiB and warm idle of 205.9–237.6 MiB; stack peaks were 637.4–640.4 MiB and stack warm
-idle 451.9–472.5 MiB. Compared pairwise with `main` using the same allocator, stack peak increased
-by 91.7 MB and 36.0 MB. Both pairs passed the relative PDF check and every general capped budget.
-The original calibration and ceilings above are retained. These are Docker Desktop measurements,
-not a new whole-host 1 GB proof.
+App RSS peaks ranged from 363.6 to 423.3 MiB capped and 522.1 to 565.0 MiB uncapped; those diagnostic values
+are not the app budget. The app's capped PSS headroom is 80.7 MiB at peak and 55.7 MiB at warm idle.
+The larger branch peak overlapped the server (280.2 MiB PSS) with maintenance (88.4 MiB PSS) and
+a 0.7 MiB helper. The maintenance process's independent peak was 91.5 MiB; `pg_dump` peaked at
+13.7 MiB in a different sample. Warm-idle server memory was 164.8 MiB anonymous PSS plus 60.0 MiB
+file PSS; anonymous residency was 35.3 MiB above its pre-load value. This includes V8 and native
+allocations, not a measured leak or a proven saving. No application optimization was made for this calibration.
+These are whole-stack CI measurements on a larger host, not a new whole-host 1 GB proof.
 
-The app figure is RSS of everything in its cgroup, including the backup's second Node process and
-`pg_dump`, and about 55 MiB of mapped program files that cgroup memory does not charge. Page cache is not counted: a
-container's cgroup fills its limit with reclaimable cache by design. A ceiling catches a regression or a leak
-larger than its headroom (about 80 MiB for the app); smaller drift is for the nightly records to show.
+Process budgets exclude reclaimable page cache and kernel memory. The sampler separately records
+cgroup memory and OOM counters because the hard container limit also charges those allocations.
+A ceiling catches a regression or a leak larger than its headroom; smaller drift is for the nightly records to show.
 Raise a ceiling only with a new measurement, and update the Resource Budget in the deployment notes with it.
 
 ## Proving it can fail

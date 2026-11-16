@@ -2,10 +2,11 @@
 import { test } from 'node:test';
 import { deepEqual, throws } from 'node:assert/strict';
 import { checkWaiverBudget } from './waiver-budget.mjs';
+import { budget } from './budget.mjs';
 
 const state = { document: { pages: 20, bytes: 10 * 1024 ** 2 }, signatures: Array(6).fill('signature') };
 const MiB = 1024 ** 2;
-const service = (peak, warm, max) => ({ peakProcessBytes: peak * MiB, warmIdleBytes: warm * MiB,
+const service = (peak, warm, max) => ({ processMetric: 'PSS', peakProcessBytes: peak * MiB, warmIdleBytes: warm * MiB,
   maxBytes: max * MiB, oomEvents: 0, oomKills: 0 });
 const result = (peak = 650_000_000) => ({ mode: 'capped', exitCode: 0,
   facts: { nodeOptions: '--max-old-space-size=256', containers: {} },
@@ -32,10 +33,10 @@ test('a text-only or incomplete PDF workload cannot pass the PDF gate', () => {
 });
 test('a relative pass cannot bypass the general capped budgets or sampler evidence', () => {
   const mutations = [
-    run => { run.summary.services.app.warmIdleBytes = 360 * MiB + 1; },
-    run => { run.summary.services.app.peakProcessBytes = 520 * MiB + 1; },
-    run => { run.summary.stack.peakProcessBytes = 820 * MiB + 1; },
-    run => { run.summary.stack.warmIdleBytes = 640 * MiB + 1; },
+    run => { run.summary.services.app.warmIdleBytes = budget.capped.appWarmIdleMiB * MiB + 1; },
+    run => { run.summary.services.app.peakProcessBytes = budget.capped.appPeakMiB * MiB + 1; },
+    run => { run.summary.stack.peakProcessBytes = budget.capped.stackPeakMiB * MiB + 1; },
+    run => { run.summary.stack.warmIdleBytes = budget.capped.stackIdleMiB * MiB + 1; },
     run => { run.summary.services.app.oomEvents = 1; },
     run => { run.summary.coverage.ratio = 0.8; },
     run => { run.facts.containers.app = { restarts: 1 }; },
@@ -46,4 +47,11 @@ test('a relative pass cannot bypass the general capped budgets or sampler eviden
     for (const runs of [[invalid, result()], [result(), invalid]])
       throws(() => checkWaiverBudget(...runs, state), /general capped budget failed/);
   }
+});
+
+test('the PDF gate refuses old RSS summaries on either side', () => {
+  const old = result();
+  delete old.summary.services.app.processMetric;
+  for (const runs of [[old, result()], [result(), old]])
+    throws(() => checkWaiverBudget(...runs, state), /app PSS evidence is required/);
 });

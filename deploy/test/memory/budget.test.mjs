@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { assessRun, budget, evaluate, resolveMarks, summarize } from './budget.mjs';
 import { parseSamples, removeContainers, run as command, withCleanup } from './run.mjs';
+import { processMemory, processRole } from './process-memory.mjs';
 
 test('sample parsing keeps complete records and drops only an unterminated tail', () => {
   assert.deepEqual(parseSamples('{"at":1}\n{"at":2}\n'), [{ at: 1 }, { at: 2 }]);
@@ -104,7 +105,7 @@ function run({ shape, capped = true, events = () => ({ oom: 0, oom_kill: 0 }), s
 }
 // What a healthy stack looks like: idle, a bump under load, back to idle.
 const healthy = (name, seconds) => {
-  const phases = { app: [200, 440, 290], postgres: [50, 205, 178], caddy: [52, 54, 53] }[name];
+  const phases = { app: [200, 340, 240], postgres: [50, 205, 178], caddy: [52, 54, 53] }[name];
   return seconds >= 20 && seconds <= 70 ? phases[1] : seconds > 70 ? phases[2] : phases[0];
 };
 const judge = (samples, mode = 'capped', facts = { containers: { app: { oomKilled: false, restarts: 0 } }, nodeOptions: '--max-old-space-size=256' }) =>
@@ -267,7 +268,7 @@ test('a healthy run passes in both modes', () => {
 test('a leak in the app fails the capped run on the app and on the whole stack', () => {
   const leak = (name, seconds) => healthy(name, seconds) + (name === 'app' && seconds > 30 ? Math.min(180, (seconds - 30) * 6) : 0);
   const bad = judge(run({ shape: leak }));
-  assert.ok(bad.some((line) => line.startsWith('app RSS peak')), bad.join('\n'));
+  assert.ok(bad.some((line) => line.startsWith('app PSS peak')), bad.join('\n'));
   assert.ok(bad.length > 0);
 });
 
@@ -302,8 +303,66 @@ test('a run the sampler barely saw fails, because it proves nothing', () => {
 test('the budget agrees with the shipped policy', () => {
   assert.deepEqual(budget.limits, { app: 512, postgres: 384, caddy: 128 });
   assert.equal(budget.nodeOldSpaceMiB, 256);
-  // Postgres and Caddy can't use more than their limit, so a ceiling above it would check nothing. The app's RSS may pass its
-  // limit, since it counts program files the cgroup does not charge to it.
+  // Ceilings below the container limits catch growth before the hard limit kills a process.
+  assert.ok(budget.capped.appPeakMiB < budget.limits.app);
   assert.ok(budget.capped.postgresPeakMiB <= budget.limits.postgres && budget.capped.caddyPeakMiB <= budget.limits.caddy);
   assert.ok(budget.capped.stackIdleMiB < budget.capped.stackPeakMiB);
+});
+
+test('app and stack use PSS even when RSS is much larger, in both modes', () => {
+  for (const capped of [true, false]) {
+    const samples = run({ shape: healthy, capped });
+    for (const sample of samples) sample.services.app.rss = 1000 * MiB;
+    const summary = summarize(samples, marks);
+    assert.equal(summary.services.app.processMetric, 'PSS');
+    assert.equal(summary.services.app.peakProcessBytes, 340 * MiB);
+    assert.equal(summary.services.app.warmIdleBytes, 240 * MiB);
+    assert.equal(summary.stack.peakProcessBytes, (340 + 205 + 54) * MiB);
+    assert.deepEqual(judge(samples, capped ? 'capped' : 'uncapped'), []);
+  }
+});
+
+test('app PSS ceilings accept their boundary and reject one byte over it', () => {
+  for (const mode of ['capped', 'uncapped']) {
+    for (const [field, ceiling, label] of [
+      ['peakProcessBytes', budget[mode].appPeakMiB, /app .*PSS peak/],
+      ...(mode === 'capped' ? [['warmIdleBytes', budget.capped.appWarmIdleMiB, /app PSS at warm idle/]] : []),
+    ]) {
+      const summary = summarize(run({ shape: healthy, capped: mode === 'capped' }), marks);
+      summary.services.app[field] = ceiling * MiB;
+      assert.deepEqual(evaluate(summary, { mode }), []);
+      summary.services.app[field]++;
+      assert.ok(evaluate(summary, { mode }).some(line => label.test(line)));
+    }
+  }
+  const samples = run({ shape: healthy });
+  delete samples[0].services.app.pss;
+  assert.throws(() => summarize(samples, marks), /invalid app PSS/);
+});
+
+test('process diagnostics apportion mapped pages and retain only fixed roles', () => {
+  const parsed = processMemory('Rss: 200 kB\nPss: 150 kB\nPss_Anon: 100 kB\nPss_File: 50 kB\nPrivate_Dirty: 90 kB\n');
+  assert.equal(parsed.pss, 150 * 1024);
+  assert.equal(parsed.pssFile, 50 * 1024);
+  assert.equal(parsed.pssShmem, null);
+  assert.throws(() => processMemory('Rss: 0 kB\n'), /Missing Pss/);
+  assert.equal(processRole('node\0--max-semi-space-size=4\0/app/server.mjs\0'), 'server');
+  assert.equal(processRole('node\0/app/server.mjs\0auto-update\0check\0'), 'cli');
+  assert.equal(processRole('node\0/app/maintenance.mjs\0snapshot\0secret\0'), 'maintenance');
+  assert.equal(processRole('/usr/bin/pg_dump\0secret\0'), 'pg_dump');
+  assert.equal(processRole('unknown-secret\0'), 'other');
+  assert.equal(processRole('/usr/lib/postgresql/17/bin/postgres\0-c\0shared_buffers=64MB\0'), 'postgres');
+  assert.equal(processRole('postgres: checkpointer \0\0\0'), 'postgres');
+  assert.equal(processRole('postgres: app plaingym 172.18.0.3(41234) idle\0'), 'postgres');
+  const samples = run({ shape: healthy });
+  for (const sample of samples) {
+    const app = sample.services.app;
+    app.processes = [{ pid: 1, role: 'server', pss: app.pss - 10 * MiB },
+      { pid: 2, role: 'maintenance', pss: 10 * MiB }];
+  }
+  const summary = summarize(samples, marks).services.app;
+  assert.equal(summary.processes.roles.server.peakPssBytes, 330 * MiB);
+  assert.equal(summary.processes.roles.server.warmIdlePssBytes, 230 * MiB);
+  assert.equal(summary.processes.roles.maintenance.peakPssBytes, 10 * MiB);
+  assert.equal(summary.processes.atServicePssPeak.reduce((n,p) => n+p.pss, 0), summary.peakProcessBytes);
 });

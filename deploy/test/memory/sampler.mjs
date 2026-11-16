@@ -7,12 +7,12 @@
 // SERVICES is a JSON object of service name to full container ID; SAMPLES_OUT is the JSON-lines file to append to.
 import { appendFileSync, readdirSync, readFileSync } from 'node:fs';
 import { tcpQueues } from './tcp-queues.mjs';
+import { processMemory, processRole } from './process-memory.mjs';
 
 const services = JSON.parse(process.env.SERVICES ?? '{}');
 const out = process.env.SAMPLES_OUT ?? '/out/samples.jsonl';
 const interval = 500;
 const read = (path) => readFileSync(path, 'utf8');
-const kib = (text, key) => { const match = new RegExp(`^${key}:\\s+(\\d+) kB`, 'm').exec(text); return match ? Number(match[1]) * 1024 : 0; };
 
 /** The cgroup directory of a container: the one a process of that container (found by its ID) lives in. */
 function cgroupOf(id) {
@@ -30,12 +30,18 @@ const keyValues = (text) => Object.fromEntries(text.trim().split('\n').map((line
 
 function sampleService(group, proxy) {
   let rss = 0, pss = 0, procs = 0;
+  const processes = [];
   const pids = read(`${group}/cgroup.procs`).split('\n').filter(Boolean);
   for (const pid of pids) {
     try {
-      const rollup = read(`/proc/${pid}/smaps_rollup`);
-      rss += kib(rollup, 'Rss'); pss += kib(rollup, 'Pss'); procs += 1;
-    } catch { /* ended between the listing and the read */ }
+      const memory = processMemory(read(`/proc/${pid}/smaps_rollup`));
+      const role = processRole(read(`/proc/${pid}/cmdline`));
+      rss += memory.rss; pss += memory.pss; procs += 1;
+      processes.push({ pid: Number(pid), role, ...memory });
+    } catch (error) {
+      if (error.code !== 'ENOENT' && error.code !== 'ESRCH') throw error;
+      // Ended between the listing and the read.
+    }
   }
   const max = read(`${group}/memory.max`).trim();
   let peak = null;
@@ -46,7 +52,7 @@ function sampleService(group, proxy) {
     catch { /* optional diagnostics; a process can end between samples */ }
   }
   return { current: Number(read(`${group}/memory.current`)), peak, max, swap: Number(read(`${group}/memory.swap.current`)),
-    events: keyValues(read(`${group}/memory.events`)), stat: keyValues(read(`${group}/memory.stat`)), queues, rss, pss, procs };
+    events: keyValues(read(`${group}/memory.events`)), stat: keyValues(read(`${group}/memory.stat`)), queues, rss, pss, procs, processes };
 }
 const hostOomKills = () => Number((/^oom_kill (\d+)/m.exec(read('/proc/vmstat')) ?? [])[1] ?? 0);
 

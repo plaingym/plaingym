@@ -22,8 +22,17 @@ The server pulls a prebuilt image; build on a development machine or CI.
 
 The default limits are 512 MiB for the app, 384 MiB for PostgreSQL, and 128 MiB
 for Caddy. Node has a 256 MiB old-space limit. The installer adds 1 GiB of swap
-when no swap is active. Use 2 GiB RAM for testing; whole-stack operation on a
-1 GiB host has not been established. Override `APP_MEMORY_LIMIT`,
+when no swap is active. A whole-stack acceptance run on a 1 GB server (961 MiB
+usable RAM and 1 GiB swap) passed on 2026-10-29 under API reads, an encrypted
+backup and twenty concurrent password sign-ins, with no OOM kills or restarts.
+Use 2 GiB RAM for more headroom. The CI app budget is **300 MiB warm idle /
+450 MiB peak PSS** (proportional set size), summed across the server and every
+backup subprocess. Whole-stack process ceilings are **600 MiB warm idle /
+750 MiB peak** (app PSS + Postgres PSS + Caddy RSS). These exclude reclaimable
+page cache and kernel memory; container limits remain separate. CI on a larger
+host catches regressions; it does not repeat that 1 GB acceptance. See the
+[memory check](test/memory/README.md) for measurements and the workload.
+Override `APP_MEMORY_LIMIT`,
 `POSTGRES_MEMORY_LIMIT`, `CADDY_MEMORY_LIMIT`, or `NODE_OPTIONS` in `.env`. The
 same file sets `AUTH_PASSWORD_LOGIN`, `RATE_LIMIT_PER_MINUTE`, `UPDATE_CHECK`, `RELEASE_REPOSITORY` and
 `DATABASE_POOL_MAX` (each uses the app's default when unset or empty; see

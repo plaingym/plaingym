@@ -8,6 +8,8 @@ function cappedPeak(result, label) {
   const peak = result?.summary?.stack?.peakProcessBytes;
   if (result?.mode !== 'capped' || result?.exitCode !== 0 || !Number.isFinite(peak) || peak <= 0)
     throw new Error(`${label}: a successful capped memory run with sampler evidence is required`);
+  if (result.summary.services?.app?.processMetric !== 'PSS')
+    throw new Error(`${label}: app PSS evidence is required; RSS and PSS runs cannot be compared`);
   const violations = evaluate(result.summary, { mode: 'capped', facts: result.facts });
   if (violations.length) throw new Error(`${label}: general capped budget failed: ${violations.join('; ')}`);
   return peak;

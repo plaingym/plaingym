@@ -7,26 +7,24 @@ export const sampleIntervalMs = 500;
 
 /**
  * The budget, in MiB. `limits` and `nodeOldSpaceMiB` are the shipped policy (deploy/compose.yaml). The ceilings are
- * measured: the largest of two full runs on 2026-11-03 (Docker Desktop, 16 CPUs; the figures beside each) plus about
- * 20% for CI machines, which differ run to run. Process memory counts the app's RSS (Node and any child in its cgroup,
- * such as the backup's `maintenance.mjs` and `pg_dump`; RSS includes about 55 MiB of mapped program files), Postgres'
- * PSS and Caddy's RSS. Raise a ceiling only with a new measurement and a matching line in the deployment notes
+ * measured in CI on 2026-11-16, with about 20% headroom for app and stack variation. Process memory counts the app's
+ * PSS (Node and every child in its cgroup, including maintenance.mjs and pg_dump), Postgres' PSS and Caddy's RSS.
+ * Shared program pages are apportioned rather than counted in full for both Node processes.
+ * Raise a ceiling only with a new measurement and a matching line in the deployment notes
  * (Resource Budget), never to silence a failure.
  */
 export const budget = {
   limits: { app: 512, postgres: 384, caddy: 128 },
   nodeOldSpaceMiB: 256,
-  // Capped (the shipped limits). Original calibration: app peak 422-444, app warm idle 287-303,
-  // Postgres peak 194-210, Caddy peak 54, stack warm idle 519-537, stack peak 662-680.
-  // Two PDF runs on 2026-11-07 with image allocator defaults: app peak 395.0-405.8, warm idle 205.9-237.6,
-  // Postgres peak 217.8-220.8, Caddy peak 54.6-54.7, stack warm idle 451.9-472.5, stack peak 637.4-640.4.
-  // Matched main runs with the same allocator: stack peak 552.9-603.0. Ceilings below are unchanged.
+  // Largest of the baseline and two branch CI runs: app PSS peak 369.3, warm idle 244.3;
+  // stack peak 620.2, warm idle 499.6 MiB. Postgres PSS peak 228.8, Caddy RSS peak 64.0 MiB.
+  // See README for the calibration runs; app and stack ceilings retain about 20% headroom over these maxima.
   capped: {
-    appPeakMiB: 520, appWarmIdleMiB: 360, postgresPeakMiB: 250, caddyPeakMiB: 70,
-    stackIdleMiB: 640, stackPeakMiB: 820,
+    appPeakMiB: 450, appWarmIdleMiB: 300, postgresPeakMiB: 250, caddyPeakMiB: 70,
+    stackIdleMiB: 600, stackPeakMiB: 750,
   },
-  // Uncapped (no limits, no heap flag). Measured: app peak 629, Postgres peak 208, Caddy peak 55, stack peak 860.
-  uncapped: { appPeakMiB: 760, postgresPeakMiB: 250, caddyPeakMiB: 70, stackPeakMiB: 1040 },
+  // Uncapped CI maxima: app PSS peak 511.2, Postgres PSS 210.0, Caddy RSS 64.2, stack peak 758.4 MiB.
+  uncapped: { appPeakMiB: 620, postgresPeakMiB: 250, caddyPeakMiB: 70, stackPeakMiB: 930 },
   // Sampler evidence: a run the sampler missed proves nothing.
   minCoverage: 0.9,
   maxGapMs: 3000,
@@ -36,7 +34,12 @@ export const budget = {
 const sum = (values) => values.reduce((total, value) => total + value, 0);
 const mean = (values) => (values.length ? sum(values) / values.length : null);
 const mib = (bytes) => Math.round((bytes / MiB) * 10) / 10;
-export const processBytes = (service, name) => (name === 'postgres' ? service.pss : service.rss);
+const processMetric = (name) => name === 'caddy' ? 'RSS' : 'PSS';
+export const processBytes = (service, name) => {
+  const bytes = name === 'caddy' ? service.rss : service.pss;
+  if (!Number.isFinite(bytes) || bytes < 0) throw new Error(`Missing or invalid ${name} ${processMetric(name)} sample`);
+  return bytes;
+};
 
 /** Prefer the sampler's clock; host-clock bounds are only a fallback for missing marks. */
 export function resolveMarks(fallback, recorded) {
@@ -66,9 +69,12 @@ export function summarize(samples, marks) {
     const all = run.map((sample) => sample.services[name]);
     const last = samples.at(-1).services[name], first = samples[0].services[name];
     return [name, {
+      processMetric: processMetric(name),
       peakProcessBytes: Math.max(0, ...all.map((s) => processBytes(s, name))),
       freshIdleBytes: mean(fresh.map((sample) => processBytes(sample.services[name], name))),
       warmIdleBytes: mean(warm.map((sample) => processBytes(sample.services[name], name))),
+      // Each role's peak is a simultaneous sum, never a sum of independent PID peaks.
+      processes: processBreakdown(all, warm.map(sample => sample.services[name])),
       peakRssBytes: Math.max(0, ...all.map((s) => s.rss)),
       peakCgroupBytes: Math.max(0, ...all.map((s) => Math.max(s.current, s.peak ?? 0))),
       peakSocketBytes: Math.max(0, ...all.map((s) => s.stat?.sock ?? 0)),
@@ -108,6 +114,16 @@ export function summarize(samples, marks) {
   };
 }
 
+function processBreakdown(run, warm) {
+  const roles = [...new Set(run.flatMap(service => (service.processes ?? []).map(p => p.role)))];
+  const roleBytes = (service, role) => sum((service.processes ?? []).filter(p => p.role === role).map(p => p.pss));
+  const peak = run.reduce((best, service) => !best || service.pss > best.pss ? service : best, null);
+  return { atServicePssPeak: peak?.processes ?? [], roles: Object.fromEntries(roles.map(role => [role, {
+    peakPssBytes: Math.max(0, ...run.map(service => roleBytes(service, role))),
+    warmIdlePssBytes: mean(warm.map(service => roleBytes(service, role))),
+  }])) };
+}
+
 /** Reasons the samples are too thin to judge the run: they say nothing about memory itself. */
 function evidenceViolations({ coverage }) {
   const bad = [];
@@ -142,8 +158,8 @@ export function evaluate(summary, { mode, facts = {} }) {
       if (services[name].maxBytes !== mibLimit * MiB) bad.push(`${name} memory limit is ${services[name].maxBytes === null ? 'unset' : mib(services[name].maxBytes) + ' MiB'}, expected ${mibLimit} MiB`);
     }
     if (facts.nodeOptions !== undefined && !String(facts.nodeOptions).includes(`--max-old-space-size=${budget.nodeOldSpaceMiB}`)) bad.push('V8 old-space cap is not the shipped 256 MiB');
-    limit('app', 'app RSS peak', services.app.peakProcessBytes, budget.capped.appPeakMiB);
-    limit('app', 'app RSS at warm idle', services.app.warmIdleBytes ?? 0, budget.capped.appWarmIdleMiB);
+    limit('app', 'app PSS peak', services.app.peakProcessBytes, budget.capped.appPeakMiB);
+    limit('app', 'app PSS at warm idle', services.app.warmIdleBytes ?? 0, budget.capped.appWarmIdleMiB);
     limit('postgres', 'Postgres PSS peak', services.postgres.peakProcessBytes, budget.capped.postgresPeakMiB);
     limit('caddy', 'Caddy RSS peak', services.caddy.peakProcessBytes, budget.capped.caddyPeakMiB);
     limit('stack', 'whole-stack process memory at warm idle', stack.warmIdleBytes ?? 0, budget.capped.stackIdleMiB);
@@ -151,7 +167,7 @@ export function evaluate(summary, { mode, facts = {} }) {
   } else {
     // Uncapped: no memory limits and no heap flag. Recorded for comparison, and held to its own measured ceilings.
     const ceiling = budget.uncapped;
-    limit('app', 'app uncapped RSS peak', services.app.peakProcessBytes, ceiling.appPeakMiB);
+    limit('app', 'app uncapped PSS peak', services.app.peakProcessBytes, ceiling.appPeakMiB);
     limit('postgres', 'Postgres uncapped PSS peak', services.postgres.peakProcessBytes, ceiling.postgresPeakMiB);
     limit('caddy', 'Caddy uncapped RSS peak', services.caddy.peakProcessBytes, ceiling.caddyPeakMiB);
     limit('stack', 'uncapped whole-stack process memory peak', stack.peakProcessBytes, ceiling.stackPeakMiB);
@@ -189,7 +205,7 @@ export function assessRun(summary, { mode, facts, failures = [], bookkeepingFail
 
 export function report(summary, violations, mode) {
   const row = (name, s) => `${name.padEnd(9)} peak ${String(mib(s.peakProcessBytes)).padStart(6)} MiB   fresh idle ${String(s.freshIdleBytes === null ? '-' : mib(s.freshIdleBytes)).padStart(6)}   warm idle ${String(s.warmIdleBytes === null ? '-' : mib(s.warmIdleBytes)).padStart(6)}   cgroup peak ${String(mib(s.peakCgroupBytes)).padStart(6)}   swap peak ${String(mib(s.swapPeakBytes ?? 0)).padStart(5)}`;
-  const lines = [`Memory run (${mode})`,
+  const lines = [`Memory run (${mode}; app/Postgres PSS, Caddy RSS; stack is their simultaneous sum)`,
     ...Object.entries(summary.services).map(([name, s]) => row(name, s)),
     row('stack', { ...summary.stack, swapPeakBytes: 0 }),
     `sampler   ${summary.coverage.samples} samples over ${Math.round(summary.coverage.spanMs / 1000)} s, coverage ${(summary.coverage.ratio * 100).toFixed(0)}%, longest gap ${summary.coverage.maxGapMs} ms`,
