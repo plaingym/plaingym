@@ -20,6 +20,7 @@ import { Alert } from '../../../components/ui/alert.js';
 import { Badge, StackedItem, StackedList } from '../../../components/ui/table.js';
 import { PageSection } from '../../../components/ui/page.js';
 import { LoadingState, ErrorState, EmptyState } from '../../../components/ui/states.js';
+import { CustomerCardImport } from './customer-cards.js';
 
 export interface InvoiceAccess { record: boolean; refund: boolean; links: boolean }
 type Action = { kind: 'cash' | 'charge' | 'link' | 'receipt' | 'viewReceipt' | 'releaseHold' | 'voidInvoice' } | { kind: 'refund'; payment: Payment } | { kind: 'revoke' | 'default'; card: MaskedPaymentMethod };
@@ -131,6 +132,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
       {data.refunds.length > 0 && <StackedList aria-label={text('refunds')}>{data.refunds.map(r => <StackedItem key={r.id}>{money(r.amountCents, r.currency)} · {text(r.status)}{r.reason && <p>{r.reason}</p>}</StackedItem>)}</StackedList>}
     </PageSection>
     <PageSection title={text('cards')}>
+      <CustomerCardImport key={invoice.householdId} gymId={gymId} householdId={invoice.householdId} allowed={access.record} client={client}/>
       {cards.isPending && <LoadingState/>}{cards.isError && <ErrorState onRetry={() => void cards.refetch()}/>}
       {cards.data?.data.length === 0 && <EmptyState title={text('noCards')}/>}
       <StackedList>{cards.data?.data.map(card => <StackedItem key={card.id}>

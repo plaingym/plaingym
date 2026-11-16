@@ -46,8 +46,14 @@ for (const index of [0, 1] as const) {
     await showWeek(page, await gymTimezone(own.owner), Date.parse(own.session.startsAt));
     await expect(page.getByText(own.sessionName).first()).toBeVisible();
     await expectOnlyOwn(page, own, other, 'the schedule');
-    const members = (await own.owner.json<{ data: Person[] }>('/api/members?limit=100')).data;
-    expect(members.map((member) => member.id)).toEqual([own.student.id]);
+    // Other specs create members in these gyms too. Their rosters must still be disjoint.
+    const [members, otherMembers] = await Promise.all([
+      own.owner.json<{ data: Person[] }>('/api/members?limit=100'),
+      other.owner.json<{ data: Person[] }>('/api/members?limit=100'),
+    ]);
+    const mine = members.data.map(member => member.id), theirs = otherMembers.data.map(member => member.id);
+    expect(mine).toContain(own.student.id); expect(theirs).toContain(other.student.id);
+    expect(mine.filter(id => theirs.includes(id))).toEqual([]);
     const bootstrap = await own.owner.json<{ data: { gym: { name: string }; session: { roles: string[] } } }>('/api/auth/bootstrap');
     expect(bootstrap.data.gym.name).toBe(own.name);
     expect(bootstrap.data.session.roles).toEqual(['owner']);

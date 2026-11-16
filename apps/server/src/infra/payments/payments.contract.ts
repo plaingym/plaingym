@@ -5,6 +5,38 @@ import type { Payments, CreateCharge, CheckoutRequest } from './index.js';
 import type { ClearCustomerEmail } from './email-erasure.js';
 import { runInTransaction } from '@plaingym/shared/transaction';
 
+interface CustomerCardsFixture {
+  payments: Payments; customerId: string; householdId: string;
+}
+/** The provider and fake list only the linked, gym-tagged customer's attached cards, in bounded replayable pages. */
+export function customerCardsContract(name: string, create: (options?: { gymId?: string; householdId?: string; deleted?: boolean }) => CustomerCardsFixture) {
+  describe(name + ' customer card listing', () => {
+    it('pages through more than 100 cards without mixing customers or detached cards, and safely repeats a page', async () => {
+      const { payments, customerId, householdId } = create();
+      const first = await payments.listCustomerCards(customerId, { householdId, limit: 100 });
+      expect(first.cards).toHaveLength(100); expect(first.nextCursor).not.toBeNull();
+      expect(await payments.listCustomerCards(customerId, { householdId, limit: 100 })).toEqual(first);
+      const last = await payments.listCustomerCards(customerId, { householdId, cursor: first.nextCursor!, limit: 100 });
+      expect(last.cards).toHaveLength(2); expect(last.nextCursor).toBeNull();
+      const cards = [...first.cards, ...last.cards];
+      expect(new Set(cards.map(card => card.id)).size).toBe(102);
+      expect(cards.every(card => card.customerId === customerId && card.createdAt instanceof Date)).toBe(true);
+      expect(cards.some(card => card.id === 'pm_foreign' || card.id === 'pm_detached')).toBe(false);
+    });
+    it.each([{ gymId: 'other-gym' }, { gymId: '' }, { householdId: 'other-household' }, { deleted: true }])('refuses customer ownership %j', async fixture => {
+      const { payments, customerId, householdId } = create(fixture);
+      await expect(payments.listCustomerCards(customerId, { householdId })).rejects.toThrow('not owned');
+    });
+    it('refuses transaction I/O, unsafe IDs and unbounded pages', async () => {
+      const { payments, customerId, householdId } = create();
+      await runInTransaction(async () => { await expect(payments.listCustomerCards(customerId, { householdId })).rejects.toThrow('transaction'); });
+      await expect(payments.listCustomerCards('../customer', { householdId })).rejects.toThrow('Invalid processor ID');
+      await expect(payments.listCustomerCards(customerId, { householdId, cursor: '../card' })).rejects.toThrow('Invalid processor ID');
+      for (const limit of [0, 101, 1.5]) await expect(payments.listCustomerCards(customerId, { householdId, limit })).rejects.toThrow('page size');
+    });
+  });
+}
+
 export interface EmailErasureFixture {
   customerEmail?: string;
   cardEmail?: string;

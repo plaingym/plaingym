@@ -162,6 +162,9 @@ export interface PaymentEvent {
   readonly objectKind: PaymentObjectReference['kind'];
 }
 export interface DetachOptions { readonly redactBillingDetails?: boolean }
+export class CardImportRefused extends Error {}
+export interface CustomerCardPage { readonly cards: readonly PaymentMethod[]; readonly nextCursor: string | null }
+export interface CustomerCardQuery { readonly householdId: string; readonly cursor?: string; readonly limit?: number }
 export interface Payments {
   /**
    * The key's mode, where the provider knows it. A test key can't see live-mode objects, so a live customer it reads
@@ -197,6 +200,8 @@ export interface Payments {
    * Call it only on staff-provided IDs, never on IDs taken from untrusted input.
    */
   adoptCustomer(customerId: string): Promise<{ id: string; email: string | null }>;
+  /** One bounded page of attached cards. Requires this gym's tag and refuses another household's metadata. */
+  listCustomerCards(customerId: string, options: CustomerCardQuery): Promise<CustomerCardPage>;
   /**
    * Detach a gym-owned card; missing and already detached methods succeed. With `redactBillingDetails` (erasure only, never a
    * staff removal) the card's billing name, email, phone and address are cleared first: the provider updates only an attached
@@ -775,6 +780,23 @@ export class FakePayments implements Payments {
     // Only an attached card can be updated, so its details go before it is detached.
     if (options.redactBillingDetails) this.#billing.delete(processorId);
     this.#detached.add(processorId);
+  }
+  async listCustomerCards(customerId: string, options: CustomerCardQuery): Promise<CustomerCardPage> {
+    assertNoTransaction('payments.listCustomerCards');
+    const limit = options.limit ?? 100;
+    if (!/^[A-Za-z0-9_]+$/.test(customerId) || options.cursor !== undefined && !/^[A-Za-z0-9_]+$/.test(options.cursor))
+      throw new Error('Invalid processor ID');
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('Invalid card page size');
+    const customer = this.#customers.find(item => item.id === customerId);
+    if (!customer || customer.deleted || customer.gymId !== this.gymId
+      || customer.householdId !== undefined && customer.householdId !== options.householdId)
+      throw new CardImportRefused('Customer is not owned by this gym and household');
+    const methods = [...this.#methods.values()].filter(method => method.customerId === customerId && !this.#detached.has(method.id))
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id));
+    const start = options.cursor ? methods.findIndex(method => method.id === options.cursor) + 1 : 0;
+    if (options.cursor && !start) throw new Error('Invalid card cursor');
+    const cards = methods.slice(start, start + limit);
+    return structuredClone({ cards, nextCursor: start + limit < methods.length ? cards.at(-1)!.id : null });
   }
   /** The stored name, email and personal details, as the provider would show them. */
   customer(customerId: string): ({ name: string | null; email: string | null } & Required<CustomerDetails>) | undefined {

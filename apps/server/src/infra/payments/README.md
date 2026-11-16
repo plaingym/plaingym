@@ -1,6 +1,22 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Payments adapter
 
+`listCustomerCards(customerId, { householdId, cursor?, limit? })` reads one page
+of attached cards (1–100, default 100), returning masked card details, processor
+creation times and an opaque next cursor. It requires the customer's metadata to
+name this gym and refuses metadata naming another household, cards from another
+customer or gym, and malformed pages. It never adopts an untagged customer or
+changes Stripe's default. `FakePayments` implements the same contract.
+
+Staff choose **Import cards from Stripe** on household billing or invoice details
+(`payments.record`). The import commits at most 100 cards per background job,
+atomically queues its continuation, deduplicates processor IDs and keeps revoked
+cards revoked. It rechecks the local customer link and test-to-live switch after
+provider reads. An existing default stays selected; otherwise the newest active
+card by processor creation time and ID becomes the default after the last page.
+No customer IDs or processor IDs enter the route response. The billing runner
+then uses that stored default normally; campaign filtering still uses local rows.
+
 The `Payments` types, `FakePayments`, and `normalizeChargeOutcome` are exported
 from `index.ts`. Import `StripePayments`, `stripeTransport`, and
 `STRIPE_API_VERSION` from `stripe.ts`. Only this directory imports the Stripe SDK

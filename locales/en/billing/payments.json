@@ -1,5 +1,12 @@
 {
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "importCards": "Import cards from Stripe",
+  "refreshCards": "Refresh cards",
+  "importCardsHelp": "Import cards attached to this household’s Stripe customer outside the app. An existing default stays selected. If there is no default, the newest active card becomes the default when the import finishes. Removed cards stay removed.",
+  "importCardsQueued": "Card import queued. It runs in the background; refresh cards to see new cards. If none appear, check failed jobs on the health page or ask an owner or admin.",
+  "errors.card_import_no_customer": "This household has no linked Stripe customer. Link its customer before importing cards.",
+  "errors.card_import_refused": "These cards could not be imported because the Stripe customer is not tagged for this gym and household. Ask an owner or admin to check the customer.",
+  "errors.card_import_changed": "The household’s Stripe customer or payment configuration changed. Refresh the page and request the import again.",
   "title": "Invoices",
   "invoice": "Invoice details",
   "create": "Add one-off charge",

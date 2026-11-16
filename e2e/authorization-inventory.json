@@ -1083,6 +1083,7 @@
   {"method": "GET", "path": "/api/billing/charge-types/{chargeTypeId}", "permission": {"kind": "staff", "capability": "billing.read"}},
   {"method": "PATCH", "path": "/api/billing/charge-types/{chargeTypeId}", "permission": {"kind": "staff", "capability": "plans.manage"}},
   {"method": "GET", "path": "/api/billing/households/{householdId}/payment-methods", "permission": {"kind": "staff", "capability": "billing.read"}},
+  {"method": "POST", "path": "/api/billing/households/{householdId}/payment-methods/import", "permission": {"kind": "staff", "capability": "payments.record"}},
   {"method": "POST", "path": "/api/billing/households/{householdId}/payment-methods/{paymentMethodId}/default", "permission": {"kind": "staff", "capability": "payments.record"}},
   {"method": "POST", "path": "/api/billing/households/{householdId}/payment-methods/{paymentMethodId}/revoke", "permission": {"kind": "staff", "capability": "payments.record"}},
   {"method": "GET", "path": "/api/billing/invoices", "permission": {"kind": "staff", "capability": "billing.read"}},

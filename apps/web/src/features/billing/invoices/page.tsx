@@ -18,6 +18,7 @@ import { invoiceClient, type InvoiceClient } from './api.js';
 import { InvoiceDetails, type InvoiceAccess } from './detail.js';
 import { OneOffEditor } from './editor.js';
 import { money, text } from './format.js';
+import { HouseholdCards } from './customer-cards.js';
 
 export function InvoiceList({ gymId, householdId, access, custom, catalog, client = invoiceClient }: {
   gymId: string; householdId?: string; access: InvoiceAccess; custom: boolean; catalog: boolean; client?: InvoiceClient;
@@ -82,6 +83,8 @@ export function InvoiceTab({ memberId }: ExtensionViewProps) {
   if (!gymId || !allowed || !memberId) return null;
   if (member.isError) return <ErrorState onRetry={() => void member.refetch()}/>;
   return <PageSection title={text('title')} description={text('householdInvoices')}>
+    <PageSection title={text('cards')}><HouseholdCards key={member.data.householdId} gymId={gymId}
+      householdId={member.data.householdId} allowed={access.record}/></PageSection>
     <InvoiceList key={member.data.householdId} gymId={gymId} householdId={member.data.householdId} access={access} custom={custom} catalog={catalog}/>
   </PageSection>;
 }

@@ -7,6 +7,14 @@ household `Autocomplete`. Receipt, cash/check, saved-card confirmation, refund,
 pay-link, void, review-hold and card-management views stay inside invoice details,
 with a back control and focus restored to the action that opened the view.
 
+Household billing also lists saved cards before an invoice exists. Staff with
+`payments.record` can choose **Import cards from Stripe** there or in invoice
+details. The action queues bounded jobs and offers **Refresh cards** to read their
+results. It preserves the selected default, chooses the newest active card only
+when none is selected after the last chunk, and never restores a removed card.
+The linked Stripe customer must already be tagged for this gym; conflicting
+household metadata is refused. The campaign's card filter uses stored cards.
+
 In the Packs tab, a successful manual payment, saved-card charge or refund starts
 a minute of follow-up credit reads. The invoice action invalidates billing once;
 the follow-up callback only sets that read window. Failed or pending processor

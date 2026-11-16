@@ -14,6 +14,9 @@ import { loadHousehold, loadInvoice, presentRefund, type PaymentOptions } from '
 import { paymentConflict, paymentUnavailable } from './payments.errors.js';
 import { markRefundSending, markRefundSent, pastRefundWindow, sameRefund, settleLapsed } from './transitions/lapsed-refunds.js';
 import { duplicateReservation } from './transitions/store.js';
+import { withJobTransaction } from '../../infra/jobs/index.js';
+import { CardImportRefused } from '../../infra/payments/index.js';
+import { customerCardImportJob } from './customer-card-import.js';
 
 type Options = PaymentOptions & { scope: typeof forGym; clock: Clock; transitions: InvoiceTransitions; settings: GymSettingsAccessor };
 export const receiptJob = 'billing.payments.receipt';
@@ -30,6 +33,31 @@ const masked = (r: typeof paymentMethods.$inferSelect) => c.maskedPaymentMethodS
 
 export function createPaymentMutations({ scope, clock, settings, transitions, jobs, paymentsFor, detachCard }: Options) {
   return {
+    async importCustomerCards(context: MutationContext, householdId: string) {
+      // Check local ownership before configuration or provider access.
+      const loaded = await scope(context.gymId, async tx => ({ household: await loadHousehold(tx, householdId),
+        switched: await latestTestSwitchId(tx, context.gymId) }));
+      if (!loaded.household.stripeCustomerId) paymentConflict('card_import_no_customer', 'Household has no Stripe customer');
+      if (!jobs || !paymentsFor) paymentUnavailable('payments_unavailable', 'Card import is not configured');
+      const customerId = loaded.household.stripeCustomerId, provider = await paymentsFor(context.gymId);
+      if (!provider) paymentUnavailable('payments_unavailable', 'Payments are not configured');
+      try { await provider.listCustomerCards(customerId, { householdId, limit: 1 }); }
+      catch (error) {
+        if (error instanceof CardImportRefused) paymentConflict('card_import_refused', 'Customer is not owned by this gym and household');
+        throw error;
+      }
+      const requestId = uuidv7(), gym = await settings.get(context.gymId);
+      await withJobTransaction(scope, context.gymId, async transaction => {
+        const { tx } = transaction;
+        if (!await stripeWriteCurrent(tx, context.gymId, loaded.switched)) paymentConflict('card_import_changed', 'Stripe configuration changed; request the import again');
+        if ((await loadHousehold(tx, householdId, true)).stripeCustomerId !== customerId)
+          paymentConflict('card_import_changed', 'Household customer changed; request the import again');
+        await catalogAudit(tx, context, clock, 'billing.card.import_requested', 'household', householdId, undefined, { requestId });
+        await jobs.enqueue(customerCardImportJob, { householdId, customerId, requestId, switched: loaded.switched },
+          { gymId: context.gymId, timezone: gym.timezone, idempotencyKey: requestId, maxAttempts: 8 }, transaction);
+      });
+      return { queued: true as const };
+    },
     async listPaymentMethods(gymId: string, householdId: string, input: unknown) {
       const q = c.billingPaymentMethodListQuerySchema.parse(input);
       return scope(gymId, async tx => {

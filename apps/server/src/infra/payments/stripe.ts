@@ -6,7 +6,8 @@ import { clock as systemClock } from '../../core/clock.js';
 import { CustomerCreationInProgress, CustomerDeleted, ERASED_CUSTOMER_NAME, normalizeChargeOutcome, type DetachOptions, type Payments, type CreateCustomer, type CreateCharge, type CheckoutRequest,
   type CheckoutSession, type CheckoutExpiry, type ChargeReference, type ChargeOutcome, type PaymentMetadata,
   type PaymentObjectReference, type PaymentObjectResult, type PaymentObject, type PaymentChange,
-  type PaymentEvent, type Refund, type RefundRequest, type CustomerMatch } from './index.js';
+  type PaymentEvent, type Refund, type RefundRequest, type CustomerMatch, CardImportRefused,
+  type CustomerCardPage, type CustomerCardQuery } from './index.js';
 import type { Json, ObjectData, PaymentTransport, ProviderRequest } from './transport.js';
 import { PaymentWebhookError } from './webhook-error.js';
 import { matchesBillingEmail, type ClearCustomerEmail } from './email-erasure.js';
@@ -506,6 +507,34 @@ export class StripePayments implements Payments {
     // Metadata updates merge, so the customer's other keys stay.
     if (owner === undefined) await this.#post(path, { metadata: { gym_id: this.gymId } }, 'customer:' + customerId + ':adopt');
     return { id: id(customer.id), email: typeof customer.email === 'string' ? customer.email : null };
+  }
+  async listCustomerCards(customerId: string, options: CustomerCardQuery): Promise<CustomerCardPage> {
+    assertNoTransaction('payments.listCustomerCards');
+    const path = this.#path('customers', customerId), limit = options.limit ?? 100;
+    if (options.cursor !== undefined) this.#path('payment_methods', options.cursor);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('Invalid card page size');
+    const customer = await this.#get(path), metadata = data(customer.metadata ?? {});
+    if (customer.deleted === true || metadata.gym_id !== this.gymId
+      || metadata.household_id !== undefined && metadata.household_id !== options.householdId)
+      throw new CardImportRefused('Customer is not owned by this gym and household');
+    const page = await this.#get('/v1/payment_methods', { customer: customerId, type: 'card', limit,
+      ...(options.cursor ? { starting_after: options.cursor } : {}) });
+    if (!Array.isArray(page.data) || page.data.length > limit || typeof page.has_more !== 'boolean') throw new Error('Invalid card page');
+    const cards = page.data.map(value => {
+      const method = data(value), card = data(method.card), owner = data(method.metadata ?? {}).gym_id;
+      if (id(method.customer) !== customerId || owner !== undefined && owner !== this.gymId)
+        throw new CardImportRefused('Card belongs to another customer or gym');
+      const methodId = id(method.id); this.#path('payment_methods', methodId);
+      if (method.type !== 'card' || typeof card.last4 !== 'string' || !/^[0-9]{4}$/.test(card.last4)
+        || !Number.isInteger(card.exp_month) || Number(card.exp_month) < 1 || Number(card.exp_month) > 12
+        || !Number.isInteger(card.exp_year) || Number(card.exp_year) < 2000) throw new Error('Invalid card details');
+      return { id: methodId, customerId, createdAt: timestamp(method.created), last4: card.last4,
+        ...(typeof card.brand === 'string' ? { brand: card.brand } : {}), expiresMonth: Number(card.exp_month), expiresYear: Number(card.exp_year) };
+    });
+    const nextCursor = page.has_more ? cards.at(-1)?.id : null;
+    if (nextCursor === undefined || nextCursor === options.cursor || new Set(cards.map(card => card.id)).size !== cards.length)
+      throw new Error('Invalid card pagination');
+    return { cards, nextCursor };
   }
   async findCustomerByEmail(email: string): Promise<readonly CustomerMatch[]> {
     assertNoTransaction('payments.findCustomerByEmail');

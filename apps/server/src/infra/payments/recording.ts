@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { isDeepStrictEqual } from 'node:util';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
-import { CustomerCreationInProgress, CustomerDeleted, type Payments } from './index.js';
+import { CardImportRefused, CustomerCreationInProgress, CustomerDeleted, type Payments } from './index.js';
 
 export interface Exchange {
   operation: string;
@@ -11,7 +11,7 @@ export interface Exchange {
 }
 export interface Tape { version: 1; gymId: string; exchanges: Exchange[] }
 const paymentMethods = new Set<string>(['createCustomer', 'createCharge', 'confirmCharge', 'cancelCharge', 'findCharge', 'readPaymentObject',
-  'listChangesSince', 'listRefunds', 'refund', 'createCheckout', 'expireCheckout', 'findCustomerByEmail', 'adoptCustomer', 'detachPaymentMethod', 'redactCustomer', 'clearCustomerEmail', 'parseWebhook']);
+  'listChangesSince', 'listRefunds', 'refund', 'createCheckout', 'expireCheckout', 'findCustomerByEmail', 'adoptCustomer', 'listCustomerCards', 'detachPaymentMethod', 'redactCustomer', 'clearCustomerEmail', 'parseWebhook']);
 /** Fixtures contain synthetic test-account data only. Credentials never enter the transport. */
 export function redact(value: unknown): unknown {
   if (typeof value === 'string') return value.replace(/(?:sk|rk)_(?:test|live)_[A-Za-z0-9]+|whsec_[A-Za-z0-9]+/g, '[redacted]');
@@ -45,7 +45,8 @@ export class FixtureRecorder {
       const record = error as Exchange['error'];
       const raw = error && typeof error === 'object' && 'raw' in error ? error.raw as Record<string, unknown> : undefined;
       const intent = record?.payment_intent ?? raw?.payment_intent;
-      exchange.error = { type: error instanceof CustomerCreationInProgress ? 'CustomerCreationInProgress' : error instanceof CustomerDeleted ? 'CustomerDeleted' : record?.type ?? 'Error', ...(record?.code ? { code: record.code } : {}),
+      exchange.error = { type: error instanceof CustomerCreationInProgress ? 'CustomerCreationInProgress' : error instanceof CustomerDeleted ? 'CustomerDeleted'
+        : error instanceof CardImportRefused ? 'CardImportRefused' : record?.type ?? 'Error', ...(record?.code ? { code: record.code } : {}),
         ...(record?.statusCode ? { statusCode: record.statusCode } : {}),
         ...(intent ? { payment_intent: redact(intent) } : {}) };
       throw error;
@@ -72,7 +73,8 @@ export class Replay {
     if (!exchange || exchange.operation !== operation || !isDeepStrictEqual(exchange.input, redact(input)))
       throw new Error('Fixture request mismatch at exchange ' + this.#position + ': ' + operation);
     if (exchange.error) throw Object.assign(exchange.error.type === 'CustomerCreationInProgress' ? new CustomerCreationInProgress()
-      : exchange.error.type === 'CustomerDeleted' ? new CustomerDeleted() : new Error(exchange.error.type), hydrate(exchange.error));
+      : exchange.error.type === 'CustomerDeleted' ? new CustomerDeleted()
+        : exchange.error.type === 'CardImportRefused' ? new CardImportRefused() : new Error(exchange.error.type), hydrate(exchange.error));
     return hydrate(structuredClone(exchange.output)) as T;
   }
   assertConsumed(): void {

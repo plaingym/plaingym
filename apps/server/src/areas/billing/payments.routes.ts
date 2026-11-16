@@ -41,6 +41,7 @@ export function createPaymentRoutes(service?: PaymentService) {
     billingRoute(c.billingContracts.listRefunds, (ctx, _p, q) => read().listRefunds(ctx.gym.gymId, q)),
     billingRoute(c.billingContracts.createRefund, async (ctx, p, _q, b) => ({ data: await read().refund(billingMutation(ctx), p.paymentId!, c.createRefundRequestSchema.parse(b)) })),
     billingRoute(c.billingContracts.listPaymentMethods, (ctx, p, q) => read().listPaymentMethods(ctx.gym.gymId, p.householdId!, q)),
+    billingRoute(c.billingContracts.importCustomerCards, async (ctx, p) => ({ data: await read().importCustomerCards(billingMutation(ctx), p.householdId!) })),
     billingRoute(c.billingContracts.setDefaultPaymentMethod, async (ctx, p) => ({ data: await read().setDefault(billingMutation(ctx), p.householdId!, p.paymentMethodId!) })),
     billingRoute(c.billingContracts.revokePaymentMethod, async (ctx, p) => ({ data: await read().revokeCard(billingMutation(ctx), p.householdId!, p.paymentMethodId!) })),
     billingRoute(c.billingContracts.resendReceipt, async (ctx, p) => ({ data: await read().resendReceipt(billingMutation(ctx), p.invoiceId!) })),

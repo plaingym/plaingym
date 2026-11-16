@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 // eslint-disable-next-line database/system-tables -- One test reads backend PIDs to see a refund wait on the gym row lock.
 import { eq, sql } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- One test holds the gym row the way a settings save does.
-import { auditEvents, gyms, invoices, paymentAttempts, paymentMethods, payments, refunds, signedLinks, uuidv7 } from '@plaingym/db';
+import { auditEvents, gyms, households, invoices, paymentAttempts, paymentMethods, payments, refunds, signedLinks, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { canStaff, createTranslator, type StaffRole } from '@plaingym/shared';
@@ -34,6 +34,8 @@ import { createChargeRunner, type ChargeResult } from './runner/index.js';
 import { configurePayments, createPaymentRoutes } from './payments.routes.js';
 import { createLapsedRefundJobs, createPaymentJobs, lapsedRefundJob } from './payments.jobs.js';
 import { detachJob } from './payments.mutations.js';
+import { createCustomerCardImportJobs, customerCardImportJob } from './customer-card-import.js';
+import { stripeTestClearedAction } from './stripe-writes.js';
 import { refundSending, refundSendLeaseMs, refundSent, refundSettleSkewMs } from './transitions/lapsed-refunds.js';
 
 const db = useTestDatabase(), factory = createFactories(db), origin = 'https://gym.example.test';
@@ -55,7 +57,8 @@ async function fixture() {
   const payment = await service.manualPayment(context, paid.id, { amountCents: 2500, currency: 'USD', method: 'cash', paidAt: clock.now().toISOString() });
   const notifications = createTransitionNotifications({ scope: db.forGym, clock, settings,
     prepare: async () => ({ email, origin }), staffRecipients: async () => ['owner@example.invalid'] });
-  createServerRegistry({ jobs: createPaymentJobs({ scope: db.forGym, detachCard, notifications }) }).registerJobs(jobs, new Set());
+  createServerRegistry({ jobs: [...createPaymentJobs({ scope: db.forGym, detachCard, notifications }),
+    ...createCustomerCardImportJobs({ ...options, jobs, paymentsFor: async () => provider })] }).registerJobs(jobs, new Set());
   const links = createSignedLinksService({ scope: db.forGym, clock, delivery: { prepare: async () => ({
     gymId, gymName: 'Gym', origin, email, memberEmailsEnabled: true, t: createTranslator(locales.en ?? {}),
   }) } });
@@ -86,9 +89,125 @@ function app(f: Fixture, principal: Principal, realRegistrations = false) {
   });
 }
 const staff = (f: Fixture, role: StaffRole): Principal => ({ kind: 'staff', gymId: f.gymId, userId: f.user.id, roles: [role] });
+
+describe('staff import of externally attached cards', () => {
+  const rows = (f: Fixture) => db.forGym(f.gymId, tx => tx.select().from(paymentMethods));
+  function attached(f: Fixture, id: string, createdAt = f.clock.now(), customerId = 'cus_fixture') {
+    f.provider.recordPaymentMethod({ id, customerId, createdAt, brand: 'visa', last4: '4242', expiresMonth: 12, expiresYear: 2035 });
+  }
+  async function empty(f: Fixture) { await db.forGym(f.gymId, tx => tx.delete(paymentMethods)); }
+  it('imports dashboard-added cards once, safely repeats, and the runner charges the imported default', async () => {
+    const f = await fixture(); await empty(f);
+    attached(f, 'pm_old', new Date('2026-01-01T00:00:00Z')); attached(f, 'pm_new');
+    attached(f, 'pm_foreign', f.clock.now(), 'cus_foreign');
+    await f.service.importCustomerCards(f.context, f.home.id);
+    expect(await rows(f)).toHaveLength(0);
+    await f.jobs.runNext();
+    expect((await rows(f)).map(card => card.processorId).sort()).toEqual(['pm_new', 'pm_old']);
+    expect((await rows(f)).filter(card => card.isDefault).map(card => card.processorId)).toEqual(['pm_new']);
+    const audits = () => db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.card.imported')));
+    expect(await audits()).toHaveLength(2);
+    await f.service.importCustomerCards(f.context, f.home.id); await f.jobs.runNext();
+    expect(await rows(f)).toHaveLength(2); expect(await audits()).toHaveLength(2);
+    expect(await f.service.charge(f.context, f.invoice.id)).toMatchObject({ status: 'succeeded' });
+    const [attempt] = await db.forGym(f.gymId, tx => tx.select().from(paymentAttempts).where(eq(paymentAttempts.invoiceId, f.invoice.id)));
+    expect(attempt?.savedPaymentMethod).toBe('pm_new');
+  });
+  it('uses bounded jobs, chooses the default after all pages, and deduplicates replayed continuations', async () => {
+    const f = await fixture(); await empty(f);
+    for (let i = 0; i < 205; i++) attached(f, 'pm_chunk_' + String(i).padStart(3, '0'));
+    await f.service.importCustomerCards(f.context, f.home.id);
+    expect(f.jobs.batchJobs.has(customerCardImportJob)).toBe(true);
+    await f.jobs.runNext(); expect(await rows(f)).toHaveLength(100);
+    expect((await rows(f)).some(card => card.isDefault)).toBe(false);
+    const next = f.jobs.jobs.find(job => job.name === customerCardImportJob && job.status === 'queued')!;
+    await f.jobs.runNext(); expect(await rows(f)).toHaveLength(200);
+    await f.jobs.runNext(); expect(await rows(f)).toHaveLength(205);
+    const registration = createCustomerCardImportJobs({ ...f.options, paymentsFor: async () => f.provider })[0]!;
+    await registration.handler(next.payload, { gymId: f.gymId, timezone: 'UTC', jobId: next.id, attempt: 2, clock: f.clock });
+    expect(await rows(f)).toHaveLength(205);
+    expect((await rows(f)).filter(card => card.isDefault).map(card => card.processorId)).toEqual(['pm_chunk_204']);
+  });
+  it('keeps the selected default when importing newer cards', async () => {
+    const f = await fixture(); attached(f, 'pm_newest');
+    await f.service.importCustomerCards(f.context, f.home.id); await f.jobs.runNext();
+    expect((await rows(f)).filter(card => card.isDefault).map(card => card.id)).toEqual([f.card.id]);
+  });
+  it('rolls a chunk back if its continuation cannot be committed, then safely retries', async () => {
+    const f = await fixture(); await empty(f);
+    for (let i = 0; i < 101; i++) attached(f, 'pm_atomic_' + i);
+    await f.service.importCustomerCards(f.context, f.home.id);
+    const registration = createCustomerCardImportJobs({ ...f.options, paymentsFor: async () => f.provider })[0]!;
+    const job = f.jobs.jobs[0]!, context = { gymId: f.gymId, timezone: 'UTC', jobId: job.id, attempt: 1, clock: f.clock };
+    vi.spyOn(f.jobs, 'enqueue').mockRejectedValueOnce(new Error('Queue unavailable'));
+    await expect(registration.handler(job.payload, context)).rejects.toThrow('Queue unavailable');
+    expect(await rows(f)).toHaveLength(0); expect(f.jobs.jobs).toHaveLength(1);
+    await registration.handler(job.payload, { ...context, attempt: 2 });
+    expect(await rows(f)).toHaveLength(100); expect(f.jobs.jobs).toHaveLength(2);
+  });
+  it('preserves a staff default chosen during the provider read', async () => {
+    const f = await fixture(), chosen = await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_chosen' });
+    attached(f, 'pm_newest'); await f.service.importCustomerCards(f.context, f.home.id);
+    const original = f.provider.listCustomerCards.bind(f.provider);
+    vi.spyOn(f.provider, 'listCustomerCards').mockImplementationOnce(async (...args) => {
+      const page = await original(...args); await f.service.setDefault(f.context, f.home.id, chosen.id); return page;
+    });
+    await f.jobs.runNext();
+    expect((await rows(f)).filter(card => card.isDefault).map(card => card.id)).toEqual([chosen.id]);
+  });
+  it('never reactivates a revoked card or selects it as default', async () => {
+    const f = await fixture(); attached(f, f.card.processorId); attached(f, 'pm_active');
+    await db.forGym(f.gymId, tx => tx.update(paymentMethods).set({ revokedAt: f.clock.now(), isDefault: false }));
+    await f.service.importCustomerCards(f.context, f.home.id); await f.jobs.runNext();
+    expect((await rows(f)).find(card => card.id === f.card.id)).toMatchObject({ revokedAt: f.clock.now(), isDefault: false });
+    expect((await rows(f)).filter(card => card.isDefault).map(card => card.processorId)).toEqual(['pm_active']);
+  });
+  it('refuses another gym-tagged customer before queueing or writing', async () => {
+    const f = await fixture(), provider = new FakePayments(f.gymId, f.clock);
+    provider.seedCustomer({ id: 'cus_fixture', email: 'foreign@example.invalid', gymId: uuidv7() });
+    const service = createPaymentService({ ...f.options, paymentsFor: async () => provider });
+    await expect(service.importCustomerCards(f.context, f.home.id)).rejects.toMatchObject({ code: 'conflict', details: { reason: ['card_import_refused'] } });
+    expect(f.jobs.jobs).toHaveLength(0); expect(await rows(f)).toHaveLength(1);
+  });
+  it('refuses an unlinked household without provider calls', async () => {
+    const f = await fixture();
+    await db.forGym(f.gymId, tx => tx.update(households).set({ stripeCustomerId: null }));
+    const list = vi.spyOn(f.provider, 'listCustomerCards');
+    await expect(f.service.importCustomerCards(f.context, f.home.id)).rejects.toMatchObject({ details: { reason: ['card_import_no_customer'] } });
+    expect(list).not.toHaveBeenCalled(); expect(f.jobs.jobs).toHaveLength(0);
+  });
+  it('does not import a card already stored for a different household', async () => {
+    const f = await fixture(), other = await factory('households', f.gymId);
+    await factory('paymentMethods', f.gymId, { householdId: other.id, processorId: 'pm_mislinked' });
+    attached(f, 'pm_mislinked'); await f.service.importCustomerCards(f.context, f.home.id);
+    const registration = createCustomerCardImportJobs({ ...f.options, paymentsFor: async () => f.provider })[0]!;
+    const job = f.jobs.jobs[0]!;
+    await expect(registration.handler(job.payload, { gymId: f.gymId, timezone: 'UTC', jobId: job.id, attempt: 1, clock: f.clock }))
+      .rejects.toThrow('another household');
+    expect(await rows(f)).toHaveLength(2);
+  });
+  it('leaves no imported rows when a customer changes during provider I/O', async () => {
+    const f = await fixture(); attached(f, 'pm_stale');
+    await f.service.importCustomerCards(f.context, f.home.id);
+    const original = f.provider.listCustomerCards.bind(f.provider);
+    vi.spyOn(f.provider, 'listCustomerCards').mockImplementationOnce(async (...args) => {
+      const page = await original(...args);
+      await db.forGym(f.gymId, tx => tx.update(households).set({ stripeCustomerId: 'cus_replaced' }));
+      return page;
+    });
+    await f.jobs.runNext(); expect(await rows(f)).toHaveLength(1);
+  });
+  it('discards a queued import after test-mode data is cleared', async () => {
+    const f = await fixture(); attached(f, 'pm_stale');
+    await f.service.importCustomerCards(f.context, f.home.id);
+    await factory('auditEvents', f.gymId, { action: stripeTestClearedAction, targetType: 'gym', targetId: f.gymId });
+    const list = vi.spyOn(f.provider, 'listCustomerCards');
+    await f.jobs.runNext(); expect(list).not.toHaveBeenCalled(); expect(await rows(f)).toHaveLength(1);
+  });
+});
 const contracts = { ...billingContracts, releaseInvoiceHold: releaseInvoiceHoldContract };
 const operations = ['listInvoices', 'getInvoice', 'createOneOffInvoice', 'chargeInvoice', 'recordManualPayment', 'listPayments',
-  'listRefunds', 'createRefund', 'listPaymentMethods', 'setDefaultPaymentMethod', 'revokePaymentMethod', 'resendReceipt', 'releaseInvoiceHold', 'voidInvoice'] as const satisfies readonly (BillingEndpoint | 'releaseInvoiceHold')[];
+  'listRefunds', 'createRefund', 'listPaymentMethods', 'importCustomerCards', 'setDefaultPaymentMethod', 'revokePaymentMethod', 'resendReceipt', 'releaseInvoiceHold', 'voidInvoice'] as const satisfies readonly (BillingEndpoint | 'releaseInvoiceHold')[];
 type Operation = typeof operations[number];
 function request(server: ReturnType<typeof app>, operation: Operation, f: Fixture, oneOff?: unknown) {
   const contract = contracts[operation];

@@ -255,6 +255,19 @@ isn't checked; neither is any server on a single-gym install.
 
 `payments.custom` is billing a custom amount; front desk bills catalog charge
 types and existing invoices only.
+
+| Card import route | Required capability | Owner | Admin | Coach | Front desk |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| `POST /api/billing/households/{householdId}/payment-methods/import` | `payments.record` | yes | yes | | yes |
+
+Card import is staff-triggered from household billing or invoice details and runs
+in bounded background jobs. It reads only the linked customer's attached cards,
+requires that customer's gym tag, refuses conflicting household metadata, and
+deduplicates stored cards without restoring revoked cards. An existing default is
+preserved; only a household with none receives the newest active card as default
+after the final chunk. Provider calls run outside database transactions, and each
+chunk rechecks the customer link and test-to-live switch before storing cards.
+
 Voiding an unpaid invoice uses `refunds.create` (owner and admin only), with a
 required audited reason. It refuses pending or authentication-needed card
 attempts and reserved Checkout, revokes the invoice's pay links and prevents
