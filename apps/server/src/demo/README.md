@@ -2,7 +2,14 @@
 # Demo mode
 
 The demo entry host's root serves a server-rendered product page. **Try the demo**
-opens the showcase start page directly, followed by a **GitHub** repository link.
+opens the showcase start page directly, followed by a **GitHub** repository link;
+both lead with an inline SVG icon, in the hero, the "How the demo works" section
+and the header. The header sits above the hero (it scrolls with the page) and links
+to the three top-level sections. From the `md` breakpoint it is a row; below that a
+menu button opens the same links in a popover, with a `<details>` fallback where
+popovers are missing. Escape or a tap outside closes the popover, and a section link
+scrolls the page away from it. The footer lists the source, license and self-hosting
+links with the running version beside them.
 The page uses the public stylesheet, native links and a policy that forbids scripts.
 Ten feature sections have inline SVG icons and seeded screenshots. Images use
 light/dark sources, responsive densities and lazy loading. Native popovers enlarge

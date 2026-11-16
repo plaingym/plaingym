@@ -36,7 +36,8 @@ it('serves the entry root as HTML with ordered CTAs, the showcase start URL, sou
     "default-src 'none'", "script-src 'none'", "style-src 'self'", "img-src 'self'", "base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'",
   ]);
   const html = await response.text();
-  const links = [...html.matchAll(/<a href="([^"]+)"[^>]*>([^<]+)<\/a>/g)].map(match => [match[1], match[2]]);
+  const links = [...html.replace(/<svg\b.*?<\/svg>/g, '').replace(/<span class="shrink-0"><\/span>/g, '')
+    .matchAll(/<a href="([^"]+)"[^>]*>([^<]+)<\/a>/g)].map(match => [match[1], match[2]]);
   expect(links).toEqual(expect.arrayContaining([
     ['https://showcase.demo.example.test/demo', 'Try the demo'], ['https://github.com/plaingym/plaingym', 'GitHub'],
     ['https://showcase.demo.example.test/demo', 'Try the demo'], ['https://github.com/plaingym/plaingym', 'GitHub'],
@@ -66,6 +67,45 @@ it('has ten linked feature sections, responsive screenshots and native lightboxe
   }
   expect(html).toContain('prefers-color-scheme: dark');
   expect(Buffer.byteLength(html)).toBeLessThan(100_000);
+});
+it('has a header with section links, a script-free menu and icons on both calls to action', async () => {
+  const response = await appFor(true).request(origin + '/');
+  const html = await response.text();
+  const header = html.match(/<header class="mx-auto flex[^>]*>.*?<\/header>/s)?.[0] ?? '';
+  expect(html.indexOf(header)).toBeLessThan(html.indexOf('<main'));
+  expect(header).toContain('>PlainGym</a>');
+  // The desktop row and both phone menus list the same links, each a target the page defines.
+  const lists = [header.match(/<nav aria-label="Main".*?<\/nav>/s)?.[0], header.match(/<div id="site-menu".*?<\/ul>/s)?.[0], header.match(/<details.*?<\/details>/s)?.[0]];
+  for (const list of lists) {
+    expect(list).toBeDefined();
+    const text = (list ?? '').replace(/<svg\b.*?<\/svg>/g, '').replace(/<[^>]+>/g, '|').split('|').filter(Boolean);
+    expect(text).toEqual(['Why PlainGym', 'Features', 'How the demo works', 'Try the demo', 'GitHub']);
+    for (const [target] of [['#strengths'], ['#features'], ['#explore']] as const) {
+      expect(list).toContain(`href="${target}"`);
+      expect(html).toMatch(new RegExp(`<h2 id="${target.slice(1)}" class="scroll-mt-6 `));
+    }
+  }
+  // Popover API menu, with no script: the button names it, the popover is auto (Escape and outside taps close it).
+  expect(header).toMatch(/<button type="button" popovertarget="site-menu"[^>]*aria-label="Menu"/);
+  expect(header).toMatch(/<div id="site-menu" popover="auto"/);
+  expect(header).toMatch(/<summary[^>]*aria-label="Menu"/);
+  // Both calls to action, in the hero, the explore section and the header, lead with an aria-hidden icon and keep their text.
+  for (const [label, count] of [['Try the demo', 4], ['GitHub', 4]] as const) {
+    const withIcon = [...html.matchAll(/<a href="[^"]+"[^>]*><span class="shrink-0"><svg\b[^>]*aria-hidden="true"[^>]*>.*?<\/svg><\/span>([^<]+)<\/a>/g)].filter(match => match[1] === label);
+    expect(withIcon.length).toBeGreaterThanOrEqual(count);
+  }
+  // Every menu control is a 44 px target and the page's policy and stylesheet version are unchanged in kind.
+  expect(header).not.toMatch(/<(?:a|button|summary)\b(?![^>]*min-h-11)[^>]*>/);
+  expect(html).toContain('/demo-assets/landing.css?v=2');
+  expect(response.headers.get('content-security-policy')).toContain("script-src 'none'");
+  expect(html).not.toMatch(/<script|\sstyle\s*=|\sonclick=/i);
+});
+it('keeps the running version in the footer after the source, license and self-hosting links', () => {
+  const html = demoLandingPage('/demo', source), footer = html.match(/<footer.*?<\/footer>/s)?.[0] ?? '';
+  const text = footer.replace(/<[^>]+>/g, '|').split('|').filter(Boolean);
+  expect(text.slice(0, 3)).toEqual(['Source code', 'AGPL-3.0 license', 'Self-hosting guide']);
+  expect(text).toHaveLength(4);
+  expect(footer).toContain('flex-wrap');
 });
 it('serves only the manifest assets on the entry host with immutable image caching', async () => {
   const app = appFor(true);

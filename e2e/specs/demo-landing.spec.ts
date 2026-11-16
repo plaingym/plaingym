@@ -24,7 +24,7 @@ for (const width of [360, 1280]) for (const colorScheme of ['light', 'dark'] as 
     expect(response?.headers()['content-security-policy']).toContain("script-src 'none'");
     expect(response?.headers()['content-security-policy']).toContain("style-src 'self'");
     await expect(page.getByRole('heading', { level: 1, name: 'PlainGym', exact: true })).toBeVisible();
-    const links = page.getByRole('link');
+    const links = page.getByRole('main').getByRole('link');
     await expect(links.nth(0)).toHaveText('Try the demo');
     await expect(links.nth(0)).toHaveAttribute('href', /^https:\/\/showcase\.demo\.localhost\/demo#kioskToken=.+$/);
     await expect(links.nth(1)).toHaveText('GitHub');

@@ -32,9 +32,31 @@ export function repositoryUrl(source: string): string {
 /** Entry-host product page: native links and popovers, with no JavaScript. */
 export function demoLandingPage(showcaseHref: string, source: string, t: Translator = translator) {
   const text = (key: string) => t('demo/product:' + key);
+  const repository = repositoryUrl(source);
+  const withIcon = (name: DemoIconName, label: string) => [h('span', { class: 'shrink-0' }, icon(name)), label];
   const actions = () => h('div', { class: 'flex flex-col gap-3 sm:flex-row' },
-    h('a', { href: showcaseHref, class: button }, text('try')),
-    h('a', { href: repositoryUrl(source), class: secondaryButton }, text('github')));
+    h('a', { href: showcaseHref, class: button + ' gap-2' }, ...withIcon('play', text('try'))),
+    h('a', { href: repository, class: secondaryButton + ' gap-2' }, ...withIcon('github', text('github'))));
+  const sectionLinks = [['#strengths', 'navWhy'], ['#features', 'navFeatures'], ['#explore', 'explore']] as const;
+  // One list of links feeds the desktop row and both phone menus (popover, and a details fallback).
+  const menuLink = 'flex min-h-11 min-w-11 items-center gap-3 rounded-lg px-3 py-2 font-semibold hover:bg-muted';
+  const menuItems = () => [...sectionLinks.map(([href, key]) => h('li', null, h('a', { href, class: menuLink }, text(key)))),
+    h('li', null, h('a', { href: showcaseHref, class: menuLink }, ...withIcon('play', text('try')))),
+    h('li', null, h('a', { href: repository, class: menuLink }, ...withIcon('github', text('github'))))];
+  const panel = 'demo-menu-panel w-72 max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-card p-2 text-card-foreground shadow-lg dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100';
+  const rowLink = 'inline-flex min-h-11 min-w-11 items-center rounded-lg px-2 text-sm font-semibold hover:bg-muted';
+  const rowButton = 'inline-flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-lg px-3 text-sm font-semibold';
+  const siteHeader = () => h('header', { class: 'mx-auto flex max-w-6xl items-center justify-between gap-2 px-4 pt-4 sm:px-6' },
+    h('a', { href: '/', class: 'inline-flex min-h-11 items-center text-xl font-bold tracking-tight' }, text('name')),
+    h('nav', { 'aria-label': text('navLabel'), class: 'demo-nav-row items-center gap-1' },
+      ...sectionLinks.map(([href, key]) => h('a', { href, class: rowLink }, text(key))),
+      h('a', { href: showcaseHref, class: rowButton + ' ml-2 bg-primary text-primary-foreground' }, ...withIcon('play', text('try'))),
+      h('a', { href: repository, class: rowButton + ' border border-border bg-background text-foreground' }, ...withIcon('github', text('github')))),
+    h('button', { type: 'button', popovertarget: 'site-menu', class: secondaryButton + ' demo-menu-button', 'aria-label': text('menu') }, icon('menu')),
+    h('div', { id: 'site-menu', popover: 'auto', class: 'demo-menu ' + panel }, h('ul', null, ...menuItems())),
+    h('details', { class: 'demo-menu-fallback' },
+      h('summary', { class: secondaryButton + ' cursor-pointer', 'aria-label': text('menu') }, icon('menu')),
+      h('ul', { class: panel }, ...menuItems())));
   const card = 'min-w-0 space-y-3 rounded-xl border border-border bg-card p-6 dark:border-gray-700 dark:bg-gray-900';
   const picture = (key: typeof featureKeys[number], expanded = false) => {
     const shot = screenshots[key], href = (file: string) => '/demo-assets/' + file;
@@ -49,20 +71,21 @@ export function demoLandingPage(showcaseHref: string, source: string, t: Transla
     h('head', null, h('meta', { charset: 'utf-8' }), h('meta', { name: 'viewport', content: 'width=device-width, initial-scale=1' }),
       h('meta', { name: 'color-scheme', content: 'light dark' }), h('meta', { name: 'description', content: text('pitch') }),
       h('title', null, text('title')), h('link', { rel: 'stylesheet', href: '/public/pages/styles.css' }),
-      h('link', { rel: 'stylesheet', href: '/demo-assets/landing.css?v=1' })),
+      h('link', { rel: 'stylesheet', href: '/demo-assets/landing.css?v=2' })),
     h('body', { class: 'm-0 bg-background font-sans text-foreground dark:bg-gray-950 dark:text-gray-100' },
+      siteHeader(),
       h('main', { class: 'mx-auto max-w-6xl space-y-16 px-4 py-8 sm:px-6 sm:py-12' },
         h('header', { class: 'space-y-6 rounded-2xl border-t-4 border-primary bg-secondary p-6 text-secondary-foreground sm:p-12 dark:bg-gray-900 dark:text-gray-100' },
           h('p', { class: 'text-sm font-semibold uppercase tracking-widest' }, text('eyebrow')),
           h('h1', { class: 'text-5xl font-bold tracking-tight sm:text-7xl' }, text('name')),
           h('p', { class: 'max-w-2xl text-xl leading-relaxed sm:text-2xl' }, text('pitch')), actions()),
         h('section', { class: 'space-y-6', 'aria-labelledby': 'strengths' },
-          h('h2', { id: 'strengths', class: 'text-3xl font-semibold tracking-tight' }, text('strengths')),
+          h('h2', { id: 'strengths', class: 'scroll-mt-6 text-3xl font-semibold tracking-tight' }, text('strengths')),
           h('div', { class: 'grid gap-4 sm:grid-cols-2 lg:grid-cols-4' }, ...(['data', 'standards', 'open', 'selfHost'] as const).map(key =>
             h('div', { class: card }, icon(key), h('h3', { class: 'text-xl font-semibold' }, text(key + 'Title')),
               h('p', { class: 'leading-relaxed' }, text(key + 'Body')))))),
         h('section', { class: 'space-y-6', 'aria-labelledby': 'features' },
-          h('h2', { id: 'features', class: 'text-3xl font-semibold tracking-tight' }, text('features')),
+          h('h2', { id: 'features', class: 'scroll-mt-6 text-3xl font-semibold tracking-tight' }, text('features')),
           h('nav', { 'aria-labelledby': 'features', class: 'grid gap-3 sm:grid-cols-2 lg:grid-cols-5' }, ...featureKeys.map(key =>
             h('a', { href: '#feature-' + key, class: 'flex min-h-11 min-w-0 items-center gap-3 rounded-lg border border-border p-4 text-sm font-semibold dark:border-gray-700' },
               h('span', { class: 'shrink-0' }, icon(key)), text(key + 'Title'))))),
@@ -80,11 +103,11 @@ export function demoLandingPage(showcaseHref: string, source: string, t: Transla
             h('button', { type: 'button', tabindex: 0, popovertarget: 'shot-' + key, popovertargetaction: 'hide', class: 'demo-close', autofocus: true }, text('close')),
             picture(key, true)))),
         h('section', { class: 'space-y-6 rounded-xl bg-secondary p-6 text-secondary-foreground sm:p-8 dark:bg-gray-900 dark:text-gray-100', 'aria-labelledby': 'explore' },
-          h('h2', { id: 'explore', class: 'text-3xl font-semibold' }, text('explore')),
+          h('h2', { id: 'explore', class: 'scroll-mt-6 text-3xl font-semibold' }, text('explore')),
           h('ol', { class: 'grid gap-6 md:grid-cols-3' }, ...[1, 2, 3].map(step => h('li', { class: 'space-y-2' },
             h('span', { class: 'inline-flex h-11 w-11 items-center justify-center rounded-full bg-primary font-semibold text-primary-foreground', 'aria-hidden': 'true' }, step),
             h('h3', { class: 'text-lg font-semibold' }, text('step' + step + 'Title')), h('p', { class: 'leading-relaxed' }, text('step' + step + 'Body'))))), actions())),
       h('footer', { class: 'mx-auto flex max-w-6xl flex-wrap gap-6 px-4 py-8 sm:px-6' },
-        ...[['/source', 'source'], [repositoryUrl(source) + '/blob/main/LICENSE', 'license'], [repositoryUrl(source) + '/blob/main/docs/self-hosting.md', 'selfHosting']].map(([href, key]) =>
+        ...[['/source', 'source'], [repository + '/blob/main/LICENSE', 'license'], [repository + '/blob/main/docs/self-hosting.md', 'selfHosting']].map(([href, key]) =>
           h('a', { href, class: 'inline-flex min-h-11 min-w-11 items-center underline' }, text(key!))), buildLabelItem(undefined, buildLabel(undefined, source))))).toString();
 }

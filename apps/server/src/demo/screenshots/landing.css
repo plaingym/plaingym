@@ -16,12 +16,26 @@
   border-radius: 8px; background: #fff; color: #172524; cursor: pointer;
 }
 .demo-fallback-image { display: none; }
+/* Header navigation: a row from md up; below that a menu button opens a popover (details where popovers are missing).
+   The panel hangs from the page top rather than the viewport, so it scrolls away when a link jumps to a section. */
+.demo-nav-row, .demo-menu, .demo-menu-fallback { display: none; }
+.demo-menu:popover-open { display: block; }
+.demo-menu-panel { position: absolute; top: 64px; right: max(1rem, env(safe-area-inset-right)); left: auto; bottom: auto; margin: 0; z-index: 10; }
+.demo-menu::backdrop { background: transparent; pointer-events: none; }
+.demo-menu-fallback > summary { list-style: none; }
+.demo-menu-fallback > summary::-webkit-details-marker { display: none; }
 @supports not selector(:popover-open) {
   .demo-zoom { display: none; }
   .demo-fallback-image { display: block; }
   .demo-original { display: block; }
+  .demo-menu-button { display: none; }
+  .demo-menu-fallback { display: block; }
 }
-@media (min-width: 768px) { .demo-feature:nth-of-type(odd) > div:first-child { order: 1; } }
+@media (min-width: 768px) {
+  .demo-feature:nth-of-type(odd) > div:first-child { order: 1; }
+  .demo-nav-row { display: flex; }
+  .demo-menu-button, .demo-menu, .demo-menu-fallback { display: none !important; }
+}
 @media (prefers-color-scheme: dark) {
   .demo-lightbox:popover-open, .demo-close { background: #111827; color: #f3f4f6; border-color: #374151; }
 }
