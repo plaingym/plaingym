@@ -4,6 +4,7 @@ import { raw } from 'hono/html';
 import { createTranslator, type Translator } from '@plaingym/shared';
 import type { DemoIconName } from '../../../web/src/components/demo-icon.js';
 import { demoIconMarkup } from '../../../web/src/components/demo-icon-markup.js';
+import { buildLabel, buildLabelItem } from '../areas/health/build-label.js';
 import { button, secondaryButton } from '../public/pages/page.js';
 import messages from '../../../../locales/en/demo/product.json' with { type: 'json' };
 import screenshots from './screenshots.json' with { type: 'json' };
@@ -85,5 +86,5 @@ export function demoLandingPage(showcaseHref: string, source: string, t: Transla
             h('h3', { class: 'text-lg font-semibold' }, text('step' + step + 'Title')), h('p', { class: 'leading-relaxed' }, text('step' + step + 'Body'))))), actions())),
       h('footer', { class: 'mx-auto flex max-w-6xl flex-wrap gap-6 px-4 py-8 sm:px-6' },
         ...[['/source', 'source'], [repositoryUrl(source) + '/blob/main/LICENSE', 'license'], [repositoryUrl(source) + '/blob/main/docs/self-hosting.md', 'selfHosting']].map(([href, key]) =>
-          h('a', { href, class: 'inline-flex min-h-11 min-w-11 items-center underline' }, text(key!)))))).toString();
+          h('a', { href, class: 'inline-flex min-h-11 min-w-11 items-center underline' }, text(key!))), buildLabelItem(undefined, buildLabel(undefined, source))))).toString();
 }

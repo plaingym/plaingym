@@ -2,6 +2,15 @@
 declare const __BUILD_INFO__: { version: string; commit: string };
 export const clientVersion = typeof __BUILD_INFO__ === 'undefined' ? null : __BUILD_INFO__;
 
+/** The label beside the footer's source link; a plain release links to its notes on the source repository. */
+export function versionLabel(version: string, sourceUrl: string): { text: string; href?: string } {
+  if (!/^\d+\.\d+\.\d+$/.test(version)) return { text: version };
+  try {
+    const url = new URL(sourceUrl);
+    return { text: 'v' + version, href: `${url.origin}/${url.pathname.split('/').filter(Boolean).slice(0, 2).join('/')}/releases/tag/v${version}` };
+  } catch { return { text: 'v' + version }; }
+}
+
 type FollowOptions = {
   built?: { version: string; commit: string } | null;
   request?: typeof fetch;

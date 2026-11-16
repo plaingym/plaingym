@@ -17,6 +17,7 @@
   "retry": "Try again",
   "loading": "Loading...",
   "source": "Source code",
+  "version": "Version {version}",
   "notFound": "Page not found",
   "error": "Something went wrong. Please try again.",
   "home": "Go to sign in",

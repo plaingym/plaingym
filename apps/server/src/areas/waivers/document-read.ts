@@ -5,6 +5,7 @@ import { AppError, createTranslator } from '@plaingym/shared';
 import type { RequestEnvironment } from '../../core/context.js';
 import { rateLimit } from '../../core/rate-limit.js';
 import { setPolicy } from '../../core/csp.js';
+import { buildLabelItem } from '../health/build-label.js';
 import messages from '../../../../../locales/en/waivers/waivers.json' with { type: 'json' };
 
 export const documentReadBudget = 300;
@@ -24,7 +25,7 @@ export function documentRetryPage(ctx: Context<RequestEnvironment>, status: 429 
     jsx('body', { class: 'm-0 bg-background text-foreground' }, jsx('main', { class: 'mx-auto max-w-2xl space-y-4 px-4 py-6' },
       jsx('h1', { class: 'text-2xl font-bold' }, text('documentRetryTitle')),
       jsx('p', null, text(status === 429 ? 'documentRetryBody' : 'documentUnavailableBody')),
-      jsx('footer', null, jsx('a', { href: '/source', target: '_blank', rel: 'noopener noreferrer', class: 'inline-flex min-h-11 items-center underline' }, text('documentSource')))))).toString(), status);
+      jsx('footer', { class: 'flex flex-wrap gap-x-4' }, jsx('a', { href: '/source', target: '_blank', rel: 'noopener noreferrer', class: 'inline-flex min-h-11 items-center underline' }, text('documentSource')), buildLabelItem())))).toString(), status);
 }
 /** Frames and explicit opens share a larger, per-client read budget suitable for a gym's Wi-Fi. */
 export function documentReadLimit(html: boolean | ((ctx: Context<RequestEnvironment>) => boolean) = false): MiddlewareHandler<RequestEnvironment> {

@@ -149,6 +149,14 @@ repository, and is passed through Docker and Compose. Footers can use `/source`
 or load `/api/source` to follow a runtime override. Existing SPA footers use
 their build-time URL until connected to this endpoint.
 
+Every footer that shows the Source code link also shows the running version
+beside it. The SPA footer reads its own bundle's build; the server-rendered
+pages read `areas/health/version.ts` (what `/healthz` returns). A plain release
+(`0.5.0`) shows as `v0.5.0` and links to `<repository>/releases/tag/v0.5.0`, the
+repository taken from `SOURCE_URL` so a fork links to its own releases; any other
+build (a development build, `0.4.0+0.g6e55ffe`) shows its version text without a
+link. The label wraps onto its own line on a narrow screen.
+
 The install endpoint schemas are declared locally. TODO: move these declarations
 into the shared contracts, which currently omit these endpoints. All four
 endpoints explicitly declare public access with the same `route` helper used

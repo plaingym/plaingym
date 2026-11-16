@@ -3,6 +3,7 @@ import { jsx as h } from 'hono/jsx';
 import type { Translator } from '@plaingym/shared';
 import type { PublicBranding, WaiverTemplate } from '@plaingym/shared/contracts';
 import { formatMoney } from '../../core/money.js';
+import { buildLabelItem } from '../../areas/health/build-label.js';
 import { logoVersion } from '../short-hash.js';
 /** Native browser preview and a separate link also work without JavaScript. */
 export function waiverDocumentView(template: WaiverTemplate, t: Translator, href = `/api/public/waivers/${template.id}/document?view=1`, preview = true) {
@@ -52,7 +53,7 @@ export function publicLayout(input: { gym: PublicBranding; title: string; t: Tra
         input.content, contactBlock(input.gym, input.t),
         h('footer', { class: 'flex flex-wrap gap-3' },
           ...[['/join', 'join'], ['/trial', 'trial'], ['/drop-in', 'drop-in'], ['/portal', 'portal'], ['/source', 'source']].map(([href, key]) =>
-            h('a', { href, class: 'inline-flex min-h-11 items-center underline', rel: 'noreferrer' }, text(key!))))))).toString();
+            h('a', { href, class: 'inline-flex min-h-11 items-center underline', rel: 'noreferrer' }, text(key!))), buildLabelItem())))).toString();
 }
 export interface IntakePageInput {
   kind: 'trial' | 'drop-in'; gym: PublicBranding; t: Translator; templates?: WaiverTemplate[];

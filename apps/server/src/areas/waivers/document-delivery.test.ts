@@ -60,7 +60,7 @@ describe('waiver document delivery', () => {
     const response = await f.app().request('/api/waivers/template-document?token=junk');
     expect(response.status).toBe(404); expect(response.headers.get('content-type')).toContain('text/html');
     const html = await response.text();
-    expect(html).toContain('Return to the signing page'); expect(html).toContain('href="/source"');
+    expect(html).toContain('Return to the signing page'); expect(html).toContain('href="/source"'); expect(html).toContain('aria-label="Version ');
   });
   it('uses an application URL with a five-minute expiry and survives service recreation', async () => {
     const f = await fixture();

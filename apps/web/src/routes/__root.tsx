@@ -3,11 +3,18 @@ import { createRootRoute, Outlet } from '@tanstack/react-router';
 import { Button } from '../components/ui/button.js';
 import { t } from '../lib/i18n.js';
 import { DemoShell } from '../features/demo/notice.js';
-import { checkOnNavigation } from '../app/version.js';
+import { checkOnNavigation, clientVersion, versionLabel } from '../app/version.js';
 // `/source` redirects to the running install's SOURCE_URL, so a modified install can change it at runtime.
-export function SourceFooter({ sourceUrl = '/source' }: { sourceUrl?: string }) {
-  return <footer className="border-t border-border px-4 py-2 text-center text-sm text-muted-foreground sm:px-6">
+// The version beside it is this bundle's build; a plain release links to its notes in the source repository.
+export function SourceFooter({ sourceUrl = '/source', version = clientVersion?.version, repository = typeof __SOURCE_URL__ === 'undefined' ? '' : __SOURCE_URL__ }:
+{ sourceUrl?: string; version?: string; repository?: string }) {
+  const label = version ? versionLabel(version, repository) : undefined;
+  const shown = label && <><span aria-hidden="true">{label.text}</span><span className="sr-only">{t('shell/shell:version', { version: version ?? '' })}</span></>;
+  return <footer className="flex flex-wrap items-center justify-center gap-x-4 border-t border-border px-4 py-2 text-center text-sm text-muted-foreground sm:px-6">
     <a className="inline-flex min-h-11 items-center underline underline-offset-4" href={sourceUrl}>{t('shell/shell:source')}</a>
+    {label && (label.href
+      ? <a className="inline-flex min-h-11 items-center break-all underline underline-offset-4" href={label.href}>{shown}</a>
+      : <span className="inline-flex min-h-11 items-center break-all">{shown}</span>)}
   </footer>;
 }
 export function RootLayout() {

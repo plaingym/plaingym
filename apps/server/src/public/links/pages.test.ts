@@ -71,7 +71,7 @@ describe('signed-link presentation and return receipts', () => {
       templates: [{ id: 'template', name: 'Terms', kind: 'waiver', version: 1, body: '<img src=x onerror=alert(1)>', retiredAt: null, createdAt: now.toISOString() }], signatures: [] } });
     expect(page).toContain('&lt;script&gt;'); expect(page).not.toContain('<img src=x');
     expect(page).toContain('parent or guardian must sign'); expect(page).not.toContain('value="self"');
-    expect(page).toContain('viewport'); expect(page).toContain('/source'); expect(page).toContain('min-h-11');
+    expect(page).toContain('viewport'); expect(page).toContain('/source'); expect(page).toContain('aria-label="Version '); expect(page).toContain('min-h-11');
     expect(page).toContain('Finish and clear screen'); expect(page).not.toContain('public/links:');
   });
   it('used credentials show a friendly message without any resource details or scripts', () => {

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { Translator } from '@plaingym/shared';
 import { jsx } from 'hono/jsx/jsx-runtime';
+import { buildLabelItem } from '../health/build-label.js';
 import { button, inputClass, panel } from '../../public/pages/page.js';
 /** Public form uses a fragment token, never interpolates it into markup, and submits JSON to the same origin.
  * The inline script carries the response's Content-Security-Policy nonce. It wears the core public pages' stylesheet and the
@@ -22,7 +23,7 @@ export function invitationPage(t: Translator, passwordRequired: boolean, nonce: 
       jsx('p', { id: 'error', role: 'alert', hidden: true, children: t('staff/profiles:invitationError') }),
       jsx('p', { id: 'success', role: 'status', hidden: true, children: [t('staff/profiles:invitationAccepted'), ' ', jsx('a', { href: '/login', class: 'inline-flex min-h-11 items-center underline', children: t('staff/profiles:signIn') })] }),
       jsx('noscript', { children: t('staff/profiles:javascriptRequired') }),
-      jsx('footer', { class: 'flex flex-wrap gap-3', children: jsx('a', { href: '/source', class: 'inline-flex min-h-11 items-center underline', children: t('staff/profiles:source') }) }),
+      jsx('footer', { class: 'flex flex-wrap gap-3', children: [jsx('a', { href: '/source', class: 'inline-flex min-h-11 items-center underline', children: t('staff/profiles:source') }), buildLabelItem()] }),
     ] }),
     jsx('script', { nonce, dangerouslySetInnerHTML: { __html: script } })] }),
   ] });

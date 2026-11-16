@@ -206,6 +206,7 @@ describe('your account routes', () => {
     expect(response.headers.get('referrer-policy')).toBe('no-referrer');
     const html = await response.text();
     expect(html).toContain('/api/account/email/confirm');
+    expect(html).toContain('href="/source"'); expect(html).toContain('aria-label="Version ');
     expect(html).toContain('location.hash');
   });
 });

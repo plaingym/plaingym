@@ -271,7 +271,7 @@ describe('core public pages through the production registrations', () => {
       expect(response.status).toBe(200); expect(html).toContain('North &lt;Gym&gt;');
       expect(html).toContain('12 Mat Street'); expect(html).toContain('href="tel:+16045550100"');
       expect(html).toContain('href="mailto:hello@north.example.test"'); expect(html).not.toContain('Not public');
-      expect(html).toContain('href="/source"'); expect(html).not.toContain('Private Member');
+      expect(html).toContain('href="/source"'); expect(html).toContain('aria-label="Version '); expect(html).not.toContain('Private Member');
       expect(response.headers.get('content-security-policy')).toContain("script-src 'self'");
       expect(response.headers.get('content-security-policy')).toMatch(/; report-uri \/csp-report; report-to csp$/);
       expect(response.headers.get('reporting-endpoints')).toBe('csp="/csp-report"');
