@@ -33,7 +33,10 @@ export default defineConfig(({ mode }) => {
       // Native Linux Docker may need VITE_HOST=0.0.0.0 to reach the host dev server.
       host: env.VITE_HOST || '127.0.0.1',
       // Keep the browser's Host: the auth handler only serves the gym's own host (PUBLIC_ORIGIN).
-      proxy: developmentProxy(env.PORT || '3000'),
+      // A demo install's entry host (PUBLIC_ORIGIN, else the demo domain, as the server reads it) gets the
+      // server-rendered product page at its root.
+      proxy: developmentProxy(env.PORT || '3000', env.DEMO_MODE === 'true' && (env.PUBLIC_ORIGIN || env.DEMO_DOMAIN)
+        ? new URL(env.PUBLIC_ORIGIN || `https://${env.DEMO_DOMAIN}`).host : undefined),
     },
     define: {
       __SOURCE_URL__: JSON.stringify(sourceUrl),

@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
-import { demoLandingPage, demoLandingDirectives } from '../../../../server/src/demo/landing.page.js';
+import { demoLandingPage, demoLandingDirectives, landingStylesheet } from '../../../../server/src/demo/landing.page.js';
 import { buildLinkStyles } from '../../../../server/src/public/links/styles.build.mjs';
 
 const root = fileURLToPath(new URL('../../../../../', import.meta.url)), output = resolve(root, 'coverage/demo/product');
@@ -13,13 +13,13 @@ await mkdir(output, { recursive: true });
 await buildLinkStyles(resolve(output, 'styles.css'));
 const html = demoLandingPage('/sandbox', 'https://github.com/plaingym/plaingym');
 const css = await readFile(resolve(output, 'styles.css'));
-const extra = await readFile(resolve(root, 'apps/server/src/demo/screenshots/landing.css'));
+const extra = landingStylesheet.body;
 expect(Buffer.byteLength(html) + css.length + extra.length).toBeLessThan(300_000);
 const server = createServer(async (req, res) => {
   try {
     const path = new URL(req.url, 'http://localhost').pathname;
     if (path === '/') { res.setHeader('Content-Security-Policy', demoLandingDirectives.join('; ')); res.setHeader('Content-Type', 'text/html'); res.end(html); }
-    else if (path === '/public/pages/styles.css' || path === '/demo-assets/landing.css') { res.setHeader('Content-Type', 'text/css'); res.end(path.endsWith('landing.css') ? extra : css); }
+    else if (path === '/public/pages/styles.css' || path === '/demo-assets/' + landingStylesheet.file) { res.setHeader('Content-Type', 'text/css'); res.end(path.startsWith('/demo-assets/') ? extra : css); }
     else if (/^\/demo-assets\/[a-z0-9-]+\.webp$/.test(path)) { res.setHeader('Content-Type', 'image/webp'); res.end(await readFile(resolve(root, 'apps/server/src/demo/screenshots', path.split('/').pop()))); }
     else res.writeHead(404).end();
   } catch { res.writeHead(500).end(); }
@@ -56,7 +56,8 @@ try {
           await expect(image).toHaveJSProperty('complete', true);
           expect(await image.evaluate(node => node.naturalWidth)).toBeGreaterThan(0);
           const close = popover.getByRole('button', { name: 'Close screenshot' });
-          for (const item of [image, close]) {
+          // On a phone held upright the image keeps its own width and scrolls inside the lightbox; the close button stays in view.
+          for (const item of width < 768 ? [close] : [image, close]) {
             const b = await item.boundingBox(); expect(b.x).toBeGreaterThanOrEqual(0); expect(b.y).toBeGreaterThanOrEqual(0);
             expect(b.x + b.width).toBeLessThanOrEqual(width); expect(b.y + b.height).toBeLessThanOrEqual(900);
           }

@@ -4,18 +4,30 @@
 The demo entry host's root serves a server-rendered product page. **Try the demo**
 opens the showcase start page directly, followed by a **GitHub** repository link;
 both lead with an inline SVG icon, in the hero, the "How the demo works" section
-and the header. The header sits above the hero (it scrolls with the page) and links
-to the three top-level sections. From the `md` breakpoint it is a row; below that a
-menu button opens the same links in a popover, with a `<details>` fallback where
-popovers are missing. Escape or a tap outside closes the popover, and a section link
-scrolls the page away from it. The footer lists the source, license and self-hosting
-links with the running version beside them.
+and the header. The hero shows the schedule screenshot beside the pitch.
+The header is sticky at the top of the screen on every width and links to the three
+top-level sections; the page's scroll padding stops a section reached from a link
+below it. From the `lg` breakpoint the header is a row; below that it keeps **Try
+the demo** and a menu button that opens the same links in a popover, fixed just
+below the header wherever the page is scrolled, with a `<details>` fallback where
+popovers are missing. Escape or a tap outside closes the popover. Without script a
+followed link leaves it open, so while it is open the scroll padding grows and the
+section stops below the panel. The footer lists the source, license and self-hosting links
+with the running version beside them.
 The page uses the public stylesheet, native links and a policy that forbids scripts.
-Ten feature sections have inline SVG icons and seeded screenshots. Images use
-light/dark sources, responsive densities and lazy loading. Native popovers enlarge
-them without JavaScript; full-size links work in browsers without popover support.
+Its controls have their own hover, active and keyboard-focus styles in light and
+dark, and colour transitions stop under reduced motion.
+Ten feature sections have inline SVG icons and seeded screenshots; each lists the
+`<key>BulletN` entries the locale file has. Images use light/dark sources,
+responsive densities and lazy loading (the hero's loads first). Native popovers
+enlarge them without JavaScript; on a phone held upright an enlarged screenshot keeps
+its own width and scrolls both ways inside the lightbox, with the close button fixed
+in view. Full-size links work in browsers without popover support.
 Only the entry host serves `/demo-assets/:file`, from an exact asset allowlist.
-Content-hashed WebP images cache for a year; the versioned page CSS caches for a day.
+Content-hashed WebP images and the page's own stylesheet, `screenshots/landing.css`
+served as `landing-<hash>.css` (hashed when the server starts), cache for a year.
+That stylesheet holds only what the public stylesheet's utilities can't: popovers,
+backdrops, the fallbacks, the scroll padding and safe-area gutters.
 The server build copies these files beside the bundle in `screenshots/`.
 The sandbox start page uses the app's cards, role icons and numbered join steps,
 including a test-card copy button with a selectable fallback.

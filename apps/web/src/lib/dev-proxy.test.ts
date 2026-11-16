@@ -52,4 +52,38 @@ it('proxies signed pages, assets, returns and POSTs with sandbox authority, cook
   expect(seen[0]?.url).toBe('/l/example?tablet=1'); expect(seen[5]?.url).toBe('/join?plan=example'); expect(seen[7]?.method).toBe('POST');
   expect((await fetch(`http://127.0.0.1:${port}/login`)).status).toBe(418);
   expect((await fetch(`http://127.0.0.1:${port}/joined`)).status).toBe(418);
+  // Without a demo entry host, every root and /demo stays on Vite.
+  for (const path of ['/', '/demo', '/demo-assets/landing.css']) expect((await get(path)).status).toBe(418);
+});
+it('sends only the demo entry host\'s root, /demo and page assets to the server', async () => {
+  const seen: { url: string | undefined; host: string | undefined }[] = [];
+  const backend = httpServer((req, res) => {
+    seen.push({ url: req.url, host: req.headers.host });
+    if (req.url === '/demo') { res.writeHead(302, { location: '/' }); res.end(); } else { res.writeHead(200); res.end('server-rendered'); }
+  });
+  const backendPort = await listen(backend);
+  const cacheDir = await mkdtemp(join(tmpdir(), 'plaingym-dev-proxy-'));
+  cleanups.push(() => rm(cacheDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  const vite = await createServer({ configFile: false, appType: 'custom', cacheDir, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, proxy: developmentProxy(backendPort, 'demo.localhost') } });
+  cleanups.push(() => vite.close());
+  const frontend = httpServer((req, res) => vite.middlewares(req, res, () => { res.statusCode = 418; res.end('SPA'); }));
+  const port = await listen(frontend);
+  const get = (host: string, path: string) => new Promise<{ status: number; text: string; location?: string }>((resolve, reject) => {
+    const req = httpRequest({ host: '127.0.0.1', port, path, headers: { host } }, res => {
+      let text = ''; res.setEncoding('utf8'); res.on('data', chunk => { text += chunk; });
+      res.on('end', () => resolve({ status: res.statusCode!, text, ...(res.headers.location ? { location: res.headers.location } : {}) }));
+    }); req.on('error', reject); req.end();
+  });
+  expect(await get('demo.localhost', '/')).toEqual({ status: 200, text: 'server-rendered' });
+  expect(await get('demo.localhost', '/?ref=readme')).toEqual({ status: 200, text: 'server-rendered' });
+  expect(await get('demo.localhost', '/demo')).toEqual({ status: 302, text: '', location: '/' });
+  expect(await get('demo.localhost', '/demo-assets/landing-0123456789abcdef.css')).toEqual({ status: 200, text: 'server-rendered' });
+  // The showcase, private copies and other dev hosts keep the SPA root and /demo start page.
+  for (const host of ['showcase.demo.localhost', 'sample.demo.localhost', '127.0.0.1:5173']) {
+    for (const path of ['/', '/demo', '/demo-assets/landing-0123456789abcdef.css']) expect((await get(host, path)).status).toBe(418);
+  }
+  // Other SPA paths on the entry host stay on Vite as well.
+  for (const path of ['/demos', '/demo/next', '/portal']) expect((await get('demo.localhost', path)).status).toBe(418);
+  expect(seen).toEqual([{ url: '/', host: 'demo.localhost' }, { url: '/?ref=readme', host: 'demo.localhost' },
+    { url: '/demo', host: 'demo.localhost' }, { url: '/demo-assets/landing-0123456789abcdef.css', host: 'demo.localhost' }]);
 });

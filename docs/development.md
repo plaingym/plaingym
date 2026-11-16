@@ -79,9 +79,10 @@ your Chromium browser). Open **https://demo.localhost/** and click **Try the
 demo**. The showcase refuses edits; **Make my own copy** opens a private sandbox
 signed in as the selected role. Five gyms are seeded ahead, one at a time. Copies
 expire after two idle hours, at most 24 hours after allocation.
-On a demo server the demo domain's root is a server-rendered product page, and its
-old `/demo` address redirects there; under `pnpm dev` both show the SPA's entry bar
-instead. The showcase and private copies keep their `/demo` start pages.
+The demo domain's root is the server-rendered product page and its old `/demo`
+address redirects there: with `DEMO_MODE=true`, Vite forwards that host's `/`,
+`/demo` and `/demo-assets/` to the server. The showcase and private copies keep
+their `/demo` start pages.
 Use that HTTPS address instead of `localhost:5173`; sandbox redirects,
 secure cookies and Vite's HMR websocket then use the same origin on port 443.
 No DNS or hosts-file changes are needed in Chrome/Edge for `.localhost` names.

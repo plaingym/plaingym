@@ -16,10 +16,10 @@ import { demoLoginRateLimit, demoLoginRedirect, joinedMembers } from './identiti
 import type { forGym } from '@plaingym/db';
 import { clock as defaultClock, type Clock } from '../core/clock.js';
 import { cachedLinkAsset } from '../public/links/assets.js';
-import { demoLandingDirectives, demoLandingPage } from './landing.page.js';
+import { demoLandingDirectives, demoLandingPage, landingStylesheet } from './landing.page.js';
 import screenshots from './screenshots.json' with { type: 'json' };
 
-const landingStylesheet = cachedLinkAsset('./public/links.css');
+const publicStylesheet = cachedLinkAsset('./public/links.css');
 const screenshotFiles = new Set(Object.values(screenshots).flatMap(shot => [...shot.light, ...shot.dark]));
 
 /** A captured email's own policy: inline styles and data: images only, no script (sandbox), framed only by the app. */
@@ -130,13 +130,14 @@ export function createDemoRoutes(service: DemoService, options: { installOrigin:
       if (options.enabled !== false) {
         app.get('/demo-assets/:file', async (c, next) => {
           if (!isInstallHost(c.req.header('host') ?? new URL(c.req.url).host)) return next();
-          const file = c.req.param('file'), css = file === 'landing.css';
+          // The page stylesheet is named by its content hash, so it caches as long as the images.
+          const file = c.req.param('file'), css = file === landingStylesheet.file;
           if (!css && !screenshotFiles.has(file)) return c.notFound();
           await authorize({ kind: 'public' })(c, async () => {
-            const body = await readFile(new URL('./screenshots/' + file, import.meta.url));
+            const body = css ? landingStylesheet.body : await readFile(new URL('./screenshots/' + file, import.meta.url));
             c.header('content-type', css ? 'text/css; charset=utf-8' : 'image/webp');
             c.header('x-content-type-options', 'nosniff');
-            c.header('cache-control', css ? 'public, max-age=86400' : 'public, max-age=31536000, immutable');
+            c.header('cache-control', 'public, max-age=31536000, immutable');
             c.res = c.body(body);
           });
           return c.res;
@@ -149,7 +150,7 @@ export function createDemoRoutes(service: DemoService, options: { installOrigin:
         app.get('/public/pages/styles.css', async (c, next) => {
           if (!isInstallHost(c.req.header('host') ?? new URL(c.req.url).host)) return next();
           await authorize({ kind: 'public' })(c, async () => {
-            c.header('content-type', 'text/css; charset=utf-8'); c.res = c.body(await landingStylesheet());
+            c.header('content-type', 'text/css; charset=utf-8'); c.res = c.body(await publicStylesheet());
           });
           return c.res;
         });

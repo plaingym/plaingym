@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { jsx as h } from 'hono/jsx';
 import { raw } from 'hono/html';
 import { createTranslator, type Translator } from '@plaingym/shared';
 import type { DemoIconName } from '../../../web/src/components/demo-icon.js';
 import { demoIconMarkup } from '../../../web/src/components/demo-icon-markup.js';
 import { buildLabel, buildLabelItem } from '../areas/health/build-label.js';
-import { button, secondaryButton } from '../public/pages/page.js';
 import messages from '../../../../locales/en/demo/product.json' with { type: 'json' };
 import screenshots from './screenshots.json' with { type: 'json' };
 
@@ -13,7 +14,15 @@ const translator = createTranslator({ 'demo/product': messages });
 export const demoLandingDirectives = ["default-src 'none'", "script-src 'none'", "style-src 'self'", "img-src 'self'",
   "base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'"];
 export const featureKeys = ['members', 'ranks', 'schedule', 'kiosk', 'portal', 'billing', 'waivers', 'join', 'reports', 'server'] as const;
-const bulletCounts = [4, 4, 4, 4, 4, 5, 4, 3, 4, 5];
+type FeatureKey = typeof featureKeys[number];
+/** The bullets each feature has in the locale file: `<key>Bullet1`, `<key>Bullet2`, ... */
+const bulletsByFeature = new Map(featureKeys.map(key => [key, Object.keys(messages).filter(name => new RegExp(`^${key}Bullet\\d+$`).test(name))
+  .sort((a, b) => Number(a.slice(key.length + 6)) - Number(b.slice(key.length + 6)))]));
+export const bulletKeys = (key: FeatureKey): string[] => bulletsByFeature.get(key) ?? [];
+/** The page's own stylesheet (popovers, backdrops and fallbacks), named by its content so a changed file is never served stale.
+ * The server build copies `screenshots/` beside the bundle, so the same relative path works from source and from the bundle. */
+const landingCss = readFileSync(new URL('./screenshots/landing.css', import.meta.url));
+export const landingStylesheet = { file: `landing-${createHash('sha256').update(landingCss).digest('hex').slice(0, 16)}.css`, body: landingCss } as const;
 // The markup never changes, so render each icon once rather than on every request.
 const iconMarkup = new Map<DemoIconName, string>();
 const icon = (name: DemoIconName) => {
@@ -29,85 +38,125 @@ export function repositoryUrl(source: string): string {
   return url.href;
 }
 
+// One spacing scale (Tailwind's 4/6/8/12/16/24 steps) and one type scale (sm, base, lg, xl, 3xl/4xl, 4xl-6xl) throughout.
+// demo-gutter (landing.css) keeps the page clear of a notch in landscape, since the viewport covers the safe areas.
+const container = 'mx-auto w-full max-w-6xl demo-gutter';
+// Every control: a 44 px target, a visible keyboard ring in both themes and colour changes that stop under reduced motion.
+const ring = 'outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring dark:focus-visible:outline-teal-300';
+const motion = 'transition-colors motion-reduce:transition-none';
+const control = `inline-flex min-h-11 min-w-11 items-center justify-center gap-2 whitespace-nowrap rounded-lg font-semibold ${motion}`;
+const primary = `${control} ${ring} bg-primary text-white shadow-sm hover:bg-teal-900 active:bg-teal-950 dark:bg-teal-700 dark:hover:bg-teal-800 dark:active:bg-teal-900`;
+const secondary = `${control} ${ring} border border-border bg-white text-foreground shadow-sm hover:bg-muted active:bg-secondary dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100 dark:hover:bg-gray-800 dark:active:bg-gray-700`;
+// On the brand band the actions invert, and the keyboard ring is white in both themes.
+const bandRing = 'outline-offset-2 focus-visible:outline-2 focus-visible:outline-white';
+const bandPrimary = `${control} ${bandRing} bg-white text-primary shadow-sm hover:bg-secondary active:bg-teal-100`;
+const bandSecondary = `${control} ${bandRing} border border-white/70 text-white hover:bg-white/15 active:bg-white/25`;
+const navLink = `${control} ${ring} px-3 text-sm text-muted-foreground hover:bg-muted hover:text-foreground active:bg-secondary dark:text-gray-300 dark:hover:bg-gray-800 dark:hover:text-white dark:active:bg-gray-700`;
+// Inside a menu panel the ring sits inside the item, so the panel's edge never clips it.
+const menuLink = `flex min-h-11 w-full items-center gap-3 rounded-lg px-3 font-semibold ${motion} -outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring hover:bg-muted active:bg-secondary dark:hover:bg-gray-800 dark:focus-visible:outline-teal-300 dark:active:bg-gray-700`;
+const footerLink = `inline-flex min-h-11 items-center rounded-sm ${ring} ${motion} text-muted-foreground underline-offset-4 hover:text-foreground hover:underline dark:text-gray-400 dark:hover:text-white`;
+const iconTile = 'inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-secondary text-primary dark:bg-teal-950 dark:text-teal-300';
+const sectionTitle = 'text-3xl font-bold tracking-tight sm:text-4xl';
+const muted = 'text-muted-foreground dark:text-gray-400';
+
 /** Entry-host product page: native links and popovers, with no JavaScript. */
 export function demoLandingPage(showcaseHref: string, source: string, t: Translator = translator) {
   const text = (key: string) => t('demo/product:' + key);
   const repository = repositoryUrl(source);
-  const withIcon = (name: DemoIconName, label: string) => [h('span', { class: 'shrink-0' }, icon(name)), label];
-  const actions = () => h('div', { class: 'flex flex-col gap-3 sm:flex-row' },
-    h('a', { href: showcaseHref, class: button + ' gap-2' }, ...withIcon('play', text('try'))),
-    h('a', { href: repository, class: secondaryButton + ' gap-2' }, ...withIcon('github', text('github'))));
+  const withIcon = (name: DemoIconName, label: string) => [h('span', { class: 'shrink-0 demo-icon' }, icon(name)), label];
+  const actions = (band = false) => h('div', { class: 'flex flex-col gap-3 sm:flex-row' },
+    h('a', { href: showcaseHref, class: (band ? bandPrimary : primary) + ' px-6 py-3' }, ...withIcon('play', text('try'))),
+    h('a', { href: repository, class: (band ? bandSecondary : secondary) + ' px-6 py-3' }, ...withIcon('github', text('github'))));
   const sectionLinks = [['#strengths', 'navWhy'], ['#features', 'navFeatures'], ['#explore', 'explore']] as const;
   // One list of links feeds the desktop row and both phone menus (popover, and a details fallback).
-  const menuLink = 'flex min-h-11 min-w-11 items-center gap-3 rounded-lg px-3 py-2 font-semibold hover:bg-muted';
   const menuItems = () => [...sectionLinks.map(([href, key]) => h('li', null, h('a', { href, class: menuLink }, text(key)))),
     h('li', null, h('a', { href: showcaseHref, class: menuLink }, ...withIcon('play', text('try')))),
     h('li', null, h('a', { href: repository, class: menuLink }, ...withIcon('github', text('github'))))];
-  const panel = 'demo-menu-panel w-72 max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-card p-2 text-card-foreground shadow-lg dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100';
-  const rowLink = 'inline-flex min-h-11 min-w-11 items-center rounded-lg px-2 text-sm font-semibold hover:bg-muted';
-  const rowButton = 'inline-flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-lg px-3 text-sm font-semibold';
-  const siteHeader = () => h('header', { class: 'mx-auto flex max-w-6xl items-center justify-between gap-2 px-4 pt-4 sm:px-6' },
-    h('a', { href: '/', class: 'inline-flex min-h-11 items-center text-xl font-bold tracking-tight' }, text('name')),
-    h('nav', { 'aria-label': text('navLabel'), class: 'demo-nav-row items-center gap-1' },
-      ...sectionLinks.map(([href, key]) => h('a', { href, class: rowLink }, text(key))),
-      h('a', { href: showcaseHref, class: rowButton + ' ml-2 bg-primary text-primary-foreground' }, ...withIcon('play', text('try'))),
-      h('a', { href: repository, class: rowButton + ' border border-border bg-background text-foreground' }, ...withIcon('github', text('github')))),
-    h('button', { type: 'button', popovertarget: 'site-menu', class: secondaryButton + ' demo-menu-button', 'aria-label': text('menu') }, icon('menu')),
-    h('div', { id: 'site-menu', popover: 'auto', class: 'demo-menu ' + panel }, h('ul', null, ...menuItems())),
-    h('details', { class: 'demo-menu-fallback' },
-      h('summary', { class: secondaryButton + ' cursor-pointer', 'aria-label': text('menu') }, icon('menu')),
-      h('ul', { class: panel }, ...menuItems())));
-  const card = 'min-w-0 space-y-3 rounded-xl border border-border bg-card p-6 dark:border-gray-700 dark:bg-gray-900';
-  const picture = (key: typeof featureKeys[number], expanded = false) => {
+  const panel = 'w-64 max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-white p-2 text-foreground shadow-xl dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100';
+  // Sticky on every width: a row of links from lg up, below that the call to action and a menu button. The popover
+  // panel is fixed just below the header (landing.css); the details panel hangs from it.
+  const siteHeader = () => h('header', { class: 'sticky top-0 z-40 border-b border-border bg-white/90 pt-[env(safe-area-inset-top)] backdrop-blur dark:border-gray-800 dark:bg-gray-950/90' },
+    h('div', { class: container + ' relative flex h-16 items-center gap-2' },
+      h('a', { href: '/', class: `mr-auto inline-flex min-h-11 items-center rounded-sm text-xl font-bold tracking-tight ${ring}` }, text('name')),
+      h('nav', { 'aria-label': text('navLabel'), class: 'hidden items-center gap-1 lg:flex' },
+        ...sectionLinks.map(([href, key]) => h('a', { href, class: navLink }, text(key))),
+        h('a', { href: showcaseHref, class: primary + ' ml-3 px-4 text-sm' }, ...withIcon('play', text('try'))),
+        h('a', { href: repository, class: secondary + ' px-4 text-sm' }, ...withIcon('github', text('github')))),
+      h('a', { href: showcaseHref, class: primary + ' px-4 text-sm lg:hidden' }, ...withIcon('play', text('try'))),
+      h('button', { type: 'button', popovertarget: 'site-menu', class: secondary + ' demo-menu-button lg:hidden', 'aria-label': text('menu') }, icon('menu')),
+      h('div', { id: 'site-menu', popover: 'auto', class: 'demo-menu ' + panel }, h('ul', null, ...menuItems())),
+      h('details', { class: 'demo-menu-fallback' },
+        h('summary', { class: secondary + ' cursor-pointer', 'aria-label': text('menu') }, icon('menu')),
+        h('ul', { class: panel + ' absolute top-full right-4 z-50 mt-1' }, ...menuItems()))));
+  const picture = (key: FeatureKey, mode: 'inline' | 'hero' | 'expanded') => {
     const shot = screenshots[key], href = (file: string) => '/demo-assets/' + file;
-    const sizes = expanded ? '(max-width: 768px) 94vw, 90vw' : shot.width < 500 ? '(max-width: 640px) 90vw, 360px' : '(max-width: 768px) 90vw, 600px';
+    // Expanded on a phone held upright, a screenshot keeps its own width and scrolls inside the lightbox (landing.css).
+    const sizes = mode === 'expanded' ? `(max-width: 767px) and (orientation: portrait) ${shot.width}px, 90vw`
+      : mode === 'hero' ? '(min-width: 1152px) 640px, (min-width: 1024px) 55vw, 92vw'
+        : shot.width < 500 ? '(min-width: 640px) 384px, 92vw' : '(min-width: 1152px) 540px, (min-width: 768px) 45vw, 92vw';
     return h('picture', null,
       h('source', { media: '(prefers-color-scheme: dark)', srcset: `${href(shot.dark[0]!)} ${shot.width}w, ${href(shot.dark[1]!)} ${shot.width * 2}w`, sizes }),
       h('img', { src: href(shot.light[0]!), srcset: `${href(shot.light[0]!)} ${shot.width}w, ${href(shot.light[1]!)} ${shot.width * 2}w`, sizes,
-        alt: text(key + 'Alt'), width: shot.width, height: shot.height, loading: 'lazy', decoding: 'async',
-        class: expanded ? 'block max-h-[80dvh] max-w-full object-contain' : 'block h-auto w-full rounded-lg' }));
+        alt: text(key + 'Alt'), width: shot.width, height: shot.height, loading: mode === 'hero' ? 'eager' : 'lazy', decoding: 'async',
+        ...(mode === 'hero' ? { fetchpriority: 'high' } : {}), class: mode === 'expanded' ? 'demo-expanded' : 'block h-auto w-full rounded-lg' }));
+  };
+  const frame = 'rounded-xl border border-border bg-white p-1.5 shadow-xl shadow-gray-900/10 dark:border-gray-700 dark:bg-gray-800 dark:shadow-black/40';
+  const feature = (key: FeatureKey, index: number) => {
+    const narrow = screenshots[key].width < 500;
+    return h('section', { id: 'feature-' + key, class: 'grid items-center gap-8 py-12 sm:py-16 md:grid-cols-2 lg:gap-16', 'aria-labelledby': key + '-heading' },
+      // Screenshots alternate sides from md up; the text stays first in the source for reading order.
+      h('div', { class: 'min-w-0 space-y-4' + (index % 2 === 0 ? ' md:order-last' : '') },
+        h('span', { class: iconTile }, icon(key)),
+        h('h2', { id: key + '-heading', class: 'text-2xl font-bold tracking-tight sm:text-3xl' }, text(key + 'Title')),
+        h('p', { class: 'text-lg ' + muted }, text(key + 'Lead')),
+        h('ul', { class: 'list-disc space-y-2 pl-5 marker:text-primary dark:marker:text-teal-400' }, ...bulletKeys(key).map(bullet => h('li', null, text(bullet)))),
+        key === 'billing' ? h('div', { class: 'space-y-3 text-sm' }, h('p', { class: muted }, text('billingHelp')),
+          h('p', { class: 'rounded-lg border-l-4 border-primary bg-muted p-4 text-foreground dark:border-teal-400 dark:bg-gray-900 dark:text-gray-100' }, text('billingTest'))) : null),
+      h('figure', { class: narrow ? 'mx-auto w-full max-w-sm' : 'min-w-0' },
+        h('button', { type: 'button', tabindex: 0, popovertarget: 'shot-' + key, class: `demo-zoom block w-full cursor-zoom-in ${frame} ${ring} transition-shadow hover:shadow-2xl motion-reduce:transition-none`, 'aria-label': text('enlarge') + ': ' + text(key + 'Title') }, picture(key, 'inline')),
+        h('a', { class: 'demo-original mt-2 inline-flex min-h-11 min-w-11 items-center rounded-sm text-sm underline underline-offset-4 ' + ring + ' ' + muted + ' hover:text-foreground dark:hover:text-white', href: '/demo-assets/' + screenshots[key].light[1] },
+          h('span', { class: 'demo-fallback-image' }, picture(key, 'inline')), text('original'))),
+      h('div', { id: 'shot-' + key, popover: 'auto', class: 'demo-lightbox', role: 'dialog', 'aria-label': text(key + 'Title') },
+        h('button', { type: 'button', tabindex: 0, popovertarget: 'shot-' + key, popovertargetaction: 'hide', class: 'demo-close', autofocus: true }, text('close')),
+        picture(key, 'expanded')));
   };
   return '<!doctype html>' + h('html', { lang: 'en' },
-    h('head', null, h('meta', { charset: 'utf-8' }), h('meta', { name: 'viewport', content: 'width=device-width, initial-scale=1' }),
+    h('head', null, h('meta', { charset: 'utf-8' }), h('meta', { name: 'viewport', content: 'width=device-width, initial-scale=1, viewport-fit=cover' }),
       h('meta', { name: 'color-scheme', content: 'light dark' }), h('meta', { name: 'description', content: text('pitch') }),
       h('title', null, text('title')), h('link', { rel: 'stylesheet', href: '/public/pages/styles.css' }),
-      h('link', { rel: 'stylesheet', href: '/demo-assets/landing.css?v=2' })),
-    h('body', { class: 'm-0 bg-background font-sans text-foreground dark:bg-gray-950 dark:text-gray-100' },
+      h('link', { rel: 'stylesheet', href: '/demo-assets/' + landingStylesheet.file })),
+    h('body', { class: 'm-0 bg-white font-sans text-base leading-relaxed text-foreground antialiased dark:bg-gray-950 dark:text-gray-100' },
       siteHeader(),
-      h('main', { class: 'mx-auto max-w-6xl space-y-16 px-4 py-8 sm:px-6 sm:py-12' },
-        h('header', { class: 'space-y-6 rounded-2xl border-t-4 border-primary bg-secondary p-6 text-secondary-foreground sm:p-12 dark:bg-gray-900 dark:text-gray-100' },
-          h('p', { class: 'text-sm font-semibold uppercase tracking-widest' }, text('eyebrow')),
-          h('h1', { class: 'text-5xl font-bold tracking-tight sm:text-7xl' }, text('name')),
-          h('p', { class: 'max-w-2xl text-xl leading-relaxed sm:text-2xl' }, text('pitch')), actions()),
-        h('section', { class: 'space-y-6', 'aria-labelledby': 'strengths' },
-          h('h2', { id: 'strengths', class: 'scroll-mt-6 text-3xl font-semibold tracking-tight' }, text('strengths')),
-          h('div', { class: 'grid gap-4 sm:grid-cols-2 lg:grid-cols-4' }, ...(['data', 'standards', 'open', 'selfHost'] as const).map(key =>
-            h('div', { class: card }, icon(key), h('h3', { class: 'text-xl font-semibold' }, text(key + 'Title')),
-              h('p', { class: 'leading-relaxed' }, text(key + 'Body')))))),
-        h('section', { class: 'space-y-6', 'aria-labelledby': 'features' },
-          h('h2', { id: 'features', class: 'scroll-mt-6 text-3xl font-semibold tracking-tight' }, text('features')),
-          h('nav', { 'aria-labelledby': 'features', class: 'grid gap-3 sm:grid-cols-2 lg:grid-cols-5' }, ...featureKeys.map(key =>
-            h('a', { href: '#feature-' + key, class: 'flex min-h-11 min-w-0 items-center gap-3 rounded-lg border border-border p-4 text-sm font-semibold dark:border-gray-700' },
-              h('span', { class: 'shrink-0' }, icon(key)), text(key + 'Title'))))),
-        ...featureKeys.map((key, index) => h('section', { id: 'feature-' + key, class: 'demo-feature grid scroll-mt-6 items-center gap-8 border-t border-border pt-12 md:grid-cols-2 dark:border-gray-700', 'aria-labelledby': key + '-heading' },
-          h('div', { class: 'min-w-0 space-y-5' }, h('span', { class: 'inline-flex rounded-xl bg-secondary p-3 text-primary' }, icon(key)),
-            h('h2', { id: key + '-heading', class: 'text-3xl font-semibold tracking-tight' }, text(key + 'Title')),
-            h('p', { class: 'text-lg leading-relaxed' }, text(key + 'Lead')),
-            h('ul', { class: 'list-disc space-y-2 pl-5 leading-relaxed' }, ...Array.from({ length: bulletCounts[index]! }, (_, i) => h('li', null, text(key + 'Bullet' + (i + 1))))),
-            key === 'billing' ? h('div', { class: 'space-y-3 text-sm leading-relaxed' }, h('p', null, text('billingHelp')), h('p', { class: 'rounded-lg bg-secondary p-4 text-secondary-foreground' }, text('billingTest'))) : null),
-          h('figure', { class: screenshots[key].width < 500 ? 'mx-auto w-full max-w-sm space-y-2' : 'min-w-0 space-y-2' },
-            h('button', { type: 'button', tabindex: 0, popovertarget: 'shot-' + key, class: 'demo-zoom block w-full cursor-zoom-in rounded-xl border border-border bg-muted p-2 shadow-lg', 'aria-label': text('enlarge') + ': ' + text(key + 'Title') }, picture(key)),
-            h('a', { class: 'demo-original inline-flex min-h-11 min-w-11 items-center text-sm underline', href: '/demo-assets/' + screenshots[key].light[1] },
-              h('span', { class: 'demo-fallback-image' }, picture(key)), text('original'))),
-          h('div', { id: 'shot-' + key, popover: 'auto', class: 'demo-lightbox', role: 'dialog', 'aria-label': text(key + 'Title') },
-            h('button', { type: 'button', tabindex: 0, popovertarget: 'shot-' + key, popovertargetaction: 'hide', class: 'demo-close', autofocus: true }, text('close')),
-            picture(key, true)))),
-        h('section', { class: 'space-y-6 rounded-xl bg-secondary p-6 text-secondary-foreground sm:p-8 dark:bg-gray-900 dark:text-gray-100', 'aria-labelledby': 'explore' },
-          h('h2', { id: 'explore', class: 'scroll-mt-6 text-3xl font-semibold' }, text('explore')),
-          h('ol', { class: 'grid gap-6 md:grid-cols-3' }, ...[1, 2, 3].map(step => h('li', { class: 'space-y-2' },
-            h('span', { class: 'inline-flex h-11 w-11 items-center justify-center rounded-full bg-primary font-semibold text-primary-foreground', 'aria-hidden': 'true' }, step),
-            h('h3', { class: 'text-lg font-semibold' }, text('step' + step + 'Title')), h('p', { class: 'leading-relaxed' }, text('step' + step + 'Body'))))), actions())),
-      h('footer', { class: 'mx-auto flex max-w-6xl flex-wrap gap-6 px-4 py-8 sm:px-6' },
-        ...[['/source', 'source'], [repository + '/blob/main/LICENSE', 'license'], [repository + '/blob/main/docs/self-hosting.md', 'selfHosting']].map(([href, key]) =>
-          h('a', { href, class: 'inline-flex min-h-11 min-w-11 items-center underline' }, text(key!))), buildLabelItem(undefined, buildLabel(undefined, source))))).toString();
+      h('main', null,
+        h('header', { class: 'border-b border-border bg-linear-to-b from-secondary to-white dark:border-gray-800 dark:from-gray-900 dark:to-gray-950' },
+          h('div', { class: container + ' grid items-center gap-12 py-16 sm:py-24 lg:grid-cols-12 lg:gap-12' },
+            h('div', { class: 'min-w-0 space-y-6 lg:col-span-5' },
+              h('p', { class: 'inline-flex rounded-full border border-primary/25 bg-white px-3 py-1 text-sm font-semibold text-primary dark:border-teal-800 dark:bg-gray-900 dark:text-teal-300' }, text('eyebrow')),
+              h('h1', { class: 'text-5xl font-bold tracking-tight sm:text-6xl' }, text('name')),
+              h('p', { class: 'max-w-xl text-xl text-muted-foreground sm:text-2xl dark:text-gray-300' }, text('pitch')), actions()),
+            h('div', { class: 'min-w-0 lg:col-span-7' }, h('div', { class: frame }, picture('schedule', 'hero'))))),
+        h('section', { class: container + ' py-16 sm:py-24', 'aria-labelledby': 'strengths' },
+          h('h2', { id: 'strengths', class: sectionTitle }, text('strengths')),
+          h('div', { class: 'mt-8 grid gap-4 sm:grid-cols-2 sm:gap-6 lg:grid-cols-4' }, ...(['data', 'standards', 'open', 'selfHost'] as const).map(key =>
+            h('div', { class: 'min-w-0 rounded-2xl border border-border bg-white p-6 shadow-sm dark:border-gray-800 dark:bg-gray-900' },
+              h('span', { class: iconTile }, icon(key)), h('h3', { class: 'mt-4 text-lg font-semibold' }, text(key + 'Title')),
+              h('p', { class: 'mt-2 ' + muted }, text(key + 'Body')))))),
+        h('div', { class: 'border-y border-border bg-muted dark:border-gray-800 dark:bg-gray-900/50' },
+          h('section', { class: container + ' py-16 sm:py-24', 'aria-labelledby': 'features' },
+            h('h2', { id: 'features', class: sectionTitle }, text('features')),
+            h('nav', { 'aria-labelledby': 'features', class: 'mt-8 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5' }, ...featureKeys.map(key =>
+              h('a', { href: '#feature-' + key, class: `flex min-h-11 min-w-0 items-center gap-3 rounded-xl border border-border bg-white px-3 py-3 text-sm font-semibold ${ring} ${motion} hover:border-primary hover:bg-secondary active:bg-teal-100 sm:px-4 dark:border-gray-700 dark:bg-gray-900 dark:hover:border-teal-400 dark:hover:bg-gray-800 dark:active:bg-gray-700` },
+                h('span', { class: 'shrink-0 text-primary dark:text-teal-300' }, icon(key)), h('span', { class: 'min-w-0' }, text(key + 'Title'))))))),
+        h('div', { class: container + ' py-4 sm:py-8' }, ...featureKeys.map(feature)),
+        h('div', { class: container + ' pb-16 sm:pb-24' },
+          h('section', { class: 'rounded-3xl bg-primary px-6 py-12 text-white sm:px-12 sm:py-16', 'aria-labelledby': 'explore' },
+            h('h2', { id: 'explore', class: sectionTitle }, text('explore')),
+            h('ol', { class: 'mt-8 grid gap-8 md:grid-cols-3' }, ...[1, 2, 3].map(step => h('li', { class: 'space-y-3' },
+              h('span', { class: 'inline-flex h-11 w-11 items-center justify-center rounded-full bg-white text-lg font-bold text-primary', 'aria-hidden': 'true' }, step),
+              h('h3', { class: 'text-lg font-semibold' }, text('step' + step + 'Title')), h('p', { class: 'text-teal-50' }, text('step' + step + 'Body'))))),
+            h('div', { class: 'mt-10' }, actions(true))))),
+      h('footer', { class: 'border-t border-border dark:border-gray-800' },
+        h('div', { class: container + ' flex flex-wrap items-center gap-x-6 gap-y-1 py-6 text-sm' },
+          ...[['/source', 'source'], [repository + '/blob/main/LICENSE', 'license'], [repository + '/blob/main/docs/self-hosting.md', 'selfHosting']].map(([href, key]) =>
+            h('a', { href, class: footerLink }, text(key!))), buildLabelItem(`${footerLink} break-all`, buildLabel(undefined, source)))))).toString();
 }

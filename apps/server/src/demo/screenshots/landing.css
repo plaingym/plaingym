@@ -1,29 +1,64 @@
 /* SPDX-License-Identifier: AGPL-3.0-only */
-/* Popover support, safe-area controls and alternating source-order-preserving rows. */
+/* What the public stylesheet's utilities can't express: popovers in the top layer, their backdrops and the fallbacks
+   for browsers without popovers. Layout, colours and states are utilities on the page. This file is unlayered, so it
+   wins over those utilities where both apply. The public stylesheet's class scanner skips `,` and `+`, so rules with
+   max() or calc() of two values live here too. */
+
+/* A section reached from a link stops below the sticky header (4rem, plus the safe area on a notched phone). */
+html { scroll-padding-top: calc(5rem + env(safe-area-inset-top)); }
+/* Without script a followed link can't close the phone menu, so while it is open the section stops below the panel
+   (header 4rem, five 44 px items and padding, about 15rem) instead of under it. Escape or a tap outside closes it. */
+html:has(#site-menu:popover-open) { scroll-padding-top: calc(20rem + env(safe-area-inset-top)); }
+html:has(.demo-menu-fallback[open]) { scroll-padding-top: calc(20rem + env(safe-area-inset-top)); }
+/* The call-to-action icons are 20 px (the icon component's own size is 24 px; the class scanner can't build `*:h-5`). */
+.demo-icon > svg { width: 1.25rem; height: 1.25rem; }
+/* Page gutters clear a notch in landscape: the viewport covers the safe areas (viewport-fit=cover). */
+.demo-gutter { padding-left: max(1rem, env(safe-area-inset-left)); padding-right: max(1rem, env(safe-area-inset-right)); }
+@media (min-width: 640px) {
+  .demo-gutter { padding-left: max(1.5rem, env(safe-area-inset-left)); padding-right: max(1.5rem, env(safe-area-inset-right)); }
+}
+
+/* Screenshot lightbox: fits the viewport, with the close button in its top corner. */
 .demo-lightbox { display: none; }
 .demo-lightbox:popover-open {
-  display: flex; align-items: center; justify-content: center;
-  width: fit-content; max-width: 94vw; max-height: 94dvh;
-  margin: auto; padding: 64px 12px 12px; border: 1px solid #d6e1df;
-  border-radius: 12px; background: #fff; color: #172524; overflow: auto;
+  display: flex; align-items: center; justify-content: center; box-sizing: border-box;
+  width: fit-content; max-width: 94vw; max-height: 94dvh; margin: auto; padding: 64px 12px 12px;
+  border: 1px solid #d6e1df; border-radius: 16px; background: #fff; color: #172524; overflow: auto;
 }
-.demo-lightbox::backdrop { background: rgb(0 0 0 / 75%); }
+.demo-lightbox::backdrop { background: rgb(3 7 18 / 80%); }
 .demo-lightbox picture { display: flex; min-width: 0; }
-.demo-lightbox img { max-height: calc(94dvh - 80px); }
+.demo-expanded { display: block; max-width: 100%; max-height: calc(94dvh - 80px); width: auto; height: auto; object-fit: contain; border-radius: 8px; }
 .demo-close {
-  position: absolute; top: max(8px, env(safe-area-inset-top)); right: max(8px, env(safe-area-inset-right));
-  min-width: 44px; min-height: 44px; padding: 8px 12px; border: 1px solid currentColor;
-  border-radius: 8px; background: #fff; color: #172524; cursor: pointer;
+  position: absolute; top: max(10px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right)); min-width: 44px; min-height: 44px; padding: 8px 14px;
+  border: 1px solid #a6b9b5; border-radius: 8px; background: #fff; color: #172524; font-weight: 600; cursor: pointer;
 }
-.demo-fallback-image { display: none; }
-/* Header navigation: a row from md up; below that a menu button opens a popover (details where popovers are missing).
-   The panel hangs from the page top rather than the viewport, so it scrolls away when a link jumps to a section. */
-.demo-nav-row, .demo-menu, .demo-menu-fallback { display: none; }
-.demo-menu:popover-open { display: block; }
-.demo-menu-panel { position: absolute; top: 64px; right: max(1rem, env(safe-area-inset-right)); left: auto; bottom: auto; margin: 0; z-index: 10; }
+.demo-close:hover { background: #f1f5f4; }
+.demo-close:active { background: #e3eeec; }
+.demo-close:focus-visible { outline: 2px solid #0f766e; outline-offset: 2px; }
+/* On a phone held upright a desktop screenshot would shrink to the screen's width and its text become unreadable:
+   the lightbox fills the screen, the image keeps its own width (the expanded `sizes`), and the visitor scrolls it
+   both ways inside the lightbox. The close button stays fixed in view; the page itself never scrolls sideways. */
+@media (max-width: 767px) and (orientation: portrait) {
+  .demo-lightbox:popover-open {
+    display: block; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0;
+    padding: calc(64px + env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+    overscroll-behavior: contain;
+  }
+  .demo-lightbox picture { display: block; width: max-content; }
+  .demo-expanded { max-width: none; max-height: none; }
+  .demo-close { position: fixed; top: max(10px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right)); }
+}
+
+/* Phone menu: a popover fixed just below the sticky header wherever the page is scrolled (details where popovers are missing). */
+.demo-menu, .demo-menu-fallback { display: none; }
+.demo-menu:popover-open {
+  display: block; position: fixed; inset: auto; top: calc(4rem + env(safe-area-inset-top) + 4px);
+  right: max(1rem, env(safe-area-inset-right)); margin: 0;
+}
 .demo-menu::backdrop { background: transparent; pointer-events: none; }
 .demo-menu-fallback > summary { list-style: none; }
 .demo-menu-fallback > summary::-webkit-details-marker { display: none; }
+.demo-fallback-image { display: none; }
 @supports not selector(:popover-open) {
   .demo-zoom { display: none; }
   .demo-fallback-image { display: block; }
@@ -31,11 +66,13 @@
   .demo-menu-button { display: none; }
   .demo-menu-fallback { display: block; }
 }
-@media (min-width: 768px) {
-  .demo-feature:nth-of-type(odd) > div:first-child { order: 1; }
-  .demo-nav-row { display: flex; }
-  .demo-menu-button, .demo-menu, .demo-menu-fallback { display: none !important; }
+@media (min-width: 1024px) {
+  .demo-menu, .demo-menu-fallback { display: none !important; }
 }
+
 @media (prefers-color-scheme: dark) {
-  .demo-lightbox:popover-open, .demo-close { background: #111827; color: #f3f4f6; border-color: #374151; }
+  .demo-lightbox:popover-open, .demo-close { background: #111827; color: #f3f4f6; border-color: #4b5563; }
+  .demo-close:hover { background: #1f2937; }
+  .demo-close:active { background: #374151; }
+  .demo-close:focus-visible { outline-color: #5eead4; }
 }
