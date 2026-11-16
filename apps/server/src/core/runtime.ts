@@ -70,6 +70,7 @@ import { configurePortalBilling } from '../areas/portal/billing.routes.js';
 import { configurePortalWaivers } from '../areas/portal/waivers.routes.js';
 import { createSignedLinkCheckout } from '../areas/billing/signed-link-checkout.js';
 import { createMemberPhotoJobs } from '../areas/members/members.jobs.js';
+import { createSmsResolver } from '../areas/settings/sms.js';
 import { createSmtpResolver } from '../areas/settings/smtp.js';
 import { configureSignedLinkDelivery } from '../areas/links/service.js';
 import { configureCampaigns, createCampaignsService } from '../areas/links/campaigns.js';
@@ -318,7 +319,9 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   configureImportStep({ imports: importPipeline, clock });
   // Normal installs use stored gym credentials; sandboxes resolve the shared test account.
   const paymentsFor = demo?.payments.paymentsFor ?? createPaymentsResolver({ key, clock });
-  configureGoLive({ clock, smtpConfigured, paymentsConfigured: async gymId => Boolean(await paymentsFor(gymId)) });
+  // The member SMS switch needs a saved, readable provider; a sandbox's outbox stands in for one.
+  const smsResolver = createSmsResolver({ key, tenancy: mode, demo: Boolean(demo), clock });
+  configureGoLive({ clock, smtpConfigured, smsConfigured: gymId => smsResolver.configured(gymId), paymentsConfigured: async gymId => Boolean(await paymentsFor(gymId)) });
   // Settings → Integrations (Email, SMS, Payments and Backups) reuses the setup steps' services with the runtime's key, auth rules and gym origins.
   // A confirmed backup change queues one snapshot through the backup job registered below (installs that take snapshots).
   configureIntegrations({ key, env, config, origin: gymOrigin, hasPassword: (userId) => accounts.hasPassword(userId), sandbox: Boolean(demo), clock,
