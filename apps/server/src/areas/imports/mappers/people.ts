@@ -3,6 +3,9 @@ import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 import { households, members, memberTags, memberTagLinks, paymentMethods, revisionGuard, assertRevised, uuidv7, writeAudit,
   type Transaction } from '@plaingym/db';
 import type { ImportIssue, ImportPlanRequest, ImportPreviewRow } from '@plaingym/shared/contracts';
+import { normalizePhone } from '@plaingym/shared/phone';
+import { auditSmsCleared, clearedMemberSms } from '../../members/member-write.js';
+import { readGymSettings } from '../../settings/settings.js';
 import { t } from '../pipeline.messages.js';
 import { csvValue, type CsvRow } from '../pipeline.csv.js';
 import type { CsvMapper, MapperContext, PlannedRow } from './registry.js';
@@ -229,6 +232,7 @@ function planned(row: PlannedRow) {
 
 async function commit(tx: Transaction, rows: readonly PlannedRow[], context: MapperContext): Promise<number> {
   const now = context.clock.now();
+  const country = (await readGymSettings(tx, context.gymId)).address.country;
   // Audits name the import run and the target, never personal details.
   const audit = (action: string, targetType: string, targetId: string) => writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
     ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
@@ -242,6 +246,8 @@ async function commit(tx: Transaction, rows: readonly PlannedRow[], context: Map
       memberId = row.duplicateIds[0]!;
       const [current] = await tx.select({ householdId: members.householdId, firstName: members.firstName, lastName: members.lastName,
         email: members.email, phone: members.phone, dateOfBirth: members.dateOfBirth, status: members.status, emailOptOut: members.emailOptOut,
+        phoneE164: members.phoneE164, smsNoticesConsentAt: members.smsNoticesConsentAt, smsNoticesConsentSource: members.smsNoticesConsentSource,
+        smsAnnouncementsConsentAt: members.smsAnnouncementsConsentAt, smsAnnouncementsConsentSource: members.smsAnnouncementsConsentSource,
         anonymizedAt: members.anonymizedAt, revision: members.revision }).from(members).where(eq(members.id, memberId)).for('update');
       if (!current || current.anonymizedAt) throw new Error('Import target member is unavailable');
       householdId = current.householdId;
@@ -249,9 +255,14 @@ async function commit(tx: Transaction, rows: readonly PlannedRow[], context: Map
         phone: value.phone, dateOfBirth: value.dateOfBirth, status: value.status, emailOptOut: value.emailOptOut })
         .filter(([key, next]) => next !== null && current[key as keyof typeof current] !== next));
       if (Object.keys(changes).length) {
+        const changedPhone = value.phone !== null && value.phone !== current.phone;
+        const phoneE164 = normalizePhone(value.phone, country);
+        const changedNumber = changedPhone && (phoneE164 === null || phoneE164 !== normalizePhone(current.phone, country) || phoneE164 !== current.phoneE164);
         const guard = revisionGuard(members.revision, current.revision);
-        assertRevised(await tx.update(members).set({ ...changes, revision: guard.next })
+        assertRevised(await tx.update(members).set({ ...changes, revision: guard.next,
+          ...(changedPhone ? { phoneE164, ...(changedNumber ? clearedMemberSms : {}) } : {}) })
           .where(and(eq(members.id, memberId), guard.matches, isNull(members.anonymizedAt))).returning({ id: members.id }));
+        if (changedNumber) await auditSmsCleared(tx, context, 'member', memberId, current, 'staff', now);
         await audit('member.updated', 'member', memberId);
       }
     } else {
@@ -260,17 +271,18 @@ async function commit(tx: Transaction, rows: readonly PlannedRow[], context: Map
       if (!householdId) {
         householdId = uuidv7();
         await tx.insert(households).values({ id: householdId, gymId: context.gymId, name: value.householdName, email: value.householdEmail,
-          phone: value.householdPhone, stripeCustomerId: value.stripeCustomerId, ...(value.billingDay ? { billingDay: value.billingDay } : {}), createdAt: now });
+          phone: value.householdPhone, phoneE164: normalizePhone(value.householdPhone, country), stripeCustomerId: value.stripeCustomerId, ...(value.billingDay ? { billingDay: value.billingDay } : {}), createdAt: now });
         await audit('household.created', 'household', householdId);
         created.set(family, householdId);
       }
       memberId = uuidv7();
       await tx.insert(members).values({ id: memberId, gymId: context.gymId, householdId, firstName: value.firstName, lastName: value.lastName,
-        email: value.email, phone: value.phone, dateOfBirth: value.dateOfBirth, ...(value.status ? { status: value.status } : {}),
+        email: value.email, phone: value.phone, phoneE164: normalizePhone(value.phone, country), dateOfBirth: value.dateOfBirth, ...(value.status ? { status: value.status } : {}),
         ...(value.emailOptOut !== null ? { emailOptOut: value.emailOptOut } : {}), createdAt: now });
       await audit('member.created', 'member', memberId);
     }
-    // Existing households gain a missing Stripe customer; an update also applies the billing day.
+    // Existing households gain a missing Stripe customer; an update also applies the billing day. Their billing phone,
+    // and with it the household's SMS consent, is never changed by an import.
     const [home] = await tx.select({ customer: households.stripeCustomerId, billingDay: households.billingDay, revision: households.revision })
       .from(households).where(eq(households.id, householdId)).for('update');
     if (!home) throw new Error('Import household is unavailable');

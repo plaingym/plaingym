@@ -19,7 +19,7 @@ const clock = new TestClock('2026-10-22T12:00:00Z');
 let gymA: string, gymB: string;
 beforeEach(async () => {
   gymA = uuidv7(); gymB = uuidv7();
-  await factory('gyms', gymA); await factory('gyms', gymB);
+  await factory('gyms', gymA, { address: { country: 'GB' } }); await factory('gyms', gymB, { address: { country: 'GB' } });
 });
 function services() {
   const stores = new Map<string, FakeUploads>(), jobs = new FakeJobs(clock);
@@ -55,6 +55,15 @@ const snapshot = (gymId = gymA) => database.forGym(gymId, async (tx) => ({
   methods: await tx.select().from(paymentMethods).orderBy(asc(paymentMethods.id)), tags: await tx.select().from(memberTags).orderBy(asc(memberTags.id)),
   links: await tx.select().from(memberTagLinks).orderBy(asc(memberTagLinks.id)), audits: await tx.select().from(auditEvents).orderBy(asc(auditEvents.id)),
 }));
+
+async function consentedContacts(gymId = gymA) {
+  const consent = { phone: '020 7946 0018', phoneE164: '+442079460018',
+    smsNoticesConsentAt: clock.now(), smsNoticesConsentSource: 'portal' };
+  const home = await factory('households', gymId, { ...consent, revision: 4 });
+  const member = await factory('members', gymId, { ...consent, householdId: home.id, firstName: 'Jo', lastName: 'Fields',
+    email: 'jo@example.test', smsAnnouncementsConsentAt: clock.now(), smsAnnouncementsConsentSource: 'join', revision: 7 });
+  return { home, member };
+}
 
 describe('people mapper through the real import pipeline', () => {
   it('rebuilds customer-keyed singleton families without merging their distinct member IDs', async () => {
@@ -107,6 +116,97 @@ describe('people mapper through the real import pipeline', () => {
     const [member] = (await snapshot()).members;
     expect(member).toMatchObject({ id: original.id, householdId: original.householdId, status: 'frozen', revision: 8,
       phone: '555-keep', emailOptOut: true, medicalNotes: 'Keep private' });
+  });
+  it.each([
+    { phone: '020 7946 0019', normalized: '+442079460019' },
+    { phone: 'not a phone', normalized: null },
+  ])('clears and audits member SMS consent, keeping the household billing phone, when importing $phone', async ({ phone, normalized }) => {
+    const { home, member } = await consentedContacts();
+    await consentedContacts(gymB);
+    const otherGym = await snapshot(gymB);
+    const { load } = services();
+    const source = await load(csvLine(['First Name', 'Last Name', 'Email', 'Phone'])
+      + csvLine(['Jo', 'Fields', 'jo@example.test', phone]), { duplicatePolicy: 'update' });
+    const before = await snapshot();
+    await source.preview();
+    expect((await source.run(true)).job).toMatchObject({ status: 'succeeded', committedRows: 0 });
+    expect(await snapshot()).toEqual(before);
+    expect((await source.run()).job).toMatchObject({ status: 'succeeded', committedRows: 1 });
+    const saved = await snapshot();
+    expect(saved.members[0]).toMatchObject({ id: member.id, phone, phoneE164: normalized, revision: 8,
+      smsNoticesConsentAt: null, smsNoticesConsentSource: null, smsAnnouncementsConsentAt: null, smsAnnouncementsConsentSource: null });
+    // The household billing phone and its consent are not the member's: an import never changes them.
+    expect(saved.households).toEqual(before.households);
+    expect(saved.households[0]).toMatchObject({ id: home.id, phone: '020 7946 0018', smsNoticesConsentAt: clock.now() });
+    const audits = saved.audits.filter((event) => event.action.endsWith('.sms_consent_changed'));
+    expect(audits).toHaveLength(2);
+    for (const [targetType, targetId, kind, consentSource] of [
+      ['member', member.id, 'notices', 'portal'], ['member', member.id, 'announcements', 'join'],
+    ]) expect(audits).toContainEqual(expect.objectContaining({ gymId: gymA, actorKind: 'system', targetType, targetId,
+      action: targetType + '.sms_consent_changed', occurredAt: clock.now(),
+      before: { kind, at: clock.now().toISOString(), source: consentSource },
+      after: { kind, at: null, source: null, changeSource: 'staff' } }));
+    const auditData = JSON.stringify(saved.audits.map((event) => [event.before, event.after]));
+    for (const value of [phone, '020 7946 0018', '+442079460018', normalized].filter((value) => value !== null)) expect(auditData).not.toContain(value);
+    // Returning to the previously consented number cannot revive its consent.
+    await (await load('First Name,Last Name,Email,Phone\nJo,Fields,jo@example.test,020 7946 0018\n', { duplicatePolicy: 'update' })).run();
+    const restored = await snapshot();
+    expect(restored.members[0]).toMatchObject({ phoneE164: '+442079460018', smsNoticesConsentAt: null, smsAnnouncementsConsentAt: null });
+    expect(restored.households).toEqual(before.households);
+    expect(restored.audits.filter((event) => event.action.endsWith('.sms_consent_changed'))).toHaveLength(2);
+    expect(await snapshot(gymB)).toEqual(otherGym);
+  });
+  it.each(['020 7946 0018', '02079460018', '', null])('keeps SMS consent for an unchanged, reformatted or absent phone: %s', async (phone) => {
+    const { home, member } = await consentedContacts();
+    const csv = csvLine(['First Name', 'Last Name', 'Email', ...(phone === null ? [] : ['Phone'])])
+      + csvLine(['Jo', 'Fields', 'jo@example.test', ...(phone === null ? [] : [phone])]);
+    const source = await services().load(csv, { duplicatePolicy: 'update' });
+    expect((await source.run()).job).toMatchObject({ status: 'succeeded', committedRows: 1 });
+    const saved = await snapshot(), expectedPhone = phone || member.phone;
+    expect(saved.members[0]).toMatchObject({ phone: expectedPhone, phoneE164: member.phoneE164,
+      smsNoticesConsentAt: member.smsNoticesConsentAt, smsNoticesConsentSource: member.smsNoticesConsentSource,
+      smsAnnouncementsConsentAt: member.smsAnnouncementsConsentAt, smsAnnouncementsConsentSource: member.smsAnnouncementsConsentSource });
+    expect(saved.households[0]).toMatchObject({ phone: home.phone, phoneE164: home.phoneE164, revision: home.revision,
+      smsNoticesConsentAt: home.smsNoticesConsentAt, smsNoticesConsentSource: home.smsNoticesConsentSource });
+    expect(saved.audits.filter((event) => event.action.endsWith('.sms_consent_changed'))).toEqual([]);
+  });
+  it('rolls back phone and consent changes and their audits if a later import write fails', async () => {
+    await consentedContacts();
+    const rows = parseCsv('First Name,Last Name,Email,Phone,Stripe Customer ID,Stripe Payment Method ID\nJo,Fields,jo@example.test,020 7946 0019,cus_New,pm_Race\n').rows;
+    const plan: ImportPlanRequest = { uploadId: uuidv7(), mapper: 'people', duplicatePolicy: 'update', mapping: autoMatch(Object.keys(rows[0]!.values)) };
+    const context: MapperContext = { gymId: gymA, actor: { kind: 'system' }, runId: uuidv7(), clock, timezone: 'UTC', sourceRows: rows };
+    const planned = await database.forGym(gymA, (tx) => peopleMapper.analyze(tx, rows, plan, context));
+    expect(planned[0]!.issues).toEqual([]);
+    const other = await factory('households', gymA);
+    await factory('paymentMethods', gymA, { householdId: other.id, processorId: 'pm_Race' });
+    const before = await snapshot();
+    await expect(database.forGym(gymA, (tx) => peopleMapper.commit(tx, planned.map((row) => ({ ...row, action: 'update' })), context)))
+      .rejects.toThrow('Payment method belongs to another household');
+    expect(await snapshot()).toEqual(before);
+  });
+  it('does not revive stale consent when reformatting a phone whose stored consent number differs', async () => {
+    const { member, home } = await consentedContacts();
+    await database.forGym(gymA, async (tx) => {
+      await tx.update(members).set({ phoneE164: '+442079460019' }).where(eq(members.id, member.id));
+      await tx.update(households).set({ phoneE164: '+442079460019' }).where(eq(households.id, home.id));
+    });
+    const source = await services().load('First Name,Last Name,Email,Phone\nJo,Fields,jo@example.test,02079460018\n', { duplicatePolicy: 'update' });
+    expect((await source.run()).job).toMatchObject({ status: 'succeeded', committedRows: 1 });
+    const saved = await snapshot();
+    expect(saved.members[0]).toMatchObject({ phoneE164: '+442079460018', smsNoticesConsentAt: null, smsNoticesConsentSource: null,
+      smsAnnouncementsConsentAt: null, smsAnnouncementsConsentSource: null });
+    expect(saved.households[0]).toMatchObject({ phoneE164: '+442079460019', smsNoticesConsentAt: home.smsNoticesConsentAt,
+      smsNoticesConsentSource: home.smsNoticesConsentSource });
+    expect(saved.audits.filter((event) => event.action.endsWith('.sms_consent_changed'))).toHaveLength(2);
+  });
+  it('stores normalized phones for created members and households, without SMS consent', async () => {
+    const source = await services().load(csvLine(['First Name', 'Last Name', 'Email', 'Phone'])
+      + csvLine(['Ana', 'Reyes', 'ana@example.test', '020 7946 0018']));
+    expect((await source.run()).job).toMatchObject({ status: 'succeeded', committedRows: 1 });
+    const saved = await snapshot();
+    expect(saved.members[0]).toMatchObject({ phone: '020 7946 0018', phoneE164: '+442079460018',
+      smsNoticesConsentAt: null, smsAnnouncementsConsentAt: null });
+    expect(saved.households[0]).toMatchObject({ phone: '020 7946 0018', phoneE164: '+442079460018', smsNoticesConsentAt: null });
   });
   it('flags within-file duplicates even across chunk boundaries and never creates a second copy', async () => {
     const csv = 'First Name,Last Name,Email\n' + Array.from({ length: 101 }, (_, i) =>
