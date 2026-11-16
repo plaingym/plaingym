@@ -16,7 +16,7 @@ import { KeyRotationFenceError, KeyRotationIncompleteError, PostgresMaintenance,
 
 const oldKey = randomBytes(32), newKey = randomBytes(32);
 const columns = {
-  stripe_config: 'stripeConfig', smtp_config: 'smtpConfig', s3_config: 's3Config', qr_key: 'qrKey', backup_blob_key: 'backupBlobKey',
+  stripe_config: 'stripeConfig', smtp_config: 'smtpConfig', sms_config: 'smsConfig', s3_config: 's3Config', qr_key: 'qrKey', backup_blob_key: 'backupBlobKey',
   google_config: 'googleConfig', oauth_access_token: 'accessToken', oauth_refresh_token: 'refreshToken', oauth_id_token: 'idToken',
 } as const satisfies Record<SecretClass, string>;
 const plaintext = (context: SecretContext) => 'private ' + context.secretClass + ' of ' + context.owner;
@@ -38,6 +38,7 @@ async function install(key: Buffer) {
     legacy ? legacySecret(key, secretClass, plaintext({ secretClass, owner })) : encryptSecret(key, { secretClass, owner }, plaintext({ secretClass, owner }));
   for (const [index, gymId] of gymIds.entries()) {
     await make('gyms', gymId, { stripeConfig: value('stripe_config', gymId, index === 1), smtpConfig: value('smtp_config', gymId, true),
+      smsConfig: value('sms_config', gymId, index === 0),
       s3Config: value('s3_config', gymId, false), qrKey: value('qr_key', gymId, index === 0), backupBlobKey: value('backup_blob_key', gymId, false),
       googleConfig: index === 0 ? value('google_config', gymId, false) : null });
     const accountId = accountIds[index]!;
@@ -242,8 +243,8 @@ describe('APP_ENCRYPTION_KEY rotation', { timeout: 60_000 }, () => {
   it('re-encrypts every stored secret, v1 or v2, as v2 under the new key, each bound to its own row', async () => {
     await withInstall(oldKey, async ({ stored, maintenance, gymIds }) => {
       const before = await stored();
-      expect(before.size).toBe(17);
-      expect((await maintenance.rotateKey(oldKey, newKey)).rewritten).toBe(17);
+      expect(before.size).toBe(19);
+      expect((await maintenance.rotateKey(oldKey, newKey)).rewritten).toBe(19);
       const after = await stored();
       expect([...after.keys()].sort()).toEqual([...before.keys()].sort());
       expectRotated(after, newKey, oldKey);
@@ -273,8 +274,8 @@ describe('APP_ENCRYPTION_KEY rotation', { timeout: 60_000 }, () => {
         if (!done) expect(value === before.get(where)).toBe(true);
       }
       expect(accountIds.every((id) => interrupted.get('oauth_id_token:' + id) !== before.get('oauth_id_token:' + id))).toBe(true);
-      // Run again with the same keys: only gym B's five values are left.
-      expect((await maintenance.rotateKey(oldKey, newKey)).rewritten).toBe(5);
+      // Run again with the same keys: only gym B's six values are left.
+      expect((await maintenance.rotateKey(oldKey, newKey)).rewritten).toBe(6);
       const after = await stored();
       expectRotated(after, newKey, oldKey);
       for (const [where, value] of interrupted) if (contextOf(where).owner !== gymIds[1]) expect(after.get(where) === value).toBe(true);
@@ -354,8 +355,8 @@ describe('the one-time v1 to v2 rewrite after migrations', { timeout: 60_000 }, 
       const gymB = gymIds[1]!, unreadable = legacySecret(randomBytes(32), 'qr_key', 'under another key');
       await database.forGym(gymB, (tx) => tx.update(gyms).set({ qrKey: unreadable }).where(eq(gyms.id, gymB)));
       const before = await stored(), legacy = [...before].filter(([, value]) => value.startsWith('v1.'));
-      expect(legacy.length).toBe(8);
-      expect(await maintenance.upgradeSecrets(oldKey)).toEqual({ rewritten: 7, unreadable: 1 });
+      expect(legacy.length).toBe(9);
+      expect(await maintenance.upgradeSecrets(oldKey)).toEqual({ rewritten: 8, unreadable: 1 });
       const after = await stored();
       for (const [where, value] of after) {
         if (where === 'qr_key:' + gymB) { expect(value === unreadable).toBe(true); continue; }

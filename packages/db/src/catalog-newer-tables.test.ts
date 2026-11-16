@@ -39,15 +39,15 @@ describe('a table this image does not declare', () => {
       create policy newer_delete on newer for delete to app using (${system});`],
   ])('is accepted as %s', async (_name, statements) => {
     await maintenance.sql.unsafe(statements);
-    await expect(assertCatalog(database.app.sql)).resolves.toEqual({ tableCount: 70, tenantTableCount: expect.any(Number) });
+    await expect(assertCatalog(database.app.sql)).resolves.toEqual({ tableCount: 73, tenantTableCount: expect.any(Number) });
   });
 
   it('counts as a tenant table only with the gym policy', async () => {
     await maintenance.sql.unsafe(safeGymTable);
-    expect(await assertCatalog(database.app.sql)).toEqual({ tableCount: 70, tenantTableCount: 58 });
+    expect(await assertCatalog(database.app.sql)).toEqual({ tableCount: 73, tenantTableCount: 61 });
     await maintenance.sql.unsafe(`drop table newer; create table newer (id uuid primary key); ${forced}
       create policy newer_system on newer to app using (${system}) with check (${system});`);
-    expect(await assertCatalog(database.app.sql)).toEqual({ tableCount: 70, tenantTableCount: 57 });
+    expect(await assertCatalog(database.app.sql)).toEqual({ tableCount: 73, tenantTableCount: 60 });
   });
 
   it.each([
@@ -107,7 +107,7 @@ describe('a view, materialized view or function this image does not declare', ()
     ['a function that runs as its caller', `create function newer_fn() returns bigint language sql as 'select count(*) from members'; grant execute on function newer_fn() to app;`],
   ])('is accepted as %s', async (_name, statements) => {
     await maintenance.sql.unsafe(statements);
-    await expect(assertCatalog(database.app.sql)).resolves.toEqual({ tableCount: 69, tenantTableCount: expect.any(Number) });
+    await expect(assertCatalog(database.app.sql)).resolves.toEqual({ tableCount: 72, tenantTableCount: expect.any(Number) });
   });
   it.each([
     ['a view that runs as its owner', 'create view newer_view as select id, gym_id from members;', 'newer_view: view without security_invoker'],
@@ -153,7 +153,7 @@ describe('a view, materialized view or function this image does not declare', ()
     const admin = openConnection(databaseUrl(inject('testDatabase').adminUrl, database.name), 1);
     try {
       await admin.sql.unsafe('alter view newer_view owner to postgres');
-      await expect(assertCatalog(database.app.sql)).resolves.toMatchObject({ tableCount: 69 });
+      await expect(assertCatalog(database.app.sql)).resolves.toMatchObject({ tableCount: 72 });
       await expect(migrateDatabase(database.maintenanceUrl)).resolves.toBeUndefined();
       await admin.sql.unsafe('grant select (id) on newer_view to app');
       await expect(assertCatalog(database.app.sql)).rejects.toThrow('newer_view: wrong owner');
@@ -188,7 +188,7 @@ it('starts this image on a database a newer release migrated: its migrations sta
   await maintenance.sql`insert into drizzle.__drizzle_migrations (hash, created_at) values ('newer-release', ${Number(latest?.at) + 1000})`;
   try {
     await expect(migrateDatabase(database.maintenanceUrl)).resolves.toBeUndefined();
-    await expect(assertCatalog(database.app.sql)).resolves.toMatchObject({ tableCount: 70 });
+    await expect(assertCatalog(database.app.sql)).resolves.toMatchObject({ tableCount: 73 });
     expect(await maintenance.sql`select 1 from drizzle.__drizzle_migrations where hash = 'newer-release'`).toHaveLength(1);
   } finally { await maintenance.sql`delete from drizzle.__drizzle_migrations where hash = 'newer-release'`; }
 });

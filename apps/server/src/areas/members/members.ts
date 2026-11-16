@@ -153,6 +153,7 @@ export function createMembersService(options: MembersOptions = {}) {
         const before = missing((await tx.select({ ...memberFields, emailAddress: members.emailAddress }).from(members).where(eq(members.id, id)).for('update'))[0]);
         editable(before); const guard = revisionGuard(members.revision, revision), now = clock.now();
         const row = assertRevised(await tx.update(members).set({ firstName: 'Anonymized', lastName: 'Member', email: null, phone: null, dateOfBirth: null,
+          phoneE164: null, smsNoticesConsentAt: null, smsNoticesConsentSource: null, smsAnnouncementsConsentAt: null, smsAnnouncementsConsentSource: null,
           photoKey: null, emergencyContacts: [], medicalNotes: null, emailOptOut: true, emailDeliverable: false, status: 'cancelled',
           checkinCodeHash: null, anonymizedAt: now, revision: guard.next })
           .where(and(eq(members.id, id), guard.matches, isNull(members.anonymizedAt))).returning(memberFields));
@@ -196,7 +197,7 @@ export function createMembersService(options: MembersOptions = {}) {
         const billingEmailCleared = home.email !== null && (last || erasedBillingAddress);
         await tx.update(households).set({ pinHash: null, revision: homeGuard.next,
           ...(erasedBillingAddress ? { email: null } : {}),
-          ...(last ? { name: 'Anonymized household', email: null, phone: null, address: {}, stripeCustomerId: null } : {}) }).where(eq(households.id, home.id));
+          ...(last ? { name: 'Anonymized household', email: null, phone: null, phoneE164: null, smsNoticesConsentAt: null, smsNoticesConsentSource: null, address: {}, stripeCustomerId: null } : {}) }).where(eq(households.id, home.id));
         const revokedCards: { id: string; processorId: string }[] = [];
         if (last) {
           // Checkout locks its signed link before its invoice. Revoke household links in that order too.

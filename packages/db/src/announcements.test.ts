@@ -13,7 +13,7 @@ beforeAll(async () => { await factory('gyms', gymA); await factory('gyms', gymB)
 
 describe('announcement storage boundaries', () => {
   it('declares forced gym policies and scoped references in the live catalog', async () => {
-    expect(await assertCatalog(database.app.sql)).toEqual({ tableCount: 69, tenantTableCount: 57 });
+    expect(await assertCatalog(database.app.sql)).toEqual({ tableCount: 72, tenantTableCount: 60 });
   });
 
   it.each([

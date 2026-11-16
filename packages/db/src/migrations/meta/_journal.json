@@ -239,6 +239,13 @@
       "when": 1794620526896,
       "tag": "0034_invoice_billed_terms",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1794823908571,
+      "tag": "0035_sms",
+      "breakpoints": true
     }
   ]
 }

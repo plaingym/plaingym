@@ -65,7 +65,7 @@ export const exportDatasets = [
   'discounts', 'discount_plans', 'membership_discounts',
   'memberships', 'invoices', 'invoice_sequences', 'invoice_line_items', 'payment_methods', 'payment_attempts',
   'payments', 'refunds', 'waiver_templates', 'waiver_signatures', 'kiosk_devices', 'link_campaigns', 'signed_links',
-  'audit_events', 'email_outbox', 'announcements', 'announcement_opt_outs',
+  'audit_events', 'email_outbox', 'sms_outbox', 'announcements', 'announcement_opt_outs',
   'leads', 'lead_contacts',
 ] as const;
 export const exportDatasetSchema = z.enum(exportDatasets);

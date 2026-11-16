@@ -7,6 +7,7 @@
 export const encryptedFields = [
   { table: 'gyms', column: 'stripe_config_encrypted', secretClass: 'stripe_config' },
   { table: 'gyms', column: 'smtp_config_encrypted', secretClass: 'smtp_config' },
+  { table: 'gyms', column: 'sms_config_encrypted', secretClass: 'sms_config' },
   { table: 'gyms', column: 's3_config_encrypted', secretClass: 's3_config' },
   { table: 'gyms', column: 'qr_key_encrypted', secretClass: 'qr_key' },
   { table: 'gyms', column: 'backup_blob_key_encrypted', secretClass: 'backup_blob_key' },

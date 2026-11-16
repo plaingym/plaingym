@@ -138,6 +138,7 @@ describe('export schema coverage and secret exclusions', () => {
       payment_attempts: ['error'],
       audit_events: ['before', 'after'],
       email_outbox: ['subject', 'html', 'text'],
+      sms_outbox: ['body'],
       // A client's send idempotency generation is install-local delivery state, not portable announcement history.
       announcements: ['send_generation'],
     };
@@ -161,7 +162,7 @@ describe('export schema coverage and secret exclusions', () => {
     expect(tableNames.length).toBeGreaterThan(exportDatasets.length);
     // Operational run state has its own retention deadline; it is not a portable gym dataset. Email send state
     // only guards this install's job keys against resending.
-    const runState = new Set(['import_runs', 'import_chunks', 'export_runs', 'email_deliveries', 'announcement_recipients']);
+    const runState = new Set(['import_runs', 'import_chunks', 'export_runs', 'email_deliveries', 'sms_deliveries', 'sms_daily_usage', 'announcement_recipients']);
     expect(tableNames.filter((name) => !systemNames.has(name) && !runState.has(name)).sort()).toEqual(Object.keys(exportCatalog).sort());
     expect(Object.keys(exportCatalog).sort()).toEqual([...exportDatasets].sort());
   });

@@ -82,6 +82,7 @@ export function useRestoreFixture(options: { shared?: boolean } = {}) {
     await make('gyms', gymId, {
       stripeConfig: encryptSecret(oldKey, context('stripe_config'), 'stripe-test'),
       smtpConfig: legacySecret(oldKey, 'smtp_config', 'smtp-test'),
+      smsConfig: encryptSecret(oldKey, context('sms_config'), 'sms-test'),
       s3Config: encryptSecret(oldKey, context('s3_config'), 's3-test'),
       qrKey: legacySecret(oldKey, 'qr_key', 'stable-qr-secret'),
       backupBlobKey: encryptSecret(oldKey, context('backup_blob_key'), blobKey.toString('hex')),

@@ -221,8 +221,13 @@ describe('members and households', () => {
     expect(await service.listMemberTags(gymA, fixture.person.id)).toHaveLength(0);
   });
   it('anonymizes PII and revokes access while retaining invoice, invoice-line and attendance IDs', async () => {
+    const consent = { phoneE164: '+12025550123', smsNoticesConsentAt: clock.now(), smsNoticesConsentSource: 'portal' };
     const home = await factory('households', gymA, { name: 'Private family', email: 'private@example.test', phone: '123', address: { line1: 'Private street' }, pinHash: 'a'.repeat(64) });
     const person = await factory('members', gymA, { householdId: home.id, firstName: 'Private', lastName: 'Person', email: 'person@example.test', phone: '555', dateOfBirth: '2000-01-01', medicalNotes: 'Private condition', emergencyContacts: [{ name: 'Private contact' }], checkinCodeHash: 'b'.repeat(64) });
+    await database.forGym(gymA, async tx => {
+      await tx.update(members).set({ ...consent, smsAnnouncementsConsentAt: clock.now(), smsAnnouncementsConsentSource: 'join' }).where(eq(members.id, person.id));
+      await tx.update(households).set(consent).where(eq(households.id, home.id));
+    });
     const invoice = await factory('invoices', gymA, { householdId: home.id });
     const line = await factory('invoiceLineItems', gymA, { householdId: home.id, invoiceId: invoice.id });
     const attendance = await factory('attendances', gymA, { memberId: person.id });
@@ -254,6 +259,8 @@ describe('members and households', () => {
       waivers: await tx.select().from(waiverSignatures) }));
     expect(raw.member).toMatchObject({ email: null, phone: null, dateOfBirth: null, medicalNotes: null, emergencyContacts: [], photoKey: null, checkinCodeHash: null, status: 'cancelled' });
     expect(raw.home).toMatchObject({ name: 'Anonymized household', email: null, phone: null, address: {}, pinHash: null });
+    expect(raw.member).toMatchObject({ phoneE164: null, smsNoticesConsentAt: null, smsNoticesConsentSource: null, smsAnnouncementsConsentAt: null, smsAnnouncementsConsentSource: null });
+    expect(raw.home).toMatchObject({ phoneE164: null, smsNoticesConsentAt: null, smsNoticesConsentSource: null });
     expect(raw.invoice[0]).toEqual(invoice); expect(raw.line[0]).toEqual(line); expect(raw.attendance[0]).toEqual(attendance);
     expect(raw.users).toHaveLength(0); expect(raw.signed.revokedAt).toEqual(clock.now());
     // Promotion history is kept with its rank and date; only the notes are cleared, and only for this member.
@@ -267,9 +274,12 @@ describe('members and households', () => {
   });
   it('preserves another household member and shared contacts while clearing the shared PIN', async () => {
     const { home, person } = await routeFixture(gymA);
+    const consent = { phoneE164: '+12025550123', smsNoticesConsentAt: clock.now(), smsNoticesConsentSource: 'portal' };
+    await database.forGym(gymA, tx => tx.update(households).set(consent).where(eq(households.id, home.id)));
     const sibling = await factory('members', gymA, { householdId: home.id });
     await service.eraseMember(context(), person.id, { revision: 1 }, erasureQueue());
     expect(await service.getHousehold(gymA, home.id)).toMatchObject({ name: home.name });
+    expect((await database.forGym(gymA, tx => tx.select().from(households).where(eq(households.id, home.id))))[0]).toMatchObject(consent);
     expect(await service.getMember(gymA, sibling.id)).toMatchObject({ firstName: sibling.firstName });
   });
   it.each([false, true])('revokes billing only when erasing the last member (another member: %s)', async another => {

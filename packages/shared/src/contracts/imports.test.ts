@@ -61,7 +61,7 @@ describe('import and export contracts', () => {
     );
     const systemNames = new Set(systemTables.map((table) => table.name));
     // Progress, retained issues, signed archive links and email send state are operational state, not portable gym datasets.
-    const runState = new Set(['import_runs', 'import_chunks', 'export_runs', 'email_deliveries', 'announcement_recipients']);
+    const runState = new Set(['import_runs', 'import_chunks', 'export_runs', 'email_deliveries', 'sms_deliveries', 'sms_daily_usage', 'announcement_recipients']);
     expect([...exportDatasets].sort()).toEqual(tableNames.filter((name) => !systemNames.has(name) && !runState.has(name)).sort());
     for (const name of [...systemNames, ...runState]) expect(exportDatasetSchema.safeParse(name).success).toBe(false);
   });

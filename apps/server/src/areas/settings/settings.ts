@@ -106,10 +106,16 @@ export function createSettingsService(options: { scope?: typeof forGym; clock?: 
   };
 }
 export function createGymSettingsAccessor(options: Parameters<typeof createSettingsService>[0] = {}): GymSettingsAccessor {
-  const service = createSettingsService(options);
+  const scope = options.scope ?? forGym;
   return { async get(gymId) {
-    const value = await service.get(gymId);
+    const { value, memberSmsEnabled, smsDailyCap } = await scope(gymId, async tx => {
+      const [row] = await tx.select({ ...projection, memberSmsEnabled: gyms.memberSmsEnabled, smsDailyCap: gyms.smsDailyCap }).from(gyms).where(eq(gyms.id, gymId));
+      if (!row) throw new AppError('not_found', 'Gym not found');
+      const { memberSmsEnabled, smsDailyCap, ...publicFields } = row;
+      return { value: present(publicFields), memberSmsEnabled, smsDailyCap };
+    });
     return { gymId: value.id, timezone: value.timezone, currency: value.currency,
+      memberSmsEnabled, smsDailyCap, country: value.address.country ?? null,
       billingEnabled: value.billingEnabled, memberEmailsEnabled: value.memberEmailsEnabled, websiteEnabled: value.websiteEnabled,
       bookingWindowDays: value.bookingWindowDays, cancellationCutoffMinutes: value.cancellationCutoffMinutes,
       openMatCountsAsClass: value.openMatCountsAsClass, revision: value.revision };

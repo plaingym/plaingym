@@ -6,6 +6,7 @@ import { TestClock } from '../clock.js';
 import { FakeWebhookHealthQuery } from './webhook-health.js';
 import { gym, otherGym } from './test-fixtures.js';
 const settings = { gymId: gym, timezone: 'America/Vancouver', currency: 'CAD', billingEnabled: false,
+  memberSmsEnabled: false, smsDailyCap: 1000, country: 'CA',
   memberEmailsEnabled: false, websiteEnabled: false, bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false, revision: 1 };
 describe('Operational read interfaces', () => {
   it('returns explicit settings fields and rejects unknown gyms', async () => {
@@ -21,6 +22,7 @@ describe('Operational read interfaces', () => {
     expect(() => new FakeGymSettingsAccessor([{ ...settings, timezone: 'invalid-zone' }])).toThrow();
     expect(() => new FakeGymSettingsAccessor([{ ...settings, bookingWindowDays: -1 }])).toThrow();
     expect(() => new FakeGymSettingsAccessor([{ ...settings, revision: 0 }])).toThrow();
+    expect(() => new FakeGymSettingsAccessor([{ ...settings, smsDailyCap: 0 }])).toThrow();
   });
   it('aggregates job statuses, with pending scheduled time and no install-level or other-gym rows', async () => {
     const fake = new FakeJobStatsQuery([

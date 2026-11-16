@@ -3,7 +3,7 @@ import { expect, it } from 'vitest';
 import { openConnection } from './client.js';
 import { uuidv7 } from './id.js';
 import { migrateDatabase } from './migrate.js';
-import { attendances, members, payments, refunds } from './schema/index.js';
+import { attendances, payments, refunds } from './schema/index.js';
 import { useUpgradeTestDatabase } from './testing/database-upgrade.js';
 import { createFactories } from './testing/factories.js';
 
@@ -11,15 +11,18 @@ const database = useUpgradeTestDatabase('0027_class_packs', { applySecurity: tru
 const factory = createFactories(database);
 
 it('adds only the report time indexes to populated tables, preserving rows and gym isolation', async () => {
-  const gymId = uuidv7(), otherGymId = uuidv7();
-  await factory('gyms', gymId); await factory('gyms', otherGymId);
+  const gymId = uuidv7(), otherGymId = uuidv7(), householdId = uuidv7(), memberId = uuidv7(), invoiceId = uuidv7();
+  const seed = openConnection(database.maintenanceUrl, 1);
+  try {
+    // Historical SQL omits columns added after this fixture's starting migration.
+    for (const id of [gymId, otherGymId]) await seed.sql`insert into gyms (id, name, slug) values (${id}, 'Gym', ${id})`;
+    await seed.sql`insert into households (id, gym_id, name) values (${householdId}, ${gymId}, 'Household')`;
+    await seed.sql`insert into members (id, gym_id, household_id, first_name, last_name) values (${memberId}, ${gymId}, ${householdId}, 'Test', 'Member')`;
+    await seed.sql`insert into invoices (id, gym_id, household_id, kind, due_on, amount_cents, currency) values (${invoiceId}, ${gymId}, ${householdId}, 'one_off', '2025-06-01', 10000, 'USD')`;
+  } finally { await seed.close(); }
   const instant = new Date('2025-06-01T12:00:00Z');
-  const household = await factory('households', gymId);
-  // Explicit returning avoids requesting later generated member columns before the upgrade.
-  const [member] = await database.forGym(gymId, tx => tx.insert(members).values({ gymId, householdId: household.id,
-    firstName: 'Test', lastName: 'Member' }).returning({ id: members.id }));
-  await factory('attendances', gymId, { memberId: member!.id, occurredAt: instant });
-  const payment = await factory('payments', gymId, { paidAt: instant });
+  await factory('attendances', gymId, { memberId, occurredAt: instant });
+  const payment = await factory('payments', gymId, { invoiceId, paidAt: instant });
   await factory('refunds', gymId, { paymentId: payment.id, status: 'succeeded', resolvedAt: instant });
   await factory('refunds', gymId, { paymentId: payment.id, status: 'pending', resolvedAt: null });
   const read = (id: string) => database.forGym(id, async tx => ({ visits: await tx.select().from(attendances),

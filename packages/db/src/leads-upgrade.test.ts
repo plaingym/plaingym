@@ -14,7 +14,7 @@ it('preserves populated members and adds empty lead tables without a backfill', 
   const maintenance = openConnection(database.maintenanceUrl, 1), gymId = uuidv7();
   try {
     const factory = createFactories(database);
-    await factory('gyms', gymId);
+    await maintenance.sql`insert into gyms (id, name, slug) values (${gymId}, 'Test Gym', ${gymId})`;
     const householdId = uuidv7();
     await maintenance.sql`insert into households (id, gym_id, name) values (${householdId}, ${gymId}, 'Family')`;
     for (const status of ['prospect', 'trial', 'active']) await maintenance.sql`insert into members
@@ -24,9 +24,9 @@ it('preserves populated members and adds empty lead tables without a backfill', 
     const read = () => maintenance.sql`select * from members where gym_id = ${gymId} order by id`;
     const before = await read();
     await migrateDatabase(database.maintenanceUrl);
-    expect((await read()).map(row => Object.fromEntries(Object.entries(row).filter(([key]) => key !== 'email_address')))).toEqual([...before]);
+    expect((await read()).map(row => Object.fromEntries(Object.entries(row).filter(([key]) => Object.hasOwn(before[0]!, key))))).toEqual([...before]);
     for (const table of [leads, leadContacts]) expect(await database.forGym(gymId, tx => tx.select().from(table))).toEqual([]);
-    expect(await assertCatalog(maintenance.sql)).toEqual({ tableCount: 69, tenantTableCount: 57 });
+    expect(await assertCatalog(maintenance.sql)).toEqual({ tableCount: 72, tenantTableCount: 60 });
     await expect(factory('leadContacts', gymId)).resolves.toMatchObject({ channel: 'call' });
   } finally { await maintenance.close(); }
 });

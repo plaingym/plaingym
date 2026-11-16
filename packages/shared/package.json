@@ -8,6 +8,7 @@
     ".": "./src/index.ts",
     "./contracts": "./src/contracts/index.ts",
     "./money": "./src/money.ts",
+    "./phone": "./src/phone.ts",
     "./time": "./src/time.ts",
     "./transaction": {
       "node": "./src/transaction.ts"
@@ -19,6 +20,7 @@
     "./locales": "./dist/locales.gen.ts"
   },
   "dependencies": {
+    "libphonenumber-js": "1.13.16",
     "openapi-fetch": "0.17.0",
     "temporal-polyfill": "1.0.5",
     "zod": "4.6.7"

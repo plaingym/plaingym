@@ -20,6 +20,9 @@ export const gyms = pgTable('gyms', {
   billingEnabled: boolean('billing_enabled').notNull().default(false),
   retryDays: integer('retry_days').array().notNull().default([3, 7]),
   memberEmailsEnabled: boolean('member_emails_enabled').notNull().default(false),
+  smsConfig: text('sms_config_encrypted'),
+  memberSmsEnabled: boolean('member_sms_enabled').notNull().default(false),
+  smsDailyCap: integer('sms_daily_cap').notNull().default(1000),
   bookingWindowDays: integer('booking_window_days').notNull().default(14),
   cancellationCutoffMinutes: integer('cancellation_cutoff_minutes').notNull().default(60),
   openMatCountsAsClass: boolean('open_mat_counts_as_class').notNull().default(false),
@@ -38,6 +41,7 @@ export const gyms = pgTable('gyms', {
   unique('gyms_id_currency_key').on(t.id, t.currency),
   check('gyms_currency_check', sql`${t.currency} ~ '^[A-Z]{3}$'`),
   check('gyms_revision_check', sql`${t.revision} > 0`),
+  check('gyms_sms_daily_cap_check', sql`${t.smsDailyCap} > 0`),
   check('gyms_retry_days_check', sql`cardinality(${t.retryDays}) = 0 or (
     array_ndims(${t.retryDays}) = 1 and array_lower(${t.retryDays}, 1) = 1
     and cardinality(${t.retryDays}) between 1 and 4 and array_position(${t.retryDays}, null) is null

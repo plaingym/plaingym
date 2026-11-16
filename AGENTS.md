@@ -66,6 +66,7 @@ Third-party services are only ever accessed through these internal modules. Neve
 | `auth` | `getSession(req) → { userId } \| null` (roles live in our `staff_roles` / household tables) |
 | `jobs` | `enqueue(name, payload, opts, transaction?)`, `withJobTransaction(forGym, gymId, fn)` (a job that must commit with application writes passes its transaction to `enqueue`), `handle(name, fn, opts?)`, `schedule(name, cron, fn, opts?)` (`opts.lane: 'batch'` runs long batch work apart from the gym's other jobs; a job registration sets it with `lane`) |
 | `email` | `sendEmail({ to, subject, html, text, replyTo })` |
+| `sms` | `sendSms({ to, body })`, `verifyAccount()`; member delivery goes through consent, switch and cap checks in `MemberSms` |
 | `payments` | `createCustomer`, `createCharge` (unconfirmed PaymentIntent), `confirmCharge`, `cancelCharge`, `findCharge`, `listRefunds`, `readPaymentObject`, `listChangesSince`, `refund`, `createCheckout`, `expireCheckout`, `findCustomerByEmail`, `adoptCustomer`, `listCustomerCards`, `detachPaymentMethod`, `redactCustomer`, `clearCustomerEmail`, `parseWebhook` (webhook verification lives in the provider, not the inbox) |
 | `pdf` (`infra/pdf`) | `renderPdf` renders bounded documents with pinned fonts; `missingGlyphs` reports unsupported code points |
 | `storage` | Uploads: `put` (new immutable key, never overwrites), `get`, `head`, `list`, `signedUrl`, `markDeleted`, `sweep`. Backup destination: multipart `putObject` (aborted on failure), `getObject`, `headObject`, `listObjects`, `deleteObject` |

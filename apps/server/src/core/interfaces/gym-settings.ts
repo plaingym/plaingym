@@ -10,6 +10,9 @@ export interface GymSettings {
   readonly currency: Currency;
   readonly billingEnabled: boolean;
   readonly memberEmailsEnabled: boolean;
+  readonly memberSmsEnabled: boolean;
+  readonly smsDailyCap: number;
+  readonly country: string | null;
   readonly websiteEnabled: boolean;
   readonly bookingWindowDays: number;
   readonly cancellationCutoffMinutes: number;
@@ -20,8 +23,8 @@ export interface GymSettings {
 export interface GymSettingsAccessor { get(gymId: Id): Promise<GymSettings>; }
 export class FakeGymSettingsAccessor implements GymSettingsAccessor {
   readonly #settings = new Map<Id, GymSettings>();
-  constructor(settings: readonly GymSettings[] = []) { settings.forEach((item) => this.set(item)); }
-  set(settings: GymSettings): void {
+  constructor(settings: readonly FakeGymSettingsInput[] = []) { settings.forEach((item) => this.set(item)); }
+  set(settings: FakeGymSettingsInput): void {
     scopedKey(settings.gymId, settings.gymId);
     currencySchema.parse(settings.currency);
     revisionSchema.parse(settings.revision);
@@ -29,8 +32,11 @@ export class FakeGymSettingsAccessor implements GymSettingsAccessor {
     for (const value of [settings.bookingWindowDays, settings.cancellationCutoffMinutes])
       if (!Number.isSafeInteger(value) || value < 0) throw new Error('Invalid booking rule');
     const { gymId, timezone, currency, billingEnabled, memberEmailsEnabled, websiteEnabled,
-      bookingWindowDays, cancellationCutoffMinutes, openMatCountsAsClass, revision } = settings;
+      bookingWindowDays, cancellationCutoffMinutes, openMatCountsAsClass, revision,
+      memberSmsEnabled = false, smsDailyCap = 1000, country = null } = settings;
+    if (!Number.isSafeInteger(smsDailyCap) || smsDailyCap < 1) throw new Error('Invalid SMS daily cap');
     this.#settings.set(gymId, { gymId, timezone, currency, billingEnabled, memberEmailsEnabled,
+      memberSmsEnabled, smsDailyCap, country,
       websiteEnabled, bookingWindowDays, cancellationCutoffMinutes, openMatCountsAsClass, revision });
   }
   async get(gymId: Id): Promise<GymSettings> {
@@ -38,3 +44,4 @@ export class FakeGymSettingsAccessor implements GymSettingsAccessor {
     return structuredClone(value);
   }
 }
+type FakeGymSettingsInput = Omit<GymSettings, 'memberSmsEnabled' | 'smsDailyCap' | 'country'> & Partial<Pick<GymSettings, 'memberSmsEnabled' | 'smsDailyCap' | 'country'>>;

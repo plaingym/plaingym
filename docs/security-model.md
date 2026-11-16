@@ -627,6 +627,20 @@ Old versions and documents referenced by signatures remain retained after retire
   that waits on deletion also receives 409; missing and foreign-gym members stay
   404. The audit event carries IDs only
   (`apps/server/src/areas/members/README.md`).
+* **SMS.** The gym's `sms_config_encrypted` is bound to the gym and the `sms_config`
+  secret class under `APP_ENCRYPTION_KEY`; restore and key rotation re-encrypt it.
+  Phone numbers and consent are gym-scoped personal data. Consent belongs to the
+  normalized number and is checked against the current phone immediately before
+  delivery. Household billing phones have separate notices consent. Member erasure
+  clears normalized numbers and both consents, and clears the household's when its
+  last member is erased. Provider error 21610 withdraws all consents at that number
+  in the gym, with identifier-only audits. `sms_deliveries` holds no readable phone
+  or body: phone identifiers and command digests use `createKeyedCommandDigest`
+  under `AUTH_SECRET`, never an enumerable plain phone hash. Delivery state is
+  retained permanently; daily usage is install-local. Neither is exported. Demo
+  texts are captured only in the scoped outbox, whose body is excluded from exports.
+  SMS adapter errors and suppression logs never include phone numbers, bodies,
+  provider replies or credentials (`apps/server/src/infra/sms/README.md`).
 * **Delivery records.** `email_deliveries`, the record that keeps each email from
   being sent twice, holds no plain hash of a member's address once the member is
   erased, so nobody holding the database or a backup, without the install's

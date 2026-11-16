@@ -46,7 +46,7 @@ maintenance credentials (`deploy/README.md`, "Which process holds the maintenanc
 | :--- | :--- |
 | `apps/server/src/core/` | Server composition: the app factory, tenant resolution, CSRF, CSP, rate limits, the route and job registries, and `runtime.ts`, which wires every area to real infrastructure. |
 | `apps/server/src/areas/` | One folder per feature area: `members`, `staff`, `ranks`, `schedule`, `bookings`, `attendance`, `kiosk`, `portal`, `imports`, `billing`, `waivers`, `links`, `announcements`, `dashboard`, `reports`, `leads`, `health`, `settings`, `setup`, `public`. Each exports its routes and jobs. |
-| `apps/server/src/infra/` | The only code that talks to outside systems: `auth` (Better Auth), `jobs` (the PostgreSQL queue), `email` (SMTP), `payments` (Stripe), `storage` (local disk and S3), `pdf`, `age` (backup encryption). |
+| `apps/server/src/infra/` | The only code that talks to outside systems: `auth` (Better Auth), `jobs` (the PostgreSQL queue), `email` (SMTP), `sms` (Twilio REST), `payments` (Stripe), `storage` (local disk and S3), `pdf`, `age` (backup encryption). |
 | `apps/server/src/public/` | Server-rendered public pages (`/join`, `/trial`, `/drop-in`) and signed-link pages (`/l/*`). |
 | `apps/server/src/modules/` | Optional feature modules a gym can switch off; today the public website. |
 | `apps/server/src/cli/` | `gym-app` commands: setup link, owner password reset, gym creation (multi-gym mode), migrate, restore, webhook replay. |
@@ -149,12 +149,19 @@ PostgreSQL holds everything except file contents. The rules that matter most:
   ISK and UGX, a last digit of 0 for the three-decimal currencies); a saved-card
   charge below Stripe's minimum, or off the step, is skipped and left for a manual payment.
   Timestamps are `timestamptz`; billing dates are computed in the gym's timezone.
-* Secrets stored in the database (Stripe keys, SMTP passwords, backup credentials,
+* Secrets stored in the database (Stripe keys, SMTP passwords, SMS credentials, backup credentials,
   the gym's QR key) are encrypted with `APP_ENCRYPTION_KEY`.
 * State changes write an `audit_events` row.
 
 The table inventory, the security SQL and the scoped-access helpers are in
 `packages/db/README.md`.
+
+SMS infrastructure stores number-bound notices and announcements consent on members,
+and separate notices consent on household billing phones. Normalization uses
+`@plaingym/shared/phone` with the gym country. `sms_deliveries` retains at-most-once
+send state, `sms_daily_usage` bounds attempts per gym-local day, and `sms_outbox`
+captures demo texts. These tables have forced gym RLS. The switch defaults off;
+this infrastructure has no sending routes or jobs.
 
 ## Background jobs
 
@@ -282,6 +289,7 @@ contract suite runs against both (`core/registry-infra-contracts.ts`):
 | `auth` | Better Auth: sessions, magic links, passwords, optional Google sign-in (`infra/auth/README.md`) |
 | `jobs` | PostgreSQL queue (`infra/jobs/README.md`) |
 | `email` | Nodemailer over SMTP, with durable per-message send state (`infra/email/README.md`) |
+| `sms` | Twilio Messages REST over `fetch`, a consent and daily-cap wrapper, durable send state, and demo outbox (`infra/sms/README.md`); its shared fake/provider contract suite is in that module |
 | `payments` | Stripe, on the gym's own keys (`infra/payments/README.md`) |
 | `storage` | Local disk or an S3-compatible bucket, plus the backup destination (`infra/storage/README.md`) |
 | `pdf` | Bounded PDF rendering with pinned fonts (`infra/pdf/README.md`) |

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { sql } from 'drizzle-orm';
-import { check, index, integer, jsonb, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core';
+import { check, date, index, integer, jsonb, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core';
 import { authUser } from './auth.js';
 import { base, choice, instant, ref, scoped } from './common.js';
 import { kioskDevices } from './links.js';
@@ -36,3 +36,21 @@ export const emailDeliveries = pgTable('email_deliveries', {
   choice('email_deliveries_state_check', t.state, ['sending', 'accepted', 'unknown', 'not_accepted']),
   check('email_deliveries_key_check', sql`char_length(${t.key}) between 1 and 300`),
   check('email_deliveries_attempts_check', sql`${t.attempts} > 0`)]).enableRLS();
+
+/** Durable at-most-once state. Keys and command results contain identifiers, never text or phone numbers. */
+export const smsDeliveries = pgTable('sms_deliveries', {
+  ...base(), key: text('key').notNull(), state: text('state').notNull(), attempts: integer('attempts').notNull().default(1),
+  commandDigest: text('command_digest'), commandResult: jsonb('command_result'), updatedAt: instant('updated_at').notNull(),
+}, (t) => [...scoped('sms_deliveries', t), unique('sms_deliveries_key_key').on(t.gymId, t.key),
+  index('sms_deliveries_command_idx').on(t.gymId, t.commandDigest),
+  choice('sms_deliveries_state_check', t.state, ['sending', 'accepted', 'unknown', 'not_accepted']),
+  check('sms_deliveries_key_check', sql`char_length(${t.key}) between 1 and 300 and ${t.key} ~ '^[A-Za-z0-9_.:-]+$'`),
+  check('sms_deliveries_attempts_check', sql`${t.attempts} > 0`)]).enableRLS();
+/** Slots are charged before delivery; failures retain their slot to bound retries and uncertain sends. */
+export const smsDailyUsage = pgTable('sms_daily_usage', {
+  ...base(), day: date('day').notNull(), sent: integer('sent').notNull().default(0), refused: integer('refused').notNull().default(0),
+}, (t) => [...scoped('sms_daily_usage', t), unique('sms_daily_usage_day_key').on(t.gymId, t.day),
+  check('sms_daily_usage_counts_check', sql`${t.sent} >= 0 and ${t.refused} >= 0`)]).enableRLS();
+export const smsOutbox = pgTable('sms_outbox', {
+  ...base(), recipient: text('recipient').notNull(), body: text('body').notNull(), sentAt: instant('sent_at').notNull(),
+}, (t) => [...scoped('sms_outbox', t), index('sms_outbox_gym_time_idx').on(t.gymId, t.sentAt)]).enableRLS();

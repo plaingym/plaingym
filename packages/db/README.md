@@ -459,6 +459,9 @@ clock and cryptographic randomness. UUIDs are not a total ordering within a mill
 | stripe_events | Deduplicated verified webhook inbox |
 | audit_events | Append-only activity records with a user, device or system actor |
 | email_outbox | Per-gym captured email for demo mode |
+| sms_outbox | Per-gym captured SMS for demo mode |
+| sms_deliveries | Durable at-most-once SMS send state; identifiers and keyed phone digests only |
+| sms_daily_usage | Per-gym local-day attempted and refused SMS counts |
 | announcements | Gym announcement content, audience and delivery summary |
 | announcement_recipients | Per-member announcement delivery run state, without copied addresses or bodies |
 | announcement_opt_outs | Per-member consent to announcement email |
@@ -526,6 +529,14 @@ not secrets. Do not place credentials inside general settings or destination JSO
 Restore enumerates this registry; unknown secret classes throw.
 
 ## Database tests
+
+Migration `0035_sms.sql` adds encrypted SMS config, a disabled-by-default switch
+and a positive daily cap (1,000 by default) to gyms; E.164 phones and paired consent
+time/source columns to members and households; and the three forced-RLS SMS tables.
+Announcements consent is member-only and cannot have source `staff`. Existing
+phones are preserved and consent starts empty. SMS config is in the encrypted-field
+registry for restore and key rotation. Exports include consent and outbox metadata,
+but exclude delivery state, usage and message bodies.
 
 With Docker running, `pnpm test` starts disposable PostgreSQL automatically.
 To use an existing server, set `TEST_DATABASE_URL` with
