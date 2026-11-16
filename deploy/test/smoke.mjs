@@ -68,6 +68,8 @@ try {
   assert.equal(configuration.HostConfig.Memory, 512 * 1024 * 1024);
   assert.ok(!configuration.Mounts.some((mount) => /docker[.]sock/.test(mount.Destination)));
   assert.ok(configuration.Mounts.some((mount) => mount.Type === 'volume' && mount.Destination === '/var/lib/plaingym'));
+  const pgClientVersion = /^postgresql-client-18=(\d+\.\d+)-/m.exec(readFileSync(join(root, 'apt-runtime-pins.txt'), 'utf8'))?.[1];
+  assert.ok(pgClientVersion, 'the runtime pins must declare a PostgreSQL client version');
   compose(['exec', '-T', 'app', 'sh', '-ec', [
     'test "$(id -u)" -ne 0',
     'test -s /app/assets/fonts/NotoSans-Regular.ttf',
@@ -81,8 +83,8 @@ try {
     'test "$(command -v gym-app)" = /usr/local/bin/gym-app',
     'test -z "$(command -v docker)"',
     'touch /var/lib/plaingym/staging/test && rm /var/lib/plaingym/staging/test',
-    'pg_dump --version | grep "18.6"',
-    'pg_restore --version | grep "18.6"',
+    `pg_dump --version | grep -F "PostgreSQL) ${pgClientVersion} "`,
+    `pg_restore --version | grep -F "PostgreSQL) ${pgClientVersion} "`,
   ].join('\n')]);
   assert.throws(() => compose(['exec', '-T', 'app', 'touch', '/app/should-fail']));
   compose(['exec', '-T', 'app', '/app/deploy/database.sh', 'migrate']);

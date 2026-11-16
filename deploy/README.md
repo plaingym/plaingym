@@ -152,12 +152,21 @@ suite `bookworm-pgdg-archive`), which keeps every version it has published. A
 build therefore installs the pinned packages on any day and both architectures;
 newer Debian or PGDG releases never break it, and none arrive unannounced.
 
-Security updates are an explicit pin change. To take them, pick a newer
-timestamp (UTC, `YYYYMMDDTHHMMSSZ`; the snapshot nearest before it is used) and
-refresh the pins from a Linux or macOS shell with Docker:
+Security updates are an explicit base digest and pin change. First inspect the
+current Node tag (keep its version aligned with `.nvmrc`):
 
 ```sh
-sh deploy/apt-runtime.sh refresh 20261028T000000Z
+docker buildx imagetools inspect node:24.22.1-bookworm-slim
+```
+
+Update `NODE_IMAGE` in `deploy/Dockerfile` to the top-level multi-architecture
+index digest, keeping the tag. Then pick a newer snapshot timestamp (UTC,
+`YYYYMMDDTHHMMSSZ`; the snapshot nearest before it is used) and refresh the pins
+from a Linux or macOS shell with Docker (Git Bash on Windows rewrites the
+script's bind-mount paths):
+
+```sh
+sh deploy/apt-runtime.sh refresh 20261116T000000Z
 git diff deploy/apt-runtime-pins.txt
 ```
 
@@ -166,16 +175,20 @@ upgrade the snapshot offers, installs the runtime packages, and rewrites the
 pins with every package that changed. PGDG has no snapshots: the refresh takes
 the current stable `postgresql-client-18` release on the day it runs, checks that
 the PGDG archive already serves every pinned version (it can lag a new release by
-a day; refresh again later if not), and the pins then fix that version. Review the diff, since each changed line is an update the image takes, then
-build both architectures and run `deploy/test/smoke.mjs` before committing. Bump
-the Node base image digest in the same way, and refresh the pins after it so
-packages the new base already provides drop out. A CVE fix in a Debian package
-reaches the image only through such a refresh.
+a day; refresh again later if not), and the pins then fix that version. Packages
+the new base already provides drop out of the pins. Review the diff, since each
+changed line is an update the image takes; don't edit the generated pins by hand.
+Push the task branch, which runs **Image scan**, and start **Image checks** on it
+(`gh workflow run "Image checks" --ref <branch>`; a pull request runs both) to
+build both architectures and run `deploy/test/smoke.mjs`; both must pass before
+landing. A CVE fix in a Debian package reaches the image only through
+such a refresh.
 
 ## Image scan
 
 The **Image scan** workflow builds the runtime image every Monday, on demand, and
-for pull requests that change the Dockerfile, the pins or the exceptions, and
+for `task/**` pushes and pull requests that change the Dockerfile, the runtime
+package script or pins, the exceptions, or the scan workflow itself, and
 scans it with Trivy (run from its image, pinned by digest). It lists every high
 and critical advisory and fails when one has a fixed version, which a pin refresh
 usually resolves. Advisories without a fix are listed for review but don't fail

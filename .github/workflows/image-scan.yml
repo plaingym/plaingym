@@ -7,6 +7,13 @@ name: Image scan
 on:
   schedule:
     - cron: '17 6 * * 1'
+  push:
+    branches: ['task/**']
+    paths:
+      - 'deploy/Dockerfile'
+      - 'deploy/apt-runtime*'
+      - 'deploy/trivy-ignore.yaml'
+      - '.github/workflows/image-scan.yml'
   pull_request:
     paths:
       - 'deploy/Dockerfile'
