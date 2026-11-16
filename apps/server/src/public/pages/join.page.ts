@@ -82,7 +82,11 @@ export function joinFormPage(input: JoinPageInput & { plan: PublicPlan; count: n
     h('input', { type: 'hidden', name: 'planId', value: plan.id }), h('input', { type: 'hidden', name: 'members', value: input.count }),
     h('fieldset', { class: panel }, h('legend', { class: 'text-lg font-semibold' }, text('contact')),
       field('contactName', text('contactName'), 'text', true, 'name', 200, values.contactName), field('email', text('email'), 'email', true, 'email', 254, values.email),
-      field('phone', text('phone'), 'tel', false, 'tel', 100, values.phone)),
+      field('phone', text('phone'), 'tel', false, 'tel', 100, values.phone),
+      ...(['smsNoticesConsent', 'smsAnnouncementsConsent'] as const).map(kind => h('label', { class: 'flex min-h-11 items-start gap-3 py-2' },
+        h('input', { type: 'checkbox', name: kind, checked: values[kind] === 'on', class: 'mt-1 h-6 w-6 shrink-0' }),
+        h('span', null, text(kind, { gym: input.gym.name })))),
+      h('p', { class: 'text-sm text-muted-foreground' }, text('smsPhoneRequired'))),
     h('div', { hidden: true, 'aria-hidden': 'true' }, h('label', null, text('honeypot'), h('input', { name: 'honeypot', tabindex: -1, autocomplete: 'off' }))),
     ...people,
     // Checked when the form is sent; the review step shows the discounted amount before payment.
@@ -92,7 +96,7 @@ export function joinFormPage(input: JoinPageInput & { plan: PublicPlan; count: n
     h('p', { id: 'feedback', role: 'status', 'aria-live': 'polite', class: 'break-words' }),
     h('button', { type: 'submit', class: button }, plan.signupFeeCents === 0 && (plan.trialDays > 0 || plan.amountCents === 0)
       ? text(plan.amountCents > 0 ? 'submitCard' : 'submitFree') : text('submit')),
-    ...['failed', 'conflict', 'signatureRequired', 'busy', 'unavailable', 'tooLarge', 'retry', 'limited', 'intakeLimited', 'codeRefused'].map(key => h('span', { hidden: true, 'data-message': key }, text(key))));
+    ...['failed', 'conflict', 'signatureRequired', 'busy', 'unavailable', 'tooLarge', 'retry', 'limited', 'intakeLimited', 'codeRefused', 'smsPhoneRequired'].map(key => h('span', { hidden: true, 'data-message': key }, text(key))));
   const summary = h('section', { class: panel }, ...price(input, plan), h('p', null, text('formHelp')),
     h('p', { class: 'text-sm text-muted-foreground' }, text(plan.amountCents === 0 ? 'dueTodayFree' : plan.trialDays > 0 ? 'dueTodayTrial' : 'dueToday')));
   const feedback = input.errors?.length ? h('section', { role: 'alert', tabindex: -1, autofocus: true, class: panel }, h('p', null, text('checkDetails')),

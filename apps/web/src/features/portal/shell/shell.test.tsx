@@ -89,7 +89,7 @@ function portal(initial: string | null, { path = '/portal', hold = false, holdHo
       return Response.json(answer);
     }
     if (path === '/api/portal/payment-methods') return Response.json({ data: [], householdId: current });
-    if (path === '/api/portal/household') return Response.json({ data: { id: current, name: 'Household', email: null, phone: null, address: {}, billingDay: 1, revision: 1 }, householdId: current });
+    if (path === '/api/portal/household') return Response.json({ data: { id: current, name: 'Household', email: null, phone: null, sms: { phoneValid: false, phoneE164: null, notices: null }, address: {}, billingDay: 1, revision: 1 }, householdId: current });
     if (path.startsWith('/api/portal/members?')) return Response.json({ data: [], pagination: { limit: 100, offset: 0, total: 0 }, householdId: current });
     if (path.startsWith('/api/portal/schedule') || path === '/api/portal/act-for') return Response.json({ data: [], pagination: { limit: 100, offset: 0, total: 0 }, householdId: current });
     if (path === '/api/portal/context') return current === ids.first ? Response.json({ data: { role: 'payer', memberId: null }, householdId: ids.first })

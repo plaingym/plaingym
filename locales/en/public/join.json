@@ -1,4 +1,7 @@
 {
+  "smsNoticesConsent": "I agree to receive class, booking and billing notices and links from {gym} for each member joining and on the billing phone. Message and data rates may apply. Reply STOP to opt out.",
+  "smsAnnouncementsConsent": "I agree to receive news from {gym} for each member joining. Message and data rates may apply. Reply STOP to opt out.",
+  "smsPhoneRequired": "To agree to texts, enter a valid contact phone number, including its country code if needed.",
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
   "trialDays": "First {days} days free. Any sign-up fee is due today; the membership price starts after the trial.",
   "dueTodayTrial": "Any sign-up fee and its taxes are due today. Save a card for the first membership payment at the end of your trial.",

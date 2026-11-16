@@ -60,6 +60,7 @@ async function sweepPortal(own: Household, target: Household, sessionId: string,
   const signing = { templateId: target.template.id, templateVersion: target.template.version, signer: { kind: 'self', name: 'Cross household' },
     signatureImageKey: 'cross-household', signatureImageHash: '0'.repeat(64), consent: true };
   const bodies: Record<string, unknown> = {
+    'PUT /api/portal/members/{memberId}/sms-consent': { revision: 1, kind: 'notices', consent: false },
     'PATCH /api/portal/members/{memberId}': { revision: 1, firstName: 'Leaked' },
     'POST /api/portal/members/{memberId}/checkin-code': { revision: target.codeRevision },
     'POST /api/portal/members/{memberId}/bookings': { sessionId, allowWaitlist: true },

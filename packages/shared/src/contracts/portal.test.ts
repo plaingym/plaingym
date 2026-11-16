@@ -13,7 +13,7 @@ import {
 
 const id = '019a08bf-1234-7000-8000-000000000001';
 const other = '019a08bf-1234-7000-8000-000000000002';
-const member = { id, firstName: 'Alex', lastName: 'Example', email: null, phone: null, dateOfBirth: '2015-10-21', photoKey: null, status: 'active', emergencyContacts: [{ name: 'Parent', relationship: 'parent', phone: '555-0100' }], revision: 2 };
+const member = { id, firstName: 'Alex', lastName: 'Example', email: null, phone: null, sms: { phoneValid: false, phoneE164: null, notices: null, announcements: null }, dateOfBirth: '2015-10-21', photoKey: null, status: 'active', emergencyContacts: [{ name: 'Parent', relationship: 'parent', phone: '555-0100' }], revision: 2 };
 const invoice = { id, number: 12, kind: 'cycle', status: 'paid', dueOn: '2026-10-21', amountCents: 1000, currency: 'CAD', paidAt: '2026-10-21T12:00:00Z' };
 const line = { id, kind: 'membership', description: 'Training', amountCents: 1000, currency: 'CAD', quantity: 1, taxRateMillionths: null, taxInclusive: null };
 const card = { id, brand: 'visa', last4: '4242', expiryMonth: 12, expiryYear: 2030, isDefault: true };
@@ -58,7 +58,7 @@ describe('portal access and safe projections', () => {
     for (const contract of Object.values(portalSignedLinkContracts)) expect(contract.response.shape, contract.path).not.toHaveProperty('householdId');
   });
   it('declares the payer/adult access split for every endpoint', () => {
-    const payerOnly = new Set(['members', 'updateMember', 'household', 'updateHousehold', 'invoices', 'invoice', 'receipt', 'payInvoice', 'paymentMethods', 'updateCard', 'pendingHouseholdWaivers', 'signedHouseholdWaivers', 'signHouseholdWaiver', 'householdWaiverPdf', 'uploadHouseholdSignature']);
+    const payerOnly = new Set(['members', 'updateMember', 'household', 'updateHousehold', 'changeHouseholdSmsConsent', 'invoices', 'invoice', 'receipt', 'payInvoice', 'paymentMethods', 'updateCard', 'pendingHouseholdWaivers', 'signedHouseholdWaivers', 'signHouseholdWaiver', 'householdWaiverPdf', 'uploadHouseholdSignature']);
     const observedPayerOnly = new Set<string>();
     for (const [name, contract] of Object.entries(portalContracts)) {
       expect(isRoutePermission(contract.permission)).toBe(true);
@@ -72,6 +72,13 @@ describe('portal access and safe projections', () => {
   it('keeps payer context valid without a member login and requires a member link for adults', () => {
     expect(portalContextSchema.parse({ role: 'payer', memberId: null }).memberId).toBeNull();
     expect(portalContextSchema.safeParse({ role: 'member', memberId: null }).success).toBe(false);
+  });
+  it('gives SMS consent its own capability while keeping household writes payer-only', () => {
+    expect(portalContracts.changeMemberSmsConsent.permission).toEqual({ kind: 'member', capability: 'sms_consent.manage' });
+    for (const contract of [portalContracts.changeHouseholdSmsConsent, portalContracts.updateMember, portalContracts.updateHousehold]) {
+      expect(contract.permission).toEqual({ kind: 'member', capability: 'household.manage' });
+      expect(canMember('member', contract.permission.capability)).toBe(false);
+    }
   });
   it('includes emergency contacts but rejects staff-only or credential fields', () => {
     expect(portalMemberSchema.parse(member).emergencyContacts).toEqual(member.emergencyContacts);
@@ -134,8 +141,8 @@ describe('portal access and safe projections', () => {
   });
   it('uses fields that exist in the locked schema', () => {
     expectTypeOf<Pick<PortalMember, 'id' | 'email' | 'phone' | 'dateOfBirth' | 'photoKey' | 'revision'>>().toEqualTypeOf<Pick<typeof members.$inferSelect, 'id' | 'email' | 'phone' | 'dateOfBirth' | 'photoKey' | 'revision'>>();
-    expectTypeOf<Exclude<keyof PortalMember, keyof typeof members.$inferSelect>>().toEqualTypeOf<never>();
-    expectTypeOf<Exclude<keyof PortalHousehold, keyof typeof households.$inferSelect>>().toEqualTypeOf<never>();
+    expectTypeOf<Exclude<keyof PortalMember, keyof typeof members.$inferSelect>>().toEqualTypeOf<'sms'>();
+    expectTypeOf<Exclude<keyof PortalHousehold, keyof typeof households.$inferSelect>>().toEqualTypeOf<'sms'>();
     expectTypeOf<Exclude<keyof PortalMembership, keyof typeof memberships.$inferSelect>>().toEqualTypeOf<never>();
     expectTypeOf<Exclude<keyof PortalSession, keyof typeof classSessions.$inferSelect>>().toEqualTypeOf<never>();
     expectTypeOf<Exclude<keyof PortalAttendance, keyof typeof attendances.$inferSelect>>().toEqualTypeOf<'sessionName'>();

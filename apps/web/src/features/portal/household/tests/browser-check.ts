@@ -12,7 +12,7 @@ const id = (n: number) => `00000000-0000-7000-8000-${String(n).padStart(12, '0')
 const ids = { gym: id(1), user: id(2), household: id(3), payer: id(4), child: id(5), adult: id(6), invoice: id(7), paid: id(8), template: id(9), signature: id(10) };
 const bootstrap = { gym: { id: ids.gym, name: 'A long gym name that must fit on a phone', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: ids.user, displayName: 'Test User', roles: [], member: true }, login: { password: true, magicLink: false } };
 const person = (memberId: string, firstName: string, dateOfBirth: string | null) => ({ id: memberId, firstName, lastName: 'Rivera-Montgomery', email: firstName.toLowerCase() + '.a.long.address@example.test',
-  phone: '555-0100', dateOfBirth, photoKey: null, status: 'active', emergencyContacts: [{ name: 'Grandparent with a long name', relationship: null, phone: '555-0101' }], revision: 1 });
+  phone: '555-0100', sms: { phoneValid: false, phoneE164: null, notices: null, announcements: null }, dateOfBirth, photoKey: null, status: 'active', emergencyContacts: [{ name: 'Grandparent with a long name', relationship: null, phone: '555-0101' }], revision: 1 });
 // Jordan is an imported adult with no recorded birth date: shown, but the payer may not edit or sign for them.
 const people = [person(ids.payer, 'Pat', '1980-04-02'), person(ids.child, 'Kim', '2016-06-01'), person(ids.adult, 'Alex', '1990-01-01'), person(id(11), 'Jordan', null)];
 const list = <T>(data: T[]) => ({ data, pagination: { limit: 100, offset: 0, total: data.length } });
@@ -35,7 +35,7 @@ const api = (path: string): unknown => {
     { id: id(20), kind: 'membership', description: 'Unlimited adult membership with a long plan name', amountCents: 10_000, currency: 'USD', quantity: 1, taxRateMillionths: null, taxInclusive: null },
     { id: id(21), kind: 'tax', description: 'Sales tax', amountCents: 2500, currency: 'USD', quantity: 1, taxRateMillionths: 25_000, taxInclusive: false }] } };
   if (path === '/api/portal/payment-methods') return { data: [{ id: id(30), brand: 'visa', last4: '4242', expiryMonth: 4, expiryYear: 2029, isDefault: true }, { id: id(31), brand: null, last4: null, expiryMonth: null, expiryYear: null, isDefault: false }] };
-  if (path === '/api/portal/household') return { data: { id: ids.household, name: 'Rivera household', email: 'payer@example.test', phone: null, address: { line1: '1 Main St', city: 'Springfield', countryCode: 'US' }, billingDay: 1, revision: 1 } };
+  if (path === '/api/portal/household') return { data: { id: ids.household, name: 'Rivera household', email: 'payer@example.test', phone: null, sms: { phoneValid: false, phoneE164: null, notices: null }, address: { line1: '1 Main St', city: 'Springfield', countryCode: 'US' }, billingDay: 1, revision: 1 } };
   if (path === '/api/portal/members') return list(people);
   if (path === `/api/portal/members/${ids.adult}`) return { data: people[2] };
   if (path.endsWith('/memberships')) return list([{ id: id(40), memberId: ids.child, planId: id(41), status: 'active', interval: 'monthly', startsOn: '2026-01-01', nextDueOn: '2026-11-01', trialEndsOn: null, commitmentEndsOn: null, revision: 1 }]);

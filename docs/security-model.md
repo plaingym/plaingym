@@ -278,6 +278,7 @@ further collection. A late card success is recorded and refunded as a duplicate.
 | Capability | Payer | Member |
 | :--- | :---: | :---: |
 | `profile.read` | yes | yes |
+| `sms_consent.manage` | yes | yes |
 | `progress.read` | yes | yes |
 | `attendance.read` | yes | yes |
 | `checkin.manage` | yes | yes |
@@ -643,6 +644,17 @@ Old versions and documents referenced by signatures remain retained after retire
   Phone numbers and consent are gym-scoped personal data. Consent belongs to the
   normalized number and is checked against the current phone immediately before
   delivery. Household billing phones have separate notices consent. Member erasure
+  and phone edits clear consent in the same transaction. Staff may grant notices
+  after asking for verbal consent and withdraw either choice; only members or
+  payers managing their children's profiles may grant announcements consent in
+  the portal, or on joining. A payer cannot give consent for another adult.
+  Portal phone and consent reads go through `forHousehold`: another household
+  sees neither, and an adult non-payer sees only their own. Billing-phone consent
+  in the portal is payer-only. Member consent uses `sms_consent.manage` for both
+  portal roles with the same own-member/managed-child limits; household edits stay
+  on payer-only `household.manage`. Consent writes require revisions, reject
+  opting in an unparseable phone, and audit kind, before, after and source without a phone.
+  Member erasure
   clears normalized numbers and both consents, and clears the household's when its
   last member is erased. Provider error 21610 withdraws all consents at that number
   in the gym, with identifier-only audits. `sms_deliveries` holds no readable phone

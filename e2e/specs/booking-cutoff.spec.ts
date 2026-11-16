@@ -9,6 +9,7 @@ const session = { id: sessionId, name: 'Midday practice', startsAt: '2026-11-11T
   cancelBefore: cutoff, templateId: null, coachId: null, status: 'scheduled', capacity: 1, notes: null, kind: 'class',
   programIds: [sessionId], tagIds: [], revision: 1, createdAt: '2026-11-01T00:00:00Z' };
 const member = { id: memberId, householdId, firstName: 'River', lastName: 'Lee', status: 'active', email: null, phone: null,
+  sms: { phoneValid: false, phoneE164: null, notices: null, announcements: null },
   photoKey: null, dateOfBirth: null, emergencyContacts: [], emailOptOut: false, emailDeliverable: true, anonymizedAt: null,
   revision: 1, createdAt: session.createdAt };
 
@@ -35,7 +36,7 @@ for (const width of [360, 1280]) {
         if (path === `/api/bookings/sessions/${sessionId}/roster`) return route.fulfill({ json: { ...list([]), counts: { booked: 1, waitlisted: 0, checkedIn: 0 } } });
         if (path === '/api/members/' + memberId) return route.fulfill({ json: { data: member } });
         if (path === '/api/members') return route.fulfill({ json: list([member]) });
-        if (path === '/api/households/' + householdId) return route.fulfill({ json: { data: { id: householdId, name: 'Lee', email: null, phone: null, address: {}, revision: 1, createdAt: session.createdAt } } });
+        if (path === '/api/households/' + householdId) return route.fulfill({ json: { data: { id: householdId, name: 'Lee', email: null, phone: null, sms: { phoneValid: false, phoneE164: null, notices: null }, address: {}, revision: 1, createdAt: session.createdAt } } });
         if (path.endsWith('/cancel')) {
           cancelled = true;
           return route.fulfill({ status: 409, json: { error: { code: 'conflict', message: 'Already cancelled', details: { reason: ['already_cancelled'] } } } });

@@ -47,6 +47,7 @@ export const memberRoles = ['payer', 'member'] as const;
 export type MemberRole = (typeof memberRoles)[number];
 export const memberPermissions = {
   'profile.read': ['payer', 'member'],
+  'sms_consent.manage': ['payer', 'member'],
   'progress.read': ['payer', 'member'],
   'attendance.read': ['payer', 'member'],
   'checkin.manage': ['payer', 'member'],

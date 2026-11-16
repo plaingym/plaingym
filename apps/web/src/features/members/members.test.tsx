@@ -24,6 +24,7 @@ const { navigate } = vi.hoisted(() => ({ navigate: vi.fn(async () => undefined) 
 vi.mock('@tanstack/react-router', () => ({ Link: ({ children }: { children: ReactNode }) => <a>{children}</a>, useNavigate: () => navigate }));
 const homeId = '019ab4f0-0000-7000-8000-000000000001', memberId = '019ab4f0-0000-7000-8000-000000000002';
 const member: Member = { id: memberId, householdId: homeId, firstName: 'Alex', lastName: 'Smith', email: null, phone: null, photoKey: null,
+  sms: { phoneValid: false, phoneE164: null, notices: null, announcements: null },
   dateOfBirth: null, status: 'active', emergencyContacts: [], emailOptOut: false, emailDeliverable: true, anonymizedAt: null, revision: 1, createdAt: '2026-10-22T12:00:00Z' };
 function bootstrap(roles: readonly StaffRole[]) {
   const data: ShellBootstrap = { gym: { id: homeId, name: 'Test gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: memberId, displayName: 'Test User', roles, member: false }, login: { password: true, magicLink: false } };
@@ -39,7 +40,7 @@ beforeEach(() => {
     if (path.endsWith('/billing-settings')) return { data: { id: homeId, billingDay: 1, familyDiscountBasisPoints: 0, revision: 1 } };
     // The Portal access tab, shown to managers, lists the household's logins and invitations.
     if (path.includes('/portal-logins') || path.endsWith('/portal-invitations')) return { data: [], pagination: { limit: 20, offset: 0, total: 0 } };
-    if (path.includes('/households/')) return { data: { id: homeId, name: 'Smith family', email: null, phone: null, address: {}, revision: 1, createdAt: member.createdAt } };
+    if (path.includes('/households/')) return { data: { id: homeId, name: 'Smith family', email: null, phone: null, sms: { phoneValid: false, phoneE164: null, notices: null }, address: {}, revision: 1, createdAt: member.createdAt } };
     if (path.endsWith('/tags') || path.startsWith('/api/member-tags')) return { data: [], pagination: { limit: 100, offset: 0, total: 0 } };
     return { data: member };
   });

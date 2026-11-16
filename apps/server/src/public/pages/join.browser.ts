@@ -53,6 +53,7 @@ export const joinBrowserScript = String.raw`// SPDX-License-Identifier: AGPL-3.0
     if (!response.ok) {
       // Every refused promo code gets the same answer; the visitor can clear the code and continue without it.
       const reason = response.status === 400 ? (await response.clone().json().catch(() => null))?.error?.details?.reason : null;
+      if (Array.isArray(reason) && reason.includes('sms_phone_required')) throw new Error('smsPhoneRequired');
       if (Array.isArray(reason) && reason.includes('code_refused')) throw new Error('codeRefused');
       throw new Error(response.status === 503 ? 'unavailable' : await refusal(response));
     }
@@ -83,11 +84,12 @@ export const joinBrowserScript = String.raw`// SPDX-License-Identifier: AGPL-3.0
         })),
       })));
       const code = value('code').trim(), withCode = code ? { code } : {};
-      const admission = { planId: value('planId'), contact, members, honeypot: value('honeypot') }, key = JSON.stringify(admission);
+      const smsConsent = { smsNoticesConsent: value('smsNoticesConsent') === 'on', smsAnnouncementsConsent: value('smsAnnouncementsConsent') === 'on' };
+      const admission = { planId: value('planId'), contact, members, honeypot: value('honeypot'), ...smsConsent }, key = JSON.stringify(admission);
       // The admission is sent as UTF-8; leave room below the server's exact limit.
       if (new Blob([key]).size > ${joinBodyBytes - 64 * 1024}) throw new Error('tooLarge');
       if (cached?.key !== key || (code && cached.code !== code)) cached = { key, code, data: (await post('/join/signatures', { ...admission, ...withCode })).data };
-      await post('/api/public/join', { planId: value('planId'), contact, honeypot: value('honeypot'), ...withCode, members: members.map((person, i) => ({
+      await post('/api/public/join', { planId: value('planId'), contact, honeypot: value('honeypot'), ...smsConsent, ...withCode, members: members.map((person, i) => ({
         member: person.member, waivers: cached.data[i].map((image, j) => {
           const prefix = 'waiver-' + i + '-' + j;
           return { ...image, consent: true, signer: value(prefix + '-kind') === 'guardian'

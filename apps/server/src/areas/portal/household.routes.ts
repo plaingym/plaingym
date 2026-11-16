@@ -6,6 +6,14 @@ import { createPortalHouseholdService, ok, type PortalHouseholdService } from '.
 export function createPortalHouseholdProfileRoutes(service: PortalHouseholdService = createPortalHouseholdService()) {
   const { profile, members, updateMember, household, updateHousehold, memberships } = contracts;
   return [
+    route({ ...contracts.changeMemberSmsConsent, request: { params: contracts.changeMemberSmsConsent.params, body: { required: true, content: { 'application/json': { schema: contracts.changeMemberSmsConsent.body } } } }, responses: ok('Updated SMS consent', contracts.changeMemberSmsConsent.response) }, async c => {
+      const context = c.get('context'); c.header('Cache-Control', 'no-store');
+      return c.json({ data: await service.changeMemberSmsConsent(portalIdentity(context), c.req.valid('param').memberId, c.req.valid('json'), context.gym.timezone) }, 200);
+    }),
+    route({ ...contracts.changeHouseholdSmsConsent, request: { body: { required: true, content: { 'application/json': { schema: contracts.changeHouseholdSmsConsent.body } } } }, responses: ok('Updated billing phone SMS consent', contracts.changeHouseholdSmsConsent.response) }, async c => {
+      c.header('Cache-Control', 'no-store');
+      return c.json({ data: await service.changeHouseholdSmsConsent(portalIdentity(c.get('context')), c.req.valid('json')) }, 200);
+    }),
     route({ ...profile, request: { params: profile.params }, responses: ok('Household member profile', profile.response) }, async c => {
       c.header('Cache-Control', 'no-store');
       return c.json({ data: await service.profile(portalIdentity(c.get('context')), c.req.valid('param').memberId) }, 200);

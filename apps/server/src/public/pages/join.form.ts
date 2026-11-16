@@ -72,6 +72,7 @@ export async function readJoinForm(fields: FormData, templates: readonly WaiverT
       : problem.kind === 'guardian' ? text('checkGuardian', { document }) : fieldProblem(problem.path));
   }
   const parsed = publicContracts.joinAdmission.body.safeParse({ planId: value('planId'), contact, members, honeypot: value('honeypot'),
+    smsNoticesConsent: value('smsNoticesConsent') === 'on', smsAnnouncementsConsent: value('smsAnnouncementsConsent') === 'on',
     ...(value('code').trim() ? { code: value('code') } : {}) });
   if (!parsed.success) {
     for (const issue of parsed.error.issues) {
@@ -88,6 +89,7 @@ export async function readJoinForm(fields: FormData, templates: readonly WaiverT
 /** Service refusals retain their own meaning; never infer another cause by rechecking fields. */
 export function joinRefusalProblems(error: unknown, t: Translator): readonly string[] {
   if (error instanceof JoinFormError) return error.problems;
+  if (error instanceof AppError && error.details?.reason?.includes('sms_phone_required')) return [t('public/join:smsPhoneRequired')];
   const key = codeRefused(error) ? 'codeRefused' : error instanceof AppError && error.code === 'conflict' ? 'conflict' : 'checkApplicants';
   return [t('public/join:' + key)];
 }

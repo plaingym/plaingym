@@ -1,6 +1,19 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Portal household, billing and waivers
 
+Member reads include SMS phone validity, normalized phone and independent notices
+and announcements consent timestamps and sources. `PUT
+/api/portal/members/{memberId}/sms-consent` gives or withdraws either choice with
+the current revision. It uses `sms_consent.manage` and the profile-edit rule: the
+member acts for themselves; a payer may act for a child they manage, never another
+adult or a member with an unknown birth date. An adult non-payer sees
+only their own phone and choices, and may change those choices. Phone edits remain
+payer-only. `PUT /api/portal/household/sms-consent` uses `household.manage` and is
+payer-only, changing the billing phone's notices choice. Neither route accepts
+a household selector. Both cross the household boundary before any write.
+Changing a phone clears its consents atomically. The screen explains why an
+invalid phone cannot be opted in; each choice can be withdrawn in one tap.
+
 These portal routes act for the household chosen with the session
 (`auth.md`). No request body, query or parameter selects a household. Each route
 declares its member permission, `createPortalAuthorization` reloads the login's

@@ -15,6 +15,7 @@ const home = '00000000-0000-7000-8000-000000000001', other = '00000000-0000-7000
 const signed = { memberId: home, templateId: home, templateVersion: 1, signer: { kind: 'self', name: 'Member' },
   signatureImageKey: 'image.png', signatureImageHash: 'a'.repeat(64), consent: true };
 const inputs: Record<string, unknown> = { updateMember: { revision: 1 }, updateHousehold: { revision: 1 }, regenerateCheckin: { revision: 1 },
+  changeMemberSmsConsent: { kind: 'notices', consent: false, revision: 1 }, changeHouseholdSmsConsent: { consent: false, revision: 1 },
   signWaiver: signed, signHouseholdWaiver: signed, uploadSignature: { memberId: home, pngBase64: 'YQ==' }, uploadHouseholdSignature: { memberId: home, pngBase64: 'YQ==' } };
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 it('never raises a notice from late answers; the shell owns change notices', async () => {

@@ -54,6 +54,8 @@ export const publicDropInRequestSchema = publicTrialRequestSchema.extend({
  */
 export const joinCodeSchema = z.string().trim().max(100);
 export const publicJoinRequestSchema = z.strictObject({
+  smsNoticesConsent: z.boolean().optional().default(false),
+  smsAnnouncementsConsent: z.boolean().optional().default(false),
   planId: idSchema, contact: publicContactSchema, code: joinCodeSchema.optional(),
   members: z.array(z.strictObject({
     member: publicApplicantSchema, waivers: z.array(publicWaiverAcceptanceSchema).min(1),
@@ -82,6 +84,8 @@ export const publicAdmittedSignatureSchema = z.strictObject({
 });
 export const publicAdmissionResponseSchema = z.strictObject({ data: z.array(publicAdmittedSignatureSchema) });
 export const joinAdmissionSchema = z.strictObject({
+  smsNoticesConsent: z.boolean().optional().default(false),
+  smsAnnouncementsConsent: z.boolean().optional().default(false),
   planId: idSchema, contact: publicContactSchema, honeypot: z.literal(''), code: joinCodeSchema.optional(),
   members: z.array(z.strictObject({ member: publicApplicantSchema,
     signatures: z.array(publicSignatureUploadSchema.extend({ signer: waiverSignerSchema })).min(1).max(maxJoinDocuments) })).min(1).max(maxJoinMembers),

@@ -89,6 +89,7 @@ const memberRows: readonly [MemberPermission, readonly MemberRole[]][] = [
   ...(
     [
       'profile.read',
+      'sms_consent.manage',
       'progress.read',
       'attendance.read',
       'checkin.manage',

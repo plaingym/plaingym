@@ -1,0 +1,21 @@
+{
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "title": "Text message consent",
+  "notices": "I agree to receive class, booking and billing notices and links from {gym}. Message and data rates may apply. Reply STOP to opt out.",
+  "announcements": "I agree to receive news from {gym}. Message and data rates may apply. Reply STOP to opt out.",
+  "invalidPhone": "Text messages need a valid phone number. Save a valid number first, including its country code if needed, before giving consent.",
+  "phoneChange": "Changing the phone number clears its text message consent.",
+  "off": "Consent is off.",
+  "recorded": "Consented {at} via {source}.",
+  "source_staff": "staff (verbal)",
+  "source_portal": "the member portal",
+  "source_join": "the join form",
+  "memberOnly": "Only the member or a payer managing their profile can give announcements consent.",
+  "askFirst": "Ask for verbal consent to notices before recording it. Staff may withdraw either choice.",
+  "verbal": "Record verbal notices consent",
+  "give_notices": "Agree to notices",
+  "give_announcements": "Agree to announcements",
+  "withdraw_notices": "Withdraw notices consent",
+  "withdraw_announcements": "Withdraw announcements consent",
+  "failed": "Consent could not be saved. Refresh and try again."
+}

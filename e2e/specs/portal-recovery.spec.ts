@@ -29,10 +29,10 @@ for (const width of [360, 1280]) {
       if (path === '/api/portal/context') return route.fulfill({ json: { householdId, data: { role: 'payer', memberId } } });
       if (path === '/api/portal/household') {
         if (recovering) return route.fulfill({ status: 409, headers: { 'X-Portal-Household': id(99) }, json: { error: { code: 'conflict' } } });
-        return route.fulfill({ json: { householdId, data: { id: householdId, name: 'Rivera household', email: 'pat@example.test', phone: null, address: {}, billingDay: 1, revision: 1 } } });
+        return route.fulfill({ json: { householdId, data: { id: householdId, name: 'Rivera household', email: 'pat@example.test', phone: null, sms: { phoneValid: false, phoneE164: null, notices: null }, address: {}, billingDay: 1, revision: 1 } } });
       }
       if (path === '/api/portal/members') return route.fulfill({ json: { householdId, data: [{ id: memberId, firstName: 'Pat', lastName: 'Rivera', email: null,
-        phone: null, dateOfBirth: '1980-04-02', photoKey: null, status: 'active', emergencyContacts: [], revision: 1 }], pagination: { limit: 100, offset: 0, total: 1 } } });
+        phone: null, sms: { phoneValid: false, phoneE164: null, notices: null, announcements: null }, dateOfBirth: '1980-04-02', photoKey: null, status: 'active', emergencyContacts: [], revision: 1 }], pagination: { limit: 100, offset: 0, total: 1 } } });
       if (path.endsWith('/memberships')) return route.fulfill({ json: { householdId, data: [], pagination: { limit: 100, offset: 0, total: 0 } } });
       return route.fulfill({ status: 404, json: { error: { code: 'not_found' } } });
     });

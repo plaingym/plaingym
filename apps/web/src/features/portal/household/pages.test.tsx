@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClientProvider, useQueryClient } from '@tanstack/react-query';
-import type { PortalContext } from '@plaingym/shared/contracts';
+import type { PortalContext, PortalMember } from '@plaingym/shared/contracts';
 import { ShellServicesContext } from '../../../app/context.js';
 import type { ShellServices } from '../../../app/services.js';
 import { PortalBillingPage } from '../billing/page.js';
@@ -22,8 +22,9 @@ const id = (n: number) => `00000000-0000-7000-8000-${String(n).padStart(12, '0')
 const ids = { gym: id(1), user: id(2), household: id(3), payer: id(4), child: id(5), adult: id(6), invoice: id(7), paid: id(8), card: id(9), template: id(10), signature: id(11) };
 const payer: PortalContext = { role: 'payer', memberId: ids.payer };
 const adult: PortalContext = { role: 'member', memberId: ids.adult };
-const household = { id: ids.household, name: 'Rivera household', email: 'payer@example.test', phone: null, address: { line1: '1 Main St' }, billingDay: 1, revision: 3 };
+const household = { id: ids.household, name: 'Rivera household', email: 'payer@example.test', phone: null, sms: { phoneValid: false, phoneE164: null, notices: null }, address: { line1: '1 Main St' }, billingDay: 1, revision: 3 };
 const person = (memberId: string, firstName: string, dateOfBirth: string | null) => ({ id: memberId, firstName, lastName: 'Rivera', email: null, phone: null,
+  sms: { phoneValid: false, phoneE164: null, notices: null, announcements: null },
   dateOfBirth, photoKey: null, status: 'active', emergencyContacts: [{ name: 'Grandparent', relationship: null, phone: '555-0100' }], revision: 1 });
 const people = [person(ids.payer, 'Pat', '1980-04-02'), person(ids.child, 'Kim', '2016-06-01'), person(ids.adult, 'Alex', '1990-01-01'), person(id(12), 'Jordan', null)];
 const page = <T,>(data: T[]) => ({ data, pagination: { limit: 100, offset: 0, total: data.length } });
@@ -601,12 +602,40 @@ describe('portal household page', () => {
     await waitFor(() => expect(view.calls('PATCH', `/api/portal/members/${ids.child}`)).toHaveLength(1));
     expect(JSON.parse(String(view.calls('PATCH', `/api/portal/members/${ids.child}`)[0]![1]!.body))).toEqual({ firstName: 'Kimberly', revision: 1 });
   });
-  it('shows an adult member only their own profile, read-only', async () => {
+  it('shows an adult member only their own profile and consent controls', async () => {
     const view = mount(<PortalHousehold />, path => path === `/api/portal/members/${ids.adult}` ? { data: people[2] } : undefined, { context: adult });
     expect(await screen.findByText(/^Alex Rivera/)).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Edit details' })).toBeNull();
     expect(screen.queryByLabelText('Household name')).toBeNull();
     expect(view.fetcher.mock.calls.map(([path]) => String(path)).filter(path => path.startsWith('/api/portal/'))).toEqual(['/api/portal/context', `/api/portal/members/${ids.adult}`]);
+  });
+  it('saves and withdraws each adult SMS choice with the profile revision and open household', async () => {
+    let current: PortalMember = { ...people[2]!, status: 'active', phone: '+12025550123', sms: { phoneValid: true, phoneE164: '+12025550123', notices: null, announcements: null } };
+    const endpoint = `/api/portal/members/${ids.adult}/sms-consent`;
+    const view = mount(<PortalHousehold />, (path, init) => {
+      if (path === endpoint && init?.method === 'PUT') {
+        const input = JSON.parse(String(init.body)) as { kind: 'notices' | 'announcements'; consent: boolean; revision: number };
+        expect(input.revision).toBe(current.revision);
+        current = { ...current, revision: current.revision + 1, sms: { ...current.sms,
+          [input.kind]: input.consent ? { at: '2026-11-16T12:00:00Z', source: 'portal' } : null } };
+        return { data: current };
+      }
+      return path === `/api/portal/members/${ids.adult}` ? { data: current } : undefined;
+    }, { context: adult }), user = userEvent.setup();
+    for (const kind of ['notices', 'announcements']) {
+      const agree = await screen.findByRole('button', { name: 'Agree to ' + kind });
+      await waitFor(() => expect((agree as HTMLButtonElement).disabled).toBe(false));
+      await user.click(agree);
+      const withdraw = await screen.findByRole('button', { name: 'Withdraw ' + kind + ' consent' });
+      await waitFor(() => expect((withdraw as HTMLButtonElement).disabled).toBe(false));
+      await user.click(withdraw);
+      await waitFor(() => expect(current.sms[kind as 'notices' | 'announcements']).toBeNull());
+      await screen.findByRole('button', { name: 'Agree to ' + kind });
+    }
+    expect(view.calls('PUT', endpoint)).toHaveLength(4);
+    for (const [, init] of view.calls('PUT', endpoint)) expect(new Headers(init?.headers).get('X-Portal-Household')).toBe(ids.household);
+    expect(view.calls('GET', '/api/portal/household')).toHaveLength(0);
+    expect(view.calls('GET', '/api/portal/members')).toHaveLength(0);
   });
   it('never shows an answer for another household than the open one, and reads the household lists again', async () => {
     const view = mount(<PortalHousehold />, path => {

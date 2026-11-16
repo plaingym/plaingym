@@ -9,7 +9,8 @@ const gymId = '01900000-0000-7000-8000-000000000001';
 const id = (n: number) => '01900000-0000-7000-8000-' + String(n).padStart(12, '0');
 const clock = new TestClock('2026-10-22T12:00:00Z');
 const member = (n: number, createdAt = '2026-09-01T00:00:00Z') => memberSchema.parse({ id: id(n), householdId: id(900),
-  firstName: 'Member', lastName: String(n).padStart(3, '0'), email: null, phone: null, photoKey: null, dateOfBirth: null,
+  firstName: 'Member', lastName: String(n).padStart(3, '0'), email: null, phone: null,
+  sms: { phoneValid: false, phoneE164: null, notices: null, announcements: null }, photoKey: null, dateOfBirth: null,
   status: 'active', emergencyContacts: [], emailOptOut: false, emailDeliverable: true, anonymizedAt: null, revision: 1, createdAt });
 function page<T>(rows: T[], input: { limit?: number | string; offset?: number | string }): ListResponse<T> {
   const limit = Number(input.limit ?? 50), offset = Number(input.offset ?? 0);

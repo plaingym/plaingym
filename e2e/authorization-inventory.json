@@ -1,4 +1,8 @@
 [
+  {"method": "PUT", "path": "/api/members/{memberId}/sms-consent", "permission": {"kind": "staff", "capability": "members.manage"}},
+  {"method": "PUT", "path": "/api/households/{householdId}/sms-consent", "permission": {"kind": "staff", "capability": "households.manage"}},
+  {"method": "PUT", "path": "/api/portal/members/{memberId}/sms-consent", "permission": {"kind": "member", "capability": "sms_consent.manage"}},
+  {"method": "PUT", "path": "/api/portal/household/sms-consent", "permission": {"kind": "member", "capability": "household.manage"}},
   {"method": "GET", "path": "/api/demo/creations/{ticket}", "permission": {"kind": "public"}},
   {"method": "POST", "path": "/api/demo/handoff", "permission": {"kind": "public"}},
   {"method": "GET", "path": "/api/staff/accounts", "permission": {"kind": "staff", "capability": "staff.manage"}},

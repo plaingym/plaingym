@@ -6,6 +6,7 @@ import { forGym, members, memberRanks, memberships, households, householdUsers, 
   announcementRecipients, announcementOptOuts, staffProfiles, leads, leadContacts, databaseCode, revisionGuard, assertRevised, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
+import { normalizePhone } from '@plaingym/shared/phone';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { forgetErasedAddressDigests } from '../announcements/erasure.js';
 import { clock as defaultClock } from '../../core/clock.js';
@@ -17,28 +18,34 @@ import { billingEmailDigest } from '../../infra/payments/index.js';
 import { detachJob } from '../billing/payments.mutations.js';
 import { unscheduled } from '../billing/memberships.plan-change.js';
 import { endDiscount } from '../billing/discounts/apply.js';
-import { lockMemberForWrite, memberWriteScope } from './member-write.js';
+import { lockMemberForWrite, memberWriteScope, smsState, clearedMemberSms, clearedHouseholdSms, auditSmsCleared, auditSmsConsent, type SmsSource } from './member-write.js';
+import { readGymSettings } from '../settings/settings.js';
 
 /** The queue and gym timezone an erasure's cleanup jobs are inserted with. */
 export interface ErasureQueue { jobs: Pick<Jobs, 'enqueue'>; timezone: string }
 
 // Deliberate projections keep medical notes and credentials out of every normal roster.
 const memberFields = { id: members.id, householdId: members.householdId, firstName: members.firstName,
+  phoneE164: members.phoneE164, smsNoticesConsentAt: members.smsNoticesConsentAt, smsNoticesConsentSource: members.smsNoticesConsentSource,
+  smsAnnouncementsConsentAt: members.smsAnnouncementsConsentAt, smsAnnouncementsConsentSource: members.smsAnnouncementsConsentSource,
   lastName: members.lastName, email: members.email, phone: members.phone, photoKey: members.photoKey,
   dateOfBirth: members.dateOfBirth, status: members.status, emergencyContacts: members.emergencyContacts,
   emailOptOut: members.emailOptOut, emailDeliverable: members.emailDeliverable,
   anonymizedAt: members.anonymizedAt, revision: members.revision, createdAt: members.createdAt };
 const householdFields = { id: households.id, name: households.name, email: households.email,
+  phoneE164: households.phoneE164, smsNoticesConsentAt: households.smsNoticesConsentAt, smsNoticesConsentSource: households.smsNoticesConsentSource,
   phone: households.phone, address: households.address, revision: households.revision, createdAt: households.createdAt };
 const billingFields = { id: households.id, billingDay: households.billingDay,
   familyDiscountBasisPoints: households.familyDiscountBasisPoints, revision: households.revision };
 const tagFields = { id: memberTags.id, name: memberTags.name, color: memberTags.color, revision: memberTags.revision, createdAt: memberTags.createdAt };
 const linkFields = { id: memberTagLinks.id, memberId: memberTagLinks.memberId, tagId: memberTagLinks.tagId, createdAt: memberTagLinks.createdAt };
-const member = (row: Record<string, unknown>) => c.memberSchema.parse({
-  ...row, createdAt: (row.createdAt as Date).toISOString(), anonymizedAt: (row.anonymizedAt as Date | null)?.toISOString() ?? null,
+const member = (row: Record<string, unknown>, country?: string | null) => c.memberSchema.parse({
+  ...withoutSmsColumns(row), createdAt: (row.createdAt as Date).toISOString(), anonymizedAt: (row.anonymizedAt as Date | null)?.toISOString() ?? null,
+  sms: smsState(row as Parameters<typeof smsState>[0], row.phone as string | null, country),
   emergencyContacts: c.emergencyContactReadSchema.array().parse(row.emergencyContacts),
 });
-const household = (row: Record<string, unknown>) => c.householdSchema.parse({ ...row, createdAt: (row.createdAt as Date).toISOString(),
+const household = (row: Record<string, unknown>, country?: string | null) => c.householdSchema.parse({ ...withoutSmsColumns(row), createdAt: (row.createdAt as Date).toISOString(),
+  sms: smsState(row as Parameters<typeof smsState>[0], row.phone as string | null, country),
   address: c.householdAddressReadSchema.parse(row.address) });
 const tag = (row: Record<string, unknown>) => c.memberTagSchema.parse({ ...row, createdAt: (row.createdAt as Date).toISOString() });
 const link = (row: Record<string, unknown>) => c.memberTagLinkSchema.parse({ ...row, createdAt: (row.createdAt as Date).toISOString() });
@@ -47,6 +54,9 @@ function editable(row: { anonymizedAt: Date | null }) {
   if (row.anonymizedAt) throw new AppError('conflict', 'Anonymized profiles cannot be edited');
 }
 const search = (value: string) => '%' + escapeLike(value) + '%';
+function withoutSmsColumns(row: Record<string, unknown>) {
+  return Object.fromEntries(Object.entries(row).filter(([key]) => key !== 'phoneE164' && !key.startsWith('sms')));
+}
 
 async function unlinkStaffProfiles(tx: Transaction, memberId: string) {
   const profiles = await tx.select({ id: staffProfiles.id, revision: staffProfiles.revision }).from(staffProfiles)
@@ -103,26 +113,74 @@ export function createMembersService(options: MembersOptions = {}) {
         if (query.tagId) missing((await tx.select({ id: memberTags.id }).from(memberTags).where(eq(memberTags.id, query.tagId)))[0]);
         const total = await tx.$count(members, where);
         const rows = await tx.select(memberFields).from(members).where(where).orderBy(asc(members.lastName), asc(members.firstName), asc(members.id)).limit(query.limit).offset(query.offset);
-        return { data: rows.map(member), pagination: { limit: query.limit, offset: query.offset, total } };
+        // Only national phone numbers need the gym's default region.
+        const country = rows.some(row => row.phone?.trim() && !row.phone.trim().startsWith('+'))
+          ? (await readGymSettings(tx, gymId)).address.country : null;
+        return { data: rows.map(row => member(row, country)), pagination: { limit: query.limit, offset: query.offset, total } };
       });
     },
-    async getMember(gymId: string, id: string) { return scope(gymId, async (tx) => member(await getMemberRow(tx, id))); },
+    async getMember(gymId: string, id: string) { return scope(gymId, async (tx) => member(await getMemberRow(tx, id), (await readGymSettings(tx, gymId)).address.country)); },
     async createMember(context: MutationContext, input: c.CreateMemberRequest) {
       const data = c.createMemberRequestSchema.parse(input);
       if (data.photoKey) throw new AppError('invalid_request', 'Use the photo upload endpoint');
       return scope(context.gymId, async (tx) => {
         await getHouseholdRow(tx, data.householdId);
-        const row = missing((await tx.insert(members).values({ ...data, id: uuidv7(), gymId: context.gymId, createdAt: clock.now() }).returning(memberFields))[0]);
-        await audit(tx, context, 'member.created', 'member', row.id); return member(row);
+        const country = (await readGymSettings(tx, context.gymId)).address.country;
+        const row = missing((await tx.insert(members).values({ ...data, phoneE164: normalizePhone(data.phone, country), id: uuidv7(), gymId: context.gymId, createdAt: clock.now() }).returning(memberFields))[0]);
+        await audit(tx, context, 'member.created', 'member', row.id); return member(row, country);
       });
     },
-    async updateMember(context: MutationContext, id: string, input: c.UpdateMemberRequest) {
+    async updateMember(context: MutationContext, id: string, input: c.UpdateMemberRequest, source: SmsSource = 'staff') {
       const { revision, ...changes } = c.updateMemberRequestSchema.parse(input);
       if (changes.photoKey) throw new AppError('invalid_request', 'Use the photo upload endpoint');
       return scope(context.gymId, async (tx) => {
-        editable(await getMemberRow(tx, id)); const guard = revisionGuard(members.revision, revision);
-        const row = assertRevised(await tx.update(members).set({ ...changes, revision: guard.next }).where(and(eq(members.id, id), guard.matches, isNull(members.anonymizedAt))).returning(memberFields));
-        await audit(tx, context, 'member.updated', 'member', id); return member(row);
+        const before = await lockMemberForWrite(tx, id, 'update'); editable(before);
+        const country = (await readGymSettings(tx, context.gymId)).address.country;
+        const changedPhone = changes.phone !== undefined && changes.phone !== before.phone;
+        const guard = revisionGuard(members.revision, revision);
+        const row = assertRevised(await tx.update(members).set({ ...changes, revision: guard.next,
+          ...(changedPhone ? { phoneE164: normalizePhone(changes.phone, country), ...clearedMemberSms } : {}) })
+          .where(and(eq(members.id, id), guard.matches, isNull(members.anonymizedAt))).returning(memberFields));
+        if (changedPhone) await auditSmsCleared(tx, context, 'member', id, before, source, clock.now());
+        await audit(tx, context, 'member.updated', 'member', id); return member(row, country);
+      });
+    },
+    async changeMemberSmsConsent(context: MutationContext, id: string, input: c.ChangeSmsConsentRequest, source: 'staff' | 'portal' = 'staff') {
+      const { kind, consent, revision } = c.changeSmsConsentRequestSchema.parse(input);
+      if (source === 'staff' && kind === 'announcements' && consent) throw new AppError('forbidden', 'Members give announcements consent');
+      return scope(context.gymId, async tx => {
+        const before = await lockMemberForWrite(tx, id, 'update'); editable(before);
+        const country = (await readGymSettings(tx, context.gymId)).address.country, phoneE164 = normalizePhone(before.phone, country);
+        if (consent && !phoneE164) throw new AppError('invalid_request', 'A valid phone is required for SMS consent');
+        const guard = revisionGuard(members.revision, revision), now = clock.now();
+        const changedNumber = phoneE164 !== before.phoneE164;
+        const at = changedNumber ? null : kind === 'notices' ? before.smsNoticesConsentAt : before.smsAnnouncementsConsentAt;
+        const from = changedNumber ? null : kind === 'notices' ? before.smsNoticesConsentSource : before.smsAnnouncementsConsentSource;
+        const after = { at: consent ? at ?? now : null, source: consent ? from ?? source : null };
+        const row = assertRevised(await tx.update(members).set({ phoneE164, revision: guard.next,
+          ...(changedNumber ? clearedMemberSms : {}),
+          ...(kind === 'notices' ? { smsNoticesConsentAt: after.at, smsNoticesConsentSource: after.source }
+            : { smsAnnouncementsConsentAt: after.at, smsAnnouncementsConsentSource: after.source }) })
+          .where(and(eq(members.id, id), guard.matches)).returning(memberFields));
+        if (changedNumber) await auditSmsCleared(tx, context, 'member', id, before, source, now);
+        await auditSmsConsent(tx, context, 'member', id, kind, { at, source: from }, after, source, now);
+        return member(row, country);
+      });
+    },
+    async changeHouseholdSmsConsent(context: MutationContext, id: string, input: c.ChangeHouseholdSmsConsentRequest, source: 'staff' | 'portal' = 'staff') {
+      const { consent, revision } = c.changeHouseholdSmsConsentRequestSchema.parse(input);
+      return scope(context.gymId, async tx => {
+        const before = await getHouseholdRow(tx, id), country = (await readGymSettings(tx, context.gymId)).address.country;
+        const phoneE164 = normalizePhone(before.phone, country);
+        if (consent && !phoneE164) throw new AppError('invalid_request', 'A valid phone is required for SMS consent');
+        const now = clock.now(), guard = revisionGuard(households.revision, revision);
+        const unchangedNumber = phoneE164 === before.phoneE164;
+        const after = { at: consent ? (unchangedNumber ? before.smsNoticesConsentAt : null) ?? now : null,
+          source: consent ? (unchangedNumber ? before.smsNoticesConsentSource : null) ?? source : null };
+        const row = assertRevised(await tx.update(households).set({ phoneE164, revision: guard.next, smsNoticesConsentAt: after.at, smsNoticesConsentSource: after.source })
+          .where(and(eq(households.id, id), guard.matches)).returning(householdFields));
+        await auditSmsConsent(tx, context, 'household', id, 'notices', { at: before.smsNoticesConsentAt, source: before.smsNoticesConsentSource }, after, source, now);
+        return household(row, country);
       });
     },
     async getMedicalNotes(gymId: string, id: string) {
@@ -315,23 +373,29 @@ export function createMembersService(options: MembersOptions = {}) {
         const where = query.search ? or(ilike(households.name, search(query.search)), ilike(households.email, search(query.search))) : undefined;
         const total = await tx.$count(households, where);
         const rows = await tx.select(householdFields).from(households).where(where).orderBy(asc(households.name), asc(households.id)).limit(query.limit).offset(query.offset);
-        return { data: rows.map(household), pagination: { limit: query.limit, offset: query.offset, total } };
+        const country = (await readGymSettings(tx, gymId)).address.country;
+        return { data: rows.map(row => household(row, country)), pagination: { limit: query.limit, offset: query.offset, total } };
       });
     },
-    async getHousehold(gymId: string, id: string) { return scope(gymId, async (tx) => household(await getHouseholdRow(tx, id))); },
+    async getHousehold(gymId: string, id: string) { return scope(gymId, async (tx) => household(await getHouseholdRow(tx, id), (await readGymSettings(tx, gymId)).address.country)); },
     async createHousehold(context: MutationContext, input: c.CreateHouseholdRequest) {
       const data = c.createHouseholdRequestSchema.parse(input);
       return scope(context.gymId, async (tx) => {
-        const row = missing((await tx.insert(households).values({ ...data, id: uuidv7(), gymId: context.gymId, createdAt: clock.now() }).returning(householdFields))[0]);
-        await audit(tx, context, 'household.created', 'household', row.id); return household(row);
+        const country = (await readGymSettings(tx, context.gymId)).address.country;
+        const row = missing((await tx.insert(households).values({ ...data, phoneE164: normalizePhone(data.phone, country), id: uuidv7(), gymId: context.gymId, createdAt: clock.now() }).returning(householdFields))[0]);
+        await audit(tx, context, 'household.created', 'household', row.id); return household(row, country);
       });
     },
-    async updateHousehold(context: MutationContext, id: string, input: c.UpdateHouseholdRequest) {
+    async updateHousehold(context: MutationContext, id: string, input: c.UpdateHouseholdRequest, source: SmsSource = 'staff') {
       const { revision, ...changes } = c.updateHouseholdRequestSchema.parse(input);
       return scope(context.gymId, async (tx) => {
-        await getHouseholdRow(tx, id); const guard = revisionGuard(households.revision, revision);
-        const row = assertRevised(await tx.update(households).set({ ...changes, revision: guard.next }).where(and(eq(households.id, id), guard.matches)).returning(householdFields));
-        await audit(tx, context, 'household.updated', 'household', id); return household(row);
+        const before = await getHouseholdRow(tx, id), country = (await readGymSettings(tx, context.gymId)).address.country;
+        const changedPhone = changes.phone !== undefined && changes.phone !== before.phone, guard = revisionGuard(households.revision, revision);
+        const row = assertRevised(await tx.update(households).set({ ...changes, revision: guard.next,
+          ...(changedPhone ? { phoneE164: normalizePhone(changes.phone, country), ...clearedHouseholdSms } : {}) })
+          .where(and(eq(households.id, id), guard.matches)).returning(householdFields));
+        if (changedPhone) await auditSmsCleared(tx, context, 'household', id, before, source, clock.now());
+        await audit(tx, context, 'household.updated', 'household', id); return household(row, country);
       });
     },
     /** Only unused households can be deleted; accounting and member references always survive. */
@@ -373,7 +437,7 @@ export function createMembersService(options: MembersOptions = {}) {
       return scope(context.gymId, async (tx) => {
         await getHouseholdRow(tx, id); const guard = revisionGuard(households.revision, revision);
         const row = assertRevised(await tx.update(households).set({ pinHash, revision: guard.next }).where(and(eq(households.id, id), guard.matches)).returning(householdFields));
-        await audit(tx, context, 'household.pin.updated', 'household', id); return household(row);
+        await audit(tx, context, 'household.pin.updated', 'household', id); return household(row, (await readGymSettings(tx, context.gymId)).address.country);
       });
     },
     async listTags(gymId: string, input: c.Pagination) {
@@ -444,7 +508,7 @@ export function createMembersService(options: MembersOptions = {}) {
       return scope(context.gymId, async (tx) => {
         editable(await getMemberRow(tx, id)); const guard = revisionGuard(members.revision, c.revisionSchema.parse(revision));
         const row = assertRevised(await tx.update(members).set({ photoKey, revision: guard.next }).where(and(eq(members.id, id), guard.matches, isNull(members.anonymizedAt))).returning(memberFields));
-        await audit(tx, context, 'member.photo.updated', 'member', id); return member(row);
+        await audit(tx, context, 'member.photo.updated', 'member', id); return member(row, (await readGymSettings(tx, context.gymId)).address.country);
       });
     },
     /** Invalidates any unfinished attachment before storage retires its immutable key. */

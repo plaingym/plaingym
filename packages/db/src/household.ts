@@ -150,6 +150,8 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
     id: members.id, firstName: members.firstName, lastName: members.lastName,
     dateOfBirth: members.dateOfBirth, status: members.status, photoKey: members.photoKey,
     email: members.email, phone: members.phone, checkinCodeVersion: members.checkinCodeVersion,
+    phoneE164: members.phoneE164, smsNoticesConsentAt: members.smsNoticesConsentAt, smsNoticesConsentSource: members.smsNoticesConsentSource,
+    smsAnnouncementsConsentAt: members.smsAnnouncementsConsentAt, smsAnnouncementsConsentSource: members.smsAnnouncementsConsentSource,
     revision: members.revision, createdAt: members.createdAt,
     ...(grant.contacts ? { emergencyContacts: members.emergencyContacts } : {}),
   };
@@ -220,6 +222,7 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
       requireAccess(grant.householdProfile, 'payer_access_required');
       return tx.select({
         id: households.id, name: households.name, email: households.email, phone: households.phone,
+        phoneE164: households.phoneE164, smsNoticesConsentAt: households.smsNoticesConsentAt, smsNoticesConsentSource: households.smsNoticesConsentSource,
         address: households.address, billingDay: households.billingDay, revision: households.revision,
       }).from(households).where(and(eq(households.gymId, grant.gymId), eq(households.id, grant.householdId)));
     },

@@ -20,6 +20,7 @@ const tax: TaxRate = { id: id(3), createdAt, name: 'Sales tax', rateMillionths: 
 const settings: GymSettings = { id: id(1), name: 'Gym', slug: 'gym', currency: 'CAD', timezone: 'America/Vancouver', address: {}, branding: {}, websiteEnabled: false, existingSiteUrl: null,
   bookingWindowDays: 7, cancellationCutoffMinutes: 0, openMatCountsAsClass: false, billingEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: false, smsDailyCap: 1000, retryDays: [3, 7], dropInChargeTypeId: null, revision: 1, createdAt, updatedAt: createdAt };
 const member: Member = { id: id(4), createdAt, householdId: id(5), firstName: 'Ada', lastName: 'Student', email: null, phone: null, photoKey: null, dateOfBirth: null,
+  sms: { phoneValid: false, phoneE164: null, notices: null, announcements: null },
   status: 'active', emergencyContacts: [], emailOptOut: false, emailDeliverable: true, anonymizedAt: null, revision: 1 };
 const membership: Membership = { id: id(6), createdAt, memberId: member.id, householdId: member.householdId, planId: plan.id, status: 'active', currency: 'CAD', amountCents: 9999,
   interval: 'monthly', startsOn: '2026-10-01', nextDueOn: '2026-10-31', trialEndsOn: null, frozenAt: null, resumesOn: null, cancelledAt: null, commitmentEndsOn: '2027-04-01',

@@ -1,6 +1,15 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Public join
 
+The join form has two initially unticked SMS choices: class, booking and billing
+notices and links, and gym news. Either choice requires a contact phone that
+parses using the gym's country. Admission stores the contact phone on each member
+joining and records each selected consent with source `join`; notices also apply
+to the household's billing phone. Consent changes are audited without phones.
+Browser JSON and native form submissions carry the same choices, and final
+submission must match admission. Trial and drop-in contact contracts have no SMS
+choices. The form names the gym, notes message and data rates and STOP opt-out.
+
 Positive first invoices use the shared card minimum and currency-step check before
 Checkout. An unchargeable amount shows a manual-payment page, without polling
 Stripe or offering Checkout. The registration stays saved with pending memberships;

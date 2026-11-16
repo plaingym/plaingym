@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { memberStatusSchema, classSessionStatusSchema, membershipStatusSchema, billingIntervalSchema,
   attendanceSourceSchema, classKindSchema, invoiceKindSchema, invoiceStatusSchema } from './states.js';
 import type { EndpointContract } from './definition.js';
-import { householdParamsSchema, householdUserParamsSchema, householdUserSchema } from './members.js';
+import { householdParamsSchema, householdUserParamsSchema, householdUserSchema, memberSmsSchema, householdSmsSchema, changeSmsConsentRequestSchema, changeHouseholdSmsConsentRequestSchema } from './members.js';
 import {
   amountCentsSchema, currencySchema, dateSchema, idSchema, instantSchema,
   listResponseSchema, paginationSchema, revisionSchema, taxRateMillionthsSchema,
@@ -37,6 +37,7 @@ export const portalEmergencyContactSchema = z.strictObject({
   email: z.email().optional(),
 });
 export const portalMemberSchema = z.strictObject({
+  sms: memberSmsSchema,
   id: idSchema, firstName: z.string().min(1), lastName: z.string().min(1),
   email: z.email().nullable(), phone: z.string().nullable(), dateOfBirth: dateSchema.nullable(),
   photoKey: z.string().nullable(),
@@ -52,6 +53,7 @@ export const portalMemberUpdateRequestSchema = portalMemberSchema.pick({
   photoKey: true, emergencyContacts: true,
 }).partial().extend({ revision: revisionSchema });
 export const portalHouseholdSchema = z.strictObject({
+  sms: householdSmsSchema,
   id: idSchema, name: z.string().min(1), email: z.email().nullable(), phone: z.string().nullable(),
   address: z.record(z.string(), z.string()), billingDay: z.int32().min(1).max(31), revision: revisionSchema,
 });
@@ -192,6 +194,8 @@ export const portalSignedLinkResponseSchema = z.strictObject({ data: portalSigne
 // household endpoints require the payer grant. An ID outside the grant returns not_found, including another household's ID.
 // Every answer names the household it was read for (portalAnswerSchema). Booking endpoints and projections are owned by bookings.ts.
 export const portalContracts = {
+  changeMemberSmsConsent: { method: 'put', path: '/api/portal/members/{memberId}/sms-consent', permission: { kind: 'member', capability: 'sms_consent.manage' }, params: portalMemberParamsSchema, body: changeSmsConsentRequestSchema, response: portalAnswerSchema(portalMemberResponseSchema) },
+  changeHouseholdSmsConsent: { method: 'put', path: '/api/portal/household/sms-consent', permission: { kind: 'member', capability: 'household.manage' }, body: changeHouseholdSmsConsentRequestSchema, response: portalAnswerSchema(portalHouseholdResponseSchema) },
   context: { method: 'get', path: '/api/portal/context', permission: { kind: 'member', capability: 'profile.read' }, response: portalAnswerSchema(portalContextResponseSchema) },
   profile: { method: 'get', path: '/api/portal/members/{memberId}', permission: { kind: 'member', capability: 'profile.read' }, params: portalMemberParamsSchema, response: portalAnswerSchema(portalMemberResponseSchema) },
   members: { method: 'get', path: '/api/portal/members', permission: { kind: 'member', capability: 'household.read' }, query: paginationSchema, response: portalAnswerSchema(portalMemberListResponseSchema) },

@@ -12,8 +12,10 @@ for (const width of [360, 1280]) {
   test(`household and member saves omit unchanged fields at ${width}px`, async ({ page }, info) => {
     await page.setViewportSize({ width, height: 900 });
     const home = { id: householdId, name: 'Rivera household', email: 'pat@example.test', phone: null as string | null,
+      sms: { phoneValid: false, phoneE164: null, notices: null },
       address: { line1: '1 Main St' }, billingDay: 1, revision: 1 };
     const person = { id: memberId, firstName: 'Pat', lastName: 'Rivera', email: null, phone: null as string | null,
+      sms: { phoneValid: false, phoneE164: null, notices: null, announcements: null },
       dateOfBirth: '1980-04-02', photoKey: null, status: 'active', revision: 1,
       emergencyContacts: [{ name: 'Grandparent', relationship: null, phone: '555-0100', future: true }] };
     const writes: { path: string; body: unknown }[] = [];

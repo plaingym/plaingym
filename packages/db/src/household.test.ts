@@ -52,7 +52,8 @@ it('scopes every household query and restricts the adult non-payer to their own 
     expect(await queries.paymentMethods()).toHaveLength(1);
     // Payers edit household details with compare-and-set, so the read carries the revision; PIN hash stays staff-only.
     const [profile] = await queries.household();
-    expect(profile).toEqual({ id: first.id, name: first.name, email: null, phone: null, address: {}, billingDay: 1, revision: 1 });
+    expect(profile).toEqual({ id: first.id, name: first.name, email: null, phone: null, phoneE164: null,
+      smsNoticesConsentAt: null, smsNoticesConsentSource: null, address: {}, billingDay: 1, revision: 1 });
     for (const person of [member, child]) expect(await activity(queries, person.id)).toEqual([1, 1, 1, 1, 1]);
     expect(await activity(queries, outsider.id)).toEqual([0, 0, 0, 0, 0]);
     expect(await queries.attendanceCount({})).toBe(2);

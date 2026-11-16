@@ -21,6 +21,7 @@ import { ErrorMessage, Panel, StatusBadge, text, useDraft, useMemberSave } from 
 import { MemberForm } from './member-form.js';
 import { HouseholdDetails } from './households.js';
 import { MemberTabActivity } from './tab-activity.js';
+import { StaffSmsConsent } from './sms-consent.js';
 
 function tabFromHash() {
   try { return decodeURIComponent(window.location.hash.slice(1)) || undefined; } catch { return undefined; }
@@ -70,6 +71,7 @@ function Profile({ memberId, gymId, roles, enabledModules }: { memberId: string;
             <p className="text-sm">{contact.phone}{contact.email && ' · ' + contact.email}</p></li>)}</ul>
             : <p className="text-sm text-muted-foreground">{text('noContacts')}</p>}
         </>}</Panel>
+        {manage && <StaffSmsConsent record={member}/>}
         <Photo member={member} manage={manage}/><MemberTags gymId={gymId} memberId={memberId} manage={canStaff(roles, 'tags.manage')}/>
       </div><div className="min-w-0 space-y-6">{manage && <HouseholdDetails key={member.householdId} gymId={gymId} householdId={member.householdId}/>}
         {canStaff(roles, 'medical.read') && <MedicalNotes gymId={gymId} memberId={memberId} manage={manage}/>}

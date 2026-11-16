@@ -32,6 +32,7 @@ const eligibility: PromotionEligibility[] = [memberId, secondMemberId].map((memb
   rankSystemId: system.id, subRank, eligible: true, criteria: [{ providerId: 'classes-since-promotion', labelKey: 'ranks/ranks:classes', current: 11, target: 10, met: true }] }));
 function member(memberId: string, firstName: string): Member {
   return { id: memberId, householdId: id(9), firstName, lastName: 'Student', email: null, phone: null, photoKey: null,
+    sms: { phoneValid: false, phoneE164: null, notices: null, announcements: null },
     dateOfBirth: null, status: 'active', emergencyContacts: [], emailOptOut: false, anonymizedAt: null, revision: 1, createdAt, emailDeliverable: true };
 }
 function makeClient() {

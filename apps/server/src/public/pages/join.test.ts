@@ -166,6 +166,39 @@ async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
 describe('join lead intake', () => {
+  it.each([[false, false], [true, false], [false, true], [true, true]])('records separate join SMS choices notices=%s announcements=%s without phone audits', async (smsNoticesConsent, smsAnnouncementsConsent) => {
+    const f = await fixture(), people = [adult(), child()], phone = '+12025550123';
+    const choices = { smsNoticesConsent, smsAnnouncementsConsent };
+    const contact = { name: 'Pat Payer', email: 'sms@example.invalid', phone };
+    const admission = { planId: f.plan.id, contact, ...choices, honeypot: '', members: people.map(member => ({ member,
+      signatures: f.templates.map(template => ({ templateId: template.id, templateVersion: template.version, pngBase64,
+        signer: member.dateOfBirth > '2008-10-29' ? { kind: 'guardian', name: 'Pat Payer', relationship: 'Parent' } : { kind: 'self', name: member.firstName + ' ' + member.lastName } })) })) };
+    const response = await f.post('/join/signatures', admission); expect(response.status).toBe(200);
+    const images = joinAdmissionResponseSchema.parse(await response.json()).data;
+    const final = { ...f.body(people, images, contact.email, f.plan.id), contact, ...choices };
+    const refused = await f.post('/api/public/join', { ...final, smsNoticesConsent: !smsNoticesConsent });
+    expect(refused.status).toBe(404);
+    expect((await f.post('/api/public/join', final)).status).toBe(200);
+    const rows = await f.rows(), home = rows.homes.find(home => home.email === contact.email)!;
+    expect(home).toMatchObject({ phone, phoneE164: phone, smsNoticesConsentSource: smsNoticesConsent ? 'join' : null });
+    const joined = rows.members.filter(person => person.householdId === home.id);
+    expect(joined).toHaveLength(2);
+    for (const person of joined) {
+      expect(person).toMatchObject({ phone, phoneE164: phone, smsNoticesConsentAt: smsNoticesConsent ? f.clock.now() : null,
+        smsNoticesConsentSource: smsNoticesConsent ? 'join' : null, smsAnnouncementsConsentAt: smsAnnouncementsConsent ? f.clock.now() : null,
+        smsAnnouncementsConsentSource: smsAnnouncementsConsent ? 'join' : null });
+    }
+    const logs = rows.audits.filter(event => event.action.endsWith('.sms_consent_changed'));
+    expect(logs).toHaveLength((smsNoticesConsent ? 3 : 0) + (smsAnnouncementsConsent ? 2 : 0));
+    expect(JSON.stringify(logs.map(log => [log.before, log.after]))).not.toContain(phone);
+  });
+  it.each(['', 'not a phone'])('refuses join opt-in with an unparseable phone %s before admission', async phone => {
+    const f = await fixture(), form = nativeForm(f, f.plan.id, 'sms-invalid@example.invalid');
+    form.set('phone', phone); form.set('smsNoticesConsent', 'on');
+    const response = await f.server.request(await requestWithLength(origin + '/join', { method: 'POST', headers: { origin }, body: form }));
+    expect(response.status).toBe(400); expect(await response.text()).toContain('enter a valid contact phone number');
+    expect(await f.joined()).toHaveLength(0);
+  });
   it('uses the same field rules in admission and submission before persisting anything further', async () => {
     const f = await fixture(), people = [adult()], email = 'rules@example.invalid';
     const images = await f.admit(people, email, f.plan.id), original = f.body(people, images, email, f.plan.id);

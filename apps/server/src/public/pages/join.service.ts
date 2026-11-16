@@ -7,6 +7,8 @@ import { forGym, auditEvents, households, householdUsers, invoices, members, mem
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import * as c from '@plaingym/shared/contracts';
+import { normalizePhone } from '@plaingym/shared/phone';
+import { auditSmsConsent } from '../../areas/members/member-write.js';
 import { localDate } from '@plaingym/shared/time';
 import { z } from 'zod';
 import { clock as defaultClock } from '../../core/clock.js';
@@ -45,6 +47,7 @@ const linkLifetimeMs = 24 * 60 * 60 * 1000, settled = ['paid', 'partially_refund
 // Join records are audits on the new household: identifiers only, never contact details.
 // `discountId` is the discount a code named at admission; older admissions have none.
 const admitted = z.strictObject({ planId: c.idSchema, joinedOn: c.dateSchema, memberIds: z.array(c.idSchema), membershipIds: z.array(c.idSchema),
+  smsNoticesConsent: z.boolean().optional().default(false), smsAnnouncementsConsent: z.boolean().optional().default(false),
   discountId: c.idSchema.optional() });
 const received = admitted.extend({ linkId: c.idSchema, invoiceId: c.idSchema });
 /** The uses a join took, written in the transaction that took them and assigned its memberships, so a replay takes none. */
@@ -205,6 +208,7 @@ export function createJoinService(options: JoinOptions) {
       const record = await recorded(tx, 'public.join.admitted', householdId, admittedRead);
       // A leaked staff image key cannot enroll, edit, or sign for an existing member.
       if (!home || !record || record.planId !== input.planId || record.memberIds.length !== ids.length || home.email !== input.contact.email
+        || record.smsNoticesConsent !== input.smsNoticesConsent || record.smsAnnouncementsConsent !== input.smsAnnouncementsConsent
         || home.name !== input.contact.name || home.phone !== (input.contact.phone ?? null) || !isDeepStrictEqual(c.householdAddressReadSchema.parse(home.address), input.contact.address ?? {})) missing();
       // A submitted join replays even after its memberships were frozen or cancelled.
       const replay = await marked(tx, 'public.join.received', householdId);
@@ -426,6 +430,10 @@ export function createJoinService(options: JoinOptions) {
     async admit(gymId: string, body: unknown, timezone: string, preparedTemplates?: readonly c.WaiverTemplate[]) {
       const input = c.joinAdmissionSchema.parse(body);
       validateFields(input.contact, input.members, timezone);
+      const country = await scope(gymId, async tx => (await readGymSettings(tx, gymId)).address.country);
+      const phoneE164 = normalizePhone(input.contact.phone, country);
+      if ((input.smsNoticesConsent || input.smsAnnouncementsConsent) && !phoneE164)
+        throw new AppError('invalid_request', t('public/join:smsPhoneRequired'), { reason: ['sms_phone_required'] });
       await joinableRow(gymId, input.planId);
       const templates = preparedTemplates ?? await ready(gymId);
       input.members.forEach(m => current(templates, m.signatures));
@@ -440,14 +448,25 @@ export function createJoinService(options: JoinOptions) {
       const memberIds = await scope(gymId, async tx => {
         // Code uses are taken only at submission.
         const now = clock.now(), householdId = uuidv7(now.getTime()), ids = input.members.map(() => uuidv7(now.getTime()));
+        const notices = { smsNoticesConsentAt: input.smsNoticesConsent ? now : null, smsNoticesConsentSource: input.smsNoticesConsent ? 'join' : null };
+        const announcements = { smsAnnouncementsConsentAt: input.smsAnnouncementsConsent ? now : null, smsAnnouncementsConsentSource: input.smsAnnouncementsConsent ? 'join' : null };
         await tx.insert(households).values({ id: householdId, gymId, name: input.contact.name, email: input.contact.email,
+          phoneE164, ...notices,
           phone: input.contact.phone ?? null, address: input.contact.address ?? {}, billingDay: Number(today.slice(8)), createdAt: now });
         await tx.insert(members).values(input.members.map((m, i) => ({ id: ids[i]!, gymId, householdId, ...m.member,
+          phone: input.contact.phone ?? null, phoneE164, ...notices, ...announcements,
           email: input.contact.email, status: 'prospect', createdAt: now })));
         await audit(tx, gymId, 'household.created', 'household', householdId);
+        const context = system(gymId), off = { at: null, source: null };
+        if (input.smsNoticesConsent) await auditSmsConsent(tx, context, 'household', householdId, 'notices', off, { at: now, source: 'join' }, 'join', now);
+        for (const id of ids) {
+          if (input.smsNoticesConsent) await auditSmsConsent(tx, context, 'member', id, 'notices', off, { at: now, source: 'join' }, 'join', now);
+          if (input.smsAnnouncementsConsent) await auditSmsConsent(tx, context, 'member', id, 'announcements', off, { at: now, source: 'join' }, 'join', now);
+        }
         // The join date is fixed here, so a submission retried after midnight repeats the same memberships.
         await audit(tx, gymId, 'public.join.admitted', 'household', householdId,
           admitted.parse({ planId: input.planId, joinedOn: today, memberIds: ids, membershipIds: ids.map(() => uuidv7(now.getTime())),
+            smsNoticesConsent: input.smsNoticesConsent, smsAnnouncementsConsent: input.smsAnnouncementsConsent,
             ...(discountId === undefined ? {} : { discountId }) }));
         return { ids, householdId };
       });

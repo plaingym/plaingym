@@ -18,6 +18,7 @@ const id = '019a08bf-1234-7000-8000-000000000001';
 const householdId = '019a08bf-1234-7000-8000-000000000002';
 const createdAt = '2026-10-21T12:00:00Z';
 const member = {
+  sms: { phoneValid: false, phoneE164: null, notices: null, announcements: null },
   id, householdId, firstName: '明', lastName: '山田', email: null, phone: null, photoKey: null,
   dateOfBirth: '2014-02-28', status: 'active', emergencyContacts: [
     { name: 'أحمد', relationship: 'Parent', phone: '+1 555 0100', email: null },
@@ -25,6 +26,7 @@ const member = {
   emailOptOut: true, anonymizedAt: null, revision: 2, createdAt,
 };
 const household = {
+  sms: { phoneValid: false, phoneE164: null, notices: null },
   id: householdId, name: 'Family', email: null, phone: null, address: {}, revision: 1, createdAt,
 };
 type Wire<T> = { [K in keyof T]: T[K] extends Date ? string : T[K] extends Date | null ? string | null : T[K] };
@@ -170,10 +172,10 @@ describe('people contract permissions and schema compatibility', () => {
     expect(canStaff([role], membersContracts.createHouseholdUser.permission.capability)).toBe(role !== 'coach');
   });
   it('exposes only columns present in the locked tables, with timestamps serialized as strings', () => {
-    expectTypeOf<Member>().toExtend<Wire<Pick<typeof members.$inferSelect, keyof Member>>>();
-    expectTypeOf<HouseholdMember>().toExtend<Wire<Pick<typeof members.$inferSelect, keyof HouseholdMember>>>();
+    expectTypeOf<Omit<Member, 'sms'>>().toExtend<Wire<Pick<typeof members.$inferSelect, Exclude<keyof Member, 'sms'>>>>();
+    expectTypeOf<Omit<HouseholdMember, 'sms'>>().toExtend<Wire<Pick<typeof members.$inferSelect, Exclude<keyof HouseholdMember, 'sms'>>>>();
     expectTypeOf<MemberMedicalNotes>().toExtend<Pick<typeof members.$inferSelect, keyof MemberMedicalNotes>>();
-    expectTypeOf<Household>().toExtend<Wire<Pick<typeof households.$inferSelect, keyof Household>>>();
+    expectTypeOf<Omit<Household, 'sms'>>().toExtend<Wire<Pick<typeof households.$inferSelect, Exclude<keyof Household, 'sms'>>>>();
     expectTypeOf<HouseholdBillingSettings>().toExtend<Pick<typeof households.$inferSelect, keyof HouseholdBillingSettings>>();
     expectTypeOf<MemberTag>().toExtend<Wire<Pick<typeof memberTags.$inferSelect, keyof MemberTag>>>();
     expectTypeOf<MemberTagLink>().toExtend<Wire<Pick<typeof memberTagLinks.$inferSelect, keyof MemberTagLink>>>();

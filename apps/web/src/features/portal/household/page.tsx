@@ -17,6 +17,7 @@ import { Page, PageHeader, PageSection } from '../../../components/ui/page.js';
 import { Badge, StackedItem, StackedList } from '../../../components/ui/table.js';
 import { EmptyState, ErrorState, LoadingState } from '../../../components/ui/states.js';
 import { conflict, gymToday, knownMinor, usePortalContext, usePortalScope, type PortalScope } from './api.js';
+import { SmsConsentControls } from '../../members/sms-consent.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('portal/household:' + key, values);
 
@@ -27,7 +28,7 @@ export function PortalHousehold() {
   return <PortalHouseholdPage context={context.data} scope={scope} />;
 }
 function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope: PortalScope }) {
-  const bootstrap = useBootstrap(), { ready, own } = scope, payer = context.role === 'payer';
+  const bootstrap = useBootstrap(), cache = useQueryClient(), { ready, own } = scope, payer = context.role === 'payer';
   const [editing, setEditing] = useState<PortalMember | null>(null), [saved, setSaved] = useState<'saved' | 'unchanged' | null>(null);
   const household = useQuery({ queryKey: [...scope.key, 'household', 'details'], enabled: ready && payer, queryFn: async () => own(await scope.call(contracts.household)).data });
   const members = useQuery({ queryKey: [...scope.key, 'household', 'members'], enabled: ready, queryFn: async () => payer
@@ -40,6 +41,11 @@ function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope
     {/* A failed refetch keeps its data, so the form and its draft stay. */}
     {payer && (household.data ? <HouseholdForm key={household.data.revision} household={household.data} scope={scope} saved={saved} setSaved={setSaved} />
       : household.isPending || scope.settling ? <LoadingState /> : <ErrorState onRetry={() => void household.refetch()} />)}
+    {payer && household.data && <SmsConsentControls sms={household.data.sms} gymName={bootstrap.data?.gym.name ?? ''}
+      onChange={async (_kind, consent) => {
+        own(await scope.call(contracts.changeHouseholdSmsConsent, { consent, revision: household.data.revision }));
+        await cache.invalidateQueries({ queryKey: [...scope.key, 'household'] });
+      }}/>}
     <PageSection title={text(payer ? 'members' : 'profile')}>
       {members.isPending || (!members.data && scope.settling) ? <LoadingState /> : members.isError && <ErrorState onRetry={() => void members.refetch()} />}
       {members.data?.length === 0 && <EmptyState title={text('noMembers')} />}
@@ -56,6 +62,11 @@ function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope
           <ul className="space-y-1">{member.emergencyContacts.map((item, index) => <li key={index} className="wrap-anywhere">{item.name}
             {item.relationship && <span className="text-muted-foreground"> · {item.relationship}</span>} · {item.phone}{item.email && ` · ${item.email}`}</li>)}</ul></div>}
         <Memberships memberId={member.id} scope={scope} />
+        {(member.id === context.memberId || editable(member)) && <SmsConsentControls sms={member.sms} gymName={bootstrap.data?.gym.name ?? ''}
+          onChange={async (kind, consent) => {
+            own(await scope.call(contracts.changeMemberSmsConsent, { kind, consent, revision: member.revision }, { memberId: member.id }));
+            await cache.invalidateQueries({ queryKey: [...scope.key, 'household'] });
+          }}/>}
         {editable(member) && <div><Button variant="outline" onClick={() => setEditing(member)}>{text('edit')}</Button></div>}
       </StackedItem>)}</StackedList>}
       <p className="text-sm text-muted-foreground">{text(payer ? 'adultNote' : 'memberNote')}</p>

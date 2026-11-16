@@ -53,6 +53,69 @@ const send = (app: ReturnType<typeof server>, path: string, method = 'GET', body
   ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) });
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
 
+describe('staff SMS consent', () => {
+  it('does not transfer another consent when the current phone no longer matches its normalized record', async () => {
+    const person = await factory('members', gymA, { phone: '+12025550123', phoneE164: '+12025550123',
+      smsAnnouncementsConsentAt: clock.now(), smsAnnouncementsConsentSource: 'portal' });
+    await database.forGym(gymA, tx => tx.update(members).set({ phone: '+12025550199' }).where(eq(members.id, person.id)));
+    const changed = await service.changeMemberSmsConsent(context(), person.id, { kind: 'notices', consent: true, revision: 1 });
+    expect(changed.sms.phoneE164).toBe('+12025550199'); expect(changed.sms.notices?.source).toBe('staff');
+    expect(changed.sms.announcements).toBeNull();
+  });
+  it('allows verbal notices, refuses announcements opt-in, withdraws either, and checks revisions', async () => {
+    const person = await factory('members', gymA, { phone: '+1 202 555 0123' });
+    const path = `/api/members/${person.id}/sms-consent`;
+    expect((await send(staff('coach'), path, 'PUT', { kind: 'notices', consent: true, revision: 1 })).status).toBe(403);
+    expect((await send(staff('owner'), path, 'PUT', { kind: 'announcements', consent: true, revision: 1 })).status).toBe(403);
+    const response = await send(staff('front_desk'), path, 'PUT', { kind: 'notices', consent: true, revision: 1 });
+    expect(response.status).toBe(200);
+    const on = c.memberResponseSchema.parse(await response.json()).data;
+    expect(on.sms).toEqual({ phoneValid: true, phoneE164: '+12025550123', notices: { at: clock.now().toISOString(), source: 'staff' }, announcements: null });
+    expect((await send(staff('owner'), path, 'PUT', { kind: 'notices', consent: false, revision: 1 })).status).toBe(409);
+    const announced = await service.changeMemberSmsConsent(context(), person.id, { kind: 'announcements', consent: true, revision: on.revision }, 'portal');
+    const off = await service.changeMemberSmsConsent(context(), person.id, { kind: 'announcements', consent: false, revision: announced.revision });
+    expect(off.sms.announcements).toBeNull(); expect(off.sms.notices?.source).toBe('staff');
+    expect((await service.changeMemberSmsConsent(context(), person.id, { kind: 'notices', consent: false, revision: off.revision })).sms.notices).toBeNull();
+  });
+  it('validates with the gym country and clears both choices on a phone change in the same revision', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId, { address: { country: 'US' } });
+    const person = await factory('members', gymId, { phone: '202-555-0123' }), ctx = context(gymId);
+    expect((await service.getMember(gymId, person.id)).sms.phoneValid).toBe(true);
+    expect((await service.listMembers(gymId, { limit: 50, offset: 0 })).data[0]?.sms).toMatchObject({ phoneValid: true, phoneE164: '+12025550123' });
+    const notices = await service.changeMemberSmsConsent(ctx, person.id, { kind: 'notices', consent: true, revision: 1 });
+    const both = await service.changeMemberSmsConsent(ctx, person.id, { kind: 'announcements', consent: true, revision: notices.revision }, 'portal');
+    const same = await service.updateMember(ctx, person.id, { firstName: 'Renamed', revision: both.revision });
+    expect(same.sms.announcements?.source).toBe('portal');
+    const changed = await service.updateMember(ctx, person.id, { phone: '202-555-0199', revision: same.revision });
+    expect(changed.sms).toEqual({ phoneValid: true, phoneE164: '+12025550199', notices: null, announcements: null });
+    const invalid = await service.updateMember(ctx, person.id, { phone: 'not a number', revision: changed.revision });
+    await expect(service.changeMemberSmsConsent(ctx, person.id, { kind: 'notices', consent: true, revision: invalid.revision })).rejects.toMatchObject({ code: 'invalid_request' });
+    const events = await database.forGym(gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'member.sms_consent_changed')));
+    expect(events).toHaveLength(4);
+    expect(JSON.stringify(events)).not.toContain('1202555');
+    expect(events.filter(event => (event.after as { at?: unknown } | null)?.at === null)).toHaveLength(2);
+  });
+  it('records and clears billing-phone notices consent and denies cross-gym writes', async () => {
+    const home = await factory('households', gymA, { phone: '+12025550123' }), foreign = await factory('households', gymB, { phone: '+12025550199' });
+    const path = `/api/households/${home.id}/sms-consent`;
+    expect((await send(staff('coach'), path, 'PUT', { consent: true, revision: 1 })).status).toBe(403);
+    const response = await send(staff('front_desk'), path, 'PUT', { consent: true, revision: 1 });
+    expect(response.status).toBe(200);
+    const on = c.householdResponseSchema.parse(await response.json()).data;
+    expect(on.sms.notices?.source).toBe('staff');
+    const off = await service.changeHouseholdSmsConsent(context(), home.id, { consent: false, revision: on.revision });
+    expect(off.sms.notices).toBeNull();
+    const again = await service.changeHouseholdSmsConsent(context(), home.id, { consent: true, revision: off.revision });
+    const changed = await service.updateHousehold(context(), home.id, { phone: '+12025550199', revision: again.revision });
+    expect(changed.sms.notices).toBeNull();
+    const invalid = await service.updateHousehold(context(), home.id, { phone: 'invalid', revision: changed.revision });
+    await expect(service.changeHouseholdSmsConsent(context(), home.id, { consent: true, revision: invalid.revision })).rejects.toMatchObject({ code: 'invalid_request' });
+    expect((await send(staff('owner'), `/api/households/${foreign.id}/sms-consent`, 'PUT', { consent: true, revision: 1 })).status).toBe(404);
+    const events = await database.forGym(gymA, tx => tx.select().from(auditEvents).where(and(eq(auditEvents.targetId, home.id), eq(auditEvents.action, 'household.sms_consent_changed'))));
+    expect(events).toHaveLength(4); expect(JSON.stringify(events.map(event => [event.before, event.after]))).not.toContain('1202555');
+  });
+});
+
 it.each([undefined, 'not json'])('rejects a missing or non-JSON member body: %s', async (body) => {
   const response = await staff('owner').request('/api/members', { method: 'POST', ...(body === undefined ? {} : { body }) });
   expect(response.status).toBe(400);
@@ -79,6 +142,7 @@ async function requestFor(definition: ReturnType<typeof createMembersRoutes>[num
       : definition.path.endsWith('/anonymize') ? { revision: 1 }
       : definition.path.endsWith('/billing-settings') ? { revision: 1, billingDay: 31, familyDiscountBasisPoints: 100 }
       : definition.path.endsWith('/pin') ? { revision: 1, pin: '1234' }
+      : definition.path.endsWith('/sms-consent') ? { revision: 1, consent: false, ...(definition.path.includes('/members/') ? { kind: 'notices' } : {}) }
       : definition.path.endsWith('/photo') ? { revision: 1, contentType: 'image/png', base64: png.toString('base64') }
       : definition.path.endsWith('/tags') ? { tagId: tag.id }
       : definition.path.includes('member-tags') ? { revision: 1, color: '#123456' }

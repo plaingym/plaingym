@@ -38,8 +38,9 @@ for (const width of [360, 1280]) {
         coachId: null, capacity: 10, status: 'cancelled', revision: 1, bookingOpensAt: new Date().toISOString(),
         cancelBefore: startsAt, placesLeft: 10, bookings: [],
       }]);
-      if (path === '/api/portal/household') return answer({ id: householdId, name: 'Rivera household', email: null, phone: null, address: {}, billingDay: 1, revision: 1 });
+      if (path === '/api/portal/household') return answer({ id: householdId, name: 'Rivera household', email: null, phone: null, sms: { phoneValid: false, phoneE164: null, notices: null }, address: {}, billingDay: 1, revision: 1 });
       if (path === '/api/portal/members') return list([{ id: memberId, firstName: 'Pat', lastName: 'Rivera', email: null, phone: null,
+        sms: { phoneValid: false, phoneE164: null, notices: null, announcements: null },
         dateOfBirth: '1980-04-02', photoKey: null, status: 'active', emergencyContacts: [], revision: 1 }]);
       if (path.endsWith('/progress')) return answer({ history: [], programs: [], ranks: [], criteria: [] });
       if (path.endsWith('/checkin-code')) return answer({ memberId, code: null, version: 1, revision: 1 });

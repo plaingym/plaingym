@@ -4,6 +4,7 @@ import { AppError, type Clock } from '@plaingym/shared';
 import {
   paginationSchema, portalHouseholdSchema, portalHouseholdUpdateRequestSchema, portalMemberSchema, portalMemberUpdateRequestSchema,
   portalMembershipSchema, type Pagination, type PortalEmergencyContact, type PortalHouseholdUpdateRequest, type PortalMemberUpdateRequest,
+  type ChangeSmsConsentRequest, type ChangeHouseholdSmsConsentRequest,
 } from '@plaingym/shared/contracts';
 import type { MemberHouseholdContext, PortalIdentity } from '../../core/interfaces/member-household.js';
 import { notFound } from '../../core/interfaces/common.js';
@@ -11,6 +12,8 @@ import { clock as defaultClock } from '../../core/clock.js';
 import { createMemberHouseholdContext } from '../members/household-users.context.js';
 import { createMembersService, type MembersService } from '../members/members.js';
 import { needsGuardian } from '../waivers/snapshot.js';
+import { smsState } from '../members/member-write.js';
+import { createGymSettingsAccessor } from '../settings/settings.js';
 
 export type HouseholdQueries = Parameters<Parameters<typeof forHousehold>[1]>[0];
 type StoredContact = { name: string; relationship: string | null; phone: string; email: string | null };
@@ -20,8 +23,9 @@ const contact = (row: StoredContact): PortalEmergencyContact => ({ name: row.nam
 const stored = (row: PortalEmergencyContact): StoredContact => ({ name: row.name, phone: row.phone, email: row.email ?? null,
   relationship: row.relationship?.trim() || null });
 
-function project(row: Awaited<ReturnType<HouseholdQueries['members']>>[number]) {
+function project(row: Awaited<ReturnType<HouseholdQueries['members']>>[number], country?: string | null) {
   return portalMemberSchema.parse({ id: row.id, firstName: row.firstName, lastName: row.lastName, email: row.email, phone: row.phone,
+    sms: smsState(row, row.phone, country),
     dateOfBirth: row.dateOfBirth, photoKey: row.photoKey, status: row.status, revision: row.revision,
     emergencyContacts: ('emergencyContacts' in row ? row.emergencyContacts as StoredContact[] | null : null)?.map(contact) ?? [] });
 }
@@ -54,16 +58,19 @@ export function createPortalHouseholdService(options: {
   households?: MemberHouseholdContext; householdScope?: typeof forHousehold; members?: MembersService; clock?: Clock;
 } = {}) {
   const households = options.households ?? createMemberHouseholdContext(), scope = options.householdScope ?? forHousehold;
-  const members = options.members ?? createMembersService(), clock = options.clock ?? defaultClock;
+  const clock = options.clock ?? defaultClock, members = options.members ?? createMembersService({ clock });
+  const settings = createGymSettingsAccessor();
   const read = householdReader(scope);
   async function member(identity: PortalIdentity, id: string) {
     const [row] = await read(identity, queries => queries.member(id));
-    return row ? project(row) : notFound();
+    return row ? project(row, (await settings.get(identity.gymId)).country) : notFound();
   }
   async function household(identity: PortalIdentity) {
     const [row] = await read(identity, queries => queries.household());
     if (!row) notFound();
-    return portalHouseholdSchema.parse({ ...row, address: Object.fromEntries(Object.entries(row.address ?? {}).filter(([, value]) => typeof value === 'string')) });
+    const publicRow = Object.fromEntries(Object.entries(row).filter(([key]) => key !== 'phoneE164' && !key.startsWith('sms')));
+    return portalHouseholdSchema.parse({ ...publicRow, sms: smsState(row, row.phone, (await settings.get(identity.gymId)).country),
+      address: Object.fromEntries(Object.entries(row.address ?? {}).filter(([, value]) => typeof value === 'string')) });
   }
   const actor = (identity: PortalIdentity) => ({ gymId: identity.gymId, actor: { kind: 'user' as const, userId: identity.userId } });
   return {
@@ -76,7 +83,8 @@ export function createPortalHouseholdService(options: {
       const query = paginationSchema.parse(input), context = await households.requirePayer(identity, 'household.read');
       const rows = (await read(identity, queries => queries.members())).filter(row => context.visibleMemberIds.includes(row.id))
         .sort((a, b) => a.lastName.localeCompare(b.lastName) || a.firstName.localeCompare(b.firstName) || a.id.localeCompare(b.id));
-      return { data: rows.slice(query.offset, query.offset + query.limit).map(project), pagination: { limit: query.limit, offset: query.offset, total: rows.length } };
+      const country = (await settings.get(identity.gymId)).country;
+      return { data: rows.slice(query.offset, query.offset + query.limit).map(row => project(row, country)), pagination: { limit: query.limit, offset: query.offset, total: rows.length } };
     },
     /** Payers edit their own profile and children's profiles; status, memberships and check-in credentials are not fields here. */
     async updateMember(identity: PortalIdentity, memberId: string, input: PortalMemberUpdateRequest, timezone: string) {
@@ -85,7 +93,7 @@ export function createPortalHouseholdService(options: {
       const current = await member(identity, memberId);
       if (!payerMayActFor(context, current, clock.now(), timezone)) throw new AppError('forbidden', 'Adults manage their own profile');
       if (photoKey !== undefined && photoKey !== current.photoKey) throw new AppError('invalid_request', 'Photos are managed by the gym');
-      await members.updateMember(actor(identity), memberId, { ...changes, ...(emergencyContacts ? { emergencyContacts: emergencyContacts.map(stored) } : {}) });
+      await members.updateMember(actor(identity), memberId, { ...changes, ...(emergencyContacts ? { emergencyContacts: emergencyContacts.map(stored) } : {}) }, 'portal');
       return member(identity, memberId);
     },
     household(identity: PortalIdentity) { return households.requirePayer(identity, 'household.read').then(() => household(identity)); },
@@ -94,7 +102,20 @@ export function createPortalHouseholdService(options: {
       await households.requirePayer(identity, 'household.manage');
       // Through the household boundary first; the members service then writes with the revision check and audit.
       await household(identity);
-      await members.updateHousehold(actor(identity), identity.householdId, changes);
+      await members.updateHousehold(actor(identity), identity.householdId, changes, 'portal');
+      return household(identity);
+    },
+    async changeMemberSmsConsent(identity: PortalIdentity, memberId: string, input: ChangeSmsConsentRequest, timezone: string) {
+      const context = await households.requireMember(identity, memberId, 'sms_consent.manage');
+      const current = await member(identity, memberId);
+      if (!payerMayActFor(context, current, clock.now(), timezone)) throw new AppError('forbidden', 'Adults manage their own consent');
+      await members.changeMemberSmsConsent(actor(identity), memberId, input, 'portal');
+      return member(identity, memberId);
+    },
+    async changeHouseholdSmsConsent(identity: PortalIdentity, input: ChangeHouseholdSmsConsentRequest) {
+      await households.requirePayer(identity, 'household.manage');
+      await household(identity);
+      await members.changeHouseholdSmsConsent(actor(identity), identity.householdId, input, 'portal');
       return household(identity);
     },
     /** Memberships are read-only in the portal; staff make every membership change. */

@@ -1,6 +1,30 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Members and households
 
+SMS choices are independent, initially off, and attached to the normalized phone
+using the gym's country. `sms` on member and household reads reports validity,
+normalized phone, and each consent's timestamp and source. The billing phone has
+notices consent only. `PUT /api/members/{memberId}/sms-consent` requires
+`members.manage`: staff may record verbal notices consent or withdraw either
+choice, but may never grant announcements consent. The household equivalent at
+`/api/households/{householdId}/sms-consent` requires `households.manage`.
+Both writes require the current revision. An unparseable phone cannot be opted in.
+Changing a member's phone clears both choices in that transaction; changing the
+billing phone clears its notices choice. Each change audits the kind, previous
+and new consent, and source without recording a phone.
+
+`sms-recipients.ts` owns notice recipient selection. Call `householdNoticePhones`
+or `memberNoticePhones` inside a gym transaction. Results group by `phoneE164`;
+`memberIds` and `householdIds` identify whom the notice covers. Pass the separate
+`consentMemberIds` and `consentHouseholdIds` as the corresponding IDs to `MemberSms`
+so its final consent check uses the actual consent holders. Billing notices use
+the consented billing phone first, otherwise consented members at the trimmed,
+case-insensitive billing email. Class notices prefer each member's consented
+phone, otherwise their consented billing phone. Only notices consent qualifies;
+anonymized members are excluded. A shared parent phone yields one entry naming
+all children covered. Delivery must still use `MemberSms` to recheck the current
+phone and consent, switch and cap immediately before sending.
+
 Member list search splits on whitespace. Every word must match at least one of
 first name, last name or email, ignoring case; literal `%` and `_` stay literal.
 The admin members list and coach check-in roster use this same query.

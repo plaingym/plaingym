@@ -106,6 +106,8 @@ export function createMembersRoutes(service?: MembersService, uploadsFor?: Membe
   }
   const contracts = c.membersContracts;
   return [
+    jsonRoute(contracts.changeMemberSmsConsent, async (ctx, p, _q, b) => ({ data: await current().service.changeMemberSmsConsent(mutation(ctx), p.memberId!, c.changeSmsConsentRequestSchema.parse(b)) })),
+    jsonRoute(contracts.changeHouseholdSmsConsent, async (ctx, p, _q, b) => ({ data: await current().service.changeHouseholdSmsConsent(mutation(ctx), p.householdId!, c.changeHouseholdSmsConsentRequestSchema.parse(b)) })),
     jsonRoute(contracts.listMembers, async (ctx, _p, q) => current().service.listMembers(ctx.gym.gymId, c.memberListQuerySchema.parse(q))),
     jsonRoute(contracts.getMember, async (ctx, p) => ({ data: await current().service.getMember(ctx.gym.gymId, p.memberId!) })),
     jsonRoute(contracts.createMember, async (ctx, _p, _q, b) => ({ data: await current().service.createMember(mutation(ctx), c.createMemberRequestSchema.parse(b)) })),

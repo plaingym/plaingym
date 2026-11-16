@@ -26,7 +26,10 @@ as their parent or guardian; an adult member sees only their own documents.
 
 `/portal/household` lets payers edit the household's contact details, their own
 profile and children's profiles, and shows each member's memberships read-only.
-An adult member sees their own profile, read-only.
+An adult member sees their own profile and can give or withdraw their own notices
+and announcements SMS consent through `sms_consent.manage`. Payers can do the same
+for themselves and children they manage, but cannot consent for another adult.
+Billing-phone notices consent stays payer-only under `household.manage`.
 Household and member saves send only changed fields. An unrelated edit preserves
 stored address and emergency-contact keys that the running release cannot read;
 editing either of those fields replaces that entire value.

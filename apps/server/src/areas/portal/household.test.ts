@@ -30,10 +30,57 @@ const json = async <T>(response: Response, schema: { parse(value: unknown): T })
 /** Every household route for a member ID, with a valid body, so a denial cannot be a validation error. */
 function memberRoutes(memberId: string, revision = 1) {
   return [['GET', `/api/portal/members/${memberId}`], ['GET', `/api/portal/members/${memberId}/memberships`],
+    ['PUT', `/api/portal/members/${memberId}/sms-consent`, { kind: 'notices', consent: false, revision }],
     ['PATCH', `/api/portal/members/${memberId}`, { firstName: 'Changed', revision }]] as const;
 }
 
 describe('portal household routes', () => {
+  it('lets a member consent for themselves and a payer for a child, and clears both on portal phone edits', async () => {
+    const f = await portalFixture(factory, { address: { country: 'US' } }), payer = app(f, payerPrincipal(f)), adult = app(f, adultPrincipal(f));
+    const staff = createMembersService({ scope: db.forGym, clock }), actor = { gymId: f.gymId, actor: { kind: 'user' as const, userId: f.staffUser.id } };
+    for (const [server, person] of [[payer, f.child], [adult, f.adult]] as const) {
+      const edited = await staff.updateMember(actor, person.id, { revision: 1, phone: '202-555-0123' });
+      let revision = edited.revision;
+      for (const kind of ['notices', 'announcements'] as const) {
+        const on = await json(await send(server, 'PUT', `/api/portal/members/${person.id}/sms-consent`, { kind, consent: true, revision }), contracts.changeMemberSmsConsent.response);
+        expect(on.data.sms[kind]).toEqual({ at: clock.now().toISOString(), source: 'portal' }); revision = on.data.revision;
+        const off = await json(await send(server, 'PUT', `/api/portal/members/${person.id}/sms-consent`, { kind, consent: false, revision }), contracts.changeMemberSmsConsent.response);
+        expect(off.data.sms[kind]).toBeNull(); revision = off.data.revision;
+        const again = await json(await send(server, 'PUT', `/api/portal/members/${person.id}/sms-consent`, { kind, consent: true, revision }), contracts.changeMemberSmsConsent.response);
+        revision = again.data.revision;
+      }
+      if (person.id === f.child.id) {
+        const changed = await json(await send(server, 'PATCH', `/api/portal/members/${person.id}`, { revision, phone: '202-555-0199' }), contracts.updateMember.response);
+        expect(changed.data.sms).toEqual({ phoneValid: true, phoneE164: '+12025550199', notices: null, announcements: null });
+      } else {
+        expect((await send(server, 'PATCH', `/api/portal/members/${person.id}`, { revision, phone: '202-555-0199' })).status).toBe(404);
+      }
+    }
+    for (const person of [f.child, f.payer, f.outsider])
+      expect((await send(adult, 'PUT', `/api/portal/members/${person.id}/sms-consent`, { kind: 'announcements', consent: true, revision: 1 })).status).toBe(404);
+    expect((await send(payer, 'PUT', `/api/portal/members/${f.adult.id}/sms-consent`, { kind: 'announcements', consent: true, revision: 1 })).status).toBe(403);
+  });
+  it('reserves billing-phone notices consent for the payer and clears it on a portal phone edit', async () => {
+    const f = await portalFixture(factory), payer = app(f, payerPrincipal(f)), adult = app(f, adultPrincipal(f));
+    const path = '/api/portal/household/sms-consent';
+    expect((await send(adult, 'PUT', path, { consent: true, revision: 1 })).status).toBe(404);
+    expect((await send(payer, 'PUT', path, { consent: true, revision: 1 })).status).toBe(400);
+    const edited = await json(await send(payer, 'PATCH', '/api/portal/household', { phone: '+12025550123', revision: 1 }), contracts.updateHousehold.response);
+    const on = await json(await send(payer, 'PUT', path, { consent: true, revision: edited.data.revision }), contracts.changeHouseholdSmsConsent.response);
+    expect(on.data.sms.notices?.source).toBe('portal');
+    expect((await send(payer, 'PUT', path, { consent: false, revision: 1 })).status).toBe(409);
+    const off = await json(await send(payer, 'PUT', path, { consent: false, revision: on.data.revision }), contracts.changeHouseholdSmsConsent.response);
+    expect(off.data.sms.notices).toBeNull();
+    const again = await json(await send(payer, 'PUT', path, { consent: true, revision: off.data.revision }), contracts.changeHouseholdSmsConsent.response);
+    const changed = await json(await send(payer, 'PATCH', '/api/portal/household', { phone: '+12025550199', revision: again.data.revision }), contracts.updateHousehold.response);
+    expect(changed.data.sms.notices).toBeNull();
+    const other = app(f, otherPayerPrincipal(f));
+    const otherRead = await json(await other.request('/api/portal/household'), contracts.household.response);
+    expect(otherRead.data.sms).toEqual({ phoneValid: false, phoneE164: null, notices: null });
+    expect((await send(other, 'PUT', path, { consent: true, revision: 1 })).status).toBe(400);
+    const logs = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'household.sms_consent_changed')));
+    expect(logs).toHaveLength(4); expect(JSON.stringify(logs.map(log => [log.before, log.after]))).not.toContain('1202555');
+  });
   it('projects extended stored emergency contacts and still refuses extensions on portal writes', async () => {
     const f = await portalFixture(factory), server = app(f, payerPrincipal(f));
     const contact = { name: 'Grandparent', relationship: null, phone: '555-0100', email: null, future: true };
@@ -176,6 +223,7 @@ describe('portal household routes', () => {
   it('returns 404 for other households, other gyms and non-member sessions on every route', async () => {
     const f = await portalFixture(factory), foreign = await portalFixture(factory);
     const all = (memberId: string) => [...memberRoutes(memberId), ['GET', '/api/portal/members'], ['GET', '/api/portal/household'],
+      ['PUT', '/api/portal/household/sms-consent', { consent: false, revision: 1 }],
       ['PATCH', '/api/portal/household', { phone: '1', revision: 1 }]] as const;
     const payer = app(f, payerPrincipal(f));
     for (const memberId of [f.outsider.id, foreign.child.id])

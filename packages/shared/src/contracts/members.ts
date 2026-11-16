@@ -9,6 +9,18 @@ import {
 const nameSchema = z.string().trim().min(1);
 const nullableTextSchema = z.string().nullable();
 
+export const smsConsentSchema = z.strictObject({ at: instantSchema, source: z.enum(['join', 'portal', 'staff']) });
+export const householdSmsSchema = z.strictObject({
+  phoneValid: z.boolean(), phoneE164: z.string().nullable(), notices: smsConsentSchema.nullable(),
+});
+export const memberSmsSchema = householdSmsSchema.extend({ announcements: smsConsentSchema.extend({ source: z.enum(['join', 'portal']) }).nullable() });
+export const changeSmsConsentRequestSchema = z.strictObject({
+  kind: z.enum(['notices', 'announcements']), consent: z.boolean(), revision: revisionSchema,
+});
+export const changeHouseholdSmsConsentRequestSchema = z.strictObject({ consent: z.boolean(), revision: revisionSchema });
+export type ChangeSmsConsentRequest = z.infer<typeof changeSmsConsentRequestSchema>;
+export type ChangeHouseholdSmsConsentRequest = z.infer<typeof changeHouseholdSmsConsentRequestSchema>;
+
 export { memberStatusSchema } from './states.js';
 export const householdAddressSchema = z.strictObject({
   line1: z.string().optional(),
@@ -36,6 +48,7 @@ export const householdMemberSchema = z.strictObject({
   lastName: nameSchema,
   email: z.email().nullable(),
   phone: nullableTextSchema,
+  sms: memberSmsSchema,
   photoKey: nullableTextSchema,
   dateOfBirth: dateSchema.nullable(),
   status: memberStatusSchema,
@@ -88,6 +101,7 @@ export const householdSchema = z.strictObject({
   name: nameSchema,
   email: z.email().nullable(),
   phone: nullableTextSchema,
+  sms: householdSmsSchema,
   address: householdAddressSchema,
   revision: revisionSchema,
   createdAt: instantSchema,
@@ -179,6 +193,10 @@ export const householdUserListResponseSchema = listResponseSchema(householdUserS
  * Medical writes require BOTH permissions, checked before reading or changing the record.
  */
 export const membersContracts = {
+  changeMemberSmsConsent: { method: 'put', path: '/api/members/{memberId}/sms-consent', permission: { kind: 'staff', capability: 'members.manage' },
+    params: memberParamsSchema, body: changeSmsConsentRequestSchema, response: memberResponseSchema },
+  changeHouseholdSmsConsent: { method: 'put', path: '/api/households/{householdId}/sms-consent', permission: { kind: 'staff', capability: 'households.manage' },
+    params: householdParamsSchema, body: changeHouseholdSmsConsentRequestSchema, response: householdResponseSchema },
   listMembers: { method: 'get', path: '/api/members', permission: { kind: 'staff', capability: 'members.read' },
     query: memberListQuerySchema, response: memberListResponseSchema },
   getMember: { method: 'get', path: '/api/members/{memberId}', permission: { kind: 'staff', capability: 'members.read' },

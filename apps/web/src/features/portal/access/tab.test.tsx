@@ -11,6 +11,7 @@ import { PortalAccessTab } from './tab.js';
 vi.mock('../../../app/context.js', () => ({ useBootstrap: vi.fn() }));
 const homeId = '019ab4f0-0000-7000-8000-000000000001', memberId = '019ab4f0-0000-7000-8000-000000000002', inviteId = '019ab4f0-0000-7000-8000-000000000003';
 const person = { id: memberId, householdId: homeId, firstName: 'Alex', lastName: 'Smith', email: null, phone: null, photoKey: null, dateOfBirth: '1990-01-01',
+  sms: { phoneValid: false, phoneE164: null, notices: null, announcements: null },
   status: 'active', emergencyContacts: [], emailOptOut: false, emailDeliverable: true, anonymizedAt: null, revision: 1, createdAt: '2026-10-22T12:00:00Z' };
 const invitation = { id: inviteId, scope: 'member', memberId, memberName: 'Alex Smith', email: 'alex@example.test', expiresAt: '2026-11-04T12:00:00.000Z' };
 let outstanding: unknown[] = [], fail = false, listFails = false, uncertain = false;

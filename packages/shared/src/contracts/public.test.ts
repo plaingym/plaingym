@@ -97,7 +97,7 @@ describe('public response validation', () => {
     const signed = { ...signature, signer: { kind: 'self', name: 'Visitor' } };
     const person = { member, signatures: [signed] };
     const input = { contact, planId: id, honeypot: '', members: [person] };
-    expect(joinAdmissionSchema.parse(input)).toEqual(input);
+    expect(joinAdmissionSchema.parse(input)).toEqual({ ...input, smsNoticesConsent: false, smsAnnouncementsConsent: false });
     for (const members of [[], Array.from({ length: 7 }, () => person), [{ member, signatures: [] }],
       [{ member, signatures: Array.from({ length: 9 }, () => signed) }], [{ member, signatures: [signature] }]])
       expect(joinAdmissionSchema.safeParse({ ...input, members }).success).toBe(false);
@@ -115,6 +115,22 @@ describe('public response validation', () => {
       expect(schema.parse({ ...input, code: '50% off!' }).code).toBe('50% off!');
       expect(schema.safeParse({ ...input, code: 'x'.repeat(101) }).success).toBe(false);
       expect(schema.safeParse({ ...input, code: 25 }).success).toBe(false);
+    }
+  });
+  it('defaults the two join-only SMS choices off and accepts only boolean choices', () => {
+    const admission = { contact, planId: id, honeypot: '', members: [{ member, signatures: [{ ...signature, signer: { kind: 'self', name: 'Visitor' } }] }] };
+    const submission = { planId: id, contact, members: [{ member, waivers: [waiver] }], honeypot: '' };
+    for (const [schema, input] of [[joinAdmissionSchema, admission], [publicJoinRequestSchema, submission]] as const) {
+      expect(schema.parse(input)).toMatchObject({ smsNoticesConsent: false, smsAnnouncementsConsent: false });
+      for (const key of ['smsNoticesConsent', 'smsAnnouncementsConsent']) {
+        expect(schema.parse({ ...input, [key]: true })).toHaveProperty(key, true);
+        expect(schema.safeParse({ ...input, [key]: 'true' }).success).toBe(false);
+        expect(schema.safeParse({ ...input, contact: { ...contact, [key]: true } }).success).toBe(false);
+      }
+    }
+    for (const key of ['smsNoticesConsent', 'smsAnnouncementsConsent']) {
+      expect(publicTrialRequestSchema.safeParse({ contact, member, honeypot: '', [key]: true }).success).toBe(false);
+      expect(publicDropInRequestSchema.safeParse({ contact, member, honeypot: '', waivers: [waiver], [key]: true }).success).toBe(false);
     }
   });
 });

@@ -13,6 +13,7 @@ import { useDialogSaved } from '../../components/ui/dialog.js';
 import { memberRequest } from './api.js';
 import { Field, Panel, ErrorMessage, text, useDraft, useMemberSave } from './common.js';
 import { basisPointsToPercent, percentToBasisPoints } from '../billing/discounts/percent.js';
+import { StaffSmsConsent } from './sms-consent.js';
 
 export function HouseholdsManager({ gymId }: { gymId: string }) {
   const [search, setSearch] = useState(''), [offset, setOffset] = useState(0), [selected, setSelected] = useState('');
@@ -59,6 +60,7 @@ export function HouseholdDetails({ householdId, gymId, onDeleted }: { householdI
   const billing = useQuery({ queryKey: ['members', gymId, 'billing', householdId], queryFn: ({ signal }) => memberRequest(c.householdBillingSettingsResponseSchema, `/api/households/${householdId}/billing-settings`, 'GET', undefined, signal) });
   return <Panel title={text('household')}><ErrorMessage error={query.error}/>{query.isPending && <LoadingState label={text('loading')}/>}{query.data && <>
     <HouseholdForm household={query.data.data}/>
+    <StaffSmsConsent record={query.data.data} household/>
     <PinForm household={query.data.data}/>
     {billing.data && <BillingForm billing={billing.data.data}/>}
     {onDeleted && <DeleteHousehold household={query.data.data} onDeleted={onDeleted}/>}
