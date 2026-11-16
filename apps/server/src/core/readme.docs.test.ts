@@ -23,8 +23,36 @@ describe('root README and development guide', () => {
     expect(missing, `${relative(root, file)} links to missing files`).toEqual([]);
   });
 
-  it('finds the README screenshots', () => {
-    const targets = localTargets(readFileSync(resolve(root, 'README.md'), 'utf8'));
-    expect(targets.filter((target) => target.endsWith('.webp')).length).toBeGreaterThanOrEqual(10);
+  it('links every screenshot to its full-size light image and keeps its dark source', () => {
+    const markdown = readFileSync(resolve(root, 'README.md'), 'utf8');
+    const pictures = [...markdown.matchAll(/<picture>[\s\S]*?<\/picture>/g)];
+    expect(pictures).toHaveLength(11); // Hero and ten features.
+    for (const [picture] of pictures) {
+      const image = /<img\b[^>]*\bsrc="([^"]+)"/.exec(picture)?.[1];
+      expect(image).toMatch(/^apps\/server\/src\/demo\/screenshots\/[a-z]+-light-2x-[a-f0-9]+\.webp$/);
+      expect(markdown).toContain(`<a href="${image}">\n${picture}\n</a>`);
+      const sources = [...picture.matchAll(/<source\b[^>]*>/g)].map(([source]) => source);
+      expect(sources).toHaveLength(1);
+      expect(sources[0]).toContain('media="(prefers-color-scheme: dark)"');
+      const dark = /\bsrcset="([^"]+)"/.exec(sources[0]!)?.[1];
+      const screen = image!.split('/').at(-1)!.split('-light-')[0];
+      expect(dark).toMatch(new RegExp(`^apps/server/src/demo/screenshots/${screen}-dark-2x-[a-f0-9]+\\.webp$`));
+      for (const target of [image!, dark!]) {
+        expect(existsSync(resolve(root, target)), `${target} exists`).toBe(true);
+      }
+    }
+  });
+
+  it('shows each feature below its heading and text, with centred phone screenshots', () => {
+    const markdown = readFileSync(resolve(root, 'README.md'), 'utf8');
+    const features = markdown.split('## Features\n')[1]!.split('\n## Get started')[0]!;
+    expect(features).not.toMatch(/<t(?:able|r|d)\b/);
+    const sections = features.split('### ').slice(1);
+    expect(sections).toHaveLength(10);
+    for (const section of sections) {
+      expect(section).toMatch(/^[^\n]+\n\n[^<]+\n\n<p align="center">\n<a href=/);
+      const phone = section.startsWith('Member portal\n') || section.startsWith('Waivers and onboarding\n');
+      expect(section).toContain(`width="${phone ? '55%' : '100%'}"`);
+    }
   });
 });
