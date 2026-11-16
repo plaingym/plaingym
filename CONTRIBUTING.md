@@ -17,6 +17,12 @@ Before your first pull request can be merged, you sign our [Contributor License 
 * **Every version published under AGPL-3.0-only stays available under it.**
 * It includes a patent license, and you confirm that you have the right to contribute what you submit (including your employer's permission, if needed).
 
+## Bugs and Feedback
+
+* **Bugs:** open an issue with the bug report form. It asks for the version (on the admin's **System health** page, or from `/healthz`), how PlainGym is running, and steps to reproduce.
+* **Feedback, ideas and questions:** start a thread in [Discussions](https://github.com/plaingym/plaingym/discussions).
+* **Security problems:** report them privately, never in an issue or discussion ([`SECURITY.md`](SECURITY.md)).
+
 ## Branches and Pull Requests
 
 * `main` is the only long-lived branch. Fork the repository, branch from `main`, and open your pull request against `main`.

@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/plaingym/plaingym/security/advisories/new
+    about: Report vulnerabilities privately, never in a public issue.
+  - name: Feedback, ideas and questions
+    url: https://github.com/plaingym/plaingym/discussions
+    about: Share what you think, suggest a feature or ask how something works.

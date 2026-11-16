@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying PlainGym. Anything helps: first impressions, what confused you, what's missing for your gym, or what you'd do differently in the code. Found a bug? Please [open a bug report](https://github.com/plaingym/plaingym/issues/new/choose) instead. Security problems go through [private reporting](https://github.com/plaingym/plaingym/blob/main/SECURITY.md).
+  - type: dropdown
+    id: role
+    attributes:
+      label: You are
+      options:
+        - A gym owner or staff member
+        - A coach or member
+        - A self-hoster or sysadmin
+        - A developer
+        - Other
+  - type: textarea
+    id: feedback
+    attributes:
+      label: Your feedback
+    validations:
+      required: true

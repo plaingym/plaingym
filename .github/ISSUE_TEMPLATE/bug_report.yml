@@ -1,0 +1,88 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+name: Bug report
+description: Something in PlainGym doesn't work as it should.
+title: 'bug: '
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. **Security problems go through private reporting, never a public issue** (see [SECURITY.md](https://github.com/plaingym/plaingym/blob/main/SECURITY.md)).
+
+        Please leave out member names, emails, phone numbers, payment details and other personal data, and remove secrets (keys, tokens, passwords) from any logs you paste.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What went wrong, and what you expected to happen instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The shortest steps that show the problem, starting from a screen or command.
+      placeholder: |
+        1. Sign in as the owner and open Members
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The version on the admin's **System health** page, or from `https://<your-host>/healthz`. For the demo, write "demo".
+      placeholder: 0.6.0
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How it's running
+      options:
+        - The public demo
+        - One-command install
+        - Cloud-init
+        - Docker Compose (by hand)
+        - Local development checkout
+        - Other (say below)
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where it happens
+      multiple: true
+      options:
+        - Staff admin
+        - Member portal
+        - Check-in kiosk
+        - Public pages (join, trial, drop-in)
+        - Gym website
+        - Billing and Stripe
+        - Emails or texts
+        - Install, update, backup or restore
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Browser and device
+      description: For screen problems, for example "Safari on iPhone 15" or "Chrome 131 on Windows".
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Relevant lines from `docker compose logs app`, the browser console, or a screenshot. Remove personal data and secrets first.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched the existing issues and this one isn't there yet.
+          required: true
+        - label: This isn't a security problem (those go through private reporting, see SECURITY.md).
+          required: true
