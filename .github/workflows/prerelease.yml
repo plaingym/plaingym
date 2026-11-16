@@ -16,11 +16,15 @@ concurrency:
 jobs:
   prerelease:
     # The most the called jobs may use: the plan reads workflow runs, and only the publish job on main, in the
-    # prerelease-main environment, writes the tag, release and image. No secrets are passed.
+    # prerelease-main environment, writes the tag, release and image.
+    # The called workflow sees an environment's secrets only when its caller passes secrets on, so this inherits.
+    # The repository and organization hold no secrets; each key lives in its own environment, and prerelease-main
+    # admits only the main branch, so this run can reach PRERELEASE_SIGNING_KEY and never RELEASE_SIGNING_KEY.
     permissions:
       contents: write
       packages: write
       actions: read
     uses: ./.github/workflows/release.yml
+    secrets: inherit
     with:
       prerelease: true

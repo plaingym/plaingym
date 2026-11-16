@@ -157,9 +157,12 @@ test('each signing key is reachable only from its own job, and no workflow write
   assert.match(nightly, /gh release create "\$VERSION" .*--target "\$GITHUB_SHA" --prerelease --latest=false/);
   // The dry run has no secrets, and nothing commits, pushes a branch or moves a ref.
   assert.doesNotMatch(job(release, 'dry-run'), /secrets\./);
-  for (const text of [release, prerelease]) assert.doesNotMatch(text, /git (?:push|commit|tag )|secrets: inherit|git\/refs/);
+  for (const text of [release, prerelease]) assert.doesNotMatch(text, /git (?:push|commit|tag )|git\/refs/);
+  // release.yml takes no secrets from its caller; prerelease.yml's one call inherits them (see its comment).
+  assert.doesNotMatch(release, /secrets: inherit|workflow_call:\n(?: {4,}[^\n]*\n)*? {4}secrets:/);
   // The nightly schedule, before the demo's update window, calls the Release workflow's own steps.
   assert.match(prerelease, /- cron: '30 5 \* \* \*'/);
-  assert.match(prerelease, /^ {4}uses: \.\/\.github\/workflows\/release\.yml\n {4}with:\n {6}prerelease: true$/m);
-  assert.doesNotMatch(prerelease, /secrets[.:]/);
+  assert.match(prerelease, /^ {4}uses: \.\/\.github\/workflows\/release\.yml\n {4}secrets: inherit\n {4}with:\n {6}prerelease: true$/m);
+  assert.equal([...prerelease.matchAll(/^\s*secrets:/gm)].length, 1);
+  assert.doesNotMatch(prerelease, /secrets\./);
 });
