@@ -16,7 +16,8 @@ import { createGymSettingsAccessor, readGymSettings } from '../../areas/settings
 import { addsTaxOnTop } from '../../areas/billing/invoicing/adds-tax-on-top.js';
 import { signedLinkWaiversComplete, type WaiversService } from '../../areas/waivers/waivers.js';
 import { needsGuardian, validateSignatureImage } from '../../areas/waivers/snapshot.js';
-import { createMembershipService } from '../../areas/billing/memberships.js';
+import { createMembershipService, reconcileMemberStatus } from '../../areas/billing/memberships.js';
+import { parseSignatureImageKey } from '../../areas/waivers/signature-image-key.js';
 import { recordLeadIntake } from '../../areas/leads/intake.js';
 import { calculateCycleInvoice, calculateOneOffInvoice } from '../../areas/billing/invoicing/index.js';
 import { issue, system } from '../../areas/billing/runner/store.js';
@@ -117,6 +118,30 @@ async function recorded<T extends z.ZodType>(tx: Transaction, action: string, ho
 const marked = async (tx: Transaction, action: string, householdId: string) => (await tx.select({ id: auditEvents.id }).from(auditEvents)
   .where(and(eq(auditEvents.action, action), eq(auditEvents.targetId, householdId))).limit(1)).length > 0;
 
+export interface JoinFieldProblem { path: (string | number)[]; kind: 'field' | 'birthDate' | 'guardian' }
+/** The service and native form use the same applicant and signer rules, including field locations. */
+export function joinFieldProblems(contact: c.PublicContact,
+  people: readonly { member: c.PublicApplicant; signatures: readonly { signer: c.WaiverSigner }[] }[], now: Date, timezone: string): JoinFieldProblem[] {
+  const problems: JoinFieldProblem[] = [], today = localDate(now, timezone);
+  const bound = (value: string | undefined, max: number, path: (string | number)[]) => {
+    if ((value?.trim().length ?? 0) > max) problems.push({ path, kind: 'field' });
+  };
+  bound(contact.name, 200, ['contact', 'name']); bound(contact.email, 254, ['contact', 'email']); bound(contact.phone, 100, ['contact', 'phone']);
+  people.forEach(({ member, signatures }, i) => {
+    const prefix = ['members', i];
+    bound(member.firstName, 200, [...prefix, 'member', 'firstName']); bound(member.lastName, 200, [...prefix, 'member', 'lastName']);
+    const dated = c.dateSchema.safeParse(member.dateOfBirth).success;
+    if (dated && member.dateOfBirth > today) problems.push({ path: [...prefix, 'member', 'dateOfBirth'], kind: 'birthDate' });
+    signatures.forEach(({ signer }, j) => {
+      const path = [...prefix, 'signatures', j, 'signer'];
+      bound(signer.name, 200, [...path, 'name']);
+      if (signer.kind === 'guardian') bound(signer.relationship, 100, [...path, 'relationship']);
+      if (dated && needsGuardian(member.dateOfBirth, now, timezone) && signer.kind !== 'guardian') problems.push({ path, kind: 'guardian' });
+    });
+  });
+  return problems;
+}
+
 export function createJoinService(options: JoinOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const settings = (gymId: string) => scope(gymId, tx => readGymSettings(tx, gymId));
@@ -134,16 +159,9 @@ export function createJoinService(options: JoinOptions) {
     writeAudit(tx, { gymId, actorKind: 'system', action, targetType, targetId, occurredAt: clock.now(),
       ...(after === undefined ? {} : { after }), ...(before === undefined ? {} : { before }) });
 
-  function applicants(contact: c.PublicContact, people: readonly c.PublicApplicant[], timezone: string) {
-    const today = localDate(clock.now(), timezone);
-    if (contact.name.length > 200 || contact.email.length > 254 || (contact.phone?.length ?? 0) > 100
-      || people.some(p => p.dateOfBirth > today || p.firstName.length > 200 || p.lastName.length > 200)) invalid('Invalid applicant');
-  }
-  function signers(people: readonly { member: c.PublicApplicant; signatures: readonly { signer: c.WaiverSigner }[] }[], timezone: string) {
-    for (const person of people) for (const { signer } of person.signatures) {
-      if (needsGuardian(person.member.dateOfBirth, clock.now(), timezone) && signer.kind !== 'guardian') invalid('A parent or guardian must sign for a minor');
-      if (signer.name.length > 200 || signer.kind === 'guardian' && signer.relationship.length > 100) invalid('Signer details too long');
-    }
+  function validateFields(contact: c.PublicContact, people: Parameters<typeof joinFieldProblems>[1], timezone: string) {
+    const problems = joinFieldProblems(contact, people, clock.now(), timezone);
+    if (problems.length) throw new AppError('invalid_request', 'Invalid applicant or signer', { fields: problems.map(p => p.path.join('.')) });
   }
   /** The plan row when it can be paid for online; a submission needs no tax lookup. */
   async function joinableRow(gymId: string, planId: string) {
@@ -173,9 +191,8 @@ export function createJoinService(options: JoinOptions) {
   }
   /** The private image keys name the admitted members; the submission must repeat exactly what was admitted. */
   async function admission(gymId: string, input: c.PublicJoinRequest) {
-    const key = new RegExp(`^${gymId}/waivers/([0-9a-f-]{36})/signatures/[0-9a-f-]{36}\\.png$`);
     const ids = input.members.map(m => {
-      const owners = new Set(m.waivers.map(w => key.exec(w.signatureImageKey)?.[1]));
+      const owners = new Set(m.waivers.map(w => { const key = parseSignatureImageKey(w.signatureImageKey); return key?.gymId === gymId ? key.memberId : undefined; }));
       const [id] = owners;
       return owners.size === 1 && id && c.idSchema.safeParse(id).success ? id : missing();
     });
@@ -190,11 +207,14 @@ export function createJoinService(options: JoinOptions) {
       if (!home || !record || record.planId !== input.planId || record.memberIds.length !== ids.length || home.email !== input.contact.email
         || home.name !== input.contact.name || home.phone !== (input.contact.phone ?? null) || !isDeepStrictEqual(c.householdAddressReadSchema.parse(home.address), input.contact.address ?? {})) missing();
       // A submitted join replays even after its memberships were frozen or cancelled.
-      const statuses = await marked(tx, 'public.join.received', householdId)
-        ? ['prospect', 'trial', 'active', 'frozen', 'cancelled'] : ['prospect', 'trial', 'active'];
+      const replay = await marked(tx, 'public.join.received', householdId);
+      const joined = replay ? await tx.select({ id: memberships.id, status: memberships.status }).from(memberships)
+        .where(inArray(memberships.id, record.membershipIds)) : [];
       const membershipIds = ids.map((id, i) => {
         const index = record.memberIds.indexOf(id), person = people.find(p => p.id === id)!, requested = input.members[i]!.member;
-        if (index < 0 || person.anonymizedAt || !statuses.includes(person.status) || person.firstName !== requested.firstName
+        const statusAllowed = ['prospect', 'trial', 'active'].includes(person.status)
+          || replay && ['frozen', 'cancelled'].includes(person.status) && joined.some(m => m.id === record.membershipIds[index] && m.status === person.status);
+        if (index < 0 || person.anonymizedAt || !statusAllowed || person.firstName !== requested.firstName
           || person.lastName !== requested.lastName || person.dateOfBirth !== requested.dateOfBirth) missing();
         return record.membershipIds[index]!;
       });
@@ -349,12 +369,8 @@ export function createJoinService(options: JoinOptions) {
         await audit(tx, gymId, 'public.join.trial_started', 'membership', membership.id, { status: 'trial', revision: membership.revision + 1 },
           { status: membership.status, revision: membership.revision });
       }
-      for (const person of await tx.select().from(members).where(inArray(members.id, record.memberIds)).for('update')) {
-        if (person.status !== 'prospect' || person.anonymizedAt) continue;
-        const status = joinedMemberships.some(m => m.memberId === person.id && m.trialEndsOn && ['pending', 'trial'].includes(m.status)) ? 'trial' : 'active';
-        await tx.update(members).set({ status, revision: person.revision + 1 }).where(and(eq(members.id, person.id), eq(members.revision, person.revision)));
-        await audit(tx, gymId, 'public.join.member_activated', 'member', person.id, { status, revision: person.revision + 1 },
-          { status: person.status, revision: person.revision });
+      for (const membership of joinedMemberships) {
+        await reconcileMemberStatus(tx, system(gymId), clock, membership.memberId, membership.id, 'public.join.completed');
       }
       await audit(tx, gymId, 'public.join.completed', 'household', householdId);
       // No mail proves the address in password mode: staff check the person, then issue a printed invitation.
@@ -407,12 +423,11 @@ export function createJoinService(options: JoinOptions) {
       return scope(gymId, tx => readPublicBranding(tx, gymId));
     },
     /** Creates the new household and its prospects, then stores each validated signature image. Never looks up an address. */
-    async admit(gymId: string, body: unknown, timezone: string) {
+    async admit(gymId: string, body: unknown, timezone: string, preparedTemplates?: readonly c.WaiverTemplate[]) {
       const input = c.joinAdmissionSchema.parse(body);
-      applicants(input.contact, input.members.map(m => m.member), timezone);
-      signers(input.members, timezone);
+      validateFields(input.contact, input.members, timezone);
       await joinableRow(gymId, input.planId);
-      const templates = await ready(gymId);
+      const templates = preparedTemplates ?? await ready(gymId);
       input.members.forEach(m => current(templates, m.signatures));
       const images = input.members.map(m => m.signatures.map(s => Buffer.from(s.pngBase64, 'base64')));
       images.flat().forEach(validateSignatureImage);
@@ -470,8 +485,7 @@ export function createJoinService(options: JoinOptions) {
     async join(gymId: string, body: unknown, timezone: string, ipAddress: string) {
       const input = c.publicJoinRequestSchema.parse(body);
       if (input.members.length > c.maxJoinMembers) invalid('Too many members');
-      applicants(input.contact, input.members.map(m => m.member), timezone);
-      signers(input.members.map(m => ({ member: m.member, signatures: m.waivers })), timezone);
+      validateFields(input.contact, input.members.map(m => ({ member: m.member, signatures: m.waivers })), timezone);
       const selectedPlan = await joinableRow(gymId, input.planId);
       const templates = await ready(gymId);
       input.members.forEach(m => current(templates, m.waivers));
@@ -480,8 +494,6 @@ export function createJoinService(options: JoinOptions) {
       if (done) { await settleFree(gymId, found.householdId); return { linkId: done.linkId }; }
       // A day's grace for midnight; an older admission would start memberships, and bill periods, in the past.
       if (joinAdmissionExpired(today, clock.now(), timezone)) changed();
-      for (const m of input.members) if (needsGuardian(m.member.dateOfBirth, clock.now(), timezone) && m.waivers.some(w => w.signer.kind !== 'guardian'))
-        invalid('A parent or guardian must sign for a minor');
       // The code must be the one admitted. Leaving it out continues without the discount; once the join has taken its
       // uses, it keeps them, with or without the code. A refusal here comes before anything is signed or taken.
       const code = input.code || undefined;

@@ -60,7 +60,7 @@ it('protects a signing claim made after the sweep listed an old image, including
     const files = await list(prefix); listed.release(); await resumeList.promise; return files;
   });
   const sweeping = f.sweep(); await listed.promise;
-  const service = createWaiversService({ ...f.options, render: async () => {
+  const service = createWaiversService({ ...f.options, preflight: async () => {
     rendering.release(); await finishRender.promise; return new Uint8Array();
   } });
   const signing = service.sign(f.ctx, f.input, f.signing); await rendering.promise;
@@ -111,7 +111,7 @@ it('marks the old images of a removed member, which no signature can reference',
 });
 it('reclaims an abandoned signing claim and refuses a late signature commit', async () => {
   const f = await fixture(), rendering = gate(), finishRender = gate();
-  const service = createWaiversService({ ...f.options, render: async () => {
+  const service = createWaiversService({ ...f.options, preflight: async () => {
     rendering.release(); await finishRender.promise; return new Uint8Array();
   } });
   const signing = service.sign(f.ctx, f.input, f.signing), rejected = expect(signing).rejects.toMatchObject({ code: 'not_found' });

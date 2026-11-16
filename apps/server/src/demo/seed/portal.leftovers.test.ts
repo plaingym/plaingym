@@ -54,8 +54,8 @@ it('finishes a CLI rerun after a failed current student charge without charging 
 it('reuses one uploaded sample signature after rendering fails before signing', async () => {
   const { gymId } = db.seeded, f = fixture(false), { member } = await studentRows(db, gymId);
   await db.forGym(gymId, tx => tx.delete(waiverSignatures).where(eq(waiverSignatures.memberId, member.id)));
-  const uploads = new FakeUploads(gymId, f.clock), render = vi.fn().mockRejectedValueOnce(new Error('Renderer unavailable')).mockResolvedValue(new Uint8Array());
-  const step = portalSeed({ scope: db.forGym, clock: f.clock, pinSecret: null, uploadsFor: async () => uploads, render });
+  const uploads = new FakeUploads(gymId, f.clock), preflight = vi.fn().mockRejectedValueOnce(new Error('Renderer unavailable')).mockResolvedValue(new Uint8Array());
+  const step = portalSeed({ scope: db.forGym, clock: f.clock, pinSecret: null, uploadsFor: async () => uploads, preflight });
   const context = { gymId, timezone: 'UTC', enabledModules: new Set<string>() };
   await expect(step.run(context)).rejects.toThrow('Renderer unavailable');
   const [image] = await uploads.list();
@@ -71,7 +71,7 @@ it('never reuses a deleted sample signature or one that signed other terms', asy
   const uploads = new FakeUploads(gymId, f.clock), deleted = `${gymId}/waivers/${member.id}/signatures/${uuidv7()}.png`;
   await uploads.put(deleted, demoSignaturePng(), 'image/png');
   await uploads.markDeleted(deleted);
-  const options = { scope: db.forGym, clock: f.clock, uploadsFor: async () => uploads, render: async () => new Uint8Array() };
+  const options = { scope: db.forGym, clock: f.clock, uploadsFor: async () => uploads, preflight: async () => new Uint8Array() };
   const step = portalSeed({ ...options, pinSecret: null }), context = { gymId, timezone: 'UTC', enabledModules: new Set<string>() };
   await step.run(context);
   const [first] = (await studentRows(db, gymId)).signatures;

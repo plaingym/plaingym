@@ -14,14 +14,16 @@ import type { Uploads } from '../../infra/storage/index.js';
 import { DemoUploads } from '../../demo/uploads.js';
 import { reserveDemoSignature } from '../../demo/waiver-signatures.js';
 import { digest, invalid, needsGuardian, readSnapshot, serializeSnapshot, validateSignatureImage } from './snapshot.js';
-import { renderWaiver, validateTemplatePdf } from './pdf.js';
+import { preflightWaiver, renderWaiver, validateTemplatePdf } from './pdf.js';
+import { parseSignatureImageKey } from './signature-image-key.js';
 import { validateDocumentPdf } from '../../infra/pdf/document.js';
-import { headWaiverDocument, readWaiverDocument, type WaiverDocumentDelivery } from './document-delivery.js';
+import { headWaiverDocument, readWaiverDocument, verifyWaiverDocument, type WaiverDocumentDelivery } from './document-delivery.js';
 import { checkSignatureImage } from './signature-images.js';
 
 export interface WaiverOptions {
   scope?: typeof forGym; clock?: Clock; uploadsFor: (gymId: string) => Promise<Uploads>;
   render?: typeof renderWaiver;
+  preflight?: typeof preflightWaiver;
   documentDelivery?: WaiverDocumentDelivery;
 }
 /** Shared signed-link completion rule, matching the household current-template projection. */
@@ -70,7 +72,8 @@ export function createWaiversService(options: WaiverOptions) {
     return latest!;
   }
   async function image(gymId: string, memberId: string, key: string, hash: string) {
-    if (!key.startsWith(`${gymId}/waivers/${memberId}/signatures/`)) notFound();
+    const parsed = parseSignatureImageKey(key);
+    if (!parsed || parsed.gymId !== gymId || parsed.memberId !== memberId) notFound();
     const uploads = await options.uploadsFor(gymId), info = await uploads.head(key);
     if (!info || info.deletedAt || info.contentType !== 'image/png' || info.size > 256 * 1024) notFound();
     const stream = await uploads.get(key); if (!stream) notFound();
@@ -219,11 +222,12 @@ export function createWaiversService(options: WaiverOptions) {
       }
       const prepared = await scope(ctx.gymId, tx => prepare(tx, true));
       if (prepared.kind === 'existing') return prepared.value;
-      // Never persist a snapshot whose full layout or signature PNG cannot render.
-      // No rendering/storage work runs inside either short transaction.
+      // Never persist a snapshot whose details or signature PNG cannot render, or whose document bytes changed.
+      // No rendering/storage work runs inside either short transaction. The document check streams, so concurrent
+      // signings never hold whole documents outside the PDF queue.
       const preparedDocument = readSnapshot(prepared.snapshot.snapshot, prepared.snapshot.snapshotHash).template.document;
-      await (options.render ?? renderWaiver)(prepared.snapshot.snapshot, prepared.snapshot.snapshotHash, png,
-        preparedDocument ? () => documentBytes(ctx.gymId, preparedDocument) : undefined, ctx.gymId);
+      await (options.preflight ?? preflightWaiver)(prepared.snapshot.snapshot, prepared.snapshot.snapshotHash, png,
+        preparedDocument ? async () => verifyWaiverDocument(await options.uploadsFor(ctx.gymId), ctx.gymId, preparedDocument) : undefined);
       return scope(ctx.gymId, async tx => {
         const checked = await prepare(tx);
         if (checked.kind === 'existing') return checked.value;

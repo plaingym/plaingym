@@ -108,16 +108,16 @@ describe('waiver document delivery', () => {
     const f = await fixture();
     const changed = Uint8Array.from(f.bytes); changed[10] = 0;
     f.uploads.get = async () => new ReadableStream({ start(controller) { controller.enqueue(changed); controller.close(); } });
-    await expect(f.delivery.read(f.gymId, f.token)).rejects.toThrow('Waiver document integrity failure');
+    await expect(body(await f.delivery.read(f.gymId, f.token))).rejects.toThrow('Waiver document integrity failure');
   });
   it('cancels an oversized object stream before serving any bytes', async () => {
     const f = await fixture(); let cancelled = false;
     f.uploads.get = async () => new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array(f.bytes.length + 1)); },
       cancel() { cancelled = true; } });
-    await expect(f.delivery.read(f.gymId, f.token)).rejects.toThrow('Waiver document integrity failure');
+    await expect(body(await f.delivery.read(f.gymId, f.token))).rejects.toThrow('Waiver document integrity failure');
     await vi.waitFor(() => expect(cancelled).toBe(true));
   });
-  it('streams forty concurrent reads holding a few chunks each, after one shared digest check', async () => {
+  it('streams forty concurrent first reads with one storage read each, holding a few chunks each', async () => {
     const size = 2 * 1024 * 1024, chunk = 16 * 1024, large = Buffer.alloc(size, 0x20);
     large.write('%PDF-1.7\n');
     const f = await fixture(large), app = f.app(), counters: { pulled: number }[] = [];
@@ -129,21 +129,20 @@ describe('waiver document delivery', () => {
       return response.body!.getReader();
     });
     for (const reader of readers) expect((await reader.read()).value).toHaveLength(chunk);
-    // One read of the whole document checked its digest; each served read has taken a few chunks from storage, so the
+    // Each served read has taken a few chunks from storage, so the
     // forty hold at most 40 × 8 × 16 KiB = 5 MiB here, where holding each document whole would be 80 MiB.
-    expect(counters).toHaveLength(41);
-    expect(counters.filter(counter => counter.pulled === size)).toHaveLength(1);
-    for (const counter of counters.filter(counter => counter.pulled !== size)) expect(counter.pulled).toBeLessThanOrEqual(8 * chunk);
+    expect(counters).toHaveLength(40);
+    for (const counter of counters) expect(counter.pulled).toBeLessThanOrEqual(8 * chunk);
     await Promise.all(readers.map(reader => reader.cancel()));
     expect(await body({ body: (await app.request(f.url.href)).body! })).toBe(f.document.hash);
-    expect(counters).toHaveLength(42);
+    expect(counters).toHaveLength(41);
   });
   it('withholds the end of a checked document whose stored bytes changed, and checks it again on the next read', async () => {
     const f = await fixture();
     expect(await body(await f.delivery.read(f.gymId, f.token))).toBe(f.document.hash);
     const changed = Uint8Array.from(f.bytes); changed[10] = 0;
     f.uploads.get = async () => new ReadableStream({ start(controller) {
-      controller.enqueue(changed.slice(0, 20)); controller.enqueue(changed.slice(20)); controller.close();
+      controller.enqueue(changed.slice(0, 20)); controller.enqueue(changed.slice(20)); controller.enqueue(new Uint8Array()); controller.close();
     } });
     const reader = (await f.delivery.read(f.gymId, f.token)).body.getReader();
     let received = 0;
@@ -151,6 +150,6 @@ describe('waiver document delivery', () => {
       for (;;) { const next = await reader.read(); if (next.done) return; received += next.value.length; }
     })()).rejects.toThrow('Waiver document integrity failure');
     expect(received).toBeLessThan(f.document.bytes);
-    await expect(f.delivery.read(f.gymId, f.token)).rejects.toThrow('Waiver document integrity failure');
+    await expect(body(await f.delivery.read(f.gymId, f.token))).rejects.toThrow('Waiver document integrity failure');
   });
 });

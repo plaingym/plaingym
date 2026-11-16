@@ -455,10 +455,9 @@ Details: `apps/server/src/infra/auth/README.md`.
   "busy, try again" (rate limits keep their own `Retry-After`; demo quotas have
   none). Template reads allow 300 requests per gym/client per minute so
   members sharing an address can read several documents, and refused frames show
-  a retry page. A document is served as a stream: its first read checks the
-  stored bytes' digest without keeping them, and every read is checked again as
-  it streams, withholding the last chunk unless the digest matches, so concurrent
-  reads don't each hold a copy.
+  a retry page. Every document read streams the object once while checking size and
+  digest, withholding the last chunk unless both match. Altered bytes truncate the
+  response before its declared length, and concurrent reads each hold only a few chunks.
   Public pages, signed links and downloads send stricter policies of their own; the
   public website's pages run no script and allow only their structured-data block,
   by the response's nonce.

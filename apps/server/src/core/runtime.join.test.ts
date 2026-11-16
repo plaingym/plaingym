@@ -90,10 +90,14 @@ it('joins, pays through Checkout and activates only from the webhook, then sends
 
   // Only the signed webhook, dispatched by the runtime's handlers, pays the invoice and activates the people.
   const finished = fake.completeCheckout(sessionId);
+  const drain = async () => { while (await queue!.runNext()) { /* every due job, including the transition effects */ } };
   const body = JSON.stringify({ id: 'evt_' + uuidv7(), type: 'checkout.session.completed', gymId, objectId: finished.id, objectKind: 'checkout' });
   expect((await app.request(origin + '/webhooks/stripe', { method: 'POST', body,
     headers: { 'stripe-signature': fake.signWebhook(new TextEncoder().encode(body)) } })).status).toBe(200);
   await handlers.get('billing.webhooks.dispatch')!({ eventId: JSON.parse(body).id }, { gymId, clock, timezone: 'UTC', jobId: uuidv7(), attempt: 1 });
+  // Payment is recorded first. Pending-only memberships keep the prospect status until the durable activation effect runs.
+  expect((await joined()).people.map(p => p.status)).toEqual(['prospect']);
+  await drain();
   const after = await joined();
   expect(after.people.map(p => p.status)).toEqual(['active']);
   // One invoice: join keeps its own membership service, so no separate sign-up fee invoice is issued.
@@ -116,7 +120,6 @@ it('joins, pays through Checkout and activates only from the webhook, then sends
   await factory('staffRoles', gymId, { userId: staff.id, role: 'owner' });
   await paymentService!.manualPayment({ gymId, actor: { kind: 'user', userId: staff.id } }, bill!.id,
     { amountCents: bill!.amountCents, currency: bill!.currency, method: 'cash', reference: null, paidAt: clock.now().toISOString() });
-  const drain = async () => { while (await queue!.runNext()) { /* every due job, including the transition effects */ } };
   await drain();
   const paid = await joined(cash.email);
   expect(paid.people.map(p => p.status)).toEqual(['active']);

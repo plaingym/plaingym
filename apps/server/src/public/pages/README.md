@@ -16,8 +16,9 @@ fields in its gym branding projection; it never returns the rest of the website
 settings. The join pages use the same projection.
 
 Native join refusals before admission preserve typed details and show the original
-field or service problems in a focused summary; failures after admission keep the
-generic failed page. Join cleanup settles interrupted submissions that assigned
+field or service problems in a focused summary. After admission, a refusal asks the
+visitor to contact the gym without submitting again; outages keep a 503 response
+and unexpected faults go to the app's error handler. Join cleanup settles interrupted submissions that assigned
 no memberships and reserved no discount uses without counting them as voids.
 See [join.md](join.md) for the submission and cleanup rules.
 

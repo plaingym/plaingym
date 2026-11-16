@@ -20,7 +20,8 @@ import { areaContributions } from '../../core/registry-areas.js';
 import { TestClock } from '../../core/clock.js';
 import { authorize } from '../../areas/staff/auth.permissions.js';
 import { createGymSettingsAccessor } from '../../areas/settings/settings.js';
-import { createWaiversService } from '../../areas/waivers/waivers.js';
+import { createWaiversService, type WaiverOptions } from '../../areas/waivers/waivers.js';
+import { preflightWaiver } from '../../areas/waivers/pdf.js';
 import { createWaiverDocumentDelivery } from '../../areas/waivers/document-delivery.js';
 import { waiverDocumentFixture } from '../../areas/waivers/document.fixture.js';
 import { createMembershipService } from '../../areas/billing/memberships.js';
@@ -59,7 +60,8 @@ type Person = { firstName: string; lastName: string; dateOfBirth: string };
 const adult = (firstName = 'Avery'): Person => ({ firstName, lastName: 'Joiner', dateOfBirth: '1990-01-02' });
 const child = (firstName = 'Kai'): Person => ({ firstName, lastName: 'Joiner', dateOfBirth: '2016-05-06' });
 
-async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29T18:00:00Z', currency = 'CAD', gymTimezone = timezone) {
+async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29T18:00:00Z', currency = 'CAD', gymTimezone = timezone,
+  waiverOptions: Pick<WaiverOptions, 'preflight' | 'render'> = {}) {
   const gymId = uuidv7(), otherGym = uuidv7(), clock = new TestClock(start);
   await factory('gyms', gymId, { name: 'North <Gym>', currency, timezone: gymTimezone, billingEnabled: true, memberEmailsEnabled: true, websiteEnabled: false,
     address: { line1: '12 Mat Street' }, settings: { modules: { website: { phone: '+1 (604) 555-0100', email: 'hello@north.example.test' } } } });
@@ -80,7 +82,7 @@ async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29
   const provider = new FakePayments(gymId, clock), paymentsFor = async () => provider;
   const uploads = new FakeUploads(gymId, clock), uploadsFor = async () => uploads;
   const documentDelivery = createWaiverDocumentDelivery({ uploadsFor, clock, key: new Uint8Array(32).fill(8), originFor: async () => origin });
-  const waivers = createWaiversService({ scope: db.forGym, clock, uploadsFor, documentDelivery });
+  const waivers = createWaiversService({ scope: db.forGym, clock, uploadsFor, documentDelivery, ...waiverOptions });
   const checkout = createSignedLinkCheckout({ scope: db.forGym, clock, paymentsFor, originFor: async () => origin });
   const config = mode === 'password' ? passwordConfig : emailConfig, mail = new FakeEmail(), sent: Parameters<PortalLoginLinkSender>[0][] = [];
   const invitations = createPortalInvitationService({ config, database: () => db.system.db, scope: db.forGym, householdScope: db.forHousehold,
@@ -164,6 +166,61 @@ async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
 describe('join lead intake', () => {
+  it('uses the same field rules in admission and submission before persisting anything further', async () => {
+    const f = await fixture(), people = [adult()], email = 'rules@example.invalid';
+    const images = await f.admit(people, email, f.plan.id), original = f.body(people, images, email, f.plan.id);
+    const cases = [
+      { contact: { name: 'x'.repeat(201) } }, { contact: { email: 'a'.repeat(243) + '@example.invalid' } }, { contact: { phone: 'x'.repeat(101) } },
+      { member: { firstName: 'x'.repeat(201) } }, { member: { lastName: 'x'.repeat(201) } }, { member: { dateOfBirth: '2099-01-01' } },
+      { member: { dateOfBirth: child().dateOfBirth } }, { signer: { kind: 'self' as const, name: 'x'.repeat(201) } },
+      { signer: { kind: 'guardian' as const, name: 'Parent', relationship: 'x'.repeat(101) } },
+    ];
+    for (const change of cases) {
+      const contact = { ...original.contact, ...change.contact }, member = { ...people[0]!, ...change.member };
+      const waivers = original.members[0]!.waivers.map(w => ({ ...w, signer: change.signer ?? w.signer }));
+      await expect(f.join.join(f.gymId, { ...original, contact, members: [{ member, waivers }] }, timezone, '192.0.2.1')).rejects.toMatchObject({ code: 'invalid_request' });
+      await expect(f.join.admit(f.gymId, { planId: f.plan.id, honeypot: '', contact,
+        members: [{ member, signatures: waivers.map(w => ({ templateId: w.templateId, templateVersion: w.templateVersion, signer: w.signer, pngBase64 })) }] }, timezone))
+        .rejects.toMatchObject({ code: 'invalid_request' });
+    }
+    expect(await f.joined()).toHaveLength(1);
+    const state = await f.rows(); expect(state.invoices).toHaveLength(0); expect(state.memberships).toHaveLength(0);
+  });
+  it('preflights only signing details for a five-person join with eight PDF templates', async () => {
+    const preflight = vi.fn(preflightWaiver), render = vi.fn(async () => { throw new Error('Signing must not merge documents'); });
+    const f = await fixture('email', undefined, undefined, undefined, { preflight, render });
+    const document = await f.waivers.uploadDocument({ gymId: f.gymId, actor: { kind: 'system' } }, await waiverDocumentFixture());
+    const columns = { body: '', documentKey: document.key, documentHash: document.hash, documentPages: document.pages, documentBytes: document.bytes };
+    await db.forGym(f.gymId, tx => tx.update(waiverTemplates).set(columns));
+    for (let i = 2; i < 8; i++) f.templates.push(await factory('waiverTemplates', f.gymId, { name: `Terms ${i}`, ...columns }));
+    const { response } = await f.submit(Array.from({ length: 5 }, (_, i) => adult(`Person ${i}`)), 'five@example.invalid');
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(preflight).toHaveBeenCalledTimes(40); expect(render).not.toHaveBeenCalled();
+    expect((await f.waivers.listSignatures(f.gymId)).pagination.total).toBe(40);
+  });
+  it('reconciles a staff-set visitor to trial when a received join completes and records the billing audit once', async () => {
+    const f = await fixture(), { cookie } = await f.submit([adult()], 'visitor@example.invalid', f.trial.id);
+    const [home] = await f.joined(), person = (await f.rows()).members.find(m => m.householdId === home!.id)!;
+    await db.forGym(f.gymId, tx => tx.update(members).set({ status: 'visitor', revision: person.revision + 1 }).where(eq(members.id, person.id)));
+    await f.pay(cookie);
+    const state = await f.rows();
+    expect(state.members.find(m => m.id === person.id)).toMatchObject({ status: 'trial', revision: person.revision + 2 });
+    expect(state.memberships.find(m => m.memberId === person.id)?.status).toBe('trial');
+    const changes = state.audits.filter(a => a.action === 'billing.member.trial_started' && a.targetId === person.id);
+    expect(changes).toHaveLength(1); expect(changes[0]!.before).toMatchObject({ status: 'visitor' });
+    expect(changes[0]!.after).toMatchObject({ status: 'trial', cause: 'public.join.completed' });
+    expect(state.audits.some(a => a.action === 'public.join.member_activated')).toBe(false);
+  });
+  it.each(['frozen', 'cancelled'] as const)('refuses replay after staff set a pending join member to %s, but accepts its matching membership state', async status => {
+    const f = await fixture(), email = 'staff-state@example.invalid', people = [adult()];
+    const { images } = await f.submit(people, email), body = f.body(people, images, email, f.plan.id);
+    const [home] = await f.joined(), person = (await f.rows()).members.find(m => m.householdId === home!.id)!;
+    await db.forGym(f.gymId, tx => tx.update(members).set({ status }).where(eq(members.id, person.id)));
+    await expect(f.join.join(f.gymId, body, timezone, '192.0.2.1')).rejects.toMatchObject({ code: 'not_found' });
+    await db.forGym(f.gymId, tx => tx.update(memberships).set({ status }).where(eq(memberships.memberId, person.id)));
+    await expect(f.join.join(f.gymId, body, timezone, '192.0.2.1')).resolves.toMatchObject({ linkId: expect.any(String) });
+    expect((await f.rows()).invoices.filter(i => i.householdId === home!.id)).toHaveLength(1);
+  });
   it('keeps one lead and audit per member when submission fails after marking and is retried', async () => {
     const f = await fixture(), people = [adult(), child()], email = 'retry-leads@example.invalid';
     const images = await f.admit(people, email, f.plan.id), body = f.body(people, images, email, f.plan.id);
@@ -719,6 +776,11 @@ describe('public join pages through the production registrations', () => {
     ['invalid email', 'email', 'invalid', 'Check Email.'],
     ['missing signer', 'waiver-0-0-name', '', 'Check Person 1: Signer full name.'],
     ['long signer', 'waiver-0-0-name', 'x'.repeat(201), 'Check Person 1: Signer full name.'],
+    ['long contact', 'contactName', 'x'.repeat(201), 'Check Contact or parent/guardian name.'],
+    ['long phone', 'phone', 'x'.repeat(101), 'Check Phone (optional).'],
+    ['long first name', 'member-0-firstName', 'x'.repeat(201), 'Check Person 1: First name.'],
+    ['long last name', 'member-0-lastName', 'x'.repeat(201), 'Check Person 1: Last name.'],
+    ['long guardian relationship', 'waiver-0-0-relationship', 'x'.repeat(101), 'Relationship to participant'],
     ['missing guardian relationship', 'waiver-0-0-relationship', '', 'Relationship to participant'],
   ] as const)('explains the native refusal for %s without creating an admission', async (_reason, field, value, message) => {
     const f = await fixture(), form = nativeForm(f, f.plan.id, 'bad-form@example.invalid');
@@ -744,18 +806,70 @@ describe('public join pages through the production registrations', () => {
     expect(html).not.toContain('date of birth must not be in the future');
     expect(await f.joined()).toHaveLength(0);
   });
-  it.each(['join', 'state', 'firstInvoice'] as const)('keeps the failed page after admission when %s refuses', async step => {
+  it('groups parallel PNG and field problems by person and document', async () => {
+    const f = await fixture(), form = nativeForm(f, f.plan.id, 'ordered@example.invalid');
+    form.set('members', '2');
+    for (const [name, value] of [...form]) {
+      if (name.startsWith('member-0-') || name.startsWith('waiver-0-')) form.set(name.replace('-0-', '-1-'), value);
+    }
+    form.set('member-1-firstName', 'x'.repeat(201));
+    for (const i of [0, 1]) for (const j of [0, 1]) {
+      form.delete(`waiver-${i}-${j}-consent`);
+      form.set(`waiver-${i}-${j}-image`, new File(['invalid PNG'], 'signature.png', { type: 'image/png' }));
+    }
+    const response = await f.server.request(await requestWithLength(origin + '/join', { method: 'POST', headers: { origin }, body: form }));
+    expect(response.status).toBe(400); const html = await response.text();
+    const messages = [
+      'Person 1: Conduct: agree to the document', 'Person 1: Conduct: choose a valid, supported PNG',
+      'Person 1: Participation: agree to the document', 'Person 1: Participation: choose a valid, supported PNG',
+      'Check Person 2: First name.', 'Person 2: Conduct: agree to the document', 'Person 2: Conduct: choose a valid, supported PNG',
+      'Person 2: Participation: agree to the document', 'Person 2: Participation: choose a valid, supported PNG',
+    ];
+    let previous = -1;
+    for (const message of messages) { const index = html.indexOf(message); expect(index, message).toBeGreaterThan(previous); previous = index; }
+  });
+  it.each(['join', 'state', 'firstInvoice'] as const)('asks for gym help after admission when %s refuses', async step => {
     const f = await fixture(), form = nativeForm(f, f.plan.id, 'already-admitted@example.invalid');
     const admit = vi.spyOn(f.join, 'admit');
     vi.spyOn(f.join, step).mockRejectedValueOnce(new AppError('conflict', 'Interrupted after admission'));
     const response = await f.server.request(await requestWithLength(origin + '/join', { method: 'POST', headers: { origin }, body: form }));
     const html = await response.text();
     expect(response.status).toBe(400);
-    expect(html).toContain('We could not save your details');
+    expect(html).toContain('We received your details');
+    expect(html).toContain('Do not submit another form');
+    expect(html).not.toContain('Start again');
     expect(html).not.toContain('data-join-form');
     expect(html).not.toContain('role="alert"');
     expect(admit).toHaveBeenCalledTimes(1);
     expect(await f.joined()).toHaveLength(1);
+  });
+  it.each(['unavailable', 'unexpected'] as const)('preserves the %s error status after admission', async kind => {
+    const f = await fixture();
+    vi.spyOn(f.join, 'join').mockRejectedValueOnce(kind === 'unavailable' ? new AppError('unavailable', 'Provider offline') : new Error('Unexpected fault'));
+    const response = await f.server.request(await requestWithLength(origin + '/join', { method: 'POST', headers: { origin }, body: nativeForm(f, f.plan.id, 'outage@example.invalid') }));
+    const html = await response.text();
+    expect(response.status).toBe(kind === 'unavailable' ? 503 : 500);
+    if (kind === 'unavailable') {
+      expect(html).toContain('Online joining is temporarily unavailable');
+      expect(html).toContain('We received your details');
+      expect(html).not.toContain('Start again');
+    }
+    expect(html).not.toContain('We could not save your details');
+    expect(await f.joined()).toHaveLength(1);
+  });
+  it('reuses the first ready result for admission and validation redisplay, but refreshes a conflict', async () => {
+    const f = await fixture(), ready = vi.spyOn(f.join, 'ready'), templates = vi.spyOn(f.waivers, 'listTemplates');
+    const send = async (form: FormData) => f.server.request(await requestWithLength(origin + '/join', { method: 'POST', headers: { origin }, body: form }));
+    const invalid = nativeForm(f, f.plan.id, 'invalid@example.invalid'); invalid.set('contactName', 'x'.repeat(201));
+    expect((await send(invalid)).status).toBe(400);
+    expect(ready).toHaveBeenCalledTimes(1); expect(templates).toHaveBeenCalledTimes(1);
+    ready.mockClear(); templates.mockClear();
+    vi.spyOn(f.join, 'admit').mockRejectedValueOnce(new AppError('conflict', 'Changed template'));
+    expect((await send(nativeForm(f, f.plan.id, 'conflict@example.invalid'))).status).toBe(400);
+    expect(ready).toHaveBeenCalledTimes(2); expect(templates).toHaveBeenCalledTimes(2);
+    ready.mockClear(); templates.mockClear();
+    expect((await send(nativeForm(f, f.plan.id, 'received@example.invalid'))).status).toBe(200);
+    expect(ready).toHaveBeenCalledTimes(1); expect(templates).toHaveBeenCalledTimes(2); // join rechecks before signing.
   });
   it('explains a changed document set on a native refusal that also names the missing signatures', async () => {
     const f = await fixture(), form = nativeForm(f, f.plan.id, 'changed-set@example.invalid');

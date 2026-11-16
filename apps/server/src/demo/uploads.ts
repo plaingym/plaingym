@@ -4,15 +4,14 @@ import { locales } from '@plaingym/shared/locales';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import type { ReadOptions, Uploads } from '../infra/storage/index.js';
 import { validateSignatureImage } from '../areas/waivers/snapshot.js';
+import { parseSignatureImageKey } from '../areas/waivers/signature-image-key.js';
 
 const t = createTranslator(locales.en ?? {});
 
-const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
-const imageKey = new RegExp(`^(${uuid}/waivers/${uuid})/signatures/(${uuid})\\.png$`);
 const pending = new Map<string, Promise<string>>();
 function pdfKey(key: string): string | undefined {
-  const match = imageKey.exec(key);
-  return match ? `${match[1]}/pdf/${match[2]}.pdf` : undefined;
+  const match = parseSignatureImageKey(key);
+  return match ? `${match.gymId}/waivers/${match.memberId}/pdf/${match.imageId}.pdf` : undefined;
 }
 
 /** Narrow waiver operations; the shared Uploads interface refuses general visitor puts. */
@@ -25,7 +24,7 @@ export class DemoUploads implements Uploads {
   /** The waiver service authorizes the member and reserves a persistent demo admission first. */
   async waiverSignature(key: string, bytes: Uint8Array): ReturnType<Uploads['put']> {
     assertNoTransaction('storage.put');
-    if (!imageKey.test(key)) throw new AppError('not_found', 'Resource not found');
+    if (!parseSignatureImageKey(key)) throw new AppError('not_found', 'Resource not found');
     validateSignatureImage(bytes);
     return this.source.put(key, bytes, 'image/png');
   }

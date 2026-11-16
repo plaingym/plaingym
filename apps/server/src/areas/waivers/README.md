@@ -23,7 +23,10 @@ the stored bytes and image digest and never read the live template or member.
 Text copies put SHA-256 of those exact stored bytes on every page. Uploaded PDF
 copies retain the original pages without stamps and append the generated signing
 details and snapshot SHA-256 footer.
-Signing preflights the complete snapshot outside a transaction, then locks and
+Signing checks an uploaded document's stored size and hash as it streams, never holding
+the whole document, and preflights only its signing details page outside a transaction;
+text templates preflight their full layout.
+The original PDF was validated at publication and is merged only for download. Signing then locks and
 rechecks the member, current template and idempotency key before insertion. A
 failed render or a change during preflight leaves no new signature. Missing
 glyphs in member/signer names render as visible replacements; they do not prevent
@@ -147,10 +150,10 @@ preview each template once, keeping separate consent for each member. Readers mu
 open and read the document before confirming; an unavailable preview is not consent.
 React previews retain their initial URL while the separate link refreshes, so a
 refresh or a failed background request does not reset the reader's page.
-URL issuance checks storage metadata; serving the PDF verifies its full bytes. It is
-streamed: the first read of a document checks its digest without keeping the bytes
-(concurrent first reads share that check), and every read is checked again as it
-streams, withholding the last chunk unless the digest still matches.
+URL issuance checks storage metadata; serving the PDF verifies its full bytes.
+Every read streams the object once, withholding the last chunk unless its size and
+digest match. Altered bytes truncate the response before its declared length;
+concurrent readers each hold only a few chunks, without a verification cache.
 Document URL reads and template downloads have separate 300-per-minute limits per
 client and gym, allowing families sharing a Wi-Fi address to read multiple documents.
 Refused frames and explicit opens show a plain retry page, including `Retry-After`

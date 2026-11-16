@@ -17,7 +17,7 @@ import { createJoinService, joinBodyBytes, type JoinOptions,
 import { joinContinuations, joinCookie, joinCookieLifetimeMs, type JoinContinuations } from './join.continuation.js';
 import { joinFormPage, joinPlansPage, joinStatusPage, type JoinPageState } from './join.page.js';
 import { joinBrowserScript } from './join.browser.js';
-import { JoinFormError, joinRefusalProblems, readJoinForm } from './join.form.js';
+import { codeRefused, JoinFormError, joinRefusalProblems, readJoinForm } from './join.form.js';
 import { configureJoinCleanup } from './join.jobs.js';
 import pages from '../../../../../locales/en/public/pages.json' with { type: 'json' };
 import messages from '../../../../../locales/en/public/join.json' with { type: 'json' };
@@ -73,7 +73,6 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
     const invoice = linkId && ['continue', 'card', 'manual'].includes(state) ? await config.service.firstInvoice(gymOf(ctx), linkId) : null;
     return ctx.html(joinStatusPage({ gym: await config.service.branding(gymOf(ctx)), t: config.t ?? translator, state, testCardHint, invoice }), status);
   }
-  const codeRefused = (error: unknown) => error instanceof AppError && error.details?.reason?.[0] === 'code_refused';
   /** HttpOnly, Secure, SameSite=Lax (it survives the return from Checkout), signed, short-lived and scoped to /join. */
   function remember(ctx: Context<RequestEnvironment>, linkId: string) {
     const expiresAt = new Date(ctx.get('context').clock.now().getTime() + joinCookieLifetimeMs);
@@ -121,14 +120,16 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
     route({ method: 'post', path: '/join', permission: { kind: 'public' }, middleware: [submissions, boundedForm], responses: html }, async ctx => {
       const context = ctx.get('context'), service = options().service, gymId = context.gym.gymId;
       let fields: FormData | undefined;
+      let templates: Awaited<ReturnType<JoinService['ready']>> | undefined;
       let admitted = false;
       try {
         const contentType = ctx.req.header('content-type')?.split(';')[0]?.trim().toLowerCase();
         if (contentType !== 'multipart/form-data') throw new AppError('invalid_request', 'Expected a form submission');
         const submitted = await ctx.req.raw.formData().catch(() => { throw new AppError('invalid_request', 'Invalid form submission'); });
         fields = submitted;
-        const admission = await readJoinForm(submitted, await service.ready(gymId), options().t ?? translator, context.clock.now(), context.gym.timezone);
-        const images = await service.admit(gymId, admission, context.gym.timezone);
+        templates = await service.ready(gymId);
+        const admission = await readJoinForm(submitted, templates, options().t ?? translator, context.clock.now(), context.gym.timezone);
+        const images = await service.admit(gymId, admission, context.gym.timezone, templates);
         admitted = true;
         const { members, ...common } = admission;
         const { linkId } = await service.join(gymId, { ...common, members: members.map(({ member, signatures }, i) => ({ member,
@@ -142,26 +143,29 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
         // Admission has persisted: a fresh form here could create a second household on resubmission.
         if (admitted) {
           logError('public.join.native_failed', { gymId }, error);
-          return page(ctx, 'failed', 400);
+          if (!(error instanceof AppError)) throw error;
+          if (error.code === 'unavailable') return page(ctx, 'admittedUnavailable', 503);
+          return page(ctx, 'admittedFailed', 400);
         }
         const refused = refusal(error, ctx);
         if (refused) return page(ctx, refused.details?.reason?.[0] === 'busy' ? 'retry' : 'limited', 429);
         if (error instanceof AppError && error.code === 'unavailable') return page(ctx, 'unavailable', 503);
-        if (fields && (error instanceof JoinFormError || error instanceof z.ZodError || error instanceof AppError && ['invalid_request', 'not_found', 'conflict'].includes(error.code))) {
+        if (fields && (error instanceof JoinFormError || error instanceof AppError && ['invalid_request', 'not_found', 'conflict'].includes(error.code))) {
           const values = Object.fromEntries([...fields].filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
           const count = Number(values.members);
           if (idSchema.safeParse(values.planId).success && Number.isInteger(count) && count >= 1 && count <= maxJoinMembers) {
             try {
-              const [plan, templates, gym] = await Promise.all([service.joinablePlan(gymId, values.planId!), service.ready(gymId), service.branding(gymId)]);
+              const [plan, currentTemplates, gym] = await Promise.all([service.joinablePlan(gymId, values.planId!),
+                templates && !(error instanceof AppError && error.code === 'conflict') ? templates : service.ready(gymId), service.branding(gymId)]);
               const t = options().t ?? translator;
-              return ctx.html(joinFormPage({ gym, t, plan, count, templates, values, errors: joinRefusalProblems(error, t) }), 400);
+              return ctx.html(joinFormPage({ gym, t, plan, count, templates: currentTemplates, values, errors: joinRefusalProblems(error, t) }), 400);
             } catch (retryError) {
               if (!(retryError instanceof AppError && ['not_found', 'unavailable'].includes(retryError.code))) throw retryError;
             }
           }
         }
         if (codeRefused(error)) return page(ctx, 'codeRefused', 400);
-        if (error instanceof JoinFormError || error instanceof z.ZodError || error instanceof AppError && ['invalid_request', 'not_found', 'conflict'].includes(error.code)) return page(ctx, 'failed', 400);
+        if (error instanceof JoinFormError || error instanceof AppError && ['invalid_request', 'not_found', 'conflict'].includes(error.code)) return page(ctx, 'failed', 400);
         throw error;
       }
     }),

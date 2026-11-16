@@ -30,8 +30,12 @@ The refusal summary takes focus on page load. Its messages come from the origina
 validation or service refusal; redisplay does not validate the fields again.
 Signature files must be selected again. If a document has changed, its signer
 details and consent are reset so the new version is reviewed.
-A failure after the admission is stored shows the generic failed page rather
-than a ready-to-resubmit form, because the household has already been created.
+A refusal after admission says the details were received and asks the visitor to
+contact the gym without submitting again. Unavailability keeps a 503 response and
+the received-details message; unexpected faults go to the app's 500 error handler.
+The form, admission and submission share one set of applicant and signer rules.
+The native route reuses its readiness result for admission and validation redisplay,
+refreshing it after a service conflict; submission rechecks current documents before signing.
 
 ## Submission
 
@@ -48,7 +52,10 @@ contract) must repeat exactly what was admitted; the private image keys name the
 admitted people, and a leaked staff image key cannot enroll an existing member.
 It signs the immutable waivers, assigns a pending membership per person, issues one
 invoice and a pay link, and answers `received`. Replays and concurrent retries
-return the same join. A submission retried after a plan edit uses the assigned
+return the same join. A frozen or cancelled member may replay a received join only
+when that join's own membership has the matching status, so a staff-set member
+status beside a pending membership cannot continue the submission.
+A submission retried after a plan edit uses the assigned
 memberships' trial dates and prices for invoicing and card setup. All household
 memberships are assigned in one transaction with the first invoice, holding
 the plan lock so a staff edit cannot split their trial dates. The first assignment's
@@ -226,8 +233,9 @@ Checkout's `checkout.session.completed`, a later pay link, or cash or a check st
 record), the invoice transitions activate non-trial pending memberships, and their paid-invoice
 effect then calls `afterInvoicePaid(gymId, invoiceId)`. Trial invoices contain only
 any sign-up fee, with no membership lines that could activate a trial early. Join
-completion moves a pending trial membership and its prospective member to `trial`;
-other prospective members become `active`. The membership date job activates the
+completion starts pending trial memberships and derives every joined member's status
+through the shared billing rule, including members whose status staff changed while
+payment was pending. Status changes write `billing.member.*` audits. The membership date job activates the
 trial at `trialEndsOn`, when the runner bills its first full period. At that
 activation the member becomes `active` even if another trial remains, except when
 an existing trial member still has an unpaid pending join trial. That member keeps

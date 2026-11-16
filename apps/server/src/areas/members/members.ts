@@ -173,7 +173,7 @@ export function createMembersService(options: MembersOptions = {}) {
         for (const membership of open) {
           await endDiscount(tx, context, clock, membership.id, 'removed');
           // Like a staff cancel, it drops any plan switch that hasn't applied yet.
-          await tx.update(memberships).set({ status: 'cancelled', cancelledAt: now, resumesOn: null, ...unscheduled,
+          await tx.update(memberships).set({ status: 'cancelled', cancelledAt: now, frozenAt: null, resumesOn: null, ...unscheduled,
             revision: membership.revision + 1 })
             .where(eq(memberships.id, membership.id));
           await audit(tx, context, 'billing.membership.cancelled', 'membership', membership.id);

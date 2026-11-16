@@ -30,30 +30,33 @@ const integrityFailure = () => new Error('Waiver document integrity failure');
  * (cancelling the source), and the last chunk is held back until the digest matches, so a reader never receives the
  * complete recorded length of altered bytes. Memory is one chunk, whatever the document's size.
  */
-function checked(document: WaiverDocument, onFailure: () => void = () => {}) {
+function checked(document: WaiverDocument) {
   const hash = createHash('sha256');
   let size = 0, held: Uint8Array | undefined;
   return new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
+      // Empty storage chunks must not release the final data chunk before integrity is checked.
+      if (!chunk.length) return;
       size += chunk.length;
-      if (size > document.bytes || size > byteLimit) { onFailure(); throw integrityFailure(); }
+      if (size > document.bytes || size > byteLimit) throw integrityFailure();
       hash.update(chunk);
       if (held) controller.enqueue(held);
       held = chunk;
     },
     flush(controller) {
-      if (size !== document.bytes || hash.digest('hex') !== document.hash) { onFailure(); throw integrityFailure(); }
+      if (size !== document.bytes || hash.digest('hex') !== document.hash) throw integrityFailure();
       if (held) controller.enqueue(held);
     },
   });
 }
-async function checkedStream(uploads: Uploads, document: WaiverDocument, onFailure?: () => void) {
+async function checkedStream(uploads: Uploads, document: WaiverDocument) {
   const stream = await uploads.get(document.key);
   if (!stream) notFound();
-  return stream.pipeThrough(checked(document, onFailure));
+  return stream.pipeThrough(checked(document));
 }
-/** Reads the whole object once to check its digest, holding one chunk at a time. */
-async function verifyWaiverDocument(uploads: Uploads, document: WaiverDocument) {
+/** For signing, which needs only the digest check: reads the object once, holding one chunk at a time. */
+export async function verifyWaiverDocument(uploads: Uploads, gymId: string, document: WaiverDocument): Promise<void> {
+  await headWaiverDocument(uploads, gymId, document);
   const reader = (await checkedStream(uploads, document)).getReader();
   while (!(await reader.read()).done) { /* Hashing happens as the chunks pass. */ }
 }
@@ -70,9 +73,6 @@ export async function readWaiverDocument(uploads: Uploads, gymId: string, docume
   }
   return bytes;
 }
-// Verified documents are remembered by key, digest and size (keys are immutable and gym-prefixed); a later read
-// streams straight from storage and is still checked on the way out.
-const verifiedLimit = 256;
 
 /** The runtime supplies a stable, purpose-derived key and the gym's canonical origin. */
 export function createWaiverDocumentDelivery(options: {
@@ -84,25 +84,13 @@ export function createWaiverDocumentDelivery(options: {
   if (options.key.length < 32) throw new Error('Waiver document signing key must have at least 32 bytes');
   const key = Uint8Array.from(options.key), clock = options.clock ?? defaultClock;
   const mac = (payload: string) => createHmac('sha256', key).update('waiver-document-v1\n').update(payload).digest();
-  const verified = new Map<string, Promise<void>>();
   /**
-   * A document is served as a stream, never held whole: the first read of a document checks its digest without
-   * keeping its bytes (concurrent first reads share that check), then every read streams through the same check,
-   * which withholds the last chunk unless the digest still matches.
+   * Every read streams from storage once, holding only a chunk until the digest matches.
+   * Altered bytes truncate the response before its declared length can be received.
    */
   async function stream(uploads: Uploads, gymId: string, document: WaiverDocument) {
     await headWaiverDocument(uploads, gymId, document);
-    const id = `${document.key}\n${document.hash}\n${document.bytes}`;
-    let verification = verified.get(id);
-    if (!verification) {
-      const pending = verifyWaiverDocument(uploads, document);
-      verification = pending;
-      verified.set(id, pending);
-      if (verified.size > verifiedLimit) verified.delete(verified.keys().next().value!);
-      pending.catch(() => { if (verified.get(id) === pending) verified.delete(id); });
-    }
-    await verification;
-    return { body: await checkedStream(uploads, document, () => verified.delete(id)), bytes: document.bytes };
+    return { body: await checkedStream(uploads, document), bytes: document.bytes };
   }
   const service = {
     async issue(gymId: string, document: WaiverDocument) {

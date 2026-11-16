@@ -14,6 +14,7 @@ import { createWaiverDocumentDelivery } from './document-delivery.js';
 import { waiverDocumentFixture } from './document.fixture.js';
 import { readSnapshot } from './snapshot.js';
 import { validateDocumentPdf } from '../../infra/pdf/document.js';
+import { preflightWaiver } from './pdf.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 async function fixture() {
@@ -39,7 +40,7 @@ async function extracted(bytes: Uint8Array) {
   } finally { await task.destroy(); }
 }
 describe('uploaded waiver documents against PostgreSQL', () => {
-  it.each(['sign', 'download', 'publish'] as const)('refuses a busy %s before reading the stored document', async operation => {
+  it.each(['download', 'publish'] as const)('refuses a busy %s before reading the stored document', async operation => {
     const f = await fixture();
     const signature = operation === 'download' ? await f.service.sign(f.ctx, f.input, { timezone: 'UTC', ipAddress: '192.0.2.1' }) : undefined;
     const bytes = await waiverDocumentFixture(); let release!: () => void, reads = 0;
@@ -49,12 +50,23 @@ describe('uploaded waiver documents against PostgreSQL', () => {
     const active = validateDocumentPdf(async () => { await gate; return bytes; }, f.gymId);
     const waiting = [validateDocumentPdf(bytes, f.gymId), validateDocumentPdf(bytes, f.gymId)];
     try {
-      const request = operation === 'sign' ? f.service.sign(f.ctx, f.input, { timezone: 'UTC', ipAddress: '192.0.2.1' })
-        : operation === 'download' ? f.service.pdf(f.gymId, signature!.id)
+      const request = operation === 'download' ? f.service.pdf(f.gymId, signature!.id)
         : f.service.publishTemplate(f.ctx, f.template.id, { name: f.template.name, kind: f.template.kind, body: '', document: f.document, expectedVersion: 1 });
       await expect(request).rejects.toMatchObject({ code: 'rate_limited' });
       expect(reads).toBe(0);
       expect((await f.service.listSignatures(f.gymId)).data).toHaveLength(operation === 'download' ? 1 : 0);
+    } finally { release(); await Promise.all([active, ...waiting]); }
+  });
+  it('signs while the document queue is full and preflights only the appended details page', async () => {
+    const f = await fixture(), bytes = await waiverDocumentFixture(); let release!: () => void;
+    const active = validateDocumentPdf(async () => { await new Promise<void>(resolve => { release = resolve; }); return bytes; }, f.gymId);
+    const waiting = [validateDocumentPdf(bytes, f.gymId), validateDocumentPdf(bytes, f.gymId)];
+    try {
+      const signed = await f.service.sign(f.ctx, f.input, { timezone: 'UTC', ipAddress: '192.0.2.1' });
+      const details = await preflightWaiver(signed.snapshot, signed.snapshotHash, demoSignaturePng(), bytes);
+      const pages = await extracted(details);
+      expect(pages).toHaveLength(1); expect(pages[0]).toContain('Alex Example'); expect(pages[0]).toContain(signed.snapshotHash);
+      expect(pages[0]).not.toContain('Original waiver page');
     } finally { release(); await Promise.all([active, ...waiting]); }
   });
   it('issues document links from metadata without buffering bytes, and refuses deleted uploads', async () => {

@@ -72,9 +72,9 @@ describe('waivers against PostgreSQL', () => {
   });
   it('does not store a failed render or a member changed during render preflight', async () => {
     const f = await fixture(), options = { scope: db.forGym, clock: f.clock, uploadsFor: async () => f.uploads };
-    const failed = createWaiversService({ ...options, render: async () => { throw new Error('Render failed'); } });
+    const failed = createWaiversService({ ...options, preflight: async () => { throw new Error('Render failed'); } });
     await expect(failed.sign(f.ctx, f.input, f.signing)).rejects.toThrow('Render failed');
-    const changed = createWaiversService({ ...options, render: async () => {
+    const changed = createWaiversService({ ...options, preflight: async () => {
       // A scoped write here also proves preflight is outside a transaction.
       await db.forGym(f.gymId, tx => tx.update(members).set({ firstName: 'New name' }).where(eq(members.id, f.person.id)));
       return new Uint8Array();

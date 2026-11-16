@@ -65,6 +65,8 @@
   "submit": "Continue to payment",
   "busy": "Saving your details…",
   "failed": "We could not save your details. Check them and try again, or contact the gym.",
+  "admittedFailed": "We received your details, but could not finish your join. Please contact the gym for help. Do not submit another form.",
+  "admittedUnavailable": "Online joining is temporarily unavailable. We received your details. Please contact the gym for help. Do not submit another form.",
   "conflict": "The waivers or membership have changed. Reload this page and review them again.",
   "tooLarge": "The signature images are too large to send together. Draw the signatures here, or choose smaller PNG files.",
   "signatureRequired": "Please draw or choose a signature image for each document.",

@@ -111,6 +111,8 @@ describe.each(['fake', 'postgres'] as const)('%s atomic erasure', kind => {
   });
   it('commits the erased member with its redaction, detach and release jobs before calling the provider', async () => {
     const customerId = 'cus_commit_' + uuidv7().replaceAll('-', ''), { home, person, lead, membership, cards, files } = await fixture(customerId);
+    await database.forGym(gymId, tx => tx.update(memberships).set({ status: 'frozen', frozenAt: clock.now(), resumesOn: '2026-12-01' })
+      .where(eq(memberships.id, membership.id)));
     const otherMembership = await factory('memberships', gymId, { switchOverrideReason: 'Another member override' });
     const credit = await factory('classCreditEntries', gymId, { memberId: person.id, reason: 'Private adjustment detail' });
     const draw = await factory('classCreditEntries', gymId, { memberId: person.id, credits: -1,
@@ -141,7 +143,7 @@ describe.each(['fake', 'postgres'] as const)('%s atomic erasure', kind => {
     expect(await overrideReason(otherMembership.id)).toBe('Another member override');
     // The erasure's cancel drops the switch that hadn't applied yet.
     expect((await database.forGym(gymId, tx => tx.select().from(memberships).where(eq(memberships.id, membership.id))))[0]).toMatchObject({
-      status: 'cancelled', scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null, scheduledOrigin: null });
+      status: 'cancelled', frozenAt: null, resumesOn: null, scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null, scheduledOrigin: null });
     const erasures = await database.forGym(gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'household.anonymized')));
     const erasure = erasures.find(row => (row.before as { stripeCustomerId?: string } | null)?.stripeCustomerId === customerId)!;
     if (q instanceof FakeJobs) expect(q.jobs[0]).toMatchObject({ name: redactCustomerJob, payload: { customerId },

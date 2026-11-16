@@ -4,17 +4,16 @@ import { auditEvents, forGym, members, waiverSignatures, writeAudit, type Transa
 import { notFound } from '../../core/interfaces/common.js';
 import { logError } from '../../core/log.js';
 import type { Uploads } from '../../infra/storage/index.js';
+import { parseSignatureImageKey } from './signature-image-key.js';
 
 export const SIGNATURE_IMAGE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 const claimed = 'waiver.signature_image.claimed', deleted = 'waiver.signature_image.deleted';
 const targetType = 'waiver_signature_image';
-const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
-const path = new RegExp(`^(${uuid})/waivers/(${uuid})/signatures/(${uuid})\\.png$`);
 
 function imageId(gymId: string, memberId: string, key: string) {
-  const match = path.exec(key);
-  if (!match || match[1] !== gymId || match[2] !== memberId) notFound();
-  return match[3]!;
+  const match = parseSignatureImageKey(key);
+  if (!match || match.gymId !== gymId || match.memberId !== memberId) notFound();
+  return match.imageId;
 }
 async function marker(tx: Transaction, id: string, action: string) {
   const [row] = await tx.select({ occurredAt: auditEvents.occurredAt }).from(auditEvents)
@@ -39,8 +38,8 @@ export async function sweepSignatureImages(options: {
   const { gymId, uploads, now } = options, scope = options.scope ?? forGym;
   const before = new Date(now.getTime() - SIGNATURE_IMAGE_GRACE_MS);
   const candidates = (await uploads.list(`${gymId}/waivers/`)).flatMap(info => {
-    const match = path.exec(info.key);
-    return !match || match[1] !== gymId || info.deletedAt || info.createdAt >= before ? [] : [{ key: info.key, memberId: match[2]!, id: match[3]! }];
+    const match = parseSignatureImageKey(info.key);
+    return !match || match.gymId !== gymId || info.deletedAt || info.createdAt >= before ? [] : [{ key: info.key, memberId: match.memberId, id: match.imageId }];
   });
   if (!candidates.length) return 0;
   // Signatures are never re-pointed, so a key referenced now stays safe to skip. Unreferenced keys are checked again under the lock.

@@ -362,7 +362,7 @@ describe('signed-link pages through production registrations', () => {
     for (const id of [f.sibling.id, f.other.id]) await expect(f.waivers.uploadSignedLink(f.gymId, f.link.link.id, id, demoSignaturePng())).rejects.toThrow();
     const image = await f.waivers.uploadSignedLink(f.gymId, f.link.link.id, f.member.id, demoSignaturePng());
     const guarded = createWaiversService({ scope: db.forGym, clock: f.clock, uploadsFor: async () => f.uploads,
-      render: async () => { await f.links.revoke(f.mutation, f.link.link.id); return new Uint8Array(); } });
+      preflight: async () => { await f.links.revoke(f.mutation, f.link.link.id); return new Uint8Array(); } });
     await expect(guarded.signSignedLink(f.gymId, f.link.link.id, { ...image, memberId: f.member.id, templateId: f.template.id, templateVersion: 1,
       consent: true, signer: { kind: 'guardian', name: 'Parent', relationship: 'Parent' } }, { timezone: 'UTC', ipAddress: 'unknown' })).rejects.toThrow();
     expect(await db.forGym(f.gymId, tx => tx.select().from(waiverSignatures))).toHaveLength(0);
