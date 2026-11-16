@@ -14,6 +14,8 @@
   "duplicateReleasedBody": "The automatic refund of a duplicate payment for invoice {number} was stopped. {amount} of that payment isn't recorded as refunded yet, though a refund made in Stripe may still be pending. Check the payment in Stripe and in billing, and refund the payer only what they are still owed.",
   "refundFailedSubject": "Refund failed for invoice {number}",
   "refundFailedBody": "A refund of {amount} for invoice {number} failed, so the payer did not receive it. Check the payment and its refunds in billing, and refund the payer another way only if they are still owed.",
+  "refundCanceledSubject": "Refund canceled for invoice {number}",
+  "refundCanceledBody": "A refund of {amount} that billing sent to Stripe for invoice {number} was canceled there, so the payer did not receive it. Stripe does not say who canceled it. Check the payment and its refunds in billing and Stripe, and refund the payer again only if they are still owed.",
   "refundReleasedSubject": "Refund for invoice {number} wasn't sent",
   "refundArrivedSubject": "Refund for invoice {number} reached Stripe",
   "refundArrivedBody": "The refund of {amount} for invoice {number}, whose reservation was released earlier, did reach Stripe and is now recorded as successful in billing. Check the updated payment before issuing another refund.",

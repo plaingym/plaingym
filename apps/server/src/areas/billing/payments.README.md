@@ -103,6 +103,16 @@ released without calling Stripe: the live key can't read it, and the staff path 
 sends one (below). It runs in the ordinary per-gym job lane alongside the duplicate-refund worker;
 neither path sends a new refund after the window. It leaves reservations inside the
 window, untagged rows, and rows with a processor ID alone. Repeated runs are safe.
+External refunds are matched and recorded under the same invoice lock and transaction
+that releases any unsent reservations they leave no room for. If the external refund
+still exceeds the payment after removing those reservations, nothing is released.
+The writer reads processor-bound pending refunds before the transaction and reconciles
+failed or canceled ones under the lock, so a stale pending amount does not displace a
+live reservation. A pending refund the processor can't find blocks only such an external
+refund, never the app's own. Release notices run immediately after commit and count the
+refund once it has succeeded (a pending one still doesn't count). If a staff refund or an automatic duplicate-payment refund ends canceled in
+Stripe, staff receive one notice naming the invoice and amount; externally created
+refunds send no cancellation notice. Stripe does not identify who canceled the refund.
 Older pending refunds, untagged or already
 at Stripe, require reconciliation. If a webhook releases the reservation between the
 two steps of a request, nothing is sent to Stripe (`refund_released`). A pending refund

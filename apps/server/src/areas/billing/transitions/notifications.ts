@@ -22,11 +22,11 @@ export interface TransitionNotice {
 }
 /** Staff are told about a duplicate card payment (the default), a processor refund that failed (`reversed` when it
  * failed after it was reported successful), a duplicate payment's reservation released with no processor refund, with
- * what isn't recorded as refunded, or a staff refund the app released on its own. A canceled refund was cancelled on
- * purpose and has no notice. */
+ * what isn't recorded as refunded, an app-created refund that was canceled, or a staff refund the app released on its own. */
 export type StaffNotice = TransitionNotice & ({ reason?: 'duplicate_payment' }
   /** `reversedCredits`: class pack credits the full refund took back, which staff restore by adjustment if owed. */
   | { reason: 'refund_failed'; refund: typeof refunds.$inferSelect; reversed?: boolean; reversedCredits?: number }
+  | { reason: 'refund_canceled'; refund: typeof refunds.$inferSelect }
   | { reason: 'duplicate_released'; unrefundedCents: number }
   /** A staff refund the app released before it reached the processor: the payer may still be owed it. */
   | { reason: 'refund_released'; refund: typeof refunds.$inferSelect }
@@ -55,11 +55,11 @@ export function createTransitionNotifications(options: {
   const links = createSignedLinksService({ scope, clock });
   const deliveries = createEmailDeliveries({ scope, clock });
   async function deliver(notice: TransitionNotice, kind: 'receipt' | 'failed' | 'action' | 'duplicate' | 'duplicateReleased' | 'refundFailed' | 'refundReleased'
-    | 'refundArrived' | 'refundReversed' | 'creditsNotGranted', subject: { purpose: string; id: string }, amountCents?: number, credits?: number) {
+    | 'refundCanceled' | 'refundArrived' | 'refundReversed' | 'creditsNotGranted', subject: { purpose: string; id: string }, amountCents?: number, credits?: number) {
     assertNoTransaction('invoice notification');
     const { gymId, invoice } = notice;
     const staff = kind === 'duplicate' || kind === 'duplicateReleased' || kind === 'refundFailed' || kind === 'refundReversed' || kind === 'refundReleased'
-      || kind === 'creditsNotGranted' || kind === 'refundArrived';
+      || kind === 'creditsNotGranted' || kind === 'refundArrived' || kind === 'refundCanceled';
     const recipients = staff ? await options.staffRecipients(gymId) : await memberRecipients(gymId, invoice.householdId);
     if (!recipients.length) {
       if (staff) throw new Error('No staff recipient configured for billing staff notices');
@@ -160,6 +160,8 @@ export function createTransitionNotifications(options: {
       if (notice.reason === 'refund_failed')
         await deliver(notice, notice.reversed ? 'refundReversed' : 'refundFailed', { purpose: 'refund_failure', id: notice.refund.id }, notice.refund.amountCents,
           notice.reversedCredits);
+      else if (notice.reason === 'refund_canceled')
+        await deliver(notice, 'refundCanceled', { purpose: 'refund_canceled', id: notice.refund.id }, notice.refund.amountCents);
       else if (notice.reason === 'refund_released')
         await deliver(notice, 'refundReleased', { purpose: 'refund_released', id: notice.refund.id }, notice.refund.amountCents);
       else if (notice.reason === 'refund_arrived')

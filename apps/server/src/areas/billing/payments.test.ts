@@ -72,7 +72,7 @@ function dashboardRefund(f: Fixture, paid: typeof payments.$inferSelect, amount:
   vi.spyOn(f.provider, 'refund').mockImplementationOnce(async request => {
     const dashboard = await send({ chargeId: request.chargeId, amount, idempotencyKey: 'dashboard' });
     made.id = dashboard.id;
-    await writer.refund(f.gymId, paid, dashboard);
+    await writer.refund(f.gymId, paid, dashboard, f.provider);
     return send(request);
   });
   return made;
@@ -576,7 +576,7 @@ describe('one-off collection and payment durability', () => {
     const payment = (await f.service.getInvoice(f.gymId, f.invoice.id)).payments[0]!, paid = await paymentRow(payment.id, f);
     f.provider.respondNextRefund('pending');
     const external = await f.provider.refund({ chargeId: paid.paymentIntentId!, amount: 1000, idempotencyKey: 'dashboard' });
-    await createDisputeRefundWriter({ scope: db.forGym, clock: f.clock, transitions: f.options.transitions }).refund(f.gymId, paid, external);
+    await createDisputeRefundWriter({ scope: db.forGym, clock: f.clock, transitions: f.options.transitions }).refund(f.gymId, paid, external, f.provider);
     const refund = vi.spyOn(f.provider, 'refund');
     for (const amountCents of [1000, 500])
       await expect(f.service.refund(f.context, payment.id, { ...staffRefund, amountCents }))
@@ -647,7 +647,7 @@ describe('one-off collection and payment durability', () => {
   it.each([1000, 500])('releases a tagged reservation that never reached Stripe once its window has passed, for a request of %i, moving no money', async amountCents => {
     const f = await fixture(), { payment, paid, refundId } = await lapsedReservation(f);
     const dashboard = await f.provider.refund({ chargeId: paid.paymentIntentId!, amount: 1000, idempotencyKey: 'dashboard' });
-    await createDisputeRefundWriter({ scope: db.forGym, clock: f.clock, transitions: f.options.transitions }).refund(f.gymId, paid, dashboard);
+    await createDisputeRefundWriter({ scope: db.forGym, clock: f.clock, transitions: f.options.transitions }).refund(f.gymId, paid, dashboard, f.provider);
     expect(await refundRows(payment.id, f)).toHaveLength(2);
     expect(await readiness(f)).toBe('needs_attention');
     const refund = vi.spyOn(f.provider, 'refund');

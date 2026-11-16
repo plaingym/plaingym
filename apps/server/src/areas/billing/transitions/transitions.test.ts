@@ -20,7 +20,7 @@ import { createSignedLinksService } from '../../links/service.js';
 import { createInvoiceTransitions } from './index.js';
 import { formatMinorUnits } from '@plaingym/shared/money';
 import { createDisputeRefundWriter } from '../disputes-refunds.js';
-import { createTransitionEffects, releasedNoticeDelayMs } from './effects.js';
+import { createTransitionEffects } from './effects.js';
 import { createTransitionJobs } from './transitions.jobs.js';
 import { createTransitionNotifications } from './notifications.js';
 import { applyChargeOutcome } from './outcomes.js';
@@ -360,9 +360,9 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect(f.email.messages.some(message => message.subject.includes("wasn't sent"))).toBe(true);
     const value = await f.provider.refund({ chargeId: payment.paymentIntentId!, amount: 3000, idempotencyKey: 'late', reservationId: refundId });
     const writer = createDisputeRefundWriter({ ...f.options, transitions: f.transitions });
-    await Promise.all([writer.refund(f.gymId, payment, value), writer.refund(f.gymId, payment, value)]);
-    if (reversed) await writer.refund(f.gymId, payment, { ...value, status: 'failed' });
-    await f.drain(); await writer.refund(f.gymId, payment, value); await f.drain();
+    await Promise.all([writer.refund(f.gymId, payment, value, f.provider), writer.refund(f.gymId, payment, value, f.provider)]);
+    if (reversed) await writer.refund(f.gymId, payment, { ...value, status: 'failed' }, f.provider);
+    await f.drain(); await writer.refund(f.gymId, payment, value, f.provider); await f.drain();
     expect((await f.read()).refunds.filter(row => row.processorId === value.id)).toHaveLength(1);
     const followups = f.email.messages.filter(message => message.subject.includes('reached Stripe'));
     expect(followups).toHaveLength(reversed ? 0 : 1);
@@ -375,13 +375,13 @@ describe('invoice transitions with real PostgreSQL', () => {
     await f.transitions.refund(f.context, { ...request, status: 'pending', tagged: true });
     const value = await f.provider.refund({ chargeId: payment.paymentIntentId!, amount: 3000, idempotencyKey: 'crossed', reservationId: refundId });
     const writer = createDisputeRefundWriter({ ...f.options, transitions: { refund: async (context, incoming) => {
-      if (incoming.refundId === refundId && incoming.processorId) {
+      if (incoming.processorId) {
         f.clock.advance(refundRetryWindowMs + refundSettleSkewMs);
         await f.transitions.refund(f.context, { ...request, status: 'failed' });
       }
       return f.transitions.refund(context, incoming);
     } } });
-    expect(await writer.refund(f.gymId, payment, value)).toBe(true);
+    expect(await writer.refund(f.gymId, payment, value, f.provider)).toBe(true);
     const rows = await f.read();
     expect(rows.refunds.filter(row => row.processorId === value.id)).toMatchObject([{ status: 'succeeded', amountCents: 3000 }]);
     expect(rows.audits.map(row => row.after)).toContainEqual(expect.objectContaining({ notice: 'refund_arrived' }));
@@ -581,6 +581,78 @@ describe('invoice transitions with real PostgreSQL', () => {
   const refundNotices = (rows: Awaited<ReturnType<Fixture['read']>>) => rows.audits
     .filter(row => row.action === effectCreated && (row.after as { notice?: string }).notice === 'refund_failed')
     .map(row => (row.after as { refundId: string }).refundId);
+  it('keeps a reservation and its audits unchanged when an external refund exceeds the payment', async () => {
+    const f = await fixture(); await succeed(f); await f.transitions.cardSucceeded(f.context, f.success);
+    const payment = (await f.read()).payments[0]!, refundId = uuidv7();
+    await f.transitions.refund(f.context, { invoiceId: f.invoice.id, paymentId: payment.id, refundId,
+      amountCents: 3000, currency: 'CAD', status: 'pending', tagged: true });
+    const dashboard = await f.provider.refund({ chargeId: f.success.paymentIntentId, amount: 1000, idempotencyKey: 'too-large' });
+    const writer = createDisputeRefundWriter({ ...f.options, transitions: f.transitions }), before = await f.read();
+    await expect(writer.refund(f.gymId, payment, { ...dashboard, amount: 11000 }, f.provider))
+      .rejects.toThrow('Refund exceeds payment');
+    expect(await f.read()).toEqual(before);
+  });
+  it('rolls back reservation releases, the external refund and their notices together on commit failure', async () => {
+    const f = await fixture(); await succeed(f); await f.transitions.manualPayment(f.context, f.manual);
+    await f.transitions.cardSucceeded(f.context, f.success);
+    const payment = (await f.read()).payments.find(row => row.id === f.success.paymentId)!;
+    const external = await f.provider.refund({ chargeId: f.success.paymentIntentId, amount: 3000, idempotencyKey: 'rollback' });
+    const scope: typeof db.forGym = (gymId, fn) => db.forGym(gymId, async tx => {
+      await fn(tx);
+      throw new Error('Commit interrupted');
+    });
+    const transitions = createInvoiceTransitions({ ...f.options, scope });
+    const writer = createDisputeRefundWriter({ ...f.options, transitions }), before = await f.read();
+    await expect(writer.refund(f.gymId, payment, external, f.provider)).rejects.toThrow('Commit interrupted');
+    expect(await f.read()).toEqual(before);
+  });
+  it.each(['failed', 'canceled'] as const)('reconciles a stale pending processor refund that is %s before releasing a live reservation', async status => {
+    const f = await fixture(); await succeed(f); await f.transitions.cardSucceeded(f.context, f.success);
+    const payment = (await f.read()).payments[0]!, refundId = uuidv7(), liveId = uuidv7();
+    const base = { invoiceId: f.invoice.id, paymentId: payment.id, currency: 'CAD' };
+    await f.transitions.refund(f.context, { ...base, refundId, amountCents: 6000, status: 'pending', tagged: true });
+    f.provider.respondNextRefund('pending');
+    const stale = await f.provider.refund({ chargeId: f.success.paymentIntentId, amount: 6000, idempotencyKey: 'stale', reservationId: refundId });
+    await f.transitions.refund(f.context, { ...base, refundId, amountCents: 6000, status: 'pending', processorId: stale.id });
+    await f.transitions.refund(f.context, { ...base, refundId: liveId, amountCents: 3000, status: 'pending', tagged: true });
+    f.provider.setRefundStatus(stale.id, status);
+    const external = await f.provider.refund({ chargeId: f.success.paymentIntentId, amount: 3000, idempotencyKey: 'external' });
+    const writer = createDisputeRefundWriter({ ...f.options, transitions: f.transitions });
+    await writer.refund(f.gymId, payment, external, f.provider);
+    const rows = await f.read();
+    expect(rows.refunds.find(row => row.id === liveId)).toMatchObject({ status: 'pending', processorId: null });
+    expect(rows.refunds.find(row => row.id === refundId)).toMatchObject({ status });
+    expect(rows.refunds.find(row => row.processorId === external.id)).toMatchObject({ status: 'succeeded', amountCents: 3000 });
+    expect(rows.audits.filter(row => row.targetId === liveId && row.action === 'billing.refund.recorded')).toHaveLength(1);
+  });
+  it('records the app\'s own refund while another pending processor refund cannot be read', async () => {
+    const f = await fixture(); await succeed(f); await f.transitions.cardSucceeded(f.context, f.success);
+    const payment = (await f.read()).payments[0]!, ownId = uuidv7();
+    const base = { invoiceId: f.invoice.id, paymentId: payment.id, currency: 'CAD' };
+    await f.transitions.refund(f.context, { ...base, refundId: uuidv7(), amountCents: 2000, status: 'pending', processorId: 're_unreadable' });
+    await f.transitions.refund(f.context, { ...base, refundId: ownId, amountCents: 3000, status: 'pending', tagged: true });
+    const own = await f.provider.refund({ chargeId: f.success.paymentIntentId, amount: 3000, idempotencyKey: 'own', reservationId: ownId });
+    const writer = createDisputeRefundWriter({ ...f.options, transitions: f.transitions });
+    expect(await writer.refund(f.gymId, payment, own, f.provider)).toBe(true);
+    expect((await f.read()).refunds.find(row => row.id === ownId)).toMatchObject({ processorId: own.id, status: 'succeeded' });
+    // An external refund that must weigh the unreadable one still refuses to record, and releases nothing.
+    const external = await f.provider.refund({ chargeId: f.success.paymentIntentId, amount: 1000, idempotencyKey: 'external' });
+    await expect(writer.refund(f.gymId, payment, external, f.provider)).rejects.toMatchObject({ code: 'conflict' });
+  });
+  it('sends no cancellation notice for an external refund first seen pending', async () => {
+    const f = await fixture(); await succeed(f); await f.transitions.cardSucceeded(f.context, f.success); await f.drain();
+    const payment = (await f.read()).payments[0]!;
+    f.provider.respondNextRefund('pending');
+    const external = await f.provider.refund({ chargeId: f.success.paymentIntentId, amount: 3000, idempotencyKey: 'dashboard-canceled' });
+    const writer = createDisputeRefundWriter({ ...f.options, transitions: f.transitions });
+    await writer.refund(f.gymId, payment, external, f.provider);
+    f.provider.setRefundStatus(external.id, 'canceled');
+    const canceled = { ...external, status: 'canceled' as const }, sent = f.email.messages.length;
+    await writer.refund(f.gymId, payment, canceled, f.provider);
+    await writer.refund(f.gymId, payment, canceled, f.provider); await f.drain();
+    expect(f.email.messages).toHaveLength(sent);
+    expect((await f.read()).refunds).toMatchObject([{ processorId: external.id, status: 'canceled' }]);
+  });
   describe('a released duplicate-payment reservation', () => {
     const releasedNotices = (rows: Awaited<ReturnType<Fixture['read']>>) => rows.audits
       .filter(row => row.action === effectCreated && (row.after as { notice?: string }).notice === 'duplicate_released');
@@ -592,17 +664,17 @@ describe('invoice transitions with real PostgreSQL', () => {
       const writer = createDisputeRefundWriter({ scope: db.forGym, clock: f.clock, transitions: f.transitions });
       const paid = (await f.read()).payments.find(row => row.id === f.success.paymentId)!;
       const dashboard = await f.provider.refund({ chargeId: f.success.paymentIntentId, amount, idempotencyKey: 'dashboard' });
-      const deliver = (value: 'pending' | 'succeeded' | 'canceled') => writer.refund(f.gymId, paid, { ...dashboard, status: value });
+      const deliver = (value: 'pending' | 'succeeded' | 'canceled') => writer.refund(f.gymId, paid, { ...dashboard, status: value }, f.provider);
       await deliver(status);
       return { deliver };
     }
-    const settle = async (f: Fixture) => { f.clock.advance(releasedNoticeDelayMs); await f.drain(); };
-    it('tells staff what a partial dashboard refund left unrefunded, once, after the delay', async () => {
+    const settle = async (f: Fixture) => { await f.drain(); };
+    it('tells staff what a partial dashboard refund left unrefunded, once, without a delay', async () => {
       const f = await fixture(), sent = vi.spyOn(f.provider, 'refund'), { deliver } = await dashboardRefund(f, 5000, 'succeeded');
       await f.drain();
       expect(sent).toHaveBeenCalledTimes(1); // Only the dashboard refund: the worker sent nothing.
       expect((await f.read()).refunds.find(row => row.reason === 'duplicate_payment')).toMatchObject({ status: 'failed', processorId: null });
-      expect(staffEmails(f)).toEqual([]);
+      expect(staffEmails(f)).toHaveLength(1);
       await settle(f); await deliver('succeeded'); await settle(f);
       expect(staffEmails(f)).toHaveLength(1);
       expect(staffEmails(f)[0]).toMatchObject({ to: 'staff@example.invalid' });
@@ -673,7 +745,7 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect((await f.read()).audits.filter(row => row.action === effectCreated && (row.after as { notice?: string }).notice === 'refund_released')
       .map(row => (row.after as { refundId: string }).refundId)).toEqual([lapsed.refundId]);
   });
-  it('records a refund staff cancel as canceled, releases its amount and sends no notice', async () => {
+  it('notifies staff only for the canceled refund the app created and releases both amounts', async () => {
     const f = await fixture(); await f.transitions.cardSucceeded(f.context, f.success); await f.drain();
     const base = { invoiceId: f.invoice.id, paymentId: f.success.paymentId, currency: 'CAD' };
     // A staff card refund is reserved without a processor ID; staff then cancel it in the processor's dashboard.
@@ -694,13 +766,16 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect(rows.audits.filter(row => row.action === 'billing.refund.recorded' && (row.after as { status: string }).status === 'canceled')
       .map(row => row.targetId).sort()).toEqual([reserved.refundId, canceled.refundId].sort());
     expect(refundNotices(rows)).toEqual([]);
-    expect(f.email.messages.slice(sent)).toEqual([]);
+    expect(f.email.messages.slice(sent)).toMatchObject([{ to: 'staff@example.invalid', subject: 'Refund canceled for invoice 1',
+      text: expect.stringContaining(formatMinorUnits(6000, 'CAD')) }]);
+    expect(rows.audits.filter(row => row.action === effectCreated && (row.after as { notice?: string }).notice === 'refund_canceled')
+      .map(row => (row.after as { refundId: string }).refundId)).toEqual([reserved.refundId]);
     expect(rows.invoice.status).toBe('paid');
     // Both amounts are released: the whole payment can still be refunded.
     expect((await f.transitions.refund(f.context, { ...base, refundId: uuidv7(), processorId: 're_full', amountCents: 10000,
       status: 'succeeded' })).invoice.status).toBe('refunded');
   });
-  it('completes the duplicate-payment refund job without a refund notice when the refund is canceled', async () => {
+  it('completes the duplicate-payment refund job and notifies staff when the refund is canceled', async () => {
     const f = await fixture(); await f.transitions.manualPayment(f.context, f.manual); await succeed(f); await f.drain();
     const create = f.provider.refund.bind(f.provider);
     vi.spyOn(f.provider, 'refund').mockImplementation(async request => ({ ...await create(request), status: 'canceled' }));
@@ -712,7 +787,7 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect(rows.invoice).toEqual(before);
     expect(refundNotices(rows)).toEqual([]);
     expect(f.jobs.jobs.filter(job => job.status !== 'completed')).toEqual([]);
-    expect(f.email.messages.slice(sent).map(m => m.subject)).toEqual(['Duplicate payment for invoice 1']);
+    expect(f.email.messages.slice(sent).map(m => m.subject)).toEqual(['Duplicate payment for invoice 1', 'Refund canceled for invoice 1']);
   });
   it('records a failed automatic duplicate-payment refund and notifies staff instead of failing its job', async () => {
     const f = await fixture(); await f.transitions.manualPayment(f.context, f.manual); await succeed(f); await f.drain();

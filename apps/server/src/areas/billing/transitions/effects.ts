@@ -20,8 +20,6 @@ import { abandonedAttempt, audit, effectCompleted, effectCreated, effectPublishe
 export const effectJob = 'billing.transitions.effect';
 /** How far back the publisher looks. A publish normally follows its commit at once, or within the hour. */
 export const publishWindowDays = 30;
-/** A release is committed just before the refund that caused it. Waiting lets the notice's amount count that refund. */
-export const releasedNoticeDelayMs = 15 * 60_000;
 export const effectRecoveryDelayMs = 15 * 60_000, effectRecoveryLimit = 5;
 export const effectRetried = 'billing.transition.effect.retried';
 export const effectRecoveryExhausted = 'billing.transition.effect.recovery_exhausted';
@@ -75,7 +73,7 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
     for (const row of rows) {
       const work = row.after as TransitionEffect;
       const runAt = work.kind === 'retry' ? retryAt(localDate(row.occurredAt, gym.timezone), work.retryDay!, gym.timezone)
-        : work.notice === 'duplicate_released' ? new Date(clock.now().getTime() + releasedNoticeDelayMs) : clock.now();
+        : clock.now();
       await options.jobs.enqueue(effectJob, { effectId: row.targetId },
         { gymId, timezone: gym.timezone, runAt, idempotencyKey: row.targetId, maxAttempts: 12 });
       await scope(gymId, async tx => {
@@ -137,7 +135,7 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
       const invoice = await lockInvoice(tx, work.invoiceId);
       const payment = work.paymentId ? (await tx.select().from(payments).where(eq(payments.id, work.paymentId)))[0] : undefined;
       if (payment && payment.invoiceId !== invoice.id) notFound();
-      const refund = (work.notice === 'refund_failed' || work.notice === 'refund_released' || work.notice === 'refund_arrived') && work.refundId
+      const refund = (work.notice === 'refund_failed' || work.notice === 'refund_canceled' || work.notice === 'refund_released' || work.notice === 'refund_arrived') && work.refundId
         ? (await tx.select().from(refunds).where(eq(refunds.id, work.refundId)))[0] : undefined;
       if (refund && refund.paymentId !== payment?.id) notFound();
       const refunded = work.notice === 'duplicate_released' && payment
@@ -183,12 +181,15 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
     } else if (work.kind === 'staff_notice') {
       if (work.notice === 'duplicate_released') {
         if (!payment) throw new Error('Released duplicate refund notice has no payment');
-        // Only recorded refunds count: a pending one can still be canceled, and then nothing else would say so.
+        // Only succeeded refunds count; a pending one may still fail or be canceled.
         const unrefundedCents = refunded.reduce((left, row) => left - row.amountCents, payment.amountCents);
         if (unrefundedCents > 0) await options.notifications.staffNotice({ ...data, reason: 'duplicate_released', unrefundedCents });
       } else if (work.notice === 'credits_not_granted') {
         if (!sale) throw new Error('Credits notice has no class pack sale');
         await options.notifications.staffNotice({ ...data, reason: 'credits_not_granted', credits: sale.credits });
+      } else if (work.notice === 'refund_canceled') {
+        if (!refund) throw new Error('Canceled refund notice has no refund');
+        await options.notifications.staffNotice({ ...data, reason: 'refund_canceled', refund });
       } else if (work.notice === 'refund_released') {
         if (!refund) throw new Error('Released refund notice has no refund');
         await options.notifications.staffNotice({ ...data, reason: 'refund_released', refund });

@@ -11,10 +11,10 @@ import type { InvoiceTransitions } from '../../core/interfaces/invoice-transitio
 import type { ChargeOutcome, Dispute, Payments, Refund } from '../../infra/payments/index.js';
 import type { BillingAlerts } from './alerts/index.js';
 import { stripeWriteCurrent, stripeWriteScope } from './stripe-writes.js';
+import type { ProcessorRefundTransition } from './transitions/refunds.js';
 import { audit, effect, lockInvoice, recorded } from './transitions/store.js';
 
 type Payment = typeof payments.$inferSelect;
-type RefundRow = typeof refunds.$inferSelect;
 type Succeeded = Extract<ChargeOutcome, { status: 'succeeded' }>;
 
 const terminal = new Set<string>(terminalDisputeStatuses);
@@ -32,19 +32,6 @@ export function processorRefundId(gymId: string, processorId: string): string {
   digest[8] = (digest[8]! & 0x3f) | 0x80;
   const hex = digest.toString('hex');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
-
-/** The newest reservations an external refund pushes past the payment. The processor never lets its refunds exceed the
- * payment, so these can't have reached it as refunds of their own. */
-function outrunReservations(rows: readonly RefundRow[], reservations: readonly RefundRow[], external: number, paid: number) {
-  let excess = rows.filter(row => !refundReleased(row)).reduce((sum, row) => sum + row.amountCents, external - paid);
-  const outrun: RefundRow[] = [];
-  for (const row of [...reservations].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))) {
-    if (excess <= 0) break;
-    outrun.push(row);
-    excess -= row.amountCents;
-  }
-  return outrun;
 }
 
 export interface DisputeRefundOptions {
@@ -86,47 +73,25 @@ export function createDisputeRefundWriter(options: DisputeRefundOptions) {
    * reservations to the app's own refund, unless the processor has no room left for them: those never reached it, and
    * are released (untagged ones too, once a refund naming another reservation leaves them unmatched). False when the
    * refund does not belong to this payment. */
-  async function refund(gymId: string, payment: Payment, value: Refund): Promise<boolean> {
+  async function refund(gymId: string, payment: Payment, value: Refund, provider: Pick<Payments, 'readPaymentObject'>): Promise<boolean> {
     const currency = value.currency.toUpperCase();
-    if (value.metadata.gymId !== gymId || currency !== payment.currency) return false;
-    const { refundId, outrun } = await scope(gymId, async tx => {
-      const existing = (await tx.select().from(refunds).where(eq(refunds.processorId, value.id)))[0];
-      if (existing) return { refundId: existing.id, outrun: [] };
-      const rows = await tx.select().from(refunds).where(eq(refunds.paymentId, payment.id));
-      const reservations = rows.filter(row => row.processorId === null && row.status === 'pending');
-      const tagged = reservations.filter(row => row.taggedAt !== null);
-      const untagged = reservations.filter(row => row.taggedAt === null);
-      const own = tagged.find(row => row.id === value.reservationId && row.amountCents === value.amount);
-      if (own) return { refundId: own.id, outrun: [] };
-      if (value.reservationId === undefined && untagged.length) {
-        if (untagged.length !== 1 || untagged[0]!.amountCents !== value.amount
-          || untagged[0]!.currency !== currency) throw new Error('Refund reservation is ambiguous');
-        return { refundId: untagged[0]!.id, outrun: [] };
-      }
-      // An untagged reservation is outrun too: it is left here only when this refund names another reservation.
-      return { refundId: processorRefundId(gymId, value.id),
-        outrun: refundReleased(value) ? [] : outrunReservations(rows, reservations, value.amount, payment.amountCents) };
-    });
-    // Each move is a transition of its own, which rechecks the row under the invoice lock. A replay after a crash here
-    // finds the amount already released.
-    for (const row of outrun) await options.transitions.refund(system(gymId), { invoiceId: payment.invoiceId, paymentId: payment.id,
-      refundId: row.id, amountCents: row.amountCents, currency: row.currency, status: 'failed' });
-    const apply = (id: string) => options.transitions.refund(system(gymId), { invoiceId: payment.invoiceId, paymentId: payment.id,
-      refundId: id, processorId: value.id, amountCents: value.amount, currency: currency, status: value.status });
-    try {
-      const result = await apply(refundId);
-      if (result.outcome === 'ignored' && refundId === value.reservationId) {
-        const [row] = await scope(gymId, tx => tx.select().from(refunds).where(eq(refunds.id, refundId)));
-        // Settlement may have released the selected reservation before the transition took its lock. Re-read the
-        // payment's reservations and record this now-external refund, instead of losing the processor outcome.
-        if (row && row.processorId === null && refundReleased(row)) return refund(gymId, payment, value);
-      }
-    } catch (error) {
-      // A concurrent delivery or restore pass may have recorded this processor refund first, under another local ID.
-      const raced = await scope(gymId, async tx => (await tx.select().from(refunds).where(eq(refunds.processorId, value.id)))[0]);
-      if (!raced || raced.paymentId !== payment.id || raced.amountCents !== value.amount || raced.currency !== currency) throw error;
-      await apply(raced.id);
+    if (value.metadata.gymId !== gymId || currency !== payment.currency
+      || ![payment.paymentIntentId, payment.chargeId].includes(value.chargeId)) return false;
+    // Processor reads stay outside the transaction. The transition rechecks the selected reservation and every
+    // pending amount under the invoice lock, then releases and records atomically. A refund the processor can't
+    // find is left out: only an external refund that must weigh it refuses to record, so the app's own refund and an
+    // already recorded one never wait on another refund.
+    const pending = refundReleased(value) ? [] : await scope(gymId, tx => tx.select().from(refunds)
+      .where(eq(refunds.paymentId, payment.id)));
+    const pendingRefunds: Refund[] = [];
+    for (const row of pending.filter(row => row.status === 'pending' && row.processorId !== null && row.processorId !== value.id)) {
+      const found = await provider.readPaymentObject({ kind: 'refund', id: row.processorId! });
+      if (found.status === 'found' && found.value.kind === 'refund') pendingRefunds.push(found.value.object);
     }
+    const request: ProcessorRefundTransition = { invoiceId: payment.invoiceId, paymentId: payment.id,
+      refundId: processorRefundId(gymId, value.id), processorId: value.id, amountCents: value.amount, currency, status: value.status,
+      processorRefund: value, pendingRefunds };
+    await options.transitions.refund(system(gymId), request);
     // A timed-out request may finish after settlement listed Stripe and released its reservation. Its external row
     // records the money; a durable follow-up corrects the earlier release notice, once, including on webhook replay.
     if (value.reservationId && value.status === 'succeeded') await scope(gymId, async tx => {

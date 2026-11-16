@@ -111,7 +111,7 @@ export function registerBillingWebhookHandlers(inbox: Pick<WebhookInbox, 'regist
   }
   async function applyRefund(gymId: string, provider: Payments, refund: Refund) {
     const payment = await parentPayment(gymId, provider, refund.chargeId, 'Refund');
-    if (!await writer.refund(gymId, payment, refund)) throw new Error('Refund payment mismatch');
+    if (!await writer.refund(gymId, payment, refund, provider)) throw new Error('Refund payment mismatch');
   }
   const handle: WebhookHandler = async (event, context) => {
     const { gymId, payments: provider } = context;

@@ -46,8 +46,8 @@ export interface RefundTransition extends Money {
   readonly paymentId: Id;
   readonly refundId: Id;
   readonly processorId?: string;
-  /** canceled: cancelled at the processor before it completed (by staff, so no notice); failed: it did not reach the
-   * payer. Both are final and release the amount. */
+  /** canceled: cancelled at the processor before it completed (staff are notified only when the app created it);
+   * failed: it did not reach the payer. Both are final and release the amount. */
   readonly status: 'pending' | 'succeeded' | 'failed' | 'canceled';
   /** Marks a new reservation whose processor refund will carry its row ID. It applies only when this call creates the
    * row with status pending, never to an existing row, so a retry of an older reservation keeps its request. */
@@ -66,7 +66,7 @@ export interface InvoiceTransitionResult {
  * processor refund that fails after it succeeded (same processor refund ID): its amount is released, the invoice's
  * refund status is recomputed (back to partially refunded or paid) and staff are notified. Staff are notified once for
  * every processor refund that ends failed: first recorded failed, pending to failed, or reversed. A canceled refund is
- * recorded as canceled and released like a failed one, without a notice; it never reverses a successful refund.
+ * recorded as canceled and released like a failed one; an app-created refund notifies staff once. It never reverses a successful refund.
  * A full refund queues reverse_credits only when the invoice has a class pack sale.
  */
 export interface InvoiceTransitions {
@@ -100,7 +100,7 @@ export type InvoiceEffect = {
   readonly paymentId?: Id;
 };
 interface StoredPayment extends Money { invoiceId: Id; id: Id; accepted: boolean; fingerprint: string; }
-interface StoredRefund { gymId: Id; request: RefundTransition; }
+interface StoredRefund { gymId: Id; request: RefundTransition; appCreated: boolean; }
 const terminal = new Set<InvoiceSnapshot['status']>(['paid', 'partially_refunded', 'refunded', 'void']);
 const canceled = (attempt: InvoiceAttemptFixture) => attempt.declineCode === 'intent_canceled' || attempt.declineCode === 'confirm_abandoned';
 
@@ -291,11 +291,11 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
       && gymId === context.gymId && other.paymentId === payment.id && !refundReleased(other))
       .reduce((sum, [, { request: other }]) => sum + other.amountCents, 0);
     if (!refundReleased(request) && reserved + request.amountCents > payment.amountCents) conflict('Refund exceeds payment');
-    this.#refunds.set(key, { gymId: context.gymId, request: structuredClone(request) });
+    const appCreated = this.#refunds.get(key)?.appCreated ?? (request.status === 'pending' && request.processorId === undefined);
+    this.#refunds.set(key, { gymId: context.gymId, request: structuredClone(request), appCreated });
     if (processorKey !== undefined) this.#processorRefunds.set(processorKey, key);
-    // A failed refund never moves again, so each processor refund that ends failed notifies staff once. A canceled one
-    // was cancelled on purpose and sends nothing.
-    if (request.status === 'failed' && request.processorId !== undefined)
+    // Failed refunds notify once; canceled refunds notify only when the app created them.
+    if (request.status === 'failed' && request.processorId !== undefined || request.status === 'canceled' && appCreated)
       this.#effect(context.gymId, invoice.id, 'staff_notice', payment.id);
     if (!(request.status === 'succeeded' || (reversed && ['partially_refunded', 'refunded'].includes(invoice.status)))
       || !payment.accepted) return this.#result('applied', invoice);

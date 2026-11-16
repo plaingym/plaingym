@@ -121,7 +121,7 @@ export function invoiceTransitionsContract(name: string, create: (options?: { pa
       expect(await notices()).toBe(2);
       expect((await h.read()).invoice).toBe('paid');
     });
-    it('records a canceled refund as final and released, without notifying staff', async () => {
+    it('records an external canceled refund as final and released, without notifying staff', async () => {
       const h = await create();
       await h.transitions.cardSucceeded(h.context, h.success);
       const { invoiceId, paymentId, amountCents, currency } = h.success;
@@ -161,7 +161,21 @@ export function invoiceTransitionsContract(name: string, create: (options?: { pa
       expect((await h.transitions.refund(h.context, report)).outcome).toBe('ignored');
       await expect(h.transitions.refund(h.context, { ...report, processorId: 're_different' })).rejects.toMatchObject({ code: 'conflict' });
       await expect(h.transitions.refund(h.context, { ...report, amountCents: amountCents - 1 })).rejects.toMatchObject({ code: 'conflict' });
-      expect(count((await h.read()).effects, 'staff_notice')).toBe(status === 'failed' ? 1 : 0);
+      expect(count((await h.read()).effects, 'staff_notice')).toBe(status === 'failed' || status === 'canceled' ? 1 : 0);
+    });
+    it('remembers an app reservation after linking a pending processor refund, and notifies once on cancellation', async () => {
+      const h = await create();
+      await h.transitions.cardSucceeded(h.context, h.success);
+      const { invoiceId, paymentId, amountCents, currency } = h.success;
+      const reservation: RefundTransition = { invoiceId, paymentId, amountCents, currency, refundId: randomUUID(), status: 'pending' };
+      await h.transitions.refund(h.context, reservation);
+      const linked = { ...reservation, processorId: 're_contract_app_pending' };
+      await h.transitions.refund(h.context, linked);
+      const canceled = { ...linked, status: 'canceled' as const };
+      await h.transitions.refund(h.context, canceled);
+      await h.transitions.refund(h.context, canceled);
+      expect(count((await h.read()).effects, 'staff_notice')).toBe(1);
+      expect((await h.read()).invoice).toBe('paid');
     });
     it('never reverses a refund without a processor ID', async () => {
       const h = await create();

@@ -133,7 +133,7 @@ export function createReconciliation(options: Options) {
     const payment = await writer.recordedPayment(gymId, value.object.chargeId)
       ?? (await writer.parentPayment(gymId, provider, value.object.chargeId, success => apply(gymId, success))).payment;
     if (!payment) return false;
-    if (value.kind === 'refund') return await writer.refund(gymId, payment, value.object) && value.object.status !== 'pending';
+    if (value.kind === 'refund') return await writer.refund(gymId, payment, value.object, provider) && value.object.status !== 'pending';
     return await writer.dispute(gymId, payment, value.object) !== 'conflict';
   }
   /** `resolved` is a provider already resolved by the caller; null means the gym has none, so stored intents are listed unread. */

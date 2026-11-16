@@ -20,7 +20,7 @@ export interface TransitionEffect {
   refundId?: string;
   retryDay?: number;
   /** A staff notice's subject; absent on older notices, which all report a duplicate payment. */
-  notice?: 'refund_failed' | 'refund_released' | 'refund_arrived' | 'duplicate_released' | 'credits_not_granted';
+  notice?: 'refund_canceled' | 'refund_failed' | 'refund_released' | 'refund_arrived' | 'duplicate_released' | 'credits_not_granted';
 }
 /** The app gave up on these attempts before the member's card was charged: neither a decline nor a collection. */
 export const createAbandoned = 'create_abandoned', confirmAbandoned = 'confirm_abandoned';

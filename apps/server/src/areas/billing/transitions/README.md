@@ -234,8 +234,13 @@ automatic refund is recorded as failed, which queues the failed-refund staff
 notice below, and the effect completes. A reservation released with no processor
 refund (a dashboard refund left it no room, or the worker, hourly job or a staff
 request settled it past the window) also ends the effect, and queues a `notice: 'duplicate_released'` staff
-notice. Its job runs 15 minutes later, so the amount counts the refund that caused
-the release, and it names what the payment's succeeded refunds leave unrefunded.
+notice. It runs without a delay and names what the payment's succeeded refunds leave
+unrefunded. An external refund's identity, reservation releases and recording share
+one invoice lock and transaction, so the notice counts the refund that caused the
+release once it has succeeded. If recording fails, all releases and their notices roll back too.
+Processor-bound pending refunds are read outside the transaction and terminal outcomes
+are reconciled under the lock before deciding which unsent reservations no longer fit.
+A pending row added after those reads forces reconciliation to retry.
 A pending refund doesn't count, because it can still be canceled; if nothing is
 left, no email is sent. The worker's refund is never reduced to the remainder,
 since that would change a retried request. A pending processor refund is stored for
@@ -274,11 +279,13 @@ the window queues none either. The window, the send records that keep a staff re
 still in flight from being released, and the settling rule live in `lapsed-refunds.ts`
 (see the payments README). Because a failed
 refund never moves again, a replayed webhook or rerun reconciliation queues no
-second notice. A refund cancelled at the processor (usually by staff in its
-dashboard; the Stripe adapter reports it as `canceled`) is recorded as `canceled`
-and released like a failed one, with no notice: cancelling it was deliberate, not
-a failure. A canceled automatic duplicate-payment refund completes its effect the
-same way.
+second notice. A refund canceled at the processor (the Stripe adapter reports it as
+`canceled`) is recorded as `canceled` and released like a failed one. If the app created
+it (a staff refund or an automatic duplicate-payment refund), one `refund_canceled`
+staff notice names the invoice and amount and asks staff to check what the payer is
+still owed. Stripe does not identify who canceled it. A refund created outside the app
+sends no cancellation notice, including one first recorded as pending. A canceled
+automatic duplicate-payment refund completes its effect without retrying the refund.
 
 A refund that names a released tagged reservation and later succeeds is recorded
 as an external refund. `notice: 'refund_arrived'` tells staff it reached Stripe,
@@ -290,7 +297,7 @@ listing it. Late card successes still record and refund duplicates.
 
 `createTransitionNotifications` sends localized receipts, signed pay/update-card
 links, and staff notices (a duplicate card payment, a failed processor refund, a
-duplicate payment's released reservation, or a staff refund released after its window).
+canceled app-created refund, a duplicate payment's released reservation, or a staff refund released after its window).
 Runtime must supply a gym SMTP resolver (or demo outbox), trusted canonical origin and staff recipients. Household email respects
 the gym's email switch and matching member opt-outs/deliverability, through the
 household recipient helper shared with signed-link delivery and billing alerts. Receipts and

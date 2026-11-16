@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, desc, eq, or } from 'drizzle-orm';
-import { classPackSales, forGym, invoices, paymentAttempts, payments, refunds, uuidv7, type Transaction } from '@plaingym/db';
+import { desc, eq, or } from 'drizzle-orm';
+import { forGym, invoices, paymentAttempts, payments, refunds, uuidv7, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
-import { idSchema, moneySchema, refundReleased } from '@plaingym/shared/contracts';
+import { idSchema } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../../core/clock.js';
 import { conflict, instant, notFound, requireMoney, type MutationContext } from '../../../core/interfaces/common.js';
 import type { CardSuccess, CardFailure, ManualPayment, RefundTransition, InvoiceTransitions, InvoiceTransitionResult } from '../../../core/interfaces/invoice-transitions.js';
 import { logError } from '../../../core/log.js';
 import { readBillingRules } from '../../settings/settings.js';
-import { pastRefundWindow } from './lapsed-refunds.js';
+import { applyProcessorRefund, applyRefund, type ProcessorRefundTransition } from './refunds.js';
 import { createInvoiceVoid } from './void.js';
 import { stripeWriteScope } from '../stripe-writes.js';
-import { accepted, audit, canceledAttempt, confirmAbandoned, duplicateReservation, effect, lockInvoice, paymentRecorded, recorded, result, snapshot, terminal,
+import { accepted, audit, canceledAttempt, confirmAbandoned, effect, lockInvoice, paymentRecorded, recorded, result, snapshot, terminal,
   type InvoiceRow } from './store.js';
 
 export interface TransitionOptions {
@@ -155,81 +155,12 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
         return result('applied', next);
       });
     },
-    async refund(context: MutationContext, request: RefundTransition) {
-      idSchema.parse(request.refundId); moneySchema.parse({ amountCents: request.amountCents, currency: request.currency });
-      if (request.amountCents <= 0 || !['pending', 'succeeded', 'failed', 'canceled'].includes(request.status)) conflict('Invalid refund');
-      if (request.status === 'canceled' && request.processorId === undefined) conflict('Only a processor refund can be canceled');
+    async refund(context: MutationContext, request: RefundTransition | ProcessorRefundTransition) {
       return scope(context.gymId, async tx => {
         const invoice = await lockInvoice(tx, request.invoiceId);
-        const payment = (await tx.select().from(payments).where(eq(payments.id, request.paymentId)))[0] ?? notFound();
-        if (payment.invoiceId !== invoice.id) notFound();
-        if (request.currency !== payment.currency) conflict('Refund currency does not match');
-        const previous = (await tx.select().from(refunds).where(eq(refunds.id, request.refundId)))[0];
-        if (previous && (previous.paymentId !== request.paymentId || previous.amountCents !== request.amountCents
-          || previous.currency !== request.currency || (previous.processorId !== null && previous.processorId !== request.processorId)))
-          conflict('Refund ID reused with different parameters');
-        // The one backward move: the processor reports that a refund it reported as successful has failed. A processor
-        // only cancels a refund before it completes, so a canceled report for a successful one is ignored like any other.
-        const reversed = previous?.status === 'succeeded' && request.status === 'failed'
-          && previous.processorId !== null && previous.processorId === request.processorId;
-        if (previous && !reversed && (previous.status === request.status && (previous.processorId !== null || request.processorId === undefined)
-          || previous.status !== 'pending')) return result('ignored', invoice);
-        if (request.processorId !== undefined) {
-          const other = (await tx.select().from(refunds).where(eq(refunds.processorId, request.processorId)))[0];
-          if (other && other.id !== request.refundId) conflict('Processor refund already recorded');
-        }
-        const existing = await tx.select().from(refunds).where(eq(refunds.paymentId, payment.id));
-        const reserved = existing.filter(row => row.id !== request.refundId && !refundReleased(row))
-          .reduce((sum, row) => sum + row.amountCents, 0);
-        if (!refundReleased(request) && reserved + request.amountCents > payment.amountCents) conflict('Refund exceeds payment');
-        const values = { status: request.status, processorId: request.processorId ?? null,
-          resolvedAt: request.status === 'pending' ? null : clock.now() };
-        if (previous) await tx.update(refunds).set(values).where(eq(refunds.id, request.refundId));
-        else {
-          const inserted = await tx.insert(refunds).values({ ...values, id: request.refundId, gymId: context.gymId,
-            paymentId: request.paymentId, amountCents: request.amountCents, currency: request.currency, createdAt: clock.now(),
-            taggedAt: request.tagged && request.status === 'pending' ? clock.now() : null })
-            .onConflictDoNothing().returning();
-          if (!inserted.length) conflict('Refund identity already recorded');
-        }
-        const recordedRefund = { paymentId: payment.id, amountCents: request.amountCents, currency: request.currency, ...values };
-        if (!reversed) await audit(tx, context, clock, 'billing.refund.recorded', 'refund', request.refundId, recordedRefund);
-        else await audit(tx, context, clock, 'billing.refund.reversed', 'refund', request.refundId, recordedRefund,
-          { status: 'succeeded', resolvedAt: previous?.resolvedAt ?? null });
-        // Staff hear about every processor refund that ends failed: the payer wasn't refunded. A failed refund never
-        // moves again, so a replayed webhook or reconciliation is ignored above and queues no second notice. A canceled
-        // refund is just as final and releases its amount the same way, but someone cancelled it on purpose (usually staff
-        // in the processor's dashboard), so it sends no notice.
-        if (request.status === 'failed' && values.processorId !== null)
-          await effect(tx, context, clock, { kind: 'staff_notice', notice: 'refund_failed', invoiceId: invoice.id,
-            paymentId: payment.id, refundId: request.refundId });
-        // A duplicate payment's reservation released with no processor refund stops its automatic refund for good, so
-        // staff hear what stayed with the gym.
-        else if (request.status === 'failed' && previous && await duplicateReservation(tx, previous))
-          await effect(tx, context, clock, { kind: 'staff_notice', notice: 'duplicate_released', invoiceId: invoice.id,
-            paymentId: payment.id, refundId: request.refundId });
-        // Any other reservation the app releases on its own once its retry window has passed (no refund at Stripe names
-        // it) tells staff, who last saw it pending: the payer may still be owed it. A staff request that releases one is
-        // answered directly instead, and one a refund made in Stripe outran inside the window was made by someone there.
-        else if (request.status === 'failed' && previous && context.actor.kind === 'system' && pastRefundWindow(previous, clock))
-          await effect(tx, context, clock, { kind: 'staff_notice', notice: 'refund_released', invoiceId: invoice.id,
-            paymentId: payment.id, refundId: request.refundId });
-        if (!(request.status === 'succeeded' || reversed && ['partially_refunded', 'refunded'].includes(invoice.status))
-          || !await accepted(tx, payment.id)) return result('applied', invoice);
-        const successful = await tx.select({ refund: refunds, payment: payments }).from(refunds)
-          .innerJoin(payments, eq(payments.id, refunds.paymentId)).where(and(eq(payments.invoiceId, invoice.id), eq(refunds.status, 'succeeded')));
-        let total = 0;
-        for (const row of successful) if (await accepted(tx, row.payment.id)) total += row.refund.amountCents;
-        const next = { ...invoice, status: total === 0 ? 'paid' : total >= invoice.amountCents ? 'refunded' : 'partially_refunded' };
-        if (next.status !== invoice.status) {
-          await tx.update(invoices).set({ status: next.status }).where(eq(invoices.id, invoice.id));
-          await audit(tx, context, clock, reversed ? 'billing.invoice.refund_reversed' : 'billing.invoice.refunded', 'invoice',
-            invoice.id, snapshot(next), snapshot(invoice));
-          if (next.status === 'refunded' && (await tx.select({ id: classPackSales.id }).from(classPackSales)
-            .where(eq(classPackSales.invoiceId, invoice.id)).limit(1)).length)
-            await effect(tx, context, clock, { kind: 'reverse_credits', invoiceId: invoice.id });
-        }
-        return result('applied', next);
+        return 'processorRefund' in request
+          ? applyProcessorRefund(tx, context, clock, invoice, request)
+          : applyRefund(tx, context, clock, invoice, request);
       });
     },
   };

@@ -35,6 +35,7 @@ const senders: [string, number, (notifications: TransitionNotifications, notice:
   ['failed-payment dunning', 2, (n, notice) => n.dunning({ ...notice, actionRequired: false })],
   ['action-required dunning', 2, (n, notice) => n.dunning({ ...notice, actionRequired: true })],
   ['duplicate payment staff notice', 0, (n, notice) => n.staffNotice(notice)],
+  ['canceled refund staff notice', 0, (n, notice) => n.staffNotice({ ...notice, reason: 'refund_canceled', refund })],
   ['failed refund staff notice', 0, (n, notice) => n.staffNotice({ ...notice, reason: 'refund_failed', refund })],
   ['reversed refund staff notice', 0, (n, notice) => n.staffNotice({ ...notice, reason: 'refund_failed', refund, reversed: true })],
 ];

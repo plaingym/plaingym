@@ -87,6 +87,22 @@ describe('processorRefundId', () => {
 });
 
 describe('one dispute and refund writer for webhooks and restore', () => {
+  it.each([false, true])('notifies staff once when an app-created refund is canceled through the webhook: tagged %s', async tagged => {
+    const f = await fixture(), intentId = await charged(f), payment = (await f.read()).payments[0]!, refundId = uuidv7();
+    await f.transitions.refund({ gymId: f.gymId, actor: { kind: 'system' } }, { invoiceId: payment.invoiceId,
+      paymentId: payment.id, refundId, amountCents: 3000, currency: 'CAD', status: 'pending', tagged });
+    f.provider.respondNextRefund('pending');
+    const refund = await f.provider.refund({ chargeId: intentId, amount: 3000, idempotencyKey: 'app-cancel',
+      ...(tagged ? { reservationId: refundId } : {}) });
+    await f.webhook('refund.created', { kind: 'refund', id: refund.id });
+    f.provider.setRefundStatus(refund.id, 'canceled');
+    await f.webhook('refund.updated', { kind: 'refund', id: refund.id });
+    await f.webhook('refund.updated', { kind: 'refund', id: refund.id });
+    const rows = await f.read();
+    expect(rows.refunds).toMatchObject([{ id: refundId, processorId: refund.id, status: 'canceled' }]);
+    expect(rows.audits.filter(row => row.action === 'billing.transition.effect.created'
+      && (row.after as { notice?: string }).notice === 'refund_canceled')).toHaveLength(1);
+  });
   it('raises the owner alert for a dispute found during restore once, under the webhook path key', async () => {
     const f = await fixture(), intentId = await charged(f);
     f.provider.recordDispute({ id: 'dp_restore', chargeId: intentId, amount: 10000, status: 'open' });
