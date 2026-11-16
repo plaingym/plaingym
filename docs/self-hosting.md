@@ -272,7 +272,7 @@ Restore onto a fresh install: install as above with the same or a new hostname, 
 setup link, choose **Restore a backup**, and give the bucket, its credentials, the snapshot
 ID (the folder name under `snapshots/` in the bucket) and your backup private key. The restore
 verifies the snapshot, loads the database and files, and re-encrypts the stored secrets for the
-new install. Billing and member emails stay paused; turn them on in **Settings → Go live** only
+new install. Billing, member emails and member texts stay off; turn them on in **Settings → Go live** only
 after shutting down the old server (billing also requires payment reconciliation). New
 snapshots continue, but pruning is held until the owner confirms **the old server is gone** in
 the backups section of Settings or on the Last backup tile. Once a held bucket reaches the
@@ -421,8 +421,8 @@ message kind. You can turn it off at any time without a provider.
 The cap counts send attempts per calendar day in the gym's timezone, including
 failed or uncertain attempts. Further member texts are refused and counted;
 **System health → SMS** shows today's attempts, refusals, cap, switch and last
-owner test. Owner test texts bypass the switch, consent and cap. Restoring keeps
-the SMS switch as saved in the snapshot, so shut down the old server first.
+owner test. Owner test texts bypass the switch, consent and cap. A restore turns
+the SMS switch off, like billing and member emails. Shut down the old server before turning it on again.
 Demo texts stay in the demo outbox and never contact a provider.
 
 ## Running several gyms

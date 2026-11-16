@@ -227,12 +227,12 @@ export class PostgresMaintenance {
           }
           afterField?.(field.secretClass);
         }
-        const gyms = await tx.execute<{ id: string }>(sql`update gyms set billing_enabled = false, member_emails_enabled = false,
+        const gyms = await tx.execute<{ id: string }>(sql`update gyms set billing_enabled = false, member_emails_enabled = false, member_sms_enabled = false,
           settings = (settings - 'manualBackup') || '{"backupPruningHeld":true}'::jsonb,
           revision = revision + 1, updated_at = ${clock.now().toISOString()} returning id`);
         for (const gym of gyms) await writeAudit(tx, { gymId: gym.id, actorKind: 'system',
           action: 'restore.completed', targetType: 'gym', targetId: gym.id,
-          after: { billingEnabled: false, memberEmailsEnabled: false, backupPruningHeld: true }, occurredAt: clock.now() });
+          after: { billingEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: false, backupPruningHeld: true }, occurredAt: clock.now() });
       });
     } finally { await connection.close(); }
   }

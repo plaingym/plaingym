@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { gyms, uuidv7 } from '@plaingym/db';
+import { auditEvents, gyms, uuidv7 } from '@plaingym/db';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { BackupService } from './backups.js';
 import { PostgresMaintenance } from './backups.database.js';
@@ -21,15 +21,20 @@ beforeAll(async () => {
   })).id;
 });
 describe('restore follow-up safety', () => {
-  it('turns member emails off with billing, clears old jobs, and Go live explicitly enables emails again', async () => {
+  it('turns member emails and texts off with billing, audits the switches, and Go live explicitly enables emails again', async () => {
     await f.restore().restore(snapshotId, f.identity);
     const { gym } = await f.secretRows();
-    expect(gym).toMatchObject({ billingEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: true,
+    expect(gym).toMatchObject({ billingEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: false,
       settings: { backupPruningHeld: true, kept: true } });
     expect(gym.settings).not.toHaveProperty('manualBackup');
+    const audits = await f.target.forGym(f.gymId, tx => tx.select().from(auditEvents)
+      .where(eq(auditEvents.action, 'restore.completed')));
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({ actorKind: 'system', targetType: 'gym', targetId: f.gymId,
+      after: { billingEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: false, backupPruningHeld: true } });
     const b = await restoredBilling(f);
     expect((await b.request('/api/settings/go-live', 'PATCH', { revision: (await b.read()).revision, memberEmailsEnabled: true })).status).toBe(200);
-    expect(await b.read()).toMatchObject({ memberEmailsEnabled: true, billingEnabled: false });
+    expect(await b.read()).toMatchObject({ memberEmailsEnabled: true, memberSmsEnabled: false, billingEnabled: false });
   });
   it('preserves every bucket object during snapshots and pruning until an audited owner release', async () => {
     await f.restore().restore(snapshotId, f.identity);

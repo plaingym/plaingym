@@ -156,7 +156,7 @@ completed setup. You work on the server over SSH.
 
    It copies both files into the app's private storage for the restore and removes those
    copies afterwards, whether the restore works or not. On success it says that billing and
-   member emails remain paused and that pruning is held. On failure it prints
+   member emails remain paused and that pruning is held. Member texts are also off. On failure it prints
    `Restore failed: ` and a reason; look the reason up in the
    [restore errors](restore-reference.md#restore-errors), fix what it names and run the
    command again. If it also says a verified restore can be resumed, a restore is staged and a
@@ -167,9 +167,9 @@ completed setup. You work on the server over SSH.
 
 ## What to check afterwards
 
-1. **Billing and member emails are paused.** Both stay off until you turn them on yourself in
+1. **Billing, member emails and member texts are off.** All three stay off until you turn them on yourself in
    **Settings → Go live**, so a restored copy doesn't charge members or send duplicate member
-   emails while the old server still runs.
+   emails or texts while the old server still runs.
 2. **Reconcile payments.** The app compares its payment records with Stripe. Open **Settings →
    Go live**: the checklist's *Payment reconciliation* item must be clear. If it shows
    unresolved items, correct them and use **Check restored payments again**. Then turn billing

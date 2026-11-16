@@ -368,7 +368,7 @@ by setup, the gym CLI, staff and portal invitations, and the join flow.
 * **Setup.** The first owner is created, or a backup restored, only with the
   `SETUP_TOKEN` from the server's `.env`, sent from the private link the installer
   prints. A valid certificate for the hostname is not enough.
-* **Restore safety.** Restore turns billing and member emails off and holds backup
+* **Restore safety.** Restore turns billing, member emails and member texts off and holds backup
   pruning until an owner explicitly confirms the old server is gone. The backup
   request action is for owners/admins; releasing pruning is owner-only and audited.
 
@@ -657,8 +657,8 @@ Old versions and documents referenced by signatures remain retained after retire
   use the gym revision and audit only the old and new cap (1–100,000, default 1,000).
   Health exposes only configuration status, switch, cap, local-day counts and last
   test metadata, never recipients. Outbox list/detail/preview require `settings.manage`
-  in the requesting demo gym; texts have no HTML preview. Restore preserves the
-  SMS switch from the snapshot.
+  in the requesting demo gym; texts have no HTML preview. Restore turns the
+  SMS switch off with billing and member emails and records all three in `restore.completed`.
 * **Delivery records.** `email_deliveries`, the record that keeps each email from
   being sent twice, holds no plain hash of a member's address once the member is
   erased, so nobody holding the database or a backup, without the install's

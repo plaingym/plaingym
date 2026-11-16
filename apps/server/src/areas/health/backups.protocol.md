@@ -135,7 +135,8 @@ scope without exposing values.
 One short transaction re-encrypts every field in the encrypted-field registry
 from the key the snapshot carries to this install's, as `v2` envelopes bound to
 their rows (`v1` ones from older snapshots included), preserves QR key
-plaintext, pauses billing, and writes restore audit events.
+plaintext, turns billing, member emails and member texts off, and writes restore audit events
+recording all three switches.
 The external journal commits each uploads rename before reopening admission.
 With S3 uploads, the switch instead marks every stored file that the snapshot
 doesn't contain as deleted (so the next sweep removes it, as the directory restore
