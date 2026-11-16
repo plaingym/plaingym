@@ -319,7 +319,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   // Normal installs use stored gym credentials; sandboxes resolve the shared test account.
   const paymentsFor = demo?.payments.paymentsFor ?? createPaymentsResolver({ key, clock });
   configureGoLive({ clock, smtpConfigured, paymentsConfigured: async gymId => Boolean(await paymentsFor(gymId)) });
-  // Settings → Email, Payments and Backups reuse the setup steps' services with the runtime's key, auth rules and gym origins.
+  // Settings → Integrations (Email, SMS, Payments and Backups) reuses the setup steps' services with the runtime's key, auth rules and gym origins.
   // A confirmed backup change queues one snapshot through the backup job registered below (installs that take snapshots).
   configureIntegrations({ key, env, config, origin: gymOrigin, hasPassword: (userId) => accounts.hasPassword(userId), sandbox: Boolean(demo), clock,
     ...(gate && env.MAINTENANCE_DATABASE_URL ? { requestSnapshot: async (change: string) => { await queue.enqueueSystem('health.backup', { kind: 'manual' },
