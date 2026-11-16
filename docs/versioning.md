@@ -46,6 +46,34 @@ head journal's `when` timestamps are strictly increasing in entry order, whateve
 commit range is checked. Equal or older timestamps fail with both migration tags
 and an instruction to regenerate the migration, so existing installs won't skip it.
 
+Adding a value to a `CHECK`-constrained column can leave stored data that the
+previous release's reader rejects. Adding a `NOT NULL` column without a default
+breaks inserts from that release, which omit the new column. Either change needs
+a major release and a rollback floor that excludes incompatible code, unless it
+ships with a non-null default for older writes and readers that accept both old
+and new values throughout the rollback window. A default alone does not make a
+new enum value safe: the previous release must already tolerate it. Stage the
+reader change in an earlier release when necessary.
+
+Repo compliance runs `scripts/release/check-rollback.mjs BASE HEAD` against only
+SQL migrations added since the branch's merge base with `main`. It flags an
+`ALTER TABLE` that adds a `NOT NULL` column without a non-null `DEFAULT`, sets
+`NOT NULL` on an existing column, drops a column's default, adds a `CHECK`, or
+drops a constraint. A dropped constraint's kind is absent from that SQL, so even a
+foreign-key drop needs review. Constraints and required columns
+inside a new `CREATE TABLE` are allowed because older code does not use that table.
+The lint ignores comments and quoted text and handles multiple ALTER actions;
+it does not execute SQL, inspect procedural/dynamic SQL, or prove reader compatibility.
+Keep migration changes declarative and review the data readers as well.
+
+An intentional finding needs a comment on its own line immediately before that
+statement: `-- rollback-reviewed: <reason>`. State the major boundary and upgrade notes, or
+name the default and the previous release's tolerant reader (including when that
+reader shipped). For a non-CHECK constraint, state its kind and why the change
+preserves rollback. The comment exempts only that statement, not the file; a blank
+reason does not exempt it. Reviewers verify the rationale against the release's
+rollback floor and application code. Existing migrations remain immutable.
+
 Stored job payloads, inbox events and settings JSON tolerate unknown keys, so the
 previous minor reads what a newer one wrote: the gym's address, branding, website
 content, pending backup change and backup destination, and its encrypted SMTP and
@@ -114,11 +142,14 @@ it doesn't declare when the table has the security shape every table has: owner
 `maintenance`, row-level security enabled and forced, exactly the gym policy or one
 system access kind's policies, for the `app` role only, and no privilege beyond
 select, insert, update and delete. Any other unknown table stops the start, and so
-does a missing table or any change to a table that release declares. A view is
-accepted only when owned by `maintenance` with `security_invoker` set; a
-materialized view or foreign table only when the `app` role can't use it; and a
-`SECURITY DEFINER` function only when the `app` role can't run it and no trigger
-uses it. A minor can
+does a missing table or any change to a table that release declares. A view the
+`app` role neither owns nor holds a privilege on is accepted whatever its invoker
+option, so an inaccessible extension view does not prevent startup. When `app`
+holds any privilege on a view, it must be owned by `maintenance` with
+`security_invoker` set and no unexpected privileges. Column grants and privileges
+through `PUBLIC` count too. A materialized view or foreign table is accepted only
+when the `app` role can't use it; a `SECURITY DEFINER` function only when the `app`
+role can't run it and no trigger uses it. A minor can
 therefore add a table, a column or such a view, but tightening a table the previous minor declares
 (a new policy, a revoked privilege) breaks the promise and needs a major.
 

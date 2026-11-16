@@ -221,9 +221,13 @@ Call `migrateDatabase(maintenanceUrl)` before `initializeDatabase(appUrl)` and b
 serving requests. Migration uses a dedicated connection and a session advisory lock.
 After Drizzle finishes, `applySecurity` forces enabled RLS and restores the declared
 write restrictions. `assertCatalog` then checks actual policies, role properties,
-ownership, table and column privileges, tenant keys and foreign keys, and refuses a
-view without `security_invoker` or not owned by `maintenance`, a materialized view or
-foreign table the app can use, and a `SECURITY DEFINER` function the app can run or a trigger uses
+ownership, table and column privileges, tenant keys and foreign keys. A view with
+no `app` privileges that `app` doesn't own passes whatever its invoker option (for example an
+inaccessible extension view). When `app` holds any privilege, including column
+grants or privileges through `PUBLIC`, the view must have `security_invoker`, be
+owned by `maintenance`, and grant no unexpected privileges. The check refuses a
+materialized view or foreign table the app can use, and a `SECURITY DEFINER`
+function the app can run or a trigger uses
 (the schema declares none, so any of these comes from a newer release or outside the app). Restore uses
 the same migration/security entry point. A failed check prevents successful startup.
 

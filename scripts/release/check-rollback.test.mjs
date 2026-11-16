@@ -1,0 +1,137 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { git } from './version.mjs';
+import { checkRollback, rollbackFindings } from './check-rollback.mjs';
+
+for (const sql of [
+  'ALTER TABLE "members" ADD COLUMN "required" text NOT NULL;',
+  'alter table public.members add required text not null;',
+  'ALTER TABLE ONLY "public"."members" ADD COLUMN IF NOT EXISTS "required" text NOT NULL;',
+  'ALTER TABLE members ADD COLUMN required text NOT /* comment */ NULL;',
+  'ALTER TABLE members ADD COLUMN required text NOT NULL DEFAULT NULL;',
+  "ALTER TABLE members ADD COLUMN safe text NOT NULL DEFAULT 'x', ADD COLUMN required numeric(10, 2) NOT NULL;",
+  "ALTER TABLE members ADD COLUMN required text NOT NULL; ALTER TABLE members ADD COLUMN safe text NOT NULL DEFAULT 'x';",
+]) {
+  test(`flags an omitted required-column default: ${sql}`, () => {
+    const findings = rollbackFindings(sql);
+    assert.equal(findings.length, 1);
+    assert.match(findings[0].rule, /NOT NULL/);
+  });
+}
+
+for (const sql of [
+  `ALTER TABLE "members" ADD CONSTRAINT "status_check" CHECK (status IN ('old', 'new'));`,
+  `ALTER TABLE public.members ADD CHECK (status IN ('old', 'new')) NOT VALID;`,
+  'ALTER TABLE members DROP CONSTRAINT "status_check";',
+  'ALTER TABLE members DROP CONSTRAINT IF EXISTS "status_check";',
+]) {
+  test(`flags a CHECK change for review: ${sql}`, () => {
+    assert.match(rollbackFindings(sql)[0].rule, /changed CHECK/);
+  });
+}
+
+for (const sql of [
+  "ALTER TABLE members ADD COLUMN required text DEFAULT 'x' NOT NULL;",
+  "ALTER TABLE members ADD COLUMN required text NOT NULL DEFAULT 'x';",
+  "ALTER TABLE members ADD COLUMN required text NOT NULL DEFAULT concat('a', 'b');",
+  'ALTER TABLE members ADD COLUMN optional text;',
+  'CREATE TABLE newer (id uuid NOT NULL, status text NOT NULL, CHECK (status IN (\'new\')));',
+  'ALTER TABLE members ADD CONSTRAINT other_fk FOREIGN KEY (id) REFERENCES other(id);',
+  'ALTER TABLE members VALIDATE CONSTRAINT status_check;',
+  "-- ALTER TABLE members ADD COLUMN required text NOT NULL;\nSELECT 1;",
+  '/* outer /* ALTER TABLE members ADD COLUMN required text NOT NULL; */ comment */ SELECT 1;',
+  "SELECT 'ALTER TABLE members ADD COLUMN required text NOT NULL;';",
+  "SELECT $quoted$ALTER TABLE members ADD CHECK (true);$quoted$;",
+  "ALTER TABLE members ADD COLUMN required text NOT NULL DEFAULT $$CHECK; NOT NULL$$;",
+  `ALTER TABLE members ADD COLUMN "CHECK" text DEFAULT 'NOT NULL' NOT NULL;`,
+  'ALTER TABLE members ADD COLUMN "DROP CONSTRAINT" text;',
+  'ALTER TABLE members ADD COLUMN "SET NOT NULL" text;',
+  `ALTER TABLE members ADD COLUMN "a""NOT NULL" text;`,
+  "ALTER TABLE members ADD COLUMN required text NOT NULL DEFAULT E'can\\'t; CHECK';",
+  "ALTER TABLE members ADD COLUMN required text NOT NULL DEFAULT 'can''t; CHECK';",
+]) {
+  test(`accepts compatible DDL or opaque SQL text: ${sql}`, () => {
+    assert.deepEqual(rollbackFindings(sql), []);
+  });
+}
+
+test('reviews require a reason and apply to one statement only', () => {
+  const sql = 'ALTER TABLE members ADD COLUMN required text NOT NULL;';
+  assert.equal(rollbackFindings(`-- rollback-reviewed:\n${sql}`).length, 1);
+  assert.equal(rollbackFindings(`-- rollback-reviewed: major boundary; older inserts are unsupported\n${sql}`).length, 0);
+  assert.deepEqual(rollbackFindings(`-- rollback-reviewed: default and tolerant reader documented\nALTER TABLE members ADD CHECK (true);\n${sql}`), [
+    { line: 3, rule: 'new NOT NULL column without a non-null DEFAULT: older inserts omit it' },
+  ]);
+  assert.equal(rollbackFindings(`/* -- rollback-reviewed: fake */\n${sql}`).length, 1);
+  // A comment after a statement's semicolon on the same line never reviews the next statement.
+  assert.deepEqual(rollbackFindings(`SELECT 1; -- rollback-reviewed: trailing\n${sql}`), [
+    { line: 2, rule: 'new NOT NULL column without a non-null DEFAULT: older inserts omit it' },
+  ]);
+  assert.equal(rollbackFindings(`SELECT 1;--> statement-breakpoint\n-- rollback-reviewed: own line\n${sql}`).length, 0);
+  assert.equal(rollbackFindings(`SELECT '-- rollback-reviewed: fake';\n${sql}`).length, 1);
+});
+
+test('reports statement lines after comments and dollar-quoted strings', () => {
+  const findings = rollbackFindings('-- heading\nSELECT $$a;\nb$$;\n--> statement-breakpoint\nALTER TABLE members ADD COLUMN required text NOT NULL;');
+  assert.equal(findings[0].line, 5);
+});
+
+test('also flags a required column introduced in separate ALTER steps', () => {
+  const findings = rollbackFindings('ALTER TABLE members ADD COLUMN required text;\nALTER TABLE members ALTER COLUMN required SET NOT NULL;');
+  assert.deepEqual(findings, [{ line: 2, rule: 'SET NOT NULL: verify a non-null DEFAULT for older inserts' }]);
+});
+
+test('flags a dropped default, which older inserts of a NOT NULL column rely on', () => {
+  assert.deepEqual(rollbackFindings('ALTER TABLE "members" ALTER COLUMN "status" DROP DEFAULT;'), [
+    { line: 1, rule: 'DROP DEFAULT: older inserts that omit a NOT NULL column fail' },
+  ]);
+  assert.deepEqual(rollbackFindings(`ALTER TABLE members ALTER COLUMN status SET DEFAULT 'x';`), []);
+});
+
+test('refuses malformed quoted SQL instead of silently skipping the rest of a migration', () => {
+  for (const sql of ["SELECT 'unfinished", 'SELECT "unfinished', 'SELECT $tag$unfinished', '/* unfinished'])
+    assert.throws(() => rollbackFindings(sql), /Unterminated SQL/);
+});
+
+test('checks only added SQL blobs between the supplied revisions, including the whole branch', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'rollback-rules-'));
+  const directory = 'packages/db/src/migrations';
+  const run = (...args) => git(args, cwd);
+  const write = (path, source) => writeFileSync(join(cwd, path), source);
+  const commit = () => { run('add', '-A'); run('commit', '-m', 'feat: fixture migration'); return run('rev-parse', 'HEAD'); };
+  try {
+    run('init', '-b', 'main'); run('config', 'user.name', 'Release'); run('config', 'user.email', 'release@example.test');
+    run('config', 'commit.gpgsign', 'false');
+    mkdirSync(join(cwd, directory, 'meta'), { recursive: true });
+    // The historical migration is deliberately unsafe: the lint never rechecks it.
+    write(`${directory}/0000_old.sql`, 'ALTER TABLE members ADD COLUMN required text NOT NULL;');
+    const base = commit();
+    write(`${directory}/0001_safe.sql`, "ALTER TABLE members ADD COLUMN required text DEFAULT 'x' NOT NULL;");
+    write(`${directory}/meta/0001_snapshot.json`, '{}');
+    const safe = commit();
+    assert.equal(checkRollback(base, safe, cwd), 1);
+    write(`${directory}/0002_unsafe.sql`, '\nALTER TABLE members ADD COLUMN unsafe text NOT NULL;');
+    const unsafe = commit();
+    assert.throws(() => checkRollback(base, unsafe, cwd), /0002_unsafe.sql:2: new NOT NULL/);
+    // A later push still checks an earlier migration on this branch.
+    write('README.md', 'another commit\n'); commit();
+    assert.throws(() => checkRollback(base, 'HEAD', cwd), /0002_unsafe.sql/);
+    // Working files cannot hide a committed finding.
+    write(`${directory}/0002_unsafe.sql`, 'SELECT 1;');
+    assert.throws(() => checkRollback(base, unsafe, cwd), /0002_unsafe.sql/);
+    write(`${directory}/0002_unsafe.sql`, 'ALTER TABLE members ADD CHECK (status IN (\'old\', \'new\'));');
+    const check = commit();
+    assert.throws(() => checkRollback(base, check, cwd), /changed CHECK/);
+    write(`${directory}/0002_unsafe.sql`, '-- rollback-reviewed: major boundary; upgrade notes explain the new values\nALTER TABLE members ADD CHECK (true);');
+    const reviewed = commit();
+    assert.equal(checkRollback(base, reviewed, cwd), 2);
+    // Edits to existing files belong to the separate append-only migration check.
+    assert.equal(checkRollback(unsafe, reviewed, cwd), 0);
+    assert.throws(() => checkRollback('', reviewed, cwd), /merge base/);
+    assert.throws(() => checkRollback('0000000', reviewed, cwd), /merge base/);
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
+});

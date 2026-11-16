@@ -101,6 +101,7 @@ describe('a view, materialized view or function this image does not declare', ()
   it.each([
     ['a security_invoker view', invokerView],
     ['a security_invoker view whose option reads t', 'create view newer_view with (security_invoker = t) as select id, gym_id from members;'],
+    ['an owner view the app cannot use', 'create view newer_view as select id, gym_id from members; revoke all on newer_view from app, public;'],
     ['a materialized view the app cannot use', `${matview} revoke all on newer_matview from app;`],
     ['a security definer function the app cannot run', `${definer} revoke execute on function newer_fn() from public, app;`],
     ['a function that runs as its caller', `create function newer_fn() returns bigint language sql as 'select count(*) from members'; grant execute on function newer_fn() to app;`],
@@ -111,6 +112,9 @@ describe('a view, materialized view or function this image does not declare', ()
   it.each([
     ['a view that runs as its owner', 'create view newer_view as select id, gym_id from members;', 'newer_view: view without security_invoker'],
     ['a view with security_invoker off', 'create view newer_view with (security_invoker = false) as select id, gym_id from members;', 'newer_view: view without security_invoker'],
+    ['an owner view with a public grant', 'create view newer_view as select id, gym_id from members; revoke all on newer_view from app; grant select on newer_view to public;', 'newer_view: view without security_invoker'],
+    ['an owner view with only a column grant', 'create view newer_view as select id, gym_id from members; revoke all on newer_view from app; grant select (id) on newer_view to app;', 'newer_view: view without security_invoker'],
+    ['an owner view with only REFERENCES', 'create view newer_view as select id, gym_id from members; revoke all on newer_view from app; grant references (id) on newer_view to app;', 'newer_view: unexpected view privileges'],
     ['a view with TRIGGER for the app', `${invokerView} grant trigger on newer_view to app;`, 'newer_view: unexpected view privileges'],
     ['a materialized view the app can read', `${matview} grant select on newer_matview to app;`, 'newer_matview: materialized view without row-level security'],
     ['a security definer function the app can run', `${definer} grant execute on function newer_fn() to app;`, 'newer_fn: security definer function'],
@@ -128,6 +132,32 @@ describe('a view, materialized view or function this image does not declare', ()
     try {
       await admin.sql.unsafe('alter view newer_view owner to postgres');
       await expect(assertCatalog(database.app.sql)).rejects.toThrow('newer_view: wrong owner');
+    } finally {
+      await admin.sql.unsafe('drop view newer_view');
+      await admin.close();
+    }
+  });
+  it('refuses a view app owns even with its own privileges revoked', async () => {
+    await maintenance.sql.unsafe('create view newer_view as select id, gym_id from members');
+    const admin = openConnection(databaseUrl(inject('testDatabase').adminUrl, database.name), 1);
+    try {
+      await admin.sql.unsafe('alter view newer_view owner to app; revoke all on newer_view from app, public');
+      await expect(assertCatalog(database.app.sql)).rejects.toThrow('newer_view: wrong owner');
+    } finally {
+      await admin.sql.unsafe('drop view newer_view');
+      await admin.close();
+    }
+  });
+  it('accepts an extension-style view with another owner only until app gains a privilege', async () => {
+    await maintenance.sql.unsafe('create view newer_view as select id, gym_id from members; revoke all on newer_view from app, public');
+    const admin = openConnection(databaseUrl(inject('testDatabase').adminUrl, database.name), 1);
+    try {
+      await admin.sql.unsafe('alter view newer_view owner to postgres');
+      await expect(assertCatalog(database.app.sql)).resolves.toMatchObject({ tableCount: 69 });
+      await expect(migrateDatabase(database.maintenanceUrl)).resolves.toBeUndefined();
+      await admin.sql.unsafe('grant select (id) on newer_view to app');
+      await expect(assertCatalog(database.app.sql)).rejects.toThrow('newer_view: wrong owner');
+      await expect(migrateDatabase(database.maintenanceUrl)).rejects.toThrow('newer_view: view without security_invoker');
     } finally {
       await admin.sql.unsafe('drop view newer_view');
       await admin.close();

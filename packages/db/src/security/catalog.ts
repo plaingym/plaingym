@@ -35,11 +35,15 @@ async function viewFailures(sql: Sql): Promise<string[]> {
       coalesce((select o.option_value::boolean from pg_options_to_table(c.reloptions) o
         where o.option_name = 'security_invoker'), false) as security_invoker,
       has_any_column_privilege('app', c.oid, 'SELECT, INSERT, UPDATE') or has_table_privilege('app', c.oid, 'DELETE') as usable,
-      has_table_privilege('app', c.oid, 'TRUNCATE, TRIGGER') or has_any_column_privilege('app', c.oid, 'REFERENCES') as other_privileges
+      has_table_privilege('app', c.oid, 'TRUNCATE, TRIGGER, MAINTAIN') or has_any_column_privilege('app', c.oid, 'REFERENCES') as other_privileges
     from pg_class c join pg_namespace n on n.oid = c.relnamespace
     where n.nspname in ('public', 'drizzle') and c.relkind in ('v', 'm', 'f') order by n.nspname, c.relname
   `;
   for (const relation of relations) {
+    // Extension views need not follow our view conventions when app has no privilege on them.
+    // Include column grants and non-DML privileges; schema USAGE alone is not the test. A view `app` owns stays
+    // checked: its owner can grant itself privileges again after this check.
+    if (relation.relkind === 'v' && !relation.usable && !relation.other_privileges && relation.owner !== 'app') continue;
     const name = (relation.nspname === 'public' ? '' : String(relation.nspname) + '.') + String(relation.relname);
     if (relation.owner !== 'maintenance') failures.push(name + ': wrong owner');
     if (relation.other_privileges) failures.push(name + ': unexpected view privileges');

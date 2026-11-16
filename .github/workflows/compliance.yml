@@ -39,6 +39,7 @@ jobs:
             migration_base=$(git merge-base origin/main "$head")
           fi
           node scripts/release/check-migrations.mjs "$migration_base" "$head"
+          node scripts/release/check-rollback.mjs "$migration_base" "$head"
       - name: Test release tooling in scratch repositories
         run: node --test scripts/release/*.test.mjs
   reuse:

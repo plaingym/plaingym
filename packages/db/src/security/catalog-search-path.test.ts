@@ -152,7 +152,7 @@ it('refuses drizzle CREATE granted to app without USAGE', async () => {
 });
 
 it.each([
-  ['owner view', 'create view drizzle.catalog_probe as select * from public.households', 'view without security_invoker'],
+  ['owner view', 'create view drizzle.catalog_probe as select * from public.households; grant select (id) on drizzle.catalog_probe to app', 'view without security_invoker'],
   ['materialized view', 'create materialized view drizzle.catalog_probe as select * from public.households; grant select (id) on drizzle.catalog_probe to app', 'materialized view without row-level security'],
   ['executable definer', "create function drizzle.catalog_probe() returns bigint language sql security definer as 'select count(*) from public.households'", 'security definer function'],
   ['trigger definer', `create function drizzle.catalog_probe() returns trigger language plpgsql security definer as 'begin return new; end';

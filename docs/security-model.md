@@ -44,7 +44,11 @@ Isolation is enforced in the database, not only in application code.
   `app` role alone, and no more than ordinary table privileges. The schema declares
   no views, materialized views, foreign tables or functions, so the check also
   refuses any in `public` or `drizzle` the `app` role could use to read past row-level
-  security: a view not owned by `maintenance` or without `security_invoker`, a
+  security: a view on which `app` holds any privilege must be owned by
+  `maintenance`, have `security_invoker`, and grant no unexpected privileges. A
+  view with no `app` privileges, not owned by `app`, passes whatever its invoker option, so
+  inaccessible extension views do not block startup. Column grants and privileges
+  through `PUBLIC` count. The check also refuses a
   materialized view or foreign table the `app` role can use, and a
   `SECURITY DEFINER` function it can run or a trigger uses. CI runs the same check.
   The check also refuses schemas usable by `app` or `maintenance` outside `public`,

@@ -145,6 +145,13 @@ Keep `schema-compatibility.yaml` with this installation's database. The updater 
 checked floor to both startup and migration; code below that floor refuses to start. Don't
 remove it to bypass a rollback refusal.
 
+Startup also checks the database catalog for unsafe objects. An extension's view
+that `app` neither owns nor holds a privilege on is allowed. A view that grants `app` any privilege
+(including through `PUBLIC` or on a column) must be owned by `maintenance` and use
+`security_invoker`, with no unexpected privileges. See the
+[security model](security-model.md#gym-isolation) for the full checks and
+[versioning rules](versioning.md#compatibility-from-10) for schema compatibility.
+
 ## Updating across a rollback floor
 
 A release's floor can be above your version: a major that breaks compatibility, or a skipped
