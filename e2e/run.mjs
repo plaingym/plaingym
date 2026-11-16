@@ -18,7 +18,7 @@ const token = () => randomBytes(32).toString('hex');
 const env = { ...process.env, E2E_POSTGRES_PASSWORD: token(), E2E_APP_PASSWORD: token(),
   E2E_MAINTENANCE_PASSWORD: token(), E2E_AUTH_SECRET: token(), E2E_ENCRYPTION_KEY: token(),
   E2E_SETUP_TOKEN: token(), E2E_S3_SECRET: token(), E2E_STRIPE_KEY: 'sk_test_' + token(), E2E_STRIPE_RESTRICTED_KEY: 'rk_test_' + token(),
-  E2E_STRIPE_WEBHOOK_SECRET: 'whsec_' + token(), E2E_IMAGE: process.env.E2E_IMAGE ?? 'plaingym:e2e',
+  E2E_STRIPE_WEBHOOK_SECRET: 'whsec_' + token(), E2E_IMAGE: process.env.E2E_IMAGE ?? (process.env.DEMO_CAPTURE === '1' ? 'plaingym:demo-capture-' + randomBytes(6).toString('hex') : 'plaingym:e2e'),
   E2E_COMPOSE_PROJECT: 'plaingym-e2e-' + randomBytes(6).toString('hex') };
 // Issue once, then share the exact keys with both the fixtures and fake Stripe.
 env.E2E_STRIPE_GYM_KEYS = JSON.stringify(Object.fromEntries(['alpha', 'beta'].map(slug => [slug, 'rk_test_' + token()])));
@@ -51,6 +51,7 @@ async function build() {
 }
 const compose = ['compose', '--project-name', env.E2E_COMPOSE_PROJECT, '--file', 'compose.yaml'];
 await mkdir(new URL('./coverage/', import.meta.url), { recursive: true });
+if (process.env.DEMO_CAPTURE === '1') compose.push('--file', await (await import('./ux-pass/product-stack.mjs')).productOverlay());
 await rm(new URL('./coverage/fixtures.json', import.meta.url), { force: true });
 await rm(new URL('./coverage/containers.log', import.meta.url), { force: true });
 const caDirectory = await mkdtemp(join(tmpdir(), 'plaingym-e2e-ca-'));
@@ -83,6 +84,11 @@ try {
     } finally {
       await rm(new URL('./coverage/fixtures.json', import.meta.url), { force: true });
       await rm(caDirectory, { recursive: true, force: true });
+      if (process.env.DEMO_CAPTURE === '1' && !process.env.E2E_IMAGE) {
+        // Cleanup never decides the result: report an image that couldn't be removed and keep the run's outcome.
+        await command('docker', ['image', 'rm', env.E2E_IMAGE], { timeout: 120_000 })
+          .catch(error => console.error('Could not remove ' + env.E2E_IMAGE + ': ' + error.message));
+      }
     }
   }
 }

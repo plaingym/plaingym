@@ -1,0 +1,122 @@
+{
+  "members": {
+    "width": 1280,
+    "height": 900,
+    "light": [
+      "members-light-1x-8f65a70f8f4fc5d3.webp",
+      "members-light-2x-81f93841b45ba21f.webp"
+    ],
+    "dark": [
+      "members-dark-1x-8f65a70f8f4fc5d3.webp",
+      "members-dark-2x-81f93841b45ba21f.webp"
+    ]
+  },
+  "ranks": {
+    "width": 1280,
+    "height": 900,
+    "light": [
+      "ranks-light-1x-7b17494c98b99efb.webp",
+      "ranks-light-2x-63e21c86698722f5.webp"
+    ],
+    "dark": [
+      "ranks-dark-1x-7b17494c98b99efb.webp",
+      "ranks-dark-2x-63e21c86698722f5.webp"
+    ]
+  },
+  "schedule": {
+    "width": 1280,
+    "height": 900,
+    "light": [
+      "schedule-light-1x-a7eb823f78cdc407.webp",
+      "schedule-light-2x-afc5f6e781392d53.webp"
+    ],
+    "dark": [
+      "schedule-dark-1x-359d9c796482676d.webp",
+      "schedule-dark-2x-afc5f6e781392d53.webp"
+    ]
+  },
+  "kiosk": {
+    "width": 768,
+    "height": 900,
+    "light": [
+      "kiosk-light-1x-819116a4607c24ce.webp",
+      "kiosk-light-2x-957689bc28b3affc.webp"
+    ],
+    "dark": [
+      "kiosk-dark-1x-819116a4607c24ce.webp",
+      "kiosk-dark-2x-957689bc28b3affc.webp"
+    ]
+  },
+  "portal": {
+    "width": 390,
+    "height": 844,
+    "light": [
+      "portal-light-1x-bd456f71303a99fd.webp",
+      "portal-light-2x-587bf93157fb3071.webp"
+    ],
+    "dark": [
+      "portal-dark-1x-bd456f71303a99fd.webp",
+      "portal-dark-2x-587bf93157fb3071.webp"
+    ]
+  },
+  "billing": {
+    "width": 1280,
+    "height": 900,
+    "light": [
+      "billing-light-1x-7c40ce4958ce63ce.webp",
+      "billing-light-2x-24280289de568642.webp"
+    ],
+    "dark": [
+      "billing-dark-1x-7c40ce4958ce63ce.webp",
+      "billing-dark-2x-24280289de568642.webp"
+    ]
+  },
+  "waivers": {
+    "width": 390,
+    "height": 844,
+    "light": [
+      "waivers-light-1x-9b051ef1100b1105.webp",
+      "waivers-light-2x-6f8fa2e5e97ab0d4.webp"
+    ],
+    "dark": [
+      "waivers-dark-1x-9b051ef1100b1105.webp",
+      "waivers-dark-2x-6f8fa2e5e97ab0d4.webp"
+    ]
+  },
+  "join": {
+    "width": 1280,
+    "height": 900,
+    "light": [
+      "join-light-1x-f30ff74d39d8e6bc.webp",
+      "join-light-2x-1a62af82ed206c97.webp"
+    ],
+    "dark": [
+      "join-dark-1x-f30ff74d39d8e6bc.webp",
+      "join-dark-2x-1a62af82ed206c97.webp"
+    ]
+  },
+  "reports": {
+    "width": 1280,
+    "height": 900,
+    "light": [
+      "reports-light-1x-6b5463ef8cdc82a7.webp",
+      "reports-light-2x-a77fc9b8476a43b0.webp"
+    ],
+    "dark": [
+      "reports-dark-1x-6b5463ef8cdc82a7.webp",
+      "reports-dark-2x-a77fc9b8476a43b0.webp"
+    ]
+  },
+  "server": {
+    "width": 1280,
+    "height": 490,
+    "light": [
+      "server-light-1x-3c4fea604e5d1911.webp",
+      "server-light-2x-c156eed019dfe626.webp"
+    ],
+    "dark": [
+      "server-dark-1x-3c4fea604e5d1911.webp",
+      "server-dark-2x-c156eed019dfe626.webp"
+    ]
+  }
+}

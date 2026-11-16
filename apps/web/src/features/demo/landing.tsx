@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { demoTestCard } from '@plaingym/shared/contracts';
+import { useState } from 'react';
+import { DemoIcon } from '../../components/demo-icon.js';
 import { t } from '../../lib/i18n.js';
 import { Page, PageHeader, PageSection } from '../../components/ui/page.js';
 import { Card } from '../../components/ui/card.js';
@@ -8,6 +10,20 @@ import { DemoMenuLink, useDemoExpiry, useDemoJoin, useDemoLogin, useDemoMenu, us
 import { instantLabel } from '../../lib/instant.js';
 
 const roles = ['owner', 'coach', 'student'] as const;
+
+function TestCard() {
+  const [status, setStatus] = useState<'copyCard' | 'copied' | 'copyFailed'>('copyCard');
+  return <div className="space-y-2">
+    {/* The number sits outside the button, so it stays selectable when the clipboard is unavailable. */}
+    <p className="w-fit max-w-full rounded-md border border-border bg-muted px-3 py-2 font-mono text-base whitespace-nowrap">
+      <span className="sr-only">{t('demo/landing:testCard')}: </span><span className="select-all">{demoTestCard}</span></p>
+    <Button type="button" variant="outline" className="min-h-11 w-full" onClick={() => {
+      void navigator.clipboard?.writeText(demoTestCard.replaceAll(' ', '')).then(() => setStatus('copied'), () => setStatus('copyFailed'));
+      if (!navigator.clipboard) setStatus('copyFailed');
+    }}>{t('demo/landing:copyCard')}</Button>
+    <p role="status" className="text-sm text-muted-foreground">{status !== 'copyCard' ? t(`demo/landing:${status}`) : ''}</p>
+  </div>;
+}
 
 export function DemoPage() {
   const mode = useDemoMode();
@@ -26,9 +42,12 @@ function SandboxLanding() {
   const { login, pending } = useDemoLogin(), join = useDemoJoin(), members = useDemoMenu().data?.members ?? [], expires = useDemoExpiry();
   return <main id="main-content" className="flex-1 p-4 sm:p-6">
     <Page className="max-w-4xl">
-      <PageHeader title={t('demo/landing:title')} description={t(join ? 'demo/landing:intro' : 'demo/landing:introWithoutJoin')} />
+      <div className="rounded-xl border-t-4 border-primary bg-secondary p-5 sm:p-8">
+        <PageHeader title={t('demo/landing:title')} description={t(join ? 'demo/landing:intro' : 'demo/landing:introWithoutJoin')} />
+      </div>
       <PageSection title={t('demo/landing:rolesTitle')}>
         <div className="grid gap-4 md:grid-cols-3">{roles.map((role) => <Card key={role} className="flex flex-col gap-3 p-4 sm:p-6">
+          <span className="w-fit rounded-lg bg-secondary p-3 text-primary"><DemoIcon name={role} /></span>
           <h3 className="text-lg font-semibold">{t(`demo/demo:${role}Label`)}</h3>
           <p className="flex-1">{t(role === 'student' ? 'demo/landing:studentHelp' : `demo/demo:${role}Help`)}</p>
           <Button type="button" variant="outline" className="w-full" disabled={pending} onClick={() => { void login(role); }}>{t(`demo/demo:${role}`)}</Button>
@@ -42,17 +61,16 @@ function SandboxLanding() {
       </PageSection>
       <Card className="p-4 sm:p-6">
         <PageSection title={t('demo/landing:joinTitle')} {...(join ? {} : { description: t('demo/landing:joinUnavailable') })}>
-          {join && <ol className="list-decimal space-y-4 pl-5">
-            <li className="space-y-2"><p>{t('demo/landing:joinStepPlan')}</p><DemoMenuLink href="/join">{t('demo/landing:joinOpen')}</DemoMenuLink></li>
-            <li className="space-y-2"><p>{t('demo/landing:joinStepPay')}</p>
-              <p className="w-fit rounded-md border border-border bg-muted px-3 py-2 font-mono text-lg whitespace-nowrap">
-                <span className="sr-only">{t('demo/landing:testCard')}: </span>{demoTestCard}</p></li>
-            <li className="space-y-2"><p>{t('demo/landing:joinStepSignIn')}</p>
+          {join && <ol className="grid gap-5 md:grid-cols-3">
+            <li className="min-w-0 space-y-3"><StepNumber number={1} /><p>{t('demo/landing:joinStepPlan')}</p><DemoMenuLink href="/join">{t('demo/landing:joinOpen')}</DemoMenuLink></li>
+            <li className="min-w-0 space-y-3"><StepNumber number={2} /><p>{t('demo/landing:joinStepPay')}</p><TestCard /></li>
+            <li className="min-w-0 space-y-3"><StepNumber number={3} /><p>{t('demo/landing:joinStepSignIn')}</p>
               <Button type="button" variant="outline" className="w-full" disabled={pending} onClick={() => { void login('owner', '/admin/outbox'); }}>{t('demo/landing:outboxOpen')}</Button></li>
           </ol>}
         </PageSection>
       </Card>
       <Card className="p-4 sm:p-6">
+        <span className="mb-4 inline-flex rounded-lg bg-secondary p-3 text-primary"><DemoIcon name="kiosk" /></span>
         <PageSection title={t('demo/landing:kioskTitle')}>
           <p>{t('demo/landing:kioskHelp')}</p><DemoMenuLink href="/kiosk">{t('demo/landing:kioskOpen')}</DemoMenuLink>
         </PageSection>
@@ -60,4 +78,8 @@ function SandboxLanding() {
       {expires && <p className="text-sm text-muted-foreground" data-demo-deletion>{t('demo/demo:banner', { time: instantLabel(expires) })}</p>}
     </Page>
   </main>;
+}
+
+function StepNumber({ number }: { number: number }) {
+  return <span aria-hidden="true" className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-primary font-semibold text-primary-foreground">{number}</span>;
 }

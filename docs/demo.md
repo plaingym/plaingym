@@ -9,8 +9,12 @@ and student logins. Choose **Make my own copy** to edit a private sandbox.
 Copies expire after two idle hours and at most 24 hours after allocation.
 Each private copy keeps its start page at `/demo`, ending with the current deletion
 time and a reminder that using the copy moves that time later, up to 24 hours
-after it was created. The product page and
-read-only showcase have no deletion notice. Gym website roots and ordinary installs
+after it was created. The read-only showcase has no deletion notice. The product
+page explains the private copy's lifetime without showing a specific deletion time.
+Its ten feature sections include seeded screenshots in both color schemes and
+densities, with native popovers and full-size links. All assets come from the entry
+host; the page runs no JavaScript. To refresh images, see the
+[manual capture guide](../e2e/ux-pass/PRODUCT.md). Gym website roots and ordinary installs
 keep their existing behavior.
 Use a demo to evaluate the software, to train staff before launch, or to
 show it to your board. Don't use it for your real gym: sandboxes are throwaway, and

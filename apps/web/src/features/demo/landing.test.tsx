@@ -10,7 +10,7 @@ const context = vi.hoisted(() => ({ mode: undefined as 'disabled' | 'entry' | 's
 vi.mock('./notice.js', async (original) => ({ ...await original<typeof import('./notice.js')>(), useDemoMode: () => context.mode, useDemoJoin: () => context.join,
   useDemoExpiry: () => context.mode === 'sandbox' ? '2099-11-15T16:12:00.000Z' : undefined,
   useDemoLogin: () => ({ login: context.login, pending: context.pending, error: context.error }), useDemoMenu: () => ({ data: { members: context.members, website: false } }) }));
-afterEach(() => { cleanup(); context.join = true; context.login.mockReset(); context.pending = false; context.error = false; context.members = []; });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); context.join = true; context.login.mockReset(); context.pending = false; context.error = false; context.members = []; });
 
 it.each(['disabled', undefined] as const)('shows a neutral sign-in route in %s mode', (mode) => {
   context.mode = mode;
@@ -27,8 +27,8 @@ it('starts a sandbox with one-click roles, the test-card join walkthrough and th
   expect(screen.getByRole('heading', { level: 1, name: 'Your demo gym' })).toBeDefined();
   for (const role of ['owner', 'coach', 'student']) fireEvent.click(screen.getByRole('button', { name: `Sign in as ${role}` }));
   expect(context.login.mock.calls).toEqual([['owner'], ['coach'], ['student']]);
-  expect(screen.getByText(/Alex Student: two booked classes, a waitlist place/)).toBeDefined();
-  expect(screen.getByText(/check-in QR code and paid invoices/)).toBeDefined();
+  expect(screen.getByText(/Alex Student's bookings, waitlist/)).toBeDefined();
+  expect(screen.getByText(/QR code and paid invoices/)).toBeDefined();
   expect(screen.queryByText(/when this demo has/)).toBeNull();
   expect(screen.queryByText(/no test payments/)).toBeNull();
   expect(screen.getByRole('link', { name: 'Open the join page' }).getAttribute('href')).toBe('/join');
@@ -45,6 +45,23 @@ it('starts a sandbox with one-click roles, the test-card join walkthrough and th
   expect(notice.textContent).toContain('Email stays in the demo outbox and uploads are disabled.');
   expect(notice).toBe(document.querySelector('main')?.firstElementChild?.lastElementChild);
   expect(notice.textContent).not.toContain('after 24 hours');
+});
+it('copies the test card without spaces and announces the result', async () => {
+  context.mode = 'sandbox';
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal('navigator', { clipboard: { writeText } });
+  render(<DemoPage />);
+  fireEvent.click(screen.getByRole('button', { name: /Copy test card/ }));
+  expect(writeText).toHaveBeenCalledWith('4242424242424242');
+  expect(await screen.findByText('Test card copied')).toBeDefined();
+});
+it('keeps the card selectable when clipboard access fails', async () => {
+  context.mode = 'sandbox';
+  vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn().mockRejectedValue(new Error('Unavailable')) } });
+  render(<DemoPage />);
+  fireEvent.click(screen.getByRole('button', { name: /Copy test card/ }));
+  expect(await screen.findByText('Select the card number to copy it')).toBeDefined();
+  expect(screen.getByText('4242 4242 4242 4242').className).toContain('select-all');
 });
 it('keeps the showcase start page free of deletion notices', () => {
   context.mode = 'showcase';

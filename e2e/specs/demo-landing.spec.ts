@@ -31,7 +31,9 @@ for (const width of [360, 1280]) for (const colorScheme of ['light', 'dark'] as 
     await expect(links.nth(1)).toHaveAttribute('href', 'https://github.com/plaingym/plaingym');
     await expect(page.getByRole('link', { name: 'Source code', exact: true })).toHaveAttribute('href', '/source');
     await expect(page.locator('script, [style]')).toHaveCount(0);
-    await expect(page.getByText(/deleted|Inactivity|Expires:/)).toHaveCount(0);
+    // Explain the general lifetime without showing a particular sandbox's expiry notice.
+    await expect(page.getByText('Private copies expire after inactivity and are deleted within 24 hours.', { exact: true })).toBeVisible();
+    await expect(page.locator('[data-demo-deletion]')).toHaveCount(0);
     const stylesheet = await stylesLoaded;
     expect(stylesheet.status()).toBe(200);
     expect(stylesheet.headers()['content-type']).toContain('text/css');

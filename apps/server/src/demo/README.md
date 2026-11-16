@@ -4,6 +4,16 @@
 The demo entry host's root serves a server-rendered product page. **Try the demo**
 opens the showcase start page directly, followed by a **GitHub** repository link.
 The page uses the public stylesheet, native links and a policy that forbids scripts.
+Ten feature sections have inline SVG icons and seeded screenshots. Images use
+light/dark sources, responsive densities and lazy loading. Native popovers enlarge
+them without JavaScript; full-size links work in browsers without popover support.
+Only the entry host serves `/demo-assets/:file`, from an exact asset allowlist.
+Content-hashed WebP images cache for a year; the versioned page CSS caches for a day.
+The server build copies these files beside the bundle in `screenshots/`.
+The sandbox start page uses the app's cards, role icons and numbered join steps,
+including a test-card copy button with a selectable fallback.
+Refresh images with the manual command in
+[`e2e/ux-pass/PRODUCT.md`](../../../../e2e/ux-pass/PRODUCT.md).
 An old entry-host `/demo` link redirects to `/`. Gym hosts keep their own roots
 and `/demo` start pages; ordinary installs have no product landing page.
 Creation announces pending work immediately, prevents duplicate

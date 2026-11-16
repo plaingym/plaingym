@@ -45,8 +45,8 @@ try {
   const address = server.httpServer.address();
   browser = await chromium.launch({ channel: process.env.E2E_BROWSER_CHANNEL ?? 'msedge', headless: true });
   const errors = [], results = [];
-  for (const join of [true, false]) for (const width of [360, 1280]) for (const path of ['/demo', '/admin']) {
-    const context = await browser.newContext({ viewport: { width, height: 900 } });
+  for (const join of [true, false]) for (const width of [360, 1280]) for (const path of ['/demo', '/admin']) for (const theme of ['light', 'dark']) {
+    const context = await browser.newContext({ viewport: { width, height: 900 }, colorScheme: theme, reducedMotion: 'reduce' });
     const page = await context.newPage(); page.setDefaultTimeout(12_000);
     page.on('pageerror', error => errors.push(error.message)); page.on('console', message => { if (process.env.DEBUG_CHECK) console.log('console:', message.text()); });
     await page.goto('http://127.0.0.1:' + address.port + '/fixture' + path + '?join=' + join);
@@ -55,7 +55,7 @@ try {
     expect(await page.locator('main [data-demo-deletion]').evaluate(element => element === element.parentElement.lastElementChild)).toBe(true);
     await expect(page.getByText('4242 4242 4242 4242')).toHaveCount(join ? 1 : 0);
     await expect(page.getByRole('link', { name: 'Open the join page' })).toHaveCount(join ? 1 : 0);
-    await expect(page.getByText(/check-in QR code and paid invoices/)).toHaveCount(join ? 1 : 0);
+    await expect(page.getByText(/QR code and paid invoices/)).toHaveCount(1);
     if (!join) await expect(page.getByText("Joining online isn't available in this demo gym right now.")).toBeVisible();
     await expect(page.getByRole('button', { name: 'Sign in as Riley Visitor-Longername' })).toBeVisible();
     // The bar is one slim row: about 44 px, with no hints.
@@ -69,7 +69,7 @@ try {
     expect(small).toEqual([]);
     const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
     expect(accessibility.violations).toEqual([]);
-    await page.screenshot({ path: resolve(output, 'start' + path.replace('/', '-') + '-' + width + '-join-' + join + '.png'), fullPage: true });
+    await page.screenshot({ path: resolve(output, 'start' + path.replace('/', '-') + '-' + width + '-' + theme + '-join-' + join + '.png'), fullPage: true });
     // The menu: a bottom sheet on a phone, a side panel on wider screens.
     await bar.getByRole('button', { name: 'Demo menu' }).click();
     const menu = page.getByRole('dialog', { name: 'Demo menu' });
@@ -82,10 +82,10 @@ try {
     }).map(element => element.outerHTML));
     expect(menuSmall).toEqual([]);
     expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze()).violations).toEqual([]);
-    await page.screenshot({ path: resolve(output, 'menu' + path.replace('/', '-') + '-' + width + '-join-' + join + '.png') });
+    await page.screenshot({ path: resolve(output, 'menu' + path.replace('/', '-') + '-' + width + '-' + theme + '-join-' + join + '.png') });
     await page.keyboard.press('Escape');
     await expect(menu).toHaveCount(0);
-    results.push({ join, width, path, overflow: false, minimumTarget: 44, axeViolations: 0, bar: 'slim', menu: width < 640 ? 'bottom sheet' : 'side panel' });
+    results.push({ join, width, path, theme, overflow: false, minimumTarget: 44, axeViolations: 0, bar: 'slim', menu: width < 640 ? 'bottom sheet' : 'side panel' });
     await context.close();
   }
   expect(errors).toEqual([]); await writeFile(resolve(output, 'results.json'), JSON.stringify(results, null, 2));

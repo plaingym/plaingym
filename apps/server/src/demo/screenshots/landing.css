@@ -1,0 +1,27 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+/* Popover support, safe-area controls and alternating source-order-preserving rows. */
+.demo-lightbox { display: none; }
+.demo-lightbox:popover-open {
+  display: flex; align-items: center; justify-content: center;
+  width: fit-content; max-width: 94vw; max-height: 94dvh;
+  margin: auto; padding: 64px 12px 12px; border: 1px solid #d6e1df;
+  border-radius: 12px; background: #fff; color: #172524; overflow: auto;
+}
+.demo-lightbox::backdrop { background: rgb(0 0 0 / 75%); }
+.demo-lightbox picture { display: flex; min-width: 0; }
+.demo-lightbox img { max-height: calc(94dvh - 80px); }
+.demo-close {
+  position: absolute; top: max(8px, env(safe-area-inset-top)); right: max(8px, env(safe-area-inset-right));
+  min-width: 44px; min-height: 44px; padding: 8px 12px; border: 1px solid currentColor;
+  border-radius: 8px; background: #fff; color: #172524; cursor: pointer;
+}
+.demo-fallback-image { display: none; }
+@supports not selector(:popover-open) {
+  .demo-zoom { display: none; }
+  .demo-fallback-image { display: block; }
+  .demo-original { display: block; }
+}
+@media (min-width: 768px) { .demo-feature:nth-of-type(odd) > div:first-child { order: 1; } }
+@media (prefers-color-scheme: dark) {
+  .demo-lightbox:popover-open, .demo-close { background: #111827; color: #f3f4f6; border-color: #374151; }
+}

@@ -1,6 +1,10 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Members and mat browser QA
 
+The manual [product screenshot capture](ux-pass/PRODUCT.md) reuses the UX pass's
+seeded demo install and writes the product page's committed WebP images. It has
+its own opt-in command and never runs in CI or changes the regular UX pass.
+
 Fresh-host installation, browser backups/restore, memory and password QA live in
 [`vm/README.md`](vm/README.md). Use `node e2e/run.mjs --vm PRIVATE_CONFIG_JSON`
 from the repository root to select that suite; the default runner below keeps

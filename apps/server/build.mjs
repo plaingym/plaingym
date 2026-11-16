@@ -35,6 +35,7 @@ export async function buildServer(
   await cp(new URL('./src/assets/', import.meta.url), new URL('./assets/', outputDirectory), {
     recursive: true,
   });
+  await cp(new URL('./src/demo/screenshots/', import.meta.url), new URL('./screenshots/', outputDirectory), { recursive: true });
   await cp(new URL('../../packs/', import.meta.url), new URL('./packs/', outputDirectory), { recursive: true });
   await cp(new URL('../../deploy/cloudflare-ranges.txt', import.meta.url), new URL('./cloudflare-ranges.txt', outputDirectory));
   await cp(new URL('./src/infra/pdf/fonts/', import.meta.url), new URL('./assets/pdf/', outputDirectory), { recursive: true });
