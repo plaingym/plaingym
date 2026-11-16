@@ -50,6 +50,8 @@ def validate(config):
     local = config["DEMO_LOCAL_TEST"] == "true"
     if config.get("DEMO_AUTO_UPDATE", "on") not in ("on", "off"):
         raise ValueError("DEMO_AUTO_UPDATE must be on or off")
+    if config.get("DEMO_RELEASE_CHANNEL", "prerelease") not in ("prerelease", "stable"):
+        raise ValueError("DEMO_RELEASE_CHANNEL must be prerelease or stable")
     try:
         ZoneInfo(config.get("DEMO_UPDATE_TIMEZONE", "America/New_York"))
     except (ValueError, ZoneInfoNotFoundError):
@@ -330,7 +332,8 @@ def main():
     config.setdefault("UPLOADS_S3_REGION", os.environ.get("UPLOADS_S3_REGION", "auto"))
     config.setdefault("ACME_CA", os.environ.get("ACME_CA", "https://acme-v02.api.letsencrypt.org/directory"))
     config.setdefault("DEMO_SNAPSHOT_RETENTION", os.environ.get("DEMO_SNAPSHOT_RETENTION", "3"))
-    for name, default in (("DEMO_AUTO_UPDATE", "on"), ("DEMO_UPDATE_TIMEZONE", "America/New_York"),
+    for name, default in (("DEMO_AUTO_UPDATE", "on"), ("DEMO_RELEASE_CHANNEL", "prerelease"),
+                          ("DEMO_UPDATE_TIMEZONE", "America/New_York"),
                           ("RELEASE_REPOSITORY", "plaingym/plaingym")):
         config.setdefault(name, os.environ.get(name, default))
     for name, default in (("DEMO_MAX_SANDBOXES", "50"), ("DEMO_POOL_SIZE", "5"), ("DEMO_IDLE_HOURS", "2")):

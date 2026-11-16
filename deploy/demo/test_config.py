@@ -78,6 +78,7 @@ class PreflightTests(unittest.TestCase):
         config.validate({**inputs(), "DEMO_AUTO_UPDATE": "off", "DEMO_UPDATE_TIMEZONE": "UTC",
                          "RELEASE_REPOSITORY": "example/fork"})
         for key, value in (("DEMO_AUTO_UPDATE", "maybe"), ("DEMO_UPDATE_TIMEZONE", "not/a-zone"),
+                           ("DEMO_RELEASE_CHANNEL", "beta"), ("DEMO_RELEASE_CHANNEL", "stable\nAPP_IMAGE=evil"),
                            ("DEMO_UPDATE_TIMEZONE", "../etc/passwd"), ("RELEASE_REPOSITORY", "../fork"),
                            ("RELEASE_REPOSITORY", "example/fork\nAPP_IMAGE=evil")):
             with self.subTest(key=key, value=value), self.assertRaises(ValueError):

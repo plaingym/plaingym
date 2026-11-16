@@ -33,11 +33,15 @@ case "$#:${1:-}:${2:-}" in
   3:*:--bundle) valid_image "$1" || fail 'Use an explicit version or sha256 digest.'; bundle=$3 ;;
   *) fail "$usage" ;;
 esac
+signed_release=false
+if [ "$automatic" = false ] && [ -z "$bundle" ] && valid_version "${1##*:}"; then signed_release=true; fi
+if [ "$automatic" = true ] || [ "$signed_release" = true ]; then
+  # shellcheck source=deploy/demo/auto-update.sh
+  . "$ROOT/auto-update.sh"
+fi
 if [ "$automatic" = true ]; then
   exec 8>"$ROOT/.auto-update.lock"
   flock -n 8 || exit 0
-  # shellcheck source=deploy/demo/auto-update.sh
-  . "$ROOT/auto-update.sh"
   # An interrupted attempt left the app stopped: recover it at the next hourly run, not the next night.
   scheduled=false
   if [ ! -f "$ROOT/.demo-update.inflight" ]; then demo_auto_schedule; scheduled=true; fi
@@ -131,6 +135,8 @@ demo_apply_update() { # TARGET [PREPARED_DEPLOY_DIRECTORY]
   awk -v image="$target" '/^APP_IMAGE=/ { print "APP_IMAGE=" image; next } { print }' "$ROOT/.env" | env_next
   commit_env_next
   changed=false
+  # Retire this committed generation before catch-up can open the next journal.
+  if [ -d "$ROOT/.demo-deploy-update" ]; then python3 "$ROOT/deploy-files.py" recover "$ROOT"; fi
   rm -f "$ROOT/.demo-update.inflight"
   python3 "$ROOT/snapshots.py" --directory "$ROOT/snapshots" --keep "$keep"
   printf 'Updated demo to %s. Pre-update snapshot: %s\n' "$target" "$snapshot"
@@ -153,6 +159,8 @@ if [ -f "$ROOT/.demo-update.inflight" ]; then
 fi
 if [ "$automatic" = true ]; then
   demo_auto_run
+elif [ "$signed_release" = true ]; then
+  demo_explicit_release "$1"
 else
   demo_apply_update "$1"
 fi

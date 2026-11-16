@@ -146,35 +146,47 @@ certificate is intentionally not accepted as public deployment success.
 
 ### Automatic release updates
 
-The installer installs `release-signing.pem` and enables
+The installer installs `release-signing.pem` and `prerelease-signing.pem` and enables
 `plaingym-demo-update.timer`. Existing demos receive these through the bootstrap
 refresh described below. The timer fires hourly with up to 50 minutes of random
 delay; it acts once between 02:00 and 05:00 in `DEMO_UPDATE_TIMEZONE` (default
 `America/New_York`). It does not catch up outside that window.
 
-The demo follows the newest published stable patch **or minor** release with
-the running image's major version. A new major requires an explicit operator
-update. Images without a stable release version label, including development
-builds, are skipped. Set these host-only options in the root-only installed `.env`:
+By default the demo follows published prereleases and stable releases with the
+running image's major version. It installs the **next** newer version, then the
+next, in order while each update succeeds and the nightly window remains open.
+Release history is paginated before selection (at most 1,000 entries; an
+incomplete history is skipped). `DEMO_RELEASE_CHANNEL=stable` instead follows
+the newest stable patch **or minor** release, as a single update. A new major
+requires an explicit operator update. Tags and image labels use plain `vX.Y.Z`,
+including nightly `v0.Y.Z` prereleases; development/bundle labels are skipped.
+Set these host-only options in the root-only installed `.env`:
 
 | Setting | Default | Meaning |
 | :--- | :--- | :--- |
 | `DEMO_AUTO_UPDATE` | `on` | `off` disables automatic updates, including `--now`. |
+| `DEMO_RELEASE_CHANNEL` | `prerelease` | `prerelease` considers prereleases and stable releases in ascending version order; `stable` considers only the newest stable release. |
 | `DEMO_UPDATE_TIMEZONE` | `America/New_York` | IANA timezone for the nightly window. |
 | `RELEASE_REPOSITORY` | `plaingym/plaingym` | Repository publishing releases, including for forks. |
 
-Only the installed public key can authorize a release. The updater reuses the
-self-hosted manifest/signature, deploy-archive checks, host-file journal, timezone
-window and version-selection helpers; it pulls the manifest's
+The GitHub prerelease flag selects one installed key: `prerelease-signing.pem`
+for prereleases, `release-signing.pem` for stable releases. The signed manifest
+must also have `channel=prerelease` for a prerelease and no channel for a stable
+release. The keys are never tried interchangeably. The updater reuses the
+self-hosted manifest/signature, deploy-archive checks, host-file journal and
+timezone window, and selects releases with its own channel-aware helper; it pulls the manifest's
 `IMAGE:vX.Y.Z@sha256:DIGEST` and checks the registry digest and version label
 before stopping the app. Invalid signatures, manifests, digests, labels and
-archives are refused permanently for that tag, even with `--now`. A newer tag
-can be considered. Network failures can be tried on a later night. As on
+archives are refused permanently for that tag, even with `--now`. On `stable`,
+a newer tag can be considered. On `prerelease`, a refusal or exhausted attempts
+stop ordered catch-up at that tag; an explicit update is needed to pass it.
+Network failures can be tried on a later night. As on
 self-hosted installs, a release whose signed `rollback_floor` is above the
 running version is skipped with `rollback_floor_above_running`, since the
 running image couldn't restart on its migrated database; install it explicitly.
 Failed update attempts are limited to two per release, counting interrupted
-attempts; after that the demo waits for a newer release. A night when the app
+attempts. Catch-up stops at the first failure; an earlier successful update
+remains the running pin and rollback target. A night when the app
 isn't running is skipped with `app_not_running` and uses no attempt. `--now`
 bypasses the clock, but keeps these trust checks and attempt limits.
 
@@ -190,7 +202,10 @@ only from the verified release archive. Credentials, the app pin and the Caddy
 image stay in place until the normal update health checks commit the new app
 pin. Failed refreshes restore the preceding files and proxy configuration before
 restarting the old image. A host-file journal recovers interrupted refreshes.
-The signing key is retained, never automatically rotated. If the archive's demo
+Both installed signing keys are retained, never automatically rotated. The
+archive's `release-signing.pem` must match the key selected for that release;
+this slot carries the prerelease key in a prerelease archive and does not
+replace either installed key. If the archive's demo
 Caddy Dockerfile differs from the installed build recipe, the release is skipped
 with `caddy_image_required`: releases do not publish the custom demo proxy image.
 Refresh the bundle and its Caddy image explicitly, then install that app release
@@ -214,6 +229,19 @@ For an explicit published app image, one command on the server is sufficient:
 ```sh
 sudo /opt/plaingym-demo/update.sh ghcr.io/plaingym/app:v0.2.1
 ```
+
+This is also the one-time switch from a bundle image to nightly prereleases:
+substitute the newest published prerelease's actual tag. Refresh the demo bundle
+first to install these scripts and both public keys. The update installs the
+deploy files from that release's archive, so pick a prerelease that already
+includes this updater: an older one would put back an updater that ignores
+prereleases. Explicit `IMAGE:vX.Y.Z` updates
+look up that published tag and perform the same signature, channel, archive,
+digest, label and Caddy checks as automatic updates, then pin the signed digest.
+They accept a prerelease even when the automatic channel is `stable` and can
+cross its rollback floor; they do not depend on a release label on the running
+bundle image. The operator runs this switch; the nightly updater keeps skipping
+the bundle image until then.
 
 For another unpublished build, use the same bootstrap command with the **new**
 bundle URL and SHA256, adding `--update plaingym:v0.0.1-local`. No manual image
@@ -247,9 +275,12 @@ Re-run the bootstrap with a new bundle URL and its **new SHA256**, without
 prebuilt Caddy image. Existing credentials and the app image pin are preserved;
 the proxy pin is published after health checks. A failed refresh restores the
 previous deploy files, configuration and proxy. Use a new immutable version tag
-or digest when changing the Caddy image. The app-only `update.sh IMAGE` command
-does not refresh deploy files. The bootstrap's `--update IMAGE` form first
-refreshes deployment files, then runs that app update.
+or digest when changing the Caddy image. Published `update.sh IMAGE:vX.Y.Z`
+updates also refresh deployment files from their verified release archive.
+Bundle/local image updates keep the files installed by the bootstrap. The
+bootstrap's `--update IMAGE` form first refreshes deployment files, then runs
+that bundle app update. A refresh installs missing public keys beside existing
+ones and preserves either key already installed.
 
 The local smoke verifies this with a checksum-verified HTTPS bundle, changed
 scripts/Compose/Caddyfile, a new proxy reference and unchanged app/secrets. It

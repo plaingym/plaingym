@@ -198,13 +198,13 @@ host_units_dir() { printf '%s\n' "${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"; }
 host_mode() { case "$1" in update.sh|rotate-key.sh|restore.sh|auto-update.sh|deploy-files.py|snapshots.py) echo 0700 ;; *) echo 0644 ;; esac; }
 # Prepare only data from the already verified manifest; no script from the archive is sourced or executed.
 # Returns 2 when the archive can't be downloaded, and 1 when it or a file fails a check.
-host_download() { # MANIFEST BASE_URL WORK
+host_download() { # MANIFEST BASE_URL WORK [TRUSTED_PUBLIC_KEY]
   [ -n "$(manifest_value "$1" host_format)" ] || return 0 # Releases predating host updates.
   download "$2/$(manifest_value "$1" deploy_archive)" "$3/host.tar.gz" 52428800 || return 2
   printf '%s  %s\n' "$(manifest_value "$1" deploy_archive_sha256 | sed 's/^sha256://')" "$3/host.tar.gz" | sha256sum -c - >/dev/null 2>&1 || return 1
   mkdir "$3/host" || return 1
   # Expand only the fixed allowlist, and decompress the archive once.
-  host_manifest=$1; host_base=$2; host_archive=$3
+  host_manifest=$1; host_base=$2; host_archive=$3; host_public=${4:-$ROOT/release-signing.pem}
   set --
   for host_file in $host_files; do set -- "$@" "deploy/$host_file"; done
   tar -xzf "$host_archive/host.tar.gz" -C "$host_archive/host" --no-same-owner -- "$@" || return 1
@@ -216,7 +216,7 @@ host_download() { # MANIFEST BASE_URL WORK
     [ "sha256:$(sha256sum "$host_path" | cut -d' ' -f1)" = "$host_hash" ] || return 1
   done
   # Trust never transfers just because an archive names another key. Rotation is a separate, explicit host step.
-  openssl pkey -pubin -in "$ROOT/release-signing.pem" -outform DER -out "$3/trusted.der" || return 1
+  openssl pkey -pubin -in "$host_public" -outform DER -out "$3/trusted.der" || return 1
   openssl pkey -pubin -in "$3/host/deploy/release-signing.pem" -outform DER -out "$3/release.der" || return 1
   cmp -s "$3/trusted.der" "$3/release.der" || return 1
   # update.sh uses this prepared directory only after host_download succeeds.

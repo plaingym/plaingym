@@ -69,7 +69,7 @@ fi
 inputs=$(mktemp)
 backup=
 refreshing=false
-deploy_paths='compose.yaml base-lib.sh postgres/01-roles.sh demo.compose.yaml lib.sh update.sh auto-update.sh deploy-files.py snapshots.py Caddyfile caddy.Dockerfile release-signing.pem systemd/plaingym-demo-update.service systemd/plaingym-demo-update.timer'
+deploy_paths='compose.yaml base-lib.sh postgres/01-roles.sh demo.compose.yaml lib.sh update.sh auto-update.sh deploy-files.py snapshots.py Caddyfile caddy.Dockerfile release-signing.pem prerelease-signing.pem systemd/plaingym-demo-update.service systemd/plaingym-demo-update.timer'
 cleanup() {
   result=$?
   trap - EXIT HUP INT TERM
@@ -146,7 +146,9 @@ for unit in plaingym-demo-update.service plaingym-demo-update.timer; do
   copy_deploy "$SOURCE/systemd/$unit" "systemd/$unit" 0644
 done
 # Existing trust belongs to the operator; a routine bundle refresh never rotates it.
-if [ ! -f "$ROOT/release-signing.pem" ]; then copy_deploy "$DEPLOY/release-signing.pem" release-signing.pem 0644; fi
+for key in release-signing.pem prerelease-signing.pem; do
+  if [ ! -f "$ROOT/$key" ]; then copy_deploy "$DEPLOY/$key" "$key" 0644; fi
+done
 copy_deploy "$SOURCE/snapshots.py" snapshots.py 0700
 if [ "$DEMO_LOCAL_TEST" = true ]; then caddyfile=Caddyfile.local.conf; else caddyfile=Caddyfile; fi
 copy_deploy "$SOURCE/$caddyfile" Caddyfile 0644

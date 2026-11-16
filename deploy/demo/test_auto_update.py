@@ -33,7 +33,7 @@ def executable(path, text):
 
 @unittest.skipUnless(os.name == "posix" and getattr(os, "geteuid", lambda: -1)() == 0,
                      "Host updater requires POSIX and root; CI runs these fixtures with sudo.")
-class AutoUpdateTests(unittest.TestCase):
+class UpdateFixture(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -48,12 +48,16 @@ class AutoUpdateTests(unittest.TestCase):
                        check=True, capture_output=True)
         subprocess.run(["openssl", "pkey", "-in", str(self.base / "private.pem"), "-pubout", "-out", str(self.root / "release-signing.pem")],
                        check=True, capture_output=True)
+        subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(self.base / "prerelease-private.pem")],
+                       check=True, capture_output=True)
+        subprocess.run(["openssl", "pkey", "-in", str(self.base / "prerelease-private.pem"), "-pubout", "-out", str(self.root / "prerelease-signing.pem")],
+                       check=True, capture_output=True)
         for source, target in deploy_files.mapping(True).items():
             path = self.root / target
             path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(DEPLOY / source, path)
         self.initial = ("DEMO_INSTALL=1\nDEMO_LOCAL_TEST=true\nAPP_IMAGE=" + IMAGE + ":v1.2.3\n"
-                        "CADDY_IMAGE=plaingym-caddy:v2.11.7-cf0.2.4\nAUTH_SECRET=preserved\n")
+                        "CADDY_IMAGE=plaingym-caddy:v2.11.7-cf0.2.4\nAUTH_SECRET=preserved\nDEMO_RELEASE_CHANNEL=stable\n")
         (self.root / ".env").write_text(self.initial)
         (self.base / "running").write_text("yes")
         self.make_tools()
@@ -73,7 +77,7 @@ elif a[:2]==['image','inspect']:
     if 'RepoDigests' in fmt: print('ghcr.io/example/app@sha256:'+('d' if os.environ.get('BAD_DIGEST') else 'a')*64)
     elif 'image.version' in fmt:
         print('1.2.3' if pin=='ghcr.io/example/app:v1.2.3' else ('9.0.0' if os.environ.get('BAD_LABEL') else pin.split(':v')[1].split('@')[0]))
-    elif '.Id' in fmt: print('sha256:'+'b'*64)
+    elif '.Id' in fmt: print('sha256:'+('c' if ':v0.2.0@' in pin else 'b')*64)
 elif a and a[0]=='compose':
     if 'config' in a:
         app=os.environ.get('BAD_COMPOSE_APP_IMAGE',os.environ['APP_IMAGE'])
@@ -91,24 +95,38 @@ elif a and a[0]=='compose':
     elif 'up' in a:
         if 'app' in a:
             (base/'running').write_text('yes')
-            if os.environ.get('INTERRUPT_STARTUP'): os.kill(os.getppid(), 9)
-            if os.environ.get('FAIL_UPDATE') and os.environ.get('DEMO_TARGET_APP_IMAGE','').startswith('ghcr.io/'):
+            if os.environ.get('END_WINDOW'): (base/'end-window').touch()
+            target=os.environ.get('DEMO_TARGET_APP_IMAGE','')
+            if os.environ.get('INTERRUPT_STARTUP') or (os.environ.get('INTERRUPT_TAG') and (':'+os.environ['INTERRUPT_TAG']+'@') in target): os.kill(os.getppid(), 9)
+            if (os.environ.get('FAIL_UPDATE') and target.startswith('ghcr.io/')) or (os.environ.get('FAIL_TAG') and (':'+os.environ['FAIL_TAG']+'@') in target):
                 sys.exit(1)
 ''')
         executable(self.bin / "curl", '''#!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
-import os,sys,shutil
+import json,os,sys,shutil
 from pathlib import Path
 a=sys.argv[1:]; base=Path(os.environ['FIXTURE'])
 url=next(x for x in a if x.startswith('https://'))
 with (base/'calls').open('a') as log: log.write('curl '+url+'\\n')
-name='releases.json' if 'api.github.com' in url else url.rsplit('/',1)[1]
-shutil.copyfile(base/'release'/name, a[a.index('-o')+1])
+destination=Path(a[a.index('-o')+1])
+if '/releases/tags/' in url:
+    tag=url.rsplit('/',1)[1]
+    choices=json.loads((base/'release/releases.json').read_text())
+    release=next((r for r in choices if r.get('tag_name')==tag), None)
+    if release is None: sys.exit(22)
+    destination.write_text(json.dumps(release))
+else:
+    name=('releases-page2.json' if '&page=2' in url else 'releases.json') if 'api.github.com' in url else url.rsplit('/',1)[1]
+    directory=base/'release'
+    if '/download/' in url:
+        tagged=directory/url.split('/download/')[1].split('/')[0]
+        if tagged.is_dir(): directory=tagged
+    shutil.copyfile(directory/name, destination)
 ''')
         executable(self.bin / "date", '''#!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-only
 case "$*" in
-  +%H) echo "${FAKE_HOUR:-03}" ;;
+  +%H) if [ -f "$FIXTURE/end-window" ]; then echo 05; else echo "${FAKE_HOUR:-03}"; fi ;;
   +%F) echo "$FAKE_NIGHT" ;;
   '-u +%s') echo "$FAKE_EPOCH" ;;
   *) exec /bin/date "$@" ;;
@@ -117,39 +135,51 @@ esac
         executable(self.bin / "systemctl", '#!/bin/sh\n# SPDX-License-Identifier: AGPL-3.0-only\nprintf "systemctl %s\\n" "$*" >> "$FIXTURE/calls"\n')
         executable(self.bin / "sleep", '#!/bin/sh\n# SPDX-License-Identifier: AGPL-3.0-only\nprintf "seed wait\\n" >> "$FIXTURE/calls"\n')
 
-    def publish(self, tag="v1.3.0", mutate=None):
+    def publish(self, tag="v1.3.0", mutate=None, prerelease=False, floor=None, signer=None, signed_channel=None):
         self.tag = tag
         staging = self.base / "staged"
         shutil.rmtree(staging, ignore_errors=True)
         for name in set(HOST_FILES) | set(deploy_files.mapping(True)):
             path = staging / "deploy" / name
             path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(self.root / "release-signing.pem" if name == "release-signing.pem" else DEPLOY / name, path)
+            public = "prerelease-signing.pem" if prerelease else "release-signing.pem"
+            shutil.copyfile(self.root / public if name == "release-signing.pem" else DEPLOY / name, path)
         # Both public and local configurations must be present in a release archive.
         shutil.copyfile(HERE / "Caddyfile", staging / "deploy/demo/Caddyfile")
         with (staging / "deploy/demo/compose.yaml").open("a") as file:
-            file.write("\n# verified release refresh\n")
+            file.write(f"\n# verified release refresh {tag}\n")
         if mutate:
             mutate(staging)
         archive = self.release / f"plaingym-deploy-{tag}.tar.gz"
         with tarfile.open(archive, "w:gz") as bundle:
             bundle.add(staging / "deploy", arcname="deploy")
+        floor = floor or ("v0.1.0" if prerelease else "v1.0.0")
+        signed_channel = ("prerelease" if prerelease else "") if signed_channel is None else signed_channel
         manifest = (f"format=plaingym-release-manifest/2\nversion={tag}\nimage={IMAGE}\ndigest={DIGEST}\n"
-                    f"revision={'c' * 40}\nmigrations=sha256:{'d' * 64}\nrollback_floor=v1.0.0\nhost_format=1\n"
+                    f"revision={'c' * 40}\nmigrations=sha256:{'d' * 64}\nrollback_floor={floor}\nhost_format=1\n"
                     f"deploy_archive={archive.name}\ndeploy_archive_sha256=sha256:{hashlib.sha256(archive.read_bytes()).hexdigest()}\n")
+        if signed_channel:
+            manifest += f"channel={signed_channel}\n"
         for name in HOST_FILES:
             manifest += f"host.{name.lower()}=sha256:{hashlib.sha256((staging / 'deploy' / name).read_bytes()).hexdigest()}\n"
         (self.release / "release-manifest.txt").write_text(manifest)
-        self.sign()
-        self.tags([tag, "v2.0.0", "v1.2.4"])
+        self.sign(signer or ("prerelease-private.pem" if prerelease else "private.pem"))
+        self.tags([{"tag_name": tag, "prerelease": prerelease}, "v2.0.0", "v1.2.4"])
 
-    def sign(self):
-        subprocess.run(["openssl", "pkeyutl", "-sign", "-inkey", str(self.base / "private.pem"), "-rawin",
+    def sign(self, key="private.pem"):
+        subprocess.run(["openssl", "pkeyutl", "-sign", "-inkey", str(self.base / key), "-rawin",
                         "-in", str(self.release / "release-manifest.txt"), "-out", str(self.release / "release-manifest.txt.sig")],
                        check=True, capture_output=True)
 
     def tags(self, tags):
-        (self.release / "releases.json").write_text(json.dumps([{"tag_name": tag} for tag in tags]))
+        (self.release / "releases.json").write_text(json.dumps([tag if isinstance(tag, dict) else {"tag_name": tag} for tag in tags]))
+
+    def keep_release(self):
+        directory = self.release / self.tag
+        directory.mkdir()
+        for path in self.release.iterdir():
+            if path.is_file() and path.name != "releases.json":
+                shutil.copyfile(path, directory / path.name)
 
     def run_update(self, *args, **env):
         return subprocess.run(["bash", str(self.root / "update.sh"), *(args or ("--auto", "--now"))],
@@ -161,6 +191,8 @@ esac
     def status(self):
         return (self.root / "auto-update.status").read_text()
 
+
+class AutoUpdateTests(UpdateFixture):
     def test_newer_minor_refreshes_deploy_files_and_preserves_credentials_proxy_and_key(self):
         key = (self.root / "release-signing.pem").read_bytes()
         result = self.run_update()
@@ -324,10 +356,11 @@ esac
 
     def test_explicit_update_after_interrupted_attempt_installs_requested_image(self):
         self.assertNotEqual(self.run_update(INTERRUPT_DRAIN="1").returncode, 0)
+        self.publish("v1.2.4")
         result = self.run_update(f"{IMAGE}:v1.2.4")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("recovered an interrupted attempt", result.stdout)
-        self.assertIn(f"APP_IMAGE={IMAGE}:v1.2.4\n", (self.root / ".env").read_text())
+        self.assertIn(f"APP_IMAGE={IMAGE}:v1.2.4@{DIGEST}\n", (self.root / ".env").read_text())
         self.assertFalse((self.root / ".demo-update.inflight").exists())
 
     def test_rollback_floor_above_running_release_is_skipped_not_refused(self):

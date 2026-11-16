@@ -318,6 +318,16 @@ class ReinstallRestoreTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.root / "base-lib.sh").read_text(), (DEPLOY / "lib.sh").read_text())
         self.assertNotEqual((self.root / "compose.yaml").read_text(), self.OLD_COMPOSE)
+        for name in ("release-signing.pem", "prerelease-signing.pem"):
+            self.assertEqual((self.root / name).read_bytes(), (DEPLOY / name).read_bytes())
+
+    def test_reinstall_never_rotates_either_installed_key(self):
+        for name in ("release-signing.pem", "prerelease-signing.pem"):
+            (self.root / name).write_text("operator-kept-key\n")
+        result = self.reinstall()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for name in ("release-signing.pem", "prerelease-signing.pem"):
+            self.assertEqual((self.root / name).read_text(), "operator-kept-key\n")
 
     def test_a_failed_reinstall_puts_back_what_was_there_including_the_missing_copy(self):
         self.flag.write_text("")

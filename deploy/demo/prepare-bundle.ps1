@@ -16,7 +16,7 @@ $caddyImage = 'plaingym-caddy:v2.11.7-cf0.2.4'
 docker build --platform "linux/$Architecture" -t $caddyImage -f (Join-Path $PSScriptRoot 'Dockerfile') $PSScriptRoot
 if ($LASTEXITCODE -ne 0) { throw 'Prebuilt Caddy image failed.' }
 New-Item -ItemType Directory -Force -Path (Join-Path $staging 'deploy/demo/images'), (Join-Path $staging 'deploy/postgres') | Out-Null
-foreach ($file in @('compose.yaml', 'lib.sh', 'host.sh', 'install.sh', 'cloudflare-ranges.txt', 'release-signing.pem')) { Copy-Item -LiteralPath (Join-Path $deployRoot $file) -Destination (Join-Path $staging "deploy/$file") }
+foreach ($file in @('compose.yaml', 'lib.sh', 'host.sh', 'install.sh', 'cloudflare-ranges.txt', 'release-signing.pem', 'prerelease-signing.pem')) { Copy-Item -LiteralPath (Join-Path $deployRoot $file) -Destination (Join-Path $staging "deploy/$file") }
 Copy-Item -LiteralPath (Join-Path $deployRoot 'postgres/01-roles.sh') -Destination (Join-Path $staging 'deploy/postgres/01-roles.sh')
 New-Item -ItemType Directory -Force -Path (Join-Path $staging 'deploy/demo/systemd') | Out-Null
 foreach ($file in @('install.sh', 'host.sh', 'lib.sh', 'update.sh', 'auto-update.sh', 'deploy-files.py', 'snapshots.py', 'bootstrap.sh', 'config.py', 'compose.yaml', 'Caddyfile', 'Caddyfile.local.conf', 'Dockerfile', 'systemd/plaingym-demo-update.service', 'systemd/plaingym-demo-update.timer', 'README.md')) {
@@ -31,7 +31,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Caddy export failed.' }
 [IO.File]::WriteAllText((Join-Path $staging 'deploy/demo/images.env'), "# SPDX-License-Identifier: AGPL-3.0-only`nAPP_IMAGE=$AppTag`nCADDY_IMAGE=$caddyImage`nBUNDLE_ARCHITECTURE=$Architecture`n", [Text.UTF8Encoding]::new($false))
 $archivePath = Join-Path $bundleOutput "plaingym-demo-$Architecture.tar"
 # Explicit members exclude credentials, local test fixtures and stale staging files.
-tar -cf $archivePath -C $staging deploy/compose.yaml deploy/lib.sh deploy/host.sh deploy/install.sh deploy/cloudflare-ranges.txt deploy/release-signing.pem deploy/postgres/01-roles.sh deploy/demo/install.sh deploy/demo/host.sh deploy/demo/lib.sh deploy/demo/update.sh deploy/demo/auto-update.sh deploy/demo/deploy-files.py deploy/demo/systemd/plaingym-demo-update.service deploy/demo/systemd/plaingym-demo-update.timer deploy/demo/Dockerfile deploy/demo/snapshots.py deploy/demo/bootstrap.sh deploy/demo/config.py deploy/demo/compose.yaml deploy/demo/Caddyfile deploy/demo/Caddyfile.local.conf deploy/demo/README.md deploy/demo/images.env deploy/demo/images/app.tar deploy/demo/images/caddy.tar
+tar -cf $archivePath -C $staging deploy/compose.yaml deploy/lib.sh deploy/host.sh deploy/install.sh deploy/cloudflare-ranges.txt deploy/release-signing.pem deploy/prerelease-signing.pem deploy/postgres/01-roles.sh deploy/demo/install.sh deploy/demo/host.sh deploy/demo/lib.sh deploy/demo/update.sh deploy/demo/auto-update.sh deploy/demo/deploy-files.py deploy/demo/systemd/plaingym-demo-update.service deploy/demo/systemd/plaingym-demo-update.timer deploy/demo/Dockerfile deploy/demo/snapshots.py deploy/demo/bootstrap.sh deploy/demo/config.py deploy/demo/compose.yaml deploy/demo/Caddyfile deploy/demo/Caddyfile.local.conf deploy/demo/README.md deploy/demo/images.env deploy/demo/images/app.tar deploy/demo/images/caddy.tar
 if ($LASTEXITCODE -ne 0) { throw 'Demo bundle export failed.' }
 $checksum = (Get-FileHash -Algorithm SHA256 $archivePath).Hash.ToLowerInvariant()
 Write-Output "Bundle: $archivePath"
