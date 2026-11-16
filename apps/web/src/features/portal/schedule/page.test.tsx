@@ -45,6 +45,9 @@ describe('portal schedule actions', () => {
     expect(sessionAction(booked, child, new Date(Date.parse(session.cancelBefore) + 1)).kind).toBe('locked');
     expect(sessionAction(booked, parent, now).kind).toBe('book');
     expect(sessionAction({ ...session, placesLeft: 0 }, parent, now).kind).toBe('waitlist');
+    expect(sessionAction({ ...session, placesLeft: 0 }, parent, new Date(session.cancelBefore)).kind).toBe('waitlist');
+    expect(sessionAction({ ...session, placesLeft: 0 }, parent, new Date(Date.parse(session.cancelBefore) + 1)).kind).toBe('closed');
+    expect(sessionAction(session, parent, new Date(Date.parse(session.cancelBefore) + 1)).kind).toBe('book');
     expect(sessionAction(session, parent, new Date('2026-10-22T23:59:59Z'))).toMatchObject({ kind: 'opens' });
     expect(sessionAction({ ...session, capacity: null, placesLeft: null }, parent, now).kind).toBe('dropIn');
     expect(sessionAction({ ...session, status: 'cancelled' }, parent, now).kind).toBe('cancelled');
@@ -58,6 +61,15 @@ describe('portal schedule actions', () => {
   });
 });
 describe('portal schedule page', () => {
+  it('shows a full class without a waitlist action after the cutoff', async () => {
+    client.schedule.mockResolvedValue(answer([{ ...session, placesLeft: 0 }]));
+    view(<PortalSchedulePage client={client as unknown as PortalClient} now={() => new Date(Date.parse(session.cancelBefore) + 1)} />);
+    expect(await screen.findByText('The waitlist is closed. The cancellation cutoff has passed.')).toBeDefined();
+    expect(screen.getByText('Full')).toBeDefined();
+    expect(screen.queryByText('Full — waitlist open')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Join the waitlist/ })).toBeNull();
+    expect(client.book).not.toHaveBeenCalled();
+  });
   it('keeps places and both waitlist messages in English in a German browser', async () => {
     const NativeNumberFormat = Intl.NumberFormat;
     const numbers = vi.spyOn(Intl, 'NumberFormat').mockImplementation(function (locale, options) {

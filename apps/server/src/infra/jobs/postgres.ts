@@ -67,6 +67,7 @@ export interface WorkerOptions {
 }
 export interface JobWorker { stop(): Promise<void> }
 export const retentionJob = 'jobs.retention';
+export const defaultSucceededRetentionDays = 14;
 const day = 86_400_000;
 function positive(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive integer`);
@@ -116,7 +117,7 @@ export class PostgresJobs implements Jobs, JobRecovery {
     this.#batch = new Set();
     this.#batchCap = positive(options.batch?.perGymConcurrency ?? 1, 'batch.perGymConcurrency');
     if (options.retention) {
-      const { keep, succeededDays = 14, failedDays = 90, batchSize = 1000 } = options.retention;
+      const { keep, succeededDays = defaultSucceededRetentionDays, failedDays = 90, batchSize = 1000 } = options.retention;
       this.#retention = { keep: [...keep], succeededDays: positive(succeededDays, 'succeededDays'),
         failedDays: positive(failedDays, 'failedDays'), batchSize: positive(batchSize, 'batchSize') };
       this.handleSystem(retentionJob, async () => { await this.prune(); });

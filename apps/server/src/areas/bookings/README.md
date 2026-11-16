@@ -33,6 +33,9 @@ and promotion leave gaps; `queueRank` is the current place in line, including
 members outside the viewer's household, without exposing their identities.
 A new booking first reconciles the queue under the session lock, so it never
 takes a place promotion could fill.
+Inline promotions use the system audit actor. `book` returns `{ booking, promoted }`;
+the staff and portal adapters enqueue each promotion's notice after commit with
+`createBookingDelivery().enqueueNotice`, and expose only the caller's booking.
 
 `reconcileSessionBookings` is the single rule called **under the session lock**
 by new bookings, both schedule capacity-update paths and promotion. A capacity below the
@@ -56,6 +59,10 @@ job and new bookings). A capacity change after the cutoff is saved without confi
 Staff and portal members can book a free place after the cutoff, while existing
 waitlisted members keep their frozen positions. Joining a full class's waitlist
 after the cutoff is refused with reason `waitlistClosed`.
+The portal shows a full class without a waitlist action after the cutoff.
+Both staff booking forms use the schedule response's server-derived `cancelBefore`
+instant and hide the waitlist option as an open form crosses that cutoff. A free
+place remains bookable after the cutoff.
 
 Readers share the same rules: `cancellationCutoffAt` is the instant `cutoffPassed`
 compares against, and `openPlaces` counts the places a new booking can take now
@@ -84,6 +91,9 @@ the scan from recreating sent notices after job retention removes their keys. Th
 records durable send state (`infra/email/README.md`): once SMTP accepted the
 notice, or may have, a retry never sends it again, even if the process failed
 before the audit committed. Only a definite non-send is retried.
+Unsent promotions expire after the jobs module's exported succeeded-retention
+default, so recovery stops before a completed notice job's key can be pruned.
+The notice handler logs when it skips a stale or missing promotion.
 
 `createBookingMailer` uses `createSmtpResolver` for each gym's encrypted SMTP
 settings (with its existing install fallback). The runtime may inject the demo
@@ -106,7 +116,8 @@ profile tab. Both let staff book or cancel places; the roster includes walk-ins.
 The member tab chooses classes by a gym-local date. Views use paginated booking
 contracts: the roster includes `displayName` (first and last name) from a
 gym-scoped query; the member tab uses the schedule projection for class names.
-No additional member profile fields are exposed. A roster page needs one request.
+No additional member profile fields are exposed. A roster page needs one request;
+its booking form separately reads the session detail for the cancellation cutoff.
 
 The roster response carries `counts` for the whole session, not the page:
 `booked`, `waitlisted` (one grouped query over active bookings) and `checkedIn`

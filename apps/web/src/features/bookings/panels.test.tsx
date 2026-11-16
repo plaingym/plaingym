@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { BookingRosterPanel, MemberBookingsPanel } from './panels.js';
 import { registration } from './registrations.js';
@@ -15,8 +15,9 @@ vi.mock('../../app/context.js', () => ({ useBootstrap: () => ({ data: { gym: { t
 const memberId = '00000000-0000-7000-8000-000000000001', sessionId = '00000000-0000-7000-8000-000000000002';
 const booking = { id: 'booking', memberId, sessionId, status: 'booked', waitlistPosition: null, queueRank: null };
 const member = { id: memberId, firstName: 'River', lastName: 'Lee' };
-const session = { id: sessionId, name: 'Fundamentals', startsAt: '2026-11-02T18:00:00Z', capacity: 2 };
+const session = { id: sessionId, name: 'Fundamentals', startsAt: '2026-11-02T18:00:00Z', cancelBefore: '2026-11-02T17:00:00Z', capacity: 2 };
 beforeEach(() => {
+  vi.setSystemTime(new Date('2026-11-02T16:00:00Z'));
   for (const mock of Object.values(client)) mock.mockReset();
   client.roster.mockResolvedValue({ data: [{ displayName: 'River Lee', booking, attendance: { memberId } }], pagination: { total: 1 }, counts: { booked: 1, waitlisted: 0, checkedIn: 1 } });
   client.list.mockResolvedValue({ data: [booking], pagination: { total: 1 } });
@@ -24,8 +25,43 @@ beforeEach(() => {
   client.session.mockResolvedValue(session); client.sessions.mockResolvedValue([session]);
   client.book.mockResolvedValue(booking); client.cancel.mockResolvedValue({ ...booking, status: 'cancelled' });
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); });
 describe('staff booking panels', () => {
+  it.each(['roster', 'member'] as const)('closes an open %s waitlist form one millisecond after the exact cutoff', async kind => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date(session.cancelBefore));
+    try {
+      await act(async () => { render(kind === 'roster' ? <BookingRosterPanel sessionId={sessionId}/> : <MemberBookingsPanel memberId={memberId}/>); });
+      if (kind === 'roster') {
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Search members' })); });
+        fireEvent.change(screen.getByLabelText('Member', { exact: true }), { target: { value: memberId } });
+      } else fireEvent.change(screen.getByLabelText('Class', { exact: true }), { target: { value: sessionId } });
+      expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(true);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(screen.queryByRole('checkbox')).toBeNull();
+      await act(async () => { fireEvent.submit(screen.getByRole('button', { name: 'Book a place' }).closest('form')!); });
+      expect(client.book).toHaveBeenCalledWith({ memberId, sessionId, allowWaitlist: false });
+    } finally { cleanup(); vi.useRealTimers(); }
+  });
+  it.each(['roster', 'member'] as const)('hides the %s waitlist option when loaded after the cutoff', async kind => {
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse(session.cancelBefore) + 1);
+    render(kind === 'roster' ? <BookingRosterPanel sessionId={sessionId}/> : <MemberBookingsPanel memberId={memberId}/>);
+    if (kind === 'member') {
+      await waitFor(() => expect(client.sessions).toHaveBeenCalled());
+      await screen.findByRole('option', { name: /Fundamentals/ });
+      fireEvent.change(screen.getByLabelText('Class', { exact: true }), { target: { value: sessionId } });
+    } else { await screen.findByText('River Lee'); await waitFor(() => expect(client.session).toHaveBeenCalledWith(sessionId)); }
+    expect(screen.queryByRole('checkbox')).toBeNull();
+  });
+  it('keeps the roster form bookable without a waitlist when the cutoff lookup fails', async () => {
+    client.session.mockRejectedValue(new Error('offline'));
+    render(<BookingRosterPanel sessionId={sessionId}/>);
+    await screen.findByText('River Lee'); await waitFor(() => expect(client.session).toHaveBeenCalledWith(sessionId));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Search members' })); });
+    fireEvent.change(screen.getByLabelText('Member', { exact: true }), { target: { value: memberId } });
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    await act(async () => { fireEvent.submit(screen.getByRole('button', { name: 'Book a place' }).closest('form')!); });
+    expect(client.book).toHaveBeenCalledWith({ memberId, sessionId, allowWaitlist: false });
+  });
   it('loads a 50-person roster page with one request and no member lookups', async () => {
     client.roster.mockResolvedValue({ data: Array.from({ length: 50 }, (_, i) => ({
       displayName: `Member ${i}`, booking: { ...booking, id: `booking-${i}`, memberId: `member-${i}` }, attendance: null,
@@ -33,7 +69,8 @@ describe('staff booking panels', () => {
     render(<BookingRosterPanel sessionId={sessionId}/>);
     await screen.findByText('Member 49');
     expect(client.roster).toHaveBeenCalledTimes(1);
-    for (const method of ['members', 'session', 'sessions', 'list'] as const) expect(client[method]).not.toHaveBeenCalled();
+    expect(client.session).toHaveBeenCalledOnce(); // The form reads the cutoff; roster rows need no lookups.
+    for (const method of ['members', 'sessions', 'list'] as const) expect(client[method]).not.toHaveBeenCalled();
   });
   it('retains stale rows and counts during and after a failed manual Refresh', async () => {
     const publish = vi.fn(), user = userEvent.setup();

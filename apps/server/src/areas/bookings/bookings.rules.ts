@@ -35,12 +35,13 @@ export function cutoffPassed(session: Pick<SessionRow, 'startsAt'>, settings: Pi
 export function openPlaces(capacity: number, active: readonly Pick<BookingRow, 'status'>[], promotable: number) {
   return Math.max(0, capacity - active.filter(row => row.status === 'booked').length - promotable);
 }
-async function canPromote(tx: Transaction, waiting: BookingRow, now: Date) {
+type PromotionCandidate = Pick<BookingRow, 'memberId' | 'bookedByKind' | 'status'>;
+async function canPromote(tx: Transaction, waiting: PromotionCandidate, now: Date) {
   const [member] = await tx.select({ id: members.id }).from(members).where(and(eq(members.id, waiting.memberId), isNull(members.anonymizedAt)));
   return !!member && (waiting.bookedByKind !== 'member' || !await lacksClassEligibility(tx, waiting.memberId, now));
 }
 /** Read-only counterpart of reconciliation, including the same cutoff and credit checks. */
-export async function bookablePlaces(tx: Transaction, session: SessionRow, active: BookingRow[], settings: Pick<GymSettings, 'cancellationCutoffMinutes'>, now: Date) {
+export async function bookablePlaces(tx: Transaction, session: Pick<SessionRow, 'status' | 'startsAt' | 'capacity'>, active: PromotionCandidate[], settings: Pick<GymSettings, 'cancellationCutoffMinutes'>, now: Date) {
   if (session.status !== 'scheduled' || session.startsAt <= now) return 0;
   const available = openPlaces(session.capacity!, active, 0);
   if (!available || cutoffPassed(session, settings, now)) return available;
@@ -68,12 +69,13 @@ export async function bookingAudit(tx: Transaction, context: MutationContext, no
  * A reduction below confirmed bookings is rejected. Removing capacity confirms the remaining queue.
  * After the cancellation cutoff the waitlist is frozen; the gym's current cutoff is read under the lock.
  * No email or job enqueue happens in this transaction; the promotion audits are durable delivery work. */
-export async function reconcileSessionBookings(tx: Transaction, session: SessionRow, context: MutationContext, now: Date) {
+export async function reconcileSessionBookings(tx: Transaction, session: SessionRow, context: MutationContext, now: Date,
+  rules?: Pick<GymSettings, 'cancellationCutoffMinutes'>) {
   const active = await activeBookings(tx, session.id);
   const booked = active.filter(row => row.status === 'booked').length;
   if (session.capacity !== null && session.capacity < booked) bookingConflict('capacityBelowBooked');
   if (session.status !== 'scheduled' || session.startsAt <= now) return [];
-  if (cutoffPassed(session, await readBookingRules(tx, session.gymId), now)) return [];
+  if (cutoffPassed(session, rules ?? await readBookingRules(tx, session.gymId), now)) return [];
   const promoted: BookingRow[] = [];
   let available = session.capacity === null ? active.length : session.capacity - booked;
   for (const waiting of active.filter(row => row.status === 'waitlisted')) {

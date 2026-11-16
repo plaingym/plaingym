@@ -116,10 +116,27 @@ function BookingForm({ memberId, sessionId, timezone, disabled, onSaved }: Exten
   const [search, setSearch] = useState(''), [matches, setMatches] = useState<Member[]>([]), [searched, setSearched] = useState(false);
   const [date, setDate] = useState(() => localDate(new Date(), timezone)), [sessions, setSessions] = useState<ClassSession[]>([]);
   const [allowWaitlist, setAllowWaitlist] = useState(true), [saving, setSaving] = useState(false), [loading, setLoading] = useState(false), [error, setError] = useState('');
+  const selected = sessions.find(row => row.id === session);
+  const [now, setNow] = useState(Date.now);
+  const waitlistOpen = !!selected && now <= Date.parse(selected.cancelBefore);
   useEffect(() => {
-    if (sessionId || !date) return;
-    let active = true; setLoading(true); setSession(''); setError(''); setSessions([]);
-    void bookingClient.sessions(date, timezone).then(rows => { if (active) setSessions(rows); })
+    let timer: ReturnType<typeof setTimeout>;
+    const update = () => {
+      clearTimeout(timer);
+      const current = Date.now(); setNow(current);
+      const delay = selected ? Date.parse(selected.cancelBefore) - current + 1 : 0;
+      // Long-lived forms and sleeping tabs still close at the first instant past the cutoff.
+      if (delay > 0) timer = setTimeout(update, Math.min(delay, 86_400_000));
+    };
+    update(); window.addEventListener('focus', update);
+    return () => { clearTimeout(timer); window.removeEventListener('focus', update); };
+  }, [selected]);
+  useEffect(() => {
+    if (!sessionId && !date) return;
+    let active = true; setLoading(true); if (!sessionId) setSession(''); setError(''); setSessions([]);
+    const load = sessionId ? bookingClient.session(sessionId).then(row => [row]) : bookingClient.sessions(date, timezone);
+    // A roster form keeps its session if the lookup fails: only the waitlist option, which needs the cutoff, goes.
+    void load.then(rows => { if (active) setSessions(rows); })
       .catch(error => { if (active) setError(errorText(error)); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [date, timezone, sessionId]);
@@ -132,7 +149,8 @@ function BookingForm({ memberId, sessionId, timezone, disabled, onSaved }: Exten
   return <form className="min-w-0 space-y-4 rounded-xl border border-border p-4 sm:p-6" onSubmit={event => {
     event.preventDefault(); if (busy || !member || !session) return;
     setSaving(true); setError('');
-    void bookingClient.book({ memberId: member, sessionId: session, allowWaitlist }).then(onSaved)
+    void bookingClient.book({ memberId: member, sessionId: session,
+      allowWaitlist: allowWaitlist && !!selected && Date.now() <= Date.parse(selected.cancelBefore) }).then(onSaved)
       .catch(error => setError(errorText(error))).finally(() => setSaving(false));
   }}>
     <h4 className="font-semibold">{text(memberId ? 'book' : 'addMember')}</h4>
@@ -150,7 +168,7 @@ function BookingForm({ memberId, sessionId, timezone, disabled, onSaved }: Exten
       <div className="space-y-2"><Label htmlFor={id + '-session'}>{text('session')}</Label><Select id={id + '-session'} value={session} disabled={busy} onChange={event => setSession(event.target.value)}>
         <option value="">{text('chooseSession')}</option>{sessions.map(row => <option key={row.id} value={row.id}>{sessionLabel(row, timezone)}</option>)}
       </Select></div>{!loading && sessions.length === 0 && <p>{text('noSessions')}</p>}</>}
-    <label className="flex min-h-11 cursor-pointer items-center gap-3" htmlFor={id + '-waitlist'}><input id={id + '-waitlist'} type="checkbox" checked={allowWaitlist} disabled={busy} onChange={event => setAllowWaitlist(event.target.checked)}/><span>{text('allowWaitlist')}</span></label>
+    {waitlistOpen && <label className="flex min-h-11 cursor-pointer items-center gap-3" htmlFor={id + '-waitlist'}><input id={id + '-waitlist'} type="checkbox" checked={allowWaitlist} disabled={busy} onChange={event => setAllowWaitlist(event.target.checked)}/><span>{text('allowWaitlist')}</span></label>}
     <Button type="submit" className="w-full sm:w-auto" disabled={busy || !member || !session}>{text('book')}</Button>
   </form>;
 }

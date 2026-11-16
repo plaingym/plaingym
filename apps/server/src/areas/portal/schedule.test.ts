@@ -24,8 +24,8 @@ async function members(f: PortalFixture, principal: Principal) {
   expect(response.status).toBe(200);
   return portalScheduleContracts.members.response.parse(await response.json()).data;
 }
-const staffBook = (f: PortalFixture, memberId: string, sessionId = f.session.id) =>
-  services.bookings.book({ gymId: f.gymId, actor: { kind: 'user', userId: f.staff.id } }, { memberId, sessionId, allowWaitlist: true });
+const staffBook = async (f: PortalFixture, memberId: string, sessionId = f.session.id) =>
+  (await services.bookings.book({ gymId: f.gymId, actor: { kind: 'user', userId: f.staff.id } }, { memberId, sessionId, allowWaitlist: true })).booking;
 
 describe('portal schedule', () => {
   it.each(['self', 'household'] as const)('offers a freed place to the %s path after the cutoff and refuses a new frozen waitlist entry', async target => {

@@ -8,6 +8,7 @@ for (const width of [360, 1280]) {
     await page.clock.install({ time: new Date('2026-11-11T12:00:00Z') });
     const id = '01900000-0000-7000-8000-000000000001';
     const session = { id, name: 'Midday practice', startsAt: '2026-11-11T12:01:00Z', endsAt: '2026-11-11T13:01:00Z',
+      cancelBefore: '2026-11-11T11:01:00Z',
       templateId: null, coachId: null, status: 'scheduled', capacity: null, notes: null, kind: 'class',
       programIds: [id], tagIds: [], revision: 1, createdAt: '2026-11-01T00:00:00Z' };
     await page.route('**/api/**', async route => {

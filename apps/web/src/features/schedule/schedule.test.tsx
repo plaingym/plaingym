@@ -18,6 +18,7 @@ vi.mock('../../lib/api.js', async (importOriginal) => ({ ...await importOriginal
 const id = '00000000-0000-7000-8000-000000000001', programId = '00000000-0000-7000-8000-000000000002';
 const options = { timezone: 'America/New_York', programs: [{ id: programId, name: 'Program A' }], coaches: [] };
 const session: ClassSession = { id, name: 'Evening class', startsAt: '2026-03-02T23:00:00Z', endsAt: '2026-03-03T00:00:00Z',
+  cancelBefore: '2026-03-02T22:00:00Z',
   templateId: null, coachId: null, status: 'scheduled', capacity: null, notes: '<script>Keep plain</script>', kind: 'class', programIds: [programId], tagIds: [], revision: 4, createdAt: '2026-03-01T00:00:00Z' };
 function bootstrap(roles: StaffRole[] = ['owner'], gymId = id, staffProfileId: string | null = null) {
   const data: ShellBootstrap = { gym: { id: gymId, name: 'Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: id, staffProfileId, displayName: 'Test User', roles, member: !roles.length }, login: { password: true, magicLink: false } };
@@ -53,6 +54,19 @@ describe('schedule calendar and session detail', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel session' }));
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
     expect(api.POST).toHaveBeenCalledWith('/api/schedule/sessions/{id}/cancel', { params: { path: { id } }, body: { revision: 4, notify: true, note: '<b>Closed</b>\nTomorrow' } });
+  });
+  it('explains an already-cancelled response and refreshes the stale session', async () => {
+    vi.mocked(api.POST).mockResolvedValue({ response: new Response(null, { status: 409 }),
+      error: { error: { details: { reason: ['already_cancelled'] } } } } as Awaited<ReturnType<typeof api.POST>>);
+    const cancelled = { ...session, status: 'cancelled' as const, revision: 5 };
+    vi.mocked(api.GET).mockResolvedValue({ response: new Response(), data: { data: cancelled } } as Awaited<ReturnType<typeof api.GET>>);
+    const onSaved = vi.fn();
+    render(<SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={onSaved} registries={noticeRegistries()}/>);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Email the 3 booked and waitlisted members' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel session' }));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('This session is already cancelled. No cancellation notice was queued.'));
+    expect(api.GET).toHaveBeenCalledWith('/api/schedule/sessions/{id}', { params: { path: { id } } });
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(cancelled));
   });
   it.each(['2026-03-02T23:00:00Z', '2026-03-02T23:30:00Z', '2026-03-03T01:00:00Z'])('hides cancellation controls once started at %s', now => {
     vi.setSystemTime(new Date(now));

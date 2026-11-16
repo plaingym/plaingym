@@ -6,6 +6,7 @@ import { auditEvents, classBookings, classSessions, gyms, members, uuidv7 } from
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
+import { setLogSink } from '../../core/log.js';
 import { createServerRegistry } from '../../core/registry.js';
 import { DeliveryError, FakeEmail } from '../../infra/email/index.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
@@ -25,8 +26,8 @@ async function fixture() {
   const delivery = createBookingDelivery({ ...options, jobs, mailer: async () => email });
   createServerRegistry({ jobs: createBookingJobs(() => delivery) }).registerJobs(jobs, new Set());
   const actor = { gymId, actor: { kind: 'user' as const, userId: user.id } };
-  const booked = await service.book(actor, { memberId: first.id, sessionId: session.id, allowWaitlist: true });
-  const queued = await service.book(actor, { memberId: waiting.id, sessionId: session.id, allowWaitlist: true });
+  const { booking: booked } = await service.book(actor, { memberId: first.id, sessionId: session.id, allowWaitlist: true });
+  const { booking: queued } = await service.book(actor, { memberId: waiting.id, sessionId: session.id, allowWaitlist: true });
   await service.cancel(actor, booked.id);
   return { gymId, clock, first, waiting, session, options, service, email, jobs, delivery, actor, booked, queued };
 }
@@ -63,7 +64,11 @@ describe('promotion jobs and notices', () => {
     const late = await sweepAfter(promotionNoticeDays + 1);
     expect(late.fresh.jobs).toHaveLength(0);
     // A notice job still queued from before (or retried) no longer sends, though the gym has SMTP now.
-    await late.restarted.send(f.gymId, f.queued.id);
+    const logs: string[] = [], previous = setLogSink(line => logs.push(line));
+    try { await late.restarted.send(f.gymId, f.queued.id); } finally { setLogSink(previous); }
+    expect(logs.map(line => JSON.parse(line))).toContainEqual(expect.objectContaining({
+      event: 'bookings.notice_skipped', gymId: f.gymId, bookingId: f.queued.id, reason: 'stale_or_missing_promotion',
+    }));
     expect(f.email.messages).toHaveLength(0);
   });
   it('registered jobs promote once and deliver one escaped, gym-local notice on replay', async () => {

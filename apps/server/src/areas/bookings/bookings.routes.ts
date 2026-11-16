@@ -18,7 +18,11 @@ export function createBookingRoutes(service = createBookingService(), readDelive
     route({ ...list, request: { query: list.query }, responses: { 200: { description: 'Bookings', content: { 'application/json': { schema: list.response } } } } },
       async c => c.json(await service.list(staff(c.get('context')).gymId, c.req.valid('query')), 200)),
     route({ ...create, request: { body: { required: true, content: { 'application/json': { schema: create.body } } } }, responses: { 200: { description: 'Booking', content: { 'application/json': { schema: create.response } } } } },
-      async c => c.json({ data: await service.book(staff(c.get('context')), c.req.valid('json')) }, 200)),
+      async c => {
+        const actor = staff(c.get('context')), result = await service.book(actor, c.req.valid('json'));
+        for (const row of result.promoted) await readDelivery()?.enqueueNotice(actor.gymId, row.id);
+        return c.json({ data: result.booking }, 200);
+      }),
     route({ ...cancel, request: { params: cancel.params }, responses: { 200: { description: 'Cancelled booking', content: { 'application/json': { schema: cancel.response } } } } }, async c => {
       const actor = staff(c.get('context')), booking = await service.cancel(actor, c.req.valid('param').id);
       await readDelivery()?.request(actor.gymId, booking.sessionId, booking.id);

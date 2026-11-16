@@ -21,6 +21,7 @@ const sessions = [
   { id: id(10), name: 'Fundamentals with a long class name that wraps on a phone', starts: 18 * 3_600_000, capacity: 12, places: 3, cancelBefore: 17 * 3_600_000 },
   { id: id(11), name: 'Early class', starts: 2 * 3_600_000 + 1, capacity: 10, places: 0, cancelBefore: -day },
   { id: id(12), name: 'Open training', starts: day + 19 * 3_600_000, capacity: null, places: null, cancelBefore: day + 18 * 3_600_000 },
+  { id: id(13), name: 'Later full class', starts: 20 * 3_600_000, capacity: 10, places: 0, cancelBefore: 19 * 3_600_000 },
 ];
 const members = () => role === 'payer' ? [{ id: parent, name: 'Pat Parent' }, { id: child, name: 'Casey Parent-Longname' }] : [{ id: child, name: 'Casey Parent-Longname' }];
 const view = (row: { id: string; memberId: string; sessionId: string; status: 'booked' | 'waitlisted' }) => ({ ...row, createdAt: at(-day),
@@ -96,7 +97,9 @@ try {
     await page.getByRole('button', { name: /^Book Fundamentals with a long class name/ }).focus();
     await page.keyboard.press('Enter');
     await expect(page.getByText('Casey Parent-Longname is booked.')).toBeVisible();
-    await page.getByRole('button', { name: /^Join the waitlist: Early class for Casey/ }).click();
+    await expect(page.getByRole('button', { name: /^Join the waitlist: Early class for Casey/ })).toHaveCount(0);
+    await expect(page.getByText('The waitlist is closed. The cancellation cutoff has passed.')).toBeVisible();
+    await page.getByRole('button', { name: /^Join the waitlist: Later full class for Casey/ }).click();
     await expect(page.getByText(/on the waitlist at position 2/)).toBeVisible();
     await check('schedule-payer');
     await page.getByRole('button', { name: /^Cancel booking: Fundamentals with a long class name/ }).click();

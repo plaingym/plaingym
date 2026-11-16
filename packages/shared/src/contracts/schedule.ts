@@ -71,6 +71,7 @@ export const updateClassSessionRequestSchema = sessionFieldsSchema.extend({ revi
 });
 export const classSessionSchema = sessionFieldsSchema.extend({
   id: idSchema, templateId: idSchema.nullable(), status: classSessionStatusSchema,
+  cancelBefore: instantSchema,
   createdAt: instantSchema, revision: revisionSchema,
 }).refine(orderedTimes, { path: ['endsAt'], message: 'Session must end after it starts' });
 export const classSessionResponseSchema = z.strictObject({ data: classSessionSchema });

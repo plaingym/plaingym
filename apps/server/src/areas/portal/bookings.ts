@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { forHousehold } from '@plaingym/db';
-import { memberBookingListQuerySchema, memberBookingSchema, type MemberBookingListQuery, type MemberCreateBookingRequest } from '@plaingym/shared/contracts';
+import { memberBookingListQuerySchema, memberBookingSchema, type ClassBooking, type MemberBookingListQuery, type MemberCreateBookingRequest } from '@plaingym/shared/contracts';
 import type { MemberPermission } from '@plaingym/shared';
 import type { MemberHouseholdContext, PortalIdentity } from '../../core/interfaces/member-household.js';
 import { notFound } from '../../core/interfaces/common.js';
@@ -34,7 +34,9 @@ export function createPortalBookingService(options: {
     },
     async book(identity: PortalIdentity, input: MemberCreateBookingRequest, memberId?: string) {
       const id = await target(identity, memberId);
-      return portalView(await bookings.book(actor(identity), { ...input, memberId: id }));
+      const result = await bookings.book(actor(identity), { ...input, memberId: id });
+      for (const row of result.promoted) await options.delivery?.()?.enqueueNotice(identity.gymId, row.id);
+      return portalView(result.booking);
     },
     async cancel(identity: PortalIdentity, bookingId: string, memberId?: string) {
       const id = await target(identity, memberId);
@@ -45,7 +47,7 @@ export function createPortalBookingService(options: {
     },
   };
 }
-function portalView(row: Awaited<ReturnType<BookingService['book']>>) {
+function portalView(row: ClassBooking) {
   return memberBookingSchema.parse({ id: row.id, memberId: row.memberId, sessionId: row.sessionId,
     status: row.status, waitlistPosition: row.waitlistPosition, queueRank: row.queueRank,
     createdAt: row.createdAt, cancelledAt: row.cancelledAt });

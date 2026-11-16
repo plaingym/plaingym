@@ -70,6 +70,19 @@ function input(name: RouteName, target: Awaited<ReturnType<typeof resources>>, g
   return { path: scheduleContracts[name].path.replace('{id}', id) + (name === 'listSessions' ? '?from=2026-01-01T00:00:00Z&until=2027-01-01T00:00:00Z' : ''), body };
 }
 describe('schedule routes and tenant isolation', () => {
+  it.each(staffRoles)('projects the configured cancellation cutoff in list and detail responses for %s', async role => {
+    const gymId = uuidv7(); await factory('gyms', gymId, { cancellationCutoffMinutes: 45 });
+    const program = await factory('programs', gymId);
+    const session = await factory('classSessions', gymId, { startsAt: new Date('2026-03-02T18:00:00Z'), endsAt: new Date('2026-03-02T19:00:00Z') });
+    await factory('classSessionPrograms', gymId, { sessionId: session.id, programId: program.id });
+    const app = server(role, gymId);
+    const detail = await app.request(`/api/schedule/sessions/${session.id}`);
+    expect(detail.status).toBe(200);
+    expect(scheduleContracts.getSession.response.parse(await detail.json()).data.cancelBefore).toBe('2026-03-02T17:15:00.000Z');
+    const list = await app.request('/api/schedule/sessions?from=2026-03-02T00:00:00Z&until=2026-03-03T00:00:00Z');
+    expect(list.status).toBe(200);
+    expect(scheduleContracts.listSessions.response.parse(await list.json()).data).toMatchObject([{ id: session.id, cancelBefore: '2026-03-02T17:15:00.000Z' }]);
+  });
   it.each(staffRoles)('checks every endpoint with valid requests for %s', async (role) => {
     const app = server(role);
     for (const name of Object.keys(scheduleContracts) as RouteName[]) {

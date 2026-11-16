@@ -87,6 +87,12 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
       if (kind === 'cancel' && result.response.status === 409 && Array.isArray(reasons) && reasons.includes('session_started')) {
         setNotice(text('sessionStarted')); setNow(Date.now()); return;
       }
+      if (kind === 'cancel' && result.response.status === 409 && Array.isArray(reasons) && reasons.includes('already_cancelled')) {
+        setNotice(text('alreadyCancelled'));
+        const refreshed = await api.GET('/api/schedule/sessions/{id}', { params });
+        check(refreshed.response); onSaved(parseResponse(classSessionResponseSchema, refreshed.data).data);
+        setChanged(value => value + 1); return;
+      }
       check(result.response); if (formElement) markSaved(formElement);
       onSaved(parseResponse(classSessionResponseSchema, result.data).data); setNotice(text('saved'));
       // A new capacity can promote or move bookings, and cancelling a session cancels its bookings, so the panels that show counts reload.

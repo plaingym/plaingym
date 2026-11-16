@@ -11,7 +11,8 @@ see what is described in [security-model.md](security-model.md).
 
 1. **Classes.** In **Schedule**, add weekly classes (*New weekly class*) and one-off
    sessions (*New one-off session*). A session with a **capacity** needs a booking:
-   members book it in the portal, and when it is full they can join its waitlist.
+   members book it in the portal, and when it is full they can join its waitlist
+   through the cancellation cutoff.
    A session with no capacity needs no booking, and the portal shows "No booking needed".
 2. **Booking rules.** In **Settings → Class and booking rules**, set:
    * **Booking window (days)**: how many calendar days before the class date booking
@@ -94,7 +95,8 @@ app* option.
 * When a place opens (a cancellation, or you raise the capacity), waitlisted members
   are promoted in order and told by email, if member emails are on. Promotion stops
   at the cancellation cutoff, so the waitlist is frozen near class time and a freed place
-  can be booked by staff or through the portal. Joining the frozen waitlist is refused.
+  can be booked by staff or through the portal. The portal and staff booking forms
+  stop offering the waitlist after the cutoff; the server also refuses joining it.
 * You can lower a class's capacity only to the number of people already booked.
 * Booking and waitlist promotion are safe when many people act at once; the server
   re-checks capacity for each change.

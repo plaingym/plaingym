@@ -22,6 +22,8 @@ import { FakeJobs } from '../../infra/jobs/index.js';
 import { createMembersRoutes } from '../members/members.routes.js';
 import { createBookingService, promoteWaitlist } from './bookings.js';
 import { createBookingRoutes } from './bookings.routes.js';
+import { createBookingDelivery, noticeJob, type BookingDelivery } from './bookings.delivery.js';
+import { FakeEmail } from '../../infra/email/index.js';
 import { createPortalBookingService } from '../portal/bookings.js';
 import { createPortalBookingRoutes } from '../portal/bookings.routes.js';
 
@@ -50,11 +52,11 @@ const staffPrincipal = (f: Fixture, role: StaffRole = 'owner'): Principal => ({ 
 const memberPrincipal = (f: Fixture, adult = false): Principal => ({ kind: 'member', userId: adult ? f.adult.id : f.payer.id,
   scope: adult ? { gymId: f.gymId, householdId: f.member.householdId, memberId: f.sibling.id, role: 'member' }
     : { gymId: f.gymId, householdId: f.member.householdId, memberId: f.member.id, role: 'payer' } });
-function app(f: Fixture, principal: Principal, fake = false, production = false) {
+function app(f: Fixture, principal: Principal, fake = false, production = false, delivery?: BookingDelivery) {
   const households = fake ? f.fake : createMemberHouseholdContext(db.forGym);
-  const portal = createPortalBookingService({ households, householdScope: db.forHousehold, bookings: service });
+  const portal = createPortalBookingService({ households, householdScope: db.forHousehold, bookings: service, delivery: () => delivery });
   return rememberPortalApp(createApp({ clock, skipSetup: true, origin: 'http://localhost',
-    contributions: production ? areaContributions : { routes: [...createMembersRoutes(createMembersService({ scope: db.forGym, clock }), undefined, { clock, jobs: new FakeJobs(clock) }), ...createBookingRoutes(service), ...createPortalBookingRoutes(portal)] },
+    contributions: production ? areaContributions : { routes: [...createMembersRoutes(createMembersService({ scope: db.forGym, clock }), undefined, { clock, jobs: new FakeJobs(clock) }), ...createBookingRoutes(service, () => delivery), ...createPortalBookingRoutes(portal)] },
     resolveGym: async (c, next) => { c.set('context', { ...c.get('context'), gym: { gymId: f.gymId, timezone: 'UTC', enabledModules: new Set() } }); await next(); },
     session: async (c, next) => { c.set('context', { ...c.get('context'), principal }); await next(); },
     authorize: createPortalAuthorization(households),
@@ -62,7 +64,7 @@ function app(f: Fixture, principal: Principal, fake = false, production = false)
 }
 const post = (server: ReturnType<typeof app>, path: string, body?: unknown) => server.request(path, { method: 'POST',
   headers: { 'content-type': 'application/json', origin: 'http://localhost', ...portalTestHeaders(server) }, body: JSON.stringify(body ?? {}) });
-const book = (f: Fixture, memberId = f.member.id) => service.book(f.actor, { memberId, sessionId: f.session.id, allowWaitlist: true });
+const book = async (f: Fixture, memberId = f.member.id) => (await service.book(f.actor, { memberId, sessionId: f.session.id, allowWaitlist: true })).booking;
 
 describe('portal class-credit eligibility', () => {
   it.each(['staff', 'portal'] as const)('allows a direct %s booking while every queued member lacks credits', async source => {
@@ -70,7 +72,7 @@ describe('portal class-credit eligibility', () => {
     const bookings = createBookingService({ scope: db.forGym, clock: localClock });
     const portal = createPortalBookingService({ households: createMemberHouseholdContext(db.forGym), householdScope: db.forHousehold, bookings });
     const confirmed = [];
-    for (let n = 0; n < 5; n++) confirmed.push(await bookings.book(f.actor, { memberId: (await factory('members', f.gymId)).id, sessionId: f.session.id, allowWaitlist: false }));
+    for (let n = 0; n < 5; n++) confirmed.push((await bookings.book(f.actor, { memberId: (await factory('members', f.gymId)).id, sessionId: f.session.id, allowWaitlist: false })).booking);
     const lot = await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1 });
     expect(await portal.book(f.identity, { sessionId: f.session.id, allowWaitlist: true })).toMatchObject({ status: 'waitlisted' });
     await factory('classCreditEntries', f.gymId, { memberId: f.member.id, lotId: lot.id, credits: -1 });
@@ -78,7 +80,7 @@ describe('portal class-credit eligibility', () => {
     expect((await bookings.openPlaces(f.gymId, [f.session.id])).get(f.session.id)).toBe(1);
     const input = { sessionId: f.session.id, allowWaitlist: false };
     const row = source === 'portal' ? await portal.book(f.identity, input, f.sibling.id)
-      : await bookings.book(f.actor, { ...input, memberId: f.sibling.id });
+      : (await bookings.book(f.actor, { ...input, memberId: f.sibling.id })).booking;
     expect(row.status).toBe('booked');
     expect((await bookings.openPlaces(f.gymId, [f.session.id])).get(f.session.id)).toBe(0);
     expect((await bookings.list(f.gymId, { limit: 50, offset: 0, status: 'waitlisted' })).data).toMatchObject([{ memberId: f.member.id }]);
@@ -186,6 +188,30 @@ describe('portal class-credit eligibility', () => {
 });
 
 describe('booking route permissions and production composition', () => {
+  it.each(['staff', 'self', 'household'] as const)('enqueues inline promotions after the %s booking commits and audits the system actor', async source => {
+    const f = await fixture(), jobs = new FakeJobs(clock), email = new FakeEmail();
+    const delivery = createBookingDelivery({ scope: db.forGym, clock, jobs, mailer: async () => email });
+    const confirmed = [];
+    for (let n = 0; n < 5; n++) confirmed.push(await book(f, (await factory('members', f.gymId)).id));
+    const waiting = await book(f, f.outsider.id);
+    await service.cancel(f.actor, confirmed[0]!.id);
+    const server = app(f, source === 'staff' ? staffPrincipal(f, 'front_desk') : memberPrincipal(f), false, false, delivery);
+    const path = source === 'staff' ? '/api/bookings' : source === 'self' ? '/api/portal/bookings' : `/api/portal/members/${f.sibling.id}/bookings`;
+    const input = { sessionId: f.session.id, allowWaitlist: true, ...(source === 'staff' ? { memberId: f.member.id } : {}) };
+    const response = await post(server, path, input);
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.data).toMatchObject({ status: 'waitlisted', memberId: source === 'household' ? f.sibling.id : f.member.id });
+    expect(body.data).not.toHaveProperty('promoted'); expect(body).not.toHaveProperty('promoted');
+    // FakeJobs asserts that enqueue runs outside a transaction; no sweep or promotion job has run.
+    expect(jobs.jobs).toMatchObject([{ name: noticeJob, payload: { bookingId: waiting.id }, options: { gymId: f.gymId } }]);
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, waiting.id)));
+    expect(audits.find(row => row.action === 'booking.promoted')).toMatchObject({ actorKind: 'system', actorUserId: null });
+    expect((await service.list(f.gymId, { limit: 50, offset: 0 })).data.find(row => row.id === waiting.id)?.status).toBe('booked');
+    // Replaying the caller's booking adds no promotion work or duplicate notice.
+    expect((await post(server, path, input)).status).toBe(200);
+    expect(jobs.jobs).toHaveLength(1);
+  });
   it('promotes the waiting member after erasure commits through the member route', async () => {
     const f = await fixture(), server = app(f, staffPrincipal(f));
     const erased = await book(f);

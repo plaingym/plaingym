@@ -5,7 +5,8 @@ import { z } from 'zod';
 import { idSchema } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
 import { createEmailDeliveries, MemberEmail, SmtpEmail, type Email } from '../../infra/email/index.js';
-import type { Jobs } from '../../infra/jobs/index.js';
+import { defaultSucceededRetentionDays, type Jobs } from '../../infra/jobs/index.js';
+import { logInfo } from '../../core/log.js';
 import { createSmtpResolver } from '../settings/smtp.js';
 import { createGymSettingsAccessor, createSettingsService } from '../settings/settings.js';
 import { renderBookingPromotion } from '../../emails/bookings/bookings.js';
@@ -17,7 +18,7 @@ export const noticeJob = 'bookings.notice';
  * A promotion notice's shelf life: the sweep and the notice job act only on promotions this recent. It matches the
  * queue's retention of succeeded jobs, so the sweep stops before a finished notice job's key could have been pruned.
  */
-export const promotionNoticeDays = 14;
+export const promotionNoticeDays = defaultSucceededRetentionDays;
 // Read from stored jobs: a newer release may add keys, which this one ignores after a rollback.
 export const promotionPayload = z.object({ sessionId: idSchema });
 export const noticePayload = z.object({ bookingId: idSchema });
@@ -88,7 +89,11 @@ export function createBookingDelivery(options: BookingDeliveryOptions) {
     const read = () => scope(gymId, async tx => {
       const [promotion] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.targetId, bookingId), recentPromotion()));
       const [sent] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.targetId, bookingId), eq(auditEvents.action, 'booking.notice_sent')));
-      if (!promotion || sent) return;
+      if (sent) return;
+      if (!promotion) {
+        logInfo('bookings.notice_skipped', { gymId, bookingId, reason: 'stale_or_missing_promotion' });
+        return;
+      }
       const [row] = await tx.select({ booking: classBookings, session: classSessions, email: members.email, memberId: members.id })
         .from(classBookings).innerJoin(classSessions, eq(classSessions.id, classBookings.sessionId))
         .innerJoin(members, eq(members.id, classBookings.memberId)).where(and(eq(classBookings.id, bookingId),
@@ -109,6 +114,6 @@ export function createBookingDelivery(options: BookingDeliveryOptions) {
     if (result.status === 'suppressed' || (result.status === 'skipped' && result.state === 'unknown')) return;
     await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'booking.notice_sent', targetType: 'class_booking', targetId: bookingId, occurredAt: clock.now() }));
   }
-  return { promote, request, sweep, send };
+  return { promote, request, sweep, send, enqueueNotice };
 }
 export type BookingDelivery = ReturnType<typeof createBookingDelivery>;

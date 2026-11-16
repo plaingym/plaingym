@@ -68,11 +68,11 @@ export function createBookingService(options: BookingOptions = {}) {
         await requireMember(tx, context, value.memberId);
         let active = await activeBookings(tx, session.id);
         const existing = active.find(row => row.memberId === value.memberId);
-        if (existing) return bookingView(tx, existing);
+        if (existing) return { booking: await bookingView(tx, existing), promoted: [] };
         const now = clock.now(), rules = await readBookingRules(tx, context.gymId);
         assertBookable(session, { ...gym, ...rules }, now);
         if (context.portal && await lacksClassEligibility(tx, value.memberId, now)) bookingConflict('noCredits');
-        await reconcileSessionBookings(tx, session, context, now);
+        const promoted = await reconcileSessionBookings(tx, session, { gymId: context.gymId, actor: { kind: 'system' } }, now, rules);
         active = await activeBookings(tx, session.id);
         const waiting = active.filter(row => row.status === 'waitlisted');
         // Reconciliation has filled every place the queue can take under this lock.
@@ -85,7 +85,7 @@ export function createBookingService(options: BookingOptions = {}) {
           sessionId: session.id, status: waitlisted ? 'waitlisted' : 'booked', waitlistPosition: position,
           bookedBy: context.actor.userId, bookedByKind: context.portal ? 'member' : 'staff', createdAt: clock.now() }).returning();
         await bookingAudit(tx, context, clock.now(), waitlisted ? 'waitlisted' : 'booked', row!);
-        return bookingView(tx, row!);
+        return { booking: await bookingView(tx, row!), promoted };
       });
     },
     async cancel(context: BookingActor, id: string, memberId?: string) {
@@ -152,8 +152,9 @@ export function createBookingService(options: BookingOptions = {}) {
     async openPlaces(gymId: string, sessionIds: readonly string[]) {
       if (!sessionIds.length) return new Map<string, number>();
       return scope(gymId, async tx => {
-        const sessions = await tx.select().from(classSessions).where(inArray(classSessions.id, [...sessionIds]));
-        const rows = await tx.select().from(classBookings)
+        const sessions = await tx.select({ id: classSessions.id, status: classSessions.status, startsAt: classSessions.startsAt, capacity: classSessions.capacity })
+          .from(classSessions).where(inArray(classSessions.id, [...sessionIds]));
+        const rows = await tx.select({ sessionId: classBookings.sessionId, memberId: classBookings.memberId, status: classBookings.status, bookedByKind: classBookings.bookedByKind }).from(classBookings)
           .where(and(inArray(classBookings.sessionId, [...sessionIds]), ne(classBookings.status, 'cancelled')));
         const rules = await readBookingRules(tx, gymId), now = clock.now(), places = new Map<string, number>();
         for (const session of sessions.filter(session => session.capacity !== null)) {

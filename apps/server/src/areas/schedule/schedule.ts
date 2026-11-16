@@ -7,9 +7,9 @@ import { classTagSchema, classTemplateSchema, classSessionSchema, createClassTag
 import { clock as defaultClock } from '../../core/clock.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { localDate, occurrences } from './schedule.time.js';
-import { createGymSettingsAccessor } from '../settings/settings.js';
+import { createGymSettingsAccessor, readBookingRules } from '../settings/settings.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
-import { bookingAudit, reconcileSessionBookings } from '../bookings/bookings.rules.js';
+import { bookingAudit, cancellationCutoffAt, reconcileSessionBookings } from '../bookings/bookings.rules.js';
 import { cancelSessionRequestSchema, type CancelSessionRequest } from '@plaingym/shared/contracts';
 import { readCancellationRecipients } from '../bookings/bookings.recipients.js';
 import { cancellationNotice, type CancellationNotice } from '../announcements/cancellation.js';
@@ -31,9 +31,11 @@ async function templateView(tx: Transaction, row: TemplateRow): Promise<ClassTem
     revision: row.revision, createdAt: row.createdAt.toISOString(), programIds, tagIds });
 }
 async function sessionView(tx: Transaction, row: SessionRow): Promise<ClassSession> {
+  const rules = await readBookingRules(tx, row.gymId);
   const programIds = (await tx.select({ id: classSessionPrograms.programId }).from(classSessionPrograms).where(eq(classSessionPrograms.sessionId, row.id)).orderBy(asc(classSessionPrograms.programId))).map((value) => value.id);
   const tagIds = (await tx.select({ id: classSessionTags.tagId }).from(classSessionTags).where(eq(classSessionTags.sessionId, row.id)).orderBy(asc(classSessionTags.tagId))).map((value) => value.id);
   return classSessionSchema.parse({ id: row.id, name: row.name, templateId: row.templateId, status: row.status,
+    cancelBefore: cancellationCutoffAt(row, rules).toISOString(),
     coachId: row.coachId, capacity: row.capacity, notes: row.notes, kind: row.kind, revision: row.revision,
     createdAt: row.createdAt.toISOString(), startsAt: row.startsAt.toISOString(), endsAt: row.endsAt.toISOString(), programIds, tagIds });
 }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { formatCount } from '../../../lib/count.js';
 import { PortalRecovery } from '../household/recovery.js';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
 import type { MemberBooking, PortalContext, PortalScheduleMember, PortalScheduleSession } from '@plaingym/shared/contracts';
@@ -19,7 +19,7 @@ import { weekStart } from '../../schedule/calendar.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('portal/schedule:' + key, values);
 export type SessionAction =
-  | { kind: 'cancelled' | 'started' | 'dropIn' | 'book' | 'waitlist' }
+  | { kind: 'cancelled' | 'started' | 'dropIn' | 'book' | 'waitlist' | 'closed' }
   | { kind: 'opens'; at: Date }
   | { kind: 'cancel' | 'locked'; booking: MemberBooking };
 /** What the chosen member can do now. Cancel is offered only through the engine's cutoff; the server still decides. */
@@ -30,6 +30,7 @@ export function sessionAction(session: PortalScheduleSession, memberId: string, 
   if (booking) return now.getTime() <= Date.parse(session.cancelBefore) ? { kind: 'cancel', booking } : { kind: 'locked', booking };
   if (session.capacity === null) return { kind: 'dropIn' };
   if (now.getTime() < Date.parse(session.bookingOpensAt)) return { kind: 'opens', at: new Date(session.bookingOpensAt) };
+  if (session.placesLeft === 0 && now.getTime() > Date.parse(session.cancelBefore)) return { kind: 'closed' };
   return { kind: session.placesLeft === 0 ? 'waitlist' : 'book' };
 }
 function weekRange(today: string, week: number, timezone: string) {
@@ -44,6 +45,11 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
   const bootstrap = useBootstrap(), cache = useQueryClient(), timezone = bootstrap.data?.gym.timezone ?? 'UTC';
   const { scope, context, members, memberId, member, choose } = usePortalMembers(client);
   const [week, setWeek] = useState(0), [message, setMessage] = useState<{ tone: 'success' | 'error'; text: string }>();
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => setTick(value => value + 1), 1_000);
+    return () => clearInterval(timer);
+  }, []);
   const range = weekRange(localDate(now(), timezone), week, timezone);
   const schedule = useQuery({ queryKey: [...scope.key, 'schedule', range.from], enabled: scope.ready, queryFn: async () => scope.own(await scope.run(() => client.schedule(range.from, range.to))).data, staleTime: 0 });
   const change = useMutation({
@@ -94,7 +100,7 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
                   <div className="flex flex-wrap gap-2">
                     {session.status === 'cancelled' ? <Badge tone="destructive">{text('sessionCancelled')}</Badge>
                       : session.capacity === null ? <Badge tone="muted">{text('dropIn')}</Badge>
-                        : session.placesLeft === 0 ? <Badge tone="warning">{text('full')}</Badge>
+                        : session.placesLeft === 0 ? <Badge tone="warning">{text(current.getTime() > Date.parse(session.cancelBefore) ? 'fullClosed' : 'full')}</Badge>
                           : <Badge tone="muted">{text('placesLeft', { count: formatCount(session.placesLeft ?? 0) })}</Badge>}
                   </div>
                 </div>
@@ -112,7 +118,7 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
                         {text(action.booking.status === 'waitlisted' ? 'leaveWaitlist' : 'cancel')}</Button>
                       : action.kind !== 'cancelled' && <p className="text-sm text-muted-foreground">{action.kind === 'opens' ? text('opens', { when: whenLabel.format(action.at) })
                         : action.kind === 'locked' ? text('locked') : action.kind === 'dropIn' ? text('dropInHelp')
-                          : text('started')}</p>}
+                          : action.kind === 'closed' ? text('waitlistClosed') : text('started')}</p>}
                   {action.kind === 'cancel' && <p className="text-sm text-muted-foreground">{text('cancelUntil', { when: whenLabel.format(new Date(session.cancelBefore)) })}</p>}
                 </div>
               </li>;

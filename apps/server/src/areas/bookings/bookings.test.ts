@@ -21,7 +21,7 @@ async function fixture(capacity: number | null = 1) {
   await factory('classSessionPrograms', gymId, { sessionId: session.id, programId: program.id });
   const actor = { gymId, actor: { kind: 'user' as const, userId: user.id } };
   const options = { scope: db.forGym, clock }, service = createBookingService(options);
-  const book = (memberId = member.id, allowWaitlist = true) => service.book(actor, { sessionId: session.id, memberId, allowWaitlist });
+  const book = async (memberId = member.id, allowWaitlist = true) => (await service.book(actor, { sessionId: session.id, memberId, allowWaitlist })).booking;
   return { gymId, clock, user, member, other, session, actor, options, service, book };
 }
 

@@ -148,3 +148,5 @@ It also looks only at promotions from the last 14 days, the succeeded-job window
 the notice job sends nothing for an older one: a notice that finished without a sent
 audit (member emails off, no SMTP, a suppressed address) is never enqueued again after
 its key is pruned, and never goes out weeks late.
+The queue exports `defaultSucceededRetentionDays`; booking notice expiry uses that
+same default instead of maintaining a separate window.

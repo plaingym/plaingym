@@ -92,6 +92,14 @@ describe('weekly templates and materialized sessions', () => {
       expect(createClassSessionRequestSchema.safeParse({ ...session, ...extra }).success).toBe(false);
     }
   });
+  it('requires the server-derived cutoff on read responses and rejects it on writes', () => {
+    const cancelBefore = '2026-11-01T00:00:00Z';
+    const read = { ...session, id, templateId: null, createdAt, revision: 1, status: 'scheduled', kind: 'class' };
+    expect(classSessionSchema.safeParse(read).success).toBe(false);
+    expect(classSessionSchema.parse({ ...read, cancelBefore }).cancelBefore).toBe(cancelBefore);
+    expect(createClassSessionRequestSchema.safeParse({ ...session, cancelBefore }).success).toBe(false);
+    expect(updateClassSessionRequestSchema.safeParse({ ...session, kind: 'class', revision: 1, cancelBefore }).success).toBe(false);
+  });
   it('extends strict offset pagination with real schedule filters and a forward interval', () => {
     const query = { from: session.startsAt, until: session.endsAt, programId: id, tagId: otherId };
     expect(classSessionListQuerySchema.parse(query)).toMatchObject({ ...query, limit: 50, offset: 0 });

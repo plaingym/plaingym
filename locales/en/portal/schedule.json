@@ -17,6 +17,8 @@
   "waitlisted": "Waitlist — position {rank}",
   "placesLeft": "Places left: {count}",
   "full": "Full — waitlist open",
+  "fullClosed": "Full",
+  "waitlistClosed": "The waitlist is closed. The cancellation cutoff has passed.",
   "dropIn": "No booking needed",
   "dropInHelp": "No booking is needed for this class. Just come along.",
   "sessionCancelled": "Cancelled",
