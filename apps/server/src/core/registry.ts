@@ -62,6 +62,8 @@ export interface EmailTemplate extends RegistryEntry {
 export interface ModuleDefinition extends RegistryEntry {
   readonly schemaFile: string | null;
   readonly routes: readonly RouteRegistration[];
+  /** Staff-only preparation routes, available even when the gym has the module switched off. */
+  readonly settingsRoutes?: readonly RouteRegistration[];
   readonly jobs: readonly JobRegistration[];
   readonly emails: readonly EmailTemplate[];
   readonly web: WebContribution<unknown>;
@@ -83,6 +85,13 @@ export function createServerRegistry(contributions: ServerContributions) {
   emails.registerAll(contributions.emails ?? []);
   for (const module of contributions.modules ?? []) {
     modules.register(module);
+    for (const entry of module.settingsRoutes ?? []) {
+      if (entry.definition.permission.kind !== 'staff') throw new Error('Module settings routes must require staff permission');
+      // Preparation is authenticated independently of the module's public switch.
+      const preparation = { ...entry };
+      delete preparation.moduleId;
+      routes.register(preparation);
+    }
     routes.registerAll(module.routes.map((item) => ({ ...item, moduleId: module.id })));
     jobs.registerAll(module.jobs.map((item) => ({ ...item, moduleId: module.id })));
     emails.registerAll(module.emails.map((item) => ({ ...item, moduleId: module.id })));

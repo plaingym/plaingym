@@ -3,7 +3,7 @@
   "title": "Website",
   "brandInGymDetails": "Change your brand color in Gym details",
   "view": "View the website",
-  "unpublished": "Your website is off. Prepare your text and photos here, then turn on Enable gym website in Gym details to publish. Photo previews appear once the website is on. Your logo and public contact details also appear on the join, trial and drop-in pages.",
+  "unpublished": "Your website is off. Prepare your text and preview your photos here, then turn on Enable gym website in Gym details to publish. Your logo and public contact details also appear on the join, trial and drop-in pages.",
   "help": "Your public website shows your schedule, programs, memberships and public coach profiles from the rest of the app. Add your logo, photos and a few words about the gym here. Set the address and brand color in Settings → Gym details, and public phone and email below. Publish only the contact details you want visitors to see; they also appear on the join, trial and drop-in pages, with or without the website.",
   "loading": "Loading the website settings…",
   "error": "The website settings could not be loaded or saved. Try again.",

@@ -350,7 +350,7 @@ contact, plus a sitemap and `LocalBusiness` structured data for search engines.
 **Settings → Website** sets the logo, up to eight photos, a tagline, an about text
 and a public phone number and email, even while the site is off. Prepare the site
 there before turning on **Enable gym website** in Gym details; saving website
-settings does not publish it. Photo previews appear once it is on. General has no
+settings does not publish it. Photos preview in Website whether or not the site is on. General has no
 raw logo storage key input; upload the logo in Website.
 Set the brand color in **Settings → Gym details**;
 the website uses its light tint for the footer and clears legacy accent colors on save. The logo and

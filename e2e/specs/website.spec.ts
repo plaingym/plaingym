@@ -45,6 +45,9 @@ test('the website pages load under their own policy and fit a 360 px phone and a
       const section = page.locator('section[id="settingsSections.website"]');
       await expect(section.getByText(/Your website is off/)).toBeVisible();
       await expect(section.getByRole('link', { name: 'View the website' })).toHaveCount(0);
+      const preview = section.locator('img[src^="/api/website/photos/"]').first();
+      await expect(preview).toBeVisible();
+      await expect.poll(() => preview.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
       await expect(page.getByLabel('Logo storage key')).toHaveCount(0);
       await section.getByLabel('Tagline', { exact: true }).fill('Classes for every level, seven days a week');
       await section.getByRole('button', { name: 'Save website', exact: true }).click();

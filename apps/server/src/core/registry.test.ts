@@ -198,6 +198,30 @@ describe('route declarations and server composition', () => {
     registry.mount(disabled, allow, new Set());
     expect((await disabled.request('/optional')).status).toBe(404);
   });
+  it.each(['static', 'per-request'] as const)('keeps staff preparation available with a disabled module using %s switches', async mode => {
+    const preparation = route({ method: 'get', path: '/api/optional',
+      permission: { kind: 'staff', capability: 'settings.manage' }, responses: { 200: { description: 'Preparation' } } }, () => new Response('prepare'));
+    const publicRoute = route({ method: 'get', path: '/optional', permission: { kind: 'public' },
+      responses: { 200: { description: 'Public module page' } } }, () => new Response('public'));
+    const registry = createServerRegistry({ modules: [{ id: 'website', schemaFile: null, routes: [publicRoute],
+      settingsRoutes: [preparation], jobs: [], emails: [], web: {} }] });
+    const app = new OpenAPIHono<RequestEnvironment>();
+    registry.mount(app, permission => async (context, next) => {
+      if (permission.kind === 'staff' && context.req.header('x-test-authorized') !== 'yes') return context.json({ error: 'denied' }, 403);
+      await next();
+    }, mode === 'static' ? new Set() : context => new Set(context.req.header('x-test-enabled') === 'yes' ? ['website'] : []));
+    expect((await app.request('/api/optional')).status).toBe(403);
+    expect(await (await app.request('/api/optional', { headers: { 'x-test-authorized': 'yes' } })).text()).toBe('prepare');
+    expect((await app.request('/optional', { headers: { 'x-test-authorized': 'yes' } })).status).toBe(404);
+    if (mode === 'per-request') expect((await app.request('/optional', { headers: { 'x-test-enabled': 'yes' } })).status).toBe(200);
+  });
+  it('rejects unauthenticated preparation routes and duplicate preparation identities', () => {
+    const module = { id: 'website', schemaFile: null, routes: [], jobs: [], emails: [], web: {} };
+    const publicRoute = route({ method: 'get', path: '/optional', permission: { kind: 'public' },
+      responses: { 200: { description: 'Public page' } } }, () => new Response());
+    expect(() => createServerRegistry({ modules: [{ ...module, settingsRoutes: [publicRoute] }] })).toThrow('staff permission');
+    expect(() => createServerRegistry({ routes: [fixture()], modules: [{ ...module, settingsRoutes: [fixture()] }] })).toThrow('Duplicate');
+  });
   it('hands a job registration\'s lane to the queue, for plain, scheduled and module jobs alike', () => {
     const handler = async () => {};
     const registry = createServerRegistry({

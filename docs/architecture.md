@@ -118,17 +118,17 @@ replaces placeholder routes with configured ones (setup's placeholders answer
 503 "not configured" until it does).
 
 Optional modules (`apps/server/src/modules/`) own their schema, routes and UI,
-sit behind a per-gym switch in `gyms`, and aren't imported by core (one exception
-below). The registry checks the switch on every request and job, so a module's routes answer
+sit behind a per-gym switch in `gyms`, and aren't imported by core or areas
+(enforced by lint). The registry checks the switch on every request and job, so a module's public routes answer
 404 while the gym has it off. A module keeps small per-gym settings through
 `areas/settings/module-settings.ts`, which saves them in the gym's settings under
 the gym revision and audits each save. The public website
 (`apps/server/src/modules/website/README.md`) is the first module.
-Its authenticated `/api/website` preparation routes are registered with the
-settings area and remain available while the public website is off. Preparing
-content does not enable the public pages or photo routes. The settings area's
-route list (`areas/settings/routes.ts`) is the one place in core that imports
-the module, for those routes.
+Modules can register staff-only preparation routes in `settingsRoutes`; the registry
+rejects other permission kinds and mounts these routes independently of the gym's switch.
+The website uses this field for `/api/website` preparation and
+`GET /api/website/photos/{photoId}` private previews (`settings.manage`, `no-store`).
+Preparing content does not enable the public pages or public photo routes.
 
 ## Data
 

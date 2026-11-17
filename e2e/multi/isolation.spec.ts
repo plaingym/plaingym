@@ -9,7 +9,7 @@ interface WebsiteSettings {
 }
 test.use({ trace: 'off', screenshot: 'off' });
 
-test('public record-ID routes isolate waiver documents and website images on both gym hosts', async () => {
+test('record-ID routes isolate waiver documents and public and private website images on both gym hosts', async () => {
   test.setTimeout(180_000);
   const gyms = await multiGyms();
   const originals: { gym: Context; enabled: boolean }[] = [];
@@ -47,6 +47,9 @@ test('public record-ID routes isolate waiver documents and website images on bot
         expect((await guest.request(entry.path(own))).status, own.gym.slug + ' own ' + entry.name).toBe(entry.status);
         expect((await guest.request(entry.path(other))).status, own.gym.slug + ' foreign ' + entry.name).toBe(404);
       }
+      const preview = await own.gym.owner.request(`/api/website/photos/${own.photoId}`);
+      expect(preview.status).toBe(200);
+      expect((await own.gym.owner.request(`/api/website/photos/${other.photoId}`)).status).toBe(404);
     }
   } finally {
     // Register each resource immediately, so a later setup/assertion failure still cleans it.

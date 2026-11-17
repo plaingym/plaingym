@@ -42,12 +42,13 @@ describe('website settings', () => {
     expect(sections.forModules(new Set(['website'])).some((entry) => entry.id === 'settingsSections.website')).toBe(true);
   });
 
-  it('explains preparation while off without linking to the public site or loading gated photos', async () => {
+  it('explains preparation while off and shows private photo previews without linking to the public site', async () => {
     client.GET.mockImplementation(async (path: string) => path === '/api/website' ? reply(200, { data: stored }) : reply(200, { data: { ...gym, websiteEnabled: false } }));
     start();
     expect(await screen.findByText(/Your website is off/)).toBeDefined();
     expect(screen.queryByRole('link', { name: 'View the website' })).toBeNull();
     expect(document.querySelector('img[src^="/website/photos/"]')).toBeNull();
+    expect([...document.querySelectorAll('img')].map(img => img.getAttribute('src'))).toEqual(website.photos.map(photo => '/api/website/photos/' + photo.id));
     expect(screen.getByLabelText('Tagline')).toBeDefined();
   });
 
@@ -166,8 +167,15 @@ describe('website settings', () => {
 
   it('aborts a retry read when the section unmounts', async () => {
     const user = userEvent.setup();
-    client.GET.mockImplementation(async (path: string) => path === '/api/website' ? reply(500) : reply(200, { data: gym }));
+    let finishGym!: (value: ReturnType<typeof reply>) => void;
+    const pendingGym = new Promise<ReturnType<typeof reply>>(resolve => { finishGym = resolve; });
+    client.GET.mockImplementation(async (path: string) => path === '/api/website' ? reply(500) : pendingGym);
     const view = start(); await screen.findByRole('button', { name: 'Reload' });
+    // The shared gym read changes epoch/revision from undefined, triggering a second website read.
+    // Settle that read before replacing the mock with the retry that stays pending.
+    await act(async () => { finishGym(reply(200, { data: gym })); await pendingGym; });
+    await waitFor(() => expect(client.GET.mock.calls.filter(([path]) => path === '/api/website')).toHaveLength(2));
+    const reload = await screen.findByRole('button', { name: 'Reload' });
     let finish!: (value: ReturnType<typeof reply>) => void;
     const pending = new Promise<ReturnType<typeof reply>>(resolve => { finish = resolve; });
     let signal: AbortSignal | undefined;
@@ -175,7 +183,7 @@ describe('website settings', () => {
       if (path !== '/api/website') return reply(200, { data: gym });
       signal = options?.signal; return pending;
     });
-    await user.click(screen.getByRole('button', { name: 'Reload' }));
+    await user.click(reload);
     expect(signal?.aborted).toBe(false);
     view.unmount(); expect(signal?.aborted).toBe(true);
     await act(async () => { finish(reply(200, { data: website })); await pending; });

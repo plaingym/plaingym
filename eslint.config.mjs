@@ -47,6 +47,7 @@ const rawNames = {
   message: 'Use forGym or forHousehold; raw database handles stay in database/core infrastructure.',
 };
 const rawDatabase = [rawClient, rawNames];
+const featureModules = { regex: '(^|/)modules(/|$)', message: 'Core must not depend on feature modules.' };
 const staticImports = [
   { selector: 'ImportExpression', message: 'Use static imports in server runtime code so boundaries can be checked.' },
   { selector: 'CallExpression[callee.name="require"]', message: 'Use a static import in server runtime code.' },
@@ -115,15 +116,19 @@ export default defineConfig(
     rules: {
       'no-restricted-imports': ['error', { patterns: [
         vendor, temporal, driver,
-        { regex: '(^|/)modules(/|$)', message: 'Core must not depend on feature modules.' },
+        featureModules,
       ] }],
     },
+  },
+  {
+    files: ['apps/server/src/areas/**'],
+    rules: { 'no-restricted-imports': ['error', { patterns: [vendor, temporal, driver, ...rawDatabase, featureModules] }] },
   },
   {
     files: ['apps/server/src/areas/portal/**', 'apps/server/src/public/links/**'],
     rules: {
       'no-restricted-imports': ['error', { patterns: [
-        vendor, temporal, driver, ...rawDatabase,
+        vendor, temporal, driver, ...rawDatabase, featureModules,
         {
           // Any core module could forward forGym; schema namespaces stay allowed.
           regex: [...databaseEntrypoints, '(?:^|/)core/'].join('|'),

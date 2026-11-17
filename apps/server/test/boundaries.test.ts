@@ -120,6 +120,10 @@ async function messages(filePath: string, source: string) {
 }
 
 describe('dependency boundaries use the real ESLint configuration', () => {
+  it.each([core, area, portal, 'apps/server/src/areas/settings/routes.ts'])('rejects feature-module imports in %s', async path => {
+    expect(await messages(path, "import { settingsRoutes } from '../../modules/website/routes.js'; void settingsRoutes;"))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ ruleId: 'no-restricted-imports', message: expect.stringContaining('Core must not depend') })]));
+  });
   it.each([
     'better-auth', 'better-auth/react', '@better-auth/drizzle-adapter',
     'stripe', 'nodemailer', '@aws-sdk/client-s3', '@aws-sdk/client-s3/deep',

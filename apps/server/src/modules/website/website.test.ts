@@ -74,10 +74,9 @@ beforeAll(async () => {
 
 /** The real composition: area routes plus the module, with each request's modules read from the gym, as the tenant resolver does. */
 function app(gymId = gymA, principal: Principal = { kind: 'anonymous' }, permissions = authorize) {
-  const website = { ...websiteModule, routes: createWebsiteRoutes({ service, origin: () => origin }) };
-  const routes = [...areaContributions.routes.filter(entry => !entry.definition.path.startsWith('/api/website')),
-    ...createWebsiteSettingsRoutes({ service })];
-  return createApp({ skipSetup: true, clock, authorize: permissions, publicDirectory, contributions: { ...areaContributions, routes, modules: [website] }, origin,
+  const website = { ...websiteModule, routes: createWebsiteRoutes({ service, origin: () => origin }),
+    settingsRoutes: createWebsiteSettingsRoutes({ service }) };
+  return createApp({ skipSetup: true, clock, authorize: permissions, publicDirectory, contributions: { ...areaContributions, modules: [website] }, origin,
     rateLimit: { limit: 10_000 },
     resolveGym: async (ctx, next) => {
       const gym = await settings.get(gymId);
@@ -120,6 +119,39 @@ it.each(staffRoles.flatMap(role => [true, false].map(on => ({ role, on }))))('ch
 });
 
 describe('the module toggle', () => {
+  it.each([true, false])('serves private previews only to administrators of this gym, enabled=%s', async on => {
+    const before = editable(await service.settings(gymA));
+    const uploaded = await service.uploadPhoto({ gymId: gymA, actor: { kind: 'system' } },
+      { revision: await revision(), contentType: 'image/jpeg', base64: jpeg.toString('base64'), alt: 'Private mats' });
+    const photoId = uploaded.photos.at(-1)!.id, path = '/api/website/photos/' + photoId;
+    await toggle(gymA, on);
+    try {
+      for (const role of staffRoles) {
+        const response = await get(path, app(gymA, { kind: 'staff', gymId: gymA, userId: users.get(role)!, roles: [role] }));
+        expect(response.status, role).toBe(role === 'owner' || role === 'admin' ? 200 : 403);
+        if (response.ok) {
+          expect(response.headers.get('cache-control')).toBe('no-store');
+          expect(response.headers.get('content-type')).toBe('image/jpeg');
+          expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+          expect(Buffer.from(await response.arrayBuffer())).toEqual(jpeg);
+        }
+      }
+      expect((await get(path)).status).toBe(401);
+      expect((await get(path, app(gymA, { kind: 'member', userId: uuidv7(), scope: { gymId: gymA, householdId: uuidv7(), role: 'payer' } }))).status).toBe(403);
+      expect((await get(path, app(gymB, owner(gymB)))).status).toBe(404);
+      expect((await get(path, app(gymB, owner(gymA)))).status).toBe(403);
+      const allowAll: typeof authorize = () => async (_c, next) => { await next(); };
+      expect((await get(path, app(gymB, owner(gymA), allowAll))).status).toBe(404);
+      expect((await get('/api/website/photos/' + uuidv7(), app(gymA, owner()))).status).toBe(404);
+      expect((await get('/api/website/photos/not-an-id', app(gymA, owner()))).status).toBe(400);
+      await service.update({ gymId: gymA, actor: { kind: 'system' } }, { ...before, revision: await revision() });
+      expect((await get(path, app(gymA, owner()))).status).toBe(404);
+    } finally {
+      await service.update({ gymId: gymA, actor: { kind: 'system' } }, { ...before, revision: await revision() });
+      await toggle(gymA, true);
+    }
+  });
+
   it('keeps preparation private while off and publishes the prepared text and photo only when enabled', async () => {
     const photo = await service.uploadPhoto({ gymId: gymA, actor: { kind: 'system' } }, { revision: await revision(), contentType: 'image/jpeg', base64: jpeg.toString('base64'), alt: 'Mats' });
     await toggle(gymA, false);
@@ -488,6 +520,7 @@ describe('follow-ups', () => {
     try {
       expect((await get('/public/pages/logo/' + logoVersion(logoKey))).status).toBe(404);
       expect((await get('/website/photos/' + photoId)).status).toBe(404);
+      expect((await get('/api/website/photos/' + photoId, app(gymA, owner()))).status).toBe(404);
       // Just under the cap is served.
       const fine = `${gymA}/website/logo/${uuidv7()}`;
       await store().put(fine, big.subarray(0, 2_000_000), 'image/png');

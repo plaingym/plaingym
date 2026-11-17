@@ -47,13 +47,19 @@ export async function targetOf(gym: Context): Promise<Target> {
   const state = (await gym.household.json<{ data: { revision: number } }>(codePath)).data;
   const checkin = (await gym.household.json<{ data: { code: string } }>(codePath, 'POST', { revision: state.revision })).data;
   expect(checkin.code).toBeTruthy();
+  // Private website previews need a real photo even while the public website is off.
+  // Reuse it across sweep slices so fixture preparation cannot exhaust the gallery.
+  const website = (await owner.json<{ data: { revision: number; photos: RecordId[] } }>('/api/website')).data;
+  const photo = website.photos[0] ?? (await owner.json<{ data: { photos: RecordId[] } }>('/api/website/photos', 'POST',
+    { revision: website.revision, contentType: 'image/png', base64: signaturePng().toString('base64'), alt: gym.name + ' mats' })).data.photos.at(-1)!;
+  expect((await owner.request('/api/website/photos/' + photo.id)).status).toBe(200);
   const ids: Record<string, string> = { memberId: gym.student.id, householdId: gym.householdId, sessionId: gym.sessionId, bookingId: gym.bookingId,
     invoiceId: gym.invoiceId, signatureId: gym.signatureId, deviceId: gym.deviceId, tagId: gym.tagId, programId: gym.program.id, rankSystemId: gym.rankSystemId,
     rankId: gym.rankId, staffRoleId: roles.at(-1)?.id ?? missingId, userId: roles.at(-1)?.userId ?? missingId, staffProfileId: profiles[0]?.id ?? missingId,
     templateId: gym.templateId, planId: gym.planId, householdUserId: householdUsers[0]?.id ?? missingId, invitationId: invitations[0]?.id ?? missingId,
     chargeTypeId: gym.chargeTypeId, packId: gym.classPackId, discountId: discount.id, taxRateId: gym.taxRateId, membershipId: gym.membershipId, paymentId: gym.paymentId, refundId: gym.refundId,
     paymentMethodId: gym.paymentMethodId, linkId: gym.linkId, campaignId: gym.campaignId, announcementId: gym.announcementId, attendanceId: gym.attendanceId, scheduleTemplateId: gym.scheduleTemplateId, classTagId: gym.classTagId,
-    exportId: gym.exportId, importId: gym.importId, uploadId: gym.uploadId, previewId: gym.previewId, paidInvoiceId: gym.paidInvoiceId };
+    exportId: gym.exportId, importId: gym.importId, uploadId: gym.uploadId, previewId: gym.previewId, paidInvoiceId: gym.paidInvoiceId, photoId: photo.id };
   // Every kind of record exists in the gym's fixtures: an ID nothing holds would make a refusal prove nothing.
   for (const [name, id] of Object.entries(ids)) expect(id, `${gym.slug} fixture holds a ${name}`).toBeTruthy();
   const secrets = [...new Set([...Object.values(ids).filter((value) => value !== missingId), gym.gymId, gym.name, gym.student.lastName, gym.sessionName,

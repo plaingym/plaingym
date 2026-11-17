@@ -169,8 +169,8 @@ export function WebsiteSettings() {
         <legend className="mb-2 text-base font-semibold">{text('photos')}</legend>
         <p className="text-sm text-muted-foreground">{text('photosHelp', { max: String(maxPhotos) })}</p>
         {draft.photos.length ? <ol className="grid gap-4">
-          {draft.photos.map((photo, index) => <li key={photo.id} className={'grid min-w-0 gap-3 rounded-lg border border-border p-3' + (gym.settings?.websiteEnabled ? ' sm:grid-cols-[8rem_1fr]' : '')}>
-            {gym.settings?.websiteEnabled && <img src={'/website/photos/' + photo.id} alt="" className="aspect-[4/3] w-full rounded-md object-cover sm:w-32"/>}
+          {draft.photos.map((photo, index) => <li key={photo.id} className="grid min-w-0 gap-3 rounded-lg border border-border p-3 sm:grid-cols-[8rem_1fr]">
+            <img src={'/api/website/photos/' + photo.id} alt="" className="aspect-[4/3] w-full rounded-md object-cover sm:w-32"/>
             <div className="grid min-w-0 gap-3">
               <Field label={text(index === 0 ? 'altFirst' : 'alt', { number: String(index + 1) })}>{() =>
                 <Input value={photo.alt} maxLength={200} onChange={(event) => set({ photos: draft.photos.map((item) => item.id === photo.id ? { ...item, alt: event.target.value } : item) })}/>}</Field>

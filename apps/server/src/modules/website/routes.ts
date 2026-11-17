@@ -46,9 +46,9 @@ function staff(c: Ctx): MutationContext {
   if (principal.kind !== 'staff' || principal.gymId !== gym.gymId) throw new AppError('not_found', 'Gym not found');
   return { gymId: gym.gymId, actor: { kind: 'user', userId: principal.userId } };
 }
-const image = (c: Ctx, file: { stream: ReadableStream | Uint8Array; contentType: string }) => {
-  // Public, but a removed photo should not linger in caches for long.
-  c.header('Cache-Control', 'public, max-age=3600'); c.header('X-Content-Type-Options', 'nosniff'); c.header('Content-Type', file.contentType);
+const image = (c: Ctx, file: { stream: ReadableStream | Uint8Array; contentType: string }, cacheControl = 'public, max-age=3600') => {
+  // The caller sets the cache policy: public photos are cached briefly so a removed one does not linger; the private staff preview passes 'no-store'.
+  c.header('Cache-Control', cacheControl); c.header('X-Content-Type-Options', 'nosniff'); c.header('Content-Type', file.contentType);
   return c.body(file.stream as ReadableStream);
 };
 
@@ -100,6 +100,11 @@ export function createWebsiteSettingsRoutes(supplied?: WebsiteRouteOptions): rea
     return c.json({ data: await data }, 200);
   };
   return [
+    route({ method: 'get', path: '/api/website/photos/{photoId}', permission: { kind: 'staff', capability: 'settings.manage' },
+      request: { params: photoParamsSchema }, responses: { 200: { description: 'Private website photo preview' } } }, async (c) => {
+      const { gymId } = staff(c);
+      return image(c, await options().service.photo(gymId, c.req.valid('param').photoId), 'no-store');
+    }),
     route({ ...websiteContracts.get, responses: settingsResponses }, async (c) => {
       staff(c); return settingsData(c, options().service.settings(c.get('context').gym.gymId));
     }),

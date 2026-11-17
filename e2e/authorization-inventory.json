@@ -1191,6 +1191,7 @@
   {"method": "POST", "path": "/api/website/logo", "permission": {"kind": "staff", "capability": "settings.manage"}},
   {"method": "DELETE", "path": "/api/website/logo", "permission": {"kind": "staff", "capability": "settings.manage"}},
   {"method": "POST", "path": "/api/website/photos", "permission": {"kind": "staff", "capability": "settings.manage"}},
+  {"method": "GET", "path": "/api/website/photos/{photoId}", "permission": {"kind": "staff", "capability": "settings.manage"}},
   {"method": "GET", "path": "/healthz", "permission": {"kind": "public"}},
   {"method": "GET", "path": "/source", "permission": {"kind": "public"}},
   {"method": "POST", "path": "/webhooks/stripe", "permission": {"kind": "public"}},
