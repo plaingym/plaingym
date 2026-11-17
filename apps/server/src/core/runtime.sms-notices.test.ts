@@ -50,6 +50,9 @@ it('texts a cancelled class and a card expiry through the runtime composition, i
     const card = await factory('paymentMethods', gymId, { householdId: home.id, isDefault: true, expiryMonth: 11, expiryYear: 2026 });
     const beforeCard = (await texts()).length;
     await run('billing.alerts.send', { kind: 'card_expiry', paymentMethodId: card.id, cycle: '2026-12-01' });
+    expect((await texts()).slice(beforeCard)).toEqual([]);
+    await run('billing.alerts.sms.send', { kind: 'card_expiry', paymentMethodId: card.id, cycle: '2026-12-01' });
+    await run('billing.alerts.sms.send', { kind: 'card_expiry', paymentMethodId: card.id, cycle: '2026-12-01' });
     const expiry = (await texts()).slice(beforeCard);
     expect(expiry).toHaveLength(1);
     expect(expiry[0]!.recipient).toBe(phone);

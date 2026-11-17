@@ -21,7 +21,10 @@ erasing or adding a covered member never changes it, and the consented member's 
 for a fallback phone. The final check before sending supplies the covered members.
 The reservation, independent signed pay/update-card links and remembered link IDs
 commit together. No token, phone or message body goes in delivery state. Accepted
-and uncertain sends never mint or send again. Definite non-sends revoke their
+and uncertain sends never mint or send again. A `cap_reached` or `no_provider`
+suppression is recorded with the link IDs, revokes its links and completes the
+effect without retry or next-day delivery. An email failure cannot revive that
+text on an effect retry; only its cleanup is repaired. Other definite non-sends revoke their
 links and permit retry; a retry repairs any failed revocation before creating
 fresh links. A crash after reservation commit keeps that attempt uncertain and
 its links usable. SMS never reuses email's token.

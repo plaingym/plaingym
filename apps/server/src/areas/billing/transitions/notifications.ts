@@ -41,6 +41,18 @@ export interface TransitionNotifications {
 }
 // English messages live in locales/en/billing/transitions.json.
 const defaultTranslator = createTranslator(locales.en ?? {});
+export function billingTranslator(translator?: Translator): Translator {
+  return (key, values) => {
+    const translated = translator?.(key, values);
+    return translated && translated !== key ? translated : defaultTranslator(key, values);
+  };
+}
+export function trustedBillingOrigin(value: string): URL {
+  const origin = new URL(value);
+  if (!['https:', 'http:'].includes(origin.protocol) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash)
+    throw new Error('Invalid billing notification origin');
+  return origin;
+}
 const escape = (text: string) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 
 /** Runtime supplies the gym SMTP resolver (or demo outbox), trusted origin and staff recipients. */
@@ -106,13 +118,7 @@ export function createTransitionNotifications(options: {
           if (errors.length) throw new AggregateError(errors, 'Billing email cleanup failed');
         }
         try {
-          const prepared = await prepare(), origin = new URL(prepared.origin);
-          if (!['https:', 'http:'].includes(origin.protocol) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash)
-            throw new Error('Invalid billing notification origin');
-          const t: Translator = (key, values) => {
-            const translated = prepared.t?.(key, values);
-            return translated && translated !== key ? translated : defaultTranslator(key, values);
-          };
+          const prepared = await prepare(), origin = trustedBillingOrigin(prepared.origin), t = billingTranslator(prepared.t);
           const payUrl = pending.created[0] ? new URL(`/l/${pending.created[0].token}`, origin).href : '';
           const updateUrl = pending.created[1] ? new URL(`/l/${pending.created[1].token}`, origin).href : '';
           const values = { number: invoice.number, amount: formatMoney(amountCents ?? notice.payment?.amountCents ?? invoice.amountCents, invoice.currency),

@@ -2,17 +2,19 @@
 # Billing alerts
 
 Optional `sms: createCardExpirySms({ settings, resolver, prepare, scope?, clock? })`
-adds card-expiry texts to the existing scan and `billing.alerts.send` job. Its
+adds card-expiry texts to the existing scan through a separate `billing.alerts.sms.send` job. Its
 `prepare` resolves the canonical gym origin and optional translator without SMTP.
-An enabled SMS channel permits scans without member email or mail readiness;
-email's send checks and owner dispute alerts keep their existing behavior.
-Each channel reaches its own durable outcome even if the other fails.
+The scan queues email only with member emails on and mail ready, under its existing
+`billing.alert.card_expiry:<paymentMethodId>:<cycle>` key. SMS is queued only with
+member SMS on, under `billing.alert.sms.card_expiry:<paymentMethodId>:<cycle>`.
+Each channel can be enabled later in the window without the other spending its key.
+SMS needs no SMTP or deliverable email; owner dispute alerts keep their existing behavior.
 
 Text recipients come from `householdNoticePhones`, preferring the household's
 consented billing phone over consented members at its billing email. Three children
 on one household produce one text per phone. `MemberSms` checks the switch,
 number-bound notices consent, provider and daily cap immediately before sending.
-The card, household and due-date cycle are reloaded before reservation and again
+The shared card-cycle query reloads the card, household and due-date cycle at reservation and again
 after preparation; a stale or replaced default card sends nothing.
 Text keys are `billing.alert.sms.card_expiry:<paymentMethodId>:<cycle>:<recipientId>`.
 The suffix follows the transition texts' rule: the household for its billing phone,
@@ -20,7 +22,13 @@ the consented member for a fallback phone.
 A text reserves its key and creates its own update-card link in one transaction,
 remembering IDs only. The shared lifecycle in `../transitions/notifications.sms.ts`
 revokes a definite non-send's links, retains uncertain ones, and never sends or
-mints again for an accepted or unknown attempt. Links have the same seven-days-
+mints again for an accepted or unknown attempt. A `cap_reached` or `no_provider`
+suppression is remembered with its link IDs, revokes its links and completes the
+job. It never retries or sends after a daily cap reset, including when an enclosing
+transition effect retries because email failed. Cleanup retries repair revocation
+without issuing another text. Card dates use the same long localized format and
+gym timezone as email (`prepare` may supply `locale`, English by default).
+Links have the same seven-days-
 after-cycle expiry as email. Disputes send no text.
 
 `createBillingAlerts` accepts the job queue, gym settings, account service, and a
@@ -42,7 +50,7 @@ uses the same delivery key, so the scan, webhook replay and repeated restore pas
 send one notice. When mail isn't ready it uses no key and the hourly scan recovers;
 the writer logs a failed publish instead of failing the recorded dispute.
 
-Each email-only card scan and each dispute scan prepares mail once and validates the
+Each email-enabled card scan and each dispute scan prepares mail once and validates the
 origin before enqueueing anything. Preparation failure leaves delivery keys unused
 so a later scan can recover after SMTP is configured. A dispute scan also requires
 an owner email before reserving its key; recipients are reloaded at delivery.

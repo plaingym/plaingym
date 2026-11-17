@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { JobRegistration } from '../../../core/registry.js';
-import { sendAlertJob, type BillingAlerts } from './index.js';
+import { sendAlertJob, sendCardSmsJob, type BillingAlerts } from './index.js';
 
 let configured: BillingAlerts | undefined;
 export function configureBillingAlerts(alerts: BillingAlerts) { configured = alerts; }
@@ -18,6 +18,7 @@ export function createBillingAlertJobs(read: () => BillingAlerts | undefined = (
       await service().disputes(context.gymId);
     } },
     { id: sendAlertJob, async handler(payload, context) { await service().send(payload, context); } },
+    { id: sendCardSmsJob, async handler(payload, context) { await service().sendSms(payload, context); } },
   ];
 }
 export const jobs = createBillingAlertJobs();

@@ -1,27 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, inArray } from 'drizzle-orm';
 import { forGym, invoices, smsDeliveries, type Transaction } from '@plaingym/db';
-import { createTranslator, type Clock, type Translator } from '@plaingym/shared';
-import { locales } from '@plaingym/shared/locales';
+import { type Clock, type Translator } from '@plaingym/shared';
 import { cardChargeIssue, formatMinorUnits } from '@plaingym/shared/money';
 import type { CreateSignedLinkRequest } from '@plaingym/shared/contracts';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { clock as defaultClock } from '../../../core/clock.js';
-import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
-import { createSmsDeliveries, deliveryAcceptance, DeliveryError, MemberSms } from '../../../infra/sms/index.js';
+import type { GymSettings, GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
+import { createSmsDeliveries, deliveryAcceptance, MemberSms } from '../../../infra/sms/index.js';
 import { createSignedLinksIn, revokeSignedLinkIn } from '../../links/service.js';
 import { householdNoticePhones, type SmsRecipientGroup } from '../../members/sms-recipients.js';
 import type { SmsResolver } from '../../settings/sms.js';
-import type { TransitionNotice } from './notifications.js';
+import { billingTranslator, trustedBillingOrigin, type TransitionNotice } from './notifications.js';
 
-const english = createTranslator(locales.en ?? {});
 export interface BillingSmsOptions {
   scope?: typeof forGym;
   clock?: Clock;
   settings: GymSettingsAccessor;
   resolver: SmsResolver;
   /** The canonical gym origin, independent of whether SMTP is configured. */
-  prepare(gymId: string): Promise<{ origin: string; t?: Translator }>;
+  prepare(gymId: string): Promise<{ origin: string; t?: Translator; locale?: string }>;
 }
 interface SmsNotice {
   gymId: string;
@@ -29,40 +27,61 @@ interface SmsNotice {
   key(recipientId: string): string;
   eligible(tx: Transaction): Promise<boolean>;
   links(): CreateSignedLinkRequest[];
-  body(t: Translator, urls: string[]): string;
+  body(t: Translator, urls: string[], locale?: string): string;
 }
+interface RememberedNotice { linkIds?: string[]; suppression?: 'cap_reached' | 'no_provider' }
 /** Shared credential lifecycle for transition texts and card-expiry texts. */
 export function createBillingSmsSender(options: BillingSmsOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const deliveries = createSmsDeliveries({ scope, clock });
-  return async function send(notice: SmsNotice): Promise<void> {
+  return async function send(notice: SmsNotice, settings?: GymSettings): Promise<void> {
     assertNoTransaction('billing SMS notification');
     const { gymId, householdId } = notice;
-    if (!(await options.settings.get(gymId)).memberSmsEnabled) return;
-    const groups = await scope(gymId, async tx => await notice.eligible(tx) ? householdNoticePhones(tx, gymId, [householdId]) : []);
+    if (!(settings ?? await options.settings.get(gymId)).memberSmsEnabled) return;
+    const context = { gymId, actor: { kind: 'system' as const } };
+    // Selection is the reservation's first eligibility/recipient check. All credentials commit before preparation.
+    const pendingGroups = await scope(gymId, async tx => {
+      if (!await notice.eligible(tx)) return [];
+      const groups = await householdNoticePhones(tx, gymId, [householdId]);
+      const pending = [];
+      for (const group of groups) {
+        // Fallback phones use their consent holder; a billing phone uses its household, never its covered children.
+        const key = notice.key(group.consentMemberIds[0] ?? householdId);
+        const [previous] = await tx.select().from(smsDeliveries)
+          .where(and(eq(smsDeliveries.gymId, gymId), eq(smsDeliveries.key, key))).for('update');
+        let old = previous?.commandResult as RememberedNotice | null;
+        if (old?.suppression) {
+          // A retry repairs cleanup only, even if SMTP or a different recipient made the enclosing effect fail.
+          for (const id of old.linkIds ?? []) await revokeSignedLinkIn(tx, context, id, clock.now());
+          continue;
+        }
+        const reservation = await deliveries.reserve(tx, gymId, key);
+        if (!reservation) continue;
+        // A competing first insertion may have settled while reserve waited on the unique key.
+        if (!previous) {
+          const [claimed] = await tx.select({ result: smsDeliveries.commandResult }).from(smsDeliveries)
+            .where(eq(smsDeliveries.id, reservation.id));
+          old = claimed?.result as RememberedNotice | null;
+          if (old?.suppression) {
+            for (const id of old.linkIds ?? []) await revokeSignedLinkIn(tx, context, id, clock.now());
+            await tx.update(smsDeliveries).set({ state: 'not_accepted', updatedAt: clock.now() }).where(eq(smsDeliveries.id, reservation.id));
+            continue;
+          }
+        }
+        for (const id of old?.linkIds ?? []) await revokeSignedLinkIn(tx, context, id, clock.now());
+        const created = await createSignedLinksIn(tx, context, notice.links(), clock.now());
+        await deliveries.remember(tx, reservation, { linkIds: created.map(item => item.link.id) });
+        pending.push({ group, reservation, created });
+      }
+      return pending;
+    });
+    let preparation: ReturnType<BillingSmsOptions['prepare']> | undefined;
     let failure: unknown;
-    for (const group of groups) {
+    for (const pending of pendingGroups) {
+      const { group } = pending;
       try {
-        // Fallback members, rather than the covered children, distinguish two billing-contact phones. The billing phone
-        // is keyed by its household, which (unlike the covered children) can't change between retries.
-        const first = group.consentMemberIds[0] ?? householdId;
-        const key = notice.key(first), context = { gymId, actor: { kind: 'system' as const } };
         const current = async (tx: Transaction) => await notice.eligible(tx)
           ? (await householdNoticePhones(tx, gymId, [householdId])).find(candidate => sameRecipient(candidate, group)) : undefined;
-        const pending = await scope(gymId, async tx => {
-          if (!await current(tx)) return;
-          const reservation = await deliveries.reserve(tx, gymId, key);
-          if (!reservation) return;
-          // Repair cleanup lost after a proven non-send before minting another credential.
-          const [previous] = await tx.select({ result: smsDeliveries.commandResult }).from(smsDeliveries)
-            .where(and(eq(smsDeliveries.gymId, gymId), eq(smsDeliveries.id, reservation.id)));
-          const old = previous?.result as { linkIds?: string[] } | null;
-          for (const id of old?.linkIds ?? []) await revokeSignedLinkIn(tx, context, id, clock.now());
-          const created = await createSignedLinksIn(tx, context, notice.links(), clock.now());
-          await deliveries.remember(tx, reservation, { linkIds: created.map(item => item.link.id) });
-          return { reservation, created };
-        });
-        if (!pending) continue;
         let attempted = false, cleaned = false;
         const cleanup = async () => {
           cleaned = true;
@@ -76,16 +95,10 @@ export function createBillingSmsSender(options: BillingSmsOptions) {
           if (errors.length) throw new AggregateError(errors, 'Billing SMS cleanup failed');
         };
         try {
-          const prepared = await options.prepare(gymId), origin = new URL(prepared.origin);
-          if (!['https:', 'http:'].includes(origin.protocol) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash)
-            throw new Error('Invalid billing SMS origin');
-          const t: Translator = (key, values) => {
-            const translated = prepared.t?.(key, values);
-            return translated && translated !== key ? translated : english(key, values);
-          };
-          const body = notice.body(t, pending.created.map(item => new URL(`/l/${item.token}`, origin).href));
+          const prepared = await (preparation ??= options.prepare(gymId)), origin = trustedBillingOrigin(prepared.origin);
+          const body = notice.body(billingTranslator(prepared.t), pending.created.map(item => new URL(`/l/${item.token}`, origin).href), prepared.locale);
           // The covered members are taken from this final check: one erased since selection would refuse the household's text.
-          const latest = (await options.settings.get(gymId)).memberSmsEnabled ? await scope(gymId, current) : undefined;
+          const latest = await scope(gymId, current);
           if (!latest) {
             await cleanup();
             continue;
@@ -94,14 +107,28 @@ export function createBillingSmsSender(options: BillingSmsOptions) {
             memberIds: latest.consentHouseholdIds.length ? latest.memberIds : latest.consentMemberIds,
             householdIds: latest.consentHouseholdIds });
           attempted = true;
-          const result = await deliveries.attempt(pending.reservation, sms, { to: group.phoneE164, body });
+          const result = await deliveries.attempt(pending.reservation, {
+            verifyAccount: () => sms.verifyAccount(),
+            async sendSms(message) {
+              const result = await sms.sendSms(message);
+              if (result.status === 'suppressed' && (result.reason === 'cap_reached' || result.reason === 'no_provider')) {
+                const suppression = result.reason;
+                // Persist before `attempt` releases the key. A lost outcome or cleanup never permits a later text.
+                await scope(gymId, tx => deliveries.remember(tx, pending.reservation, {
+                  linkIds: pending.created.map(item => item.link.id), suppression,
+                } satisfies RememberedNotice));
+              }
+              return result;
+            },
+          }, { to: group.phoneE164, body });
           if (result.status === 'suppressed') {
             await cleanup();
-            if (result.reason === 'cap_reached' || result.reason === 'no_provider')
-              throw new DeliveryError('not_accepted', 'Billing SMS temporarily suppressed');
           }
         } catch (error) {
-          if (!cleaned && (!attempted || deliveryAcceptance(error) === 'not_accepted')) await cleanup();
+          if (!cleaned && (!attempted || deliveryAcceptance(error) === 'not_accepted')) {
+            try { await cleanup(); }
+            catch (cause) { throw new AggregateError([error, cause], 'Billing SMS and cleanup failed', { cause }); }
+          }
           throw error;
         }
       } catch (error) { failure ??= error; }

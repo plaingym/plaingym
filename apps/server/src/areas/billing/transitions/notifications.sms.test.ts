@@ -1,22 +1,29 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { households, invoices, members, paymentMethods, signedLinks, smsDeliveries, uuidv7 } from '@plaingym/db';
+// eslint-disable-next-line database/system-tables -- Tests inspect jobs and edit settings in their isolated PostgreSQL database.
+import { auditEvents, gyms, households, invoices, jobs, members, paymentMethods, signedLinks, smsDeliveries, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../../core/clock.js';
 import { FakeEmail, DeliveryError } from '../../../infra/email/index.js';
-import { FakeJobs } from '../../../infra/jobs/index.js';
+import { FakeJobs, PostgresJobs } from '../../../infra/jobs/index.js';
+import { FakePayments } from '../../../infra/payments/index.js';
 import { FakeSms, SmsDeliveryError, type Sms } from '../../../infra/sms/index.js';
+import { takeSmsSlot } from '../../../infra/sms/daily-cap.js';
 import { createGymSettingsAccessor } from '../../settings/settings.js';
 import type { SmsResolver } from '../../settings/sms.js';
 import { createSignedLinksService } from '../../links/service.js';
 import { createBillingAlerts } from '../alerts/index.js';
 import { createCardExpirySms } from '../alerts/sms.js';
 import { createPaymentJobs } from '../payments.jobs.js';
+import { createMembershipService } from '../memberships.js';
+import { createInvoiceTransitions } from './index.js';
+import { createTransitionEffects } from './effects.js';
+import { createTransitionJobs } from './transitions.jobs.js';
 import { createTransitionNotifications } from './notifications.js';
 import { createTransitionSmsNotifications, type BillingSmsOptions } from './notifications.sms.js';
-import { snapshot } from './store.js';
+import { effect, effectCompleted, snapshot } from './store.js';
 
 const db = useTestDatabase(), make = createFactories(db), scope = db.forGym;
 const phone = '+12025550123', fallback = '+12025550199', origin = 'https://gym.example.invalid';
@@ -44,6 +51,12 @@ async function fixture(changes: { enabled?: boolean; amountCents?: number; curre
   return { gymId, clock, consent, home, children, invoice, card, text, holder, email, options, notice, rows, links, context };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
+async function exhaustCap(f: Fixture) {
+  await scope(f.gymId, async tx => {
+    await tx.update(gyms).set({ smsDailyCap: 1 }).where(eq(gyms.id, f.gymId));
+    expect(await takeSmsSlot(tx, f.gymId, f.clock.now(), 'UTC', 1)).toBe(true);
+  });
+}
 const senders = [
   { name: 'receipt', count: 0, send: (f: Fixture, options = f.options) => createTransitionSmsNotifications(options).receipt(f.notice) },
   { name: 'failed payment', count: 2, send: (f: Fixture, options = f.options) => createTransitionSmsNotifications(options).dunning({ ...f.notice, actionRequired: false }) },
@@ -101,6 +114,22 @@ describe.each(senders)('$name SMS with real Postgres and RLS', sender => {
     expect((await f.links()).every(link => link.revokedAt !== null)).toBe(true);
     await sender.send(f);
     expect(f.text.messages).toHaveLength(1);
+  });
+  it.each(['cap_reached', 'no_provider'] as const)('drops %s permanently, including retries after midnight or provider recovery', async reason => {
+    const f = await fixture();
+    if (reason === 'cap_reached') await exhaustCap(f);
+    const resolve = vi.spyOn(f.options.resolver, 'resolve');
+    if (reason === 'no_provider') resolve.mockResolvedValueOnce(null);
+    await expect(sender.send(f)).resolves.toBeUndefined();
+    expect(f.text.messages).toEqual([]);
+    expect(await f.rows()).toMatchObject([{ state: 'not_accepted', attempts: 1, commandResult: { suppression: reason } }]);
+    expect((await f.links()).every(link => link.revokedAt !== null)).toBe(true);
+    f.clock.advance(24 * 3600_000);
+    await scope(f.gymId, tx => tx.update(gyms).set({ smsDailyCap: 100 }).where(eq(gyms.id, f.gymId)));
+    await sender.send(f);
+    expect(f.text.messages).toEqual([]);
+    expect(await f.links()).toHaveLength(sender.count);
+    expect(await f.rows()).toMatchObject([{ attempts: 1, commandResult: { suppression: reason } }]);
   });
   it('never resends after acceptance when all outcome writes fail', async () => {
     const f = await fixture(), send = f.text.sendSms.bind(f.text);
@@ -237,7 +266,7 @@ it.each([{ amountCents: 32, currency: 'CAD' }, { amountCents: 10001, currency: '
 
 it('revokes its links and releases a notice when its origin is invalid', async () => {
   const f = await fixture();
-  await expect(senders[1]!.send(f, { ...f.options, prepare: async () => ({ origin: origin + '/untrusted' }) })).rejects.toThrow('Invalid billing SMS origin');
+  await expect(senders[1]!.send(f, { ...f.options, prepare: async () => ({ origin: origin + '/untrusted' }) })).rejects.toThrow('Invalid billing notification origin');
   expect(f.text.messages).toEqual([]); expect((await f.links()).every(link => link.revokedAt !== null)).toBe(true);
 });
 
@@ -262,8 +291,8 @@ it('queues and sends a card text without SMTP readiness or a deliverable househo
     sms: createCardExpirySms(options), prepare });
   await alerts.cardExpiry(f.gymId);
   expect(queue.jobs).toHaveLength(1);
-  await alerts.send(queue.jobs[0]!.payload, f.context());
-  await alerts.send(queue.jobs[0]!.payload, f.context());
+  await alerts.sendSms(queue.jobs[0]!.payload, f.context());
+  await alerts.sendSms(queue.jobs[0]!.payload, f.context());
   expect(prepare).not.toHaveBeenCalled(); expect(f.text.messages).toHaveLength(1);
   expect(await f.links()).toHaveLength(1);
 });
@@ -303,11 +332,86 @@ it('repairs revocation lost after a definite non-send before minting fresh crede
     if ((await tx.select().from(signedLinks)).some(link => link.revokedAt !== null)) throw new Error('Revoke failed');
     return result;
   })) as typeof scope };
-  await expect(senders[1]!.send(f, options)).rejects.toThrow('Billing SMS cleanup failed');
+  const error = await senders[1]!.send(f, options).catch((error: unknown) => error);
+  expect(error).toBeInstanceOf(AggregateError);
+  expect((error as AggregateError).errors[0]).toBeInstanceOf(SmsDeliveryError);
+  expect((error as AggregateError).errors[0]).toMatchObject({ acceptance: 'not_accepted' });
+  expect((error as AggregateError).errors[1]).toMatchObject({ message: 'Billing SMS cleanup failed', errors: [expect.objectContaining({ message: 'Revoke failed' })] });
   expect(await f.rows()).toMatchObject([{ state: 'not_accepted' }]);
   expect(await f.links()).toMatchObject([{ revokedAt: null }, { revokedAt: null }]);
   await senders[1]!.send(f);
   expect((await f.links()).filter(link => !link.revokedAt)).toHaveLength(2);
   expect((await f.links()).filter(link => link.revokedAt)).toHaveLength(2);
   expect(f.text.messages).toHaveLength(1);
+});
+
+it('keeps an invalid-origin error together with both cleanup failures', async () => {
+  const f = await fixture();
+  let failCleanup = false;
+  const options = { ...f.options, prepare: async () => { failCleanup = true; return { origin: origin + '/invalid' }; },
+    scope: (async (gymId, fn) => {
+      if (failCleanup) throw new Error('Cleanup unavailable');
+      return scope(gymId, fn);
+    }) as typeof scope };
+  const error = await senders[1]!.send(f, options).catch((error: unknown) => error);
+  expect(error).toBeInstanceOf(AggregateError);
+  expect((error as AggregateError).errors[0]).toMatchObject({ message: 'Invalid billing notification origin' });
+  expect((error as AggregateError).errors[1].errors).toHaveLength(2);
+  expect(f.text.messages).toEqual([]);
+});
+
+it.each(['cap_reached', 'no_provider'] as const)('completes a real queued receipt effect after %s with no recovery or next-day send', async reason => {
+  const f = await fixture(), queue = new PostgresJobs({ database: db, clock: f.clock });
+  if (reason === 'cap_reached') await exhaustCap(f);
+  else vi.spyOn(f.options.resolver, 'resolve').mockResolvedValueOnce(null);
+  const notifications = createTransitionNotifications({ ...f.options, sms: createTransitionSmsNotifications(f.options),
+    prepare: async () => ({ email: f.email, origin }), staffRecipients: async () => [] });
+  const effects = createTransitionEffects({ ...f.options, jobs: queue, recovery: queue, notifications,
+    transitions: createInvoiceTransitions(f.options), memberships: createMembershipService(f.options),
+    payments: async () => new FakePayments(f.gymId, f.clock), retry: async () => {} });
+  for (const job of createTransitionJobs(() => effects)) queue.handle(job.id, job.handler);
+  await scope(f.gymId, tx => effect(tx, { gymId: f.gymId, actor: { kind: 'system' } }, f.clock, { kind: 'receipt', invoiceId: f.invoice.id }));
+  await effects.publish(f.gymId);
+  expect(await queue.runNext()).toBe(true);
+  expect(await queue.runNext()).toBe(false);
+  expect(await scope(f.gymId, tx => tx.select().from(jobs))).toMatchObject([{ status: 'succeeded', attempts: 1 }]);
+  expect(await scope(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, effectCompleted)))).toHaveLength(1);
+  expect(await f.rows()).toMatchObject([{ commandResult: { suppression: reason } }]);
+  expect(f.email.messages).toHaveLength(1); expect(f.text.messages).toEqual([]);
+  f.clock.advance(24 * 3600_000);
+  expect(await effects.recoverFailed(f.gymId)).toEqual({ recovered: 0, exhausted: 0 });
+  await effects.publish(f.gymId);
+  expect(await queue.runNext()).toBe(false);
+  expect(f.text.messages).toEqual([]);
+});
+
+it('does not revive a capped text when a failed email retries the enclosing notice after midnight', async () => {
+  const f = await fixture();
+  await exhaustCap(f);
+  const notifications = createTransitionNotifications({ ...f.options, sms: createTransitionSmsNotifications(f.options),
+    prepare: async () => ({ email: f.email, origin }), staffRecipients: async () => [] });
+  f.email.respondNext(new DeliveryError('not_accepted', 'SMTP refused'));
+  await expect(notifications.receipt(f.notice)).rejects.toThrow('SMTP refused');
+  await scope(f.gymId, tx => tx.update(gyms).set({ smsDailyCap: 100 }).where(eq(gyms.id, f.gymId)));
+  f.clock.advance(24 * 3600_000);
+  await notifications.receipt(f.notice);
+  expect(f.email.messages).toHaveLength(1); expect(f.text.messages).toEqual([]);
+  expect(await f.rows()).toMatchObject([{ attempts: 1, commandResult: { suppression: 'cap_reached' } }]);
+});
+
+it('repairs suppressed-text cleanup without reserving again or sending after provider recovery', async () => {
+  const f = await fixture();
+  vi.spyOn(f.options.resolver, 'resolve').mockResolvedValueOnce(null);
+  const options = { ...f.options, scope: (async (gymId, fn) => scope(gymId, async tx => {
+    const result = await fn(tx);
+    if ((await tx.select().from(signedLinks)).some(link => link.revokedAt !== null)) throw new Error('Revoke failed');
+    return result;
+  })) as typeof scope };
+  await expect(senders[1]!.send(f, options)).rejects.toThrow('Billing SMS cleanup failed');
+  expect(await f.rows()).toMatchObject([{ attempts: 1, commandResult: { suppression: 'no_provider' } }]);
+  expect((await f.links()).every(link => link.revokedAt === null)).toBe(true);
+  await senders[1]!.send(f);
+  expect(f.text.messages).toEqual([]);
+  expect((await f.links()).every(link => link.revokedAt !== null)).toBe(true);
+  expect(await f.rows()).toMatchObject([{ attempts: 1 }]);
 });

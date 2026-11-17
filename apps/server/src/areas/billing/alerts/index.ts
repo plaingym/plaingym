@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, count, eq, gt, inArray, isNotNull, isNull, not, notInArray, or } from 'drizzle-orm';
-import { auditEvents, forGym, invoices, memberships, paymentMethods, writeAudit, type Transaction } from '@plaingym/db';
+import { and, asc, count, eq, gt, isNotNull, isNull, not, notInArray, or } from 'drizzle-orm';
+import { auditEvents, forGym, invoices, paymentMethods, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, canStaff, type Clock, type Translator } from '@plaingym/shared';
 import { dateSchema, extensionDashboardWidgetSchema, idSchema, terminalDisputeStatuses } from '@plaingym/shared/contracts';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
@@ -16,9 +16,12 @@ import { createSignedLinksService } from '../../links/service.js';
 import { householdRecipient } from '../../members/household-recipient.js';
 import { testModeDispute, unalertedDisputes } from './disputes.query.js';
 import type { CardExpirySms } from './sms.js';
-import { deliverBillingChannels } from '../transitions/notifications.js';
+import { trustedBillingOrigin } from '../transitions/notifications.js';
+import { cardForCycle, smsCardKey } from './cards.query.js';
+export { needsCardExpiryAlert } from './cards.query.js';
 
 export const sendAlertJob = 'billing.alerts.send';
+export const sendCardSmsJob = 'billing.alerts.sms.send';
 // Default queue backoff: 1s doubling to a 24h cap. These budgets cover >31 days and >36 hours.
 export const cardAlertMaxAttempts = 48;
 export const disputeAlertMaxAttempts = 18;
@@ -30,15 +33,8 @@ export const alertPayloadSchema = z.discriminatedUnion('kind', [cardPayload, dis
 /** Job idempotency keys and durable send-state keys: both are kept permanently. */
 const cardKey = (paymentMethodId: string, cycle: string) => `billing.alert.card_expiry:${paymentMethodId}:${cycle}`;
 const disputeKey = (disputeId: string) => `billing.alert.dispute:${disputeId}`;
-type Card = typeof paymentMethods.$inferSelect;
 type AlertPayload = z.infer<typeof alertPayloadSchema>;
 
-/** Cards remain valid through their expiry month; billing dates are gym-local calendar dates. */
-export function needsCardExpiryAlert(card: Pick<Card, 'expiryMonth' | 'expiryYear'>, cycle: string, today: string) {
-  if (card.expiryMonth === null || card.expiryYear === null) return false;
-  const expiresMonth = `${String(card.expiryYear).padStart(4, '0')}-${String(card.expiryMonth).padStart(2, '0')}`;
-  return cycle.slice(0, 7) > expiresMonth && today >= addDays(cycle, -30) && today <= cycle;
-}
 
 export interface BillingAlertsOptions {
   scope?: typeof forGym;
@@ -58,41 +54,47 @@ export function createBillingAlerts(options: BillingAlertsOptions) {
   async function ready(gymId: string) {
     try {
       const prepared = await options.prepare(gymId);
-      trustedOrigin(prepared.origin);
+      trustedBillingOrigin(prepared.origin);
       return true;
     } catch {
       // Readiness must not consume the permanent delivery key. A later scan can try again.
       return false;
     }
   }
-  async function cardForCycle(gymId: string, paymentMethodId: string, timezone: string, requireEmail = true) {
+  async function emailCardForCycle(gymId: string, paymentMethodId: string, timezone: string) {
     return scope(gymId, async tx => {
-      const [card] = await tx.select().from(paymentMethods).where(and(eq(paymentMethods.id, paymentMethodId),
-        eq(paymentMethods.isDefault, true), isNull(paymentMethods.revokedAt)));
-      if (!card) return;
-      const [membership] = await tx.select({ cycle: memberships.nextDueOn }).from(memberships).where(and(
-        eq(memberships.householdId, card.householdId), inArray(memberships.status, ['active', 'trial', 'pending']),
-        gt(memberships.amountCents, 0))).orderBy(asc(memberships.nextDueOn)).limit(1);
-      if (!membership || !needsCardExpiryAlert(card, membership.cycle, localDate(clock.now(), timezone))) return;
-      const household = await householdRecipient(tx, gymId, card.householdId);
-      if (requireEmail && (!household || household.suppressed)) return;
-      return { card, cycle: membership.cycle, email: household?.email ?? '' };
+      const candidate = await cardForCycle(tx, paymentMethodId, localDate(clock.now(), timezone));
+      if (!candidate) return;
+      const household = await householdRecipient(tx, gymId, candidate.card.householdId);
+      if (!household || household.suppressed) return;
+      return { ...candidate, email: household.email };
     });
   }
   async function cardExpiry(gymId: string) {
     const gym = await options.settings.get(gymId);
     const smsEnabled = await options.sms?.enabled(gymId) ?? false;
-    if (!smsEnabled && (!gym.memberEmailsEnabled || !await ready(gymId))) return;
+    const emailEnabled = gym.memberEmailsEnabled && await ready(gymId);
+    if (!smsEnabled && !emailEnabled) return;
     let cursor: string | undefined;
     for (;;) {
       const cards = await scope(gymId, tx => tx.select({ id: paymentMethods.id }).from(paymentMethods).where(and(
         eq(paymentMethods.isDefault, true), isNull(paymentMethods.revokedAt), cursor ? gt(paymentMethods.id, cursor) : undefined))
         .orderBy(asc(paymentMethods.id)).limit(100));
       for (const { id } of cards) {
-        const candidate = await cardForCycle(gymId, id, gym.timezone, !smsEnabled);
-        if (candidate) await options.jobs.enqueue(sendAlertJob,
+        const candidate = await scope(gymId, async tx => {
+          const found = await cardForCycle(tx, id, localDate(clock.now(), gym.timezone));
+          if (!found) return;
+          const household = emailEnabled ? await householdRecipient(tx, gymId, found.card.householdId) : undefined;
+          return { ...found, email: !!household && !household.suppressed };
+        });
+        if (!candidate) continue;
+        if (emailEnabled && candidate.email) await options.jobs.enqueue(sendAlertJob,
           { kind: 'card_expiry', paymentMethodId: id, cycle: candidate.cycle } satisfies AlertPayload,
           { gymId, timezone: gym.timezone, idempotencyKey: cardKey(id, candidate.cycle),
+            maxAttempts: cardAlertMaxAttempts });
+        if (smsEnabled) await options.jobs.enqueue(sendCardSmsJob,
+          { kind: 'card_expiry', paymentMethodId: id, cycle: candidate.cycle } satisfies AlertPayload,
+          { gymId, timezone: gym.timezone, idempotencyKey: smsCardKey(id, candidate.cycle),
             maxAttempts: cardAlertMaxAttempts });
       }
       if (cards.length < 100) return;
@@ -143,23 +145,25 @@ export function createBillingAlerts(options: BillingAlertsOptions) {
     });
   }
   async function send(payload: unknown, context: JobContext) {
-    const work = alertPayloadSchema.parse(payload);
-    await deliverBillingChannels(() => sendEmail(work, context), work.kind === 'card_expiry' && options.sms
-      ? () => options.sms!.send(context.gymId, work.paymentMethodId, work.cycle) : undefined);
+    await sendEmail(alertPayloadSchema.parse(payload), context);
   }
-  async function sendEmail(payload: unknown, context: JobContext) {
-    const work = alertPayloadSchema.parse(payload), gymId = context.gymId;
+  async function sendSms(payload: unknown, context: JobContext) {
+    const work = cardPayload.parse(payload);
+    await options.sms?.send(context.gymId, work.paymentMethodId, work.cycle);
+  }
+  async function sendEmail(work: AlertPayload, context: JobContext) {
+    const gymId = context.gymId;
     const gym = await options.settings.get(gymId);
     if (work.kind === 'card_expiry') {
       if (!gym.memberEmailsEnabled) return;
-      let candidate = await cardForCycle(gymId, work.paymentMethodId, gym.timezone);
+      let candidate = await emailCardForCycle(gymId, work.paymentMethodId, gym.timezone);
       if (!candidate || candidate.cycle !== work.cycle) return;
       // An accepted or possibly accepted notice is never sent again, so no second link is minted for it.
       const key = cardKey(work.paymentMethodId, work.cycle), sent = await deliveries.state(gymId, key);
       if (sent === 'sending') throw new Error('Card expiry alert is still being sent');
       if (sent === 'accepted') await auditOnce(gymId, work.kind, work.paymentMethodId, { cycle: work.cycle }, 'sent');
       if (sent === 'accepted' || sent === 'unknown') return;
-      const prepared = await options.prepare(gymId), origin = trustedOrigin(prepared.origin);
+      const prepared = await options.prepare(gymId), origin = trustedBillingOrigin(prepared.origin);
       const created = await links.create({ gymId, actor: { kind: 'system' } }, {
         purpose: 'update_card', householdId: candidate.card.householdId,
         expiresAt: zonedInstant(addDays(work.cycle, 7), '09:00', gym.timezone, { gap: 'shift' })!.toISOString(),
@@ -168,7 +172,7 @@ export function createBillingAlerts(options: BillingAlertsOptions) {
       let message;
       try {
         // Recheck after preparation/link creation too; a queued notice never follows an old default card.
-        candidate = await cardForCycle(gymId, work.paymentMethodId, gym.timezone);
+        candidate = await emailCardForCycle(gymId, work.paymentMethodId, gym.timezone);
         if (!candidate || candidate.cycle !== work.cycle || !(await options.settings.get(gymId)).memberEmailsEnabled) {
           await revoke();
           return;
@@ -208,7 +212,7 @@ export function createBillingAlerts(options: BillingAlertsOptions) {
       const prepared = await options.prepare(gymId);
       const message = await renderBillingAlert({ ...prepared, kind: 'dispute', timezone: gym.timezone, number: invoice.number ?? invoice.id,
         disputeId: work.disputeId, status: invoice.disputeStatus ?? 'unknown',
-        url: new URL('/admin/billing/invoices/' + invoice.id, trustedOrigin(prepared.origin)).href }, prepared.t);
+        url: new URL('/admin/billing/invoices/' + invoice.id, trustedBillingOrigin(prepared.origin)).href }, prepared.t);
       const identity = { disputeId: work.disputeId };
       let result;
       try {
@@ -229,7 +233,7 @@ export function createBillingAlerts(options: BillingAlertsOptions) {
       await audit(gymId, work.kind, invoice.id, identity);
     }
   }
-  return { cardExpiry, disputes, publishDispute, send };
+  return { cardExpiry, disputes, publishDispute, send, sendSms };
 }
 export type BillingAlerts = ReturnType<typeof createBillingAlerts>;
 
@@ -237,12 +241,6 @@ function recipient(value: string): string {
   const email = value.trim();
   if (!/^[^\s@<>,;"\r\n\0]+@[^\s@<>,;"\r\n\0]+$/.test(email)) throw new Error('Invalid billing alert recipient');
   return email;
-}
-function trustedOrigin(value: string): URL {
-  const origin = new URL(value);
-  if (!['http:', 'https:'].includes(origin.protocol) || origin.username || origin.password || origin.pathname !== '/'
-    || origin.search || origin.hash) throw new Error('Invalid billing alert origin');
-  return origin;
 }
 
 /** The existing count renderer supports this extension; no UI or shared-contract change is needed. */

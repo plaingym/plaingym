@@ -22,6 +22,7 @@ const boundaries = {
   'areas/billing/transitions/notifications.ts': 'memberEmailsEnabled at recipient selection and immediately before sending; staff notices are exempt',
   'areas/billing/transitions/notifications.sms.ts': 'memberSmsEnabled before reservation and delivery; MemberSms rechecks gym-bound provider, number-bound notices consent and daily cap',
   'areas/billing/alerts/index.ts': 'memberEmailsEnabled: card expiry; owner disputes are exempt',
+  'areas/billing/alerts/alerts.jobs.ts': 'separate card SMS job delegates to the alert sender; memberSmsEnabled guards the scan and MemberSms rechecks switch, notices consent and cap',
   'areas/billing/memberships.price-notice.ts': 'memberEmailsEnabled before reservation and after SMTP preparation; household recipient preferences, payer erasure and pending changes rechecked before delivery',
   'areas/announcements/cancellation.ts': 'memberEmailsEnabled and grouped member or household billing email preferences rechecked immediately before gym SMTP delivery',
   'areas/announcements/send.delivery.ts': 'memberEmailsEnabled and recipient preferences reloaded by MemberEmail immediately before gym SMTP delivery; an off switch skips the rest',
