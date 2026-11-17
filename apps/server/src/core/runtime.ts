@@ -75,7 +75,7 @@ import { createSmsPhoneDigest } from '../infra/sms/index.js';
 import { createTransitionSmsNotifications } from '../areas/billing/transitions/notifications.sms.js';
 import { createCardExpirySms } from '../areas/billing/alerts/sms.js';
 import { createSmtpResolver } from '../areas/settings/smtp.js';
-import { configureSignedLinkDelivery } from '../areas/links/service.js';
+import { configureSignedLinkDelivery, configureSignedLinkSmsDelivery } from '../areas/links/service.js';
 import { configureCampaigns, createCampaignsService } from '../areas/links/campaigns.js';
 import { configureCancellationNotice, createCancellationNotice } from '../areas/announcements/cancellation.js';
 import { configurePriceNotice, createPriceNotice } from '../areas/billing/memberships.price-notice.js';
@@ -275,6 +275,9 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   const phoneDigest = createSmsPhoneDigest(config.secret);
   // Billing texts need only the gym's own origin, not its SMTP settings.
   const smsPrepare = async (gymId: string) => ({ origin: await gymOrigin(gymId), t });
+  // Texted links (a staff send, a card re-collection campaign) need the same, and never wait on SMTP or the member email switch.
+  const linkSmsDelivery = { async prepare(gymId: string) { return { gymId, ...await smsPrepare(gymId), resolver: smsResolver }; } };
+  configureSignedLinkSmsDelivery(linkSmsDelivery);
   const bookingDelivery = createBookingDelivery({ jobs: queue, settings, clock, sms: { resolver: smsResolver, phoneDigest },
     mailer: async gymId => demo ? demo.emailFor(gymId) : smtpMailer(smtp!)(gymId) });
   configureBookingJobs(bookingDelivery);
@@ -347,7 +350,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
     return provider;
   }
   configureCampaigns(createCampaignsService({ jobs: queue, clock, paymentsFor: requirePayments,
-    delivery: { prepare: async gymId => ({ gymId, ...await gymMail(gymId) }) } }));
+    delivery: { prepare: async gymId => ({ gymId, ...await gymMail(gymId) }) },
+    smsDelivery: linkSmsDelivery, smsPhoneDigest: phoneDigest }));
   // Announcements send through the gym's SMTP (or the demo outbox, which needs no resolver) to the members it selects.
   configureAnnouncements(createAnnouncementsService({ jobs: queue, clock, smtp: smtp ?? { configured: async () => true },
     mailer: async gymId => {
