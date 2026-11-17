@@ -1,6 +1,6 @@
 {
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
-  "replacementNotice": "This email replaces any earlier email for the same request. Use the link in the newest one; earlier links for this request no longer work.",
+  "replacementNotice": "This email replaces any earlier email for the same request, and any earlier text. Use the newest link; earlier links for this request no longer work.",
   "title": "Campaigns",
   "help": "Send onboarding or card update links to households and follow their progress.",
   "create": "New campaign",
@@ -50,10 +50,14 @@
   "empty": "No campaigns yet",
   "view": "View",
   "remind": "Remind pending households",
-  "remindHelp": "Scheduled and manual sends share a limit of one attempt per link each gym-local day. A suppressed reminder, or one without a payment link, keeps the earlier link working; otherwise use the newest email. Expiry stays the same. Completed, revoked and expired links receive no reminders.",
+  "remindHelp": "Scheduled and manual sends share a limit of one attempt per link each gym-local day. A suppressed reminder, or one without a payment link, keeps the earlier link working; otherwise use the newest email or text. Expiry stays the same. Completed, revoked and expired links receive no reminders.",
   "whoLeft": "Who's left?",
   "noRecipients": "No recipients in this state",
-  "created": "Campaign created. Delivery starts while member emails are enabled.",
+  "created": "Campaign created. Emails go out while member emails are enabled; card collection campaigns also text consented recipients while member texts are enabled.",
+  "sms.sent": "Text sent",
+  "sms.unknown": "Text delivery uncertain; this occurrence will not be resent",
+  "sms.not_accepted": "Text was not sent",
+  "smsReplacementNotice": "Use this newest link. Earlier campaign links have been replaced.",
   "noAccess": "You do not have access to campaigns.",
   "householdsError": "Households could not be loaded. Try again to select recipients and see their names."
 }

@@ -163,8 +163,8 @@ it('serves a 320-household campaign with batched creation, grouped progress, SQL
     expect(page.data.map(r => r.link.id), String(state)).toEqual(expected.slice(20, 40));
     expect(page.data.every(r => r.state === (state ?? r.state))).toBe(true);
     const listed = reads[1]!;
-    // Campaign, count/page, then, for pending recipients only, bounded household and lease reads.
-    expect(reads.length).toBeLessThanOrEqual(4);
+    // Campaign, count/page, bounded household and lease reads for pending recipients, then text history for the page.
+    expect(reads.length).toBeLessThanOrEqual(5);
     expect(listed.rows).toBe(expected.slice(20, 40).length); expect(listed.sql).toMatch(/limit \$\d+ offset \$\d+/);
     expect(listed.sql).toContain('count(*)');
   }

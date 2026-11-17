@@ -43,6 +43,7 @@ function transport(initial: Partial<InvoiceDetail> = {}) {
     if (url.pathname.endsWith('/release-hold')) { detail.invoice = { ...detail.invoice, needsReview: false }; return Response.json({ data: detail.invoice }); }
     if (url.pathname.endsWith('/void')) { detail.invoice = { ...detail.invoice, status: 'void' }; return Response.json({ data: detail.invoice }); }
     if (url.pathname.endsWith('/payment-methods')) return Response.json(page([card]));
+    if (url.pathname === '/api/members') return Response.json(page([]));
     if (url.pathname === '/api/households/' + home) return Response.json({ data: { id: home, name: 'Rivera household', email: null, phone: null, sms: { phoneValid: false, phoneE164: null, notices: null }, address: {}, revision: 1, createdAt } });
     if (url.pathname.endsWith('/payments') && method === 'POST') {
       detail.invoice = { ...invoice, status: 'paid', paidAt: createdAt }; detail.payments = [payment]; return Response.json({ data: payment }, { status: 201 });
@@ -64,6 +65,36 @@ function start(view: React.ReactNode) {
   return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}><ShellServicesContext.Provider value={createShellServices(async () => bootstrap)}>{view}</ShellServicesContext.Provider></QueryClientProvider>);
 }
 afterEach(cleanup);
+it('lists consented household text recipients and disables invalid, nonconsenting and erased members with reasons', async () => {
+  const f = transport(), original = f.fetcher.getMockImplementation()!;
+  const page = (data: unknown[]) => ({ data, pagination: { limit: 100, offset: 0, total: data.length } });
+  const consent = { at: createdAt, source: 'staff' };
+  f.fetcher.mockImplementation(async (path, options) => {
+    const url = new URL(String(path), 'http://gym.test');
+    if (url.pathname === '/api/households/' + home) return Response.json({ data: { id: home, name: 'Rivera household', email: null,
+      phone: '+12025550123', sms: { phoneE164: '+12025550123', phoneValid: true, notices: consent }, address: {}, revision: 1, createdAt } });
+    if (url.pathname === '/api/members') return Response.json(page([
+      { id: id(101), firstName: 'Ready', lastName: 'Recipient', anonymizedAt: null, sms: { phoneValid: true, notices: consent } },
+      { id: id(102), firstName: 'No', lastName: 'Consent', anonymizedAt: null, sms: { phoneValid: true, notices: null } },
+      { id: id(103), firstName: 'Bad', lastName: 'Phone', anonymizedAt: null, sms: { phoneValid: false, notices: consent } },
+      { id: id(104), firstName: 'Erased', lastName: 'Member', anonymizedAt: createdAt, sms: { phoneValid: true, notices: consent } },
+    ].map(person => ({ ...person, householdId: home, email: null, phone: '+12025550123', photoKey: null, dateOfBirth: null,
+      status: 'active', emergencyContacts: [], emailOptOut: false, emailDeliverable: true, revision: 1, createdAt,
+      sms: { ...person.sms, phoneE164: person.sms.phoneValid ? '+12025550123' : null, announcements: null } }))));
+    return original(path, options);
+  });
+  start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={desk} client={f.client}/>);
+  fireEvent.click(await screen.findByRole('button', { name: 'Send or share pay link' }));
+  expect(await screen.findByRole('option', { name: 'Send by text: Ready Recipient' })).toHaveProperty('disabled', false);
+  expect(screen.getByRole('option', { name: /No Consent — No notices consent/ })).toHaveProperty('disabled', true);
+  expect(screen.getByRole('option', { name: /Bad Phone — Invalid or missing phone/ })).toHaveProperty('disabled', true);
+  expect(screen.getByRole('option', { name: /Erased Member — Member erased/ })).toHaveProperty('disabled', true);
+  fireEvent.change(screen.getByLabelText('Delivery'), { target: { value: 'sms:' + id(101) } });
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+  await screen.findByText('Pay link sent to the household.');
+  const request = f.fetcher.mock.calls.find(([path]) => String(path) === '/api/links/send');
+  expect(JSON.parse(String(request?.[1]?.body))).toMatchObject({ channel: 'sms', recipientMemberId: id(101), householdId: home });
+});
 it.each(['open', 'past_due'] as const)('voids an %s invoice with a reason and removes collection actions', async status => {
   const f = transport({ invoice: { ...invoice, status } });
   start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={admin} client={f.client}/>);
@@ -462,7 +493,7 @@ it('shows an uncertain pay-link replay and changes generation only on a delibera
   start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={desk} client={f.client}/>);
   fireEvent.click(await screen.findByRole('button', { name: 'Send or share pay link' }));
   fireEvent.click(within(screen.getByRole('region')).getByRole('button', { name: 'Confirm' }));
-  await screen.findByText(/earlier email may have been delivered/);
+  await screen.findByText(/earlier message may have been delivered/);
   expect(screen.queryByText('Pay link sent to the household.')).toBeNull();
   uncertain = false;
   fireEvent.click(screen.getByRole('button', { name: 'Send again' }));

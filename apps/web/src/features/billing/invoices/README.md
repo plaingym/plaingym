@@ -56,6 +56,14 @@ replay still says a pay link was sent if its credential has since been revoked.
 A zero invoice offers no send/share pay-link action. No Stripe Checkout
 response is fabricated for a signed link.
 
+The existing pay-link dialog also offers Send by text for the billing phone and
+each household member. Choices without notices consent, a valid phone, or an
+unerased member are disabled with the reason. Household members load across all
+pages. Text sends include `channel: 'sms'` and a member recipient when selected;
+the billing phone omits that recipient. Retry generations include the delivery
+choice, so changing recipient cannot replay another recipient's send. Uncertain
+sends show the same deliberate Send again confirmation for either channel.
+
 `page.test.tsx` covers contract transport, household filtering, pagination, exact
 cents, front-desk controls, admin refunds, error recovery, and signed-link sends.
 Phone and desktop browser checks should cover the list, one-off editor, detail,

@@ -37,17 +37,22 @@ export const createSignedLinkRequestSchema = z.discriminatedUnion('purpose', [
   z.strictObject({ ...createLinkFields, purpose: z.literal('update_card') }),
   z.strictObject({ ...createLinkFields, purpose: z.literal('onboarding') }),
 ]);
-const sendLinkFields = { ...createLinkFields, sendGeneration: idSchema };
+const sendLinkFields = { ...createLinkFields, sendGeneration: idSchema,
+  channel: z.enum(['email', 'sms']).optional(),
+  /** SMS only. Omit for the billing phone; distinct from a waiver's resource memberId. */
+  recipientMemberId: idSchema.optional(),
+};
 /**
  * `sendGeneration` identifies one send command: the client keeps it while retrying and picks a new one for a deliberate
- * resend. A replay returns the first attempt's link and sends no second email.
+ * resend. A replay returns the first attempt's link and sends no second message. Email is the default channel.
  */
 export const sendSignedLinkRequestSchema = z.discriminatedUnion('purpose', [
   z.strictObject({ ...sendLinkFields, purpose: z.literal('pay_invoice'), invoiceId: idSchema }),
   z.strictObject({ ...sendLinkFields, purpose: z.literal('sign_waiver'), memberId: idSchema }),
   z.strictObject({ ...sendLinkFields, purpose: z.literal('update_card') }),
   z.strictObject({ ...sendLinkFields, purpose: z.literal('onboarding') }),
-]);
+]).refine(request => !request.recipientMemberId || request.channel === 'sms',
+  'A member recipient is only supported for SMS');
 /** Only this creation result exposes the opaque secret, for a front-desk tablet or printed link. */
 export const createSignedLinkResponseSchema = z.strictObject({
   data: z.strictObject({
@@ -131,6 +136,7 @@ export const campaignRecipientSchema = z.strictObject({
   link: signedLinkSchema,
   state: campaignRecipientStateSchema,
   customerMatchHeld: z.boolean().optional(),
+  smsState: z.enum(['sent', 'unknown', 'not_accepted']).optional(),
 });
 export const linkCampaignParamsSchema = z.strictObject({ campaignId: idSchema });
 export const linkCampaignListQuerySchema = paginationSchema.extend({

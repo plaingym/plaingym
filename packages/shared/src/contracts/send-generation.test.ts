@@ -10,6 +10,13 @@ const staff = { email: 'coach@example.test', role: 'coach' };
 const portal = { email: 'payer@example.test', scope: 'payer' };
 
 describe('send generations', () => {
+  it('accepts text recipients without conflating a waiver resource and its recipient', () => {
+    const input = { ...link, sendGeneration, channel: 'sms', recipientMemberId: sendGeneration };
+    expect(sendSignedLinkRequestSchema.safeParse(input).success).toBe(true);
+    expect(sendSignedLinkRequestSchema.safeParse({ ...input, purpose: 'sign_waiver', memberId: id }).success).toBe(true);
+    expect(sendSignedLinkRequestSchema.safeParse({ ...input, channel: 'email' }).success).toBe(false);
+    expect(sendSignedLinkRequestSchema.safeParse({ ...input, channel: 'fax' }).success).toBe(false);
+  });
   it('a signed link send needs one, and creating a link takes none', () => {
     expect(sendSignedLinkRequestSchema.safeParse({ ...link, sendGeneration }).success).toBe(true);
     expect(sendSignedLinkRequestSchema.safeParse(link).success).toBe(false);

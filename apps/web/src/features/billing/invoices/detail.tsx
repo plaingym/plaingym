@@ -41,6 +41,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
   const detail = useQuery({ queryKey: key, queryFn: () => client.invoice(invoiceId) });
   const homeId = detail.data?.invoice.householdId;
   const household = useQuery({ queryKey: ['billing', gymId, 'household', homeId], queryFn: () => client.household(homeId!), enabled: !!homeId });
+  const people = useQuery({ queryKey: ['billing', gymId, 'householdMembers', homeId], queryFn: () => client.householdMembers(homeId!), enabled: !!homeId && action?.kind === 'link' });
   const cards = useQuery({ queryKey: ['billing', gymId, 'cards', homeId, cardOffset], queryFn: () => client.cards(homeId!, cardOffset), enabled: !!homeId });
   const allCards = useQuery({ queryKey: ['billing', gymId, 'activeCards', homeId], queryFn: () => client.activeDefaultCard(homeId!), enabled: !!homeId });
   function open(next: Action) { linkSend.reset(); trigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setError(''); setMessage(''); setUrl(''); setDraft(false); setDiscard(false); setAction(next); }
@@ -77,10 +78,13 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
         { householdId: invoice.householdId, paymentMethodId: action.card.id });
       if (action.kind === 'receipt') { await client.call('resendReceipt', {}, { invoiceId }); setMessage(text('receiptQueued')); }
       if (action.kind === 'link') {
-        if (uncertain && form.get('delivery') === 'email') linkSend.resend();
-        const sendGeneration = form.get('delivery') === 'email' ? linkSend.generation({ gymId, invoiceId }) : undefined;
+        const delivery = String(form.get('delivery')), sms = delivery.startsWith('sms:');
+        const recipientMemberId = sms && delivery !== 'sms:household' ? delivery.slice(4) : undefined;
+        if (uncertain && delivery !== 'copy') linkSend.resend();
+        const sendGeneration = delivery !== 'copy' ? linkSend.generation({ gymId, invoiceId, delivery }) : undefined;
         const result = await client.link({ purpose: 'pay_invoice', householdId: invoice.householdId, invoiceId,
-          expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString() }, sendGeneration);
+          expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString() }, sendGeneration,
+          sms ? { channel: 'sms', ...(recipientMemberId ? { recipientMemberId } : {}) } : undefined);
         const unknown = sendGeneration ? linkSend.settle(result.data) : false;
         if (!sendGeneration) linkSend.reset();
         if ('token' in result.data) { setUrl(new URL('/l/' + result.data.token, location.origin).href); }
@@ -174,13 +178,29 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
           </>}
           {action.kind === 'charge' && <p>{text('chargeHelp')}</p>}
           {action.kind === 'revoke' && <p>{text('removeHelp')} · {action.card.last4}</p>}
-          {action.kind === 'link' && <Label className="block">{text('delivery')}<Select name="delivery"><option value="email">{text('emailLink')}</option><option value="copy">{text('showLink')}</option></Select></Label>}
+          {action.kind === 'link' && <>
+            <Label className="block">{text('delivery')}<Select name="delivery">
+              <option value="email">{text('emailLink')}</option><option value="copy">{text('showLink')}</option>
+              <option value="sms:household" disabled={!household.data?.sms?.notices || !household.data.sms.phoneValid}>
+                {text('smsLink')}: {text('billingPhone')}{smsRefusal(household.data?.sms)}
+              </option>
+              {people.data?.map(person => <option key={person.id} value={'sms:' + person.id}
+                disabled={!!person.anonymizedAt || !person.sms.notices || !person.sms.phoneValid}>
+                {text('smsLink')}: {person.firstName} {person.lastName}{person.anonymizedAt ? ' — ' + text('smsAnonymized') : smsRefusal(person.sms)}
+              </option>)}
+            </Select></Label>
+            {people.isError && <ErrorState message={text('smsRecipientsError')} onRetry={() => void people.refetch()}/>}
+            <p className="text-sm text-muted-foreground">{text('smsHelp')}</p>
+          </>}
           {url ? <Label className="block">{text('linkReady')}<Input readOnly value={url} onFocus={event => event.target.select()}/></Label>
             : <Button type="submit" className="w-full sm:w-auto">{text(busy ? 'saving' : uncertain ? 'sendAgain' : 'confirm')}</Button>}
         </fieldset>
       </form>}
     </section>}
   </div>;
+}
+function smsRefusal(sms?: { notices: unknown; phoneValid: boolean }) {
+  return !sms?.notices ? ' — ' + text('smsNoConsent') : !sms.phoneValid ? ' — ' + text('smsInvalidPhone') : '';
 }
 function refundable(data: InvoiceDetail, payment: Payment) {
   return payment.amountCents - data.refunds.filter(r => r.paymentId === payment.id && !refundReleased(r)).reduce((sum, r) => sum + r.amountCents, 0);

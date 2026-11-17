@@ -144,7 +144,14 @@ export function bodiesOf(route: Route, aim: Aim): unknown[] {
   const schema = route.operation.requestBody?.content['application/json']?.schema;
   if (!schema) return [];
   const alternatives = schema.anyOf ?? schema.oneOf;
-  return (alternatives ?? [schema]).map((alternative) => valueOf(alternative, '', aim));
+  const bodies = (alternatives ?? [schema]).map((alternative) => valueOf(alternative, '', aim));
+  // OpenAPI cannot express this refinement: a member recipient is valid only for the text channel.
+  if (routeKey(route) === 'POST /api/links/send') return bodies.flatMap(body => {
+    const fields = { ...body as Record<string, unknown> };
+    delete fields.recipientMemberId;
+    return [{ ...fields, channel: 'email' }, { ...fields, channel: 'sms', recipientMemberId: aim.target.ids.memberId }];
+  });
+  return bodies;
 }
 export const hasJsonBody = (route: Route) => !!route.operation.requestBody?.content['application/json'];
 /** Whether a body or query holds any of the target's record IDs, so the route is aimed at the target even with no ID in its path. */

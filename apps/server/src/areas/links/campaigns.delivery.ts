@@ -5,9 +5,12 @@ import { invoices, signedLinks, type forGym, type Transaction, uuidv7, writeAudi
 import type { Clock } from '@plaingym/shared';
 import { deliveryAcceptance, type Email } from '../../infra/email/index.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
+import { householdNoticePhones } from '../members/sms-recipients.js';
+import { createSmsDeliveries, MemberSms } from '../../infra/sms/index.js';
 import { checkoutInProgress, credentialDisclosed, deliveryBlocked, deliveryHistory } from './campaigns.attempts.js';
 import { campaignRecipient, completeCampaignIn } from './campaigns.model.js';
-import { deliverSignedLink, validateSignedLinkDelivery, type SignedLinkDelivery } from './service.delivery.js';
+import { deliverSignedLink, householdBoundSmsResolver, validateSignedLinkDelivery, validateSignedLinkOrigin,
+  type SignedLinkDelivery, type SignedLinkSmsDelivery, type PreparedSignedLinkSmsDelivery } from './service.delivery.js';
 import { revokeSignedLinkIn } from './service.js';
 
 /** The request is fulfilled when its invoice no longer needs payment, including payment outside this link. */
@@ -32,7 +35,8 @@ export function completeClosedCampaignInvoice(options: { scope: typeof forGym; c
 }
 
 /** Reissue the existing recipient credential; reminders never add recipients or extend their expiry. */
-export async function deliverCampaignLink(options: { scope: typeof forGym; clock: Clock; delivery: SignedLinkDelivery },
+export async function deliverCampaignLink(options: { scope: typeof forGym; clock: Clock; delivery: SignedLinkDelivery;
+  smsDelivery?: SignedLinkSmsDelivery; smsPhoneDigest?: (phone: string) => string },
   gymId: string, campaignId: string, linkId: string, occurrence: string) {
   const { scope, clock, delivery } = options;
   const [candidate] = await scope(gymId, tx => tx.select({ purpose: signedLinks.purpose }).from(signedLinks)
@@ -40,13 +44,31 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
   if (candidate?.purpose === 'unsubscribe') return;
   const gym = await createGymSettingsAccessor({ scope }).get(gymId);
   let prepared;
-  try {
+  if (gym.memberEmailsEnabled) try {
     prepared = await delivery.prepare(gymId);
     validateSignedLinkDelivery(prepared, gymId);
   } catch (error) {
+    prepared = undefined;
     await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'link_campaign.delivery_cancelled',
       targetType: 'signed_link', targetId: linkId, after: { campaignId, occurrence }, occurredAt: clock.now() }));
-    throw error; // No credential changed or SMTP attempted; configuration can recover on the job retry.
+    // With member email enabled, missing or temporarily broken SMTP must retain the email job's retries.
+    throw error;
+  }
+  let preparedSms: PreparedSignedLinkSmsDelivery | undefined;
+  if (candidate?.purpose === 'update_card' && options.smsDelivery && options.smsPhoneDigest && gym.memberSmsEnabled) try {
+    preparedSms = await options.smsDelivery.prepare(gymId);
+    validateSignedLinkOrigin(preparedSms, gymId);
+  } catch (error) {
+    preparedSms = undefined;
+    await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'link_campaign.sms_prepare_failed',
+      targetType: 'signed_link', targetId: linkId, after: { campaignId, occurrence }, occurredAt: clock.now() }));
+    if (!prepared) throw error;
+  }
+  if (!prepared && !preparedSms) {
+    // Member email was switched off after the send handler's check, and no text applies: record the skip.
+    await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'link_campaign.delivery_skipped',
+      targetType: 'signed_link', targetId: linkId, after: { campaignId, occurrence, reason: 'member_emails_disabled' }, occurredAt: clock.now() }));
+    return;
   }
   // A public format marker permits replacement guidance without retaining old secrets or their hashes.
   // It grants no authority: resolution still requires the complete token's current stored hash.
@@ -79,7 +101,7 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
   let outcome = 'sent', transportEntered = false, transportSuppressed = false, failure: unknown;
   // Observe the shared delivery's existing transport boundary. All sending and its last-moment
   // switch/recipient checks still live in service.delivery; no second outbound call site is added.
-  const observed: Email = { sendEmail: new Proxy(prepared.email.sendEmail, {
+  const observed: Email | undefined = prepared && { sendEmail: new Proxy(prepared.email.sendEmail, {
     apply(send, _receiver, args) {
       transportEntered = true;
       return (Reflect.apply(send, prepared.email, args) as ReturnType<Email['sendEmail']>).then(result => {
@@ -92,10 +114,11 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
     // A completion or revoke committed during preparation stops the queued send before anything is reserved.
     const [current] = await scope(gymId, tx => tx.select().from(signedLinks).where(eq(signedLinks.id, linkId)));
     if (current && current.purpose !== 'unsubscribe' && current.campaignId === campaignId && campaignRecipient(current, clock.now()).state === 'pending') {
-      const disclosed = await deliverSignedLink({ scope, context: { gymId, actor: { kind: 'system' } }, link: campaignRecipient(current, clock.now()).link, token,
+      const disclosed = prepared && observed ? await deliverSignedLink({ scope, context: { gymId, actor: { kind: 'system' } }, link: campaignRecipient(current, clock.now()).link, token,
         prepareSelected: async mode => { reservation = await reserve(mode); return !!reservation; },
-        delivery: { ...prepared, email: observed }, noticeKey: 'links/campaigns:replacementNotice' });
-      if (reservation && !disclosed) outcome = reservation.mode === 'skip' ? 'skipped' : 'manual';
+        delivery: { ...prepared, email: observed }, noticeKey: 'links/campaigns:replacementNotice' })
+        : (reservation = await reserve('link'), false);
+      if (reservation && !disclosed) outcome = !prepared ? 'suppressed' : reservation.mode === 'skip' ? 'skipped' : 'manual';
     }
   } catch (error) {
     if (!reservation) throw error;
@@ -105,7 +128,34 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
     else outcome = 'uncertain';
   }
   if (!reservation) return;
-  const { previousHash, revokeUndisclosed } = reservation;
+  // The token exists only in this send step. Text the same credential before it is discarded;
+  // recording another link would split the campaign's completion tracking.
+  if (preparedSms && reservation.mode === 'link') {
+    const [row] = await scope(gymId, tx => tx.select().from(signedLinks).where(and(eq(signedLinks.id, linkId), eq(signedLinks.campaignId, campaignId))));
+    if (row && campaignRecipient(row, clock.now()).state === 'pending') {
+      const groups = await scope(gymId, tx => householdNoticePhones(tx, gymId, [row.householdId]));
+      const deliveries = createSmsDeliveries({ scope, clock }), settings = createGymSettingsAccessor({ scope });
+      for (const group of groups) {
+        let smsOutcome: 'sent' | 'unknown' | 'not_accepted' = 'not_accepted';
+        try {
+          const result = await deliveries.send(gymId, `links.campaign.sms:${campaignId}:${row.householdId}:${occurrence}:${options.smsPhoneDigest!(group.phoneE164)}`,
+            new MemberSms({ gymId, memberIds: group.consentMemberIds, householdIds: group.consentHouseholdIds,
+              kind: 'notices', resolver: householdBoundSmsResolver(preparedSms.resolver, scope, gymId, row.householdId, group.consentMemberIds), settings, scope, clock }),
+            { to: group.phoneE164, body: `${preparedSms.t('links/service:update_card.subject')}: ${new URL(`/l/${token}`, preparedSms.origin).href} ${preparedSms.t('links/campaigns:smsReplacementNotice')}` });
+          smsOutcome = result.status === 'sent' ? 'sent' : result.status === 'skipped' ? result.state === 'accepted' ? 'sent' : 'unknown' : 'not_accepted';
+        } catch (error) {
+          smsOutcome = deliveryAcceptance(error) === 'not_accepted' ? 'not_accepted' : 'unknown';
+          if (smsOutcome === 'not_accepted' && outcome !== 'sent' && outcome !== 'uncertain') {
+            outcome = 'not_accepted'; failure = error;
+          }
+        }
+        if (smsOutcome !== 'not_accepted') { outcome = smsOutcome === 'sent' ? 'sent' : outcome === 'sent' ? 'sent' : 'uncertain'; failure = undefined; }
+        await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: `link_campaign.sms_${smsOutcome}`,
+          targetType: 'signed_link', targetId: linkId, after: { campaignId, occurrence }, occurredAt: clock.now() }));
+      }
+    }
+  }
+  const { previousHash, revokeUndisclosed, mode } = reservation;
   await scope(gymId, async tx => {
     // Only a notice that reached SMTP closes the credential; a suppressed one stays pending for the next reminder.
     if (revokeUndisclosed && (outcome === 'manual' || outcome === 'uncertain'))
@@ -117,8 +167,8 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
     }
     await writeAudit(tx, { gymId, actorKind: 'system', action: `link_campaign.delivery_${outcome}`,
       targetType: 'signed_link', targetId: linkId, after: { campaignId, occurrence }, occurredAt: clock.now() });
-    // A released reservation no longer counts toward the occurrence or daily limit, so the job retry can send.
-    if (outcome === 'not_accepted') await writeAudit(tx, { gymId, actorKind: 'system', action: 'link_campaign.delivery_released',
+    // Release undisclosed link credentials too; the suppression outcome still consumes the occurrence and day.
+    if (outcome === 'not_accepted' || (outcome === 'suppressed' && mode === 'link')) await writeAudit(tx, { gymId, actorKind: 'system', action: 'link_campaign.delivery_released',
       targetType: 'signed_link', targetId: linkId, after: { campaignId, occurrence, reservation: reservationId }, occurredAt: clock.now() });
   });
   if (failure !== undefined) throw failure;

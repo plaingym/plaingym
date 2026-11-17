@@ -176,6 +176,10 @@ and [bookings](../apps/server/src/areas/bookings/README.md#promotion-notices) mo
 Billing's optional SMS services use
 this infrastructure for receipts, failed-payment/authentication notices and card
 expiry reminders, with independent links and durable send keys.
+Staff signed-link sends support SMS,
+and card re-collection campaigns can text consented billing recipients using
+the same campaign credential. Delivery composition supplies the SMS resolver
+and canonical origin independently of SMTP (`areas/links/service.md`).
 
 ## Background jobs
 

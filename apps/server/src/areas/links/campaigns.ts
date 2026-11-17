@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, count, desc, eq, gt, isNull, ne, notExists } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, inArray, isNull, ne, notExists } from 'drizzle-orm';
 import { auditEvents, forGym, households, linkCampaigns, paymentMethods, signedLinks, writeAudit } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
@@ -12,7 +12,7 @@ import type { JobRecovery, Jobs } from '../../infra/jobs/index.js';
 import type { Payments } from '../../infra/payments/index.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { createSignedLinksIn } from './service.js';
-import type { SignedLinkDelivery } from './service.delivery.js';
+import type { SignedLinkDelivery, SignedLinkSmsDelivery } from './service.delivery.js';
 import { campaignDetail, campaignRecipient, campaignTallies, recipientState } from './campaigns.model.js';
 import { completeClosedCampaignInvoice, deliverCampaignLink } from './campaigns.delivery.js';
 import { campaignCustomerHolds, matchCampaignCustomer } from './campaigns.customers.js';
@@ -25,6 +25,9 @@ export interface CampaignsOptions {
   clock?: Clock;
   jobs: Jobs & JobRecovery;
   delivery: SignedLinkDelivery;
+  smsDelivery?: SignedLinkSmsDelivery;
+  /** HMAC digest from createSmsPhoneDigest(AUTH_SECRET); never put phone numbers in delivery keys. */
+  smsPhoneDigest?: (phone: string) => string;
   paymentsFor(gymId: string): Promise<Payments>;
 }
 // Read from stored jobs: a newer release may add keys, which this one ignores after a rollback.
@@ -68,7 +71,11 @@ export function createCampaignsService(options: CampaignsOptions) {
   }
   async function queue(gymId: string, campaignId: string, occurrence: string, retry = false) {
     const gym = await settings.get(gymId);
-    if (!gym.memberEmailsEnabled) return 0;
+    if (!gym.memberEmailsEnabled) {
+      if (!(gym.memberSmsEnabled && options.smsDelivery && options.smsPhoneDigest)) return 0;
+      const [campaign] = await scope(gymId, tx => tx.select({ purpose: linkCampaigns.purpose }).from(linkCampaigns).where(eq(linkCampaigns.id, campaignId)));
+      if (campaign?.purpose !== 'update_card') return 0;
+    }
     const rows = await scope(gymId, tx => tx.select({ id: signedLinks.id }).from(signedLinks).where(and(
       eq(signedLinks.gymId, gymId), eq(signedLinks.campaignId, campaignId), ne(signedLinks.purpose, 'unsubscribe'), isNull(signedLinks.usedAt),
       isNull(signedLinks.revokedAt), gt(signedLinks.expiresAt, clock.now()))).orderBy(asc(signedLinks.id)));
@@ -162,7 +169,22 @@ export function createCampaignsService(options: CampaignsOptions) {
         // Sends match customers only for pending recipients of the purposes that use a card.
         const matched = (row: (typeof data)[number]) => row.state === 'pending' && row.link.purpose !== 'sign_waiver';
         const held = await campaignCustomerHolds(tx, [...new Set(data.filter(matched).map(row => row.link.householdId))], now);
-        return { data: data.map(row => ({ ...row, customerMatchHeld: matched(row) && held.has(row.link.householdId) })),
+        const texts = data.length ? await tx.select({ targetId: auditEvents.targetId, action: auditEvents.action, after: auditEvents.after }).from(auditEvents)
+          .where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.targetType, 'signed_link'),
+            inArray(auditEvents.targetId, data.map(row => row.link.id)),
+            inArray(auditEvents.action, ['link_campaign.sms_sent', 'link_campaign.sms_unknown', 'link_campaign.sms_not_accepted'])))
+          .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)) : [];
+        const smsStates = new Map<string, 'sent' | 'unknown' | 'not_accepted'>();
+        for (const row of data) {
+          const latest = texts.find(text => text.targetId === row.link.id);
+          if (!latest) continue;
+          const occurrence = (latest.after as { occurrence: string }).occurrence;
+          const attempts = texts.filter(text => text.targetId === row.link.id && (text.after as { occurrence: string }).occurrence === occurrence);
+          smsStates.set(row.link.id, attempts.some(text => text.action === 'link_campaign.sms_unknown') ? 'unknown'
+            : attempts.some(text => text.action === 'link_campaign.sms_sent') ? 'sent' : 'not_accepted');
+        }
+        return { data: data.map(row => ({ ...row, customerMatchHeld: matched(row) && held.has(row.link.householdId),
+          ...(smsStates.has(row.link.id) ? { smsState: smsStates.get(row.link.id)! } : {}) })),
           pagination: { total: rows[0]!.totals.total, limit: query.limit, offset: query.offset } };
       });
     },
@@ -195,13 +217,14 @@ export function createCampaignsService(options: CampaignsOptions) {
     },
     async scan(gymId: string) {
       const gym = await settings.get(gymId);
-      if (!gym.memberEmailsEnabled) return;
+      if (!gym.memberEmailsEnabled && !(gym.memberSmsEnabled && options.smsDelivery && options.smsPhoneDigest)) return;
       let cursor: string | undefined;
       for (;;) {
         const rows = await scope(gymId, tx => tx.select({ id: linkCampaigns.id, createdAt: linkCampaigns.createdAt,
           reminderSchedule: linkCampaigns.reminderSchedule }).from(linkCampaigns)
           .innerJoin(signedLinks, and(eq(signedLinks.gymId, gymId), eq(signedLinks.campaignId, linkCampaigns.id)))
-          .where(and(eq(linkCampaigns.gymId, gymId), ne(signedLinks.purpose, 'unsubscribe'), isNull(signedLinks.usedAt), isNull(signedLinks.revokedAt),
+          .where(and(eq(linkCampaigns.gymId, gymId), gym.memberEmailsEnabled ? undefined : eq(linkCampaigns.purpose, 'update_card'),
+            ne(signedLinks.purpose, 'unsubscribe'), isNull(signedLinks.usedAt), isNull(signedLinks.revokedAt),
             gt(signedLinks.expiresAt, clock.now()), cursor ? gt(linkCampaigns.id, cursor) : undefined))
           .groupBy(linkCampaigns.id).orderBy(asc(linkCampaigns.id)).limit(100));
         for (const row of rows) {
@@ -219,7 +242,7 @@ export function createCampaignsService(options: CampaignsOptions) {
         eq(signedLinks.id, work.linkId), eq(signedLinks.campaignId, work.campaignId))));
       if (!row || row.purpose === 'unsubscribe' || campaignRecipient(row, clock.now()).state !== 'pending') return;
       if (row.purpose === 'pay_invoice' && await completeClosedCampaignInvoice({ scope, clock }, gymId, work.campaignId, row.id)) return;
-      if (!gym.memberEmailsEnabled) {
+      if (!gym.memberEmailsEnabled && !(row.purpose === 'update_card' && gym.memberSmsEnabled && options.smsDelivery && options.smsPhoneDigest)) {
         await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'link_campaign.delivery_skipped',
           targetType: 'signed_link', targetId: row.id, after: { campaignId: work.campaignId, occurrence: work.occurrence,
             reason: 'member_emails_disabled' }, occurredAt: clock.now() }));
@@ -243,7 +266,9 @@ export function createCampaignsService(options: CampaignsOptions) {
             targetType: 'signed_link', targetId: row.id, after: { campaignId: work.campaignId, occurrence: work.occurrence }, occurredAt: clock.now() }));
         }
       }
-      await deliverCampaignLink({ scope, clock, delivery: options.delivery }, gymId, work.campaignId, work.linkId, work.occurrence);
+      await deliverCampaignLink({ scope, clock, delivery: options.delivery,
+        ...(options.smsDelivery ? { smsDelivery: options.smsDelivery } : {}),
+        ...(options.smsPhoneDigest ? { smsPhoneDigest: options.smsPhoneDigest } : {}) }, gymId, work.campaignId, work.linkId, work.occurrence);
     },
   };
 }

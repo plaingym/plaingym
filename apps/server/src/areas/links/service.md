@@ -72,6 +72,29 @@ The expiry isn't part of the command's identity. Campaign sends and reminders ha
 occurrence reservations (`campaigns.README.md`) and don't use a generation.
 The email transport runs outside transactions.
 
+`channel: 'sms'` sends any of the four staff purposes by text. Omit
+`recipientMemberId` for the household billing phone, or name a member of that
+household. The separate recipient field leaves a waiver's resource `memberId`
+unchanged. Email remains the default channel and refuses an SMS-only recipient.
+The recipient must not be erased, must have notices consent, and must have a
+phone that normalizes to its stored E.164 value. These checks run before minting,
+in the same transaction. `MemberSms` checks consent, phone, the member-text
+switch, and the daily cap again at the transport boundary. A household-bound
+resolver also refuses a recipient moved out of the link's household during
+provider preparation, immediately before the provider call. SMS needs no SMTP or
+member-email switch. Texts use the same signed-link resolver, expiry and
+single-use rules as email.
+
+SMS uses `sms_deliveries` with key
+`links.sms.<purpose>:<household>:<sendGeneration>`. Replay comes first; reserve,
+link creation and remember commit together; the attempt runs outside the
+transaction. The recipient participates in command identity. Accepted or unknown
+attempts never send again; a definite non-send revokes the undisclosed link and
+releases the reservation. An unknown replay returns `outcome: 'unknown'`.
+Inject `smsDelivery` or call `configureSignedLinkSmsDelivery` with a
+`prepare(gymId)` returning the trusted origin, matching gym ID, translator and
+gym SMS resolver. Runtime composition supplies this independently of email.
+
 For a positive invoice below the card minimum or off the currency step, send checks
 the amount before minting and commits the new metadata record already revoked,
 with creation and revocation audits. It emails manual-payment instructions without

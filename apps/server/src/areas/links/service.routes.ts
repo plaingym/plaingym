@@ -23,7 +23,7 @@ export function createSignedLinksRoutes(service = createSignedLinksService()) {
     }),
     route({ ...send,
       request: { body: { required: true, content: { 'application/json': { schema: send.body } } } },
-      responses: { 200: { description: 'Emailed signed link metadata', content: { 'application/json': { schema: send.response } } } },
+      responses: { 200: { description: 'Sent signed link metadata', content: { 'application/json': { schema: send.response } } } },
     }, async (c) => {
       c.header('Cache-Control', 'no-store');
       return c.json({ data: await service.send(mutation(c.get('context')), c.req.valid('json')) }, 200);

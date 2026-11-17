@@ -28,6 +28,7 @@ const boundaries = {
   'areas/announcements/send.ts': 'preview and send refuse while memberEmailsEnabled is off; the sender-only test copy is a staff notice and is exempt',
   'areas/links/service.delivery.ts': 'memberEmailsEnabled reloaded from persisted settings immediately before delivery',
   'areas/links/service.ts': 'one-off send command: its last-moment checks and the memberEmailsEnabled reload stay in service.delivery, which calls this transport',
+  'areas/links/campaigns.delivery.ts': 'campaign texts use MemberSms for the member text switch, consent and cap; email still uses the guarded signed-link delivery',
   'infra/email/member.ts': 'memberEmailsEnabled: member-targeted email adapter',
   'infra/email/deliveries.ts': 'keyed send state around a transport its callers chose; each caller above checks its own switch',
   'infra/email/smtp.ts': 'administrative SMTP test, delivery transport guarded by its member callers',

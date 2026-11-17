@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { linksContracts, membersContracts, releaseInvoiceHoldContract } from '@plaingym/shared/contracts';
-import type { CreateSignedLinkRequest, InvoiceStatus } from '@plaingym/shared/contracts';
+import type { CreateSignedLinkRequest, InvoiceStatus, Member } from '@plaingym/shared/contracts';
 import { billingRequest, createBillingClient } from '../catalog/api.js';
 import { readApiError, reportApiRefusal } from '../../../lib/api.js';
 import { text } from './format.js';
@@ -42,9 +42,18 @@ export function createInvoiceClient(fetcher: typeof fetch = fetch) {
     },
     households: (search: string) => billingRequest(membersContracts.listHouseholds, undefined, {}, { ...(search.trim() ? { search: search.trim() } : {}), limit: 25 }, checked),
     household: async (householdId: string) => (await billingRequest(membersContracts.getHousehold, undefined, { householdId }, {}, checked)).data,
-    /** With a send generation the link is emailed; without one it is created for the page to show. */
-    link: (input: CreateSignedLinkRequest, sendGeneration?: string) => sendGeneration
-      ? billingRequest(linksContracts.sendLink, { ...input, sendGeneration }, {}, {}, checked)
+    householdMembers: async (householdId: string) => {
+      const people: Member[] = [];
+      for (;;) {
+        const page = await billingRequest(membersContracts.listMembers, undefined, {}, { householdId, limit: 100, offset: people.length }, checked);
+        people.push(...page.data);
+        if (people.length >= page.pagination.total) return people;
+        if (!page.data.length) throw new Error('Incomplete household member list');
+      }
+    },
+    /** A generation sends the link; without one it is created for the page to show. */
+    link: (input: CreateSignedLinkRequest, sendGeneration?: string, sms?: { channel: 'sms'; recipientMemberId?: string }) => sendGeneration
+      ? billingRequest(linksContracts.sendLink, { ...input, sendGeneration, ...sms }, {}, {}, checked)
       : billingRequest(linksContracts.createLink, input, {}, {}, checked),
   };
 }

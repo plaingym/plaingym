@@ -10,7 +10,7 @@ them through the gym settings service, with no additional runtime wiring.
 
 Campaign reminders with a link rotate their token. An unresolvable token in the public
 `campaign_` format renders a static **This link was replaced** page with instructions
-to use the newest email. It returns 404, exposes no data or actions, and looks the
+to use the newest email or text. It returns 404, exposes no data or actions, and looks the
 same for made-up tokens and tokens presented to another gym. The prefix does not
 grant access; every active token still needs its current, gym-scoped stored hash.
 Unmarked unavailable links also mention replacement in their general guidance.

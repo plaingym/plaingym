@@ -17,7 +17,10 @@ import { clock as defaultClock } from '../../core/clock.js';
 import type { Principal } from '../../core/context.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { commandDigest, createEmailDeliveries, deliveryAcceptance, type Email } from '../../infra/email/index.js';
-import { deliverSignedLink, validateSignedLinkDelivery, type SignedLinkDelivery } from './service.delivery.js';
+import { createSmsDeliveries, MemberSms } from '../../infra/sms/index.js';
+import { createGymSettingsAccessor } from '../settings/settings.js';
+import { deliverSignedLink, householdBoundSmsResolver, signedLinkSmsRecipient, validateSignedLinkDelivery, validateSignedLinkOrigin,
+  type SignedLinkDelivery, type SignedLinkSmsDelivery } from './service.delivery.js';
 import { completeCampaignIn } from './campaigns.model.js';
 
 type LinkRow = typeof signedLinks.$inferSelect;
@@ -187,11 +190,13 @@ export function createSignedLinksService(options: {
   scope?: typeof forGym;
   clock?: Clock;
   delivery?: SignedLinkDelivery;
+  smsDelivery?: SignedLinkSmsDelivery;
   /** Internal settlement flows may need an undisclosed zero-invoice association; staff sharing always refuses it. */
   allowZeroInvoices?: boolean;
 } = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const deliveries = createEmailDeliveries({ scope, clock });
+  const smsDeliveries = createSmsDeliveries({ scope, clock }), settings = createGymSettingsAccessor({ scope });
   /** Creates every link or none, in one transaction (`createSignedLinksIn`). */
   async function createMany(context: MutationContext, inputs: CreateSignedLinkRequest[]) {
     return scope(context.gymId, tx => createSignedLinksIn(tx, context, inputs, clock.now(), { allowZeroInvoices: options.allowZeroInvoices ?? false }));
@@ -263,21 +268,33 @@ export function createSignedLinksService(options: {
      */
     async send(context: MutationContext, input: SendSignedLinkRequest) {
       assertNoTransaction('links.send');
-      const delivery = options.delivery ?? configuredDelivery;
-      if (!delivery) throw new AppError('unavailable', 'Signed link email delivery is not configured');
-      // Resolve the trusted origin and delivery preferences before minting a credential.
-      const prepared = await delivery.prepare(context.gymId);
-      validateSignedLinkDelivery(prepared, context.gymId);
-      const { sendGeneration, ...fields } = sendSignedLinkRequestSchema.parse(input);
+      const { sendGeneration, channel = 'email', recipientMemberId, ...fields } = sendSignedLinkRequestSchema.parse(input);
+      const sending = channel === 'sms' ? smsDeliveries : deliveries;
       const request = lowercaseIds(fields);
-      const key = `links.send.${request.purpose}:${request.householdId}:${sendGeneration.toLowerCase()}`;
+      const recipientId = recipientMemberId?.toLowerCase();
+      const key = `links.${channel === 'sms' ? 'sms' : 'send'}.${request.purpose}:${request.householdId}:${sendGeneration.toLowerCase()}`;
       // The expiry isn't part of the request's identity: a client computes it afresh for each try.
       const digest = commandDigest([request.purpose === 'pay_invoice' ? request.invoiceId : null,
-        request.purpose === 'sign_waiver' ? request.memberId : null, request.campaignId ?? null]);
-      const replayed = await scope(context.gymId, tx => deliveries.replay(tx, context.gymId, key, digest));
+        request.purpose === 'sign_waiver' ? request.memberId : null, request.campaignId ?? null,
+        ...(channel === 'sms' ? [recipientId ?? null] : [])]);
+      const replayed = await scope(context.gymId, tx => sending.replay(tx, context.gymId, key, digest));
       if (replayed) return { ...await get(context.gymId, sentLinkSchema.parse(replayed.result).linkId), ...(replayed.outcome ? { outcome: replayed.outcome } : {}) };
-      const { created, reservation } = await scope(context.gymId, async tx => {
-        const reservation = await deliveries.reserve(tx, context.gymId, key, digest);
+      const gym = channel === 'sms' ? await settings.get(context.gymId) : undefined;
+      // Refuse foreign or ineligible recipients even when this gym has no configured text transport.
+      // Preparation can be slow; check again atomically with minting below.
+      if (channel === 'sms') await scope(context.gymId, tx => signedLinkSmsRecipient(tx, context.gymId, request.householdId, recipientId, gym!.country));
+      const delivery = options.delivery ?? configuredDelivery, smsDelivery = options.smsDelivery ?? configuredSmsDelivery;
+      if (channel === 'email' && !delivery || channel === 'sms' && !smsDelivery)
+        throw new AppError('unavailable', `Signed link ${channel === 'email' ? 'email' : 'text'} delivery is not configured`);
+      // SMS preparation never requires SMTP or the member-email switch.
+      const prepared = channel === 'email' ? await delivery!.prepare(context.gymId) : undefined;
+      const preparedSms = channel === 'sms' ? await smsDelivery!.prepare(context.gymId) : undefined;
+      if (prepared) validateSignedLinkDelivery(prepared, context.gymId);
+      if (preparedSms) validateSignedLinkOrigin(preparedSms, context.gymId);
+      const { created, reservation, recipient } = await scope(context.gymId, async tx => {
+        const recipient = channel === 'sms'
+          ? await signedLinkSmsRecipient(tx, context.gymId, request.householdId, recipientId, gym!.country) : undefined;
+        const reservation = await sending.reserve(tx, context.gymId, key, digest);
         // Check the invoice before minting. Manual notices keep a revoked metadata record
         // for the send response, but never commit an active undisclosed credential.
         let manualPayment = false;
@@ -293,14 +310,14 @@ export function createSignedLinksService(options: {
         if (manualPayment) {
           created.link = await revokeSignedLinkIn(tx, context, created.link.id, clock.now());
         }
-        await deliveries.remember(tx, reservation, { linkId: created.link.id });
-        return { created, reservation };
+        await sending.remember(tx, reservation, { linkId: created.link.id });
+        return { created, reservation, recipient };
       });
-      // All sending and its last-moment checks stay in service.delivery; this records what reached the transport.
+      // Observe the email boundary; SMS uses MemberSms for its last-moment checks.
       let entered = false, suppressed = false;
       const email: Email = { async sendEmail(message) {
         entered = true;
-        const result = await deliveries.attempt(reservation, prepared.email, message);
+        const result = await deliveries.attempt(reservation, prepared!.email, message);
         suppressed = result.status !== 'sent';
         return result;
       } };
@@ -309,12 +326,32 @@ export function createSignedLinksService(options: {
         // The link was never disclosed. Even if revocation fails, release this definite non-send for a safe retry.
         const errors: unknown[] = [];
         try { await revoke(context, created.link.id); } catch (error) { errors.push(error); }
-        try { await deliveries.release(reservation); } catch (error) { errors.push(error); }
+        try { await sending.release(reservation); } catch (error) { errors.push(error); }
         if (errors.length) throw new AggregateError(errors, 'Signed link cleanup failed');
       }
       try {
-        disclosed = await deliverSignedLink({ scope, context, link: created.link, token: created.token, delivery: { ...prepared, email },
-          manualPayment: created.link.revokedAt !== null });
+        if (preparedSms && recipient) {
+          const sms = new MemberSms({ gymId: context.gymId, memberIds: recipient.memberIds, householdIds: recipient.householdIds,
+            kind: 'notices', resolver: householdBoundSmsResolver(preparedSms.resolver, scope, context.gymId, request.householdId, recipient.memberIds), settings, scope, clock });
+          let manual = created.link.revokedAt !== null;
+          if (request.purpose === 'pay_invoice') {
+            const invoice = await scope(context.gymId, async tx => (await tx.select().from(invoices)
+              .where(and(eq(invoices.id, request.invoiceId), eq(invoices.householdId, request.householdId))))[0]);
+            if (!invoice || !['open', 'past_due'].includes(invoice.status) || invoice.amountCents === 0)
+              throw new AppError('conflict', 'Invoice cannot be paid');
+            manual ||= !!cardChargeIssue(invoice.amountCents, invoice.currency);
+          }
+          const body = manual ? preparedSms.t('links/service:manualPayment')
+            : `${preparedSms.t(`links/service:${request.purpose}.subject`)}: ${new URL(`/l/${created.token}`, preparedSms.origin).href}`;
+          entered = true;
+          const result = await smsDeliveries.attempt(reservation, sms, { to: recipient.to, body });
+          suppressed = result.status !== 'sent';
+          if (suppressed) throw new AppError('unavailable', 'Signed link text was suppressed');
+          disclosed = !manual;
+        } else {
+          disclosed = await deliverSignedLink({ scope, context, link: created.link, token: created.token, delivery: { ...prepared!, email },
+            manualPayment: created.link.revokedAt !== null });
+        }
       } catch (error) {
         // A definite non-send can't leave an undisclosed credential active, and a retry mints a new one. A possibly
         // delivered link stays usable: a replay returns it and never sends another.
@@ -323,9 +360,9 @@ export function createSignedLinksService(options: {
           try { await cleanup(); }
           catch (cleanupError) { cause = new AggregateError([error, cleanupError], 'Signed link delivery and cleanup failed'); }
         }
-        throw Object.assign(new AppError('unavailable', 'Signed link email was not delivered'), { cause });
+        throw Object.assign(new AppError('unavailable', `Signed link ${channel === 'email' ? 'email' : 'text'} was not delivered`), { cause });
       }
-      // The email was delivered, so a failure here must not report otherwise.
+      // The message was delivered, so a failure here must not report otherwise.
       if (!disclosed) await revoke(context, created.link.id);
       return get(context.gymId, created.link.id);
     },
@@ -333,5 +370,8 @@ export function createSignedLinksService(options: {
 }
 
 let configuredDelivery: SignedLinkDelivery | undefined;
+let configuredSmsDelivery: SignedLinkSmsDelivery | undefined;
+/** Composition supplies a gym SMS resolver and trusted origin independently of SMTP. */
+export function configureSignedLinkSmsDelivery(delivery: SignedLinkSmsDelivery): void { configuredSmsDelivery = delivery; }
 /** Composition supplies the email transport and canonical per-gym origin, never the request Host header. */
 export function configureSignedLinkDelivery(delivery: SignedLinkDelivery): void { configuredDelivery = delivery; }

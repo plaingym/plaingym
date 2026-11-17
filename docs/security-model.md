@@ -96,7 +96,7 @@ pages.
   one member's announcement subscription. The
   token is 256 random bits; only its SHA-256 digest is stored. Each request
   reloads the link and refuses it once revoked, used or expired. Staff-created
-  links, including emailed links, expire within 90 days of creation. A link can't
+  links, including emailed and texted links, expire within 90 days of creation. A link can't
   read bookings, attendance, ranks, memberships or emergency contacts.
   Announcement unsubscribe links last 90 days and remain reusable until expiry.
   Their GET page never changes preferences; a button or a cookie-less one-click

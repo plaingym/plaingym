@@ -33,6 +33,13 @@ function mount(service: CampaignClient) {
   return render(<QueryClientProvider client={cache}><CampaignWorkspace gymId={id} timezone="America/Los_Angeles" client={service} /></QueryClientProvider>);
 }
 describe('campaign admin screens', () => {
+  it.each(['sent', 'unknown', 'not_accepted'] as const)('shows the recipient text state %s', async smsState => {
+    const service = client(), recipients = await service.recipients(id, undefined);
+    service.recipients = vi.fn(async () => ({ ...recipients, data: recipients.data.map(row => ({ ...row, smsState })) }));
+    mount(service);
+    await userEvent.click(await screen.findByRole('button', { name: 'View October welcome' }));
+    expect(await screen.findByText(text('sms.' + smsState))).toBeDefined();
+  });
   it('groups campaign progress counts', async () => {
     const service = client();
     vi.mocked(service.list).mockResolvedValue({ data: [{ ...detail, progress: { total: 12000, pending: 1200, completed: 2400, expired: 3600, revoked: 4800 } }],

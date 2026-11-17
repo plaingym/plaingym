@@ -4,7 +4,7 @@ import { auditEvents, type Transaction } from '@plaingym/db';
 import { localDate } from '@plaingym/shared/time';
 
 export const campaignDeliveryActions = ['link_campaign.delivery_reserved', 'link_campaign.delivery_released',
-  'link_campaign.delivery_sent', 'link_campaign.delivery_uncertain', 'link_campaign.delivery_manual',
+  'link_campaign.delivery_sent', 'link_campaign.delivery_uncertain', 'link_campaign.delivery_manual', 'link_campaign.delivery_suppressed',
   'link_campaign.delivery_queued', 'billing.card_setup.started', 'billing.checkout.started'] as const;
 export type DeliveryHistory = Pick<typeof auditEvents.$inferSelect, 'targetId' | 'action' | 'after' | 'occurredAt'>[];
 
