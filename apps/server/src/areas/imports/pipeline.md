@@ -40,8 +40,10 @@ fresh. A process shares one FIFO memory budget across all pipeline instances:
 one third of V8's heap limit, capped at 128 MiB. A computation reserves 4 MiB plus
 eight times its upload size and 256 bytes per row, up to the whole budget. Small
 previews can run together; a large preview waits for the allowance to be free.
-At most 16 previews may wait in that process's FIFO queue. Admission beyond that
-bound answers `503 unavailable` with a safe queue-busy explanation. A retry for
+At most 16 previews may wait in that process's FIFO queue, with at most three
+waiting previews per gym. Running previews do not count against that waiting
+share. Admission beyond either bound answers `503 unavailable` with a safe
+queue-busy explanation, leaving room for other gyms. A retry for
 the same active plan shares its ticket across pipeline instances and does not
 consume another queue position. This coalescing, like the memory allowance, is
 process-local; separate processes may compute the same plan, with the existing
@@ -54,7 +56,8 @@ through storage metadata and object reads, including body consumption, and check
 the deadline between mapper chunks and writes. The budget is released only when
 the computation settles; a timeout does not race a still-running read. Work already
 in a database transaction or write finishes before the next check. Queue waiting
-does not consume the computation's deadline. A cancellation caused by the deadline
+and the ticket's computing-marker write do not consume the computation's deadline.
+A cancellation caused by the deadline
 answers `unavailable`; unrelated storage or mapper failures retain their cause,
 even after the deadline. A computation whose summary is already stored keeps its result, even
 if removing the previous preview's files runs past the deadline.
@@ -65,17 +68,33 @@ admission to the memory allowance. `GET
 /api/imports/uploads/{uploadId}/previews/{id}` reads that ticket's state and, when
 ready, its requested page. Both routes require `settings.manage` and send
 `Cache-Control: no-store`. A ticket's metadata, computing marker and terminal
-result live under the upload's `preview-requests/<id>/` prefix. A poll can reach
+result live under the upload's `preview/requests/<id>/` prefix, so ticket writes
+and renewals do not extend upload retention. A poll can reach
 another app process; it reads the same stored progress and result without
-starting work. Polls check upload ownership and expiry and the gym's current
-import revision before returning any rows. Failed computations store only a safe
+starting work. The coordinator answers its own pending tickets from memory,
+checking the cached gym, upload and expiry without storage or revision reads.
+Other processes check upload ownership and expiry in storage. The gym's current
+import revision is read only when a ready result exists, before returning rows.
+Failed computations store only a safe
 application explanation; other failures use a generic retry message. A retry of
 a failed start gets a new ticket. All ticket files expire with the upload.
-If a process exits without saving a result, its ticket eventually reports failure:
-the upper bound is 17 computation-and-cleanup allowances (about 37 minutes with
-the defaults), allowing all 16 queued previews to receive their own full deadline.
-The internal `preview` helper still awaits the same budgeted computation for
-in-process callers; HTTP routes use `requestPreview` and `getPreview`.
+Pending work renews a lease every ten seconds, while queued, computing, cleaning
+up, and saving its terminal result. A renewal writes an immutable
+`lease/<ten-second-bucket>.json` key under the ticket, valid for 30 seconds from
+the bucket's start (20–30 seconds after the write). Readers check only the three
+potentially live buckets, without listing storage. A process that exits, or fails
+to save its result, stops renewing; the ticket reports failure when its last
+lease lapses. Healthy work is not failed because a fixed total lifetime elapsed.
+Tickets written by earlier releases at `preview-requests/<id>/` remain readable
+and retain their original expiry behavior.
+The internal `preview` helper joins the same ticket and awaits its computation;
+HTTP routes use `requestPreview` and `getPreview`. The shared budget owns ticket
+coalescing as well as admission.
+
+The import page keeps polling its previous ticket when columns or duplicate
+policy change, and disables Preview until it finishes. An obsolete result is
+discarded. Network and server errors during polling are retried up to three
+times; an explicit failed ticket is terminal and is never retried automatically.
 
 All three mappers use gym-scoped indexes on generated, PostgreSQL-folded member
 last names; mat and memberships also use the folded email index. First names

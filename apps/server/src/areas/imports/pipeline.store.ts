@@ -3,6 +3,7 @@ import { t } from './pipeline.messages.js';
 import { AppError } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import type { Uploads } from '../../infra/storage/index.js';
+import { PREVIEW_LEASE_INTERVAL_MS, PREVIEW_LEASE_MS } from './pipeline.budget.js';
 export type UploadsFor = (gymId: string) => Promise<Uploads>;
 /** Immutable source uploads and compatibility reads/writes for runs created by older releases. */
 export class PipelineStore {
@@ -31,5 +32,17 @@ export class PipelineStore {
   async claim(gymId: string, key: string): Promise<boolean> {
     try { await this.put(gymId, key, {}); return true; }
     catch (error) { if (await this.exists(gymId, key)) return false; throw error; }
+  }
+  /** Renew with a new immutable key; readers need only the three potentially live buckets, never a storage listing. */
+  async renewLease(gymId: string, prefix: string, now: number): Promise<number> {
+    const bucket = Math.floor(now / PREVIEW_LEASE_INTERVAL_MS);
+    await this.putOnce(gymId, `${prefix}/lease/${bucket}.json`, {});
+    return bucket * PREVIEW_LEASE_INTERVAL_MS + PREVIEW_LEASE_MS;
+  }
+  async hasLease(gymId: string, prefix: string, now: number): Promise<boolean> {
+    const bucket = Math.floor(now / PREVIEW_LEASE_INTERVAL_MS);
+    const live = await Promise.all(Array.from({ length: PREVIEW_LEASE_MS / PREVIEW_LEASE_INTERVAL_MS },
+      (_, index) => this.exists(gymId, `${prefix}/lease/${bucket - index}.json`)));
+    return live.some(Boolean);
   }
 }

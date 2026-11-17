@@ -4,21 +4,21 @@ import { PreviewBudget, previewDeadline } from './pipeline.budget.js';
 
 it('bounds the waiting queue without refusing an immediately available slot', async () => {
   const budget = new PreviewBudget(1, 1), release = Promise.withResolvers<void>();
-  const active = budget.run(1, 1, () => release.promise);
-  const queued = budget.run(1, 1, async () => 'next');
-  expect(() => budget.run(1, 1, async () => 'overflow')).toThrow('queue is full');
+  const active = budget.run('a', 1, 1, () => release.promise);
+  const queued = budget.run('a', 1, 1, async () => 'next');
+  expect(() => budget.run('b', 1, 1, async () => 'overflow')).toThrow('queue is full');
   release.resolve(); await active; expect(await queued).toBe('next');
-  expect(await budget.run(1, 1, async () => 'free')).toBe('free');
+  expect(await budget.run('a', 1, 1, async () => 'free')).toBe('free');
 });
 
 it('admits small files together, queues a large file fairly, and releases reservations on failure', async () => {
   const budget = new PreviewBudget(16 * 1024 * 1024), order: string[] = [];
   const a = Promise.withResolvers<void>(), b = Promise.withResolvers<void>(), large = Promise.withResolvers<void>();
-  const first = budget.run(1, 1, async () => { order.push('a'); await a.promise; });
-  const second = budget.run(1, 1, async () => { order.push('b'); await b.promise; });
-  const third = budget.run(20 * 1024 * 1024, 100_000, async () => { order.push('large'); await large.promise; throw new Error('failed'); });
+  const first = budget.run('a', 1, 1, async () => { order.push('a'); await a.promise; });
+  const second = budget.run('b', 1, 1, async () => { order.push('b'); await b.promise; });
+  const third = budget.run('a', 20 * 1024 * 1024, 100_000, async () => { order.push('large'); await large.promise; throw new Error('failed'); });
   const rejection = expect(third).rejects.toThrow('failed');
-  const fourth = budget.run(1, 1, async () => { order.push('last'); });
+  const fourth = budget.run('b', 1, 1, async () => { order.push('last'); });
   await Promise.resolve(); expect(order).toEqual(['a', 'b']);
   a.resolve(); await first; expect(order).toEqual(['a', 'b']);
   b.resolve(); await second; expect(order).toEqual(['a', 'b', 'large']);
@@ -28,7 +28,7 @@ it('admits small files together, queues a large file fairly, and releases reserv
 it('aborts the computation itself and waits for cancellation before releasing its budget', async () => {
   const budget = new PreviewBudget(1), entered = Promise.withResolvers<void>(), stopping = Promise.withResolvers<void>();
   let stopped = false;
-  const first = budget.run(1, 1, () => previewDeadline(20, async (signal) => {
+  const first = budget.run('a', 1, 1, () => previewDeadline(20, async (signal) => {
     entered.resolve();
     await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
     await stopping.promise; stopped = true; signal.throwIfAborted();
@@ -36,9 +36,22 @@ it('aborts the computation itself and waits for cancellation before releasing it
   const rejection = expect(first).rejects.toThrow('took too long');
   await entered.promise;
   let started = false;
-  const next = budget.run(1, 1, async () => { expect(stopped).toBe(true); started = true; });
+  const next = budget.run('b', 1, 1, async () => { expect(stopped).toBe(true); started = true; });
   await new Promise(resolve => setTimeout(resolve, 30));
   expect(started).toBe(false); stopping.resolve(); await rejection; await next;
+});
+
+it('caps each gym waiting behind the shared memory allowance and frees its share on admission', async () => {
+  const budget = new PreviewBudget(1, 16, 2), release = Promise.withResolvers<void>();
+  const active = budget.run('a', 1, 1, () => release.promise);
+  const first = budget.run('a', 1, 1, async () => 'a1');
+  const second = budget.run('a', 1, 1, async () => 'a2');
+  expect(() => budget.run('a', 1, 1, async () => 'overflow')).toThrow('queue is full');
+  const other = budget.run('b', 1, 1, async () => 'b');
+  release.resolve();
+  await active;
+  expect(await Promise.all([first, second, other])).toEqual(['a1', 'a2', 'b']);
+  expect(await budget.run('a', 1, 1, async () => 'free')).toBe('free');
 });
 
 it.each(['AbortError', 'TimeoutError'])('answers a provider %s as a timed-out preview and keeps other failures', async name => {

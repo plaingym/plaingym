@@ -17,6 +17,16 @@ for (const width of [360, 1280]) {
       const page = await context.newPage();
       const capture = async (label: string) => {
         await accessibleLayout(page, info, label);
+        // Focus and accessibility checks can scroll the document. A full-page capture retains the sticky header at that offset.
+        await page.evaluate(() => window.scrollTo({ top: 0, left: 0, behavior: 'instant' }));
+        await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+        const heading = page.getByRole('heading', { level: 1 });
+        await expect(heading).toBeInViewport();
+        const header = page.locator('header').first();
+        await expect.poll(async () => {
+          const titleBounds = await heading.boundingBox(), headerBounds = await header.boundingBox();
+          return !!titleBounds && !!headerBounds && titleBounds.y >= headerBounds.y + headerBounds.height;
+        }).toBe(true);
         await mkdir('coverage/imports-catalog', { recursive: true });
         await writeFile(`coverage/imports-catalog/${label}-${width}.png`, await page.screenshot({ fullPage: true }));
       };
@@ -65,7 +75,11 @@ for (const width of [360, 1280]) {
       }));
       await page.getByRole('button', { name: 'Preview', exact: true }).click();
       await expect(page.getByText('Your preview is queued. Waiting for other previews to finish…', { exact: true })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Preview', exact: true })).toBeDisabled();
       await capture('import-preview-queued');
+      await page.getByRole('combobox', { name: /^Duplicates/ }).selectOption('skip');
+      await expect(page.getByRole('button', { name: 'Preview', exact: true })).toBeDisabled();
+      await page.getByRole('combobox', { name: /^Duplicates/ }).selectOption('error');
       previewState = 'computing';
       await expect(page.getByText('Preparing your preview…', { exact: true })).toBeVisible();
       await capture('import-preview-computing');

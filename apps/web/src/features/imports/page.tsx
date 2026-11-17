@@ -23,11 +23,13 @@ import { Badge, TableContainer } from '../../components/ui/table.js';
 const request = createJsonTransport();
 const label = (key: string) => t('imports/pipeline:' + key);
 class PreviewError extends Error {}
+class RetryablePreviewError extends PreviewError {}
 async function readPreviewResponse(response: Response) {
   if (!response.ok) {
     await reportApiRefusal(response);
     const { message } = await readApiError(response, [{ status: 400, code: 'invalid_request' }, { status: 404, code: 'not_found' },
       { status: 503, code: 'unavailable' }]);
+    if (response.status >= 500) throw new RetryablePreviewError(message ?? label('requestFailed'));
     if (message) throw new PreviewError(message);
     throw new Error('Preview failed');
   }
@@ -48,15 +50,20 @@ function ImportPanel({ gymId }: { gymId: string }) {
   const fingerprint = JSON.stringify(plan);
   const currentPlan = useRef(fingerprint);
   useEffect(() => { currentPlan.current = fingerprint; }, [fingerprint]);
-  const ticket = previewTicket?.fingerprint === fingerprint ? previewTicket : undefined;
+  // Keep polling the upload's previous plan so editing columns cannot queue another abandoned preview.
+  const ticket = previewTicket;
   const previewProgress = useQuery({ queryKey: ['import-preview', gymId, ticket?.id, ticket?.page], enabled: !!ticket,
-    retry: false, refetchOnWindowFocus: false, refetchOnReconnect: false,
+    retry: (failures, error) => failures < 3 && (error instanceof RetryablePreviewError || error instanceof TypeError),
+    retryDelay: attempt => Math.min(250 * 2 ** attempt, 1000), refetchOnWindowFocus: false, refetchOnReconnect: false,
     queryFn: async ({ signal }) => readPreviewResponse(await fetch(`/api/imports/uploads/${ticket!.uploadId}/previews/${ticket!.id}?offset=${ticket!.page}&limit=50`,
       { credentials: 'same-origin', redirect: 'error', signal })),
     refetchInterval: query => query.state.status === 'error' || query.state.data?.status === 'ready' ? false : 1000 });
   useEffect(() => {
     if (ticket && previewProgress.data?.status === 'ready') {
-      setPreview(previewProgress.data.preview); setOffset(previewProgress.data.preview.pagination.offset); setPreviewTicket(undefined);
+      if (ticket.fingerprint === currentPlan.current) {
+        setPreview(previewProgress.data.preview); setOffset(previewProgress.data.preview.pagination.offset);
+      }
+      setPreviewTicket(undefined);
     }
   }, [ticket, previewProgress.data]);
   const progress = useQuery({ queryKey: ['imports', gymId, runId], enabled: !!runId,
@@ -79,8 +86,9 @@ function ImportPanel({ gymId }: { gymId: string }) {
       headers: { 'content-type': 'application/json' }, body: JSON.stringify(plan) });
     return { data: await readPreviewResponse(response), fingerprint, page };
   }, onMutate() { setPreviewTicket(undefined); }, onSuccess({ data, fingerprint: requestedPlan, page }) {
-    if (requestedPlan !== currentPlan.current) return;
-    if (data.status === 'ready') { setPreview(data.preview); setOffset(data.preview.pagination.offset); }
+    if (data.status === 'ready') {
+      if (requestedPlan === currentPlan.current) { setPreview(data.preview); setOffset(data.preview.pagination.offset); }
+    }
     else setPreviewTicket({ ...data, page, fingerprint: requestedPlan });
   } });
   const start = useMutation({ mutationFn: async (dryRun: boolean) => parseResponse(importJobSchema, (await request<{ data: unknown }>('/api/imports', { ...plan, dryRun })).data),
@@ -89,14 +97,14 @@ function ImportPanel({ gymId }: { gymId: string }) {
   const dryRunPassed = progress.data?.dryRun && progress.data.status === 'succeeded' && progress.data.errorCount === 0 && runPlan === fingerprint;
   // A preview's explanation must not stand in for a later failure of another request.
   const otherFailure = uploadFile.isError || start.isError || progress.isError || errors.isError;
-  const previewFailure = ticket && previewProgress.isError ? previewProgress.error : previewRows.error;
+  const previewFailure = ticket ? ticket.fingerprint === fingerprint && previewProgress.isError ? previewProgress.error : undefined : previewRows.error;
   const previewPending = previewRows.isPending || !!ticket && !previewProgress.isError;
   const columns = [...new Set(preview?.data.flatMap(row => Object.keys(row.values)) ?? [])];
   return <PageSection title={label('import')} description={label('mapperNotice')}><div className={card}>
     <ol className="grid gap-1 text-sm text-muted-foreground sm:grid-cols-4" aria-label={label('steps')}>
       {(['stepUpload', 'stepMatch', 'stepCheck', 'stepCommit'] as const).map((step, index) => <li key={step}>{index + 1}. {label(step)}</li>)}</ol>
     <div className="grid gap-2"><Label htmlFor="csv-file">{label('file')}</Label>
-      <Input id="csv-file" type="file" accept=".csv,text/csv" className="py-2" disabled={demo || !!busy} onChange={(event) => { const file = event.target.files?.[0]; if (file) uploadFile.mutate(file); }}/></div>
+      <Input id="csv-file" type="file" accept=".csv,text/csv" className="py-2" disabled={demo || !!busy || previewPending} onChange={(event) => { const file = event.target.files?.[0]; if (file) uploadFile.mutate(file); }}/></div>
     {demo && <Alert>{label('demoNotice')}</Alert>}
     {(otherFailure || previewFailure) && <Alert variant="error" focusOnReveal>{!otherFailure && previewFailure instanceof PreviewError
       ? previewFailure.message : label('requestFailed')}</Alert>}
@@ -105,10 +113,10 @@ function ImportPanel({ gymId }: { gymId: string }) {
     {upload && <>
       <p className="break-all text-sm"><span className="font-medium">{upload.filename}</span> · {label('rows')}: {formatCount(upload.rowCount)}</p>
       <div className="grid gap-4 sm:grid-cols-2">
-        <Label className="grid gap-2">{label('mapper')}<Select value={mapper} disabled={!!busy} onChange={(event) => { setMapper(event.target.value as ImportMapper); setPreview(undefined); setPreviewTicket(undefined); previewRows.reset(); }}>
+        <Label className="grid gap-2">{label('mapper')}<Select value={mapper} disabled={!!busy} onChange={(event) => { setMapper(event.target.value as ImportMapper); setPreview(undefined); if (!previewRows.isPending) previewRows.reset(); }}>
           {(['people', 'mat', 'memberships'] as const).map((id) => <option key={id} value={id}>{label('mapper.' + id)}</option>)}
         </Select></Label>
-        <Label className="grid gap-2">{label('duplicates')}<Select value={duplicatePolicy} disabled={!!busy} onChange={(event) => { setPolicy(event.target.value as ImportPlanRequest['duplicatePolicy']); setPreview(undefined); setPreviewTicket(undefined); previewRows.reset(); }}>
+        <Label className="grid gap-2">{label('duplicates')}<Select value={duplicatePolicy} disabled={!!busy} onChange={(event) => { setPolicy(event.target.value as ImportPlanRequest['duplicatePolicy']); setPreview(undefined); if (!previewRows.isPending) previewRows.reset(); }}>
           {(['error', 'skip', 'update'] as const).map((policy) => <option key={policy} value={policy}>{label('policy.' + policy)}</option>)}
         </Select></Label>
       </div>
@@ -118,7 +126,7 @@ function ImportPanel({ gymId }: { gymId: string }) {
             value={mapping.find((item) => item.sourceColumn === column)?.targetField ?? ''} onChange={(event) => {
               const target = importTargetFieldSchema.safeParse(event.target.value);
               setMapping((previous) => [...previous.filter((item) => item.sourceColumn !== column && item.targetField !== event.target.value),
-                ...(target.success ? [{ sourceColumn: column, targetField: target.data }] : [])]); setPreview(undefined); setPreviewTicket(undefined); previewRows.reset();
+                ...(target.success ? [{ sourceColumn: column, targetField: target.data }] : [])]); setPreview(undefined); if (!previewRows.isPending) previewRows.reset();
             }}><option value="">{label('ignore')}</option>{importTargetFieldSchema.options.map((field) => <option key={field} value={field}>{label('field.' + field)}</option>)}</Select></Label>)}</div>
       </fieldset>
       <div className="grid gap-2 sm:flex">

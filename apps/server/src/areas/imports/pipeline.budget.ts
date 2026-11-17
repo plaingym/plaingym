@@ -10,21 +10,38 @@ export const PREVIEW_TIMEOUT_MS = 120_000;
 /** Removing a failed computation's rows, or reading a summary another process stored first, can follow its deadline, so each has this limit. */
 export const PREVIEW_CLEANUP_MS = 10_000;
 export const PREVIEW_QUEUE_LIMIT = 16;
+export const PREVIEW_GYM_QUEUE_LIMIT = 3;
+export const PREVIEW_LEASE_INTERVAL_MS = 10_000;
+export const PREVIEW_LEASE_MS = 30_000;
+
+export interface PreviewSummary { totalRows: number; create: number; update: number; skip: number; errors: number }
+/** Summary written after all immutable preview row files. */
+export interface StoredPreview extends PreviewSummary { generation: string; files: number; startedAt: string; createdAt: string }
+export interface PendingPreview {
+  id: string; gymId: string; uploadId: string; expiresAt: string; leaseUntil: number;
+  status: 'queued' | 'computing'; admitted: Promise<void>; finished: Promise<StoredPreview>;
+}
 
 /** FIFO admission keeps small previews concurrent without allowing them to starve a large file. */
 export class PreviewBudget {
+  /** Coalescing belongs to the same coordinator as process-wide admission. Keys include the gym and upload. */
+  readonly pending = new Map<string, PendingPreview>();
   #used = 0;
-  readonly #waiting: { weight: number; start: () => void }[] = [];
-  constructor(readonly bytes = PREVIEW_MEMORY_BYTES, readonly queueLimit = PREVIEW_QUEUE_LIMIT) {
+  readonly #waiting: { gymId: string; weight: number; start: () => void }[] = [];
+  constructor(readonly bytes = PREVIEW_MEMORY_BYTES, readonly queueLimit = PREVIEW_QUEUE_LIMIT,
+    readonly gymQueueLimit = PREVIEW_GYM_QUEUE_LIMIT) {
     if (!Number.isSafeInteger(bytes) || bytes < 1) throw new Error('Invalid preview memory budget');
     if (!Number.isSafeInteger(queueLimit) || queueLimit < 0) throw new Error('Invalid preview queue limit');
+    if (!Number.isSafeInteger(gymQueueLimit) || gymQueueLimit < 0) throw new Error('Invalid preview gym queue limit');
   }
-  run<T>(size: number, rows: number, work: () => Promise<T>): Promise<T> {
+  run<T>(gymId: string, size: number, rows: number, work: () => Promise<T>): Promise<T> {
     // Include per-row overhead for narrow CSVs, whose parsed size is not proportional to their byte size.
     const weight = Math.min(this.bytes, 4 * MIB + size * 8 + rows * 256);
-    if (this.#waiting.length >= this.queueLimit && (this.#waiting.length > 0 || this.#used + weight > this.bytes))
+    const waits = this.#waiting.length > 0 || this.#used + weight > this.bytes;
+    if (waits && (this.#waiting.length >= this.queueLimit
+      || this.#waiting.filter(entry => entry.gymId === gymId).length >= this.gymQueueLimit))
       throw new AppError('unavailable', t('imports/pipeline:previewBusy'));
-    const admitted = new Promise<void>((start) => { this.#waiting.push({ weight, start }); this.#drain(); });
+    const admitted = new Promise<void>((start) => { this.#waiting.push({ gymId, weight, start }); this.#drain(); });
     return (async () => {
       await admitted;
       try { return await work(); }

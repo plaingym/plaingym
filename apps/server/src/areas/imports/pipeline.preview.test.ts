@@ -17,7 +17,8 @@ import { createImportPipeline, IMPORT_CHUNK_SIZE, PREVIEW_FILE_ROWS, PREVIEW_LIF
 import { createImportRetention, UPLOAD_RETENTION_MS } from './retention.js';
 import { MapperRegistry, type CsvMapper, type PlannedRow } from './mappers/registry.js';
 import { peopleMapper } from './mappers/people.js';
-import { PreviewBudget } from './pipeline.budget.js';
+import { PreviewBudget, PREVIEW_LEASE_MS, PREVIEW_LEASE_INTERVAL_MS } from './pipeline.budget.js';
+import { PipelineStore } from './pipeline.store.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
 const clock = new TestClock('2099-10-22T12:00:00Z'), gymA = uuidv7(), gymB = uuidv7();
@@ -77,7 +78,9 @@ function setup(mappers = new MapperRegistry([fixtureMapper({ analyze: 0 })]), cl
 const csv = (count: number) => 'Name,Email\r\n' + Array.from({ length: count }, (_, i) => `P${i},p${i}@example.test\r\n`).join('');
 const planFor = (uploadId: string, column = 'Name', field: 'firstName' | 'email' = 'firstName'): ImportPlanRequest =>
   ({ uploadId, mapper: 'people', mapping: [{ sourceColumn: column, targetField: field }], duplicatePolicy: 'error' });
-const liveKeys = async (uploads: Uploads, prefix: string) => (await uploads.list(prefix)).filter((info) => !info.deletedAt).map((info) => info.key);
+// Cache assertions count summaries and rows; upload-root assertions also include ticket/lease files.
+const liveKeys = async (uploads: Uploads, prefix: string) => (await uploads.list(prefix))
+  .filter((info) => !info.deletedAt && !(prefix.endsWith('/preview/') && info.key.startsWith(prefix + 'requests/'))).map((info) => info.key);
 const previewPrefix = (gymId: string, uploadId: string) => `${gymId}/imports/uploads/${uploadId}/preview/`;
 const bucket = (clk = clock) => Math.floor(clk.now().getTime() / PREVIEW_LIFETIME);
 
@@ -88,7 +91,7 @@ describe('stored import previews', () => {
       entered.resolve(); await release.promise; return base.analyze(...args);
     } };
     const budget = new PreviewBudget(1, 1), mappers = new MapperRegistry([mapper]);
-    const { pipeline, uploadsFor } = setup(mappers, clock, { budget });
+    const { pipeline, uploadsFor, calls: storageCalls } = setup(mappers, clock, { budget });
     const peer = createImportPipeline({ uploadsFor, jobs: new FakeJobs(clock), clock, scope: database.forGym, mappers, previewBudget: budget });
     const a = await pipeline.upload(actorA, new File([csv(1)], 'a.csv'));
     const b = await pipeline.upload(actorB, new File([csv(1)], 'b.csv'));
@@ -103,6 +106,12 @@ describe('stored import previews', () => {
       expect(duplicate).toMatchObject({ id: first.id, status: 'computing' });
       const next = await peer.requestPreview(actorB, planFor(b.id), page, 'UTC');
       expect(next.status).toBe('queued');
+      if (next.status !== 'queued') throw new Error('Expected queued preview');
+      const noRevision = vi.fn(() => { throw new Error('Queued polls must not read the revision'); });
+      const polling = createImportPipeline({ uploadsFor, jobs: new FakeJobs(clock), clock, scope: noRevision, mappers, previewBudget: budget });
+      storageCalls.length = 0;
+      expect(await polling.getPreview(gymB, b.id, next.id, page)).toMatchObject({ status: 'queued' });
+      expect(noRevision).not.toHaveBeenCalled(); expect(storageCalls).toEqual([]);
       expect(await peer.getPreview(gymA, a.id, first.id, page)).toMatchObject({ status: 'computing' });
       await expect(peer.requestPreview(actorB, planFor(c.id), page, 'UTC')).rejects.toMatchObject({ code: 'unavailable', status: 503 });
       // Even a full queue must return the existing task rather than reserve another slot.
@@ -116,6 +125,101 @@ describe('stored import previews', () => {
     // Polling is storage-backed: a reader without this process's budget/task map sees the result too.
     const restarted = createImportPipeline({ uploadsFor, jobs: new FakeJobs(clock), clock, scope: database.forGym, mappers, previewBudget: new PreviewBudget(1) });
     expect(await restarted.getPreview(gymA, a.id, first.id, page)).toMatchObject({ status: 'ready' });
+  });
+
+  it('coalesces synchronous callers with tickets and starts the deadline after the computing marker write', async () => {
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), calls = { analyze: 0 };
+    const base = fixtureMapper(calls), mapper: CsvMapper = { ...base, async analyze(...args) {
+      entered.resolve(); await release.promise; return base.analyze(...args);
+    } };
+    const now = vi.spyOn(performance, 'now').mockReturnValue(0), stores = new Map<string, FakeUploads>();
+    class SlowMarkerUploads extends FakeUploads {
+      override async put(...args: Parameters<FakeUploads['put']>) {
+        // Advancing monotonic time during onStart would exhaust a deadline started before the write.
+        if (args[0].endsWith('/computing.json')) now.mockReturnValue(10_000);
+        return super.put(...args);
+      }
+    }
+    const uploadsFor = async (gymId: string) => {
+      if (!stores.has(gymId)) stores.set(gymId, new SlowMarkerUploads(gymId, clock));
+      return stores.get(gymId)!;
+    };
+    const pipeline = createImportPipeline({ uploadsFor, jobs: new FakeJobs(clock), clock, scope: database.forGym,
+      mappers: new MapperRegistry([mapper]), previewBudget: new PreviewBudget(1), previewTimeoutMs: 1000 });
+    const upload = await pipeline.upload(actorA, new File([csv(1)], 'sync.csv')), page = { limit: 10, offset: 0 };
+    const sync = pipeline.preview(actorA, planFor(upload.id), page, 'UTC');
+    try {
+      await entered.promise;
+      const ticket = await pipeline.requestPreview(actorA, planFor(upload.id), page, 'UTC');
+      expect(ticket.status).toBe('computing');
+      if (ticket.status !== 'computing') throw new Error('Expected computing ticket');
+      expect(await pipeline.getPreview(gymA, upload.id, ticket.id, page)).toMatchObject({ status: 'computing' });
+    } finally { release.resolve(); }
+    try { expect((await sync).summary.totalRows).toBe(1); expect(calls.analyze).toBe(1); }
+    finally { now.mockRestore(); }
+  });
+
+  it('renews an immutable lease and fails a lost computation after its last renewal', async () => {
+    const time = new TestClock(clock.now()), { pipeline, uploadsFor } = setup(undefined, time);
+    const upload = await pipeline.upload(actorA, new File([csv(1)], 'lost.csv')), id = uuidv7(), page = { limit: 10, offset: 0 };
+    const prefix = `${gymA}/imports/uploads/${upload.id}/preview-requests/${id}`, store = new PipelineStore(uploadsFor);
+    await store.put(gymA, `${prefix}/meta.json`, { prefix: 'unused', revision: '0.0.0.0', leased: true });
+    await store.put(gymA, `${prefix}/computing.json`, {});
+    await store.renewLease(gymA, prefix, time.now().getTime());
+    // Same bucket is safe to renew without attempting to overwrite an immutable key.
+    await store.renewLease(gymA, prefix, time.now().getTime());
+    time.advance(PREVIEW_LEASE_MS - PREVIEW_LEASE_INTERVAL_MS);
+    await store.renewLease(gymA, prefix, time.now().getTime());
+    time.advance(PREVIEW_LEASE_INTERVAL_MS);
+    expect(await pipeline.getPreview(gymA, upload.id, id, page)).toMatchObject({ status: 'computing' });
+    time.advance(PREVIEW_LEASE_MS - PREVIEW_LEASE_INTERVAL_MS);
+    expect(await pipeline.getPreview(gymA, upload.id, id, page)).toMatchObject({ status: 'failed' });
+  });
+
+  it('stops renewing when saving the result fails, so the ticket fails after its lease', async () => {
+    const time = new TestClock(clock.now()), budget = new PreviewBudget(1);
+    const { pipeline, uploadsFor } = setup(undefined, time, { budget, reserved: key => key.endsWith('/result.json') });
+    const upload = await pipeline.upload(actorA, new File([csv(1)], 'result-failure.csv')), page = { limit: 10, offset: 0 };
+    const ticket = await pipeline.requestPreview(actorA, planFor(upload.id), page, 'UTC');
+    if (ticket.status !== 'queued' && ticket.status !== 'computing') throw new Error('Expected pending ticket');
+    await expect.poll(() => budget.pending.size).toBe(0);
+    const reader = createImportPipeline({ uploadsFor, jobs: new FakeJobs(time), clock: time, scope: database.forGym, previewBudget: new PreviewBudget(1) });
+    expect(await reader.getPreview(gymA, upload.id, ticket.id, page)).toMatchObject({ status: 'computing' });
+    time.advance(PREVIEW_LEASE_MS);
+    expect(await reader.getPreview(gymA, upload.id, ticket.id, page)).toMatchObject({ status: 'failed' });
+  });
+
+  it('automatically renews queued and computing tickets beyond their initial leases', async () => {
+    const time = new TestClock(clock.now()), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const base = fixtureMapper({ analyze: 0 }), mapper: CsvMapper = { ...base, async analyze(...args) {
+      entered.resolve(); await release.promise; return base.analyze(...args);
+    } };
+    const timers = vi.spyOn(globalThis, 'setTimeout'), renewals = vi.spyOn(PipelineStore.prototype, 'renewLease');
+    const budget = new PreviewBudget(1), { pipeline, uploadsFor } = setup(new MapperRegistry([mapper]), time, { budget });
+    const reader = createImportPipeline({ uploadsFor, jobs: new FakeJobs(time), clock: time, scope: database.forGym, previewBudget: new PreviewBudget(1) });
+    const a = await pipeline.upload(actorA, new File([csv(1)], 'active.csv'));
+    const b = await pipeline.upload(actorB, new File([csv(1)], 'queued.csv')), page = { limit: 10, offset: 0 };
+    const first = await pipeline.requestPreview(actorA, planFor(a.id), page, 'UTC');
+    await entered.promise;
+    const next = await pipeline.requestPreview(actorB, planFor(b.id), page, 'UTC');
+    if (first.status !== 'queued' && first.status !== 'computing' || next.status !== 'queued') throw new Error('Expected pending tickets');
+    try {
+      expect(renewals).toHaveBeenCalledTimes(2);
+      time.advance(PREVIEW_LEASE_MS - PREVIEW_LEASE_INTERVAL_MS);
+      // Fire the real heartbeat callbacks without waiting ten wall-clock seconds or advancing database timers.
+      const heartbeats = timers.mock.calls.flatMap(([callback, delay], index) => delay === PREVIEW_LEASE_INTERVAL_MS
+        ? [{ callback, timer: timers.mock.results[index]!.value as ReturnType<typeof setTimeout> }] : []);
+      expect(heartbeats).toHaveLength(2);
+      for (const heartbeat of heartbeats) { clearTimeout(heartbeat.timer); (heartbeat.callback as () => void)(); }
+      await expect.poll(() => renewals.mock.results.filter(result => result.type === 'return').length).toBe(4);
+      await Promise.all(renewals.mock.results.map(result => result.value));
+      time.advance(PREVIEW_LEASE_INTERVAL_MS);
+      expect(await reader.getPreview(gymA, a.id, first.id, page)).toMatchObject({ status: 'computing' });
+      expect(await reader.getPreview(gymB, b.id, next.id, page)).toMatchObject({ status: 'queued' });
+    } finally {
+      release.resolve(); timers.mockRestore(); renewals.mockRestore();
+      await expect.poll(() => budget.pending.size).toBe(0);
+    }
   });
 
   it('polls safe failures, permits retry, and expires abandoned tickets', async () => {
@@ -367,7 +471,7 @@ describe('stored import previews', () => {
     try {
       await expect(pipeline.preview(actorA, planFor(upload.id), { limit: 10, offset: 0 }, 'UTC')).rejects.toMatchObject({ code: 'unavailable' });
     } finally { now.mockRestore(); }
-    expect((await uploads.list(previewPrefix(gymA, upload.id))).map((info) => !!info.deletedAt)).toEqual([true]);
+    expect((await uploads.list(previewPrefix(gymA, upload.id))).filter(info => info.key.includes('/pages/')).map(info => !!info.deletedAt)).toEqual([true]);
   });
   it('answers a preview another process stored, even when this pass\'s deadline ends during the write', async () => {
     let deadline: AbortSignal | undefined, lost = false;
@@ -395,7 +499,7 @@ describe('stored import previews', () => {
     const upload = await pipeline.upload(actorA, new File([csv(PREVIEW_FILE_ROWS + 100)], 'people.csv')), uploads = await uploadsFor(gymA);
     await expect(pipeline.preview(actorA, planFor(upload.id), { limit: 10, offset: 0 }, 'UTC')).rejects.toThrow('database timeout');
     // The first row file was written before the failure; it is a tombstone now.
-    expect((await uploads.list(previewPrefix(gymA, upload.id))).map((info) => !!info.deletedAt)).toEqual([true]);
+    expect((await uploads.list(previewPrefix(gymA, upload.id))).filter(info => info.key.includes('/pages/')).map(info => !!info.deletedAt)).toEqual([true]);
     // The next request computes again and is stored.
     expect((await pipeline.preview(actorA, planFor(upload.id), { limit: 10, offset: 0 }, 'UTC')).data).toHaveLength(10);
     expect(await liveKeys(uploads, previewPrefix(gymA, upload.id))).toHaveLength(3);
@@ -481,7 +585,8 @@ describe('stored import previews', () => {
     clock.advance(UPLOAD_RETENTION_MS - 60_000);
     await pipeline.preview(actorA, planFor(upload.id), { limit: 50, offset: 0 }, 'UTC');
     const uploads = await uploadsFor(gymA), prefix = `${gymA}/imports/uploads/${upload.id}/`;
-    expect((await liveKeys(uploads, prefix)).filter((key) => key.includes('/preview/'))).toHaveLength(2);
+    expect(await liveKeys(uploads, previewPrefix(gymA, upload.id))).toHaveLength(2);
+    expect((await liveKeys(uploads, prefix)).some(key => key.includes('/preview/requests/'))).toBe(true);
     expect(await retention.expire(gymA)).toBe(0);
     clock.advance(60_000);
     expect(await retention.expire(gymA)).toBe(1);

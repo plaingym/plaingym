@@ -73,10 +73,46 @@ describe('CSV admin workflow', () => {
     fireEvent.change(screen.getByLabelText(/CSV file/), { target: { files: [new File(['Name\nTest'], 'people.csv')] } });
     fireEvent.click(await screen.findByRole('button', { name: 'Preview' }));
     await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
+    expect((screen.getByRole('button', { name: 'Preview' }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(screen.getByLabelText('Import type'), { target: { value: 'memberships' } });
+    expect((screen.getByRole('button', { name: 'Preview' }) as HTMLButtonElement).disabled).toBe(true);
     answer.resolve(Response.json({ status: 'failed', message: 'Old preview failure' }));
     await waitFor(() => expect(clients[0]!.isFetching()).toBe(0));
     expect(screen.queryByRole('alert')).toBeNull(); expect(screen.queryByRole('status')).toBeNull();
+    expect((screen.getByRole('button', { name: 'Preview' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+  it.each(['network', '502'] as const)('retries a transient %s poll failure', async failure => {
+    let polls = 0;
+    const fetcher = vi.fn(async (path: string) => {
+      if (path === '/api/imports/uploads') return Response.json({ data: uploaded });
+      if (path.startsWith('/api/imports/preview?')) return Response.json({ status: 'queued', id: runId, uploadId: id });
+      if (++polls === 1) {
+        if (failure === 'network') throw new TypeError('Failed to fetch');
+        return new Response('Bad gateway', { status: 502 });
+      }
+      return Response.json({ status: 'ready', preview: { data: [{ rowNumber: 2, values: { firstName: 'Retried preview' }, action: 'create', duplicateIds: [] }],
+        pagination: { limit: 50, offset: 0, total: 1 }, summary: { totalRows: 1, create: 1, update: 0, skip: 0, errors: 0 } } });
+    });
+    vi.stubGlobal('fetch', fetcher); start();
+    fireEvent.change(screen.getByLabelText(/CSV file/), { target: { files: [new File(['Name\nTest'], 'people.csv')] } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview' }));
+    await screen.findByText('Retried preview');
+    expect(polls).toBe(2); expect(screen.queryByRole('alert')).toBeNull();
+  });
+  it('does not retry a failed ticket', async () => {
+    let polls = 0;
+    vi.stubGlobal('fetch', vi.fn(async (path: string) => {
+      if (path === '/api/imports/uploads') return Response.json({ data: uploaded });
+      if (path.startsWith('/api/imports/preview?')) return Response.json({ status: 'queued', id: runId, uploadId: id });
+      polls++;
+      return Response.json({ status: 'failed', message: 'Preview stopped' });
+    }));
+    start();
+    fireEvent.change(screen.getByLabelText(/CSV file/), { target: { files: [new File(['Name\nTest'], 'people.csv')] } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview' }));
+    expect((await screen.findByRole('alert')).textContent).toBe('Preview stopped');
+    expect(polls).toBe(1);
+    expect((screen.getByRole('button', { name: 'Preview' }) as HTMLButtonElement).disabled).toBe(false);
   });
   it.each([
     { status: 'succeeded', processedRows: 1000, committedRows: 1000, errorCount: 0, outcome: 'Complete' },
@@ -108,6 +144,7 @@ describe('CSV admin workflow', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Preview' }));
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
     fireEvent.change(screen.getByLabelText('Import type'), { target: { value: 'memberships' } });
+    expect((screen.getByRole('button', { name: 'Preview' }) as HTMLButtonElement).disabled).toBe(true);
     resolvePreview(Response.json({ status: 'ready', preview: { data: [{ rowNumber: 2, values: { firstName: 'Obsolete preview' }, action: 'create', duplicateIds: [] }],
       pagination: { limit: 50, offset: 0, total: 1 }, summary: { totalRows: 1, create: 1, update: 0, skip: 0, errors: 0 } } }));
     // Wait for the mutation callback as well as the response to finish.
