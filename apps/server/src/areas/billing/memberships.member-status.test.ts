@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
 import { and, asc, eq, like } from 'drizzle-orm';
-import { auditEvents, classCreditEntries, members, memberships, uuidv7 } from '@plaingym/db';
+import { auditEvents, classCreditEntries, members, memberships, uuidv7, writeAudit } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import type { MemberStatus } from '@plaingym/shared/contracts';
@@ -34,17 +34,30 @@ async function fixture(status: MemberStatus = 'prospect') {
 }
 
 describe('member status derived from memberships against PostgreSQL', () => {
-  it.each(['activate', 'cancel'] as const)('keeps an unpaid join trial from promoting a trial member on sibling %s', async action => {
+  it.each(['activate', 'freeze', 'cancel'] as const)('derives status beside an unpaid join trial on sibling %s', async action => {
     const f = await fixture('trial');
     const unpaid = await f.service.assign(f.context, { ...f.request, initialStatus: 'pending', trialEndsOn: '2028-03-15' });
-    const other = await factory('memberships', f.gymId, { ...f.request, id: uuidv7(), status: action === 'activate' ? 'trial' : 'active' });
+    const other = await factory('memberships', f.gymId, { ...f.request, id: uuidv7(), status: action === 'cancel' ? 'active' : 'trial' });
     await f.service[action](f.context, { membershipId: other.id, revision: other.revision });
-    expect(await f.read()).toMatchObject({ status: 'trial', revision: 1 });
-    expect(await f.events()).toEqual([]);
+    const status = action === 'activate' ? 'active' : action === 'freeze' ? 'frozen' : 'trial';
+    expect(await f.read()).toMatchObject({ status, revision: status === 'trial' ? 1 : 2 });
     expect(await f.service.get(f.gymId, unpaid.id)).toMatchObject({ status: 'pending', trialEndsOn: '2028-03-15' });
-    // Once the unpaid trial itself activates there is no pending trial left to defer promotion.
     await f.service.activate(f.context, { membershipId: unpaid.id, revision: unpaid.revision });
-    expect(await f.read()).toMatchObject({ status: 'active', revision: 2 });
+    expect(await f.read()).toMatchObject({ status: 'active', revision: action === 'freeze' ? 3 : 2 });
+  });
+
+  it.each([true, false])('counts a paid join activation only for its own membership: %s', async ownMembership => {
+    const f = await fixture('active'), pending = await f.assign('pending');
+    await db.forGym(f.gymId, async tx => {
+      await writeAudit(tx, { gymId: f.gymId, actorKind: 'system', action: 'public.join.member_activated',
+        targetType: 'member', targetId: f.person.id, before: { status: 'prospect' }, after: { status: 'active' }, occurredAt: f.clock.now() });
+      await writeAudit(tx, { gymId: f.gymId, actorKind: 'system', action: 'public.join.admitted',
+        targetType: 'household', targetId: f.person.householdId,
+        after: { memberIds: [f.person.id], membershipIds: [ownMembership ? pending.id : uuidv7()] }, occurredAt: f.clock.now() });
+    });
+    await f.service.cancel(f.context, { membershipId: pending.id, revision: pending.revision });
+    expect(await f.read()).toMatchObject({ status: ownMembership ? 'cancelled' : 'active', revision: ownMembership ? 2 : 1 });
+    expect(await f.standing()).toEqual(ownMembership ? { status: 'front_desk', reasonCode: 'inactive' } : { status: 'ok' });
   });
 
   it.each(memberStatuses)('derives active and trial assignments from a staff-set %s status', async status => {

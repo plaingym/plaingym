@@ -161,7 +161,7 @@ replay, a second run or a concurrent one finds the record and releases nothing.
 The people, their signed waivers and leads, and the household stay for staff
 follow-up, as a retained admission's do. Cancelling memberships that never left
 pending keeps their people as prospects, including pending trials with an end
-date, under the
+date. The void also reconciles status against any other memberships, under the
 [membership status rule](../../areas/billing/memberships.README.md#member-status).
 The join page then shows the closed page,
 Checkout can't start, and a replayed submission returns the same link without taking
@@ -246,9 +246,9 @@ completion starts pending trial memberships and derives every joined member's st
 through the shared billing rule, including members whose status staff changed while
 payment was pending. Status changes write `billing.member.*` audits. The membership date job activates the
 trial at `trialEndsOn`, when the runner bills its first full period. At that
-activation the member becomes `active` even if another trial remains, except when
-an existing trial member still has an unpaid pending join trial. That member keeps
-`trial` until the pending trial starts or is cancelled. Otherwise any active
+activation the member becomes `active` even if another trial remains, including an
+unpaid pending join trial. Freezing the only started trial makes the member `frozen`;
+pending trials do not hold back status derivation. Any active
 membership takes priority under the
 [membership status rule](../../areas/billing/memberships.README.md#member-status).
 The member update is revision-guarded and audited in the same transaction. The join

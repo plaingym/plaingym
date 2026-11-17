@@ -2,7 +2,7 @@
 import { escapeLike } from '../../../lib/escape-like.js';
 import { and, asc, eq, ilike, inArray, isNull, or } from 'drizzle-orm';
 import { z } from 'zod';
-import { households, members, memberships, plans, RevisionConflictError, assertRevised, revisionGuard,
+import { households, leads, members, memberships, plans, RevisionConflictError, assertRevised, revisionGuard,
   uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import { dateSchema, idSchema, type ImportIssue, type ImportPlanRequest, type ImportTargetField } from '@plaingym/shared/contracts';
 import { minorUnitStep, onMinorUnitStep } from '@plaingym/shared/money';
@@ -210,11 +210,12 @@ async function commit(tx: Transaction, rows: readonly PlannedRow[], context: Map
     .orderBy(asc(memberships.id)).for('update');
   const seen = new Set(existing.filter(item => item.status !== 'cancelled').map(item => key(item.memberId, item.planId)));
   for (const item of records) {
-    // A concurrent create may have advanced the member revision through reconciliation.
+    // A replayed or concurrent create may already have inserted this pair.
     // Replaying that already-present pair is a no-op, before checking stale references.
+    // The member revision is not checked: reconciliation derives status from the locked member.
     if (item.action === 'create' && seen.has(key(item.memberId, item.planId))) continue;
     const home = homes.find(row => row.id === item.householdId), person = people.find(row => row.id === item.memberId), selectedPlan = catalog.find(row => row.id === item.planId);
-    if (!home || home.revision !== item.householdRevision || !person || person.revision !== item.memberRevision || person.anonymizedAt
+    if (!home || home.revision !== item.householdRevision || !person || person.anonymizedAt
       || person.householdId !== home.id || !selectedPlan || selectedPlan.revision !== item.planRevision || !selectedPlan.active || selectedPlan.currency !== item.currency)
       throw new RevisionConflictError();
     if (item.action === 'update') {
@@ -227,11 +228,14 @@ async function commit(tx: Transaction, rows: readonly PlannedRow[], context: Map
     gymId, actorKind: context.actor.kind, ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
     action, targetType, targetId, after: { importId: context.runId, ...after }, occurredAt: now,
   });
-  const reconcile = async (memberId: string, membershipId: string, status: string, cause: string) => {
+  const reconcile = async (memberId: string, membershipId: string, cause: string) => {
     // Schedule-update siblings are not in the up-front member lock. Take the member lock
     // before lead work, matching attendance's and activation's member/lead lock order.
     await tx.select({ id: members.id }).from(members).where(and(eq(members.gymId, gymId), eq(members.id, memberId))).for('update');
-    if (status === 'active') await markLeadWon(tx, { gymId, actor: context.actor, memberId, now });
+    // Imports convert existing leads only on insertion, without creating roster-import leads.
+    if (cause === 'billing.membership.imported' && (await tx.select({ id: leads.id }).from(leads)
+      .where(and(eq(leads.gymId, gymId), eq(leads.memberId, memberId))).limit(1)).length)
+      await markLeadWon(tx, { gymId, actor: context.actor, memberId, now });
     await reconcileMemberStatus(tx, { gymId, actor: context.actor }, context.clock, memberId, membershipId, cause);
   };
   let count = 0;
@@ -267,7 +271,7 @@ async function commit(tx: Transaction, rows: readonly PlannedRow[], context: Map
           await audit('billing.membership.import_schedule_updated', 'membership', before.id,
             { memberId: before.memberId, planId: before.planId, previousDueOn: update.oldDueOn, nextDueOn: after.nextDueOn,
               ...movedSwitchAudit(before, movedSwitch) });
-          await reconcile(before.memberId, before.id, before.status, 'billing.membership.import_schedule_updated');
+          await reconcile(before.memberId, before.id, 'billing.membership.import_schedule_updated');
           Object.assign(before, after);
         }
         const guard = revisionGuard(households.revision, home.revision);
@@ -305,7 +309,7 @@ async function commit(tx: Transaction, rows: readonly PlannedRow[], context: Map
         ...(before?.scheduledPlanId && replacedTerms
           ? { clearedSwitch: { scheduledPlanId: before.scheduledPlanId, scheduledOn: before.scheduledOn } } : {}),
         ...(before ? movedSwitchAudit(before, movedSwitch) : {}) });
-    await reconcile(item.memberId, id, before?.status ?? 'active', cause);
+    await reconcile(item.memberId, id, cause);
     count++;
   }
   return count;

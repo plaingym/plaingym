@@ -56,7 +56,9 @@ cancellation) derive the member's status from all their memberships, in order:
 `active` if any is active, otherwise `trial` if any is trial, otherwise `frozen`
 if any is frozen, otherwise `cancelled` if all are cancelled and at least one
 ever left pending. The membership audit history records trial starts, activation
-and freezes; a pending trial's end date alone does not count. Pending-only live
+and freezes; a pending trial's end date alone does not count. An older join's
+`public.join.member_activated` audit also counts for that member's own join membership,
+even if its paid-invoice activation effect has not run. Pending-only live
 memberships keep the staff-set status, including a mix of pending and cancelled
 memberships. A member with no memberships (such as a prospect, visitor or
 pack-only member), or one whose memberships never left pending, also keeps the
@@ -64,9 +66,9 @@ staff-set status. This includes abandoned joins and mistaken pending assignments
 cancelled by staff. A staff edit stands until the next membership change.
 An active membership takes priority over an unfinished
 or frozen trial.
-An existing trial member with a pending join trial (`trialEndsOn` set) keeps their
-trial status while that join remains unpaid, even if a sibling membership activates.
-This exception does not start a trial for a prospect with only a pending join.
+A pending join trial does not override this priority: an active sibling wins, and
+freezing the only started trial makes the member frozen. Voiding an unpaid join
+reconciles the member against their remaining memberships in the same transaction.
 
 Cancelling the last live membership after a trial or activation makes the member
 `cancelled` even when pack credits remain; the kiosk sends them to the front desk. Cancelling a frozen
@@ -82,9 +84,11 @@ transaction, under the household lock. Concurrent changes to sibling memberships
 therefore derive one consistent status. Erased members are never revived.
 Erasure locks the household before the member, matching membership changes.
 The memberships import calls the same exported `reconcileMemberStatus` in its
-chunk transaction after inserts and updates, and wins the lead for active
-memberships before reconciling. Pending updates preserve their lifecycle state
-and do not win the lead.
+chunk transaction after inserts and updates. Only inserting an active membership
+wins an existing lead before reconciling; imports never create leads. Updates and
+household schedule moves preserve lead stages. Reconciliation uses the current
+member revision under lock, so a member revision change alone does not reject an
+import chunk; billing reference revisions and member identity are still checked.
 
 ## Lead conversion
 
@@ -95,7 +99,16 @@ leads, increments the lead revision and audits the caller's actor once. A
 prospect or trial member without lead details gains a null-source lead; other
 members without a lead gain none. Resuming a never-active frozen trial also marks
 its lead won. Repeated effects, trial assignments and resumes of previously active
-memberships leave lead stages unchanged. Direct membership imports change no stage.
+memberships leave lead stages unchanged. Membership imports win an existing lead
+only when inserting an active membership, and never create a lead.
+
+## Freeze history
+
+The member's Memberships tab loads freeze history on demand, newest first. A
+membership revision change returns the panel to its first page; paging and refreshes
+keep the previous list and disable its paging buttons until the new page arrives.
+Malformed audit snapshots are skipped and logged with identifiers only. Pagination
+counts audit rows, including skipped snapshots, so older pages remain reachable.
 
 ## Anniversary dates
 

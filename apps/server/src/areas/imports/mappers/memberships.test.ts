@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { beforeEach, describe, expect, it } from 'vitest';
 import { asc, eq } from 'drizzle-orm';
-import { auditEvents, forGym, households, importChunks, importRuns, invoices, members, memberships, plans, RevisionConflictError, uuidv7 } from '@plaingym/db';
+import { auditEvents, forGym, households, importChunks, importRuns, invoices, leads, members, memberships, plans, RevisionConflictError, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import type { ImportPlanRequest, ImportTargetField } from '@plaingym/shared/contracts';
@@ -314,13 +314,12 @@ describe('membership renewals through the durable pipeline', () => {
     else expect(event.after).toMatchObject({ rescheduledSwitch: { scheduledPlanId: next.id,
       previousScheduledOn: '2026-11-15', scheduledOn: '2026-11-01' } });
   });
-  it.each(['member', 'household', 'plan', 'membership'] as const)('refuses stale %s revisions atomically', async changed => {
+  it.each(['household', 'plan', 'membership'] as const)('refuses stale %s revisions atomically', async changed => {
     const f = await fixture();
     await (await services().load([{ email: f.member.email!, plan: f.plan.name, nextDueOn: '2026-11-15' }])).run();
     const batch = await analyzed([{ email: f.member.email!, plan: f.plan.name, nextDueOn: '2026-12-15' }], 'update');
     expect(batch.planned[0]!.issues).toEqual([]);
     await database.forGym(gymId, async tx => {
-      if (changed === 'member') await tx.update(members).set({ revision: Number(batch.planned[0]!.values.memberRevision) + 1 }).where(eq(members.id, f.member.id));
       if (changed === 'household') await tx.update(households).set({ revision: 3 }).where(eq(households.id, f.home.id));
       if (changed === 'plan') await tx.update(plans).set({ revision: 2 }).where(eq(plans.id, f.plan.id));
       if (changed === 'membership') await tx.update(memberships).set({ revision: 2 }).where(eq(memberships.memberId, f.member.id));
@@ -451,6 +450,7 @@ describe('membership renewals through the durable pipeline', () => {
   });
   it('moves dependent monthly dates with the anchor even when the later chunk rolls back', async () => {
     const family = await spanningFamily();
+    const lost = await factory('leads', gymId, { memberId: family.sibling.member.id, stage: 'lost', lostAt: clock.now(), lostReason: 'Other' });
     const mapper = { ...membershipsMapper, async commit(...args: Parameters<typeof membershipsMapper.commit>) {
       const count = await membershipsMapper.commit(...args);
       if (args[1].some(row => row.values.memberId === family.sibling.member.id)) throw new Error('later chunk rolled back');
@@ -471,6 +471,7 @@ describe('membership renewals through the durable pipeline', () => {
       .from(members).where(eq(members.id, family.sibling.member.id)))).toEqual([{ status: 'active', revision: 2 }]);
     expect(after.audits.find(event => event.action === 'billing.member.activated' && event.targetId === family.sibling.member.id))
       .toMatchObject({ after: { cause: 'billing.membership.import_schedule_updated', membershipId: later.id } });
+    expect(await database.forGym(gymId, tx => tx.select().from(leads).where(eq(leads.id, lost.id)))).toEqual([lost]);
     // Reanalysis sees the revision from the atomic anchor move and can apply the remaining fields.
     const retry = await services().load([family.records.at(-1)!], 'update'); expect((await retry.run()).committedRows).toBe(1);
     expect((await read()).memberships.find(row => row.id === later.id)).toMatchObject({ revision: 3, amountCents: 7000, nextDueOn: '2026-11-20' });

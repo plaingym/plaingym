@@ -9,7 +9,7 @@ import { addDays, localDate } from '@plaingym/shared/time';
 import { checkSubmittedJoin, joinFollowedUp, submittedJoinSessions, voidAbandonedJoinInvoice, voidSubmittedJoin,
   type SubmittedJoin } from '../../areas/billing/transitions/join-cleanup.js';
 import { endDiscount, liveDiscounts, releaseDiscountUses } from '../../areas/billing/discounts/apply.js';
-import { createMembershipService } from '../../areas/billing/memberships.js';
+import { createMembershipService, reconcileMemberStatus } from '../../areas/billing/memberships.js';
 import type { Payments } from '../../infra/payments/index.js';
 import type { Uploads } from '../../infra/storage/index.js';
 import { logError, logInfo } from '../../core/log.js';
@@ -200,6 +200,9 @@ export function createJoinCleanup(options: JoinCleanupOptions) {
       await voidSubmittedJoin(tx, gymId, join, check.invoice, clock);
       // The membership service runs in this transaction, so the void, the cancellations and the release commit together.
       const released = await cancelPending(tx, gymId, householdId, rows, await readDiscount(tx, householdId));
+      // Reconcile against the final set after all of the join's cancellations.
+      for (const [memberId, membershipId] of new Map(rows.map(row => [row.memberId, row.id])))
+        await reconcileMemberStatus(tx, { gymId, actor: { kind: 'system' } }, clock, memberId, membershipId, 'public.join.voided');
       await writeAudit(tx, { gymId, actorKind: 'system', action: 'public.join.voided', targetType: 'household', targetId: householdId,
         occurredAt: clock.now(), after: { invoiceId: join.invoiceId, linkId: join.linkId, membershipIds: join.membershipIds,
           ...released } });

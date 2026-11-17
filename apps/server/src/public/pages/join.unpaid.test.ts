@@ -84,6 +84,22 @@ const count = (audits: { action: string; targetId: string }[], action: string, t
   audits.filter(a => a.action === action && (targetId === undefined || a.targetId === targetId)).length;
 
 describe('unpaid submitted joins', () => {
+  it('reconciles a legacy join-activated trial member when the pending join is voided', async () => {
+    const f = await fixture(submittedAt, undefined, 14), join = await f.submit('void-trial@example.invalid');
+    const before = await f.state(join.householdId), person = before.members[0]!;
+    await db.forGym(f.gymId, async tx => {
+      await tx.update(members).set({ status: 'trial', revision: 2 }).where(eq(members.id, person.id));
+      await writeAudit(tx, { gymId: f.gymId, actorKind: 'system', action: 'public.join.member_activated',
+        targetType: 'member', targetId: person.id, before: { status: 'prospect' }, after: { status: 'trial', revision: 2 }, occurredAt: f.clock.now() });
+    });
+    f.clock.set(seventhDay);
+    expect(await f.join.cleanup.voidUnpaid(f.gymId, join.householdId, timezone)).toBe(true);
+    const after = await f.state(join.householdId);
+    expect(after.memberships[0]).toMatchObject({ status: 'cancelled' });
+    expect(after.members[0]).toMatchObject({ status: 'cancelled', revision: 3 });
+    expect(after.audits.filter(event => event.action === 'billing.member.cancelled' && event.targetId === person.id)).toHaveLength(1);
+    expect(await f.join.cleanup.voidUnpaid(f.gymId, join.householdId, timezone)).toBe(false);
+  });
   it.each(['code exhausted', 'waivers changed'] as const)('retains an interrupted submission that assigned nothing after %s, without counting a void', async reason => {
     const f = await fixture(), code = await factory('discounts', f.gymId, { code: 'ONE-USE', percentBasisPoints: 2000, duration: 'forever', maxUses: 1 });
     const body = await f.admit('empty-interrupted@example.invalid', 1, code.code!);

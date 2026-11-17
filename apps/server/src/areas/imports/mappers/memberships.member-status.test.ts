@@ -91,23 +91,23 @@ describe('imported memberships reconcile member status against PostgreSQL', () =
     expect(await f.people.getMember(f.gymId, member.id)).toMatchObject({ status: 'cancelled', revision: member.revision + 2 });
   });
 
-  it('reconciles an active update, wins its lead and leaves a repeated update without duplicate status or lead audits', async () => {
+  it('reconciles active updates without reopening a lost lead', async () => {
     const f = await fixture(), member = await factory('members', f.gymId, { email: 'update@example.test', status: 'cancelled' });
     const membership = await factory('memberships', f.gymId, { memberId: member.id, householdId: member.householdId,
       planId: f.plan.id, status: 'active', startsOn: '2028-03-01', nextDueOn: '2028-03-15' });
-    await factory('leads', f.gymId, { memberId: member.id, stage: 'contacted' });
+    const lead = await factory('leads', f.gymId, { memberId: member.id, stage: 'lost', lostAt: f.clock.now(), lostReason: 'Other' });
     const records = [renewal(member.email!, f.plan.id)];
     await f.run('memberships', records, 'update');
     const first = await f.read();
     expect(first.people[0]).toMatchObject({ status: 'active', revision: 2 });
-    expect(first.leads[0]).toMatchObject({ stage: 'won' });
+    expect(first.leads).toEqual([lead]);
     expect(first.audits.find(row => row.action === 'billing.member.activated')).toMatchObject({
       after: { cause: 'billing.membership.import_updated', membershipId: membership.id } });
     await f.run('memberships', records, 'update');
     const second = await f.read();
     expect(second.people).toEqual(first.people); expect(second.leads).toEqual(first.leads);
     expect(second.audits.filter(row => row.action === 'billing.member.activated')).toHaveLength(1);
-    expect(second.audits.filter(row => row.action === 'lead.stage_changed')).toHaveLength(1);
+    expect(second.audits.filter(row => row.action === 'lead.stage_changed')).toHaveLength(0);
   });
 
   it('keeps an updated pending assignment and its lead pending', async () => {
@@ -133,7 +133,7 @@ describe('imported memberships reconcile member status against PostgreSQL', () =
     expect(after.memberships).toHaveLength(2);
     expect(after.people[0]).toMatchObject({ status: 'active', revision: 2 });
     expect(after.audits.filter(row => row.action === 'billing.member.activated')).toHaveLength(1);
-    expect(after.leads).toMatchObject([{ stage: 'won' }]);
+    expect(after.leads).toEqual([]);
   });
 
   it('rolls back the membership, member revision, lead and audits with the chunk', async () => {
@@ -144,12 +144,32 @@ describe('imported memberships reconcile member status against PostgreSQL', () =
     expect(await f.read()).toEqual(before);
   });
 
-  it('rejects a stale member revision without changing the membership, lead or audits', async () => {
+  it('derives from the current member when its revision changed after analysis', async () => {
     const f = await fixture(), member = await factory('members', f.gymId, { email: 'stale@example.test' });
     const commit = await f.analyzed([renewal(member.email!, f.plan.id)]);
     await f.people.updateMember(f.actor, member.id, { revision: member.revision, status: 'visitor' });
-    const before = await f.read();
-    await expect(db.forGym(f.gymId, commit)).rejects.toMatchObject({ name: 'RevisionConflictError' });
-    expect(await f.read()).toEqual(before);
+    expect(await db.forGym(f.gymId, commit)).toBe(1);
+    expect(await f.people.getMember(f.gymId, member.id)).toMatchObject({ status: 'active', revision: 3 });
+  });
+
+  it('imports a prospect without creating a lead', async () => {
+    const f = await fixture(), member = await factory('members', f.gymId, { email: 'roster@example.test', status: 'prospect' });
+    await f.run('memberships', [renewal(member.email!, f.plan.id)]);
+    const after = await f.read();
+    expect(after.people[0]).toMatchObject({ status: 'active' });
+    expect(after.leads).toEqual([]);
+    expect(after.audits.filter(row => row.action.startsWith('lead.'))).toEqual([]);
+  });
+
+  it('commits two imports analysed at the same member revision for different plans', async () => {
+    const f = await fixture(), home = await factory('households', f.gymId, { billingDay: 15 });
+    const member = await factory('members', f.gymId, { householdId: home.id, email: 'parallel@example.test' });
+    const other = await factory('plans', f.gymId, { currency: 'CAD' });
+    const first = await f.analyzed([renewal(member.email!, f.plan.id)]);
+    const second = await f.analyzed([renewal(member.email!, other.id)]);
+    expect(await Promise.all([db.forGym(f.gymId, first), db.forGym(f.gymId, second)])).toEqual([1, 1]);
+    const after = await f.read();
+    expect(after.memberships).toHaveLength(2);
+    expect(after.people[0]).toMatchObject({ status: 'active', revision: 2 });
   });
 });

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
 import { canStaff, type StaffRole } from '@plaingym/shared';
 import type { Membership, Plan, ShellBootstrap } from '@plaingym/shared/contracts';
@@ -72,6 +72,35 @@ it('shows an empty history and retries a failed history read', async () => {
   fireEvent.click(await screen.findByRole('button', { name: 'Freeze history' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
   expect(await screen.findByText('No freezes recorded.')).toBeDefined();
+});
+it('keeps the list while paging and returns to the first page after a freeze', async () => {
+  const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const event = { id: id(10), occurredAt: createdAt, skippedDueOn: '2026-02-01', nextDueOn: '2026-03-01' };
+  const response = (offset: number) => ({ data: [{ ...event, id: id(10 + offset), skippedDueOn: offset ? '2025-02-01' : event.skippedDueOn }],
+    pagination: { limit: 10, offset, total: 11 } });
+  let completePage!: (value: ReturnType<typeof response>) => void;
+  let completeRevision!: (value: ReturnType<typeof response>) => void;
+  const history = vi.fn<BillingClient['freezeHistory']>().mockResolvedValueOnce(response(0))
+    .mockImplementationOnce(() => new Promise(resolve => { completePage = resolve; }))
+    .mockImplementation(() => new Promise(resolve => { completeRevision = resolve; }));
+  const frozen = { ...membership, status: 'frozen' as const, revision: 2 };
+  const client = start('admin', { cache, history, call: async () => frozen });
+  fireEvent.click(await screen.findByRole('button', { name: 'Freeze history' }));
+  await screen.findByText('Skipped billing date: Feb 1, 2026');
+  fireEvent.click(screen.getByRole('button', { name: 'Older freezes' }));
+  await waitFor(() => expect(history).toHaveBeenLastCalledWith(membership.id, 10));
+  expect(screen.getByText('Skipped billing date: Feb 1, 2026')).toBeDefined();
+  expect(screen.getByRole('button', { name: 'Older freezes' }).hasAttribute('disabled')).toBe(true);
+  await act(async () => completePage(response(10)));
+  await screen.findByText('Skipped billing date: Feb 1, 2025');
+  vi.mocked(client.memberships).mockResolvedValue([frozen]);
+  fireEvent.click(screen.getByRole('button', { name: 'Freeze' }));
+  save();
+  await waitFor(() => expect(history).toHaveBeenLastCalledWith(membership.id, 0));
+  expect(screen.getByText('Skipped billing date: Feb 1, 2025')).toBeDefined();
+  await act(async () => completeRevision(response(0)));
+  await screen.findByText('Skipped billing date: Feb 1, 2026');
+  expect(screen.queryByRole('button', { name: 'Newer freezes' })).toBeNull();
 });
 it('refreshes an open member profile and the member list after membership changes, within its gym', async () => {
   const cache = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });

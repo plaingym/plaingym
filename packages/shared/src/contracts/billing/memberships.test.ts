@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { membershipFreezeEventSchema, membershipFreezeHistoryQuerySchema, membershipFreezeHistoryResponseSchema } from './memberships.js';
-import { assignMembershipRequestSchema, appliedMembershipDiscountSchema, membershipSchema,
+import { membershipFreezeEventSchema, membershipFreezeHistoryQuerySchema, membershipFreezeHistoryResponseSchema,
+  assignMembershipRequestSchema, appliedMembershipDiscountSchema, membershipSchema,
   setMembershipDiscountRequestSchema, removeMembershipDiscountRequestSchema, membershipSwitchPreviewSchema } from './memberships.js';
 
 const id = '01900000-0000-7000-8000-000000000001';

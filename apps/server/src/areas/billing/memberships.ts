@@ -3,12 +3,14 @@ import { and, asc, desc, eq, gt, inArray, lte, ne, or } from 'drizzle-orm';
 import { forGym, memberships, households, members, plans, auditEvents,
   revisionGuard, assertRevised, uuidv7, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
+import { z } from 'zod';
 import { isCalendarDate, localDate } from '@plaingym/shared/time';
 import * as c from '@plaingym/shared/contracts';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import type { MembershipLifecycle, AssignMembership, MembershipEdit, UpdateMembership } from '../../core/interfaces/membership-lifecycle.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import { clock as defaultClock } from '../../core/clock.js';
+import { logWarn } from '../../core/log.js';
 import { gymSettingsAccessor } from '../settings/settings.js';
 import { markLeadWon } from '../leads/stages.js';
 import { catalogAudit, catalogMissing } from './catalog.js';
@@ -73,30 +75,48 @@ export interface MembershipOptions {
   onAssigned?: (tx: Transaction, context: MutationContext, membership: c.Membership, billing: AssignmentBilling) => Promise<void>;
 }
 /** The caller holds the household lock and has saved the membership's new state. */
+const joinActivation = z.object({ status: z.enum(['active', 'trial']) });
+const joinAdmission = z.object({ memberIds: z.array(c.idSchema), membershipIds: z.array(c.idSchema) });
+// Older joins activated the person before the paid-invoice effect activated their membership.
+// Only that join's own membership counts, never a later pending staff assignment.
+async function joinedAndActivated(tx: Transaction, memberId: string, rows: readonly { id: string; householdId: string }[]) {
+  const activations = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
+    eq(auditEvents.action, 'public.join.member_activated'), eq(auditEvents.targetType, 'member'), eq(auditEvents.targetId, memberId)));
+  if (!activations.some(event => joinActivation.safeParse(event.after).success)) return false;
+  const admissions = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
+    eq(auditEvents.action, 'public.join.admitted'), eq(auditEvents.targetType, 'household'),
+    inArray(auditEvents.targetId, [...new Set(rows.map(row => row.householdId))])));
+  return admissions.some(event => {
+    const parsed = joinAdmission.safeParse(event.after);
+    if (!parsed.success) return false;
+    const index = parsed.data.memberIds.indexOf(memberId);
+    return index >= 0 && rows.some(row => row.id === parsed.data.membershipIds[index]);
+  });
+}
+
 export async function reconcileMemberStatus(tx: Transaction, context: MutationContext, clock: Clock,
   memberId: string, membershipId: string, cause: string) {
   const [member] = await tx.select().from(members).where(eq(members.id, memberId)).for('update');
   if (!member || member.anonymizedAt) return;
-  const rows = await tx.select({ id: memberships.id, status: memberships.status, trialEndsOn: memberships.trialEndsOn })
+  const rows = await tx.select({ id: memberships.id, householdId: memberships.householdId, status: memberships.status })
     .from(memberships).where(eq(memberships.memberId, memberId));
-  // An unpaid public join has reserved its trial, but has not started it. A sibling's activation must not
-  // promote an existing trial member before that join completes and runs its trial.
-  if (member.status === 'trial' && rows.some(row => row.status === 'pending' && row.trialEndsOn !== null)) return;
   // Pending-only live memberships and members without memberships keep the staff-set status.
   let status: 'active' | 'trial' | 'frozen' | 'cancelled' | undefined = rows.some(row => row.status === 'active') ? 'active'
     : rows.some(row => row.status === 'trial') ? 'trial'
     : rows.some(row => row.status === 'frozen') ? 'frozen' : undefined;
   if (status === undefined && rows.length && rows.every(row => row.status === 'cancelled')) {
     const history = await tx.select({ action: auditEvents.action, before: auditEvents.before, after: auditEvents.after })
-      .from(auditEvents).where(and(eq(auditEvents.targetType, 'membership'), inArray(auditEvents.targetId, rows.map(row => row.id))));
+      .from(auditEvents).where(and(eq(auditEvents.targetType, 'membership'), inArray(auditEvents.targetId, rows.map(row => row.id)),
+        inArray(auditEvents.action, ['billing.membership.assigned', 'billing.membership.imported',
+          'billing.membership.activated', 'public.join.trial_started', 'billing.membership.frozen', 'billing.membership.cancelled'])));
     const leftPending = (value: unknown) => {
       const snapshot = value as { status?: string; membership?: { status?: string } } | null;
       return [snapshot?.status, snapshot?.membership?.status].some(state => state === 'trial' || state === 'active' || state === 'frozen');
     };
     // Imports start active; assignment audits nest the initial state under membership.
     // A pending trial's trialEndsOn alone is not evidence that it ever started.
-    if (history.some(event => event.action === 'billing.membership.imported'
-      || leftPending(event.before) || leftPending(event.after))) status = 'cancelled';
+    if (history.some(event => event.action === 'billing.membership.imported' || leftPending(event.before) || leftPending(event.after))
+      || await joinedAndActivated(tx, memberId, rows)) status = 'cancelled';
   }
   if (status === undefined || status === member.status) return;
   const guard = revisionGuard(members.revision, member.revision);
@@ -265,16 +285,23 @@ export function createMembershipService(options: MembershipOptions = {}) {
     async freezeHistory(gymId: string, membershipId: string, input: unknown) {
       const query = c.membershipFreezeHistoryQuerySchema.parse(input);
       return scope(gymId, async tx => {
-        catalogMissing((await tx.select({ id: memberships.id }).from(memberships).where(eq(memberships.id, membershipId)))[0]);
         const where = and(eq(auditEvents.gymId, gymId), eq(auditEvents.targetId, membershipId),
           eq(auditEvents.targetType, 'membership'), eq(auditEvents.action, 'billing.membership.frozen'));
-        const total = await tx.$count(auditEvents, where);
+        const { total } = catalogMissing((await tx.select({ total: tx.$count(auditEvents, where) })
+          .from(memberships).where(eq(memberships.id, membershipId)))[0]);
         const rows = await tx.select({ id: auditEvents.id, occurredAt: auditEvents.occurredAt,
           before: auditEvents.before, after: auditEvents.after }).from(auditEvents).where(where)
           .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(query.limit).offset(query.offset);
         const snapshot = c.membershipSchema.pick({ nextDueOn: true }).strip();
-        return { data: rows.map(row => c.membershipFreezeEventSchema.parse({ id: row.id, occurredAt: row.occurredAt.toISOString(),
-          skippedDueOn: snapshot.parse(row.before).nextDueOn, nextDueOn: snapshot.parse(row.after).nextDueOn })),
+        return { data: rows.flatMap(row => {
+          const before = snapshot.safeParse(row.before), after = snapshot.safeParse(row.after);
+          if (!before.success || !after.success) {
+            logWarn('billing.membership.freeze_history_invalid', { gymId, membershipId, auditId: row.id });
+            return [];
+          }
+          return [c.membershipFreezeEventSchema.parse({ id: row.id, occurredAt: row.occurredAt.toISOString(),
+            skippedDueOn: before.data.nextDueOn, nextDueOn: after.data.nextDueOn })];
+        }),
         pagination: { limit: query.limit, offset: query.offset, total } };
       });
     },

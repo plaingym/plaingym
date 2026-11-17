@@ -262,12 +262,15 @@ source of truth; Stripe is the processor. In outline:
   supplies updated terms but cannot replace a voided or refunded period bill.
   Membership changes also derive member status: any active membership, then any
   trial, then any frozen membership, then cancelled if all are cancelled and at
-  least one ever left pending, as recorded in its audit history. Only pending live
+  least one ever left pending, as recorded in its audit history. An older join's
+  `public.join.member_activated` counts for that member's own join membership even
+  before its paid-invoice activation effect runs. Only pending live
   memberships, no memberships, or memberships that never left pending preserve
   the staff-set status. The memberships import uses this same reconciliation
-  after inserts and updates and wins leads for active memberships.
-  An existing trial member with an unpaid pending join trial keeps their trial
-  status until that pending trial starts or is cancelled, even when a sibling activates.
+  after inserts and updates; only inserts win existing leads, and imports never create
+  leads. A pending join trial follows the same priority: an active sibling wins,
+  and freezing the only started trial makes the member frozen. Voiding an unpaid
+  join reconciles against the remaining memberships in the same transaction.
   Staff edits stand until the next membership change. The daily trial-end and
   resume-date job uses the same transaction and member revision guard; changes
   audit their causing membership. Even with pack credits left, a member whose

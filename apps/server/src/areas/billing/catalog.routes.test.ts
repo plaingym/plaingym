@@ -2,7 +2,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
-import { plans, uuidv7 } from '@plaingym/db';
+import { plans, uuidv7, writeAudit } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { canStaff, type StaffRole } from '@plaingym/shared';
@@ -66,6 +66,22 @@ function request(app: ReturnType<typeof server>, name: Operation, f: Fixture, ov
 }
 const staff = (f: Fixture, role: StaffRole): Principal => ({ kind: 'staff', gymId: f.gymId, userId: f.user.id, roles: [role] });
 describe('all billing catalog and membership routes', () => {
+  it('skips malformed freeze snapshots while keeping later pages reachable', async () => {
+    const f = await fixture(), app = server(f, staff(f, 'front_desk'));
+    await f.memberships.freeze({ gymId: f.gymId, actor: { kind: 'system' } }, { membershipId: f.active.id, revision: 1 });
+    await db.forGym(f.gymId, async tx => {
+      for (const [before, after] of [[null, {}], [{ nextDueOn: 'bad' }, { nextDueOn: '2028-02-29' }],
+        [{ nextDueOn: '2028-01-31' }, { nextDueOn: null }]])
+        await writeAudit(tx, { gymId: f.gymId, actorKind: 'system', action: 'billing.membership.frozen',
+          targetType: 'membership', targetId: f.active.id, before, after, occurredAt: clock.now() });
+    });
+    const response = await app.request('/api/billing/memberships/' + f.active.id + '/freeze-history');
+    expect(response.status).toBe(200);
+    const result = billingContracts.getMembershipFreezeHistory.response.parse(await response.json());
+    expect(result.data).toHaveLength(1);
+    expect(result.data[0]).toMatchObject({ skippedDueOn: '2028-01-31', nextDueOn: '2028-02-29' });
+    expect(result.pagination.total).toBe(4);
+  });
   it('reads bounded freeze snapshots newest first, preserving skipped dates after resume and edits', async () => {
     const f = await fixture(), other = await fixture(), app = server(f, staff(f, 'front_desk'));
     const context = { gymId: f.gymId, actor: { kind: 'user' as const, userId: f.user.id } };

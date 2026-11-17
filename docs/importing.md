@@ -50,11 +50,16 @@ ones, from the mapping.
 ### Memberships columns
 
 Import people first, then their memberships. A newly imported active membership
-sets its member to **Active** and wins their lead, even when the people file
-omitted status or said Cancelled or Frozen. Updating an active membership applies
-the same rule. An existing pending membership stays pending when updated and
-does not win its lead. People without an imported membership keep the status
+sets its member to **Active**, even when the people file omitted status or said
+Cancelled or Frozen. Inserting a membership wins an existing lead; it never creates
+a lead. Updating an active membership or moving its billing date derives the member's
+status without changing the lead stage, so a lost lead stays lost. An existing pending
+membership stays pending when updated and does not win its lead. People without an imported membership keep the status
 from the people file (Prospect when omitted).
+
+Membership imports use the member's current state when reconciling status; a changed
+member revision alone does not reject a chunk. Membership, household and plan revision
+checks still protect the imported billing changes, and erased or moved members are refused.
 
 Each row needs an email (or both names), the **plan's name** (or its ID) exactly as
 it is in **Billing catalog**, and **Next due date** as `YYYY-MM-DD`. Optional: amount in

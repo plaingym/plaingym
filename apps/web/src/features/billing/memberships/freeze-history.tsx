@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { calendarDateLabel, useGymTime } from '../../../lib/instant.js';
 import { t } from '../../../lib/i18n.js';
 import { Alert } from '../../../components/ui/alert.js';
@@ -11,10 +11,13 @@ const text = (key: string, values?: Record<string, string | number>) => t('billi
 export function FreezeHistory({ gymId, membershipId, revision, client }: {
   gymId: string; membershipId: string; revision: number; client: BillingClient;
 }) {
-  const [open, setOpen] = useState(false), [offset, setOffset] = useState(0);
+  const [open, setOpen] = useState(false), [page, setPage] = useState({ revision, offset: 0 });
+  const offset = page.revision === revision ? page.offset : 0;
+  const setOffset = (offset: number) => setPage({ revision, offset });
   const { instantLabel } = useGymTime();
   const history = useQuery({ queryKey: ['billing', gymId, 'memberships', membershipId, 'freeze-history', revision, offset],
-    queryFn: () => client.freezeHistory(membershipId, offset), enabled: open });
+    queryFn: () => client.freezeHistory(membershipId, offset), enabled: open, placeholderData: keepPreviousData });
+  const displayedOffset = history.data?.pagination.offset ?? offset;
   return <div className="min-w-0 space-y-2">
     <Button variant="outline" aria-expanded={open} onClick={() => setOpen(!open)}>{text('freezeHistory')}</Button>
     {open && <section aria-label={text('freezeHistory')} className="space-y-3">
@@ -28,8 +31,8 @@ export function FreezeHistory({ gymId, membershipId, revision, client }: {
           <p>{text('freezeNextDue', { date: calendarDateLabel(event.nextDueOn) })}</p>
         </li>)}</ol>
         <div className="flex flex-col gap-2 sm:flex-row">
-          {offset > 0 && <Button variant="outline" onClick={() => setOffset(Math.max(0, offset - history.data.pagination.limit))}>{text('newerFreezes')}</Button>}
-          {offset + history.data.data.length < history.data.pagination.total && <Button variant="outline" onClick={() => setOffset(offset + history.data.pagination.limit)}>{text('olderFreezes')}</Button>}
+          {displayedOffset > 0 && <Button variant="outline" disabled={history.isPlaceholderData} onClick={() => setOffset(Math.max(0, displayedOffset - history.data.pagination.limit))}>{text('newerFreezes')}</Button>}
+          {displayedOffset + history.data.pagination.limit < history.data.pagination.total && <Button variant="outline" disabled={history.isPlaceholderData} onClick={() => setOffset(displayedOffset + history.data.pagination.limit)}>{text('olderFreezes')}</Button>}
         </div>
       </>}
     </section>}

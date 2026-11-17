@@ -40,6 +40,11 @@ for (const width of [360, 1280]) {
       const history = page.getByRole('region', { name: 'Freeze history', exact: true });
       await expect(history.getByText('Skipped billing date: ' + dateLabel(membership.nextDueOn), { exact: true })).toBeVisible();
       await expect(history.getByText('Next billing date after this freeze:', { exact: false })).toBeVisible();
+      // A new freeze refreshes an already-open panel without a reload, on phone and desktop.
+      await page.getByRole('button', { name: 'Freeze', exact: true }).click();
+      await panel.getByRole('button', { name: 'Save', exact: true }).click();
+      await expect(history.locator('li')).toHaveCount(2);
+      await expect(history.getByText('Skipped billing date: ' + dateLabel(membership.nextDueOn), { exact: true })).toBeVisible();
       expect(await horizontalOverflow(page)).toBeUndefined();
       const small = await history.locator('button').evaluateAll(elements => elements.filter(element => {
         const box = element.getBoundingClientRect(); return box.width < 44 || box.height < 44;
