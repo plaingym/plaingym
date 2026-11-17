@@ -34,13 +34,27 @@ The runtime passes the queue's recovery capability as `recovery` to
 `createWebhookInbox` as well as `jobs`. A redelivery resets an exhausted original dispatch job with `retryFailed`
 and audits `billing.webhook.dispatch_retried`, keeping its ID, payload and key.
 Concurrent redeliveries reset it only once; pending and running jobs are unchanged.
-The inbox has no timer of its own: only a later delivery of the same event resets
-the job. Stripe retries a delivery automatically only while the endpoint doesn't
-answer 2xx, and this endpoint answers 200 once the dispatch job is enqueued, so a
-dispatch that fails later is reset by a manual redelivery from the provider, a
-duplicate delivery, or a retry after a response that never reached the provider.
-Otherwise it stays failed until staff replay it. Queue or recovery errors fail the
-request so the provider retries.
+Queue or recovery errors fail the request so the provider retries.
+
+The hourly `billing.webhooks.recover` job (minute 17) also resets failed original
+dispatch jobs without another delivery. It pages the gym's unprocessed events
+with an error in groups of 100, including old events, and looks up failed jobs
+using the stored event row ID. It waits 15 minutes after an exhausted batch, then
+30, 60, 120 and 240 minutes after subsequent batches. The same
+`billing.webhook.dispatch_retried` audits count resets across restarts, including
+those triggered by redelivery. After five audited resets the sweep leaves the
+event for Health's failed-webhooks count and staff replay or manual redelivery.
+Processed events and failed replay jobs are left alone. Concurrent sweeps can
+reset only one failed job; a per-event error is logged safely and does not stop
+the other events. The sweep is in the billing job barrel and uses the inbox
+already supplied by `configureWebhookInboxJobs`; no separate runtime setup is needed.
+
+The reset and its audit are separate transactions. A crash after resetting but
+before auditing can allow an extra automatic reset; the queue's atomic failed-job
+reset and the dispatcher's processed guard still prevent duplicate dispatch jobs
+and repeated handling of an already processed event. Stripe retries deliveries
+automatically only after a non-2xx response, so it cannot recover a dispatch that
+fails after this endpoint answered 200 by itself.
 
 `inbox.register(type, handler)` registers one handler per event type. The dispatcher
 loads the saved event in the job's gym scope and passes the verified reference,

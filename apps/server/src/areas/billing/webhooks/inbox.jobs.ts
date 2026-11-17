@@ -6,6 +6,7 @@ export function createWebhookInboxJobs(inbox: WebhookInbox): readonly JobRegistr
   return [{ id: webhookDispatchJob, handler: (payload, context) => inbox.dispatch(payload, context) }];
 }
 let configured: WebhookInbox | undefined;
+export function configuredWebhookInbox() { return configured; }
 export function configureWebhookInboxJobs(inbox: WebhookInbox) { configured = inbox; }
 export const jobs: readonly JobRegistration[] = [{ id: webhookDispatchJob, async handler(payload, context) {
   if (!configured) throw new Error('Webhook inbox jobs are not configured');

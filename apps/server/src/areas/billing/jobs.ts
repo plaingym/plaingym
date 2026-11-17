@@ -11,6 +11,7 @@ import { jobs as part7 } from './payments.jobs.js';
 import { jobs as part8 } from './alerts/alerts.jobs.js';
 import { jobs as part9 } from './kiosk-standing.jobs.js';
 import { jobs as part10 } from './packs/expiry.jobs.js';
+import { jobs as part11 } from './webhooks/inbox-recovery.jobs.js';
 
 export const jobs: readonly JobRegistration[] = [
   ...part0,
@@ -24,4 +25,5 @@ export const jobs: readonly JobRegistration[] = [
   ...part8,
   ...part9,
   ...part10,
+  ...part11,
 ];

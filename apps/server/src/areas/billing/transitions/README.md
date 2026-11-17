@@ -162,8 +162,14 @@ first failure, then 30, 60, 120 and 240 minutes after subsequent exhausted batch
 The reset count survives process restarts in `billing.transition.effect.retried`
 audits. After five resets, recovery records
 `billing.transition.effect.recovery_exhausted` once and leaves the failed job for
-the gym's Health failed-jobs warning and staff follow-up. It does not complete or
-discard the effect. Completed effects are excluded, and the handler's completion
+the gym's Health failed-jobs warning until queue retention removes it after 90 days;
+the exhausted audit remains. It does not complete or discard the effect. Completed
+and recovery-exhausted effects are excluded using correlated lookups on the
+`(gym_id, action, target_id)` audit index, so later sweeps do not lock an exhausted
+effect's invoice again. A per-effect error is logged safely and does not stop the
+remaining recoveries. The reset and its retry audit commit in separate transactions:
+a crash between them can permit an extra reset beyond the audited five-reset limit.
+The queue still resets each failed job atomically, and the handler's completion
 guard also prevents a completed effect from running again. Recovered retry work
 still calls the charge runner, which checks current invoice state and retry windows.
 Settlement or publication failure does not stop this recovery pass.

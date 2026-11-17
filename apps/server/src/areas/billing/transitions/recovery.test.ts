@@ -7,6 +7,7 @@ import { jobs } from '@plaingym/db';
 import { isInTransaction } from '@plaingym/shared/transaction';
 import { FakeJobs, PostgresJobs, PostgresJobStatsQuery, type JobContext } from '../../../infra/jobs/index.js';
 import { FakeEmail } from '../../../infra/email/index.js';
+import { setLogSink } from '../../../core/log.js';
 import { createMembershipService } from '../memberships.js';
 import { useRunnerFixture } from '../runner/runner.fixture.test-helper.js';
 import { createWebhookInbox } from '../webhooks/inbox.js';
@@ -93,8 +94,12 @@ it('a recovered retry still respects a retry window already consumed while its j
   f.options.retry.mockRejectedValue(new Error('Runner unavailable'));
   await f.effects.publish(f.gymId); await f.drain();
   f.clock.set('2028-03-04T09:00:00Z'); await f.exhaust();
-  const [work] = await f.work('retry');
+  // Both day-three and day-seven effects exist; database row order does not identify the due one.
+  const work = (await f.work('retry')).find(row => (row.after as TransitionEffect).retryDay === 3);
+  const later = (await f.work('retry')).find(row => (row.after as TransitionEffect).retryDay === 7);
+  expect(work).toBeDefined(); expect(later).toBeDefined();
   expect(await f.queue.failedJobs(effectJob, [work!.targetId], { gymId: f.gymId })).toHaveLength(1);
+  expect(await f.queue.failedJobs(effectJob, [later!.targetId], { gymId: f.gymId })).toHaveLength(0);
   // Another collection consumed day three. Recovered work must not charge a second time in that window.
   f.provider.respondNextConfirmation('declined'); await f.runner.retry(f.bill.id, f.context);
   expect((await f.read()).attempts).toHaveLength(2);
@@ -123,7 +128,9 @@ it('backs off across restarts, stops at its limit, and leaves the failure visibl
   expect(await f.audits(effectRetried)).toHaveLength(effectRecoveryLimit);
   expect(await f.audits(effectRecoveryExhausted)).toMatchObject([{ targetId: work!.targetId,
     after: { kind: 'receipt', jobId: original!.jobId, resets: effectRecoveryLimit } }]);
-  expect(await f.build().recoverFailed(f.gymId)).toEqual({ recovered: 0, exhausted: 1 });
+  const lookup = vi.spyOn(f.queue, 'failedJobs');
+  expect(await f.build().recoverFailed(f.gymId)).toEqual({ recovered: 0, exhausted: 0 });
+  expect(lookup).not.toHaveBeenCalled();
   expect(await new PostgresJobStatsQuery(db).get(f.gymId)).toMatchObject({ failed: 1, succeeded: 1, pending: 0 });
 });
 
@@ -134,6 +141,26 @@ it('leaves a completed effect alone even when its queue acknowledgement failed t
   expect(f.afterInvoicePaid).toHaveBeenCalledTimes(1);
   expect(f.options.notifications.receipt).toHaveBeenCalledTimes(1);
   expect(await f.audits(effectRetried)).toEqual([]);
+});
+
+it('logs one effect recovery failure and continues with the other failed effects', async () => {
+  const f = await fixture();
+  f.options.notifications.receipt.mockRejectedValue(new Error('Delivery unavailable'));
+  f.afterInvoicePaid.mockRejectedValue(new Error('Paid hook unavailable'));
+  await f.pay(); await f.exhaust(); f.clock.advance(effectRecoveryDelayMs);
+  const reset = f.queue.retryFailed.bind(f.queue);
+  const retry = vi.spyOn(f.queue, 'retryFailed').mockRejectedValueOnce(new Error('Private lock timeout details'))
+    .mockImplementationOnce(reset);
+  const lines: string[] = [], previous = setLogSink(line => lines.push(line));
+  try {
+    expect(await f.build().recoverFailed(f.gymId)).toEqual({ recovered: 1, exhausted: 0 });
+  } finally { setLogSink(previous); }
+  expect(retry).toHaveBeenCalledTimes(2);
+  expect(lines).toHaveLength(1);
+  expect(JSON.parse(lines[0]!)).toMatchObject({ event: 'billing.transition.effect.recovery_failed', gymId: f.gymId });
+  expect(lines[0]).not.toContain('Private lock timeout details');
+  retry.mockRestore();
+  expect(await f.build().recoverFailed(f.gymId)).toEqual({ recovered: 1, exhausted: 0 });
 });
 
 it('pages old work, keeps gym scope, and ignores unpublished, missing, pending and completed jobs', async () => {

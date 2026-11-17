@@ -8,6 +8,7 @@ import { recentWebhookFailureMs, type WebhookHealthQuery } from '../../../core/i
 import type { JobContext, Jobs, JobRecovery } from '../../../infra/jobs/index.js';
 import type { PaymentEvent, Payments } from '../../../infra/payments/index.js';
 import { PaymentWebhookError } from '../../../infra/payments/webhook-error.js';
+import { createWebhookInboxRecovery, webhookDispatchRetried } from './inbox-recovery.js';
 import { latestTestSwitch, latestTestSwitchId, StripeTestModeSwitched, withStripeTestWrites } from '../stripe-writes.js';
 
 export const webhookDispatchJob = 'billing.webhooks.dispatch';
@@ -62,6 +63,7 @@ export function createWebhookInbox(options: {
     return scope(gymId, async (tx) => (await tx.select().from(stripeEvents).where(match(gymId, eventId)))[0]);
   }
   return {
+    recoverFailed: createWebhookInboxRecovery({ job: webhookDispatchJob, scope, clock, ...(options.recovery ? { recovery: options.recovery } : {}) }),
     register(type: string, handler: WebhookHandler) {
       if (!type || handlers.has(type)) throw new Error('Duplicate or empty webhook handler');
       handlers.set(type, handler);
@@ -82,11 +84,11 @@ export function createWebhookInbox(options: {
       await options.jobs.enqueue(webhookDispatchJob, { eventId: event.id }, {
         gymId, timezone, idempotencyKey: row.id, maxAttempts: 10,
       });
-      // A redelivery also recovers a dispatch that used all its attempts. Stripe's delivery schedule bounds resets.
+      // A redelivery also recovers a dispatch that used all its attempts; its audit counts toward the sweep's limit.
       // Reset only this gym's failed original job; concurrent deliveries cannot reset queued or running work.
       if (options.recovery) for (const job of await options.recovery.failedJobs(webhookDispatchJob, [row.id], { gymId }))
         if (await options.recovery.retryFailed(job.jobId, { gymId, runAt: clock.now() }))
-          await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'billing.webhook.dispatch_retried',
+          await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: webhookDispatchRetried,
             targetType: 'stripe_event', targetId: row.id, after: { jobId: job.jobId }, occurredAt: clock.now() }));
     },
     async dispatch(payload: unknown, context: JobContext): Promise<void> {
