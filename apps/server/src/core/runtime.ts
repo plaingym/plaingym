@@ -359,7 +359,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
       const email = await smtpMailer(smtp!)(gymId);
       if (!email) throw new AppError('unavailable', 'Email is not configured for this gym');
       return email;
-    }, origin: gymOrigin, demoMode: Boolean(demo),
+    }, origin: gymOrigin, demoMode: Boolean(demo), sms: { resolver: smsResolver, phoneDigest },
     ...(demo ? { demoEmailFor: demo.emailFor } : {}),
     async senderEmail(gymId, userId) {
       const email = await accounts.userEmail(gymId, userId);
