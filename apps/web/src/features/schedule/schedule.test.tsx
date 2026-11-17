@@ -2,14 +2,14 @@
 // @vitest-environment jsdom
 import { sessionTimes } from './session.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryObserver } from '@tanstack/react-query';
-import type { StaffRole } from '@plaingym/shared';
+import { createWebRegistries, type StaffRole } from '@plaingym/shared';
 import type { ClassSession } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
 import { useBootstrap } from '../../app/context.js';
 import type { ShellBootstrap } from '../../app/services.js';
-import { createRegistries } from '../../lib/registries.js';
+import { createRegistries, type ExtensionView } from '../../lib/registries.js';
 import { usePublishSessionCounts, useSessionChanged } from '../../lib/session-summary.js';
 import { SchedulePage, SessionDetail, SessionForm, SessionPanels } from './page.js';
 import { calendarDate, calendarInstant, localTime, shiftDate, weekStart } from './calendar.js';
@@ -74,15 +74,62 @@ describe('schedule calendar and session detail', () => {
     expect(screen.queryByRole('button', { name: 'Cancel session' })).toBeNull();
     expect(screen.queryByRole('checkbox', { name: /Email the/ })).toBeNull();
   });
-  it('shows the specific refusal when the server finds the session has started', async () => {
+  it.each([
+    [false, 'This session has started and cannot be cancelled.'],
+    [true, 'This session has started and cannot be cancelled. Your cancellation note was not sent.'],
+  ] as const)('shows the specific refusal when the server finds the session has started (notify %s)', async (notify, expected) => {
     const onSaved = vi.fn();
     const response = Response.json({ error: { code: 'conflict', message: 'Server message', details: { reason: ['session_started'] } } }, { status: 409 });
     const error: unknown = await response.json(); // The typed API client consumes the body before returning.
     vi.mocked(api.POST).mockResolvedValue({ response, error } as Awaited<ReturnType<typeof api.POST>>);
-    render(<SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={onSaved} registries={noticeRegistries()}/>);
+    const registries = noticeRegistries();
+    const view = render(<SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={onSaved} registries={registries}/>);
+    if (notify) fireEvent.click(screen.getByRole('checkbox', { name: 'Email the 3 booked and waitlisted members' }));
     fireEvent.click(screen.getByRole('button', { name: 'Cancel session' }));
-    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('This session has started and cannot be cancelled.'));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe(expected));
+    // The browser is still eight hours behind the server's start decision.
+    expect(Date.now()).toBeLessThan(Date.parse(session.startsAt));
+    expect(screen.queryByRole('button', { name: 'Cancel session' })).toBeNull();
+    expect(screen.queryByLabelText(/Optional cancellation note/)).toBeNull();
     expect(onSaved).not.toHaveBeenCalled();
+    // Another staff member moves the session: the refusal was for the old start, so cancelling is offered again.
+    view.rerender(<SessionDetail session={{ ...session, startsAt: '2026-03-09T23:00:00Z', endsAt: '2026-03-10T00:00:00Z', revision: 5 }} options={options} roles={['owner']} enabledModules={[]} onSaved={onSaved} registries={registries}/>);
+    expect(screen.getByRole('button', { name: 'Cancel session' })).toBeTruthy();
+  });
+  it('tells nobody without the cancel form that a note was not sent when the start passes', () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date(Date.parse(session.startsAt) - 5_000));
+    render(<SessionDetail session={session} options={options} roles={['front_desk']} enabledModules={[]} onSaved={vi.fn()} registries={createWebRegistries<ExtensionView>([])}/>);
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+  it('uses one start timer and explains that an unsent note was not delivered when time passes', () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date(Date.parse(session.startsAt) - 5_000));
+    const timeout = vi.spyOn(window, 'setTimeout'), interval = vi.spyOn(window, 'setInterval');
+    try {
+      const rendered = vi.fn();
+      const counts = { booked: 1, waitlisted: 0, checkedIn: 0 };
+      const Panel = () => { rendered(); usePublishSessionCounts(counts); return null; };
+      const registries = createWebRegistries<ExtensionView>([{ sessionPanels: [{ id: 'timer-counts', labelKey: 'schedule/schedule:bookings', enabled: true,
+        permission: { kind: 'staff', capability: 'schedule.manage' }, component: Panel }] }]);
+      const view = render(<SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={vi.fn()} registries={registries}/>);
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Email the 1 booked or waitlisted member' }));
+      fireEvent.change(screen.getByLabelText(/Optional cancellation note/), { target: { value: 'Please save this note' } });
+      const renders = rendered.mock.calls.length;
+      act(() => vi.advanceTimersByTime(4_000));
+      expect(rendered).toHaveBeenCalledTimes(renders);
+      expect(timeout.mock.calls.filter(([, delay]) => delay === 5_000)).toHaveLength(1);
+      expect(interval).not.toHaveBeenCalled();
+      act(() => vi.advanceTimersByTime(1_000));
+      expect(screen.queryByRole('button', { name: 'Cancel session' })).toBeNull();
+      expect(screen.getByRole('status').textContent).toContain('Your cancellation note was not sent.');
+      expect(api.POST).not.toHaveBeenCalled();
+      view.unmount(); expect(vi.getTimerCount()).toBe(0);
+    } finally { timeout.mockRestore(); interval.mockRestore(); }
+  });
+  it.each(['started', 'cancelled'] as const)('does not schedule a start timer for a %s session', kind => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date(kind === 'started' ? session.startsAt : '2026-03-02T15:00:00Z'));
+    render(<SessionDetail session={{ ...session, status: kind === 'cancelled' ? 'cancelled' : 'scheduled' }} options={options} roles={['owner']} enabledModules={[]} onSaved={vi.fn()} registries={createWebRegistries<ExtensionView>([])}/>);
+    expect(vi.getTimerCount()).toBe(0);
   });
   it.each(['other_coach', 'unlinked_coach', 'front_desk'] as const)('hides the notice option from %s', kind => {
     const role = kind === 'front_desk' ? 'front_desk' : 'coach';

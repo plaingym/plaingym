@@ -114,6 +114,10 @@ Ordinary booking confirmations and member booking cancellations send no notice.
 Unsent promotions expire after the jobs module's exported succeeded-retention
 default, so recovery stops before a completed notice job's key can be pruned.
 The notice handler logs when it skips a stale or missing promotion.
+The retention test checks that this window matches the runtime queue's effective
+succeeded retention, including an explicit override. A failed notice enqueue
+after a staff or portal booking commits is logged; the response still returns
+the committed booking, and the scan recovers its promotion notice.
 
 `createBookingMailer` uses `createSmtpResolver` for each gym's encrypted SMTP
 settings (with its existing install fallback). The runtime may inject the demo

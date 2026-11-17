@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, eq, gte, ilike, inArray, isNull, lt, or, type SQL } from 'drizzle-orm';
+import { z } from 'zod';
 import { forGym, classBookings, classTags, classTemplates, classTemplatePrograms, classTemplateTags, classSessions, classSessionPrograms, classSessionTags, programs, staffProfiles, staffRoles, revisionGuard, assertRevised, writeAudit, RevisionConflictError, type Transaction } from '@plaingym/db';
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { classTagSchema, classTemplateSchema, classSessionSchema, createClassTagRequestSchema, updateClassTagRequestSchema, createClassTemplateRequestSchema, updateClassTemplateRequestSchema, createClassSessionRequestSchema, updateClassSessionRequestSchema, classTagListQuerySchema, classTemplateListQuerySchema, classSessionListQuerySchema, scheduleRevisionRequestSchema, swapSessionCoachRequestSchema, updateSessionNotesRequestSchema, updateSessionCapacityRequestSchema,
@@ -30,14 +31,17 @@ async function templateView(tx: Transaction, row: TemplateRow): Promise<ClassTem
     durationMinutes: row.durationMinutes, coachId: row.coachId, capacity: row.capacity, notes: row.notes, kind: row.kind,
     revision: row.revision, createdAt: row.createdAt.toISOString(), programIds, tagIds });
 }
-async function sessionView(tx: Transaction, row: SessionRow): Promise<ClassSession> {
-  const rules = await readBookingRules(tx, row.gymId);
+// Project stored fields without modifying the response schema's session-wide refinements.
+const sessionSnapshotSchema = z.strictObject(classSessionSchema.shape).omit({ cancelBefore: true });
+async function sessionSnapshot(tx: Transaction, row: SessionRow): Promise<Omit<ClassSession, 'cancelBefore'>> {
   const programIds = (await tx.select({ id: classSessionPrograms.programId }).from(classSessionPrograms).where(eq(classSessionPrograms.sessionId, row.id)).orderBy(asc(classSessionPrograms.programId))).map((value) => value.id);
   const tagIds = (await tx.select({ id: classSessionTags.tagId }).from(classSessionTags).where(eq(classSessionTags.sessionId, row.id)).orderBy(asc(classSessionTags.tagId))).map((value) => value.id);
-  return classSessionSchema.parse({ id: row.id, name: row.name, templateId: row.templateId, status: row.status,
-    cancelBefore: cancellationCutoffAt(row, rules).toISOString(),
+  return sessionSnapshotSchema.parse({ id: row.id, name: row.name, templateId: row.templateId, status: row.status,
     coachId: row.coachId, capacity: row.capacity, notes: row.notes, kind: row.kind, revision: row.revision,
     createdAt: row.createdAt.toISOString(), startsAt: row.startsAt.toISOString(), endsAt: row.endsAt.toISOString(), programIds, tagIds });
+}
+function sessionResponse(snapshot: Omit<ClassSession, 'cancelBefore'>, rules: Awaited<ReturnType<typeof readBookingRules>>): ClassSession {
+  return classSessionSchema.parse({ ...snapshot, cancelBefore: cancellationCutoffAt({ startsAt: new Date(snapshot.startsAt) }, rules).toISOString() });
 }
 async function relationships(tx: Transaction, input: { programIds: string[]; tagIds: string[]; coachId: string | null }) {
   // Resolve IDs before writing so forged references receive the same 404 as an absent resource.
@@ -101,7 +105,7 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
         .onConflictDoNothing().returning();
       if (!session) continue;
       await mappings(tx, 'session', gymId, session.id, template, now);
-      await writeAudit(tx, { gymId, actorKind: 'system', action: 'schedule.session.materialized', targetType: 'class_session', targetId: session.id, after: await sessionView(tx, session), occurredAt: now });
+      await writeAudit(tx, { gymId, actorKind: 'system', action: 'schedule.session.materialized', targetType: 'class_session', targetId: session.id, after: await sessionSnapshot(tx, session), occurredAt: now });
       count++;
     }
     return count;
@@ -200,7 +204,7 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
           const guard = revisionGuard(classSessions.revision, session.revision);
           const detached = assertRevised(await tx.update(classSessions).set({ templateId: null, revision: guard.next })
             .where(and(eq(classSessions.id, session.id), guard.matches)).returning());
-          await audit(tx, context, 'session.template_removed', session.id, await sessionView(tx, session), await sessionView(tx, detached));
+          await audit(tx, context, 'session.template_removed', session.id, await sessionSnapshot(tx, session), await sessionSnapshot(tx, detached));
         }
         await tx.delete(classTemplatePrograms).where(eq(classTemplatePrograms.templateId, id));
         await tx.delete(classTemplateTags).where(eq(classTemplateTags.templateId, id));
@@ -218,20 +222,24 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
         if (query.tagId) filters.push(inArray(classSessions.id, tx.select({ id: classSessionTags.sessionId }).from(classSessionTags).where(eq(classSessionTags.tagId, query.tagId))));
         const where = and(...filters);
         const rows = await tx.select().from(classSessions).where(where).orderBy(asc(classSessions.startsAt), asc(classSessions.id)).limit(query.limit).offset(query.offset);
-        const data = []; for (const row of rows) data.push(await sessionView(tx, row));
+        const rules = await readBookingRules(tx, gymId);
+        const data = []; for (const row of rows) data.push(sessionResponse(await sessionSnapshot(tx, row), rules));
         return { data, pagination: { limit: query.limit, offset: query.offset, total: await tx.$count(classSessions, where) } };
       });
     },
     async getSession(gymId: string, id: string) {
-      return scope(gymId, async (tx) => { const [row] = await tx.select().from(classSessions).where(eq(classSessions.id, id)); return sessionView(tx, row ?? missing()); });
+      return scope(gymId, async (tx) => {
+        const [row] = await tx.select().from(classSessions).where(eq(classSessions.id, id));
+        return sessionResponse(await sessionSnapshot(tx, row ?? missing()), await readBookingRules(tx, gymId));
+      });
     },
     async createSession(context: MutationContext, input: CreateClassSessionRequest) {
       const value = createClassSessionRequestSchema.parse(input), { programIds, tagIds, ...fields } = value;
       return safe(() => scope(context.gymId, async (tx) => {
         await relationships(tx, value);
         const [row] = await tx.insert(classSessions).values({ ...fields, startsAt: new Date(fields.startsAt), endsAt: new Date(fields.endsAt), gymId: context.gymId, createdAt: clock.now() }).returning();
-        await mappings(tx, 'session', context.gymId, row!.id, { programIds, tagIds }, clock.now()); const after = await sessionView(tx, row!);
-        await audit(tx, context, 'session.created', after.id, null, after); return after;
+        await mappings(tx, 'session', context.gymId, row!.id, { programIds, tagIds }, clock.now()); const after = await sessionSnapshot(tx, row!);
+        await audit(tx, context, 'session.created', after.id, null, after); return sessionResponse(after, await readBookingRules(tx, context.gymId));
       }));
     },
     async updateSession(context: MutationContext, id: string, input: UpdateClassSessionRequest) {
@@ -241,12 +249,13 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
         // A generated session keeps its occurrence key when moved, so materialization never recreates it.
         // One generated without a key (by the previous release) was never moved, so its current start is the key.
         const occurrenceStartsAt = row.occurrenceStartsAt ?? (row.templateId ? row.startsAt : null);
-        const before = await sessionView(tx, row); await relationships(tx, value);
+        const before = await sessionSnapshot(tx, row); await relationships(tx, value);
         const guard = revisionGuard(classSessions.revision, revision);
         const afterRow = assertRevised(await tx.update(classSessions).set({ ...fields, startsAt: new Date(fields.startsAt), endsAt: new Date(fields.endsAt), occurrenceStartsAt, revision: guard.next }).where(and(eq(classSessions.id, id), guard.matches)).returning());
-        await reconcileSessionBookings(tx, afterRow, context, clock.now());
-        await mappings(tx, 'session', context.gymId, id, { programIds, tagIds }, clock.now()); const after = await sessionView(tx, afterRow);
-        await audit(tx, context, 'session.updated', id, before, after); return after;
+        const rules = await readBookingRules(tx, context.gymId);
+        await reconcileSessionBookings(tx, afterRow, context, clock.now(), rules);
+        await mappings(tx, 'session', context.gymId, id, { programIds, tagIds }, clock.now()); const after = await sessionSnapshot(tx, afterRow);
+        await audit(tx, context, 'session.updated', id, before, after); return sessionResponse(after, rules);
       }));
     },
     async changeSession(context: MutationContext, id: string, kind: 'cancel' | 'coach' | 'notes' | 'capacity', input: CancelSessionRequest | SwapSessionCoachRequest | UpdateSessionNotesRequest | UpdateSessionCapacityRequest) {
@@ -267,7 +276,7 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
               ? await tx.select({ id: staffProfiles.id }).from(staffProfiles).where(and(eq(staffProfiles.id, row.coachId), eq(staffProfiles.userId, context.actor.userId))) : [];
             if (!manager && !profile) throw new AppError('forbidden', 'Only the session coach, an admin or an owner may send a cancellation notice');
           }
-          const before = await sessionView(tx, row), guard = revisionGuard(classSessions.revision, value.revision);
+          const before = await sessionSnapshot(tx, row), guard = revisionGuard(classSessions.revision, value.revision);
           const afterRow = assertRevised(await tx.update(classSessions).set({ status: 'cancelled', revision: guard.next })
             .where(and(eq(classSessions.id, id), guard.matches)).returning());
           if (value.notify) {
@@ -277,9 +286,9 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
           const cancelled = await tx.update(classBookings).set({ status: 'cancelled', cancelledAt: now, waitlistPosition: null })
             .where(and(eq(classBookings.sessionId, id), inArray(classBookings.status, ['booked', 'waitlisted']))).returning();
           for (const booking of cancelled) await bookingAudit(tx, context, now, 'cancelled', booking);
-          const after = await sessionView(tx, afterRow);
+          const after = await sessionSnapshot(tx, afterRow);
           await audit(tx, context, 'session.cancel', id, before, after);
-          return after;
+          return sessionResponse(after, await readBookingRules(tx, context.gymId));
         }));
       }
       const schema = kind === 'coach' ? swapSessionCoachRequestSchema : kind === 'notes' ? updateSessionNotesRequestSchema : updateSessionCapacityRequestSchema;
@@ -287,12 +296,13 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
       return safe(() => scope(context.gymId, async (tx) => {
         // All session mutations share the row lock with attendance and booking changes.
         const [row] = await tx.select().from(classSessions).where(eq(classSessions.id, id)).for('update'); if (!row) missing();
-        const before = await sessionView(tx, row);
+        const before = await sessionSnapshot(tx, row);
         if ('coachId' in value && typeof value.coachId === 'string' && !(await tx.select({ id: staffProfiles.id }).from(staffProfiles).where(eq(staffProfiles.id, value.coachId))).length) missing();
         const guard = revisionGuard(classSessions.revision, revision);
         const afterRow = assertRevised(await tx.update(classSessions).set({ ...value, revision: guard.next }).where(and(eq(classSessions.id, id), guard.matches)).returning());
-        if (kind === 'capacity') await reconcileSessionBookings(tx, afterRow, context, clock.now());
-        const after = await sessionView(tx, afterRow); await audit(tx, context, 'session.' + kind, id, before, after); return after;
+        const rules = await readBookingRules(tx, context.gymId);
+        if (kind === 'capacity') await reconcileSessionBookings(tx, afterRow, context, clock.now(), rules);
+        const after = await sessionSnapshot(tx, afterRow); await audit(tx, context, 'session.' + kind, id, before, after); return sessionResponse(after, rules);
       }));
     },
     async materialize(gymId: string, timezone: string, jobClock: Clock = clock) {

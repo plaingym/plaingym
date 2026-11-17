@@ -18,6 +18,7 @@ const slash = (path) => path.split('\\').join('/');
 const isDocsTest = (file) => /\.docs\.test\.ts$/.test(file);
 // These tests inspect source/configuration files outside Vitest's import graph (sync and async reads).
 const sourceScanningTests = [
+  'apps/server/src/areas/bookings/bookings.retention.test.ts',
   'apps/web/src/features/portal/household/keys.test.ts',
   'apps/server/src/areas/imports/export.catalog.test.ts',
   'apps/server/src/areas/settings/go-live.inventory.test.ts',

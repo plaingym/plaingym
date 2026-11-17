@@ -41,6 +41,7 @@
   "saveNotes": "Save notes",
   "cancelSession": "Cancel session",
   "sessionStarted": "This session has started and cannot be cancelled.",
+  "sessionStartedNoteLost": "This session has started and cannot be cancelled. Your cancellation note was not sent.",
   "cancelNotify": "Email the {count} booked and waitlisted members",
   "cancelNotifyOne": "Email the 1 booked or waitlisted member",
   "cancelNotifyNone": "No booked or waitlisted members to email",

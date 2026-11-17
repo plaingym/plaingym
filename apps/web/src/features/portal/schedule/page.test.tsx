@@ -2,7 +2,7 @@
 // @vitest-environment jsdom
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { answer, portalTestCache, storedFor, stubHouseholdLists } from '../household/test-cache.test-helper.js';
@@ -61,6 +61,48 @@ describe('portal schedule actions', () => {
   });
 });
 describe('portal schedule page', () => {
+  it('schedules only the nearest boundary, advances to the next cutoff, and refreshes on focus', async () => {
+    let instant = now;
+    let crossDuringEffect = false;
+    const readNow = () => {
+      const result = instant;
+      if (crossDuringEffect) { instant = new Date(instant.getTime() + 1); crossDuringEffect = false; }
+      return result;
+    };
+    const firstCutoff = now.getTime() + 5_000, nextCutoff = now.getTime() + 10_000;
+    client.schedule.mockResolvedValue(answer([
+      { ...session, cancelBefore: new Date(firstCutoff).toISOString(), bookings: [{ ...booking, memberId: parent }] },
+      { ...session, id: 'second', name: 'Advanced', cancelBefore: new Date(nextCutoff).toISOString(), bookings: [{ ...booking, memberId: parent }] },
+      { ...session, id: 'cancelled', status: 'cancelled', cancelBefore: new Date(now.getTime() + 1_000).toISOString() },
+    ]));
+    const timeout = vi.spyOn(window, 'setTimeout'), clear = vi.spyOn(window, 'clearTimeout'), interval = vi.spyOn(window, 'setInterval');
+    try {
+      const result = view(<PortalSchedulePage client={client as unknown as PortalClient} now={readNow}/>);
+      await screen.findByRole('button', { name: /Cancel booking: Fundamentals/ });
+      const timers = timeout.mock.calls.filter(([, delay]) => delay === 5_001);
+      expect(timers).toHaveLength(1);
+      expect(timeout.mock.calls.some(([, delay]) => delay === 10_001 || delay === 1_001)).toBe(false);
+      expect(interval.mock.calls.filter(([, delay]) => delay === 1_000)).toHaveLength(0);
+      // Render at the inclusive cutoff, then cross it before the effect reads the clock.
+      instant = new Date(firstCutoff); crossDuringEffect = true;
+      act(() => { (timers[0]![0] as () => void)(); });
+      expect(screen.getByRole('button', { name: /Cancel booking: Fundamentals/ })).toBeDefined();
+      const catchup = timeout.mock.calls.filter(([, delay]) => delay === 0).at(-1);
+      expect(catchup).toBeDefined();
+      act(() => { (catchup![0] as () => void)(); });
+      expect(screen.queryByRole('button', { name: /Cancel booking: Fundamentals/ })).toBeNull();
+      expect(screen.getByRole('button', { name: /Cancel booking: Advanced/ })).toBeDefined();
+      expect(timeout.mock.calls.filter(([, delay]) => delay === 5_000)).toHaveLength(1);
+      instant = new Date(nextCutoff + 1);
+      act(() => { window.dispatchEvent(new Event('focus')); });
+      expect(screen.queryByRole('button', { name: /Cancel booking: Advanced/ })).toBeNull();
+      result.unmount();
+      expect(clear).toHaveBeenCalled();
+      const calls = timeout.mock.calls.length;
+      act(() => { window.dispatchEvent(new Event('focus')); });
+      expect(timeout).toHaveBeenCalledTimes(calls);
+    } finally { timeout.mockRestore(); clear.mockRestore(); interval.mockRestore(); }
+  });
   it('shows a full class without a waitlist action after the cutoff', async () => {
     client.schedule.mockResolvedValue(answer([{ ...session, placesLeft: 0 }]));
     view(<PortalSchedulePage client={client as unknown as PortalClient} now={() => new Date(Date.parse(session.cancelBefore) + 1)} />);

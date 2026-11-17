@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import '@hono/zod-openapi';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { auditEvents, classBookings, classCreditEntries, householdUsers, uuidv7 } from '@plaingym/db';
 // eslint-disable-next-line no-restricted-imports -- Initialize the real registrations' app-role pools in the isolated composition test; no raw queries.
@@ -26,6 +26,7 @@ import { createBookingDelivery, noticeJob, type BookingDelivery } from './bookin
 import { FakeEmail } from '../../infra/email/index.js';
 import { createPortalBookingService } from '../portal/bookings.js';
 import { createPortalBookingRoutes } from '../portal/bookings.routes.js';
+import { setLogSink } from '../../core/log.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 beforeAll(() => initializeDatabase(db.appUrl));
@@ -188,6 +189,35 @@ describe('portal class-credit eligibility', () => {
 });
 
 describe('booking route permissions and production composition', () => {
+  it.each(['staff', 'self', 'household'] as const)('returns the committed %s booking when notice enqueue fails and the sweep recovers it', async source => {
+    const f = await fixture(), jobs = new FakeJobs(clock), email = new FakeEmail();
+    const delivery = createBookingDelivery({ scope: db.forGym, clock, jobs, mailer: async () => email });
+    const confirmed = [];
+    for (let n = 0; n < 5; n++) confirmed.push(await book(f, (await factory('members', f.gymId)).id));
+    const waiting = await book(f, f.outsider.id);
+    await service.cancel(f.actor, confirmed[0]!.id);
+    const enqueue = vi.spyOn(delivery, 'enqueueNotice').mockRejectedValue(new Error('Unavailable'));
+    const server = app(f, source === 'staff' ? staffPrincipal(f, 'front_desk') : memberPrincipal(f), false, false, delivery);
+    const path = source === 'staff' ? '/api/bookings' : source === 'self' ? '/api/portal/bookings' : `/api/portal/members/${f.sibling.id}/bookings`;
+    const input = { sessionId: f.session.id, allowWaitlist: true, ...(source === 'staff' ? { memberId: f.member.id } : {}) };
+    const logs: string[] = [], previous = setLogSink(line => logs.push(line));
+    try {
+      const response = await post(server, path, input);
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.data).toMatchObject({ status: 'waitlisted', memberId: source === 'household' ? f.sibling.id : f.member.id });
+      expect(enqueue).toHaveBeenCalledWith(f.gymId, waiting.id);
+      expect(logs.map(line => JSON.parse(line))).toContainEqual(expect.objectContaining({
+        event: 'bookings.notice_enqueue_failed', gymId: f.gymId, bookingId: waiting.id,
+      }));
+      expect((await service.list(f.gymId, { limit: 50, offset: 0 })).data).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: body.data.id, status: 'waitlisted' }), expect.objectContaining({ id: waiting.id, status: 'booked' }),
+      ]));
+      expect((await (await post(server, path, input)).json()).data.id).toBe(body.data.id);
+    } finally { enqueue.mockRestore(); setLogSink(previous); }
+    await delivery.sweep(f.gymId);
+    expect(jobs.jobs).toMatchObject([{ name: noticeJob, payload: { bookingId: waiting.id } }]);
+  });
   it.each(['staff', 'self', 'household'] as const)('enqueues inline promotions after the %s booking commits and audits the system actor', async source => {
     const f = await fixture(), jobs = new FakeJobs(clock), email = new FakeEmail();
     const delivery = createBookingDelivery({ scope: db.forGym, clock, jobs, mailer: async () => email });

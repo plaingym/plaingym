@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { asc, eq } from 'drizzle-orm';
 import { auditEvents, attendances, classBookings, classSessions, classSessionPrograms, classSessionTags, uuidv7, RevisionConflictError } from '@plaingym/db';
@@ -16,6 +16,7 @@ import { FakeJobs } from '../../infra/jobs/index.js';
 import { createScheduleService } from './schedule.js';
 import { createScheduleRoutes } from './schedule.routes.js';
 import { createScheduleJobs } from './schedule.jobs.js';
+import * as settings from '../settings/settings.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
 const clock = new TestClock('2026-03-01T00:00:00Z'), service = createScheduleService({ scope: database.forGym, clock });
@@ -37,6 +38,47 @@ function sessionFields(gymId = gymA) {
   const { name, coachId, capacity, notes, kind, programIds, tagIds } = fields(gymId);
   return { name, coachId, capacity, notes, kind, programIds, tagIds, startsAt: '2026-03-02T18:00:00Z', endsAt: '2026-03-02T19:00:00Z' };
 }
+describe('stored schedule snapshots and response cutoffs', () => {
+  it('reads booking rules once for a multi-session list', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId, { cancellationCutoffMinutes: 90 });
+    const program = await factory('programs', gymId);
+    for (let n = 0; n < 3; n++) {
+      const session = await factory('classSessions', gymId, {
+        startsAt: new Date('2026-03-02T18:00:00Z'), endsAt: new Date('2026-03-02T19:00:00Z'),
+      });
+      await factory('classSessionPrograms', gymId, { sessionId: session.id, programId: program.id });
+    }
+    const read = vi.spyOn(settings, 'readBookingRules');
+    try {
+      const result = await service.listSessions(gymId, { from: '2026-03-01T00:00:00Z', until: '2026-03-03T00:00:00Z', limit: 100, offset: 0 });
+      expect(result.data).toHaveLength(3);
+      expect(result.data.every(row => row.cancelBefore === '2026-03-02T16:30:00.000Z')).toBe(true);
+      expect(read).toHaveBeenCalledTimes(1);
+    } finally { read.mockRestore(); }
+  });
+  it('keeps derived cutoffs out of creation, update, cancellation, materialization and detachment audits', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId, { cancellationCutoffMinutes: 60 });
+    const program = await factory('programs', gymId);
+    const template = await service.createTemplate(context(gymId), { ...fields(), coachId: null, programIds: [program.id] });
+    const session = await service.createSession(context(gymId), { ...sessionFields(), coachId: null, programIds: [program.id] });
+    await settings.createSettingsService({ scope: database.forGym, clock }).update(context(gymId), 'booking', { revision: 1, bookingWindowDays: 7, cancellationCutoffMinutes: 90 });
+    const updated = await service.updateSession(context(gymId), session.id, { ...sessionFields(), coachId: null, programIds: [program.id], revision: session.revision, notes: 'Updated' });
+    const notes = await service.changeSession(context(gymId), session.id, 'notes', { revision: updated.revision, notes: 'Another note' });
+    const cancelled = await service.changeSession(context(gymId), session.id, 'cancel', { revision: notes.revision });
+    await service.deleteTemplate(context(gymId), template.id, { revision: template.revision });
+    expect(session.cancelBefore).toBe('2026-03-02T17:00:00.000Z');
+    expect(updated.cancelBefore).toBe('2026-03-02T16:30:00.000Z');
+    expect(cancelled.cancelBefore).toBe(updated.cancelBefore);
+    const audits = (await database.forGym(gymId, tx => tx.select().from(auditEvents))).filter(row => row.action.startsWith('schedule.session.'));
+    expect(audits.map(row => row.action)).toEqual(expect.arrayContaining([
+      'schedule.session.created', 'schedule.session.updated', 'schedule.session.notes', 'schedule.session.cancel',
+      'schedule.session.materialized', 'schedule.session.template_removed',
+    ]));
+    for (const audit of audits) for (const snapshot of [audit.before, audit.after]) {
+      if (snapshot !== null) expect(snapshot).not.toHaveProperty('cancelBefore');
+    }
+  });
+});
 function server(role: StaffRole | 'anonymous' | 'member' = 'owner', gymId = gymA) {
   const app = new OpenAPIHono<RequestEnvironment>();
   app.use('*', async (c, next) => {

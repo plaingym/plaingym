@@ -38,13 +38,18 @@ The local `GET /api/schedule/options` response projects the gym timezone and
 program/coach IDs and names for schedule readers (TODO: move the response into the shared contract).
 All other endpoints use the shared schedule contracts. Every session response includes a read-only `cancelBefore`
 instant, derived from the gym's current cancellation cutoff using the booking
-rules. Create and update requests cannot set it. The cancel request accepts
+rules, read once per transaction. Audit snapshots contain stored session fields
+and mappings only; they exclude this derived cutoff. Create and update requests cannot set it. The cancel request accepts
 optional `notify: true` and a plain text `note` of at most 1,000 characters.
 Once its start time is reached, a session cannot be cancelled, with or without a
 notice. The service checks the injected clock after acquiring the session row
 lock and returns a conflict with reason `session_started` before any writes.
 The session dialog hides cancellation controls for started sessions and shows
-the specific refusal if the session starts while a request is in flight.
+the specific refusal if the session starts while a request is in flight, then
+hides the controls for that start time even if the browser clock is behind; a
+session moved since then offers them again. A single timer targets the start
+time; reaching it tells a user who could cancel why the controls went away. Both
+messages say the cancellation note was not sent only when one was being written.
 If another caller already cancelled it, the dialog shows that no cancellation
 notice was queued and refreshes the session instead of showing a generic conflict.
 With notification requested, the service checks the current user's stored roles

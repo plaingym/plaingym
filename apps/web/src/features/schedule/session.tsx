@@ -2,7 +2,7 @@
 import { formatCount } from '../../lib/count.js';
 import { dateFormatter, timeLabel } from '../../lib/instant.js';
 import { parseResponse } from '../../lib/response.js';
-import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { canStaff, type StaffRole } from '@plaingym/shared';
 import { classSessionResponseSchema, updateClassSessionRequestSchema, type ClassSession, type ClassTag } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
@@ -53,11 +53,9 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState(''), [editing, setEditing] = useState(false);
   const [emailMembers, setEmailMembers] = useState(false);
   const [now, setNow] = useState(Date.now);
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, []);
-  const started = Date.parse(session.startsAt) <= now;
+  // The start the server refused a cancel for; a session moved since then (here or elsewhere) is judged afresh.
+  const [serverStartedAt, setServerStartedAt] = useState<string | null>(null);
+  const started = serverStartedAt === session.startsAt || Date.parse(session.startsAt) <= now;
   const staffProfileId = useBootstrap().data?.session?.staffProfileId;
   // Booking numbers come from whichever session panel publishes them (the bookings panel), not from an import.
   const [counts, setCounts] = useState<SessionCounts | null>(null), [changed, setChanged] = useState(0);
@@ -70,6 +68,19 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
   const offerNotice = mayNotify && !started && session.status !== 'cancelled' && counts !== null;
   // With nobody left to email the box is off and locked, whatever was ticked before the counts changed.
   const notifying = offerNotice && emailMembers && counts.booked + counts.waitlisted > 0;
+  // Only someone who could see the cancel form is told why it went away. Read through a ref so ticking
+  // the email box doesn't re-arm the start timer.
+  const startNotice = useRef('');
+  useEffect(() => { startNotice.current = manage ? text(notifying ? 'sessionStartedNoteLost' : 'sessionStarted') : ''; }, [manage, notifying]);
+  useEffect(() => {
+    if (started || session.status === 'cancelled') return;
+    const timer = window.setTimeout(() => {
+      const instant = Date.now();
+      setNow(instant);
+      if (startNotice.current && instant >= Date.parse(session.startsAt)) setNotice(startNotice.current);
+    }, Math.min(2_147_483_647, Math.max(0, Date.parse(session.startsAt) - Date.now())));
+    return () => window.clearTimeout(timer);
+  }, [started, session.startsAt, session.status, now]);
   async function change(kind: 'coach' | 'notes' | 'capacity' | 'cancel', event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
     const formElement = event?.currentTarget, form = formElement ? new FormData(formElement) : null;
@@ -85,7 +96,7 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
       const error = result.error as { error?: { details?: { reason?: unknown } } } | undefined;
       const reasons = error?.error?.details?.reason;
       if (kind === 'cancel' && result.response.status === 409 && Array.isArray(reasons) && reasons.includes('session_started')) {
-        setNotice(text('sessionStarted')); setNow(Date.now()); return;
+        setServerStartedAt(session.startsAt); setNotice(text(notifying ? 'sessionStartedNoteLost' : 'sessionStarted')); return;
       }
       if (kind === 'cancel' && result.response.status === 409 && Array.isArray(reasons) && reasons.includes('already_cancelled')) {
         setNotice(text('alreadyCancelled'));
@@ -101,7 +112,11 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
   }
   const when = dateFormatter('fullDate', options.timezone).format(new Date(session.startsAt));
   if (editing) return <SessionForm session={session} options={options} tags={tags} siblings={siblings}
-    onCancel={() => setEditing(false)} onSaved={(next) => { setEditing(false); setNotice(text(Date.parse(next.startsAt) === Date.parse(session.startsAt) ? 'saved' : 'moved')); onSaved(next); }}/>;
+    onCancel={() => setEditing(false)} onSaved={(next) => {
+      const moved = Date.parse(next.startsAt) !== Date.parse(session.startsAt);
+      setEditing(false); if (moved) setNow(Date.now());
+      setNotice(text(moved ? 'moved' : 'saved')); onSaved(next);
+    }}/>;
   return <div className="space-y-6">
     <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <div><dt className="text-sm text-muted-foreground">{text('when')}</dt><dd className="font-medium">{when}</dd>

@@ -19,6 +19,7 @@ import { MemberPicker, usePortalMembers } from './members.js';
 import { weekStart } from '../../schedule/calendar.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('portal/schedule:' + key, values);
+const currentTime = () => new Date();
 export type SessionAction =
   | { kind: 'cancelled' | 'started' | 'dropIn' | 'book' | 'waitlist' | 'closed' }
   | { kind: 'opens'; at: Date }
@@ -42,17 +43,26 @@ function status(booking: MemberBooking) {
   return booking.status === 'waitlisted' ? text(booking.queueRank === null ? 'waitlistedUnknown' : 'waitlisted', { rank: booking.queueRank === null ? '' : formatCount(booking.queueRank) }) : text('booked');
 }
 
-export function PortalSchedulePage({ client = portalClient, now = () => new Date() }: { client?: PortalClient; now?: () => Date }) {
+export function PortalSchedulePage({ client = portalClient, now = currentTime }: { client?: PortalClient; now?: () => Date }) {
   const bootstrap = useBootstrap(), cache = useQueryClient(), timezone = bootstrap.data?.gym.timezone ?? 'UTC';
   const { scope, context, members, memberId, member, choose } = usePortalMembers(client);
   const [week, setWeek] = useState(0), [message, setMessage] = useState<{ tone: 'success' | 'error'; text: string }>();
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    const timer = setInterval(() => setTick(value => value + 1), 1_000);
-    return () => clearInterval(timer);
-  }, []);
-  const range = weekRange(localDate(now(), timezone), week, timezone);
+  const [tick, setTick] = useState(0);
+  const current = now(), instant = current.getTime();
+  const range = weekRange(localDate(current, timezone), week, timezone);
   const schedule = useQuery({ queryKey: [...scope.key, 'schedule', range.from], enabled: scope.ready, queryFn: async () => scope.own(await scope.run(() => client.schedule(range.from, range.to))).data, staleTime: 0 });
+  useEffect(() => {
+    const refresh = () => setTick(value => value + 1);
+    // Also refresh when booking opens or a class starts, without polling the whole page.
+    const boundaries = (schedule.data ?? []).filter(session => session.status !== 'cancelled')
+      .flatMap(session => [Date.parse(session.cancelBefore) + 1, Date.parse(session.bookingOpensAt), Date.parse(session.startsAt)])
+      .filter(at => at > instant);
+    const nearest = Math.min(...boundaries);
+    // A boundary can pass between rendering and this effect. Refresh immediately rather than skipping it.
+    const timer = Number.isFinite(nearest) ? window.setTimeout(refresh, Math.min(2_147_483_647, Math.max(0, nearest - now().getTime()))) : undefined;
+    window.addEventListener('focus', refresh);
+    return () => { window.clearTimeout(timer); window.removeEventListener('focus', refresh); };
+  }, [schedule.data, now, tick, instant]);
   const change = useMutation({
     mutationFn: async (input: { action: 'book' | 'cancel'; session: PortalScheduleSession; booking?: MemberBooking; context: PortalContext; member: PortalScheduleMember }) =>
       scope.run(() => input.action === 'book' ? client.book(input.context, input.member.id, input.session.id, scope.key[4]!) : client.cancel(input.context, input.member.id, input.booking!.id, scope.key[4]!)),
@@ -73,7 +83,6 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
     const day = localDate(new Date(session.startsAt), timezone);
     days.set(day, [...days.get(day) ?? [], session]);
   }
-  const current = now();
   return <Page className="max-w-3xl"><PortalRecovery moving={scope.moving}>
     <PageHeader title={text('title')} description={text('description')} />
     <MemberPicker label={text('member')} members={members.data} value={memberId} onChange={id => { setMessage(undefined); choose(id); }} />

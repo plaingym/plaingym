@@ -8,6 +8,7 @@ import { createMemberHouseholdContext } from '../members/household-users.context
 import { createBookingService, type BookingService } from '../bookings/bookings.js';
 import type { BookingDelivery } from '../bookings/bookings.delivery.js';
 import { householdReader } from './household.js';
+import { logError } from '../../core/log.js';
 
 export function createPortalBookingService(options: {
   households?: MemberHouseholdContext; householdScope?: typeof forHousehold; bookings?: BookingService;
@@ -35,7 +36,10 @@ export function createPortalBookingService(options: {
     async book(identity: PortalIdentity, input: MemberCreateBookingRequest, memberId?: string) {
       const id = await target(identity, memberId);
       const result = await bookings.book(actor(identity), { ...input, memberId: id });
-      for (const row of result.promoted) await options.delivery?.()?.enqueueNotice(identity.gymId, row.id);
+      for (const row of result.promoted) {
+        try { await options.delivery?.()?.enqueueNotice(identity.gymId, row.id); }
+        catch (error) { logError('bookings.notice_enqueue_failed', { gymId: identity.gymId, bookingId: row.id }, error); }
+      }
       return portalView(result.booking);
     },
     async cancel(identity: PortalIdentity, bookingId: string, memberId?: string) {
