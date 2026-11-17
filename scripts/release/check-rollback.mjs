@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { pathToFileURL } from 'node:url';
 import { git } from './version.mjs';
-
-const migrations = 'packages/db/src/migrations';
+import { assertMigrationBase, migrations } from './migration-files.mjs';
 
 /** Tokenize declarative migration SQL, keeping literals opaque and statement boundaries intact.
  * @param {string} source
@@ -57,26 +56,45 @@ function statements(source) {
   return result;
 }
 
-/** Split ALTER actions, ignoring keywords and commas inside expressions.
- * @param {string[]} tokens
+/** Split ALTER actions, keeping each parenthesized expression as one opaque token.
+ * @param {string[]} tokens @param {number} line
  */
-function actions(tokens) {
+function actions(tokens, line) {
   const result = [[]];
   let depth = 0;
+  let expression = [];
   for (const token of tokens) {
     if (token === '(') depth++;
-    else if (token === ')') depth--;
-    else if (!depth) {
-      if (token === ',') result.push([]);
+    if (depth) {
+      expression.push(token);
+      if (token === ')' && --depth === 0) {
+        result.at(-1).push(expression.join(' '));
+        expression = [];
+      }
+    } else {
+      if (token === ')') throw new Error(`Unmatched SQL parenthesis in the statement at line ${line}`);
+      else if (token === ',') result.push([]);
       else result.at(-1).push(token);
     }
   }
+  if (depth) throw new Error(`Unterminated SQL parenthesis in the statement at line ${line}`);
   return result;
 }
 
 /** @param {string[]} tokens @param {string[]} phrase */
 function contains(tokens, phrase) {
   return tokens.some((_, index) => phrase.every((token, offset) => tokens[index + offset] === token));
+}
+
+/** Whether the DEFAULT expression starting at `index` is a literal NULL: bare, parenthesized, or cast
+ * (`NULL::text`, `(NULL)::text`, `CAST(NULL AS text)`).
+ * @param {string[]} tokens @param {number} index
+ */
+function nullDefault(tokens, index) {
+  const words = (/** @type {string} */ token) => token.replace(/[()]/g, ' ').split(/\s+/).filter(Boolean);
+  const value = tokens[index] === 'CAST' ? ['CAST', ...words(tokens[index + 1] ?? '')] : words(tokens[index] ?? '');
+  if (value[0] === 'CAST') return value[1] === 'NULL' && value[2] === 'AS';
+  return value[0] === 'NULL' && (value.length === 1 || (value[1] === ':' && value[2] === ':'));
 }
 
 /** Static review triggers, not proof that arbitrary SQL or application readers are compatible.
@@ -88,23 +106,43 @@ export function rollbackFindings(source) {
   for (const statement of statements(source)) {
     const { tokens, line, reviewed } = statement;
     if (tokens[0] !== 'ALTER' || tokens[1] !== 'TABLE' || reviewed) continue;
-    for (const action of actions(tokens)) {
+    for (const action of actions(tokens, line)) {
       // A removed constraint may be a CHECK; its kind is not in DROP CONSTRAINT SQL.
       if (action.includes('CHECK') || contains(action, ['DROP', 'CONSTRAINT']))
         findings.push({ line, rule: 'changed CHECK (or dropped constraint): older readers may reject new stored values' });
       if (contains(action, ['SET', 'NOT', 'NULL']))
         findings.push({ line, rule: 'SET NOT NULL: verify a non-null DEFAULT for older inserts' });
+      if (contains(action, ['DROP', 'NOT', 'NULL']))
+        findings.push({ line, rule: 'DROP NOT NULL: older readers may reject null stored values' });
+      // Only an ALTER [COLUMN] action changes a type; an ADD or DROP of a column named `type` doesn't.
+      const alter = action.lastIndexOf('ALTER');
+      const alteration = alter === -1 ? [] : action.slice(alter + 1);
+      if (alteration[0] === 'COLUMN') alteration.shift();
+      if (alteration.length && !['TABLE', 'CONSTRAINT'].includes(alteration[0]) &&
+        (alteration[1] === 'TYPE' || contains(alteration, ['SET', 'DATA', 'TYPE'])))
+        findings.push({ line, rule: 'SET DATA TYPE (or TYPE): older readers may reject new stored values' });
       if (contains(action, ['DROP', 'DEFAULT']))
         findings.push({ line, rule: 'DROP DEFAULT: older inserts that omit a NOT NULL column fail' });
+      const setDefault = action.findIndex((token, index) => token === 'SET' && action[index + 1] === 'DEFAULT');
+      if (setDefault !== -1 && nullDefault(action, setDefault + 2))
+        findings.push({ line, rule: 'SET DEFAULT NULL: older inserts that omit a NOT NULL column fail' });
       const add = action.indexOf('ADD');
       if (add === -1) continue;
       const definition = action.slice(add + 1);
       if (definition[0] === 'COLUMN') definition.shift();
       if (definition.slice(0, 3).join(' ') === 'IF NOT EXISTS') definition.splice(0, 3);
-      if (['CONSTRAINT', 'CHECK', 'UNIQUE', 'PRIMARY', 'FOREIGN', 'EXCLUDE'].includes(definition[0])) continue;
-      const required = definition.some((token, index) => token === 'NOT' && definition[index + 1] === 'NULL');
+      const constraint = definition[0] === 'CONSTRAINT' ? definition.slice(2) : definition;
+      if (contains(constraint.slice(0, 2), ['NOT', 'NULL']))
+        findings.push({ line, rule: 'NOT NULL constraint: verify a non-null DEFAULT for older inserts' });
+      if (contains(constraint.slice(0, 2), ['PRIMARY', 'KEY']))
+        findings.push({ line, rule: 'PRIMARY KEY constraint: verify non-null DEFAULTs for older inserts' });
+      if (['CONSTRAINT', 'CHECK', 'UNIQUE', 'PRIMARY', 'FOREIGN', 'EXCLUDE', 'NOT'].includes(definition[0])) continue;
+      const column = definition.slice(2);
+      const required = contains(column, ['NOT', 'NULL']) || contains(column, ['PRIMARY', 'KEY']);
+      const filled = /^(?:SMALLSERIAL|SERIAL|BIGSERIAL|SERIAL[248])$/.test(definition[1] ?? '') ||
+        contains(column, ['GENERATED', 'ALWAYS', 'AS']) || contains(column, ['GENERATED', 'BY', 'DEFAULT', 'AS', 'IDENTITY']);
       const defaultIndex = definition.indexOf('DEFAULT');
-      if (required && (defaultIndex === -1 || definition[defaultIndex + 1] === 'NULL'))
+      if (required && !filled && (defaultIndex === -1 || nullDefault(definition, defaultIndex + 1)))
         findings.push({ line, rule: 'new NOT NULL column without a non-null DEFAULT: older inserts omit it' });
     }
   }
@@ -115,13 +153,18 @@ export function rollbackFindings(source) {
  * @param {string} base @param {string} head @param {string} cwd
  */
 export function checkRollback(base, head = 'HEAD', cwd = process.cwd()) {
-  if (!base || /^0+$/.test(base)) throw new Error('Give the main merge base');
+  assertMigrationBase(base);
   const paths = git(['diff', '--name-only', '--diff-filter=A', '--no-renames', '-z', base, head, '--', migrations], cwd, { raw: true })
     .split('\0').filter(path => path.endsWith('.sql'));
   const failures = [];
   for (const path of paths) {
-    for (const finding of rollbackFindings(git(['show', `${head}:${path}`], cwd, { raw: true })))
-      failures.push(`${path}:${finding.line}: ${finding.rule}`);
+    let findings;
+    try {
+      findings = rollbackFindings(git(['show', `${head}:${path}`], cwd, { raw: true }));
+    } catch (error) {
+      throw new Error(`${path}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+    }
+    for (const finding of findings) failures.push(`${path}:${finding.line}: ${finding.rule}`);
   }
   if (failures.length) throw new Error('Migration rollback review required:\n' + failures.join('\n') +
     '\nUse an expand-compatible migration, or document the major boundary / default and tolerant reader with a statement-level -- rollback-reviewed: reason. See docs/versioning.md.');

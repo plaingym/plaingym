@@ -91,7 +91,7 @@ describe('a table this image does not declare', () => {
   });
 });
 
-describe('a view, materialized view or function this image does not declare', () => {
+describe('a view, materialized view, foreign table or function this image does not declare', () => {
   const invokerView = 'create view newer_view with (security_invoker = true) as select id, gym_id from members;';
   const matview = 'create materialized view newer_matview as select id, gym_id from members with no data;';
   const definer = `create function newer_fn() returns bigint language sql security definer as 'select count(*) from members';`;
@@ -137,29 +137,62 @@ describe('a view, materialized view or function this image does not declare', ()
       await admin.close();
     }
   });
-  it('refuses a view app owns even with its own privileges revoked', async () => {
-    await maintenance.sql.unsafe('create view newer_view as select id, gym_id from members');
+  it.each([
+    ['view', 'newer_view', 'create view newer_view as select id, gym_id from members;'],
+    ['materialized view', 'newer_matview', matview],
+  ])('refuses a %s app owns even with its own privileges revoked', async (kind, name, create) => {
+    await maintenance.sql.unsafe(create);
     const admin = openConnection(databaseUrl(inject('testDatabase').adminUrl, database.name), 1);
     try {
-      await admin.sql.unsafe('alter view newer_view owner to app; revoke all on newer_view from app, public');
-      await expect(assertCatalog(database.app.sql)).rejects.toThrow('newer_view: wrong owner');
+      await admin.sql.unsafe(`alter ${kind} ${name} owner to app; revoke all on ${name} from app, public`);
+      await expect(assertCatalog(database.app.sql)).rejects.toThrow(`${name}: wrong owner`);
     } finally {
-      await admin.sql.unsafe('drop view newer_view');
+      await admin.sql.unsafe(`drop ${kind} ${name}`);
       await admin.close();
     }
   });
-  it('accepts an extension-style view with another owner only until app gains a privilege', async () => {
-    await maintenance.sql.unsafe('create view newer_view as select id, gym_id from members; revoke all on newer_view from app, public');
+  it.each([
+    ['view', 'newer_view', 'create view newer_view as select id, gym_id from members;', 'view without security_invoker'],
+    ['materialized view', 'newer_matview', matview, 'materialized view without row-level security'],
+  ])('accepts an extension-style %s with another owner only until app gains a privilege', async (kind, name, create, failure) => {
+    await maintenance.sql.unsafe(`${create} revoke all on ${name} from app, public`);
     const admin = openConnection(databaseUrl(inject('testDatabase').adminUrl, database.name), 1);
     try {
-      await admin.sql.unsafe('alter view newer_view owner to postgres');
+      await admin.sql.unsafe(`alter ${kind} ${name} owner to postgres`);
       await expect(assertCatalog(database.app.sql)).resolves.toMatchObject({ tableCount: 72 });
       await expect(migrateDatabase(database.maintenanceUrl)).resolves.toBeUndefined();
-      await admin.sql.unsafe('grant select (id) on newer_view to app');
-      await expect(assertCatalog(database.app.sql)).rejects.toThrow('newer_view: wrong owner');
-      await expect(migrateDatabase(database.maintenanceUrl)).rejects.toThrow('newer_view: view without security_invoker');
+      await admin.sql.unsafe(`grant select (id) on ${name} to app`);
+      await expect(assertCatalog(database.app.sql)).rejects.toThrow(`${name}: wrong owner`);
+      await expect(migrateDatabase(database.maintenanceUrl)).rejects.toThrow(`${name}: ${failure}`);
+      await admin.sql.unsafe(`revoke all on ${name} from app; grant select on ${name} to public`);
+      await expect(assertCatalog(database.app.sql)).rejects.toThrow(`${name}: wrong owner`);
+      await admin.sql.unsafe(`revoke all on ${name} from public; grant ${kind === 'view' ? 'trigger' : 'maintain'} on ${name} to app`);
+      await expect(assertCatalog(database.app.sql)).rejects.toThrow(`${name}: unexpected view privileges`);
     } finally {
-      await admin.sql.unsafe('drop view newer_view');
+      await admin.sql.unsafe(`drop ${kind} ${name}`);
+      await admin.close();
+    }
+  });
+  it('accepts an inaccessible foreign table owned by another role, but still refuses app privileges and ownership', async () => {
+    const admin = openConnection(databaseUrl(inject('testDatabase').adminUrl, database.name), 1);
+    try {
+      // No handler or remote connection is needed to check catalog privileges.
+      await admin.sql.unsafe(`create foreign data wrapper newer_fdw;
+        create server newer_server foreign data wrapper newer_fdw;
+        create foreign table newer_foreign (id uuid, gym_id uuid) server newer_server;
+        revoke all on newer_foreign from app, public;`);
+      await expect(assertCatalog(database.app.sql)).resolves.toMatchObject({ tableCount: 72 });
+      await expect(migrateDatabase(database.maintenanceUrl)).resolves.toBeUndefined();
+      await admin.sql.unsafe('grant select (id) on newer_foreign to app');
+      await expect(assertCatalog(database.app.sql)).rejects.toThrow('newer_foreign: foreign table without row-level security');
+      await admin.sql.unsafe('revoke all on newer_foreign from app; grant select on newer_foreign to public');
+      await expect(assertCatalog(database.app.sql)).rejects.toThrow('newer_foreign: foreign table without row-level security');
+      await admin.sql.unsafe('revoke all on newer_foreign from public; grant references (id) on newer_foreign to app');
+      await expect(assertCatalog(database.app.sql)).rejects.toThrow('newer_foreign: unexpected view privileges');
+      await admin.sql.unsafe('revoke all on newer_foreign from app; alter foreign table newer_foreign owner to app');
+      await expect(assertCatalog(database.app.sql)).rejects.toThrow('newer_foreign: wrong owner');
+    } finally {
+      await admin.sql.unsafe('drop foreign data wrapper if exists newer_fdw cascade');
       await admin.close();
     }
   });

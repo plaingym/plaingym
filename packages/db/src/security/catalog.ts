@@ -40,10 +40,10 @@ async function viewFailures(sql: Sql): Promise<string[]> {
     where n.nspname in ('public', 'drizzle') and c.relkind in ('v', 'm', 'f') order by n.nspname, c.relname
   `;
   for (const relation of relations) {
-    // Extension views need not follow our view conventions when app has no privilege on them.
-    // Include column grants and non-DML privileges; schema USAGE alone is not the test. A view `app` owns stays
+    // Extension relations need not follow our conventions when app has no privilege on them.
+    // Include column grants and non-DML privileges; schema USAGE alone is not the test. A relation `app` owns stays
     // checked: its owner can grant itself privileges again after this check.
-    if (relation.relkind === 'v' && !relation.usable && !relation.other_privileges && relation.owner !== 'app') continue;
+    if (!relation.usable && !relation.other_privileges && relation.owner !== 'app') continue;
     const name = (relation.nspname === 'public' ? '' : String(relation.nspname) + '.') + String(relation.relname);
     if (relation.owner !== 'maintenance') failures.push(name + ': wrong owner');
     if (relation.other_privileges) failures.push(name + ': unexpected view privileges');

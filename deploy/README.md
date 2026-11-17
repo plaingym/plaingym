@@ -377,6 +377,28 @@ key rotation.
   `v2` rewrite after migrations. `v1` values still read for compatibility
   (`docs/security-model.md`).
 
+### Monitoring extensions
+
+Startup checks every view, materialized view and foreign table in `public` and
+`drizzle` that `app` owns or holds any privilege on, including column grants and
+grants through `PUBLIC`. Inaccessible objects owned by another role pass. A
+monitoring extension such as `pg_stat_statements` installed in `public` grants
+`SELECT` on its views to `PUBLIC`, so it can stop startup even though those views
+only expose statistics. There is no exception for named extensions.
+
+Install monitoring extensions as a database administrator in a separate schema
+that neither `app` nor `maintenance` can use (including through `PUBLIC`), and
+grant access only to the monitoring role. For an existing `pg_stat_statements`
+installation in `public`, an administrator can instead remove the view grants:
+
+```sql
+REVOKE SELECT ON public.pg_stat_statements, public.pg_stat_statements_info FROM PUBLIC, app;
+```
+
+Remove any other direct or column grants to `app` too. Recheck these grants after
+updating an extension. Do not grant `app` ownership or change its database role
+to work around a catalog failure. See [the security model](../docs/security-model.md).
+
 ## Logs
 
 The app writes one JSON object per line to its container's standard error

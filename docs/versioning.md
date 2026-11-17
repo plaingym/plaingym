@@ -57,9 +57,14 @@ reader change in an earlier release when necessary.
 
 Repo compliance runs `scripts/release/check-rollback.mjs BASE HEAD` against only
 SQL migrations added since the branch's merge base with `main`. It flags an
-`ALTER TABLE` that adds a `NOT NULL` column without a non-null `DEFAULT`, sets
-`NOT NULL` on an existing column, drops a column's default, adds a `CHECK`, or
-drops a constraint. A dropped constraint's kind is absent from that SQL, so even a
+`ALTER TABLE` that adds a `NOT NULL` or `PRIMARY KEY` column without a non-null
+`DEFAULT` (including `DEFAULT (NULL)` and a cast `NULL`), or adds a `NOT NULL` or `PRIMARY KEY`
+constraint to existing columns. Database-filled identity, generated and `serial`
+columns are allowed without an explicit default. It also flags `SET NOT NULL`,
+`DROP NOT NULL`, `SET DATA TYPE` (or its `TYPE` shorthand), a dropped or `NULL` column default,
+an added `CHECK`, or a dropped constraint. Relaxing nullability or changing a type
+can store values the previous release's readers reject. A dropped constraint's
+kind is absent from that SQL, so even a
 foreign-key drop needs review. Constraints and required columns
 inside a new `CREATE TABLE` are allowed because older code does not use that table.
 The lint ignores comments and quoted text and handles multiple ALTER actions;
@@ -148,7 +153,8 @@ option, so an inaccessible extension view does not prevent startup. When `app`
 holds any privilege on a view, it must be owned by `maintenance` with
 `security_invoker` set and no unexpected privileges. Column grants and privileges
 through `PUBLIC` count too. A materialized view or foreign table is accepted only
-when the `app` role can't use it; a `SECURITY DEFINER` function only when the `app`
+when `app` neither owns it nor holds any privilege on it, regardless of its owner;
+a `SECURITY DEFINER` function only when the `app`
 role can't run it and no trigger uses it. A minor can
 therefore add a table, a column or such a view, but tightening a table the previous minor declares
 (a new policy, a revoked privilege) breaks the promise and needs a major.

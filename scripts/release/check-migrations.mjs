@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { pathToFileURL } from 'node:url';
 import { git } from './version.mjs';
+import { assertMigrationBase, journal, migrations } from './migration-files.mjs';
 
-const migrations = 'packages/db/src/migrations';
-const journal = `${migrations}/meta/_journal.json`;
 /** @param {string} base @param {string} head @param {string} cwd */
 export function checkMigrations(base, head = 'HEAD', cwd = process.cwd()) {
-  if (!base) throw new Error('Give the main merge base');
+  assertMigrationBase(base);
   const paths = git(['ls-tree', '-r', '--name-only', base, '--', migrations], cwd).split('\n').filter(Boolean);
   for (const path of paths) {
     const before = git(['show', `${base}:${path}`], cwd);

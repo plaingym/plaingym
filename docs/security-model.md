@@ -49,7 +49,10 @@ Isolation is enforced in the database, not only in application code.
   view with no `app` privileges, not owned by `app`, passes whatever its invoker option, so
   inaccessible extension views do not block startup. Column grants and privileges
   through `PUBLIC` count. The check also refuses a
-  materialized view or foreign table the `app` role can use, and a
+  materialized view or foreign table the `app` role owns or holds any privilege on;
+  inaccessible ones owned by another role pass. Monitoring extensions that grant
+  `SELECT` to `PUBLIC` need [restricted grants or a separate schema](../deploy/README.md#monitoring-extensions).
+  The check also refuses a
   `SECURITY DEFINER` function it can run or a trigger uses. CI runs the same check.
   The check also refuses schemas usable by `app` or `maintenance` outside `public`,
   `drizzle`, `pg_catalog`, `information_schema` and `pg_toast*`, any `app` USAGE or CREATE on

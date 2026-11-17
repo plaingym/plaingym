@@ -7,7 +7,15 @@ import { join } from 'node:path';
 import { git } from './version.mjs';
 import { checkCommits, checkMessage } from './check-commits.mjs';
 import { checkMigrations } from './check-migrations.mjs';
+import { checkRollback } from './check-rollback.mjs';
 import { previousCode } from '../../deploy/release/previous-code.mjs';
+
+test('both migration checks reject missing and all-zero merge bases before calling git', () => {
+  for (const check of [checkMigrations, checkRollback]) {
+    for (const base of ['', '0', '0000000', '0'.repeat(40)])
+      assert.throws(() => check(base, 'HEAD', 'not-a-repository'), { message: 'Give the main merge base' });
+  }
+});
 
 test('conventional subjects and session attribution', () => {
   for (const value of ['fix: health', 'feat(api)!: require a setting', 'chore(release): v1.2.0', 'docs: changelog for v1.2.1'])
