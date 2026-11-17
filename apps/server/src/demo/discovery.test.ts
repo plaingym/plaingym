@@ -145,11 +145,12 @@ describe('demo runtime discovery', () => {
   it('discovery-only polling never extends a private copy past its idle deadline', async () => {
     const gymId = uuidv7(), hostname = 'poll-only.demo.example.test';
     const allocatedAt = new Date('2026-11-14T12:00:00Z'), deadline = '2026-11-14T14:00:00.000Z';
-    await factory('gyms', gymId, { settings: { demo: { sandbox: true, ready: true, kind: 'private',
-      allocatedAt: allocatedAt.toISOString(), lastActivityAt: allocatedAt.toISOString(), expiresAt: deadline } } });
-    await factory('gymDomains', gymId, { hostname });
-    const now = vi.spyOn(clock, 'now');
+    // Cleanup is already running: the sandbox must never be visible under the wall clock.
+    const now = vi.spyOn(clock, 'now').mockReturnValue(allocatedAt);
     try {
+      await factory('gyms', gymId, { settings: { demo: { sandbox: true, ready: true, kind: 'private',
+        allocatedAt: allocatedAt.toISOString(), lastActivityAt: allocatedAt.toISOString(), expiresAt: deadline } } });
+      await factory('gymDomains', gymId, { hostname });
       for (let minutes = 5; minutes < 120; minutes += 5) {
         now.mockReturnValue(new Date(allocatedAt.getTime() + minutes * 60_000));
         expect((await get('https://' + hostname)).status).toBe(200);

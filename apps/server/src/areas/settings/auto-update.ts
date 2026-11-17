@@ -24,6 +24,10 @@ async function readGym(tx: Transaction, gymId: string, lock: boolean) {
   if (!row) throw new AppError('not_found', 'Gym not found');
   return row;
 }
+/** Serialize attempt recording within the caller's transaction, including the first report before any audit exists. */
+export async function lockAutoUpdateRecording(tx: Transaction, gymId: string): Promise<void> {
+  await readGym(tx, gymId, true);
+}
 export function createAutoUpdateSettings(options: { scope?: typeof forGym; clock?: Clock } = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   return {

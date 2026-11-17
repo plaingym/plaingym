@@ -52,11 +52,14 @@ it.each(['time', 'id'] as const)('orders same-expiry Checkout reservations by %s
   const other = await f.links.create(f.context, { purpose: 'pay_invoice', householdId: f.household.id,
     invoiceId: f.invoice.id, expiresAt: f.created.link.expiresAt });
   const expiresAt = new Date(f.clock.now().getTime() + 23 * 3600000);
+  // Distinct pairs for the two cases; the later ID wins only when the audit times tie.
+  const firstId = `01900000-0000-7000-8000-00000000000${order === 'time' ? '1' : '3'}`;
+  const secondId = `01900000-0000-7000-8000-00000000000${order === 'time' ? '2' : '4'}`;
   await db.forGym(f.gymId, async tx => {
     await tx.update(invoices).set({ checkoutExpiresAt: expiresAt }).where(eq(invoices.id, f.invoice.id));
-    await writeAudit(tx, { id: uuidv7(), gymId: f.gymId, actorKind: 'system', targetType: 'signed_link',
+    await writeAudit(tx, { id: firstId, gymId: f.gymId, actorKind: 'system', targetType: 'signed_link',
       targetId: f.linkId, action: 'billing.checkout.reserved', occurredAt: f.clock.now(), after: { expiresAt: expiresAt.toISOString() } });
-    await writeAudit(tx, { id: uuidv7(), gymId: f.gymId, actorKind: 'system', targetType: 'signed_link',
+    await writeAudit(tx, { id: secondId, gymId: f.gymId, actorKind: 'system', targetType: 'signed_link',
       targetId: other.link.id, action: 'billing.checkout.reservation_renewed', occurredAt: new Date(f.clock.now().getTime() - (order === 'time' ? 1000 : 0)),
       after: { expiresAt: expiresAt.toISOString() } });
   });

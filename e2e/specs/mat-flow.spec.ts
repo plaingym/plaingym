@@ -74,6 +74,7 @@ test('import → schedule → coach check-in → kiosk → promote persists acro
   await roster.getByRole('button', { name: 'Check in Jamie River', exact: true }).click();
   await expect(roster.getByRole('button', { name: 'Jamie River is checked in', exact: true })).toBeDisabled();
   await page.reload();
+  await showWeek(page, zone, began);
   await page.getByRole('button', { name: /QA evening class/ }).click();
   await expect(page.getByRole('button', { name: 'Jamie River is checked in', exact: true })).toBeDisabled();
 
@@ -133,3 +134,30 @@ test('import → schedule → coach check-in → kiosk → promote persists acro
   await page.getByRole('tab', { name: 'Ranks & promotions', exact: true }).click();
   await expect(page.getByRole('tabpanel', { name: 'Ranks & promotions', exact: true }).getByRole('listitem').filter({ hasText: rank.name })).toHaveCount(1);
 });
+
+for (const width of [360, 1280]) {
+  test(`class survives two schedule reloads at Monday 00:02 UTC (${width}px)`, async ({ page, install }, info) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.clock.setFixedTime(new Date('2026-11-16T00:02:00Z'));
+    const owner = install.clients.owner, zone = await gymTimezone(owner);
+    expect(zone).toBe('UTC');
+    const began = new Date('2026-11-15T23:57:00Z');
+    const name = `Sunday class at ${width}px`;
+    await owner.json('/api/schedule/sessions', 'POST', { name, startsAt: began.toISOString(),
+      endsAt: '2026-11-16T00:57:00Z', programIds: [install.program.id], tagIds: [], capacity: 5,
+      coachId: null, notes: null, kind: 'class' });
+    await owner.browser(page.context());
+    await page.goto(gymOrigin + '/admin/schedule');
+    await expect(page.getByLabel('Week of', { exact: true })).toHaveValue('2026-11-16');
+    await showWeek(page, zone, began);
+    await expect(page.getByRole('button', { name })).toBeVisible();
+    for (let reload = 0; reload < 2; reload++) {
+      await page.reload();
+      await expect(page.getByLabel('Week of', { exact: true })).toHaveValue('2026-11-16');
+      await showWeek(page, zone, began);
+      await expect(page.getByRole('button', { name })).toBeVisible();
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: info.outputPath(`monday-reload-${width}.png`), fullPage: true });
+  });
+}

@@ -6,7 +6,7 @@ import { createTranslator, type Clock } from '@plaingym/shared';
 import { automaticUpdatesHealthDetailsSchema, instantSchema, type AutomaticUpdatesHealthDetails, type HealthTile } from '@plaingym/shared/contracts';
 import messages from '../../../../../locales/en/health/auto-update.json' with { type: 'json' };
 import { tenancyMode, type TenancyMode } from '../../core/tenancy.js';
-import { createAutoUpdateSettings, type AutoUpdateSettings } from '../settings/auto-update.js';
+import { createAutoUpdateSettings, lockAutoUpdateRecording, type AutoUpdateSettings } from '../settings/auto-update.js';
 import { healthProvider } from './status.js';
 import type { StaffProviderContext } from '../../core/interfaces/extensions.js';
 
@@ -110,11 +110,13 @@ export function createAutoUpdateAttempts(options: Pick<AutoUpdateOptions, 'scope
     history,
     /**
      * The host sends a report again until the command succeeds (an owner notice that wasn't accepted fails it), so a
-     * replay of a recent attempt (same instant) records nothing new. The host's update lock runs one report at a time.
+     * replay of a recent attempt (same instant) records nothing new, including concurrent command invocations.
      */
     async record(gymId: string, input: AutoUpdateAttempt): Promise<AutoUpdateAttempt> {
       const attempt = autoUpdateAttemptSchema.parse(input), now = options.clock.now();
       await scope(gymId, async (tx) => {
+        // Lock before reading: otherwise both replays can see no audit and each insert one.
+        await lockAutoUpdateRecording(tx, gymId);
         const replay = (await latestRows(tx)).some(row => autoUpdateAttemptSchema.safeParse(row.after).data?.attemptedAt === attempt.attemptedAt);
         if (replay) return;
         const row = { gymId, actorKind: 'system', targetType: 'auto_update', after: attempt, occurredAt: now } as const;

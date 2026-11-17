@@ -531,6 +531,8 @@ order, and are sent first on the next run; a later result never replaces an
 unsent one, and a result the app refuses as invalid is dropped with a line in the
 journal. `auto-update.state` holds the timezone, the night of the last check (its
 date, zone and time), and the failed attempts per release.
+Concurrent reports are serialized per gym before checking for a recent replay,
+so a replay of one of the gym's five latest attempts records nothing new.
 
 When SMTP is configured, `gym-app auto-update notice` sends each owner one notice for a rolled-back
 or failed attempt, through the gym's SMTP settings (or the install fallback).

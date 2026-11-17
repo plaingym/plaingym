@@ -11,7 +11,7 @@ import { FakeEmail, DeliveryError } from '../../infra/email/index.js';
 import { encryptSmtpConfig } from '../settings/smtp.js';
 import { createAutoUpdateNotices, type AutoUpdateNoticeOptions } from './auto-update.notices.js';
 import { createAutoUpdateCommand } from './auto-update.cli.js';
-import { autoUpdateAttemptAction, type AutoUpdateAttempt } from './auto-update.js';
+import { autoUpdateAttemptAction, autoUpdateChangeAction, type AutoUpdateAttempt } from './auto-update.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 const clock = new TestClock('2026-11-03T16:30:00Z');
@@ -102,10 +102,16 @@ it('sends through the host record command and deduplicates concurrent replays', 
   // Exit 3 asks the host to replay; neither concurrent invocation has to return 0.
   expect(results.every(code => code === 0 || code === 3), errors.join('\n')).toBe(true);
   expect(errors.every(message => message === 'Another attempt is sending this email'), errors.join('\n')).toBe(true);
+  const audits = () => db.forGym(f.gymId, tx => tx.select().from(auditEvents));
+  // Both commands have finished; each audit kind must already be unique before a sequential replay.
+  const concurrent = await audits();
+  expect(concurrent.filter(row => row.action === autoUpdateAttemptAction)).toHaveLength(1);
+  expect(concurrent.filter(row => row.action === autoUpdateChangeAction)).toHaveLength(1);
   expect(await command.run(args, io)).toBe(0);
   expect(f.email.messages).toHaveLength(2);
   expect(new Set(f.email.messages.map(message => message.to)).size).toBe(2);
   expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, autoUpdateAttemptAction)))).toHaveLength(1);
+  expect((await audits()).filter(row => row.action === autoUpdateChangeAction)).toHaveLength(1);
 });
 it('stores a deferred failure and its recovery, then sends only the recovery notice with per-owner replay protection', async () => {
   const f = await fixture(), command = createAutoUpdateCommand({ env, clock, scope: db.forGym, resolveGymId: async () => f.gymId,
