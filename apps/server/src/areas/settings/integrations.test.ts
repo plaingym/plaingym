@@ -253,7 +253,11 @@ describe('Settings → Payments: test to live', () => {
     households: await tx.select().from(households), cards: await tx.select().from(paymentMethods), invoices: await tx.select().from(invoices),
     attempts: await tx.select().from(paymentAttempts), payments: await tx.select().from(payments) }));
 
-  it.each([0, 1, 3])('replaces a revoked test default with the newest of %i kept active cards', async count => {
+  it.each([
+    { count: 0, expired: false, allExpired: false }, { count: 1, expired: false, allExpired: false },
+    { count: 3, expired: false, allExpired: false }, { count: 3, expired: true, allExpired: false },
+    { count: 3, expired: true, allExpired: true },
+  ])('replaces a revoked test default using the shared order: %j', async ({ count, expired, allExpired }) => {
     const gymId = uuidv7();
     await factory('gyms', gymId);
     const user = await factory('authUser', gymId), app = server({ gymId, userId: user.id });
@@ -267,6 +271,7 @@ describe('Settings → Payments: test to live', () => {
     const kept = [];
     for (let index = 0; index < count; index++) {
       const card = await factory('paymentMethods', gymId, { householdId: home.id,
+        expiryMonth: 12, expiryYear: allExpired || expired && index === count - 1 ? 2020 : 2035,
         createdAt: new Date(index === 0 ? '2026-10-20T12:00:00Z' : '2026-10-21T12:00:00Z') });
       kept.push(card);
       await factory('auditEvents', gymId, { action: 'payment_method.created', targetType: 'payment_method', targetId: card.id });
@@ -278,7 +283,9 @@ describe('Settings → Payments: test to live', () => {
     const otherBefore = await snapshot(gymB);
 
     expect((await saveTo(app, 'rk_live_default', { clearTestData: true })).status).toBe(200);
-    const state = await snapshot(gymId), newest = kept.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))[0];
+    const state = await snapshot(gymId);
+    kept.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id));
+    const newest = kept.find(card => card.expiryYear === 2035) ?? kept[0];
     expect(state.households.find(row => row.id === home.id)?.stripeCustomerId).toBe(home.stripeCustomerId);
     expect(state.cards.filter(row => row.householdId === home.id && row.isDefault).map(row => row.id)).toEqual(newest ? [newest.id] : []);
     for (const card of [removed, testCard])

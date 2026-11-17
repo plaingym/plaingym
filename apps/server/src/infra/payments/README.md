@@ -6,14 +6,24 @@ of attached cards (1–100, default 100), returning masked card details, process
 creation times and an opaque next cursor. It requires the customer's metadata to
 name this gym and refuses metadata naming another household, cards from another
 customer or gym, and malformed pages. It never adopts an untagged customer or
-changes Stripe's default. `FakePayments` implements the same contract.
+changes Stripe's default. A rejected continuation raises `CardCursorRefused`;
+ownership refusals raise `CardImportRefused`. `FakePayments` implements the same contract.
 
 Staff choose **Import cards from Stripe** on household billing or invoice details
 (`payments.record`). The import commits at most 100 cards per background job,
 atomically queues its continuation, deduplicates processor IDs and keeps revoked
 cards revoked. It rechecks the local customer link and test-to-live switch after
-provider reads. An existing default stays selected; otherwise the newest active
-card by processor creation time and ID becomes the default after the last page.
+provider reads. Ownership changes finish as stale, cards already stored for another
+household are skipped, and a refused cursor restarts listing at most three times.
+Each request records its completion, refusal or stale outcome in the audit trail,
+including skipped cards and restarts. Exhausting cursor restarts also settles a
+default for cards already imported.
+
+Imports, card removal and clearing test cards share default promotion. An existing
+default stays selected; otherwise cards are ordered newest first by processor
+creation time when known (local creation time otherwise), then local creation time,
+then row ID. The first card whose stored expiry month has not passed in the gym's
+timezone is promoted; if every remaining card has expired, the newest is promoted.
 No customer IDs or processor IDs enter the route response. The billing runner
 then uses that stored default normally; campaign filtering still uses local rows.
 

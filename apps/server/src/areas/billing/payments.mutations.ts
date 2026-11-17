@@ -4,6 +4,7 @@ import { forGym, paymentMethods, payments, refunds, uuidv7, type Transaction } f
 import type { Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { onMinorUnitStep } from '@plaingym/shared/money';
+import { localDate } from '@plaingym/shared/time';
 import { notFound, type MutationContext } from '../../core/interfaces/common.js';
 import type { InvoiceTransitions } from '../../core/interfaces/invoice-transitions.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
@@ -31,14 +32,24 @@ const masked = (r: typeof paymentMethods.$inferSelect) => c.maskedPaymentMethodS
   expiryMonth: r.expiryMonth, expiryYear: r.expiryYear, isDefault: r.isDefault, revokedAt: r.revokedAt?.toISOString() ?? null,
 });
 
-/** After revoking a default, promote the newest active card. The caller holds the household lock in this transaction. */
-export async function promoteDefaultCard(tx: Transaction, context: MutationContext, clock: Clock, householdId: string) {
-  const [replacement] = await tx.select({ id: paymentMethods.id }).from(paymentMethods)
-    .where(and(eq(paymentMethods.householdId, householdId), isNull(paymentMethods.revokedAt)))
-    .orderBy(desc(paymentMethods.createdAt), desc(paymentMethods.id)).limit(1);
+/** Caller holds the household lock. Preserve a chosen default; prefer an unexpired replacement in the gym's month. */
+export async function promoteDefaultCard(tx: Transaction, context: MutationContext, clock: Clock, householdId: string,
+  timezone: string, requestId?: string) {
+  const cards = await tx.select({ id: paymentMethods.id, isDefault: paymentMethods.isDefault,
+    processorCreatedAt: paymentMethods.processorCreatedAt, createdAt: paymentMethods.createdAt,
+    expiryMonth: paymentMethods.expiryMonth, expiryYear: paymentMethods.expiryYear }).from(paymentMethods)
+    .where(and(eq(paymentMethods.householdId, householdId), isNull(paymentMethods.revokedAt)));
+  if (cards.some(card => card.isDefault)) return;
+  // Use the processor's date when known, otherwise the local date; local date and row ID break ties.
+  cards.sort((a, b) => (b.processorCreatedAt ?? b.createdAt).getTime() - (a.processorCreatedAt ?? a.createdAt).getTime()
+    || b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id));
+  const month = localDate(clock.now(), timezone).slice(0, 7);
+  const replacement = cards.find(card => card.expiryYear === null || card.expiryMonth === null
+    || `${card.expiryYear}-${String(card.expiryMonth).padStart(2, '0')}` >= month) ?? cards[0];
   if (replacement) {
     await tx.update(paymentMethods).set({ isDefault: true }).where(eq(paymentMethods.id, replacement.id));
-    await catalogAudit(tx, context, clock, 'billing.card.default_changed', 'payment_method', replacement.id, undefined, { householdId });
+    await catalogAudit(tx, context, clock, 'billing.card.default_changed', 'payment_method', replacement.id, undefined,
+      { householdId, ...(requestId ? { requestId } : {}) });
   }
 }
 
@@ -96,6 +107,7 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
         return (await tx.select().from(paymentMethods).where(and(eq(paymentMethods.id, c.idSchema.parse(id)), eq(paymentMethods.householdId, householdId))))[0] ?? notFound();
       });
       if (!detachCard) paymentUnavailable('detach_unavailable', 'Card removal is not configured');
+      const { timezone } = await settings.get(context.gymId);
       const row = await scope(context.gymId, async tx => {
         await loadHousehold(tx, householdId, true);
         // Card state may have changed since the ownership check. Decide under the household lock.
@@ -103,12 +115,12 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
         const changed = (await tx.update(paymentMethods).set({ isDefault: false, revokedAt: card.revokedAt ?? clock.now() })
           .where(eq(paymentMethods.id, id)).returning())[0] ?? notFound();
         if (!card.revokedAt) await catalogAudit(tx, context, clock, 'billing.card.revoked', 'payment_method', id, undefined, { householdId });
-        if (card.isDefault) await promoteDefaultCard(tx, context, clock, householdId);
+        if (card.isDefault) await promoteDefaultCard(tx, context, clock, householdId, timezone);
         return changed;
       });
       // Queue before the immediate attempt: a Stripe outage leaves a revoked local card and durable retry.
       if (jobs) await jobs.enqueue(detachJob, { paymentMethodId: id }, {
-        gymId: context.gymId, timezone: (await settings.get(context.gymId)).timezone, idempotencyKey: `detach:${id}`, maxAttempts: 12,
+        gymId: context.gymId, timezone, idempotencyKey: `detach:${id}`, maxAttempts: 12,
       });
       await detachCard(context.gymId, row.processorId);
       return masked(row);

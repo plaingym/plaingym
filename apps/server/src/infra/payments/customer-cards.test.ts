@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it } from 'vitest';
 import { TestClock } from '../../core/clock.js';
-import { CardImportRefused, FakePayments } from './index.js';
+import { CardCursorRefused, CardImportRefused, FakePayments } from './index.js';
 import { StripePayments } from './stripe.js';
 import { StripeFixtures } from './stripe-fixtures.js';
 import { customerCardsContract } from './payments.contract.js';
@@ -47,6 +47,32 @@ it('sends only customer-scoped card filters and never adopts or writes a custome
     { customer: customerId, type: 'card', limit: 100, starting_after: ids[99] },
   ]);
   expect(f.transport.requests.every(request => request.method === 'GET')).toBe(true);
+});
+it.each([
+  { statusCode: 400, code: 'resource_missing' },
+  { statusCode: 400, param: 'starting_after' },
+  { statusCode: 404, raw: { param: 'starting_after' } },
+])('classifies refused Stripe continuation cursors: %j', async failure => {
+  const f = stripe();
+  const transport: PaymentTransport = { request: input => input.path === '/v1/payment_methods'
+    ? Promise.reject(Object.assign(new Error('Cursor missing'), failure)) : f.transport.request(input) };
+  const payments = new StripePayments(gymId, { transport, webhookSecret: 'fixture-secret' });
+  await expect(payments.listCustomerCards(customerId, { householdId, cursor: ids[0]! })).rejects.toBeInstanceOf(CardCursorRefused);
+  await expect(payments.listCustomerCards(customerId, { householdId })).rejects.not.toBeInstanceOf(CardCursorRefused);
+});
+it.each([{ statusCode: 500 }, { statusCode: 403 }, { statusCode: 400, param: 'customer', code: 'resource_missing' }])('does not classify other provider errors as cursor refusals: %j', async failure => {
+  const f = stripe(), error = Object.assign(new Error('Provider unavailable'), failure);
+  const transport: PaymentTransport = { request: input => input.path === '/v1/payment_methods'
+    ? Promise.reject(error) : f.transport.request(input) };
+  await expect(new StripePayments(gymId, { transport, webhookSecret: 'fixture-secret' })
+    .listCustomerCards(customerId, { householdId, cursor: ids[0]! })).rejects.toBe(error);
+});
+it('records and replays the typed fake cursor refusal', async () => {
+  const payments = new FakePayments(gymId, new TestClock('2026-01-01T00:00:00Z'));
+  payments.seedCustomer({ id: customerId, email: 'payer@example.invalid', householdId });
+  const recorder = new FixtureRecorder(gymId), recorded = recorder.wrap(payments);
+  await expect(recorded.listCustomerCards(customerId, { householdId, cursor: 'pm_missing' })).rejects.toBeInstanceOf(CardCursorRefused);
+  await expect(replayPayments(recorder.tape, gymId).listCustomerCards(customerId, { householdId, cursor: 'pm_missing' })).rejects.toBeInstanceOf(CardCursorRefused);
 });
 it.each([
   { customer: 'cus_foreign' }, { metadata: { gym_id: 'other-gym' } },

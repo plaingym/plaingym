@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { isDeepStrictEqual } from 'node:util';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
-import { CardImportRefused, CustomerCreationInProgress, CustomerDeleted, type Payments } from './index.js';
+import { CardCursorRefused, CardImportRefused, CustomerCreationInProgress, CustomerDeleted, type Payments } from './index.js';
 
 export interface Exchange {
   operation: string;
@@ -46,7 +46,7 @@ export class FixtureRecorder {
       const raw = error && typeof error === 'object' && 'raw' in error ? error.raw as Record<string, unknown> : undefined;
       const intent = record?.payment_intent ?? raw?.payment_intent;
       exchange.error = { type: error instanceof CustomerCreationInProgress ? 'CustomerCreationInProgress' : error instanceof CustomerDeleted ? 'CustomerDeleted'
-        : error instanceof CardImportRefused ? 'CardImportRefused' : record?.type ?? 'Error', ...(record?.code ? { code: record.code } : {}),
+        : error instanceof CardImportRefused ? 'CardImportRefused' : error instanceof CardCursorRefused ? 'CardCursorRefused' : record?.type ?? 'Error', ...(record?.code ? { code: record.code } : {}),
         ...(record?.statusCode ? { statusCode: record.statusCode } : {}),
         ...(intent ? { payment_intent: redact(intent) } : {}) };
       throw error;
@@ -74,7 +74,8 @@ export class Replay {
       throw new Error('Fixture request mismatch at exchange ' + this.#position + ': ' + operation);
     if (exchange.error) throw Object.assign(exchange.error.type === 'CustomerCreationInProgress' ? new CustomerCreationInProgress()
       : exchange.error.type === 'CustomerDeleted' ? new CustomerDeleted()
-        : exchange.error.type === 'CardImportRefused' ? new CardImportRefused() : new Error(exchange.error.type), hydrate(exchange.error));
+        : exchange.error.type === 'CardImportRefused' ? new CardImportRefused()
+          : exchange.error.type === 'CardCursorRefused' ? new CardCursorRefused() : new Error(exchange.error.type), hydrate(exchange.error));
     return hydrate(structuredClone(exchange.output)) as T;
   }
   assertConsumed(): void {

@@ -164,6 +164,8 @@ export interface PaymentEvent {
 }
 export interface DetachOptions { readonly redactBillingDetails?: boolean }
 export class CardImportRefused extends Error {}
+/** The continuation card no longer exists in the customer's attached-card list. */
+export class CardCursorRefused extends Error {}
 export interface CustomerCardPage { readonly cards: readonly PaymentMethod[]; readonly nextCursor: string | null }
 export interface CustomerCardQuery { readonly householdId: string; readonly cursor?: string; readonly limit?: number }
 export interface Payments {
@@ -801,7 +803,7 @@ export class FakePayments implements Payments {
       && this.#methodTypes.get(method.id) === 'card')
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id));
     const start = options.cursor ? methods.findIndex(method => method.id === options.cursor) + 1 : 0;
-    if (options.cursor && !start) throw new Error('Invalid card cursor');
+    if (options.cursor && !start) throw new CardCursorRefused('Invalid card cursor');
     const cards = methods.slice(start, start + limit);
     return structuredClone({ cards, nextCursor: start + limit < methods.length ? cards.at(-1)!.id : null });
   }

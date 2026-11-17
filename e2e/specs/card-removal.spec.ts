@@ -26,7 +26,7 @@ for (const width of [360, 1280]) {
       await page.getByRole('button', { name: 'View invoice ' + bill.number, exact: true }).click();
       await page.getByRole('button', { name: 'Remove card', exact: true }).click();
       const confirmation = page.getByRole('region', { name: 'Remove saved card', exact: true });
-      await expect(confirmation.getByText('the most recently added remaining card becomes the default for automatic payments', { exact: false })).toBeVisible();
+      await expect(confirmation.getByText('The newest remaining card whose stored expiry has not passed becomes the default for automatic payments.', { exact: false })).toBeVisible();
       await expect(confirmation.getByText('If no cards remain, automatic card payments stop until another card is saved.', { exact: false })).toBeVisible();
       await accessibleLayout(page, info, 'card-removal-' + width);
       await mkdir('coverage/card-removal', { recursive: true });

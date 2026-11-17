@@ -85,6 +85,20 @@ cards may already exist:
 
 ## Afterwards
 
+Staff with payment collection permission can import attached cards from the linked,
+gym-tagged Stripe customer on a member's **Invoices** tab or in invoice details.
+Choose **Import cards from Stripe**, then **Refresh cards** after the background
+import finishes. Both views let staff make a card default or remove it, including
+before the first invoice. Import outcomes and skipped cards appear in the audit trail.
+
+Removing a default card promotes the newest remaining card whose stored expiry
+has not passed in the gym's timezone. Cards are ordered by processor creation time
+when known (local creation time otherwise), then local creation time and row ID.
+If all remaining cards have expired, the newest is promoted. If none remain,
+automatic card payments stop until another card is saved. A Stripe detach error
+can occur after the local removal; refresh shows that change and staff can retry
+the detach with **Retry card removal**.
+
 * A card whose expiry month has passed makes the *Saved cards* check show *Needs
   attention*, and members get card-expiry emails while member emails are on.
 * A household can replace its card any time from the portal, or from a new

@@ -1,14 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '../../../components/ui/button.js';
 import { Alert } from '../../../components/ui/alert.js';
-import { Badge, StackedItem, StackedList } from '../../../components/ui/table.js';
-import { Pager } from '../../../components/ui/pager.js';
-import { LoadingState, ErrorState, EmptyState } from '../../../components/ui/states.js';
-import { cardBrand } from '../../../lib/card-brand.js';
 import { invoiceClient, invoiceError, type InvoiceClient } from './api.js';
 import { text } from './format.js';
+import { CardList, invalidateHouseholdCards } from './card-list.js';
 
 export function CustomerCardImport({ gymId, householdId, allowed, client = invoiceClient }: {
   gymId: string; householdId: string; allowed: boolean; client?: InvoiceClient;
@@ -29,7 +26,7 @@ export function CustomerCardImport({ gymId, householdId, allowed, client = invoi
     {queued && <Alert focusOnReveal>{text('importCardsQueued')}</Alert>}
     <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
       <Button variant="outline" disabled={busy} onClick={() => void requestImport()}>{text(busy ? 'saving' : 'importCards')}</Button>
-      <Button variant="outline" onClick={() => void cache.invalidateQueries({ queryKey: ['billing', gymId] })}>{text('refreshCards')}</Button>
+      <Button variant="outline" onClick={() => void invalidateHouseholdCards(cache, gymId, householdId)}>{text('refreshCards')}</Button>
     </div>
   </div>;
 }
@@ -38,18 +35,8 @@ export function CustomerCardImport({ gymId, householdId, allowed, client = invoi
 export function HouseholdCards({ gymId, householdId, allowed, client = invoiceClient }: {
   gymId: string; householdId: string; allowed: boolean; client?: InvoiceClient;
 }) {
-  const [offset, setOffset] = useState(0);
-  const cards = useQuery({ queryKey: ['billing', gymId, 'cards', householdId, offset], queryFn: () => client.cards(householdId, offset) });
   return <div className="min-w-0 space-y-4">
     <CustomerCardImport gymId={gymId} householdId={householdId} allowed={allowed} client={client}/>
-    {cards.isPending && <LoadingState/>}{cards.isError && <ErrorState onRetry={() => void cards.refetch()}/>}
-    {cards.data?.data.length === 0 && <EmptyState title={text('noCards')}/>}
-    <StackedList>{cards.data?.data.map(card => <StackedItem key={card.id}>
-      <span>{card.brand ? cardBrand(card.brand) : text('card')} · {card.last4 ?? text('unknownCard')} · {card.expiryMonth}/{card.expiryYear}</span>
-      {card.isDefault && <Badge className="self-start">{text('default')}</Badge>}
-      {card.revokedAt && <Badge className="self-start">{text('removed')}</Badge>}
-    </StackedItem>)}</StackedList>
-    {cards.data && <Pager offset={offset} total={cards.data.pagination.total} limit={25} onChange={setOffset}
-      previousLabel={text('previous')} nextLabel={text('next')}/>}
+    <CardList gymId={gymId} householdId={householdId} allowed={allowed} client={client}/>
   </div>;
 }

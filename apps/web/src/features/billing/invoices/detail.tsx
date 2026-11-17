@@ -2,14 +2,12 @@
 import { formatCount } from '../../../lib/count.js';
 import { calendarDateLabel, useGymTime } from '../../../lib/instant.js';
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
-import { cardBrand } from '../../../lib/card-brand.js';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { refundReleased, type InvoiceDetail, type MaskedPaymentMethod, type Payment } from '@plaingym/shared/contracts';
+import { refundReleased, type InvoiceDetail, type Payment } from '@plaingym/shared/contracts';
 import { AmountInputError, cardChargeIssue } from '@plaingym/shared/money';
 import { invoiceClient, invoiceError, type InvoiceClient } from './api.js';
 import { text, money, minorUnitsToInput, parseMinorUnits } from './format.js';
 import { Button } from '../../../components/ui/button.js';
-import { Pager } from '../../../components/ui/pager.js';
 import { useDialogOperation, useDialogSaved } from '../../../components/ui/dialog.js';
 import { t } from '../../../lib/i18n.js';
 import { useSendGeneration } from '../../../lib/send-generation.js';
@@ -21,16 +19,17 @@ import { Badge, StackedItem, StackedList } from '../../../components/ui/table.js
 import { PageSection } from '../../../components/ui/page.js';
 import { LoadingState, ErrorState, EmptyState } from '../../../components/ui/states.js';
 import { CustomerCardImport } from './customer-cards.js';
+import { CardList } from './card-list.js';
 
 export interface InvoiceAccess { record: boolean; refund: boolean; links: boolean }
-type Action = { kind: 'cash' | 'charge' | 'link' | 'receipt' | 'viewReceipt' | 'releaseHold' | 'voidInvoice' } | { kind: 'refund'; payment: Payment } | { kind: 'revoke' | 'default'; card: MaskedPaymentMethod };
-export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClient, onCreditChange }: {
-  gymId: string; invoiceId: string; access: InvoiceAccess; client?: InvoiceClient; onCreditChange?: () => void;
+type Action = { kind: 'cash' | 'charge' | 'link' | 'receipt' | 'viewReceipt' | 'releaseHold' | 'voidInvoice' } | { kind: 'refund'; payment: Payment };
+export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClient, onCreditChange, showCardImport = true }: {
+  gymId: string; invoiceId: string; access: InvoiceAccess; client?: InvoiceClient; onCreditChange?: () => void; showCardImport?: boolean;
 }) {
   const { instantLabel } = useGymTime();
   const cache = useQueryClient(), key = ['billing', gymId, 'invoice', invoiceId];
   const [action, setAction] = useState<Action | null>(null), [busy, setBusy] = useState(false), [error, setError] = useState('');
-  const [message, setMessage] = useState(''), [url, setUrl] = useState(''), [cardOffset, setCardOffset] = useState(0);
+  const [message, setMessage] = useState(''), [url, setUrl] = useState('');
   const actionTitle = useId(), heading = useRef<HTMLHeadingElement>(null), trigger = useRef<HTMLElement | null>(null);
   const linkSend = useSendGeneration('invoice-link'), { uncertain } = linkSend;
   const [draft, setDraft] = useState(false), [discard, setDiscard] = useState(false), keep = useRef<HTMLButtonElement>(null);
@@ -42,7 +41,6 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
   const homeId = detail.data?.invoice.householdId;
   const household = useQuery({ queryKey: ['billing', gymId, 'household', homeId], queryFn: () => client.household(homeId!), enabled: !!homeId });
   const people = useQuery({ queryKey: ['billing', gymId, 'householdMembers', homeId], queryFn: () => client.householdMembers(homeId!), enabled: !!homeId && action?.kind === 'link' });
-  const cards = useQuery({ queryKey: ['billing', gymId, 'cards', homeId, cardOffset], queryFn: () => client.cards(homeId!, cardOffset), enabled: !!homeId });
   const allCards = useQuery({ queryKey: ['billing', gymId, 'activeCards', homeId], queryFn: () => client.activeDefaultCard(homeId!), enabled: !!homeId });
   function open(next: Action) { linkSend.reset(); trigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setError(''); setMessage(''); setUrl(''); setDraft(false); setDiscard(false); setAction(next); }
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -74,8 +72,6 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
           currency: action.payment.currency, reason: form.get('reason') || null }, { paymentId: action.payment.id });
         creditChanged = result.data.status === 'succeeded';
       }
-      if (action.kind === 'revoke' || action.kind === 'default') await client.call(action.kind === 'revoke' ? 'revokePaymentMethod' : 'setDefaultPaymentMethod', {},
-        { householdId: invoice.householdId, paymentMethodId: action.card.id });
       if (action.kind === 'receipt') { await client.call('resendReceipt', {}, { invoiceId }); setMessage(text('receiptQueued')); }
       if (action.kind === 'link') {
         const delivery = String(form.get('delivery')), sms = delivery.startsWith('sms:');
@@ -136,18 +132,8 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
       {data.refunds.length > 0 && <StackedList aria-label={text('refunds')}>{data.refunds.map(r => <StackedItem key={r.id}>{money(r.amountCents, r.currency)} · {text(r.status)}{r.reason && <p>{r.reason}</p>}</StackedItem>)}</StackedList>}
     </PageSection>
     <PageSection title={text('cards')}>
-      <CustomerCardImport key={invoice.householdId} gymId={gymId} householdId={invoice.householdId} allowed={access.record} client={client}/>
-      {cards.isPending && <LoadingState/>}{cards.isError && <ErrorState onRetry={() => void cards.refetch()}/>}
-      {cards.data?.data.length === 0 && <EmptyState title={text('noCards')}/>}
-      <StackedList>{cards.data?.data.map(card => <StackedItem key={card.id}>
-        <span>{card.brand ? cardBrand(card.brand) : text('card')} · {card.last4 ?? text('unknownCard')} · {card.expiryMonth}/{card.expiryYear}</span>
-        {/* In the stacked column a badge would stretch to the card's width. */}{card.isDefault && <Badge className="self-start">{text('default')}</Badge>}{card.revokedAt && <Badge className="self-start">{text('removed')}</Badge>}
-        {access.record && <div className="flex flex-col gap-2 sm:flex-row">
-          {!card.revokedAt && !card.isDefault && <Button variant="outline" onClick={() => open({ kind: 'default', card })}>{text('makeDefault')}</Button>}
-          <Button variant="outline" onClick={() => open({ kind: 'revoke', card })}>{text(card.revokedAt ? 'retryRemoval' : 'removeCard')}</Button>
-        </div>}
-      </StackedItem>)}</StackedList>
-      {cards.data && <Pager offset={cardOffset} total={cards.data.pagination.total} limit={25} onChange={setCardOffset} previousLabel={text('previous')} nextLabel={text('next')}/>}
+      {showCardImport && <CustomerCardImport key={invoice.householdId} gymId={gymId} householdId={invoice.householdId} allowed={access.record} client={client}/>}
+      <CardList key={`cards:${invoice.householdId}`}gymId={gymId} householdId={invoice.householdId} allowed={access.record} client={client}/>
     </PageSection>
     </div>
     {action && <section aria-labelledby={actionTitle} className="space-y-4">
@@ -177,7 +163,6 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
             <Label className="block">{text('reason')}<Input name="reason"/></Label>
           </>}
           {action.kind === 'charge' && <p>{text('chargeHelp')}</p>}
-          {action.kind === 'revoke' && <p>{text('removeHelp')} · {action.card.last4}</p>}
           {action.kind === 'link' && <>
             <Label className="block">{text('delivery')}<Select name="delivery">
               <option value="email">{text('emailLink')}</option><option value="copy">{text('showLink')}</option>

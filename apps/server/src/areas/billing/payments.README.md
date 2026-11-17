@@ -137,12 +137,16 @@ custom body gets the same 403), and the invoice editor hides the custom amount. 
 catalog charge types, which managers price.
 
 Removing a card first revokes it locally and clears its default flag. Removing the
-default promotes the household's most recently added active card, ordered by
-`createdAt` and then ID descending, in the same transaction under the household
+default promotes the household's newest active card whose stored expiry has not
+passed in the gym's timezone, falling back to the newest when every card has expired.
+Unknown expiry stays eligible. Cards are ordered by processor creation time when
+known (local creation time otherwise), then local creation time and row ID descending,
+in the same transaction under the household
 lock, with a `billing.card.default_changed` audit. Removing a non-default card
 leaves the default alone; removing the only active card leaves no default, so
 automatic card payments need another card. The test-to-live Stripe switch shares
 this promotion when it revokes a default and keeps an imported active card.
+Customer-card imports also use it after the final page or exhausted cursor restarts.
 Retrying removal of a revoked card
 does not change the default or repeat these audits. Removal then queues
 a detach retry and attempts detachment outside the transaction. Revoked rows

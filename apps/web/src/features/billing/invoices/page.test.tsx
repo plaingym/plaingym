@@ -10,6 +10,7 @@ import type { ShellBootstrap } from '@plaingym/shared/contracts';
 import { canStaff } from '@plaingym/shared';
 import { InvoiceList } from './page.js';
 import { InvoiceDetails } from './detail.js';
+import { HouseholdCards } from './customer-cards.js';
 import { OneOffEditor } from './editor.js';
 import { createInvoiceClient, InvoiceRequestError } from './api.js';
 import { registration } from './registrations.js';
@@ -60,6 +61,16 @@ function transport(initial: Partial<InvoiceDetail> = {}) {
   });
   return { fetcher, client: createInvoiceClient(fetcher), detail };
 }
+it('offers one import control when opening an invoice from household billing', async () => {
+  const f = transport();
+  start(<><HouseholdCards gymId={gymId} householdId={home} allowed client={f.client}/>
+    <InvoiceList gymId={gymId} householdId={home} access={desk} custom catalog client={f.client}/></>);
+  fireEvent.click(await screen.findByRole('button', { name: 'View invoice ' + invoice.number }));
+  const dialog = await screen.findByRole('dialog');
+  await within(dialog).findByRole('button', { name: 'Remove card' });
+  expect(within(dialog).queryByRole('button', { name: 'Import cards from Stripe' })).toBeNull();
+  expect(screen.getAllByRole('button', { name: 'Import cards from Stripe', hidden: true })).toHaveLength(1);
+});
 const bootstrap: ShellBootstrap = { gym: { id: gymId, name: 'Gym', timezone: settings.timezone, currency: 'USD', enabledModules: [] }, session: { userId: id(10), displayName: 'Test User', roles: ['front_desk'], member: false }, login: { password: true, magicLink: false } };
 function start(view: React.ReactNode) {
   return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}><ShellServicesContext.Provider value={createShellServices(async () => bootstrap)}>{view}</ShellServicesContext.Provider></QueryClientProvider>);

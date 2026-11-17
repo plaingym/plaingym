@@ -6,7 +6,7 @@ import { clock as systemClock } from '../../core/clock.js';
 import { CustomerCreationInProgress, CustomerDeleted, ERASED_CUSTOMER_NAME, normalizeChargeOutcome, type DetachOptions, type Payments, type CreateCustomer, type CreateCharge, type CheckoutRequest,
   type CheckoutSession, type CheckoutExpiry, type ChargeReference, type ChargeOutcome, type PaymentMetadata,
   type PaymentObjectReference, type PaymentObjectResult, type PaymentObject, type PaymentChange,
-  type PaymentEvent, type Refund, type RefundRequest, type CustomerMatch, CardImportRefused,
+  type PaymentEvent, type Refund, type RefundRequest, type CustomerMatch, CardImportRefused, CardCursorRefused,
   type CustomerCardPage, type CustomerCardQuery } from './index.js';
 import type { Json, ObjectData, PaymentTransport, ProviderRequest } from './transport.js';
 import { PaymentWebhookError } from './webhook-error.js';
@@ -534,7 +534,14 @@ export class StripePayments implements Payments {
       || metadata.household_id !== undefined && metadata.household_id !== options.householdId)
       throw new CardImportRefused('Customer is not owned by this gym and household');
     const page = await this.#get('/v1/payment_methods', { customer: customerId, type: 'card', limit,
-      ...(options.cursor ? { starting_after: options.cursor } : {}) });
+      ...(options.cursor ? { starting_after: options.cursor } : {}) }).catch(error => {
+      const refused = error as { statusCode?: number; code?: string; param?: string; raw?: { param?: string } } | null;
+      const parameter = refused?.param ?? refused?.raw?.param;
+      if (options.cursor && [400, 404].includes(refused?.statusCode ?? 0)
+        && (parameter === 'starting_after' || parameter === undefined && refused?.code === 'resource_missing'))
+        throw new CardCursorRefused('Invalid card cursor');
+      throw error;
+    });
     if (!Array.isArray(page.data) || page.data.length > limit || typeof page.has_more !== 'boolean') throw new Error('Invalid card page');
     const cards = page.data.map(value => {
       const method = data(value), card = data(method.card), owner = data(method.metadata ?? {}).gym_id;

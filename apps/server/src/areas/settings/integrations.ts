@@ -242,7 +242,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
    * card payments as test. Imported customer IDs and cards, test payments, refunds, attempts and invoices stay. Returns
    * the Stripe objects to retire with the old test key afterwards.
    */
-  async function clearTestData(tx: Transaction, gymId: string, userId: string) {
+  async function clearTestData(tx: Transaction, gymId: string, userId: string, timezone: string) {
     // The charge runner reserves an attempt under its invoice's lock: holding every payable invoice first means no attempt
     // is reserved with a test card while the switch runs, and any reserved before is seen as in flight.
     const payable = await tx.select({ id: invoices.id, sessionId: invoices.checkoutSessionId, reservedUntil: invoices.checkoutExpiresAt })
@@ -284,7 +284,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
         .where(and(inArray(paymentMethods.id, testCardIds.slice(index, index + 500)), isNull(paymentMethods.revokedAt)))
         .returning({ id: paymentMethods.id }));
     for (const householdId of new Set(testCardRows.filter(row => row.isDefault).map(row => row.householdId)))
-      await promoteDefaultCard(tx, { gymId, actor: { kind: 'user', userId } }, clock, householdId);
+      await promoteDefaultCard(tx, { gymId, actor: { kind: 'user', userId } }, clock, householdId, timezone);
     // Paid and void invoices keep their completed session's ID as history; nothing reads it with the new key.
     const sessions = payable.filter((row) => row.sessionId || row.reservedUntil);
     for (let index = 0; index < sessions.length; index += 500)
@@ -584,7 +584,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
         const now = await stripeReference(tx, gymId);
         if (!checked && !switching && now !== null && !importedOnly(previous, now))
           throw new AppError('conflict', 'Stripe customers were recorded while the key was checked; try again');
-        if (switching) retire = await clearTestData(tx, gymId, userId);
+        if (switching) retire = await clearTestData(tx, gymId, userId, before.timezone);
         const was = readStripeConfig(options.key, before.stripeConfig, gymId);
         const paused = await pauseRestoredBillingForStripe(tx, context, before.billingEnabled, clock.now(), config.mode);
         return { set: { stripeConfig: encryptSecret(options.key, { secretClass: 'stripe_config', owner: gymId }, JSON.stringify(config)),

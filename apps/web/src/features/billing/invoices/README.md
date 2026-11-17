@@ -4,14 +4,27 @@
 The invoice page and detail route use the shared page/state components. Lists and
 line items use stacked rows. One-off editors use the shared `Dialog` and searchable
 household `Autocomplete`. Receipt, cash/check, saved-card confirmation, refund,
-pay-link, void, review-hold and card-management views stay inside invoice details,
+pay-link, void and review-hold views stay inside invoice details,
 with a back control and focus restored to the action that opened the view.
 
-Household billing also lists saved cards before an invoice exists. Staff with
+Household billing and invoice details share `CardList`, including saved-card
+confirmations, before an invoice exists. Staff with
 `payments.record` can choose **Import cards from Stripe** there or in invoice
 details. The action queues bounded jobs and offers **Refresh cards** to read their
-results. It preserves the selected default, chooses the newest active card only
-when none is selected after the last chunk, and never restores a removed card.
+results. The household page has one import control, including when an invoice
+dialog is open. Refresh invalidates only this household's card lists and charge
+eligibility. Default and removal actions require `payments.record`, and refresh
+these queries on success and error because local removal can precede a Stripe outage.
+Removal help starts with the card's last four digits; promotion help appears only
+for the current active default, including after a failed removal refresh.
+
+Imports preserve the selected default and never restore a removed card. When a
+default needs replacing, import, removal and test-card clearing share the newest-first
+order: processor creation time when known (local time otherwise), then local
+creation time and row ID. They skip expired cards using the gym's local month,
+falling back to the newest if every card has expired. Unknown expiry stays eligible.
+Imports audit stale ownership refusals, skip cards stored for another household,
+and restart refused cursors at most three times before settling a partial import.
 The linked Stripe customer must already be tagged for this gym; conflicting
 household metadata is refused. The campaign's card filter uses stored cards.
 

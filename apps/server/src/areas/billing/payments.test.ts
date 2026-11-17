@@ -16,7 +16,7 @@ import { TestClock } from '../../core/clock.js';
 import type { Principal } from '../../core/context.js';
 import { createServerRegistry } from '../../core/registry.js';
 import { areaContributions } from '../../core/registry-areas.js';
-import { FakePayments, type DetachOptions } from '../../infra/payments/index.js';
+import { CardCursorRefused, FakePayments, type DetachOptions } from '../../infra/payments/index.js';
 import { StripePayments } from '../../infra/payments/stripe.js';
 import { StripeFixtures } from '../../infra/payments/stripe-fixtures.js';
 import { FakeJobs, PostgresJobs } from '../../infra/jobs/index.js';
@@ -126,7 +126,8 @@ describe('staff import of externally attached cards', () => {
     const registration = createCustomerCardImportJobs({ ...f.options, paymentsFor: async () => f.provider })[0]!;
     await registration.handler(next.payload, { gymId: f.gymId, timezone: 'UTC', jobId: next.id, attempt: 2, clock: f.clock });
     expect(await rows(f)).toHaveLength(205);
-    expect((await rows(f)).filter(card => card.isDefault).map(card => card.processorId)).toEqual(['pm_chunk_204']);
+    const newest = (await rows(f)).sort((a, b) => b.id.localeCompare(a.id))[0]!;
+    expect((await rows(f)).filter(card => card.isDefault).map(card => card.id)).toEqual([newest.id]);
   });
   it('keeps the selected default when importing newer cards', async () => {
     const f = await fixture(); attached(f, 'pm_newest');
@@ -176,15 +177,133 @@ describe('staff import of externally attached cards', () => {
     await expect(f.service.importCustomerCards(f.context, f.home.id)).rejects.toMatchObject({ details: { reason: ['card_import_no_customer'] } });
     expect(list).not.toHaveBeenCalled(); expect(f.jobs.jobs).toHaveLength(0);
   });
-  it('does not import a card already stored for a different household', async () => {
-    const f = await fixture(), other = await factory('households', f.gymId);
-    await factory('paymentMethods', f.gymId, { householdId: other.id, processorId: 'pm_mislinked' });
-    attached(f, 'pm_mislinked'); await f.service.importCustomerCards(f.context, f.home.id);
-    const registration = createCustomerCardImportJobs({ ...f.options, paymentsFor: async () => f.provider })[0]!;
+  it('skips and audits another household card, finishes later pages and chooses a default', async () => {
+    const f = await fixture(); await empty(f);
+    const other = await factory('households', f.gymId);
+    const foreign = await factory('paymentMethods', f.gymId, { householdId: other.id, processorId: 'pm_mislinked' });
+    attached(f, 'pm_mislinked', new Date('2026-10-26T00:00:00Z'));
+    for (let i = 0; i < 102; i++) attached(f, 'pm_safe_' + i);
+    await f.service.importCustomerCards(f.context, f.home.id);
+    await f.jobs.runNext(); await f.jobs.runNext();
+    expect(f.jobs.jobs.every(job => job.status === 'completed' && job.attempt === 1)).toBe(true);
+    const cards = await rows(f);
+    expect(cards).toHaveLength(103); expect(cards.find(card => card.id === foreign.id)).toEqual(foreign);
+    expect(cards.filter(card => card.householdId === f.home.id && card.isDefault)).toHaveLength(1);
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents));
+    expect(audits).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: 'billing.card.import_skipped', targetId: f.home.id, after: expect.objectContaining({ processorId: 'pm_mislinked' }) }),
+      expect.objectContaining({ action: 'billing.card.import_finished', after: expect.objectContaining({ outcome: 'finished', skippedCards: 1 }) }),
+    ]));
+  });
+  it.each(['gym', 'household'] as const)('settles a queued %s ownership refusal as stale with its request ID, without retries', async changedMetadata => {
+    const f = await fixture(); await empty(f);
+    await f.service.importCustomerCards(f.context, f.home.id);
+    const changed = new FakePayments(f.gymId, f.clock);
+    changed.seedCustomer({ id: 'cus_fixture', email: 'payer@example.invalid',
+      ...(changedMetadata === 'gym' ? { gymId: uuidv7() } : { householdId: uuidv7() }) });
+    const registration = createCustomerCardImportJobs({ ...f.options, paymentsFor: async () => changed })[0]!;
     const job = f.jobs.jobs[0]!;
-    await expect(registration.handler(job.payload, { gymId: f.gymId, timezone: 'UTC', jobId: job.id, attempt: 1, clock: f.clock }))
-      .rejects.toThrow('another household');
-    expect(await rows(f)).toHaveLength(2);
+    await registration.handler(job.payload, { gymId: f.gymId, timezone: 'UTC', jobId: job.id, attempt: 1, clock: f.clock });
+    expect(await rows(f)).toHaveLength(0); expect(f.jobs.jobs).toHaveLength(1);
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.card.import_finished')));
+    expect(audits).toMatchObject([{ after: { requestId: (job.payload as { requestId: string }).requestId, outcome: 'stale', reason: 'ownership_refused' } }]);
+  });
+  it('restarts after a detached continuation card, deduplicates earlier cards and finishes with a default', async () => {
+    const f = await fixture(); await empty(f);
+    for (let i = 0; i < 102; i++) attached(f, 'pm_cursor_' + i);
+    await f.service.importCustomerCards(f.context, f.home.id); await f.jobs.runNext();
+    const next = f.jobs.jobs.find(job => job.status === 'queued')!;
+    await f.provider.detachPaymentMethod((next.payload as { cursor: string }).cursor);
+    await f.jobs.runNext(); await f.jobs.runNext(); await f.jobs.runNext();
+    expect(f.jobs.jobs.every(job => job.status === 'completed' && job.attempt === 1)).toBe(true);
+    expect(await rows(f)).toHaveLength(102);
+    expect((await rows(f)).filter(card => card.isDefault)).toHaveLength(1);
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents));
+    expect(audits.filter(row => row.action === 'billing.card.imported')).toHaveLength(102);
+    expect(audits.filter(row => row.action === 'billing.card.import_restarted')).toHaveLength(1);
+    expect(audits).toContainEqual(expect.objectContaining({ action: 'billing.card.import_finished', after: expect.objectContaining({ outcome: 'finished', restarts: 1 }) }));
+  });
+  it('counts a skipped card once when a cursor restart lists its page again', async () => {
+    const f = await fixture(); await empty(f);
+    const other = await factory('households', f.gymId);
+    await factory('paymentMethods', f.gymId, { householdId: other.id, processorId: 'pm_restart_foreign' });
+    attached(f, 'pm_restart_foreign', new Date(f.clock.now().getTime() + 86_400_000));
+    for (let i = 0; i < 101; i++) attached(f, 'pm_restart_' + i);
+    await f.service.importCustomerCards(f.context, f.home.id); await f.jobs.runNext();
+    const next = f.jobs.jobs.find(job => job.status === 'queued')!;
+    await f.provider.detachPaymentMethod((next.payload as { cursor: string }).cursor);
+    for (let i = 0; i < 10 && await f.jobs.runNext(); i++) { /* bounded drain */ }
+    expect(f.jobs.jobs.every(job => job.status === 'completed' && job.attempt === 1)).toBe(true);
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.card.import_finished')));
+    expect(audits).toMatchObject([{ after: { outcome: 'finished', skippedCards: 1, restarts: 1 } }]);
+  });
+  it('bounds cursor restarts and settles partial cards with a default and a refused outcome', async () => {
+    const f = await fixture(); await empty(f);
+    for (let i = 0; i < 101; i++) attached(f, 'pm_limit_' + i);
+    await f.service.importCustomerCards(f.context, f.home.id);
+    const list = f.provider.listCustomerCards.bind(f.provider);
+    vi.spyOn(f.provider, 'listCustomerCards').mockImplementation((customerId, options) => {
+      if (options.cursor) return Promise.reject(new CardCursorRefused());
+      return list(customerId, options);
+    });
+    for (let i = 0; i < 10 && await f.jobs.runNext(); i++) { /* bounded drain */ }
+    expect(f.jobs.jobs).toHaveLength(8);
+    expect(f.jobs.jobs.every(job => job.status === 'completed' && job.attempt === 1)).toBe(true);
+    expect(await rows(f)).toHaveLength(100); expect((await rows(f)).filter(card => card.isDefault)).toHaveLength(1);
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.card.import_finished')));
+    expect(audits).toMatchObject([{ after: { outcome: 'refused', reason: 'cursor_restart_limit', restarts: 3 } }]);
+  });
+  it('keeps transient provider failures retryable instead of restarting', async () => {
+    const f = await fixture(); await f.service.importCustomerCards(f.context, f.home.id);
+    vi.spyOn(f.provider, 'listCustomerCards').mockRejectedValueOnce(new Error('Provider unavailable'));
+    await f.jobs.runNext();
+    expect(f.jobs.jobs).toMatchObject([{ status: 'queued', attempt: 1 }]);
+    expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.card.import_finished')))).toHaveLength(0);
+  });
+  it.each(['import', 'removal'] as const)('%s uses processor date before local date and prefers unexpired cards in the gym month', async caller => {
+    const f = await fixture(); f.clock.set('2026-11-01T00:30:00Z');
+    await db.forGym(f.gymId, tx => tx.update(gyms).set({ timezone: 'America/Los_Angeles' }));
+    const valid = await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_valid', expiryMonth: 10, expiryYear: 2026,
+      processorCreatedAt: new Date('2026-10-20T00:00:00Z'), createdAt: new Date('2026-10-21T00:00:00Z') });
+    await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_valid_older', expiryMonth: 12, expiryYear: 2035,
+      processorCreatedAt: new Date('2026-10-19T00:00:00Z'), createdAt: new Date('2026-10-25T00:00:00Z') });
+    await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_expired', expiryMonth: 9, expiryYear: 2026,
+      processorCreatedAt: new Date('2026-10-24T00:00:00Z'), createdAt: new Date('2026-10-26T00:00:00Z') });
+    if (caller === 'removal') await f.service.revokeCard(f.context, f.home.id, f.card.id);
+    else {
+      await db.forGym(f.gymId, tx => tx.update(paymentMethods).set({ revokedAt: f.clock.now(), isDefault: false }).where(eq(paymentMethods.id, f.card.id)));
+      await f.service.importCustomerCards(f.context, f.home.id); await f.jobs.runNext();
+    }
+    expect((await rows(f)).filter(card => card.isDefault).map(card => card.id)).toEqual([valid.id]);
+  });
+  it.each(['import', 'removal'] as const)('%s falls back to the newest card when every card is expired', async caller => {
+    const f = await fixture();
+    await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_older_expired', expiryMonth: 1, expiryYear: 2020,
+      processorCreatedAt: new Date('2026-10-01T00:00:00Z'), createdAt: new Date('2026-10-24T00:00:00Z') });
+    const newest = await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_newest_expired', expiryMonth: 1, expiryYear: 2020,
+      processorCreatedAt: new Date('2026-10-20T00:00:00Z'), createdAt: new Date('2026-10-21T00:00:00Z') });
+    if (caller === 'removal') await f.service.revokeCard(f.context, f.home.id, f.card.id);
+    else {
+      await db.forGym(f.gymId, tx => tx.update(paymentMethods).set({ revokedAt: f.clock.now(), isDefault: false }).where(eq(paymentMethods.id, f.card.id)));
+      await f.service.importCustomerCards(f.context, f.home.id); await f.jobs.runNext();
+    }
+    expect((await rows(f)).filter(card => card.isDefault).map(card => card.id)).toEqual([newest.id]);
+  });
+  it.each(['import', 'removal'] as const)('%s uses local time for an unknown processor date and local time to break processor-date ties', async caller => {
+    const f = await fixture();
+    await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_known_old',
+      processorCreatedAt: new Date('2026-10-01T00:00:00Z'), createdAt: new Date('2026-10-25T00:00:00Z') });
+    const local = await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_unknown',
+      expiryMonth: null, expiryYear: null,
+      createdAt: new Date('2026-10-24T00:00:00Z') });
+    await factory('paymentMethods', f.gymId, { householdId: f.home.id, processorId: 'pm_same_processor_time',
+      processorCreatedAt: local.createdAt, createdAt: new Date('2026-10-23T00:00:00Z') });
+    if (caller === 'removal') await f.service.revokeCard(f.context, f.home.id, f.card.id);
+    else {
+      await db.forGym(f.gymId, tx => tx.update(paymentMethods).set({ revokedAt: f.clock.now(), isDefault: false }).where(eq(paymentMethods.id, f.card.id)));
+      await f.service.importCustomerCards(f.context, f.home.id); await f.jobs.runNext();
+    }
+    expect((await rows(f)).filter(card => card.isDefault).map(card => card.id)).toEqual([local.id]);
   });
   it('leaves no imported rows when a customer changes during provider I/O', async () => {
     const f = await fixture(); attached(f, 'pm_stale');

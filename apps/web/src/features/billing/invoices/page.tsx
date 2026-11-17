@@ -51,7 +51,7 @@ export function InvoiceList({ gymId, householdId, access, custom, catalog, clien
       setCreate(false); setSelected(invoiceId); void cache.invalidateQueries({ queryKey: ['billing', gymId] });
     }}/>}
     {selected && <Dialog size="wide" title={text('invoice')} closeLabel={text('close')} onClose={() => setSelected(null)}>
-      <InvoiceDetails key={selected} gymId={gymId} invoiceId={selected} access={access} client={client}/>
+      <InvoiceDetails key={selected} gymId={gymId} invoiceId={selected} access={access} client={client} showCardImport={!householdId}/>
     </Dialog>}
   </div>;
 }
