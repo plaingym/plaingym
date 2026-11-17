@@ -7,11 +7,11 @@ import { assertNoTransaction } from '@plaingym/shared/transaction';
 export class RestoreCheckBusyError extends Error {
   constructor() { super('Restore reconciliation is already running'); this.name = 'RestoreCheckBusyError'; }
 }
-export type RestoreCheckLease = <T>(gymId: string, restoreId: string, action: () => Promise<T>) => Promise<T>;
+export type RestoreCheckLease = <T>(gymId: string, action: () => Promise<T>) => Promise<T>;
 
 /** One running check per gym, released on completion or process death, with no age-based takeover. */
 export function createRestoreCheckLease(url: () => string | undefined = () => process.env.DATABASE_URL): RestoreCheckLease {
-  return async (gymId, _restoreId, action) => {
+  return async (gymId, action) => {
     assertNoTransaction('restore.checkLease');
     const address = url();
     if (!address) throw new Error('Restore reconciliation database is not configured');
@@ -19,7 +19,7 @@ export function createRestoreCheckLease(url: () => string | undefined = () => pr
     try {
       const session = await connection.sql.reserve();
       try {
-        // Older queued payloads may omit the restore ID. They still share the current restore's lease.
+        // Queued checks and explicit reruns share one lease for the gym.
         const key = `billing.runner.restore:${gymId}`;
         const [lease] = await session<{ acquired: boolean }[]>`select pg_try_advisory_lock(hashtextextended(${key}, 0)) as acquired`;
         if (!lease?.acquired) throw new RestoreCheckBusyError();

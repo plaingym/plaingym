@@ -183,7 +183,7 @@ describe('restore checks belong to the Stripe mode they read', () => {
       await began;
       clock.advance(16 * 60_000);
       if (first === 'job') expect((await rerun(app, gymId, restoreId)).status).toBe(409);
-      else await expect(job()).rejects.toThrow('Restore reconciliation is already running');
+      else await expect(job()).resolves.toBeUndefined();
       expect(list).toHaveBeenCalledTimes(1);
       release(); await checking;
       await job();

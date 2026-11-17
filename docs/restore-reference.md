@@ -81,7 +81,7 @@ and logged again if they recur after a successful check.
 | `The key file doesn't hold an age private key`, `The key file must hold exactly one age private key` | The key file's content, including a mistyped character that breaks its checksum. |
 | `A snapshot object is missing from the bucket` | The snapshot was damaged or deleted in the bucket; try an earlier one. |
 | `A verified restore is already staged; resume it first` | See [If a restore is interrupted](#if-a-restore-is-interrupted). |
-| `A restore may be staged; preserve the restore state and run resume` | Writing the journal and reading it back both failed, so activation is uncertain. Fix the filesystem error and run `resume`; it resumes a published journal or removes abandoned staging when none was published. |
+| `A restore may be staged; preserve the restore state and run resume` | Writing the journal and reading it back both failed, so activation is uncertain. Fix the filesystem error and run `resume`; it resumes a published journal or removes abandoned staging when none was published. If a backup is running, it leaves that staging for a later start or `resume`. |
 | `Missing NAME` | The environment variable the app container needs. |
 | `Restored gym receipt is missing` | The restored database's restore audit record. Keep the staged restore and investigate before retrying. |
 | `Invalid current app key` | APP_ENCRYPTION_KEY must be the destination install's key, 64 hex characters. |

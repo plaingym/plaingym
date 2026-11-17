@@ -6,7 +6,7 @@ import { chargeFailuresJob, dailyRunJob, retryJob, type ChargeRunner } from './i
 import { gymSettingsAccessor } from '../../settings/settings.js';
 import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
 import { notConfigured } from './reconciliation.js';
-import { restoreCheckLease, type RestoreCheckLease } from '../../health/restore.billing-lease.js';
+import { restoreCheckLease, RestoreCheckBusyError, type RestoreCheckLease } from '../../health/restore.billing-lease.js';
 
 let configured: ChargeRunner | undefined;
 export function configureChargeRunner(runner: ChargeRunner) { configured = runner; }
@@ -52,8 +52,13 @@ export function createRunnerJobs(read: () => ChargeRunner | undefined = () => co
     { id: 'billing.runner.restore', async handler(payload, context) {
       const snapshotAt = instantSchema.parse((payload as { snapshotAt?: unknown } | null)?.snapshotAt);
       const restoreId = idSchema.optional().parse((payload as { restoreId?: unknown } | null)?.restoreId);
-      const result = await lease(context.gymId, restoreId ?? 'legacy', () => required().postRestore(context.gymId,
-        new Date(snapshotAt), restoreId));
+      const result = await lease(context.gymId, () => required().postRestore(context.gymId,
+        new Date(snapshotAt), restoreId)).catch(error => {
+        // The holder runs the same check and records its result; contention must not exhaust this job's attempts.
+        if (error instanceof RestoreCheckBusyError) return undefined;
+        throw error;
+      });
+      if (!result) return;
       // Without Stripe a retry would find the same stored references; the report lists them for the owner, who connects
       // Stripe and checks again. A check that ran with Stripe and left issues retries.
       if (!result.readyForOwnerReview && result.stripeConfigured !== false)

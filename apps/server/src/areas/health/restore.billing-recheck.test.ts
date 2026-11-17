@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import '@hono/zod-openapi';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { eq } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- Restore regression inspects the production queue's stored outcome.
+import { jobs } from '@plaingym/db';
 import type { FakePayments } from '../../infra/payments/index.js';
 import { restoredBilling as billing } from './restore.billing.test-helper.js';
 import { useRestoreFixture } from './restore.fixture.test-helper.js';
@@ -11,6 +14,37 @@ beforeAll(async () => { base = (await f.prepare(() => f.backup().snapshot())).id
 const restored = () => billing(f);
 
 describe('restored billing through production restore, jobs and go-live routes', () => {
+  it.each([false, true])('succeeds the queued check while a long rerun holds its lease (legacy payload: %s)', async legacy => {
+    await f.restore().restore(base, f.identity);
+    const b = await restored();
+    const queued = (await f.target.forGym(f.gymId, tx => tx.select().from(jobs).where(eq(jobs.name, 'billing.runner.restore'))))[0]!;
+    if (legacy) {
+      const snapshotAt = (await b.read()).restoreReconciliation!.snapshotAt;
+      await f.target.forGym(f.gymId, tx => tx.update(jobs).set({ payload: { version: 1, timezone: 'UTC',
+        value: { snapshotAt } } }).where(eq(jobs.id, queued.id)));
+    }
+    let entered!: () => void, release!: (value: Awaited<ReturnType<FakePayments['listChangesSince']>>) => void;
+    const began = new Promise<void>(resolve => { entered = resolve; });
+    const list = vi.spyOn(b.provider, 'listChangesSince').mockImplementationOnce(async () => {
+      entered(); return new Promise(resolve => { release = resolve; });
+    });
+    const running = b.rerun();
+    try {
+      await began;
+      // Keep the rerun active beyond every retry's backoff in the production Postgres queue.
+      for (let attempt = 0; attempt < queued.maxAttempts; attempt++) {
+        await b.queue.runNext();
+        f.clock.advance(60_000);
+      }
+      const [finished] = await f.target.forGym(f.gymId, tx => tx.select().from(jobs).where(eq(jobs.id, queued.id)));
+      expect(finished).toMatchObject({ status: 'succeeded', attempts: 1, lastError: null });
+      expect(list).toHaveBeenCalledOnce();
+    } finally {
+      release({ changes: [], nextCursor: null });
+      try { expect((await running).status).toBe(200); } finally { list.mockRestore(); }
+    }
+    expect((await b.read()).restoreReconciliation).toMatchObject({ unresolved: 0, checkedAt: expect.any(String) });
+  });
   it('invalidates old results on a newer restore and ignores delayed old jobs', async () => {
     await f.restore().restore(base, f.identity);
     const b = await restored(); await b.queue.runNext();

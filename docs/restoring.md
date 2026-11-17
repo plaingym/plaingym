@@ -163,6 +163,9 @@ completed setup. You work on the server over SSH.
    command again. If it also says a verified restore can be resumed, a restore is staged and a
    new one is refused: finish it as in
    [If a restore is interrupted](restore-reference.md#if-a-restore-is-interrupted).
+   On startup with no restore journal, cleanup of abandoned staging skips a
+   running backup's lock, so the backup does not hold up startup. Cleanup runs
+   again on a later start or restore.
 6. **Delete your copies:** `sudo rm restore.json backup-key.txt`. Keep your original backup
    private key in safe storage.
 
@@ -179,6 +182,8 @@ completed setup. You work on the server over SSH.
    If you switch Stripe modes after the check, billing pauses. Go live and Payments
    name the mode the earlier check read and ask you to check again in the saved
    mode before turning billing back on; a clear test-mode check cannot clear live payments.
+   If the queued check meets an already running check, its job completes while
+   that check records the result. Wait for the checklist's result before enabling billing.
 3. **Stripe webhooks.** In **Settings → Integrations**, check that **Payments**
    shows the webhook endpoint as registered. If the hostname changed, the endpoint Stripe knows
    still points at the old address: paste the Stripe key again, which registers the endpoint at

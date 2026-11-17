@@ -164,7 +164,7 @@ describe('restore check reruns', () => {
   it('answers an overlapping rerun with 409 and the field code', async () => {
     const { gymId, restoreId } = await restoredGym();
     const app = server('owner', gymId), { revision } = await service.checklist(gymId);
-    const response = await lease(gymId, restoreId, async () => app.request('/api/settings/go-live/reconciliation', {
+    const response = await lease(gymId, async () => app.request('/api/settings/go-live/reconciliation', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ revision, restoreId }) }));
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ error: { code: 'conflict', details: { restoreId: ['check_running'] } } });

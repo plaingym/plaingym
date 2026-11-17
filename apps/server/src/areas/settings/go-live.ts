@@ -129,7 +129,7 @@ export function createGoLiveService(options: {
     checklist,
     async rerunReconciliation(context: MutationContext, input: { revision: number; restoreId: string }): Promise<Checklist> {
       try {
-        return await (options.restoreCheckLease ?? restoreCheckLease)(context.gymId, input.restoreId, async () => {
+        return await (options.restoreCheckLease ?? restoreCheckLease)(context.gymId, async () => {
           const snapshotAt = await scope(context.gymId, async tx => {
             const [gym] = await tx.select(projection).from(gyms).where(eq(gyms.id, context.gymId)).for('update');
             if (!gym) throw new AppError('not_found', t('settings/go-live:notFound'));

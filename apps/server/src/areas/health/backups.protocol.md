@@ -124,8 +124,10 @@ The journal counts as written once its rename has landed: if the directory sync
 after it fails, the staging it names is kept for `resume`.
 If the write and read-back both fail, restore reports that activation is uncertain
 and tells the owner to run `resume`. Under the backup lock, a new restore and a
-resume with no journal or a complete journal sweep abandoned `restore-*` staging
-folders. An unfinished or unreadable journal preserves its verified plaintext.
+resume with a complete journal sweep abandoned `restore-*` staging folders.
+With no journal, startup's `resume` tries that lock without waiting and skips the
+sweep if a backup holds it; a later start or restore can clean up the folders.
+An unfinished or unreadable journal preserves its verified plaintext.
 A service using the gate must never initiate restore from inside its own activity
 lease: the setup coordinator calls the service outside the wrapped request.
 
@@ -163,6 +165,9 @@ reopens. It never enables billing. The go-live page displays the latest check an
 lets a manager rerun it after resolving issues, then explicitly enable billing.
 The job and rerun share a per-gym PostgreSQL session lease, outside transactions,
 so job retries and manual checks cannot overlap or take over a long check by age.
+Both use the runtime's database configuration. A job finding that lease busy
+completes successfully: the holder runs the same check and records its outcome.
+The go-live checklist still requires that check's result before billing can resume.
 
 A restart resumes without needing to retain the age private identity.
 Before the rekey receipt it repeats reset/restore/migrate/rekey from verified

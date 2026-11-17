@@ -103,26 +103,80 @@ it('logs a persistent lease-removal error once and retries without abandoning th
   } finally { setLogSink(sink); }
 });
 
-it('logs a journal failure again after a successful monitor tick', async () => {
+it.each(['journal', 'lease'])('logs a flapping %s failure once per episode', async operation => {
   const gate = await fixture();
   await gate.activity(async () => undefined);
-  const original = files.readJson, lines: string[] = [];
-  let failing = true, attempts = 0;
-  vi.spyOn(files, 'readJson').mockImplementation(async path => {
+  const lines: string[] = [];
+  let attempts = 0, now = 0;
+  vi.spyOn(performance, 'now').mockImplementation(() => now);
+  const fail = () => { if (++attempts % 2) throw Object.assign(new Error('Private path'), { code: 'EIO' }); };
+  if (operation === 'journal') {
+    const original = fs.stat;
+    vi.spyOn(fs, 'stat').mockImplementation(async (path, options) => {
+      if (path === gate.statePath) fail();
+      return original(path, options);
+    });
+  } else {
+    const original = files.exists;
+    vi.spyOn(files, 'exists').mockImplementation(async path => {
+      if (path === gate.activityDirectory) fail();
+      return original(path);
+    });
+  }
+  const sink = setLogSink(line => { lines.push(line); });
+  try {
+    await vi.waitFor(() => { expect(attempts).toBeGreaterThanOrEqual(8); }, { timeout: 2_000 });
+    expect(lines).toHaveLength(1);
+    // Even a success near the quiet-time boundary must not reopen a flapping error's log.
+    now = 4_999;
+    const before = attempts;
+    await vi.waitFor(() => { expect(attempts).toBeGreaterThanOrEqual(before + 4); }, { timeout: 2_000 });
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]!)).toMatchObject({ event: 'restore.activity_monitor_failed', operation, error: { code: 'EIO' } });
+    expect(lines[0]).not.toContain('Private path');
+  } finally { setLogSink(sink); }
+});
+
+it('logs a journal failure again only after five seconds without that failure', async () => {
+  const gate = await fixture();
+  await gate.activity(async () => undefined);
+  const original = fs.stat, lines: string[] = [];
+  let failing = true, attempts = 0, now = 0;
+  vi.spyOn(performance, 'now').mockImplementation(() => now);
+  vi.spyOn(fs, 'stat').mockImplementation(async (path, options) => {
     if (path === gate.statePath) { attempts++; if (failing) throw Object.assign(new Error('Denied'), { code: 'EIO' }); }
-    return original(path);
+    return original(path, options);
   });
   const sink = setLogSink(line => { lines.push(line); });
   try {
-    await files.atomicJson(gate.statePath, { phase: 'complete' });
     await vi.waitFor(() => { expect(lines).toHaveLength(1); });
-    failing = false;
+    failing = false; now = 5_000;
     const before = attempts;
-    await vi.waitFor(() => { expect(attempts).toBeGreaterThan(before); });
+    await vi.waitFor(() => { expect(attempts).toBeGreaterThanOrEqual(before + 2); });
     failing = true;
-    // Replace the journal so the successful cached read must be performed again.
-    await files.atomicJson(gate.statePath, { phase: 'complete', changed: true });
     await vi.waitFor(() => { expect(lines).toHaveLength(2); });
+  } finally { setLogSink(sink); }
+});
+
+it('logs a failure that returns after five seconds without one, though no successful tick came between', async () => {
+  const gate = await fixture();
+  await gate.activity(async () => undefined);
+  const original = fs.stat, lines: string[] = [];
+  let attempts = 0, now = 0;
+  vi.spyOn(performance, 'now').mockImplementation(() => now);
+  vi.spyOn(fs, 'stat').mockImplementation(async (path, options) => {
+    if (path === gate.statePath) { attempts++; throw Object.assign(new Error('Denied'), { code: 'EIO' }); }
+    return original(path, options);
+  });
+  const sink = setLogSink(line => { lines.push(line); });
+  try {
+    await vi.waitFor(() => { expect(lines).toHaveLength(1); });
+    // Stands for a monitor that stopped checking (busy or retired) and meets the failure again much later.
+    now = 60 * 60_000;
+    await vi.waitFor(() => { expect(lines).toHaveLength(2); });
+    const before = attempts;
+    await vi.waitFor(() => { expect(attempts).toBeGreaterThanOrEqual(before + 3); });
+    expect(lines).toHaveLength(2);
   } finally { setLogSink(sink); }
 });
 

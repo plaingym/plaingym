@@ -125,7 +125,8 @@ import { configureWebhookInboxJobs } from '../areas/billing/webhooks/inbox.jobs.
 import { configureWebhookReplay } from '../cli/replay.js';
 import { composeBillingWebhooks } from '../areas/billing/webhooks/handlers/composition.js';
 import { createChargeRunner } from '../areas/billing/runner/index.js';
-import { configureChargeRunner } from '../areas/billing/runner/runner.jobs.js';
+import { configureChargeRunner, createRunnerJobs } from '../areas/billing/runner/runner.jobs.js';
+import { createRestoreCheckLease } from '../areas/health/restore.billing-lease.js';
 import { createMembershipService } from '../areas/billing/memberships.js';
 import { configureMemberships } from '../areas/billing/memberships.routes.js';
 import { createPaymentService } from '../areas/billing/payments.js';
@@ -332,7 +333,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   configureImportStep({ imports: importPipeline, clock });
   // Normal installs use stored gym credentials; sandboxes resolve the shared test account.
   const paymentsFor = demo?.payments.paymentsFor ?? createPaymentsResolver({ key, clock });
-  configureGoLive({ clock, smtpConfigured, smsConfigured: gymId => smsResolver.configured(gymId), paymentsConfigured: async gymId => Boolean(await paymentsFor(gymId)) });
+  const restoreCheckLease = createRestoreCheckLease(() => env.DATABASE_URL);
+  configureGoLive({ clock, smtpConfigured, restoreCheckLease, smsConfigured: gymId => smsResolver.configured(gymId), paymentsConfigured: async gymId => Boolean(await paymentsFor(gymId)) });
   // Settings → Integrations (Email, SMS, Payments and Backups) reuses the setup steps' services with the runtime's key, auth rules and gym origins.
   // A confirmed backup change queues one snapshot through the backup job registered below (installs that take snapshots).
   configureIntegrations({ key, env, config, origin: gymOrigin, hasPassword: (userId) => accounts.hasPassword(userId), sandbox: Boolean(demo), clock,
@@ -406,6 +408,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   // Only daily is monitored. Retry, assignment callbacks and staff collection keep the original runner.
   const monitored = monitorChargeRunner(runner, { clock, settings });
   configureChargeRunner(monitored);
+  const restoreJob = createRunnerJobs(() => monitored, settings, restoreCheckLease).find(job => job.id === 'billing.runner.restore')!;
   // The charge-run tile lists and dismisses the reports of the same runner the worker runs.
   configureChargeFailures(monitored);
   const memberships = createMembershipService({ clock, settings, onAssigned: runner.onAssigned });
@@ -441,7 +444,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
     routes: [...(areaContributions.routes ?? []).filter(r => !replaced.has(r.id)), ...setupRoutes,
       ...createPipelineRoutes(importPipeline), ...createExportRoutes(exportService),
       createUploadDownloadRoute({ uploadsFor: uploads.forGym, origin: originFor })],
-    jobs: [...areaContributions.jobs ?? [], ...createPipelineJobs(importPipeline), ...createExportJobs(exportService), ...createMemberPhotoJobs(uploads.forGym),
+    jobs: [...(areaContributions.jobs ?? []).filter(job => job.id !== restoreJob.id), restoreJob,
+      ...createPipelineJobs(importPipeline), ...createExportJobs(exportService), ...createMemberPhotoJobs(uploads.forGym),
       ...createPortalInvitationExpiryJobs(), ...createEmailDeliveryJobs(), ...createAnnouncementRecoveryJobs({ jobs: queue, clock }),
       // Default lane: the per-gym cap of 1 keeps this sweep apart from the duplicate-refund workers.
       ...createLapsedRefundJobs({ clock, transitions: billing.transitions, payments: requirePayments }),

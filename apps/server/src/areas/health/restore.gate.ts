@@ -38,7 +38,7 @@ class ProcessActivity {
   #timer: NodeJS.Timeout | undefined;
   #idle = new Set<() => void>();
   #progress = new Set<() => void>();
-  #reported = new Set<string>();
+  #reported = new Map<string, number>();
   #journal: { mtimeNs: bigint; ctimeNs: bigint; size: bigint; ino: bigint; closed: boolean } | undefined;
   readonly path: string;
   constructor(readonly directory: string, readonly statePath: string) {
@@ -102,12 +102,17 @@ class ProcessActivity {
   #report(operation: string, error: unknown): void {
     const kind = operation + ':' + (safeName((error as NodeJS.ErrnoException)?.code) ??
       safeName(error instanceof Error ? error.name : null) ?? 'unknown');
-    if (this.#reported.has(kind)) return;
-    this.#reported.add(kind);
+    // A failure after five seconds without one starts a new episode, even if no successful tick cleared the last.
+    const now = performance.now(), previous = this.#reported.get(kind);
+    this.#reported.set(kind, now);
+    if (previous !== undefined && now - previous < 5_000) return;
     logError('restore.activity_monitor_failed', { pid: process.pid, operation }, error);
   }
   #recovered(operation: string): void {
-    for (const kind of this.#reported) if (kind.startsWith(operation + ':')) this.#reported.delete(kind);
+    // A single successful tick doesn't end an intermittent filesystem failure's episode.
+    const now = performance.now();
+    for (const [kind, failedAt] of this.#reported)
+      if (kind.startsWith(operation + ':') && now - failedAt >= 5_000) this.#reported.delete(kind);
   }
   #monitor(): void {
     if (this.#timer) return;

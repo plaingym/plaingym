@@ -120,6 +120,16 @@ export class PostgresMaintenance {
       return await action();
     } finally { await connection.close(); }
   }
+  /** Skips optional cleanup while a snapshot or another maintenance operation holds the backup lock. */
+  async tryLocked<T>(action: () => Promise<T>): Promise<T | undefined> {
+    assertNoTransaction('backup.tryLock');
+    const connection = openConnection(this.url, 1);
+    try {
+      const [lock] = await connection.sql<{ acquired: boolean }[]>`select pg_try_advisory_lock(${advisoryLockNamespace}::int, ${advisoryLocks.backups}::int) as acquired`;
+      if (lock?.acquired) return await action();
+      return undefined;
+    } finally { await connection.close(); }
+  }
   async tool(tool: 'pg_dump' | 'pg_restore', args: string[], input?: string): Promise<ReadableStream<Uint8Array>> {
     const url = new URL(this.url);
     const env = { ...process.env, PGHOST: url.hostname, PGPORT: url.port || '5432',

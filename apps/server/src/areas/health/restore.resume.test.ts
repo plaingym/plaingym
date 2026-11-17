@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import '@hono/zod-openapi';
-import { readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { decryptSecret } from '../../core/secrets.js';
 import { PostgresJobs } from '../../infra/jobs/postgres.js';
@@ -11,6 +12,24 @@ let base: string;
 beforeAll(async () => { base = (await f.prepare(() => f.backup().snapshot())).id; });
 
 describe('install restore after an interruption', () => {
+  it('skips abandoned staging cleanup without waiting for an active backup when there is no journal', async () => {
+    const service = f.restore(), staging = service.options.stagingDirectory;
+    const abandoned = join(staging, 'restore-abandoned');
+    await mkdir(abandoned, { recursive: true });
+    await writeFile(join(abandoned, 'plaintext'), 'staged snapshot');
+    let resumed: Promise<void> | undefined, finished = false;
+    try {
+      await f.targetMaintenance.locked(async () => {
+        resumed = service.resume().then(() => { finished = true; });
+        await vi.waitFor(() => { expect(finished).toBe(true); }, { timeout: 2_000 });
+        expect(await readdir(staging)).toEqual(['restore-abandoned']);
+        expect(await service.options.gate.isClosed()).toBe(false);
+      });
+    } finally { await resumed; }
+    // The skipped plaintext is swept on a later start once the backup releases its lock.
+    await service.resume();
+    expect(await readdir(staging)).toEqual([]);
+  });
   it.each(['database_restored', 'secret_field', 'rekeyed', 'old_uploads_renamed', 'new_uploads_renamed', 'billing_reconciliation_queued'] as const)(
     'resumes after interruption at %s', async (stop) => {
       let interrupted = false;

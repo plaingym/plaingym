@@ -186,12 +186,12 @@ export class RestoreService {
   async resume(): Promise<void> {
     const o = this.options;
     if (!await exists(o.gate.statePath)) {
-      // Recheck after taking the lock: another caller may have staged a restore while we waited.
-      const absent = await o.database.locked(async () => {
+      // Cleanup is optional at startup: don't wait behind an active snapshot. Recheck the journal under the lock.
+      const absent = await o.database.tryLocked(async () => {
         if (await exists(o.gate.statePath)) return false;
         await this.#sweepStaging(); return true;
       });
-      if (absent) return;
+      if (absent !== false) return;
     }
     await o.gate.close();
     await this.#staged(() => o.database.locked(async () => {
