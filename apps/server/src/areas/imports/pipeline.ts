@@ -5,7 +5,7 @@ import { and, asc, count, eq, max } from 'drizzle-orm';
 import { forGym, auditEvents, importRuns, importChunks, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { importPlanRequestSchema, startImportRequestSchema, type ImportUpload, type ImportJob, type ImportIssue,
-  type ImportPlanRequest, type ImportPreviewRow, type Pagination, type StartImportRequest } from '@plaingym/shared/contracts';
+  type ImportPlanRequest, type ImportPreviewRow, type ImportPreviewState, type Pagination, type StartImportRequest } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import type { Jobs } from '../../infra/jobs/index.js';
@@ -32,6 +32,12 @@ interface PreviewSummary { totalRows: number; create: number; update: number; sk
  * when it finished, and the preview is served for `PREVIEW_LIFETIME` from then.
  */
 interface StoredPreview extends PreviewSummary { generation: string; files: number; startedAt: string; createdAt: string }
+interface PreviewTicket { prefix: string; revision: string; expiresAt: string }
+type PreviewResult = { status: 'ready'; stored: StoredPreview } | { status: 'failed'; message: string };
+interface PendingPreview { id: string; status: 'queued' | 'computing'; admitted: Promise<void> }
+// Pipeline instances in this process share both coalescing and the memory allowance.
+const pendingPreviews = new WeakMap<PreviewBudget, Map<string, PendingPreview>>();
+const previewComputations = new WeakMap<PreviewBudget, Map<string, Promise<StoredPreview>>>();
 /** `timezone` is fixed when the run starts; runs saved before it was recorded read offset-free values as UTC, as their dry runs did. */
 interface StoredRun { job: ImportJob; input: StartImportRequest; actor: MutationContext['actor']; chunkIds: string[]; timezone?: string }
 interface ChunkResult { count: number; issues: ImportIssue[] }
@@ -65,6 +71,12 @@ export function createImportPipeline(options: PipelineOptions) {
   const budget = options.previewBudget ?? previewBudget, timeout = options.previewTimeoutMs ?? PREVIEW_TIMEOUT_MS;
   if (!Number.isSafeInteger(timeout) || timeout < 1) throw new Error('Invalid preview deadline');
   const store = new PipelineStore(options.uploadsFor);
+  const pending = pendingPreviews.get(budget) ?? new Map<string, PendingPreview>();
+  pendingPreviews.set(budget, pending);
+  const computing = previewComputations.get(budget) ?? new Map<string, Promise<StoredPreview>>();
+  previewComputations.set(budget, computing);
+  const ticketKey = (gymId: string, uploadId: string, id: string, file: string) =>
+    store.key(gymId, 'uploads', uploadId, `preview-requests/${id}/${file}.json`);
   const mappers = options.mappers ?? new MapperRegistry([peopleMapper, matMapper, membershipsMapper]);
   const key = (gymId: string, id: string, file: string) => store.key(gymId, 'runs', id, file);
   const stateKey = (gymId: string, id: string, index: number) => key(gymId, id, `state-${String(index).padStart(8, '0')}.json`);
@@ -186,7 +198,6 @@ export function createImportPipeline(options: PipelineOptions) {
     await uploads.markDeleted(key, signal ? { signal } : undefined);
   }
   const immutable = (error: unknown) => error instanceof Error && error.message === 'Upload keys are immutable';
-  const computing = new Map<string, Promise<StoredPreview>>();
   /**
    * Computes and stores a preview, answering the stored preview to page from; the caller has checked the upload's metadata.
    * Two requests for one preview in this process share one pass; when another process stored the same bucket's summary first,
@@ -194,11 +205,13 @@ export function createImportPipeline(options: PipelineOptions) {
    * mid-write can't be read or written: this pass's own summary is then remembered in this process, and its rows are kept and go
    * with the upload, so the bucket costs one pass per process.
    */
-  function computePreview(context: MutationContext, plan: ImportPlanRequest, timezone: string, prefix: string, meta: StoredUpload): Promise<StoredPreview> {
+  function computePreview(context: MutationContext, plan: ImportPlanRequest, timezone: string, prefix: string, meta: StoredUpload,
+    onStart = async () => {}): Promise<StoredPreview> {
     const running = computing.get(prefix);
     if (running) return running;
     // Uploads from earlier releases have no byte size: reserve conservatively until they expire.
     const task = budget.run(meta.byteSize ?? MAX_CSV_BYTES, meta.rowCount, () => previewDeadline(timeout, async (signal, check): Promise<StoredPreview> => {
+      await onStart(); check();
       const { gymId } = context, uploads = await options.uploadsFor(gymId), generation = uuidv7(), startedAt = clock.now();
       const document = await loadSource(gymId, plan.uploadId, signal), written: string[] = [];
       check();
@@ -246,6 +259,73 @@ export function createImportPipeline(options: PipelineOptions) {
     })).finally(() => computing.delete(prefix));
     computing.set(prefix, task);
     return task;
+  }
+  const previewResponse = (stored: { summary: PreviewSummary; data: ImportPreviewRow[] }, page: Pagination) =>
+    ({ data: stored.data, pagination: { ...page, total: stored.summary.totalRows }, summary: stored.summary });
+
+  async function requestPreview(context: MutationContext, input: ImportPlanRequest, page: Pagination, timezone: string): Promise<ImportPreviewState> {
+    const plan = importPlanRequestSchema.parse(input), meta = await loadMeta(context.gymId, plan);
+    const revision = await importRevision(context.gymId), prefix = planPrefix(context.gymId, plan, timezone, revision);
+    const found = await readPreview(context.gymId, prefix, page);
+    if (found) return { status: 'ready', preview: previewResponse(found, page) };
+    let entry = pending.get(prefix);
+    if (!entry) {
+      const id = uuidv7(), saved = Promise.withResolvers<void>();
+      entry = { id, status: 'queued', admitted: saved.promise };
+      pending.set(prefix, entry);
+      const current = entry, ticket: PreviewTicket = { prefix, revision,
+        // A lost process cannot leave a polling client waiting forever. Queue waiting is outside the computation deadline.
+        expiresAt: new Date(clock.now().getTime() + (budget.queueLimit + 1) * (timeout + PREVIEW_CLEANUP_MS)).toISOString() };
+      let computation: Promise<StoredPreview>;
+      try {
+        computation = computePreview(context, plan, timezone, prefix, meta, async () => {
+          await saved.promise;
+          current.status = 'computing';
+          await store.put(context.gymId, ticketKey(context.gymId, plan.uploadId, id, 'computing'), {});
+        });
+      } catch (error) {
+        pending.delete(prefix); saved.reject(error);
+        // No duplicate caller can have observed the entry before this synchronous rejection.
+        void saved.promise.catch(() => undefined);
+        throw error;
+      }
+      void computation.catch(() => undefined);
+      // Every background failure is observed, and only safe application explanations are persisted.
+      void (async () => {
+        try {
+          await store.put(context.gymId, ticketKey(context.gymId, plan.uploadId, id, 'meta'), ticket);
+          saved.resolve();
+          const stored = await computation;
+          await store.put(context.gymId, ticketKey(context.gymId, plan.uploadId, id, 'result'), { status: 'ready', stored });
+        } catch (error) {
+          saved.reject(error);
+          await computation.catch(() => undefined);
+          const message = error instanceof AppError && ['invalid_request', 'not_found', 'unavailable'].includes(error.code)
+            ? error.message : t('imports/pipeline:previewFailed');
+          await store.put(context.gymId, ticketKey(context.gymId, plan.uploadId, id, 'result'), { status: 'failed', message });
+        } finally { pending.delete(prefix); }
+      })().catch(() => undefined);
+    }
+    await entry.admitted;
+    return { status: entry.status, id: entry.id, uploadId: plan.uploadId };
+  }
+  async function getPreview(gymId: string, uploadId: string, id: string, page: Pagination): Promise<ImportPreviewState> {
+    // Checking the upload first also enforces deletion, expiry, and gym ownership for every poll.
+    const meta = await store.get<StoredUpload>(gymId, store.key(gymId, 'uploads', uploadId, 'meta.json'));
+    if (Date.parse(meta.expiresAt) <= clock.now().getTime()) throw new AppError('not_found', t('imports/pipeline:notFound'));
+    const ticket = await store.get<PreviewTicket>(gymId, ticketKey(gymId, uploadId, id, 'meta'));
+    if (ticket.revision !== await importRevision(gymId)) return { status: 'failed', message: t('imports/pipeline:previewChanged') };
+    const uploads = await options.uploadsFor(gymId);
+    const result = await readJson<PreviewResult>(uploads, ticketKey(gymId, uploadId, id, 'result'));
+    if (result?.status === 'failed') return result;
+    if (result?.status === 'ready') {
+      if (!fresh(result.stored, clock.now())) return { status: 'failed', message: t('imports/pipeline:previewChanged') };
+      const rows = await readRows(uploads, ticket.prefix, result.stored, page);
+      if (rows) return { status: 'ready', preview: previewResponse(rows, page) };
+      return { status: 'failed', message: t('imports/pipeline:previewFailed') };
+    }
+    if (Date.parse(ticket.expiresAt) <= clock.now().getTime()) return { status: 'failed', message: t('imports/pipeline:previewFailed') };
+    return { status: await store.exists(gymId, ticketKey(gymId, uploadId, id, 'computing')) ? 'computing' : 'queued', id, uploadId };
   }
   async function get(gymId: string, id: string): Promise<ImportJob> {
     const run = await findRun(gymId, id);
@@ -321,6 +401,7 @@ export function createImportPipeline(options: PipelineOptions) {
     }
   }
   return {
+    requestPreview, getPreview,
     async upload(context: MutationContext, file: File): Promise<ImportUpload> {
       if (!file.size || file.size > MAX_CSV_BYTES) throw new AppError('invalid_request', t('imports/pipeline:invalidCsv'));
       const { columns, rowCount } = await readShape(file), id = uuidv7(), mapping = autoMatch(columns);

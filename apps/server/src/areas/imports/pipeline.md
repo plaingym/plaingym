@@ -23,7 +23,7 @@ tables, without changing domain data or writing import audits.
 A preview is stored once per upload, plan (mapper, columns, duplicate policy),
 timezone and import revision, under the upload's own prefix
 (`<gym>/imports/uploads/<id>/preview/<key>/`, the key a hash of all four). The
-first request parses the CSV once and analyzes it chunk by chunk, writing the
+first computation parses the CSV once and analyzes it chunk by chunk, writing the
 preview rows (issues are not stored: the response doesn't return them) to
 5,000-row files under a new `pages/<generation>/`, about 20 files for 100,000
 rows. It writes the summary last, at `<bucket>/summary.json`, where the bucket is
@@ -40,6 +40,12 @@ fresh. A process shares one FIFO memory budget across all pipeline instances:
 one third of V8's heap limit, capped at 128 MiB. A computation reserves 4 MiB plus
 eight times its upload size and 256 bytes per row, up to the whole budget. Small
 previews can run together; a large preview waits for the allowance to be free.
+At most 16 previews may wait in that process's FIFO queue. Admission beyond that
+bound answers `503 unavailable` with a safe queue-busy explanation. A retry for
+the same active plan shares its ticket across pipeline instances and does not
+consume another queue position. This coalescing, like the memory allowance, is
+process-local; separate processes may compute the same plan, with the existing
+immutable-summary winner behavior described below.
 Upload metadata records the byte size internally; older uploads without it reserve
 for the maximum upload size. This does not change the upload response.
 
@@ -51,8 +57,25 @@ in a database transaction or write finishes before the next check. Queue waiting
 does not consume the computation's deadline. A cancellation caused by the deadline
 answers `unavailable`; unrelated storage or mapper failures retain their cause,
 even after the deadline. A computation whose summary is already stored keeps its result, even
-if removing the previous preview's files runs past the deadline. Previews still
-finish in the request.
+if removing the previous preview's files runs past the deadline.
+
+`POST /api/imports/preview` validates the upload and plan, then answers a ready
+preview page or a `queued`/`computing` ticket without awaiting computation or
+admission to the memory allowance. `GET
+/api/imports/uploads/{uploadId}/previews/{id}` reads that ticket's state and, when
+ready, its requested page. Both routes require `settings.manage` and send
+`Cache-Control: no-store`. A ticket's metadata, computing marker and terminal
+result live under the upload's `preview-requests/<id>/` prefix. A poll can reach
+another app process; it reads the same stored progress and result without
+starting work. Polls check upload ownership and expiry and the gym's current
+import revision before returning any rows. Failed computations store only a safe
+application explanation; other failures use a generic retry message. A retry of
+a failed start gets a new ticket. All ticket files expire with the upload.
+If a process exits without saving a result, its ticket eventually reports failure:
+the upper bound is 17 computation-and-cleanup allowances (about 37 minutes with
+the defaults), allowing all 16 queued previews to receive their own full deadline.
+The internal `preview` helper still awaits the same budgeted computation for
+in-process callers; HTTP routes use `requestPreview` and `getPreview`.
 
 All three mappers use gym-scoped indexes on generated, PostgreSQL-folded member
 last names; mat and memberships also use the folded email index. First names
@@ -75,8 +98,10 @@ that crashes leaves row files
 under its own generation, which block nothing. When another process stored the
 same bucket's summary first, that preview is served and this computation's rows
 are marked deleted. A summary key that a crashed writer reserved and never wrote
-can't be read or written: until the next bucket, each request is served
-from its own computation's rows, which are marked deleted once its page is read. After storing a summary, a computation marks deleted the previous
+can't be read or written: the computing process remembers its own summary and
+keeps its row files, and the asynchronous ticket also stores that summary so
+polls in other processes can read those rows. Those files go with the upload.
+After storing a summary, a computation marks deleted the previous
 bucket's preview of the same plan (its summary names its row files); every other
 preview file goes with its upload. Stored previews hold row values, so
 `imports.retention` marks them deleted with the whole upload prefix (a preview
@@ -98,7 +123,10 @@ the mapper's whole-file index, never every planned row.
 The admin preview displays bounded explanations only for the API's own
 `invalid_request` 400, `not_found` 404 and `unavailable` 503 responses, using
 the shared web error reader. Other failures show the generic request error. Changing the mapper, duplicate policy or column mapping clears
-the previous preview and its error.
+the previous preview and its error. The page polls pending tickets every second,
+shows queued/computing progress and stops polling on ready or failed state.
+Changing the plan or leaving the page detaches its old poll; a late answer cannot
+replace the current plan's preview.
 
 An upload reads the file's bytes into a buffer only to decode them, so they are
 released before the text is parsed; it keeps only the header and row count, and

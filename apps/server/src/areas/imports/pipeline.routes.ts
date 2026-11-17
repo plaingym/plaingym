@@ -13,7 +13,7 @@ export function importActor(context: RequestContext): MutationContext {
   return { gymId: context.gym.gymId, actor: { kind: 'user', userId: context.principal.userId } };
 }
 export function createPipelineRoutes(service: ImportPipeline): RouteRegistration[] {
-  const { upload, preview, start, get, errors } = importsContracts;
+  const { upload, preview, previewState, start, get, errors } = importsContracts;
   return [
     route({ ...upload, middleware: [async (c, next) => {
       if (c.req.header('content-type')?.split(';', 1)[0]?.trim().toLowerCase() !== 'multipart/form-data')
@@ -24,7 +24,17 @@ export function createPipelineRoutes(service: ImportPipeline): RouteRegistration
     async (c) => c.json({ data: await service.upload(importActor(c.get('context')), c.req.valid('form').file) }, 200)),
     route({ ...preview, request: { query: preview.query, body: { required: true, content: { 'application/json': { schema: preview.body } } } },
       responses: { 200: { description: 'Import preview', content: { 'application/json': { schema: preview.response } } } } },
-    async (c) => c.json(await service.preview(importActor(c.get('context')), c.req.valid('json'), c.req.valid('query'), c.get('context').gym.timezone), 200)),
+    async (c) => {
+      c.header('Cache-Control', 'no-store');
+      return c.json(await service.requestPreview(importActor(c.get('context')), c.req.valid('json'), c.req.valid('query'), c.get('context').gym.timezone), 200);
+    }),
+    route({ ...previewState, request: { params: previewState.params, query: previewState.query },
+      responses: { 200: { description: 'Import preview state', content: { 'application/json': { schema: previewState.response } } } } },
+    async (c) => {
+      const { uploadId, id } = c.req.valid('param');
+      c.header('Cache-Control', 'no-store');
+      return c.json(await service.getPreview(importActor(c.get('context')).gymId, uploadId, id, c.req.valid('query')), 200);
+    }),
     route({ ...start, request: { body: { required: true, content: { 'application/json': { schema: start.body } } } },
       responses: { 200: { description: 'Import queued', content: { 'application/json': { schema: start.response } } } } },
     async (c) => c.json({ data: await service.start(importActor(c.get('context')), c.req.valid('json'), c.get('context').gym.timezone) }, 200)),

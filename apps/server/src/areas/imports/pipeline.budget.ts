@@ -9,20 +9,27 @@ export const PREVIEW_MEMORY_BYTES = Math.floor(Math.min(128 * MIB, getHeapStatis
 export const PREVIEW_TIMEOUT_MS = 120_000;
 /** Removing a failed computation's rows, or reading a summary another process stored first, can follow its deadline, so each has this limit. */
 export const PREVIEW_CLEANUP_MS = 10_000;
+export const PREVIEW_QUEUE_LIMIT = 16;
 
 /** FIFO admission keeps small previews concurrent without allowing them to starve a large file. */
 export class PreviewBudget {
   #used = 0;
   readonly #waiting: { weight: number; start: () => void }[] = [];
-  constructor(readonly bytes = PREVIEW_MEMORY_BYTES) {
+  constructor(readonly bytes = PREVIEW_MEMORY_BYTES, readonly queueLimit = PREVIEW_QUEUE_LIMIT) {
     if (!Number.isSafeInteger(bytes) || bytes < 1) throw new Error('Invalid preview memory budget');
+    if (!Number.isSafeInteger(queueLimit) || queueLimit < 0) throw new Error('Invalid preview queue limit');
   }
-  async run<T>(size: number, rows: number, work: () => Promise<T>): Promise<T> {
+  run<T>(size: number, rows: number, work: () => Promise<T>): Promise<T> {
     // Include per-row overhead for narrow CSVs, whose parsed size is not proportional to their byte size.
     const weight = Math.min(this.bytes, 4 * MIB + size * 8 + rows * 256);
-    await new Promise<void>((start) => { this.#waiting.push({ weight, start }); this.#drain(); });
-    try { return await work(); }
-    finally { this.#used -= weight; this.#drain(); }
+    if (this.#waiting.length >= this.queueLimit && (this.#waiting.length > 0 || this.#used + weight > this.bytes))
+      throw new AppError('unavailable', t('imports/pipeline:previewBusy'));
+    const admitted = new Promise<void>((start) => { this.#waiting.push({ weight, start }); this.#drain(); });
+    return (async () => {
+      await admitted;
+      try { return await work(); }
+      finally { this.#used -= weight; this.#drain(); }
+    })();
   }
   #drain(): void {
     while (this.#waiting.length && this.#used + this.#waiting[0]!.weight <= this.bytes) {

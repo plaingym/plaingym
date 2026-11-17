@@ -6,7 +6,7 @@ import { auditEvents, attendances, forGym, importRuns, importChunks, exportRuns,
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError, canStaff, errorResponse, staffRoles, type StaffRole } from '@plaingym/shared';
-import { exportDatasets, exportJobSchema, importJobSchema, importUploadSchema, type ImportPlanRequest } from '@plaingym/shared/contracts';
+import { exportDatasets, exportJobSchema, importJobSchema, importUploadSchema, importPreviewStateSchema, type ImportPlanRequest } from '@plaingym/shared/contracts';
 import { TestClock } from '../../core/clock.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import { createServerRegistry } from '../../core/registry.js';
@@ -32,7 +32,7 @@ const uploadsFor = async (gymId: string) => {
 };
 function fixtureMapper(overrides: Partial<CsvMapper> = {}): CsvMapper {
   return { id: 'people', available: true,
-    async analyze(_tx, rows) { return rows.map((row) => ({ ...row, action: 'create', duplicateIds: [], issues: [] })); },
+    async analyze(_tx, rows) { return rows.map((row) => ({ rowNumber: row.rowNumber, values: row.values, action: 'create', duplicateIds: [], issues: [] })); },
     async commit(tx, rows, context) {
       await tx.insert(memberTags).values(rows.map((row) => ({ gymId: context.gymId, name: context.runId + ':' + row.rowNumber + ':' + uuidv7(), createdAt: context.clock.now() })));
       return rows.length;
@@ -279,19 +279,27 @@ describe('HTTP permissions and gym isolation', () => {
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual(errorResponse(new AppError('invalid_request', 'The request must contain a multipart file upload.'), 'imports-test'));
   });
-  it.each(staffRoles)('allows only owner/admin on all seven routes (%s)', async (role) => {
+  it.each(staffRoles)('allows only owner/admin on all import and export routes (%s)', async (role) => {
     const app = server(role), allowed = role === 'owner' || role === 'admin';
     const form = new FormData(); form.set('file', new File(['First Name\nTest'], 'test.csv'));
     const uploadResponse = await app.request('/api/imports/uploads', { method: 'POST', body: form });
     expect(uploadResponse.status).toBe(allowed ? 200 : 403);
     if (!allowed) {
       for (const path of ['/api/imports/preview', '/api/imports', '/api/exports']) expect((await post(app, path, {})).status).toBe(403);
-      for (const path of [`/api/imports/${uuidv7()}`, `/api/imports/${uuidv7()}/errors`, `/api/exports/${uuidv7()}`]) expect((await app.request(path)).status).toBe(403);
+      for (const path of [`/api/imports/${uuidv7()}`, `/api/imports/${uuidv7()}/errors`, `/api/exports/${uuidv7()}`,
+        `/api/imports/uploads/${uuidv7()}/previews/${uuidv7()}`]) expect((await app.request(path)).status).toBe(403);
       return;
     }
     const data = importUploadSchema.parse((await uploadResponse.json() as { data: unknown }).data);
     const input = plan(data.id);
-    expect((await post(app, '/api/imports/preview', input)).status).toBe(200);
+    const previewResponse = await post(app, '/api/imports/preview', input);
+    expect(previewResponse.status).toBe(200);
+    expect(previewResponse.headers.get('cache-control')).toBe('no-store');
+    const preview = importPreviewStateSchema.parse(await previewResponse.json());
+    if (preview.status !== 'queued' && preview.status !== 'computing') throw new Error('Expected pending preview');
+    const previewPath = `/api/imports/uploads/${data.id}/previews/${preview.id}`;
+    expect((await app.request(previewPath)).status).toBe(200);
+    await expect.poll(async () => importPreviewStateSchema.parse(await (await app.request(previewPath)).json()).status).toBe('ready');
     const start = await post(app, '/api/imports', { ...input, dryRun: true }); expect(start.status).toBe(200);
     const run = importJobSchema.parse((await start.json() as { data: unknown }).data);
     expect((await app.request(`/api/imports/${run.id}`)).status).toBe(200);
@@ -302,15 +310,18 @@ describe('HTTP permissions and gym isolation', () => {
   });
   it('returns 404 for gym B uploads/jobs from gym A and for a mismatched principal on every route', async () => {
     const data = await upload(shared.pipeline, 1, gymB), input = plan(data.id);
+    const preview = await shared.pipeline.requestPreview({ ...actor, gymId: gymB }, input, { limit: 10, offset: 0 }, 'UTC');
+    if (preview.status !== 'queued' && preview.status !== 'computing') throw new Error('Expected pending preview');
+    const previewPath = `/api/imports/uploads/${data.id}/previews/${preview.id}`;
     const run = await shared.pipeline.start({ ...actor, gymId: gymB }, { ...input, dryRun: true }, 'UTC');
     const exported = await shared.exports.create({ ...actor, gymId: gymB }, 'UTC'), app = server('owner');
     expect((await post(app, '/api/imports/preview', input)).status).toBe(404);
     expect((await post(app, '/api/imports', { ...input, dryRun: false })).status).toBe(404);
-    for (const path of [`/api/imports/${run.id}`, `/api/imports/${run.id}/errors`, `/api/exports/${exported.id}`]) expect((await app.request(path)).status).toBe(404);
+    for (const path of [`/api/imports/${run.id}`, `/api/imports/${run.id}/errors`, `/api/exports/${exported.id}`, previewPath]) expect((await app.request(path)).status).toBe(404);
     const mismatch = server('owner', gymB, gymA), form = new FormData(); form.set('file', new File(['Name\nTest'], 'test.csv'));
     expect((await mismatch.request('/api/imports/uploads', { method: 'POST', body: form })).status).toBe(404);
     for (const path of ['/api/imports/preview', '/api/imports', '/api/exports']) expect((await post(mismatch, path, {})).status).toBe(404);
-    for (const path of [`/api/imports/${run.id}`, `/api/imports/${run.id}/errors`, `/api/exports/${exported.id}`]) expect((await mismatch.request(path)).status).toBe(404);
+    for (const path of [`/api/imports/${run.id}`, `/api/imports/${run.id}/errors`, `/api/exports/${exported.id}`, previewPath]) expect((await mismatch.request(path)).status).toBe(404);
   });
 });
 describe('OpenAPI documentation for composed routes', () => {

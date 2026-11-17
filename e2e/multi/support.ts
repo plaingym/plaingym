@@ -89,7 +89,7 @@ export interface GymFixture {
   /** An announcement the owner sent. */
   announcementId: string; attendanceId: string;
   /** A weekly schedule template, a class tag, a data export, and an import run (dry run) with its CSV upload. */
-  scheduleTemplateId: string; classTagId: string; exportId: string; importId: string; uploadId: string;
+  scheduleTemplateId: string; classTagId: string; exportId: string; importId: string; uploadId: string; previewId: string;
 }
 export interface Context extends GymFixture {
   owner: Client; coach: Client; household: Client; device: Client;
@@ -277,13 +277,15 @@ export async function createGym(gym: (typeof gyms)[number], afterWrite: (step: '
     const csv = Buffer.from(`First,Last\r\nPlaced,${gym.slug[0]!.toUpperCase() + gym.slug.slice(1)}Import\r\n`);
     const file = multipart('file', 'people.csv', 'text/csv', csv);
     const upload = (await write<{ data: { id: string } }>(owner, 'imports-uploads', '/api/imports/uploads', 'POST', file.body, file.headers)).data;
+    const preview = await write<{ id: string }>(owner, 'imports-preview', '/api/imports/preview', 'POST', { uploadId: upload.id, mapper: 'people', duplicatePolicy: 'skip',
+      mapping: [{ sourceColumn: 'First', targetField: 'firstName' }, { sourceColumn: 'Last', targetField: 'lastName' }] });
     const imported = (await write<{ data: RecordId }>(owner, 'imports', '/api/imports', 'POST', { uploadId: upload.id, mapper: 'people', duplicatePolicy: 'skip', dryRun: true,
       mapping: [{ sourceColumn: 'First', targetField: 'firstName' }, { sourceColumn: 'Last', targetField: 'lastName' }] })).data;
     const announcement = (await write<{ data: RecordId }>(owner, 'announcements', '/api/announcements/send', 'POST', { subject: gym.name + ' notice', body: 'Placed announcement.',
       sendGeneration: randomUUID(), confirm: true })).data;
     // A staff-recorded open-mat visit (the student's membership covers it, so no credit moves), so undoing one is aimed at a real record too.
     const attendance = (await write<{ data: RecordId }>(owner, 'attendance', '/api/attendance', 'POST', { memberId: student.id, sessionId: null, programId: ranks.program.id })).data;
-    return { announcementId: announcement.id, attendanceId: attendance.id, campaignId: campaign.id, linkId: link.id, scheduleTemplateId: scheduleTemplate.id, classTagId: classTag.id, exportId: exported.id, importId: imported.id, uploadId: upload.id };
+    return { announcementId: announcement.id, attendanceId: attendance.id, campaignId: campaign.id, linkId: link.id, scheduleTemplateId: scheduleTemplate.id, classTagId: classTag.id, exportId: exported.id, importId: imported.id, uploadId: upload.id, previewId: preview.id };
   });
 
   return { slug: gym.slug, name: gym.name, origin: gym.origin, gymId: opened.gymId, ownerEmail: gym.ownerEmail, coachEmail, stripeKey,

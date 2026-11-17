@@ -104,6 +104,9 @@ For each file, in order:
 
 Preview computation has a two-minute limit, starting after it gets a turn to run.
 Large files wait for other previews to finish; small files can run together.
+The page shows queued or preparing progress and checks for the result automatically.
+If the preview queue is full, it asks you to try again shortly; choose **Preview**
+again to retry. Each app process allows at most 16 waiting previews.
 The page shows the API's explanation when a preview fails. If it says the preview
 took too long, split the file into smaller files and preview each one.
 For people, keep every member of a family in the same file: family links work only

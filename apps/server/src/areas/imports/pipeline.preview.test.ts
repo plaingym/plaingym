@@ -82,6 +82,68 @@ const previewPrefix = (gymId: string, uploadId: string) => `${gymId}/imports/upl
 const bucket = (clk = clock) => Math.floor(clk.now().getTime() / PREVIEW_LIFETIME);
 
 describe('stored import previews', () => {
+  it('starts without waiting, coalesces across pipeline instances, and bounds the shared queue across gyms', async () => {
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), calls = { analyze: 0 };
+    const base = fixtureMapper(calls), mapper: CsvMapper = { ...base, async analyze(...args) {
+      entered.resolve(); await release.promise; return base.analyze(...args);
+    } };
+    const budget = new PreviewBudget(1, 1), mappers = new MapperRegistry([mapper]);
+    const { pipeline, uploadsFor } = setup(mappers, clock, { budget });
+    const peer = createImportPipeline({ uploadsFor, jobs: new FakeJobs(clock), clock, scope: database.forGym, mappers, previewBudget: budget });
+    const a = await pipeline.upload(actorA, new File([csv(1)], 'a.csv'));
+    const b = await pipeline.upload(actorB, new File([csv(1)], 'b.csv'));
+    const c = await pipeline.upload(actorB, new File([csv(1)], 'c.csv'));
+    const page = { limit: 10, offset: 0 };
+    const first = await pipeline.requestPreview(actorA, planFor(a.id), page, 'UTC');
+    expect(['queued', 'computing']).toContain(first.status);
+    if (first.status !== 'queued' && first.status !== 'computing') throw new Error('Expected pending preview');
+    await entered.promise;
+    try {
+      const duplicate = await peer.requestPreview(actorA, planFor(a.id), page, 'UTC');
+      expect(duplicate).toMatchObject({ id: first.id, status: 'computing' });
+      const next = await peer.requestPreview(actorB, planFor(b.id), page, 'UTC');
+      expect(next.status).toBe('queued');
+      expect(await peer.getPreview(gymA, a.id, first.id, page)).toMatchObject({ status: 'computing' });
+      await expect(peer.requestPreview(actorB, planFor(c.id), page, 'UTC')).rejects.toMatchObject({ code: 'unavailable', status: 503 });
+      // Even a full queue must return the existing task rather than reserve another slot.
+      expect(await pipeline.requestPreview(actorA, planFor(a.id), page, 'UTC')).toMatchObject({ id: first.id });
+      expect(calls.analyze).toBe(0);
+      await expect(peer.getPreview(gymB, a.id, first.id, page)).rejects.toMatchObject({ code: 'not_found' });
+    } finally { release.resolve(); }
+    await expect.poll(async () => (await peer.getPreview(gymA, a.id, first.id, page)).status).toBe('ready');
+    await expect.poll(() => calls.analyze).toBe(2);
+    expect(await peer.requestPreview(actorA, planFor(a.id), page, 'UTC')).toMatchObject({ status: 'ready', preview: { summary: { totalRows: 1 } } });
+    // Polling is storage-backed: a reader without this process's budget/task map sees the result too.
+    const restarted = createImportPipeline({ uploadsFor, jobs: new FakeJobs(clock), clock, scope: database.forGym, mappers, previewBudget: new PreviewBudget(1) });
+    expect(await restarted.getPreview(gymA, a.id, first.id, page)).toMatchObject({ status: 'ready' });
+  });
+
+  it('polls safe failures, permits retry, and expires abandoned tickets', async () => {
+    const time = new TestClock(clock.now()), base = fixtureMapper({ analyze: 0 });
+    let fail = true;
+    const mapper: CsvMapper = { ...base, async analyze(...args) {
+      if (fail) throw new Error('private database detail');
+      return base.analyze(...args);
+    } };
+    const budget = new PreviewBudget(1, 1), { pipeline, uploadsFor } = setup(new MapperRegistry([mapper]), time, { budget });
+    const upload = await pipeline.upload(actorA, new File([csv(1)], 'failure.csv')), page = { limit: 10, offset: 0 };
+    const first = await pipeline.requestPreview(actorA, planFor(upload.id), page, 'UTC');
+    if (first.status !== 'queued' && first.status !== 'computing') throw new Error('Expected pending preview');
+    await expect.poll(async () => (await pipeline.getPreview(gymA, upload.id, first.id, page)).status).toBe('failed');
+    expect(JSON.stringify(await pipeline.getPreview(gymA, upload.id, first.id, page))).not.toContain('private database detail');
+    fail = false;
+    const retry = await pipeline.requestPreview(actorA, planFor(upload.id), page, 'UTC');
+    if (retry.status !== 'queued' && retry.status !== 'computing') throw new Error('Expected pending retry');
+    expect(retry.id).not.toBe(first.id);
+    await expect.poll(async () => (await pipeline.getPreview(gymA, upload.id, retry.id, page)).status).toBe('ready');
+    const lostId = uuidv7();
+    await (await uploadsFor(gymA)).put(`${gymA}/imports/uploads/${upload.id}/preview-requests/${lostId}/meta.json`,
+      new TextEncoder().encode(JSON.stringify({ prefix: 'unused', revision: '0.0.0.0', expiresAt: time.now().toISOString() })), 'application/json');
+    expect(await pipeline.getPreview(gymA, upload.id, lostId, page)).toMatchObject({ status: 'failed' });
+    time.advance(24 * 60 * 60 * 1000);
+    await expect(pipeline.getPreview(gymA, upload.id, retry.id, page)).rejects.toMatchObject({ code: 'not_found' });
+  });
+
   it('aborts a stuck source read and lets a queued preview proceed', async () => {
     const entered = Promise.withResolvers<void>(), cancelled = vi.fn(), stores = new Map<string, FakeUploads>();
     let blockedKey = '';
@@ -105,11 +167,13 @@ describe('stored import previews', () => {
     const a = await pipeline.upload(actorA, new File([csv(1)], 'a.csv'));
     const b = await pipeline.upload(actorB, new File([csv(1)], 'b.csv'));
     blockedKey = `${gymA}/imports/uploads/${a.id}/source.csv`;
-    const failed = pipeline.preview(actorA, planFor(a.id), { limit: 10, offset: 0 }, 'UTC');
-    const rejection = expect(failed).rejects.toThrow('took too long');
+    const failed = await pipeline.requestPreview(actorA, planFor(a.id), { limit: 10, offset: 0 }, 'UTC');
+    if (failed.status !== 'queued' && failed.status !== 'computing') throw new Error('Expected pending preview');
     await entered.promise;
     const next = patient.preview(actorB, planFor(b.id), { limit: 10, offset: 0 }, 'UTC');
-    await rejection; expect(cancelled).toHaveBeenCalledOnce(); expect((await next).summary.totalRows).toBe(1);
+    await expect.poll(async () => (await pipeline.getPreview(gymA, a.id, failed.id, { limit: 10, offset: 0 })).status, { timeout: 10_000 }).toBe('failed');
+    expect(await pipeline.getPreview(gymA, a.id, failed.id, { limit: 10, offset: 0 })).toMatchObject({ message: expect.stringContaining('took too long') });
+    expect(cancelled).toHaveBeenCalledOnce(); expect((await next).summary.totalRows).toBe(1);
     blockedKey = '';
     expect((await patient.preview(actorA, planFor(a.id), { limit: 10, offset: 0 }, 'UTC')).summary.totalRows).toBe(1);
   });

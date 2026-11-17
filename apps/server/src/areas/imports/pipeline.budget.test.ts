@@ -2,6 +2,15 @@
 import { expect, it, vi } from 'vitest';
 import { PreviewBudget, previewDeadline } from './pipeline.budget.js';
 
+it('bounds the waiting queue without refusing an immediately available slot', async () => {
+  const budget = new PreviewBudget(1, 1), release = Promise.withResolvers<void>();
+  const active = budget.run(1, 1, () => release.promise);
+  const queued = budget.run(1, 1, async () => 'next');
+  expect(() => budget.run(1, 1, async () => 'overflow')).toThrow('queue is full');
+  release.resolve(); await active; expect(await queued).toBe('next');
+  expect(await budget.run(1, 1, async () => 'free')).toBe('free');
+});
+
 it('admits small files together, queues a large file fairly, and releases reservations on failure', async () => {
   const budget = new PreviewBudget(16 * 1024 * 1024), order: string[] = [];
   const a = Promise.withResolvers<void>(), b = Promise.withResolvers<void>(), large = Promise.withResolvers<void>();

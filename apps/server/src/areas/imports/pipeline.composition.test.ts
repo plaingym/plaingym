@@ -18,7 +18,9 @@ import { createUploadDownloadRoute } from '../../core/uploads-download.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
 import { LocalUploads } from '../../infra/storage/index.js';
 import { authorize } from '../staff/auth.permissions.js';
-import { createImportPipeline } from './pipeline.js';
+import { createImportPipeline, type PipelineOptions } from './pipeline.js';
+import { PreviewBudget } from './pipeline.budget.js';
+import { MapperRegistry } from './mappers/registry.js';
 import { createPipelineRoutes } from './pipeline.routes.js';
 import { createPipelineJobs } from './pipeline.jobs.js';
 import { createExportService } from './export.js';
@@ -34,8 +36,8 @@ beforeAll(async () => {
   storage = new LocalUploads({ root, gymId, signingKey: new Uint8Array(32).fill(7), clock, downloadUrl: origin + '/api/uploads/download' });
 });
 afterAll(async () => { if (root) await rm(root, { recursive: true, force: true }); });
-function server(principal: Principal = { kind: 'staff', gymId, userId, roles: ['owner'] }) {
-  const jobs = new FakeJobs(clock), options = { scope: database.forGym, clock, jobs, uploadsFor: async () => storage };
+function server(principal: Principal = { kind: 'staff', gymId, userId, roles: ['owner'] }, overrides: Partial<Pick<PipelineOptions, 'mappers' | 'previewBudget'>> = {}) {
+  const jobs = new FakeJobs(clock), options = { scope: database.forGym, clock, jobs, uploadsFor: async () => storage, ...overrides };
   const pipeline = createImportPipeline(options), exports = createExportService(options);
   const contributions = { routes: [...createPipelineRoutes(pipeline), ...createExportRoutes(exports),
     createUploadDownloadRoute({ uploadsFor: options.uploadsFor, origin: () => origin })],
@@ -51,6 +53,39 @@ const post = (app: ReturnType<typeof server>['app'], path: string, body: unknown
   const init = jsonInit(body);
   return app.request(origin + path, { method: 'POST', ...init, headers: { ...init.headers, origin } });
 };
+
+it('answers preview HTTP requests before work finishes, coalesces retries and answers busy at the bound', async () => {
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  let calls = 0;
+  const { app } = server(undefined, { previewBudget: new PreviewBudget(1, 0), mappers: new MapperRegistry([{
+    id: 'people', available: true, async commit() { return 0; },
+    async analyze(_tx, rows) {
+      calls++; entered.resolve(); await release.promise;
+      return rows.map(row => ({ rowNumber: row.rowNumber, values: { firstName: 'Preview' }, action: 'create', duplicateIds: [], issues: [] }));
+    },
+  }]) });
+  const upload = async () => {
+    const form = new FormData(); form.set('file', new File(['First Name\nPreview\n'], 'preview.csv'));
+    const response = await app.request(await requestWithLength(origin + '/api/imports/uploads', { method: 'POST', headers: { origin }, body: form }));
+    return importUploadSchema.parse((await response.json()).data);
+  };
+  const a = await upload(), b = await upload();
+  const plan = (uploadId: string) => ({ uploadId, mapper: 'people', mapping: [{ sourceColumn: 'First Name', targetField: 'firstName' }], duplicatePolicy: 'error' });
+  const first = await post(app, '/api/imports/preview', plan(a.id));
+  expect(first.status).toBe(200);
+  const state = await first.json();
+  expect(['queued', 'computing']).toContain(state.status);
+  await entered.promise;
+  try {
+    const retry = await post(app, '/api/imports/preview', plan(a.id));
+    expect(await retry.json()).toMatchObject({ id: state.id, status: 'computing' });
+    const busy = await post(app, '/api/imports/preview', plan(b.id));
+    expect(busy.status).toBe(503); expect((await busy.json()).error.message).toContain('queue is full');
+    expect(calls).toBe(1);
+  } finally { release.resolve(); }
+  const path = `/api/imports/uploads/${a.id}/previews/${state.id}`;
+  await expect.poll(async () => (await (await app.request(origin + path)).json()).status).toBe('ready');
+});
 
 it('imports, restarts its API, exports, and follows the archive link through the app composition', async () => {
   const { app, jobs } = server(), form = new FormData();
@@ -85,7 +120,8 @@ it('denies anonymous, member, kiosk, and foreign staff principals on every impor
     const { app } = server(principal), denied = principal.kind === 'anonymous' ? 401 : 403;
     for (const path of ['/api/imports/uploads', '/api/imports/preview', '/api/imports', '/api/exports'])
       expect((await post(app, path, {})).status, path).toBe(denied);
-    for (const path of [`/api/imports/${uuidv7()}`, `/api/imports/${uuidv7()}/errors`, `/api/exports/${uuidv7()}`])
+    for (const path of [`/api/imports/${uuidv7()}`, `/api/imports/${uuidv7()}/errors`, `/api/exports/${uuidv7()}`,
+      `/api/imports/uploads/${uuidv7()}/previews/${uuidv7()}`])
       expect((await app.request(origin + path)).status, path).toBe(denied);
   }
 });

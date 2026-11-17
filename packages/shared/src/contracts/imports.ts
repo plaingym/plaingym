@@ -46,6 +46,11 @@ export const importIssueSchema = z.strictObject({
 export const importPreviewResponseSchema = listResponseSchema(importPreviewRowSchema).extend({
   summary: z.strictObject({ totalRows: count, create: count, update: count, skip: count, errors: count }),
 });
+export const importPreviewStateSchema = z.discriminatedUnion('status', [
+  z.strictObject({ status: z.enum(['queued', 'computing']), id: idSchema, uploadId: idSchema }),
+  z.strictObject({ status: z.literal('ready'), preview: importPreviewResponseSchema }),
+  z.strictObject({ status: z.literal('failed'), message: z.string().min(1).max(2000) }),
+]);
 export const importJobSchema = z.strictObject({
   id: idSchema, uploadId: idSchema, mapper: importMapperSchema, dryRun: z.boolean(),
   status: z.enum(['pending', 'running', 'succeeded', 'failed']),
@@ -86,7 +91,9 @@ export const importsContracts = {
   upload: { method: 'post', path: '/api/imports/uploads', permission: manage,
     contentType: 'multipart/form-data', body: uploadCsvRequestSchema, response: z.strictObject({ data: importUploadSchema }) },
   preview: { method: 'post', path: '/api/imports/preview', permission: manage,
-    query: paginationSchema, body: importPlanRequestSchema, response: importPreviewResponseSchema },
+    query: paginationSchema, body: importPlanRequestSchema, response: importPreviewStateSchema },
+  previewState: { method: 'get', path: '/api/imports/uploads/{uploadId}/previews/{id}', permission: manage,
+    params: z.strictObject({ uploadId: idSchema, id: idSchema }), query: paginationSchema, response: importPreviewStateSchema },
   start: { method: 'post', path: '/api/imports', permission: manage,
     body: startImportRequestSchema, response: z.strictObject({ data: importJobSchema }) },
   get: { method: 'get', path: '/api/imports/{id}', permission: manage,
@@ -106,6 +113,7 @@ export type ImportUpload = z.infer<typeof importUploadSchema>;
 export type ImportPlanRequest = z.infer<typeof importPlanRequestSchema>;
 export type ImportPreviewRow = z.infer<typeof importPreviewRowSchema>;
 export type ImportPreviewResponse = z.infer<typeof importPreviewResponseSchema>;
+export type ImportPreviewState = z.infer<typeof importPreviewStateSchema>;
 export type ImportIssue = z.infer<typeof importIssueSchema>;
 export type ImportJob = z.infer<typeof importJobSchema>;
 export type StartImportRequest = z.infer<typeof startImportRequestSchema>;

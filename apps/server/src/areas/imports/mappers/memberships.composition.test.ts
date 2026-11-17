@@ -60,7 +60,11 @@ it.each(['owner', 'admin', 'coach', 'front_desk'] as const)('checks %s permissio
   }
   const uploaded = importUploadSchema.parse((await upload.json()).data), plan = planFor(uploaded.id);
   const preview = await post(app, '/api/imports/preview', plan); expect(preview.status).toBe(200);
-  expect(importPreviewResponseSchema.parse(await preview.json()).summary).toMatchObject({ create: 1, errors: 0 });
+  const ticket = await preview.json();
+  const previewPath = `/api/imports/uploads/${uploaded.id}/previews/${ticket.id}`;
+  await expect.poll(async () => (await (await app.request(origin + previewPath)).json()).status, { timeout: 10_000 }).toBe('ready');
+  const ready = await (await app.request(origin + previewPath)).json();
+  expect(importPreviewResponseSchema.parse(ready.preview).summary).toMatchObject({ create: 1, errors: 0 });
   const started = await post(app, '/api/imports', { ...plan, dryRun: false }); expect(started.status).toBe(200);
   const run = importJobSchema.parse((await started.json()).data); await jobs.runNext();
   const status = await server(role).request(origin + '/api/imports/' + run.id); expect(status.status).toBe(200);

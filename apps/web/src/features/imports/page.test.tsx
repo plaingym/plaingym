@@ -28,6 +28,56 @@ function start() {
 beforeEach(() => { bootstrap(); request.mockReset(); });
 afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear(); vi.unstubAllGlobals(); });
 describe('CSV admin workflow', () => {
+  it('polls queued and computing previews to ready without starting another computation', async () => {
+    let polls = 0;
+    const preview = { data: [{ rowNumber: 2, values: { firstName: 'Polled preview' }, action: 'create', duplicateIds: [] }],
+      pagination: { limit: 50, offset: 0, total: 1 }, summary: { totalRows: 1, create: 1, update: 0, skip: 0, errors: 0 } };
+    const fetcher = vi.fn(async (path: string) => {
+      if (path === '/api/imports/uploads') return Response.json({ data: uploaded });
+      if (path.startsWith('/api/imports/preview?')) return Response.json({ status: 'queued', id: runId, uploadId: id });
+      return Response.json(++polls === 1 ? { status: 'computing', id: runId, uploadId: id } : { status: 'ready', preview });
+    });
+    vi.stubGlobal('fetch', fetcher); start();
+    fireEvent.change(screen.getByLabelText(/CSV file/), { target: { files: [new File(['Name\nTest'], 'people.csv')] } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview' }));
+    expect((await screen.findByRole('status')).textContent).toContain('preview');
+    await screen.findByText('Polled preview', {}, { timeout: 4000 });
+    expect(polls).toBe(2);
+    expect(fetcher.mock.calls.filter(([path]) => path.startsWith('/api/imports/preview?'))).toHaveLength(1);
+    expect(fetcher.mock.calls.filter(([path]) => path.startsWith(`/api/imports/uploads/${id}/previews/${runId}`))).toHaveLength(2);
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+  it('shows queue busy and polled failures and allows a new preview', async () => {
+    const message = t('imports/pipeline:previewBusy');
+    let busy = true;
+    vi.stubGlobal('fetch', vi.fn(async (path: string) => {
+      if (path === '/api/imports/uploads') return Response.json({ data: uploaded });
+      if (path.startsWith('/api/imports/preview?')) return busy
+        ? Response.json({ error: { code: 'unavailable', message } }, { status: 503 })
+        : Response.json({ status: 'computing', id: runId, uploadId: id });
+      return Response.json({ status: 'failed', message: t('imports/pipeline:previewTimedOut') });
+    }));
+    start();
+    fireEvent.change(screen.getByLabelText(/CSV file/), { target: { files: [new File(['Name\nTest'], 'people.csv')] } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview' }));
+    expect((await screen.findByRole('alert')).textContent).toBe(message);
+    busy = false; fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(t('imports/pipeline:previewTimedOut')));
+    expect((screen.getByRole('button', { name: 'Preview' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+  it('ignores an in-flight poll when the plan changes', async () => {
+    const answer = Promise.withResolvers<Response>();
+    const fetcher = vi.fn(async (path: string) => path === '/api/imports/uploads' ? Response.json({ data: uploaded })
+      : path.startsWith('/api/imports/preview?') ? Response.json({ status: 'queued', id: runId, uploadId: id }) : answer.promise);
+    vi.stubGlobal('fetch', fetcher); start();
+    fireEvent.change(screen.getByLabelText(/CSV file/), { target: { files: [new File(['Name\nTest'], 'people.csv')] } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview' }));
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
+    fireEvent.change(screen.getByLabelText('Import type'), { target: { value: 'memberships' } });
+    answer.resolve(Response.json({ status: 'failed', message: 'Old preview failure' }));
+    await waitFor(() => expect(clients[0]!.isFetching()).toBe(0));
+    expect(screen.queryByRole('alert')).toBeNull(); expect(screen.queryByRole('status')).toBeNull();
+  });
   it.each([
     { status: 'succeeded', processedRows: 1000, committedRows: 1000, errorCount: 0, outcome: 'Complete' },
     { status: 'failed', processedRows: 1000, committedRows: 999, errorCount: 1, outcome: 'Finished with 1 row error; review the error report' },
@@ -58,8 +108,8 @@ describe('CSV admin workflow', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Preview' }));
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
     fireEvent.change(screen.getByLabelText('Import type'), { target: { value: 'memberships' } });
-    resolvePreview(Response.json({ data: [{ rowNumber: 2, values: { firstName: 'Obsolete preview' }, action: 'create', duplicateIds: [] }],
-      pagination: { limit: 50, offset: 0, total: 1 }, summary: { totalRows: 1, create: 1, update: 0, skip: 0, errors: 0 } }));
+    resolvePreview(Response.json({ status: 'ready', preview: { data: [{ rowNumber: 2, values: { firstName: 'Obsolete preview' }, action: 'create', duplicateIds: [] }],
+      pagination: { limit: 50, offset: 0, total: 1 }, summary: { totalRows: 1, create: 1, update: 0, skip: 0, errors: 0 } } }));
     // Wait for the mutation callback as well as the response to finish.
     await waitFor(() => expect(clients[0]!.getMutationCache().getAll().every(mutation => mutation.state.status !== 'pending')).toBe(true));
     expect(screen.queryByText('Obsolete preview')).toBeNull();
@@ -147,8 +197,8 @@ describe('CSV admin workflow', () => {
     vi.stubGlobal('fetch', vi.fn(async (path: string) => {
       if (path === '/api/imports/uploads') return Response.json({ data: { id, filename: 'people.csv', rowCount: 1, columns: ['Name'],
         suggestedMapping: [{ sourceColumn: 'Name', targetField: 'firstName' }], expiresAt: createdAt } });
-      return Response.json({ data: [{ rowNumber: 2, values: { firstName: '<script>secret()</script>' }, action: 'create', duplicateIds: [] }],
-        pagination: { limit: 50, offset: 0, total: 1 }, summary: { totalRows: 1, create: 1, update: 0, skip: 0, errors: 0 } });
+      return Response.json({ status: 'ready', preview: { data: [{ rowNumber: 2, values: { firstName: '<script>secret()</script>' }, action: 'create', duplicateIds: [] }],
+        pagination: { limit: 50, offset: 0, total: 1 }, summary: { totalRows: 1, create: 1, update: 0, skip: 0, errors: 0 } } });
     }));
     start();
     fireEvent.change(screen.getByLabelText(/CSV file/), { target: { files: [new File(['Name\nTest'], 'people.csv', { type: 'text/csv' })] } });

@@ -47,11 +47,29 @@ for (const width of [360, 1280]) {
       await page.getByRole('combobox', { name: /^Import type/ }).selectOption('memberships');
       await expect(page.getByRole('alert')).toHaveCount(0);
       await capture('import-plan-changed');
-      await page.route('**/api/imports/preview?*', route => route.fulfill({ json: {
-        data: [{ rowNumber: 2, values: { firstName: 'Person', lastName: 'Preview' }, action: 'create', duplicateIds: [] }],
-        pagination: { limit: 50, offset: 0, total: 1 }, summary: { totalRows: 1, create: 1, update: 0, skip: 0, errors: 0 },
+      await page.route('**/api/imports/preview?*', route => route.fulfill({ status: 503, json: {
+        error: { code: 'unavailable', message: 'The preview queue is full. Please try again shortly.' },
       } }));
       await page.getByRole('button', { name: 'Preview', exact: true }).click();
+      await expect(page.getByRole('alert')).toContainText('queue is full');
+      await capture('import-preview-busy');
+      const previewId = '01900000-0000-7000-8000-000000000002';
+      let previewState: 'queued' | 'computing' | 'ready' = 'queued';
+      const readyPreview = {
+        data: [{ rowNumber: 2, values: { firstName: 'Person', lastName: 'Preview' }, action: 'create', duplicateIds: [] }],
+        pagination: { limit: 50, offset: 0, total: 1 }, summary: { totalRows: 1, create: 1, update: 0, skip: 0, errors: 0 },
+      };
+      await page.route('**/api/imports/preview?*', route => route.fulfill({ json: { status: 'queued', id: previewId, uploadId } }));
+      await page.route(`**/api/imports/uploads/${uploadId}/previews/${previewId}?*`, route => route.fulfill({ json:
+        previewState === 'ready' ? { status: 'ready', preview: readyPreview } : { status: previewState, id: previewId, uploadId },
+      }));
+      await page.getByRole('button', { name: 'Preview', exact: true }).click();
+      await expect(page.getByText('Your preview is queued. Waiting for other previews to finish…', { exact: true })).toBeVisible();
+      await capture('import-preview-queued');
+      previewState = 'computing';
+      await expect(page.getByText('Preparing your preview…', { exact: true })).toBeVisible();
+      await capture('import-preview-computing');
+      previewState = 'ready';
       await expect(page.getByRole('columnheader', { name: 'First name', exact: true })).toBeVisible();
       await expect(page.getByRole('columnheader', { name: 'Last name', exact: true })).toBeVisible();
       await expect(page.getByRole('cell', { name: 'Person', exact: true })).toBeVisible();

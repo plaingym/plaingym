@@ -321,6 +321,11 @@
     }
   },
   {
+    "method": "GET",
+    "path": "/api/imports/uploads/{uploadId}/previews/{id}",
+    "permission": { "kind": "staff", "capability": "settings.manage" }
+  },
+  {
     "method": "POST",
     "path": "/api/imports/uploads",
     "permission": {

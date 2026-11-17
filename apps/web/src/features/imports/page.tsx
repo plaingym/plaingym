@@ -4,7 +4,7 @@ import { parseResponse } from '../../lib/response.js';
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { canStaff } from '@plaingym/shared';
-import { importTargetFieldSchema, importUploadSchema, importPreviewResponseSchema, importJobSchema, importIssueSchema,
+import { importTargetFieldSchema, importUploadSchema, importPreviewStateSchema, importJobSchema, importIssueSchema,
   exportJobSchema, listResponseSchema, type ImportUpload, type ImportColumnMapping, type ImportMapper,
   type ImportPlanRequest, type ImportPreviewResponse } from '@plaingym/shared/contracts';
 import { useBootstrap } from '../../app/context.js';
@@ -23,6 +23,18 @@ import { Badge, TableContainer } from '../../components/ui/table.js';
 const request = createJsonTransport();
 const label = (key: string) => t('imports/pipeline:' + key);
 class PreviewError extends Error {}
+async function readPreviewResponse(response: Response) {
+  if (!response.ok) {
+    await reportApiRefusal(response);
+    const { message } = await readApiError(response, [{ status: 400, code: 'invalid_request' }, { status: 404, code: 'not_found' },
+      { status: 503, code: 'unavailable' }]);
+    if (message) throw new PreviewError(message);
+    throw new Error('Preview failed');
+  }
+  const state = parseResponse(importPreviewStateSchema, await response.json());
+  if (state.status === 'failed') throw new PreviewError(state.message);
+  return state;
+}
 const card = 'min-w-0 space-y-5 rounded-xl border border-border bg-card p-4 sm:p-6';
 const summaryTone = { create: 'success', update: 'default', skip: 'muted' } as const;
 function ImportPanel({ gymId }: { gymId: string }) {
@@ -30,11 +42,23 @@ function ImportPanel({ gymId }: { gymId: string }) {
   const [upload, setUpload] = useState<ImportUpload>(), [mapping, setMapping] = useState<ImportColumnMapping[]>([]);
   const [mapper, setMapper] = useState<ImportMapper>('people'), [duplicatePolicy, setPolicy] = useState<ImportPlanRequest['duplicatePolicy']>('error');
   const [preview, setPreview] = useState<ImportPreviewResponse>(), [offset, setOffset] = useState(0);
+  const [previewTicket, setPreviewTicket] = useState<{ id: string; uploadId: string; status: 'queued' | 'computing'; page: number; fingerprint: string }>();
   const [runId, setRunId] = useState<string>(), [runPlan, setRunPlan] = useState(''), [errorOffset, setErrorOffset] = useState(0);
   const plan = upload ? { uploadId: upload.id, mapper, mapping, duplicatePolicy } : undefined;
   const fingerprint = JSON.stringify(plan);
   const currentPlan = useRef(fingerprint);
   useEffect(() => { currentPlan.current = fingerprint; }, [fingerprint]);
+  const ticket = previewTicket?.fingerprint === fingerprint ? previewTicket : undefined;
+  const previewProgress = useQuery({ queryKey: ['import-preview', gymId, ticket?.id, ticket?.page], enabled: !!ticket,
+    retry: false, refetchOnWindowFocus: false, refetchOnReconnect: false,
+    queryFn: async ({ signal }) => readPreviewResponse(await fetch(`/api/imports/uploads/${ticket!.uploadId}/previews/${ticket!.id}?offset=${ticket!.page}&limit=50`,
+      { credentials: 'same-origin', redirect: 'error', signal })),
+    refetchInterval: query => query.state.status === 'error' || query.state.data?.status === 'ready' ? false : 1000 });
+  useEffect(() => {
+    if (ticket && previewProgress.data?.status === 'ready') {
+      setPreview(previewProgress.data.preview); setOffset(previewProgress.data.preview.pagination.offset); setPreviewTicket(undefined);
+    }
+  }, [ticket, previewProgress.data]);
   const progress = useQuery({ queryKey: ['imports', gymId, runId], enabled: !!runId,
     queryFn: async () => parseResponse(importJobSchema, (await request<{ data: unknown }>('/api/imports/' + runId)).data),
     refetchInterval: (query) => query.state.data && ['succeeded', 'failed'].includes(query.state.data.status) ? false : 1500 });
@@ -49,22 +73,15 @@ function ImportPanel({ gymId }: { gymId: string }) {
     const response = await fetch('/api/imports/uploads', { method: 'POST', body: form, credentials: 'same-origin', redirect: 'error' });
     if (!response.ok) { await reportApiRefusal(response); throw new Error('Upload failed'); }
     return parseResponse(importUploadSchema, (await response.json() as { data: unknown }).data);
-  }, onSuccess(data) { setUpload(data); setMapping(data.suggestedMapping ?? []); setPreview(undefined); setRunId(undefined); setOffset(0); previewRows.reset(); } });
+  }, onSuccess(data) { setUpload(data); setMapping(data.suggestedMapping ?? []); setPreview(undefined); setPreviewTicket(undefined); setRunId(undefined); setOffset(0); previewRows.reset(); } });
   const previewRows = useMutation({ mutationFn: async (page: number) => {
     const response = await fetch(`/api/imports/preview?offset=${page}&limit=50`, { method: 'POST', credentials: 'same-origin', redirect: 'error',
       headers: { 'content-type': 'application/json' }, body: JSON.stringify(plan) });
-    if (!response.ok) {
-      await reportApiRefusal(response);
-      // The API's own explanations: an expired upload, an invalid file or mapping, or a preview past its deadline.
-      const { message } = await readApiError(response, [{ status: 400, code: 'invalid_request' }, { status: 404, code: 'not_found' },
-        { status: 503, code: 'unavailable' }]);
-      if (message) throw new PreviewError(message);
-      throw new Error('Preview failed');
-    }
-    return { data: parseResponse(importPreviewResponseSchema, await response.json()), fingerprint };
-  }, onSuccess({ data, fingerprint: requestedPlan }) {
+    return { data: await readPreviewResponse(response), fingerprint, page };
+  }, onMutate() { setPreviewTicket(undefined); }, onSuccess({ data, fingerprint: requestedPlan, page }) {
     if (requestedPlan !== currentPlan.current) return;
-    setPreview(data); setOffset(data.pagination.offset);
+    if (data.status === 'ready') { setPreview(data.preview); setOffset(data.preview.pagination.offset); }
+    else setPreviewTicket({ ...data, page, fingerprint: requestedPlan });
   } });
   const start = useMutation({ mutationFn: async (dryRun: boolean) => parseResponse(importJobSchema, (await request<{ data: unknown }>('/api/imports', { ...plan, dryRun })).data),
     onSuccess(data) { setRunId(data.id); setRunPlan(fingerprint); setErrorOffset(0); } });
@@ -72,7 +89,8 @@ function ImportPanel({ gymId }: { gymId: string }) {
   const dryRunPassed = progress.data?.dryRun && progress.data.status === 'succeeded' && progress.data.errorCount === 0 && runPlan === fingerprint;
   // A preview's explanation must not stand in for a later failure of another request.
   const otherFailure = uploadFile.isError || start.isError || progress.isError || errors.isError;
-  // Exactly one status region: the run's progress.
+  const previewFailure = ticket && previewProgress.isError ? previewProgress.error : previewRows.error;
+  const previewPending = previewRows.isPending || !!ticket && !previewProgress.isError;
   const columns = [...new Set(preview?.data.flatMap(row => Object.keys(row.values)) ?? [])];
   return <PageSection title={label('import')} description={label('mapperNotice')}><div className={card}>
     <ol className="grid gap-1 text-sm text-muted-foreground sm:grid-cols-4" aria-label={label('steps')}>
@@ -80,15 +98,17 @@ function ImportPanel({ gymId }: { gymId: string }) {
     <div className="grid gap-2"><Label htmlFor="csv-file">{label('file')}</Label>
       <Input id="csv-file" type="file" accept=".csv,text/csv" className="py-2" disabled={demo || !!busy} onChange={(event) => { const file = event.target.files?.[0]; if (file) uploadFile.mutate(file); }}/></div>
     {demo && <Alert>{label('demoNotice')}</Alert>}
-    {(otherFailure || previewRows.isError) && <Alert variant="error" focusOnReveal>{!otherFailure && previewRows.error instanceof PreviewError
-      ? previewRows.error.message : label('requestFailed')}</Alert>}
+    {(otherFailure || previewFailure) && <Alert variant="error" focusOnReveal>{!otherFailure && previewFailure instanceof PreviewError
+      ? previewFailure.message : label('requestFailed')}</Alert>}
+    {ticket && !previewProgress.isError && <p role="status" className="text-sm text-muted-foreground">{label(
+      (previewProgress.data?.status ?? ticket.status) === 'queued' ? 'previewQueued' : 'previewComputing')}</p>}
     {upload && <>
       <p className="break-all text-sm"><span className="font-medium">{upload.filename}</span> · {label('rows')}: {formatCount(upload.rowCount)}</p>
       <div className="grid gap-4 sm:grid-cols-2">
-        <Label className="grid gap-2">{label('mapper')}<Select value={mapper} disabled={!!busy} onChange={(event) => { setMapper(event.target.value as ImportMapper); setPreview(undefined); previewRows.reset(); }}>
+        <Label className="grid gap-2">{label('mapper')}<Select value={mapper} disabled={!!busy} onChange={(event) => { setMapper(event.target.value as ImportMapper); setPreview(undefined); setPreviewTicket(undefined); previewRows.reset(); }}>
           {(['people', 'mat', 'memberships'] as const).map((id) => <option key={id} value={id}>{label('mapper.' + id)}</option>)}
         </Select></Label>
-        <Label className="grid gap-2">{label('duplicates')}<Select value={duplicatePolicy} disabled={!!busy} onChange={(event) => { setPolicy(event.target.value as ImportPlanRequest['duplicatePolicy']); setPreview(undefined); previewRows.reset(); }}>
+        <Label className="grid gap-2">{label('duplicates')}<Select value={duplicatePolicy} disabled={!!busy} onChange={(event) => { setPolicy(event.target.value as ImportPlanRequest['duplicatePolicy']); setPreview(undefined); setPreviewTicket(undefined); previewRows.reset(); }}>
           {(['error', 'skip', 'update'] as const).map((policy) => <option key={policy} value={policy}>{label('policy.' + policy)}</option>)}
         </Select></Label>
       </div>
@@ -98,11 +118,11 @@ function ImportPanel({ gymId }: { gymId: string }) {
             value={mapping.find((item) => item.sourceColumn === column)?.targetField ?? ''} onChange={(event) => {
               const target = importTargetFieldSchema.safeParse(event.target.value);
               setMapping((previous) => [...previous.filter((item) => item.sourceColumn !== column && item.targetField !== event.target.value),
-                ...(target.success ? [{ sourceColumn: column, targetField: target.data }] : [])]); setPreview(undefined); previewRows.reset();
+                ...(target.success ? [{ sourceColumn: column, targetField: target.data }] : [])]); setPreview(undefined); setPreviewTicket(undefined); previewRows.reset();
             }}><option value="">{label('ignore')}</option>{importTargetFieldSchema.options.map((field) => <option key={field} value={field}>{label('field.' + field)}</option>)}</Select></Label>)}</div>
       </fieldset>
       <div className="grid gap-2 sm:flex">
-        <Button variant="outline" disabled={!mapping.length || !!busy || previewRows.isPending} onClick={() => previewRows.mutate(0)}>{label('preview')}</Button>
+        <Button variant="outline" disabled={!mapping.length || !!busy || previewPending} onClick={() => previewRows.mutate(0)}>{label('preview')}</Button>
         <Button variant="outline" disabled={!mapping.length || !!busy} onClick={() => start.mutate(true)}>{label('dryRun')}</Button>
         <Button disabled={!dryRunPassed || !!busy} onClick={() => start.mutate(false)}>{label('commit')}</Button>
       </div>
@@ -117,7 +137,7 @@ function ImportPanel({ gymId }: { gymId: string }) {
         <thead className="bg-muted"><tr><th scope="col" className="p-2">{label('row')}</th><th scope="col" className="p-2">{label('action')}</th>{columns.map(field => <th scope="col" className="p-2" key={field}>{importTargetFieldSchema.safeParse(field).success ? label('field.' + field) : field}</th>)}</tr></thead>
         <tbody>{preview.data.map((row) => <tr key={row.rowNumber} className="border-t border-border"><td className="p-2 tabular-nums">{row.rowNumber}</td><td className="p-2">{label(row.action)}</td>
           {columns.map(field => <td key={field} className="max-w-xs wrap-anywhere p-2">{row.values[field] ?? '—'}</td>)}</tr>)}</tbody></table></TableContainer>
-      <Pager offset={offset} total={preview.pagination.total} limit={50} onChange={value => previewRows.mutate(value)} disabled={previewRows.isPending} previousLabel={label('previous')} nextLabel={label('next')}/>
+      <Pager offset={offset} total={preview.pagination.total} limit={50} onChange={value => previewRows.mutate(value)} disabled={previewPending} previousLabel={label('previous')} nextLabel={label('next')}/>
     </div>}
     {progress.data && <div role="status" className="space-y-2 rounded-lg border border-border bg-muted p-3 text-sm">
       <p className="font-medium">{label(progress.data.dryRun ? 'dryRun' : 'import')}: {progress.data.status === 'failed' && progress.data.processedRows === progress.data.totalRows && progress.data.errorCount > 0

@@ -4,7 +4,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import { systemTables } from '../../../db/system-tables.mjs';
 import type { jobs } from '../../../db/src/schema/index.js';
 import {
-  importsContracts, importPlanRequestSchema, importJobSchema, importPreviewResponseSchema,
+  importsContracts, importPlanRequestSchema, importJobSchema, importPreviewResponseSchema, importPreviewStateSchema,
   uploadCsvRequestSchema, exportDatasets, exportDatasetSchema, exportJobSchema, type ImportJob,
 } from './index.js';
 import { canStaff, staffRoles } from '../permissions.js';
@@ -44,6 +44,14 @@ describe('import and export contracts', () => {
       pagination: { limit: 50, offset: 0, total: 1 }, summary: { totalRows: 1, create: 0, update: 1, skip: 0, errors: 0 } };
     expect(importPreviewResponseSchema.parse(preview)).toEqual(preview);
     expect(importPreviewResponseSchema.safeParse({ ...preview, pagination: { limit: 50, offset: 0 } }).success).toBe(false);
+    expect(importPreviewStateSchema.parse({ status: 'ready', preview })).toEqual({ status: 'ready', preview });
+    for (const status of ['queued', 'computing']) {
+      expect(importPreviewStateSchema.parse({ status, id, uploadId: id })).toEqual({ status, id, uploadId: id });
+      expect(importPreviewStateSchema.safeParse({ status, id }).success).toBe(false);
+    }
+    expect(importPreviewStateSchema.parse({ status: 'failed', message: 'Try again' })).toEqual({ status: 'failed', message: 'Try again' });
+    expect(importPreviewStateSchema.safeParse({ status: 'ready' }).success).toBe(false);
+    expect(importPreviewStateSchema.safeParse({ status: 'failed', message: 'x'.repeat(2001) }).success).toBe(false);
   });
   it('rejects committed dry runs and counters beyond the input size', () => {
     expect(importJobSchema.parse(job)).toEqual(job);
