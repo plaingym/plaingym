@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { MutationContext } from './common.js';
-import type { CardSuccess, InvoiceEffect, InvoiceFixture, InvoiceTransitions, ManualPayment, RefundTransition } from './invoice-transitions.js';
+import type { CardSuccess, InvoiceEffect, InvoiceFixture, InvoiceTransitions, ManualPayment, ProcessorRefundTransition, RefundTransition } from './invoice-transitions.js';
+import type { Refund } from '../../infra/payments/index.js';
+
+export type RefundProvenance = 'tagged' | 'requested' | 'duplicate' | 'original' | 'external';
 
 export interface InvoiceTransitionsHarness {
   transitions: InvoiceTransitions;
@@ -11,7 +14,9 @@ export interface InvoiceTransitionsHarness {
   success: CardSuccess & { attemptId: string };
   /** A cash payment of the same invoice, for the full amount. */
   manual: ManualPayment;
-  read(): Promise<{ invoice: string; attempt: { status: string; declineCode: string | null }; effects: InvoiceEffect['kind'][] }>;
+  seedRefund(request: RefundTransition, provenance: RefundProvenance): Promise<void>;
+  read(): Promise<{ invoice: string; attempt: { status: string; declineCode: string | null }; effects: InvoiceEffect['kind'][];
+    refunds: RefundTransition[] }>;
 }
 
 /** Both the fake and the real transitions run these cases, so the fake can't drift from cancellation or refund rules. */
@@ -19,6 +24,132 @@ export function invoiceTransitionsContract(name: string, create: (options?: { pa
   checkout?: Pick<InvoiceFixture, 'checkoutSessionId' | 'checkoutExpiresAt'> }) => Promise<InvoiceTransitionsHarness>) {
   describe(name + ': cancellations and refund reversals', () => {
     const count = (effects: readonly string[], kind: InvoiceEffect['kind']) => effects.filter((effect) => effect === kind).length;
+    const processor = (h: InvoiceTransitionsHarness, value: Partial<Refund> = {}, pendingRefunds: Refund[] = []): ProcessorRefundTransition => ({
+      invoiceId: h.success.invoiceId, paymentId: h.success.paymentId, refundId: randomUUID(), pendingRefunds,
+      processorRefund: { id: 're_contract_processor', chargeId: h.success.paymentIntentId, amount: h.success.amountCents,
+        currency: h.success.currency.toLowerCase(), status: 'succeeded', metadata: { gymId: h.context.gymId }, ...value },
+    });
+    const reservation = (h: InvoiceTransitionsHarness, amountCents = h.success.amountCents): RefundTransition => ({
+      invoiceId: h.success.invoiceId, paymentId: h.success.paymentId, refundId: randomUUID(), amountCents,
+      currency: h.success.currency, status: 'pending', tagged: true,
+    });
+    it('requires the named processor transition in the interface', () => {
+      expectTypeOf<ProcessorRefundTransition>().not.toExtend<Parameters<InvoiceTransitions['refund']>[1]>();
+      expectTypeOf<Parameters<InvoiceTransitions['processorRefund']>[1]>().toEqualTypeOf<ProcessorRefundTransition>();
+    });
+    for (const tagged of [false, true]) it.each(['pending', 'succeeded', 'failed', 'canceled'] as const)(
+      `matches the app reservation with tagged=${tagged} when the processor reports %s`, async status => {
+        const h = await create(); await h.transitions.cardSucceeded(h.context, h.success);
+        const own = { ...reservation(h), tagged };
+        await h.transitions.refund(h.context, own);
+        const report = processor(h, { status, ...(tagged ? { reservationId: own.refundId } : {}) });
+        expect((await h.transitions.processorRefund(h.context, report)).outcome).toBe('applied');
+        const after = await h.read();
+        expect(after.refunds).toHaveLength(1);
+        expect(after.refunds[0]).toMatchObject({ refundId: own.refundId, processorId: report.processorRefund.id, status });
+        expect(after.invoice).toBe(status === 'succeeded' ? 'refunded' : 'paid');
+        expect(count(after.effects, 'staff_notice')).toBe(status === 'failed' || status === 'canceled' ? 1 : 0);
+        expect((await h.transitions.processorRefund(h.context, { ...report, refundId: randomUUID() })).outcome).toBe('ignored');
+        expect(await h.read()).toEqual(after);
+      });
+    it('matches the named tagged reservation among otherwise identical pending reservations', async () => {
+      const h = await create(); await h.transitions.cardSucceeded(h.context, h.success);
+      const first = reservation(h, 5000), own = reservation(h, 5000);
+      await h.transitions.refund(h.context, first); await h.transitions.refund(h.context, own);
+      await h.transitions.processorRefund(h.context, processor(h, { amount: 5000, reservationId: own.refundId }));
+      const after = await h.read();
+      expect(after.refunds).toHaveLength(2);
+      expect(after.refunds.find(row => row.refundId === first.refundId)?.status).toBe('pending');
+      expect(after.refunds.find(row => row.refundId === own.refundId)).toMatchObject({ status: 'succeeded', processorId: 're_contract_processor' });
+    });
+    it.each(['tagged', 'requested', 'duplicate', 'original', 'external'] as const)(
+      'uses %s provenance when canceling an already linked processor refund', async provenance => {
+        const h = await create(); await h.transitions.cardSucceeded(h.context, h.success);
+        const own = { ...reservation(h), processorId: 're_contract_processor', tagged: false };
+        await h.seedRefund(own, provenance);
+        const report = processor(h, { status: 'canceled' });
+        await h.transitions.processorRefund(h.context, report);
+        await h.transitions.processorRefund(h.context, { ...report, refundId: randomUUID() });
+        const after = await h.read();
+        expect(after.refunds).toHaveLength(1);
+        expect(after.refunds[0]).toMatchObject({ refundId: own.refundId, status: 'canceled' });
+        expect(count(after.effects, 'staff_notice')).toBe(provenance === 'external' ? 0 : 1);
+      });
+    it('refuses ambiguous legacy reservations without releasing or recording anything', async () => {
+      const h = await create(); await h.transitions.cardSucceeded(h.context, h.success);
+      const own = { ...reservation(h, 2000), tagged: false };
+      await h.transitions.refund(h.context, own);
+      await h.transitions.refund(h.context, { ...own, refundId: randomUUID() });
+      const before = await h.read();
+      await expect(h.transitions.processorRefund(h.context, processor(h, { amount: 2000 }))).rejects.toThrow('Refund reservation is ambiguous');
+      expect(await h.read()).toEqual(before);
+    });
+    it.each(['missing', 'amount', 'currency', 'gym', 'payment'] as const)(
+      'records an external refund that fits while another pending read has a %s mismatch', async mismatch => {
+        const h = await create(); await h.transitions.cardSucceeded(h.context, h.success);
+        const unread = { ...reservation(h, 2000), processorId: 're_unreadable' };
+        await h.transitions.refund(h.context, unread);
+        const unsent = reservation(h, 3000); await h.transitions.refund(h.context, unsent);
+        const read = processor(h, { id: unread.processorId, amount: mismatch === 'amount' ? 1000 : 2000, status: 'failed',
+          ...(mismatch === 'currency' ? { currency: 'usd' } : {}),
+          ...(mismatch === 'gym' ? { metadata: { gymId: randomUUID() } } : {}),
+          ...(mismatch === 'payment' ? { chargeId: 'pi_unrelated' } : {}),
+        }).processorRefund;
+        const report = processor(h, { amount: 5000 }, mismatch === 'missing' ? [] : [read]);
+        await h.transitions.processorRefund(h.context, report);
+        const after = await h.read();
+        expect(after.refunds).toHaveLength(3);
+        expect(after.refunds.find(row => row.refundId === unread.refundId)?.status).toBe('pending');
+        expect(after.refunds.find(row => row.refundId === unsent.refundId)?.status).toBe('pending');
+        expect(after.refunds.find(row => row.refundId === report.refundId)?.status).toBe('succeeded');
+        expect(after.invoice).toBe('partially_refunded');
+      });
+    it('rolls back a refreshed refund when an unread row would force releasing an unsent reservation', async () => {
+      const h = await create(); await h.transitions.cardSucceeded(h.context, h.success);
+      const unread = { ...reservation(h, 2000), processorId: 're_unreadable' };
+      const refreshed = { ...reservation(h, 3000), processorId: 're_refresh' };
+      await h.transitions.refund(h.context, unread); await h.transitions.refund(h.context, refreshed);
+      await h.transitions.refund(h.context, reservation(h, 5000));
+      const before = await h.read();
+      const read = processor(h, { id: refreshed.processorId, amount: 3000, status: 'failed' }).processorRefund;
+      await expect(h.transitions.processorRefund(h.context, processor(h, { amount: 4000 }, [read])))
+        .rejects.toMatchObject({ code: 'conflict' });
+      expect(await h.read()).toEqual(before);
+    });
+    it('refreshes a failed processor refund and preserves an unsent reservation when the external amount then fits', async () => {
+      const h = await create(); await h.transitions.cardSucceeded(h.context, h.success);
+      const refreshed = { ...reservation(h, 6000), processorId: 're_refresh' };
+      const unsent = reservation(h, 3000);
+      await h.transitions.refund(h.context, refreshed); await h.transitions.refund(h.context, unsent);
+      const read = processor(h, { id: refreshed.processorId, amount: 6000, status: 'failed' }).processorRefund;
+      await h.transitions.processorRefund(h.context, processor(h, { amount: 3000 }, [read]));
+      const after = await h.read();
+      expect(after.refunds.find(row => row.refundId === refreshed.refundId)?.status).toBe('failed');
+      expect(after.refunds.find(row => row.refundId === unsent.refundId)?.status).toBe('pending');
+      expect(count(after.effects, 'staff_notice')).toBe(1);
+    });
+    it('releases only the newest unsent reservation needed for an external refund', async () => {
+      const h = await create(); await h.transitions.cardSucceeded(h.context, h.success);
+      // Both use the same clock instant, so IDs break the tie deterministically.
+      const [firstId, secondId] = [randomUUID(), randomUUID()].sort();
+      const first = { ...reservation(h, 4000), refundId: firstId! }, second = { ...reservation(h, 6000), refundId: secondId! };
+      await h.transitions.refund(h.context, first); await h.transitions.refund(h.context, second);
+      const report = processor(h, { amount: 3000 });
+      await h.transitions.processorRefund(h.context, report);
+      const after = await h.read();
+      expect(after.refunds).toHaveLength(3);
+      expect(after.refunds.find(row => row.refundId === first.refundId)?.status).toBe('pending');
+      expect(after.refunds.find(row => row.refundId === second.refundId)?.status).toBe('failed');
+      expect(after.refunds.find(row => row.refundId === report.refundId)?.status).toBe('succeeded');
+    });
+    it('refuses a processor refund in another gym without changing its reservations', async () => {
+      const h = await create(); await h.transitions.cardSucceeded(h.context, h.success);
+      const own = reservation(h); await h.transitions.refund(h.context, own);
+      const before = await h.read();
+      await expect(h.transitions.processorRefund({ ...h.context, gymId: randomUUID() }, processor(h, { reservationId: own.refundId })))
+        .rejects.toMatchObject({ code: 'not_found' });
+      expect(await h.read()).toEqual(before);
+    });
     it('refuses an unresolved attempt, then voids a failed invoice and refunds a late success once', async () => {
       const h = await create(), { invoiceId, attemptId, paymentIntentId } = h.success;
       const request = { invoiceId, reason: 'Invoice issued in error' };

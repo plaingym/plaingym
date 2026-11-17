@@ -5,10 +5,10 @@ import type { Clock } from '@plaingym/shared';
 import { idSchema } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../../core/clock.js';
 import { conflict, instant, notFound, requireMoney, type MutationContext } from '../../../core/interfaces/common.js';
-import type { CardSuccess, CardFailure, ManualPayment, RefundTransition, InvoiceTransitions, InvoiceTransitionResult } from '../../../core/interfaces/invoice-transitions.js';
+import type { CardSuccess, CardFailure, ManualPayment, RefundTransition, ProcessorRefundTransition, InvoiceTransitions, InvoiceTransitionResult } from '../../../core/interfaces/invoice-transitions.js';
 import { logError } from '../../../core/log.js';
 import { readBillingRules } from '../../settings/settings.js';
-import { applyProcessorRefund, applyRefund, type ProcessorRefundTransition } from './refunds.js';
+import { applyProcessorRefund, applyRefund } from './refunds.js';
 import { createInvoiceVoid } from './void.js';
 import { stripeWriteScope } from '../stripe-writes.js';
 import { accepted, audit, canceledAttempt, confirmAbandoned, effect, lockInvoice, paymentRecorded, recorded, result, snapshot, terminal,
@@ -155,12 +155,16 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
         return result('applied', next);
       });
     },
-    async refund(context: MutationContext, request: RefundTransition | ProcessorRefundTransition) {
+    async refund(context: MutationContext, request: RefundTransition) {
       return scope(context.gymId, async tx => {
         const invoice = await lockInvoice(tx, request.invoiceId);
-        return 'processorRefund' in request
-          ? applyProcessorRefund(tx, context, clock, invoice, request)
-          : applyRefund(tx, context, clock, invoice, request);
+        return applyRefund(tx, context, clock, invoice, request);
+      });
+    },
+    async processorRefund(context: MutationContext, request: ProcessorRefundTransition) {
+      return scope(context.gymId, async tx => {
+        const invoice = await lockInvoice(tx, request.invoiceId);
+        return applyProcessorRefund(tx, context, clock, invoice, request);
       });
     },
   };
@@ -178,6 +182,7 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
     manualPayment: (context, request) => published(context, service.manualPayment(context, request)),
     cardFailed: (context, request) => published(context, service.cardFailed(context, request)),
     refund: (context, request) => published(context, service.refund(context, request)),
+    processorRefund: (context, request) => published(context, service.processorRefund(context, request)),
   };
 }
 function samePayment(row: PaymentRow, request: CardSuccess | ManualPayment, method: string) {

@@ -7,11 +7,10 @@ import { refundReleased, stripeTestPaymentReference, terminalDisputeStatuses } f
 import { clock as defaultClock } from '../../core/clock.js';
 import { logError } from '../../core/log.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
-import type { InvoiceTransitions } from '../../core/interfaces/invoice-transitions.js';
+import type { InvoiceTransitions, ProcessorRefundTransition } from '../../core/interfaces/invoice-transitions.js';
 import type { ChargeOutcome, Dispute, Payments, Refund } from '../../infra/payments/index.js';
 import type { BillingAlerts } from './alerts/index.js';
 import { stripeWriteCurrent, stripeWriteScope } from './stripe-writes.js';
-import type { ProcessorRefundTransition } from './transitions/refunds.js';
 import { audit, effect, lockInvoice, recorded } from './transitions/store.js';
 
 type Payment = typeof payments.$inferSelect;
@@ -35,7 +34,7 @@ export function processorRefundId(gymId: string, processorId: string): string {
 }
 
 export interface DisputeRefundOptions {
-  transitions: Pick<InvoiceTransitions, 'refund'>;
+  transitions: Pick<InvoiceTransitions, 'processorRefund'>;
   scope?: typeof forGym;
   clock?: Clock;
   /** Queues the owner's dispute alert. Without it, the hourly dispute scan still finds the dispute. */
@@ -67,7 +66,7 @@ export function createDisputeRefundWriter(options: DisputeRefundOptions) {
     }
     return { outcome, ...(payment ? { payment } : {}) };
   }
-  /** Applies a processor refund through the refund transition. A refund that names a tagged reservation on this payment
+  /** Applies a processor refund through the processor refund transition. A refund that names a tagged reservation on this payment
    * takes that row; an untagged reservation, from before the marker, keeps matching any refund of its payment. Every
    * other refund is external: it gets a deterministic ID, so every path records it as one row, and it leaves
    * reservations to the app's own refund, unless the processor has no room left for them: those never reached it, and
@@ -89,9 +88,8 @@ export function createDisputeRefundWriter(options: DisputeRefundOptions) {
       if (found.status === 'found' && found.value.kind === 'refund') pendingRefunds.push(found.value.object);
     }
     const request: ProcessorRefundTransition = { invoiceId: payment.invoiceId, paymentId: payment.id,
-      refundId: processorRefundId(gymId, value.id), processorId: value.id, amountCents: value.amount, currency, status: value.status,
-      processorRefund: value, pendingRefunds };
-    await options.transitions.refund(system(gymId), request);
+      refundId: processorRefundId(gymId, value.id), processorRefund: value, pendingRefunds };
+    await options.transitions.processorRefund(system(gymId), request);
     // A timed-out request may finish after settlement listed Stripe and released its reservation. Its external row
     // records the money; a durable follow-up corrects the earlier release notice, once, including on webhook replay.
     if (value.reservationId && value.status === 'succeeded') await scope(gymId, async tx => {

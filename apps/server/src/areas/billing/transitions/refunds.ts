@@ -4,16 +4,9 @@ import { auditEvents, classPackSales, invoices, payments, refunds, type Transact
 import type { Clock } from '@plaingym/shared';
 import { idSchema, moneySchema, refundReleased } from '@plaingym/shared/contracts';
 import { conflict, notFound, type MutationContext } from '../../../core/interfaces/common.js';
-import type { RefundTransition, InvoiceTransitionResult } from '../../../core/interfaces/invoice-transitions.js';
-import type { Refund } from '../../../infra/payments/index.js';
+import type { RefundTransition, ProcessorRefundTransition, InvoiceTransitionResult } from '../../../core/interfaces/invoice-transitions.js';
 import { pastRefundWindow, sameRefund } from './lapsed-refunds.js';
 import { accepted, audit, duplicateReservation, effect, recorded, result, snapshot, type InvoiceRow } from './store.js';
-
-/** Implementation-local reconciliation input: processor reads happen before the invoice transaction. */
-export type ProcessorRefundTransition = RefundTransition & {
-  processorRefund: Refund;
-  pendingRefunds: readonly Refund[];
-};
 
 /** The caller holds the invoice lock; every reservation, audit and effect commits with the refund. */
 export async function applyRefund(tx: Transaction, context: MutationContext, clock: Clock, invoice: InvoiceRow,
@@ -89,8 +82,10 @@ export async function applyRefund(tx: Transaction, context: MutationContext, clo
 
 /** Select the identity and release only the unsent reservations needed for this external refund, under one lock. */
 export async function applyProcessorRefund(tx: Transaction, context: MutationContext, clock: Clock, invoice: InvoiceRow,
-  request: ProcessorRefundTransition): Promise<InvoiceTransitionResult> {
-  const value = request.processorRefund;
+  input: ProcessorRefundTransition): Promise<InvoiceTransitionResult> {
+  const value = input.processorRefund;
+  const request: RefundTransition = { invoiceId: input.invoiceId, paymentId: input.paymentId, refundId: input.refundId,
+    processorId: value.id, amountCents: value.amount, currency: value.currency.toUpperCase(), status: value.status };
   const payment = (await tx.select().from(payments).where(eq(payments.id, request.paymentId)))[0] ?? notFound();
   if (payment.invoiceId !== invoice.id) notFound();
   let rows = await tx.select().from(refunds).where(eq(refunds.paymentId, payment.id));
@@ -108,17 +103,21 @@ export async function applyProcessorRefund(tx: Transaction, context: MutationCon
     return applyRefund(tx, context, clock, invoice, { ...request, refundId: untagged[0]!.id });
   }
   if (!refundReleased(value)) {
-    // Refresh processor-bound pending rows before deciding that an unsent reservation cannot fit. A new pending row
-    // since the processor reads forces a retry rather than releasing based on an unverified amount.
+    // Count unread processor rows as pending. They only force a retry when releasing an unsent reservation would
+    // depend on their outcome, including a row linked after the processor reads and before this lock.
+    let unread = false;
     for (const row of rows.filter(row => row.processorId !== null && row.status === 'pending')) {
-      const current = request.pendingRefunds.find(refund => refund.id === row.processorId);
-      if (!current || !sameRefund(current, row, payment, context.gymId))
-        conflict('Pending refund must be reconciled before recording an external refund');
+      const current = input.pendingRefunds.find(refund => refund.id === row.processorId);
+      if (!current || !sameRefund(current, row, payment, context.gymId)) {
+        unread = true;
+        continue;
+      }
       if (refundReleased(current)) await applyRefund(tx, context, clock, invoice, { ...request,
         refundId: row.id, processorId: current.id, amountCents: current.amount, currency: row.currency, status: current.status });
     }
     rows = await tx.select().from(refunds).where(eq(refunds.paymentId, payment.id));
     let excess = rows.filter(row => !refundReleased(row)).reduce((sum, row) => sum + row.amountCents, value.amount - payment.amountCents);
+    if (excess > 0 && unread) conflict('Pending refund must be reconciled before recording an external refund');
     const outrun = [...reservations].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id));
     if (excess > outrun.reduce((sum, row) => sum + row.amountCents, 0)) conflict('Refund exceeds payment');
     for (const row of outrun) {

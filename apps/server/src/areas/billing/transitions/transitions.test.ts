@@ -19,6 +19,7 @@ import { createPaymentService } from '../payments.js';
 import { createSignedLinksService } from '../../links/service.js';
 import { createInvoiceTransitions } from './index.js';
 import { formatMinorUnits } from '@plaingym/shared/money';
+import { refundStatusSchema } from '@plaingym/shared/contracts';
 import { createDisputeRefundWriter } from '../disputes-refunds.js';
 import { createTransitionEffects } from './effects.js';
 import { createTransitionJobs } from './transitions.jobs.js';
@@ -376,12 +377,10 @@ describe('invoice transitions with real PostgreSQL', () => {
     const request = { invoiceId: f.invoice.id, paymentId: payment.id, refundId, amountCents: 3000, currency: 'CAD' };
     await f.transitions.refund(f.context, { ...request, status: 'pending', tagged: true });
     const value = await f.provider.refund({ chargeId: payment.paymentIntentId!, amount: 3000, idempotencyKey: 'crossed', reservationId: refundId });
-    const writer = createDisputeRefundWriter({ ...f.options, transitions: { refund: async (context, incoming) => {
-      if (incoming.processorId) {
-        f.clock.advance(refundRetryWindowMs + refundSettleSkewMs);
-        await f.transitions.refund(f.context, { ...request, status: 'failed' });
-      }
-      return f.transitions.refund(context, incoming);
+    const writer = createDisputeRefundWriter({ ...f.options, transitions: { processorRefund: async (context, incoming) => {
+      f.clock.advance(refundRetryWindowMs + refundSettleSkewMs);
+      await f.transitions.refund(f.context, { ...request, status: 'failed' });
+      return f.transitions.processorRefund(context, incoming);
     } } });
     expect(await writer.refund(f.gymId, payment, value, f.provider)).toBe(true);
     const rows = await f.read();
@@ -637,9 +636,33 @@ describe('invoice transitions with real PostgreSQL', () => {
     const writer = createDisputeRefundWriter({ ...f.options, transitions: f.transitions });
     expect(await writer.refund(f.gymId, payment, own, f.provider)).toBe(true);
     expect((await f.read()).refunds.find(row => row.id === ownId)).toMatchObject({ processorId: own.id, status: 'succeeded' });
-    // An external refund that must weigh the unreadable one still refuses to record, and releases nothing.
+    // The external refund fits even if the unreadable row is still pending, so it records without releasing it.
     const external = await f.provider.refund({ chargeId: f.success.paymentIntentId, amount: 1000, idempotencyKey: 'external' });
-    await expect(writer.refund(f.gymId, payment, external, f.provider)).rejects.toMatchObject({ code: 'conflict' });
+    expect(await writer.refund(f.gymId, payment, external, f.provider)).toBe(true);
+    const rows = await f.read();
+    expect(rows.refunds).toHaveLength(3);
+    expect(rows.refunds.find(row => row.processorId === external.id)).toMatchObject({ status: 'succeeded', amountCents: 1000 });
+    expect(rows.refunds.find(row => row.processorId === 're_unreadable')).toMatchObject({ status: 'pending', amountCents: 2000 });
+    expect(rows.invoice.status).toBe('partially_refunded');
+  });
+  it.each([true, false])('rechecks a processor row linked after the reads, with room for the external refund: %s', async fits => {
+    const f = await fixture(); await succeed(f); await f.transitions.cardSucceeded(f.context, f.success);
+    const payment = (await f.read()).payments[0]!, unsentId = uuidv7();
+    const base = { invoiceId: f.invoice.id, paymentId: payment.id, currency: 'CAD' };
+    await f.transitions.refund(f.context, { ...base, refundId: unsentId, amountCents: fits ? 5000 : 6000, status: 'pending', tagged: true });
+    const external = await f.provider.refund({ chargeId: f.success.paymentIntentId, amount: 3000, idempotencyKey: 'external-race' });
+    const writer = createDisputeRefundWriter({ ...f.options, transitions: { processorRefund: async (context, incoming) => {
+      expect(incoming.pendingRefunds).toEqual([]);
+      await f.transitions.refund(f.context, { ...base, refundId: uuidv7(), amountCents: 2000,
+        status: 'pending', processorId: 're_linked_late' });
+      return f.transitions.processorRefund(context, incoming);
+    } } });
+    if (fits) expect(await writer.refund(f.gymId, payment, external, f.provider)).toBe(true);
+    else await expect(writer.refund(f.gymId, payment, external, f.provider)).rejects.toMatchObject({ code: 'conflict' });
+    const rows = await f.read();
+    expect(rows.refunds.find(row => row.id === unsentId)?.status).toBe('pending');
+    expect(rows.refunds.find(row => row.processorId === 're_linked_late')?.status).toBe('pending');
+    expect(rows.refunds.filter(row => row.processorId === external.id)).toHaveLength(fits ? 1 : 0);
   });
   it('sends no cancellation notice for an external refund first seen pending', async () => {
     const f = await fixture(); await succeed(f); await f.transitions.cardSucceeded(f.context, f.success); await f.drain();
@@ -1060,9 +1083,24 @@ invoiceTransitionsContract('invoice transitions with real PostgreSQL', async opt
     checkoutExpiresAt: options.checkout!.checkoutExpiresAt ? new Date(options.checkout!.checkoutExpiresAt) : null,
   }).where(eq(invoices.id, f.invoice.id)));
   return { transitions: f.transitions, context: f.context, success: f.success, manual: f.manual,
+    async seedRefund(request, provenance) {
+      await factory('refunds', f.gymId, { id: request.refundId, paymentId: request.paymentId, amountCents: request.amountCents,
+        currency: request.currency, status: request.status, processorId: request.processorId ?? null,
+        taggedAt: provenance === 'tagged' || request.tagged === true && request.status === 'pending' ? f.clock.now() : null });
+      if (provenance !== 'tagged' && provenance !== 'external') await factory('auditEvents', f.gymId, {
+        actorKind: 'system', targetType: 'refund', targetId: request.refundId,
+        action: provenance === 'requested' ? 'billing.refund.requested'
+          : provenance === 'duplicate' ? 'billing.refund.duplicate_reserved' : 'billing.refund.recorded',
+        after: provenance === 'original' ? { status: 'pending', processorId: null } : {},
+      });
+    },
     async read() {
       const rows = await f.read(), attempt = rows.attempts.find(row => row.id === f.attempt.id)!;
       return { invoice: rows.invoice.status, attempt: { status: attempt.status, declineCode: attempt.declineCode },
-        effects: rows.audits.filter(row => row.action === effectCreated).map(row => (row.after as InvoiceEffect).kind).sort() };
+        effects: rows.audits.filter(row => row.action === effectCreated).map(row => (row.after as InvoiceEffect).kind).sort(),
+        refunds: rows.refunds.map(row => ({ invoiceId: f.invoice.id, paymentId: row.paymentId, refundId: row.id,
+          amountCents: row.amountCents, currency: row.currency, status: refundStatusSchema.parse(row.status),
+          ...(row.processorId === null ? {} : { processorId: row.processorId }) }))
+          .sort((a, b) => a.refundId.localeCompare(b.refundId)) };
     } };
 });

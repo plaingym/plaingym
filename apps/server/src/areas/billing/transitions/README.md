@@ -275,7 +275,14 @@ one invoice lock and transaction, so the notice counts the refund that caused th
 release once it has succeeded. If recording fails, all releases and their notices roll back too.
 Processor-bound pending refunds are read outside the transaction and terminal outcomes
 are reconciled under the lock before deciding which unsent reservations no longer fit.
-A pending row added after those reads forces reconciliation to retry.
+An unread or mismatched pending row still reserves its full amount. It forces a retry
+only when that total would require releasing an unsent reservation; an external refund
+that fits records normally, including when a pending row was linked after those reads.
+The named `InvoiceTransitions.processorRefund` method accepts the processor refund and
+those reads, selects an existing processor ID or matching app reservation, and records
+the outcome atomically. Plain `refund` handles local reservations and their outcomes;
+processor reports cannot be passed to it. The fake and real transitions run the same
+processor identity, reservation, cancellation provenance and rollback contract cases.
 A pending refund doesn't count, because it can still be canceled; if nothing is
 left, no email is sent. The worker's refund is never reduced to the remainder,
 since that would change a retried request. A pending processor refund is stored for
