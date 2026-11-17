@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { announcementsContracts, ranksContracts, staffContracts, type AnnouncementDraft, type SendAnnouncement } from '@plaingym/shared/contracts';
+import { announcementsContracts, ranksContracts, staffContracts, type AnnouncementDraft, type AnnouncementSmsTest, type SendAnnouncement } from '@plaingym/shared/contracts';
 import { api, ApiError } from '../../lib/api.js';
 import { parseResponse } from '../../lib/response.js';
 
@@ -15,18 +15,26 @@ async function checked<T>(result: { response: Response; data?: T; error?: unknow
   }
   return result.data;
 }
+function draftBody<T extends AnnouncementDraft>(input: T) {
+  const { sms, ...rest } = input;
+  return { ...rest, ...(sms ? { sms } : {}) };
+}
 export const announcementClient = {
   async preview(input: AnnouncementDraft) {
     return parseResponse(announcementsContracts.preview.response,
-      await checked(await api.POST('/api/announcements/preview', { body: announcementsContracts.preview.body.parse(input) }))).data;
+      await checked(await api.POST('/api/announcements/preview', { body: draftBody(announcementsContracts.preview.body.parse(input)) }))).data;
   },
   async test(input: AnnouncementDraft) {
     return parseResponse(announcementsContracts.test.response,
-      await checked(await api.POST('/api/announcements/test', { body: announcementsContracts.test.body.parse(input) }))).data;
+      await checked(await api.POST('/api/announcements/test', { body: draftBody(announcementsContracts.test.body.parse(input)) }))).data;
+  },
+  async testSms(input: AnnouncementSmsTest) {
+    return parseResponse(announcementsContracts.testSms.response,
+      await checked(await api.POST('/api/announcements/test-sms', { body: announcementsContracts.testSms.body.parse(input) }))).data;
   },
   async send(input: SendAnnouncement) {
     return parseResponse(announcementsContracts.send.response,
-      await checked(await api.POST('/api/announcements/send', { body: announcementsContracts.send.body.parse(input) }))).data;
+      await checked(await api.POST('/api/announcements/send', { body: draftBody(announcementsContracts.send.body.parse(input)) }))).data;
   },
   async list(offset = 0) {
     return parseResponse(announcementsContracts.list.response,

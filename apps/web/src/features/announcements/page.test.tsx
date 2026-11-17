@@ -19,12 +19,14 @@ const id = '01900000-0000-7000-8000-000000000001', senderId = '01900000-0000-700
 const program = { id, gymId: id, name: 'Adults', rankSystemId: null, active: true, revision: 1, createdAt: '2026-11-10T00:00:00Z' };
 const announcement: Announcement = { id, createdBy: senderId, subject: 'Winter classes', body: 'Classes resume Monday.',
   audience: { statuses: ['active', 'trial', 'frozen'], programIds: [] }, recipientCount: 1200, status: 'sent',
-  createdAt: '2026-11-10T00:00:00Z', completedAt: '2026-11-10T00:01:00Z', sent: 2400, failed: 3600, skipped: 4800 };
+  createdAt: '2026-11-10T00:00:00Z', completedAt: '2026-11-10T00:01:00Z', sent: 2400, failed: 3600, skipped: 4800,
+  smsBody: null, smsRecipientCount: 0, smsSent: 0, smsFailed: 0, smsSkipped: 0, smsScheduledFor: null, smsCompletedAt: null };
 function client(): AnnouncementClient {
   return { list: vi.fn(async () => ({ data: [announcement], pagination: { total: 1, offset: 0, limit: 20 } })),
     programs: vi.fn(async () => [program]), senders: vi.fn(async () => [{ id, userId: senderId, memberId: null, displayName: 'Jo Owner',
       bio: null, photoKey: null, rank: null, isPublic: false, revision: 1, createdAt: announcement.createdAt }]),
-    preview: vi.fn(async () => ({ recipientCount: 1200 })), test: vi.fn(async () => ({ sent: true as const })), send: vi.fn(async () => announcement) };
+    preview: vi.fn(async () => ({ recipientCount: 1200, smsRecipientCount: 0, smsSegments: 0 })), test: vi.fn(async () => ({ sent: true as const })),
+    testSms: vi.fn(async () => ({ sent: true as const })), send: vi.fn(async () => announcement) };
 }
 function provider(content: React.ReactNode) {
   return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })}>{content}</QueryClientProvider>);
@@ -35,6 +37,23 @@ function mount(service: AnnouncementClient) {
 function editor(service: AnnouncementClient, owner = true) {
   return render(<AnnouncementEditor gymName="Our Gym" programs={[program]} client={service} owner={owner} close={vi.fn()} sent={vi.fn()} />);
 }
+it('uses the full text limit and permits confirmed texts with zero email recipients', async () => {
+  const service = client(); vi.mocked(service.preview).mockResolvedValue({ recipientCount: 0, smsRecipientCount: 2, smsSegments: 1 });
+  editor(service);
+  fireEvent.change(screen.getByLabelText('Subject'), { target: { value: 'Classes' } });
+  fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Email' } });
+  await userEvent.click(screen.getByLabelText('Include a text message'));
+  fireEvent.change(screen.getByLabelText('Text message'), { target: { value: 'x'.repeat(480) } });
+  await userEvent.click(screen.getByRole('button', { name: 'Preview announcement' }));
+  expect(service.preview).not.toHaveBeenCalled();
+  expect(screen.getByRole('alert').textContent).toContain('including the gym name and STOP line');
+  fireEvent.change(screen.getByLabelText('Text message'), { target: { value: 'See you Monday.' } });
+  await userEvent.click(screen.getByRole('button', { name: 'Preview announcement' }));
+  expect(await screen.findByText('2 text recipients · 1 segments per recipient')).not.toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: 'Continue to confirmation' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Send 0 emails and 2 texts' }));
+  expect(service.send).toHaveBeenCalledWith(expect.objectContaining({ sms: { body: 'See you Monday.' } }));
+});
 async function compose() {
   fireEvent.change(screen.getByLabelText('Subject'), { target: { value: ' Winter classes ' } });
   fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Classes resume Monday.\nBring water. <script>plain text</script>' } });
@@ -278,7 +297,7 @@ describe('announcement screens', () => {
   });
 
   it('blocks an empty audience and refreshes preview after editing', async () => {
-    const service = client(); vi.mocked(service.preview).mockResolvedValueOnce({ recipientCount: 0 });
+    const service = client(); vi.mocked(service.preview).mockResolvedValueOnce({ recipientCount: 0, smsRecipientCount: 0, smsSegments: 0 });
     editor(service); await compose();
     expect((await screen.findByRole('button', { name: 'Continue to confirmation' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText(/No eligible members/)).toBeDefined();

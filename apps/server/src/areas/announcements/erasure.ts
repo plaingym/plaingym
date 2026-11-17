@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, gte, inArray, isNotNull, lt, or } from 'drizzle-orm';
-import { announcementRecipients, emailDeliveries, type Transaction } from '@plaingym/db';
+import { announcementRecipients, announcementSmsRecipients, emailDeliveries, smsDeliveries, type Transaction } from '@plaingym/db';
 import { cancellationNoticeKeyPrefix } from './cancellation.js';
-import { erasedAddressDigest, noticeMemberId, recipientAddressDigest, recipientDeliveryKey } from './erasure.sql.js';
+import { erasedAddressDigest, noticeMemberId, recipientAddressDigest, recipientDeliveryKey, smsRecipientDeliveryKey, smsRecipientDeliveryDigest, smsRecipientIncludes } from './erasure.sql.js';
 
 /**
  * Called inside a member's erasure transaction. Announcement and cancellation notice records keep a digest of the
@@ -11,6 +11,12 @@ import { erasedAddressDigest, noticeMemberId, recipientAddressDigest, recipientD
  * still at that address could then get a copy of an announcement that is still being sent.
  */
 export async function forgetErasedAddressDigests(tx: Transaction, gymId: string, memberId: string, erasedAddress?: string | null): Promise<void> {
+  const smsWhere = and(eq(announcementSmsRecipients.gymId, gymId), or(eq(announcementSmsRecipients.memberId, memberId), smsRecipientIncludes(memberId)));
+  const textKeys = tx.select({ key: smsRecipientDeliveryKey }).from(announcementSmsRecipients).where(smsWhere);
+  const textDigests = tx.select({ digest: smsRecipientDeliveryDigest }).from(announcementSmsRecipients).where(smsWhere);
+  await tx.update(smsDeliveries).set({ commandDigest: null }).where(and(eq(smsDeliveries.gymId, gymId),
+    or(inArray(smsDeliveries.key, textKeys), inArray(smsDeliveries.commandDigest, textDigests))));
+  await tx.update(announcementSmsRecipients).set({ phoneDigest: null }).where(smsWhere);
   const keys = tx.select({ key: recipientDeliveryKey }).from(announcementRecipients)
     .where(and(eq(announcementRecipients.gymId, gymId), eq(announcementRecipients.memberId, memberId)));
   await tx.update(emailDeliveries).set({ commandDigest: null }).where(and(eq(emailDeliveries.gymId, gymId),

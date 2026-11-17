@@ -7,12 +7,13 @@ afterEach(() => vi.restoreAllMocks());
 const id = '01900000-0000-7000-8000-000000000001';
 const draft = { subject: ' Schedule ', body: ' Classes resume. ', audience: { statuses: ['active' as const], programIds: [] } };
 const announcement = { id, createdBy: id, subject: 'Schedule', body: 'Classes resume.', audience: draft.audience,
-  recipientCount: 3, status: 'sending' as const, createdAt: '2026-11-10T00:00:00Z', completedAt: null, sent: 0, failed: 0, skipped: 0 };
+  recipientCount: 3, status: 'sending' as const, createdAt: '2026-11-10T00:00:00Z', completedAt: null, sent: 0, failed: 0, skipped: 0,
+  smsBody: null, smsRecipientCount: 0, smsSent: 0, smsFailed: 0, smsSkipped: 0, smsScheduledFor: null, smsCompletedAt: null };
 
 it('sends validated preview, test and confirmed drafts through their typed endpoints', async () => {
   const post = vi.spyOn(api, 'POST');
   post.mockResolvedValueOnce({ response: new Response('{}'), data: { data: { recipientCount: 3, future: true }, future: true } } as never);
-  expect(await announcementClient.preview(draft)).toEqual({ recipientCount: 3 });
+  expect(await announcementClient.preview(draft)).toEqual({ recipientCount: 3, smsRecipientCount: 0, smsSegments: 0 });
   expect(post).toHaveBeenLastCalledWith('/api/announcements/preview', { body: { ...draft, subject: 'Schedule', body: 'Classes resume.' } });
   post.mockResolvedValueOnce({ response: new Response('{}'), data: { data: { sent: true } } });
   expect(await announcementClient.test(draft)).toEqual({ sent: true });

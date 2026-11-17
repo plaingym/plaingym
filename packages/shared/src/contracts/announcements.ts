@@ -10,6 +10,7 @@ export const announcementAudienceSchema = z.strictObject({
 export const announcementDraftSchema = z.strictObject({
   subject: z.string().trim().min(1).max(150).regex(/^[^\r\n]+$/).refine(value => !value.includes(String.fromCharCode(0)), 'Invalid subject'),
   body: z.string().trim().min(1).max(10000),
+  sms: z.strictObject({ body: z.string().trim().min(1).max(480) }).optional(),
   audience: announcementAudienceSchema.default({ statuses: ['active', 'trial', 'frozen'], programIds: [] }),
 });
 /** Gym-scoped idempotency generation, separate from the server-generated announcement ID. Keep across retries. */
@@ -19,14 +20,21 @@ export const announcementSchema = z.strictObject({
   recipientCount: z.int().nonnegative(), status: z.enum(['sending', 'sent']),
   createdAt: instantSchema, completedAt: instantSchema.nullable(),
   sent: z.int().nonnegative(), failed: z.int().nonnegative(), skipped: z.int().nonnegative(),
+  smsBody: z.string().nullable().default(null), smsRecipientCount: z.int().nonnegative().default(0),
+  smsSent: z.int().nonnegative().default(0), smsFailed: z.int().nonnegative().default(0), smsSkipped: z.int().nonnegative().default(0),
+  smsScheduledFor: instantSchema.nullable().default(null), smsCompletedAt: instantSchema.nullable().default(null),
 });
 const permission = { kind: 'staff', capability: 'announcements.send' } as const;
 const response = z.strictObject({ data: announcementSchema });
 export const announcementsContracts = {
   // Preview and a new send refuse with reason disabled, no_smtp or no_origin (canonical HTTPS origin required).
   preview: { method: 'post', path: '/api/announcements/preview', permission, body: announcementDraftSchema,
-    response: z.strictObject({ data: z.strictObject({ recipientCount: z.int().nonnegative() }) }) },
+    response: z.strictObject({ data: z.strictObject({ recipientCount: z.int().nonnegative(),
+      smsRecipientCount: z.int().nonnegative().default(0), smsSegments: z.int().nonnegative().default(0) }) }) },
   test: { method: 'post', path: '/api/announcements/test', permission, body: announcementDraftSchema,
+    response: z.strictObject({ data: z.strictObject({ sent: z.literal(true) }) }) },
+  testSms: { method: 'post', path: '/api/announcements/test-sms', permission,
+    body: announcementDraftSchema.required({ sms: true }).extend({ testTo: z.string().trim().min(1).max(40) }),
     response: z.strictObject({ data: z.strictObject({ sent: z.literal(true) }) }) },
   send: { method: 'post', path: '/api/announcements/send', permission, body: sendAnnouncementSchema, response },
   list: { method: 'get', path: '/api/announcements', permission, query: paginationSchema, response: listResponseSchema(announcementSchema) },
@@ -36,3 +44,4 @@ export const announcementsContracts = {
 export type AnnouncementDraft = z.infer<typeof announcementDraftSchema>;
 export type AnnouncementAudience = z.infer<typeof announcementAudienceSchema>;
 export type SendAnnouncement = z.infer<typeof sendAnnouncementSchema>;
+export type AnnouncementSmsTest = z.infer<typeof announcementsContracts.testSms.body>;

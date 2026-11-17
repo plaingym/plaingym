@@ -15,7 +15,7 @@ export function createAnnouncementRoutes(read: () => AnnouncementsService = anno
     route({ ...contracts.preview, request: { body: { required: true, content: { 'application/json': { schema: contracts.preview.body } } } },
       responses: { 200: { description: 'Eligible recipients', content: { 'application/json': { schema: contracts.preview.response } } } } }, async c => {
       c.header('Cache-Control', 'no-store');
-      return c.json({ data: await read().preview(c.get('context').gym.gymId, c.req.valid('json')) }, 200);
+      return c.json(contracts.preview.response.parse({ data: await read().preview(c.get('context').gym.gymId, c.req.valid('json')) }), 200);
     }),
     route({ ...contracts.test, request: { body: { required: true, content: { 'application/json': { schema: contracts.test.body } } } },
       responses: { 200: { description: 'Test delivered to sender', content: { 'application/json': { schema: contracts.test.response } } } } }, async c => {
@@ -26,6 +26,11 @@ export function createAnnouncementRoutes(read: () => AnnouncementsService = anno
       responses: { 200: { description: 'Announcement queued', content: { 'application/json': { schema: contracts.send.response } } } } }, async c => {
       c.header('Cache-Control', 'no-store');
       return c.json({ data: await read().send(actor(c.get('context')), c.req.valid('json')) }, 200);
+    }),
+    route({ ...contracts.testSms, request: { body: { required: true, content: { 'application/json': { schema: contracts.testSms.body } } } },
+      responses: { 200: { description: 'Test text delivered to the entered phone', content: { 'application/json': { schema: contracts.testSms.response } } } } }, async c => {
+      c.header('Cache-Control', 'no-store');
+      return c.json({ data: await read().testSms(actor(c.get('context')), c.req.valid('json')) }, 200);
     }),
     route({ ...contracts.list, request: { query: contracts.list.query },
       responses: { 200: { description: 'Announcement history', content: { 'application/json': { schema: contracts.list.response } } } } }, async c => {

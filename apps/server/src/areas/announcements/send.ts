@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, inArray } from 'drizzle-orm';
-import { announcementRecipients, announcements, forGym, staffRoles, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
-import { AppError, createTranslator, type Clock } from '@plaingym/shared';
-import { announcementDraftSchema, sendAnnouncementSchema, type AnnouncementDraft, type SendAnnouncement } from '@plaingym/shared/contracts';
+import { announcementRecipients, announcementSmsRecipients, announcements, forGym, staffRoles, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
+import { AppError, createTranslator, smsSegments, type Clock } from '@plaingym/shared';
+import { normalizePhone } from '@plaingym/shared/phone';
+import { announcementDraftSchema, announcementsContracts, sendAnnouncementSchema, type AnnouncementDraft, type SendAnnouncement } from '@plaingym/shared/contracts';
 import { z } from 'zod';
 import { clock as systemClock } from '../../core/clock.js';
 import { type Email } from '../../infra/email/index.js';
@@ -11,7 +12,9 @@ import type { SmtpResolver } from '../settings/smtp.js';
 import { createGymSettingsAccessor, createSettingsService, readGymSettings } from '../settings/settings.js';
 import { renderAnnouncement } from '../../emails/announcements/send.js';
 import messages from '../../../../../locales/en/announcements/send.json' with { type: 'json' };
-import { readAudience } from './audience.js';
+import { readAudience, readSmsAudience } from './audience.js';
+import { announcementSmsJob, announcementSmsJobKey, checkedAnnouncementSms, createAnnouncementSmsDelivery, nextAnnouncementSmsTime, type AnnouncementSmsOptions } from './send.sms.js';
+import { takeSmsSlot } from '../../infra/sms/daily-cap.js';
 import { createAnnouncementDelivery } from './send.delivery.js';
 import { createAnnouncementHistory } from './send.history.js';
 
@@ -27,6 +30,7 @@ export interface AnnouncementsOptions {
   senderEmail(gymId: string, userId: string): Promise<string>;
   demoMode?: boolean;
   demoEmailFor?(gymId: string): Email;
+  sms?: AnnouncementSmsOptions;
 }
 const t = createTranslator({ 'announcements/send': messages });
 const refuse = (reason: 'disabled' | 'no_smtp' | 'no_origin'): never => {
@@ -67,12 +71,43 @@ export function createAnnouncementsService(options: AnnouncementsOptions) {
   }
   const history = createAnnouncementHistory(scope);
   const delivery = createAnnouncementDelivery({ scope, clock, settings, t, mail });
+  const smsDelivery = createAnnouncementSmsDelivery({ scope, clock, settings, jobs: options.jobs, ...(options.sms ? { sms: options.sms } : {}) });
+  async function textReady(gymId: string, body: string) {
+    if (!options.sms || !await options.sms.resolver.configured(gymId)) throw new AppError('conflict', 'Text provider is not configured', { reason: ['no_provider'] });
+    const details = await gymSettings.get(gymId), gym = await settings.get(gymId);
+    if (!gym.memberSmsEnabled) throw new AppError('conflict', 'Member texts are disabled', { reason: ['sms_disabled'] });
+    return { gym, text: checkedAnnouncementSms(details.name, body) };
+  }
   return {
     ...history,
     async preview(gymId: string, input: AnnouncementDraft) {
       const draft = announcementDraftSchema.parse(input);
       await available(gymId);
-      return scope(gymId, async tx => ({ recipientCount: (await readAudience(tx, draft.audience)).recipients.length }));
+      const text = draft.sms ? await textReady(gymId, draft.sms.body) : undefined;
+      return scope(gymId, async tx => ({ recipientCount: (await readAudience(tx, draft.audience)).recipients.length,
+        ...(text ? { smsRecipientCount: (await readSmsAudience(tx, draft.audience, text.gym.country)).length,
+          smsSegments: smsSegments(text.text).segments } : {}) }));
+    },
+    async testSms(actor: AnnouncementActor, input: z.infer<typeof announcementsContracts.testSms.body>) {
+      const draft = announcementsContracts.testSms.body.parse(input);
+      await scope(actor.gymId, tx => manager(tx, actor));
+      if (!options.sms) throw new AppError('unavailable', 'Announcement text delivery is not configured');
+      const resolved = await options.sms.resolver.resolve(actor.gymId), gym = await settings.get(actor.gymId);
+      await scope(actor.gymId, tx => readSmsAudience(tx, draft.audience, gym.country));
+      const phone = normalizePhone(draft.testTo, gym.country);
+      if (!phone) throw new AppError('invalid_request', 'Enter a valid phone number', { testTo: ['invalid_phone'] });
+      if (!resolved || resolved.gymId !== actor.gymId) throw new AppError('unavailable', 'Text provider is not configured');
+      const body = checkedAnnouncementSms(resolved.name, draft.sms.body);
+      const allowed = await scope(actor.gymId, async tx => {
+        if (!await takeSmsSlot(tx, actor.gymId, clock.now(), gym.timezone, gym.smsDailyCap)) return false;
+        await writeAudit(tx, { gymId: actor.gymId, actorKind: 'user', actorUserId: actor.userId,
+          action: 'announcement.sms_test_requested', targetType: 'user', targetId: actor.userId, occurredAt: clock.now() });
+        return true;
+      });
+      if (!allowed) throw new AppError('conflict', 'Daily text cap reached', { reason: ['cap_reached'] });
+      try { if ((await resolved.sms.sendSms({ to: phone, body })).status !== 'sent') throw new Error('Suppressed'); }
+      catch { throw new AppError('unavailable', t('announcements/send:failed')); }
+      return { sent: true as const };
     },
     async test(actor: AnnouncementActor, input: AnnouncementDraft) {
       const draft = announcementDraftSchema.parse(input);
@@ -95,7 +130,7 @@ export function createAnnouncementsService(options: AnnouncementsOptions) {
       async function replay(tx: Transaction) {
         const [previous] = await tx.select().from(announcements).where(and(eq(announcements.gymId, actor.gymId), eq(announcements.sendGeneration, generation)));
         if (!previous) return;
-        if (previous.createdBy !== actor.userId || previous.subject !== draft.subject || previous.body !== draft.body
+        if (previous.createdBy !== actor.userId || previous.subject !== draft.subject || previous.body !== draft.body || previous.smsBody !== (draft.sms?.body ?? null)
           || JSON.stringify(previous.audience.statuses) !== JSON.stringify(draft.audience.statuses)
           || JSON.stringify(previous.audience.programIds) !== JSON.stringify(draft.audience.programIds))
           throw new AppError('conflict', 'This send generation belongs to another announcement');
@@ -104,6 +139,7 @@ export function createAnnouncementsService(options: AnnouncementsOptions) {
       const previousId = await scope(actor.gymId, async tx => { await manager(tx, actor); return replay(tx); });
       if (previousId) return history.get(actor.gymId, previousId);
       const gym = await available(actor.gymId);
+      if (draft.sms) await textReady(actor.gymId, draft.sms.body);
       const id = await withJobTransaction(scope, actor.gymId, async transaction => {
         const { tx } = transaction;
         await manager(tx, actor);
@@ -112,7 +148,7 @@ export function createAnnouncementsService(options: AnnouncementsOptions) {
         if (!(await readGymSettings(tx, actor.gymId)).memberEmailsEnabled) refuse('disabled');
         const id = uuidv7(clock.now().getTime());
         const [row] = await tx.insert(announcements).values({ id, sendGeneration: generation, gymId: actor.gymId, createdBy: actor.userId,
-          subject: draft.subject, body: draft.body, audience: draft.audience, createdAt: clock.now() })
+          subject: draft.subject, body: draft.body, audience: draft.audience, smsBody: draft.sms?.body ?? null, createdAt: clock.now() })
           .onConflictDoNothing({ target: [announcements.gymId, announcements.sendGeneration] }).returning();
         if (!row) {
           const previous = await replay(tx);
@@ -124,16 +160,31 @@ export function createAnnouncementsService(options: AnnouncementsOptions) {
           .values(recipients.slice(offset, offset + 100).map(recipient => ({ gymId: actor.gymId, announcementId: id,
             memberId: recipient.memberId, createdAt: clock.now(), updatedAt: clock.now() })));
         await tx.update(announcements).set({ recipientCount: recipients.length }).where(eq(announcements.id, id));
-        await writeAudit(tx, { gymId: actor.gymId, actorKind: 'user', actorUserId: actor.userId, action: 'announcement.queued',
-          targetType: 'announcement', targetId: id, after: { recipientCount: recipients.length }, occurredAt: clock.now() });
+        // Both channels use the batch lane; queue email first so a large text batch cannot delay it.
         await options.jobs.enqueue(announcementSendJob, { announcementId: id }, {
           gymId: actor.gymId, timezone: gym.timezone, idempotencyKey: id, maxAttempts: 12,
         }, transaction);
+        if (draft.sms) {
+          const groups = await readSmsAudience(tx, draft.audience, gym.country);
+          for (let offset = 0; offset < groups.length; offset += 100) await tx.insert(announcementSmsRecipients)
+            .values(groups.slice(offset, offset + 100).map(group => ({ gymId: actor.gymId, announcementId: id,
+              memberId: group.memberIds[0]!, memberIds: group.memberIds, phoneDigest: options.sms!.phoneDigest(group.phone), createdAt: clock.now(), updatedAt: clock.now() })));
+          const runAt = groups.length ? nextAnnouncementSmsTime(clock.now(), gym.timezone) : null;
+          await tx.update(announcements).set({ smsRecipientCount: groups.length, smsScheduledFor: runAt,
+            smsCompletedAt: groups.length ? null : clock.now() }).where(eq(announcements.id, id));
+          if (groups.length) await options.jobs.enqueue(announcementSmsJob, { announcementId: id }, {
+            gymId: actor.gymId, timezone: gym.timezone, ...(runAt ? { runAt } : {}),
+            idempotencyKey: announcementSmsJobKey(id, runAt), maxAttempts: 12,
+          }, transaction);
+        }
+        await writeAudit(tx, { gymId: actor.gymId, actorKind: 'user', actorUserId: actor.userId, action: 'announcement.queued',
+          targetType: 'announcement', targetId: id, after: { recipientCount: recipients.length }, occurredAt: clock.now() });
         return id;
       });
       return history.get(actor.gymId, id);
     },
     async run(payload: unknown, gymId: string) { await delivery.run(gymId, announcementPayload.parse(payload).announcementId); },
+    async runSms(payload: unknown, gymId: string) { await smsDelivery.run(gymId, announcementPayload.parse(payload).announcementId); },
   };
 }
 export type AnnouncementsService = ReturnType<typeof createAnnouncementsService>;
@@ -141,5 +192,5 @@ let configured: AnnouncementsService | undefined;
 export function configureAnnouncements(service: AnnouncementsService) { configured = service; }
 export function announcementService(): AnnouncementsService {
   const unavailable = (): never => { throw new AppError('unavailable', 'Announcement delivery is not configured'); };
-  return configured ?? { ...createAnnouncementHistory(), preview: unavailable, test: unavailable, send: unavailable, run: unavailable };
+  return configured ?? { ...createAnnouncementHistory(), preview: unavailable, test: unavailable, testSms: unavailable, send: unavailable, run: unavailable, runSms: unavailable };
 }

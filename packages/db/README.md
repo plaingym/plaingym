@@ -1,6 +1,14 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Database schema
 
+Migration `0036_announcement_sms.sql` expands announcements with an optional text
+body, independent recipient/outcome counts, `sms_scheduled_for` and
+`sms_completed_at`. New `announcement_sms_recipients` rows snapshot one group per
+phone using member IDs and a keyed digest, without copying phone numbers. The
+table has the same forced gym RLS, ordinary app grants and composite references
+as email recipients. Existing email content, rows and lifecycle remain intact;
+the previous release can keep writing email announcements with default SMS counts.
+
 Migration `0030_member_address_index.sql` adds stored generated `members.email_address`
 and its `(gym_id, email_address)` index for announcement and cancellation address groups.
 It lower-cases email after trimming ECMAScript whitespace, including tabs and non-breaking
@@ -464,6 +472,7 @@ clock and cryptographic randomness. UUIDs are not a total ordering within a mill
 | sms_daily_usage | Per-gym local-day attempted and refused SMS counts |
 | announcements | Gym announcement content, audience and delivery summary |
 | announcement_recipients | Per-member announcement delivery run state, without copied addresses or bodies |
+| announcement_sms_recipients | Independent text recipient groups and safe outcomes, with keyed phone digests and member IDs |
 | announcement_opt_outs | Per-member consent to announcement email |
 | leads | One lead per member, with source, stage, follow-up and lifecycle history |
 | lead_contacts | Staff contact history for a lead |

@@ -40,6 +40,7 @@
   {"method": "GET", "path": "/api/reports/members", "permission": {"kind": "staff", "capability": "reports.read"}, "additionalPermissions": [{"kind": "staff", "capability": "billing.read"}]},
   {"method": "POST", "path": "/api/announcements/preview", "permission": {"kind": "staff", "capability": "announcements.send"}},
   {"method": "POST", "path": "/api/announcements/test", "permission": {"kind": "staff", "capability": "announcements.send"}},
+  {"method": "POST", "path": "/api/announcements/test-sms", "permission": {"kind": "staff", "capability": "announcements.send"}},
   {"method": "POST", "path": "/api/announcements/send", "permission": {"kind": "staff", "capability": "announcements.send"}},
   {"method": "GET", "path": "/api/announcements", "permission": {"kind": "staff", "capability": "announcements.send"}},
   {"method": "GET", "path": "/api/announcements/{announcementId}", "permission": {"kind": "staff", "capability": "announcements.send"}},

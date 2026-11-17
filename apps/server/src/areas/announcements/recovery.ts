@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, desc, eq, gt } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, isNotNull, isNull } from 'drizzle-orm';
 import { announcements, auditEvents, classSessions, forGym, writeAudit } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { clock as systemClock } from '../../core/clock.js';
 import type { JobRegistration } from '../../core/registry.js';
 import type { JobRecovery } from '../../infra/jobs/index.js';
 import { announcementSendJob } from './send.js';
+import { announcementSmsJob, announcementSmsJobKey } from './send.sms.js';
 import { cancellationNoticeJob, cancellationNoticeKeyPrefix } from './cancellation.js';
 
 export const announcementRecoveryJob = 'announcements.recover';
@@ -51,6 +52,17 @@ export function createAnnouncementRecovery(options: AnnouncementRecoveryOptions)
         // Include an empty pending set: a crash can also interrupt the final completion write.
         recovered += await retry(gymId, announcementSendJob, rows.map(row => row.id), id => id,
           'announcement.delivery_retried', 'announcement');
+        cursor = rows.at(-1)!.id;
+      }
+      cursor = undefined;
+      for (;;) {
+        const rows = await scope(gymId, tx => tx.select({ id: announcements.id, scheduledFor: announcements.smsScheduledFor }).from(announcements)
+          .where(and(isNotNull(announcements.smsBody), isNull(announcements.smsCompletedAt), cursor ? gt(announcements.id, cursor) : undefined))
+          .orderBy(asc(announcements.id)).limit(batchSize));
+        if (!rows.length) break;
+        const schedules = new Map(rows.map(row => [row.id, row.scheduledFor]));
+        recovered += await retry(gymId, announcementSmsJob, rows.map(row => row.id), id => announcementSmsJobKey(id, schedules.get(id) ?? null),
+          'announcement.sms_delivery_retried', 'announcement');
         cursor = rows.at(-1)!.id;
       }
       cursor = undefined;

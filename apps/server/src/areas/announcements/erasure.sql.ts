@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // eslint-disable-next-line database/system-tables -- Reviewed expression only concatenates recipient IDs from imported gym-owned columns; no raw table access.
 import { sql } from 'drizzle-orm';
-import { announcementRecipients, emailDeliveries } from '@plaingym/db';
+import { announcementRecipients, announcementSmsRecipients, emailDeliveries } from '@plaingym/db';
 
 /** Same ID-only key as announcementDeliveryKey, evaluated in the erasure's UPDATE subquery. */
 export const recipientDeliveryKey = sql<string>`'announcement:' || ${announcementRecipients.announcementId}::text || ':' || ${announcementRecipients.id}::text`;
@@ -17,3 +17,6 @@ export function erasedAddressDigest(address: string) {
 }
 /** Cancellation keys contain IDs only. Kept in SQL so erasure never loads the gym's notice history. */
 export const noticeMemberId = sql<string>`split_part(${emailDeliveries.key}, ':', 3)`;
+export const smsRecipientDeliveryKey = sql<string>`'announcement-sms:' || ${announcementSmsRecipients.announcementId}::text || ':' || ${announcementSmsRecipients.memberId}::text`;
+export const smsRecipientDeliveryDigest = sql<string>`'announcement-sms:' || ${announcementSmsRecipients.announcementId}::text || ':' || ${announcementSmsRecipients.phoneDigest}`;
+export const smsRecipientIncludes = (memberId: string) => sql<boolean>`${announcementSmsRecipients.memberIds} @> ${JSON.stringify([memberId])}::jsonb`;

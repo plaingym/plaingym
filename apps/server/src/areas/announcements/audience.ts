@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, isNotNull, or } from 'drizzle-orm';
+import { normalizePhone } from '@plaingym/shared/phone';
 import { announcementOptOuts, households, memberRanks, members, programs, type Transaction } from '@plaingym/db';
 import { AppError } from '@plaingym/shared';
 import type { AnnouncementAudience } from '@plaingym/shared/contracts';
@@ -57,4 +58,28 @@ export async function readAudience(tx: Transaction, audience: AnnouncementAudien
     return true;
   });
   return { candidates, recipients };
+}
+
+/** Texts use announcements consent only; email preferences and household notice consent do not apply. */
+export async function readSmsAudience(tx: Transaction, audience: AnnouncementAudience, country: string | null | undefined, memberIds?: string[]) {
+  if (audience.programIds.length) {
+    const existing = await tx.select({ id: programs.id }).from(programs).where(inArray(programs.id, audience.programIds));
+    if (!memberIds && existing.length !== new Set(audience.programIds).size) throw new AppError('not_found', 'Program not found');
+  }
+  const rows = await tx.select({ id: members.id, phone: members.phone, phoneE164: members.phoneE164 }).from(members)
+    .where(and(isNull(members.anonymizedAt), isNotNull(members.smsAnnouncementsConsentAt),
+      inArray(members.status, audience.statuses), memberIds ? inArray(members.id, memberIds) : undefined))
+    .orderBy(asc(members.id));
+  const ranked = audience.programIds.length && rows.length ? new Set((await tx.select({ id: memberRanks.memberId }).from(memberRanks)
+    .where(and(inArray(memberRanks.programId, audience.programIds), inArray(memberRanks.memberId, rows.map(row => row.id)))))
+    .map(row => row.id)) : undefined;
+  const groups = new Map<string, { phone: string; memberIds: string[] }>();
+  for (const row of rows) {
+    if (ranked && !ranked.has(row.id)) continue;
+    const phone = normalizePhone(row.phone, country);
+    if (!phone || phone !== row.phoneE164) continue;
+    const group = groups.get(phone) ?? { phone, memberIds: [] };
+    group.memberIds.push(row.id); groups.set(phone, group);
+  }
+  return [...groups.values()];
 }

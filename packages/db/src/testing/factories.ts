@@ -73,6 +73,7 @@ const defaults = {
   emailDeliveries: () => ({ key: 'test.delivery:' + uuidv7(), state: 'accepted', updatedAt: date }),
   announcements: () => ({ sendGeneration: uuidv7(), subject: 'Gym update', body: 'Welcome to class.', audience: { statuses: ['active'], programIds: [] } }),
   announcementRecipients: () => ({ updatedAt: date }),
+  announcementSmsRecipients: () => ({ updatedAt: date, memberIds: [uuidv7()] }),
   announcementOptOuts: () => ({}),
   leads: () => ({}),
   leadContacts: () => ({ occurredAt: date, channel: 'call' }),

@@ -14,7 +14,9 @@ export function createAnnouncementHistory(scope: typeof forGym = forGym) {
       return announcementSchema.parse({ id: row.id, createdBy: row.createdBy, subject: row.subject, body: row.body,
         audience: row.audience, recipientCount: row.recipientCount, status: row.status,
         createdAt: row.createdAt.toISOString(), completedAt: row.completedAt?.toISOString() ?? null,
-        sent: tally('sent'), failed: tally('failed'), skipped: tally('skipped') });
+        sent: tally('sent'), failed: tally('failed'), skipped: tally('skipped'),
+        smsBody: row.smsBody, smsRecipientCount: row.smsRecipientCount, smsSent: row.smsSent, smsFailed: row.smsFailed, smsSkipped: row.smsSkipped,
+        smsScheduledFor: row.smsScheduledFor?.toISOString() ?? null, smsCompletedAt: row.smsCompletedAt?.toISOString() ?? null });
     });
   }
   return {

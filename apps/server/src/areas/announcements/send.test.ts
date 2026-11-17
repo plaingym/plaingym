@@ -381,7 +381,8 @@ it('captures demo sends and tests without resolving or calling SMTP', async () =
 });
 it.each(['owner', 'admin', 'coach', 'front_desk'] as const)('enforces %s on preview, test, send, history and detail', async role => {
   const f = await fixture(role), manager = role === 'owner' || role === 'admin'; await f.member();
-  for (const contract of Object.values(announcementsContracts)) {
+  // Text-test allow/deny coverage supplies its SMS resolver and typed phone in send.sms.test.ts.
+  for (const contract of Object.values(announcementsContracts).filter(contract => contract !== announcementsContracts.testSms)) {
     const path = contract.path.replace('{announcementId}', uuidv7());
     const response = await f.app().request(path, { method: contract.method.toUpperCase(), headers: { 'content-type': 'application/json' },
       ...(contract.method === 'post' ? { body: JSON.stringify(contract === announcementsContracts.send ? f.input() : draft) } : {}) });

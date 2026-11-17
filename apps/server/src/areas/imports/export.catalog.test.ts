@@ -71,6 +71,8 @@ describe('export schema coverage and secret exclusions', () => {
       id: announcement.id, gym_id: gymA, created_at: announcement.createdAt, created_by: announcement.createdBy,
       subject: announcement.subject, body: announcement.body, audience: announcement.audience,
       recipient_count: announcement.recipientCount, status: announcement.status, completed_at: announcement.completedAt,
+      sms_body: announcement.smsBody, sms_recipient_count: announcement.smsRecipientCount, sms_sent: announcement.smsSent,
+      sms_failed: announcement.smsFailed, sms_skipped: announcement.smsSkipped, sms_scheduled_for: announcement.smsScheduledFor, sms_completed_at: announcement.smsCompletedAt,
     }]);
     expect(await exportCatalog.announcement_opt_outs.page(database.forGym, gymA, cutoff)).toEqual([{
       id: optOut.id, gym_id: gymA, created_at: optOut.createdAt, member_id: optOut.memberId,
@@ -162,7 +164,7 @@ describe('export schema coverage and secret exclusions', () => {
     expect(tableNames.length).toBeGreaterThan(exportDatasets.length);
     // Operational run state has its own retention deadline; it is not a portable gym dataset. Email send state
     // only guards this install's job keys against resending.
-    const runState = new Set(['import_runs', 'import_chunks', 'export_runs', 'email_deliveries', 'sms_deliveries', 'sms_daily_usage', 'announcement_recipients']);
+    const runState = new Set(['import_runs', 'import_chunks', 'export_runs', 'email_deliveries', 'sms_deliveries', 'sms_daily_usage', 'announcement_recipients', 'announcement_sms_recipients']);
     expect(tableNames.filter((name) => !systemNames.has(name) && !runState.has(name)).sort()).toEqual(Object.keys(exportCatalog).sort());
     expect(Object.keys(exportCatalog).sort()).toEqual([...exportDatasets].sort());
   });

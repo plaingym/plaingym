@@ -156,6 +156,13 @@ PostgreSQL holds everything except file contents. The rules that matter most:
 The table inventory, the security SQL and the scoped-access helpers are in
 `packages/db/README.md`.
 
+Announcements can include an optional text body. Their separate SMS job, recipient
+groups and outcome counts allow email to finish while texts wait for 08:00 gym
+time. Texts require announcements consent, deduplicate normalized phones, include
+the gym name and STOP line within 480 characters, and pause outside 08:00-21:00.
+The announcement service accepts the gym SMS resolver and keyed phone digest as
+constructor options; see its [module README](../apps/server/src/areas/announcements/README.md).
+
 SMS infrastructure stores number-bound notices and announcements consent on members,
 and separate notices consent on household billing phones. Normalization uses
 `@plaingym/shared/phone` with the gym country. `sms_deliveries` retains at-most-once

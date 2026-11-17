@@ -20,6 +20,6 @@ it('preserves existing phones, starts consent empty and SMS disabled, and forces
       .toEqual({ phone: '202-555-0123', phone_e164: null, sms_notices_consent_at: null, sms_announcements_consent_at: null });
     expect((await connection.sql`select phone, phone_e164, sms_notices_consent_at from households where id = ${household}`)[0])
       .toEqual({ phone: '202-555-0123', phone_e164: null, sms_notices_consent_at: null });
-    expect(await assertCatalog(connection.sql)).toEqual({ tableCount: 72, tenantTableCount: 60 });
+    expect(await assertCatalog(connection.sql)).toEqual({ tableCount: 73, tenantTableCount: 61 });
   } finally { await connection.close(); }
 });

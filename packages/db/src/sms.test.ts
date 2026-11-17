@@ -10,7 +10,7 @@ import { createFactories } from './testing/factories.js';
 const db = useTestDatabase(), make = createFactories(db), a = uuidv7(), b = uuidv7();
 beforeAll(async () => { await make('gyms', a); await make('gyms', b); });
 it('declares all SMS tables with ENABLE and FORCE and exact gym policies', async () => {
-  expect(await assertCatalog(db.app.sql)).toEqual({ tableCount: 72, tenantTableCount: 60 });
+  expect(await assertCatalog(db.app.sql)).toEqual({ tableCount: 73, tenantTableCount: 61 });
 });
 it.each([['smsDailyUsage', smsDailyUsage], ['smsDeliveries', smsDeliveries], ['smsOutbox', smsOutbox]] as const)('isolates %s for reads and mutations', async (name, table) => {
   const row = await make(name, b), predicate = eq(table.id, row.id);

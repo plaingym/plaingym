@@ -331,7 +331,7 @@ describe('member deletion', () => {
       'memberships_household_fk', 'memberships_member_fk', 'membership_discounts_membership_fk',
       'invoices_household_fk', 'invoice_line_items_membership_fk', 'payment_methods_household_fk',
       'class_pack_sales_household_fk', 'class_pack_sales_member_fk', 'class_credit_entries_member_fk',
-      'announcement_recipients_member_fk', 'announcement_opt_outs_member_fk', 'waiver_signatures_member_fk',
+      'announcement_recipients_member_fk', 'announcement_sms_recipients_member_fk', 'announcement_opt_outs_member_fk', 'waiver_signatures_member_fk',
       'staff_profiles_member_fk', 'attendances_member_fk', 'class_bookings_member_fk', 'member_ranks_member_fk',
     ];
     expect(constraints.map(row => row.name).sort()).toEqual(handled.sort());

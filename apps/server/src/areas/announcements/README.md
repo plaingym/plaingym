@@ -1,12 +1,13 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Announcements
 
-Owners and admins use `announcements.send` for all five endpoints:
+Owners and admins use `announcements.send` for all six endpoints:
 
 | Method and path | Result |
 | --- | --- |
 | `POST /api/announcements/preview` | Eligible recipient count |
 | `POST /api/announcements/test` | One test to the authenticated sender's login email |
+| `POST /api/announcements/test-sms` | One test text to the supplied `testTo` phone, counted against the daily cap |
 | `POST /api/announcements/send` | Confirm and queue an announcement |
 | `GET /api/announcements` | Newest-first paginated history and outcome counts |
 | `GET /api/announcements/{announcementId}` | One announcement and its counts |
@@ -20,6 +21,37 @@ missing program IDs return 404. Preview and confirmation return `conflict` with
 email is off, SMTP is unconfigured, or the gym has no canonical HTTPS origin.
 Test mail bypasses the member switch, carries a test marker
 and an inert unsubscribe line, and accepts no caller-supplied recipient.
+
+Drafts may also include `sms: { body }`. The server prefixes the gym name and
+appends `Reply STOP to opt out`; the complete text must fit within 480 UTF-16
+code units. Preview includes `smsRecipientCount` and `smsSegments` using the
+shared GSM-7/UCS-2 counter, including escape characters and surrogate pairs.
+Text recipients require announcements consent and a valid normalized member
+phone; notices consent and email unsubscribe preferences do not qualify or block
+them. One recipient group represents each phone, with consenting member IDs
+snapshotted at confirmation. Text consent, phone and audience are checked again
+at delivery. The text test uses the entered number directly, bypassing member
+consent and quiet hours, but consumes the gym's daily cap.
+
+`announcements.send-sms` is a separate batch job. Email sends immediately; texts
+send only from 08:00 inclusive to 21:00 exclusive in the current gym timezone.
+Outside this window, including a batch crossing 21:00, a transactional enqueue
+sets `runAt` to the next 08:00 and records `smsScheduledFor`. Shared time helpers
+handle clock changes. A final check at the provider boundary catches slow
+preparation crossing 21:00. Independent `announcement_sms_recipients` rows and
+persisted SMS counts leave email outcomes unchanged. `smsCompletedAt` marks text
+completion, independently of the email `status`.
+
+Text reservations use `announcement-sms:<announcementId>:<firstMemberId>` and
+a keyed phone digest under the announcement lock. Accepted or uncertain attempts
+never send again after a crash. Member delivery uses `MemberSms` with kind
+`announcements`; suppression and failures record safe reason codes only. Erasure
+clears the group's phone digest and transport digest for either snapshotted member.
+Recovery retries exhausted SMS jobs with their original scheduled key.
+Gym CSV exports include the announcement's text body, counts and schedule;
+per-phone recipient groups remain operational send state, like email recipients.
+The service accepts `sms: { resolver, phoneDigest }`; runtime composition must
+supply both to enable text delivery. Job registration is in this area's barrel.
 
 Confirmation also requires `confirm: true` and a UUID `sendGeneration`. Keep that
 generation across double clicks and network retries; use a new one for another

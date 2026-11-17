@@ -704,6 +704,14 @@ Old versions and documents referenced by signatures remain retained after retire
   clears the erased member's in its own transaction. Only staff recipients' keys
   carry a hash of their address. An hourly job per gym deletes login-link rows once
   their five-minute link has expired (`apps/server/src/infra/email/README.md`).
+* **Announcement texts.** `announcements.send` restricts text sends and tests to
+  owners and admins. Announcement consent is independent of notices consent and
+  email unsubscribe preferences. Each normalized phone receives one announcement;
+  a durable reservation prevents replay after an accepted or uncertain outcome.
+  Gym-scoped recipient groups store IDs and keyed phone digests, with forced RLS
+  and composite references. Erasure clears the group's digest and transport digest
+  when either snapshotted member is erased. Quiet hours use the gym timezone and
+  are checked again immediately before provider delivery.
 * **Medical notes** are readable only by owners, admins and coaches, and are never
   returned to signed links or the portal's household view.
 * **Audit.** State-changing actions write an `audit_events` row (the app role can

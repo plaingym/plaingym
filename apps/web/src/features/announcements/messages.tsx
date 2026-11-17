@@ -8,11 +8,11 @@ export const text = (key: string, values?: Record<string, string | number>) => t
 /** A refusal settles this request only; callers must preserve any earlier uncertain outcome. */
 export function definiteRefusal(error: unknown) {
   return error instanceof ApiError && (error.status === 503 || (error.status >= 400 && error.status < 500 &&
-    (error.status !== 409 || error.reason.some(reason => ['disabled', 'no_smtp', 'no_origin'].includes(reason)))));
+    (error.status !== 409 || error.reason.some(reason => ['disabled', 'no_smtp', 'no_origin', 'no_provider', 'sms_disabled', 'cap_reached'].includes(reason)))));
 }
 export function Failure({ error, fallback, owner = false, retrySame = false }: { error: unknown; fallback: string; owner?: boolean; retrySame?: boolean }) {
   const reason = error instanceof ApiError && error.status === 409
-    ? error.reason.find(value => value === 'disabled' || value === 'no_smtp' || value === 'no_origin') : undefined;
+    ? error.reason.find(value => ['disabled', 'no_smtp', 'no_origin', 'no_provider', 'sms_disabled', 'cap_reached'].includes(value)) : undefined;
   return <Alert variant="error" focusOnReveal role="alert" className="space-y-3">
     <p>{text(retrySame ? 'sendError' : reason ?? (fallback === 'sendError' && definiteRefusal(error) ? 'sendRefused' : fallback))}</p>
     {retrySame && reason && <p>{text(reason)}</p>}

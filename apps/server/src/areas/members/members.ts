@@ -3,7 +3,7 @@ import { escapeLike } from '../../lib/escape-like.js';
 import { and, asc, eq, gt, ilike, inArray, isNotNull, isNull, ne, or } from 'drizzle-orm';
 import { forGym, members, memberRanks, memberships, households, householdUsers, memberTags, memberTagLinks, signedLinks, waiverSignatures,
   invoices, invoiceLineItems, membershipDiscounts, paymentMethods, classBookings, classSessions, classCreditEntries, classPackSales, attendances,
-  announcementRecipients, announcementOptOuts, staffProfiles, leads, leadContacts, databaseCode, revisionGuard, assertRevised, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
+  announcementRecipients, announcementSmsRecipients, announcementOptOuts, staffProfiles, leads, leadContacts, databaseCode, revisionGuard, assertRevised, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { normalizePhone } from '@plaingym/shared/phone';
@@ -344,6 +344,7 @@ export function createMembersService(options: MembersOptions = {}) {
           // Delivery records keep no value derived from the deleted member's address (`infra/email/README.md`).
           await forgetErasedAddressDigests(tx, context.gymId, id, before.email);
           await tx.delete(announcementRecipients).where(eq(announcementRecipients.memberId, id));
+          await tx.delete(announcementSmsRecipients).where(eq(announcementSmsRecipients.memberId, id));
           await tx.delete(announcementOptOuts).where(eq(announcementOptOuts.memberId, id));
           await tx.delete(householdUsers).where(eq(householdUsers.memberId, id));
           await tx.delete(signedLinks).where(eq(signedLinks.memberId, id));

@@ -23,7 +23,7 @@ export function AnnouncementWorkspace({ gymId, gymName, timezone, owner = false,
   const [attempt, setAttempt] = useState<AnnouncementAttempt>();
   // Poll only while a shown announcement is still being delivered.
   const history = useQuery({ queryKey: [...key, 'history', offset], queryFn: () => client.list(offset),
-    refetchInterval: query => query.state.data?.data.some(item => item.status === 'sending') ? 5000 : false });
+    refetchInterval: query => query.state.data?.data.some(item => item.status === 'sending' || (item.smsBody && !item.smsCompletedAt)) ? 5000 : false });
   const programs = useQuery({ queryKey: [...key, 'programs'], queryFn: () => client.programs() });
   const senders = useQuery({ queryKey: [...key, 'senders'], queryFn: () => client.senders() });
   const names = new Map(senders.data?.filter(profile => profile.userId).map(profile => [profile.userId, profile.displayName]));
@@ -46,7 +46,12 @@ export function AnnouncementWorkspace({ gymId, gymName, timezone, owner = false,
             <div className="min-w-0 lg:col-span-2"><dt className="text-sm text-muted-foreground">{text('sender')}</dt><dd>{names.get(item.createdBy) ?? text('senderId', { id: item.createdBy })}</dd></div>
             {(['sent', 'failed', 'skipped'] as const).map(count => <div key={count}><dt className="text-sm text-muted-foreground">{text(count)}</dt><dd>{formatCount(item[count])}</dd></div>)}
           </dl>
-          <p className="text-sm text-muted-foreground">{text(item.status + 'Status')}</p>
+          <p className="text-sm text-muted-foreground">{text(item.smsBody ? item.status === 'sent' ? 'emailSentStatus' : 'emailSendingStatus' : item.status + 'Status')}</p>
+          {item.smsBody && <div className="space-y-2 border-t pt-3">
+            <p>{text('smsHistory', { count: item.smsRecipientCount, sent: item.smsSent, failed: item.smsFailed, skipped: item.smsSkipped })}</p>
+            {item.smsScheduledFor && <p>{text('smsScheduled', { when: instantLabel(item.smsScheduledFor, timezone) })}</p>}
+            {!item.smsCompletedAt && <p>{text('smsPending')}</p>}
+          </div>}
         </Card></li>)}</ul>
         <Pager offset={offset} total={history.data.pagination.total} onChange={setOffset} label={text('pages')} previousLabel={text('previous')} nextLabel={text('next')}/>
       </div>}
