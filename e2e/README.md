@@ -24,10 +24,12 @@ pnpm --dir e2e test
 ```
 
 CI runs this suite in the **End-to-end** workflow on every task and integration branch, nightly,
-and on demand. `node e2e/ci.mjs shard-lists` assigns sorted whole files round-robin across four stacks,
-keeping the setup wizard on stack 1. Each runs `pnpm --dir e2e test --test-list coverage/shard-N.txt --no-deps`,
-with one worker per stack (`fullyParallel: false`). File assignment lets one-test isolation slices spread
-across stacks even when a preceding spec contains many short tests.
+and on demand. `node e2e/ci.mjs shard-lists` assigns whole files by recorded duration, largest first onto
+the least-loaded stack, counting the setup wizard's cost on stack 1. The checked-in `fileDurations` table in
+`ci.mjs` comes from a merged `results.json`; new files use a 20-second estimate. Refresh the table when
+the suite changes materially. Each stack runs `pnpm --dir e2e test --test-list coverage/shard-N.txt --no-deps`,
+with one worker (`fullyParallel: false`). `E2E_SHARD_COUNT` in the workflow is the single count for matrix
+generation and inventory selections; local commands read that workflow default when the environment is unset.
 The local command above still runs the entire suite on one stack. The suite includes portal recovery fixtures at 360 px and 1280 px that
 check notices in the page and editor, preserved drafts, and the shell's availability
 during recovery. The hosted Ubuntu runner already has Chromium's system libraries, so the workflow
@@ -46,11 +48,14 @@ can be retried with **Re-run all jobs**; uploads replace the same
 named artifacts so the merged report reflects the new attempt. Collection or
 stack-startup failures can leave a shard without a blob; the merge job fails and
 still uploads the available diagnostics. Shard 1 checks the single-stack test
-inventory against all four shard selections, rejecting missing and duplicate
+inventory against all shard selections, rejecting missing and duplicate
 tests, and the report job checks the merged result against that inventory.
+Tests must be declared in spec files; a helper-declared test fails selection with its filename.
+Merged-report runtime errors are reported with their details separately from collection errors.
 
 On `task/**` pushes, an independent `changed-specs-test` job runs only new or
-changed default-suite specs against the merge base with `main`, on its own fresh
+changed default-suite specs, plus specs transitively importing a changed helper under `e2e/specs` or
+`e2e/multi`, against the merge base with `main`, on its own fresh
 stack. It does not delay the shards and is skipped when there are no such specs
 (deleted files and the opt-in VM/UX specs are excluded). Its separate artifact is
 `e2e-changed-specs`. A `ux_pass` dispatch runs one UX stack, including its browser
@@ -261,7 +266,7 @@ to the gym's own hostname (`deliverStripeEvent` in `portal.ts`, shared with demo
   payment intents, none appears in the other account, every object the gym tagged carries its own gym ID, and the
   other key gets 404 for each by ID.
 * A cross-gym sweep (`isolation-{alpha-beta,beta-alpha}-{1,2,3}.spec.ts`, with public record-ID checks in `isolation.spec.ts`) of every non-public operation of the running OpenAPI document, in both
-  directions (232 operations when written). Nothing is listed by hand: a route added to the application is swept
+  directions. Operations are enumerated from the running document: a route added to the application is swept
   without widening a list. Only the demo routes, the single-gym setup wizard and the install's own release state
   are left out (`outOfScope` in `multi/probe.ts`, which fails if an exclusion stops matching a route), and every
   route of `authorization-inventory.json` must be swept or left out. Gym A's owner session, household login, kiosk
@@ -280,12 +285,17 @@ to the gym's own hostname (`deliverStripeEvent` in `portal.ts`, shared with demo
   payer login has no member identity; that same credential supplies its positive and cross-gym controls.
   Each direction partitions the complete operation list into three disjoint groups by position, one file per group;
   public reads use the same three-way partition. Every file checks that all six files exist and each sweeps its own group. Each file snapshots both gyms across the full route inventory.
-  The sweep prepares four staff-issued signed-link purposes; the two unsubscribe operations remain without
-  probe credentials. It asserts this existing gap explicitly so no other operation silently loses its probes.
+  The sweep prepares four staff-issued signed-link purposes and a real announcement-issued unsubscribe token.
+  Both unsubscribe operations receive that token on the other gym's hostname, in both directions. Every
+  operation must have probe credentials and receive a foreign-host probe. Each slice has a 300-second timeout.
 * A second pass aims a caller's own record in the path at gym B's IDs in the body (an own class or schedule
   template given gym B's programs, an own member given gym B's tag, an own household given gym B's member or
   login, a membership or plan given gym B's plan): every one must answer 404, and the controls then send the same
-  shape with the caller's own IDs and are accepted.
+  shape with the caller's own IDs and are accepted. An explicit `ownPathRoutes` list in `multi/isolation-sweep.ts`
+  names the expected own-path operations independently of body generation. Each slice must probe exactly its share
+  of those routes in each direction; inserting other operations cannot invalidate the guard by shifting slice counts.
+  That list is kept by hand: a new route whose body names another record gets an own-path probe, and the
+  guard fails until the route is added to `ownPathRoutes`.
 * Every ID-free read and public page of a gym is checked for the other gym's IDs and names, with and without a
   filter naming the other gym's records. Controls prove the same credentials read each of their own records
   (every GET with an ID in its path, but the photos nobody uploaded). The full, unfiltered lists of both gyms (IDs,

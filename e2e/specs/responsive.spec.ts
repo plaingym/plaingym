@@ -1,11 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { test, expect, type Page } from '@playwright/test';
-import { horizontalOverflow } from '../responsive.js';
+import { accessibleLayout, horizontalOverflow } from '../responsive.js';
 
 // These pages are served by the test itself: the layout check needs no install.
 test.use({ viewport: { width: 360, height: 740 }, trace: 'off', screenshot: 'off' });
 
 const wide = 'width: 600px; height: 20px';
+test('layout audit waits for a button color transition before measuring contrast', async ({ page }, info) => {
+  await page.setContent(`<!doctype html><html lang="en"><head><title>Transition check</title></head>
+    <body><main><button style="width:100px;height:48px;background:white;color:#eeeeee;transition:color 2s linear">Book</button></main></body></html>`);
+  await page.locator('button').evaluate(button => {
+    button.getBoundingClientRect();
+    button.style.color = '#333333';
+    // The starting color fails contrast; axe must measure the readable resting color after the transition.
+  });
+  expect(await page.locator('button').evaluate(button => button.getAnimations().some(animation => animation.playState === 'running'))).toBe(true);
+  await accessibleLayout(page, info, 'button-transition');
+  await expect(page.locator('button')).toHaveCSS('color', 'rgb(51, 51, 51)');
+  expect(await page.locator('button').evaluate(button => button.getAnimations().filter(animation => animation.playState === 'running'))).toEqual([]);
+});
+
 async function show(page: Page, html: string, rootStyle = '') {
   await page.setContent(`<!doctype html><html style="${rootStyle}"><body style="margin:0">${html}</body></html>`);
 }

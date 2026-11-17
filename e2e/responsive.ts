@@ -81,9 +81,19 @@ export async function accessibleLayout(page: Page, info: TestInfo, name: string)
   await expect(page.locator('html'), name + ': document language').toHaveAttribute('lang', /\S+/);
   // Let finite CSS transitions and animations settle first: axe measuring a button mid-transition reports
   // colors nobody sees at rest. Infinite ones (spinners) never finish, so they're skipped.
-  await page.evaluate(() => Promise.all(document.getAnimations()
-    .filter((animation) => Number.isFinite(Number(animation.effect?.getComputedTiming().endTime ?? Infinity)))
-    .map((animation) => animation.finished.catch(() => undefined))));
+  await page.evaluate(async () => {
+    // Recheck after a frame: finishing an animation can start another transition or mount new controls.
+    // A page that keeps starting new ones is measured after ten seconds rather than waiting out the test.
+    const deadline = performance.now() + 10_000;
+    while (performance.now() < deadline) {
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+      const running = document.getAnimations().filter(animation => animation.playState === 'running'
+        && Number.isFinite(Number(animation.effect?.getComputedTiming().endTime ?? Infinity)));
+      if (!running.length) break;
+      await Promise.race([Promise.all(running.map(animation => animation.finished.catch(() => undefined))),
+        new Promise(resolve => setTimeout(resolve, Math.max(0, deadline - performance.now())))]);
+    }
+  });
   expect(await horizontalOverflow(page), name + ': horizontal scroll').toBeUndefined();
   // An open modal dialog makes the rest of the page inert, so only its own controls can be touched.
   const small = await page.evaluate(() => {

@@ -18,10 +18,24 @@ on:
         default: false
 permissions:
   contents: read
+env:
+  E2E_SHARD_COUNT: '4'
 concurrency:
   group: e2e-${{ github.ref }}-${{ inputs.ux_pass && 'ux' || 'suite' }}
   cancel-in-progress: true
 jobs:
+  shards:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      shards: ${{ steps.matrix.outputs.shards }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.22.1
+      - id: matrix
+        run: node e2e/ci.mjs matrix
   reuse:
     # main only receives fast-forwards of integration branches whose CI passed, so the same commit has
     # already been checked: reuse that run's result instead of repeating it. Any lookup failure checks again.
@@ -41,14 +55,14 @@ jobs:
             --jq '[.workflow_runs[] | select(.event == "push" and .id != ${{ github.run_id }})] | length' || echo 0)"
           if [ "$count" -gt 0 ]; then echo passed=true; else echo passed=false; fi >> "$GITHUB_OUTPUT"
   e2e:
-    needs: reuse
+    needs: [reuse, shards]
     if: ${{ !cancelled() && !inputs.ux_pass && needs.reuse.outputs.passed != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: ${{ fromJSON(needs.shards.outputs.shards) }}
     env:
       E2E_BLOB_REPORT: '1'
     steps:
@@ -65,7 +79,7 @@ jobs:
       - run: pnpm --dir e2e exec playwright install chromium
         timeout-minutes: 5
       - run: pnpm --dir e2e check-types
-      - name: Assign whole files across the four stacks
+      - name: Assign whole files by recorded duration
         run: node e2e/ci.mjs shard-lists
       - name: Check every test belongs to exactly one shard
         if: matrix.shard == 1

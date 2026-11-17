@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { describe, expect, it } from 'vitest';
-import { changedSpecs, fileFilters, reportTests, shardFiles, verifyShards } from './ci.mjs';
+import { readFileSync } from 'node:fs';
+import { describe, expect, it, vi } from 'vitest';
+import { changedSpecs, fileFilters, reportTests, shardFiles, shardNumbers, verifyShards } from './ci.mjs';
 
 describe('browser CI selection and completeness', () => {
   it('selects only specs in the default suite, including new names from a rename', () => {
@@ -8,6 +9,27 @@ describe('browser CI selection and completeness', () => {
       'e2e/ux-pass/browsers.spec.ts', 'e2e/specs/ux-pass.spec.ts', 'e2e/specs/vm.spec.ts', 'apps/web/a.spec.ts']))
       .toEqual(['e2e/specs/new.spec.ts', 'e2e/multi/isolation.spec.ts']);
     expect(changedSpecs(['e2e/playwright.config.ts', 'README.md'])).toEqual([]);
+  });
+
+  it('selects importing specs when only a helper changes, through re-exports and nested helpers', () => {
+    const sources = new Map([
+      ['e2e/multi/probe.ts', 'export const probe = 1;'],
+      ['e2e/multi/isolation-sweep.ts', 'export { probe } from "./probe.js";'],
+      ['e2e/multi/isolation.spec.ts', 'import { probe } from "./isolation-sweep.js";'],
+      ['e2e/specs/mobile-admin.ts', 'import "../multi/probe.js";'],
+      ['e2e/specs/mobile.spec.ts', 'import { walk } from "./mobile-admin.js";'],
+      ['e2e/specs/other.spec.ts', 'import "../support.js";'],
+      ['e2e/specs/vm.spec.ts', 'import "../multi/probe.js";'],
+      ['e2e/specs/ux-pass.spec.ts', 'import "../multi/probe.js";'],
+    ]);
+    expect(changedSpecs(['e2e/multi/probe.ts'], sources)).toEqual([
+      'e2e/multi/isolation.spec.ts', 'e2e/specs/mobile.spec.ts',
+    ]);
+    expect(changedSpecs(['e2e/specs/mobile-admin.ts'], sources)).toEqual(['e2e/specs/mobile.spec.ts']);
+    expect(changedSpecs(['e2e/multi/probe.ts'], new Map([...sources].reverse())).sort()).toEqual([
+      'e2e/multi/isolation.spec.ts', 'e2e/specs/mobile.spec.ts',
+    ]);
+    expect(changedSpecs(['e2e/specs/other.spec.ts'], sources)).toEqual(['e2e/specs/other.spec.ts']);
   });
 
   it('passes literal file names through Playwright regex matching without widening the selection', () => {
@@ -24,6 +46,8 @@ describe('browser CI selection and completeness', () => {
       { projectName: 'fresh-setup' }, { projectName: 'members-mat' },
     ] }] }] }] })).toEqual(['fresh-setup:same', 'members-mat:same']);
     expect(() => reportTests({ errors: [{ message: 'collection failed' }], suites: [] })).toThrow('collect');
+    expect(() => reportTests({ errors: [{ message: 'worker teardown timeout' }], suites: [] }, 'merged run'))
+      .toThrow('merged run had runtime errors: [{"message":"worker teardown timeout"}]');
   });
 
   it('rejects missing and duplicate tests even when the total count matches', () => {
@@ -36,7 +60,7 @@ describe('browser CI selection and completeness', () => {
     expect(() => verifyShards(['a', 'a'], [['a']])).toThrow();
   });
 
-  it('spreads one-test files, keeps nested describes together, and pins the wizard to stack 1', () => {
+  it('places largest files on the least-loaded stack, counts the wizard and keeps nested describes together', () => {
     const spec = (file: string, projectName = 'multi-gym') => ({ file, id: file, tests: [{ projectName }] });
     const report = { suites: [
       { specs: [spec('fresh-setup.spec.ts', 'fresh-setup')] },
@@ -44,13 +68,46 @@ describe('browser CI selection and completeness', () => {
         { specs: [spec('../multi/a.spec.ts'), spec('../multi/c.spec.ts'), spec('../multi/d.spec.ts')] },
       ] },
     ] };
-    expect(shardFiles(report)).toEqual([
-      ['[fresh-setup] > fresh-setup.spec.ts', '[multi-gym] > ../multi/a.spec.ts'],
-      ['[multi-gym] > ../multi/b.spec.ts'],
-      ['[multi-gym] > ../multi/c.spec.ts'],
-      ['[multi-gym] > ../multi/d.spec.ts'],
+    const durations = { 'fresh-setup.spec.ts': 30, '../multi/a.spec.ts': 100, '../multi/b.spec.ts': 90,
+      '../multi/c.spec.ts': 20, '../multi/d.spec.ts': 10 };
+    expect(shardFiles(report, 3, durations)).toEqual([
+      ['[fresh-setup] > fresh-setup.spec.ts', '[multi-gym] > ../multi/c.spec.ts', '[multi-gym] > ../multi/d.spec.ts'],
+      ['[multi-gym] > ../multi/a.spec.ts'], ['[multi-gym] > ../multi/b.spec.ts'],
+    ]);
+    // Missing timings still assign every file exactly once, without splitting its describes.
+    expect(shardFiles(report, 3, {}).flat().sort()).toEqual([
+      '[fresh-setup] > fresh-setup.spec.ts', '[multi-gym] > ../multi/a.spec.ts', '[multi-gym] > ../multi/b.spec.ts',
+      '[multi-gym] > ../multi/c.spec.ts', '[multi-gym] > ../multi/d.spec.ts',
     ]);
     expect(() => shardFiles({ suites: [] })).toThrow('wizard');
     expect(() => shardFiles({ errors: [{ message: 'collection failed' }], suites: [] })).toThrow('collect');
+  });
+
+  it('uses declaration locations inside describes and rejects tests declared in helpers', () => {
+    const report = { suites: [{ file: 'fresh-setup.spec.ts', specs: [
+      { file: 'fresh-setup.spec.ts', id: 'wizard', tests: [{ projectName: 'fresh-setup' }] },
+    ] }, { file: 'wrapper.spec.ts', suites: [{ file: 'wrapper.spec.ts', specs: [
+      { file: 'actual.spec.ts', id: 'nested', tests: [{ projectName: 'members-mat' }] },
+    ] }] }] };
+    expect(shardFiles(report).flat()).toContain('[members-mat] > actual.spec.ts');
+    report.suites[1]!.suites![0]!.specs[0]!.file = 'helper.ts';
+    expect(() => shardFiles(report)).toThrow('Test declared outside a spec file: helper.ts');
+  });
+
+  it('shares the workflow shard count with matrix generation and inventory selections', () => {
+    const workflow = readFileSync(new URL('../.github/workflows/e2e.yml', import.meta.url), 'utf8');
+    expect(workflow).toContain('shard: ${{ fromJSON(needs.shards.outputs.shards) }}');
+    expect(workflow).toContain('run: node e2e/ci.mjs matrix');
+    expect(workflow).toContain('run: node e2e/ci.mjs inventory');
+    const count = workflow.match(/^ {2}E2E_SHARD_COUNT: '(\d+)'/m)![1]!;
+    expect(shardNumbers(count)).toHaveLength(Number(count));
+    vi.stubEnv('E2E_SHARD_COUNT', '3');
+    try {
+      expect(shardNumbers()).toEqual([1, 2, 3]);
+      expect(shardFiles({ suites: [{ specs: [
+        { file: 'fresh-setup.spec.ts', id: 'wizard', tests: [{ projectName: 'fresh-setup' }] },
+      ] }] })).toHaveLength(3);
+    } finally { vi.unstubAllEnvs(); }
+    for (const invalid of ['', '0', '-1', '1.5', 'bad', '65']) expect(() => shardNumbers(invalid)).toThrow('E2E_SHARD_COUNT');
   });
 });

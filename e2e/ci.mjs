@@ -1,25 +1,54 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { dirname, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const directory = dirname(fileURLToPath(import.meta.url));
 
 // Only the default suite: VM and UX captures have their own opt-in runs and setup paths.
-export function changedSpecs(names) {
-  return names.filter(name => /^e2e\/(specs|multi)\/.+\.spec\.ts$/.test(name)
-    && !/\/(vm|ux-pass)\.spec\.ts$/.test(name));
+const defaultSpec = name => /^e2e\/(specs|multi)\/.+\.spec\.ts$/.test(name)
+  && !/\/(vm|ux-pass)\.spec\.ts$/.test(name);
+
+function suiteSources() {
+  return new Map(['specs', 'multi'].flatMap(folder => readdirSync(resolve(directory, folder), { recursive: true })
+    .filter(name => String(name).endsWith('.ts')).map(name => {
+      const file = `e2e/${folder}/${String(name).replaceAll('\\', '/')}`;
+      return [file, readFileSync(resolve(directory, '..', file), 'utf8')];
+    })));
+}
+
+export function changedSpecs(names, sources = suiteSources()) {
+  const affected = new Set(names.filter(name => /^e2e\/(specs|multi)\/.+\.ts$/.test(name)));
+  // Follow relative imports and re-exports transitively, including a helper importing another helper.
+  let grew;
+  do {
+    grew = false;
+    for (const [file, source] of sources) {
+      if (affected.has(file)) continue;
+      const imports = [...source.matchAll(/(?:\bfrom\s*|\bimport\s*(?:\(\s*)?)['"]([^'"]+)['"]/g)];
+      if (imports.some(([, name]) => {
+        if (!name.startsWith('.')) return false;
+        const target = posix.normalize(posix.join(posix.dirname(file), name)).replace(/\.js$/, '.ts');
+        return affected.has(target) || affected.has(target + '.ts');
+      })) {
+        affected.add(file);
+        grew = true;
+      }
+    }
+  } while (grew);
+  return [...affected].filter(defaultSpec);
 }
 
 export function fileFilters(files) {
-  if (!files.length || changedSpecs(files).length !== files.length) throw new Error('Expected default-suite spec files');
+  if (!files.length || !files.every(defaultSpec)) throw new Error('Expected default-suite spec files');
   // Playwright's positional file arguments are regular expressions, not literal paths.
   return files.map(file => '(^|/)' + file.slice('e2e/'.length).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$');
 }
 
-export function reportTests(report) {
-  if (report.errors?.length) throw new Error('Playwright could not collect the suite: ' + JSON.stringify(report.errors));
+export function reportTests(report, label = 'collection') {
+  if (report.errors?.length) throw new Error((label === 'merged run'
+    ? 'Playwright merged run had runtime errors: ' : 'Playwright could not collect the suite: ') + JSON.stringify(report.errors));
   const tests = [];
   const visit = suite => {
     for (const spec of suite.specs ?? []) {
@@ -41,29 +70,67 @@ export function verifyShards(single, shards) {
   return { single: single.length, shards: shards.map(tests => tests.length), total: actual.length };
 }
 
-export function shardFiles(report) {
+export function shardNumbers(value = process.env.E2E_SHARD_COUNT ?? readFileSync(resolve(directory, '../.github/workflows/e2e.yml'), 'utf8')
+  .match(/^ {2}E2E_SHARD_COUNT: ['"]?(\d+)/m)?.[1]) {
+  const count = Number(value);
+  if (!Number.isInteger(count) || count < 1 || count > 64) throw new Error('Expected E2E_SHARD_COUNT between 1 and 64');
+  return Array.from({ length: count }, (_, index) => index + 1);
+}
+
+// Milliseconds summed per file from the merged End-to-end report, run 43987782721.
+// Refresh from results.json when the suite changes materially. New files use a conservative 20s estimate.
+export const fileDurations = {
+  'account-email.spec.ts': 5661, 'card-removal.spec.ts': 2688, 'customer-card-import.spec.ts': 6605,
+  'demo-join.spec.ts': 56153, 'discount-screens.spec.ts': 27015, 'health-backups.spec.ts': 9251,
+  'intake-retry.spec.ts': 1340, 'long-names.spec.ts': 25120, 'mobile-admin-phone.spec.ts': 15132,
+  'mobile-public.spec.ts': 15874, 'portal-home.spec.ts': 3172, 'responsive.spec.ts': 1081,
+  'settings-dashboard.spec.ts': 16057, 'sign-in-limits.spec.ts': 1037, 'website-branding.spec.ts': 2728,
+  '../multi/flows.spec.ts': 38486, '../multi/isolation-beta-alpha-1.spec.ts': 8135,
+  'announcements.spec.ts': 18726, 'changed-fields-saves.spec.ts': 6748, 'demo-copy.spec.ts': 3574,
+  'demo-landing.spec.ts': 24645, 'display-counts.spec.ts': 5564, 'household-isolation.spec.ts': 6263,
+  'invoice-filter.spec.ts': 1812, 'mat-flow.spec.ts': 11503, 'mobile-kiosk-keyboard.spec.ts': 8701,
+  'mobile.spec.ts': 15885, 'portal-polish.spec.ts': 10568, 'restore-payments.spec.ts': 5995,
+  'settings-sign-in.spec.ts': 9908, 'sms-consent.spec.ts': 5134, 'website.spec.ts': 16095,
+  '../multi/isolation-alpha-beta-1.spec.ts': 19729, '../multi/isolation-beta-alpha-2.spec.ts': 8781,
+  'authorization.spec.ts': 52788, 'credit-messages.spec.ts': 2917, 'demo-discovery.spec.ts': 1879,
+  'demo-links.spec.ts': 3211, 'downloads.spec.ts': 386, 'imports-catalog.spec.ts': 7289,
+  'invoice-void.spec.ts': 2393, 'members-staff-screens.spec.ts': 5623, 'mobile-portal-keyboard.spec.ts': 11456,
+  'pack-screens.spec.ts': 18245, 'portal-recovery.spec.ts': 3900, 'schedule-cancel-started.spec.ts': 3908,
+  'settings-sms.spec.ts': 4696, 'sms-go-live.spec.ts': 5711, '../multi/isolation-alpha-beta-2.spec.ts': 19555,
+  '../multi/isolation-beta-alpha-3.spec.ts': 6616, 'fresh-setup.spec.ts': 24919, 'booking-cutoff.spec.ts': 13561,
+  'csp.spec.ts': 3025, 'demo-isolation.spec.ts': 5708, 'dialog-scroll.spec.ts': 2563, 'freeze-history.spec.ts': 4644,
+  'imports-status.spec.ts': 7955, 'leads-leftovers.spec.ts': 8362, 'mobile-admin-desktop.spec.ts': 19057,
+  'mobile-portal.spec.ts': 17834, 'pay-link-confirmation.spec.ts': 5033, 'price-change-screens.spec.ts': 10679,
+  'send-generations.spec.ts': 4974, 'setup-kiosk-demo.spec.ts': 24360, 'waivers.spec.ts': 22643,
+  '../multi/00-harness.spec.ts': 824, '../multi/isolation-alpha-beta-3.spec.ts': 8555, '../multi/isolation.spec.ts': 486,
+};
+
+export function shardFiles(report, count = shardNumbers().length, durations = fileDurations) {
   reportTests(report); // Reject collection errors before writing a partial selection.
   const files = new Map();
-  const visit = (suite, ownerFile = suite.file) => {
+  const visit = suite => {
     for (const spec of suite.specs ?? []) for (const test of spec.tests) {
-      // A helper can declare a test for a spec wrapper: its declaration location is
-      // not the discoverable spec file. Keep the top-level suite's owning filename.
-      const file = (ownerFile ?? spec.file).replaceAll('\\', '/');
+      const file = spec.file.replaceAll('\\', '/');
+      if (!file.endsWith('.spec.ts')) throw new Error(`Test declared outside a spec file: ${file}`);
       if (!files.has(file)) files.set(file, new Set());
       files.get(file).add(`[${test.projectName}] > ${file}`);
     }
-    for (const child of suite.suites ?? []) visit(child, ownerFile ?? child.file);
+    for (const child of suite.suites ?? []) visit(child);
   };
   for (const suite of report.suites) visit(suite);
-  const shards = [[], [], [], []];
+  const shards = shardNumbers(count).map(() => []), loads = shards.map(() => 0);
+  const duration = file => durations[file] ?? 20_000;
   const wizard = [...files].filter(([, lines]) => [...lines].some(line => line.startsWith('[fresh-setup]')));
   if (wizard.length !== 1) throw new Error('Expected exactly one wizard file');
   shards[0].push(...wizard[0][1]);
-  // Balance by whole files, not test counts: the many small tests in one file must not
-  // push every one-test isolation slice onto the last shard. Keep nested describes together.
-  [...files.keys()].filter(file => file !== wizard[0][0]).sort().forEach((file, index) => {
-    shards[index % shards.length].push(...files.get(file));
-  });
+  loads[0] = duration(wizard[0][0]);
+  // Largest files go first onto the least-loaded stack, counting the wizard's cost on stack 1.
+  [...files.keys()].filter(file => file !== wizard[0][0])
+    .sort((a, b) => duration(b) - duration(a) || a.localeCompare(b)).forEach(file => {
+      const index = loads.indexOf(Math.min(...loads));
+      shards[index].push(...files.get(file));
+      loads[index] += duration(file);
+    });
   return shards;
 }
 
@@ -84,7 +151,9 @@ function writeShardLists(report) {
 }
 
 function main(command) {
-  if (command === 'changed-specs') {
+  if (command === 'matrix') {
+    appendFileSync(process.env.GITHUB_OUTPUT, `shards=${JSON.stringify(shardNumbers())}\n`);
+  } else if (command === 'changed-specs') {
     const names = execFileSync('git', ['diff', '--name-only', '--diff-filter=ACMRT', '-z', 'origin/main...HEAD', '--', 'e2e/'],
       { cwd: resolve(directory, '..'), encoding: 'utf8', timeout: 30_000 }).split('\0').filter(Boolean);
     const files = changedSpecs(names);
@@ -111,10 +180,10 @@ function main(command) {
   } else if (command === 'verify-report') {
     const inventory = JSON.parse(readFileSync(resolve(directory, 'coverage/shards/e2e-shard-1/inventory.json'), 'utf8'));
     const report = JSON.parse(readFileSync(resolve(directory, 'coverage/results.json'), 'utf8'));
-    const counts = verifyShards(inventory.tests, [reportTests(report)]);
+    const counts = verifyShards(inventory.tests, [reportTests(report, 'merged run')]);
     console.log(`Merged report matches single-stack inventory: ${counts.total} tests; ${JSON.stringify(report.stats)}`);
   } else {
-    throw new Error('Expected changed-specs, run-changed, shard-lists, inventory or verify-report');
+    throw new Error('Expected matrix, changed-specs, run-changed, shard-lists, inventory or verify-report');
   }
 }
 

@@ -15,6 +15,26 @@ const refusedWith200: Record<string, unknown> = {
   'POST /api/kiosk/checkin': { data: [{ status: 'see_front_desk' }] },
   'POST /api/kiosk/checkin/qr': { data: { status: 'see_front_desk' } },
 };
+// Coverage guard independent of bodiesOf/namesTarget: these bodies must aim foreign IDs at an owned path.
+// Select each slice's expectations by route identity, so inserting an operation cannot move a numeric floor.
+const ownPathRoutes = [
+  'PATCH /api/billing/charge-types/{chargeTypeId}',
+  'PATCH /api/billing/class-packs/{packId}',
+  'PATCH /api/billing/discounts/{discountId}',
+  'PATCH /api/billing/plans/{planId}',
+  'PATCH /api/programs/{id}',
+  'PATCH /api/staff/profiles/{staffProfileId}',
+  'POST /api/billing/memberships/{membershipId}/switch',
+  'POST /api/billing/packs/{packId}/sell',
+  'POST /api/households/{householdId}/portal-invitations',
+  'POST /api/households/{householdId}/users',
+  'POST /api/members/{memberId}/tags',
+  'POST /api/portal/members/{memberId}/bookings',
+  'POST /api/schedule/sessions/{id}/coach',
+  'PUT /api/billing/memberships/{membershipId}/discount',
+  'PUT /api/schedule/sessions/{id}',
+  'PUT /api/schedule/templates/{id}',
+];
 interface SignatureImage { signatureImageKey: string; signatureImageHash: string }
 type Images = Record<'link' | 'household' | 'staff' | 'onboarding', SignatureImage>;
 
@@ -33,7 +53,7 @@ class Sweep {
     // route an adult member login, so both its positive and foreign-gym probes reach the template.
     const email = `document-reader-${crypto.randomUUID()}@${from.slug}.example.invalid`;
     const member = (await from.owner.json<{ data: { id: string } }>('/api/members', 'POST', {
-      householdId: from.householdId, firstName: 'Document', lastName: 'Reader', dateOfBirth: '1990-01-01', email,
+      householdId: from.householdId, firstName: 'Document', lastName: 'Reader', dateOfBirth: '1990-01-01', email, status: 'active',
     })).data;
     const invitation = (await from.owner.json<{ data: { invitationUrl: string } }>(`/api/households/${from.householdId}/portal-invitations`, 'POST',
       { email, scope: 'member', memberId: member.id, delivery: 'print' })).data;
@@ -45,6 +65,17 @@ class Sweep {
       const created = await from.owner.json<{ data: { token: string } }>('/api/links', 'POST', { purpose, householdId: from.householdId, expiresAt, ...extra });
       this.links[purpose] = new Client(from.origin, { authorization: 'Bearer ' + created.data.token });
     }
+    // Unsubscribe credentials can only be issued by a real announcement, never by the staff link endpoint.
+    const beforeAnnouncement = await mailIds();
+    const announcement = (await from.owner.json<{ data: { id: string } }>('/api/announcements/send', 'POST', {
+      subject: 'Isolation sweep notice', body: 'Class notice.', sendGeneration: crypto.randomUUID(), confirm: true,
+    })).data;
+    const unsubscribe = await mailLink(email, /^\/l\//, beforeAnnouncement);
+    this.links.unsubscribe = new Client(from.origin, { authorization: 'Bearer ' + unsubscribe.pathname.slice('/l/'.length) });
+    expect((await this.links.unsubscribe.request('/api/links/unsubscribe')).status).toBe(200);
+    // All recipients finish before snapshots, so a late delivery cannot change the announcement during the sweep.
+    await expect.poll(async () => (await from.owner.json<{ data: { status: string } }>(`/api/announcements/${announcement.id}`)).data.status)
+      .toBe('sent');
     // Real signature images of the caller's own, so a waiver signed for the target's member or template fails on the gym boundary.
     const pngBase64 = this.pngBase64 = signaturePng().toString('base64'), image = async (client: Client, path: string, body: Record<string, unknown>) =>
       (await client.json<{ data: SignatureImage }>(path, 'POST', body)).data;
@@ -184,7 +215,7 @@ async function sweepReads(from: Context, own: Target, target: Target, routes: Ro
 }
 
 export async function isolationSweep(direction: 'alpha-beta' | 'beta-alpha', part: 0 | 1 | 2) {
-  test.setTimeout(900_000);
+  test.setTimeout(300_000);
   const [alpha, beta] = await multiGyms();
   const [alphaTarget, betaTarget] = [await targetOf(alpha), await targetOf(beta)];
   const document = await alpha.owner.json<Document>('/api/openapi.json');
@@ -213,29 +244,31 @@ export async function isolationSweep(direction: 'alpha-beta' | 'beta-alpha', par
     expect(swept.filter((route) => pathFor(route, target).includes(missingId)).map(routeKey), 'routes whose path names no fixture record').toEqual([]);
 
   // Each caller's own signed links and signature images are made first, so the gyms' full lists are compared over the sweep alone.
-  const sweeps = [direction === 'alpha-beta' ? new Sweep(alpha, beta, alphaTarget, betaTarget, document) : new Sweep(beta, alpha, betaTarget, alphaTarget, document)];
-  for (const sweep of sweeps) await sweep.prepare();
+  const sweep = direction === 'alpha-beta' ? new Sweep(alpha, beta, alphaTarget, betaTarget, document) : new Sweep(beta, alpha, betaTarget, alphaTarget, document);
+  await sweep.prepare();
   const snapshots = async () => [await snapshot(alpha, alphaTarget, allRoutes), await snapshot(beta, betaTarget, allRoutes)];
   const before = await snapshots();
   const results: string[] = [], statuses = new Map<number, number>(), secondPass: string[] = [];
-  for (const sweep of sweeps) {
-    for (const route of swept) await sweep.aimAtTarget(route, results);
-    for (const route of swept) secondPass.push(...await sweep.aimOwnPath(route, statuses));
-  }
-  for (const sweep of sweeps) await sweepReads(sweep.from, sweep.own, sweep.target, swept, open);
+  for (const route of swept) await sweep.aimAtTarget(route, results);
+  for (const route of swept) secondPass.push(...await sweep.aimOwnPath(route, statuses));
+  await sweepReads(sweep.from, sweep.own, sweep.target, swept, open);
   console.log(`Cross-gym sweep: ${results.length} requests aimed at the other gym; ${secondPass.length} own-path probes (statuses ${JSON.stringify(Object.fromEntries(statuses))})`);
-  // Preserve the original sweep's credential coverage: unsubscribe tokens are issued by announcements,
-  // not the four staff-issued link purposes prepared above. Make that existing gap explicit so no
-  // additional route can silently lose its credential handler during a split.
-  const sweep = sweeps[0]!;
   const withoutCredentials = swept.filter(route => !sweep.credentials(route, sweep.to.origin));
-  expect(withoutCredentials.filter(route => route.kind !== 'signed_link' || route.purpose !== 'unsubscribe')
-    .map(routeKey), 'unexpected routes without probe credentials').toEqual([]);
+  expect(withoutCredentials.map(routeKey), 'operations without probe credentials').toEqual([]);
   const foreignRoutes = new Set(results.filter(line => line.includes(' foreign host '))
     .map(line => line.split(' foreign host ')[1]!.replace(/ \d+$/, '')));
   expect([...foreignRoutes].sort(), 'every credentialed operation received a foreign-host probe')
-    .toEqual(swept.filter(route => !withoutCredentials.includes(route)).map(routeKey).sort());
-  expect(secondPass.length).toBeGreaterThan(0);
+    .toEqual(swept.map(routeKey).sort());
+  const unsubscribeRoutes = allRoutes.filter(route => route.purpose === 'unsubscribe');
+  expect(unsubscribeRoutes.map(routeKey).sort(), 'both unsubscribe operations are in the sweep')
+    .toEqual(['GET /api/links/unsubscribe', 'POST /api/links/unsubscribe']);
+  for (const route of unsubscribeRoutes.filter(route => swept.includes(route)))
+    expect(foreignRoutes.has(routeKey(route)), `${direction}: unsubscribe token reaches ${routeKey(route)} on the other host`).toBe(true);
+  const operationKeys = allRoutes.map(routeKey), sliceKeys = swept.map(routeKey);
+  expect(operationKeys, 'own-path coverage guard names current operations').toEqual(expect.arrayContaining(ownPathRoutes));
+  const ownPathProbed = [...new Set(secondPass.map(line => line.slice(sweep.from.slug.length + 1).replace(/ \d+$/, '')))];
+  expect(ownPathProbed.sort(), `${direction} group ${part + 1}: every expected own-path route was probed`)
+    .toEqual(ownPathRoutes.filter(key => sliceKeys.includes(key)).sort());
   // A probe that reaches the gym check is refused for the other gym's record: a request refused for its own shape (or a missing
   // credential) would prove nothing about the boundary, so no request that reaches a gym's own host may be.
   expect([...statuses.keys()].filter((status) => status !== 404), 'own-path probes answer 404 for the other gym\'s record').toEqual([]);
@@ -246,7 +279,7 @@ export async function isolationSweep(direction: 'alpha-beta' | 'beta-alpha', par
   expect(await snapshots()).toEqual(before);
 
   // Controls: the same credentials do reach the gym's own records, so the refusals above are the gym boundary and not broken requests.
-  for (const sweep of sweeps) {
+  {
     const { from: gym, own } = sweep;
     const unread: string[] = [];
     for (const route of swept.filter((entry) => entry.method === 'GET' && pathParams(entry).length && entry.kind !== 'signed_link' && entry.kind !== 'kiosk')) {
@@ -266,7 +299,8 @@ export async function isolationSweep(direction: 'alpha-beta' | 'beta-alpha', par
     expect((await gym.device.request('/api/kiosk/lookup', 'POST', { name: gym.student.fullName, pin: gym.pin })).status).toBe(200);
   }
   // A body naming the caller's own records, in the shape the second pass sends the other gym's, is accepted: the shape is valid.
-  for (const { from: gym } of sweeps) {
+  {
+    const { from: gym } = sweep;
     const session = (await gym.owner.json<{ data: { revision: number; startsAt: string; endsAt: string; name: string } }>('/api/schedule/sessions/' + gym.sessionId)).data;
     await gym.owner.json('/api/schedule/sessions/' + gym.sessionId, 'PUT', { name: session.name, startsAt: session.startsAt, endsAt: session.endsAt, coachId: null,
       capacity: 10, notes: null, kind: 'class', programIds: [gym.program.id], tagIds: [gym.classTagId], revision: session.revision });
@@ -276,7 +310,8 @@ export async function isolationSweep(direction: 'alpha-beta' | 'beta-alpha', par
     expect((await gym.owner.request(`/api/members/${gym.student.id}/tags`, 'POST', { tagId: gym.tagId })).status).toBeLessThan(300);
   }
   // Controls for the body-aimed kiosk probes, last because they record visits: a gym's own device does check in its own code.
-  for (const { from: gym, own: target } of sweeps) {
+  {
+    const { from: gym, own: target } = sweep;
     const scanned = await gym.device.json<{ data: { status: string } }>('/api/kiosk/checkin/qr', 'POST', { code: target.checkinCode, sessionId: null });
     expect(['checked_in', 'already_checked_in'], `${gym.slug} scans its own code`).toContain(scanned.data.status);
   }

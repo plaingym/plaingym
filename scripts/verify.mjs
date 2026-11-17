@@ -30,6 +30,7 @@ const sourceScanningTests = [
   'apps/server/src/public/links/styles.build.test.ts',
   'apps/server/test/contracts.test.ts',
   'apps/server/test/packs.test.ts',
+  'e2e/ci.test.ts',
   'packages/db/src/budget.test.ts',
   'packages/shared/src/contracts/imports.test.ts',
   'packages/shared/src/money.sweep.test.ts',
