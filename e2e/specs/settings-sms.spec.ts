@@ -8,6 +8,7 @@ const session = { userId: '00000000-0000-7000-8000-000000000002', displayName: '
 const login = { password: true, magicLink: false };
 const settings = { ...gym, slug: 'sms-settings', address: {}, branding: {}, websiteEnabled: false, existingSiteUrl: null,
   bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false, billingEnabled: false, memberEmailsEnabled: false,
+  memberSmsEnabled: false, smsDailyCap: 1000,
   retryDays: [3, 7], dropInChargeTypeId: null, revision: 3, createdAt: '2026-11-01T12:00:00Z', updatedAt: '2026-11-01T12:00:00Z' };
 const sms = { configured: false, provider: 'twilio', unreadable: false, accountSid: null as string | null,
   authKind: null as 'token' | 'apiKey' | null, from: null as string | null, messagingServiceSid: null as string | null, baseUrl: 'https://api.twilio.com' };
@@ -45,6 +46,8 @@ for (const width of [360, 1280]) {
       return route.fulfill({ status: 404, json: { error: { code: 'not_found' } } });
     });
     await page.goto(gymOrigin + '/admin/settings');
+    const cap = page.getByRole('spinbutton', { name: 'Daily text cap' });
+    await cap.fill('25');
     const section = page.getByRole('region', { name: 'SMS', exact: true });
     await page.getByRole('button', { name: 'Connect SMS provider' }).click();
     const form = page.getByRole('form', { name: 'SMS provider settings' });
@@ -57,6 +60,7 @@ for (const width of [360, 1280]) {
     await page.screenshot({ path: info.outputPath('sms-token-form-' + width + '.png'), fullPage: true });
     await form.getByRole('button', { name: 'Send test text and save' }).click();
     await expect(section.getByRole('status')).toContainText('SMS settings are saved');
+    await expect(cap).toHaveValue('25');
     expect(requests).toEqual([{ revision: 3, provider: 'twilio', accountSid, auth: { token: 'test-token' },
       sender: { from: '+14155552671' }, testTo: '+1 (202) 555-0123', baseUrl: 'https://api.twilio.com' }]);
     await expect(page.getByText('Credentials are stored securely', { exact: false })).toBeVisible();

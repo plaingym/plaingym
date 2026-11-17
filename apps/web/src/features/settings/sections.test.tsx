@@ -19,6 +19,7 @@ const mat: ChargeType = { id: id(10), createdAt: '2026-10-26T12:00:00Z', name: '
 const reply = (status: number, data?: unknown) => ({ response: { ok: status < 300, status }, data });
 let gym: GymSettings;
 const checklist = () => ({ data: { revision: gym.revision, billingEnabled: gym.billingEnabled, memberEmailsEnabled: gym.memberEmailsEnabled,
+  memberSmsEnabled: gym.memberSmsEnabled,
   items: goLiveChecklistItemSchema.shape.id.options.map((item) => ({ id: item, status: 'ready', message: 'Message for ' + item })) } });
 /** The server's rule for every save: the revision sent must be the gym's current one, and each save moves it on. */
 const fakeServer = () => {

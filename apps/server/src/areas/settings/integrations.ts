@@ -39,6 +39,9 @@ export function checkIntegrationsEnvironment(mode: AuthConfig['tenancy'], env: N
 }
 
 type Gym = typeof gyms.$inferSelect;
+export type IntegrationSave = (context: MutationContext, revision: number,
+  change: (gym: Gym, tx: Transaction) => Promise<{ set: Partial<Gym>; action: string; before: Record<string, unknown>; after: (gym: Gym) => Record<string, unknown> }>,
+  options?: { emailTestSent?: boolean }) => Promise<Gym>;
 /** A new destination and key waiting for the owner to prove they saved the private key. Kept in the gym's opaque settings. */
 // Read from the gym's settings: a newer release may store more keys, which this one ignores after a rollback.
 const storedDestinationSchema = z.object(backupDestinationSchema.shape);
@@ -93,8 +96,6 @@ export function createIntegrationsService(options: IntegrationsOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const sandbox = options.sandbox ?? false, single = options.config.tenancy === 'single';
   const integrationsEditable = gymIntegrationsEditable(options.config.tenancy, options.env);
-  const sms = createSmsIntegration({ key: options.key, scope, clock, tenancy: options.config.tenancy, sandbox,
-    editable: integrationsEditable, ...(options.smsFactory ? { smsFactory: options.smsFactory } : {}) });
   // A sandbox mails through the demo outbox and never reads the install's SMTP settings (as the runtime doesn't).
   const installSmtp = !sandbox && smtpFromEnvironment(options.env) !== null;
   const google = createGoogleClientResolver({ key: options.key, env: options.env, tenancy: options.config.tenancy, scope });
@@ -411,9 +412,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     return gym;
   }
   /** One short transaction: lock the gym, check the revision, apply the change and write its audit. */
-  async function save(context: MutationContext, revision: number,
-    change: (gym: Gym, tx: Transaction) => Promise<{ set: Partial<Gym>; action: string; before: Record<string, unknown>; after: (gym: Gym) => Record<string, unknown> }>,
-    options: { emailTestSent?: boolean } = {}) {
+  const save: IntegrationSave = async (context, revision, change, options = {}) => {
     const userId = userOf(context);
     return scope(context.gymId, async (tx) => {
       const [before] = await readGym(tx, context.gymId).for('update');
@@ -429,7 +428,9 @@ export function createIntegrationsService(options: IntegrationsOptions) {
         action: 'integrations.email_tested', targetType: 'gym', targetId: context.gymId, after: { test: 'sent' }, occurredAt: clock.now() });
       return after;
     });
-  }
+  };
+  const sms = createSmsIntegration({ key: options.key, scope, clock, tenancy: options.config.tenancy, sandbox,
+    assertChangeable, userOf, assertCurrent, save, ...(options.smsFactory ? { smsFactory: options.smsFactory } : {}) });
   /**
    * Whether `apiKey` can read an object the gym's current Stripe account created: a key for another account (or the other
    * mode) gets a 404 `resource_missing`. Stripe keeps deleted customers readable, so a deleted one still matches.

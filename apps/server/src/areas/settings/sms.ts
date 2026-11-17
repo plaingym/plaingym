@@ -3,29 +3,33 @@ import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { forGym, gyms } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
+import { smsSidSchema as sid, smsBaseUrlSchema } from '@plaingym/shared/contracts';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { TwilioSms, OutboxSms, type Sms } from '../../infra/sms/index.js';
 import { decryptSecret, encryptSecret } from '../../core/secrets.js';
 import { clock as systemClock } from '../../core/clock.js';
 import { readStoredSecret } from './unreadable-secret.js';
 
-const sid = (prefix: string) => z.string().regex(new RegExp(`^${prefix}[0-9a-fA-F]{32}$`));
 export const twilioBaseUrl = 'https://api.twilio.com';
-const baseSchema = z.url().refine(value => {
-  try {
-    const url = new URL(value);
-    return url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash;
-  } catch { return false; }
-});
 export const storedSmsSchema = z.strictObject({
   accountSid: sid('AC'),
   auth: z.union([z.strictObject({ token: z.string().min(1).max(1024) }), z.strictObject({ apiKey: sid('SK'), secret: z.string().min(1).max(1024) })]),
   sender: z.union([z.strictObject({ from: z.string().regex(/^[+][1-9][0-9]{1,14}$/) }), z.strictObject({ messagingServiceSid: sid('MG') })]),
-  baseUrl: baseSchema.optional(),
+  baseUrl: smsBaseUrlSchema.optional(),
 });
 export type StoredSmsConfig = z.infer<typeof storedSmsSchema>;
-// Ignore additional top-level keys written by a newer release.
-const readSmsSchema = z.object(storedSmsSchema.shape);
+// Ignore additional keys written by a newer release, including inside auth and sender.
+const readSmsSchema = z.object({ ...storedSmsSchema.shape,
+  auth: z.union([z.object(storedSmsSchema.shape.auth.options[0].shape), z.object(storedSmsSchema.shape.auth.options[1].shape)]),
+  sender: z.union([z.object(storedSmsSchema.shape.sender.options[0].shape), z.object(storedSmsSchema.shape.sender.options[1].shape)]),
+});
+export function readSmsConfig(key: Buffer, tenancy: 'single' | 'multi', gymId: string, stored: string | null): StoredSmsConfig | null {
+  return readStoredSecret(key, 'sms_config', gymId, stored, () => {
+    const config = readSmsSchema.parse(JSON.parse(decryptSecret(key, { secretClass: 'sms_config', owner: gymId }, stored!)));
+    if (tenancy === 'multi' && new URL(config.baseUrl ?? twilioBaseUrl).href !== twilioBaseUrl + '/') throw new Error('SMS provider base is unavailable');
+    return config;
+  });
+}
 export function encryptSmsConfig(key: Buffer, gymId: string, config: StoredSmsConfig): string {
   return encryptSecret(key, { secretClass: 'sms_config', owner: gymId }, JSON.stringify(storedSmsSchema.parse(config)));
 }
@@ -46,11 +50,7 @@ export function createSmsResolver(options: {
       return { gym, config: null, unreadable: false };
     }
     const [gym] = await scope(gymId, tx => tx.select({ id: gyms.id, name: gyms.name, secret: gyms.smsConfig }).from(gyms).where(eq(gyms.id, gymId)));
-    const config = readStoredSecret(options.key, 'sms_config', gymId, gym?.secret ?? null, () => {
-      const value = readSmsSchema.parse(JSON.parse(decryptSecret(options.key, { secretClass: 'sms_config', owner: gymId }, gym!.secret!)));
-      if (options.tenancy === 'multi' && new URL(value.baseUrl ?? twilioBaseUrl).href !== twilioBaseUrl + '/') throw new Error('SMS provider base is unavailable');
-      return value;
-    });
+    const config = readSmsConfig(options.key, options.tenancy, gymId, gym?.secret ?? null);
     return { gym, config, unreadable: !!gym?.secret && !config };
   }
   async function resolve(gymId: string): Promise<ResolvedSms | null> {

@@ -2,6 +2,7 @@
   "tile.sms": "SMS",
   "smsConfigured": "The gym's saved provider handles member texts.",
   "smsMissing": "No SMS provider is configured.",
+  "smsOnWithoutProvider": "Member texts are on, but cannot be sent until a working SMS provider is saved.",
   "smsDemo": "Demo texts are captured in the in-app outbox; no provider is contacted.",
   "smsOff": "Member texts are off. Turn them on in Go-live when ready.",
   "smsUnreadable": "The saved SMS settings could not be read. Replace or remove them in Settings.",

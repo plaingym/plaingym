@@ -660,10 +660,13 @@ Old versions and documents referenced by signatures remain retained after retire
   normalized number through the raw adapter, outside transactions; failed checks
   or tests leave the stored config unchanged. A revision check guards both the
   initial check and the final encrypted write. Audits record only account SID,
-  auth kind and sender (`integrations.sms_saved` / `integrations.sms_removed`),
+  auth kind, sender and resulting gym revision (`integrations.sms_saved` / `integrations.sms_removed`),
   or the test outcome (`integrations.sms_tested`). Demo saves are refused before
   any provider call. Multi-gym installs accept only Twilio's URL; single-gym
   installs may use an HTTPS Twilio-compatible provider URL.
+  Settings and delivery share a config reader that ignores newer nested keys
+  after rollback; new writes remain strict. Failed provider tests log only the
+  error name and acceptance status, and unexpected errors return 500.
   Phone numbers and consent are gym-scoped personal data. Consent belongs to the
   normalized number and is checked against the current phone immediately before
   delivery. Household billing phones have separate notices consent. Member erasure
@@ -690,6 +693,8 @@ Old versions and documents referenced by signatures remain retained after retire
   The go-live SMS switch requires `go_live.manage` and a readable provider before
   enabling; disabling requires no provider. Cap edits require `integrations.manage`,
   use the gym revision and audit only the old and new cap (1–100,000, default 1,000).
+  Caps remain editable in sandboxes and on operator-managed installs because
+  they change no credentials.
   Health exposes only configuration status, switch, cap, local-day counts and last
   test metadata, never recipients. Outbox list/detail/preview require `settings.manage`
   in the requesting demo gym; texts have no HTML preview. Restore turns the

@@ -55,7 +55,7 @@ export const billingRulesSchema = z.strictObject({
 export const dropInSettingsSchema = z.strictObject({
   dropInChargeTypeId: idSchema.nullable().describe('One of the gym\'s own charge types, or null for no listed drop-in fee.'),
 });
-export const goLiveSwitchesSchema = z.strictObject({ billingEnabled: z.boolean(), memberEmailsEnabled: z.boolean(), memberSmsEnabled: z.boolean().default(false) });
+export const goLiveSwitchesSchema = z.strictObject({ billingEnabled: z.boolean(), memberEmailsEnabled: z.boolean(), memberSmsEnabled: z.boolean() });
 export const smsDailyCapSchema = z.int().min(1).max(100_000);
 export const updateSmsDailyCapRequestSchema = z.strictObject({ revision: revisionSchema, smsDailyCap: smsDailyCapSchema });
 /** An allowlist projection: credentials, PIN/QR keys, and opaque settings never leave the service. */
@@ -64,7 +64,7 @@ export const gymSettingsSchema = z.strictObject({
   address: gymAddressSchema, branding: gymBrandingSchema,
   websiteEnabled: z.boolean(), existingSiteUrl: z.url({ protocol: /^https?$/ }).nullable(),
   currency: currencySchema, ...bookingRulesSchema.shape, ...billingRulesSchema.shape, ...dropInSettingsSchema.shape,
-  ...goLiveSwitchesSchema.shape, smsDailyCap: smsDailyCapSchema.default(1000), revision: revisionSchema, createdAt: instantSchema, updatedAt: instantSchema,
+  ...goLiveSwitchesSchema.shape, smsDailyCap: smsDailyCapSchema, revision: revisionSchema, createdAt: instantSchema, updatedAt: instantSchema,
 });
 /** A change names the new timezone under the shared rule; leave `timezone` out to keep a stored zone as it is. */
 export const updateGymSettingsRequestSchema = gymSettingsSchema.pick({
@@ -81,7 +81,7 @@ export const updateGymCurrencyRequestSchema = z.strictObject({ revision: revisio
 /** A confirmation binds the reviewed dates to the membership revisions the owner saw. */
 export const goLivePastDueDateSchema = z.strictObject({ id: idSchema, revision: revisionSchema, nextDueOn: z.iso.date() });
 export const updateGoLiveRequestSchema = goLiveSwitchesSchema.partial().extend({
-  memberSmsEnabled: z.boolean().optional(), revision: revisionSchema, confirmedPastDueDates: z.array(goLivePastDueDateSchema).optional(),
+  revision: revisionSchema, confirmedPastDueDates: z.array(goLivePastDueDateSchema).optional(),
 }).refine((value) => value.billingEnabled !== undefined || value.memberEmailsEnabled !== undefined || value.memberSmsEnabled !== undefined, 'Supply at least one change');
 export const goLiveChecklistItemSchema = z.strictObject({
   id: z.enum(['gym_details', 'members_imported', 'schedule_ready', 'stripe_ready', 'cards_collected', 'waivers_signed', 'smtp_ready', 'sms_ready', 'backup_ready', 'webhook_ready', 'reconciliation_complete', 'past_due_dates']),

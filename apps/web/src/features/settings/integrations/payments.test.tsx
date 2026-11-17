@@ -29,7 +29,7 @@ describe('Settings → Payments', () => {
     current = configured ? live : integrations;
     const get = client.GET.getMockImplementation()!;
     const modeMessage = 'Resolve pending payment attempts or refunds. The last check read Stripe test mode. Check restored payments again in live mode before turning billing on.';
-    const checklist = { revision: 3, billingEnabled: false, memberEmailsEnabled: false,
+    const checklist = { revision: 3, billingEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: false,
       items: [{ id: 'reconciliation_complete', status: 'needs_attention', message: modeMessage }],
       restoreReconciliation: { restoreId: '00000000-0000-7000-8000-000000000003', snapshotAt: '2026-11-01T12:00:00Z',
         checkedAt: '2026-11-02T12:00:00Z', inspected: 0, unresolved: 0, stripeConfigured: true, stripeMode: 'test' } };
@@ -48,7 +48,7 @@ describe('Settings → Payments', () => {
     current = live;
     const get = client.GET.getMockImplementation()!;
     client.GET.mockImplementation((path: string) => path === '/api/settings/go-live' ? Promise.resolve(reply(200, { data: {
-      revision: 3, billingEnabled: false, memberEmailsEnabled: false,
+      revision: 3, billingEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: false,
       items: [{ id: 'reconciliation_complete', status: 'needs_attention', message: 'Resolve pending payment attempts or refunds.' }],
       restoreReconciliation: { restoreId: '00000000-0000-7000-8000-000000000003', snapshotAt: '2026-11-01T12:00:00Z',
         checkedAt: '2026-11-02T12:00:00Z', inspected: 0, unresolved: 0, stripeConfigured: true, stripeMode: 'test' },
@@ -61,7 +61,7 @@ describe('Settings → Payments', () => {
     current = checkedMode === 'test' ? live : connected;
     const get = client.GET.getMockImplementation()!;
     client.GET.mockImplementation((path: string) => path === '/api/settings/go-live' ? Promise.resolve(reply(200, { data: {
-      revision: current.revision, billingEnabled: false, memberEmailsEnabled: false, items: [{ id: 'reconciliation_complete', status: 'needs_attention',
+      revision: current.revision, billingEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: false, items: [{ id: 'reconciliation_complete', status: 'needs_attention',
         message: `Resolve pending payment attempts or refunds. The last check read Stripe ${checkedMode} mode. Check restored payments again in ${current.payments.mode} mode before turning billing on.` }], restoreReconciliation: {
         restoreId: '00000000-0000-7000-8000-000000000003', snapshotAt: '2026-11-01T12:00:00Z',
         checkedAt: '2026-11-02T12:00:00Z', inspected: 0, unresolved: 0, stripeConfigured: true, stripeMode: checkedMode,
@@ -84,7 +84,7 @@ describe('Settings → Payments', () => {
   it('explains the billing pause after connecting Stripe when the restore check ran without it', async () => {
     const get = client.GET.getMockImplementation()!;
     client.GET.mockImplementation((path: string) => path === '/api/settings/go-live' ? Promise.resolve(reply(200, { data: {
-      revision: 4, billingEnabled: false, memberEmailsEnabled: false, items: [], restoreReconciliation: {
+      revision: 4, billingEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: false, items: [], restoreReconciliation: {
         restoreId: '00000000-0000-7000-8000-000000000003', snapshotAt: '2026-11-01T12:00:00Z',
         checkedAt: '2026-11-02T12:00:00Z', inspected: 0, unresolved: 0, stripeConfigured: false,
       },

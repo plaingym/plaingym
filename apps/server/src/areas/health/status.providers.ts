@@ -90,12 +90,13 @@ export function createStatusProviders(options: StatusOptions = {}) {
         return { usage, test };
       });
       const refused = usage?.refused ?? 0;
-      const warning = unreadable || refused > 0 || test?.result === 'failed';
+      const warning = unreadable || refused > 0 || test?.result === 'failed' || (gym.memberSmsEnabled && !configured);
       return { id: 'sms', status: warning ? 'warning' : !configured ? 'not_configured' : gym.memberSmsEnabled ? 'healthy' : 'warning',
         checkedAt: now.toISOString(), details: { configured, memberSmsEnabled: gym.memberSmsEnabled,
           sentToday: usage?.sent ?? 0, refusedToday: refused, smsDailyCap: gym.smsDailyCap,
           lastTestAt: test?.at ?? null, lastTestResult: test?.result ?? null },
         message: statusMessage(source === 'demo' ? 'smsDemo' : configured ? 'smsConfigured' : 'smsMissing')
+          + (gym.memberSmsEnabled && !configured ? ' ' + statusMessage('smsOnWithoutProvider') : '')
           + (!gym.memberSmsEnabled ? ' ' + statusMessage('smsOff') : '')
           + (unreadable ? ' ' + statusMessage('smsUnreadable') : '')
           + (refused ? ' ' + statusMessage('smsCapReached') : '')

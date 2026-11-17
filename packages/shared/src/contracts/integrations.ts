@@ -32,18 +32,19 @@ export const smsIntegrationSchema = z.strictObject({
   accountSid: z.string().nullable(), authKind: z.enum(['token', 'apiKey']).nullable(),
   from: z.string().nullable(), messagingServiceSid: z.string().nullable(), baseUrl: z.string().optional(),
 });
-const smsSid = (prefix: string) => z.string().regex(new RegExp(`^${prefix}[0-9a-fA-F]{32}$`));
+export const smsSidSchema = (prefix: string) => z.string().regex(new RegExp(`^${prefix}[0-9a-fA-F]{32}$`));
+export const smsBaseUrlSchema = z.url().max(2048).refine(value => {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash;
+  } catch { return false; }
+});
 export const saveSmsIntegrationRequestSchema = z.strictObject({
-  revision: revisionSchema, provider: z.literal('twilio'), accountSid: smsSid('AC'),
+  revision: revisionSchema, provider: z.literal('twilio'), accountSid: smsSidSchema('AC'),
   auth: z.union([z.strictObject({ token: z.string().min(1).max(1024) }),
-    z.strictObject({ apiKey: smsSid('SK'), secret: z.string().min(1).max(1024) })]),
-  sender: z.union([z.strictObject({ from: z.string().min(1).max(100) }), z.strictObject({ messagingServiceSid: smsSid('MG') })]),
-  baseUrl: z.url().max(2048).refine(value => {
-    try {
-      const url = new URL(value);
-      return url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash;
-    } catch { return false; }
-  }).optional(),
+    z.strictObject({ apiKey: smsSidSchema('SK'), secret: z.string().min(1).max(1024) })]),
+  sender: z.union([z.strictObject({ from: z.string().min(1).max(100) }), z.strictObject({ messagingServiceSid: smsSidSchema('MG') })]),
+  baseUrl: smsBaseUrlSchema.optional(),
   testTo: z.string().min(1).max(100),
 });
 export const removeSmsIntegrationRequestSchema = z.strictObject({ revision: revisionSchema });

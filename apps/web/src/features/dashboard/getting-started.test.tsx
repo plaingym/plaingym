@@ -9,6 +9,7 @@ import { GettingStarted } from './getting-started.js';
 
 vi.mock('../../lib/api.js', () => ({ api: { GET: vi.fn() } }));
 const checklist = (status = 'needs_attention') => ({ data: { revision: 3, billingEnabled: false, memberEmailsEnabled: false,
+  memberSmsEnabled: false,
   items: [{ id: 'members_imported', status, message: 'Members' }] } });
 function start(roles: StaffRole[] = ['owner'], gymId = 'gym-a') {
   const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });

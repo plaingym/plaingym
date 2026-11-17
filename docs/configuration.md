@@ -119,6 +119,11 @@ timezone and includes failed or uncertain attempts. **System health → SMS**
 reports the switch, cap, today's attempts and refusals, and the last owner test.
 Owner test texts bypass member switches, consent and the cap. Demo texts are
 captured beside emails in the demo outbox without contacting a provider.
+The daily cap stays editable in demo sandboxes and on operator-managed installs;
+provider credentials still follow the integration policy. Removing a provider
+leaves member texts on; Health warns that texts cannot be sent until a working
+provider is saved. Go-live marks text delivery not applicable when texts are off
+and no provider is configured.
 
 In multi-gym mode gym owners change email, SMS and payments only when
 `GYM_INTEGRATIONS=gym`; see [Tenancy and demo](#tenancy-and-demo). A gym's own SMTP server there must

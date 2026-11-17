@@ -3,6 +3,13 @@ import { describe, expect, it } from 'vitest';
 import { demoContracts, demoEntryResponse, demoLoginRequest, demoMenuResponse, demoSignInLinkResponse, outboxMessageResponse, outboxResponse, demoCreationResponse, demoCopyRequest, demoHandoffRequest } from './index.js';
 
 const expiresAt = '2099-10-24T12:00:00.000Z';
+it('requires an explicit channel on outbox replies', () => {
+  const message = { id: '019a08bf-1234-7000-8000-000000000001', recipient: 'member@example.test', subject: 'Test', text: 'Hello', sentAt: expiresAt };
+  expect(outboxResponse.safeParse({ data: [message], next: null }).success).toBe(false);
+  expect(outboxMessageResponse.safeParse({ data: message }).success).toBe(false);
+  for (const channel of ['email', 'sms'])
+    expect(outboxMessageResponse.safeParse({ data: { ...message, channel } }).success).toBe(true);
+});
 it('bounds queue progress and restricts copy pages and one-time bearer shape', () => {
   expect(demoCreationResponse.safeParse({ data: { pending: true, ticket: 'a'.repeat(43), position: 50, retryAfterSeconds: 2 } }).success).toBe(true);
   for (const position of [0, 1001, 1.5]) expect(demoCreationResponse.safeParse({ data: { pending: true, ticket: 'a'.repeat(43), position, retryAfterSeconds: 2 } }).success).toBe(false);
@@ -45,7 +52,7 @@ describe('demo response validation', () => {
   const id = '019a08bf-1234-7000-8000-000000000001';
 
   it('omits HTML from JSON responses while keeping the HTML preview', () => {
-    const message = { id, subject: 'Hello', recipient: 'pat@example.test', text: 'Hello', sentAt: '2026-11-05T00:00:00Z' };
+    const message = { id, channel: 'email', subject: 'Hello', recipient: 'pat@example.test', text: 'Hello', sentAt: '2026-11-05T00:00:00Z' };
     expect(outboxResponse.parse({ data: [message], next: null }).data[0]).not.toHaveProperty('html');
     expect(outboxResponse.safeParse({ data: [{ ...message, html: '<p>Hello</p>' }], next: null }).success).toBe(false);
     expect(outboxMessageResponse.parse({ data: message }).data).not.toHaveProperty('html');

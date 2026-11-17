@@ -1,4 +1,5 @@
 {
+  "notFound": "Gym not found",
   "sms.capForm": "SMS daily cap",
   "sms.dailyCap": "Daily text cap",
   "sms.capHelp": "From 1 to 100,000 send attempts per day in the gym's timezone (default 1,000). Failed or uncertain attempts also count. Further member texts are refused and counted in System health. Owner test texts are exempt.",
@@ -13,8 +14,8 @@
   "conflict": "Settings changed elsewhere. The latest saved settings are shown; review them and try again.",
   "conflictKept": "Something changed elsewhere, so this change wasn’t saved. Your entries are still here; reload to see the latest settings, then try again.",
   "timeout": "The request took too long to answer and may still have gone through. Reload and check the settings before trying again.",
-  "sandbox": "This sandbox uses the demo’s email, SMS and payment services. Integration credentials can’t be changed here.",
-  "operatorManaged": "Whoever runs this install manages email, SMS and payments, so they can’t be changed here. Ask them if any need to change.",
+  "sandbox": "This sandbox uses the demo’s email, SMS and payment services. Integration credentials can’t be changed here. You can change the daily text cap.",
+  "operatorManaged": "Whoever runs this install manages email, SMS and payments, so their credentials can’t be changed here. Ask them if any need to change. You can change the daily text cap.",
   "sms.title": "SMS",
   "sms.notConfigured": "No SMS provider is connected.",
   "sms.configured": "Twilio account {account}, sending from {sender}.",

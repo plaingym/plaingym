@@ -37,13 +37,15 @@ describe('member SMS go-live', () => {
   });
   it('requires an available readable provider, and always allows an up-to-date off request', async () => {
     const f = await fixture();
+    expect((await f.service.checklist(f.gymId)).items.find(item => item.id === 'sms_ready')?.status).toBe('not_applicable');
     await expect(f.toggle(true)).rejects.toMatchObject({ code: 'conflict', details: { memberSmsEnabled: ['no_provider'] } });
     await db.forGym(f.gymId, tx => tx.update(gyms).set({ smsConfig: 'unreadable', memberSmsEnabled: true }).where(eq(gyms.id, f.gymId)));
     await expect(f.toggle(true)).rejects.toMatchObject({ code: 'conflict' });
+    expect((await f.service.checklist(f.gymId)).items.find(item => item.id === 'sms_ready')?.status).toBe('needs_attention');
     f.configured.mockClear(); await f.toggle(false);
     // Turning off does not consult the provider before the save; the resulting checklist still checks readiness.
     expect((await f.settings.get(f.gymId)).memberSmsEnabled).toBe(false);
-    expect((await f.service.checklist(f.gymId)).items.find(item => item.id === 'sms_ready')?.status).toBe('needs_attention');
+    expect((await f.service.checklist(f.gymId)).items.find(item => item.id === 'sms_ready')?.status).toBe('not_applicable');
   });
   it('keeps a missing switch out of other go-live changes', () => {
     expect(updateGoLiveRequestSchema.parse({ revision: 1, memberEmailsEnabled: true })).toEqual({ revision: 1, memberEmailsEnabled: true });

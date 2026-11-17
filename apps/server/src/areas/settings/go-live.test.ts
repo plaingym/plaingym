@@ -54,7 +54,7 @@ describe('go-live switches and checklist', () => {
   it('reports readiness from this gym only and never exposes credentials', async () => {
     const a = await service.checklist(gymA), b = await service.checklist(gymB);
     expect(status(a)).toEqual({ gym_details: 'ready', members_imported: 'ready', schedule_ready: 'ready', stripe_ready: 'ready',
-      cards_collected: 'not_applicable', waivers_signed: 'not_applicable', smtp_ready: 'ready', sms_ready: 'needs_attention', backup_ready: 'ready',
+      cards_collected: 'not_applicable', waivers_signed: 'not_applicable', smtp_ready: 'ready', sms_ready: 'not_applicable', backup_ready: 'ready',
       webhook_ready: 'needs_attention', reconciliation_complete: 'ready', past_due_dates: 'ready' });
     // Gym B has an unfinished wizard, only an erased member, and nothing configured; gym A's rows never count.
     expect(status(b)).toMatchObject({ gym_details: 'needs_attention', members_imported: 'needs_attention', schedule_ready: 'needs_attention',

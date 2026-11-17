@@ -46,10 +46,10 @@ it('turns member texts on only once the runtime finds the gym\'s saved provider'
   const checklist = async () => (await (await request('/api/settings/go-live', 'GET', undefined, cookie)).json() as { data: { revision: number;
     memberSmsEnabled: boolean; items: { id: string; status: string }[] } }).data;
 
-  // Without a saved provider the runtime reports it missing and the switch refuses.
+  // Unused SMS is not applicable, and enabling still requires a saved provider.
   const before = await checklist();
   expect(before).toMatchObject({ memberSmsEnabled: false });
-  expect(before.items.find((item) => item.id === 'sms_ready')?.status).toBe('needs_attention');
+  expect(before.items.find((item) => item.id === 'sms_ready')?.status).toBe('not_applicable');
   const refused = await request('/api/settings/go-live', 'PATCH', { revision: before.revision, memberSmsEnabled: true }, cookie);
   expect(refused.status, await refused.clone().text()).toBe(409);
 

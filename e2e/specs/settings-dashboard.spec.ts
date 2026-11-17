@@ -6,7 +6,7 @@ const gym = { id: '00000000-0000-7000-8000-000000000001', name: 'A gym getting r
 const session = { userId: '00000000-0000-7000-8000-000000000002', displayName: 'Owner', roles: ['owner'], member: false };
 const settings = { id: gym.id, name: gym.name, timezone: 'UTC', currency: 'USD', slug: 'first-gym', address: {}, branding: { primaryColor: '#155e55' },
   websiteEnabled: true, existingSiteUrl: null, bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false,
-  billingEnabled: false, memberEmailsEnabled: false, retryDays: [3, 7], dropInChargeTypeId: null, revision: 3,
+  billingEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: false, smsDailyCap: 1000, retryDays: [3, 7], dropInChargeTypeId: null, revision: 3,
   createdAt: '2026-11-01T12:00:00Z', updatedAt: '2026-11-01T12:00:00Z' };
 
 // Fixtures exercise the production bundle without adding data to the shared install.
@@ -21,6 +21,7 @@ for (const width of [360, 1280]) test(`settings sections and an empty dashboard 
     if (path === '/api/settings') return route.fulfill(route.request().method() === 'GET' ? { json: { data: settings } }
       : { status: 500, json: { error: { code: 'internal_error' } } });
     if (path === '/api/settings/go-live') return route.fulfill({ json: { data: { revision: 3, billingEnabled: false, memberEmailsEnabled: false,
+      memberSmsEnabled: false,
       items: [{ id: 'members_imported', status: rosterReady ? 'ready' : 'needs_attention', message: 'Add your first members.' },
         { id: 'reconciliation_complete', status: 'needs_attention', message: 'Resolve pending payment attempts or refunds. The last check read Stripe test mode. Check restored payments again in live mode before turning billing on.' }],
       restoreReconciliation: { restoreId: '00000000-0000-7000-8000-000000000003', snapshotAt: '2026-11-01T12:00:00Z',

@@ -17,6 +17,7 @@ const settingsReads = vi.hoisted(() => vi.fn());
 vi.mock('../../lib/api.js', () => ({ api: client }));
 const ids = goLiveChecklistItemSchema.shape.id.options;
 const checklist = (revision = 3, billingEnabled = false, memberEmailsEnabled = false) => ({ data: { revision, billingEnabled, memberEmailsEnabled,
+  memberSmsEnabled: false,
   items: ids.map((id) => ({ id, status: id === 'smtp_ready' ? 'needs_attention' : id.startsWith('cards') ? 'not_applicable' : 'ready', message: 'Message for ' + id })) } });
 const reply = (status: number, data?: unknown) => ({ response: { ok: status < 300, status }, data });
 const overdue = () => ({ ...checklist(), data: { ...checklist().data, pastDueMemberships: [{

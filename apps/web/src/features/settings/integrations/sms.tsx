@@ -65,19 +65,21 @@ export function SmsIntegrationSection({ sms, editable, state }: { sms: SmsIntegr
   return <section aria-label={label('title')} className="min-w-0 space-y-3">
     <h3 className="font-semibold">{label('title')}</h3>
     {sms.unreadable && <p role="alert" className="text-sm">{label('unreadable')}</p>}
-    <p className="text-sm wrap-anywhere">{sms.configured ? text('sms.configured', { account: sms.accountSid ?? '', sender: sms.from ?? sms.messagingServiceSid ?? '' }) : label('notConfigured')}</p>
+    {/* A sandbox texts through the demo outbox (the page's intro says so), never through a saved provider. */}
+    {!state.integrations?.sandbox && <p className="text-sm wrap-anywhere">{sms.configured ? text('sms.configured', { account: sms.accountSid ?? '', sender: sms.from ?? sms.messagingServiceSid ?? '' }) : label('notConfigured')}</p>}
     {sms.configured && <p className="text-sm text-muted-foreground">{label('stored')}</p>}
     <FormMessage message={message}/>
-    {editable && <>
-      {gym.settings && <form aria-label={label('capForm')} onSubmit={event => void saveCap(event)}>
+    {gym.settings && <form aria-label={label('capForm')} onSubmit={event => void saveCap(event)}>
         <fieldset disabled={busy || gym.failed} className="grid min-w-0 gap-3">
           <Label htmlFor="integrations-sms-cap">{label('dailyCap')}</Label>
-          <Input key={gym.settings.revision} id="integrations-sms-cap" name="smsDailyCap" type="number" min={1} max={100000} step={1}
+          {/* Starts over only when the settings are read from the server again, never after a save from this page. */}
+          <Input key={gym.epoch} id="integrations-sms-cap" name="smsDailyCap" type="number" min={1} max={100000} step={1}
             required defaultValue={gym.settings.smsDailyCap} aria-describedby="integrations-sms-cap-help"/>
           <p id="integrations-sms-cap-help" className="text-sm text-muted-foreground">{label('capHelp')}</p>
           <div><Button type="submit">{label('saveCap')}</Button></div>
         </fieldset>
       </form>}
+    {editable && <>
       <p className="text-sm text-muted-foreground">{label('hint')}</p>
       <div className="flex flex-col gap-3 sm:flex-row">
         {!open && <Button variant="outline" onClick={() => { setOpen(true); setMessage(null); }}>{label(sms.configured ? 'change' : 'connect')}</Button>}

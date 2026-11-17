@@ -31,6 +31,9 @@ describe('SMS health provider', () => {
     expect(await f.read()).toMatchObject({ status: 'warning', details: { memberSmsEnabled: false } });
     await db.forGym(f.gymId, tx => tx.update(gyms).set({ smsConfig: null }).where(eq(gyms.id, f.gymId)));
     expect(await f.read()).toMatchObject({ status: 'not_configured', details: { configured: false } });
+    await db.forGym(f.gymId, tx => tx.update(gyms).set({ memberSmsEnabled: true }).where(eq(gyms.id, f.gymId)));
+    expect(await f.read()).toMatchObject({ status: 'warning', message: expect.stringContaining('texts are on, but cannot be sent'),
+      details: { configured: false, memberSmsEnabled: true } });
     await db.forGym(f.gymId, tx => tx.update(gyms).set({ smsConfig: 'unreadable' }).where(eq(gyms.id, f.gymId)));
     expect(await f.read()).toMatchObject({ status: 'warning', message: expect.stringContaining('could not be read'), details: { configured: false } });
   });

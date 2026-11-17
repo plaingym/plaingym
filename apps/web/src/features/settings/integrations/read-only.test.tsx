@@ -23,17 +23,18 @@ describe('Settings → Email and payments managed by the operator', () => {
     expect(screen.getByRole('heading', { name: 'Email' })).toBeDefined();
     expect(screen.getByRole('heading', { name: 'Payments' })).toBeDefined();
     expect(screen.getByText(/smtp\.gym\.test/)).toBeDefined();
-    expect(screen.queryByRole('form')).toBeNull();
+    expect(await screen.findByRole('form', { name: 'SMS daily cap' })).toBeDefined();
+    expect(screen.getAllByRole('form')).toHaveLength(1);
     expect(screen.queryByRole('textbox')).toBeNull();
-    // Reloading is all that's left.
-    expect(screen.getAllByRole('button').map((button) => button.textContent)).toEqual(['Reload']);
+    expect(screen.getAllByRole('button').map((button) => button.textContent)).toEqual(['Save daily text cap', 'Reload']);
     expect(client.PUT).not.toHaveBeenCalled();
   });
   it('shows a gym on the install’s email and without Stripe the same way', async () => {
     current = { ...managed, email: integrations.email, payments: integrations.payments }; renderSection();
     expect(await screen.findByText(reason)).toBeDefined();
     expect(screen.getByText(/Stripe isn’t connected/)).toBeDefined();
-    expect(screen.queryByRole('form')).toBeNull();
+    expect(await screen.findByRole('form', { name: 'SMS daily cap' })).toBeDefined();
+    expect(screen.getAllByRole('form')).toHaveLength(1);
   });
   it('keeps the forms when owners may change them, and the demo’s own text in a sandbox', async () => {
     current = { ...managed, integrationsEditable: true }; renderSection();

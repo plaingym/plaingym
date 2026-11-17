@@ -12,12 +12,14 @@ import type { RequestEnvironment } from '../../core/context.js';
 import { errorHandler } from '../../core/errors.js';
 import { setLogSink } from '../../core/log.js';
 import { createServerRegistry } from '../../core/registry.js';
-import { decryptSecret } from '../../core/secrets.js';
+import { decryptSecret, encryptSecret } from '../../core/secrets.js';
 import { authConfig } from '../../infra/auth/config.js';
-import { TwilioSms, type Sms } from '../../infra/sms/index.js';
+import { FakeSms, MemberSms, SmsDeliveryError, TwilioSms, type Sms } from '../../infra/sms/index.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { createIntegrationsService, type IntegrationsOptions } from './integrations.js';
 import { createIntegrationsRoutes } from './integrations.routes.js';
+import { createSmsResolver } from './sms.js';
+import { createGymSettingsAccessor } from './settings.js';
 
 const database = useTestDatabase(), factory = createFactories(database), key = Buffer.alloc(32, 19);
 const clock = new TestClock('2026-11-16T04:00:00Z');
@@ -67,6 +69,11 @@ async function call(app: ReturnType<typeof server>, method = 'GET', body?: unkno
 const input = (revision: number, overrides: Record<string, unknown> = {}) => ({ revision, provider: 'twilio', accountSid,
   auth: { token }, sender: { from: '+1 (415) 555-2671' }, testTo: '+1 (202) 555-0123', ...overrides });
 const save = async (app = server(), overrides: Record<string, unknown> = {}) => call(app, 'PUT', input((await row()).revision, overrides));
+function providerError() {
+  const error = new SmsDeliveryError('not_accepted');
+  error.message = token + secret;
+  return error;
+}
 
 describe('SMS integration settings', () => {
   it.each(staffRoles)('allows only the owner to change the SMS daily cap: %s', async role => {
@@ -119,25 +126,40 @@ describe('SMS integration settings', () => {
     expect(integrationsResponseSchema.parse((await call(app, 'GET', undefined, '')).body).data.sms).toEqual(value.integrations.sms);
     const audits = await database.forGym(gymId, tx => tx.select().from(auditEvents));
     expect(audits.map(a => a.action).sort()).toEqual(['integrations.sms_saved', 'integrations.sms_tested']);
-    expect(audits.find(a => a.action === 'integrations.sms_saved')?.after).toEqual({ accountSid, authKind, from: null, messagingServiceSid });
+    expect(audits.find(a => a.action === 'integrations.sms_saved')?.after).toEqual({ accountSid, authKind, from: null, messagingServiceSid, revision: gym.revision });
     expect(JSON.stringify(audits)).not.toContain('+12025550123');
     expect((await call(app, 'DELETE', { revision: gym.revision })).status).toBe(200);
     expect((await row()).smsConfig).toBeNull();
-    expect((await database.forGym(gymId, tx => tx.select().from(auditEvents))).map(a => a.action)).toContain('integrations.sms_removed');
+    const removed = (await database.forGym(gymId, tx => tx.select().from(auditEvents))).find(a => a.action === 'integrations.sms_removed');
+    expect(removed).toMatchObject({ before: { accountSid, authKind, from: null, messagingServiceSid },
+      after: { accountSid: null, authKind: null, from: null, messagingServiceSid: null, revision: gym.revision + 1 } });
   });
   it.each(['account', 'send', 'suppressed'])('stores nothing after a failed %s and strips provider errors', async failure => {
-    if (failure === 'account') verify.mockRejectedValueOnce(new Error(token + secret));
-    else if (failure === 'send') send.mockRejectedValueOnce(new Error(token + secret));
+    if (failure === 'account') verify.mockRejectedValueOnce(providerError());
+    else if (failure === 'send') send.mockRejectedValueOnce(providerError());
     else send.mockResolvedValueOnce({ status: 'suppressed', reason: 'disabled' });
     const before = await row(), result = await save();
     expect(result.status).toBe(200);
     expect(saveSmsIntegrationResponseSchema.parse(result.body).data).toMatchObject({ test: 'failed', integrations: { revision: before.revision } });
     expect((await row()).smsConfig).toBeNull();
     if (failure === 'account') expect(send).not.toHaveBeenCalled();
+    const logs = seen.filter(line => line.includes('settings.sms_test_failed')).map(line => JSON.parse(line));
+    expect(logs).toEqual([expect.objectContaining({ errorName: failure === 'suppressed' ? 'SmsSuppressed' : 'DeliveryError',
+      providerStatus: failure === 'suppressed' ? 'suppressed' : 'not_accepted' })]);
+    expect(Object.keys(logs[0]).sort()).toEqual(['time', 'level', 'event', 'errorName', 'providerStatus'].sort());
+  });
+  it('fails the test, not the request, when the adapter refuses the message itself', async () => {
+    await database.forGym(gymId, tx => tx.update(gyms).set({ name: 'G'.repeat(1600) }));
+    const result = await save(server({ current: service({ smsFactory: () => new FakeSms() }) }));
+    expect(result.status).toBe(200);
+    expect(saveSmsIntegrationResponseSchema.parse(result.body).data.test).toBe('failed');
+    expect((await row()).smsConfig).toBeNull();
+    expect(seen.filter(line => line.includes('settings.sms_test_failed')).map(line => JSON.parse(line)))
+      .toEqual([expect.objectContaining({ errorName: 'DeliveryError', providerStatus: 'not_accepted' })]);
   });
   it('keeps the previous credentials when their replacement fails', async () => {
     await save(); const before = await row();
-    send.mockRejectedValueOnce(new Error(secret));
+    send.mockRejectedValueOnce(providerError());
     await save(server(), { auth: { apiKey, secret } });
     expect((await row()).smsConfig).toBe(before.smsConfig);
     expect((await row()).revision).toBe(before.revision);
@@ -156,6 +178,35 @@ describe('SMS integration settings', () => {
     expect(audits.map(a => [a.action, a.after])).toEqual([['integrations.sms_tested', { test: 'sent' }]]);
     expect((await call(app, 'DELETE', { revision: 2 })).status).toBe(409);
   });
+  it.each(['account', 'send'])('propagates programming errors in the %s path as 500 without saving', async failure => {
+    (failure === 'account' ? verify : send).mockRejectedValueOnce(new TypeError(token + secret));
+    const before = await row(), result = await save();
+    expect(result.status).toBe(500);
+    expect((await row()).revision).toBe(before.revision);
+    expect((await row()).smsConfig).toBeNull();
+    expect(seen.filter(line => line.includes('settings.sms_test_failed'))).toEqual([]);
+    expect(await database.forGym(gymId, tx => tx.select().from(auditEvents))).toEqual([]);
+  });
+  it.each([['token', 'from'], ['apiKey', 'from'], ['token', 'service'], ['apiKey', 'service']])('settings and member sending read newer nested %s / %s fields consistently', async (authKind, senderKind) => {
+    const sender = senderKind === 'from' ? { from: '+14155552671' } : { messagingServiceSid };
+    const stored = { ...input(1), auth: { ...(authKind === 'token' ? { token } : { apiKey, secret }), futureAuth: true },
+      sender: { ...sender, futureSender: true }, futureConfig: true };
+    // Bypass strict new-write validation to model a config stored by a newer release.
+    await database.forGym(gymId, tx => tx.update(gyms).set({ memberSmsEnabled: true, smsConfig: encryptSecret(key,
+      { secretClass: 'sms_config', owner: gymId }, JSON.stringify(stored)) }));
+    const app = server();
+    expect(integrationsResponseSchema.parse((await call(app, 'GET', undefined, '')).body).data.sms)
+      .toMatchObject({ configured: true, unreadable: false, accountSid, authKind, ...sender });
+    const fetcher = vi.fn<typeof fetch>(async () => Response.json({ sid: 'SM' + '4'.repeat(32) }));
+    const resolver = createSmsResolver({ key, tenancy: 'single', scope: database.forGym, fetch: fetcher });
+    expect(await resolver.status(gymId)).toEqual({ source: 'gym', unreadable: false });
+    const member = await factory('members', gymId, { phone: '+12025550123', phoneE164: '+12025550123',
+      smsNoticesConsentAt: clock.now(), smsNoticesConsentSource: 'staff' });
+    const sms = new MemberSms({ gymId, memberIds: [member.id], householdIds: [], kind: 'notices', resolver,
+      settings: createGymSettingsAccessor({ scope: database.forGym }), scope: database.forGym, clock, logSuppression: () => undefined });
+    expect(await sms.sendSms({ to: '+12025550123', body: 'Test' })).toMatchObject({ status: 'sent' });
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
   it('refuses to remove SMS settings that were never saved, without a revision change or audit', async () => {
     const before = await row();
     const result = await call(server(), 'DELETE', { revision: before.revision });
@@ -163,6 +214,12 @@ describe('SMS integration settings', () => {
     expect(JSON.stringify(result.body)).toContain('not_configured');
     expect((await row()).revision).toBe(before.revision);
     expect(await database.forGym(gymId, tx => tx.select().from(auditEvents))).toEqual([]);
+  });
+  it('leaves the member-text switch on when the provider is removed', async () => {
+    await save();
+    await database.forGym(gymId, tx => tx.update(gyms).set({ memberSmsEnabled: true }));
+    expect((await call(server(), 'DELETE', { revision: (await row()).revision })).status).toBe(200);
+    expect(await row()).toMatchObject({ memberSmsEnabled: true, smsConfig: null });
   });
   it('isolates reads and mutations between gyms and refuses a mismatched principal', async () => {
     const other = uuidv7(); await factory('gyms', other, { name: 'Other gym' });
@@ -199,6 +256,13 @@ describe('SMS integration settings', () => {
       expect((await save(app)).status).toBe(403);
       expect((await call(app, 'DELETE', { revision: (await row()).revision })).status).toBe(403);
     }
+    expect(smsFactory).not.toHaveBeenCalled();
+  });
+  it.each(['sandbox', 'operator'])('allows a daily cap edit in a %s without touching credentials', async mode => {
+    const multiEnv = { ...env, TENANCY: 'multi', AUTH_PASSWORD_LOGIN: 'off' };
+    const current = mode === 'sandbox' ? service({ sandbox: true }) : service({ env: multiEnv, config: authConfig(multiEnv, true) });
+    expect((await call(server({ current }), 'PATCH', { revision: (await row()).revision, smsDailyCap: 9 }, '/sms/cap')).status).toBe(200);
+    expect((await row()).smsDailyCap).toBe(9);
     expect(smsFactory).not.toHaveBeenCalled();
   });
   it('reports unreadable credentials without exposing them and lets the owner remove them', async () => {

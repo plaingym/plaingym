@@ -140,7 +140,7 @@ describe('Settings → Backups', () => {
     expect(alert.dataset.variant).toBe('error');
     await vi.waitFor(() => expect(document.activeElement).toBe(alert));
   });
-  it('has no backups part in multi-gym mode, and nothing to change in a sandbox', async () => {
+  it('has no backups part in multi-gym mode, and only the SMS cap is editable in a sandbox', async () => {
     current = { ...integrations, backups: null }; renderSection();
     expect(await screen.findByRole('heading', { name: 'Email' })).toBeDefined();
     expect(screen.queryByRole('heading', { name: 'Backups' })).toBeNull();
@@ -148,6 +148,8 @@ describe('Settings → Backups', () => {
     current = { ...integrations, backups: null, sandbox: true }; renderSection();
     expect(await screen.findByText(/This sandbox uses the demo/)).toBeDefined();
     expect(screen.queryByRole('heading', { name: 'Email' })).toBeNull();
-    expect(screen.queryByRole('form')).toBeNull();
+    expect(await screen.findByRole('form', { name: 'SMS daily cap' })).toBeDefined();
+    expect(screen.getAllByRole('form')).toHaveLength(1);
+    expect(screen.queryByRole('heading', { name: 'Backups' })).toBeNull();
   });
 });

@@ -114,7 +114,7 @@ export function createGoLiveService(options: {
         item('waivers_signed', !people.length || !currentWaivers.some(w => !w.retiredAt) ? 'not_applicable'
           : ready(await signedLinkWaiversComplete(tx, people.map(p => p.id)))),
         item('smtp_ready', ready(smtp)),
-        item('sms_ready', ready(sms)),
+        item('sms_ready', !sms && !gym.memberSmsEnabled ? 'not_applicable' : ready(sms)),
         item('backup_ready', ready(gym.backupPublicKey && gym.backupDestination)),
         item('webhook_ready', !stripe ? 'not_applicable'
           : ready(webhook.lastProcessedAt && !webhook.pendingCount && !webhook.failedCount)),

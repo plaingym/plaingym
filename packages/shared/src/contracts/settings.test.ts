@@ -17,6 +17,17 @@ const settings = {
 };
 
 describe('gym settings contracts', () => {
+  it('requires the SMS switch and cap in settings replies and the switch in go-live replies', () => {
+    for (const field of ['memberSmsEnabled', 'smsDailyCap']) {
+      const missing = { ...settings } as Record<string, unknown>;
+      delete missing[field];
+      expect(gymSettingsSchema.safeParse(missing).success).toBe(false);
+    }
+    expect(settingsContracts.goLiveChecklist.response.safeParse({ data: {
+      revision: 1, billingEnabled: false, memberEmailsEnabled: false, items: [],
+    } }).success).toBe(false);
+    expect(updateGoLiveRequestSchema.parse({ revision: 1, memberEmailsEnabled: true })).toEqual({ revision: 1, memberEmailsEnabled: true });
+  });
   it('returns the same go-live checklist after reads and saves, including billing readiness', () => {
     const response = { data: { revision: 2, billingEnabled: false, memberEmailsEnabled: true, memberSmsEnabled: false,
       items: [{ id: 'webhook_ready', status: 'ready', message: 'Ready' },

@@ -5,6 +5,7 @@ import { cleanup, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { Integrations } from '@plaingym/shared/contracts';
 import { integrations, settings, renderSection, reply, serve } from './fixtures.test-helper.js';
+import { useGymSettings } from '../gym-settings.js';
 
 const client = vi.hoisted(() => ({ GET: vi.fn(), PUT: vi.fn(), DELETE: vi.fn(), PATCH: vi.fn() }));
 vi.mock('../../../lib/api.js', async original => ({ ...await original<typeof import('../../../lib/api.js')>(), api: client, createApiClient: () => client }));
@@ -23,7 +24,33 @@ async function fill(user: ReturnType<typeof userEvent.setup>) {
   await user.type(within(form).getByLabelText('Send the test text to'), '+12025550123');
   return form;
 }
+function OtherSettingsSave() {
+  const gym = useGymSettings();
+  return <button onClick={() => void gym.save(async () => reply(200, { data: { ...settings, revision: 4, websiteEnabled: true } }))}>Save website</button>;
+}
 describe('SMS integration form', () => {
+  it('keeps a typed cap after another section saves, then saves it with the latest revision', async () => {
+    const user = userEvent.setup(); renderSection(<OtherSettingsSave/>);
+    const field = await screen.findByRole('spinbutton', { name: 'Daily text cap' });
+    await user.clear(field); await user.type(field, '25');
+    await user.click(screen.getByRole('button', { name: 'Save website' }));
+    expect(screen.getByRole('spinbutton', { name: 'Daily text cap' })).toBe(field);
+    expect((field as HTMLInputElement).value).toBe('25');
+    client.PATCH.mockResolvedValue(reply(200, { data: { ...settings, revision: 5, smsDailyCap: 25 } }));
+    await user.click(screen.getByRole('button', { name: 'Save daily text cap' }));
+    await screen.findByRole('status');
+    expect(client.PATCH).toHaveBeenCalledWith('/api/settings/integrations/sms/cap', { signal: expect.any(AbortSignal), body: { revision: 4, smsDailyCap: 25 } });
+  });
+  it('shows a cap saved elsewhere once the settings are read again', async () => {
+    const user = userEvent.setup(); renderSection();
+    const field = await screen.findByRole('spinbutton', { name: 'Daily text cap' });
+    await user.clear(field); await user.type(field, '25');
+    const base = client.GET.getMockImplementation()!;
+    client.GET.mockImplementation(async (path: string) => path === '/api/settings'
+      ? reply(200, { data: { ...settings, revision: 6, smsDailyCap: 500 } }) : base(path));
+    await user.click(screen.getByRole('button', { name: 'Reload' }));
+    expect(await screen.findByDisplayValue('500')).toBeDefined();
+  });
   it('saves the cap through the shared settings revision, without sending a provider test', async () => {
     const user = userEvent.setup(); renderSection();
     const field = await screen.findByRole('spinbutton', { name: 'Daily text cap' });
@@ -79,9 +106,18 @@ describe('SMS integration form', () => {
     expect(screen.getByRole('button', { name: 'Remove SMS provider' })).toBeDefined();
   });
   it.each(['operator', 'sandbox'])('offers no credential form for %s settings', async mode => {
-    current = { ...configured, integrationsEditable: mode !== 'operator', sandbox: mode === 'sandbox' }; renderSection();
+    current = { ...configured, integrationsEditable: mode !== 'operator', sandbox: mode === 'sandbox' };
+    const user = userEvent.setup(); renderSection();
     await screen.findByRole('heading', { name: 'Integrations' });
     expect(screen.queryByRole('button', { name: 'Change SMS settings' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Remove SMS provider' })).toBeNull();
+    // A sandbox texts through the demo outbox, so it names no provider.
+    expect(screen.queryByText(/^Twilio account /) === null).toBe(mode === 'sandbox');
+    const field = await screen.findByRole('spinbutton', { name: 'Daily text cap' });
+    await user.clear(field); await user.type(field, '12');
+    client.PATCH.mockResolvedValue(reply(200, { data: { ...settings, revision: 4, smsDailyCap: 12 } }));
+    await user.click(screen.getByRole('button', { name: 'Save daily text cap' }));
+    expect((await screen.findByRole('status')).textContent).toContain('daily text cap is saved');
+    expect(client.PATCH).toHaveBeenCalledWith('/api/settings/integrations/sms/cap', { signal: expect.any(AbortSignal), body: { revision: 3, smsDailyCap: 12 } });
   });
 });

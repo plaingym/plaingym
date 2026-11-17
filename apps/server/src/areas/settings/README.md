@@ -70,6 +70,7 @@ also supply PATCH `/api/settings/integrations/sms/cap`: an integer from 1 to
 100,000, default 1,000, using `integrations.manage`, the gym revision and an
 `integrations.sms_daily_cap_updated` audit with the old and new cap only. This
 route is mounted by `createIntegrationsRoutes` and returns the shared gym settings.
+The cap remains editable in a sandbox and on an operator-managed install: it changes no credentials.
 Provider changes
 share `integrations.manage`, the gym revision, sandbox refusal and operator policy.
 GET returns only configured/unreadable status, account SID, auth kind and sender;
@@ -81,9 +82,14 @@ the text with the gym name. Network calls happen outside transactions. Each test
 outcome is audited on its own (`integrations.sms_tested`, sent or failed), so a
 text the provider accepted stays recorded even if the save then conflicts. Both
 must succeed before an encrypted config is committed with its revision and the
-`integrations.sms_saved` audit; failures preserve the previous config. Remove
+`integrations.sms_saved` audit; failures preserve the previous config. Provider save and remove
+use the shared integration save transaction and record the resulting revision in their audit.
+Failed provider tests log only the error name and provider acceptance status, never the message;
+unexpected programming errors propagate as server errors. Remove
 clears the config and writes `integrations.sms_removed`; with nothing stored it
 answers 409 `not_configured`, like email.
+Removal leaves the member-text switch on. Health warns when texts are on without a
+readable provider; Go-live marks SMS not applicable when texts are off and no provider is configured.
 Multi-gym installs accept only Twilio's URL; single-gym installs accept an HTTPS
 Twilio-compatible base URL. `smsFactory` is an optional test transport override;
 production defaults to `TwilioSms` with the saved credentials.

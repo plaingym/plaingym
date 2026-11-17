@@ -171,7 +171,12 @@ captures demo texts. These tables have forced gym RLS. The switch defaults off;
 Go-live requires a readable provider before enabling it. The owner sets a daily
 cap from 1 to 100,000 (default 1,000); the SMS Health tile reports attempts and
 cap refusals for the gym-local day without phone numbers. Demo texts share the
-email outbox and never contact a provider. Class-cancellation and waitlist-promotion
+email outbox and never contact a provider. The cap stays editable in sandboxes
+and on operator-managed installs. Settings and delivery share one reader for the
+encrypted provider config, ignoring newer top-level and nested keys after rollback.
+Removing a provider leaves the switch on and Health warns that texts cannot be sent.
+Go-live marks text delivery not applicable when the switch is off with no provider.
+Class-cancellation and waitlist-promotion
 notice handlers accept an optional gym SMS resolver and keyed phone digest. When
 supplied by the application composition, each handler attempts its text after and
 independently of email, using notices consent and durable delivery keys. They

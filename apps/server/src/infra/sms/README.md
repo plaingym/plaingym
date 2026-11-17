@@ -23,7 +23,10 @@ never exposed by the adapter.
 `createSmsResolver({ key, tenancy, scope, demo, clock, fetch })` in
 `areas/settings/sms.ts` reads only the requested gym's encrypted config and returns
 `{ gymId, name, sms }`, or null. `status` reports unreadable secrets, through the
-same safe reporting path as SMTP. There is no install-wide fallback. A custom
+same safe reporting path as SMTP. There is no install-wide fallback. Stored
+config is read by the same `readSmsConfig` helper used by the settings page. Reads
+ignore newer top-level and nested auth/sender keys so rollback preserves delivery.
+New writes still validate strictly. A custom
 HTTPS base is permitted only in single mode; multi mode permits only Twilio's
 default API base. Demo mode reads no credentials and returns `OutboxSms`. Capture
 and its `demo.sms_captured` audit commit together; only the outbox holds content.

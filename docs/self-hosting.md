@@ -429,6 +429,10 @@ failed or uncertain attempts. Further member texts are refused and counted;
 owner test. Owner test texts bypass the switch, consent and cap. A restore turns
 the SMS switch off, like billing and member emails. Shut down the old server before turning it on again.
 Demo texts stay in the demo outbox and never contact a provider.
+The daily cap remains editable in a demo sandbox and on an operator-managed
+install. Removing the provider leaves the member-text switch on: System health
+warns that texts cannot be sent until a working provider is saved. Go-live marks
+text delivery not applicable when texts are off and no provider is configured.
 
 ## Running several gyms
 
