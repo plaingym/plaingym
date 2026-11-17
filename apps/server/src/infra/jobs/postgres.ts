@@ -278,6 +278,16 @@ export class PostgresJobs implements Jobs, JobRecovery {
     await this.#execute(row);
     return true;
   }
+  /** Caller keys retained for this gym and name, regardless of queue status. */
+  async existingJobs(name: string, idempotencyKeys: readonly string[], options: { gymId: string }): Promise<string[]> {
+    assertNoTransaction('jobs.existingJobs');
+    idSchema.parse(options.gymId);
+    if (!idempotencyKeys.length) return [];
+    const keys = new Map(idempotencyKeys.map(key => [hashKey(name, key), key]));
+    const rows = await this.#database.forGym(options.gymId, tx => tx.select({ key: jobs.idempotencyKey }).from(jobs)
+      .where(and(eq(jobs.name, name), inArray(jobs.idempotencyKey, [...keys.keys()]))));
+    return rows.map(row => keys.get(row.key)!);
+  }
   /** Only rows marked failed: an expired final lease counts once a claim marks it failed. */
   async failedJobs(name: string, idempotencyKeys: readonly string[], options: { gymId: string }): Promise<FailedJob[]> {
     assertNoTransaction('jobs.failedJobs');

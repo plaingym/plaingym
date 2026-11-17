@@ -7,7 +7,7 @@ import type { JobRecovery, Jobs } from '../../infra/jobs/index.js';
 import type { Uploads } from '../../infra/storage/index.js';
 import type { ClearCustomerEmail } from '../../infra/payments/index.js';
 import { logError, logInfo } from '../../core/log.js';
-import { billingEmailClearedAction, billingEmailErasuresToRetry, billingEmailQueuedAction, customerRedactedAction, erasuresToRedact, redactionQueuedAction } from './erasure-redaction.query.js';
+import { billingEmailAbandonedAction, billingEmailClearedAction, billingEmailErasuresToRetry, billingEmailMissingAction, billingEmailNoMatchAction, billingEmailQueuedAction, billingEmailResets, billingEmailResetAction, billingEmailSkippedAction, customerRedactedAction, erasuresToRedact, redactionQueuedAction } from './erasure-redaction.query.js';
 
 /** The sole ledger update: erase free text while preserving the append-only credit history. */
 export async function eraseCreditReasons(tx: Transaction, memberId: string) {
@@ -23,7 +23,7 @@ const billingEmailPayload = z.object({ householdId: z.uuid(), customerId: z.stri
   erasureId: z.uuid().optional(), emailDigest: z.string().regex(/^(?:k1:)?[a-f0-9]{64}$/),
   paymentMethodIds: z.array(z.string().regex(/^(?:pm|card|ba|src)_[A-Za-z0-9_]+$/)).optional(),
   paymentMethodId: z.string().regex(/^(?:pm|card|ba|src)_[A-Za-z0-9_]+$/).optional() }); // Imported cards and already queued jobs keep legacy IDs.
-export type ClearBillingEmail = (gymId: string, customerId: string, options: ClearCustomerEmail) => Promise<void>;
+export type ClearBillingEmail = (gymId: string, customerId: string, options: ClearCustomerEmail) => Promise<boolean>;
 
 /** Recheck the local customer link before calling out; a reassigned customer is left alone. */
 export async function clearErasedBillingEmail(payload: unknown, gymId: string, clear: ClearBillingEmail,
@@ -35,10 +35,13 @@ export async function clearErasedBillingEmail(payload: unknown, gymId: string, c
     .where(eq(households.stripeCustomerId, customerId)));
   if (linked.length !== 1 || linked[0]!.id !== options.householdId) {
     logInfo('members.erasure.billing_email_skipped_linked', { gymId, householdId: options.householdId });
+    await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: billingEmailSkippedAction,
+      targetType: 'household', targetId: options.householdId, after: { stripeCustomerId: customerId, ...(erasureId ? { erasure: erasureId } : {}) },
+      occurredAt: config.clock.now() }));
     return;
   }
-  await clear(gymId, customerId, { ...options, secret: config.secret });
-  await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: billingEmailClearedAction,
+  const matched = await clear(gymId, customerId, { ...options, secret: config.secret });
+  await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: matched ? billingEmailClearedAction : billingEmailNoMatchAction,
     targetType: 'household', targetId: options.householdId, after: { stripeCustomerId: customerId, ...(erasureId ? { erasure: erasureId } : {}) },
     occurredAt: config.clock.now() }));
 }
@@ -60,6 +63,9 @@ export const redactEarlierJob = 'members.erasure.redact_earlier';
 export { billingEmailClearedAction, billingEmailQueuedAction, customerRedactedAction, redactionQueuedAction };
 /** Each run queues at most this many customer redactions and retries this many exhausted email clears. */
 export const redactEarlierBatch = 200;
+/** At most four extra sets of queue attempts, after exponentially increasing delays from the final failure. */
+export const billingEmailMaxResets = 4;
+export const billingEmailResetDelayMs = 24 * 60 * 60_000;
 
 /**
  * Redaction of erased households' provider customers that erasure's own job missed: customers erased before the
@@ -72,7 +78,7 @@ export const redactEarlierBatch = 200;
  * none. The redaction itself is idempotent, so a crash between the job and its marker only repeats it. A customer that a
  * household of the gym links today is skipped (and not marked): the gym has since reused it, and redacting it would erase
  * a live customer (`guardRedaction` checks again when the job runs). The selection and the batch limit run in SQL
- * (`erasuresToRedact`). Also resets exhausted billing email clears without a completion audit, through JobRecovery.
+ * (`erasuresToRedact`). Also resets exhausted billing email clears through JobRecovery, with a durable cap and backoff.
  * Returns the number of customer redactions queued plus email clears reset (each capped at `batch`).
  */
 export async function queueEarlierRedactions(options: { gymId: string; timezone: string; jobs: Pick<Jobs, 'enqueue'> & Partial<JobRecovery>; clock: Clock; scope?: typeof forGym; batch?: number }): Promise<number> {
@@ -89,8 +95,32 @@ export async function queueEarlierRedactions(options: { gymId: string; timezone:
     let afterId: string | undefined;
     for (;;) {
       const emails = await scope(gymId, tx => billingEmailErasuresToRetry(tx, gymId, batch, afterId));
-      const failed = await jobs.failedJobs(clearBillingEmailJob, emails.map(row => `clear-billing-email:${row.erasureId}`), { gymId });
-      for (const job of failed.slice(0, batch - retried)) if (await jobs.retryFailed(job.jobId, { gymId, runAt: clock.now() })) retried++;
+      const markers = new Map(emails.map(row => [`clear-billing-email:${row.erasureId}`, row]));
+      const keys = [...markers.keys()];
+      if (jobs.existingJobs) {
+        const existing = new Set(await jobs.existingJobs(clearBillingEmailJob, keys, { gymId }));
+        for (const [key, marker] of markers) if (!existing.has(key)) await scope(gymId, tx => writeAudit(tx, {
+          gymId, actorKind: 'system', action: billingEmailMissingAction, targetType: 'household', targetId: marker.householdId,
+          after: { erasure: marker.erasureId }, occurredAt: clock.now() }));
+      }
+      const failed = await jobs.failedJobs(clearBillingEmailJob, keys, { gymId });
+      for (const job of failed) {
+        const marker = markers.get(job.idempotencyKey)!;
+        const history = await scope(gymId, tx => billingEmailResets(tx, gymId, marker.id, billingEmailMaxResets));
+        const now = clock.now(), delay = billingEmailResetDelayMs * 2 ** history.length;
+        if (history.length >= billingEmailMaxResets) {
+          await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: billingEmailAbandonedAction,
+            targetType: 'audit_event', targetId: marker.id, after: { erasure: marker.erasureId, jobId: job.jobId }, occurredAt: now }));
+          // The erased address may still be at the provider, and nothing retries it again: tell the operator.
+          logError(billingEmailAbandonedAction, { gymId, householdId: marker.householdId, erasureId: marker.erasureId, jobId: job.jobId });
+          continue;
+        }
+        if (now.getTime() - job.failedAt.getTime() < delay) continue;
+        if (!await jobs.retryFailed(job.jobId, { gymId, runAt: now })) continue;
+        await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: billingEmailResetAction,
+          targetType: 'audit_event', targetId: marker.id, after: { erasure: marker.erasureId, jobId: job.jobId, delayMs: delay }, occurredAt: now }));
+        if (++retried >= batch) break;
+      }
       // Pending or deliberately skipped jobs must not hide exhausted jobs on a later page.
       if (emails.length < batch || retried >= batch) break;
       afterId = emails.at(-1)!.id;

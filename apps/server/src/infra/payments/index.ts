@@ -4,6 +4,7 @@ import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { clock as systemClock } from '../../core/clock.js';
 import { matchesBillingEmail, type ClearCustomerEmail } from './email-erasure.js';
+import { logWarn } from '../../core/log.js';
 export { billingEmailDigest, type ClearCustomerEmail } from './email-erasure.js';
 
 export type ChargeReference = { kind: 'charge' | 'checkout'; id: string };
@@ -211,12 +212,12 @@ export interface Payments {
   /**
    * Erasure: renames the gym's customer (tagged for this gym or untagged) to "Erased member" and clears its email, phone, address,
    * shipping details, description, individual and business names and invoice custom fields, and deletes its tax IDs. The customer,
-   * its metadata and its payment history stay. Clears billing details on every attached card, including cards without local rows,
+   * its metadata and its payment history stay. Clears billing details on every attached payment method, including those without local rows,
    * without detaching them. Idempotent; missing and deleted customers succeed; refuses another gym's customer.
    */
   redactCustomer(customerId: string): Promise<void>;
-  /** Clears only matching erased emails on this household's customer and specified cards; keeps them attached. */
-  clearCustomerEmail(customerId: string, options: ClearCustomerEmail): Promise<void>;
+  /** Clears only matching erased emails on this household's customer and specified cards; returns whether any matched. */
+  clearCustomerEmail(customerId: string, options: ClearCustomerEmail): Promise<boolean>;
   parseWebhook(body: Uint8Array, signature: string): Promise<PaymentEvent>;
 }
 
@@ -326,6 +327,8 @@ export class FakePayments implements Payments {
   readonly #checkoutRequests = new Map<string, CheckoutRequest>();
   readonly #refunds = new Map<string, Refund>();
   readonly #methods = new Map<string, PaymentMethod>();
+  readonly #methodOwners = new Map<string, string>();
+  readonly #methodTypes = new Map<string, string>();
   readonly #detached = new Set<string>();
   readonly #setups = new Map<string, SetupOutcome>();
   readonly #disputes = new Map<string, Dispute>();
@@ -368,7 +371,10 @@ export class FakePayments implements Payments {
   setBillingDetails(processorId: string, details: BillingDetails): void { this.#billing.set(processorId, structuredClone(details)); }
   /** The card's billing details; absent once erasure cleared them. */
   billingDetails(processorId: string): BillingDetails | undefined { return structuredClone(this.#billing.get(processorId)); }
-  recordPaymentMethod(method: Omit<PaymentMethod, 'createdAt'> & { createdAt?: Date }): void {
+  recordPaymentMethod(input: Omit<PaymentMethod, 'createdAt'> & { createdAt?: Date; gymId?: string; type?: string }): void {
+    const { gymId, type = 'card', ...method } = input;
+    if (gymId !== undefined) this.#methodOwners.set(method.id, gymId);
+    this.#methodTypes.set(method.id, type);
     this.#methods.set(method.id, structuredClone({ ...method, createdAt: method.createdAt ?? this.#methods.get(method.id)?.createdAt ?? this.clock.now() }));
     this.#record('payment_method', method.id);
   }
@@ -791,7 +797,8 @@ export class FakePayments implements Payments {
     if (!customer || customer.deleted || customer.gymId !== this.gymId
       || customer.householdId !== undefined && customer.householdId !== options.householdId)
       throw new CardImportRefused('Customer is not owned by this gym and household');
-    const methods = [...this.#methods.values()].filter(method => method.customerId === customerId && !this.#detached.has(method.id))
+    const methods = [...this.#methods.values()].filter(method => method.customerId === customerId && !this.#detached.has(method.id)
+      && this.#methodTypes.get(method.id) === 'card')
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id));
     const start = options.cursor ? methods.findIndex(method => method.id === options.cursor) + 1 : 0;
     if (options.cursor && !start) throw new Error('Invalid card cursor');
@@ -806,13 +813,13 @@ export class FakePayments implements Payments {
       individualName: customer.individualName ?? null, businessName: customer.businessName ?? null,
       customFields: customer.customFields ?? null, taxIds: customer.taxIds ?? [] };
   }
-  async clearCustomerEmail(customerId: string, options: ClearCustomerEmail): Promise<void> {
+  async clearCustomerEmail(customerId: string, options: ClearCustomerEmail): Promise<boolean> {
     assertNoTransaction('payments.clearCustomerEmail');
     const methodIds = [...new Set([...(options.paymentMethodIds ?? []), ...(options.paymentMethodId ? [options.paymentMethodId] : [])])];
     if (!/^[A-Za-z0-9_]+$/.test(customerId)
       || methodIds.some(methodId => !/^[A-Za-z0-9_]+$/.test(methodId))) throw new Error('Invalid processor ID');
     const customer = this.#customers.find(item => item.id === customerId);
-    if (!customer || customer.deleted) return;
+    if (!customer || customer.deleted) return false;
     if (customer.gymId !== this.gymId) throw new Error('Customer belongs to another gym');
     if (customer.householdId !== undefined && customer.householdId !== options.householdId) throw new Error('Customer belongs to another household');
     const methods = methodIds.flatMap(methodId => {
@@ -820,11 +827,13 @@ export class FakePayments implements Payments {
       return method && !this.#detached.has(method.id) ? [method] : [];
     });
     if (methods.some(method => method.customerId !== customerId)) throw new Error('Card belongs to another customer');
-    if (matchesBillingEmail(customer.email, options.emailDigest, options.secret)) customer.email = null;
+    let matched = false;
+    if (matchesBillingEmail(customer.email, options.emailDigest, options.secret)) { customer.email = null; matched = true; }
     for (const method of methods) {
       const details = this.#billing.get(method.id);
-      if (details && matchesBillingEmail(details.email, options.emailDigest, options.secret)) details.email = null;
+      if (details && matchesBillingEmail(details.email, options.emailDigest, options.secret)) { details.email = null; matched = true; }
     }
+    return matched;
   }
   async redactCustomer(customerId: string): Promise<void> {
     assertNoTransaction('payments.redactCustomer');
@@ -835,8 +844,15 @@ export class FakePayments implements Payments {
     customer.name = ERASED_CUSTOMER_NAME; customer.email = null;
     customer.phone = null; customer.address = null; customer.shipping = null; customer.description = null;
     customer.individualName = null; customer.businessName = null; customer.customFields = null; customer.taxIds = [];
-    for (const method of this.#methods.values())
-      if (method.customerId === customerId && !this.#detached.has(method.id)) this.#billing.delete(method.id);
+    for (const method of this.#methods.values()) {
+      if (method.customerId !== customerId || this.#detached.has(method.id)) continue;
+      const owner = this.#methodOwners.get(method.id);
+      if (owner !== undefined && owner !== this.gymId) {
+        logWarn('payments.redaction.method_skipped_foreign', { gymId: this.gymId, customerId, paymentMethodId: method.id });
+        continue;
+      }
+      this.#billing.delete(method.id);
+    }
   }
   signWebhook(body: Uint8Array): string {
     return createHmac('sha256', this.webhookSecret).update(body).digest('hex');

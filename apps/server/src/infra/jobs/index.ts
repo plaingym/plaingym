@@ -38,6 +38,8 @@ export interface FailedJob {
 }
 /** Gym-scoped recovery of exhausted jobs; producers never read or change queue rows directly. */
 export interface JobRecovery {
+  /** Retained caller keys, including pending and completed jobs, for resolving recovery markers after retention. */
+  existingJobs?(name: string, idempotencyKeys: readonly string[], options: { gymId: string }): Promise<string[]>;
   /** The gym's failed jobs (attempts used up) with this name among the given caller idempotency keys. */
   failedJobs(name: string, idempotencyKeys: readonly string[], options: { gymId: string }): Promise<FailedJob[]>;
   /** Atomically resets one failed job of the gym to pending at `runAt`, keeping its ID and key. */
@@ -153,6 +155,12 @@ export class FakeJobs implements Jobs, JobRecovery {
     assertNoTransaction('jobs.triggerSchedule');
     if (!this.#schedules.has(name)) throw new Error(`Unknown schedule: ${name}`);
     for (const gym of gyms) await this.enqueue(name, {}, { ...gym, idempotencyKey: occurrence });
+  }
+  async existingJobs(name: string, idempotencyKeys: readonly string[], options: { gymId: string }): Promise<string[]> {
+    assertNoTransaction('jobs.existingJobs');
+    return this.#jobs.filter(job => job.name === name && job.options.gymId === options.gymId
+      && job.options.idempotencyKey !== undefined && idempotencyKeys.includes(job.options.idempotencyKey))
+      .map(job => job.options.idempotencyKey!);
   }
   async failedJobs(name: string, idempotencyKeys: readonly string[], options: { gymId: string }): Promise<FailedJob[]> {
     assertNoTransaction('jobs.failedJobs');

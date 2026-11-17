@@ -601,9 +601,15 @@ Old versions and documents referenced by signatures remain retained after retire
   card ownership, then clears only matching customer and specified card emails,
   preserving replacement addresses, other billing details and the attached card.
   Stripe reads and writes cannot be atomic with concurrent external edits.
-  A completed provider clear is audited with identifiers only. The daily
+  A matched provider clear is audited with identifiers only; a no-match run has a
+  distinct audit and doesn't resolve its marker, though its completed job is not run
+  again. Skipped reassigned customers and jobs removed by retention resolve their
+  markers without claiming a clear. The daily
   `members.erasure.redact_earlier` sweep resets exhausted clear jobs through the
-  queue's recovery API, excluding clears with a completion audit.
+  queue's recovery API after 1, 2, 4 and 8 days from each final failure, with at most
+  four durable reset audits per marker. Exhausted jobs at the cap are audited as
+  abandoned, logged as an error with identifiers only, and excluded from later
+  sweeps, as are completed clears.
   Erasure and deletion unlink staff profiles and advance their revisions, so stale
   staff forms cannot restore the member link. After commit the auth store revokes
   the member's pending portal invitations; with the household's last member it
@@ -616,9 +622,12 @@ Old versions and documents referenced by signatures remain retained after retire
   revokes its cards, clears each card's billing name, email, phone and address at
   Stripe before detaching it, and clears the Stripe Customer's name, email, phone,
   address, shipping details, description, individual and business names and invoice
-  custom fields, and deletes its tax IDs. It also lists every attached card and
-  clears its billing name, email, phone and address, including cards with no active
-  local row, while leaving those cards attached. Every retry job of an erasure (each
+  custom fields, and deletes its tax IDs. It also lists every attached payment method
+  of every type and clears its billing name, email, phone and address, including methods
+  with no active local row, while leaving them attached. Methods tagged for another
+  gym are skipped with an identifier-only warning. Tax-ID and payment-method cleanup
+  are both attempted, and a method error does not block later methods; the first error
+  is rethrown for retry after cleanup. Every retry job of an erasure (each
   revoked card's detach, the release of the erased photo and signature images, and
   the customer redaction) commits in the same transaction as the erasure, so a
   crash or a later failure cannot lose a retry between clearing the local data and

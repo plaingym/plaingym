@@ -13,6 +13,10 @@ export function logInfo(event: string, fields: LogFields): void {
   sink(JSON.stringify({ time: new Date().toISOString(), level: 'info', event, ...fields }));
 }
 
+export function logWarn(event: string, fields: LogFields): void {
+  sink(JSON.stringify({ time: new Date().toISOString(), level: 'warn', event, ...fields }));
+}
+
 export function logError(event: string, fields: LogFields, error?: unknown): void {
   sink(JSON.stringify({ time: new Date().toISOString(), level: 'error', event, ...fields,
     ...(error === undefined ? {} : { error: describeError(error) }) }));

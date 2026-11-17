@@ -53,8 +53,8 @@ export function customerEmailErasureContract(name: string, create: (fixture?: Em
   describe(name + ' billing email erasure', () => {
     it('clears matching emails once, preserving names and the attached card', async () => {
       const { payments, customerId, options, state } = create({ customerEmail: ' PAYER@Example.invalid ' });
-      await payments.clearCustomerEmail(customerId, options);
-      await payments.clearCustomerEmail(customerId, options);
+      expect(await payments.clearCustomerEmail(customerId, options)).toBe(true);
+      expect(await payments.clearCustomerEmail(customerId, options)).toBe(false);
       expect(state()).toEqual({ email: null, name: 'Household', cardEmail: null, cardName: 'Card holder', attached: true });
     });
     it.each([
@@ -63,7 +63,7 @@ export function customerEmailErasureContract(name: string, create: (fixture?: Em
       { customerEmail: 'replacement@example.invalid', cardEmail: 'payer@example.invalid' },
     ])('clears each field only if its address still matches: %j', async fixture => {
       const { payments, customerId, options, state } = create(fixture);
-      await payments.clearCustomerEmail(customerId, options);
+      expect(await payments.clearCustomerEmail(customerId, options)).toBe(fixture.customerEmail === 'payer@example.invalid' || fixture.cardEmail === 'payer@example.invalid');
       expect(state()).toMatchObject({ email: fixture.customerEmail === 'payer@example.invalid' ? null : fixture.customerEmail,
         cardEmail: fixture.cardEmail === 'payer@example.invalid' ? null : fixture.cardEmail });
     });
@@ -95,21 +95,22 @@ export function customerEmailErasureContract(name: string, create: (fixture?: Em
 /** Provider and fake must erase cards the application has never stored, while keeping them attached. */
 interface CustomerCardRedactionFixture {
   payments: Payments; customerId: string;
-  cards(): { id: string; attached: boolean; details: { name?: string | null; email?: string | null; phone?: string | null; address?: unknown } }[];
+  cards(): { id: string; type: string; attached: boolean; details: { name?: string | null; email?: string | null; phone?: string | null; address?: unknown } }[];
 }
 export function customerCardRedactionContract(name: string, create: () => CustomerCardRedactionFixture | Promise<CustomerCardRedactionFixture>) {
   describe(name + ' attached card redaction', () => {
-    it('clears every attached card without touching another customer or detaching cards, including on retry', async () => {
+    it('clears every method type, skips foreign gym methods and preserves attachments, including on retry', async () => {
       const { payments, customerId, cards } = await create(), before = cards();
       await payments.redactCustomer(customerId);
       await payments.redactCustomer(customerId);
       const after = cards();
       expect(after.map(card => ({ id: card.id, attached: card.attached }))).toEqual(before.map(card => ({ id: card.id, attached: card.attached })));
-      expect(after).toHaveLength(104);
+      expect(after).toHaveLength(105);
+      expect(after.slice(0, 102).some(card => card.type === 'us_bank_account')).toBe(true);
       for (const card of after.slice(0, 102)) {
         expect(Object.values(card.details).every(value => value == null)).toBe(true);
         expect(card.attached).toBe(true);
-        expect(await payments.readPaymentObject({ kind: 'payment_method', id: card.id })).toMatchObject({ status: 'found' });
+        if (card.type === 'card') expect(await payments.readPaymentObject({ kind: 'payment_method', id: card.id })).toMatchObject({ status: 'found' });
       }
       expect(after.slice(102)).toEqual(before.slice(102));
     });

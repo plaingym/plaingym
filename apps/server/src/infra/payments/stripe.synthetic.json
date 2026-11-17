@@ -2204,10 +2204,8 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_methods",
+            "path": "/v1/customers/cus_1/tax_ids",
             "params": {
-              "customer": "cus_1",
-              "type": "card",
               "limit": 100
             }
           },
@@ -2220,8 +2218,9 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/customers/cus_1/tax_ids",
+            "path": "/v1/payment_methods",
             "params": {
+              "customer": "cus_1",
               "limit": 100
             }
           },
@@ -2257,10 +2256,8 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_methods",
+            "path": "/v1/customers/cus_1/tax_ids",
             "params": {
-              "customer": "cus_1",
-              "type": "card",
               "limit": 100
             }
           },
@@ -2273,8 +2270,9 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/customers/cus_1/tax_ids",
+            "path": "/v1/payment_methods",
             "params": {
+              "customer": "cus_1",
               "limit": 100
             }
           },

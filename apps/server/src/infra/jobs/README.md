@@ -155,3 +155,8 @@ audit (member emails off, no SMTP, a suppressed address) is never enqueued again
 its key is pruned, and never goes out weeks late.
 The queue exports `defaultSucceededRetentionDays`; booking notice expiry uses that
 same default instead of maintaining a separate window.
+
+`JobRecovery.existingJobs(name, keys, { gymId })` returns only the caller's retained
+keys for that gym and job name, regardless of status. Both queues implement it;
+recovery sweeps use it to resolve durable markers after retention removes their jobs.
+Queue access stays inside infrastructure, and the method refuses transaction I/O.

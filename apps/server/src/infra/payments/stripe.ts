@@ -11,6 +11,7 @@ import { CustomerCreationInProgress, CustomerDeleted, ERASED_CUSTOMER_NAME, norm
 import type { Json, ObjectData, PaymentTransport, ProviderRequest } from './transport.js';
 import { PaymentWebhookError } from './webhook-error.js';
 import { matchesBillingEmail, type ClearCustomerEmail } from './email-erasure.js';
+import { logWarn } from '../../core/log.js';
 
 export const STRIPE_API_VERSION = '2026-09-30.endive' as const;
 export const STRIPE_PERMISSIONS = [
@@ -393,15 +394,15 @@ export class StripePayments implements Payments {
       if (current.customer) throw error;
     }
   }
-  async clearCustomerEmail(customerId: string, options: ClearCustomerEmail): Promise<void> {
+  async clearCustomerEmail(customerId: string, options: ClearCustomerEmail): Promise<boolean> {
     assertNoTransaction('payments.clearCustomerEmail');
     const path = this.#path('customers', customerId);
     const methodPaths = [...new Set([...(options.paymentMethodIds ?? []), ...(options.paymentMethodId ? [options.paymentMethodId] : [])])]
       .map(methodId => this.#path('payment_methods', methodId));
     let customer: ObjectData;
     try { customer = await this.#get(path); }
-    catch (error) { if (absent(error)) return; throw error; }
-    if (customer.deleted === true) return;
+    catch (error) { if (absent(error)) return false; throw error; }
+    if (customer.deleted === true) return false;
     const metadata = data(customer.metadata ?? {});
     if (metadata.gym_id !== undefined && metadata.gym_id !== this.gymId) throw new NotForGym('Customer belongs to another gym');
     if (metadata.household_id !== undefined && metadata.household_id !== options.householdId) throw new Error('Customer belongs to another household');
@@ -418,10 +419,16 @@ export class StripePayments implements Payments {
       }
     }
     // No idempotency key: every retry reads current fields and never replays a cached write over a replacement address.
-    if (matchesBillingEmail(customer.email, options.emailDigest, options.secret)) await this.#post(path, { email: '' });
-    for (const { path: methodPath, method } of methods)
-      if (matchesBillingEmail(data(method.billing_details ?? {}).email, options.emailDigest, options.secret))
-        await this.#post(methodPath, { billing_details: { email: '' } });
+    let matched = false;
+    if (matchesBillingEmail(customer.email, options.emailDigest, options.secret)) {
+      await this.#post(path, { email: '' }); matched = true;
+    }
+    for (const { path: methodPath, method } of methods) {
+      if (matchesBillingEmail(data(method.billing_details ?? {}).email, options.emailDigest, options.secret)) {
+        await this.#post(methodPath, { billing_details: { email: '' } }); matched = true;
+      }
+    }
+    return matched;
   }
   async redactCustomer(customerId: string): Promise<void> {
     assertNoTransaction('payments.redactCustomer');
@@ -447,28 +454,37 @@ export class StripePayments implements Payments {
         ...(holds(customer.business_name) ? { business_name: '' } : {}),
         ...(holds(customFields) ? { invoice_settings: { custom_fields: '' } } : {}) });
     }
-    await this.#redactAttachedCards(customerId);
-    // Tax IDs are separate objects (a VAT number names the person or business), so they are deleted whatever the rest held.
-    // They go last, so a key that can't manage them still has the customer's own fields cleared before the job reports it.
-    await this.#deleteTaxIds(path);
+    // Neither independent cleanup may block the other. Report the first error only after attempting both.
+    let failure: unknown;
+    try { await this.#deleteTaxIds(path); } catch (error) { failure = error; }
+    try { await this.#redactAttachedCards(customerId); } catch (error) { failure ??= error; }
+    if (failure !== undefined) throw failure;
   }
-  /** Attached cards can outlive their local rows. Paginate without detaching or changing payment history. */
+  /** Attached payment methods can outlive their local rows. Paginate every type without detaching them. */
   async #redactAttachedCards(customerId: string): Promise<void> {
     try {
       let cursor: string | undefined;
+      let failure: unknown;
       for (;;) {
-        const page = await this.#get('/v1/payment_methods', { customer: customerId, type: 'card', limit: 100,
+        const page = await this.#get('/v1/payment_methods', { customer: customerId, limit: 100,
           ...(cursor ? { starting_after: cursor } : {}) });
         const methods = (Array.isArray(page.data) ? page.data : []).map(data);
         for (const method of methods) {
-          if (id(method.customer) !== customerId) throw new Error('Card belongs to another customer');
-          if (data(method.metadata ?? {}).gym_id !== undefined) this.#metadata(method);
-          if (holds(method.billing_details)) {
-            try { await this.#post(this.#path('payment_methods', id(method.id)), { billing_details: { name: '', email: '', phone: '', address: '' } }); }
-            catch (error) { if (!absent(error)) throw error; }
-          }
+          try {
+            if (id(method.customer) !== customerId) throw new Error('Card belongs to another customer');
+            const owner = data(method.metadata ?? {}).gym_id;
+            if (owner !== undefined && owner !== this.gymId) {
+              logWarn('payments.redaction.method_skipped_foreign', { gymId: this.gymId, customerId, paymentMethodId: id(method.id) });
+              continue;
+            }
+            if (holds(method.billing_details)) await this.#post(this.#path('payment_methods', id(method.id)),
+              { billing_details: { name: '', email: '', phone: '', address: '' } });
+          } catch (error) { if (!absent(error)) failure ??= error; }
         }
-        if (!page.has_more) return;
+        if (!page.has_more) {
+          if (failure !== undefined) throw failure;
+          return;
+        }
         const next = methods.at(-1)?.id;
         if (typeof next !== 'string' || next === cursor) throw new Error('Invalid card pagination');
         cursor = next;

@@ -233,7 +233,8 @@ detach, so the retry still finds the card attached; a card that is already detac
 keeps what it holds, since it can no longer be updated.
 
 `clearCustomerEmail(id, { householdId, emailDigest, secret, paymentMethodIds })` handles
-erasing a payer while other household members remain. It clears only the customer
+erasing a payer while other household members remain. It returns whether an address
+matched and was cleared (false for a no-match, missing or deleted customer). It clears only the customer
 email and every specified card's billing email that match the digest of the
 trimmed, lowercased erased address. It preserves names and other billing fields,
 and keeps the cards attached. The digest is a versioned HMAC under a key derived
@@ -267,11 +268,14 @@ safe to repeat. Erasing a household's last member commits first, then calls it
 with the customer ID the erasure cleared; a durable `members.erasure.redact_customer`
 job carries that ID and retries when Stripe is unreachable. It uses the Customers
 **Write** permission that customer creation already needs. It also
-[lists attached cards](https://docs.stripe.com/api/payment_methods/list), 100 per page,
-and clears each card's billing name, email, phone and address without detaching it,
+[lists attached payment methods](https://docs.stripe.com/api/payment_methods/list) of every type, 100 per page,
+and clears each method's billing name, email, phone and address without detaching it,
 using the existing Payment Methods **Write** permission. This covers dashboard-added
-cards and revoked cards whose detach has not succeeded. A card failure is retried;
-already cleared details cause no further write, and other customers' cards are left alone.
+cards, bank accounts and revoked cards whose detach has not succeeded. A method
+tagged for another gym is skipped with an identifier-only warning. Tax IDs are deleted
+before payment-method cleanup; both are attempted even if one fails, and the first
+error is rethrown for retry after attempting the remaining methods. Already cleared details cause no further write, and other
+customers' methods are left alone.
 
 `adoptCustomer(id)` raises `CustomerDeleted` (exported from `index.ts`; the fake raises it
 for a customer seeded as `deleted`) when Stripe reports the customer deleted, so callers

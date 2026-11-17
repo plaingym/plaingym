@@ -93,14 +93,24 @@ link check and external call cannot be one transaction; an external edit during
 the call cannot be made atomic with erasure. `configureMembers` accepts the
 gym-scoped `clearBillingEmail(gymId, customerId, options)` callback backed by
 `Payments.clearCustomerEmail`; an absent callback or HMAC secret fails the job so it retries.
-Already queued jobs with an unkeyed digest and one card ID still drain. A successful
-provider clear writes `members.erasure.billing_email_cleared` with customer and erasure
-IDs only; a failure writes no completion audit. The erasure also writes the ID-only
+Already queued jobs with an unkeyed digest and one card ID still drain. The callback
+returns whether any address matched. A matching provider clear writes
+`members.erasure.billing_email_cleared` with customer and erasure IDs only; a no-match
+run writes `members.erasure.billing_email_no_match` and leaves its marker unresolved.
+The job itself completed, so the sweep never runs it again; the marker resolves as
+`members.erasure.billing_email_job_missing` once retention removes the job.
+A failure writes no completion audit. A skipped reassigned customer writes
+`members.erasure.billing_email_skipped_linked`, resolving its marker. The erasure also writes the ID-only
 `members.erasure.billing_email_queued` marker. The daily `members.erasure.redact_earlier`
 sweep uses these markers and the queue's `JobRecovery` API to reset exhausted email
-clear jobs, retaining their payload and key. Completed clears are excluded. The sweep
-pages outstanding markers 200 at a time and resets at most 200 jobs per gym per run; it requires the queue's
-`failedJobs` and `retryFailed` methods for this recovery.
+clear jobs, retaining their payload and key. Completed clears are excluded. Resets wait
+1, 2, 4 and 8 days after each final failure, with a maximum of four resets recorded as
+`members.erasure.billing_email_reset`. An exhausted job at that cap writes
+`members.erasure.billing_email_abandoned`, logs an error with identifiers only, and leaves the sweep. Markers whose jobs
+retention removed resolve with `members.erasure.billing_email_job_missing`, without
+claiming that any email was cleared. The sweep pages outstanding markers 200 at a time
+and resets at most 200 jobs per gym per run; it uses the queue's `failedJobs`,
+`retryFailed` and `existingJobs` recovery methods. No digest or secret enters these audits.
 When the household
 has no remaining identifiable members, its contact details and remaining portal
 and signed-link access are also removed. Other household members remain intact.

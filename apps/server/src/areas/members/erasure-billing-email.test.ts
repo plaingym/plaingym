@@ -10,7 +10,8 @@ import { FakeJobs, PostgresJobs } from '../../infra/jobs/index.js';
 import { billingEmailDigest, FakePayments } from '../../infra/payments/index.js';
 import { createMembersService } from './members.js';
 import { createErasureJobs } from './members.routes.js';
-import { billingEmailClearedAction, clearBillingEmailJob, queueEarlierRedactions, redactEarlierJob } from './erasure-redaction.js';
+import { billingEmailClearedAction, billingEmailMaxResets, billingEmailResetDelayMs, clearBillingEmailJob, queueEarlierRedactions, redactEarlierJob } from './erasure-redaction.js';
+import { billingEmailAbandonedAction, billingEmailErasuresToRetry, billingEmailMissingAction, billingEmailNoMatchAction, billingEmailResetAction, billingEmailSkippedAction } from './erasure-redaction.query.js';
 
 const database = useTestDatabase(), factory = createFactories(database), gymId = uuidv7(), otherGym = uuidv7();
 const clock = new TestClock('2026-11-14T12:00:00Z');
@@ -43,7 +44,7 @@ async function jobPayload(queue: FakeJobs | PostgresJobs, customerId: string | n
 function handler(payments: FakePayments) {
   const clear = vi.fn(async (gym: string, customerId: string, options: Parameters<FakePayments['clearCustomerEmail']>[1]) => {
     expect(gym).toBe(gymId);
-    await payments.clearCustomerEmail(customerId, options);
+    return payments.clearCustomerEmail(customerId, options);
   });
   const job = createErasureJobs({ clearBillingEmail: clear, billingEmailSecret, scope: database.forGym }).find(job => job.id === clearBillingEmailJob)!;
   return { clear, run: (payload: unknown, gym = gymId) => job.handler(payload, { gymId: gym, jobId: 'clear-email', timezone: 'UTC', attempt: 1, clock }) };
@@ -77,7 +78,7 @@ describe.each(['fake', 'postgres'] as const)('%s payer email erasure', kind => {
     expect(await payments.readPaymentObject({ kind: 'payment_method', id: card.processorId })).toMatchObject({ status: 'found' });
     await expect(service.eraseMember(context, person.id, { revision: 1 }, { jobs, timezone: 'UTC' })).rejects.toThrow();
     const completed = await database.forGym(gymId, tx => tx.select().from(auditEvents).where(and(eq(auditEvents.action, billingEmailClearedAction), eq(auditEvents.targetId, home.id))));
-    expect(completed).toHaveLength(2);
+    expect(completed).toHaveLength(1);
     expect(completed[0]).toMatchObject({ actorKind: 'system', after: { stripeCustomerId: customerId, erasure: payload.erasureId }, occurredAt: clock.now() });
     expect(JSON.stringify(completed)).not.toContain(expected.emailDigest);
     // Every erased email is checked at the provider even when no local billing email remains.
@@ -192,7 +193,8 @@ it('recovers an exhausted email clear in the daily sweep, scoped to its gym, the
   const jobs = new PostgresJobs({ database, clock });
   await service.eraseMember(context, person.id, { revision: 1 }, { jobs, timezone: 'UTC' });
   const [queued] = await jobPayload(jobs, customerId);
-  const exhausted = await database.forGym(gymId, tx => tx.update(jobRows).set({ status: 'failed', attempts: 12 })
+  const exhausted = await database.forGym(gymId, tx => tx.update(jobRows).set({ status: 'failed', attempts: 12,
+    runAt: new Date(clock.now().getTime() - billingEmailResetDelayMs) })
     .where(and(eq(jobRows.name, clearBillingEmailJob), eq(jobRows.idempotencyKey, queued!.key!))).returning({ id: jobRows.id }));
   expect(exhausted).toHaveLength(1);
   expect(await queueEarlierRedactions({ gymId: otherGym, timezone: 'UTC', jobs, clock, scope: database.forGym })).toBe(0);
@@ -215,4 +217,63 @@ it('fails closed and rolls erasure back when its HMAC secret is missing', async 
   await expect(createMembersService({ scope: database.forGym, clock }).eraseMember(context, person.id, { revision: 1 },
     { jobs: new FakeJobs(clock), timezone: 'UTC' })).rejects.toMatchObject({ code: 'unavailable' });
   expect((await service.getMember(gymId, person.id)).anonymizedAt).toBeNull();
+});
+
+it('backs off exhausted email clears exponentially, caps resets and stops selecting abandoned markers', async () => {
+  const { person, customerId, home } = await fixture();
+  const recoveryClock = new TestClock(clock.now()), jobs = new PostgresJobs({ database, clock: recoveryClock });
+  await service.eraseMember(context, person.id, { revision: 1 }, { jobs, timezone: 'UTC' });
+  const [queued] = await jobPayload(jobs, customerId);
+  const sweep = () => queueEarlierRedactions({ gymId, timezone: 'UTC', jobs, clock: recoveryClock, scope: database.forGym });
+  const fail = () => database.forGym(gymId, tx => tx.update(jobRows).set({ status: 'failed', attempts: 12, runAt: recoveryClock.now() })
+    .where(eq(jobRows.idempotencyKey, queued!.key!)));
+  for (let reset = 0; reset < billingEmailMaxResets; reset++) {
+    await fail();
+    recoveryClock.advance(billingEmailResetDelayMs * 2 ** reset - 1);
+    expect(await sweep()).toBe(0);
+    recoveryClock.advance(1);
+    expect(await sweep()).toBe(1);
+    const [row] = await database.forGym(gymId, tx => tx.select().from(jobRows).where(eq(jobRows.idempotencyKey, queued!.key!)));
+    expect(row).toMatchObject({ status: 'pending', attempts: 0, runAt: recoveryClock.now() });
+  }
+  await fail();
+  expect(await sweep()).toBe(0);
+  const resets = await database.forGym(gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, billingEmailResetAction)));
+  const own = resets.filter(row => (row.after as { erasure: string }).erasure === (queued!.payload as { erasureId: string }).erasureId);
+  expect(own).toHaveLength(billingEmailMaxResets);
+  const abandoned = await database.forGym(gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, billingEmailAbandonedAction)));
+  expect(abandoned.some(row => (row.after as { erasure: string }).erasure === (queued!.payload as { erasureId: string }).erasureId)).toBe(true);
+  expect((await database.forGym(gymId, tx => billingEmailErasuresToRetry(tx, gymId, 1000))).some(row => row.householdId === home.id)).toBe(false);
+  recoveryClock.advance(100 * billingEmailResetDelayMs);
+  expect(await sweep()).toBe(0);
+});
+
+it('resolves skipped and pruned job markers without hiding a no-match run from recovery', async () => {
+  const cases = await Promise.all([fixture(), fixture(), fixture()]);
+  const jobs = new PostgresJobs({ database, clock });
+  const payloads: { householdId: string; erasureId: string; emailDigest: string }[] = [];
+  for (const item of cases) {
+    await service.eraseMember(context, item.person.id, { revision: 1 }, { jobs, timezone: 'UTC' });
+    payloads.push((await jobPayload(jobs, item.customerId))[0]!.payload as typeof payloads[number]);
+  }
+  const [skipped, pruned, noMatch] = cases;
+  await database.forGym(gymId, tx => tx.update(households).set({ stripeCustomerId: null }).where(eq(households.id, skipped!.home.id)));
+  await handler(skipped!.payments).run(payloads[0]);
+  expect(await database.forGym(gymId, tx => tx.select().from(auditEvents).where(and(eq(auditEvents.action, billingEmailSkippedAction),
+    eq(auditEvents.targetId, skipped!.home.id))))).toHaveLength(1);
+  const [prunedJob] = await jobPayload(jobs, pruned!.customerId);
+  await database.forGym(gymId, tx => tx.delete(jobRows).where(eq(jobRows.idempotencyKey, prunedJob!.key!)));
+  // A rotated HMAC key cannot prove the queued digest matched. This must not write a cleared marker.
+  await handler(noMatch!.payments).run({ ...payloads[2], emailDigest: billingEmailDigest('payer@example.invalid', 'rotated-secret') });
+  expect(await database.forGym(gymId, tx => tx.select().from(auditEvents).where(and(eq(auditEvents.action, billingEmailNoMatchAction),
+    eq(auditEvents.targetId, noMatch!.home.id))))).toHaveLength(1);
+  expect(await database.forGym(gymId, tx => tx.select().from(auditEvents).where(and(eq(auditEvents.action, billingEmailClearedAction),
+    eq(auditEvents.targetId, noMatch!.home.id))))).toHaveLength(0);
+  await queueEarlierRedactions({ gymId, timezone: 'UTC', jobs, clock, scope: database.forGym });
+  expect(await database.forGym(gymId, tx => tx.select().from(auditEvents).where(and(eq(auditEvents.action, billingEmailMissingAction),
+    eq(auditEvents.targetId, pruned!.home.id))))).toHaveLength(1);
+  const pending = await database.forGym(gymId, tx => billingEmailErasuresToRetry(tx, gymId, 1000));
+  expect(pending.some(row => row.householdId === skipped!.home.id || row.householdId === pruned!.home.id)).toBe(false);
+  expect(pending.some(row => row.householdId === noMatch!.home.id)).toBe(true);
+  expect(noMatch!.payments.customer(noMatch!.customerId!)!.email).toBe('payer@example.invalid');
 });

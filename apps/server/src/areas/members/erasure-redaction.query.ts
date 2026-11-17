@@ -11,15 +11,30 @@ export const customerRedactedAction = 'members.erasure.customer_redacted';
 /** Identifier-only markers for narrow billing email cleanup and its completion. */
 export const billingEmailQueuedAction = 'members.erasure.billing_email_queued';
 export const billingEmailClearedAction = 'members.erasure.billing_email_cleared';
+export const billingEmailSkippedAction = 'members.erasure.billing_email_skipped_linked';
+export const billingEmailNoMatchAction = 'members.erasure.billing_email_no_match';
+export const billingEmailMissingAction = 'members.erasure.billing_email_job_missing';
+export const billingEmailResetAction = 'members.erasure.billing_email_reset';
+export const billingEmailAbandonedAction = 'members.erasure.billing_email_abandoned';
+
+/** A small durable reset history per queued marker, bounded by the recovery cap. */
+export function billingEmailResets(tx: Transaction, gymId: string, markerId: string, limit: number) {
+  return tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.gymId, gymId),
+    eq(auditEvents.action, billingEmailResetAction), eq(auditEvents.targetId, markerId))).limit(limit);
+}
 
 export function billingEmailErasuresToRetry(tx: Transaction, gymId: string, limit: number, afterId?: string) {
   const erasure = sql<string>`${auditEvents.after}->>'erasure'`;
-  return tx.select({ id: auditEvents.id, erasureId: erasure }).from(auditEvents).where(and(eq(auditEvents.gymId, gymId),
+  return tx.select({ id: auditEvents.id, erasureId: erasure, householdId: auditEvents.targetId }).from(auditEvents).where(and(eq(auditEvents.gymId, gymId),
     eq(auditEvents.action, billingEmailQueuedAction),
     afterId ? gt(auditEvents.id, afterId) : undefined,
     sql`${erasure} ~ '^[a-f0-9-]{36}$'`,
     sql`not exists (select 1 from audit_events completed where completed.gym_id = ${gymId}
-      and completed.action = ${billingEmailClearedAction} and completed.after->>'erasure' = ${erasure})`))
+      and completed.target_id = ${auditEvents.targetId}
+      and completed.action in (${billingEmailClearedAction}, ${billingEmailSkippedAction}, ${billingEmailMissingAction})
+      and completed.after->>'erasure' = ${erasure})`,
+    sql`not exists (select 1 from audit_events abandoned where abandoned.gym_id = ${gymId}
+      and abandoned.action = ${billingEmailAbandonedAction} and abandoned.target_id = ${auditEvents.id})`))
     .orderBy(asc(auditEvents.id)).limit(limit);
 }
 
