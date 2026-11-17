@@ -42,6 +42,16 @@ jobs:
           node scripts/release/check-rollback.mjs "$migration_base" "$head"
       - name: Test release tooling in scratch repositories
         run: node --test scripts/release/*.test.mjs
+      - name: Dry-run scheduled failure reporting
+        if: ${{ startsWith(github.ref, 'refs/heads/task/') }}
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const { reportScheduledFailure } = await import('${{ github.workspace }}/scripts/release/scheduled-failure.mjs');
+            // Simulate a scheduled main failure, using this branch's workflow and run for the read-only plan.
+            context.eventName = 'schedule';
+            context.ref = 'refs/heads/main';
+            console.log(await reportScheduledFailure({ github, context, failed: true, dryRun: true }));
   reuse:
     # main only receives fast-forwards of integration branches whose CI passed, so the same commit has
     # already been checked: reuse that run's result instead of repeating it. Any lookup failure checks again.
