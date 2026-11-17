@@ -3,7 +3,7 @@ import { formatCount } from '../../../lib/count.js';
 import { calendarDateLabel, useGymTime } from '../../../lib/instant.js';
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { refundReleased, type InvoiceDetail, type Payment } from '@plaingym/shared/contracts';
+import { refundReleased, type Household, type Member, type InvoiceDetail, type Payment } from '@plaingym/shared/contracts';
 import { AmountInputError, cardChargeIssue } from '@plaingym/shared/money';
 import { invoiceClient, invoiceError, type InvoiceClient } from './api.js';
 import { text, money, minorUnitsToInput, parseMinorUnits } from './format.js';
@@ -169,12 +169,17 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
               <option value="sms:household" disabled={!household.data?.sms?.notices || !household.data.sms.phoneValid}>
                 {text('smsLink')}: {text('billingPhone')}{smsRefusal(household.data?.sms)}
               </option>
-              {people.data?.map(person => <option key={person.id} value={'sms:' + person.id}
-                disabled={!!person.anonymizedAt || !person.sms.notices || !person.sms.phoneValid}>
-                {text('smsLink')}: {person.firstName} {person.lastName}{person.anonymizedAt ? ' — ' + text('smsAnonymized') : smsRefusal(person.sms)}
-              </option>)}
+              {people.data?.map(person => {
+                const refusal = memberSmsRefusal(person, household.data);
+                return <option key={person.id} value={'sms:' + person.id} disabled={!!refusal}>
+                  {text('smsLink')}: {person.firstName} {person.lastName}{refusal}
+                </option>;
+              })}
             </Select></Label>
-            {people.isError && <ErrorState message={text('smsRecipientsError')} onRetry={() => void people.refetch()}/>}
+            {(people.isError || household.isError) && <ErrorState message={text('smsRecipientsError')} onRetry={() => {
+              if (people.isError) void people.refetch();
+              if (household.isError) void household.refetch();
+            }}/>}
             <p className="text-sm text-muted-foreground">{text('smsHelp')}</p>
           </>}
           {url ? <Label className="block">{text('linkReady')}<Input readOnly value={url} onFocus={event => event.target.select()}/></Label>
@@ -186,6 +191,14 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
 }
 function smsRefusal(sms?: { notices: unknown; phoneValid: boolean }) {
   return !sms?.notices ? ' — ' + text('smsNoConsent') : !sms.phoneValid ? ' — ' + text('smsInvalidPhone') : '';
+}
+function memberSmsRefusal(person: Member, household?: Household) {
+  if (person.anonymizedAt) return ' — ' + text('smsAnonymized');
+  const refusal = smsRefusal(person.sms);
+  if (refusal) return refusal;
+  return !household?.email?.trim() || household.sms.notices && household.sms.phoneE164
+    || person.email?.trim().toLowerCase() !== household.email.trim().toLowerCase()
+    ? ' — ' + text('smsPayerOnly') : '';
 }
 function refundable(data: InvoiceDetail, payment: Payment) {
   return payment.amountCents - data.refunds.filter(r => r.paymentId === payment.id && !refundReleased(r)).reduce((sum, r) => sum + r.amountCents, 0);

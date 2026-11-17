@@ -3,7 +3,8 @@
 Card re-collection (`update_card`) sends also text the consented billing
 recipients selected by `householdNoticePhones`. The billing phone wins; otherwise
 the helper selects consented members matching the billing email and deduplicates
-phones. `MemberSms` rechecks consent, phone, the member-text switch and the daily
+phones. The delivery boundary rechecks payer selection after provider preparation.
+`MemberSms` rechecks consent, phone, the member-text switch and the daily
 cap. Configure the service's `smsDelivery` and `smsPhoneDigest` (the HMAC helper
 `createSmsPhoneDigest(AUTH_SECRET)`) in runtime composition.
 

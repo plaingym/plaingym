@@ -282,7 +282,7 @@ export function createSignedLinksService(options: {
       const gym = channel === 'sms' ? await settings.get(context.gymId) : undefined;
       // Refuse foreign or ineligible recipients even when this gym has no configured text transport.
       // Preparation can be slow; check again atomically with minting below.
-      if (channel === 'sms') await scope(context.gymId, tx => signedLinkSmsRecipient(tx, context.gymId, request.householdId, recipientId, gym!.country));
+      if (channel === 'sms') await scope(context.gymId, tx => signedLinkSmsRecipient(tx, context.gymId, request.householdId, recipientId, gym!.country, request.purpose));
       const delivery = options.delivery ?? configuredDelivery, smsDelivery = options.smsDelivery ?? configuredSmsDelivery;
       if (channel === 'email' && !delivery || channel === 'sms' && !smsDelivery)
         throw new AppError('unavailable', `Signed link ${channel === 'email' ? 'email' : 'text'} delivery is not configured`);
@@ -293,7 +293,7 @@ export function createSignedLinksService(options: {
       if (preparedSms) validateSignedLinkOrigin(preparedSms, context.gymId);
       const { created, reservation, recipient } = await scope(context.gymId, async tx => {
         const recipient = channel === 'sms'
-          ? await signedLinkSmsRecipient(tx, context.gymId, request.householdId, recipientId, gym!.country) : undefined;
+          ? await signedLinkSmsRecipient(tx, context.gymId, request.householdId, recipientId, gym!.country, request.purpose) : undefined;
         const reservation = await sending.reserve(tx, context.gymId, key, digest);
         // Check the invoice before minting. Manual notices keep a revoked metadata record
         // for the send response, but never commit an active undisclosed credential.
@@ -332,7 +332,7 @@ export function createSignedLinksService(options: {
       try {
         if (preparedSms && recipient) {
           const sms = new MemberSms({ gymId: context.gymId, memberIds: recipient.memberIds, householdIds: recipient.householdIds,
-            kind: 'notices', resolver: householdBoundSmsResolver(preparedSms.resolver, scope, context.gymId, request.householdId, recipient.memberIds), settings, scope, clock });
+            kind: 'notices', resolver: householdBoundSmsResolver(preparedSms.resolver, scope, context.gymId, request.householdId, recipient.memberIds, request.purpose), settings, scope, clock });
           let manual = created.link.revokedAt !== null;
           if (request.purpose === 'pay_invoice') {
             const invoice = await scope(context.gymId, async tx => (await tx.select().from(invoices)

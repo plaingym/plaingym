@@ -684,6 +684,13 @@ Old versions and documents referenced by signatures remain retained after retire
   opting in an unparseable phone, and audit kind, before, after and source without a phone.
   A consent request that already holds checks the revision without changing it or
   adding an audit. Portal consent changes preserve unsaved household contact edits.
+  Staff can text `pay_invoice` and `update_card` links only to the consenting
+  billing phone, or otherwise a consenting member at the billing email, as selected
+  by `householdNoticePhones`. Other members remain visible but disabled with a
+  payer-only reason in the invoice delivery list. The server refuses an ineligible
+  recipient with `sms_payer_only` before minting and rechecks payer selection before
+  delivery. Onboarding and waiver links can still go to any consenting member of
+  the link's household with a valid phone.
   Member erasure
   clears normalized numbers and both consents, and clears the household's when its
   last member is erased. Provider error 21610 withdraws all consents at that number

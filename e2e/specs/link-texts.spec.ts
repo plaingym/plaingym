@@ -7,13 +7,16 @@ for (const width of [360, 1280]) {
   test(`invoice text recipients, consent refusals and uncertain resend at ${width}px`, async ({ browser, install }, info) => {
     const owner = install.clients.owner;
     const household = (await owner.json<{ data: { id: string; revision: number } }>('/api/households', 'POST', {
-      name: `Text recipients ${width}`, phone: '+12025550123',
+      name: `Text recipients ${width}`, email: 'payer@example.test', phone: '+12025550123',
     })).data;
-    await owner.json(`/api/households/${household.id}/sms-consent`, 'PUT', { consent: true, revision: household.revision });
     const member = (await owner.json<{ data: { id: string; revision: number } }>('/api/members', 'POST', {
-      householdId: household.id, firstName: 'Consented', lastName: `Recipient ${width}`, phone: '+12025550124',
+      householdId: household.id, firstName: 'Consented', lastName: `Recipient ${width}`, email: 'payer@example.test', phone: '+12025550124',
     })).data;
     await owner.json(`/api/members/${member.id}/sms-consent`, 'PUT', { kind: 'notices', consent: true, revision: member.revision });
+    const nonPayer = (await owner.json<{ data: { id: string; revision: number } }>('/api/members', 'POST', {
+      householdId: household.id, firstName: 'Other', lastName: `Adult ${width}`, email: 'other@example.test', phone: '+12025550126',
+    })).data;
+    await owner.json(`/api/members/${nonPayer.id}/sms-consent`, 'PUT', { kind: 'notices', consent: true, revision: nonPayer.revision });
     await owner.json('/api/members', 'POST', { householdId: household.id, firstName: 'No consent', lastName: `${width}`, phone: '+12025550125' });
     const settings = (await owner.json<{ data: { currency: string } }>('/api/settings')).data;
     const bill = (await owner.json<{ data: { id: string; number: number } }>('/api/billing/invoices/one-off', 'POST', {
@@ -37,7 +40,8 @@ for (const width of [360, 1280]) {
       await page.getByRole('button', { name: 'Send or share pay link', exact: true }).click();
       const delivery = page.getByRole('combobox', { name: 'Delivery', exact: true });
       await expect(page.getByRole('option', { name: /No consent.*No notices consent/ })).toHaveAttribute('disabled', '');
-      await expect(page.getByRole('option', { name: 'Send by text: Household billing phone', exact: true })).not.toHaveAttribute('disabled');
+      await expect(page.getByRole('option', { name: /Other Adult.*Payer only/ })).toHaveAttribute('disabled', '');
+      await expect(page.getByRole('option', { name: /Household billing phone.*No notices consent/ })).toHaveAttribute('disabled', '');
       await delivery.selectOption('sms:' + member.id);
       await accessibleLayout(page, info, 'text-link-recipients-' + width);
       await mkdir('coverage/link-texts', { recursive: true });
@@ -49,6 +53,12 @@ for (const width of [360, 1280]) {
       expect(sends).toHaveLength(2);
       expect(sends[0]).toMatchObject({ channel: 'sms', recipientMemberId: member.id });
       expect(sends[1]!.sendGeneration).not.toBe(sends[0]!.sendGeneration);
+      const currentHome = (await owner.json<{ data: { revision: number } }>(`/api/households/${household.id}`)).data;
+      await owner.json(`/api/households/${household.id}/sms-consent`, 'PUT', { consent: true, revision: currentHome.revision });
+      await page.reload();
+      await page.getByRole('button', { name: 'View invoice ' + bill.number, exact: true }).click();
+      await page.getByRole('button', { name: 'Send or share pay link', exact: true }).click();
+      await expect(page.getByRole('option', { name: /Consented Recipient.*Payer only/ })).toHaveAttribute('disabled', '');
       await delivery.selectOption('sms:household');
       await page.getByRole('region', { name: 'Pay link', exact: true }).getByRole('button', { name: 'Confirm', exact: true }).click();
       await expect.poll(() => sends.length).toBe(3);

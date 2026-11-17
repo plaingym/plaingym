@@ -76,35 +76,55 @@ function start(view: React.ReactNode) {
   return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}><ShellServicesContext.Provider value={createShellServices(async () => bootstrap)}>{view}</ShellServicesContext.Provider></QueryClientProvider>);
 }
 afterEach(cleanup);
-it('lists consented household text recipients and disables invalid, nonconsenting and erased members with reasons', async () => {
+it.each([false, true])('lists payer text recipients with reasons when billing phone consent is %s', async billingPhone => {
   const f = transport(), original = f.fetcher.getMockImplementation()!;
   const page = (data: unknown[]) => ({ data, pagination: { limit: 100, offset: 0, total: data.length } });
   const consent = { at: createdAt, source: 'staff' };
   f.fetcher.mockImplementation(async (path, options) => {
     const url = new URL(String(path), 'http://gym.test');
-    if (url.pathname === '/api/households/' + home) return Response.json({ data: { id: home, name: 'Rivera household', email: null,
-      phone: '+12025550123', sms: { phoneE164: '+12025550123', phoneValid: true, notices: consent }, address: {}, revision: 1, createdAt } });
+    if (url.pathname === '/api/households/' + home) return Response.json({ data: { id: home, name: 'Rivera household', email: 'payer@example.test',
+      phone: '+12025550123', sms: { phoneE164: '+12025550123', phoneValid: true, notices: billingPhone ? consent : null }, address: {}, revision: 1, createdAt } });
     if (url.pathname === '/api/members') return Response.json(page([
       { id: id(101), firstName: 'Ready', lastName: 'Recipient', anonymizedAt: null, sms: { phoneValid: true, notices: consent } },
       { id: id(102), firstName: 'No', lastName: 'Consent', anonymizedAt: null, sms: { phoneValid: true, notices: null } },
       { id: id(103), firstName: 'Bad', lastName: 'Phone', anonymizedAt: null, sms: { phoneValid: false, notices: consent } },
       { id: id(104), firstName: 'Erased', lastName: 'Member', anonymizedAt: createdAt, sms: { phoneValid: true, notices: consent } },
-    ].map(person => ({ ...person, householdId: home, email: null, phone: '+12025550123', photoKey: null, dateOfBirth: null,
+      { id: id(105), firstName: 'Other', lastName: 'Adult', anonymizedAt: null, sms: { phoneValid: true, notices: consent } },
+      { id: id(106), firstName: 'Other', lastName: 'Child', anonymizedAt: null, sms: { phoneValid: true, notices: consent } },
+    ].map(person => ({ ...person, householdId: home, email: person.id === id(105) ? 'other@example.test' : person.id === id(106) ? null : 'PAYER@example.test', phone: '+12025550123', photoKey: null, dateOfBirth: null,
       status: 'active', emergencyContacts: [], emailOptOut: false, emailDeliverable: true, revision: 1, createdAt,
       sms: { ...person.sms, phoneE164: person.sms.phoneValid ? '+12025550123' : null, announcements: null } }))));
     return original(path, options);
   });
   start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={desk} client={f.client}/>);
   fireEvent.click(await screen.findByRole('button', { name: 'Send or share pay link' }));
-  expect(await screen.findByRole('option', { name: 'Send by text: Ready Recipient' })).toHaveProperty('disabled', false);
+  expect(await screen.findByRole('option', { name: billingPhone ? 'Send by text: Ready Recipient — Payer only' : 'Send by text: Ready Recipient' })).toHaveProperty('disabled', billingPhone);
+  expect(screen.getByRole('option', { name: /Other Adult — Payer only/ })).toHaveProperty('disabled', true);
+  expect(screen.getByRole('option', { name: /Other Child — Payer only/ })).toHaveProperty('disabled', true);
+  expect(screen.getByRole('option', { name: /Send by text: Household billing phone/ })).toHaveProperty('disabled', !billingPhone);
   expect(screen.getByRole('option', { name: /No Consent — No notices consent/ })).toHaveProperty('disabled', true);
   expect(screen.getByRole('option', { name: /Bad Phone — Invalid or missing phone/ })).toHaveProperty('disabled', true);
   expect(screen.getByRole('option', { name: /Erased Member — Member erased/ })).toHaveProperty('disabled', true);
-  fireEvent.change(screen.getByLabelText('Delivery'), { target: { value: 'sms:' + id(101) } });
+  fireEvent.change(screen.getByLabelText('Delivery'), { target: { value: billingPhone ? 'sms:household' : 'sms:' + id(101) } });
   fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
   await screen.findByText('Pay link sent to the household.');
   const request = f.fetcher.mock.calls.find(([path]) => String(path) === '/api/links/send');
-  expect(JSON.parse(String(request?.[1]?.body))).toMatchObject({ channel: 'sms', recipientMemberId: id(101), householdId: home });
+  expect(JSON.parse(String(request?.[1]?.body))).toMatchObject({ channel: 'sms', householdId: home });
+  expect(JSON.parse(String(request?.[1]?.body)).recipientMemberId).toBe(billingPhone ? undefined : id(101));
+});
+it('shows a retryable error when the household behind the text recipients fails to load', async () => {
+  const f = transport(), original = f.fetcher.getMockImplementation()!;
+  let fail = true;
+  f.fetcher.mockImplementation(async (path, options) => {
+    if (fail && new URL(String(path), 'http://gym.test').pathname === '/api/households/' + home) return Response.json({}, { status: 500 });
+    return original(path, options);
+  });
+  start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={desk} client={f.client}/>);
+  fireEvent.click(await screen.findByRole('button', { name: 'Send or share pay link' }));
+  expect(await screen.findByText('Text recipients could not be loaded.')).toBeTruthy();
+  fail = false;
+  fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+  await waitFor(() => expect(screen.queryByText('Text recipients could not be loaded.')).toBeNull());
 });
 it.each(['open', 'past_due'] as const)('voids an %s invoice with a reason and removes collection actions', async status => {
   const f = transport({ invoice: { ...invoice, status } });

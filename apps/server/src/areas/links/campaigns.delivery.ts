@@ -140,7 +140,7 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
         try {
           const result = await deliveries.send(gymId, `links.campaign.sms:${campaignId}:${row.householdId}:${occurrence}:${options.smsPhoneDigest!(group.phoneE164)}`,
             new MemberSms({ gymId, memberIds: group.consentMemberIds, householdIds: group.consentHouseholdIds,
-              kind: 'notices', resolver: householdBoundSmsResolver(preparedSms.resolver, scope, gymId, row.householdId, group.consentMemberIds), settings, scope, clock }),
+              kind: 'notices', resolver: householdBoundSmsResolver(preparedSms.resolver, scope, gymId, row.householdId, group.consentMemberIds, 'update_card'), settings, scope, clock }),
             { to: group.phoneE164, body: `${preparedSms.t('links/service:update_card.subject')}: ${new URL(`/l/${token}`, preparedSms.origin).href} ${preparedSms.t('links/campaigns:smsReplacementNotice')}` });
           smsOutcome = result.status === 'sent' ? 'sent' : result.status === 'skipped' ? result.state === 'accepted' ? 'sent' : 'unknown' : 'not_accepted';
         } catch (error) {

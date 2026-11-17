@@ -20,9 +20,9 @@ const db = useTestDatabase(), make = createFactories(db), t = createTranslator(l
 async function fixture() {
   const gymId = uuidv7(), clock = new TestClock('2026-11-16T12:00:00Z'), sms = new FakeSms();
   await make('gyms', gymId, { memberSmsEnabled: true, memberEmailsEnabled: false });
-  const home = await make('households', gymId, { phone: '+12025550123', phoneE164: '+12025550123',
+  const home = await make('households', gymId, { email: 'payer@example.test', phone: '+12025550123', phoneE164: '+12025550123',
     smsNoticesConsentAt: clock.now(), smsNoticesConsentSource: 'staff' });
-  const member = await make('members', gymId, { householdId: home.id, phone: '+12025550124', phoneE164: '+12025550124',
+  const member = await make('members', gymId, { householdId: home.id, email: 'payer@example.test', phone: '+12025550124', phoneE164: '+12025550124',
     smsNoticesConsentAt: clock.now(), smsNoticesConsentSource: 'staff' });
   const invoice = await make('invoices', gymId, { householdId: home.id, status: 'open', number: 1, amountCents: 1000 });
   const user = await make('authUser', gymId);
@@ -46,12 +46,17 @@ async function fixture() {
     createServerRegistry({ routes: createSignedLinksRoutes(links) }).mount(app, authorize, new Set());
     return app;
   }
-  return { gymId, clock, sms, home, member, invoice, links, context, request, rows, token, app, resolver };
+  return { gymId, clock, sms, home, member, invoice, links, context, request, rows, token, app, resolver, smsDelivery };
+}
+
+async function useMemberPayer(f: Awaited<ReturnType<typeof fixture>>) {
+  await db.forGym(f.gymId, tx => tx.update(households).set({ smsNoticesConsentAt: null, smsNoticesConsentSource: null }).where(eq(households.id, f.home.id)));
 }
 
 describe('signed links by text', () => {
   it.each(['onboarding', 'pay_invoice', 'update_card', 'sign_waiver'] as const)('%s shares expiry, isolation and single-use behavior', async purpose => {
     const f = await fixture();
+    await useMemberPayer(f);
     const request = { ...f.request(), purpose, recipientMemberId: f.member.id };
     const sent = await f.links.send(f.context, purpose === 'pay_invoice' ? { ...request, purpose, invoiceId: f.invoice.id }
       : purpose === 'sign_waiver' ? { ...request, purpose, memberId: f.member.id } : { ...request, purpose });
@@ -65,6 +70,56 @@ describe('signed links by text', () => {
     await f.links.markUsed({ gymId: f.gymId, linkId: sent.id });
     expect(await f.links.resolve(f.gymId, token)).toEqual({ status: 'used' });
     await expect(f.links.markUsed({ gymId: f.gymId, linkId: sent.id })).rejects.toMatchObject({ code: 'conflict' });
+  });
+  it.each(['pay_invoice', 'update_card'] as const)('%s accepts the billing phone and the fallback consenting payer', async purpose => {
+    const f = await fixture();
+    const request = { ...f.request(), ...(purpose === 'pay_invoice' ? { purpose, invoiceId: f.invoice.id } : { purpose }) };
+    await f.links.send(f.context, request);
+    expect(f.sms.messages[0]!.to).toBe(f.home.phoneE164);
+    await useMemberPayer(f);
+    await db.forGym(f.gymId, tx => tx.update(members).set({ email: 'PAYER@example.test' }).where(eq(members.id, f.member.id)));
+    await f.links.send(f.context, { ...request, sendGeneration: uuidv7(), recipientMemberId: f.member.id });
+    expect(f.sms.messages[1]!.to).toBe(f.member.phoneE164);
+  });
+  it.each(['pay_invoice', 'update_card'] as const)('%s refuses a consenting non-payer before minting, including one sharing the billing phone', async purpose => {
+    const f = await fixture();
+    await useMemberPayer(f);
+    await db.forGym(f.gymId, tx => tx.update(members).set({ email: 'other@example.test', phone: f.home.phone, phoneE164: f.home.phoneE164 }).where(eq(members.id, f.member.id)));
+    await expect(f.links.send(f.context, { ...f.request(), recipientMemberId: f.member.id,
+      ...(purpose === 'pay_invoice' ? { purpose, invoiceId: f.invoice.id } : { purpose }) }))
+      .rejects.toMatchObject({ code: 'invalid_request', details: { reason: ['sms_payer_only'] } });
+    expect(await f.rows()).toHaveLength(0);
+    expect(f.sms.messages).toHaveLength(0);
+  });
+  it.each(['onboarding', 'sign_waiver'] as const)('%s still accepts a consenting non-payer', async purpose => {
+    const f = await fixture();
+    await db.forGym(f.gymId, tx => tx.update(members).set({ email: 'other@example.test' }).where(eq(members.id, f.member.id)));
+    await f.links.send(f.context, { ...f.request(), recipientMemberId: f.member.id,
+      ...(purpose === 'sign_waiver' ? { purpose, memberId: f.member.id } : { purpose }) });
+    expect(f.sms.messages[0]!.to).toBe(f.member.phoneE164);
+  });
+  it.each(['pay_invoice', 'update_card'] as const)('%s prefers the billing phone over even a consenting payer member', async purpose => {
+    const f = await fixture();
+    await expect(f.links.send(f.context, { ...f.request(), recipientMemberId: f.member.id,
+      ...(purpose === 'pay_invoice' ? { purpose, invoiceId: f.invoice.id } : { purpose }) }))
+      .rejects.toMatchObject({ code: 'invalid_request', details: { reason: ['sms_payer_only'] } });
+    expect(await f.rows()).toHaveLength(0);
+    expect(f.sms.messages).toHaveLength(0);
+  });
+  it.each(['preparation', 'provider'] as const)('rechecks the payer after %s changes the billing email', async stage => {
+    const f = await fixture();
+    await useMemberPayer(f);
+    const changePayer = () => db.forGym(f.gymId, tx => tx.update(households).set({ email: 'new-payer@example.test' }).where(eq(households.id, f.home.id)));
+    if (stage === 'preparation') {
+      const prepare = f.smsDelivery.prepare;
+      f.smsDelivery.prepare = async () => { await changePayer(); return prepare(); };
+    } else f.resolver.resolve = async () => { await changePayer(); return { gymId: f.gymId, name: 'Gym', sms: f.sms }; };
+    await expect(f.links.send(f.context, { ...f.request(), recipientMemberId: f.member.id }))
+      .rejects.toMatchObject({ code: stage === 'preparation' ? 'invalid_request' : 'unavailable' });
+    expect(f.sms.messages).toHaveLength(0);
+    const rows = await f.rows();
+    if (stage === 'preparation') expect(rows).toHaveLength(0);
+    else expect(rows[0]!.revokedAt).not.toBeNull();
   });
   it.each(['household', 'member'] as const)('refuses a %s without consent before creating a link', async target => {
     const f = await fixture();
@@ -153,6 +208,7 @@ describe('signed links by text', () => {
   });
   it('never texts a member who moves households while the provider is being resolved', async () => {
     const f = await fixture(), other = await make('households', f.gymId);
+    await useMemberPayer(f);
     f.resolver.resolve = async () => {
       await db.forGym(f.gymId, tx => tx.update(members).set({ householdId: other.id }).where(eq(members.id, f.member.id)));
       return { gymId: f.gymId, name: 'Gym', sms: f.sms };

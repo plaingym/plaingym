@@ -11,11 +11,12 @@ import type { Email } from '../../infra/email/index.js';
 import { renderSignedLink } from '../../emails/links/service.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { householdRecipient } from '../members/household-recipient.js';
+import { householdNoticePhones } from '../members/sms-recipients.js';
 import type { SmsResolver } from '../settings/sms.js';
 import { DeliveryError } from '../../infra/sms/index.js';
 
 /** MemberSms checks consent and phone; this additionally binds member recipients to the link's household at the last boundary. */
-export function householdBoundSmsResolver(base: SmsResolver, scope: typeof forGym, gymId: string, householdId: string, memberIds: string[]): SmsResolver {
+export function householdBoundSmsResolver(base: SmsResolver, scope: typeof forGym, gymId: string, householdId: string, memberIds: string[], purpose: SignedLinkRecord['purpose']): SmsResolver {
   return {
     status: id => base.status(id), configured: id => base.configured(id),
     async resolve(id) {
@@ -28,6 +29,12 @@ export function householdBoundSmsResolver(base: SmsResolver, scope: typeof forGy
             const found = memberIds.length ? await scope(gymId, tx => tx.select({ id: members.id }).from(members).where(and(
               eq(members.gymId, gymId), eq(members.householdId, householdId), inArray(members.id, memberIds), isNull(members.anonymizedAt)))) : [];
             if (found.length !== memberIds.length) throw new Error('Recipient moved');
+            if (purpose === 'pay_invoice' || purpose === 'update_card') {
+              const groups = await scope(gymId, tx => householdNoticePhones(tx, gymId, [householdId]));
+              if (!groups.some(group => group.phoneE164 === message.to && (memberIds.length
+                ? memberIds.every(id => group.consentMemberIds.includes(id))
+                : group.consentHouseholdIds.includes(householdId)))) throw new Error('Payer changed');
+            }
           } catch { throw new DeliveryError('not_accepted', 'Signed link recipient changed'); }
           return resolved.sms.sendSms(message);
         },
@@ -54,7 +61,7 @@ export function validateSignedLinkOrigin(delivery: { gymId: string; origin: stri
 }
 /** Checked in the transaction that creates the credential, before it can be minted. */
 export async function signedLinkSmsRecipient(tx: Transaction, gymId: string, householdId: string,
-  recipientMemberId: string | undefined, country: string | null) {
+  recipientMemberId: string | undefined, country: string | null, purpose: SignedLinkRecord['purpose']) {
   const [home] = await tx.select().from(households).where(and(eq(households.gymId, gymId), eq(households.id, householdId))).for('update');
   if (!home) throw new AppError('not_found', 'Household not found');
   const [person] = recipientMemberId ? await tx.select().from(members).where(and(eq(members.gymId, gymId),
@@ -64,6 +71,11 @@ export async function signedLinkSmsRecipient(tx: Transaction, gymId: string, hou
   if (!recipient.smsNoticesConsentAt) throw new AppError('invalid_request', 'SMS notices consent is required', { reason: ['sms_no_consent'] });
   const to = normalizePhone(recipient.phone, country);
   if (!to || to !== recipient.phoneE164) throw new AppError('invalid_request', 'SMS phone is invalid', { reason: ['sms_invalid_phone'] });
+  if (person && (purpose === 'pay_invoice' || purpose === 'update_card')) {
+    const groups = await householdNoticePhones(tx, gymId, [householdId]);
+    if (!groups.some(group => group.consentMemberIds.includes(person.id)))
+      throw new AppError('invalid_request', 'Billing links can only be texted to the payer', { reason: ['sms_payer_only'] });
+  }
   return { to, memberIds: person ? [person.id] : [], householdIds: person ? [] : [home.id] };
 }
 

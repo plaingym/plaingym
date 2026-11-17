@@ -76,6 +76,12 @@ The email transport runs outside transactions.
 `recipientMemberId` for the household billing phone, or name a member of that
 household. The separate recipient field leaves a waiver's resource `memberId`
 unchanged. Email remains the default channel and refuses an SMS-only recipient.
+For `pay_invoice` and `update_card`, the recipient must be the billing phone or
+a member selected by `householdNoticePhones`: when the billing phone lacks a
+stored number or notices consent, a consenting member at the billing email.
+Other members are refused with `sms_payer_only`; onboarding and waiver links
+still allow any consenting member of the household. Payer selection is checked
+before minting and again after provider preparation at the delivery boundary.
 The recipient must not be erased, must have notices consent, and must have a
 phone that normalizes to its stored E.164 value. These checks run before minting,
 in the same transaction. `MemberSms` checks consent, phone, the member-text
