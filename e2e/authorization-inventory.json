@@ -219,6 +219,30 @@
   },
   {
     "method": "GET",
+    "path": "/api/health/effect-failures",
+    "permission": {
+      "kind": "staff",
+      "capability": "settings.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/health/effect-failures/dismiss",
+    "permission": {
+      "kind": "staff",
+      "capability": "settings.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/health/effect-failures/retry",
+    "permission": {
+      "kind": "staff",
+      "capability": "settings.manage"
+    }
+  },
+  {
+    "method": "GET",
     "path": "/api/exports/{id}",
     "permission": {
       "kind": "staff",

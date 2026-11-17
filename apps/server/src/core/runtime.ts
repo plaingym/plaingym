@@ -107,6 +107,7 @@ import { createStripeHealthProvider } from '../areas/health/stripe.js';
 import { createChargeRunHealthProvider, monitorChargeRunner } from '../areas/health/charge-run.js';
 import { createAutoUpdateHealthProvider } from '../areas/health/auto-update.js';
 import { configureChargeFailures } from '../areas/health/charge-run.routes.js';
+import { configureEffectFailures } from '../areas/health/effect-failures.routes.js';
 import { createSetupLinkCommand } from '../cli/setup-link.js';
 import { configureRanks } from '../areas/ranks/ranks.routes.js';
 import { createAttendanceQueries } from '../areas/attendance/attendance.js';
@@ -411,6 +412,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   const restoreJob = createRunnerJobs(() => monitored, settings, restoreCheckLease).find(job => job.id === 'billing.runner.restore')!;
   // The charge-run tile lists and dismisses the reports of the same runner the worker runs.
   configureChargeFailures(monitored);
+  configureEffectFailures(billing.effects);
   const memberships = createMembershipService({ clock, settings, onAssigned: runner.onAssigned });
   configureMemberships(memberships, { assigned: runner.collectAssigned });
   const detachCard = async (gymId: string, id: string, options?: DetachOptions) => (await requirePayments(gymId)).detachPaymentMethod(id, options);

@@ -16,6 +16,7 @@ import { createGoogleClientResolver } from '../settings/google-login.js';
 import { healthProvider, statusMessage } from './status.js';
 import { createBackupHealthProvider } from './status-backups.js';
 import { createUpdateAvailableProvider } from './updates.js';
+import { countExhaustedEffects } from '../billing/transitions/effects.js';
 
 export interface StatusOptions {
   env?: NodeJS.ProcessEnv;
@@ -52,6 +53,11 @@ export function createStatusProviders(options: StatusOptions = {}) {
   let sms: ReturnType<typeof createSmsResolver> | undefined;
   const settings = createGymSettingsAccessor({ scope });
   return [createBackupHealthProvider({ env }), createUpdateAvailableProvider({ env }),
+    healthProvider('invoice_effects', async context => {
+      const exhausted = await countExhaustedEffects(context.gymId, scope);
+      return { id: 'invoice_effects', status: exhausted ? 'error' : 'healthy', checkedAt: context.clock.now().toISOString(),
+        message: statusMessage(exhausted ? 'effectsExhausted' : 'effectsHealthy', { exhausted }), details: { exhausted } };
+    }),
     healthProvider('failed_jobs', async (context) => {
       const stats = await jobs.get(context.gymId);
       return { id: 'failed_jobs', status: stats.failed ? 'error' : 'healthy', checkedAt: context.clock.now().toISOString(),

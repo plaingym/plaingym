@@ -300,24 +300,28 @@ export class PostgresJobs implements Jobs, JobRecovery {
     return rows.map(row => keys.get(row.key)!);
   }
   /** Only rows marked failed: an expired final lease counts once a claim marks it failed. */
-  async failedJobs(name: string, idempotencyKeys: readonly string[], options: { gymId: string }): Promise<FailedJob[]> {
-    assertNoTransaction('jobs.failedJobs');
+  async failedJobs(name: string, idempotencyKeys: readonly string[], options: { gymId: string }, transaction?: JobTransaction): Promise<FailedJob[]> {
+    if (transaction) assertJobTransaction(transaction, options.gymId);
+    else assertNoTransaction('jobs.failedJobs');
     idSchema.parse(options.gymId);
     if (!idempotencyKeys.length) return [];
     const keys = new Map(idempotencyKeys.map((key) => [hashKey(name, key), key]));
-    const rows = await this.#database.forGym(options.gymId, (tx) => tx.select({ id: jobs.id, key: jobs.idempotencyKey,
+    const read = (tx: Tx) => tx.select({ id: jobs.id, key: jobs.idempotencyKey,
       runAt: jobs.runAt }).from(jobs).where(and(eq(jobs.name, name), inArray(jobs.idempotencyKey, [...keys.keys()]),
-      eq(jobs.status, 'failed'))));
+      eq(jobs.status, 'failed')));
+    const rows = await (transaction ? read(transaction.tx) : this.#database.forGym(options.gymId, read));
     return rows.map((row) => ({ jobId: row.id, idempotencyKey: keys.get(row.key)!, failedAt: row.runAt }));
   }
   /** Resets one failed job of the gym to pending with fresh attempts, keeping its ID and key; other jobs are left alone. */
-  async retryFailed(jobId: string, options: { gymId: string; runAt: Date }): Promise<boolean> {
-    assertNoTransaction('jobs.retryFailed');
+  async retryFailed(jobId: string, options: { gymId: string; runAt: Date }, transaction?: JobTransaction): Promise<boolean> {
+    if (transaction) assertJobTransaction(transaction, options.gymId);
+    else assertNoTransaction('jobs.retryFailed');
     idSchema.parse(options.gymId);
     if (!Number.isFinite(options.runAt.getTime())) throw new Error('Invalid job time');
-    const reset = await this.#database.forGym(options.gymId, (tx) => tx.update(jobs).set({ status: 'pending', attempts: 0,
+    const update = (tx: Tx) => tx.update(jobs).set({ status: 'pending', attempts: 0,
       runAt: options.runAt, lockedUntil: null, lockToken: null, lastError: null })
-      .where(and(eq(jobs.id, jobId), eq(jobs.status, 'failed'))).returning({ id: jobs.id }));
+      .where(and(eq(jobs.id, jobId), eq(jobs.status, 'failed'))).returning({ id: jobs.id });
+    const reset = await (transaction ? update(transaction.tx) : this.#database.forGym(options.gymId, update));
     return reset.length > 0;
   }
   /** Only schedules without a cursor inherit the occurrence watermark used by earlier releases. */

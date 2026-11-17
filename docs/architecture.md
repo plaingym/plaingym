@@ -284,7 +284,10 @@ source of truth; Stripe is the processor. In outline:
 * **Transitions** (`areas/billing/transitions/`): the only code that changes invoice
   state; its effects (receipts, dunning, membership activation, class credit grants
   and full-refund reversals)
-  run as jobs.
+  run as jobs. Effects that exhaust automatic recovery remain on Health after job
+  retention; owners and admins can retry them with a fresh recovery budget or
+  dismiss them as handled by hand. These actions and automatic resets share the
+  invoice lock and commit their queue changes and audits atomically.
   Optional SMS services send receipts and failed-payment/authentication notices
   to the household's consented billing phone, otherwise notices-consented members
   at its billing email, once per phone. Card-expiry texts share the existing alert

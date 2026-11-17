@@ -7,6 +7,7 @@ import { routes as part3 } from './stripe.routes.js';
 import { routes as part4 } from './charge-run.routes.js';
 import { routes as part5 } from './auto-update.routes.js';
 import { routes as part6 } from './updates.routes.js';
+import { routes as part7 } from './effect-failures.routes.js';
 
 export const routes: readonly RouteRegistration[] = [
   ...part0,
@@ -16,4 +17,5 @@ export const routes: readonly RouteRegistration[] = [
   ...part4,
   ...part5,
   ...part6,
+  ...part7,
 ];

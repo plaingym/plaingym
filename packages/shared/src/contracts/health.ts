@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { z } from 'zod';
 import type { EndpointContract } from './definition.js';
-import { dateSchema, idSchema, instantSchema, revisionSchema } from './common.js';
+import { dateSchema, idSchema, instantSchema, moneySchema, revisionSchema } from './common.js';
 import type { RoutePermission } from '../permissions.js';
 
 /** Every built-in tile is present even while its provider is not configured. */
 export const healthTileIds = [
   'last_backup', 'failed_jobs', 'smtp', 'disk', 'version', 'stripe_webhooks',
-  'last_charge_run', 'automatic_updates', 'update_available', 'google_login', 'sms',
+  'last_charge_run', 'automatic_updates', 'update_available', 'google_login', 'sms', 'invoice_effects',
 ] as const;
 export const healthTileIdSchema = z.enum(healthTileIds);
 export const healthStatusSchema = z.enum(['healthy', 'warning', 'error', 'not_configured', 'unavailable']);
@@ -67,6 +67,7 @@ export const updateAvailableHealthTileSchema =z.strictObject({ ...common, id: z.
 export const healthTileSchema = z.discriminatedUnion('id', [
   z.strictObject({ ...common, id: z.literal('last_backup'), details: backupHealthDetailsSchema.nullable() }),
   z.strictObject({ ...common, id: z.literal('failed_jobs'), details: failedJobsHealthDetailsSchema.nullable() }),
+  z.strictObject({ ...common, id: z.literal('invoice_effects'), details: z.strictObject({ exhausted: count }).nullable() }),
   z.strictObject({ ...common, id: z.literal('smtp'), details: smtpHealthDetailsSchema.nullable() }),
   z.strictObject({ ...common, id: z.literal('sms'), details: smsHealthDetailsSchema.nullable() }),
   z.strictObject({ ...common, id: z.literal('disk'), details: diskHealthDetailsSchema.nullable() }),
@@ -98,6 +99,15 @@ export const chargeFailureReportSchema = z.strictObject({
   failures: z.array(z.strictObject({ invoiceId: idSchema, number: z.int().positive().nullable(), cause: chargeFailureCauseSchema })).min(1),
 });
 export const chargeFailuresResponseSchema = z.strictObject({ data: z.array(chargeFailureReportSchema) });
+export const effectKindSchema = z.enum(['receipt', 'activate_memberships', 'reverse_credits', 'dunning', 'retry', 'refund_duplicate', 'staff_notice']);
+export const exhaustedEffectSchema = z.strictObject({
+  effectId: idSchema, invoiceId: idSchema, number: z.int().positive().nullable(), kind: effectKindSchema,
+  refund: moneySchema.nullable(), exhaustedAt: instantSchema,
+});
+export const exhaustedEffectsResponseSchema = z.strictObject({ data: z.array(exhaustedEffectSchema) });
+export const effectActionRequestSchema = z.strictObject({ effectId: idSchema });
+export const effectActionResponseSchema = z.strictObject({ data: z.strictObject({ changed: z.boolean() }) });
+export type ExhaustedEffect = z.infer<typeof exhaustedEffectSchema>;
 /** The most reports one dismissal names: the list holds at most 90 days of reports. */
 export const maxDismissedChargeRuns = 500;
 /**
@@ -151,6 +161,12 @@ export const healthContracts = {
     response: chargeFailuresResponseSchema },
   dismissChargeFailures: { method: 'post', path: '/api/health/charge-failures/dismiss', permission: manageSettings,
     body: dismissChargeFailuresRequestSchema, response: dismissChargeFailuresResponseSchema },
+  listEffectFailures: { method: 'get', path: '/api/health/effect-failures', permission: manageSettings,
+    response: exhaustedEffectsResponseSchema },
+  retryEffect: { method: 'post', path: '/api/health/effect-failures/retry', permission: manageSettings,
+    body: effectActionRequestSchema, response: effectActionResponseSchema },
+  dismissEffect: { method: 'post', path: '/api/health/effect-failures/dismiss', permission: manageSettings,
+    body: effectActionRequestSchema, response: effectActionResponseSchema },
 } as const satisfies Record<string, EndpointContract>;
 
 export type HealthTileId = z.infer<typeof healthTileIdSchema>;

@@ -13,7 +13,7 @@ const integrations = { email: { source: 'none', unreadable: false, googleConfigu
 sms: { configured: false, provider: 'twilio', unreadable: false, accountSid: null, authKind: null, from: null, messagingServiceSid: null, baseUrl: 'https://api.twilio.com' },
 payments: { configured: false, mode: null, webhookRegistered: false, accountLocked: false, testData: null, importedCustomersOnly: false },
 backups: null, sandbox: false, integrationsEditable: true, revision: 3 };
-const ids = ['last_backup', 'failed_jobs', 'smtp', 'disk', 'version', 'stripe_webhooks', 'last_charge_run', 'automatic_updates', 'update_available', 'google_login', 'sms'];
+const ids = ['last_backup', 'failed_jobs', 'smtp', 'disk', 'version', 'stripe_webhooks', 'last_charge_run', 'automatic_updates', 'update_available', 'google_login', 'sms', 'invoice_effects'];
 
 for (const width of [360, 1280]) {
   test(`SMS go-live, cap, Health and mixed demo outbox at ${width}px`, async ({ page }, info) => {

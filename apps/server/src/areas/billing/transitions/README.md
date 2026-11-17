@@ -164,18 +164,30 @@ recovery never enqueues a second effect job. Recovery waits 15 minutes after the
 first failure, then 30, 60, 120 and 240 minutes after subsequent exhausted batches.
 The reset count survives process restarts in `billing.transition.effect.retried`
 audits. After five resets, recovery records
-`billing.transition.effect.recovery_exhausted` once and leaves the failed job for
-the gym's Health failed-jobs warning until queue retention removes it after 90 days;
-the exhausted audit remains. It does not complete or discard the effect. Completed
-and recovery-exhausted effects are excluded using correlated lookups on the
+`billing.transition.effect.recovery_exhausted` once per recovery budget. Health's
+Invoice effects tile and list read this durable audit, so they remain in error
+even after queue retention removes the failed job after 90 days. Completed,
+dismissed and currently recovery-exhausted effects are excluded using correlated lookups on the
 `(gym_id, action, target_id)` audit index, so later sweeps do not lock an exhausted
 effect's invoice again. A per-effect error is logged safely and does not stop the
-remaining recoveries. The reset and its retry audit commit in separate transactions:
-a crash between them can permit an extra reset beyond the audited five-reset limit.
-The queue still resets each failed job atomically, and the handler's completion
-guard also prevents a completed effect from running again. Recovered retry work
+remaining recoveries. Recovery rechecks the failed job under the invoice lock;
+the reset and its retry audit commit in one caller-owned job transaction. The
+handler checks completion and dismissal after taking that same invoice lock.
+Recovered retry work
 still calls the charge runner, which checks current invoice state and retry windows.
 Settlement or publication failure does not stop this recovery pass.
+
+Owners and admins can Retry or Dismiss any exhausted effect from Health, however
+old it is. Retry uses that invoice lock and transaction to reset a retained failed
+job or enqueue a missing job under the original effect key, and writes
+`billing.transition.effect.staff_retried` with the staff actor. A concurrent Retry
+while already queued does nothing. Completed and dismissed effects refuse Retry.
+Each staff retry starts a fresh five-reset automatic recovery budget; the list
+shows the effect again only after a new exhaustion. Dismiss writes
+`billing.transition.effect.dismissed` (handled by hand) with the staff actor,
+without running the effect or deleting the job. The sweep leaves it alone.
+Duplicate refunds keep their existing reservation, reconciliation and processor
+idempotency key; a staff retry cannot reserve or refund the money a second time.
 
 Before publishing, the hourly job settles up to 100 due, open or past-due
 zero-total one-off invoices without a Checkout session and not held for review.

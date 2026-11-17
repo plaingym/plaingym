@@ -10,6 +10,7 @@ const details = {
   last_backup: { latestRestorableAt: now, ageSeconds: 20, overdue: false, noneUnderCurrentKey: false, retainedBytes: 100,
     retentionBudgetBytes: 1000, pruningStopped: false, keyReminder: true },
   failed_jobs: { failed: 0, pending: 2, running: 1, oldestFailureAt: null },
+  invoice_effects: { exhausted: 0 },
   smtp: { configured: true, lastTestAt: now },
   disk: { uploads: { totalBytes: 1000, availableBytes: 800 }, backupStaging: null },
   version: { version: '0.1.0', sourceUrl: 'https://example.com/source' },

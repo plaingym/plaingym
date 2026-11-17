@@ -3,7 +3,7 @@ import { ShellServicesContext } from '../../../app/context.js';
 import type { ReactNode } from 'react';
 import { render } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { GymSettings, Integrations } from '@plaingym/shared/contracts';
+import { healthTileIds, type GymSettings, type Integrations } from '@plaingym/shared/contracts';
 import { IntegrationsSettings } from './section.js';
 
 export const settings: GymSettings = { id: '01900000-0000-7000-8000-000000000001', name: 'Gym', slug: 'gym',
@@ -22,7 +22,7 @@ export const health = (lastReceivedAt: string | null, latestRestorableAt: string
   { id: 'last_backup', status: 'healthy', checkedAt: '2026-11-02T12:00:00Z', message: 'ok', details: { latestRestorableAt, ageSeconds: 60, overdue: false,
     retainedBytes: 1, retentionBudgetBytes: 8_000_000_000, pruningStopped: false, keyReminder: true } },
   { id: 'stripe_webhooks', status: 'healthy', checkedAt: '2026-11-02T12:00:00Z', message: 'ok', details: { lastReceivedAt, lastProcessedAt: lastReceivedAt, pending: 0, failed: 0 } },
-  ...['failed_jobs', 'smtp', 'disk', 'version', 'last_charge_run', 'automatic_updates', 'update_available', 'google_login', 'sms'].map((id) => ({ id, status: 'unavailable', checkedAt: null, message: 'n/a', details: null })),
+  ...healthTileIds.filter(id => id !== 'last_backup' && id !== 'stripe_webhooks').map((id) => ({ id, status: 'unavailable', checkedAt: null, message: 'n/a', details: null })),
 ] } });
 export const reply = (status: number, body?: unknown) => ({ response: { ok: status < 300, status }, ...(status < 300 ? { data: body } : { error: body }) });
 export const refusal = (status: number, field: string, code: string) => reply(status, { error: { code: 'conflict', message: 'private server text', details: { [field]: [code] } }, requestId: 'r' });

@@ -13,6 +13,7 @@ import { Button } from '../../components/ui/button.js';
 import { Card } from '../../components/ui/card.js';
 import { Page, PageHeader } from '../../components/ui/page.js';
 import { ChargeFailures } from './charge-failures.js';
+import { EffectFailures } from './effect-failures.js';
 import { BackupActions } from './backups.js';
 
 const label = (key: string) => t('health/status:' + key);
@@ -90,6 +91,7 @@ function HealthPanel({ gymId, owner, timezone }: { gymId: string; owner: boolean
     <PageHeader title={label('title')} actions={<Button variant="outline" disabled={query.isFetching} onClick={() => void cache.invalidateQueries({ queryKey: ['health', gymId] })}>{label('refresh')}</Button>}/>
     {query.isPending ? <p role="status">{label('loading')}</p> : query.isError ? <Alert variant="error">{label('loadFailed')}</Alert> : <HealthTiles tiles={query.data.tiles} timezone={timezone} extras={{
       last_backup: <BackupActions gymId={gymId} owner={owner}/>,
+      invoice_effects: <EffectFailures gymId={gymId} timezone={timezone} reporting={query.data.tiles.some(tile => tile.id === 'invoice_effects' && tile.status === 'error')}/>,
       last_charge_run: <ChargeFailures gymId={gymId} reporting={query.data.tiles.some((tile) => tile.id === 'last_charge_run' && tile.status === 'error')}/> }}/>}
   </Page>;
 }

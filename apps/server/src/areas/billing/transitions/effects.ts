@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, exists, gt, gte, inArray, isNull, lte, notExists, notInArray } from 'drizzle-orm';
-import { auditEvents, classCreditEntries, classPackSales, forGym, invoiceLineItems, invoices, paymentAttempts, payments, refunds } from '@plaingym/db';
+import { and, asc, desc, eq, exists, gt, gte, inArray, isNull, lte, notExists, notInArray } from 'drizzle-orm';
+import { auditEvents, classCreditEntries, classPackSales, forGym, invoiceLineItems, invoices, paymentAttempts, payments, refunds, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
+import type { ExhaustedEffect } from '@plaingym/shared/contracts';
 import { localDate } from '@plaingym/shared/time';
 import { clock as defaultClock } from '../../../core/clock.js';
 import { logError } from '../../../core/log.js';
-import { notFound } from '../../../core/interfaces/common.js';
+import { conflict, notFound, type MutationContext } from '../../../core/interfaces/common.js';
 import type { InvoiceTransitions } from '../../../core/interfaces/invoice-transitions.js';
 import type { MembershipLifecycle } from '../../../core/interfaces/membership-lifecycle.js';
 import type { GymSettings, GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
 import type { Jobs, JobContext, JobRecovery } from '../../../infra/jobs/index.js';
+import { withJobTransaction } from '../../../infra/jobs/index.js';
 import type { Payments, Refund } from '../../../infra/payments/index.js';
 import type { TransitionNotifications } from './notifications.js';
 import { retryAt } from '../runner/eligibility.js';
@@ -22,8 +24,50 @@ export const effectJob = 'billing.transitions.effect';
 /** How far back the publisher looks. A publish normally follows its commit at once, or within the hour. */
 export const publishWindowDays = 30;
 export const effectRecoveryDelayMs = 15 * 60_000, effectRecoveryLimit = 5;
+/** Queue attempts for one effect job, whether published or enqueued again by a staff Retry. */
+const effectMaxAttempts = 12;
 export const effectRetried = 'billing.transition.effect.retried';
 export const effectRecoveryExhausted = 'billing.transition.effect.recovery_exhausted';
+export const effectStaffRetried = 'billing.transition.effect.staff_retried';
+export const effectDismissed = 'billing.transition.effect.dismissed';
+/** Audit IDs break ties for actions committed at the same clock instant, under the invoice lock. */
+function openExhaustions(tx: Transaction, gymId: string) {
+  const exhausted = tx.select({ id: auditEvents.id, effectId: auditEvents.targetId, at: auditEvents.occurredAt })
+    .from(auditEvents).where(eq(auditEvents.action, effectRecoveryExhausted)).as('exhausted_effect');
+  const later = (action: string, after = false) => tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
+    eq(auditEvents.gymId, gymId), eq(auditEvents.action, action), eq(auditEvents.targetId, exhausted.effectId),
+    after ? gt(auditEvents.id, exhausted.id) : undefined));
+  return tx.select({ effectId: exhausted.effectId, exhaustedAt: exhausted.at }).from(exhausted).where(and(
+    notExists(later(effectCompleted)), notExists(later(effectDismissed)),
+    notExists(later(effectStaffRetried, true)), notExists(later(effectRecoveryExhausted, true))))
+    .orderBy(asc(exhausted.at), asc(exhausted.id));
+}
+/** The Health tile's count: the open exhaustions alone, so the tile stays in error even if the list can't load. */
+export async function countExhaustedEffects(gymId: string, scope: typeof forGym = forGym): Promise<number> {
+  return scope(gymId, async tx => (await openExhaustions(tx, gymId)).length);
+}
+/** Independent of queue retention: Health reads the durable outbox, including arbitrarily old effects. */
+export async function listExhaustedEffects(gymId: string, scope: typeof forGym = forGym): Promise<ExhaustedEffect[]> {
+  return scope(gymId, async tx => {
+    const exhausted = await openExhaustions(tx, gymId);
+    if (!exhausted.length) return [];
+    const created = await tx.select().from(auditEvents).where(and(eq(auditEvents.action, effectCreated),
+      inArray(auditEvents.targetId, exhausted.map(row => row.effectId))));
+    const work = new Map(created.map(row => [row.targetId, row.after as TransitionEffect]));
+    const bills = await tx.select().from(invoices).where(inArray(invoices.id, [...work.values()].map(row => row.invoiceId)));
+    const byInvoice = new Map(bills.map(row => [row.id, row]));
+    const paymentIds = [...work.values()].flatMap(row => row.kind === 'refund_duplicate' && row.paymentId ? [row.paymentId] : []);
+    const paid = paymentIds.length ? await tx.select().from(payments).where(inArray(payments.id, paymentIds)) : [];
+    return exhausted.map(row => {
+      const effect = work.get(row.effectId) ?? notFound(), bill = byInvoice.get(effect.invoiceId) ?? notFound();
+      const payment = paid.find(payment => payment.id === effect.paymentId && payment.invoiceId === bill.id);
+      if (effect.kind === 'refund_duplicate' && !payment) notFound();
+      return { effectId: row.effectId, invoiceId: bill.id, number: bill.number, kind: effect.kind,
+        refund: effect.kind === 'refund_duplicate' && payment ? { amountCents: payment.amountCents, currency: payment.currency } : null,
+        exhaustedAt: row.exhaustedAt.toISOString() };
+    });
+  });
+}
 export interface TransitionEffectOptions {
   scope?: typeof forGym;
   clock?: Clock;
@@ -44,6 +88,45 @@ export interface TransitionEffectOptions {
 export function createTransitionEffects(options: TransitionEffectOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const credits = createPackCredits({ scope, clock, settings: options.settings });
+  const latest = async (tx: Transaction, action: string, effectId: string) => (await tx.select().from(auditEvents)
+    .where(and(eq(auditEvents.action, action), eq(auditEvents.targetId, effectId))).orderBy(desc(auditEvents.id)).limit(1))[0];
+  async function effectState(tx: Transaction, effectId: string) {
+    const event = await recorded(tx, effectCreated, effectId) ?? notFound();
+    const work = event.after as TransitionEffect;
+    await lockInvoice(tx, work.invoiceId);
+    const completed = await recorded(tx, effectCompleted, effectId), dismissed = await recorded(tx, effectDismissed, effectId);
+    const exhausted = await latest(tx, effectRecoveryExhausted, effectId), retried = await latest(tx, effectStaffRetried, effectId);
+    return { work, completed, dismissed, exhausted, retried, open: exhausted !== undefined && (!retried || exhausted.id > retried.id) };
+  }
+  async function retryEffect(context: MutationContext, effectId: string) {
+    const recovery = options.recovery;
+    if (!recovery) conflict('Effect recovery is unavailable');
+    const gym = await options.settings.get(context.gymId);
+    return withJobTransaction(scope, context.gymId, async transaction => {
+      const { tx } = transaction, state = await effectState(tx, effectId);
+      if (state.completed || state.dismissed) conflict('Effect is completed or dismissed');
+      if (!state.open) {
+        if (state.retried) return { changed: false };
+        conflict('Effect has not exhausted recovery');
+      }
+      const [failed] = await recovery.failedJobs(effectJob, [effectId], { gymId: context.gymId }, transaction);
+      if (!failed || !await recovery.retryFailed(failed.jobId, { gymId: context.gymId, runAt: clock.now() }, transaction))
+        await options.jobs.enqueue(effectJob, { effectId }, { gymId: context.gymId, timezone: gym.timezone,
+        idempotencyKey: effectId, runAt: clock.now(), maxAttempts: effectMaxAttempts }, transaction);
+      await audit(tx, context, clock, effectStaffRetried, 'invoice_effect', effectId,
+        { invoiceId: state.work.invoiceId, kind: state.work.kind, exhaustedId: state.exhausted!.id });
+      return { changed: true };
+    });
+  }
+  async function dismissEffect(context: MutationContext, effectId: string) {
+    return scope(context.gymId, async tx => {
+      const state = await effectState(tx, effectId);
+      if (state.completed || state.dismissed || !state.open) conflict('Effect is no longer exhausted');
+      await audit(tx, context, clock, effectDismissed, 'invoice_effect', effectId,
+        { invoiceId: state.work.invoiceId, kind: state.work.kind, reason: 'handled_by_hand' });
+      return { changed: true };
+    });
+  }
   async function settleZeroInvoices(gymId: string, settings?: GymSettings) {
     const gym = settings ?? await options.settings.get(gymId);
     const rows = await scope(gymId, tx => tx.select({ id: invoices.id }).from(invoices).where(and(
@@ -76,7 +159,7 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
       const runAt = work.kind === 'retry' ? retryAt(localDate(row.occurredAt, gym.timezone), work.retryDay!, gym.timezone)
         : clock.now();
       await options.jobs.enqueue(effectJob, { effectId: row.targetId },
-        { gymId, timezone: gym.timezone, runAt, idempotencyKey: row.targetId, maxAttempts: 12 });
+        { gymId, timezone: gym.timezone, runAt, idempotencyKey: row.targetId, maxAttempts: effectMaxAttempts });
       await scope(gymId, async tx => {
         await lockInvoice(tx, work.invoiceId);
         if (!await recorded(tx, effectPublished, row.targetId))
@@ -97,9 +180,11 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
           .from(auditEvents).where(eq(auditEvents.action, effectCreated)).as('created_effect');
         const auditFor = (action: string) => tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
           eq(auditEvents.gymId, gymId), eq(auditEvents.action, action), eq(auditEvents.targetId, created.targetId)));
+        const open = openExhaustions(tx, gymId).as('open_exhaustions');
         return tx.select({ id: created.id, effectId: created.targetId, work: created.work })
           .from(created).where(and(cursor ? gt(created.id, cursor) : undefined, exists(auditFor(effectPublished)),
-            notExists(auditFor(effectCompleted)), notExists(auditFor(effectRecoveryExhausted))))
+            notExists(auditFor(effectCompleted)), notExists(auditFor(effectDismissed)),
+            notInArray(created.targetId, tx.select({ effectId: open.effectId }).from(open))))
           .orderBy(asc(created.id)).limit(100);
       });
       if (!rows.length) break;
@@ -107,26 +192,28 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
       for (const job of await recovery.failedJobs(effectJob, [...byId.keys()], { gymId })) {
         const effectId = job.idempotencyKey, work = byId.get(effectId)!;
         try {
-          const history = await scope(gymId, tx => tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
-            eq(auditEvents.action, effectRetried), eq(auditEvents.targetId, effectId))).limit(effectRecoveryLimit));
-          if (history.length >= effectRecoveryLimit) {
-            await scope(gymId, async tx => {
-              await lockInvoice(tx, work.invoiceId);
-              if (!await recorded(tx, effectCompleted, effectId) && !await recorded(tx, effectRecoveryExhausted, effectId))
-                await audit(tx, system(gymId), clock, effectRecoveryExhausted, 'invoice_effect', effectId,
-                  { invoiceId: work.invoiceId, kind: work.kind, jobId: job.jobId, resets: history.length });
-            });
-            // Queue retention eventually removes this failed row; the exhausted audit remains.
-            exhausted++;
-            continue;
-          }
-          const now = clock.now(), delayMs = effectRecoveryDelayMs * 2 ** history.length;
-          if (now.getTime() - job.failedAt.getTime() < delayMs) continue;
-          // Compare-and-set permits one concurrent sweep to reset it, preserving its ID, payload and key.
-          if (!await recovery.retryFailed(job.jobId, { gymId, runAt: now })) continue;
-          await scope(gymId, tx => audit(tx, system(gymId), clock, effectRetried, 'invoice_effect', effectId,
-            { invoiceId: work.invoiceId, jobId: job.jobId, delayMs }));
-          recovered++;
+          const outcome = await withJobTransaction(scope, gymId, async transaction => {
+            const { tx } = transaction, state = await effectState(tx, effectId);
+            if (state.completed || state.dismissed || state.open) return 'none';
+            const [current] = await recovery.failedJobs(effectJob, [effectId], { gymId }, transaction);
+            if (!current) return 'none';
+            const history = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
+              eq(auditEvents.action, effectRetried), eq(auditEvents.targetId, effectId),
+              state.retried ? gt(auditEvents.id, state.retried.id) : undefined)).limit(effectRecoveryLimit);
+            if (history.length >= effectRecoveryLimit) {
+              await audit(tx, system(gymId), clock, effectRecoveryExhausted, 'invoice_effect', effectId,
+                { invoiceId: work.invoiceId, kind: work.kind, jobId: job.jobId, resets: history.length });
+              return 'exhausted';
+            }
+            const now = clock.now(), delayMs = effectRecoveryDelayMs * 2 ** history.length;
+            if (now.getTime() - current.failedAt.getTime() < delayMs) return 'none';
+            if (!await recovery.retryFailed(current.jobId, { gymId, runAt: now }, transaction)) return 'none';
+            await audit(tx, system(gymId), clock, effectRetried, 'invoice_effect', effectId,
+              { invoiceId: work.invoiceId, jobId: job.jobId, delayMs });
+            return 'recovered';
+          });
+          if (outcome === 'exhausted') exhausted++;
+          if (outcome === 'recovered') recovered++;
         } catch (error) {
           logError('billing.transition.effect.recovery_failed', { gymId, effectId, jobId: job.jobId }, error);
         }
@@ -139,9 +226,9 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
     const { gymId } = context;
     const loaded = await scope(gymId, async tx => {
       const event = await recorded(tx, effectCreated, effectId) ?? notFound();
-      if (await recorded(tx, effectCompleted, effectId)) return null;
       const work = event.after as TransitionEffect;
       const invoice = await lockInvoice(tx, work.invoiceId);
+      if (await recorded(tx, effectCompleted, effectId) || await recorded(tx, effectDismissed, effectId)) return null;
       const payment = work.paymentId ? (await tx.select().from(payments).where(eq(payments.id, work.paymentId)))[0] : undefined;
       if (payment && payment.invoiceId !== invoice.id) notFound();
       const refund = (work.notice === 'refund_failed' || work.notice === 'refund_canceled' || work.notice === 'refund_released' || work.notice === 'refund_arrived') && work.refundId
@@ -272,6 +359,7 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
     });
   }
   const settings = (gymId: string) => options.settings.get(gymId);
-  return { publish, run, settleZeroInvoices, recoverFailed, settings };
+  return { publish, run, settleZeroInvoices, recoverFailed, settings, retryEffect, dismissEffect,
+    exhaustedEffects: (gymId: string) => listExhaustedEffects(gymId, scope) };
 }
 export type TransitionEffects = ReturnType<typeof createTransitionEffects>;

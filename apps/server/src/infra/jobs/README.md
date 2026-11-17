@@ -48,6 +48,12 @@ any expired lease, its handler may still be running, so a retried job's handler
 needs the same idempotency as any other. `retryFailed` returns false for any
 other job.
 
+Both recovery methods accept an optional `JobTransaction` as their last argument,
+validated like `enqueue`'s. Invoice effect recovery takes its invoice lock in that
+transaction, then resets the job and writes its audit together. Failed-job reads
+use the same handle; rollback keeps the job failed. The fake stages resets until
+commit and exposes them to subsequent reads in that transaction.
+
 Install-level work uses `enqueueSystem` and `handleSystem`, with `gymId: null` in
 the handler context. These separate methods keep the gym-required `Jobs` contract
 intact. Install jobs share their own concurrency bucket and never appear in gym

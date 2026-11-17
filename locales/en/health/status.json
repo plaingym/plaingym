@@ -1,4 +1,8 @@
 {
+  "tile.invoice_effects": "Invoice effects",
+  "field.exhausted": "Exhausted effects",
+  "effectsHealthy": "No invoice effects have exhausted automatic recovery.",
+  "effectsExhausted": "{exhausted} invoice effects need attention. Retry them or mark them as handled by hand below.",
   "tile.sms": "SMS",
   "smsConfigured": "The gym's saved provider handles member texts.",
   "smsMissing": "No SMS provider is configured.",

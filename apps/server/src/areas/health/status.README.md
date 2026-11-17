@@ -6,6 +6,26 @@ including providers that are not configured. Each provider uses the frozen
 `HealthTileProvider` interface; failures and malformed payloads become an unavailable
 tile without exposing exception messages. Responses are not cached.
 
+The Invoice effects tile (`invoice_effects`) stays in error while any invoice
+effect has exhausted automatic recovery. It reads durable audits rather than
+failed jobs, so queue retention cannot clear this warning. The list is oldest
+exhaustion first and links each invoice, naming its effect kind, exhaustion time
+and duplicate-refund amount. `GET /api/health/effect-failures` reads the list;
+`POST /api/health/effect-failures/retry` and `.../dismiss` take `{ effectId }`.
+All three require `settings.manage` (owner/admin), use only the resolved gym and
+return uncached responses. The runtime supplies the billing effects service with
+`configureEffectFailures(billing.effects)`.
+
+Both actions ask for confirmation. Retry names the effect's consequence and how
+long ago recovery was exhausted, including the amount for a duplicate card
+refund. It resets a retained failed job or queues a missing one under its original
+key, atomically with its staff audit under the invoice lock. An already queued
+retry does nothing; completed or dismissed effects return conflict. Retry starts
+a fresh five-reset automatic recovery budget, and a new exhaustion lists again.
+Dismiss records handled by hand, removes the effect from the list and stops its
+recovery without deleting its job or changing the invoice. Both actions retain
+the staff actor in the audit. See [invoice effects](../billing/transitions/README.md).
+
 The SMS tile reads `SmsResolver.status`, the gym's switch and cap, and its
 `sms_daily_usage` for today in the gym timezone. `sentToday` counts reserved send
 attempts, including failures or uncertain outcomes; `refusedToday` counts cap

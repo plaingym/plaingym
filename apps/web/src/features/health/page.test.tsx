@@ -35,6 +35,18 @@ beforeEach(() => { bootstrap(); serve(); });
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 
 describe('health page', () => {
+  it('shows the exhausted effects tile and reads its invoice list only while it reports an error', async () => {
+    GET.mockImplementation(async (path: string) => ok(path === '/api/health/effect-failures' ? { data: [{
+      effectId: '00000000-0000-4000-8000-000000000001', invoiceId: '00000000-0000-4000-8000-000000000002',
+      number: 73, kind: 'receipt', refund: null, exhaustedAt: checkedAt,
+    }] } : path === '/api/health/backups' ? { data: { available: false, configured: false, pruningHeld: false, revision: 1, manual: null } }
+      : { data: { generatedAt: checkedAt, tiles: tiles().map(tile => tile.id === 'invoice_effects'
+        ? { ...tile, status: 'error', checkedAt, message: 'Invoice work needs attention', details: { exhausted: 1 } } : tile) } }));
+    start();
+    expect(await screen.findByRole('heading', { name: 'Invoice effects' })).toBeDefined();
+    expect(await screen.findByRole('link', { name: 'Invoice #73' })).toBeDefined();
+    expect(GET).toHaveBeenCalledWith('/api/health/effect-failures', expect.objectContaining({ cache: 'no-store' }));
+  });
   it('names the damaged rollback snapshot even when pruning has resumed', () => {
     const id = '00000000-0000-4000-8000-000000000001';
     const backup = healthTileSchema.parse({ id: 'last_backup', status: 'warning', checkedAt, message: 'Backup check',

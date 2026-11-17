@@ -40,10 +40,10 @@ export interface FailedJob {
 export interface JobRecovery {
   /** Retained caller keys, including pending and completed jobs, for resolving recovery markers after retention. */
   existingJobs?(name: string, idempotencyKeys: readonly string[], options: { gymId: string }): Promise<string[]>;
-  /** The gym's failed jobs (attempts used up) with this name among the given caller idempotency keys. */
-  failedJobs(name: string, idempotencyKeys: readonly string[], options: { gymId: string }): Promise<FailedJob[]>;
-  /** Atomically resets one failed job of the gym to pending at `runAt`, keeping its ID and key. */
-  retryFailed(jobId: string, options: { gymId: string; runAt: Date }): Promise<boolean>;
+  /** The gym's failed jobs with these keys; an active caller transaction can share its snapshot. */
+  failedJobs(name: string, idempotencyKeys: readonly string[], options: { gymId: string }, transaction?: JobTransaction): Promise<FailedJob[]>;
+  /** Resets one failed job to pending; an active caller transaction commits the reset with application writes. */
+  retryFailed(jobId: string, options: { gymId: string; runAt: Date }, transaction?: JobTransaction): Promise<boolean>;
 }
 export interface FakeJob {
   id: string;
@@ -62,6 +62,7 @@ export class FakeJobs implements Jobs, JobRecovery {
   readonly #batch = new Set<string>();
   readonly #keys = new Map<string, string>();
   readonly #pending = new WeakMap<JobTransaction, { jobs: FakeJob[]; keys: Map<string, string> }>();
+  readonly #resets = new WeakMap<JobTransaction, Set<string>>();
   readonly #reservations = new Map<string, { transaction: JobTransaction; settled: Promise<void> }>();
   #nextId = 0;
   constructor(readonly clock: Clock = systemClock, readonly perGymConcurrency = 1) {
@@ -162,17 +163,27 @@ export class FakeJobs implements Jobs, JobRecovery {
       && job.options.idempotencyKey !== undefined && idempotencyKeys.includes(job.options.idempotencyKey))
       .map(job => job.options.idempotencyKey!);
   }
-  async failedJobs(name: string, idempotencyKeys: readonly string[], options: { gymId: string }): Promise<FailedJob[]> {
-    assertNoTransaction('jobs.failedJobs');
+  async failedJobs(name: string, idempotencyKeys: readonly string[], options: { gymId: string }, transaction?: JobTransaction): Promise<FailedJob[]> {
+    if (transaction) assertJobTransaction(transaction, options.gymId);
+    else assertNoTransaction('jobs.failedJobs');
     return this.#jobs.filter((job) => job.name === name && job.options.gymId === options.gymId && job.status === 'failed'
+      && (!transaction || !this.#resets.get(transaction)?.has(job.id))
       && job.options.idempotencyKey !== undefined && idempotencyKeys.includes(job.options.idempotencyKey))
       .map((job) => ({ jobId: job.id, idempotencyKey: job.options.idempotencyKey!, failedAt: new Date(job.runAt) }));
   }
-  async retryFailed(jobId: string, options: { gymId: string; runAt: Date }): Promise<boolean> {
-    assertNoTransaction('jobs.retryFailed');
+  async retryFailed(jobId: string, options: { gymId: string; runAt: Date }, transaction?: JobTransaction): Promise<boolean> {
+    if (transaction) assertJobTransaction(transaction, options.gymId);
+    else assertNoTransaction('jobs.retryFailed');
     const job = this.#jobs.find((item) => item.id === jobId && item.options.gymId === options.gymId && item.status === 'failed');
-    if (!job) return false;
-    Object.assign(job, { status: 'queued', attempt: 0, runAt: new Date(options.runAt) });
+    if (!job || transaction && this.#resets.get(transaction)?.has(jobId)) return false;
+    const reset = () => Object.assign(job, { status: 'queued', attempt: 0, runAt: new Date(options.runAt) });
+    if (transaction) {
+      let resets = this.#resets.get(transaction);
+      if (!resets) { resets = new Set(); this.#resets.set(transaction, resets); }
+      resets.add(jobId);
+      jobTransactionStates.get(transaction)!.committed.push(reset);
+    }
+    else reset();
     return true;
   }
   async runNext(): Promise<boolean> {

@@ -185,14 +185,14 @@ it('pages old work, keeps gym scope, and ignores unpublished, missing, pending a
   f.clock.advance(effectRecoveryDelayMs);
   const failedJobs = queue.failedJobs.bind(queue), retryFailed = queue.retryFailed.bind(queue);
   const lookup = vi.spyOn(queue, 'failedJobs').mockImplementation(async (...args) => {
-    expect(isInTransaction()).toBe(false); return failedJobs(...args);
+    expect(isInTransaction()).toBe(args[3] !== undefined); return failedJobs(...args);
   });
   vi.spyOn(queue, 'retryFailed').mockImplementation(async (...args) => {
-    expect(isInTransaction()).toBe(false); return retryFailed(...args);
+    expect(isInTransaction()).toBe(true); expect(args[2]).toBeDefined(); return retryFailed(...args);
   });
   expect(await createTransitionEffects({ ...f.options, jobs: queue, recovery: queue }).recoverFailed(f.gymId))
     .toEqual({ recovered: 1, exhausted: 0 });
-  expect(lookup.mock.calls.map(call => call[1].length)).toEqual([100, 3]);
+  expect(lookup.mock.calls.filter(call => !call[3]).map(call => call[1].length)).toEqual([100, 3]);
   expect(queue.jobs.filter(job => job.status === 'queued')).toHaveLength(2);
   expect(queue.jobs).toHaveLength(5);
   expect(await foreign.audits(effectRetried)).toEqual([]);
