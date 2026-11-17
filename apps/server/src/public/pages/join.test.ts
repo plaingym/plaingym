@@ -167,7 +167,8 @@ type Fixture = Awaited<ReturnType<typeof fixture>>;
 
 describe('join lead intake', () => {
   it.each([[false, false], [true, false], [false, true], [true, true]])('records separate join SMS choices notices=%s announcements=%s without phone audits', async (smsNoticesConsent, smsAnnouncementsConsent) => {
-    const f = await fixture(), people = [adult(), child()], phone = '+12025550123';
+    const f = await fixture(), people = [adult(), child()], phone = smsAnnouncementsConsent ? '+1 (202) 555-0123' : '+12025550123';
+    const phoneE164 = '+12025550123';
     const choices = { smsNoticesConsent, smsAnnouncementsConsent };
     const contact = { name: 'Pat Payer', email: 'sms@example.invalid', phone };
     const admission = { planId: f.plan.id, contact, ...choices, honeypot: '', members: people.map(member => ({ member,
@@ -180,11 +181,11 @@ describe('join lead intake', () => {
     expect(refused.status).toBe(404);
     expect((await f.post('/api/public/join', final)).status).toBe(200);
     const rows = await f.rows(), home = rows.homes.find(home => home.email === contact.email)!;
-    expect(home).toMatchObject({ phone, phoneE164: phone, smsNoticesConsentSource: smsNoticesConsent ? 'join' : null });
+    expect(home).toMatchObject({ phone, phoneE164, smsNoticesConsentSource: smsNoticesConsent ? 'join' : null });
     const joined = rows.members.filter(person => person.householdId === home.id);
     expect(joined).toHaveLength(2);
     for (const person of joined) {
-      expect(person).toMatchObject({ phone, phoneE164: phone, smsNoticesConsentAt: smsNoticesConsent ? f.clock.now() : null,
+      expect(person).toMatchObject({ phone, phoneE164, smsNoticesConsentAt: smsNoticesConsent ? f.clock.now() : null,
         smsNoticesConsentSource: smsNoticesConsent ? 'join' : null, smsAnnouncementsConsentAt: smsAnnouncementsConsent ? f.clock.now() : null,
         smsAnnouncementsConsentSource: smsAnnouncementsConsent ? 'join' : null });
     }

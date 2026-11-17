@@ -55,7 +55,16 @@ clears both member consents and household notices consent at that E.164 number
 in this gym, in one transaction, incrementing revisions and auditing each record
 with source `provider`. It remains a definite non-send.
 
-`createSmsDeliveries({ scope, clock })` mirrors email's `send`, `state`, `replay`,
+Provider resolution, settings reads, consent checks and the daily-usage lock share
+a 15-second preparation deadline. A timeout proves `not_accepted` and permits a
+retry. The abandoned preparation never calls the provider; a transaction still
+waiting for the usage lock rolls back its slot when it resumes. Together with the
+provider's 30-second deadline, preparation stays inside the one-minute in-flight
+window. Database outcome writes still use their guarded retries below.
+
+`createSmsDeliveries({ scope, clock })` uses the shared `infra/delivery-state.ts`
+factory with the SMS table, key validator, in-flight window and safe error policy.
+It mirrors email's `send`, `state`, `replay`,
 `reserve`, `remember`, `attempt` and `release`. Reserve and remember commit with
 any issued credential; attempt runs afterwards. An accepted or unknown key never
 sends again. In-flight attempts conflict; after twice the adapter deadline (one

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClientProvider, useQueryClient } from '@tanstack/react-query';
-import type { PortalContext, PortalMember } from '@plaingym/shared/contracts';
+import type { PortalContext, PortalHousehold as Household, PortalMember } from '@plaingym/shared/contracts';
 import { ShellServicesContext } from '../../../app/context.js';
 import type { ShellServices } from '../../../app/services.js';
 import { PortalBillingPage } from '../billing/page.js';
@@ -608,6 +608,38 @@ describe('portal household page', () => {
     expect(screen.queryByRole('button', { name: 'Edit details' })).toBeNull();
     expect(screen.queryByLabelText('Household name')).toBeNull();
     expect(view.fetcher.mock.calls.map(([path]) => String(path)).filter(path => path.startsWith('/api/portal/'))).toEqual(['/api/portal/context', `/api/portal/members/${ids.adult}`]);
+  });
+  it('keeps a payer household draft through consent changes and saves it with the latest revision', async () => {
+    let current: Household = { ...household, phone: '+12025550123', sms: { phoneValid: true, phoneE164: '+12025550123', notices: null } };
+    const view = mount(<PortalHousehold />, (path, init) => {
+      if (path === '/api/portal/household/sms-consent' && init?.method === 'PUT') {
+        const input = JSON.parse(String(init.body)) as { consent: boolean; revision: number };
+        expect(input.revision).toBe(current.revision);
+        current = { ...current, revision: current.revision + 1, sms: { ...current.sms,
+          notices: input.consent ? { at: '2026-11-16T12:00:00Z', source: 'portal' } : null } };
+        return { data: current };
+      }
+      if (path === '/api/portal/household' && init?.method === 'PATCH') {
+        const input = JSON.parse(String(init.body)) as { name: string; revision: number };
+        expect(input.revision).toBe(current.revision);
+        current = { ...current, name: input.name, revision: current.revision + 1 }; return { data: current };
+      }
+      if (path === '/api/portal/household') return { data: current };
+      return path.startsWith('/api/portal/members?') ? page([]) : undefined;
+    }, { context: payer }), user = userEvent.setup();
+    const name = await screen.findByLabelText('Household name');
+    await user.clear(name); await user.type(name, 'Unsaved household');
+    await user.click(await screen.findByRole('button', { name: 'Agree to notices' }));
+    await screen.findByRole('button', { name: 'Withdraw notices consent' });
+    expect(screen.getByLabelText('Household name')).toBe(name);
+    expect((name as HTMLInputElement).value).toBe('Unsaved household');
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Withdraw notices consent' }) as HTMLButtonElement).disabled).toBe(false));
+    await user.click(screen.getByRole('button', { name: 'Withdraw notices consent' }));
+    await screen.findByRole('button', { name: 'Agree to notices' });
+    expect((name as HTMLInputElement).value).toBe('Unsaved household');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('Saved.');
+    expect(JSON.parse(String(view.calls('PATCH', '/api/portal/household')[0]![1]!.body))).toEqual({ name: 'Unsaved household', revision: 5 });
   });
   it('saves and withdraws each adult SMS choice with the profile revision and open household', async () => {
     let current: PortalMember = { ...people[2]!, status: 'active', phone: '+12025550123', sms: { phoneValid: true, phoneE164: '+12025550123', notices: null, announcements: null } };

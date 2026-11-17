@@ -39,7 +39,7 @@ function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope
   return <Page className="max-w-3xl"><PortalRecovery moving={scope.moving}>
     <PageHeader title={text(payer ? 'title' : 'profileTitle')} description={text(payer ? 'description' : 'profileDescription')} />
     {/* A failed refetch keeps its data, so the form and its draft stay. */}
-    {payer && (household.data ? <HouseholdForm key={household.data.revision} household={household.data} scope={scope} saved={saved} setSaved={setSaved} />
+    {payer && (household.data ? <HouseholdForm key={household.data.id} household={household.data} scope={scope} saved={saved} setSaved={setSaved} />
       : household.isPending || scope.settling ? <LoadingState /> : <ErrorState onRetry={() => void household.refetch()} />)}
     {payer && household.data && <SmsConsentControls sms={household.data.sms} gymName={bootstrap.data?.gym.name ?? ''}
       onChange={async (_kind, consent) => {
@@ -97,7 +97,7 @@ const normalizeAddress = (address: PortalHousehold['address']) => Object.fromEnt
 const normalizeHousehold = (value: Pick<PortalHousehold, 'name' | 'email' | 'phone' | 'address'>) => ({
   name: value.name.trim(), email: value.email?.trim() || null, phone: value.phone?.trim() || null, address: normalizeAddress(value.address),
 });
-/** Keyed by revision so a save shows the stored values; the confirmation lives in the parent and survives that remount. */
+/** The draft survives consent revisions; a successful contact save clears the whole draft once the stored values are refetched. */
 function HouseholdForm({ household, scope, saved, setSaved }: { household: PortalHousehold; scope: PortalScope; saved: 'saved' | 'unchanged' | null; setSaved(value: 'saved' | 'unchanged' | null): void }) {
   const cache = useQueryClient();
   const draft = useDraft({ name: household.name, email: household.email, phone: household.phone, address: household.address }, normalizeHousehold);
@@ -106,7 +106,7 @@ function HouseholdForm({ household, scope, saved, setSaved }: { household: Porta
     if (!Object.keys(changes).length) return false;
     scope.own(await scope.call(contracts.updateHousehold, { ...changes, revision: household.revision }));
     return true;
-  }, onSuccess: async changed => { setSaved(changed ? 'saved' : 'unchanged'); if (changed) await cache.invalidateQueries({ queryKey: [...scope.key, 'household'] }); } });
+  }, onSuccess: async changed => { setSaved(changed ? 'saved' : 'unchanged'); if (changed) await cache.invalidateQueries({ queryKey: [...scope.key, 'household'] }); draft.reset(); } });
   function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setSaved(null); save.mutate(); }
   return <Card className="p-4 sm:p-6"><form className="space-y-4" onSubmit={submit} aria-labelledby="household-contact">
     <h2 id="household-contact" className="text-lg font-semibold">{text('contactTitle')}</h2>

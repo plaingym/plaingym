@@ -670,7 +670,9 @@ Old versions and documents referenced by signatures remain retained after retire
   Phone numbers and consent are gym-scoped personal data. Consent belongs to the
   normalized number and is checked against the current phone immediately before
   delivery. Household billing phones have separate notices consent. Member erasure
-  and phone edits clear consent in the same transaction. Staff may grant notices
+  and edits to a different or invalid normalized number clear consent in the same
+  transaction. Reformatting the same number preserves consent; member, household,
+  portal and people-import edits share this rule. Staff may grant notices
   after asking for verbal consent and withdraw either choice; only members or
   payers managing their children's profiles may grant announcements consent in
   the portal, or on joining. A payer cannot give consent for another adult.
@@ -680,6 +682,8 @@ Old versions and documents referenced by signatures remain retained after retire
   portal roles with the same own-member/managed-child limits; household edits stay
   on payer-only `household.manage`. Consent writes require revisions, reject
   opting in an unparseable phone, and audit kind, before, after and source without a phone.
+  A consent request that already holds checks the revision without changing it or
+  adding an audit. Portal consent changes preserve unsaved household contact edits.
   Member erasure
   clears normalized numbers and both consents, and clears the household's when its
   last member is erased. Provider error 21610 withdraws all consents at that number
@@ -688,6 +692,9 @@ Old versions and documents referenced by signatures remain retained after retire
   under `AUTH_SECRET`, never an enumerable plain phone hash. Delivery state is
   retained permanently; daily usage is install-local. Neither is exported. Demo
   texts are captured only in the scoped outbox, whose body is excluded from exports.
+  SMS preparation has a 15-second deadline, including waits for the usage-row lock.
+  Timed-out checks cannot call the provider, and their definite non-send remains
+  retryable instead of aging into an uncertain delivery.
   SMS adapter errors and suppression logs never include phone numbers, bodies,
   provider replies or credentials (`apps/server/src/infra/sms/README.md`).
   The go-live SMS switch requires `go_live.manage` and a readable provider before

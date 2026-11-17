@@ -4,7 +4,7 @@ import { households, members, memberTags, memberTagLinks, paymentMethods, revisi
   type Transaction } from '@plaingym/db';
 import type { ImportIssue, ImportPlanRequest, ImportPreviewRow } from '@plaingym/shared/contracts';
 import { normalizePhone } from '@plaingym/shared/phone';
-import { auditSmsCleared, clearedMemberSms } from '../../members/member-write.js';
+import { auditSmsCleared, clearedMemberSms, smsPhoneChange } from '../../members/member-write.js';
 import { readGymSettings } from '../../settings/settings.js';
 import { t } from '../pipeline.messages.js';
 import { csvValue, type CsvRow } from '../pipeline.csv.js';
@@ -255,9 +255,7 @@ async function commit(tx: Transaction, rows: readonly PlannedRow[], context: Map
         phone: value.phone, dateOfBirth: value.dateOfBirth, status: value.status, emailOptOut: value.emailOptOut })
         .filter(([key, next]) => next !== null && current[key as keyof typeof current] !== next));
       if (Object.keys(changes).length) {
-        const changedPhone = value.phone !== null && value.phone !== current.phone;
-        const phoneE164 = normalizePhone(value.phone, country);
-        const changedNumber = changedPhone && (phoneE164 === null || phoneE164 !== normalizePhone(current.phone, country) || phoneE164 !== current.phoneE164);
+        const { changedPhone, phoneE164, changedNumber } = smsPhoneChange(current, value.phone ?? undefined, country);
         const guard = revisionGuard(members.revision, current.revision);
         assertRevised(await tx.update(members).set({ ...changes, revision: guard.next,
           ...(changedPhone ? { phoneE164, ...(changedNumber ? clearedMemberSms : {}) } : {}) })

@@ -156,10 +156,12 @@ describe('people mapper through the real import pipeline', () => {
     expect(restored.audits.filter((event) => event.action.endsWith('.sms_consent_changed'))).toHaveLength(2);
     expect(await snapshot(gymB)).toEqual(otherGym);
   });
-  it.each(['020 7946 0018', '02079460018', '', null])('keeps SMS consent for an unchanged, reformatted or absent phone: %s', async (phone) => {
+  it.each(['020 7946 0018', '02079460018', '+44 (20) 7946 0018', '', null])('keeps SMS consent for an unchanged, reformatted or absent phone: %s', async (phone) => {
     const { home, member } = await consentedContacts();
+    // csvLine protects exported '+' cells with an apostrophe; this fixture models an unmodified incoming phone.
     const csv = csvLine(['First Name', 'Last Name', 'Email', ...(phone === null ? [] : ['Phone'])])
-      + csvLine(['Jo', 'Fields', 'jo@example.test', ...(phone === null ? [] : [phone])]);
+      + (phone?.startsWith('+') ? `Jo,Fields,jo@example.test,"${phone}"\n`
+        : csvLine(['Jo', 'Fields', 'jo@example.test', ...(phone === null ? [] : [phone])]));
     const source = await services().load(csv, { duplicatePolicy: 'update' });
     expect((await source.run()).job).toMatchObject({ status: 'succeeded', committedRows: 1 });
     const saved = await snapshot(), expectedPhone = phone || member.phone;

@@ -43,6 +43,14 @@ medical notes and credentials so anonymization does not leave copies in the
 append-only log. Normal member projections exclude medical notes and check-in
 credentials. Medical writes require both `members.manage` and `medical.read`.
 
+SMS consent belongs to `phone_e164`. Staff, portal, join and people-import writes
+use `smsPhoneChange` in `member-write.ts`: reformatting the same normalized number
+keeps consent; a different or invalid number clears it with its consent audits in
+the phone-write transaction. New join records start without any inherited consent
+and record only their explicit choices. Repeated consent choices still check the
+revision but leave the revision and audit history unchanged. Reads fetch the gym's
+country only for national phone numbers.
+
 Staff can set a member's status, and that edit stands until their next membership
 change. Assignment, any staff edit of a membership (such as its discount, due date
 or plan), activation, freeze, resume and cancellation (including the daily

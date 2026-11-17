@@ -5,9 +5,25 @@ import { classBookings, members, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { setLogSink } from '../../core/log.js';
-import { memberWriteScope } from './member-write.js';
+import { memberWriteScope, phoneNeedsCountry, smsPhoneChange } from './member-write.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
+
+it.each([
+  { phone: '(202) 555-0123', phoneE164: '+12025550123', changedNumber: false },
+  { phone: '+1 202 555 0123', phoneE164: '+12025550123', changedNumber: false },
+  { phone: '2025550199', phoneE164: '+12025550199', changedNumber: true },
+  { phone: 'invalid', phoneE164: null, changedNumber: true },
+  { phone: null, phoneE164: null, changedNumber: true },
+])('ties consent to the stored normalized number for $phone', ({ phone, phoneE164, changedNumber }) => {
+  expect(smsPhoneChange({ phone: '2025550123', phoneE164: '+12025550123' }, phone, 'US'))
+    .toEqual({ changedPhone: true, phoneE164, changedNumber });
+});
+it('requires a country only for national phone text and clears consent when its stored number differs', () => {
+  for (const phone of [null, undefined, '', '  ', ' +12025550123 ']) expect(phoneNeedsCountry(phone)).toBe(false);
+  expect(phoneNeedsCountry('2025550123')).toBe(true);
+  expect(smsPhoneChange({ phone: '2025550123', phoneE164: '+12025550199' }, '(202) 555-0123', 'US').changedNumber).toBe(true);
+});
 
 it('maps a real lost member reference to conflict and logs its constraint without submitted values', async () => {
   const gymId = uuidv7(), memberId = uuidv7(), lines: string[] = [];

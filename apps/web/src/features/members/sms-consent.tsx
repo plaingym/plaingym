@@ -11,13 +11,13 @@ import { memberRequest } from './api.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('members/sms:' + key, values);
 /** A choice is saved immediately; withdrawal takes one tap, independently for each kind. */
-export function SmsConsentControls({ sms, gymName, staff = false, onChange, busy = false }: {
-  sms: Household['sms'] | Member['sms']; gymName: string; staff?: boolean; busy?: boolean;
+export function SmsConsentControls({ sms, gymName, staff = false, onChange }: {
+  sms: Household['sms'] | Member['sms']; gymName: string; staff?: boolean;
   onChange(kind: 'notices' | 'announcements', consent: boolean): Promise<unknown>;
 }) {
   const [saving, setSaving] = useState(false), [error, setError] = useState(false);
   async function change(kind: 'notices' | 'announcements', consent: boolean) {
-    if (saving || busy) return;
+    if (saving) return;
     setSaving(true); setError(false);
     try { await onChange(kind, consent); } catch { setError(true); } finally { setSaving(false); }
   }
@@ -32,7 +32,7 @@ export function SmsConsentControls({ sms, gymName, staff = false, onChange, busy
         <p className="text-sm">{text(kind, { gym: gymName })}</p>
         <p className="text-sm text-muted-foreground">{consent ? text('recorded', { at: new Date(consent.at).toLocaleString(), source: text('source_' + consent.source) }) : text('off')}</p>
         {staff && kind === 'announcements' && !consent ? <p className="text-sm text-muted-foreground">{text('memberOnly')}</p>
-          : <Button type="button" variant="outline" className="w-full whitespace-normal sm:w-auto" disabled={saving || busy || (!consent && !sms.phoneValid)}
+          : <Button type="button" variant="outline" className="w-full whitespace-normal sm:w-auto" disabled={saving || (!consent && !sms.phoneValid)}
             onClick={() => void change(kind, !consent)}>{text(consent ? 'withdraw_' + kind : staff ? 'verbal' : 'give_' + kind)}</Button>}
       </div>;
     })}

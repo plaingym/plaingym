@@ -12,7 +12,7 @@ import { clock as defaultClock } from '../../core/clock.js';
 import { createMemberHouseholdContext } from '../members/household-users.context.js';
 import { createMembersService, type MembersService } from '../members/members.js';
 import { needsGuardian } from '../waivers/snapshot.js';
-import { smsState } from '../members/member-write.js';
+import { smsState, phoneNeedsCountry, withoutSmsColumns } from '../members/member-write.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 
 export type HouseholdQueries = Parameters<Parameters<typeof forHousehold>[1]>[0];
@@ -61,15 +61,16 @@ export function createPortalHouseholdService(options: {
   const clock = options.clock ?? defaultClock, members = options.members ?? createMembersService({ clock });
   const settings = createGymSettingsAccessor();
   const read = householdReader(scope);
+  const phoneCountry = async (gymId: string, phones: readonly (string | null)[]) =>
+    phones.some(phoneNeedsCountry) ? (await settings.get(gymId)).country : null;
   async function member(identity: PortalIdentity, id: string) {
     const [row] = await read(identity, queries => queries.member(id));
-    return row ? project(row, (await settings.get(identity.gymId)).country) : notFound();
+    return row ? project(row, await phoneCountry(identity.gymId, [row.phone])) : notFound();
   }
   async function household(identity: PortalIdentity) {
     const [row] = await read(identity, queries => queries.household());
     if (!row) notFound();
-    const publicRow = Object.fromEntries(Object.entries(row).filter(([key]) => key !== 'phoneE164' && !key.startsWith('sms')));
-    return portalHouseholdSchema.parse({ ...publicRow, sms: smsState(row, row.phone, (await settings.get(identity.gymId)).country),
+    return portalHouseholdSchema.parse({ ...withoutSmsColumns(row), sms: smsState(row, row.phone, await phoneCountry(identity.gymId, [row.phone])),
       address: Object.fromEntries(Object.entries(row.address ?? {}).filter(([, value]) => typeof value === 'string')) });
   }
   const actor = (identity: PortalIdentity) => ({ gymId: identity.gymId, actor: { kind: 'user' as const, userId: identity.userId } });
@@ -83,8 +84,8 @@ export function createPortalHouseholdService(options: {
       const query = paginationSchema.parse(input), context = await households.requirePayer(identity, 'household.read');
       const rows = (await read(identity, queries => queries.members())).filter(row => context.visibleMemberIds.includes(row.id))
         .sort((a, b) => a.lastName.localeCompare(b.lastName) || a.firstName.localeCompare(b.firstName) || a.id.localeCompare(b.id));
-      const country = (await settings.get(identity.gymId)).country;
-      return { data: rows.slice(query.offset, query.offset + query.limit).map(row => project(row, country)), pagination: { limit: query.limit, offset: query.offset, total: rows.length } };
+      const page = rows.slice(query.offset, query.offset + query.limit), country = await phoneCountry(identity.gymId, page.map(row => row.phone));
+      return { data: page.map(row => project(row, country)), pagination: { limit: query.limit, offset: query.offset, total: rows.length } };
     },
     /** Payers edit their own profile and children's profiles; status, memberships and check-in credentials are not fields here. */
     async updateMember(identity: PortalIdentity, memberId: string, input: PortalMemberUpdateRequest, timezone: string) {

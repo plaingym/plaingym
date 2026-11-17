@@ -9,6 +9,7 @@ import { clock as systemClock } from '../../core/clock.js';
 import { logInfo } from '../../core/log.js';
 import type { SmsResolver } from '../../areas/settings/sms.js';
 import { takeSmsSlot } from './daily-cap.js';
+import { smsDeadlineMs } from './constants.js';
 import { DeliveryError, SmsDeliveryError, validateSms, type Sms, type SmsMessage, type SmsResult } from './index.js';
 
 type SuppressionReason = Extract<SmsResult, { status: 'suppressed' }>['reason'];
@@ -34,16 +35,20 @@ export class MemberSms implements Sms {
     assertNoTransaction('sms.sendSms');
     const { gymId, memberIds, householdIds, kind, settings, resolver } = this.#options;
     const scope = this.#options.scope ?? forGym, clock = this.#options.clock ?? systemClock;
-    let resolved: Awaited<ReturnType<SmsResolver['resolve']>>, outgoing: SmsMessage;
-    try {
+    // Keep preparation below half a transport deadline: together with the provider's deadline this stays
+    // inside the two-deadline delivery window. A timed-out transaction can finish, but can never send.
+    let expired = false, timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = () => new DeliveryError('not_accepted', 'SMS recipient checks timed out');
+    const prepare = async () => {
       // Resolve before the final settings and consent reads so slow credential reads cannot stale those checks.
-      resolved = await resolver.resolve(gymId);
+      const resolved = await resolver.resolve(gymId);
       const gym = await settings.get(gymId);
+      if (expired) throw timedOut();
       if (gym.gymId !== gymId || (resolved && resolved.gymId !== gymId)) throw new Error('SMS gym mismatch');
       if (!gym.memberSmsEnabled) return this.#suppressed('disabled');
       if (!resolved) return this.#suppressed('no_provider');
       // Checked with the gym name added, before a cap slot is taken for a message the transport would refuse.
-      outgoing = { ...message, body: `${resolved.name}: ${message.body}` };
+      const outgoing = { ...message, body: `${resolved.name}: ${message.body}` };
       validateSms(outgoing);
       const reason = await scope(gymId, async tx => {
         if ((!memberIds.length && !householdIds.length) || (kind === 'announcements' && householdIds.length)) return 'no_consent';
@@ -64,15 +69,29 @@ export class MemberSms implements Sms {
           if (!(kind === 'notices' ? member.smsNoticesConsentAt : member.smsAnnouncementsConsentAt)) return 'no_consent';
           if (member.phoneE164 !== message.to || normalizePhone(member.phone, gym.country) !== message.to) return 'phone_changed';
         }
-        return await takeSmsSlot(tx, gymId, clock.now(), gym.timezone, gym.smsDailyCap) ? undefined : 'cap_reached';
+        if (expired) throw timedOut();
+        const allowed = await takeSmsSlot(tx, gymId, clock.now(), gym.timezone, gym.smsDailyCap);
+        // A timeout while waiting for the usage lock rolls back its slot once the lock becomes available.
+        if (expired) throw timedOut();
+        return allowed ? undefined : 'cap_reached';
       });
+      // A check that finishes after the deadline neither logs a suppression nor sends: its attempt was recorded as a timeout.
+      if (expired) throw timedOut();
       if (reason) return this.#suppressed(reason);
+      return { resolved, outgoing };
+    };
+    let prepared: Awaited<ReturnType<typeof prepare>>;
+    try {
+      prepared = await Promise.race([prepare(), new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => { expired = true; reject(timedOut()); }, smsDeadlineMs / 2);
+      })]);
     } catch (error) {
       // validateSms's refusal carries a fixed message; any other failure is replaced.
       throw error instanceof DeliveryError ? error : new DeliveryError('not_accepted', 'SMS recipient checks failed');
-    }
+    } finally { clearTimeout(timer); }
+    if ('status' in prepared) return prepared;
     // Every read and the cap reservation have committed before this network boundary.
-    try { return await resolved.sms.sendSms(outgoing); }
+    try { return await prepared.resolved.sms.sendSms(prepared.outgoing); }
     catch (error) {
       if (error instanceof SmsDeliveryError && error.reason === 'recipient_opted_out') {
         try {

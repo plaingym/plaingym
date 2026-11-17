@@ -13,6 +13,20 @@ export const clearedMemberSms = { smsNoticesConsentAt: null, smsNoticesConsentSo
   smsAnnouncementsConsentAt: null, smsAnnouncementsConsentSource: null };
 export const clearedHouseholdSms = { smsNoticesConsentAt: null, smsNoticesConsentSource: null };
 
+/** Only national numbers need the gym's default region, including legacy records without phone_e164. */
+export const phoneNeedsCountry = (phone: string | null | undefined) => Boolean(phone?.trim() && !phone.trim().startsWith('+'));
+
+/** Consent belongs to the stored normalized number. A raw edit always refreshes it; invalid numbers clear consent. */
+export function smsPhoneChange(before: { phone: string | null; phoneE164: string | null }, phone: string | null | undefined, country?: string | null) {
+  const changedPhone = phone !== undefined && phone !== before.phone;
+  const phoneE164 = normalizePhone(phone, country);
+  return { changedPhone, phoneE164, changedNumber: changedPhone && (phoneE164 === null || phoneE164 !== before.phoneE164) };
+}
+
+export function withoutSmsColumns(row: Record<string, unknown>) {
+  return Object.fromEntries(Object.entries(row).filter(([key]) => key !== 'phoneE164' && !key.startsWith('sms')));
+}
+
 /** Reads validate even old, not-yet-normalized phone records with the gym's country. */
 export function smsState(row: SmsColumns, phone: string | null, country?: string | null) {
   const phoneE164 = normalizePhone(phone, country);

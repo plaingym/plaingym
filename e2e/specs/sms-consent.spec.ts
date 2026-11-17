@@ -26,13 +26,23 @@ for (const width of [360, 1280]) test('SMS choices on staff, portal and join scr
   await new Client(sandbox.origin).json('/api/portal/invitations/accept', 'POST', { token: new URL(invitation.data.invitationUrl).hash.slice(1) });
   const payer = await claimPortal(sandbox.origin, await outboxLink(owner, email, /^\/api\/auth\//, before));
   await payer.browser(context); await page.goto(sandbox.origin + '/portal/household');
+  const householdName = page.getByRole('textbox', { name: 'Household name', exact: true });
+  const draftName = 'SMS household draft ' + width;
+  await householdName.fill(draftName);
   await expect(page.getByRole('button', { name: 'Agree to announcements' })).toBeVisible();
   await page.getByRole('button', { name: 'Agree to announcements' }).click();
   await expect(page.getByRole('button', { name: 'Withdraw announcements consent' })).toBeVisible();
+  await expect(householdName).toHaveValue(draftName);
   await page.getByRole('button', { name: 'Agree to notices', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Agree to notices', exact: true })).toHaveCount(0);
+  await expect(householdName).toHaveValue(draftName);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   await info.attach('sms-portal-' + width, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByText('Saved.', { exact: true })).toBeVisible();
+  await expect(householdName).toHaveValue(draftName);
+  await page.reload();
+  await expect(householdName).toHaveValue(draftName);
   await page.getByRole('button', { name: 'Withdraw announcements consent' }).click();
   await expect(page.getByRole('button', { name: 'Agree to announcements' })).toBeVisible();
 

@@ -50,6 +50,9 @@ describe('portal household routes', () => {
         revision = again.data.revision;
       }
       if (person.id === f.child.id) {
+        const formatted = await json(await send(server, 'PATCH', `/api/portal/members/${person.id}`, { revision, phone: '(202) 555-0123' }), contracts.updateMember.response);
+        expect(formatted.data.sms.notices?.source).toBe('portal');
+        expect(formatted.data.sms.announcements?.source).toBe('portal'); revision = formatted.data.revision;
         const changed = await json(await send(server, 'PATCH', `/api/portal/members/${person.id}`, { revision, phone: '202-555-0199' }), contracts.updateMember.response);
         expect(changed.data.sms).toEqual({ phoneValid: true, phoneE164: '+12025550199', notices: null, announcements: null });
       } else {
@@ -72,7 +75,9 @@ describe('portal household routes', () => {
     const off = await json(await send(payer, 'PUT', path, { consent: false, revision: on.data.revision }), contracts.changeHouseholdSmsConsent.response);
     expect(off.data.sms.notices).toBeNull();
     const again = await json(await send(payer, 'PUT', path, { consent: true, revision: off.data.revision }), contracts.changeHouseholdSmsConsent.response);
-    const changed = await json(await send(payer, 'PATCH', '/api/portal/household', { phone: '+12025550199', revision: again.data.revision }), contracts.updateHousehold.response);
+    const formatted = await json(await send(payer, 'PATCH', '/api/portal/household', { phone: '+1 (202) 555-0123', revision: again.data.revision }), contracts.updateHousehold.response);
+    expect(formatted.data.sms.notices?.source).toBe('portal');
+    const changed = await json(await send(payer, 'PATCH', '/api/portal/household', { phone: '+12025550199', revision: formatted.data.revision }), contracts.updateHousehold.response);
     expect(changed.data.sms.notices).toBeNull();
     const other = app(f, otherPayerPrincipal(f));
     const otherRead = await json(await other.request('/api/portal/household'), contracts.household.response);

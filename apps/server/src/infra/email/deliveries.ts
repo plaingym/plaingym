@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash, createHmac, hkdfSync } from 'node:crypto';
 import { and, eq, like, lte } from 'drizzle-orm';
-import { emailDeliveries, forGym, uuidv7, type Transaction } from '@plaingym/db';
-import { AppError, type Clock } from '@plaingym/shared';
-import { assertNoTransaction } from '@plaingym/shared/transaction';
+import { emailDeliveries, forGym } from '@plaingym/db';
+import type { Clock } from '@plaingym/shared';
 import { clock as systemClock } from '../../core/clock.js';
 import type { JobRegistration } from '../../core/registry.js';
+import { createDeliveryState } from '../delivery-state.js';
 import { DeliveryError, deliveryAcceptance, type Email, type EmailMessage, type EmailResult } from './index.js';
 
 /** `sending` is an attempt in flight; once older than the in-flight window it reads as `unknown`. */
@@ -47,8 +47,6 @@ export const loginLinkKeyPrefix = 'auth.login_link:';
 /** Emailed portal invitations (`areas/members/household-users.invitations.ts`), whose digest names the invitee's address. */
 export const portalInvitationKeyPrefix = 'portal.invitation:';
 const escapeLike = (text: string) => text.replace(/[\\%_]/g, '\\$&');
-const stillSending = () => new AppError('conflict', 'This email is still being sent');
-const otherRequest = () => new AppError('conflict', 'This send generation belongs to another request');
 
 /**
  * At most one message per key can reach a recipient. An attempt is reserved as `sending` and committed before the
@@ -62,127 +60,25 @@ const otherRequest = () => new AppError('conflict', 'This send generation belong
  */
 export function createEmailDeliveries(options: { scope?: typeof forGym; clock?: Clock } = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? systemClock;
-  const settled = (row: { state: string; updatedAt: Date }): EmailDeliveryState =>
-    row.state === 'sending' && row.updatedAt.getTime() <= clock.now().getTime() - emailInFlightMs ? 'unknown' : row.state as EmailDeliveryState;
-  async function state(gymId: string, key: string): Promise<EmailDeliveryState | undefined>;
-  async function state(tx: Transaction, gymId: string, key: string): Promise<EmailDeliveryState | undefined>;
-  async function state(txOrGym: Transaction | string, gymOrKey: string, transactionKey?: string): Promise<EmailDeliveryState | undefined> {
-    if (typeof txOrGym === 'string') return scope(txOrGym, tx => state(tx, txOrGym, gymOrKey));
-    const tx = txOrGym, gymId = gymOrKey, key = transactionKey!;
-    validKey(key);
-    const [row] = await tx.select({ state: emailDeliveries.state, updatedAt: emailDeliveries.updatedAt })
-      .from(emailDeliveries).where(and(eq(emailDeliveries.gymId, gymId), eq(emailDeliveries.key, key)));
-    return row && settled(row);
-  }
-  async function claim(tx: Transaction, gymId: string, key: string, digest?: string) {
-    validKey(key);
-    const now = clock.now();
-    const [created] = await tx.insert(emailDeliveries).values({ id: uuidv7(now.getTime()), gymId, key, state: 'sending',
-      attempts: 1, commandDigest: digest ?? null, createdAt: now, updatedAt: now })
-      .onConflictDoNothing({ target: [emailDeliveries.gymId, emailDeliveries.key] })
-      .returning({ id: emailDeliveries.id, attempts: emailDeliveries.attempts });
-    if (created) return created;
-    const [row] = await tx.select().from(emailDeliveries)
-      .where(and(eq(emailDeliveries.gymId, gymId), eq(emailDeliveries.key, key))).for('update');
-    if (!row) throw new Error('Email delivery reservation vanished');
-    // Checked again under the lock: two requests racing on one generation can both pass `replay`.
-    if (digest !== undefined && row.commandDigest !== digest) throw otherRequest();
-    const current = settled(row);
-    // Another attempt may still be talking to SMTP; its outcome decides, so retry later instead of skipping.
-    if (current === 'sending') return { inFlight: true as const };
-    if (current !== 'not_accepted') return { skipped: current as 'accepted' | 'unknown' };
-    await tx.update(emailDeliveries).set({ state: 'sending', attempts: row.attempts + 1, updatedAt: now })
-      .where(eq(emailDeliveries.id, row.id));
-    return { id: row.id, attempts: row.attempts + 1 };
-  }
-  /** Retry only the outcome transaction, never the transport. The attempt guard also makes a lost commit reply safe. */
-  async function record(reservation: EmailReservation, next: Exclude<EmailDeliveryState, 'sending'>): Promise<void> {
-    for (let attempt = 0; ; attempt++) {
-      try {
-        await scope(reservation.gymId, tx => tx.update(emailDeliveries).set({ state: next, updatedAt: clock.now() })
-          .where(and(eq(emailDeliveries.id, reservation.id), eq(emailDeliveries.attempts, reservation.attempts),
-            eq(emailDeliveries.state, 'sending'))));
-        return;
-      } catch (error) {
-        if (attempt === 2) throw error;
-      }
-    }
-  }
-  /** Calls the transport for a committed reservation and records the outcome. A message builder that throws releases the
-   * reservation, since nothing reached the transport. */
-  async function attempt(reservation: EmailReservation, email: Email,
-    message: EmailMessage | (() => EmailMessage | Promise<EmailMessage>)): Promise<EmailResult> {
-    assertNoTransaction('email.deliveries.send');
-    let built: EmailMessage;
-    try {
-      built = typeof message === 'function' ? await message() : message;
-    } catch (error) {
-      try { await release(reservation); }
-      catch (cause) { throw new DeliveryError('not_accepted', 'Email message could not be built or released', {
+  const delivery = createDeliveryState<EmailMessage, EmailResult>({
+    table: emailDeliveries, name: 'email', validKey, inFlightMs: emailInFlightMs,
+    errors: {
+      acceptance: deliveryAcceptance, record: error => error, build: error => error, transport: error => error,
+      buildRelease: (error, cause) => new DeliveryError('not_accepted', 'Email message could not be built or released', {
         cause: new AggregateError([error, cause], 'Message building and reservation release failed'),
-      }); }
-      throw error;
-    }
-    let result: EmailResult;
-    try {
-      result = await email.sendEmail(built);
-    } catch (error) {
-      try { await record(reservation, deliveryAcceptance(error) === 'not_accepted' ? 'not_accepted' : 'unknown'); }
-      catch (cause) { throw new DeliveryError(deliveryAcceptance(error), 'Email delivery outcome could not be recorded', {
-        cause: new AggregateError([error, cause], 'Transport and outcome recording failed'),
-      }); }
-      throw error;
-    }
-    try { await record(reservation, result.status === 'sent' ? 'accepted' : 'not_accepted'); }
-    catch (cause) { throw new DeliveryError(result.status === 'sent' ? 'unknown' : 'not_accepted', 'Email delivery outcome could not be recorded', { cause }); }
-    return result;
-  }
-  /** Rejects with a `not_accepted` DeliveryError whenever this call did not reach the transport. */
-  async function send(gymId: string, key: string, email: Email, message: EmailMessage): Promise<RecordedEmailResult> {
-    assertNoTransaction('email.deliveries.send');
-    let reserved: Awaited<ReturnType<typeof claim>>;
-    try {
-      reserved = await scope(gymId, tx => claim(tx, gymId, key));
-    } catch (error) {
-      throw new DeliveryError('not_accepted', 'Email delivery could not be reserved', { cause: error });
-    }
-    if ('inFlight' in reserved) throw new DeliveryError('not_accepted', 'Another attempt is sending this email');
-    if ('skipped' in reserved) return { status: 'skipped', state: reserved.skipped };
-    return attempt({ gymId, ...reserved }, email, message);
-  }
-  /**
-   * What a send command already did. Returns its remembered result when it was accepted or may have been, and nothing when
-   * it hasn't run or was definitely not sent (run it). A generation used for another request, or an attempt still in flight,
-   * is a conflict.
-   */
-  async function replay(tx: Transaction, gymId: string, key: string, digest: string): Promise<{ result: unknown; outcome?: 'unknown' } | undefined> {
-    validKey(key);
-    const [row] = await tx.select().from(emailDeliveries).where(and(eq(emailDeliveries.gymId, gymId), eq(emailDeliveries.key, key)));
-    if (!row) return undefined;
-    if (row.commandDigest !== digest) throw otherRequest();
-    const current = settled(row);
-    if (current === 'sending') throw stillSending();
-    return current === 'not_accepted' ? undefined : { result: row.commandResult, ...(current === 'unknown' ? { outcome: 'unknown' as const } : {}) };
-  }
-  /** Reserves a key in the credential transaction. Commands pass their digest after `replay`; losing a race is a conflict.
-   * Persisted notices omit the digest and get nothing when an earlier attempt was accepted or uncertain. */
-  async function reserve(tx: Transaction, gymId: string, key: string, digest: string): Promise<EmailReservation>;
-  async function reserve(tx: Transaction, gymId: string, key: string): Promise<EmailReservation | undefined>;
-  async function reserve(tx: Transaction, gymId: string, key: string, digest?: string): Promise<EmailReservation | undefined> {
-    const reserved = await claim(tx, gymId, key, digest);
-    // A persisted notice has no client command to replay; accepted or uncertain means its work is finished.
-    if ('skipped' in reserved && digest === undefined) return undefined;
-    if ('inFlight' in reserved || 'skipped' in reserved) throw stillSending();
-    return { gymId, ...reserved };
-  }
-  /** Stores what a replay returns: identifiers and metadata only, never a credential. */
-  async function remember(tx: Transaction, reservation: EmailReservation, result: unknown): Promise<void> {
-    await tx.update(emailDeliveries).set({ commandResult: result }).where(eq(emailDeliveries.id, reservation.id));
-  }
-  /** The attempt never reached the transport, so nothing was sent and the command can run again. */
-  async function release(reservation: EmailReservation): Promise<void> {
-    await record(reservation, 'not_accepted');
-  }
+      }),
+      outcome: (acceptance, cause, transport) => new DeliveryError(acceptance, 'Email delivery outcome could not be recorded', {
+        cause: transport ? new AggregateError([transport.error, cause], 'Transport and outcome recording failed') : cause,
+      }),
+      reserve: cause => new DeliveryError('not_accepted', 'Email delivery could not be reserved', { cause }),
+      inFlight: () => new DeliveryError('not_accepted', 'Another attempt is sending this email'),
+    },
+  }, { scope, clock });
+  const send = (gymId: string, key: string, email: Email, message: EmailMessage): Promise<RecordedEmailResult> =>
+    delivery.send(gymId, key, built => email.sendEmail(built), message);
+  const attempt = (reservation: EmailReservation, email: Email,
+    message: EmailMessage | (() => EmailMessage | Promise<EmailMessage>)): Promise<EmailResult> =>
+    delivery.attempt(reservation, built => email.sendEmail(built), message);
   /**
    * The hourly upkeep (`createEmailDeliveryJobs`), in short transactions. It deletes login-link rows once their link has
    * expired. Every other row stays. Returns the count, for tests.
@@ -195,7 +91,7 @@ export function createEmailDeliveries(options: { scope?: typeof forGym; clock?: 
       .returning({ id: emailDeliveries.id }));
     return { swept: swept.length };
   }
-  return { state, send, replay, reserve, remember, attempt, release, upkeep };
+  return { ...delivery, send, attempt, upkeep };
 }
 export type EmailDeliveries = ReturnType<typeof createEmailDeliveries>;
 

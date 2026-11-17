@@ -2,12 +2,16 @@
 import { expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { auditEvents, households, members, smsDailyUsage, uuidv7 } from '@plaingym/db';
+// eslint-disable-next-line database/system-tables -- One extra app-role connection holds the lock in this disposable test database.
+import { openConnection, scopedDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
 import { createGymSettingsAccessor } from '../../areas/settings/settings.js';
 import type { SmsResolver } from '../../areas/settings/sms.js';
 import { createSmsDeliveries, FakeSms, MemberSms, SmsDeliveryError, type MemberSmsOptions } from './index.js';
+import { smsInFlightMs } from './deliveries.js';
+import { smsDeadlineMs } from './constants.js';
 
 const db = useTestDatabase(), make = createFactories(db), scope = db.forGym;
 const phone = '+12025550123', message = { to: phone, body: 'Private notice' };
@@ -80,6 +84,41 @@ it('serializes concurrent cap reservations and counts every refused attempt', as
   f.clock.advance(24 * 60 * 60_000);
   expect(await f.sender().sendSms(message)).toMatchObject({ status: 'sent' });
   expect(await f.usage()).toHaveLength(2);
+});
+it('retries a persisted notice held on the usage lock beyond its in-flight window without losing or duplicating it', async () => {
+  const f = await fixture();
+  await scope(f.gymId, tx => tx.insert(smsDailyUsage).values({ gymId: f.gymId, day: '2026-11-15', createdAt: f.clock.now() }));
+  let unlock!: () => void, locked!: () => void, checking!: () => void, finished!: () => void;
+  const gate = new Promise<void>(resolve => { unlock = resolve; }), lockTaken = new Promise<void>(resolve => { locked = resolve; });
+  const checksStarted = new Promise<void>(resolve => { checking = resolve; }), checksFinished = new Promise<void>(resolve => { finished = resolve; });
+  // The test database's two-connection pool remains free for preparation and recording its timeout.
+  const holderConnection = openConnection(db.appUrl, 1);
+  const holder = scopedDatabase(holderConnection.db).forGym(f.gymId, async tx => {
+    await tx.select().from(smsDailyUsage).for('update'); locked(); await gate;
+  });
+  await lockTaken;
+  const deliveries = createSmsDeliveries({ scope, clock: f.clock }), key = 'slow-lock:' + uuidv7();
+  const waitingScope: typeof scope = (gymId, fn) => scope(gymId, tx => { checking(); return fn(tx); }).finally(finished);
+  const reservation = await scope(f.gymId, tx => deliveries.reserve(tx, f.gymId, key));
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    const outcome = deliveries.attempt(reservation!, f.sender({ scope: waitingScope }), message).catch(error => error as Error);
+    await checksStarted;
+    await vi.advanceTimersByTimeAsync(smsDeadlineMs / 2);
+    expect(await outcome).toMatchObject({ acceptance: 'not_accepted', message: 'SMS delivery failed' });
+    f.clock.advance(smsInFlightMs + 1);
+    expect(await deliveries.state(f.gymId, key)).toBe('not_accepted');
+    expect(f.sms.messages).toEqual([]);
+  } finally {
+    vi.useRealTimers(); unlock(); await holder; await checksFinished; await holderConnection.close();
+  }
+  expect(await f.usage()).toEqual([expect.objectContaining({ sent: 0 })]);
+  const retry = await scope(f.gymId, tx => deliveries.reserve(tx, f.gymId, key));
+  expect(retry).toMatchObject({ attempts: 2 });
+  await deliveries.attempt(retry!, f.sender(), message);
+  expect(await scope(f.gymId, tx => deliveries.reserve(tx, f.gymId, key))).toBeUndefined();
+  expect(f.sms.messages).toHaveLength(1);
+  expect(await f.usage()).toEqual([expect.objectContaining({ sent: 1 })]);
 });
 it('clears every consent at an opted-out number in this gym, auditing identifiers only', async () => {
   const f = await fixture(), other = await fixture();
