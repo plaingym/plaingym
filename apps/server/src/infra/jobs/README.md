@@ -155,8 +155,8 @@ marked failed; pending schedules never stand in for failure times.
 Producers must not rely on a pruned job's key: a later enqueue with that key
 creates a new job. Today's producers dedupe through durable state of their own
 (signed-link and campaign audits, `email_deliveries`, stored webhook events) or
-use keys that are never enqueued again; `billing.alerts.send` keys are kept for
-good. Retention never touches `email_deliveries`.
+use keys that are never enqueued again; `billing.alerts.send` and
+`billing.alerts.sms.send` keys are kept for good. Retention never touches `email_deliveries`.
 
 Retention filters protected rows before acquiring row locks. If retention removes
 an idempotency conflict between enqueue's insert and lookup, enqueue retries the

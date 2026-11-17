@@ -95,11 +95,11 @@ it('schedules daily job retention on the worker queue, keeping billing alert job
   const old = new Date(Date.now() - 30 * 86_400_000);
   const finished = (name: string) => ({ id: uuidv7(), gymId: app.sandbox.gymId, name, status: 'succeeded', attempts: 1, maxAttempts: 3,
     payload: { version: 1, timezone: 'UTC', value: {} }, idempotencyKey: `unique:${uuidv7()}`, runAt: old, createdAt: old });
-  const alert = finished('billing.alerts.send'), other = finished('bookings.notice');
-  await database.forSystem(tx => tx.insert(jobs).values([alert, other]));
+  const alert = finished('billing.alerts.send'), cardText = finished('billing.alerts.sms.send'), other = finished('bookings.notice');
+  await database.forSystem(tx => tx.insert(jobs).values([alert, cardText, other]));
   await queue.prune();
-  const kept = await database.forSystem(tx => tx.select({ id: jobs.id }).from(jobs).where(inArray(jobs.id, [alert.id, other.id])));
-  expect(kept).toEqual([{ id: alert.id }]);
+  const kept = await database.forSystem(tx => tx.select({ id: jobs.id }).from(jobs).where(inArray(jobs.id, [alert.id, cardText.id, other.id])));
+  expect(kept.map(row => row.id).sort()).toEqual([alert.id, cardText.id].sort());
 });
 it('registers the hourly lapsed refund sweep, and a run with nothing lapsed ends without a provider', async () => {
   const handler = app.handlers.get('billing.payments.settle_lapsed');

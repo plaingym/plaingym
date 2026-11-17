@@ -134,7 +134,7 @@ import { configurePackSales } from '../areas/billing/packs/sales.handlers.js';
 import { createPackSalesService } from '../areas/billing/packs/sales.js';
 import { configurePaymentDelivery, createLapsedRefundJobs } from '../areas/billing/payments.jobs.js';
 import { createCustomerCardImportJobs } from '../areas/billing/customer-card-import.js';
-import { createBillingAlerts, createDisputeAlertProvider, sendAlertJob } from '../areas/billing/alerts/index.js';
+import { createBillingAlerts, createDisputeAlertProvider, sendAlertJob, sendCardSmsJob } from '../areas/billing/alerts/index.js';
 import { configureBillingAlerts } from '../areas/billing/alerts/alerts.jobs.js';
 import { createAccountService } from '../infra/auth/accounts.js';
 import { configureStaffAuth } from '../areas/staff/auth.routes.js';
@@ -262,8 +262,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   const gate = restoreStaging ? new RestoreGate(dirname(restoreStaging)) : undefined;
   const queue = new PostgresJobs({ clock, listGyms: demo ? () => demo.pool.listEligibleGyms() : listGyms,
     // A suspended gym's due jobs stay pending in every mode; the demo pool's own rules apply on top.
-    eligibleGym: createGymJobPolicy(demo ? { eligibleGym: (gymId: string) => demo.pool.jobPolicy(gymId) } : {}),
-    retention: { keep: [sendAlertJob] } });
+    eligibleGym: createGymJobPolicy(demo ? { eligibleGym: (gymId, readGym) => demo.pool.jobPolicy(gymId, readGym) } : {}),
+    retention: { keep: [sendAlertJob, sendCardSmsJob] } });
   // Expired magic links and staff invitations are swept by one install job an hour, in either tenancy mode.
   const verificationSweep = registerVerificationSweep(queue, clock);
   // The public forms' named limits are counted in the database, so every process shares one window; each process remembers
