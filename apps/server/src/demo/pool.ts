@@ -315,8 +315,8 @@ export function createDemoPool(options: {
       const demo = sandboxSettings(gym?.settings);
       return Boolean(gym && gym.status === 'active' && (!demo || (demo.ready && (!demo.kind || demo.kind === 'private') && Date.parse(demo.expiresAt) > options.clock.now().getTime())));
     },
-    async jobPolicy(gymId: string): Promise<boolean | 'skip' | 'defer'> {
-      const [gym] = await scope(gymId, tx => tx.select().from(gyms).where(eq(gyms.id, gymId)));
+    async jobPolicy(gymId: string, readGym?: () => Promise<Pick<Gym, 'status' | 'settings'> | undefined>): Promise<boolean | 'skip' | 'defer'> {
+      const gym = readGym ? await readGym() : (await scope(gymId, tx => tx.select().from(gyms).where(eq(gyms.id, gymId))))[0];
       if (!gym || gym.status !== 'active') return 'skip';
       const demo = sandboxSettings(gym.settings);
       if (!demo) return true;

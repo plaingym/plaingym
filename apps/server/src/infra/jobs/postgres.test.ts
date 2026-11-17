@@ -14,7 +14,7 @@ import { TestClock } from '../../core/clock.js';
 import { createGymJobPolicy } from '../../core/tenancy-jobs.js';
 import { setLogSink } from '../../core/log.js';
 import { jobsContract, infraContractGyms } from '../../core/registry-infra-contracts.js';
-import { PostgresJobs, PostgresJobStatsQuery, retentionJob, startJobsWorker } from './postgres.js';
+import { PostgresJobs, PostgresJobStatsQuery, retentionJob, startJobsWorker, waitForGymJobs } from './postgres.js';
 import { cronOccurrences, occurrenceKey } from './cron.js';
 import { FakeJobs, withJobTransaction, type JobTransaction, type Jobs, type JobOptions, type JobRecovery } from './index.js';
 
@@ -69,9 +69,11 @@ it('keeps suspended gym jobs pending without spending attempts while active and 
   expect(await q.runNext()).toBe(false);
   clock.advance(60_000);
   expect(await q.runNext()).toBe(true);
-  expect(await row(pending.jobId)).toMatchObject({ status: 'pending', attempts: 0 });
+  expect(await row(pending.jobId)).toMatchObject({ status: 'pending', attempts: 0, runAt: new Date('2026-01-01T00:03:00Z') });
   expect(handler).toHaveBeenCalledOnce();
   await database.forGym(suspended.id, tx => tx.update(gyms).set({ status: 'active' }).where(eq(gyms.id, suspended.id)));
+  clock.advance(60_000);
+  expect(await q.runNext()).toBe(false);
   clock.advance(60_000);
   expect(await q.runNext()).toBe(true);
   expect(await row(pending.jobId)).toMatchObject({ status: 'succeeded', attempts: 1 });
@@ -122,6 +124,48 @@ it('defers gym work without spending attempts, then executes it once eligible; s
   await q.runNext();
   expect(await row(skipped.jobId)).toMatchObject({ status: 'succeeded', attempts: 1 });
   expect(handler).toHaveBeenCalledOnce();
+});
+
+it('persists growing policy backoff across workers and caps it at a day', async () => {
+  const enqueue = queue();
+  const { jobId } = await enqueue.enqueue('policy.backoff', { original: true }, { ...options, maxAttempts: 1 });
+  const handler = vi.fn(async () => {});
+  for (let n = 0; n < 12; n++) {
+    const q = queue({ retryBaseMs: 90_000, eligibleGym: async () => 'defer' });
+    q.handle('policy.backoff', handler);
+    const now = clock.now().getTime();
+    expect(await q.runNext()).toBe(true);
+    const deferred = await row(jobId);
+    const backoff = Math.min(86_400_000, 90_000 * 2 ** n);
+    expect(deferred).toMatchObject({ status: 'pending', attempts: 0, runAt: new Date(now + backoff),
+      payload: { value: { original: true } } });
+    expect(await q.runNext()).toBe(false);
+    clock.advance(backoff);
+  }
+  expect(handler).not.toHaveBeenCalled();
+});
+
+it('defers a policy error on the final attempt and still runs that attempt when the policy recovers', async () => {
+  const policy = vi.fn(async (): Promise<boolean> => { throw new Error('private database details'); });
+  const q = queue({ eligibleGym: policy }), handler = vi.fn(async () => { throw new Error('handler failed'); });
+  q.handle('policy.error', handler);
+  const { jobId } = await q.enqueue('policy.error', {}, { ...options, maxAttempts: 2 });
+  // One real handler failure has already consumed the first attempt.
+  await database.forSystem(tx => tx.update(jobs).set({ attempts: 1 }).where(eq(jobs.id, jobId)));
+  const lines: string[] = [], previous = setLogSink(line => lines.push(line));
+  try { await q.runNext(); } finally { setLogSink(previous); }
+  expect(lines.map(line => JSON.parse(line))).toMatchObject([
+    { level: 'error', event: 'jobs.policy_error', jobId, gymId: gymA, error: { name: 'Error' } }]);
+  for (const line of lines) expect(line).not.toMatch(/private database details/);
+  expect(await row(jobId)).toMatchObject({ status: 'pending', attempts: 1, lastError: '{"name":"Error"}',
+    runAt: new Date('2026-01-01T00:01:00Z'), lockedUntil: null, lockToken: null });
+  expect(handler).not.toHaveBeenCalled();
+  expect((await new PostgresJobStatsQuery(database).get(gymA)).failed).toBe(0);
+  policy.mockResolvedValue(true);
+  clock.advance(60_000);
+  await q.runNext();
+  expect(handler).toHaveBeenCalledExactlyOnceWith({}, expect.objectContaining({ attempt: 2 }));
+  expect(await row(jobId)).toMatchObject({ status: 'failed', attempts: 2 });
 });
 
 describe.each(['fake', 'postgres'] as const)('%s caller-transaction enqueue contract', kind => {
@@ -441,10 +485,42 @@ describe('worker leases, caps, and lifecycle', () => {
     const q = queue({ leaseMs: 1000 }); const started = latch(), held = latch();
     q.handle('work', async () => { started.resolve(); await held.promise; });
     const { jobId } = await q.enqueue('work', {}, { ...options, maxAttempts: 1 });
-    const active = q.runNext(); await started.promise; clock.advance(1001);
+    const active = q.runNext(); await started.promise;
+    const expiredAt = (await row(jobId)).lockedUntil!;
+    clock.advance(6 * 3_600_000);
     try { expect(await queue().runNext()).toBe(false); }
     finally { held.resolve(); await active; }
-    expect(await row(jobId)).toMatchObject({ status: 'failed', attempts: 1, lastError: 'Lease expired after final attempt' });
+    expect(await row(jobId)).toMatchObject({ status: 'failed', attempts: 1, runAt: expiredAt, lastError: 'Lease expired after final attempt' });
+    expect((await new PostgresJobStatsQuery(database).get(gymA)).oldestFailureAt).toBe(expiredAt.toISOString());
+  });
+  it('waits only for the target gym live leases, allowing crashed leases to expire', async () => {
+    const q = queue(), started = latch(), held = latch(), checked = latch();
+    q.handle('drain', async () => { started.resolve(); await held.promise; });
+    await q.enqueue('drain', {}, options);
+    const active = q.runNext(); await started.promise;
+    try {
+      await waitForGymJobs(gymB, { clock, scope: database.forGym });
+      let drained = false;
+      const scope: typeof database.forGym = async (gymId, fn) => {
+        const result = await database.forGym(gymId, fn); checked.resolve(); return result;
+      };
+      const waiting = waitForGymJobs(gymA, { clock, scope }).then(() => { drained = true; });
+      await checked.promise;
+      expect(drained).toBe(false);
+      clock.advance(30_001);
+      await waiting;
+      expect(drained).toBe(true);
+    } finally { held.resolve(); await active; }
+  });
+  it('bounds the drain wait while a gym still holds a live lease', async () => {
+    const q = queue(), started = latch(), held = latch();
+    q.handle('drain', async () => { started.resolve(); await held.promise; });
+    await q.enqueue('drain', {}, options);
+    const active = q.runNext(); await started.promise;
+    try {
+      await expect(waitForGymJobs(gymA, { clock, scope: database.forGym, timeoutMs: 10 }))
+        .rejects.toMatchObject({ code: 'unavailable' });
+    } finally { held.resolve(); await active; }
   });
   it('stops claiming and waits for active handlers on graceful shutdown', async () => {
     const q = queue(); const held = latch(), started = latch();
@@ -969,7 +1045,7 @@ describe('failed job recovery', () => {
       clock.advance(1000);
       expect(await q.runNext()).toBe(false);
       expect(await q.failedJobs('work', ['slow'], options)).toEqual([
-        { jobId, idempotencyKey: 'slow', failedAt: new Date('2026-01-01T00:00:02.001Z') }]);
+        { jobId, idempotencyKey: 'slow', failedAt: new Date('2026-01-01T00:00:01.000Z') }]);
       expect(await q.retryFailed(jobId, { gymId: gymA, runAt: clock.now() })).toBe(true);
     } finally { held.resolve(); await active; }
     expect(await row(jobId)).toMatchObject({ status: 'pending', attempts: 0, lockToken: null, lastError: null });

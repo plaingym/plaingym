@@ -87,8 +87,10 @@ Background discovery polls do not count as activity.
 The guard shares its gym snapshot with activity updates and demo liveness checks
 for that request only. Progress looks up the ticket hash in SQL and wakes the pool
 only when no seed is in progress. `pool.listEligibleGyms()` supplies the scheduler
-with one system query; `pool.jobPolicy()` defers pooled and unfinished gyms for a
-minute without spending a job attempt, and skips the showcase and retired gyms.
+with one system query; `pool.jobPolicy()` defers pooled and unfinished gyms with
+the worker's growing deferral delay without spending a job attempt, and skips
+the showcase and retired gyms. It accepts the tenancy job policy's lazy gym
+reader as its second argument so composition can share one lookup per job.
 The app accepts `demoGuard` after flood protection, before session handling; the
 composition must pass the guard there rather than wrapping tenant resolution.
 Kiosk tokens are derived from the install key and gym ID; only their hash is stored.
@@ -194,8 +196,9 @@ normal signed, secure, host-only auth cookie. It never implements another sessio
 format. Student data is linked to a household; staff roles stay in `staff_roles`.
 
 Only demo mode configures gym deletion; on every other install `DELETE /api/settings/gym`
-returns 404. Gym deletion checks revision and suspends the gym before cleaning uploads outside a
-transaction. A storage error leaves a suspended gym that an install cleanup job can
+returns 404. Gym deletion checks revision, suspends the gym, and waits for its
+running jobs to finish or their leases to expire before cleaning uploads outside a
+transaction. A one-minute job-drain timeout or a storage error leaves a suspended gym that an install cleanup job can
 retry. A single gym deletion cascades all rows carrying its `gym_id`, including jobs,
 sessions and audits. Deleting a sandbox also removes its three deterministic
 `owner/coach/student.<gym-id>@example.invalid` identities in the same transaction.

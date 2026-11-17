@@ -5,6 +5,7 @@ import { AppError, type Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { deleteDemoIdentities } from '../../infra/auth/demo-cleanup.js';
 import { removeGymInvitees } from '../../infra/auth/portal-invitations.js';
+import { waitForGymJobs } from '../../infra/jobs/postgres.js';
 import { sandboxSettings } from '../../demo/config.js';
 
 export function createGymDeleteService(options: {
@@ -27,6 +28,7 @@ export function createGymDeleteService(options: {
       return { revision: updated.revision, sandbox: sandboxSettings(gym.settings) !== null ||
         /^demo-reservation\.[0-9a-f-]{36}@example[.]invalid$/.test(String((gym.settings as { bootstrapOwnerEmail?: string }).bootstrapOwnerEmail ?? '')) };
     });
+    await waitForGymJobs(gymId, { clock: options.clock, scope });
     await options.removeUploads(gymId);
     await system(async (tx) => {
       // Before the gym row, whose cascade would take its invitation rows without removing the identities they provisioned.

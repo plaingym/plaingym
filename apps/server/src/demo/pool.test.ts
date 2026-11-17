@@ -210,7 +210,16 @@ it('overrides demo skips for suspended gyms while preserving pool and showcase d
   const f = fixture(); await f.pool.refill();
   const before = await rows(), poolGym = before.find(gym => sandboxSettings(gym.settings)?.kind === 'pool')!;
   const shared = before.find(gym => sandboxSettings(gym.settings)?.kind === 'showcase')!;
-  const policy = createGymJobPolicy({ system: db.forSystem, eligibleGym: gymId => f.pool.jobPolicy(gymId) });
+  const reads = vi.fn();
+  const system: typeof db.forSystem = fn => { reads(); return db.forSystem(fn); };
+  const policy = createGymJobPolicy({ system, eligibleGym: f.pool.jobPolicy });
+  const scopeRead = vi.fn();
+  const scope: typeof db.forGym = (gymId, fn) => { scopeRead(); return db.forGym(gymId, fn); };
+  const sharedPool = createDemoPool({ ...f, key: Buffer.alloc(32, 17), scope, system });
+  const sharedPolicy = createGymJobPolicy({ system, eligibleGym: sharedPool.jobPolicy });
+  expect(await sharedPolicy(poolGym.id)).toBe('defer');
+  expect(reads).toHaveBeenCalledOnce();
+  expect(scopeRead).not.toHaveBeenCalled();
   const q = new PostgresJobs({ clock: f.clock, database: db, eligibleGym: policy }), handler = vi.fn(async () => {});
   q.handle('pool.suspension', handler);
   const pooled = await q.enqueue('pool.suspension', {}, { gymId: poolGym.id, timezone: 'UTC', maxAttempts: 1 });
@@ -231,7 +240,7 @@ it('overrides demo skips for suspended gyms while preserving pool and showcase d
   expect((await jobRows()).find(job => job.id === pooled.jobId)).toMatchObject({ status: 'pending', attempts: 0 });
   expect(handler).not.toHaveBeenCalled();
   await db.forGym(copy.gymId, tx => tx.update(gyms).set({ status: 'active' }).where(eq(gyms.id, copy.gymId)));
-  f.clock.advance(60_000);
+  f.clock.advance(120_000);
   await q.runNext();
   expect(handler).toHaveBeenCalledExactlyOnceWith({}, expect.objectContaining({ gymId: copy.gymId, attempt: 1 }));
 });

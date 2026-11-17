@@ -33,7 +33,9 @@ again, so external effects must use idempotency keys. The lock token fences ever
 heartbeat and acknowledgement so an old handler cannot overwrite its replacement.
 Retries start at one second, double per failure, and are capped at one day.
 Unregistered job names stay pending for a worker that has their handlers. A
-finished job's run time records when it succeeded or finally failed.
+finished job's run time records when it succeeded or finally failed. When a
+final attempt crashes, its failure time is the lease expiry, even if the next
+worker starts much later.
 
 `JobRecovery` (implemented by `PostgresJobs` and `FakeJobs`) lets a producer
 recover its own exhausted jobs without reading queue rows: `failedJobs(name,
@@ -55,8 +57,13 @@ exact job name. Internal orchestration uses it to retain polling progress while
 a failed demo seed's tenant reservation is being replaced; gym jobs are excluded.
 The optional `eligibleGym` policy is checked immediately before a gym handler.
 A false or `skip` result acknowledges the queued job without calling its handler.
-`defer` returns the job to pending one minute later, with its attempt count
-unchanged; `true` runs it. This preserves work for gyms that will become eligible
+`defer` returns the job to pending with its attempt count unchanged; `true` runs
+it. Deferral delays start at the larger of one minute and `retryBaseMs`, double
+on each consecutive deferral, and stop growing at one day. Their count lives in
+the internal envelope, survives worker restarts, and resets after eligibility
+allows execution. A policy lookup error also defers without consuming an attempt,
+recording only the sanitized error name and code and logging it as
+`jobs.policy_error`, since a deferred job never counts as failed. This preserves work for gyms that will become eligible
 later. Demo composition can supply `pool.jobPolicy` to defer pooled and unfinished
 gyms and skip shared or retired ones. `createGymJobPolicy` in
 `core/tenancy-jobs.ts` wraps this hook with a fresh gym-status lookup: inactive
@@ -65,9 +72,15 @@ gyms run by default. The runtime passes this policy to its worker queue in every
 mode, wrapping `pool.jobPolicy` in demo mode. Suspended gyms keep their
 queued work without spending attempts until their deletion cascades the rows;
 reactivation lets the work run on its next due attempt. Install jobs bypass gym
-eligibility. A job whose handler already started before suspension can finish.
+eligibility. Its optional install policy receives a lazy `readGym()` callback;
+forward it to `pool.jobPolicy(gymId, readGym)` to share one gym snapshot per job.
+A job whose handler already started before suspension can finish. After
+suspension, `waitForGymJobs` waits for the gym's running jobs to finish or their
+leases to expire before deletion removes uploads. Each poll uses a separate,
+short gym scope; other gyms and pending jobs do not delay it. The wait times out
+after one minute, leaving the suspended gym and its uploads available for retry.
 Payloads use a versioned internal envelope to persist timezone and scheduler
-metadata; handlers receive only the caller's original JSON value. Caller
+and deferral metadata; handlers receive only the caller's original JSON value. Caller
 idempotency keys are hashed together with the job name to fit the schema's
 `(gym_id, idempotency_key)` unique constraint.
 

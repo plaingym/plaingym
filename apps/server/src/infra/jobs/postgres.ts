@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { and, asc, eq, inArray, isNull, lt, notInArray, or, sql } from 'drizzle-orm';
 import { advisoryLockNamespace, advisoryLocks, forGym, forSystem, isConnectionError, jobs, jobScheduleCursors, uuidv7 } from '@plaingym/db';
-import type { Clock } from '@plaingym/shared';
+import { AppError, type Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import type { JobStatsQuery, JobStats } from '../../core/interfaces/job-stats.js';
 import type { Id } from '@plaingym/shared/contracts';
@@ -18,7 +18,7 @@ type Scope = { forGym: typeof forGym; forSystem: typeof forSystem };
 type Row = typeof jobs.$inferSelect;
 type Tx = Parameters<Parameters<typeof forSystem>[0]>[0];
 type Gym = Pick<JobOptions, 'gymId' | 'timezone'>;
-type Envelope = { version: 1; timezone: string; value: unknown; schedule?: { expression: string; at: string } };
+type Envelope = { version: 1; timezone: string; value: unknown; schedule?: { expression: string; at: string }; deferrals?: number };
 export type SystemJobContext = Omit<JobContext, 'gymId'> & { readonly gymId: null };
 export type SystemJobHandler = (payload: unknown, context: SystemJobContext) => Promise<void>;
 export type SystemJobOptions = Omit<JobOptions, 'gymId'>;
@@ -200,7 +200,7 @@ export class PostgresJobs implements Jobs, JobRecovery {
       // skips this tick rather than waiting with a pooled connection held.
       const lock = await tx.execute<{ acquired: boolean }>(sql`select pg_try_advisory_xact_lock(${advisoryLockNamespace}::int, ${advisoryLocks.jobClaims}::int) as acquired`);
       if (!lock[0]?.acquired) return undefined;
-      await tx.update(jobs).set({ status: 'failed', lockedUntil: null, lockToken: null, runAt: now,
+      await tx.update(jobs).set({ status: 'failed', lockedUntil: null, lockToken: null, runAt: jobs.lockedUntil,
         lastError: 'Lease expired after final attempt' }).where(sql`${jobs.status} = 'running'
           and ${jobs.lockedUntil} <= ${now.toISOString()} and ${jobs.attempts} >= ${jobs.maxAttempts}`);
       const accepted = sql`((${jobs.gymId} is not null and ${nameIn(this.#handlers.keys())})
@@ -244,13 +244,20 @@ export class PostgresJobs implements Jobs, JobRecovery {
     })();
     // Keep a rejection observed immediately; acknowledgement remains lease-fenced.
     const heartbeatResult = heartbeat.catch(() => undefined);
-    let failure: unknown, failed = false, deferred = false;
+    let failure: unknown, failed = false, deferred = false, policyFailed = false;
+    let body: Envelope | undefined;
     try {
-      const body = envelope(row.payload);
+      body = envelope(row.payload);
       const context = { jobId: row.id, timezone: body.timezone, attempt: row.attempts, clock: this.clock };
       if (row.gymId === null) await this.#systemHandlers.get(row.name)!(body.value, { ...context, gymId: null });
       else {
-        const policy = this.#eligibleGym ? await this.#eligibleGym(row.gymId) : true;
+        let policy: boolean | 'skip' | 'defer' = 'defer';
+        try { policy = this.#eligibleGym ? await this.#eligibleGym(row.gymId) : true; }
+        catch (error) {
+          // A deferred job never counts as failed, so log the error to keep a lasting policy failure visible.
+          policyFailed = true; failure = error;
+          logError('jobs.policy_error', { jobId: row.id, gymId: row.gymId }, error);
+        }
         deferred = policy === 'defer';
         if (policy === true) await this.#handlers.get(row.name)!(body.value, { ...context, gymId: row.gymId });
       }
@@ -259,13 +266,17 @@ export class PostgresJobs implements Jobs, JobRecovery {
     const now = this.clock.now();
     const final = row.attempts >= row.maxAttempts;
     const backoff = Math.min(day, this.#retryBaseMs * 2 ** Math.min(row.attempts - 1, 30));
+    const deferrals = body?.deferrals ?? 0;
+    // Deferrals have their own persisted backoff; handler attempts remain untouched.
+    const deferBackoff = Math.min(day, Math.max(60_000, this.#retryBaseMs) * 2 ** Math.min(deferrals, 30));
     await this.#database.forSystem(async (tx) => {
       await tx.update(jobs).set({
         status: deferred ? 'pending' : failed ? (final ? 'failed' : 'pending') : 'succeeded',
         ...(deferred ? { attempts: row.attempts - 1 } : {}),
+        ...(body && (deferred || deferrals > 0) ? { payload: { ...body, deferrals: deferred ? Math.min(deferrals + 1, 30) : 0 } } : {}),
         // A finished row's run time records when it finished: retention and failed-job lookups read it.
-        runAt: deferred ? new Date(now.getTime() + 60_000) : failed && !final ? new Date(now.getTime() + backoff) : now,
-        lastError: failed ? (({ name, code }) => JSON.stringify({ name, code }))(describeError(failure)) : null,
+        runAt: deferred ? new Date(now.getTime() + deferBackoff) : failed && !final ? new Date(now.getTime() + backoff) : now,
+        lastError: failed || policyFailed ? (({ name, code }) => JSON.stringify({ name, code }))(describeError(failure)) : null,
         lockedUntil: null, lockToken: null,
       }).where(and(eq(jobs.id, row.id), eq(jobs.status, 'running'), eq(jobs.lockToken, row.lockToken!),
         sql`${jobs.lockedUntil} > ${now.toISOString()}`));
@@ -471,6 +482,24 @@ export class PostgresJobs implements Jobs, JobRecovery {
   }
 }
 export function startJobsWorker(queue: PostgresJobs, options?: WorkerOptions): JobWorker { return queue.start(options); }
+
+/** Call after suspending the gym, before removing its uploads. No transaction spans the wait. */
+export async function waitForGymJobs(gymId: string, options: {
+  clock: Clock; scope?: typeof forGym; timeoutMs?: number;
+}): Promise<void> {
+  assertNoTransaction('jobs.waitForGymJobs');
+  idSchema.parse(gymId);
+  const scope = options.scope ?? forGym;
+  const signal = AbortSignal.timeout(positive(options.timeoutMs ?? 60_000, 'timeoutMs'));
+  for (;;) {
+    const now = options.clock.now();
+    const active = await scope(gymId, tx => tx.select({ id: jobs.id }).from(jobs).where(and(
+      eq(jobs.gymId, gymId), eq(jobs.status, 'running'), sql`${jobs.lockedUntil} > ${now.toISOString()}`)).limit(1));
+    if (!active.length) return;
+    try { await delay(100, undefined, { signal }); }
+    catch { throw new AppError('unavailable', 'Gym jobs are still running; retry deletion'); }
+  }
+}
 
 export class PostgresJobStatsQuery implements JobStatsQuery {
   constructor(readonly database: Pick<Scope, 'forSystem'> = { forSystem }) {}
