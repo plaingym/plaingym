@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { uuidv7 } from '@plaingym/db';
 import type { Snapshot } from './backups.format.js';
 import { prunePlan, retainedSnapshots, type BackupInventory } from './backups.retention.js';
 const now = new Date('2026-10-22T12:00:00Z');
-afterEach(() => vi.unstubAllEnvs());
 function snapshot(at: Date, kind: Snapshot['kind'] = 'hourly'): Snapshot {
   return { version: 1, id: uuidv7(), kind, startedAt: at.toISOString(),
     database: { sha256: 'a'.repeat(64), size: 1 }, manifest: { sha256: 'b'.repeat(64), size: 1 }, uploads: [] };
@@ -26,13 +25,16 @@ describe('snapshot retention', () => {
   it('keeps the floor restore point beyond both age and count limits, releasing it when the guard clears', () => {
     const snapshots = [0, 1, 2, 60].map(days => snapshot(new Date(now.getTime() - days * 86_400_000), 'pre_upgrade'));
     const protectedId = snapshots[3]!.id;
-    vi.stubEnv('SCHEMA_ROLLBACK_FLOOR', 'v1.2.0'); vi.stubEnv('SCHEMA_SNAPSHOT', protectedId);
-    expect(retainedSnapshots(snapshots, now)).toEqual(new Set([snapshots[0]!.id, snapshots[1]!.id, protectedId]));
-    const state: BackupInventory = { snapshots: snapshots.slice(0, 3), damaged: [snapshots[3]!], abandoned: [], suspect: [], objects: [] };
-    expect(prunePlan(state, now)).toMatchObject({ stopped: true });
-    vi.stubEnv('SCHEMA_ROLLBACK_FLOOR', '');
+    expect(retainedSnapshots(snapshots, now, protectedId)).toEqual(new Set([snapshots[0]!.id, snapshots[1]!.id, protectedId]));
     expect(retainedSnapshots(snapshots, now).has(protectedId)).toBe(false);
-    expect(prunePlan(state, now).stopped).toBe(false);
+  });
+  it('lets a damaged guard expire under normal pre-upgrade retention, while preserving a complete guard', () => {
+    const guard = snapshot(new Date(now.getTime() - 30 * 86_400_000), 'pre_upgrade');
+    const state: BackupInventory = { snapshots: [], damaged: [guard], abandoned: [], suspect: [], objects: [] };
+    expect(prunePlan(state, now, guard.id)).toMatchObject({ stopped: true, keep: new Set([guard.id]) });
+    const later = new Date(now.getTime() + 1);
+    expect(prunePlan(state, later, guard.id)).toMatchObject({ stopped: false, keep: new Set() });
+    expect(prunePlan({ ...state, snapshots: [guard], damaged: [] }, later, guard.id)).toMatchObject({ stopped: false, keep: new Set([guard.id]) });
   });
   it('finishes deleting a damaged snapshot outside the policy and stops at damage the policy keeps', () => {
     const state = (damaged: Snapshot[], extra: Partial<BackupInventory> = {}): BackupInventory =>

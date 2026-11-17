@@ -72,7 +72,7 @@
   "restoring": "Restoring your verified backup. Keep this page open; billing will stay paused.",
   "restoreFailed": "Restore failed. Check the source and key. If a verified restore was interrupted, resume it with the maintenance command.",
   "pollFailed": "Could not read restore progress. Reload this page to retry.",
-  "restored": "Backup restored. Sign in to your restored gym. Billing remains paused until reconciliation.",
+  "restored": "Backup restored. Sign in to your restored gym. Billing, member emails and member texts remain off until you review Go-live.",
   "skipBackups": "Set up later",
   "setupLink": "Open the private setup link printed by the installer. You can reprint it with gym-app setup-link on the server.",
   "backupHint": "Snapshots are encrypted before uploading. Only your backup private key can open them.",

@@ -2,9 +2,9 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { KeyRotationPartialError, KeyRotationRefusedError, KeyRotationUnstartedError } from './restore.rotate-key.js';
 
-const mocks = vi.hoisted(() => ({ command: vi.fn(), close: vi.fn(), report: vi.fn(), resume: vi.fn() }));
-vi.mock('@plaingym/db/client', () => ({ initializeDatabase: vi.fn(), closeDatabase: mocks.close }));
-vi.mock('./restore.js', () => ({ maintenanceCommand: mocks.command, reportRestoreResume: mocks.resume }));
+const mocks = vi.hoisted(() => ({ command: vi.fn(), initialize: vi.fn(), close: vi.fn(), report: vi.fn(), resume: vi.fn() }));
+vi.mock('@plaingym/db/client', () => ({ initializeDatabase: mocks.initialize, closeDatabase: mocks.close }));
+vi.mock('./restore.js', () => ({ maintenanceCommand: mocks.command, reportRestoreResume: mocks.resume, snapshotCheckTimeoutMs: 30_000 }));
 vi.mock('./restore.failure.js', () => ({ reportMaintenanceFailure: mocks.report }));
 vi.mock('./restore.rotate-key.js', () => {
   class KeyRotationRefusedError extends Error { readonly exitCode: number = 3; }
@@ -29,4 +29,23 @@ it.each([
   expect(mocks.report).toHaveBeenCalledWith(expect.any(Array), error);
   expect(mocks.close).toHaveBeenCalledOnce();
   expect(mocks.resume).not.toHaveBeenCalled();
+});
+
+it.each(['initialize', 'close'] as const)('bounds snapshot-check while database %s never settles', async phase => {
+  vi.resetModules(); vi.useFakeTimers();
+  vi.stubEnv('DATABASE_URL', 'postgres://app:unused@127.0.0.1:1/unused');
+  let finish!: () => void;
+  mocks[phase].mockReturnValueOnce(new Promise<void>(resolve => { finish = resolve; }));
+  const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+  const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  process.argv = ['node', 'maintenance.mjs', 'snapshot-check', '00000000-0000-4000-8000-000000000001'];
+  try {
+    const entry = import('./restore.entry.js');
+    await vi.waitFor(() => expect(mocks[phase]).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(exit).toHaveBeenCalledExactlyOnceWith(1);
+    expect(stderr).toHaveBeenCalledWith('Snapshot availability check timed out\n');
+    finish(); await entry;
+    expect(vi.getTimerCount()).toBe(0);
+  } finally { exit.mockRestore(); stderr.mockRestore(); vi.useRealTimers(); vi.unstubAllEnvs(); }
 });

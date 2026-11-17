@@ -55,19 +55,38 @@ describe('manual backups and restore pruning confirmation', () => {
     await db.forGym(f.gymId, tx => tx.update(gyms).set({ settings: { backupPruningHeld: true, manualBackup: { future: true } } }).where(eq(gyms.id, f.gymId)));
     expect((await f.request('owner', confirmPath, { revision: 1, confirmed: true })).status).toBe(200);
   });
-  it('does not mark a published snapshot failed when recording success throws', async () => {
+  it('records a published snapshot as succeeded after transient success-write failures', async () => {
     const f = await fixture(), requestId = uuidv7();
     await f.control.request({ gymId: f.gymId, userId: f.user.id }, requestId);
-    // Running uses one transaction; refuse only the following success bookkeeping transaction.
-    const scope = vi.fn(db.forGym).mockImplementationOnce(db.forGym).mockRejectedValueOnce(new Error('success write unavailable'));
+    // Running uses one transaction; refuse the first two success bookkeeping attempts.
+    const scope = vi.fn(db.forGym).mockImplementationOnce(db.forGym)
+      .mockRejectedValueOnce(new Error('success write unavailable')).mockRejectedValueOnce(new Error('still unavailable'));
     const control = createBackupControl({ scope: scope as typeof db.forGym, clock: f.clock, queue: f.queue,
       available: () => true, isRestoring: async () => false, configuredGym: async () => f.gymId });
-    await expect(control.run(f.gymId, requestId, f.snapshot)).rejects.toThrow('success write unavailable');
-    expect(f.snapshot).toHaveBeenCalledOnce(); expect(scope).toHaveBeenCalledTimes(2);
-    expect((await f.control.get(f.gymId)).manual?.status).toBe('running');
+    await control.run(f.gymId, requestId, f.snapshot);
+    expect(f.snapshot).toHaveBeenCalledOnce(); expect(scope).toHaveBeenCalledTimes(4);
+    expect((await f.control.get(f.gymId)).manual).toMatchObject({ status: 'succeeded', snapshotId: f.snapshotId });
     const failed = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'backup.failed')));
     expect(failed).toHaveLength(0);
     // The direct invocation above leaves the original queued job; drain it before the next fixture.
+    await f.queue.runNext();
+    expect(f.snapshot).toHaveBeenCalledOnce();
+    const succeeded = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'backup.succeeded')));
+    expect(succeeded).toHaveLength(1);
+    expect(succeeded[0]!.after).toMatchObject({ snapshotId: f.snapshotId });
+  });
+  it.each(['queued', 'running'])('reads %s state once when job recovery writes nothing', async status => {
+    const f = await fixture(), requestId = uuidv7();
+    await f.control.request({ gymId: f.gymId, userId: f.user.id }, requestId);
+    await db.forGym(f.gymId, async tx => {
+      const [row] = await tx.select().from(gyms).where(eq(gyms.id, f.gymId));
+      const settings = row!.settings as Record<string, unknown>;
+      await tx.update(gyms).set({ settings: { ...settings, manualBackup: { ...settings.manualBackup as object, status } } }).where(eq(gyms.id, f.gymId));
+    });
+    const scope = vi.fn(db.forGym), control = createBackupControl({ scope: scope as typeof db.forGym, queue: f.queue,
+      clock: f.clock, available: () => true, configuredGym: async () => f.gymId });
+    expect((await control.get(f.gymId)).manual?.status).toBe(status);
+    expect(scope).toHaveBeenCalledOnce();
     await f.queue.runNext();
   });
   it('reads idle state once, skips job recovery, and caches configured status for one poll interval', async () => {

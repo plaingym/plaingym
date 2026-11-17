@@ -11,6 +11,9 @@ import { s3Server } from '../infra/storage/s3-server.test-helper.js';
 import { commands, maintenanceCommand, reportRestoreResume } from './restore.js';
 import { RestoreFailure } from '../areas/health/restore.failure.js';
 import { restoreFailureReason } from './restore.reason.js';
+import { RestoreService } from '../areas/health/restore.js';
+import { bytesStream } from '../areas/health/backups.files.js';
+import * as restoreFiles from './restore.files.js';
 
 const secrets = ['SECRETACCESSKEYVALUE', 'ACCESSKEYIDVALUE', 'SECRETFIELDVALUE', 'DBPASSWORD', 'AGE-SECRET-KEY-1', 'bucket-name-value'];
 const restore = commands.find((command) => command.id === 'restore')!;
@@ -42,6 +45,23 @@ async function run(config: unknown, snapshot: string = randomUUID(), path = join
   return { code, text };
 }
 const resumeLine = 'A verified restore can be resumed with the maintenance CLI';
+
+it('names billing, member emails and member texts in both restore completion messages', async () => {
+  const id = randomUUID(), path = join(directory, 'success.json');
+  const client = createS3Client({ endpoint: bucket.endpoint, credentials: { accessKeyId: 'fixture', secretAccessKey: 'fixture' } });
+  const store = new S3BackupObjectStore({ client, bucket: 'bucket-name-value' });
+  await store.putObject('snapshots/' + id + '/manifest.age', bytesStream('fixture'));
+  const restored = vi.spyOn(RestoreService.prototype, 'restore').mockResolvedValue();
+  const files = vi.spyOn(restoreFiles, 'withRestoreFiles').mockImplementation(async (_input, _directory, action) => action(path));
+  const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  const message = 'Restore complete; billing, member emails and member texts remain off; backup pruning is on hold';
+  try {
+    expect(await run(validConfig(), id, path)).toEqual({ code: 0, text: message });
+    await maintenanceCommand(['restore-files', id]);
+    expect(output).toHaveBeenCalledWith(message + '\n');
+    expect(restored).toHaveBeenCalledTimes(2);
+  } finally { restored.mockRestore(); files.mockRestore(); output.mockRestore(); client.destroy(); }
+});
 
 describe('the command-line restore says why it failed', () => {
   it('reports an unreadable configuration without its path', async () => {

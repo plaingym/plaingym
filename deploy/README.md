@@ -463,10 +463,14 @@ messages name that original restore point. Keep that image locally. Restore a
 pre-upgrade snapshot like any other, from the setup wizard on a fresh install or
 with `gym-app restore`.
 
-A refusal from `--rollback` checks the named snapshot's authenticated inventory at
+A refusal from `--rollback` checks the named snapshot's authenticated reference list and object sizes at
 the configured destination using the current image's `snapshot-check` maintenance
 command. It says when the snapshot is missing or incomplete, or the check could not
-finish (including an older image without that command). The check does not migrate
+finish (including an older image without that command). A history fallback not named
+by the active guard is labelled as unprotected and may have been pruned. The check
+reads only the one snapshot and exits within 30 seconds, including database startup
+and cleanup. The host bounds Compose to 40 seconds plus a five-second kill grace.
+The check does not migrate
 the database, take a snapshot, or change the running services. Startup checks schema
 compatibility before opening the database and points to this availability check.
 

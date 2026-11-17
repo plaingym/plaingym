@@ -155,8 +155,9 @@ completed setup. You work on the server over SSH.
    ```
 
    It copies both files into the app's private storage for the restore and removes those
-   copies afterwards, whether the restore works or not. On success it says that billing and
-   member emails remain paused and that pruning is held. Member texts are also off. On failure it prints
+   copies afterwards, whether the restore works or not. On success it says:
+   `Restore complete; billing, member emails and member texts remain off; backup pruning is on hold`.
+   On failure it prints
    `Restore failed: ` and a reason; look the reason up in the
    [restore errors](restore-reference.md#restore-errors), fix what it names and run the
    command again. If it also says a verified restore can be resumed, a restore is staged and a

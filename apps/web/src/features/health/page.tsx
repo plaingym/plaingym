@@ -51,7 +51,7 @@ function detailRows(tile: HealthTile): [key: string, label: string, value: unkno
   ];
   const versions = tile.id === 'automatic_updates' ? tile.details : null;
   // A null oldest failure means no failed jobs remain, not an unknown time, so the row is left out.
-  return Object.entries(tile.details).filter(([key, value]) => key !== 'keyReminder' && key !== 'noneUnderCurrentKey' && key !== 'pruningHeld'
+  return Object.entries(tile.details).filter(([key, value]) => key !== 'keyReminder' && key !== 'noneUnderCurrentKey' && key !== 'pruningHeld' && key !== 'damagedGuardSnapshot'
     && !(versions && (key === 'fromVersion' || key === 'toVersion') && value === null)
     && !(tile.id === 'failed_jobs' && key === 'oldestFailureAt' && value === null))
     .map(([key, value]) => [key, label(versions && (key === 'fromVersion' || key === 'toVersion') ? `field.${key}.${versions.result}` : 'field.' + key),
@@ -70,6 +70,7 @@ export function HealthTiles({ tiles, extras = {}, timezone }: { tiles: readonly 
       {tile.details && <dl className="mt-4 space-y-2 text-sm">{detailRows(tile).map(([key, name, value]) =>
         <div key={key} className="flex flex-wrap justify-between gap-2"><dt className="text-muted-foreground">{name}</dt><dd className="break-all">{detailValue(key, value, timezone)}</dd></div>)}</dl>}
       {tile.details && 'keyReminder' in tile.details && tile.details.keyReminder && <p className="mt-4 text-sm font-medium">{label('keyReminder')}</p>}
+      {tile.id === 'last_backup' && tile.details?.damagedGuardSnapshot && <p className="mt-4 break-words text-sm font-medium">{t('health/status:backupDamagedGuard', { snapshot: tile.details.damagedGuardSnapshot })}</p>}
       {extras[id]}
       {tile.checkedAt && <p className="mt-4 text-xs text-muted-foreground">{label('checkedAt')}: <time dateTime={tile.checkedAt}>{instantLabel(tile.checkedAt, timezone)}</time></p>}
     </Card>;

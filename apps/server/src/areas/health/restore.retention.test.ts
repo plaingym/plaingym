@@ -10,6 +10,18 @@ const f = useRestoreFixture();
 const { gymId, clock, blobKey } = f;
 
 describe('install snapshot retention and publication with real Postgres and S3', () => {
+  it('resumes pruning a damaged guard after its pre-upgrade retention expires', async () => {
+    const guard = await f.backup().snapshot('pre_upgrade');
+    vi.stubEnv('SCHEMA_ROLLBACK_FLOOR', 'v1.2.0'); vi.stubEnv('SCHEMA_SNAPSHOT', guard.id);
+    try {
+      await f.store.deleteObject(snapshotPrefix(guard.id) + 'manifest.age');
+      await expect(f.backup().prune()).rejects.toThrow('pruning stopped');
+      clock.advance(31 * 86_400_000);
+      await f.backup().prune();
+      expect(await f.store.headObject(snapshotPrefix(guard.id) + 'references.json')).toBeNull();
+      expect((await inventory(f.store, blobKey)).damaged).toEqual([]);
+    } finally { vi.unstubAllEnvs(); }
+  });
   it('keeps the guard snapshot and its blobs until a later guard releases them', async () => {
     const first = await f.backup().snapshot('pre_upgrade');
     vi.stubEnv('SCHEMA_ROLLBACK_FLOOR', 'v1.2.0'); vi.stubEnv('SCHEMA_SNAPSHOT', first.id);

@@ -352,6 +352,7 @@ describe('setup wizard', () => {
     start(0);
     expect(await screen.findByRole('heading', { name: 'Setup complete' })).toBeDefined();
     expect(screen.getByRole('status').textContent).toContain('Backup restored.');
+    expect(screen.getByRole('status').textContent).toContain('Billing, member emails and member texts remain off');
     expect(screen.getByRole('link', { name: 'Sign in' }).getAttribute('href')).toBe('/login');
     expect(screen.queryByRole('link', { name: 'Open admin' })).toBeNull();
   });

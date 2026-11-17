@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq } from 'drizzle-orm';
+import { setTimeout as delay } from 'node:timers/promises';
 import { auditEvents, forGym, gyms, writeAudit } from '@plaingym/db';
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
@@ -58,24 +59,24 @@ export function createBackupControl(options: {
     return configuredCache.value;
   };
   const recoverFailure = async (gymId: string, pending: ManualBackup | null) => {
-    if (!pending || !['queued', 'running'].includes(pending.status)) return;
+    if (!pending || !['queued', 'running'].includes(pending.status)) return false;
     const failed = await queue.failedJobs(manualBackupJob, [pending.requestId], { gymId });
-    if (!failed.length) return;
-    await scope(gymId, async tx => {
+    if (!failed.length) return false;
+    return scope(gymId, async tx => {
       const row = await read(tx, gymId, true), current = manualOf(row);
-      if (current?.requestId !== pending.requestId || !['queued', 'running'].includes(current.status)) return;
+      if (current?.requestId !== pending.requestId || !['queued', 'running'].includes(current.status)) return false;
       await tx.update(gyms).set({ settings: { ...settingsOf(row), manualBackup: { ...current,
         status: 'failed', completedAt: failed[0]!.failedAt.toISOString() } }, updatedAt: clock.now() }).where(eq(gyms.id, gymId));
       await writeAudit(tx, { gymId, actorKind: 'system', action: 'backup.failed', targetType: 'backup',
         targetId: current.requestId, after: { interrupted: true }, occurredAt: clock.now() });
+      return true;
     });
   };
   return {
     async get(gymId: string): Promise<BackupControl> {
       let row = await scope(gymId, tx => read(tx, gymId));
       const pending = manualOf(row);
-      if (pending && ['queued', 'running'].includes(pending.status)) {
-        await recoverFailure(gymId, pending);
+      if (await recoverFailure(gymId, pending)) {
         row = await scope(gymId, tx => read(tx, gymId));
       }
       const configured = available() && await pollConfigured(gymId, row.revision) === gymId;
@@ -134,8 +135,14 @@ export function createBackupControl(options: {
         result = await snapshot();
       }
       catch (error) { await update('failed'); throw error; }
-      // Publication succeeded. A bookkeeping failure belongs to job recovery, not snapshot failure handling.
-      await update('succeeded', result.id);
+      // Retry only bookkeeping: publication must never run twice for a transient success-write failure.
+      for (let attempt = 0; ; attempt++) {
+        try { await update('succeeded', result.id); return; }
+        catch (error) {
+          if (attempt === 2) throw error;
+          await delay(250 * (attempt + 1));
+        }
+      }
     },
   };
 }

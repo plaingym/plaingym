@@ -26,10 +26,13 @@ under the new key (so no run committed anything), 1 anything else.
 `restore-connect` lifts the fence (grants `CONNECT` back to `app`; `PUBLIC` stays
 revoked); the host script decides when that is safe.
 
-`snapshot-check` reads the configured bucket's authenticated inventory and reports
+`snapshot-check` authenticates only the named snapshot's reference list and checks
+the sizes of its dump, manifest and upload blobs (without listing the bucket), reporting
 whether the named snapshot is complete, without taking a snapshot or migrating.
-It uses the app-role pool for configuration and run history. Bucket inspection
-times out after 30 seconds; an error means availability could not be checked.
+It uses the app-role pool for configuration. The command exits after 30 seconds,
+including database startup, configuration and cleanup; the updater also bounds its
+Compose invocation to 40 seconds (with a five-second kill grace). An error means
+availability could not be checked.
 
 The bundle reads `MAINTENANCE_DATABASE_URL`, `APP_ENCRYPTION_KEY`, `BACKUP_STAGING_DIR`,
 `UPLOADS_DIR`, and the `UPLOADS_S3_*` settings when uploads live in S3: snapshots
@@ -76,9 +79,12 @@ the encrypted staging file. Install-level jobs use durable occurrence keys.
 
 Retention shares snapshots between 24 hourly, 7 daily, and 4 weekly buckets,
 plus two pre-upgrade snapshots no older than 30 days. An active schema guard's
-`SCHEMA_SNAPSHOT` is kept in addition, without an age limit, until a later update
+complete `SCHEMA_SNAPSHOT` is kept in addition, without an age limit, until a later update
 replaces or clears it. Its blobs and source uploads stay protected and its bytes
-count toward the same budget. Pruning first validates all
+count toward the same budget. A damaged guard snapshot follows normal pre-upgrade
+retention instead: the Last backup tile names it, and it no longer stops pruning
+once it ages out after 30 days or newer pre-upgrade snapshots displace it.
+Pruning first validates all
 reference lists and referenced blob sizes. Each run is recorded in `backup_runs`
 before anything is uploaded, and runs hold the backup lock, so a prefix with no
 reference list whose run never succeeded is an abandoned publication: pruning

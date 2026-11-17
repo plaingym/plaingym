@@ -35,6 +35,15 @@ beforeEach(() => { bootstrap(); serve(); });
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 
 describe('health page', () => {
+  it('names the damaged rollback snapshot even when pruning has resumed', () => {
+    const id = '00000000-0000-4000-8000-000000000001';
+    const backup = healthTileSchema.parse({ id: 'last_backup', status: 'warning', checkedAt, message: 'Backup check',
+      details: { latestRestorableAt: checkedAt, ageSeconds: 0, overdue: false, retainedBytes: 100, retentionBudgetBytes: 1000,
+        pruningStopped: false, keyReminder: true, damagedGuardSnapshot: id } });
+    render(<HealthTiles tiles={[backup]}/>);
+    expect(screen.getByText(`Rollback snapshot ${id} is damaged and cannot be restored.`, { exact: false }).textContent).toContain('30 days');
+    expect(document.body.textContent).not.toContain('health/status:');
+  });
   it('renders every contracted tile in order, including not set up tiles', async () => {
     start();
     expect(await screen.findByRole('heading', { name: 'System health' })).toBeDefined();

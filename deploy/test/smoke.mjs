@@ -159,6 +159,16 @@ try {
   compose(['restart', 'postgres', 'app']);
   compose(['up', '-d', '--wait', '--wait-timeout', '90']);
   compose(['exec', '-T', 'app', 'node', '/app/deploy/healthcheck.mjs']);
+  // Rollback availability is read-only and must terminate with Postgres down, including pool startup/cleanup.
+  compose(['stop', 'postgres']);
+  const checkStarted = Date.now();
+  const snapshotCheck = spawnSync('docker', [...prefix, 'run', '--rm', '--no-deps', '-T', '--entrypoint', 'node',
+    'app', '/app/maintenance.mjs', 'snapshot-check', randomUUID()],
+  { env, encoding: 'utf8', timeout: 40_000, killSignal: 'SIGKILL', windowsHide: true });
+  assert.ifError(snapshotCheck.error);
+  assert.equal(snapshotCheck.status, 1, snapshotCheck.stderr);
+  assert.ok(Date.now() - checkStarted < 40_000, 'snapshot-check must stop within its deadline with Postgres down');
+  assert.match(snapshotCheck.stderr, /Snapshot availability check timed out|Maintenance command failed/);
   console.log('PASS: HTTPS, redirect, roles, boot migrations, forced RLS, image assets, first-boot shell and pack catalog, source link, gym-app CLI, hardening, memory caps, restart.');
 } catch (error) {
   try { console.error(compose(['logs', '--no-color', '--tail', '30', 'app'])); }

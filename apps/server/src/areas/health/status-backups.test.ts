@@ -11,6 +11,7 @@ import { referenceStream, snapshotPrefix, type Snapshot } from './backups.format
 import type { InstallBackupConfig } from './restore.config.js';
 import * as configuration from './restore.config.js';
 import { createBackupHealthProvider } from './status-backups.js';
+import * as retention from './backups.retention.js';
 
 const database = useTestDatabase(), factory = createFactories(database), gymId = uuidv7(), gymB = uuidv7();
 const clock = new TestClock('2026-10-22T12:00:00Z'), context = { gymId, clock, roles: ['owner'] as const };
@@ -35,6 +36,29 @@ async function snapshot(startedAt = clock.now(), status = 'succeeded', recipient
 async function read(config?: InstallBackupConfig | null) { return healthTileSchema.parse(await provider(config).read(context)); }
 
 describe('last-backup health', () => {
+  it.each([1, 31])('names a damaged %s-day-old guard using the injected environment, even after pruning resumes', async days => {
+    const record = { ...await snapshot(new Date(clock.now().getTime() - days * 86_400_000)), kind: 'pre_upgrade' as const };
+    await store.putObject(snapshotPrefix(record.id) + 'references.json', referenceStream(record, settings.blobKey));
+    await store.deleteObject(snapshotPrefix(record.id) + 'manifest.age');
+    const latest = await snapshot();
+    const health = createBackupHealthProvider({ scope: database.forSystem, config: async () => settings,
+      env: { SCHEMA_ROLLBACK_FLOOR: 'v1.2.0', SCHEMA_SNAPSHOT: record.id }, store: () => ({ store, close }) });
+    expect(healthTileSchema.parse(await health.read(context))).toMatchObject({ status: days === 1 ? 'error' : 'warning',
+      details: { damagedGuardSnapshot: record.id, pruningStopped: days === 1, latestRestorableAt: days === 1 ? null : latest.startedAt } });
+  });
+  it('passes the injected guard through to retention for an old complete restore point', async () => {
+    const guard = { ...await snapshot(new Date(clock.now().getTime() - 60 * 86_400_000)), kind: 'pre_upgrade' as const };
+    await store.putObject(snapshotPrefix(guard.id) + 'references.json', referenceStream(guard, settings.blobKey));
+    await snapshot();
+    const plan = vi.spyOn(retention, 'prunePlan');
+    try {
+      const health = createBackupHealthProvider({ scope: database.forSystem, config: async () => settings,
+        env: { SCHEMA_ROLLBACK_FLOOR: 'v1.2.0', SCHEMA_SNAPSHOT: guard.id }, store: () => ({ store, close }) });
+      expect(await health.read(context)).toMatchObject({ status: 'healthy' });
+      expect(plan).toHaveBeenCalledWith(expect.anything(), clock.now(), guard.id);
+      expect(plan.mock.results[0]!.value.keep.has(guard.id)).toBe(true);
+    } finally { plan.mockRestore(); }
+  });
   it('reports a restore pruning hold without treating a complete snapshot as damaged', async () => {
     const complete = await snapshot();
     expect(await read({ ...settings, pruningHeld: true })).toMatchObject({ status: 'warning',

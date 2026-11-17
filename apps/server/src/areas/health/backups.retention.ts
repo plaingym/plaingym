@@ -6,7 +6,7 @@ import type { Snapshot } from './backups.format.js';
 
 /** Distinct UTC buckets; one snapshot can satisfy hourly, daily, and weekly tiers. */
 export function retainedSnapshots(snapshots: readonly Snapshot[], now: Date,
-  floorSnapshot = process.env.SCHEMA_ROLLBACK_FLOOR ? process.env.SCHEMA_SNAPSHOT : undefined): ReadonlySet<string> {
+  floorSnapshot?: string): ReadonlySet<string> {
   const ordered = [...snapshots].sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   const keep = new Set<string>();
   const tiers: [number, number][] = [[3_600_000, 24], [86_400_000, 7], [604_800_000, 4]];
@@ -79,15 +79,16 @@ export async function inventory(store: BackupObjectStore, blobKey: Buffer, runs?
  * still keep (real damage, left for inspection). Damaged snapshots outside the policy are an interrupted
  * deletion, finished by pruning. Any retained damage or suspect object stops all deletion.
  */
-export function prunePlan(state: BackupInventory, now: Date): { keep: ReadonlySet<string>; stopped: boolean } {
+export function prunePlan(state: BackupInventory, now: Date, floorSnapshot?: string): { keep: ReadonlySet<string>; stopped: boolean } {
   const policy = retainedSnapshots([...state.snapshots, ...state.damaged], now);
-  const keep = new Set([...retainedSnapshots(state.snapshots, now), ...state.damaged.filter((s) => policy.has(s.id)).map((s) => s.id)]);
+  // A damaged guard is no longer a restore point: let its normal pre-upgrade retention expire.
+  const keep = new Set([...retainedSnapshots(state.snapshots, now, floorSnapshot), ...state.damaged.filter((s) => policy.has(s.id)).map((s) => s.id)]);
   return { keep, stopped: state.suspect.length > 0 || state.damaged.some((s) => keep.has(s.id)) };
 }
 export async function pruneUnlocked(store: BackupObjectStore, blobKey: Buffer, uploads: ReadonlyMap<string, Uploads>,
-  now: Date, reserveBytes = 0, budget = 8_000_000_000, sweepBefore = now, runs?: RunStatuses): Promise<{ retainedBytes: number; protectedKeys: ReadonlySet<string> }> {
+  now: Date, reserveBytes = 0, budget = 8_000_000_000, sweepBefore = now, runs?: RunStatuses, floorSnapshot?: string): Promise<{ retainedBytes: number; protectedKeys: ReadonlySet<string> }> {
   const state = await inventory(store, blobKey, runs);
-  const { keep, stopped } = prunePlan(state, now);
+  const { keep, stopped } = prunePlan(state, now, floorSnapshot);
   if (stopped) throw new UnverifiedInventory('Backup inventory could not be verified; pruning stopped');
   const retained = state.snapshots.filter((s) => keep.has(s.id));
   const blobs = new Set(retained.flatMap((s) => s.uploads.map((u) => u.blob)));

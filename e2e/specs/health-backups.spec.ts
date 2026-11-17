@@ -6,6 +6,7 @@ for (const viewport of viewports) {
   test(`backup hold warning and definite request retry at ${viewport.name} width`, async ({ browser, install }, info) => {
     const [context, page] = await open(browser, install, 'owner', viewport);
     const now = new Date().toISOString(), requests: string[] = [];
+    const damagedGuard = '00000000-0000-4000-8000-000000000001';
     const control = { available: true, configured: true, pruningHeld: true, revision: 1,
       manual: null as null | { requestId: string; status: string; requestedAt: string; completedAt: null; snapshotId: null } };
     try {
@@ -15,7 +16,8 @@ for (const viewport of viewports) {
         id: 'last_backup', status: 'warning', checkedAt: now,
         message: 'Backup pruning is on hold until the owner confirms the old server is gone. New snapshots stop when the retained backups reach the retention budget.',
         details: { latestRestorableAt: now, ageSeconds: 0, overdue: false, noneUnderCurrentKey: false,
-          retainedBytes: 1024, retentionBudgetBytes: 8_000_000_000, pruningStopped: false, pruningHeld: true, keyReminder: true },
+          retainedBytes: 1024, retentionBudgetBytes: 8_000_000_000, pruningStopped: false, pruningHeld: true,
+          damagedGuardSnapshot: damagedGuard, keyReminder: true },
       } : { ...tile, status: 'not_configured', checkedAt: now, details: null, message: 'Not set up' });
       await page.route('**/api/health', route => route.fulfill({ json: body }));
       await page.route('**/api/health/backups', route => route.fulfill({ json: { data: control } }));
@@ -29,6 +31,7 @@ for (const viewport of viewports) {
       await page.goto(gymOrigin + '/admin/health');
       await expect(page.getByRole('heading', { name: 'Last backup', exact: true })).toBeVisible();
       await expect(page.getByText(/Backup pruning is on hold.*retention budget/)).toBeVisible();
+      await expect(page.getByText(`Rollback snapshot ${damagedGuard} is damaged and cannot be restored.`, { exact: false })).toBeVisible();
       await expect(page.getByRole('button', { name: 'Back up now', exact: true })).toBeEnabled();
       await check(page, info, `${viewport.name}-backup-hold`);
       await page.getByRole('button', { name: 'Back up now', exact: true }).click();

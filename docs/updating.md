@@ -65,14 +65,22 @@ An install set up by hand with Docker Compose has no timer until you
 [add it](install-reference.md#adding-the-update-timer).
 
 The pre-upgrade snapshot named by `schema-compatibility.yaml` is kept for as long as
-the schema guard names it, even beyond the normal two-snapshot, 30-day pre-upgrade
+the schema guard names it and it remains complete, even beyond the normal two-snapshot, 30-day pre-upgrade
 retention limit. A later update that replaces or clears that restore point releases
 the old snapshot to normal retention. It still counts toward the retention budget;
 if protected backups fill the budget, new snapshots stop until there is room.
 Keep the guard with the database. Removing it also removes this retention protection.
+If inventory finds the guard snapshot damaged, **Last backup** names it and normal
+pre-upgrade retention applies; damage no longer blocks pruning once it ages out
+after 30 days or newer pre-upgrade snapshots replace it.
 When `update.sh --rollback` refuses an older release below the schema floor, it checks
 the named snapshot at the configured backup destination and reports if it is missing
-or incomplete, or if availability could not be checked. Startup refuses incompatible
+or incomplete, or if availability could not be checked. A snapshot named from history
+because the guard lacks a matching restore point is explicitly labelled as unprotected
+by the guard and may already have been pruned. The check reads only that snapshot's
+authenticated references and object sizes, exits within 30 seconds even if Postgres
+is down, and has a 40-second host timeout plus a five-second kill grace.
+Startup refuses incompatible
 code before opening the database and directs you to that check.
 
 ## When a patch doesn't install by itself

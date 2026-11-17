@@ -2,11 +2,16 @@
 // This maintenance entry is bundled separately and never starts an HTTP listener or job worker.
 // eslint-disable-next-line no-restricted-imports
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
-import { maintenanceCommand, reportRestoreResume } from './restore.js';
+import { maintenanceCommand, reportRestoreResume, snapshotCheckTimeoutMs } from './restore.js';
 import { reportMaintenanceFailure } from './restore.failure.js';
 import { KeyRotationRefusedError } from './restore.rotate-key.js';
 
 const args = process.argv.slice(2);
+// This read-only command must exit even if opening or closing the database never settles.
+const checkDeadline = args[0] === 'snapshot-check' ? setTimeout(() => {
+  process.stderr.write('Snapshot availability check timed out\n');
+  process.exit(1);
+}, snapshotCheckTimeoutMs) : undefined;
 try {
   if (args[0] === 'snapshot' || args[0] === 'snapshot-check') {
     if (!process.env.DATABASE_URL) throw new Error('Missing application database URL');
@@ -18,4 +23,4 @@ try {
   reportMaintenanceFailure(args, error);
   if (args[0] === 'restore' || args[0] === 'restore-files' || args[0] === 'resume') await reportRestoreResume();
   process.exitCode = error instanceof KeyRotationRefusedError ? error.exitCode : 1;
-} finally { await closeDatabase(); }
+} finally { try { await closeDatabase(); } finally { clearTimeout(checkDeadline); } }

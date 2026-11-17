@@ -7,8 +7,8 @@ import { parseEncryptionKey } from '../core/secrets.js';
 import { createS3Client, S3BackupObjectStore } from '../infra/storage/index.js';
 import { createRuntimeUploads } from '../infra/storage/runtime.js';
 import { readIdentityFile } from '../areas/health/backups.js';
-import { inventory } from '../areas/health/backups.retention.js';
-import { snapshotPrefix } from '../areas/health/backups.format.js';
+import { readReferences, snapshotPrefix, verifyReferences } from '../areas/health/backups.format.js';
+import { SnapshotContentError } from '../areas/health/backups.content.js';
 import { PostgresMaintenance } from '../areas/health/backups.database.js';
 import { BackupsNotConfiguredError, configuredBackup, loadBackupConfig } from '../areas/health/restore.config.js';
 import { RestoreService } from '../areas/health/restore.js';
@@ -19,6 +19,8 @@ import { RestoreFailure } from '../areas/health/restore.failure.js';
 import { z } from 'zod';
 import { logInfo } from '../core/log.js';
 import { withRestoreFiles } from './restore.files.js';
+
+export const snapshotCheckTimeoutMs = 30_000;
 
 function required(name: string): string {
   const value = process.env[name];
@@ -49,7 +51,7 @@ export async function maintenanceCommand(args: readonly string[]): Promise<void>
     if (args.length !== 2 || !z.uuid().safeParse(args[1]).success) throw new RestoreFailure('Usage: restore-files SNAPSHOT');
     await withRestoreFiles(process.stdin, dirname(required('BACKUP_STAGING_DIR')),
       path => maintenanceCommand(['restore', args[1]!, '--config', path]));
-    process.stdout.write('Restore complete; billing and member emails remain paused; backup pruning is on hold\n');
+    process.stdout.write('Restore complete; billing, member emails and member texts remain off; backup pruning is on hold\n');
     return;
   }
   if (args[0] === 'migrate') {
@@ -85,15 +87,29 @@ export class BackupsNotSetUpError extends Error {
 async function maintenance(args: readonly string[], environment: ReturnType<typeof maintenanceEnvironment>): Promise<void> {
   if (args[0] === 'snapshot-check') {
     if (args.length !== 2 || !z.uuid().safeParse(args[1]).success) throw new RestoreFailure('Usage: snapshot-check SNAPSHOT');
-    const config = await loadBackupConfig(environment.appEncryptionKey);
-    const backup = configuredBackup(config, environment.database, clock, environment.stagingDirectory, environment.uploads.forGym);
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let backup: ReturnType<typeof configuredBackup> | undefined, finished = false;
     try {
-      const state = await Promise.race([inventory(backup.store, config.blobKey, backup.service.runs),
-        new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error('Snapshot availability check timed out')), 30_000); })]);
-      const found = state.snapshots.some(snapshot => snapshot.id === args[1]);
+      const found = await Promise.race([
+        new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error('Snapshot availability check timed out')), snapshotCheckTimeoutMs); }),
+        (async () => {
+          const config = await loadBackupConfig(environment.appEncryptionKey);
+          // Configuration may finish after the deadline. Do not open a client after cleanup.
+          if (finished) return false;
+          backup = configuredBackup(config, environment.database, clock, environment.stagingDirectory, environment.uploads.forGym);
+          const prefix = snapshotPrefix(args[1]!);
+          let snapshot;
+          try { snapshot = verifyReferences(await readReferences(backup.store, prefix + 'references.json'), config.blobKey, args[1]!); }
+          catch (error) { if (error instanceof SnapshotContentError || error instanceof z.ZodError) return false; throw error; }
+          for (const [key, size] of [[prefix + 'database.age', snapshot.database.size], [prefix + 'manifest.age', snapshot.manifest.size],
+            ...snapshot.uploads.map(upload => [upload.blob, upload.encrypted.size] as const)] as const) {
+            if ((await backup.store.headObject(key))?.size !== size) return false;
+          }
+          return true;
+        })(),
+      ]);
       process.stdout.write(found ? 'Snapshot availability: available\n' : 'Snapshot availability: missing or incomplete\n');
-    } finally { clearTimeout(timer); backup.client.destroy(); }
+    } finally { finished = true; clearTimeout(timer); backup?.client.destroy(); }
     return;
   }
   if (args[0] === 'snapshot') {
@@ -167,7 +183,7 @@ export const commands: readonly Command[] = [{
 }, {
   id: 'restore', description: 'Restore an authenticated encrypted install snapshot',
   async run(args, io) {
-    try { await maintenanceCommand(['restore', ...args]); io.stdout('Restore complete; billing and member emails remain paused; backup pruning is on hold'); return 0; }
+    try { await maintenanceCommand(['restore', ...args]); io.stdout('Restore complete; billing, member emails and member texts remain off; backup pruning is on hold'); return 0; }
     catch (error) {
       io.stderr('Restore failed: ' + restoreFailureReason(error));
       await reportRestoreResume(io.stderr);

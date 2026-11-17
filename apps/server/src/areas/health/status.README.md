@@ -64,9 +64,13 @@ The Last backup tile reports `pruningHeld` separately from an inventory failure.
 Its warning names the hold and explains that new snapshots stop at the retention budget;
 it replaces the healthy and capacity messages but not the missing or overdue snapshot ones.
 The snapshot named by an active `SCHEMA_ROLLBACK_FLOOR` / `SCHEMA_SNAPSHOT` guard
-is retained without an age limit, including its referenced blobs and uploads, until
+is retained, while complete, without an age limit, including its referenced blobs and uploads, until
 a later guard replaces or clears it. Normal pre-upgrade retention still keeps two
 snapshots for up to 30 days; the guard's extra snapshot counts toward the same budget.
+If inventory finds the guard damaged, the tile names it in `damagedGuardSnapshot`
+and warns even after pruning resumes. A damaged guard follows normal pre-upgrade
+retention, so it stops blocking pruning once that policy expires. Retention receives
+the guard explicitly from the backup service and the health provider's injected `env`.
 Settings and Health share the backup actions: `GET /api/health/backups` reads the
 state and `POST /api/health/backups/now` queues `health.backup.manual` in the batch
 lane so a slow snapshot doesn't block the gym's regular jobs; both endpoints require
@@ -75,11 +79,14 @@ short gym transaction. Pending/running requests refuse a second UUID, retries of
 the current UUID return its state, and a failed job is reflected back into that state.
 Stored manual state strips unknown fields and treats unknown statuses as finished;
 unreadable manual state cannot block the owner's hold release. Idle polls read the
-gym once and skip failed-job recovery; configuration is cached for the normal
+gym once and skip failed-job recovery; queued/running polls re-read only if recovery
+writes a terminal state. Configuration is cached for the normal
 one-minute health interval across two-second progress polls, invalidated by gym
-revision changes (requests and workers validate it afresh). A success-state write
-failure fails the job without the snapshot-failure write; job recovery then records the request
-as interrupted (`failed`, no snapshot ID, `backup.failed` audit), though the snapshot was published.
+revision changes (requests and workers validate it afresh). After publication, the success-state
+write gets three attempts, with 250 ms and 500 ms waits between them. A transient write failure
+therefore records `succeeded` with the snapshot ID, without publishing again or recording a failed
+backup. Exhausting these attempts still fails the job; recovery records that request as interrupted
+(`failed`, no snapshot ID, `backup.failed` audit), although its snapshot was published.
 The browser keeps a request UUID only after a network error or 5xx response and
 clears it after any definite 2xx or 4xx response, including a stale-request conflict.
 The existing backup advisory lock serializes snapshots. No snapshot I/O runs in

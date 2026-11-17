@@ -56,6 +56,7 @@ case "$*" in
   'image inspect '*'org.opencontainers.image.version'*) version_of "$3" ;;
   'image inspect '*RepoDigests*) echo "ghcr.io/example/app@$DIGEST" ;;
   *' snapshot-check '*)
+    [ "${SNAPSHOT_CHECK_STALL:-}" != true ] || sleep 60
     for argument in "$@"; do checked_snapshot=$argument; done
     if [ -f "$SNAPSHOTS/$checked_snapshot" ]; then echo 'Snapshot availability: available'
     else echo 'Snapshot availability: missing or incomplete'; fi ;;
@@ -104,6 +105,17 @@ case "$url" in
 esac
 MOCK
 chmod 0700 "$temporary/bin/docker" "$temporary/bin/curl"
+cat > "$temporary/bin/timeout" <<'MOCK'
+#!/bin/sh
+set -eu
+if [ "${SNAPSHOT_CHECK_STALL:-}" = true ] && [ "$*" != "${*#-k 5 40 sh }" ]; then
+  printf 'snapshot-check deadline: %s\n' "$1 $2 $3" >> "$CALLS"
+  shift 3
+  exec /usr/bin/timeout -k 1 1 "$@"
+fi
+exec /usr/bin/timeout "$@"
+MOCK
+chmod 0700 "$temporary/bin/timeout"
 openssl genpkey -algorithm ed25519 -out "$FIXTURES/key.pem" 2>/dev/null
 openssl pkey -in "$FIXTURES/key.pem" -pubout -out "$FIXTURES/public.pem"
 
@@ -456,6 +468,32 @@ make_install placeholder_snapshot v1.11.0 v1.10.0
 installed history_record v1.11.0 "$digest" starting v1.10.0 "$snapshot"
 installed write_schema_guard v1.10.0 v1.11.0 -
 [ "$(installed floor_snapshot v1.10.0)" = "$snapshot" ]
+[ -z "$(installed guard_floor_snapshot v1.10.0)" ]
+
+# A history fallback is named honestly when the guard has no snapshot or names a different floor.
+make_install unprotected_history v1.11.0 v1.10.0
+update 0
+for guard_floor in v1.10.0 v1.9.0; do
+  guard_id=00000000-0000-4000-8000-000000000099
+  [ "$guard_floor" != v1.10.0 ] || guard_id=-
+  rm "$case_dir/schema-compatibility.yaml"
+  installed write_schema_guard "$guard_floor" v1.11.0 "$guard_id"
+  if sh "$case_dir/update.sh" --rollback > "$temporary/output" 2>&1; then
+    echo 'Rolled back below the floor with a history fallback.' >&2; exit 1
+  fi
+  said "Restore pre-upgrade snapshot $snapshot;"
+  said 'This history snapshot is not protected by the active schema guard'
+done
+# The different floor may still protect the very same snapshot; do not falsely call it unprotected.
+rm "$case_dir/schema-compatibility.yaml"
+installed write_schema_guard v1.9.0 v1.11.0 "$snapshot"
+if sh "$case_dir/update.sh" --rollback > "$temporary/output" 2>&1; then
+  echo 'Rolled back below the floor with a shared guard snapshot.' >&2; exit 1
+fi
+said "Restore pre-upgrade snapshot $snapshot;"
+if grep -q 'not protected by the active schema guard' "$temporary/output"; then
+  echo 'Misreported a snapshot protected by another floor as unprotected.' >&2; exit 1
+fi
 
 # A named restore point can be removed outside the app; the refusal must say it is gone.
 make_install missing_restore_point v2.0.0 v2.0.0
@@ -466,6 +504,15 @@ if sh "$case_dir/update.sh" --rollback > "$temporary/output" 2>&1; then
   echo 'Accepted rollback with a missing floor snapshot.' >&2; exit 1
 fi
 said "The named snapshot $snapshot is missing or incomplete"
+[ "$before" = "$(cat "$case_dir/.env" "$case_dir/version-history.tsv" | sha256sum)" ]
+
+# A stuck database/configuration check cannot hold the refusal open. The timeout fixture keeps this test fast,
+# verifies the production 40-second deadline, and uses the real timeout to kill the hung command tree.
+if SNAPSHOT_CHECK_STALL=true sh "$case_dir/update.sh" --rollback > "$temporary/output" 2>&1; then
+  echo 'Accepted rollback after a stalled check.' >&2; exit 1
+fi
+said 'Snapshot availability could not be checked'
+grep -q 'snapshot-check deadline: -k 5 40' "$CALLS"
 [ "$before" = "$(cat "$case_dir/.env" "$case_dir/version-history.tsv" | sha256sum)" ]
 
 # With no floor recorded, as with development builds, nothing bounds a rollback.
