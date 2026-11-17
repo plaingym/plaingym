@@ -44,6 +44,19 @@ describe('health page', () => {
     expect(screen.getByText(`Rollback snapshot ${id} is damaged and cannot be restored.`, { exact: false }).textContent).toContain('30 days');
     expect(document.body.textContent).not.toContain('health/status:');
   });
+  it('renders a missing rollback notice beside a recent restorable snapshot without exposing the detail key', () => {
+    const id = '00000000-0000-4000-8000-000000000001';
+    const backup = healthTileSchema.parse({ id: 'last_backup', status: 'warning', checkedAt,
+      message: 'The rollback snapshot is missing and cannot be restored.',
+      details: { latestRestorableAt: checkedAt, ageSeconds: 0, overdue: false, retainedBytes: 100, retentionBudgetBytes: 1000,
+        pruningStopped: false, keyReminder: true, missingGuardSnapshot: id } });
+    render(<HealthTiles tiles={[backup]}/>);
+    expect(screen.getByText('Needs attention')).toBeDefined();
+    expect(screen.getByText('The rollback snapshot is missing and cannot be restored.')).toBeDefined();
+    expect(screen.getByText(`Rollback snapshot ${id} named by the active schema guard is missing`, { exact: false }).textContent).toContain('another verified backup');
+    expect(document.body.textContent).not.toContain('health/status:');
+    expect(document.body.textContent).not.toContain('missingGuardSnapshot');
+  });
   it('renders every contracted tile in order, including not set up tiles', async () => {
     start();
     expect(await screen.findByRole('heading', { name: 'System health' })).toBeDefined();

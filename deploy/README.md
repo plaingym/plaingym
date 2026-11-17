@@ -456,7 +456,11 @@ rollback. A failed role check or restore resumption still blocks the snapshot.
 Forward-recovery retries use `snapshot manual`
 and its hourly/daily/weekly retention tiers, so they cannot displace the original snapshot
 from the two pre-upgrade slots. The snapshot named by the active schema guard is
-kept for as long as the guard names it, beyond the normal two-snapshot, 30-day limit.
+kept while complete for as long as the guard names it, beyond the normal two-snapshot, 30-day limit.
+A damaged guard snapshot follows normal pre-upgrade retention, and Last backup warns
+about it. Once the named snapshot is gone from the backup destination (a damaged one
+pruned, or any one removed outside the app), Last backup warns that it is missing
+while the active guard still names it.
 A later update that replaces or clears the named restore point releases the old one
 to normal retention. Its objects and referenced uploads remain protected, and it
 counts toward the retention budget; a full budget stops new snapshots. Keep the guard
@@ -492,6 +496,8 @@ finish (including an older image without that command). A history fallback not n
 by the active guard is labelled as unprotected and may have been pruned. The check
 reads only the one snapshot and exits within 30 seconds, including database startup
 and cleanup. The host bounds Compose to 40 seconds plus a five-second kill grace.
+The run has a unique container name; on failure, the host removes it within a
+ten-second timeout plus a five-second kill grace, reporting any cleanup failure.
 The check does not migrate
 the database, take a snapshot, or change the running services. Startup checks schema
 compatibility before opening the database and points to this availability check.
@@ -691,12 +697,14 @@ check or second check, a failed rollback with retries while the app is still dow
 and once it runs (the failure and one recovery recorded, in order), the nightly
 window and a change of timezone, a release held after two failures, five updates
 that leave only the kept images, results kept in order until the app can record
-them, and an interrupted run. The floor test adds a fixture that
+them, and an interrupted run. It also compares the host snapshot's safety steps
+with the single-gym entrypoint's steps before migrations. The floor test adds a fixture that
 refuses the previous image under a guard above it, as the app does: a failed update
 across a floor before and after migrating, an earlier guard put back, a skipped
 minor, a killed run, unchanged attempts within the floor, and same-release or newer-release
 recovery with the app stopped or restarting. Numbered snapshots check that repeated
-recovery attempts retain and name the original restore point. The rollback test swaps real
+recovery attempts retain and name the original restore point; a stalled availability
+check must leave no one-off container. The rollback test swaps real
 local images, walks back two versions from stopped and restarting apps, and checks
 that neither state permits a rollback below the floor; with images from a throwaway
 local registry, it checks that `--rollback` pins `IMAGE:vX.Y.Z@DIGEST` and that the

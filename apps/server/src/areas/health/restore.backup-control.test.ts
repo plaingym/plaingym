@@ -89,6 +89,34 @@ describe('manual backups and restore pruning confirmation', () => {
     expect(scope).toHaveBeenCalledOnce();
     await f.queue.runNext();
   });
+  it.each(['succeeded', 'replaced', 'cleared'] as const)('re-reads when failed-job recovery finds the request %s under its lock', async change => {
+    const f = await fixture(), requestId = uuidv7(), replacementId = uuidv7();
+    await f.control.request({ gymId: f.gymId, userId: f.user.id }, requestId);
+    const failed = vi.spyOn(f.queue, 'failedJobs').mockImplementationOnce(async () => {
+      // Another worker changes the row between get() reading it and recovery acquiring its lock.
+      await db.forGym(f.gymId, async tx => {
+        const [row] = await tx.select().from(gyms).where(eq(gyms.id, f.gymId));
+        const settings = row!.settings as Record<string, unknown>;
+        await tx.update(gyms).set({ settings: { ...settings, manualBackup: change === 'cleared' ? null : {
+          ...settings.manualBackup as object, requestId: change === 'replaced' ? replacementId : requestId,
+          status: change === 'replaced' ? 'queued' : 'succeeded', completedAt: change === 'replaced' ? null : f.clock.now().toISOString(),
+          snapshotId: change === 'replaced' ? null : f.snapshotId,
+        } } }).where(eq(gyms.id, f.gymId));
+      });
+      return [{ jobId: uuidv7(), idempotencyKey: requestId, failedAt: f.clock.now() }];
+    });
+    const scope = vi.fn(db.forGym), control = createBackupControl({ scope: scope as typeof db.forGym, queue: f.queue,
+      clock: f.clock, available: () => true, configuredGym: async () => f.gymId });
+    try {
+      const result = await control.get(f.gymId);
+      expect(scope).toHaveBeenCalledTimes(3);
+      if (change === 'cleared') expect(result.manual).toBeNull();
+      else expect(result.manual).toMatchObject({ requestId: change === 'replaced' ? replacementId : requestId,
+        status: change === 'replaced' ? 'queued' : 'succeeded' });
+      const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'backup.failed')));
+      expect(audits).toHaveLength(0);
+    } finally { failed.mockRestore(); await f.queue.runNext(); }
+  });
   it('reads idle state once, skips job recovery, and caches configured status for one poll interval', async () => {
     const f = await fixture(), scope = vi.fn(db.forGym), configured = vi.fn(async () => f.gymId);
     const failed = vi.spyOn(f.queue, 'failedJobs');

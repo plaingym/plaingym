@@ -64,7 +64,8 @@ export function createBackupControl(options: {
     if (!failed.length) return false;
     return scope(gymId, async tx => {
       const row = await read(tx, gymId, true), current = manualOf(row);
-      if (current?.requestId !== pending.requestId || !['queued', 'running'].includes(current.status)) return false;
+      // The first read is stale even when another worker already settled or replaced this request.
+      if (current?.requestId !== pending.requestId || !['queued', 'running'].includes(current.status)) return true;
       await tx.update(gyms).set({ settings: { ...settingsOf(row), manualBackup: { ...current,
         status: 'failed', completedAt: failed[0]!.failedAt.toISOString() } }, updatedAt: clock.now() }).where(eq(gyms.id, gymId));
       await writeAudit(tx, { gymId, actorKind: 'system', action: 'backup.failed', targetType: 'backup',

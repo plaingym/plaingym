@@ -19,6 +19,7 @@ export const backupHealthDetailsSchema = z.strictObject({
   noneUnderCurrentKey: z.boolean().default(false),
   pruningHeld: z.boolean().default(false),
   damagedGuardSnapshot: idSchema.nullable().default(null),
+  missingGuardSnapshot: idSchema.nullable().default(null),
   retainedBytes: count, retentionBudgetBytes: count, pruningStopped: z.boolean(), keyReminder: z.boolean(),
 });
 export const failedJobsHealthDetailsSchema = z.strictObject({

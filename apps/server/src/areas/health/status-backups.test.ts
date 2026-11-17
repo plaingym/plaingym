@@ -44,7 +44,43 @@ describe('last-backup health', () => {
     const health = createBackupHealthProvider({ scope: database.forSystem, config: async () => settings,
       env: { SCHEMA_ROLLBACK_FLOOR: 'v1.2.0', SCHEMA_SNAPSHOT: record.id }, store: () => ({ store, close }) });
     expect(healthTileSchema.parse(await health.read(context))).toMatchObject({ status: days === 1 ? 'error' : 'warning',
+      message: expect.stringContaining(days === 1 ? 'inventory could not be verified' : 'rollback snapshot is damaged'),
       details: { damagedGuardSnapshot: record.id, pruningStopped: days === 1, latestRestorableAt: days === 1 ? null : latest.startedAt } });
+  });
+  it.each(['removed', 'pruned'] as const)('keeps warning after the guard snapshot is %s', async cause => {
+    const guard = { ...await snapshot(new Date(clock.now().getTime() - 31 * 86_400_000)), kind: 'pre_upgrade' as const };
+    await store.putObject(snapshotPrefix(guard.id) + 'references.json', referenceStream(guard, settings.blobKey));
+    const latest = await snapshot(), env = { SCHEMA_ROLLBACK_FLOOR: 'v1.2.0', SCHEMA_SNAPSHOT: guard.id };
+    if (cause === 'pruned') {
+      await store.deleteObject(snapshotPrefix(guard.id) + 'manifest.age');
+      await retention.pruneUnlocked(store, settings.blobKey, new Map(), clock.now(), 0, settings.budgetBytes,
+        clock.now(), undefined, guard.id);
+    } else {
+      for (const name of ['database.age', 'manifest.age', 'references.json']) await store.deleteObject(snapshotPrefix(guard.id) + name);
+    }
+    const health = createBackupHealthProvider({ scope: database.forSystem, config: async () => settings, env,
+      store: () => ({ store, close }) });
+    expect(healthTileSchema.parse(await health.read(context))).toMatchObject({ status: 'warning',
+      message: expect.stringContaining('rollback snapshot is missing'), details: { missingGuardSnapshot: guard.id,
+        damagedGuardSnapshot: null, pruningStopped: false, latestRestorableAt: latest.startedAt } });
+    // The updater writes `-` for a guard that names no restore point: nothing is missing, and the tile still parses.
+    env.SCHEMA_SNAPSHOT = '-';
+    expect(healthTileSchema.parse(await health.read(context))).toMatchObject({ status: 'healthy', details: { missingGuardSnapshot: null } });
+    delete (env as NodeJS.ProcessEnv).SCHEMA_ROLLBACK_FLOOR;
+    expect(healthTileSchema.parse(await health.read(context))).toMatchObject({ status: 'healthy', details: { missingGuardSnapshot: null } });
+  });
+  it('keeps the overdue headline above a damaged or missing rollback warning', async () => {
+    const guard = { ...await snapshot(new Date(clock.now().getTime() - 31 * 86_400_000)), kind: 'pre_upgrade' as const };
+    await store.putObject(snapshotPrefix(guard.id) + 'references.json', referenceStream(guard, settings.blobKey));
+    await store.deleteObject(snapshotPrefix(guard.id) + 'manifest.age');
+    await snapshot(new Date(clock.now().getTime() - 3 * 3_600_000));
+    const health = createBackupHealthProvider({ scope: database.forSystem, config: async () => settings,
+      env: { SCHEMA_ROLLBACK_FLOOR: 'v1.2.0', SCHEMA_SNAPSHOT: guard.id }, store: () => ({ store, close }) });
+    expect(await health.read(context)).toMatchObject({ status: 'warning', message: expect.stringContaining('overdue'),
+      details: { damagedGuardSnapshot: guard.id } });
+    for (const name of ['database.age', 'references.json']) await store.deleteObject(snapshotPrefix(guard.id) + name);
+    expect(await health.read(context)).toMatchObject({ status: 'warning', message: expect.stringContaining('overdue'),
+      details: { missingGuardSnapshot: guard.id } });
   });
   it('passes the injected guard through to retention for an old complete restore point', async () => {
     const guard = { ...await snapshot(new Date(clock.now().getTime() - 60 * 86_400_000)), kind: 'pre_upgrade' as const };

@@ -56,10 +56,18 @@ case "$*" in
   'image inspect '*'org.opencontainers.image.version'*) version_of "$3" ;;
   'image inspect '*RepoDigests*) echo "ghcr.io/example/app@$DIGEST" ;;
   *' snapshot-check '*)
+    check_name=
+    while [ "$#" -gt 0 ]; do
+      case "$1" in --name) check_name=$2; shift ;; esac
+      checked_snapshot=$1; shift
+    done
+    case "$check_name" in plaingym-snapshot-check-*) ;; *) echo 'snapshot-check needs its own container name' >&2; exit 1 ;; esac
+    touch "$SNAPSHOTS/$check_name.container"
     [ "${SNAPSHOT_CHECK_STALL:-}" != true ] || sleep 60
-    for argument in "$@"; do checked_snapshot=$argument; done
     if [ -f "$SNAPSHOTS/$checked_snapshot" ]; then echo 'Snapshot availability: available'
-    else echo 'Snapshot availability: missing or incomplete'; fi ;;
+    else echo 'Snapshot availability: missing or incomplete'; fi
+    rm "$SNAPSHOTS/$check_name.container" ;;
+  'rm -f plaingym-snapshot-check-'*) rm -f "$SNAPSHOTS/$3.container" ;;
   *' snapshot pre-upgrade'|*' snapshot manual')
     compatible "${APP_IMAGE:-$PREVIOUS_ID}"
     case "${FAIL_AT:-}" in snapshot|snapshot_rollback) exit 1 ;; esac
@@ -513,6 +521,8 @@ if SNAPSHOT_CHECK_STALL=true sh "$case_dir/update.sh" --rollback > "$temporary/o
 fi
 said 'Snapshot availability could not be checked'
 grep -q 'snapshot-check deadline: -k 5 40' "$CALLS"
+grep -q 'rm -f plaingym-snapshot-check-' "$CALLS"
+[ -z "$(find "$SNAPSHOTS" -name '*.container' -print)" ] || { echo 'Left a snapshot-check container after timeout.' >&2; exit 1; }
 [ "$before" = "$(cat "$case_dir/.env" "$case_dir/version-history.tsv" | sha256sum)" ]
 
 # With no floor recorded, as with development builds, nothing bounds a rollback.

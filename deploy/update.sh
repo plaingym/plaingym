@@ -603,13 +603,21 @@ if [ "$requested_rollback" = true ]; then
     if printf '%s\n' "$restore_snapshot" | grep -Eq '^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$'; then
       check_image=$current
       [ -z "$recovery_version" ] || check_image=$(cut -f4 "$RECOVERY")
+      snapshot_check_name="plaingym-snapshot-check-$$-$(date +%s)"
       # Expand positional parameters in the timed child shell, keeping ROOT and the snapshot separate from code.
       # shellcheck disable=SC2016
-      snapshot_check=$(APP_IMAGE="$check_image" timeout -k 5 40 sh -c '
+      if snapshot_check=$(APP_IMAGE="$check_image" timeout -k 5 40 sh -c '
         ROOT=$1; shift
         . "$ROOT/lib.sh"
         compose "$@"
-      ' sh "$ROOT" run --rm --no-deps -T --entrypoint node app /app/maintenance.mjs snapshot-check "$restore_snapshot" 2>/dev/null) || snapshot_check=
+      ' sh "$ROOT" run --rm --name "$snapshot_check_name" --no-deps -T --entrypoint node app /app/maintenance.mjs snapshot-check "$restore_snapshot" 2>/dev/null); then
+        :
+      else
+        snapshot_check=
+        # A killed Compose client cannot remove its one-off container, even with --rm.
+        timeout -k 5 10 docker rm -f "$snapshot_check_name" >/dev/null 2>&1 \
+          || echo "Could not remove snapshot-check container $snapshot_check_name; remove it when Docker is available." >&2
+      fi
       case "$snapshot_check" in
         'Snapshot availability: available') snapshot_availability='The named snapshot is available at the configured backup destination.' ;;
         'Snapshot availability: missing or incomplete') snapshot_availability="The named snapshot $restore_snapshot is missing or incomplete at the configured backup destination; choose another verified backup or retry a compatible release." ;;

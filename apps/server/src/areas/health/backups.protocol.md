@@ -84,6 +84,8 @@ replaces or clears it. Its blobs and source uploads stay protected and its bytes
 count toward the same budget. A damaged guard snapshot follows normal pre-upgrade
 retention instead: the Last backup tile names it, and it no longer stops pruning
 once it ages out after 30 days or newer pre-upgrade snapshots displace it.
+If the guard still names a snapshot that is absent from both complete and damaged
+inventory, the tile reports it as missing and keeps warning, including after pruning.
 Pruning first validates all
 reference lists and referenced blob sizes. Each run is recorded in `backup_runs`
 before anything is uploaded, and runs hold the backup lock, so a prefix with no

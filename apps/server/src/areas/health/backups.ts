@@ -11,7 +11,7 @@ import type { BackupObjectStore, ObjectInfo, Uploads } from '../../infra/storage
 import { bytesStream, fileDigest, fileStream, privateDirectory, saveStream } from './backups.files.js';
 import { backupKindSchema, blobName, manifestSchema, publicReferences, referenceStream, snapshotPrefix } from './backups.format.js';
 import type { BackupKind, Manifest, Snapshot, UploadReference } from './backups.format.js';
-import { inventory, pruneUnlocked, UnverifiedInventory, type RunStatuses } from './backups.retention.js';
+import { guardSnapshot, inventory, pruneUnlocked, UnverifiedInventory, type RunStatuses } from './backups.retention.js';
 import { PostgresMaintenance } from './backups.database.js';
 import { SnapshotContentError } from './backups.content.js';
 
@@ -59,7 +59,7 @@ export class BackupService {
       try {
         // An unverifiable inventory stops pruning but never the next snapshot: one interrupted run must not end backups.
         try { if (!await o.database.pruningHeld()) await pruneUnlocked(o.store, o.blobKey, sources, startedAt, 0, o.budgetBytes, new Date(startedAt.getTime() - 1), this.runs,
-          process.env.SCHEMA_ROLLBACK_FLOOR ? process.env.SCHEMA_SNAPSHOT : undefined); }
+          guardSnapshot(process.env)); }
         catch (error) { if (!(error instanceof UnverifiedInventory)) throw error; }
         const previous = await inventory(o.store, o.blobKey, this.runs);
         const reusable = new Map(previous.snapshots.flatMap((s) => s.uploads.map((u) => [u.blob, u] as const)));
@@ -147,7 +147,7 @@ export class BackupService {
       if (await o.database.pruningHeld()) throw new UnverifiedInventory('Restore pruning hold; the owner must confirm the old server is gone');
       return pruneUnlocked(o.store, o.blobKey, await o.uploads(), o.clock.now(),
         o.reserveBytes, o.budgetBytes, o.clock.now(), this.runs,
-        process.env.SCHEMA_ROLLBACK_FLOOR ? process.env.SCHEMA_SNAPSHOT : undefined);
+        guardSnapshot(process.env));
     });
   }
 }

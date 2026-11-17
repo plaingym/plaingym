@@ -2,13 +2,22 @@
 import { describe, expect, it } from 'vitest';
 import { uuidv7 } from '@plaingym/db';
 import type { Snapshot } from './backups.format.js';
-import { prunePlan, retainedSnapshots, type BackupInventory } from './backups.retention.js';
+import { guardSnapshot, prunePlan, retainedSnapshots, type BackupInventory } from './backups.retention.js';
 const now = new Date('2026-10-22T12:00:00Z');
 function snapshot(at: Date, kind: Snapshot['kind'] = 'hourly'): Snapshot {
   return { version: 1, id: uuidv7(), kind, startedAt: at.toISOString(),
     database: { sha256: 'a'.repeat(64), size: 1 }, manifest: { sha256: 'b'.repeat(64), size: 1 }, uploads: [] };
 }
 describe('snapshot retention', () => {
+  it('protects a named snapshot only while its schema guard is active', () => {
+    const id = uuidv7();
+    expect(guardSnapshot({ SCHEMA_ROLLBACK_FLOOR: 'v1.2.0', SCHEMA_SNAPSHOT: id })).toBe(id);
+    expect(guardSnapshot({ SCHEMA_SNAPSHOT: id })).toBeUndefined();
+    expect(guardSnapshot({ SCHEMA_ROLLBACK_FLOOR: '', SCHEMA_SNAPSHOT: id })).toBeUndefined();
+    expect(guardSnapshot({ SCHEMA_ROLLBACK_FLOOR: 'v1.2.0' })).toBeUndefined();
+    // The updater's placeholder for a guard with no restore point names nothing to protect or report missing.
+    expect(guardSnapshot({ SCHEMA_ROLLBACK_FLOOR: 'v1.2.0', SCHEMA_SNAPSHOT: '-' })).toBeUndefined();
+  });
   it('retains at most 24 hourly, 7 daily, and 4 weekly buckets while sharing coincident snapshots', () => {
     const snapshots = Array.from({ length: 40 * 24 }, (_, hours) => snapshot(new Date(now.getTime() - hours * 3_600_000)));
     const keep = retainedSnapshots(snapshots, now);

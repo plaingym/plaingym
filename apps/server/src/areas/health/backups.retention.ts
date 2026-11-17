@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { z } from 'zod';
+import { idSchema } from '@plaingym/shared/contracts';
 import type { BackupObjectStore, Uploads } from '../../infra/storage/index.js';
 import { protectedName, readReferences, snapshotPrefix, verifyReferences } from './backups.format.js';
 import type { Snapshot } from './backups.format.js';
+
+/** Only an active schema guard protects its named rollback restore point. The updater writes `-` when it has none. */
+export function guardSnapshot(env: NodeJS.ProcessEnv): string | undefined {
+  return env.SCHEMA_ROLLBACK_FLOOR && idSchema.safeParse(env.SCHEMA_SNAPSHOT).success ? env.SCHEMA_SNAPSHOT : undefined;
+}
 
 /** Distinct UTC buckets; one snapshot can satisfy hourly, daily, and weekly tiers. */
 export function retainedSnapshots(snapshots: readonly Snapshot[], now: Date,

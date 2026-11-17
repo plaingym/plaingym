@@ -68,9 +68,13 @@ is retained, while complete, without an age limit, including its referenced blob
 a later guard replaces or clears it. Normal pre-upgrade retention still keeps two
 snapshots for up to 30 days; the guard's extra snapshot counts toward the same budget.
 If inventory finds the guard damaged, the tile names it in `damagedGuardSnapshot`
-and warns even after pruning resumes. A damaged guard follows normal pre-upgrade
-retention, so it stops blocking pruning once that policy expires. Retention receives
-the guard explicitly from the backup service and the health provider's injected `env`.
+and uses a damaged-rollback headline unless a more serious warning applies. A damaged
+guard follows normal pre-upgrade retention, so it stops blocking pruning once that
+policy expires. When the guard's snapshot is in neither complete nor damaged inventory
+(a damaged one pruned, or any one removed outside the app), the tile reports
+`missingGuardSnapshot` and warns while the active guard still names it. A guard
+whose `SCHEMA_SNAPSHOT` is the updater's `-` placeholder names no restore point. Retention receives the guard explicitly from the backup service and
+the health provider's injected `env`.
 Settings and Health share the backup actions: `GET /api/health/backups` reads the
 state and `POST /api/health/backups/now` queues `health.backup.manual` in the batch
 lane so a slow snapshot doesn't block the gym's regular jobs; both endpoints require

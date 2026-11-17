@@ -3,6 +3,33 @@ import { expect, gymOrigin, test } from '../support.js';
 import { check, open, viewports } from './mobile-screens.js';
 
 for (const viewport of viewports) {
+  test(`missing and damaged rollback snapshots at ${viewport.name} width`, async ({ browser, install }, info) => {
+    const [context, page] = await open(browser, install, 'owner', viewport);
+    const now = new Date().toISOString(), guard = '00000000-0000-4000-8000-000000000001';
+    let missing = false;
+    try {
+      const body = await install.clients.owner.json<{ data: { tiles: { id: string }[] } }>('/api/health');
+      await page.route('**/api/health', route => route.fulfill({ json: { data: { ...body.data,
+        tiles: body.data.tiles.map(tile => tile.id === 'last_backup' ? {
+          id: 'last_backup', status: 'warning', checkedAt: now,
+          message: `The rollback snapshot is ${missing ? 'missing' : 'damaged'} and cannot be restored.`,
+          details: { latestRestorableAt: now, ageSeconds: 0, overdue: false, retainedBytes: 1024,
+            retentionBudgetBytes: 8_000_000_000, pruningStopped: false, keyReminder: true,
+            damagedGuardSnapshot: missing ? null : guard, missingGuardSnapshot: missing ? guard : null },
+        } : { ...tile, status: 'not_configured', checkedAt: now, details: null, message: 'Not set up' }),
+      } } }));
+      await page.goto(gymOrigin + '/admin/health');
+      await expect(page.getByText('The rollback snapshot is damaged and cannot be restored.', { exact: true })).toBeVisible();
+      await expect(page.getByText(`Rollback snapshot ${guard} is damaged`, { exact: false })).toBeVisible();
+      await check(page, info, `${viewport.name}-damaged-rollback`);
+      missing = true;
+      await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+      await expect(page.getByText('The rollback snapshot is missing and cannot be restored.', { exact: true })).toBeVisible();
+      await expect(page.getByText(`Rollback snapshot ${guard} named by the active schema guard is missing`, { exact: false })).toBeVisible();
+      await expect(page.getByText(/health\/status:|available for restore/)).toHaveCount(0);
+      await check(page, info, `${viewport.name}-missing-rollback`);
+    } finally { await page.unrouteAll({ behavior: 'wait' }); await context.close(); }
+  });
   test(`backup hold warning and definite request retry at ${viewport.name} width`, async ({ browser, install }, info) => {
     const [context, page] = await open(browser, install, 'owner', viewport);
     const now = new Date().toISOString(), requests: string[] = [];

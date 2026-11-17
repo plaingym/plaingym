@@ -254,6 +254,8 @@ named by the schema guard is also kept until a later update replaces or clears
 that restore point, regardless of age, while it remains complete; it counts toward the same budget.
 If it is damaged, **Last backup** names it and normal pre-upgrade retention applies,
 so it no longer blocks pruning after 30 days (or after newer pre-upgrade snapshots replace it).
+If that restore point is pruned or removed outside the app, **Last backup** keeps
+warning that it is missing while the active schema guard still names it.
 See [updating](updating.md) for the protection and rollback availability check. Files that
 didn't change are stored once and shared between snapshots. The **Health** page
 in the admin shows the last successful backup and any failure.

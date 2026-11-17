@@ -4,7 +4,7 @@ import { backupRuns, forSystem } from '@plaingym/db';
 import { parseEncryptionKey } from '../../core/secrets.js';
 import { createS3Client, S3BackupObjectStore, type BackupObjectStore } from '../../infra/storage/index.js';
 import { isBackupsUnconfigured, loadBackupConfig, type InstallBackupConfig } from './restore.config.js';
-import { inventory, prunePlan, UnverifiedInventory } from './backups.retention.js';
+import { guardSnapshot, inventory, prunePlan, UnverifiedInventory } from './backups.retention.js';
 import { healthProvider, statusMessage } from './status.js';
 
 export function createBackupHealthProvider(options: {
@@ -33,13 +33,16 @@ export function createBackupHealthProvider(options: {
       .from(backupRuns).where(eq(backupRuns.status, 'succeeded')).orderBy(desc(backupRuns.startedAt)));
     const destination = open(settings);
     let damagedGuardSnapshot: string | null = null;
+    let missingGuardSnapshot: string | null = null;
     try {
       const state = await inventory(destination.store, settings.blobKey, async (prefixes) => new Map((await scope((tx) => tx
         .select({ prefix: backupRuns.objectPrefix, status: backupRuns.status }).from(backupRuns)
         .where(inArray(backupRuns.objectPrefix, [...prefixes])))).map((run) => [run.prefix, run.status])));
       // An abandoned run is cleaned up by the next prune; only what stops pruning is reported.
-      const floorSnapshot = env.SCHEMA_ROLLBACK_FLOOR ? env.SCHEMA_SNAPSHOT : undefined;
+      const floorSnapshot = guardSnapshot(env);
       damagedGuardSnapshot = state.damaged.find(snapshot => snapshot.id === floorSnapshot)?.id ?? null;
+      missingGuardSnapshot = floorSnapshot && !damagedGuardSnapshot && !state.snapshots.some(snapshot => snapshot.id === floorSnapshot)
+        ? floorSnapshot : null;
       if (prunePlan(state, context.clock.now(), floorSnapshot).stopped) throw new UnverifiedInventory('Pruning stopped');
       const latest = runs.find((run) => state.snapshots.some((snapshot) => snapshot.id === run.id && snapshot.recipient === settings.recipient));
       const blobs = await destination.store.listObjects('blobs/');
@@ -51,19 +54,20 @@ export function createBackupHealthProvider(options: {
       const newestSnapshot = state.snapshots.find((snapshot) => snapshot.id === newest?.id);
       const nextSnapshotBytes = newestSnapshot ? newestSnapshot.database.size + newestSnapshot.manifest.size : 0;
       const capacity = retainedBytes + nextSnapshotBytes + 128 * 1024 * 1024 > settings.budgetBytes;
-      return { id: 'last_backup', status: overdue || capacity || settings.pruningHeld || damagedGuardSnapshot ? 'warning' : 'healthy', checkedAt,
+      return { id: 'last_backup', status: overdue || capacity || settings.pruningHeld || damagedGuardSnapshot || missingGuardSnapshot ? 'warning' : 'healthy', checkedAt,
         // The hold message names the budget, so it explains capacity too; it never hides a missing or overdue snapshot.
         message: statusMessage(capacity ? (settings.pruningHeld ? 'backupPruningHeld' : 'backupCapacity') : !latest ? 'backupNoneUnderKey'
-          : overdue ? 'backupOverdue' : settings.pruningHeld ? 'backupPruningHeld' : 'backupHealthy'),
+          : overdue ? 'backupOverdue' : settings.pruningHeld ? 'backupPruningHeld'
+          : damagedGuardSnapshot ? 'backupDamagedGuardHeadline' : missingGuardSnapshot ? 'backupMissingGuardHeadline' : 'backupHealthy'),
         details: { latestRestorableAt: latest?.startedAt.toISOString() ?? null, ageSeconds, overdue,
           noneUnderCurrentKey: !latest, retainedBytes, retentionBudgetBytes: settings.budgetBytes, pruningStopped: false,
-          pruningHeld: settings.pruningHeld ?? false, damagedGuardSnapshot, keyReminder: true } };
+          pruningHeld: settings.pruningHeld ?? false, damagedGuardSnapshot, missingGuardSnapshot, keyReminder: true } };
     } catch {
       // The authenticated inventory is also pruning's safety check. Do not claim a snapshot is restorable when it fails.
       return { id: 'last_backup', status: 'error', checkedAt, message: statusMessage('backupPruningStopped'),
         details: { latestRestorableAt: null, ageSeconds: null, overdue: true, retainedBytes: 0,
           noneUnderCurrentKey: false, retentionBudgetBytes: settings.budgetBytes, pruningStopped: true,
-          pruningHeld: settings.pruningHeld ?? false, damagedGuardSnapshot, keyReminder: true } };
+          pruningHeld: settings.pruningHeld ?? false, damagedGuardSnapshot, missingGuardSnapshot, keyReminder: true } };
     } finally { destination.close(); }
   });
 }

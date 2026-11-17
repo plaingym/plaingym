@@ -31,6 +31,14 @@ for name in files:
         assert mode(canonical, name) == mode(bootstrap, name), "Bootstrap mode differs: " + name
 unit_mode = re.search(r"install -m (0[0-7]{3}) .*?/before/units/", block).group(1)
 assert all(mode(canonical, "systemd/" + name) == unit_mode for name in units), "Bootstrap unit modes differ"
+
+# The host snapshot bypasses the entrypoint and must repeat every single-gym pre-migration safety step.
+entrypoint = (root / "container/entrypoint.sh").read_text()
+single = re.search(r"(?ms)^if \[ \"\$\{TENANCY:-single\}\" = multi \]; then\n.*?^fi\n(.*?)(?=^/app/deploy/database.sh migrate$)", entrypoint).group(1)
+snapshot = re.search(r"(?ms)^maintenance_snapshot\(\) \{.*?app -ec \x27\n(.*?)(?=^    shift$)", scripts[0]).group(1)
+def steps(text):
+    return [line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+assert steps(single) == steps(snapshot), "Snapshot pre-migration steps differ from the single-gym entrypoint"
 ' "$source_dir"
 [ "$(id -u)" -eq 0 ] || { echo 'Run this test as root in a disposable environment.' >&2; exit 1; }
 [ -f /usr/share/zoneinfo/America/Denver ] || { echo 'Install tzdata first.' >&2; exit 1; }
