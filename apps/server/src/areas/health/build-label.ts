@@ -12,7 +12,7 @@ export type BuildLabel = { text: string; label: string; href?: string };
 
 export function buildLabel(version = runningVersion().version, source?: string): BuildLabel {
   const text = /^\d+\.\d+\.\d+$/.test(version) ? 'v' + version : version;
-  const label = translate('shell/shell:version', { version });
+  const label = translate('shell/shell:version', { version: text });
   if (text === version) return { text, label };
   try {
     const url = new URL(source ?? sourceUrl());
@@ -21,9 +21,9 @@ export function buildLabel(version = runningVersion().version, source?: string):
   } catch { return { text, label }; }
 }
 
-/** The footer item for the running version, in the same muted style as its neighbours. Screen readers hear "Version 0.5.0". */
+/** The footer item for the running version, in the same muted style as its neighbours. */
 export function buildLabelItem(className = 'inline-flex min-h-11 items-center break-all', label = buildLabel()) {
   return label.href
-    ? jsx('a', { href: label.href, rel: 'noreferrer', class: className + ' underline', 'aria-label': label.label }, label.text)
+    ? jsx('a', { href: label.href, rel: 'noreferrer', class: className + ' min-w-11 justify-center underline', 'aria-label': label.label }, label.text)
     : jsx('span', { role: 'note', class: className, 'aria-label': label.label }, label.text);
 }

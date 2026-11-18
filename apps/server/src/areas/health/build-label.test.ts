@@ -6,7 +6,7 @@ import { buildLabel, buildLabelItem } from './build-label.js';
 describe('buildLabel', () => {
   it('links a plain release to its page on the source repository', () => {
     expect(buildLabel('0.5.0', 'https://github.com/plaingym/plaingym')).toEqual({
-      text: 'v0.5.0', label: 'Version 0.5.0', href: 'https://github.com/plaingym/plaingym/releases/tag/v0.5.0',
+      text: 'v0.5.0', label: 'Version v0.5.0', href: 'https://github.com/plaingym/plaingym/releases/tag/v0.5.0',
     });
   });
   it('links a fork to its own releases, whatever tag the source URL names', () => {
@@ -17,7 +17,7 @@ describe('buildLabel', () => {
   });
   it('renders a link for a release and a labelled note otherwise', () => {
     expect(String(buildLabelItem('c', buildLabel('0.5.0', 'https://github.com/a/b')))).toBe(
-      '<a href="https://github.com/a/b/releases/tag/v0.5.0" rel="noreferrer" class="c underline" aria-label="Version 0.5.0">v0.5.0</a>');
+      '<a href="https://github.com/a/b/releases/tag/v0.5.0" rel="noreferrer" class="c min-w-11 justify-center underline" aria-label="Version v0.5.0">v0.5.0</a>');
     expect(String(buildLabelItem('c', buildLabel('0.4.0+1', 'https://github.com/a/b')))).toBe(
       '<span role="note" class="c" aria-label="Version 0.4.0+1">0.4.0+1</span>');
   });
@@ -26,7 +26,7 @@ describe('buildLabel', () => {
     try {
       const html = demoLandingPage('https://showcase.example.test/demo', 'https://git.example.org/acme/gym');
       expect(html).toContain('href="https://git.example.org/acme/gym/releases/tag/v0.5.0"');
-      expect(html).toContain('aria-label="Version 0.5.0"');
+      expect(html).toContain('aria-label="Version v0.5.0"');
     } finally { delete process.env.APP_VERSION; }
   });
 });

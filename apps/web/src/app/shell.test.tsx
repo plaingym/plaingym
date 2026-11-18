@@ -243,11 +243,13 @@ describe('root fallbacks', () => {
   });
   it('links a release build to its release page and a fork to its own releases', () => {
     const { unmount } = render(<SourceFooter version="0.5.0" repository="https://github.com/plaingym/plaingym" />);
-    expect(screen.getByRole('link', { name: 'Version 0.5.0' }).getAttribute('href')).toBe('https://github.com/plaingym/plaingym/releases/tag/v0.5.0');
+    const releaseLink = screen.getByRole('link', { name: 'Version v0.5.0' });
+    expect(releaseLink.getAttribute('href')).toBe('https://github.com/plaingym/plaingym/releases/tag/v0.5.0');
+    expect(releaseLink.classList).toContain('min-w-11');
     expect(screen.getByRole('link', { name: 'Source code' }).getAttribute('href')).toBe('/source');
     unmount();
     render(<SourceFooter version="0.5.0" repository="https://git.example.org/acme/gym" />);
-    expect(screen.getByRole('link', { name: 'Version 0.5.0' }).getAttribute('href')).toBe('https://git.example.org/acme/gym/releases/tag/v0.5.0');
+    expect(screen.getByRole('link', { name: 'Version v0.5.0' }).getAttribute('href')).toBe('https://git.example.org/acme/gym/releases/tag/v0.5.0');
   });
   it('shows a development build as plain text', () => {
     render(<SourceFooter version="0.4.0+0.g6e55ffe" repository="https://github.com/plaingym/plaingym" />);

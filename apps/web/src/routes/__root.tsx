@@ -9,11 +9,11 @@ import { checkOnNavigation, clientVersion, versionLabel } from '../app/version.j
 export function SourceFooter({ sourceUrl = '/source', version = clientVersion?.version, repository = typeof __SOURCE_URL__ === 'undefined' ? '' : __SOURCE_URL__ }:
 { sourceUrl?: string; version?: string; repository?: string }) {
   const label = version ? versionLabel(version, repository) : undefined;
-  const shown = label && <><span aria-hidden="true">{label.text}</span><span className="sr-only">{t('shell/shell:version', { version: version ?? '' })}</span></>;
+  const shown = label && <><span aria-hidden="true">{label.text}</span><span className="sr-only">{t('shell/shell:version', { version: label.text })}</span></>;
   return <footer className="flex flex-wrap items-center justify-center gap-x-4 border-t border-border px-4 py-2 text-center text-sm text-muted-foreground sm:px-6">
     <a className="inline-flex min-h-11 items-center underline underline-offset-4" href={sourceUrl}>{t('shell/shell:source')}</a>
     {label && (label.href
-      ? <a className="inline-flex min-h-11 items-center break-all underline underline-offset-4" href={label.href}>{shown}</a>
+      ? <a className="inline-flex min-h-11 min-w-11 items-center justify-center break-all underline underline-offset-4" href={label.href}>{shown}</a>
       : <span className="inline-flex min-h-11 items-center break-all">{shown}</span>)}
   </footer>;
 }
