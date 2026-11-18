@@ -14,10 +14,12 @@ both sections share a checklist read, and a rerun updates both without a revisio
 
 Unreadable stored SMTP settings fall back to the install's service, or none.
 The Email response reports that active source, `unreadable`, and `googleConfigured`;
-the Google removal guidance appears only while a client is configured. Health names
-the unreadable SMTP value and retains one parsed encryption key across polls, logging
-each unreadable value once. Successful SMTP test audits commit with the settings save;
-a revision conflict records no success. Failed tests still record their failure.
+the Google client is read only when the gym has stored SMTP settings of its own,
+since only then do the removal check and the Google removal guidance use it, and
+`googleConfigured` is false otherwise. Health names the unreadable SMTP value and
+retains one parsed encryption key across polls, logging each unreadable value once.
+Successful SMTP test audits commit with the settings save; a revision conflict
+records no success. Failed tests still record their failure.
 
 Settings hash navigation follows delayed section changes for at most four seconds,
 and stops as soon as the user interacts, including a click.

@@ -58,17 +58,18 @@ export interface SmtpResolver {
   /** The gym's own SMTP settings when saved, otherwise the install's, otherwise null. */
   config(gymId: string): Promise<SmtpConfig | null>;
   configured(gymId: string): Promise<boolean>;
-  source(gymId: string): Promise<'gym' | 'install' | null>;
 }
 export function createSmtpResolver(options: { key: Buffer; env?: NodeJS.ProcessEnv; scope?: typeof forGym }): SmtpResolver {
   const scope = options.scope ?? forGym, fallback = smtpFromEnvironment(options.env);
   // On a multi-gym install a gym's own server is a tenant's choice; the install's own never is.
   const tenantHosts = tenancyMode((options.env ?? process.env).TENANCY) === 'multi';
   const storedConfig = (gymId: string) => scope(gymId, async (tx) => (await tx.select({ smtp: gyms.smtpConfig }).from(gyms).where(eq(gyms.id, gymId)))[0]?.smtp);
-  async function ownConfig(gymId: string) {
-    const stored = await storedConfig(gymId);
+  function readOwnConfig(gymId: string, stored: string | null | undefined) {
     return readStoredSecret(options.key, 'smtp_config', gymId, stored ?? null, () =>
       readSmtpSchema.parse(JSON.parse(decryptSecret(options.key, { secretClass: 'smtp_config', owner: gymId }, stored!))));
+  }
+  async function ownConfig(gymId: string) {
+    return readOwnConfig(gymId, await storedConfig(gymId));
   }
   async function config(gymId: string): Promise<SmtpConfig | null> {
     const own = await ownConfig(gymId);
@@ -76,9 +77,7 @@ export function createSmtpResolver(options: { key: Buffer; env?: NodeJS.ProcessE
   }
   return { config, async status(gymId) {
     const stored = await storedConfig(gymId);
-    const own = readStoredSecret(options.key, 'smtp_config', gymId, stored ?? null, () =>
-      readSmtpSchema.parse(JSON.parse(decryptSecret(options.key, { secretClass: 'smtp_config', owner: gymId }, stored!))));
+    const own = readOwnConfig(gymId, stored);
     return { source: own ? 'gym' : fallback ? 'install' : null, unreadable: !!stored && !own };
-  }, async configured(gymId) { return (await config(gymId)) !== null; },
-    async source(gymId) { return await ownConfig(gymId) ? 'gym' : fallback ? 'install' : null; } };
+  }, async configured(gymId) { return (await config(gymId)) !== null; } };
 }

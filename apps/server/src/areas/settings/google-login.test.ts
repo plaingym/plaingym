@@ -245,6 +245,23 @@ describe('Settings → Google sign-in', () => {
     await database.forGym(gymB, (tx) => tx.update(gyms).set({ smtpConfig: null }).where(eq(gyms.id, gymB)));
     await setStored(gymB, null);
   });
+  it('reads the gym’s client only while it has SMTP settings of its own', async () => {
+    const gym = uuidv7(); await factory('gyms', gym);
+    const userId = (await factory('authUser', gym)).id, app = server({ gymId: gym, userId });
+    const email = async () => (await (await app.request('/api/settings/integrations')).json() as {
+      data: { email: { source: string; googleConfigured: boolean } } }).data.email;
+    const corrupt = () => encryptSecret(Buffer.alloc(32, 1), { secretClass: 'google_config', owner: gym }, JSON.stringify({ clientId, clientSecret }));
+    const start = logs.length;
+    await setStored(gym, corrupt());
+    expect(await email()).toMatchObject({ source: 'none', googleConfigured: false });
+    expect(logs.slice(start).filter((line) => line.includes('settings.google_config_unreadable'))).toHaveLength(0);
+    await database.forGym(gym, (tx) => tx.update(gyms).set({ smtpConfig: encryptSmtpConfig(key, gym,
+      { host: 'smtp.gym.invalid', port: 465, security: 'tls', from: 'desk@gym.invalid', username: 'user', password: 'secret' }) }).where(eq(gyms.id, gym)));
+    expect(await email()).toMatchObject({ source: 'gym', googleConfigured: false });
+    expect(logs.slice(start).filter((line) => line.includes('settings.google_config_unreadable'))).toHaveLength(1);
+    await setStored(gym, encryptGoogleConfig(key, gym, { clientId, clientSecret }));
+    expect(await email()).toMatchObject({ source: 'gym', googleConfigured: true });
+  });
   it('counts a stored or install Google client as a way in when the owner removes the gym’s email settings', async () => {
     const smtp = encryptSmtpConfig(key, gymB, { host: 'smtp.gym.invalid', port: 465, security: 'tls', from: 'desk@gym.invalid', username: 'gym-user', password: 'smtp-secret-never-shown' });
     const gym = (gymId: string, values: Partial<typeof gyms.$inferInsert>) => database.forGym(gymId, (tx) => tx.update(gyms).set(values).where(eq(gyms.id, gymId)));

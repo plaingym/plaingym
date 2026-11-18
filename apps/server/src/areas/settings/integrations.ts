@@ -127,7 +127,8 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     const { host, port, security, from } = emailAudit(gym, smtp);
     // The section reports the settings mail actually goes through: an unreadable stored value falls back.
     const source = smtp ? 'gym' : installSmtp ? 'install' : 'none';
-    const googleConfigured = await google.credentials(gym.id) !== null;
+    // Google matters only alongside the gym's stored SMTP settings: the removal check and its guidance.
+    const googleConfigured = gym.smtpConfig ? await google.credentials(gym.id) !== null : false;
     // A sandbox signs in through the demo outbox, whatever is stored.
     const now = signIn(sandbox || smtp !== null || installSmtp);
     const afterRemove = gym.smtpConfig && !sandbox ? signIn(installSmtp) : null;

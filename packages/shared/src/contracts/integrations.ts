@@ -17,6 +17,8 @@ export const signInMethodsSchema = z.strictObject({ password: z.boolean(), magic
  * otherwise; the SMTP password is never returned. `signInAfterSave` and `signInAfterRemove` are the sign-in methods after
  * saving the gym's own settings or removing them (null when the gym has none to remove). `removeBlocked` is true when
  * removing them would leave the signed-in owner no way to sign in (no email links, no password of their own and no Google client).
+ * `googleConfigured` is resolved only while the gym has stored SMTP settings of its own, since only then do the removal
+ * check and its guidance use it; it is false otherwise.
  */
 export const emailIntegrationSchema = z.strictObject({
   source: z.enum(['gym', 'install', 'none']),

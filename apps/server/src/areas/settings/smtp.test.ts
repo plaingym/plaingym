@@ -19,8 +19,8 @@ beforeAll(async () => {
 describe('per-gym SMTP with an install-wide fallback', () => {
   it('uses the gym\'s own settings first', async () => {
     const smtp = createSmtpResolver({ key, env, scope: database.forGym });
-    expect(await smtp.source(gymA)).toBe('gym');
-    expect(await smtp.source(gymB)).toBe('install');
+    expect(await smtp.status(gymA)).toEqual({ source: 'gym', unreadable: false });
+    expect(await smtp.status(gymB)).toEqual({ source: 'install', unreadable: false });
     expect(await smtp.config(gymA)).toEqual({ host: own.host, port: 587, security: 'starttls', from: own.from,
       auth: { user: 'gym-a', pass: 'gym-a-secret' } });
   });
@@ -32,19 +32,19 @@ describe('per-gym SMTP with an install-wide fallback', () => {
   });
   it('reports no email when neither the gym nor the install has SMTP', async () => {
     const smtp = createSmtpResolver({ key, env: {}, scope: database.forGym });
-    expect(await smtp.source(gymB)).toBeNull();
+    expect(await smtp.status(gymB)).toEqual({ source: null, unreadable: false });
     expect(await smtp.config(gymB)).toBeNull();
     expect(await smtp.configured(gymB)).toBe(false);
     expect(await smtp.configured(gymA)).toBe(true);
   });
   it('treats unreadable stored settings as unconfigured and uses only the install fallback', async () => {
     const smtp = createSmtpResolver({ key: parseEncryptionKey('cd'.repeat(32)), env, scope: database.forGym });
-    expect(await smtp.source(gymA)).toBe('install');
+    expect(await smtp.status(gymA)).toEqual({ source: 'install', unreadable: true });
     expect(await smtp.config(gymA)).toMatchObject({ host: env.SMTP_HOST });
     const absent = createSmtpResolver({ key: parseEncryptionKey('cd'.repeat(32)), env: {}, scope: database.forGym });
     expect(await absent.configured(gymA)).toBe(false);
     expect(await absent.config(gymA)).toBeNull();
-    expect(await absent.source(gymA)).toBeNull();
+    expect(await absent.status(gymA)).toEqual({ source: null, unreadable: true });
   });
   it('reads a stored value a newer release added a key to, and still refuses an unknown key on a save', async () => {
     const gymId = uuidv7();
