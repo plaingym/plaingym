@@ -3,8 +3,6 @@
 // eslint-disable-next-line no-restricted-imports
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
 import { maintenanceCommand, reportRestoreResume, snapshotCheckTimeoutMs } from './restore.js';
-import { reportMaintenanceFailure } from './restore.failure.js';
-import { KeyRotationRefusedError } from './restore.rotate-key.js';
 
 const args = process.argv.slice(2);
 // This read-only command must exit even if opening or closing the database never settles.
@@ -20,6 +18,8 @@ try {
   }
   await maintenanceCommand(args);
 } catch (error) {
+  const { reportMaintenanceFailure } = await import('./restore.failure.js');
+  const { KeyRotationRefusedError } = await import('./restore.rotate-key.js');
   reportMaintenanceFailure(args, error);
   if (args[0] === 'restore' || args[0] === 'restore-files' || args[0] === 'resume') await reportRestoreResume();
   process.exitCode = error instanceof KeyRotationRefusedError ? error.exitCode : 1;

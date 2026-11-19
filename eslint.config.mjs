@@ -49,8 +49,11 @@ const rawNames = {
 };
 const rawDatabase = [rawClient, rawNames];
 const featureModules = { regex: '(^|/)modules(/|$)', message: 'Core must not depend on feature modules.' };
+const dynamicImportGuard = {
+  selector: 'ImportExpression',
+  message: 'Use static imports in server runtime code so boundaries can be checked.',
+};
 const staticImports = [
-  { selector: 'ImportExpression', message: 'Use static imports in server runtime code so boundaries can be checked.' },
   { selector: 'CallExpression[callee.name="require"]', message: 'Use a static import in server runtime code.' },
   { selector: 'TSImportEqualsDeclaration', message: 'Use a static import in server runtime code.' },
   {
@@ -61,6 +64,15 @@ const staticImports = [
     selector: 'CallExpression[callee.name="createRequire"]',
     message: 'Do not create runtime loaders; use static imports.',
   },
+];
+// Only these literal local imports are deferred in the maintenance bundle's snapshot path.
+const maintenanceLazyImports = [
+  '../areas/health/restore.gate.js',
+  '../areas/health/restore.js',
+  './restore.failure.js',
+  './restore.files.js',
+  './restore.reason.js',
+  './restore.rotate-key.js',
 ];
 
 export default defineConfig(
@@ -106,7 +118,14 @@ export default defineConfig(
   {
     files: ['apps/server/src/**'],
     ignores: ['**/*.{test,spec}.*', '**/{test,tests,__tests__}/**'],
-    rules: { 'no-restricted-syntax': ['error', ...staticImports] },
+    rules: { 'no-restricted-syntax': ['error', dynamicImportGuard, ...staticImports] },
+  },
+  {
+    files: ['apps/server/src/cli/restore.ts', 'apps/server/src/cli/restore.entry.ts'],
+    rules: { 'no-restricted-syntax': ['error', {
+      ...dynamicImportGuard,
+      selector: 'ImportExpression:not(' + maintenanceLazyImports.map(path => `[source.value="${path}"]`).join(', ') + ')',
+    }, ...staticImports] },
   },
   {
     // Server code logs through core/log.ts, which redacts; benchmarks, test helpers and the browser-check scripts (.mjs) keep the console.

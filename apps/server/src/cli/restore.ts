@@ -11,14 +11,9 @@ import { readReferences, snapshotPrefix, verifyReferences } from '../areas/healt
 import { SnapshotContentError } from '../areas/health/backups.content.js';
 import { PostgresMaintenance } from '../areas/health/backups.database.js';
 import { BackupsNotConfiguredError, configuredBackup, loadBackupConfig } from '../areas/health/restore.config.js';
-import { RestoreService } from '../areas/health/restore.js';
-import { RestoreGate } from '../areas/health/restore.gate.js';
-import { rotateKey, upgradeStoredSecrets } from './restore.rotate-key.js';
-import { issuePaths, restoreFailureReason } from './restore.reason.js';
 import { RestoreFailure } from '../areas/health/restore.failure.js';
 import { z } from 'zod';
 import { logInfo } from '../core/log.js';
-import { withRestoreFiles } from './restore.files.js';
 
 export const snapshotCheckTimeoutMs = 30_000;
 
@@ -37,18 +32,21 @@ export function maintenanceEnvironment() {
   // The same storage the app uses; maintenance never creates download links.
   const uploads = createRuntimeUploads(process.env, appEncryptionKey, async () => 'https://maintenance.invalid');
   return { database: new PostgresMaintenance(required('MAINTENANCE_DATABASE_URL')),
-    appEncryptionKey, stagingDirectory, uploadsDirectory, uploads,
-    gate: new RestoreGate(dirname(stagingDirectory), {
-      onDrainWait: pid => process.stderr.write('Waiting for restore activity in PID ' + pid + ' to finish\n'),
-    }), clock };
+    appEncryptionKey, stagingDirectory, uploadsDirectory, uploads, clock };
 }
-function restoreOptions(environment: ReturnType<typeof maintenanceEnvironment>) {
+// These imports stay in the maintenance bundle and initialize only when the command needs them.
+async function restoreOptions(environment: ReturnType<typeof maintenanceEnvironment>) {
+  const { RestoreGate } = await import('../areas/health/restore.gate.js');
   const { uploads, ...options } = environment;
-  return { ...options, ...(uploads.restoreStore ? { uploadsStore: uploads.restoreStore } : {}) };
+  return { ...options,
+    gate: new RestoreGate(dirname(options.stagingDirectory), {
+      onDrainWait: pid => process.stderr.write('Waiting for restore activity in PID ' + pid + ' to finish\n'),
+    }), ...(uploads.restoreStore ? { uploadsStore: uploads.restoreStore } : {}) };
 }
 export async function maintenanceCommand(args: readonly string[]): Promise<void> {
   if (args[0] === 'restore-files') {
     if (args.length !== 2 || !z.uuid().safeParse(args[1]).success) throw new RestoreFailure('Usage: restore-files SNAPSHOT');
+    const { withRestoreFiles } = await import('./restore.files.js');
     await withRestoreFiles(process.stdin, dirname(required('BACKUP_STAGING_DIR')),
       path => maintenanceCommand(['restore', args[1]!, '--config', path]));
     process.stdout.write('Restore complete; billing, member emails and member texts remain off; backup pruning is on hold\n');
@@ -58,13 +56,17 @@ export async function maintenanceCommand(args: readonly string[]): Promise<void>
     const database = new PostgresMaintenance(required('MAINTENANCE_DATABASE_URL'));
     await database.migrate();
     // Then the one-time v1 to v2 rewrite; both install modes supply the app key to their migrate step.
-    if (process.env.APP_ENCRYPTION_KEY) await upgradeStoredSecrets(database, parseEncryptionKey(process.env.APP_ENCRYPTION_KEY));
-    else logInfo('secrets.upgrade_skipped', { reason: 'APP_ENCRYPTION_KEY is not configured' });
+    if (process.env.APP_ENCRYPTION_KEY) {
+      const { upgradeStoredSecrets } = await import('./restore.rotate-key.js');
+      await upgradeStoredSecrets(database, parseEncryptionKey(process.env.APP_ENCRYPTION_KEY));
+    } else logInfo('secrets.upgrade_skipped', { reason: 'APP_ENCRYPTION_KEY is not configured' });
     return;
   }
   if (args[0] === 'rotate-key') {
     if (args.length !== 1) throw new Error('Usage: rotate-key');
     const staging = process.env.BACKUP_STAGING_DIR;
+    const { rotateKey } = await import('./restore.rotate-key.js');
+    const { RestoreGate } = await import('../areas/health/restore.gate.js');
     await rotateKey({ database: new PostgresMaintenance(required('MAINTENANCE_DATABASE_URL')),
       currentKey: process.env.APP_ENCRYPTION_KEY, newKey: process.env.NEW_APP_ENCRYPTION_KEY,
       gate: staging ? new RestoreGate(dirname(staging)) : null });
@@ -125,9 +127,10 @@ async function maintenance(args: readonly string[], environment: ReturnType<type
     return;
   }
   if (args[0] === 'resume') {
+    const { RestoreService } = await import('../areas/health/restore.js');
     // Resumption uses already authenticated staging; it never requires saving the private age identity.
     const unusedStore = new S3BackupObjectStore({ client: createS3Client({}), bucket: 'unused' });
-    try { await new RestoreService({ ...restoreOptions(environment), store: unusedStore }).resume(); }
+    try { await new RestoreService({ ...await restoreOptions(environment), store: unusedStore }).resume(); }
     finally { unusedStore.options.client.destroy(); }
     return;
   }
@@ -138,6 +141,7 @@ async function maintenance(args: readonly string[], environment: ReturnType<type
   const id = z.uuid().safeParse(args[1]);
   if (!id.success) throw new RestoreFailure('SNAPSHOT is not a snapshot ID (a UUID)');
   if (config.snapshotId && config.snapshotId !== id.data) throw new RestoreFailure('The restore configuration names a different snapshot than SNAPSHOT');
+  const { RestoreService } = await import('../areas/health/restore.js');
   const identity = await readIdentityFile(config.identityFile).catch((error: unknown) => {
     throw error instanceof Error && 'code' in error ? new RestoreFailure('Cannot read the key file (' + errorCode(error) + ')') : error;
   });
@@ -147,30 +151,35 @@ async function maintenance(args: readonly string[], environment: ReturnType<type
     const store = new S3BackupObjectStore({ client, bucket: config.bucket, clock });
     // Asked first, so a wrong snapshot ID doesn't look like a damaged snapshot.
     if (!await store.headObject(snapshotPrefix(id.data) + 'manifest.age')) throw new RestoreFailure('Snapshot not found in the bucket');
-    await new RestoreService({ ...restoreOptions(environment), store }).restore(id.data, identity);
+    await new RestoreService({ ...await restoreOptions(environment), store }).restore(id.data, identity);
   } finally { client.destroy(); }
 }
 const errorCode = (error: Error): string => {
   const code = (error as { code?: unknown }).code;
   return typeof code === 'string' && /^[A-Z0-9_]{1,32}$/.test(code) ? code : 'unreadable';
 };
-const restoreConfigSchema = z.strictObject({ snapshotId: z.uuid().optional(), bucket: z.string().min(1),
-  endpoint: z.url().optional(), region: z.string().default('auto'),
-  accessKeyId: z.string().min(1), secretAccessKey: z.string().min(1), identityFile: z.string().min(1) });
 /** Reads the private restore file; a failure names the error code or the invalid fields, never a value. */
-async function readRestoreConfig(path: string): Promise<z.infer<typeof restoreConfigSchema>> {
+async function readRestoreConfig(path: string) {
   const text = await readFile(path, 'utf8').catch((error: unknown) => {
     throw new RestoreFailure('Cannot read the restore configuration file (' + (error instanceof Error ? errorCode(error) : 'unreadable') + ')');
   });
   let json: unknown;
   try { json = JSON.parse(text); } catch { throw new RestoreFailure('The restore configuration file is not valid JSON'); }
+  const restoreConfigSchema = z.strictObject({ snapshotId: z.uuid().optional(), bucket: z.string().min(1),
+    endpoint: z.url().optional(), region: z.string().default('auto'),
+    accessKeyId: z.string().min(1), secretAccessKey: z.string().min(1), identityFile: z.string().min(1) });
   const parsed = restoreConfigSchema.safeParse(json);
-  if (!parsed.success) throw new RestoreFailure('The restore configuration file has invalid fields: ' + issuePaths(parsed.error));
+  if (!parsed.success) {
+    const { issuePaths } = await import('./restore.reason.js');
+    throw new RestoreFailure('The restore configuration file has invalid fields: ' + issuePaths(parsed.error));
+  }
   return parsed.data;
 }
 export async function reportRestoreResume(stderr: (line: string) => void = (line) => process.stderr.write(line + '\n')): Promise<void> {
   const staging = process.env.BACKUP_STAGING_DIR;
-  if (staging && await new RestoreGate(dirname(staging)).hasStagedRestore())
+  if (!staging) return;
+  const { RestoreGate } = await import('../areas/health/restore.gate.js');
+  if (await new RestoreGate(dirname(staging)).hasStagedRestore())
     stderr('A verified restore can be resumed with the maintenance CLI');
 }
 export const commands: readonly Command[] = [{
@@ -185,6 +194,7 @@ export const commands: readonly Command[] = [{
   async run(args, io) {
     try { await maintenanceCommand(['restore', ...args]); io.stdout('Restore complete; billing, member emails and member texts remain off; backup pruning is on hold'); return 0; }
     catch (error) {
+      const { restoreFailureReason } = await import('./restore.reason.js');
       io.stderr('Restore failed: ' + restoreFailureReason(error));
       await reportRestoreResume(io.stderr);
       return 1;
