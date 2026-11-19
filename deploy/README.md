@@ -169,7 +169,13 @@ docker buildx imagetools inspect node:24.22.1-bookworm-slim
 ```
 
 Update `NODE_IMAGE` in `deploy/Dockerfile` to the top-level multi-architecture
-index digest, keeping the tag. Then pick a newer snapshot timestamp (UTC,
+index digest, keeping the tag. The helper containers that run Node
+(`deploy/test/memory/run.mjs`, `deploy/test/memory/tcp-throughput.mjs`, and the
+fake Stripe service in `e2e/compose.yaml`) pin the same image. The release
+tooling test (`scripts/release/release.test.mjs`) fails when any
+`node:<version>-bookworm-slim@sha256:` reference in the repository differs from
+`NODE_IMAGE`, so a base refresh cannot leave one behind. Then pick a newer
+snapshot timestamp (UTC,
 `YYYYMMDDTHHMMSSZ`; the snapshot nearest before it is used) and refresh the pins
 from a Linux or macOS shell with Docker (Git Bash on Windows rewrites the
 script's bind-mount paths):

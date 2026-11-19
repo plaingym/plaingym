@@ -19,7 +19,7 @@ import { collectDiagnostics, formatDiagnostics } from './diagnostics.mjs';
 import { buildInfo } from '../../../scripts/release/version.mjs';
 
 const here = fileURLToPath(new URL('./', import.meta.url)), deploy = resolve(here, '../..'), root = resolve(deploy, '..');
-const nodeImage = 'node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205';
+const nodeImage = 'node:24.22.1-bookworm-slim@sha256:be8204d4bd327363357f532187b752ff62759c31bedf98e9e18fc08c9cbd605c';
 const options = { mode: 'both', cappedRuns: 1, image: process.env.MEMORY_IMAGE ?? '', leak: false, leakMiB: 160, out: join(here, 'out') };
 for (let index = 2; import.meta.main && index < process.argv.length; index++) {
   const flag = process.argv[index];

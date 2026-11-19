@@ -105,7 +105,7 @@ jobs:
         with:
           node-version: 24.22.1
       # The budget arithmetic, against synthetic runs including a leak and a kill.
-      - run: node --test deploy/test/memory/budget.test.mjs deploy/test/memory/diagnostics.test.mjs deploy/test/memory/tcp-queues.test.mjs deploy/test/memory/waiver-budget.test.mjs
+      - run: node --test deploy/test/memory/budget.test.mjs deploy/test/memory/diagnostics.test.mjs deploy/test/memory/tcp-queues.test.mjs deploy/test/memory/tcp-throughput.test.mjs deploy/test/memory/waiver-budget.test.mjs
       - run: node --test e2e/vm/harness.test.mjs
       - name: Check Caddy download throughput at 100 ms RTT
         run: node deploy/test/memory/tcp-throughput.mjs

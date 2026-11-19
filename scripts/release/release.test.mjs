@@ -2,11 +2,32 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { git, root } from './version.mjs';
 import { release, proposal, changelogSection, insertSection, pushPathFilter, skippedByFilter, unreleasedNotes } from './release.mjs';
+
+const pinnedNodeImage = /(?<![\w-])node:[^\s"'`@]+-bookworm-slim@sha256:[0-9a-f]{64}/g;
+
+/** The runtime image every Node helper container must use, as the Dockerfile declares it. */
+function dockerfileNodeImage(text) {
+  const [match] = text.matchAll(/^ARG NODE_IMAGE=(node:\S+)$/gm);
+  assert.ok(match, 'deploy/Dockerfile must declare ARG NODE_IMAGE');
+  return match[1];
+}
+
+/** Every pinned Node base image that differs from the Dockerfile's NODE_IMAGE, with the file that names it. */
+function staleNodeImagePins(files, read) {
+  const expected = dockerfileNodeImage(read('deploy/Dockerfile'));
+  const stale = [];
+  for (const file of files) {
+    for (const [image] of read(file).matchAll(pinnedNodeImage)) {
+      if (image !== expected) stale.push({ file, image, expected });
+    }
+  }
+  return stale;
+}
 
 test('proposal follows fix, feature, migration and breaking changes', () => {
   assert.equal(proposal(undefined, [], false), '1.0.0');
@@ -287,4 +308,27 @@ test('a cleanup failure keeps the signer error as the cause and attaches cleanup
       return true;
     });
   } finally { f.close(); }
+});
+
+test('every pinned Node base image matches NODE_IMAGE in the Dockerfile', () => {
+  // NUL-separated so git never quotes a path; a tracked file deleted in the working tree has nothing to scan.
+  const files = git(['ls-files', '-z'], root, { raw: true }).split('\0').filter((file) => file && existsSync(join(root, file)));
+  const stale = staleNodeImagePins(files, (file) => readFileSync(join(root, file), 'utf8'));
+  assert.deepEqual(stale, [], 'a base refresh must update every pinned Node image reference');
+});
+
+test('the Node base image pin check flags a stale digest and accepts a matching one', () => {
+  const matching = 'node:24.22.1-bookworm-slim@sha256:' + 'a'.repeat(64);
+  const stale = 'node:24.22.1-bookworm-slim@sha256:' + 'b'.repeat(64);
+  const files = {
+    'deploy/Dockerfile': `ARG NODE_IMAGE=${matching}\n`,
+    'deploy/test/memory/run.mjs': `const nodeImage = '${matching}';\n`,
+    'deploy/test/memory/tcp-throughput.mjs': `const nodeImage = '${matching}';\n`,
+    'e2e/compose.yaml': `    image: ${stale}\n`,
+    // A tag without a digest and another image's digest are not pinned Node base images.
+    'deploy/README.md': 'docker buildx imagetools inspect node:24.22.1-bookworm-slim\n',
+    'deploy/compose.yaml': '    image: caddy:2.11.7-alpine@sha256:' + 'c'.repeat(64) + '\n',
+  };
+  assert.deepEqual(staleNodeImagePins(Object.keys(files), (file) => files[file]),
+    [{ file: 'e2e/compose.yaml', image: stale, expected: matching }]);
 });
