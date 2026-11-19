@@ -231,6 +231,12 @@ asset-only command from the repository root is:
 node apps/server/src/public/links/styles.build.mjs apps/web/dist
 ```
 
+Signed-link pages follow the device's color scheme. They load the gym's brand
+colors from `/public/pages/theme.css`, which adjusts dark-mode contrast, and
+show the gym logo on a light tile. A waiver's text body is part of the page and
+follows it; an uploaded waiver document, emails, receipts and PDFs keep a light
+palette.
+
 This uses the pinned web Tailwind version and shared design tokens, plus the
 existing esbuild toolchain. Browser code is built separately, avoiding server
 transpiler helpers in the browser. Generated CSS and JavaScript are not committed.
@@ -263,7 +269,8 @@ With the separate `e2e` dependencies installed and Edge available, run:
 pnpm --filter @plaingym/server exec tsx src/public/links/tests/browser-check.ts
 ```
 
-The bounded check verifies all four screens at 360 px and desktop, 44 px controls,
+The bounded check verifies all four screens at 360 px and desktop in the light and
+dark color schemes, each with an axe scan, 44 px controls,
 PNG signature capture, two-document waiver and onboarding signing flows, tablet
 clearing and inactivity reset, and saves screenshots
 under the server's ignored `coverage/signed-links/browser` directory.

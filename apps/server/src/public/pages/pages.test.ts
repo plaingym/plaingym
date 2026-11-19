@@ -22,7 +22,6 @@ import { demoUploads } from '../../demo/uploads.js';
 import { demoSignatureReservation } from '../../demo/waiver-signatures.js';
 import { demoSignaturePng } from '../../demo/seed/waivers-image.js';
 import { configurePublicPages, createPublicRoutes } from './pages.routes.js';
-import { themeCss } from './page.js';
 import { logoVersion } from '../short-hash.js';
 import { configureSharedRateLimits } from '../../core/rate-limit.js';
 import { createIntakeRateLimitStore } from '../../core/rate-limit-store.js';
@@ -269,6 +268,8 @@ describe('core public pages through the production registrations', () => {
     for (const path of ['/trial', '/drop-in', '/trial/received', '/drop-in/received']) {
       const response = await f.server.request(origin + path), html = await response.text();
       expect(response.status).toBe(200); expect(html).toContain('North &lt;Gym&gt;');
+      expect(html).toContain('<html lang="en" class="theme-system">');
+      expect(html).toContain('name="color-scheme" content="light dark"');
       expect(html).toContain('12 Mat Street'); expect(html).toContain('href="tel:+16045550100"');
       expect(html).toContain('href="mailto:hello@north.example.test"'); expect(html).not.toContain('Not public');
       expect(html).toContain('href="/source"'); expect(html).toContain('aria-label="Version '); expect(html).not.toContain('Private Member');
@@ -280,6 +281,11 @@ describe('core public pages through the production registrations', () => {
     }
     const theme = await f.server.request(origin + '/public/pages/theme.css');
     expect(await theme.text()).toContain('--color-primary:#ffff00;--color-primary-foreground:#000000');
+    const settings = createSettingsService({ scope: db.forGym, clock: f.clock });
+    const primaryColor = '#08152e';
+    await settings.update({ gymId: f.gymId, actor: { kind: 'system' } }, 'general', { revision: 1, branding: { primaryColor } });
+    expect(await (await f.server.request(origin + '/public/pages/theme.css')).text()).toMatch(/^:root\{--color-primary:#08152e;[^}]+\}@media screen\{\.dark\{--color-primary:(?!#08152e)/);
+    expect((await settings.get(f.gymId)).branding.primaryColor).toBe(primaryColor);
     expect((await f.server.request(origin + '/public/pages/client.js')).headers.get('content-type')).toContain('text/javascript');
     expect(await (await f.server.request(origin + '/public/pages/styles.css')).text()).toContain('shared css');
   });
@@ -360,7 +366,11 @@ describe('core public pages through the production registrations', () => {
       for (let i = 20; i < documentReadBudget; i++) expect((await f.server.request(origin + documentPath)).status).toBe(200);
       const refused = await f.server.request(origin + documentPath + '?view=1');
       expect(refused.status).toBe(429); expect(refused.headers.get('retry-after')).toBe('60');
-      expect(refused.headers.get('content-type')).toContain('text/html'); expect(await refused.text()).toContain('Wait a minute');
+      expect(refused.headers.get('content-type')).toContain('text/html');
+      const html = await refused.text();
+      expect(html).toContain('Wait a minute');
+      expect(html).toContain('<html lang="en">');
+      expect(html).not.toContain('name="color-scheme"');
       expect((await f.app(f.otherGym).request(origin + documentPath)).status).toBe(404);
       expect(await (await f.server.request(origin + '/drop-in')).text()).toContain('Open the document');
     }
@@ -484,9 +494,4 @@ describe('core public pages through the production registrations', () => {
     const response = await f.server.request(origin + '/api/public/trial', { method: 'POST', headers: { origin: 'https://attacker.invalid', cookie: 'session=untrusted', 'content-type': 'application/json' }, body: JSON.stringify(body()) });
     expect(response.status).toBe(403); expect(f.notices).toHaveLength(0);
   });
-});
-
-it('validates CSS colors and chooses a contrasting foreground', () => {
-  expect(themeCss('#ffffff')).toContain('#000000'); expect(themeCss('#000000')).toContain('#ffffff');
-  expect(themeCss('red; background:url(https://evil.invalid)')).toBe(''); expect(themeCss(null)).toBe('');
 });

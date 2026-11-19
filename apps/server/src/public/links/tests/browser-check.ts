@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { createTranslator } from '@plaingym/shared';
 import type { PortalSignedLinkData } from '@plaingym/shared/contracts';
 import { linkPage } from '../page.js';
+import { themeCss } from '../../pages/page.js';
 import { buildLinkAssets } from '../styles.build.mjs';
 import messages from '../../../../../../locales/en/public/links.json' with { type: 'json' };
 import { validateSignatureImage } from '../../../areas/waivers/snapshot.js';
@@ -15,6 +17,8 @@ import unsubscribeMessages from '../../../../../../locales/en/links/unsubscribe.
 const output = resolve('coverage/signed-links/browser');
 // Optional browser tooling is installed separately in e2e; normal type checks need no browser install.
 const { chromium, expect } = await import(new URL('../../../../../../e2e/node_modules/@playwright/test/index.mjs', import.meta.url).href);
+const require = createRequire(new URL('../../../../../../e2e/package.json', import.meta.url));
+const { default: AxeBuilder } = require('@axe-core/playwright');
 await mkdir(output, { recursive: true });
 await buildLinkAssets(output);
 const css = await readFile(resolve(output, 'links.css'), 'utf8');
@@ -48,6 +52,7 @@ const server = createServer(async (req, res) => {
     res.setHeader('content-type', 'text/html'); res.end(content.html); return;
   }
   if (url.pathname === '/l/styles.css') { res.setHeader('content-type', 'text/css'); res.end(css); return; }
+  if (url.pathname === '/public/pages/theme.css') { res.setHeader('content-type', 'text/css'); res.end(themeCss('#08152e')); return; }
   if (url.pathname === '/l/client.js') { res.setHeader('content-type', 'text/javascript'); res.end(browserSource); return; }
   if (req.method === 'POST') {
     // Browser-only fixtures model persisted signatures and confirmed card setup;
@@ -120,7 +125,14 @@ try {
         .filter(el => el.getClientRects().length && el.getBoundingClientRect().height < 44).map(el => el.textContent ?? el.tagName),
     }));
     if (metrics.overflow || metrics.shortControls.length) throw new Error(name + ' ' + width + ': ' + JSON.stringify(metrics));
-    await page.screenshot({ path: resolve(output, `${name}-${width}.png`), fullPage: true });
+    for (const colorScheme of ['light', 'dark'] as const) {
+      await page.emulateMedia({ colorScheme });
+      await expect(page.locator('body')).toHaveCSS('background-color', colorScheme === 'dark' ? 'rgb(12, 21, 20)' : 'rgb(255, 255, 255)');
+      const result = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+      expect(result.violations, `${name} ${width} ${colorScheme}`).toEqual([]);
+      await page.screenshot({ path: resolve(output, `${name}-${width}-${colorScheme}.png`), fullPage: true });
+    }
+    await page.emulateMedia({ colorScheme: null });
   }
   for (const width of [360, 1280]) {
     await page.setViewportSize({ width, height: 900 });

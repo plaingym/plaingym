@@ -27,6 +27,10 @@ export const addressLines = (address: PublicBranding['address'] = {}) => [addres
   [address.city, address.region, address.postalCode].filter(Boolean).join(', '), address.country]
   .filter((line): line is string => !!line?.trim());
 export const telephoneHref = (phone: string) => 'tel:' + phone.replace(/[^+\d]/g, '');
+export const gymLogo = (key: string, name: string) => h('img', {
+  src: '/public/pages/logo/' + logoVersion(key), alt: name, width: 64, height: 64,
+  class: 'h-16 w-16 rounded-lg bg-white object-contain p-1',
+});
 /** Public contact details also remain available with the website turned off. */
 export function contactBlock(gym: PublicBranding, t: Translator) {
   const text = pageText(t), lines = addressLines(gym.address);
@@ -40,15 +44,16 @@ export function contactBlock(gym: PublicBranding, t: Translator) {
 /** Shared server-rendered shell for the gym's core public pages. */
 export function publicLayout(input: { gym: PublicBranding; title: string; t: Translator; content: ReturnType<typeof h>; locale?: string; script?: boolean; noscriptRefreshSeconds?: number }) {
   const text = pageText(input.t);
-  return '<!doctype html>' + h('html', { lang: input.locale ?? 'en' },
+  return '<!doctype html>' + h('html', { lang: input.locale ?? 'en', class: 'theme-system' },
     h('head', null, h('meta', { charset: 'utf-8' }), h('meta', { name: 'viewport', content: 'width=device-width, initial-scale=1' }),
+      h('meta', { name: 'color-scheme', content: 'light dark' }),
       h('meta', { name: 'robots', content: 'noindex, nofollow' }), h('title', null, input.title + ' · ' + input.gym.name),
       h('link', { rel: 'stylesheet', href: '/public/pages/styles.css' }), h('link', { rel: 'stylesheet', href: '/public/pages/theme.css' }),
       input.noscriptRefreshSeconds ? h('noscript', null, h('meta', { 'http-equiv': 'refresh', content: String(input.noscriptRefreshSeconds) })) : null,
       input.script ? h('script', { src: '/public/pages/client.js', defer: true }) : null),
     h('body', { class: 'm-0 bg-background text-foreground' },
       h('main', { class: 'mx-auto w-full max-w-2xl space-y-6 px-4 py-6 sm:px-6 sm:py-10' },
-        h('header', { class: 'space-y-2' }, input.gym.logoKey ? h('img', { src: '/public/pages/logo/' + logoVersion(input.gym.logoKey), alt: input.gym.name, width: 64, height: 64 }) : null,
+        h('header', { class: 'space-y-2' }, input.gym.logoKey ? gymLogo(input.gym.logoKey, input.gym.name) : null,
           h('p', { class: 'break-words font-semibold' }, input.gym.name), h('h1', { class: 'text-2xl font-bold sm:text-3xl' }, input.title)),
         input.content, contactBlock(input.gym, input.t),
         h('footer', { class: 'flex flex-wrap gap-3' },
@@ -102,11 +107,31 @@ function waiverForm(template: WaiverTemplate, i: number, t: Translator) {
     h('label', { class: 'flex min-h-11 items-center gap-3' }, h('input', { type: 'checkbox', name: prefix + '-consent', required: true, class: 'h-6 w-6 shrink-0' }), h('span', null, text('consent'))));
 }
 
+const rgb = (hex: string) => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
+function luminance(channels: number[]) {
+  const [red, green, blue] = channels.map(channel => {
+    const c = channel / 255;
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  return red! * 0.2126 + green! * 0.7152 + blue! * 0.0722;
+}
+// Match background and card in apps/web/src/app/styles.css. The lighter surface sets the minimum.
+const darkSurface = Math.max(luminance(rgb('#0c1514')), luminance(rgb('#111d1c')));
+const darkTextMinimum = 4.5 * (darkSurface + 0.05) - 0.05;
+const colorTokens = (color: string, brightness: number) =>
+  `--color-primary:${color};--color-primary-foreground:${brightness > 0.179 ? '#000000' : '#ffffff'}`;
+
 /** Strict external stylesheet: only validated color tokens can enter CSS. */
 export function themeCss(primary: string | null) {
   if (!primary || !/^#[0-9a-f]{6}$/i.test(primary)) return '';
-  const rgb = [1, 3, 5].map(i => parseInt(primary.slice(i, i + 2), 16) / 255)
-    .map(c => c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
-  const luminance = rgb[0]! * 0.2126 + rgb[1]! * 0.7152 + rgb[2]! * 0.0722;
-  return `:root{--color-primary:${primary};--color-primary-foreground:${luminance > 0.179 ? '#000000' : '#ffffff'}}`;
+  const original = rgb(primary), light = luminance(original);
+  let dark = light, darkPrimary = primary;
+  // Check the rounded sRGB channels that the browser will actually render.
+  for (let step = 1; dark < darkTextMinimum; step++) {
+    const mixed = original.map(channel => Math.round(channel + (255 - channel) * step / 255));
+    dark = luminance(mixed);
+    darkPrimary = '#' + mixed.map(channel => channel.toString(16).padStart(2, '0')).join('');
+  }
+  const darkTokens = colorTokens(darkPrimary, dark);
+  return `:root{${colorTokens(primary, light)}}@media screen{.dark{${darkTokens}}}@media screen and (prefers-color-scheme: dark){.theme-system{${darkTokens}}}`;
 }

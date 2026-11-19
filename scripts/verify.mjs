@@ -31,6 +31,7 @@ const sourceScanningTests = [
   'apps/server/src/infra/pdf/coverage.test.ts',
   'apps/server/src/public/links/paths.test.ts',
   'apps/server/src/public/links/styles.build.test.ts',
+  'apps/server/src/public/pages/theme.test.ts',
   'apps/server/test/contracts.test.ts',
   'apps/server/test/packs.test.ts',
   'e2e/ci.test.ts',

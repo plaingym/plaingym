@@ -42,8 +42,7 @@
     }
   }
 }
-/* A page with none of these classes stays light, so the public website, signed-link
-   pages and waiver documents keep their light palette until a page opts in. */
+/* Pages opt in to the dark palette. The public website and waiver documents stay light. */
 :root { color-scheme: light; }
 .light { color-scheme: light; }
 /* Printed invitations use the light palette. Keep the two dark token blocks in sync. */

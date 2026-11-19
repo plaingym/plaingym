@@ -7,8 +7,7 @@ import { cardChargeIssue } from '@plaingym/shared/money';
 import { needsGuardian } from '../../areas/waivers/snapshot.js';
 import { formatMoney } from '../../core/money.js';
 import { buildLabelItem } from '../../areas/health/build-label.js';
-import { secondaryButton, waiverDocumentView } from '../pages/page.js';
-import { logoVersion } from '../short-hash.js';
+import { gymLogo, secondaryButton, waiverDocumentView } from '../pages/page.js';
 
 const button = 'inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg bg-primary px-4 py-3 text-center font-semibold text-primary-foreground disabled:opacity-50';
 const input = 'block min-h-11 w-full rounded-md border border-border bg-background px-3 py-2 text-base';
@@ -103,14 +102,16 @@ export function linkPage({ data, state, portalClaim, tablet = false, now, timezo
     h('p', { class: 'break-words', 'data-announcement-status': true }, announcementText(data.optedOut ? 'unsubscribed' : 'subscribed', { name: data.member.firstName + ' ' + data.member.lastName })),
     h('p', null, announcementText('help')),
     h('button', { type: 'button', class: button, 'data-announcement-opt-out': String(!data.optedOut) }, announcementText(data.optedOut ? 'resubscribe' : 'unsubscribe'))) : null;
-  return '<!doctype html>' + h('html', { lang: locale },
+  return '<!doctype html>' + h('html', { lang: locale, class: 'theme-system' },
     h('head', null, h('meta', { charset: 'utf-8' }), h('meta', { name: 'viewport', content: 'width=device-width, initial-scale=1' }),
+      h('meta', { name: 'color-scheme', content: 'light dark' }),
       h('meta', { name: 'robots', content: 'noindex, nofollow' }), h('title', null, gymName ? title + ' · ' + gymName : title), h('link', { rel: 'stylesheet', href: '/l/styles.css' }),
+      h('link', { rel: 'stylesheet', href: '/public/pages/theme.css' }),
       data || (tablet && state === 'alreadyDone') ? h('script', { src: '/l/client.js', defer: true }) : null),
     h('body', { class: 'm-0 bg-background text-foreground', 'data-state': state ?? '', 'data-purpose': data?.purpose ?? '', 'data-tablet': String(tablet) },
       h('main', { class: 'mx-auto w-full max-w-2xl space-y-6 px-4 py-6 sm:px-6 sm:py-10' },
         gymName ? h('header', { class: 'space-y-2' },
-          logoKey ? h('img', { src: '/public/pages/logo/' + logoVersion(logoKey), alt: gymName, width: 64, height: 64, class: 'h-16 w-16 object-contain' }) : null,
+          logoKey ? gymLogo(logoKey, gymName) : null,
           h('p', { class: 'break-words font-semibold' }, gymName)) : null,
         tablet ? h('aside', { class: panel }, h('p', { class: 'font-semibold' }, text('tablet')), h('p', null, text('tabletHelp')),
           h('a', { class: secondaryButton, href: '/l/cleared', 'data-exit': true }, text('clear'))) : null,

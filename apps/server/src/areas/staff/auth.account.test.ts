@@ -205,6 +205,8 @@ describe('your account routes', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('referrer-policy')).toBe('no-referrer');
     const html = await response.text();
+    expect(html).toContain('<html lang="en" class="theme-system">');
+    expect(html).toContain('name="color-scheme" content="light dark"');
     expect(html).toContain('/api/account/email/confirm');
     expect(html).toContain('href="/source"'); expect(html).toContain('aria-label="Version ');
     expect(html).toContain('location.hash');

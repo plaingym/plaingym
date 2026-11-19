@@ -75,6 +75,11 @@ maintenance credentials (`deploy/README.md`, "Which process holds the maintenanc
 | `/api` | JSON API. `/api/openapi.json` is the generated OpenAPI document. |
 | `/healthz`, `/api/source`, `/source` | Liveness and the running release's source link. |
 
+The join, trial, drop-in, signed-link, staff invitation and sign-in email
+confirmation pages follow the device's color scheme, as does the demo landing
+page. The public website, uploaded waiver documents, emails, receipts and PDFs
+use a light palette.
+
 ## A request
 
 `core/app.ts` mounts the server in this order:

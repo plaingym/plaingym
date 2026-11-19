@@ -54,8 +54,16 @@ page (`modules/website/README.md`). It is mounted before every other route.
 
 `publicLayout` is the Hono JSX shell for core pages. It escapes gym and document
 text, uses `t()`, keeps `/source`, and serves only same-origin assets under a strict
-CSP. CSS reuses the existing signed-link Tailwind asset, with validated gym color
-tokens in an external stylesheet. The color's foreground is chosen for contrast.
+CSP. The join, trial, drop-in, signed-link, staff invitation and sign-in email
+confirmation pages follow the device's color scheme, as does the demo landing
+page; a waiver's text body is part of the page and follows it. The public
+website, uploaded waiver documents, emails, receipts and PDFs use a light palette.
+CSS reuses the signed-link Tailwind asset. `/public/pages/theme.css` serves the
+gym's validated brand color and chooses a contrasting button foreground. In
+dark mode it lightens the color when needed for 4.5:1 text contrast on both
+the page and card backgrounds, then picks the foreground for the adjusted
+color. The saved brand color is used as-is in light mode.
+Core public pages and signed links show the logo on a light tile.
 Logos are streamed through the gym upload wrapper; foreign keys and SVG are refused.
 Core pages address logos by a short hash of their immutable upload key, so unrelated
 settings saves keep the same URL and replacing the logo changes it.

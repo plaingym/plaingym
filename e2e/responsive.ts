@@ -119,7 +119,7 @@ export async function accessibleLayout(page: Page, info: TestInfo, name: string)
 }
 
 /** Audit both OS preferences even on pages that currently share the same palette. */
-export async function accessibleThemes(page: Page, info: TestInfo, name: string) {
+export async function accessibleThemes(page: Page, info: TestInfo, name: string, checkPalette?: (scheme: 'light' | 'dark') => Promise<void>) {
   const original = await page.evaluate(() => matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   // Media changes can schedule transitions after getAnimations() takes its snapshot.
   // Audit the resting palette in each theme, including elements mounted during the scan.
@@ -133,6 +133,7 @@ export async function accessibleThemes(page: Page, info: TestInfo, name: string)
   try {
     for (const colorScheme of ['light', 'dark'] as const) {
       await page.emulateMedia({ colorScheme });
+      await checkPalette?.(colorScheme);
       await accessibleLayout(page, info, name + '-' + colorScheme);
       await info.attach(name + '-' + colorScheme, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
     }

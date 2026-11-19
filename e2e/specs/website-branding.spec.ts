@@ -30,12 +30,14 @@ test('logo URLs follow the upload across website, core pages and admin previews 
   try {
     const first = await upload();
     expect(first.logoVersion).toMatch(/^[a-f0-9]{12}$/);
-    const saved = (await owner.json<{ data: Website }>('/api/website', 'PUT', { ...editable(first), tagline: 'A new tagline', phone: '+1 (604) 555-0100', email: 'hello@north.example.test' })).data;
+    const primaryColor = '#08152e';
+    const saved = (await owner.json<{ data: Website }>('/api/website', 'PUT', { ...editable(first), primaryColor, tagline: 'A new tagline', phone: '+1 (604) 555-0100', email: 'hello@north.example.test' })).data;
     expect(saved.logoVersion).toBe(first.logoVersion);
     const second = await upload();
     expect(second.logoVersion).not.toBe(first.logoVersion);
     const logoPath = '/public/pages/logo/' + second.logoVersion;
     await owner.browser(page.context());
+    await page.emulateMedia({ colorScheme: 'dark' });
     for (const width of [360, 1280]) {
       await page.setViewportSize({ width, height: 800 });
       for (const path of ['/', '/join', '/trial', '/drop-in', '/trial/received', '/drop-in/received', '/contact', '/l/unavailable', '/l/cleared', '/l/return']) {
@@ -44,6 +46,16 @@ test('logo URLs follow the upload across website, core pages and admin previews 
         const logo = page.locator(`img[src="${logoPath}"]`);
         await expect(logo, path).toBeVisible();
         expect(await logo.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0), path).toBe(true);
+        if (path === '/' || path === '/contact') {
+          expect(await page.locator('html').getAttribute('class'), path).toBeNull();
+          await expect(page.locator('html'), path).toHaveCSS('--color-primary', primaryColor);
+        } else {
+          await expect(logo, path).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+          const darkPrimary = await page.locator('html').evaluate(el => getComputedStyle(el).getPropertyValue('--color-primary').trim());
+          expect(darkPrimary, path).toMatch(/^#[0-9a-f]{6}$/);
+          expect(darkPrimary, path).not.toBe(primaryColor);
+          expect(darkPrimary, path).not.toBe('#5ec9ba');
+        }
         if (['/join', '/trial', '/drop-in', '/trial/received', '/drop-in/received', '/contact'].includes(path)) {
           await expect(page.locator('main a[href="tel:+16045550100"]')).toBeVisible();
           await expect(page.locator('main a[href="mailto:hello@north.example.test"]')).toBeVisible();

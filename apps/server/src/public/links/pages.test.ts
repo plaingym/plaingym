@@ -33,6 +33,10 @@ describe('signed-link presentation and return receipts', () => {
   it.each(['alreadyDone', 'unavailable', 'replaced', 'cleared'] as const)('keeps gym branding on the %s page', state => {
     const page = linkPage({ now, timezone: 'UTC', t, state, gymName: 'North <Gym>', logoKey: 'gym/website/logo/one.png' });
     expect(page).toContain('North &lt;Gym&gt;'); expect(page).toMatch(/src="\/public\/pages\/logo\/[a-f0-9]+"/);
+    expect(page).toContain('<html lang="en" class="theme-system">');
+    expect(page).toContain('name="color-scheme" content="light dark"');
+    expect(page).toContain('href="/public/pages/theme.css"');
+    expect(page).toContain('bg-white object-contain');
     expect(page).not.toContain('gym/website/logo/one.png'); expect(page).toContain('object-contain');
   });
   it('brands active signed-link pages without a logo when none is configured', () => {

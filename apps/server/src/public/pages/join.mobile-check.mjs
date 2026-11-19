@@ -68,8 +68,16 @@ const check = async (page, name, axe = true) => {
   expect(await page.locator('input:not([type=checkbox]):visible, select:visible, button:visible, a:visible').evaluateAll(elements => elements.filter(e => {
     const r = e.getBoundingClientRect(); return r.width < 44 || r.height < 44;
   }).map(e => e.outerHTML))).toEqual([]);
-  if (axe) expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze()).violations.map(v => ({ id: v.id, nodes: v.nodes.map(n => n.target) }))).toEqual([]);
-  await page.screenshot({ path: new URL(name + '.png', output).pathname.replace(/^\/([A-Za-z]:)/, '$1'), fullPage: true });
+  try {
+    for (const colorScheme of ['light', 'dark']) {
+      await page.emulateMedia({ colorScheme });
+      await expect(page.locator('body')).toHaveCSS('background-color', colorScheme === 'dark' ? 'rgb(12, 21, 20)' : 'rgb(255, 255, 255)');
+      if (axe) expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze()).violations.map(v => ({ id: v.id, nodes: v.nodes.map(n => n.target) }))).toEqual([]);
+      await page.screenshot({ path: new URL(name + '-' + colorScheme + '.png', output).pathname.replace(/^\/([A-Za-z]:)/, '$1'), fullPage: true });
+    }
+  } finally {
+    await page.emulateMedia({ colorScheme: null });
+  }
 };
 async function fill(page, drawn, people = 2) {
   for (const [name, value] of Object.entries({ contactName: 'Pat Payer', email: 'payer@example.invalid', 'member-0-firstName': 'Avery', 'member-0-lastName': 'Joiner',

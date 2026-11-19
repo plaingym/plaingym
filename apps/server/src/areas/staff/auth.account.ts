@@ -39,8 +39,8 @@ const t = createTranslator(locales.en ?? {});
 /** The page the emailed link opens. The token stays in the fragment and is posted as JSON; the markup never contains it. */
 export function emailChangePage(text: Translator, nonce: string) {
   const script = `const token=location.hash.slice(1);history.replaceState(null,'',location.pathname);const button=document.getElementById('confirm');const show=(id)=>{document.getElementById(id).hidden=false;};button.addEventListener('click',async()=>{button.disabled=true;for(const id of ['error','expired','other','taken'])document.getElementById(id).hidden=true;try{const response=await fetch('/api/account/email/confirm',{method:'POST',credentials:'same-origin',redirect:'error',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});if(response.ok){const body=await response.json();document.getElementById('address').textContent=body.data.email;button.hidden=true;show('success');return;}show(response.status===404?'expired':response.status===403?'other':response.status===409?'taken':'error');}catch{show('error');}finally{button.disabled=false;}});`;
-  return jsx('html', { lang: 'en', children: [
-    jsx('head', { children: [jsx('meta', { charset: 'utf-8' }), jsx('meta', { name: 'viewport', content: 'width=device-width, initial-scale=1' }), jsx('meta', { name: 'referrer', content: 'no-referrer' }), jsx('title', { children: text('auth/account:confirmTitle') })] }),
+  return jsx('html', { lang: 'en', class: 'theme-system', children: [
+    jsx('head', { children: [jsx('meta', { charset: 'utf-8' }), jsx('meta', { name: 'viewport', content: 'width=device-width, initial-scale=1' }), jsx('meta', { name: 'color-scheme', content: 'light dark' }), jsx('meta', { name: 'referrer', content: 'no-referrer' }), jsx('title', { children: text('auth/account:confirmTitle') })] }),
     jsx('body', { children: [jsx('main', { children: [
       jsx('h1', { children: text('auth/account:confirmTitle') }), jsx('p', { children: text('auth/account:confirmDescription') }),
       jsx('button', { id: 'confirm', type: 'button', children: text('auth/account:confirmButton') }),
