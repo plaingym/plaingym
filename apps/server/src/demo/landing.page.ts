@@ -94,13 +94,15 @@ export function demoLandingPage(showcaseHref: string, source: string, t: Transla
     const sizes = mode === 'expanded' ? `(max-width: 767px) and (orientation: portrait) ${shot.width}px, 90vw`
       : mode === 'hero' ? '(min-width: 1152px) 640px, (min-width: 1024px) 55vw, 92vw'
         : shot.width < 500 ? '(min-width: 640px) 384px, 92vw' : '(min-width: 1152px) 540px, (min-width: 768px) 45vw, 92vw';
+    const srcset = (files: string[]) => `${href(files[0]!)} ${shot.width}w, ${href(files[1]!)} ${shot.width * 2}w`;
+    const dark = shot.dark.some((file, index) => file !== shot.light[index]);
     return h('picture', null,
-      h('source', { media: '(prefers-color-scheme: dark)', srcset: `${href(shot.dark[0]!)} ${shot.width}w, ${href(shot.dark[1]!)} ${shot.width * 2}w`, sizes }),
-      h('img', { src: href(shot.light[0]!), srcset: `${href(shot.light[0]!)} ${shot.width}w, ${href(shot.light[1]!)} ${shot.width * 2}w`, sizes,
+      dark ? h('source', { media: '(prefers-color-scheme: dark)', srcset: srcset(shot.dark), sizes }) : null,
+      h('img', { src: href(shot.light[0]!), srcset: srcset(shot.light), sizes,
         alt: text(key + 'Alt'), width: shot.width, height: shot.height, loading: mode === 'hero' ? 'eager' : 'lazy', decoding: 'async',
         ...(mode === 'hero' ? { fetchpriority: 'high' } : {}), class: mode === 'expanded' ? 'demo-expanded' : 'block h-auto w-full rounded-lg' }));
   };
-  const frame = 'rounded-xl border border-border bg-white p-1.5 shadow-xl shadow-gray-900/10 dark:border-gray-700 dark:bg-gray-800 dark:shadow-black/40';
+  const frame = 'rounded-xl border border-border bg-white p-1.5 shadow-xl shadow-gray-900/10 dark:bg-card dark:shadow-black/40';
   const feature = (key: FeatureKey, index: number) => {
     const narrow = screenshots[key].width < 500;
     return h('section', { id: 'feature-' + key, class: 'grid items-center gap-8 py-12 sm:py-16 md:grid-cols-2 lg:gap-16', 'aria-labelledby': key + '-heading' },

@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import screenshots from '../demo/screenshots.json' with { type: 'json' };
 
 const root = fileURLToPath(new URL('../../../../', import.meta.url));
 
@@ -23,23 +24,22 @@ describe('root README and development guide', () => {
     expect(missing, `${relative(root, file)} links to missing files`).toEqual([]);
   });
 
-  it('links every screenshot to its full-size light image and keeps its dark source', () => {
+  it('links each screenshot to its full-size light image and includes a dark source when it differs', () => {
     const markdown = readFileSync(resolve(root, 'README.md'), 'utf8');
     const pictures = [...markdown.matchAll(/<picture>[\s\S]*?<\/picture>/g)];
-    expect(pictures).toHaveLength(11); // Hero and ten features.
-    for (const [picture] of pictures) {
-      const image = /<img\b[^>]*\bsrc="([^"]+)"/.exec(picture)?.[1];
-      expect(image).toMatch(/^apps\/server\/src\/demo\/screenshots\/[a-z]+-light-2x-[a-f0-9]+\.webp$/);
+    const screens = ['members', 'members', 'ranks', 'schedule', 'billing', 'reports', 'join', 'portal', 'waivers', 'kiosk', 'server'] as const;
+    const directory = 'apps/server/src/demo/screenshots/';
+    expect(pictures).toHaveLength(screens.length);
+    for (const [index, key] of screens.entries()) {
+      const [picture] = pictures[index]!;
+      const { light, dark } = screenshots[key];
+      const image = directory + light[1];
+      expect(/<img\b[^>]*\bsrc="([^"]+)"/.exec(picture)?.[1]).toBe(image);
       expect(markdown).toContain(`<a href="${image}">\n${picture}\n</a>`);
       const sources = [...picture.matchAll(/<source\b[^>]*>/g)].map(([source]) => source);
-      expect(sources).toHaveLength(1);
-      expect(sources[0]).toContain('media="(prefers-color-scheme: dark)"');
-      const dark = /\bsrcset="([^"]+)"/.exec(sources[0]!)?.[1];
-      const screen = image!.split('/').at(-1)!.split('-light-')[0];
-      expect(dark).toMatch(new RegExp(`^apps/server/src/demo/screenshots/${screen}-dark-2x-[a-f0-9]+\\.webp$`));
-      for (const target of [image!, dark!]) {
-        expect(existsSync(resolve(root, target)), `${target} exists`).toBe(true);
-      }
+      expect(sources).toEqual(dark[1] === light[1] ? [] : [
+        `<source media="(prefers-color-scheme: dark)" srcset="${directory + dark[1]}">`,
+      ]);
     }
   });
 

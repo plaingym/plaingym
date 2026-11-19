@@ -24,11 +24,16 @@ when refreshing the sample date. No production clock or setting changes.
 The ten screens go to `apps/server/src/demo/screenshots/` as WebP at 1x and 2x,
 in light and dark. Portal and waiver screens are 390×844, kiosk 768×900, and
 admin/public join screens 1280×900. The Health overview is 1280×490, excluding
-variable disk and version details below the first row. The admin, portal and kiosk follow the
-device theme. A page without a theme class keeps its light palette.
+variable disk and version details below the first row. The admin, portal, kiosk,
+public join page and signed waiver form follow the device theme in a fresh browser
+context. The capture checks the applied color scheme before taking each screenshot.
 `apps/server/src/demo/screenshots.json` records dimensions and content-hashed names.
-A complete run removes obsolete captures. The root `README.md` shows the 1x captures
-too: update its file names after a refresh (`readme.docs.test.ts` fails on a missing one). Review the images before committing:
+If a dark WebP matches the light WebP byte for byte at the same density, both entries
+point to the light file. The product page uses one source set when both densities
+are shared. A complete run removes obsolete captures.
+The root `README.md` uses the 2x images. Update its file names after a refresh and
+include a dark source only where the 2x variants differ. `readme.docs.test.ts` checks
+those references against the manifest. Review the images before committing:
 only seeded people and data belong here, never tokens, QR credentials or device
 registration screens. The waiver uses a new seeded signer; no bearer URL is pictured.
 Each file must be under 200,000 bytes. Sizes also go in `e2e/coverage/product-capture.json`.
@@ -52,8 +57,9 @@ The first checks the real renderer and committed assets in three browsers, both
 themes and 360/1280-pixel viewports, under `script-src 'none'`. Chromium additionally
 disables JavaScript in the context; Firefox's automation evaluation can stall with
 that context setting. It exercises every
-popover's image, close control, Esc, outside click and returned focus, checks CSP
-and page overflow, and enforces the 300,000-byte initial HTML/CSS budget.
+popover's image, close control, Esc, and returned focus, plus outside click on
+desktop. It checks CSP and page overflow and enforces the 300,000-byte initial
+HTML/CSS budget.
 The second reviews the sandbox start page and menu with fixture discovery.
 Images and JSON results go in `coverage/demo/product/` and `coverage/demo/browser/`.
 Product review images come from Chromium and Firefox. WebKit runs every layout,

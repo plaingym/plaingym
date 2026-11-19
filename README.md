@@ -17,10 +17,10 @@ Run your gym on your terms, with your data on your own server.</p>
 </div>
 
 <p align="center">
-<a href="apps/server/src/demo/screenshots/members-light-2x-81f93841b45ba21f.webp">
+<a href="apps/server/src/demo/screenshots/members-light-2x-97447fedba731822.webp">
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/members-dark-2x-81f93841b45ba21f.webp">
-  <img src="apps/server/src/demo/screenshots/members-light-2x-81f93841b45ba21f.webp" alt="A member profile in the PlainGym admin, with household details and membership tabs" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/members-dark-2x-b62aec57ccae1389.webp">
+  <img src="apps/server/src/demo/screenshots/members-light-2x-97447fedba731822.webp" alt="A member profile in the PlainGym admin, with household details and membership tabs" width="100%">
 </picture>
 </a>
 </p>
@@ -50,10 +50,10 @@ Families, contact details and member records in one place. One payer per househo
 statuses, tags, photos, emergency contacts and staff-only medical notes.
 
 <p align="center">
-<a href="apps/server/src/demo/screenshots/members-light-2x-81f93841b45ba21f.webp">
+<a href="apps/server/src/demo/screenshots/members-light-2x-97447fedba731822.webp">
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/members-dark-2x-81f93841b45ba21f.webp">
-  <img src="apps/server/src/demo/screenshots/members-light-2x-81f93841b45ba21f.webp" alt="A member profile with household details" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/members-dark-2x-b62aec57ccae1389.webp">
+  <img src="apps/server/src/demo/screenshots/members-light-2x-97447fedba731822.webp" alt="A member profile with household details" width="100%">
 </picture>
 </a>
 </p>
@@ -64,10 +64,10 @@ Belts and stripes, or kyu and dan. Set criteria for classes, time at rank and ag
 see who is ready, and promote several members together.
 
 <p align="center">
-<a href="apps/server/src/demo/screenshots/ranks-light-2x-63e21c86698722f5.webp">
+<a href="apps/server/src/demo/screenshots/ranks-light-2x-d14683cdd88fb0db.webp">
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/ranks-dark-2x-63e21c86698722f5.webp">
-  <img src="apps/server/src/demo/screenshots/ranks-light-2x-63e21c86698722f5.webp" alt="Rank settings and promotion readiness" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/ranks-dark-2x-09ba79eb1a9b7cba.webp">
+  <img src="apps/server/src/demo/screenshots/ranks-light-2x-d14683cdd88fb0db.webp" alt="Rank settings and promotion readiness" width="100%">
 </picture>
 </a>
 </p>
@@ -78,10 +78,10 @@ Weekly class templates with capacity limits, a waitlist that moves people up on 
 own, a cancellation cutoff, and attendance taken by coaches.
 
 <p align="center">
-<a href="apps/server/src/demo/screenshots/schedule-light-2x-afc5f6e781392d53.webp">
+<a href="apps/server/src/demo/screenshots/schedule-light-2x-2f8fe56e1aece4e8.webp">
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/schedule-dark-2x-afc5f6e781392d53.webp">
-  <img src="apps/server/src/demo/screenshots/schedule-light-2x-afc5f6e781392d53.webp" alt="A weekly class schedule" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/schedule-dark-2x-d9be280eb360caef.webp">
+  <img src="apps/server/src/demo/screenshots/schedule-light-2x-2f8fe56e1aece4e8.webp" alt="A weekly class schedule" width="100%">
 </picture>
 </a>
 </p>
@@ -92,10 +92,10 @@ Memberships, signup fees, family discounts, promo codes and class packs. Card de
 stay with Stripe; failed payments retry with a payment link.
 
 <p align="center">
-<a href="apps/server/src/demo/screenshots/billing-light-2x-24280289de568642.webp">
+<a href="apps/server/src/demo/screenshots/billing-light-2x-df8e853ff278efa0.webp">
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/billing-dark-2x-24280289de568642.webp">
-  <img src="apps/server/src/demo/screenshots/billing-light-2x-24280289de568642.webp" alt="Membership plans with prices and billing periods" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/billing-dark-2x-a692d03d36f9cb26.webp">
+  <img src="apps/server/src/demo/screenshots/billing-light-2x-df8e853ff278efa0.webp" alt="Membership plans with prices and billing periods" width="100%">
 </picture>
 </a>
 </p>
@@ -106,10 +106,10 @@ A leads board with sources and conversion, member activity, revenue by plan,
 attendance by program, and member emails.
 
 <p align="center">
-<a href="apps/server/src/demo/screenshots/reports-light-2x-a77fc9b8476a43b0.webp">
+<a href="apps/server/src/demo/screenshots/reports-light-2x-267ca821f61b9e2b.webp">
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/reports-dark-2x-a77fc9b8476a43b0.webp">
-  <img src="apps/server/src/demo/screenshots/reports-light-2x-a77fc9b8476a43b0.webp" alt="Membership and attendance reports" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/reports-dark-2x-bbd3af526c26cf10.webp">
+  <img src="apps/server/src/demo/screenshots/reports-light-2x-267ca821f61b9e2b.webp" alt="Membership and attendance reports" width="100%">
 </picture>
 </a>
 </p>
@@ -120,10 +120,10 @@ Public sign-up straight through to the member portal, trial requests sent to sta
 and drop-in waivers signed before class.
 
 <p align="center">
-<a href="apps/server/src/demo/screenshots/join-light-2x-1a62af82ed206c97.webp">
+<a href="apps/server/src/demo/screenshots/join-light-2x-916852a6dcae42ec.webp">
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/join-dark-2x-1a62af82ed206c97.webp">
-  <img src="apps/server/src/demo/screenshots/join-light-2x-1a62af82ed206c97.webp" alt="The public join page with membership plans" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/join-dark-2x-ced274c0240fd53f.webp">
+  <img src="apps/server/src/demo/screenshots/join-light-2x-916852a6dcae42ec.webp" alt="The public join page with membership plans" width="100%">
 </picture>
 </a>
 </p>
@@ -134,10 +134,10 @@ An installable app for members: book classes, show a check-in QR code, follow ra
 progress, pay invoices and manage the household.
 
 <p align="center">
-<a href="apps/server/src/demo/screenshots/portal-light-2x-587bf93157fb3071.webp">
+<a href="apps/server/src/demo/screenshots/portal-light-2x-63ad5ca4862917e4.webp">
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/portal-dark-2x-587bf93157fb3071.webp">
-  <img src="apps/server/src/demo/screenshots/portal-light-2x-587bf93157fb3071.webp" alt="Rank progress in the phone-sized member portal" width="55%">
+  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/portal-dark-2x-c68e7643347f4e9b.webp">
+  <img src="apps/server/src/demo/screenshots/portal-light-2x-63ad5ca4862917e4.webp" alt="Rank progress in the phone-sized member portal" width="55%">
 </picture>
 </a>
 </p>
@@ -148,10 +148,10 @@ Waiver templates with guardian signing for minors and a PDF of each signed copy.
 One link collects a card, a waiver and the portal invite.
 
 <p align="center">
-<a href="apps/server/src/demo/screenshots/waivers-light-2x-6f8fa2e5e97ab0d4.webp">
+<a href="apps/server/src/demo/screenshots/waivers-light-2x-271f7f171557ca3f.webp">
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/waivers-dark-2x-6f8fa2e5e97ab0d4.webp">
-  <img src="apps/server/src/demo/screenshots/waivers-light-2x-6f8fa2e5e97ab0d4.webp" alt="A waiver signing page" width="55%">
+  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/waivers-dark-2x-b3f94c66bc43402c.webp">
+  <img src="apps/server/src/demo/screenshots/waivers-light-2x-271f7f171557ca3f.webp" alt="A waiver signing page" width="55%">
 </picture>
 </a>
 </p>
@@ -162,10 +162,10 @@ A tablet at the front desk. Members check in with a name and PIN or a QR code,
 families together. Payment issues stay off the shared screen.
 
 <p align="center">
-<a href="apps/server/src/demo/screenshots/kiosk-light-2x-957689bc28b3affc.webp">
+<a href="apps/server/src/demo/screenshots/kiosk-light-2x-878443562ecbc931.webp">
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/kiosk-dark-2x-957689bc28b3affc.webp">
-  <img src="apps/server/src/demo/screenshots/kiosk-light-2x-957689bc28b3affc.webp" alt="The tablet check-in screen" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/kiosk-dark-2x-99c97c16c13801ce.webp">
+  <img src="apps/server/src/demo/screenshots/kiosk-light-2x-878443562ecbc931.webp" alt="The tablet check-in screen" width="100%">
 </picture>
 </a>
 </p>
@@ -176,10 +176,10 @@ A one-command install and setup wizard, encrypted backups with restore, nightly 
 updates with rollback, health checks, CSV import and export, and an optional gym website.
 
 <p align="center">
-<a href="apps/server/src/demo/screenshots/server-light-2x-c156eed019dfe626.webp">
+<a href="apps/server/src/demo/screenshots/server-light-2x-412bdd1d8e544229.webp">
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/server-dark-2x-c156eed019dfe626.webp">
-  <img src="apps/server/src/demo/screenshots/server-light-2x-c156eed019dfe626.webp" alt="The Health page with service checks" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="apps/server/src/demo/screenshots/server-dark-2x-42aec3f8e4e9dad3.webp">
+  <img src="apps/server/src/demo/screenshots/server-light-2x-412bdd1d8e544229.webp" alt="The Health page with service checks" width="100%">
 </picture>
 </a>
 </p>

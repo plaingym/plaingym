@@ -7,7 +7,7 @@ import type { RequestEnvironment } from '../core/context.js';
 import type { PermissionMiddleware } from '../core/registry.js';
 import { mountSourceLink } from '../core/source-link.js';
 import { bulletKeys, demoLandingPage, featureKeys, landingStylesheet, repositoryUrl } from './landing.page.js';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import screenshots from './screenshots.json' with { type: 'json' };
 
@@ -52,14 +52,26 @@ it('serves the entry root as HTML with ordered CTAs, the showcase start URL, sou
 });
 it('has ten linked feature sections, responsive screenshots and native lightboxes with fallbacks', () => {
   const html = demoLandingPage('/demo', source);
-  for (const key of Object.keys(screenshots)) {
+  const pictures = [...html.matchAll(/<picture>.*?<\/picture>/gs)].map(([picture]) => picture);
+  for (const key of featureKeys) {
+    const { light, dark, width } = screenshots[key];
     expect(html).toContain(`href="#feature-${key}"`);
     expect(html).toContain(`id="feature-${key}"`);
     expect(html).toContain(`aria-labelledby="${key}-heading"`);
     expect(html).toContain(`popovertarget="shot-${key}"`);
     expect(html).toMatch(new RegExp(`id="shot-${key}"[^>]*popover="auto"`));
     expect(html).toMatch(new RegExp(`popovertarget="shot-${key}"[^>]*popovertargetaction="hide"`));
-    expect(html).toContain(`href="/demo-assets/${screenshots[key as keyof typeof screenshots].light[1]}"`);
+    expect(html).toContain(`href="/demo-assets/${light[1]}"`);
+    const variants = pictures.filter(picture => picture.includes(`src="/demo-assets/${light[0]}"`));
+    expect(variants).toHaveLength(key === 'schedule' ? 4 : 3);
+    for (const picture of variants) {
+      expect(picture).toContain(`srcset="/demo-assets/${light[0]} ${width}w, /demo-assets/${light[1]} ${width * 2}w"`);
+      if (dark.some((file, index) => file !== light[index])) {
+        expect(picture).toContain(`media="(prefers-color-scheme: dark)" srcset="/demo-assets/${dark[0]} ${width}w, /demo-assets/${dark[1]} ${width * 2}w"`);
+      } else {
+        expect(picture).not.toContain('<source');
+      }
+    }
   }
   for (const [img] of html.matchAll(/<img\b[^>]*>/g)) {
     expect(img).toMatch(/alt="[^"]+"/); expect(img).toMatch(/width="\d+"/); expect(img).toMatch(/height="\d+"/);
@@ -77,6 +89,20 @@ it('has ten linked feature sections, responsive screenshots and native lightboxe
   expect(html).toContain('prefers-color-scheme: dark');
   expect(html).toContain('<html lang="en" class="theme-system">');
   expect(Buffer.byteLength(html)).toBeLessThan(100_000);
+});
+it('uses the fallback image directly when the same files serve both themes', () => {
+  const shot = screenshots.schedule;
+  const dark = shot.dark;
+  try {
+    shot.dark = shot.light;
+    const html = demoLandingPage('/demo', source);
+    const pictures = [...html.matchAll(/<picture>.*?<\/picture>/gs)].map(([picture]) => picture)
+      .filter(picture => picture.includes(`src="/demo-assets/${shot.light[0]}"`));
+    expect(pictures).toHaveLength(4);
+    for (const picture of pictures) expect(picture).not.toContain('<source');
+  } finally {
+    shot.dark = dark;
+  }
 });
 it('has a header with section links, a script-free menu and icons on both calls to action', async () => {
   const response = await appFor(true).request(origin + '/');
@@ -122,17 +148,31 @@ it('keeps the running version in the footer after the source, license and self-h
 });
 it('serves only the manifest assets on the entry host with immutable image caching', async () => {
   const app = appFor(true);
-  const files = Object.values(screenshots).flatMap(shot => [...shot.light, ...shot.dark]);
-  expect(files).toHaveLength(40);
+  const directory = new URL('./screenshots/', import.meta.url);
+  const files = [...new Set(Object.values(screenshots).flatMap(shot => [...shot.light, ...shot.dark]))];
+  expect((await readdir(directory)).filter(file => file.endsWith('.webp')).sort()).toEqual([...files].sort());
+  for (const key of featureKeys) {
+    const { light, dark } = screenshots[key];
+    expect(light).toHaveLength(2);
+    expect(dark).toHaveLength(2);
+    for (const density of [1, 2]) {
+      const fallback = light[density - 1]!;
+      const variant = dark[density - 1]!;
+      expect(fallback).toMatch(new RegExp(`^${key}-light-${density}x-[a-f0-9]{16}\\.webp$`));
+      if (variant !== fallback) {
+        expect(variant).toMatch(new RegExp(`^${key}-dark-${density}x-[a-f0-9]{16}\\.webp$`));
+        expect(await readFile(new URL(variant, directory))).not.toEqual(await readFile(new URL(fallback, directory)));
+      }
+    }
+  }
   for (const file of files) {
-    expect(file).toMatch(/-[a-f0-9]{16}\.webp$/);
-    const path = new URL('./screenshots/' + file, import.meta.url);
-    expect((await stat(path)).size).toBeLessThan(200_000);
-    expect(file).toContain(createHash('sha256').update(await readFile(path)).digest('hex').slice(0, 16));
+    const bytes = await readFile(new URL(file, directory));
+    expect(bytes.length).toBeLessThan(200_000);
+    expect(file).toContain(createHash('sha256').update(bytes).digest('hex').slice(0, 16));
     const response = await app.request(origin + '/demo-assets/' + file);
     expect(response.status).toBe(200); expect(response.headers.get('content-type')).toBe('image/webp');
     expect(response.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
-    expect(Buffer.from(await response.arrayBuffer())).toEqual(await readFile(path));
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes);
   }
   const asset = '/demo-assets/' + files[0];
   expect((await app.request('https://showcase.demo.example.test' + asset)).status).toBe(404);

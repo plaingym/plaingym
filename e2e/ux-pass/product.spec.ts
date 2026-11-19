@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readdir, unlink, writeFile } from 'node:fs/promises';
 import { test, expect, demoClient, type Person, type RecordId } from '../support.js';
-import { openContext, settle } from './capture.js';
+import { openContext, settle, themes } from './capture.js';
 import { adminScreens } from './screens.js';
 import type { Page } from '@playwright/test';
 
@@ -41,7 +41,8 @@ test('capture ten seeded product screens in both themes and densities', async ({
       const viewport = ['portal', 'waivers'].includes(key) ? { width: 390, height: 844 } : key === 'kiosk' ? { width: 768, height: 900 }
         : { width: 1280, height: key === 'server' ? 490 : 900 };
       const shot = manifest[key] = { ...viewport, light: [] as string[], dark: [] as string[] };
-      for (const theme of ['light', 'dark'] as const) for (const density of [1, 2]) {
+      const lightCaptures = new Map<number, { file: string; bytes: Buffer }>();
+      for (const theme of themes) for (const density of [1, 2]) {
         const [context, page] = await openContext(browser, { viewport, deviceScaleFactor: density, colorScheme: theme, timezoneId: 'UTC', locale: 'en-US', reducedMotion: 'reduce' });
         try {
           await page.clock.setFixedTime(fixedTime);
@@ -58,6 +59,7 @@ test('capture ten seeded product screens in both themes and densities', async ({
           await expect(page.locator('main h1, #main-content h1').first()).toBeVisible();
           await page.waitForLoadState('networkidle');
           await settle(page);
+          await expect(page.locator('html')).toHaveCSS('color-scheme', theme === 'dark' ? 'dark' : 'light dark');
           if (key === 'ranks') {
             await page.getByLabel('Show ready members only', { exact: true }).uncheck();
             await settle(page);
@@ -67,10 +69,17 @@ test('capture ten seeded product screens in both themes and densities', async ({
           // Freeze client time before navigation; the container clock fixes the seed and server labels too.
           const bytes = await webp(await page.screenshot({ animations: 'disabled', caret: 'hide' }));
           expect(bytes.length, key + ' WebP budget').toBeLessThan(200_000);
+          const light = lightCaptures.get(density);
+          if (theme === 'dark' && light?.bytes.equals(bytes)) {
+            shot.dark.push(light.file);
+            continue;
+          }
           const hash = createHash('sha256').update(bytes).digest('hex').slice(0, 16);
           const file = `${key}-${theme}-${density}x-${hash}.webp`;
           await writeFile(new URL(file, destination), bytes);
-          shot[theme].push(file); evidence.push({ file, bytes: bytes.length });
+          shot[theme].push(file);
+          evidence.push({ file, bytes: bytes.length });
+          if (theme === 'light') lightCaptures.set(density, { file, bytes });
         } finally { await context.close(); }
       }
     }

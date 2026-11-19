@@ -63,7 +63,10 @@ try {
           }
           if (index === 0 && name !== 'webkit') await page.screenshot({ path: resolve(output, `${name}-${width}-${theme}-lightbox.png`), caret: 'initial' });
           await page.keyboard.press('Escape'); await expect(popover).toBeHidden(); await expect(trigger).toBeFocused();
-          await trigger.click(); await page.mouse.click(1, 1); await expect(popover).toBeHidden();
+          // At phone width the portrait lightbox covers the viewport, leaving no backdrop to click.
+          if (width >= 768) {
+            await trigger.click(); await page.mouse.click(1, 1); await expect(popover).toBeHidden();
+          }
           await trigger.press('Enter'); await close.click(); await expect(popover).toBeHidden(); await expect(trigger).toBeFocused();
         }
         // Load all below-fold images before the full-page review screenshot.
