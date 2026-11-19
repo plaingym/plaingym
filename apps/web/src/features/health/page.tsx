@@ -32,7 +32,7 @@ function detailValue(key: string, value: unknown, timezone?: string) {
   if (key === 'result') return label('result.' + String(value));
   if (key === 'lastTestResult') return label('sms.test.' + String(value));
   if (key.endsWith('At') && typeof value === 'string') return <time dateTime={value}>{instantLabel(value, timezone)}</time>;
-  if (key.endsWith('Url') && typeof value === 'string') return <a href={value} className="underline" target="_blank" rel="noreferrer">{label('field.' + key)}</a>;
+  if (key.endsWith('Url') && typeof value === 'string') return <a href={value} className="inline-flex min-h-11 min-w-11 items-center underline" target="_blank" rel="noreferrer">{label('field.' + key)}</a>;
   return String(value);
 }
 /**

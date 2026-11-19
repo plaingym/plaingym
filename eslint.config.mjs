@@ -5,6 +5,7 @@ import globals from 'globals';
 import tseslint from 'typescript-eslint';
 import { systemTableRule } from './packages/db/system-table-lint.mjs';
 import { userFacingStringsRule } from './scripts/user-facing-strings-lint.mjs';
+import { rawColorRule } from './scripts/raw-color-lint.mjs';
 
 const vendor = {
   group: [
@@ -63,6 +64,12 @@ const staticImports = [
 ];
 
 export default defineConfig(
+  {
+    files: ['apps/web/src/{features,components}/**/*.{js,jsx,ts,tsx,mjs,mts}'],
+    ignores: ['**/*.{test,spec}.*', '**/{test,tests,__tests__}/**'],
+    plugins: { theme: { rules: { 'raw-color': rawColorRule } } },
+    rules: { 'theme/raw-color': 'error' },
+  },
   {
     files: ['apps/web/src/**/*.{jsx,tsx}', 'apps/server/src/**/*.{ts,tsx}'],
     ignores: ['**/*.{test,spec}.*', '**/{test,tests,__tests__}/**'],

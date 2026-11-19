@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { test, expect, Client, demoClient, type RecordId } from '../support.js';
 import { claimPortal, outboxIds, outboxLink } from '../portal.js';
+import { check } from './mobile-screens.js';
 
 // Invitation and sign-in links are bearer credentials; retain screenshots only after sign-in.
 test.use({ trace: 'off', screenshot: 'off' });
@@ -18,8 +19,7 @@ for (const width of [360, 1280]) test('SMS choices on staff, portal and join scr
   await expect(page.getByRole('button', { name: 'Withdraw notices consent' }).first()).toBeVisible();
   await expect(page.getByRole('region', { name: 'Text message consent' })).toHaveCount(2);
   await expect(page.getByText('Only the member or a payer managing their profile can give announcements consent.')).toBeVisible();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
-  await info.attach('sms-staff-' + width, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
+  await check(page, info, 'sms-staff-' + width);
 
   const invitation = await owner.json<{ data: { invitationUrl: string } }>(`/api/households/${home.id}/portal-invitations`, 'POST', { email, delivery: 'print', scope: 'payer' });
   const before = await outboxIds(owner);
@@ -36,8 +36,7 @@ for (const width of [360, 1280]) test('SMS choices on staff, portal and join scr
   await page.getByRole('button', { name: 'Agree to notices', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Agree to notices', exact: true })).toHaveCount(0);
   await expect(householdName).toHaveValue(draftName);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
-  await info.attach('sms-portal-' + width, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
+  await check(page, info, 'sms-portal-payer-' + width);
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByText('Saved.', { exact: true })).toBeVisible();
   await expect(householdName).toHaveValue(draftName);
@@ -60,8 +59,7 @@ for (const width of [360, 1280]) test('SMS choices on staff, portal and join scr
   }
   await expect(page.getByRole('region', { name: 'Text message consent' })).toHaveCount(1);
   await expect(page.getByRole('button', { name: 'Edit details', exact: true })).toHaveCount(0);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
-  await info.attach('sms-adult-' + width, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
+  await check(page, info, 'sms-portal-adult-' + width);
   for (const kind of ['notices', 'announcements']) {
     await page.getByRole('button', { name: 'Withdraw ' + kind + ' consent' }).click();
     await expect(page.getByRole('button', { name: 'Agree to ' + kind, exact: true })).toBeVisible();

@@ -68,6 +68,11 @@ test('logo URLs follow the upload across website, core pages and admin previews 
       await expect(preview).toHaveAttribute('src', logoPath);
       await preview.scrollIntoViewIfNeeded();
       await expect.poll(() => preview.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
+      for (const colorScheme of ['light', 'dark'] as const) {
+        await page.emulateMedia({ colorScheme });
+        await expect(preview).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+      }
+      await page.emulateMedia({ colorScheme: 'light' });
       expect(await horizontalOverflow(page)).toBeUndefined();
       await page.screenshot({ path: info.outputPath(`admin-logo-${width}.png`) });
     }

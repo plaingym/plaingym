@@ -170,8 +170,21 @@ asks for dark, `.theme-system`; the contrast test beside `styles.css` keeps ever
 surface text token at 4.5:1 on `background`, `card`, `muted` and `secondary`, and
 `primary-foreground` and `destructive-foreground` at 4.5:1 on their own fills
 (`primary`, `destructive`), the only surfaces they are used on. Border, input and
-ring tokens reach 3:1 on `background`. Signature pads and QR images stay dark on
-white in both themes.
+ring tokens reach 3:1 on `background`.
+
+`pnpm lint` checks class names and inline styles in `src/features/` and
+`src/components/` with `theme/raw-color`. Use semantic tokens in place of
+Tailwind palette utilities and literal hex, RGB or HSL colors. Color input
+defaults and canvas ink are data and drawing instructions.
+
+The rule allows white on the following elements in both themes.
+
+- `features/kiosk-devices/settings.tsx` and `features/portal/checkin/page.tsx`
+  keep the pairing and check-in QR images on a scannable light background.
+- `features/waivers/screens.tsx` and `features/portal/waivers/page.tsx`
+  keep staff and member signature canvases white for dark ink.
+- `features/website/settings.tsx` keeps the logo preview on a white tile so
+  dark artwork remains readable.
 
 **Strings and accessibility.** All visible text goes through `t()`. Interactive
 elements are real buttons and links with accessible names. The production-image

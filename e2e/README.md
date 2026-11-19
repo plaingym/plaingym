@@ -151,6 +151,10 @@ The checks cover:
   stay light until they opt in. The same spec audits every signed-in portal page, all five
   signed-link purposes and unavailable-link feedback, `/join` (plans and form), `/trial` and
   `/drop-in` at both widths.
+  The responsive captures also audit sign-in, invitation claim, setup, staff billing,
+  lead details, reporting, announcements, campaigns, health, account and the demo outbox.
+  The invoice detail, staff and member waiver signing, and SMS test-text form are
+  checked open. Staff and portal SMS consent are covered in `sms-consent.spec.ts`.
   Keyboard-only flows cover kiosk check-in, portal booking/cancellation, invoice Checkout
   and card updates, visible focus, and trapping/restoring focus in a profile dialog.
   The website's six pages also run axe with both color preferences. Screenshots and

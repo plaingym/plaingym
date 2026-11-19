@@ -17,9 +17,11 @@ for (const { name: size, viewport } of viewports) {
     const invoice = (await owner.json<{ data: RecordId }>('/api/billing/invoices/one-off', 'POST', { householdId: household.id,
       dueOn: localDate(new Date(), 'UTC'), source: 'custom', description: 'Accessibility review', currency: 'USD', amountCents: 1000, taxRateIds: [] })).data;
     await page.setViewportSize(viewport);
-    const check = (name: string) => accessibleThemes(page, info, size + '-' + name, async scheme => {
-      await expect(page.locator('html')).toHaveClass('theme-system');
-      await expect(page.locator('body')).toHaveCSS('background-color', scheme === 'dark' ? 'rgb(12, 21, 20)' : 'rgb(255, 255, 255)');
+    const check = (name: string) => accessibleThemes(page, info, size + '-' + name, {
+      async checkPalette(scheme) {
+        await expect(page.locator('html')).toHaveClass('theme-system');
+        await expect(page.locator('body')).toHaveCSS('background-color', scheme === 'dark' ? 'rgb(12, 21, 20)' : 'rgb(255, 255, 255)');
+      },
     });
     for (const [purpose, extra] of [['pay_invoice', { invoiceId: invoice.id }], ['update_card', {}], ['onboarding', {}], ['sign_waiver', { memberId: member.id }]] as const) {
       const link = (await owner.json<{ data: { link: RecordId; token: string } }>('/api/links', 'POST', {

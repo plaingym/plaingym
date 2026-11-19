@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { test, expect, Client, gymOrigin, password } from '../support.js';
 import { accessibleLayout, reachable, sizes } from '../responsive.js';
+import { check, viewports } from './mobile-screens.js';
 
 // The fresh-setup project runs before any test can initialize the install fixture.
 test('phone-first fresh wizard completes with disabled discovery, reachable actions and axe A/AA at three sizes', async ({ page }, info) => {
@@ -18,6 +19,13 @@ test('phone-first fresh wizard completes with disabled discovery, reachable acti
   expect(restore.body).toMatchObject({ error: { code: 'invalid_request', message: 'Invalid snapshot prefix' } });
   const probes: string[] = [];
   const requests: string[] = [];
+  const capture = async (name: string, width: number) => {
+    if (viewports.some(({ viewport }) => viewport.width === width)) await check(page, info, `setup-${name}-${width}`);
+    else {
+      await accessibleLayout(page, info, `setup-${name}-${width}`);
+      await page.screenshot({ path: info.outputPath(`${name}-${width}.png`), fullPage: true });
+    }
+  };
   // Paths and error messages only: setup tokens and request/response bodies are credentials.
   page.on('request', (request) => {
     const path = new URL(request.url()).pathname;
@@ -41,16 +49,15 @@ test('phone-first fresh wizard completes with disabled discovery, reachable acti
     await expect(page.getByRole('heading', { name: 'Start fresh or restore a backup', exact: true })).toBeVisible();
     await expect(page.getByRole('alert')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Try again', exact: true })).toHaveCount(0);
-    await accessibleLayout(page, info, 'start-' + width);
+    await capture('start', width);
     await page.getByRole('button', { name: 'Restore a backup', exact: true }).click();
     await expect(page.getByLabel('Snapshot ID or snapshots/ID/ prefix')).toBeVisible();
     await reachable(page.getByRole('button', { name: 'Restore a backup', exact: true }), page);
-    await accessibleLayout(page, info, 'restore-' + width);
+    await capture('restore', width);
     await page.getByRole('button', { name: 'Back', exact: true }).click();
     await page.getByRole('button', { name: 'Start fresh', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Create your owner account', exact: true })).toBeVisible();
     await expect(page.getByRole('alert')).toHaveCount(0);
-    await accessibleLayout(page, info, 'owner-' + width);
   }
   expect(probes).toEqual(['/api/demo', '/api/demo', '/api/demo']);
   expect((await guest.json<{ data: { currentStep: number } }>('/api/setup')).data.currentStep).toBe(0);
@@ -62,8 +69,7 @@ test('phone-first fresh wizard completes with disabled discovery, reachable acti
       const actions = page.getByRole('group', { name: 'Setup actions', exact: true });
       await expect(actions).toHaveCount(1);
       for (const button of await actions.getByRole('button').all()) await reachable(button, page);
-      await accessibleLayout(page, info, name + '-' + size.width);
-      await page.screenshot({ path: info.outputPath(name + '-' + size.width + '.png'), fullPage: true });
+      await capture(name, size.width);
     }
     await page.setViewportSize(sizes[0]!);
   };
@@ -117,8 +123,7 @@ test('phone-first fresh wizard completes with disabled discovery, reachable acti
   expect(completed.status, completed.text).toBe(404);
   for (const { width, height } of sizes) {
     await page.setViewportSize({ width, height });
-    await accessibleLayout(page, info, 'setup-complete-' + width);
-    await page.screenshot({ path: info.outputPath('setup-complete-' + width + '.png'), fullPage: true });
+    await capture('complete', width);
   }
   expect(probes).toEqual(['/api/demo', '/api/demo', '/api/demo']);
 });

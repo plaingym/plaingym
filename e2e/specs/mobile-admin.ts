@@ -4,18 +4,29 @@ import { expect, gymOrigin, localDate, showWeek, wall, weekday, type Install, ty
 import { browserZone, check, open, go, sessionButton, dialogLayout, viewports } from './mobile-screens.js';
 
 interface Session extends RecordId { templateId: string | null; startsAt: string; endsAt: string }
-const screens = ['/admin', '/admin/members', '/admin/schedule', '/admin/ranks', '/admin/staff', '/admin/imports', '/admin/settings'];
+const screens = [
+  '/admin', '/admin/members', '/admin/schedule', '/admin/ranks', '/admin/staff', '/admin/imports',
+  '/admin/leads', '/admin/billing/plans', '/admin/billing/invoices', '/admin/waivers',
+  '/admin/announcements', '/admin/campaigns', '/admin/reports', '/admin/health', '/admin/settings',
+];
 
 export async function adminScreens(browser: Browser, install: Install, info: TestInfo, options: (typeof viewports)[number]) {
   const { name: size, viewport, hasTouch } = options;
   const phone = size === 'phone', last = phone ? 'Phone' : 'Desktop';
   const owner = install.clients.owner;
-  const settings = (await owner.json<{ data: RecordId & { timezone: string } }>('/api/settings')).data;
+  const settings = (await owner.json<{ data: RecordId & { timezone: string; currency: string } }>('/api/settings')).data;
   const zone = phone ? 'America/New_York' : 'Asia/Tokyo';
   await owner.json('/api/settings', 'PATCH', { revision: settings.revision, timezone: zone });
   try {
     const home = (await owner.json<{ data: RecordId }>('/api/households', 'POST', { name: `Mobile ${last} family` })).data;
     const member = (await owner.json<{ data: Person }>('/api/members', 'POST', { householdId: home.id, firstName: 'Casey', lastName: last, status: 'active' })).data;
+    const lead = (await owner.json<{ data: Person }>('/api/members', 'POST', {
+      householdId: home.id, firstName: 'Prospect', lastName: last, status: 'prospect',
+    })).data;
+    const invoice = (await owner.json<{ data: { id: string; number: number } }>('/api/billing/invoices/one-off', 'POST', {
+      householdId: home.id, dueOn: localDate(new Date(), zone), source: 'custom', description: 'Class equipment',
+      currency: settings.currency, amountCents: 1500, taxRateIds: [],
+    })).data;
     // An exhausted pack holder may still be checked in by staff, with an explicit notice.
     for (const credits of [1, -1]) await owner.json('/api/billing/credits/adjust', 'POST', {
       memberId: member.id, credits, reason: 'Opening credit correction', adjustmentId: crypto.randomUUID(),
@@ -32,13 +43,21 @@ export async function adminScreens(browser: Browser, install: Install, info: Tes
     const [context, page] = await open(browser, install, 'owner', { viewport, hasTouch });
     let requests = 0;
     context.on('request', () => { requests++; });
+    // Created last, so the try below always retires it.
+    const waiverName = `Mobile ${last} participation waiver`;
+    const waiver = (await owner.json<{ data: { id: string; version: number } }>('/api/waivers/templates', 'POST', {
+      name: waiverName, kind: 'waiver', body: 'Please tell an instructor about any injuries before training.',
+    })).data;
     try {
       // Each of these admin screens: no sideways scroll, 44 px targets, axe WCAG 2.1 A/AA on the whole page.
       await page.goto(gymOrigin + '/admin');
       for (const href of screens) {
         await go(page, href);
         await expect(page.locator('#main-content h1')).toBeVisible();
-        await expect(page.locator('#main-content [role=status]').filter({ hasText: /Loading/ })).toHaveCount(0);
+        if (href === '/admin/leads') await expect(page.getByRole('link', { name: `Prospect ${last}`, exact: true })).toBeVisible();
+        if (href === '/admin/waivers') await expect(page.getByRole('heading', { name: waiverName, exact: true })).toBeVisible();
+        if (href === '/admin/health') await expect(page.getByRole('heading', { name: 'Disk space', exact: true })).toBeVisible();
+        if (href === '/admin/settings') await expect(page.getByText('QA tablet', { exact: true })).toBeVisible();
         await check(page, info, `${size}${href.replaceAll('/', '-')}`);
       }
 
@@ -49,6 +68,28 @@ export async function adminScreens(browser: Browser, install: Install, info: Tes
       await expect(loadError).toBeVisible();
       await loadError.getByRole('button', { name: 'Try again', exact: true }).click();
       await expect(loadError).toBeHidden();
+
+      await page.getByRole('button', { name: 'Connect SMS provider', exact: true }).click();
+      const smsTest = page.getByRole('form', { name: 'SMS provider settings', exact: true });
+      await smsTest.getByLabel('Send the test text to').fill('+12025550123');
+      await check(page, info, `${size}-settings-sms-test`);
+
+      await go(page, '/admin/billing/invoices');
+      await page.getByRole('button', { name: 'View invoice ' + invoice.number, exact: true }).click();
+      const invoiceDialog = page.getByRole('dialog');
+      await expect(invoiceDialog.getByText('Class equipment', { exact: true })).toBeVisible();
+      await check(page, info, `${size}-invoice-dialog`);
+      await page.goto(gymOrigin + '/admin/billing/invoices/' + invoice.id);
+      await expect(page.getByText('Class equipment', { exact: true })).toBeVisible();
+      await check(page, info, `${size}-invoice-detail`);
+
+      await page.goto(gymOrigin + '/admin/leads/' + lead.id);
+      await expect(page.getByRole('heading', { level: 1, name: `Prospect ${last}` })).toBeVisible();
+      await check(page, info, `${size}-lead-detail`);
+
+      await page.goto(gymOrigin + '/admin/account');
+      await expect(page.locator('#main-content h1')).toBeVisible();
+      await check(page, info, `${size}-admin-account`);
 
       // Dashboard: widgets stack in one column on phones.
       await go(page, '/admin');
@@ -78,6 +119,14 @@ export async function adminScreens(browser: Browser, install: Install, info: Tes
       await expect(panel.getByText('Saved.', { exact: true })).toBeVisible();
       await expect(panel.getByRole('listitem').filter({ hasText: install.ranks[0]!.name })).toHaveCount(1);
       await check(page, info, `${size}-promotion`);
+
+      await page.goto(`${gymOrigin}/admin/members/${member.id}#memberTabs.waivers`);
+      await page.locator('li').filter({ hasText: waiverName }).getByRole('button', { name: 'Review and sign', exact: true }).click();
+      const signing = page.getByRole('dialog');
+      await expect(signing.locator('canvas')).toBeVisible();
+      await check(page, info, `${size}-staff-waiver-signing`);
+      await signing.getByRole('button', { name: 'Close', exact: true }).first().click();
+      await expect(signing).toBeHidden();
 
       // Schedule: the agenda on phones and the week grid on desktop, then move one generated session.
       await go(page, '/admin/schedule');
@@ -116,7 +165,11 @@ export async function adminScreens(browser: Browser, install: Install, info: Tes
       expect((await owner.json<{ data: Session }>('/api/schedule/sessions/' + second.id)).data.startsAt).toBe(second.startsAt);
       await dialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
       await expect(dialog).toBeHidden();
-    } finally { info.annotations.push({ type: 'owner requests', description: String(requests) }); await context.close(); }
+    } finally {
+      info.annotations.push({ type: 'owner requests', description: String(requests) });
+      await context.close();
+      await owner.json(`/api/waivers/templates/${waiver.id}/retire`, 'POST', { expectedVersion: waiver.version });
+    }
 
     // A coach checks the member in from the session's roster.
     const [coachContext, coachPage] = await open(browser, install, 'coach', { viewport, hasTouch });
