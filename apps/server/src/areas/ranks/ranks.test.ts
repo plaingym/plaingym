@@ -12,6 +12,7 @@ import { createServerRegistry } from '../../core/registry.js';
 import type { Principal, RequestEnvironment } from '../../core/context.js';
 import { TestClock } from '../../core/clock.js';
 import { FakeAttendanceQueries } from '../../core/interfaces/attendance.js';
+import { createAttendanceQueries } from '../attendance/attendance.js';
 import { FakePromotionCriterionProvider } from '../../core/interfaces/extensions.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { createPromotionCriteria } from './criteria.js';
@@ -238,6 +239,42 @@ describe('rank editing and promotion services', () => {
     expect(audits).toHaveLength(2);
     // Append-only audit rows must not keep notes that anonymization later clears.
     for (const audit of audits) { expect(JSON.stringify(audit.after)).not.toContain('555-0100'); expect(audit.after).toMatchObject({ hasNotes: true }); }
+  });
+  it('ready-only eligibility uses one batch attendance read and keeps the same answer', async () => {
+    const f = await fixture(), extra = await Promise.all(Array.from({ length: 5 }, () =>
+      factory('members', f.gymId, { status: 'active', createdAt: new Date('2026-09-01Z') })));
+    const visit = (memberId: string, occurredAt: string) =>
+      factory('attendances', f.gymId, { memberId, programId: f.program.id, occurredAt: new Date(occurredAt), kind: 'class' });
+    for (const occurredAt of ['2026-09-10T00:00:00Z', '2026-10-01T00:00:00Z']) await visit(f.member.id, occurredAt);
+    for (const occurredAt of ['2026-09-10T00:00:00Z', '2026-09-20T00:00:00Z', '2026-10-01T00:00:00Z']) await visit(extra[0]!.id, occurredAt);
+    await visit(extra[1]!.id, '2026-10-01T00:00:00Z');
+    // extra[2] has no visits. extra[3] and extra[4] visit before their promotion, which resets the count.
+    for (const occurredAt of ['2026-09-10T00:00:00Z', '2026-09-20T00:00:00Z']) {
+      await visit(extra[3]!.id, occurredAt); await visit(extra[4]!.id, occurredAt);
+    }
+    await visit(extra[3]!.id, '2026-10-16T00:00:00Z');
+    for (const occurredAt of ['2026-10-16T00:00:00Z', '2026-10-20T00:00:00Z']) await visit(extra[4]!.id, occurredAt);
+    for (const member of [extra[3]!, extra[4]!]) await factory('memberRanks', f.gymId, { memberId: member.id,
+      programId: f.program.id, rankSystemId: f.system.id, rankId: f.rank.id, subRank: 0, promotedAt: new Date('2026-10-15Z') });
+    const attendance = createAttendanceQueries({ scope: database.forGym, clock });
+    const service = createRanksService({ scope: database.forGym, clock, criteria: createPromotionCriteria(attendance) });
+    await service.updateRank(f.context, f.rank.id, { revision: f.rank.revision,
+      criteria: [{ providerId: 'classes-since-promotion', config: { target: 2 } }] });
+    const query = { programId: f.program.id, rankId: f.rank.id, limit: 100, offset: 0 };
+    const all = await service.eligibility(f.gymId, query), expected = all.data.filter(row => row.eligible);
+    expect(expected.map(row => row.memberId)).toEqual([f.member.id, extra[0]!.id, extra[4]!.id].sort((a, b) => a.localeCompare(b)));
+    const original = database.app.sql.options.debug, statements: string[] = [];
+    database.app.sql.options.debug = (_id, statement) => { statements.push(statement); };
+    let ready;
+    try { ready = await service.eligibility(f.gymId, { ...query, readyOnly: 'true' }); }
+    finally { database.app.sql.options.debug = original; }
+    expect(ready.data).toEqual(expected);
+    expect(ready.pagination).toEqual({ limit: 100, offset: 0, total: expected.length });
+    const attendanceReads = statements.filter(statement => statement.includes('attendances'));
+    expect(attendanceReads).toHaveLength(1);
+    expect(attendanceReads[0]).toContain('jsonb_to_recordset');
+    const page = await service.eligibility(f.gymId, { ...query, limit: 2, offset: 1, readyOnly: 'true' });
+    expect(page).toEqual({ data: expected.slice(1, 3), pagination: { limit: 2, offset: 1, total: expected.length } });
   });
   it('paginates consistently, filters inactive programs, and rejects stale configuration saves', async () => {
     const f = await fixture();

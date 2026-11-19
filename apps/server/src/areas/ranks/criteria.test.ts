@@ -28,6 +28,23 @@ describe('promotion criterion providers', () => {
       .toMatchObject([{ current: 3, target: 2, met: true }, { current: 21, target: 21, met: true }]);
     expect(evaluate).toHaveBeenCalledOnce();
   });
+  it('refuses a batch read for a different scope, gym or clock before any provider starts', async () => {
+    const registry = createPromotionCriteria(new FakeAttendanceQueries());
+    const prepareBatch = vi.fn(async () => vi.fn(async () => ({ current: 0, target: 1, met: false })));
+    registry.register({ id: 'custom-batch', moduleId: 'custom', labelKey: 'custom:batch',
+      configSchema: new FakePromotionCriterionProvider('config', 'config').configSchema,
+      evaluate: async () => ({ current: 0, target: 1, met: false }), prepareBatch });
+    const reads = { scope: forGym, gymId, until: context.clock.now().toISOString(), openMatCountsAsClass: false };
+    const candidate = (changed: CriterionContext) => [{ context: changed, rank: { criteria: [criterion('custom-batch', 1)] } }];
+    const household: CriterionContext = { ...context, attendanceScope: { kind: 'household',
+      identity: { gymId, householdId: uuidv7(), userId: uuidv7() } } };
+    await expect(registry.prepareBatch(candidate(household), new Set(['custom']), reads)).rejects.toMatchObject({ code: 'conflict' });
+    await expect(registry.prepareBatch(candidate({ ...context, attendanceScope: { kind: 'gym', gymId: uuidv7() } }),
+      new Set(['custom']), reads)).rejects.toMatchObject({ code: 'conflict' });
+    await expect(registry.prepareBatch(candidate({ ...context, clock: new TestClock('2026-10-22T12:00:01Z') }),
+      new Set(['custom']), reads)).rejects.toMatchObject({ code: 'conflict' });
+    expect(prepareBatch).not.toHaveBeenCalled();
+  });
   it('counts only this gym, member, program and promotion window through AttendanceQueries', async () => {
     const attendance = new FakeAttendanceQueries([
       ['2026-09-30T12:00:00Z', gymId, memberId, programId],

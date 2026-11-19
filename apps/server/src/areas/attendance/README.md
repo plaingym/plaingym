@@ -77,13 +77,17 @@ the total and once per distinct program/tag, even when its direct program also a
 on the session. Template edits cannot reclassify attendance. Intervals include `since`
 and exclude `until`; history sorts newest first, then ID ascending.
 
-`promotion.query.ts` batches dashboard promotion windows in one scoped read,
-using `attendance.ts`'s `predicate` for program links, open-mat inclusion and the
-exclusive upper bound. Its bound JSON candidate rows correlate each member's
-inclusive lower bound; direct and session links still count a visit only once.
-The filtered rows are materialized once per program before joining candidate
-windows, avoiding repeated scans caused by the program-link predicate's subquery.
-This optimization leaves `AttendanceQueries` unchanged.
+`promotion.query.ts` batches promotion windows in one scoped read, using
+`attendance.ts`'s `predicate` for program links and open-mat inclusion. Each
+program's union arm joins its bound JSON candidate rows inside the read, using
+each member's earliest window as an indexable lower bound; the outer join applies
+each window's own inclusive `since` and the global exclusive `until`. A member
+outside the candidate rows is never part of the arm, direct and session links
+still count a visit only once, and a second window in the same program reuses the
+member's earliest bound. The filtered rows are materialized once per program
+before joining candidate windows, avoiding repeated scans caused by the
+program-link predicate's subquery. This optimization leaves `AttendanceQueries`
+unchanged.
 
 Household activity is read only with `forHousehold`, reloading grants on every call.
 Its `attendancePage` and `attendanceCount` queries filter, order, page and count in

@@ -277,7 +277,7 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
     },
     async eligibility(gymId: string, input: unknown, enabledModules: ReadonlySet<string> = new Set()) {
       const query = eligibilityListQuerySchema.parse(input), now = clock.now();
-      const { timezone } = await settings.get(gymId);
+      const { timezone, openMatCountsAsClass } = await settings.get(gymId);
       const snapshot = await scope(gymId, async (tx) => {
         const { program, rank } = await references(tx, query.programId, query.rankId);
         const roster = await tx.select({ id: members.id, createdAt: members.createdAt, dateOfBirth: members.dateOfBirth })
@@ -294,18 +294,23 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
       const latest = new Map<string, (typeof snapshot.history)[number]>();
       for (const entry of snapshot.history) if (!latest.has(entry.memberId)) latest.set(entry.memberId, entry);
       const candidates = snapshot.roster.flatMap(member => {
-        const target = nextPromotion(latest.get(member.id), [snapshot.rank]);
-        return target ? [{ member, subRank: target.subRank }] : [];
-      });
-      // An unfiltered page's total is known without evaluating criteria. Ready-only
-      // pages must evaluate every candidate before filtering and paginating.
-      const selected = query.readyOnly ? candidates : candidates.slice(query.offset, query.offset + query.limit);
-      for (const { member, subRank } of selected) {
-        const previous = latest.get(member.id);
-        const evaluated = await criteria.evaluate({ attendanceScope: { kind: 'gym', gymId }, gymId, memberId: member.id,
+        const previous = latest.get(member.id), target = nextPromotion(previous, [snapshot.rank]);
+        if (!target) return [];
+        const context: CriterionContext = { attendanceScope: { kind: 'gym', gymId }, gymId, memberId: member.id,
           programId: snapshot.program.id, rankId: snapshot.rank.id,
           promotedAt: (previous?.promotedAt ?? member.createdAt).toISOString(), dateOfBirth: member.dateOfBirth, timezone,
-          clock: { now: () => new Date(now) } }, snapshot.rank.criteria, enabledModules);
+          clock: { now: () => new Date(now) } };
+        return [{ member, subRank: target.subRank, context }];
+      });
+      // An unfiltered page's total is known without evaluating criteria. Ready-only
+      // pages must evaluate every candidate before filtering and paginating, through one batch read.
+      const selected = query.readyOnly ? candidates : candidates.slice(query.offset, query.offset + query.limit);
+      const batch = query.readyOnly && candidates.length ? await criteria.prepareBatch(candidates.map(candidate => ({
+        context: candidate.context, rank: { criteria: snapshot.rank.criteria },
+      })), enabledModules, { scope, gymId, until: now.toISOString(), openMatCountsAsClass }) : null;
+      for (const { member, subRank, context } of selected) {
+        const evaluated = batch ? await batch.evaluate(context, snapshot.rank.criteria, enabledModules)
+          : await criteria.evaluate(context, snapshot.rank.criteria, enabledModules);
         const eligible = evaluated.every((item) => item.met);
         if (query.readyOnly && !eligible) continue;
         results.push({ memberId: member.id, rankSystemId: snapshot.rank.rankSystemId,

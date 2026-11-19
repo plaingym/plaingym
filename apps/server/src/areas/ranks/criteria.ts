@@ -30,6 +30,13 @@ export class PromotionCriteria extends Registry<BatchCriterionProvider> {
   }
   async prepareBatch(candidates: readonly { context: CriterionContext; rank: { criteria: readonly PromotionCriterion[] } }[],
     enabled: ReadonlySet<string>, reads: BatchReads): Promise<PromotionCriteria> {
+    // A batch read counts in the gym scope up to reads.until; refuse any context that would be counted differently.
+    const until = Date.parse(reads.until);
+    for (const { context } of candidates) {
+      if (context.attendanceScope.kind !== 'gym' || context.attendanceScope.gymId !== reads.gymId || context.gymId !== reads.gymId
+        || context.clock.now().getTime() !== until)
+        throw new AppError('conflict', 'Promotion batch reads require matching gym scope and clock');
+    }
     // Fail closed before any provider starts its batch reads, including disabled module criteria.
     for (const candidate of candidates) this.validate(candidate.rank.criteria, enabled);
     const batch = new PromotionCriteria();

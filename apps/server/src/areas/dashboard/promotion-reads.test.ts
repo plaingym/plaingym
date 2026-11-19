@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it } from 'vitest';
-import { memberRanks, uuidv7, type members } from '@plaingym/db';
+import { attendances, memberRanks, uuidv7, type members } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { targetCriterionSchema } from '../../core/interfaces/extensions.js';
 import { TestClock } from '../../core/clock.js';
 import { createAttendanceQueries } from '../attendance/attendance.js';
+import { countPromotionAttendance, promotionAttendanceEligibleQuery } from '../attendance/promotion.query.js';
 import { createPromotionCriteria } from '../ranks/criteria.js';
 import { createRanksService } from '../ranks/ranks.service.js';
 
@@ -99,4 +100,71 @@ it.each([false, true])('matches paginated eligibility for next steps, linked pro
     }
   }
   await expect(ranks.dashboardEligibility(gymId)).rejects.toMatchObject({ code: 'conflict' });
+});
+
+it.each([false, true])('scopes each promotion window to its own lower bound and agrees with evaluate (open mat = %s)', async openMatCountsAsClass => {
+  const gymId = uuidv7(), until = '2026-04-01T00:00:00Z';
+  await factory('gyms', gymId, { openMatCountsAsClass });
+  const system = await factory('rankSystems', gymId), rankCriteria = [{ providerId: 'classes-since-promotion', config: { target: 2 } }];
+  const program = await factory('programs', gymId, { rankSystemId: system.id });
+  const rank = await factory('ranks', gymId, { rankSystemId: system.id, criteria: rankCriteria });
+  const session = await factory('classSessions', gymId, { startsAt: new Date('2026-03-01Z'), endsAt: new Date('2026-03-01T01:00:00Z') });
+  await factory('classSessionPrograms', gymId, { sessionId: session.id, programId: program.id });
+  const roster = await Promise.all(['before', 'first', 'inside', 'after', 'none'].map(name =>
+    factory('members', gymId, { firstName: name, status: 'active' })));
+  for (const member of roster) {
+    for (const occurredAt of ['2026-01-01T00:00:00Z', '2026-02-01T00:00:00Z'])
+      await factory('attendances', gymId, { memberId: member.id, programId: program.id, occurredAt: new Date(occurredAt), kind: 'class' });
+    await factory('attendances', gymId, { memberId: member.id, sessionId: session.id, programId: null,
+      occurredAt: new Date('2026-03-01T00:00:00Z'), kind: 'class' });
+    // Open mat counts only when the gym says so, and the visit at until is excluded.
+    await factory('attendances', gymId, { memberId: member.id, programId: program.id,
+      occurredAt: new Date('2026-02-15T00:00:00Z'), kind: 'open_mat' });
+    await factory('attendances', gymId, { memberId: member.id, programId: program.id,
+      occurredAt: new Date(until), kind: 'class' });
+  }
+  const windows: Record<string, string | null> = { before: '2025-12-01T00:00:00Z', first: '2026-01-01T00:00:00Z',
+    inside: '2026-02-20T00:00:00Z', after: '2026-03-15T00:00:00Z', none: null };
+  const attendance = createAttendanceQueries({ scope: database.forGym, clock: new TestClock(until) });
+  const criteria = createPromotionCriteria(attendance);
+  const contexts = roster.map(member => ({ attendanceScope: { kind: 'gym' as const, gymId }, gymId, memberId: member.id,
+    programId: program.id, rankId: rank.id, promotedAt: windows[member.firstName]!, dateOfBirth: null, timezone: 'UTC',
+    clock: new TestClock(until) }));
+  const reads = { scope: database.forGym, gymId, until, openMatCountsAsClass };
+  const batch = await criteria.prepareBatch(contexts.map(context => ({ context, rank: { criteria: rankCriteria } })), new Set(), reads);
+  const expected = openMatCountsAsClass ? [4, 4, 1, 0, 4] : [3, 3, 1, 0, 3];
+  for (const [index, context] of contexts.entries()) {
+    const single = await criteria.evaluate(context, rankCriteria, new Set());
+    expect(await batch.evaluate(context, rankCriteria, new Set())).toEqual(single);
+    expect(single[0]).toMatchObject({ current: expected[index], target: 2, met: expected[index]! >= 2 });
+  }
+  // Two windows for one member and program must not duplicate that member's visits.
+  const duplicate = await countPromotionAttendance(database.forGym, gymId, [
+    { memberId: roster[0]!.id, programId: program.id, since: '2025-12-01T00:00:00Z' },
+    { memberId: roster[0]!.id, programId: program.id, since: '2026-02-20T00:00:00Z' },
+  ], until, openMatCountsAsClass);
+  expect([...duplicate.values()].sort((a, b) => a - b)).toEqual([1, openMatCountsAsClass ? 4 : 3]);
+});
+
+
+it('reads only the candidate rows from each program arm', async () => {
+  const gymId = uuidv7(), until = '2026-04-01T00:00:00Z';
+  await factory('gyms', gymId);
+  const system = await factory('rankSystems', gymId), program = await factory('programs', gymId, { rankSystemId: system.id });
+  const candidate = await factory('members', gymId), outside = await factory('members', gymId);
+  for (const occurredAt of ['2026-02-01T00:00:00Z', '2026-02-02T00:00:00Z', '2026-03-01T00:00:00Z'])
+    await factory('attendances', gymId, { memberId: candidate.id, programId: program.id, occurredAt: new Date(occurredAt), kind: 'class' });
+  await database.forGym(gymId, tx => tx.insert(attendances).values(Array.from({ length: 2_000 }, (_, index) => ({
+    gymId, memberId: outside.id, programId: program.id, kind: 'class', source: 'import',
+    occurredAt: new Date(Date.parse('2026-02-10T00:00:00Z') + index * 60_000),
+  }))));
+  const requests = [{ memberId: candidate.id, programId: program.id, since: '2026-01-15T00:00:00Z' }];
+  const counts = await countPromotionAttendance(database.forGym, gymId, requests, until, false);
+  expect([...counts.values()]).toEqual([3]);
+  // The shared CTE builder lets the test count exactly what each union arm admitted; the old query admitted all 2,003.
+  // eslint-disable-next-line database/system-tables -- Test hook explains the same bound CTE the batch reads.
+  const rows = await database.forGym(gymId, tx => tx.execute<{ member_id: string }>(
+    promotionAttendanceEligibleQuery(tx, gymId, requests, until, false)));
+  expect(rows).toHaveLength(3);
+  expect(rows.every(row => row.member_id === candidate.id)).toBe(true);
 });

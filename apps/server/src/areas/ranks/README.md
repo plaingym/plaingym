@@ -47,9 +47,13 @@ exists. The dashboard reads latest promotions with `DISTINCT ON`, ordered by the
 same date, position, sub-rank, creation and ID rules, joining the active roster
 instead of binding every member ID. It consumes those rows without sorting again.
 Its criterion registry supports an optional local `prepareBatch` provider hook;
-providers without a hook retain their normal evaluator and all validation. The
-classes provider batches through the shared attendance predicate in
+providers without a hook retain their normal evaluator and all validation. A
+batch read must use the gym attendance scope and the same `until` as every
+context's clock; `prepareBatch` refuses any other context before a provider runs.
+The classes provider batches through the shared attendance predicate in
 `attendance/promotion.query.ts`, rather than a dashboard-specific counting rule.
+Ready-only eligibility builds one batch for all its candidates before filtering
+and paginating, so it reads the same class counts as the dashboard.
 
 `memberProgress` applies the ordering to one member's history, supplied by the caller
 from its own scope. It returns each program's current rank, the next step and the
