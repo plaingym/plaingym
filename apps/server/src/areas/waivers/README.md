@@ -154,6 +154,11 @@ URL issuance checks storage metadata; serving the PDF verifies its full bytes.
 Every read streams the object once, withholding the last chunk unless its size and
 digest match. Altered bytes truncate the response before its declared length;
 concurrent readers each hold only a few chunks, without a verification cache.
+A download whose streamed bytes fail the size or digest check logs
+`waivers.document.integrity_failure` once with the storage key, so staff can find the
+changed template (a stored size that differs from the record is refused earlier as
+not found, without this log); signing and the PDF queue leave their
+errors to the callers that already log them.
 Document URL reads and template downloads have separate 300-per-minute limits per
 client and gym, allowing families sharing a Wi-Fi address to read multiple documents.
 Refused frames and explicit opens show a plain retry page, including `Retry-After`

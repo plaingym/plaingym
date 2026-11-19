@@ -8,6 +8,7 @@ import { route } from '../../core/registry.js';
 import { setPolicy } from '../../core/csp.js';
 import { documentReadLimit } from './document-read.js';
 import { clock as defaultClock } from '../../core/clock.js';
+import { logError } from '../../core/log.js';
 
 export const documentDownloadPath = '/api/waivers/template-document';
 const lifetimeMs = 300_000;
@@ -30,29 +31,30 @@ const integrityFailure = () => new Error('Waiver document integrity failure');
  * (cancelling the source), and the last chunk is held back until the digest matches, so a reader never receives the
  * complete recorded length of altered bytes. Memory is one chunk, whatever the document's size.
  */
-function checked(document: WaiverDocument) {
+function checked(document: WaiverDocument, onFailure?: (error: Error) => void) {
   const hash = createHash('sha256');
   let size = 0, held: Uint8Array | undefined;
+  const refuse = () => { const error = integrityFailure(); onFailure?.(error); return error; };
   return new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       // Empty storage chunks must not release the final data chunk before integrity is checked.
       if (!chunk.length) return;
       size += chunk.length;
-      if (size > document.bytes || size > byteLimit) throw integrityFailure();
+      if (size > document.bytes || size > byteLimit) throw refuse();
       hash.update(chunk);
       if (held) controller.enqueue(held);
       held = chunk;
     },
     flush(controller) {
-      if (size !== document.bytes || hash.digest('hex') !== document.hash) throw integrityFailure();
+      if (size !== document.bytes || hash.digest('hex') !== document.hash) throw refuse();
       if (held) controller.enqueue(held);
     },
   });
 }
-async function checkedStream(uploads: Uploads, document: WaiverDocument) {
+async function checkedStream(uploads: Uploads, document: WaiverDocument, onFailure?: (error: Error) => void) {
   const stream = await uploads.get(document.key);
   if (!stream) notFound();
-  return stream.pipeThrough(checked(document));
+  return stream.pipeThrough(checked(document, onFailure));
 }
 /** For signing, which needs only the digest check: reads the object once, holding one chunk at a time. */
 export async function verifyWaiverDocument(uploads: Uploads, gymId: string, document: WaiverDocument): Promise<void> {
@@ -86,11 +88,14 @@ export function createWaiverDocumentDelivery(options: {
   const mac = (payload: string) => createHmac('sha256', key).update('waiver-document-v1\n').update(payload).digest();
   /**
    * Every read streams from storage once, holding only a chunk until the digest matches.
-   * Altered bytes truncate the response before its declared length can be received.
+   * Altered bytes truncate the response before its declared length can be received, and the
+   * refused download records the storage key once so staff can find the changed template.
    */
   async function stream(uploads: Uploads, gymId: string, document: WaiverDocument) {
     await headWaiverDocument(uploads, gymId, document);
-    return { body: await checkedStream(uploads, document), bytes: document.bytes };
+    const body = await checkedStream(uploads, document,
+      error => logError('waivers.document.integrity_failure', { key: document.key }, error));
+    return { body, bytes: document.bytes };
   }
   const service = {
     async issue(gymId: string, document: WaiverDocument) {

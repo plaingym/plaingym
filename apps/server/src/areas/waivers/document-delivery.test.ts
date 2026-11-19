@@ -6,11 +6,23 @@ import { FakeUploads } from '../../infra/storage/index.js';
 import { TestClock } from '../../core/clock.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import { errorHandler } from '../../core/errors.js';
+import { setLogSink } from '../../core/log.js';
 import { digest } from './snapshot.js';
 import { documentReadBudget } from './document-read.js';
-import { createWaiverDocumentDelivery, createWaiverDocumentDownloadRoute, readWaiverDocument } from './document-delivery.js';
+import { createWaiverDocumentDelivery, createWaiverDocumentDownloadRoute, readWaiverDocument, verifyWaiverDocument } from './document-delivery.js';
 
 const body = async (document: { body: ReadableStream<Uint8Array> }) => digest(new Uint8Array(await new Response(document.body).arrayBuffer()));
+/** Captures structured log lines for one test, restoring the previous sink afterwards. */
+async function withLogs<T>(run: (lines: string[]) => Promise<T>): Promise<T> {
+  const lines: string[] = [], previous = setLogSink(line => lines.push(line));
+  try { return await run(lines); } finally { setLogSink(previous); }
+}
+const integrityLog = (lines: string[], key: string) => {
+  expect(lines).toHaveLength(1);
+  const entry = JSON.parse(lines[0]!) as Record<string, unknown>;
+  expect(entry).toMatchObject({ level: 'error', event: 'waivers.document.integrity_failure', key });
+  for (const secret of ['bytes', 'hash', 'url', 'signature']) expect(entry).not.toHaveProperty(secret);
+};
 /** A storage stream that hands out one chunk per pull and counts what it has handed out. */
 function pulledStream(bytes: Uint8Array, chunk: number, counter: { pulled: number }) {
   let offset = 0;
@@ -151,5 +163,51 @@ describe('waiver document delivery', () => {
     })()).rejects.toThrow('Waiver document integrity failure');
     expect(received).toBeLessThan(f.document.bytes);
     await expect(body(await f.delivery.read(f.gymId, f.token))).rejects.toThrow('Waiver document integrity failure');
+  });
+  it('logs once when stored bytes of the recorded size no longer match the digest', async () => {
+    const f = await fixture();
+    const changed = Uint8Array.from(f.bytes); changed[10] = 0;
+    f.uploads.get = async () => new ReadableStream({ start(controller) {
+      controller.enqueue(changed.slice(0, 20)); controller.enqueue(changed.slice(20)); controller.close();
+    } });
+    await withLogs(async lines => {
+      await expect(body(await f.delivery.read(f.gymId, f.token))).rejects.toThrow('Waiver document integrity failure');
+      integrityLog(lines, f.document.key);
+    });
+  });
+  it('logs once when storage hands out a byte past the recorded size', async () => {
+    const f = await fixture();
+    const longer = new Uint8Array(f.bytes.length + 1); longer.set(f.bytes);
+    f.uploads.get = async () => new ReadableStream({ start(controller) {
+      controller.enqueue(longer.slice(0, 20)); controller.enqueue(longer.slice(20)); controller.close();
+    } });
+    await withLogs(async lines => {
+      await expect(body(await f.delivery.read(f.gymId, f.token))).rejects.toThrow('Waiver document integrity failure');
+      integrityLog(lines, f.document.key);
+    });
+  });
+  it('logs once when storage ends before the recorded size', async () => {
+    const f = await fixture();
+    f.uploads.get = async () => new ReadableStream({ start(controller) { controller.enqueue(f.bytes.slice(0, f.bytes.length - 1)); controller.close(); } });
+    await withLogs(async lines => {
+      await expect(body(await f.delivery.read(f.gymId, f.token))).rejects.toThrow('Waiver document integrity failure');
+      integrityLog(lines, f.document.key);
+    });
+  });
+  it('serves an intact document without logging it', async () => {
+    const f = await fixture();
+    await withLogs(async lines => {
+      expect(await body(await f.delivery.read(f.gymId, f.token))).toBe(f.document.hash);
+      expect(lines).toEqual([]);
+    });
+  });
+  it('leaves signing failures for its caller to log', async () => {
+    const f = await fixture();
+    const changed = Uint8Array.from(f.bytes); changed[10] = 0;
+    f.uploads.get = async () => new ReadableStream({ start(controller) { controller.enqueue(changed); controller.close(); } });
+    await withLogs(async lines => {
+      await expect(verifyWaiverDocument(f.uploads, f.gymId, f.document)).rejects.toThrow('Waiver document integrity failure');
+      expect(lines).toEqual([]);
+    });
   });
 });
