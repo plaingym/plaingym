@@ -3,7 +3,9 @@
 
 The admin menu groups permitted links by task: Overview (Dashboard first), Gym,
 Billing, Communication and Administration. Billing keeps invoices, plans and
-reports together. Empty groups are hidden; the phone menu uses the same order.
+reports together. Empty groups are hidden; the phone menu uses the same order
+without the group headings, sits below the header, demo row and update banner,
+and locks the page's scroll while it is open.
 
 `App` owns the Query client and Router providers. The default `ShellServices` loads and validates `/api/auth/bootstrap` using the shared contract: resolved gym, enabled modules, current session display name, optional nullable `staffProfileId`, roles/member access, and enabled password/magic-link methods. The profile ID belongs only to the signed-in user in the resolved gym; the bootstrap returns null when that login has no profile there. The schedule uses it to show an assigned coach the cancellation-notice option. It grants no authority. Pass `createShellServices(loadBootstrap)` to inject an alternative loader for tests. Navigation filtering is presentation only; the API enforces permissions independently.
 

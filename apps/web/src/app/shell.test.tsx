@@ -216,6 +216,97 @@ describe('admin shell', () => {
     await user.click(screen.getByRole('link', { name: 'Members' }));
     await waitFor(() => expect(menu.getAttribute('aria-expanded')).toBe('false'));
   });
+  it('hides the phone menu group headings while keeping every group labelled for screen readers', async () => {
+    const state = { ...anonymous, session: { userId: 'owner', displayName: 'Test User', roles: ['owner'] as const, member: false } };
+    const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}><p>Child content</p></AdminShell> });
+    render(<RouterProvider router={createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ['/'] }) })} />);
+    const navigation = await screen.findByRole('navigation', { name: 'Gym navigation' });
+    const heading = within(navigation).getByRole('heading', { name: 'Gym' });
+    // The heading is removed from the phone layout, and returns unchanged from `md`.
+    expect(heading.className).toContain('hidden');
+    expect(heading.className).toContain('md:block');
+    // Each group keeps its section (and therefore its label) while the links remain one list.
+    expect(navigation.querySelector('section[aria-labelledby="nav-gym"]')).not.toBeNull();
+    expect(navigation.querySelector('section[aria-labelledby="nav-administration"]')).not.toBeNull();
+  });
+  it('anchors the open phone menu below the sticky header after the page has scrolled', async () => {
+    const offsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+    const offsetTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetTop');
+    const scrollY = Object.getOwnPropertyDescriptor(window, 'scrollY');
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get() { return this.tagName === 'HEADER' ? 56 : 0; } });
+    Object.defineProperty(HTMLElement.prototype, 'offsetTop', { configurable: true, get() { return this.classList.contains('relative') ? 100 : 0; } });
+    Object.defineProperty(window, 'scrollY', { configurable: true, value: 300 });
+    try {
+      const state = { ...anonymous, session: { userId: 'coach', displayName: 'Test User', roles: ['coach'] as const, member: false } };
+      const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}><p>Child content</p></AdminShell> });
+      render(<RouterProvider router={createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ['/'] }) })} />);
+      const user = userEvent.setup();
+      await user.click(await screen.findByRole('button', { name: 'Menu' }));
+      // Content at 100px in the document, scrolled by 300px: the sticky header's 56px wins over the off-screen top.
+      await waitFor(() => expect(screen.getByRole('navigation', { name: 'Gym navigation' }).style.top).toBe('56px'));
+    } finally {
+      for (const [key, descriptor] of [['offsetHeight', offsetHeight], ['offsetTop', offsetTop]] as const)
+        if (descriptor) Object.defineProperty(HTMLElement.prototype, key, descriptor);
+        else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[key];
+      if (scrollY) Object.defineProperty(window, 'scrollY', scrollY);
+      else delete (window as unknown as Record<string, unknown>).scrollY;
+    }
+  });
+  it('locks the page behind the phone menu without a scrollbar shift and releases it on Escape, outside press and navigation', async () => {
+    const width = window.innerWidth;
+    const clientWidth = Object.getOwnPropertyDescriptor(document.documentElement, 'clientWidth');
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 360 });
+    Object.defineProperty(document.documentElement, 'clientWidth', { configurable: true, value: 345 });
+    try {
+      const state = { ...anonymous, session: { userId: 'coach', displayName: 'Test User', roles: ['coach'] as const, member: false } };
+      const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}><p>Child content</p></AdminShell> });
+      render(<RouterProvider router={createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ['/'] }) })} />);
+      const user = userEvent.setup();
+      const menu = await screen.findByRole('button', { name: 'Menu' });
+      const locked = () => {
+        expect(document.documentElement.style.overflow).toBe('hidden');
+        expect(document.body.style.overflow).toBe('clip');
+        expect(document.body.style.paddingRight).toBe('15px');
+      };
+      const released = () => {
+        expect(document.documentElement.style.overflow).toBe('');
+        expect(document.body.style.overflow).toBe('');
+        expect(document.body.style.paddingRight).toBe('');
+      };
+      await user.click(menu); locked();
+      await user.keyboard('{Escape}'); released();
+      await user.click(menu); locked();
+      fireEvent.pointerDown(screen.getByText('Child content')); released();
+      await user.click(menu); locked();
+      await user.click(screen.getByRole('link', { name: 'Members' }));
+      await waitFor(() => expect(menu.getAttribute('aria-expanded')).toBe('false'));
+      released();
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
+      if (clientWidth) Object.defineProperty(document.documentElement, 'clientWidth', clientWidth);
+      else delete (document.documentElement as unknown as Record<string, unknown>).clientWidth;
+    }
+  });
+  it('closes the phone menu and releases the page when the screen reaches the desktop breakpoint', async () => {
+    const width = window.innerWidth;
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 360 });
+    try {
+      const state = { ...anonymous, session: { userId: 'coach', displayName: 'Test User', roles: ['coach'] as const, member: false } };
+      const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}><p>Child content</p></AdminShell> });
+      render(<RouterProvider router={createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ['/'] }) })} />);
+      const user = userEvent.setup();
+      const menu = await screen.findByRole('button', { name: 'Menu' });
+      await user.click(menu);
+      expect(document.documentElement.style.overflow).toBe('hidden');
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 768 });
+      fireEvent(window, new Event('resize'));
+      await waitFor(() => expect(menu.getAttribute('aria-expanded')).toBe('false'));
+      expect(document.documentElement.style.overflow).toBe('');
+      expect(document.body.style.overflow).toBe('');
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
+    }
+  });
   it('redirects anonymous admin visits to login', async () => {
     const router = start(services(), '/admin/members');
     await waitFor(() => expect(router.state.location.pathname).toBe('/login'));

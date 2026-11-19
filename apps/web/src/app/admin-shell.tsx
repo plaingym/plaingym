@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { Link, useRouterState } from '@tanstack/react-router';
 import { canStaff, type NavigationEntry } from '@plaingym/shared';
 import { createRegistries } from '../lib/registries.js';
@@ -71,16 +71,62 @@ export function AdminShell({ state, entries = createRegistries().adminNav.all(),
   const demo = useDemoSandbox();
   const pathname = useRouterState({ select: (router) => router.location.pathname });
   const menuButton = useRef<HTMLButtonElement>(null), nav = useRef<HTMLElement>(null);
+  const header = useRef<HTMLElement>(null), content = useRef<HTMLDivElement>(null), bannerRef = useRef<HTMLDivElement>(null);
+  const [menuTop, setMenuTop] = useState<number>();
   const [refs] = useState(() => [menuButton, nav]);
   const [close] = useState(() => () => setOpen(false));
   useDismiss(open, close, refs, menuButton);
   // Any navigation, including back/forward, closes the phone menu.
   useEffect(() => { setOpen(false); }, [pathname]);
+  // A resize past the phone breakpoint shows the sidebar, so the menu is no longer open.
+  useEffect(() => {
+    if (!open) return;
+    const closeOnDesktop = () => { if (window.innerWidth >= 768) setOpen(false); };
+    window.addEventListener('resize', closeOnDesktop);
+    return () => window.removeEventListener('resize', closeOnDesktop);
+  }, [open]);
+  // Anchor the menu below whatever chrome is above the content: the header, the demo row and the update banner.
+  // Measure in document coordinates: the header is sticky, and the scroll lock below changes where a sticky header
+  // reports itself once the page is scrolled, which used to put the menu above the screen.
+  const scrollAtOpen = useRef(0);
+  useLayoutEffect(() => {
+    if (!open) return;
+    scrollAtOpen.current = window.scrollY;
+    const measure = () => {
+      const headerHeight = header.current?.offsetHeight ?? 0;
+      let contentTop = 0;
+      for (let node: HTMLElement | null = content.current; node; node = node.offsetParent as HTMLElement | null) contentTop += node.offsetTop;
+      const top = Math.max(headerHeight, contentTop - scrollAtOpen.current);
+      setMenuTop((current) => current === top ? current : top);
+    };
+    measure();
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
+    if (header.current) observer?.observe(header.current);
+    if (bannerRef.current) observer?.observe(bannerRef.current);
+    window.addEventListener('resize', measure);
+    return () => { observer?.disconnect(); window.removeEventListener('resize', measure); };
+  }, [open]);
+  // The page behind the menu must not scroll or show a scrollbar. Padding keeps its content where it was.
+  // Clip the body instead of hiding it: hiding it makes the body a scroll container, which breaks the sticky header.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const root = document.documentElement, body = document.body;
+    const scrollbar = Math.max(0, window.innerWidth - root.clientWidth);
+    const previous = { rootOverflow: root.style.overflow, bodyOverflow: body.style.overflow, bodyPaddingRight: body.style.paddingRight };
+    root.style.overflow = 'hidden';
+    body.style.overflow = 'clip';
+    if (scrollbar > 0) body.style.paddingRight = `${scrollbar}px`;
+    return () => {
+      root.style.overflow = previous.rootOverflow;
+      body.style.overflow = previous.bodyOverflow;
+      body.style.paddingRight = previous.bodyPaddingRight;
+    };
+  }, [open]);
   useEffect(() => { if (open) nav.current?.querySelector<HTMLElement>('a')?.focus(); }, [open]);
   const entriesToShow = visibleAdminNavigation(entries.map((entry) => entry.id === 'adminNav.outbox'
     ? { ...entry, enabled: demo } : entry), state.session, state.gym.enabledModules);
   return <div className="flex flex-1 flex-col">
-    <header className="sticky top-0 z-30 border-b border-border bg-background">
+    <header ref={header} className="sticky top-0 z-30 border-b border-border bg-background">
       <div className="flex h-header items-center gap-2 px-2 sm:px-4">
         <Button ref={menuButton} variant="ghost" size="icon" className="md:hidden" aria-label={t(open ? 'shell/shell:closeMenu' : 'shell/shell:menu')}
           aria-expanded={open} aria-controls="admin-navigation" onClick={() => setOpen(!open)}>
@@ -98,14 +144,15 @@ export function AdminShell({ state, entries = createRegistries().adminNav.all(),
         <AccountMenu session={state.session} onSignOut={onSignOut} signingOut={signingOut} />
       </div>
     </header>
-    {banner}
-    <div className="relative flex flex-1">
-      {open && <div aria-hidden="true" className="fixed inset-0 top-header z-10 bg-foreground/20 md:hidden" />}
+    <div ref={bannerRef}>{banner}</div>
+    <div ref={content} className="relative flex flex-1">
+      {open && <div aria-hidden="true" style={menuTop === undefined ? undefined : { top: menuTop }} className="fixed inset-x-0 bottom-0 z-10 bg-foreground/20 md:hidden" />}
       <nav ref={nav} id="admin-navigation" aria-label={t('shell/shell:navigation')}
-        className={`${open ? 'block' : 'hidden'} absolute inset-x-0 top-0 z-20 max-h-[calc(100dvh-var(--spacing-header))] overflow-y-auto border-b border-border bg-background p-2 shadow-lg
-          md:sticky md:top-header md:block md:max-h-[calc(100dvh-var(--spacing-header))] md:w-60 md:shrink-0 md:self-start md:border-b-0 md:border-r md:p-3 md:shadow-none`}>
+        style={open && menuTop !== undefined ? { top: menuTop } : undefined}
+        className={`${open ? 'fixed inset-x-0 bottom-0 z-20 block' : 'hidden'} overflow-y-auto overscroll-contain border-b border-border bg-background p-2 shadow-lg
+          md:sticky md:top-header md:bottom-auto md:block md:max-h-[calc(100dvh-var(--spacing-header))] md:w-60 md:shrink-0 md:self-start md:border-b-0 md:border-r md:p-3 md:shadow-none`}>
         <div className="space-y-4">{adminNavigationGroups(entriesToShow).map(group => <section key={group.id} aria-labelledby={'nav-' + group.id}>
-          <h2 id={'nav-' + group.id} className="px-3 pb-1 text-xs font-semibold text-muted-foreground">{t('shell/shell:nav.' + group.id)}</h2>
+          <h2 id={'nav-' + group.id} className="hidden px-3 pb-1 text-xs font-semibold text-muted-foreground md:block">{t('shell/shell:nav.' + group.id)}</h2>
         <ul className="space-y-1">{group.entries.map((entry) => <li key={entry.id}>
           <Link to={entry.href} onClick={() => setOpen(false)} activeOptions={{ exact: entry.href === '/admin' }}
             activeProps={{ className: 'bg-muted font-semibold', 'aria-current': 'page' }}
