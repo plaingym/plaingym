@@ -154,12 +154,13 @@ between page sections, `gap-3` within groups, cards `p-4 sm:p-6`.
 **Theme.** `<html>` carries exactly one of `theme-system`, `light` or `dark`.
 `theme-system` follows `prefers-color-scheme` in CSS alone, so System follows a
 device change without a reload or script; the other two are explicit per-browser
-choices. The server-rendered join, trial, drop-in, signed-link, staff invitation
+choices. Open **Account** in the admin or member portal to choose **System**,
+**Light**, or **Dark**. The server-rendered join, trial, drop-in, signed-link, staff invitation
 and sign-in email confirmation pages follow the device, as does the demo landing
 page. The public website, uploaded waiver documents and printed pages use the
 light palette. `src/lib/theme.ts`
 reads the stored choice, applies the class and keeps both `theme-color` metas in
-step; `setThemeChoice` is the setter a switch uses. The key is
+step. The account menu uses `setThemeChoice` to apply and save the choice. The key is
 `plaingym.theme` and its values are `system`, `light` and `dark`. Every read
 and write is guarded, so blocked storage falls back to System, and `/kiosk`
 always follows the device. The blocking `src/lib/theme-init.js` applies the

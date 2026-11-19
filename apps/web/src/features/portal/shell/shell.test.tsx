@@ -10,12 +10,18 @@ import { App, createShellQueryClient } from '../../../app.js';
 import { ShellServicesContext } from '../../../app/context.js';
 import { createAppRouter } from '../../../app/router.js';
 import type { ShellServices } from '../../../app/services.js';
+import { themeStorageKey } from '../../../lib/theme.js';
 import { portalNavigation } from './shell.js';
 
 // Keep shell request-order assertions independent of home summaries, covered in home.test.tsx and End-to-end.
 vi.mock('./home.js', () => ({ PortalHome: () => <h1>Welcome to your member portal</h1> }));
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+  localStorage.removeItem(themeStorageKey);
+  document.documentElement.classList.remove('theme-system', 'light', 'dark');
+});
 it('filters disabled, staff, payer-only and inactive-module navigation for adult members', () => {
   const self: NavigationEntry = { id: 'self', href: '/portal', labelKey: 'Self', enabled: true, permission: { kind: 'member', capability: 'profile.read' } };
   const payer: NavigationEntry = { ...self, id: 'payer', permission: { kind: 'member', capability: 'billing.manage' } };
@@ -44,6 +50,8 @@ it('loads member context, renders the portal, and clears access when signing out
   const user = userEvent.setup(); await user.click(screen.getByRole('button', { name: 'Menu' }));
   expect(screen.getByRole('button', { name: 'Menu' }).getAttribute('aria-expanded')).toBe('true');
   await user.keyboard('{Escape}'); expect(screen.getByRole('button', { name: 'Menu' }).getAttribute('aria-expanded')).toBe('false');
+  await user.click(screen.getByRole('button', { name: 'Account' }));
+  expect(screen.getByRole('link', { name: 'Your account' }).getAttribute('href')).toBe('/portal/account');
   await user.click(screen.getByRole('button', { name: 'Sign out' })); await waitFor(() => expect(services.signOut).toHaveBeenCalledOnce());
 });
 
@@ -176,10 +184,31 @@ it('asks a login with several households to choose one before showing the portal
   expect(await screen.findByRole('heading', { name: 'Choose a household' })).toBeDefined();
   expect(f.fetcher.mock.calls.some(([path]) => path === '/api/portal/context')).toBe(false);
   expect(screen.queryByRole('heading', { name: 'Welcome to your member portal' })).toBeNull();
+  await user.click(screen.getByRole('button', { name: 'Account' }));
+  expect(screen.queryByRole('link', { name: 'Your account' })).toBeNull();
+  expect(screen.getByRole('group', { name: 'Theme' })).toBeDefined();
   await user.click(screen.getByRole('button', { name: /Birch household/ }));
   expect(await screen.findByRole('heading', { name: 'Welcome to your member portal' })).toBeDefined();
   expect(f.selections()).toEqual([{ householdId: ids.second }]);
   expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe(ids.second);
+});
+it('shows System by default and remembers the theme when the portal account menu reopens', async () => {
+  portal(ids.first);
+  const user = userEvent.setup();
+  const account = await screen.findByRole('button', { name: 'Account' });
+  await user.click(account);
+  const theme = within(screen.getByRole('group', { name: 'Theme' }));
+  expect(theme.getByRole('radio', { name: 'System', checked: true })).toBeDefined();
+  for (const [label, choice, className] of [['Light', 'light', 'light'], ['Dark', 'dark', 'dark'], ['System', 'system', 'theme-system']] as const) {
+    await user.click(theme.getByRole('radio', { name: label }));
+    expect(theme.getAllByRole('radio', { checked: true })).toEqual([theme.getByRole('radio', { name: label })]);
+    expect(document.documentElement.className).toBe(className);
+    expect(localStorage.getItem(themeStorageKey)).toBe(choice);
+  }
+  await user.click(theme.getByRole('radio', { name: 'Dark' }));
+  await user.click(account);
+  await user.click(account);
+  expect(screen.getByRole('radio', { name: 'Dark', checked: true })).toBeDefined();
 });
 it('switches households from the header and reloads the portal for the new household only', async () => {
   const f = portal(ids.first), user = userEvent.setup();

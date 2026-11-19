@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useRouterState } from '@tanstack/react-router';
 import { canStaff, type NavigationEntry } from '@plaingym/shared';
 import { createRegistries } from '../lib/registries.js';
 import { t } from '../lib/i18n.js';
 import { Button } from '../components/ui/button.js';
-import { ChevronDownIcon, CloseIcon, MenuIcon, UserIcon } from '../components/ui/icons.js';
+import { CloseIcon, MenuIcon } from '../components/ui/icons.js';
 import type { ShellBootstrap, ShellSession } from './services.js';
 import { sessionName } from './identity.js';
 import { useDemoSandbox } from '../features/demo/notice.js';
+import { AccountMenu, useDismiss } from './account-menu.js';
 export function visibleAdminNavigation(
   entries: readonly NavigationEntry[], session: ShellSession, enabledModules: readonly string[],
 ) {
@@ -30,39 +31,6 @@ export function adminNavigationGroups(entries: readonly NavigationEntry[]) {
     ...group.paths.flatMap(path => entries.filter(entry => entry.href === path)),
     ...(group.id === 'administration' ? entries.filter(entry => !known.has(entry.href)) : []),
   ] })).filter(group => group.entries.length);
-}
-/** Closes an open popover on Escape (returning focus to its trigger) or on a press outside it. */
-function useDismiss(open: boolean, close: () => void, refs: RefObject<HTMLElement | null>[], trigger: RefObject<HTMLButtonElement | null>) {
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') { close(); trigger.current?.focus(); } };
-    const onPointer = (event: PointerEvent) => {
-      if (!refs.some((ref) => ref.current?.contains(event.target as Node))) close();
-    };
-    document.addEventListener('keydown', onKey);
-    document.addEventListener('pointerdown', onPointer);
-    return () => { document.removeEventListener('keydown', onKey); document.removeEventListener('pointerdown', onPointer); };
-  }, [open, close, refs, trigger]);
-}
-function AccountMenu({ session, onSignOut, signingOut }: { session: ShellSession; onSignOut: () => void; signingOut: boolean }) {
-  const [open, setOpen] = useState(false);
-  const trigger = useRef<HTMLButtonElement>(null), panel = useRef<HTMLDivElement>(null);
-  const [refs] = useState(() => [trigger, panel]);
-  const [close] = useState(() => () => setOpen(false));
-  useDismiss(open, close, refs, trigger);
-  return <div className="relative">
-    <Button ref={trigger} variant="ghost" className="min-w-11 px-2 sm:px-3" aria-expanded={open} aria-controls="account-menu" onClick={() => setOpen(!open)}>
-      <UserIcon /><span className="sr-only sm:not-sr-only">{t('shell/shell:account')}</span><ChevronDownIcon className="hidden size-4 sm:block" />
-    </Button>
-    <div ref={panel} id="account-menu" hidden={!open}
-      className="absolute right-0 top-full z-40 mt-1 w-64 max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-card p-2 text-card-foreground shadow-lg">
-      <p className="px-3 pb-2 pt-1 text-sm text-muted-foreground">
-        {session.displayName === null ? sessionName(session) : <>{t('shell/shell:signedInAs')} <span className="wrap-anywhere font-medium text-foreground">{sessionName(session)}</span></>}{session.roles.length > 0 && ` (${roleNames(session)})`}
-      </p>
-      <Button asChild variant="ghost" className="w-full justify-start"><Link to="/admin/account" onClick={() => setOpen(false)}>{t('auth/account:menuLink')}</Link></Button>
-      <Button variant="ghost" className="w-full justify-start" onClick={onSignOut} disabled={signingOut}>{t('shell/shell:signOut')}</Button>
-    </div>
-  </div>;
 }
 export function AdminShell({ state, entries = createRegistries().adminNav.all(), children, banner = null, onSignOut, signingOut = false }:
   { state: ShellBootstrap & { session: ShellSession }; entries?: readonly NavigationEntry[];
@@ -141,7 +109,10 @@ export function AdminShell({ state, entries = createRegistries().adminNav.all(),
             {state.session.roles.length > 0 && <span className="shrink-0 whitespace-pre"> · {roleNames(state.session)}</span>}
           </p>
         </div>
-        <AccountMenu session={state.session} onSignOut={onSignOut} signingOut={signingOut} />
+        <AccountMenu accountPath="/admin/account" onSignOut={onSignOut} signingOut={signingOut}
+          identity={<p className="px-3 pb-2 pt-1 text-sm text-muted-foreground">
+            {state.session.displayName === null ? sessionName(state.session) : <>{t('shell/shell:signedInAs')} <span className="wrap-anywhere font-medium text-foreground">{sessionName(state.session)}</span></>}{state.session.roles.length > 0 && ` (${roleNames(state.session)})`}
+          </p>} />
       </div>
     </header>
     <div ref={bannerRef}>{banner}</div>

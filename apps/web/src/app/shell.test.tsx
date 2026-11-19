@@ -11,6 +11,7 @@ import type { ShellBootstrap, ShellServices } from './services.js';
 import { createWebRegistries } from '@plaingym/shared';
 import { AdminShell, adminNavigationGroups, visibleAdminNavigation } from './admin-shell.js';
 import { sessionName } from './identity.js';
+import { themeStorageKey } from '../lib/theme.js';
 import { RootError, SourceFooter } from '../routes/__root.js';
 
 // The real root shell discovers capabilities independently of the injected
@@ -35,7 +36,12 @@ function start(service: ShellServices, path = '/login') {
   return router;
 }
 beforeEach(() => { vi.stubGlobal('fetch', ordinaryDiscovery); vi.stubGlobal('__SOURCE_URL__', 'https://example.org/source/v1'); vi.stubGlobal('scrollTo', vi.fn()); });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+  localStorage.removeItem(themeStorageKey);
+  document.documentElement.classList.remove('theme-system', 'light', 'dark');
+});
 
 describe('login', () => {
   it('renders the gym and always exposes the source footer', async () => {
@@ -177,6 +183,26 @@ describe('admin shell', () => {
     expect(screen.getByText(/Signed in as/).textContent).toBe('Signed in as Test User (Coach)');
     await user.click(screen.getByRole('button', { name: 'Sign out' }));
     expect(signOut).toHaveBeenCalledOnce();
+  });
+  it('shows the stored admin theme and applies each selection immediately', async () => {
+    localStorage.setItem(themeStorageKey, 'light');
+    const state = { ...anonymous, session: { userId: 'owner', displayName: 'Test Owner', roles: ['owner'] as const, member: false } };
+    start(services(state), '/admin');
+    const user = userEvent.setup();
+    const account = await screen.findByRole('button', { name: 'Account' });
+    expect(screen.queryByRole('group', { name: 'Theme' })).toBeNull();
+    await user.click(account);
+    const theme = within(screen.getByRole('group', { name: 'Theme' }));
+    expect(theme.getByRole('radio', { name: 'Light', checked: true })).toBeDefined();
+    for (const [label, choice, className] of [['Dark', 'dark', 'dark'], ['System', 'system', 'theme-system'], ['Light', 'light', 'light']] as const) {
+      await user.click(theme.getByRole('radio', { name: label }));
+      expect(theme.getAllByRole('radio', { checked: true })).toEqual([theme.getByRole('radio', { name: label })]);
+      expect(document.documentElement.className).toBe(className);
+      expect(localStorage.getItem(themeStorageKey)).toBe(choice);
+    }
+    await user.keyboard('{Escape}');
+    expect(document.activeElement).toBe(account);
+    expect(screen.queryByRole('group', { name: 'Theme' })).toBeNull();
   });
   it('shows who is signed in, with every role, in the header outside the collapsed menus on every page', async () => {
     const state = { ...anonymous, session: { userId: 'owner', displayName: 'Dana Owner', roles: ['owner', 'coach'] as const, member: false } };
