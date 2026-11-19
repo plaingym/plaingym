@@ -146,9 +146,10 @@ The checks cover:
   exact start), a coach's roster check-in, and stacked dashboard widgets. Session moves use New York
   and Tokyo gym time with a Honolulu browser, verify stored instants and local display, and reject
   the New York spring daylight-saving gap. A coach's direct Settings URL has an explanatory empty state.
-  Whole-page checks run with both light and dark OS color preferences. The admin, portal
-  and kiosk, the public join, trial and drop-in pages and signed-link flows follow the device theme;
-  the public website and uploaded waiver documents stay light. The same spec audits every signed-in portal page, all five
+  Whole-page checks run with both light and dark OS color preferences. The admin and portal
+  follow the device in a fresh browser, where the account menu defaults to System.
+  The kiosk, public join, trial and drop-in pages, and signed-link flows also follow the device.
+  The public website and uploaded waiver documents stay light. The same spec audits every signed-in portal page, all five
   signed-link purposes and unavailable-link feedback, `/join` (plans and form), `/trial` and
   `/drop-in` at both widths.
   The responsive captures also audit sign-in, invitation claim, setup, staff billing,

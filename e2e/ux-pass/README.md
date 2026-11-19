@@ -21,8 +21,9 @@ Chromium: `pnpm --dir e2e exec playwright install chromium firefox webkit`.
 Everything goes to the git-ignored `e2e/coverage/ux-pass/`; never commit the images or videos.
 
 * `<surface>/<screen>-<size>-<theme>.png`: each screen full-page at 360×740 (a touch device), 768×1024 and 1280×800
-  (`responsive.ts`), in light and dark (`prefers-color-scheme`). The admin, portal, kiosk, public join, trial and
-  drop-in pages, and signed-link flows follow the device theme. The public website and waiver documents keep their
+  (`responsive.ts`), in light and dark (`prefers-color-scheme`). The admin and portal use the default System
+  preference during capture. The kiosk, public join, trial and drop-in pages, and signed-link flows also follow
+  the device theme. The public website and waiver documents keep their
   light palette. The manifest marks a dark image that matches its light counterpart pixel for pixel with `sameAs`.
 * `manifest.json`: every image, with its surface, screen, state (`populated` from the demo sandbox's seed, `empty` from
   a fresh gym), size and theme; the **gaps**, screens the walk couldn't reach and why; and the videos.
