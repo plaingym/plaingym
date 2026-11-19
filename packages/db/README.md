@@ -173,6 +173,11 @@ proration and tax do not change them. The migration backfills matching gym, invo
 terms from existing `billing.invoice.issued` audits. Lines without a usable snapshot stay null;
 later upgrades never reconstruct those terms from mutable discount history.
 
+Migration `0037_webhook_dispatch_recovery.sql` adds two partial indexes on
+`stripe_events (gym_id, id)`. Both cover unprocessed rows. One covers rows with
+an error marker and the other covers rows awaiting dispatch or missing a marker.
+The hourly recovery sweep pages both sets without reading processed history.
+
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver

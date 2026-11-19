@@ -37,24 +37,23 @@ Concurrent redeliveries reset it only once; pending and running jobs are unchang
 Queue or recovery errors fail the request so the provider retries.
 
 The hourly `billing.webhooks.recover` job (minute 17) also resets failed original
-dispatch jobs without another delivery. It pages the gym's unprocessed events
-with an error in groups of 100, including old events, and looks up failed jobs
-using the stored event row ID. It waits 15 minutes after an exhausted batch, then
+dispatch jobs without another delivery. It pages the gym's unprocessed events in
+groups of 100 using partial indexes for rows with and without an error marker.
+The queue looks up failed original jobs by the stored event row ID. If a failed
+dispatch left no marker, the sweep records `dispatch_failed` so Health counts it
+as failed even during the cooldown. It waits 15 minutes after an exhausted batch, then
 30, 60, 120 and 240 minutes after subsequent batches. The same
 `billing.webhook.dispatch_retried` audits count resets across restarts, including
-those triggered by redelivery. After five audited resets the sweep leaves the
-event for Health's failed-webhooks count and staff replay or manual redelivery.
-Processed events and failed replay jobs are left alone. Concurrent sweeps can
-reset only one failed job; a per-event error is logged safely and does not stop
-the other events. The sweep is in the billing job barrel and uses the inbox
-already supplied by `configureWebhookInboxJobs`; no separate runtime setup is needed.
+those triggered by redelivery. The next terminal failure after five audited resets
+records one `billing.webhook.dispatch_recovery_exhausted` audit. Later sweeps
+exclude the event before the queue lookup, and it remains visible in Health for
+staff replay or redelivery. The sweep locks the event and commits each reset
+with its audit. It safely logs a per-event error and continues with the page.
+The sweep uses the inbox supplied by `configureWebhookInboxJobs`.
 
-The reset and its audit are separate transactions. A crash after resetting but
-before auditing can allow an extra automatic reset; the queue's atomic failed-job
-reset and the dispatcher's processed guard still prevent duplicate dispatch jobs
-and repeated handling of an already processed event. Stripe retries deliveries
-automatically only after a non-2xx response, so it cannot recover a dispatch that
-fails after this endpoint answered 200 by itself.
+Redelivery still commits its reset and audit in separate transactions. A crash
+between them can leave a reset out of the sweep's count. Stripe's automatic
+redelivery covers failures reported by the endpoint in a non-2xx response.
 
 `inbox.register(type, handler)` registers one handler per event type. The dispatcher
 loads the saved event in the job's gym scope and passes the verified reference,

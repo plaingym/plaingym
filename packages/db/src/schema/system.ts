@@ -56,4 +56,6 @@ export const stripeEvents = pgTable('stripe_events', {
   receivedAt: instant('received_at').notNull().defaultNow(), processedAt: instant('processed_at'),
   error: text('error'),
 }, (t) => [unique('stripe_events_event_key').on(t.eventId), index('stripe_events_gym_received_idx').on(t.gymId, t.receivedAt),
+  index('stripe_events_recovery_error_idx').on(t.gymId, t.id).where(sql`${t.processedAt} is null and ${t.error} is not null`),
+  index('stripe_events_recovery_no_error_idx').on(t.gymId, t.id).where(sql`${t.processedAt} is null and ${t.error} is null`),
   ...systemAccess('stripe_events', 'gym', t.gymId)]).enableRLS();

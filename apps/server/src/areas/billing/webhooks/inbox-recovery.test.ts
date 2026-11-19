@@ -1,28 +1,33 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { beforeEach, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- EXPLAIN inspects the production query on the disposable database.
+import { sql } from 'drizzle-orm';
 import { auditEvents, stripeEvents, uuidv7 } from '@plaingym/db';
 // eslint-disable-next-line database/system-tables -- Each test owns this isolated database's queue rows.
 import { jobs } from '@plaingym/db';
+// eslint-disable-next-line no-restricted-imports, database/system-tables -- ANALYZE needs the table owner on the disposable database.
+import { openConnection } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
-import { assertNoTransaction } from '@plaingym/shared/transaction';
+import { isInTransaction } from '@plaingym/shared/transaction';
 import { TestClock } from '../../../core/clock.js';
 import { FakeJobs, PostgresJobs } from '../../../infra/jobs/index.js';
 import { FakePayments, type PaymentEvent } from '../../../infra/payments/index.js';
 import { jobs as billingJobs } from '../jobs.js';
 import { configureWebhookInboxJobs, createWebhookInboxJobs } from './inbox.jobs.js';
 import { createWebhookHealthQuery, createWebhookInbox, webhookDispatchJob } from './inbox.js';
-import { webhookDispatchRetried, webhookRecoveryDelayMs, webhookRecoveryLimit } from './inbox-recovery.js';
+import { webhookDispatchRecoveryExhausted, webhookDispatchRetried, webhookRecoveryDelayMs, webhookRecoveryLimit,
+  webhookRecoveryPage } from './inbox-recovery.js';
 import { webhookRecoveryJob } from './inbox-recovery.jobs.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 beforeEach(async () => { await db.forSystem(tx => tx.delete(jobs)); });
-async function fixture() {
+async function fixture(scope: typeof db.forGym = db.forGym) {
   const gymId = uuidv7(); await factory('gyms', gymId);
   const clock = new TestClock('2028-03-01T09:00:00Z'), queue = new PostgresJobs({ database: db, clock });
   const provider = new FakePayments(gymId, clock);
-  const options = { scope: db.forGym, system: db.forSystem, clock, jobs: queue, recovery: queue,
+  const options = { scope, system: db.forSystem, clock, jobs: queue, recovery: queue,
     paymentsFor: async () => provider, gymSettings: { get: async () => ({ timezone: 'UTC' }) } };
   const build = () => createWebhookInbox(options), inbox = build(), handler = vi.fn(async () => {});
   inbox.register('payment_intent.succeeded', handler);
@@ -34,8 +39,9 @@ async function fixture() {
   };
   const stored = async () => (await db.forGym(gymId, tx => tx.select().from(stripeEvents)))[0]!;
   const audits = () => db.forGym(gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, webhookDispatchRetried)));
-  const exhaust = async () => {
+  const exhaust = async (beforeAttempt?: () => void) => {
     for (let attempt = 0; attempt < 10; attempt++) {
+      beforeAttempt?.();
       expect(await queue.runNext()).toBe(true);
       if (attempt < 9) clock.advance(1000 * 2 ** attempt);
     }
@@ -65,7 +71,7 @@ it('the registered hourly sweep recovers ten failed dispatches without a redeliv
   expect(await f.build().recoverFailed(f.gymId)).toEqual({ recovered: 0, exhausted: 0 });
 });
 
-it('persists growing delays and a five-reset limit across restarts, leaving the failed webhook on Health', async () => {
+it('audits the five-reset limit once across concurrent sweeps and stops paging the failed event', async () => {
   const f = await fixture(); f.handler.mockRejectedValue(new Error('Unavailable'));
   await f.deliver(); await f.exhaust();
   const saved = await f.stored(), [failed] = await f.queue.failedJobs(webhookDispatchJob, [saved.id], { gymId: f.gymId });
@@ -79,10 +85,49 @@ it('persists growing delays and a five-reset limit across restarts, leaving the 
     expect(await f.queue.failedJobs(webhookDispatchJob, [saved.id], { gymId: f.gymId })).toMatchObject([{ jobId: failed!.jobId }]);
   }
   f.clock.advance(100 * 86_400_000);
-  expect(await f.build().recoverFailed(f.gymId)).toEqual({ recovered: 0, exhausted: 1 });
+  const outcomes = await Promise.all([f.build().recoverFailed(f.gymId), f.build().recoverFailed(f.gymId)]);
+  expect(outcomes.map(outcome => outcome.exhausted).sort()).toEqual([0, 1]);
+  const exhausted = await db.forGym(f.gymId, tx => tx.select().from(auditEvents)
+    .where(eq(auditEvents.action, webhookDispatchRecoveryExhausted)));
+  expect(exhausted).toMatchObject([{ targetId: saved.id, after: { jobId: failed!.jobId, resets: webhookRecoveryLimit } }]);
+  const lookup = vi.spyOn(f.queue, 'failedJobs');
+  expect(await f.build().recoverFailed(f.gymId)).toEqual({ recovered: 0, exhausted: 0 });
+  expect(lookup).not.toHaveBeenCalled();
   expect(await f.audits()).toHaveLength(webhookRecoveryLimit);
-  expect(await createWebhookHealthQuery(db.forGym, f.clock).get(f.gymId)).toMatchObject({ failedCount: 1 });
+  expect(await createWebhookHealthQuery(db.forGym, f.clock).get(f.gymId)).toMatchObject({
+    pendingCount: 0, failedCount: 1, recentFailedCount: 0,
+  });
   expect(await f.queue.runNext()).toBe(false);
+});
+
+it('marks and recovers a terminal dispatch whose stored-event reads failed before the marker path', async () => {
+  let failRead = false;
+  const f = await fixture(async (gymId, fn) => {
+    if (failRead) {
+      failRead = false;
+      throw new Error('Inbox read interrupted');
+    }
+    return db.forGym(gymId, fn);
+  });
+  await f.deliver();
+  await f.exhaust(() => { failRead = true; });
+  const saved = await f.stored();
+  const health = createWebhookHealthQuery(db.forGym, f.clock);
+  expect(saved).toMatchObject({ error: null, processedAt: null });
+  expect(f.handler).not.toHaveBeenCalled();
+  expect(await health.get(f.gymId)).toMatchObject({ pendingCount: 1, failedCount: 0 });
+  const [failed] = await f.queue.failedJobs(webhookDispatchJob, [saved.id], { gymId: f.gymId });
+  expect(failed).toBeDefined();
+  expect(await f.build().recoverFailed(f.gymId)).toEqual({ recovered: 0, exhausted: 0 });
+  expect(await f.stored()).toMatchObject({ error: 'dispatch_failed', processedAt: null });
+  expect(await health.get(f.gymId)).toMatchObject({ pendingCount: 0, failedCount: 1, recentFailedCount: 1 });
+  f.clock.advance(webhookRecoveryDelayMs);
+  expect(await f.build().recoverFailed(f.gymId)).toEqual({ recovered: 1, exhausted: 0 });
+  expect(await f.audits()).toMatchObject([{ targetId: saved.id, after: { jobId: failed!.jobId } }]);
+  expect(await f.queue.runNext()).toBe(true);
+  expect(f.handler).toHaveBeenCalledTimes(1);
+  expect(await f.stored()).toMatchObject({ id: saved.id, error: null, processedAt: f.clock.now() });
+  expect(await health.get(f.gymId)).toMatchObject({ pendingCount: 0, failedCount: 0, recentFailedCount: 0 });
 });
 
 it('does not reset an event processed while the original dispatch was down', async () => {
@@ -98,7 +143,7 @@ it('does not reset an event processed while the original dispatch was down', asy
   expect(lookup).not.toHaveBeenCalled(); expect(await f.audits()).toEqual([]);
 });
 
-it('pages old failed events in gym scope, skipping pending, missing, processed and clean events', async () => {
+it('pages old unprocessed events in gym scope and resets only failed original jobs', async () => {
   const f = await fixture(), otherGym = uuidv7(), queue = new FakeJobs(f.clock), ids: string[] = [];
   await factory('gyms', otherGym);
   const old = new Date(f.clock.now().getTime() - 100 * 86_400_000);
@@ -120,14 +165,46 @@ it('pages old failed events in gym scope, skipping pending, missing, processed a
   f.clock.advance(webhookRecoveryDelayMs);
   const failedJobs = queue.failedJobs.bind(queue), retryFailed = queue.retryFailed.bind(queue);
   const lookup = vi.spyOn(queue, 'failedJobs').mockImplementation(async (...args) => {
-    assertNoTransaction('recovery lookup'); return failedJobs(...args);
+    expect(isInTransaction()).toBe(args[3] !== undefined);
+    return failedJobs(...args);
   });
   vi.spyOn(queue, 'retryFailed').mockImplementation(async (...args) => {
-    assertNoTransaction('recovery reset'); return retryFailed(...args);
+    expect(isInTransaction()).toBe(true);
+    return retryFailed(...args);
   });
   expect(await createWebhookInbox({ ...f.options, jobs: queue, recovery: queue }).recoverFailed(f.gymId))
-    .toEqual({ recovered: 1, exhausted: 0 });
-  expect(lookup.mock.calls.map(call => call[1].length)).toEqual([100, 3]);
-  expect(queue.jobs.filter(job => job.status === 'queued')).toHaveLength(2);
+    .toEqual({ recovered: 2, exhausted: 0 });
+  const pages = lookup.mock.calls.filter(call => call[3] === undefined).map(call => call[1]);
+  expect(pages.map(page => page.length)).toEqual([100, 4]);
+  expect(pages.flat()).not.toContain(ids[1]);
+  expect(pages.flat()).not.toContain(foreignId);
+  expect(queue.jobs.filter(job => job.status === 'queued').map(job => job.options.idempotencyKey).sort())
+    .toEqual([ids[0], ids[2], ids[104]].sort());
+  expect(await f.audits()).toHaveLength(2);
   expect(await db.forGym(otherGym, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, webhookDispatchRetried)))).toEqual([]);
+});
+
+it('uses both partial indexes when paging the inbox as the app role', async () => {
+  const gymId = uuidv7(); await factory('gyms', gymId);
+  const processedAt = new Date('2027-03-01T09:00:00Z');
+  for (let offset = 0; offset < 4000; offset += 500) {
+    await db.forGym(gymId, tx => tx.insert(stripeEvents).values(Array.from({ length: 500 }, (_, i) => ({
+      id: uuidv7(10 + offset + i), gymId, eventId: `evt_history_${offset + i}`, type: 'payment_intent.succeeded', payload: {}, processedAt,
+    }))));
+  }
+  const cursor = uuidv7(5);
+  for (const error of [null, 'handler_failed']) {
+    await factory('stripeEvents', gymId, { error });
+  }
+  const maintenance = openConnection(db.maintenanceUrl, 1);
+  try { await maintenance.sql`analyze stripe_events`; } finally { await maintenance.close(); }
+  for (const after of [undefined, cursor]) {
+    const plan = await db.forGym(gymId, tx =>
+      // eslint-disable-next-line database/system-tables -- Explain the gym-scoped production query under forced RLS.
+      tx.execute(sql`explain (analyze, buffers) ${webhookRecoveryPage(tx, gymId, after).getSQL()}`));
+    const text = plan.map(row => row['QUERY PLAN']).join('\n');
+    expect(text).toContain('stripe_events_recovery_error_idx');
+    expect(text).toContain('stripe_events_recovery_no_error_idx');
+    expect(text).not.toContain('Seq Scan on stripe_events');
+  }
 });

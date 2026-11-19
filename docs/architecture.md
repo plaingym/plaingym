@@ -306,7 +306,10 @@ source of truth; Stripe is the processor. In outline:
   recorded as a duplicate and refunded, keeping the invoice void. Voiding changes
   no membership or future invoice; cancelling a membership leaves unpaid invoices owed.
 * **Webhook inbox** (`areas/billing/webhooks/`): verify the signature, store the
-  event once, process it in a job.
+  event once, process it in a job. The hourly recovery sweep uses partial indexes
+  on unprocessed events to find failed original dispatches with or without an error
+  marker. It audits the exhausted retry budget once per event and skips it in later
+  sweeps.
 * **Signed links and campaigns** (`areas/links/`): pay, update-card, waiver and
   onboarding links, sent one at a time or as a campaign.
   Announcement unsubscribe links (`areas/announcements/unsubscribe.ts`) are
