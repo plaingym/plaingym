@@ -151,6 +151,49 @@ describe('a view, materialized view, foreign table or function this image does n
       await admin.close();
     }
   });
+  it('refuses startup when app is a member of a view owner role, whatever the membership options', async () => {
+    const owner = `${database.name}_owner`;
+    const admin = openConnection(databaseUrl(inject('testDatabase').adminUrl, database.name), 1);
+    const sql = admin.sql;
+    try {
+      await sql`create role ${sql(owner)} nologin`;
+      await sql`create view newer_view as select 1 as probe`;
+      await sql`alter view newer_view owner to ${sql(owner)}`;
+      await sql`revoke all on newer_view from app, public, ${sql(owner)}`;
+      await expect(migrateDatabase(database.maintenanceUrl)).resolves.toBeUndefined();
+
+      const failure = `newer_view: app is a member of owner role ${owner}`;
+      const options = async () => (await database.app.sql`
+        select has_table_privilege('app', 'newer_view', 'SELECT') as can_select,
+          pg_has_role('app', ${owner}::text, 'USAGE') as can_use,
+          pg_has_role('app', ${owner}::text, 'SET') as can_switch,
+          pg_has_role('app', ${owner}::text, 'USAGE WITH ADMIN OPTION') as can_grant
+      `)[0];
+      // ADMIN OPTION alone lets app grant itself INHERIT or SET on the owner later.
+      await sql`grant ${sql(owner)} to app with inherit false, set false, admin true`;
+      expect(await options()).toEqual({ can_select: false, can_use: false, can_switch: false, can_grant: true });
+      await expect(assertCatalog(database.app.sql)).rejects.toThrow(failure);
+      await expect(migrateDatabase(database.maintenanceUrl)).rejects.toThrow(failure);
+
+      await sql`revoke ${sql(owner)} from app`;
+      await sql`grant ${sql(owner)} to app with inherit false, set false`;
+      expect(await options()).toEqual({ can_select: false, can_use: false, can_switch: false, can_grant: false });
+      await expect(migrateDatabase(database.maintenanceUrl)).rejects.toThrow(failure);
+
+      await sql`grant ${sql(owner)} to app with set true`;
+      expect(await options()).toEqual({ can_select: false, can_use: false, can_switch: true, can_grant: false });
+      await expect(migrateDatabase(database.maintenanceUrl)).rejects.toThrow(failure);
+
+      await sql`grant ${sql(owner)} to app with set false, inherit true`;
+      await expect(migrateDatabase(database.maintenanceUrl)).rejects.toThrow(failure);
+    } finally {
+      try {
+        await sql`drop view if exists newer_view`;
+        await sql`drop role if exists ${sql(owner)}`;
+      } finally { await admin.close(); }
+    }
+    await expect(migrateDatabase(database.maintenanceUrl)).resolves.toBeUndefined();
+  });
   it.each([
     ['view', 'newer_view', 'create view newer_view as select id, gym_id from members;', 'view without security_invoker'],
     ['materialized view', 'newer_matview', matview, 'materialized view without row-level security'],

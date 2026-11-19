@@ -59,9 +59,12 @@ Repo compliance runs `scripts/release/check-rollback.mjs BASE HEAD` against only
 SQL migrations added since the branch's merge base with `main`. It flags an
 `ALTER TABLE` that adds a `NOT NULL` or `PRIMARY KEY` column without a non-null
 `DEFAULT` (including `DEFAULT (NULL)` and a cast `NULL`), or adds a `NOT NULL` or `PRIMARY KEY`
-constraint to existing columns. Database-filled identity, generated and `serial`
-columns are allowed without an explicit default. It also flags `SET NOT NULL`,
-`DROP NOT NULL`, `SET DATA TYPE` (or its `TYPE` shorthand), a dropped or `NULL` column default,
+constraint to existing columns. New identity, generated and `serial` columns fill
+themselves and are allowed without an explicit default. The lint flags
+`DROP IDENTITY`, `ADD GENERATED ... AS IDENTITY`, `SET GENERATED ALWAYS` and
+`DROP EXPRESSION` on existing columns because they can reject older inserts or
+change the values those inserts receive. It also flags `SET NOT NULL`, `DROP NOT NULL`,
+`SET DATA TYPE` (or its `TYPE` shorthand), a dropped or `NULL` column default,
 an added `CHECK`, or a dropped constraint. Relaxing nullability or changing a type
 can store values the previous release's readers reject. A dropped constraint's
 kind is absent from that SQL, so even a
@@ -147,15 +150,15 @@ it doesn't declare when the table has the security shape every table has: owner
 `maintenance`, row-level security enabled and forced, exactly the gym policy or one
 system access kind's policies, for the `app` role only, and no privilege beyond
 select, insert, update and delete. Any other unknown table stops the start, and so
-does a missing table or any change to a table that release declares. A view the
-`app` role neither owns nor holds a privilege on is accepted whatever its invoker
-option, so an inaccessible extension view does not prevent startup. When `app`
+does a missing table or any change to a table that release declares. A view outside
+`app`'s reach passes whatever its invoker option. When `app`
 holds any privilege on a view, it must be owned by `maintenance` with
 `security_invoker` set and no unexpected privileges. Column grants and privileges
 through `PUBLIC` count too. A materialized view or foreign table is accepted only
-when `app` neither owns it nor holds any privilege on it, regardless of its owner;
-a `SECURITY DEFINER` function only when the `app`
-role can't run it and no trigger uses it. A minor can
+when `app` has no privileges on it and cannot act as its owner. For each of these
+three relation kinds, startup also refuses an owner role `app` is a member of, with
+any options (inherit, `SET ROLE` or `ADMIN OPTION`). A `SECURITY DEFINER` function
+passes only when the `app` role can't run it and no trigger uses it. A minor can
 therefore add a table, a column or such a view, but tightening a table the previous minor declares
 (a new policy, a revoked privilege) breaks the promise and needs a major.
 

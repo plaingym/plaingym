@@ -114,13 +114,24 @@ export function rollbackFindings(source) {
         findings.push({ line, rule: 'SET NOT NULL: verify a non-null DEFAULT for older inserts' });
       if (contains(action, ['DROP', 'NOT', 'NULL']))
         findings.push({ line, rule: 'DROP NOT NULL: older readers may reject null stored values' });
-      // Only an ALTER [COLUMN] action changes a type; an ADD or DROP of a column named `type` doesn't.
+      // These rules apply to ALTER [COLUMN] actions on existing columns.
       const alter = action.lastIndexOf('ALTER');
       const alteration = alter === -1 ? [] : action.slice(alter + 1);
       if (alteration[0] === 'COLUMN') alteration.shift();
-      if (alteration.length && !['TABLE', 'CONSTRAINT'].includes(alteration[0]) &&
-        (alteration[1] === 'TYPE' || contains(alteration, ['SET', 'DATA', 'TYPE'])))
-        findings.push({ line, rule: 'SET DATA TYPE (or TYPE): older readers may reject new stored values' });
+      const [alteredColumn, ...change] = alteration;
+      if (alteredColumn && !['TABLE', 'CONSTRAINT'].includes(alteredColumn)) {
+        const name = alteredColumn.startsWith('"') ? alteredColumn : alteredColumn.toLowerCase();
+        if (change[0] === 'TYPE' || contains(change, ['SET', 'DATA', 'TYPE']))
+          findings.push({ line, rule: 'SET DATA TYPE (or TYPE): older readers may reject new stored values' });
+        if (change[0] === 'DROP' && change[1] === 'IDENTITY')
+          findings.push({ line, rule: `DROP IDENTITY on ${name}: older inserts that omit the column lose its generated value and fail` });
+        if (change[0] === 'ADD' && change[1] === 'GENERATED' && contains(change, ['AS', 'IDENTITY']))
+          findings.push({ line, rule: `ADD GENERATED AS IDENTITY on ${name}: older inserts may fail on an explicit value or a conflicting sequence value` });
+        if (contains(change, ['SET', 'GENERATED', 'ALWAYS']))
+          findings.push({ line, rule: `SET GENERATED ALWAYS on ${name}: older inserts that supply a value are rejected` });
+        if (change[0] === 'DROP' && change[1] === 'EXPRESSION')
+          findings.push({ line, rule: `DROP EXPRESSION on ${name}: older inserts that omit the column lose its computed value` });
+      }
       if (contains(action, ['DROP', 'DEFAULT']))
         findings.push({ line, rule: 'DROP DEFAULT: older inserts that omit a NOT NULL column fail' });
       const setDefault = action.findIndex((token, index) => token === 'SET' && action[index + 1] === 'DEFAULT');

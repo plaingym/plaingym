@@ -32,6 +32,7 @@ async function viewFailures(sql: Sql): Promise<string[]> {
   const failures: string[] = [];
   const relations = await sql`
     select n.nspname, c.relname, c.relkind, pg_get_userbyid(c.relowner) as owner,
+      pg_has_role('app', c.relowner, 'MEMBER') as owner_member,
       coalesce((select o.option_value::boolean from pg_options_to_table(c.reloptions) o
         where o.option_name = 'security_invoker'), false) as security_invoker,
       has_any_column_privilege('app', c.oid, 'SELECT, INSERT, UPDATE') or has_table_privilege('app', c.oid, 'DELETE') as usable,
@@ -40,11 +41,15 @@ async function viewFailures(sql: Sql): Promise<string[]> {
     where n.nspname in ('public', 'drizzle') and c.relkind in ('v', 'm', 'f') order by n.nspname, c.relname
   `;
   for (const relation of relations) {
-    // Extension relations need not follow our conventions when app has no privilege on them.
-    // Include column grants and non-DML privileges; schema USAGE alone is not the test. A relation `app` owns stays
-    // checked: its owner can grant itself privileges again after this check.
-    if (!relation.usable && !relation.other_privileges && relation.owner !== 'app') continue;
     const name = (relation.nspname === 'public' ? '' : String(relation.nspname) + '.') + String(relation.relname);
+    // Any membership counts, not only INHERIT or SET: ADMIN OPTION, directly or through another role, lets app grant
+    // itself INHERIT or SET on the owner after this check.
+    if (relation.owner_member && relation.owner !== 'app') {
+      failures.push(name + ': app is a member of owner role ' + String(relation.owner));
+      continue;
+    }
+    // Include column grants and non-DML privileges. An owner can grant itself privileges again after this check.
+    if (!relation.usable && !relation.other_privileges && relation.owner !== 'app') continue;
     if (relation.owner !== 'maintenance') failures.push(name + ': wrong owner');
     if (relation.other_privileges) failures.push(name + ': unexpected view privileges');
     if (relation.relkind === 'v') {

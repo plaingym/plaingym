@@ -46,12 +46,14 @@ Isolation is enforced in the database, not only in application code.
   refuses any in `public` or `drizzle` the `app` role could use to read past row-level
   security: a view on which `app` holds any privilege must be owned by
   `maintenance`, have `security_invoker`, and grant no unexpected privileges. A
-  view with no `app` privileges, not owned by `app`, passes whatever its invoker option, so
-  inaccessible extension views do not block startup. Column grants and privileges
-  through `PUBLIC` count. The check also refuses a
-  materialized view or foreign table the `app` role owns or holds any privilege on;
-  inaccessible ones owned by another role pass. Monitoring extensions that grant
-  `SELECT` to `PUBLIC` need [restricted grants or a separate schema](../deploy/README.md#monitoring-extensions).
+  view outside `app`'s reach passes whatever its invoker option. Column grants and
+  privileges through `PUBLIC` count. A materialized view or foreign table passes
+  only when `app` has no privileges on it and cannot act as its owner. For all three
+  relation kinds, if `app` is a member of the owner role, directly or through another
+  role and with any options (inherit, `SET ROLE`, or `ADMIN OPTION`, which would let
+  it grant itself either), startup fails and names the relation and role. Monitoring
+  extensions that grant `SELECT` to `PUBLIC` need
+  [restricted grants or a separate schema](../deploy/README.md#monitoring-extensions).
   The check also refuses a
   `SECURITY DEFINER` function it can run or a trigger uses. CI runs the same check.
   The check also refuses schemas usable by `app` or `maintenance` outside `public`,
