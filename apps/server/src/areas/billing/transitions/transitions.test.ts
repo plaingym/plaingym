@@ -607,6 +607,17 @@ describe('invoice transitions with real PostgreSQL', () => {
     await expect(writer.refund(f.gymId, payment, external, f.provider)).rejects.toThrow('Commit interrupted');
     expect(await f.read()).toEqual(before);
   });
+  // What must stay the same: the writer skips a mismatch itself, so a webhook for another payment's refund fails
+  // only at its own handler, never inside the transition.
+  it('skips a processor refund that does not belong to the payment without throwing', async () => {
+    const f = await fixture(); await succeed(f); await f.transitions.cardSucceeded(f.context, f.success);
+    const payment = (await f.read()).payments[0]!;
+    const refund = await f.provider.refund({ chargeId: f.success.paymentIntentId, amount: 2000, idempotencyKey: 'not-this-payment' });
+    const writer = createDisputeRefundWriter({ ...f.options, transitions: f.transitions }), before = await f.read();
+    for (const value of [{ ...refund, metadata: { gymId: uuidv7() } }, { ...refund, currency: 'eur' },
+      { ...refund, chargeId: 'pi_other' }]) expect(await writer.refund(f.gymId, payment, value, f.provider)).toBe(false);
+    expect(await f.read()).toEqual(before);
+  });
   it.each(['failed', 'canceled'] as const)('reconciles a stale pending processor refund that is %s before releasing a live reservation', async status => {
     const f = await fixture(); await succeed(f); await f.transitions.cardSucceeded(f.context, f.success);
     const payment = (await f.read()).payments[0]!, refundId = uuidv7(), liveId = uuidv7();
@@ -1086,7 +1097,8 @@ invoiceTransitionsContract('invoice transitions with real PostgreSQL', async opt
     async seedRefund(request, provenance) {
       await factory('refunds', f.gymId, { id: request.refundId, paymentId: request.paymentId, amountCents: request.amountCents,
         currency: request.currency, status: request.status, processorId: request.processorId ?? null,
-        taggedAt: provenance === 'tagged' || request.tagged === true && request.status === 'pending' ? f.clock.now() : null });
+        taggedAt: provenance === 'tagged' || request.tagged === true && request.status === 'pending' ? f.clock.now() : null,
+        createdAt: f.clock.now() });
       if (provenance !== 'tagged' && provenance !== 'external') await factory('auditEvents', f.gymId, {
         actorKind: 'system', targetType: 'refund', targetId: request.refundId,
         action: provenance === 'requested' ? 'billing.refund.requested'
@@ -1094,6 +1106,7 @@ invoiceTransitionsContract('invoice transitions with real PostgreSQL', async opt
         after: provenance === 'original' ? { status: 'pending', processorId: null } : {},
       });
     },
+    advance(milliseconds) { f.clock.advance(milliseconds); },
     async read() {
       const rows = await f.read(), attempt = rows.attempts.find(row => row.id === f.attempt.id)!;
       return { invoice: rows.invoice.status, attempt: { status: attempt.status, declineCode: attempt.declineCode },

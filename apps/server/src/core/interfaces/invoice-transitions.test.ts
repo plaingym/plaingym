@@ -5,6 +5,7 @@ import { FakeInvoiceTransitions } from './invoice-transitions.js';
 import { invoiceTransitionsContract } from './invoice-transitions.contract.js';
 import type { CardSuccess, InvoiceFixture, InvoiceSnapshot, RefundTransition } from './invoice-transitions.js';
 import { gym, otherGym, household, id, mutation } from './test-fixtures.js';
+import { TestClock } from '../clock.js';
 const invoiceId = id(20);
 const attemptId = id(21);
 const paymentId = id(22);
@@ -17,10 +18,10 @@ const refund: RefundTransition = { invoiceId, paymentId, refundId: id(30), proce
   amountCents: 4000, currency: 'CAD', status: 'succeeded' };
 const build = (overrides: Partial<InvoiceSnapshot> = {}, options?: {
   packSale?: boolean; checkout?: Pick<InvoiceFixture, 'checkoutSessionId' | 'checkoutExpiresAt'>;
-}) => new FakeInvoiceTransitions(
+}, clock = new TestClock('2026-10-21T12:00:00Z')) => new FakeInvoiceTransitions(
   [{ gymId: gym, invoice: { ...invoice, ...overrides }, ...options?.checkout }],
   [{ gymId: gym, invoiceId, id: attemptId, number: 1, paymentIntentId: 'pi_1', status: 'pending' }],
-  undefined, { packSale: id => id === invoiceId && options?.packSale === true },
+  clock, { packSale: id => id === invoiceId && options?.packSale === true },
 );
 describe('InvoiceTransitions fake', () => {
   it('deduplicates success from a runner and webhook by intent even when their local IDs differ', async () => {
@@ -124,13 +125,14 @@ describe('InvoiceTransitions fake', () => {
   });
 });
 invoiceTransitionsContract('FakeInvoiceTransitions', async options => {
-  const fake = build({}, options);
+  const clock = new TestClock('2026-10-21T12:00:00Z'), fake = build({}, options, clock);
   return { transitions: fake, context: mutation, success: { ...success, attemptId },
     manual: { invoiceId, paymentId: id(40), method: 'cash', amountCents: 10000, currency: 'CAD', paidAt: success.paidAt },
     async seedRefund(request, provenance) {
       fake.seedRefund({ gymId: gym, request, tagged: provenance === 'tagged', requested: provenance === 'requested',
         duplicateReserved: provenance === 'duplicate', originalPending: provenance === 'original' });
     },
+    advance(milliseconds) { clock.advance(milliseconds); },
     async read() {
       const attempt = fake.attempts.find((row) => row.id === attemptId)!;
       return { invoice: fake.read(gym, invoiceId).status, attempt: { status: attempt.status, declineCode: attempt.declineCode ?? null },

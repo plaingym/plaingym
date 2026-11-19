@@ -7,6 +7,9 @@ import { clock as defaultClock, type Clock } from '../clock.js';
 import type { MutationContext } from './common.js';
 import type { Refund } from '../../infra/payments/index.js';
 
+/** Stripe keeps an idempotency key for 24 hours. A staff retry reuses its reservation's key only inside this window. */
+export const refundRetryWindowMs = 23 * 3600_000;
+
 export interface InvoiceSnapshot extends Money {
   readonly id: Id;
   readonly householdId: Id;
@@ -86,6 +89,8 @@ export interface InvoiceTransitions {
   cardFailed(context: MutationContext, request: CardFailure): Promise<InvoiceTransitionResult>;
   manualPayment(context: MutationContext, request: ManualPayment): Promise<InvoiceTransitionResult>;
   refund(context: MutationContext, request: RefundTransition): Promise<InvoiceTransitionResult>;
+  /** Records a processor refund, refusing as not found one whose gym metadata, charge or currency is not this
+   * payment's. */
   processorRefund(context: MutationContext, request: ProcessorRefundTransition): Promise<InvoiceTransitionResult>;
 }
 export interface InvoiceFixture {
@@ -123,7 +128,7 @@ export interface InvoiceRefundFixture {
   /** The original recorded audit was pending with no processor ID. */
   readonly originalPending?: boolean;
 }
-interface StoredRefund { gymId: Id; request: RefundTransition; appCreated: boolean; tagged: boolean; createdAt: Date; }
+interface StoredRefund { gymId: Id; request: RefundTransition; appCreated: boolean; tagged: boolean; duplicate: boolean; createdAt: Date; }
 const terminal = new Set<InvoiceSnapshot['status']>(['paid', 'partially_refunded', 'refunded', 'void']);
 const canceled = (attempt: InvoiceAttemptFixture) => attempt.declineCode === 'intent_canceled' || attempt.declineCode === 'confirm_abandoned';
 
@@ -162,8 +167,8 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
     if (this.#refunds.has(key) || processorKey !== undefined && this.#processorRefunds.has(processorKey))
       conflict('Refund already exists');
     const tagged = fixture.tagged === true || request.tagged === true && request.status === 'pending';
-    this.#refunds.set(key, { gymId, request: structuredClone(request), tagged, createdAt: this.clock.now(),
-      appCreated: request.processorId === undefined || tagged || fixture.requested === true
+    this.#refunds.set(key, { gymId, request: structuredClone(request), tagged, duplicate: fixture.duplicateReserved === true,
+      createdAt: this.clock.now(), appCreated: request.processorId === undefined || tagged || fixture.requested === true
         || fixture.duplicateReserved === true || fixture.originalPending === true });
     if (processorKey !== undefined) this.#processorRefunds.set(processorKey, key);
   }
@@ -335,7 +340,7 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
     const createdInApp = previous?.appCreated ?? (request.processorId === undefined || tagged);
     appCreated ||= createdInApp;
     this.#refunds.set(key, { gymId: context.gymId, request: structuredClone(request), appCreated: createdInApp, tagged,
-      createdAt: previous?.createdAt ?? this.clock.now() });
+      duplicate: previous?.duplicate ?? false, createdAt: previous?.createdAt ?? this.clock.now() });
     if (processorKey !== undefined) this.#processorRefunds.set(processorKey, key);
     // Failed refunds notify once; canceled refunds notify only when the app created them.
     if (request.status === 'failed' && request.processorId !== undefined || request.status === 'canceled' && appCreated)
@@ -371,6 +376,8 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
     const payment = this.#payments.get(scopedKey(context.gymId, input.paymentId)) ?? notFound();
     if (payment.invoiceId !== invoice.id) notFound();
     const value = input.processorRefund;
+    if (value.metadata.gymId !== context.gymId || value.currency.toUpperCase() !== payment.currency
+      || ![payment.paymentIntentId, payment.chargeId].includes(value.chargeId)) notFound();
     const request: RefundTransition = { invoiceId: input.invoiceId, paymentId: input.paymentId, refundId: input.refundId,
       processorId: value.id, amountCents: value.amount, currency: value.currency.toUpperCase(), status: value.status };
     const read = () => [...this.#refunds.values()].filter(row => row.gymId === context.gymId && row.request.paymentId === payment.id);
@@ -407,7 +414,11 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
       if (excess > outrun.reduce((sum, row) => sum + row.request.amountCents, 0)) conflict('Refund exceeds payment');
       for (const { request: row } of outrun) {
         if (excess <= 0) break;
+        const previous = this.#refunds.get(scopedKey(context.gymId, row.refundId));
         this.#applyRefund(context, { ...row, status: 'failed' });
+        if (previous && (previous.duplicate || context.actor.kind === 'system'
+          && this.clock.now().getTime() - previous.createdAt.getTime() >= refundRetryWindowMs))
+          this.#effect(context.gymId, invoice.id, 'staff_notice', payment.id);
         excess -= row.amountCents;
       }
     }

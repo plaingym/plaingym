@@ -4,7 +4,7 @@ import { auditEvents, forGym, uuidv7, type payments, type refunds, type Transact
 import type { Clock } from '@plaingym/shared';
 import { stripeTestPaymentReference } from '@plaingym/shared/contracts';
 import { notFound, type MutationContext } from '../../../core/interfaces/common.js';
-import type { InvoiceTransitions } from '../../../core/interfaces/invoice-transitions.js';
+import { refundRetryWindowMs, type InvoiceTransitions } from '../../../core/interfaces/invoice-transitions.js';
 import { logError } from '../../../core/log.js';
 import type { Payments, Refund } from '../../../infra/payments/index.js';
 import { paymentConflict } from '../payments.errors.js';
@@ -13,8 +13,7 @@ import { audit, lockInvoice } from './store.js';
 type PaymentRow = typeof payments.$inferSelect;
 type RefundRow = typeof refunds.$inferSelect;
 
-/** Stripe keeps an idempotency key for 24 hours. A staff retry reuses its reservation's key only inside this window. */
-export const refundRetryWindowMs = 23 * 3600_000;
+export { refundRetryWindowMs };
 export const pastRefundWindow = (row: { createdAt: Date }, clock: Clock) => clock.now().getTime() - row.createdAt.getTime() >= refundRetryWindowMs;
 /** Settlement waits beyond the send cutoff to cover app processes whose clocks differ by up to five minutes. */
 export const refundSettleSkewMs = 5 * 60_000;

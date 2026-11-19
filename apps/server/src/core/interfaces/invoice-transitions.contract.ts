@@ -15,6 +15,8 @@ export interface InvoiceTransitionsHarness {
   /** A cash payment of the same invoice, for the full amount. */
   manual: ManualPayment;
   seedRefund(request: RefundTransition, provenance: RefundProvenance): Promise<void>;
+  /** Moves the harness clock forward, so a release can cross or stay inside the refund window. */
+  advance(milliseconds: number): void;
   read(): Promise<{ invoice: string; attempt: { status: string; declineCode: string | null }; effects: InvoiceEffect['kind'][];
     refunds: RefundTransition[] }>;
 }
@@ -149,6 +151,48 @@ export function invoiceTransitionsContract(name: string, create: (options?: { pa
       await expect(h.transitions.processorRefund({ ...h.context, gymId: randomUUID() }, processor(h, { reservationId: own.refundId })))
         .rejects.toMatchObject({ code: 'not_found' });
       expect(await h.read()).toEqual(before);
+    });
+    const refuse = async (h: InvoiceTransitionsHarness, value: Partial<Refund>) => {
+      await h.transitions.cardSucceeded(h.context, h.success);
+      const own = reservation(h);
+      await h.seedRefund(own, 'tagged');
+      const before = await h.read();
+      await expect(h.transitions.processorRefund({ ...h.context, actor: { kind: 'system' } }, processor(h, value)))
+        .rejects.toMatchObject({ code: 'not_found' });
+      expect(await h.read()).toEqual(before);
+    };
+    it('refuses a processor refund whose gym metadata is another gym and releases nothing', async () => {
+      await refuse(await create(), { metadata: { gymId: randomUUID() } });
+    });
+    it('refuses a processor refund whose charge is not the payment\'s and releases nothing', async () => {
+      await refuse(await create(), { chargeId: 'ch_other' });
+    });
+    it('refuses a processor refund whose currency is not the payment\'s and releases nothing', async () => {
+      const h = await create();
+      await refuse(h, { currency: h.success.currency === 'EUR' ? 'usd' : 'eur' });
+    });
+    const release = async (h: InvoiceTransitionsHarness, provenance: RefundProvenance, advance: number) => {
+      await h.transitions.cardSucceeded(h.context, h.success);
+      const own = reservation(h);
+      await h.seedRefund(own, provenance);
+      h.advance(advance);
+      const before = await h.read();
+      await h.transitions.processorRefund({ ...h.context, actor: { kind: 'system' } }, processor(h));
+      const after = await h.read();
+      expect(after.refunds.find(row => row.refundId === own.refundId)?.status).toBe('failed');
+      return { before, after };
+    };
+    it('notices a system release past the refund window exactly once', async () => {
+      const { before, after } = await release(await create(), 'tagged', 24 * 3600_000);
+      expect(count(after.effects, 'staff_notice')).toBe(count(before.effects, 'staff_notice') + 1);
+    });
+    it('notices a released duplicate reservation exactly once inside the window', async () => {
+      const { before, after } = await release(await create(), 'duplicate', 3600_000);
+      expect(count(after.effects, 'staff_notice')).toBe(count(before.effects, 'staff_notice') + 1);
+    });
+    it('does not notice a system release inside the refund window', async () => {
+      const { before, after } = await release(await create(), 'tagged', 3600_000);
+      expect(count(after.effects, 'staff_notice')).toBe(count(before.effects, 'staff_notice'));
     });
     it('refuses an unresolved attempt, then voids a failed invoice and refunds a late success once', async () => {
       const h = await create(), { invoiceId, attemptId, paymentIntentId } = h.success;

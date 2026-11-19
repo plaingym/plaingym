@@ -294,10 +294,11 @@ An unread or mismatched pending row still reserves its full amount. It forces a 
 only when that total would require releasing an unsent reservation; an external refund
 that fits records normally, including when a pending row was linked after those reads.
 The named `InvoiceTransitions.processorRefund` method accepts the processor refund and
-those reads, selects an existing processor ID or matching app reservation, and records
-the outcome atomically. Plain `refund` handles local reservations and their outcomes;
+those reads; it first refuses as not found a refund whose gym metadata, charge or
+currency is not this payment's, then selects an existing processor ID or matching app
+reservation and records the outcome atomically. Plain `refund` handles local reservations and their outcomes;
 processor reports cannot be passed to it. The fake and real transitions run the same
-processor identity, reservation, cancellation provenance and rollback contract cases.
+processor ownership, identity, reservation, cancellation provenance, release-notice and rollback contract cases.
 A pending refund doesn't count, because it can still be canceled; if nothing is
 left, no email is sent. The worker's refund is never reduced to the remainder,
 since that would change a retried request. A pending processor refund is stored for
@@ -332,8 +333,11 @@ including one on a payment marked as test, and a dashboard refund that outran a 
 refund past its window. A duplicate payment's reservation released this way gets the
 `duplicate_released` notice instead. A staff request that releases one
 is answered directly and queues none, and a reservation a dashboard refund outran inside
-the window queues none either. The window, the send records that keep a staff retry
-still in flight from being released, and the settling rule live in `lapsed-refunds.ts`
+the window queues none either. The fake sends the same `duplicate_released` and
+`refund_released` notices when a processor refund outruns a reservation. The window
+constant lives in `core/interfaces/invoice-transitions.ts` and is re-exported by
+`lapsed-refunds.ts`; the send records that keep a staff retry
+still in flight from being released, and the settling rule, live in `lapsed-refunds.ts`
 (see the payments README). Because a failed
 refund never moves again, a replayed webhook or rerun reconciliation queues no
 second notice. A refund canceled at the processor (the Stripe adapter reports it as

@@ -40,12 +40,16 @@ are implemented here.
   its amount; staff are notified once when the app created it. Tags, request or duplicate
   reservation audits, and the original pending-without-processor audit establish that
   provenance. Cash and check refunds never reverse. `processorRefund` accepts processor
-  reports and pending reads separately from plain `refund`, matches recorded IDs or app
+  reports and pending reads separately from plain `refund`, refuses as not found a report
+  whose gym metadata, charge or currency is not the payment's, matches recorded IDs or app
   reservations and releases outrun reservations atomically. Unread processor rows keep
   reserving their amount and block only a decision that would release an unsent reservation.
-  The fake's `seedRefund` accepts persisted provenance for fixtures.
-  `invoice-transitions.contract.ts` runs the same cancellation, processor matching,
-  reservation and rollback cases against the fake and the real transitions.
+  The fake's `seedRefund` accepts persisted provenance for fixtures, and the fake's
+  `processorRefund` sends a staff notice for each outrun reservation it releases that is a
+  duplicate, or that a system actor releases past `refundRetryWindowMs` (23 hours, exported
+  here). `invoice-transitions.contract.ts` runs the same cancellation, processor ownership
+  and matching, reservation, release-notice and rollback cases against the fake and the
+  real transitions.
 - `MemberHouseholdContext` accepts authenticated user/gym IDs and a selected
   household, then reloads the link. Payers may see the household; non-payers see
   their linked member. Its context carries IDs only. It does not replace

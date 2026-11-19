@@ -88,6 +88,8 @@ export async function applyProcessorRefund(tx: Transaction, context: MutationCon
     processorId: value.id, amountCents: value.amount, currency: value.currency.toUpperCase(), status: value.status };
   const payment = (await tx.select().from(payments).where(eq(payments.id, request.paymentId)))[0] ?? notFound();
   if (payment.invoiceId !== invoice.id) notFound();
+  if (value.metadata.gymId !== context.gymId || value.currency.toUpperCase() !== payment.currency
+    || ![payment.paymentIntentId, payment.chargeId].includes(value.chargeId)) notFound();
   let rows = await tx.select().from(refunds).where(eq(refunds.paymentId, payment.id));
   const appCreated = rows.some(row => row.taggedAt !== null && row.id === value.reservationId
     && row.amountCents === value.amount && row.currency === request.currency);
