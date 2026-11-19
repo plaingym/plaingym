@@ -37,8 +37,8 @@ test('logo URLs follow the upload across website, core pages and admin previews 
     expect(second.logoVersion).not.toBe(first.logoVersion);
     const logoPath = '/public/pages/logo/' + second.logoVersion;
     await owner.browser(page.context());
-    await page.emulateMedia({ colorScheme: 'dark' });
     for (const width of [360, 1280]) {
+      await page.emulateMedia({ colorScheme: 'dark' });
       await page.setViewportSize({ width, height: 800 });
       for (const path of ['/', '/join', '/trial', '/drop-in', '/trial/received', '/drop-in/received', '/contact', '/l/unavailable', '/l/cleared', '/l/return']) {
         const response = await page.goto(gymOrigin + path);
