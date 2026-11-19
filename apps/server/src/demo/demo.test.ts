@@ -269,7 +269,7 @@ describe('outbox isolation, permissions, and external boundaries', () => {
 });
 
 it.each(roleNames)('restricts gym deletion to the owner for %s', async (role) => {
-  const f = fixture(), a = await f.service.create(), remove = vi.fn(async () => {});
+  const f = fixture(), a = await f.service.create(), remove = vi.fn(async () => 'removed' as const);
   const { app } = appFor(createGymDeleteRoutes({ remove }), a.gymId, role);
   const response = await app.request('/api/settings/gym', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ revision: 1, confirmation: 'DELETE' }) });
   expect(response.status).toBe(role === 'owner' ? 200 : 403); expect(remove).toHaveBeenCalledTimes(role === 'owner' ? 1 : 0);
@@ -282,7 +282,7 @@ it('exposes an idempotent seed command and rejects missing gym IDs', async () =>
 it('runs cleanup as a deduplicated install job, including suspended and unfinished reservations', async () => {
   const f = fixture(), sandbox = await f.service.create();
   await db.forGym(sandbox.gymId, (tx) => tx.update(gyms).set({ status: 'suspended' }).where(eq(gyms.id, sandbox.gymId)));
-  const expire = vi.spyOn(f.service, 'expire').mockResolvedValue();
+  const expire = vi.spyOn(f.service, 'expire').mockResolvedValue('skipped');
   const queue = new PostgresJobs({ database: db, clock: f.time });
   const cleanup = registerDemoCleanup(queue, { config, service: f.service, clock: f.time, system: db.forSystem });
   await cleanup.scheduleDue(); await cleanup.scheduleDue();
@@ -290,7 +290,7 @@ it('runs cleanup as a deduplicated install job, including suspended and unfinish
   expect(expire).toHaveBeenCalledWith(sandbox.gymId); expect(expire).not.toHaveBeenCalledWith(infraContractGyms.a);
 });
 it('preserves a different gym when a deletion request tries to inject its ID', async () => {
-  const f = fixture(), a = await f.service.create(), b = await f.service.create(), remove = vi.fn(async () => {});
+  const f = fixture(), a = await f.service.create(), b = await f.service.create(), remove = vi.fn(async () => 'removed' as const);
   const { app } = appFor(createGymDeleteRoutes({ remove }), a.gymId);
   expect((await app.request('/api/settings/gym', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ revision: 1, confirmation: 'DELETE', gymId: b.gymId }) })).status).toBe(400);
   expect(remove).not.toHaveBeenCalled(); expect(await f.service.status(b.gymId)).toHaveProperty('expiresAt');

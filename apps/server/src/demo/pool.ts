@@ -6,6 +6,7 @@ import { AppError, type Clock } from '@plaingym/shared';
 import { demoCopyRequest, idSchema, type DemoRole } from '@plaingym/shared/contracts';
 import type { DemoService } from './service.js';
 import { logError } from '../core/log.js';
+import { gymsWithLiveJobs } from '../infra/jobs/postgres.js';
 import { requireDemo, sandboxSettings, type DemoConfig, type SandboxSettings, type SeedRecovery } from './config.js';
 import { demoText } from './queries.js';
 
@@ -70,9 +71,11 @@ export function createDemoPool(options: {
     gym.settings = { ...settingsOf(gym), demo: completed };
   }
   /** All allocators lock the same pool/queue rows in ID order, and select tickets in arrival order.
+   * `exclude` names gyms with live jobs: refill must not claim them or jump an older ticket blocked by one.
    * Only system lifecycle metadata moves between gyms; seeded gym-owned data never moves.
    */
-  async function allocateReady(visitor?: { ticket: string; input: { role: DemoRole; page: string } }) {
+  async function allocateReady(visitor?: { ticket: string; input: { role: DemoRole; page: string } },
+    exclude?: ReadonlySet<string>) {
     const allocated = await system(async tx => {
       const locked = await tx.select().from(gyms).where(inArray(demoText('kind'), ['pool', 'queued']))
         .orderBy(asc(gyms.id)).for('update');
@@ -82,7 +85,7 @@ export function createDemoPool(options: {
         .sort((a, b) => queueOrder(a).localeCompare(queueOrder(b)));
       const ready = locked.filter(row => {
         const demo = sandboxSettings(row.settings);
-        return row.status === 'active' && demo?.ready && demo.kind === 'pool'
+        return row.status === 'active' && !exclude?.has(row.id) && demo?.ready && demo.kind === 'pool'
           && Date.parse(demo.expiresAt) > now.getTime();
       }).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id));
       async function save(row: Gym, demo: SandboxSettings) {
@@ -91,6 +94,8 @@ export function createDemoPool(options: {
         Object.assign(row, saved!);
       }
       for (const reservation of waiting) {
+        // A busy older ticket keeps its place: serving a newer ticket would jump the queue.
+        if (exclude?.has(reservation.id)) break;
         const candidate = ready.shift() ?? (sandboxSettings(reservation.settings)?.ready ? reservation : undefined);
         if (!candidate) break;
         const ticket = sandboxSettings(reservation.settings)!;
@@ -122,11 +127,15 @@ export function createDemoPool(options: {
     });
     // A durable claim stays inaccessible until its gym-scoped private transition and audit commit together.
     // If this process ends here, refill finishes the claim instead of allocating that ticket a second time.
-    if (allocated.own) await finishAllocation(allocated.own);
-    for (const gym of allocated.changes) {
-      if (gym === allocated.own) continue;
-      try { await finishAllocation(gym); }
-      catch (error) { logError('demo.allocation_failed', { gymId: gym.id }, error); }
+    // Finish the other committed claims even when the visitor's own claim fails, then surface that own error.
+    try {
+      if (allocated.own) await finishAllocation(allocated.own);
+    } finally {
+      for (const gym of allocated.changes) {
+        if (gym === allocated.own) continue;
+        try { await finishAllocation(gym); }
+        catch (error) { logError('demo.allocation_failed', { gymId: gym.id }, error); }
+      }
     }
     return { gym: allocated.own, count: allocated.changes.length };
   }
@@ -173,7 +182,9 @@ export function createDemoPool(options: {
         return { ...current, kind: 'retired', expiresAt: options.clock.now().toISOString() };
       });
       if (!recoverable) return;
-      await options.service.expire(gymId);
+      // The retired row still owns its ticket until deletion commits. The checkpoint retries this recovery.
+      if (await options.service.expire(gymId) !== 'removed')
+        throw new AppError('unavailable', 'Demo seed cleanup is pending');
     }
     if (Date.parse(recoveryDemo.ticketExpiresAt ?? recoveryDemo.expiresAt) <= options.clock.now().getTime()) return;
     // The durable job keeps the ticket across deletion and bootstrap; reserve is idempotent for this recovery.
@@ -205,8 +216,14 @@ export function createDemoPool(options: {
     async refill() {
       requireDemo(options.config);
       const cleanupFailed = new Set<string>();
+      // A gym with a live lease waits for the next refill, so one long job cannot hold up the others.
+      // Leave every busy gym untouched for this run: never expire, seed or promote work beneath a running job.
+      const busy = await gymsWithLiveJobs({ clock: options.clock, system });
       for (let count = 0; count < options.config.maxSandboxes * 4 + 4; count++) {
-        const rows = await all(), now = options.clock.now();
+        // Keep the full inventory for showcase and pool-size decisions: a busy gym still counts,
+        // and only the filtered rows below skip work beneath a running job.
+        const inventory = await all(), now = options.clock.now();
+        const rows = inventory.filter(gym => !busy.has(gym.id));
         const stale = rows.find(gym => { const demo = sandboxSettings(gym.settings); return !cleanupFailed.has(gym.id) && demo && demo.kind !== 'showcase'
           && (Date.parse(demo.expiresAt) <= now.getTime() || (demo.kind === 'queued' && Date.parse(demo.ticketExpiresAt ?? demo.expiresAt) <= now.getTime())); });
         if (stale) {
@@ -214,7 +231,8 @@ export function createDemoPool(options: {
             await update(stale.id, demo => Date.parse(demo.expiresAt) <= now.getTime()
               || (demo.kind === 'queued' && Date.parse(demo.ticketExpiresAt ?? demo.expiresAt) <= now.getTime())
               ? { ...demo, kind: 'retired', expiresAt: now.toISOString() } : demo);
-            await options.service.expire(stale.id);
+            // A lease that starts after the snapshot defers deletion after suspension; leave it for the next run.
+            if (await options.service.expire(stale.id) === 'deferred') cleanupFailed.add(stale.id);
           }
           catch (error) { cleanupFailed.add(stale.id); logError('demo.cleanup_failed', { gymId: stale.id }, error); }
           continue;
@@ -230,13 +248,16 @@ export function createDemoPool(options: {
         }
         if (rows.some(row => liveTicket(sandboxSettings(row.settings), now))
           && rows.some(row => sandboxSettings(row.settings)?.ready && ['pool', 'queued'].includes(sandboxSettings(row.settings)?.kind ?? ''))) {
-          if ((await allocateReady()).count) continue;
+          if ((await allocateReady(undefined, busy)).count) continue;
         }
         const waiting = [...rows].sort((a, b) => queueOrder(a).localeCompare(queueOrder(b)))
           .find(gym => { const demo = sandboxSettings(gym.settings); return gym.status === 'active' && demo && ((demo.kind === 'queued' && demo.ticketHash && demo.copy) || (!demo.ready && demo.kind === 'pool')); });
         if (waiting) {
           const previous = sandboxSettings(waiting.settings)!;
-          if (!previous.ready && previous.seedStartedAt) {
+          // An already-prepared ticket can still be waiting behind a busy older ticket.
+          // The busy set lasts for this refill, so another allocation attempt cannot advance it.
+          if (previous.ready) return;
+          if (previous.seedStartedAt) {
             // A previous lease ended mid-seed. Seed steps aren't repeatable: discard the partial gym.
             const recovery = { gymId: waiting.id, demo: previous };
             await checkpoint(recovery);
@@ -244,14 +265,14 @@ export function createDemoPool(options: {
             catch (error) { cleanupFailed.add(waiting.id); logError('demo.cleanup_failed', { gymId: waiting.id }, error); continue; }
             continue;
           }
-          if (!previous.ready) await options.service.prepare(waiting.id);
+          await options.service.prepare(waiting.id);
           continue;
         }
-        const showcase = rows.find(gym => sandboxSettings(gym.settings)?.kind === 'showcase');
+        const showcase = inventory.find(gym => sandboxSettings(gym.settings)?.kind === 'showcase');
         const replace = !showcase || now.getTime() - Date.parse(sandboxSettings(showcase.settings)!.promotedAt ?? sandboxSettings(showcase.settings)!.seededAt ?? showcase.createdAt.toISOString()) >= day;
-        const pool = rows.filter(gym => { const demo = sandboxSettings(gym.settings); return gym.status === 'active' && demo?.kind === 'pool' && demo.ready; });
-        if (replace && pool[0]) {
-          const next = pool[0];
+        const pool = inventory.filter(gym => gym.status === 'active' && sandboxSettings(gym.settings)?.kind === 'pool');
+        const next = pool.find(gym => !busy.has(gym.id) && sandboxSettings(gym.settings)?.ready);
+        if (replace && next && (!showcase || !busy.has(showcase.id))) {
           await system(async tx => {
             const locked = await tx.select().from(gyms).where(inArray(gyms.id, showcase ? [showcase.id, next.id] : [next.id])).orderBy(asc(gyms.id)).for('update');
             const candidate = locked.find(gym => gym.id === next.id);
@@ -268,7 +289,9 @@ export function createDemoPool(options: {
           });
           continue;
         }
-        if (!replace && pool.length >= (options.config.poolSize ?? 5)) return;
+        // Every pool reservation counts toward capacity, including one still waiting to be seeded.
+        // Even a zero-sized pool needs one reservation when the showcase is due for replacement.
+        if (pool.length >= (options.config.poolSize ?? 5) && (pool.length > 0 || !replace)) return;
         try { await options.service.reserve('pool'); }
         catch (error) { if (error instanceof AppError && error.code === 'rate_limited') return; throw error; }
       }

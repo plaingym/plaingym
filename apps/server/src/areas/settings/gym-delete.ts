@@ -5,17 +5,18 @@ import { AppError, type Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { deleteDemoIdentities } from '../../infra/auth/demo-cleanup.js';
 import { removeGymInvitees } from '../../infra/auth/portal-invitations.js';
-import { waitForGymJobs } from '../../infra/jobs/postgres.js';
+import { earliestLiveGymJobLease, waitForGymJobs } from '../../infra/jobs/postgres.js';
 import { sandboxSettings } from '../../demo/config.js';
 
 export function createGymDeleteService(options: {
   clock: Clock; removeUploads(gymId: string): Promise<void>; scope?: typeof forGym; system?: typeof forSystem;
 }) {
   const scope = options.scope ?? forGym, system = options.system ?? forSystem;
-  return { async remove(gymId: string, revision: number, actorUserId?: string): Promise<void> {
+  return { async remove(gymId: string, revision: number, actorUserId?: string,
+    removal?: { drain?: boolean }): Promise<'removed' | 'deferred'> {
     assertNoTransaction('gym.delete');
-    // Suspension closes tenant resolution before any external storage work. A failed
-    // cleanup leaves a suspended, retryable gym; never an active gym missing files.
+    // Suspension closes tenant resolution before any external storage work. A failed or
+    // deferred cleanup leaves a suspended, retryable gym; never an active gym missing files.
     const suspendedRevision = await scope(gymId, async (tx) => {
       const [gym] = await tx.select().from(gyms).where(eq(gyms.id, gymId)).for('update');
       if (!gym) throw new AppError('not_found', 'Gym not found');
@@ -28,7 +29,11 @@ export function createGymDeleteService(options: {
       return { revision: updated.revision, sandbox: sandboxSettings(gym.settings) !== null ||
         /^demo-reservation\.[0-9a-f-]{36}@example[.]invalid$/.test(String((gym.settings as { bootstrapOwnerEmail?: string }).bootstrapOwnerEmail ?? '')) };
     });
-    await waitForGymJobs(gymId, { clock: options.clock, scope });
+    if (removal?.drain === false) {
+      // Suspension already stops new claims from running. If a job still holds a lease, leave the
+      // suspended gym for the next cleanup run instead of holding the install-job lane in a drain.
+      if (await earliestLiveGymJobLease(gymId, options.clock.now(), scope)) return 'deferred';
+    } else await waitForGymJobs(gymId, { clock: options.clock, scope });
     await options.removeUploads(gymId);
     await system(async (tx) => {
       // Before the gym row, whose cascade would take its invitation rows without removing the identities they provisioned.
@@ -37,6 +42,7 @@ export function createGymDeleteService(options: {
       if (removed.length !== 1) throw new RevisionConflictError();
       if (suspendedRevision.sandbox) await deleteDemoIdentities(tx, gymId);
     });
+    return 'removed';
   } };
 }
 export type GymDeleteService = ReturnType<typeof createGymDeleteService>;

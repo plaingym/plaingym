@@ -198,7 +198,7 @@ export function configureDemoRoutes(service: DemoService, options: Parameters<ty
 export function disableDemoRoutes(installOrigin: string, tenancy: TenancyMode = 'single'): void { configured = createDemoRoutes(placeholder, { installOrigin, tenancy, enabled: false }); }
 // Stable registrations delegate to the configured runtime; outside demo mode only discovery succeeds.
 const disabled = async () => { throw new AppError('not_found', 'Not found'); };
-const placeholder: DemoService = { create: disabled, reserve: disabled, recover: disabled, prepare: disabled, kioskTokenFor: () => '', status: disabled, live: disabled, login: disabled, expire: async () => {}, setJoinReadiness() {} };
+const placeholder: DemoService = { create: disabled, reserve: disabled, recover: disabled, prepare: disabled, kioskTokenFor: () => '', status: disabled, live: disabled, login: disabled, expire: async () => 'skipped', setJoinReadiness() {} };
 export const routes: readonly RouteRegistration[] = createDemoRoutes(placeholder, { installOrigin: '', enabled: false }).map((entry, index) => ({
   ...entry, mount(app, authorize) {
     if (configured) configured[index]!.mount(app, authorize);

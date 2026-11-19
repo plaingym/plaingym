@@ -147,18 +147,19 @@ export function createDemoService(options: {
       if (!domain || !domain.hostname.endsWith('.' + options.config.domain)) throw new AppError('not_found', 'Not found');
       return options.identities.login(gymId, target, `https://${domain.hostname}`, clientIp);
     },
-    async expire(gymId: string) {
-      if (!options.config.enabled) return;
+    async expire(gymId: string): Promise<'removed' | 'deferred' | 'skipped'> {
+      if (!options.config.enabled) return 'skipped';
       const [gym] = await scope(gymId, (tx) => tx.select().from(gyms).where(eq(gyms.id, gymId)));
       const settings = sandboxSettings(gym?.settings);
-      if (settings?.kind === 'showcase') return;
+      if (settings?.kind === 'showcase') return 'skipped';
       const marker = (gym?.settings as { bootstrapOwnerEmail?: string } | undefined)?.bootstrapOwnerEmail;
       const reserved = typeof marker === 'string' && /^demo-(?:reservation|replacement)\.[0-9a-f-]{36}@example[.]invalid$/.test(marker);
       const expiresAt = settings ? Date.parse(settings.expiresAt) : reserved && gym ? gym.createdAt.getTime() + 24 * 60 * 60 * 1000 : Infinity;
       if (gym && expiresAt <= options.clock.now().getTime()) {
-        try { await options.deletion.remove(gymId, gym.revision); }
+        try { return await options.deletion.remove(gymId, gym.revision, undefined, { drain: false }); }
         catch (error) { if (!(error instanceof RevisionConflictError)) throw error; }
       }
+      return 'skipped';
     },
   };
 }

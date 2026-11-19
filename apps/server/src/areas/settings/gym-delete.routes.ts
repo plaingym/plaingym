@@ -17,7 +17,7 @@ export function createGymDeleteRoutes(deletion: GymDeleteService) {
     return c.json({ data: { deleted: true as const } }, 200);
   })];
 }
-export const routes = createGymDeleteRoutes({ async remove(...args) {
+export const routes = createGymDeleteRoutes({ remove(...args) {
   if (!service) throw new AppError('not_found', 'Not found');
-  await service.remove(...args);
+  return service.remove(...args);
 } });

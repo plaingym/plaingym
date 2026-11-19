@@ -1,4 +1,4 @@
-﻿<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # PostgreSQL jobs
 
 `PostgresJobs` implements `Jobs`; `PostgresJobStatsQuery` implements the health
@@ -65,7 +65,7 @@ The optional `eligibleGym` policy is checked immediately before a gym handler.
 A false or `skip` result acknowledges the queued job without calling its handler.
 `defer` returns the job to pending with its attempt count unchanged; `true` runs
 it. Deferral delays start at the larger of one minute and `retryBaseMs`, double
-on each consecutive deferral, and stop growing at one day. Their count lives in
+on each consecutive deferral, and stop growing at one hour. Their count lives in
 the internal envelope, survives worker restarts, and resets after eligibility
 allows execution. A policy lookup error also defers without consuming an attempt,
 recording only the sanitized error name and code and logging it as
@@ -82,9 +82,16 @@ eligibility. Its optional install policy receives a lazy `readGym()` callback;
 forward it to `pool.jobPolicy(gymId, readGym)` to share one gym snapshot per job.
 A job whose handler already started before suspension can finish. After
 suspension, `waitForGymJobs` waits for the gym's running jobs to finish or their
-leases to expire before deletion removes uploads. Each poll uses a separate,
-short gym scope; other gyms and pending jobs do not delay it. The wait times out
-after one minute, leaving the suspended gym and its uploads available for retry.
+leases to expire before deletion removes uploads. It reads the earliest live
+lease and sleeps until it, checking at least once a second, instead of polling
+every 100 ms. Each check uses a separate, short gym scope; other gyms and pending
+jobs do not delay it. The wait times out after one minute, leaving the suspended
+gym and its uploads available for retry. Demo expiry skips a gym with a live job
+lease at the start and retries it on the next run; if a lease starts during
+cleanup, the demo service suspends the gym and defers deletion instead of waiting
+in the install lane. Demo refill likewise keeps busy gyms out of allocation while
+still counting them in its showcase and pool inventory, so it neither swaps a
+busy showcase's hostname nor seeds an extra copy.
 Payloads use a versioned internal envelope to persist timezone and scheduler
 and deferral metadata; handlers receive only the caller's original JSON value. Caller
 idempotency keys are hashed together with the job name to fit the schema's

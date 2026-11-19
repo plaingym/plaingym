@@ -68,6 +68,7 @@ export interface WorkerOptions {
 export interface JobWorker { stop(): Promise<void> }
 export const retentionJob = 'jobs.retention';
 export const defaultSucceededRetentionDays = 14;
+const hour = 3_600_000;
 const day = 86_400_000;
 function positive(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive integer`);
@@ -268,7 +269,7 @@ export class PostgresJobs implements Jobs, JobRecovery {
     const backoff = Math.min(day, this.#retryBaseMs * 2 ** Math.min(row.attempts - 1, 30));
     const deferrals = body?.deferrals ?? 0;
     // Deferrals have their own persisted backoff; handler attempts remain untouched.
-    const deferBackoff = Math.min(day, Math.max(60_000, this.#retryBaseMs) * 2 ** Math.min(deferrals, 30));
+    const deferBackoff = Math.min(hour, Math.max(60_000, this.#retryBaseMs) * 2 ** Math.min(deferrals, 30));
     await this.#database.forSystem(async (tx) => {
       await tx.update(jobs).set({
         status: deferred ? 'pending' : failed ? (final ? 'failed' : 'pending') : 'succeeded',
@@ -487,22 +488,44 @@ export class PostgresJobs implements Jobs, JobRecovery {
 }
 export function startJobsWorker(queue: PostgresJobs, options?: WorkerOptions): JobWorker { return queue.start(options); }
 
+/** Earliest unexpired running lease in this gym, or null when its uploads can be cleaned after suspension. */
+export async function earliestLiveGymJobLease(gymId: string, now: Date, scope: typeof forGym = forGym): Promise<Date | null> {
+  assertNoTransaction('jobs.earliestLiveGymJobLease');
+  idSchema.parse(gymId);
+  const [active] = await scope(gymId, tx => tx.select({ lockedUntil: jobs.lockedUntil }).from(jobs).where(and(
+    eq(jobs.gymId, gymId), eq(jobs.status, 'running'), sql`${jobs.lockedUntil} > ${now.toISOString()}`))
+    .orderBy(asc(jobs.lockedUntil)).limit(1));
+  return active?.lockedUntil ?? null;
+}
+
 /** Call after suspending the gym, before removing its uploads. No transaction spans the wait. */
 export async function waitForGymJobs(gymId: string, options: {
   clock: Clock; scope?: typeof forGym; timeoutMs?: number;
+  /** Tests can advance their clock instead of waiting in real time. */
+  sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 }): Promise<void> {
   assertNoTransaction('jobs.waitForGymJobs');
-  idSchema.parse(gymId);
-  const scope = options.scope ?? forGym;
+  const sleep = options.sleep ?? ((ms, signal) => delay(ms, undefined, { signal }));
   const signal = AbortSignal.timeout(positive(options.timeoutMs ?? 60_000, 'timeoutMs'));
   for (;;) {
     const now = options.clock.now();
-    const active = await scope(gymId, tx => tx.select({ id: jobs.id }).from(jobs).where(and(
-      eq(jobs.gymId, gymId), eq(jobs.status, 'running'), sql`${jobs.lockedUntil} > ${now.toISOString()}`)).limit(1));
-    if (!active.length) return;
-    try { await delay(100, undefined, { signal }); }
+    const lease = await earliestLiveGymJobLease(gymId, now, options.scope);
+    if (!lease) return;
+    // Sleep until the earliest lease ends, checking at least once a second so a finished job does not hold deletion.
+    const remaining = lease.getTime() - now.getTime();
+    try { await sleep(Math.max(1, Math.min(1000, remaining)), signal); }
     catch { throw new AppError('unavailable', 'Gym jobs are still running; retry deletion'); }
   }
+}
+
+/** Gym IDs with a claimed job whose lease is still live. Expiry cleanup skips them and retries on its next run. */
+export async function gymsWithLiveJobs(options: { clock: Clock; system?: typeof forSystem }): Promise<ReadonlySet<string>> {
+  assertNoTransaction('jobs.gymsWithLiveJobs');
+  const system = options.system ?? forSystem;
+  const now = options.clock.now();
+  const rows = await system(tx => tx.selectDistinct({ gymId: jobs.gymId }).from(jobs).where(and(
+    eq(jobs.status, 'running'), sql`${jobs.lockedUntil} > ${now.toISOString()}`, sql`${jobs.gymId} is not null`)));
+  return new Set(rows.map(row => row.gymId).filter((gymId): gymId is string => gymId !== null));
 }
 
 export class PostgresJobStatsQuery implements JobStatsQuery {

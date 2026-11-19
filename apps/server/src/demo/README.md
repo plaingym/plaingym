@@ -60,11 +60,14 @@ row locks. Ready pool gyms go to the oldest live ticket before a new visitor.
 Position includes unready pool seeds ahead of the ticket; expired tickets release
 their reservations without seeding them. Allocation first records a durable claim,
 then commits the private transition and its audit in that gym's transaction. A
-request finishes its own claim first. Failures finishing older visitors' claims
+request finishes its own claim first and still finishes the other committed claims
+if its own transition fails. Failures finishing older visitors' claims
 are logged and left for refill to recover, so they do not fail the new request.
 A restart also completes unfinished claims. A restart discards an interrupted seed and seeds a fresh gym instead;
 waiting tickets move to the replacement. A durable `demo.replace-seed` job saves
-the ticket before deletion and resumes an idempotent replacement bootstrap.
+the ticket before deletion and resumes an idempotent replacement bootstrap once
+the original gym is gone. A pool reservation counts toward the configured pool
+size while a live job lease delays its preparation.
 Stripe rate limits back off with the
 same idempotent request. The cap includes the showcase, ready pool and pending
 reservations. Keep settings consistent across processes and leave room for daily
@@ -196,10 +199,12 @@ normal signed, secure, host-only auth cookie. It never implements another sessio
 format. Student data is linked to a household; staff roles stay in `staff_roles`.
 
 Only demo mode configures gym deletion; on every other install `DELETE /api/settings/gym`
-returns 404. Gym deletion checks revision, suspends the gym, and waits for its
+returns 404. The delete route checks revision, suspends the gym, and waits for its
 running jobs to finish or their leases to expire before cleaning uploads outside a
 transaction. A one-minute job-drain timeout or a storage error leaves a suspended gym that an install cleanup job can
-retry. A single gym deletion cascades all rows carrying its `gym_id`, including jobs,
+retry. Scheduled expiry skips gyms with live leases. If a lease starts during a
+sweep, cleanup checks again after suspension and leaves the gym and uploads for
+the next run. A single gym deletion cascades all rows carrying its `gym_id`, including jobs,
 sessions and audits. Deleting a sandbox also removes its three deterministic
 `owner/coach/student.<gym-id>@example.invalid` identities in the same transaction.
 Ordinary install-wide identities remain shared.

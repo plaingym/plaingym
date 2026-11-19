@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { beforeEach, expect, it, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { asc, eq } from 'drizzle-orm';
 import { gyms, gymDomains, kioskDevices } from '@plaingym/db';
 // eslint-disable-next-line database/system-tables -- verify the composed demo policy preserves queued rows and attempt counts
 import { jobs } from '@plaingym/db';
@@ -18,6 +18,11 @@ import { registerDemoCleanup } from './demo.jobs.js';
 
 const db = useTestDatabase();
 beforeEach(async () => { await db.forSystem(tx => tx.delete(gyms)); });
+function latch() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
+}
 function fixture() {
   const config = { enabled: true, domain: 'demo.example.test', maxSandboxes: 20, poolSize: 1, idleHours: 2 };
   const clock = new TestClock('2026-11-14T12:00:00Z'), key = Buffer.alloc(32, 17);
@@ -31,11 +36,20 @@ function fixture() {
   return { config, clock, service, pool, makePool, seed, identities, removeUploads };
 }
 const rows = () => db.forSystem(tx => tx.select().from(gyms));
+const orderedRows = () => db.forSystem(tx => tx.select().from(gyms).orderBy(asc(gyms.createdAt), asc(gyms.id)));
 const create = async (f: ReturnType<typeof fixture>, role = 'owner', page = '/admin') => {
   const result = await f.pool.request({ role, page });
   if ('pending' in result) throw new Error('Expected a ready copy');
   return result;
 };
+async function holdGymJob(f: ReturnType<typeof fixture>, gymId: string) {
+  const queue = new PostgresJobs({ database: { forGym: db.forGym, forSystem: db.forSystem }, clock: f.clock });
+  const started = latch(), held = latch();
+  queue.handle('pool.hold', async () => { started.resolve(); await held.promise; });
+  await queue.enqueue('pool.hold', {}, { gymId, timezone: 'UTC' });
+  const running = queue.runNext(); await started.promise;
+  return async () => { held.resolve(); await running; };
+}
 
 it('gives the only ready gym to the oldest of two tickets before accepting a newcomer', async () => {
   const f = fixture();
@@ -91,10 +105,27 @@ it.each([false, true])('recovers another ticket claim without failing a visitor 
   if ('pending' in visitor) expect(await f.pool.progress(visitor.ticket)).toHaveProperty('gymId');
 });
 
-it('still fails a visitor request when its own private transition fails', async () => {
+it('finishes other committed claims when the visitor own transition fails', async () => {
+  const f = fixture(), pending = await f.pool.request({ role: 'student', page: '/portal' });
+  if (!('pending' in pending)) throw new Error('Expected ticket');
+  const ready = await f.service.reserve('pool'); await f.service.prepare(ready.gymId);
+  const own = await f.service.reserve('pool'); await f.service.prepare(own.gymId);
+  const scope: typeof db.forGym = async (gymId, fn) => {
+    if (gymId === own.gymId) throw new Error('Own allocation unavailable');
+    return db.forGym(gymId, fn);
+  };
+  await expect(f.makePool({ scope }).request({ role: 'coach', page: '/admin' })).rejects.toThrow('Own allocation unavailable');
+  const readySettings = sandboxSettings((await rows()).find(row => row.id === ready.gymId)?.settings);
+  expect(readySettings).toMatchObject({ kind: 'private', ready: true });
+  expect(readySettings).not.toHaveProperty('allocationPending');
+  expect(sandboxSettings((await rows()).find(row => row.id === own.gymId)?.settings)).toMatchObject({ kind: 'queued', allocationPending: true });
+  expect(await f.pool.progress(pending.ticket)).toMatchObject({ gymId: ready.gymId });
+});
+
+it('preserves an own-claim rejection even when its reason is undefined', async () => {
   const f = fixture(), ready = await f.service.reserve('pool'); await f.service.prepare(ready.gymId);
-  const scope: typeof db.forGym = async () => { throw new Error('Own allocation unavailable'); };
-  await expect(f.makePool({ scope }).request({})).rejects.toThrow('Own allocation unavailable');
+  const scope = vi.fn<() => Promise<never>>().mockRejectedValue(undefined);
+  await expect(f.makePool({ scope }).request({})).rejects.toBeUndefined();
   expect(sandboxSettings((await rows()).find(row => row.id === ready.gymId)?.settings)).toMatchObject({ allocationPending: true });
   await f.pool.refill();
   expect(sandboxSettings((await rows()).find(row => row.id === ready.gymId)?.settings)).toMatchObject({ kind: 'private' });
@@ -390,6 +421,166 @@ it('keeps a queued ticket in a durable recovery job if replacement fails after d
   expect((await rows()).filter(gym => sandboxSettings(gym.settings)?.ticketHash === sandboxSettings(failed.settings)?.ticketHash)).toHaveLength(1);
 });
 
+it('retries seed recovery before moving a ticket whose original gym still holds a lease', async () => {
+  const f = fixture(), pending = await f.pool.request({});
+  if (!('pending' in pending)) throw new Error('Expected a ticket');
+  f.seed.mockRejectedValueOnce(new Error('Interrupted seed'));
+  await expect(f.pool.refill()).rejects.toThrow('Interrupted seed');
+  const [original] = await rows(), demo = sandboxSettings(original!.settings)!;
+  const queue = new PostgresJobs({ database: db, clock: f.clock });
+  registerDemoCleanup(queue, { ...f, system: db.forSystem });
+  const recovery = await queue.enqueueSystem('demo.replace-seed', { gymId: original!.id, demo }, { timezone: 'UTC' });
+  const ticketOwners = async () => (await rows()).filter(gym => sandboxSettings(gym.settings)?.ticketHash === demo.ticketHash);
+  const release = await holdGymJob(f, original!.id);
+  try {
+    expect(await queue.runNext()).toBe(true);
+    expect(await ticketOwners()).toMatchObject([{ id: original!.id, status: 'suspended' }]);
+    const [job] = await db.forSystem(tx => tx.select().from(jobs).where(eq(jobs.id, recovery.jobId)));
+    expect(job).toMatchObject({ status: 'pending' });
+  } finally { await release(); }
+
+  f.clock.advance(1000);
+  expect(await queue.runNext()).toBe(true);
+  const [replacement] = await ticketOwners();
+  expect(sandboxSettings(replacement!.settings)).toMatchObject({ replacementFor: original!.id });
+  await f.pool.refill();
+  expect(await f.pool.progress(pending.ticket)).toMatchObject({ gymId: replacement!.id });
+});
+
+it('skips a busy stale gym and retires it on the next refill', async () => {
+  const f = fixture(); await f.pool.refill(); const copy = await create(f);
+  f.clock.advance(7_200_000);
+  const queue = new PostgresJobs({ database: { forGym: db.forGym, forSystem: db.forSystem }, clock: f.clock });
+  const started = latch(), held = latch();
+  queue.handle('pool.hold', async () => { started.resolve(); await held.promise; });
+  await queue.enqueue('pool.hold', {}, { gymId: copy.gymId, timezone: 'UTC' });
+  const running = queue.runNext(); await started.promise;
+  try {
+    await f.pool.refill();
+    expect((await rows()).find(gym => gym.id === copy.gymId)).toMatchObject({ status: 'active' });
+    expect(sandboxSettings((await rows()).find(gym => gym.id === copy.gymId)?.settings)).toMatchObject({ kind: 'private' });
+  } finally { held.resolve(); await running; }
+  await f.pool.refill();
+  expect((await rows()).some(gym => gym.id === copy.gymId)).toBe(false);
+});
+
+it('seeds the copy that becomes the showcase when the configured pool is empty', async () => {
+  const f = fixture();
+  f.config.poolSize = 0;
+  await f.pool.refill();
+  const showcase = (await rows()).find(gym => sandboxSettings(gym.settings)?.kind === 'showcase');
+  expect(showcase).toBeDefined();
+  expect(await f.pool.showcase()).toContain(f.service.kioskTokenFor(showcase!.id));
+  const domains = await db.forSystem(tx => tx.select().from(gymDomains).where(eq(gymDomains.hostname, f.pool.showcaseHostname)));
+  expect(domains).toHaveLength(1);
+  expect(domains[0]!.gymId).toBe(showcase!.id);
+});
+
+it('keeps a busy showcase in the inventory and leaves its hostname in place', async () => {
+  const f = fixture(); await f.pool.refill();
+  const shared = (await rows()).find(gym => sandboxSettings(gym.settings)?.kind === 'showcase')!;
+  const release = await holdGymJob(f, shared.id);
+  try {
+    await f.pool.refill();
+    expect(await f.pool.showcase()).toContain(f.service.kioskTokenFor(shared.id));
+    const domains = await db.forSystem(tx => tx.select().from(gymDomains).where(eq(gymDomains.hostname, f.pool.showcaseHostname)));
+    expect(domains).toHaveLength(1);
+    expect(domains[0]!.gymId).toBe(shared.id);
+  } finally { await release(); }
+});
+
+it.each([false, true])('counts a busy pool reservation toward capacity (ready=%s)', async ready => {
+  const f = fixture();
+  f.config.poolSize = 0;
+  await f.pool.refill();
+  f.config.poolSize = 1;
+  const pooled = await f.service.reserve('pool');
+  if (ready) await f.service.prepare(pooled.gymId);
+  const poolRows = async () => (await rows()).filter(gym => sandboxSettings(gym.settings)?.kind === 'pool');
+  const release = await holdGymJob(f, pooled.gymId);
+  try {
+    await f.pool.refill();
+    expect(await poolRows()).toMatchObject([{ id: pooled.gymId, settings: { demo: { ready } } }]);
+  } finally { await release(); }
+  await f.pool.refill();
+  expect(await poolRows()).toMatchObject([{ id: pooled.gymId, settings: { demo: { ready: true } } }]);
+});
+
+it('allocates around a busy ready gym instead of claiming it for a waiting ticket', async () => {
+  const f = fixture(), pending = await f.pool.request({ role: 'student', page: '/portal' });
+  if (!('pending' in pending)) throw new Error('Expected a ticket');
+  const busy = await f.service.reserve('pool'); await f.service.prepare(busy.gymId);
+  f.clock.advance(1);
+  const idle = await f.service.reserve('pool'); await f.service.prepare(idle.gymId);
+  const release = await holdGymJob(f, busy.gymId);
+  try {
+    await f.pool.refill();
+    const busyAfter = (await rows()).find(gym => gym.id === busy.gymId)!;
+    expect(busyAfter).toMatchObject({ status: 'active' });
+    expect(sandboxSettings(busyAfter.settings)).toMatchObject({ kind: 'pool', ready: true });
+    expect(await f.pool.progress(pending.ticket)).toMatchObject({ gymId: idle.gymId });
+  } finally { await release(); }
+});
+
+it('keeps a later ticket behind an older ticket on a busy gym', async () => {
+  const f = fixture();
+  const first = await f.pool.request({ role: 'owner', page: '/admin' });
+  f.clock.advance(1);
+  const second = await f.pool.request({ role: 'student', page: '/portal' });
+  if (!('pending' in first) || !('pending' in second)) throw new Error('Expected tickets');
+  const older = (await orderedRows()).find(gym => sandboxSettings(gym.settings)?.kind === 'queued')!;
+  f.clock.advance(1);
+  const ready = await f.service.reserve('pool'); await f.service.prepare(ready.gymId);
+  f.config.maxSandboxes = 3;
+  const release = await holdGymJob(f, older.id);
+  let transactions = 0;
+  const system: typeof db.forSystem = fn => { transactions++; return db.forSystem(fn); };
+  try {
+    await f.makePool({ system }).refill();
+    // Once the later ticket is prepared, the busy predecessor still blocks allocation.
+    // A second look is enough; the install job must not exhaust its iteration limit.
+    expect(transactions).toBeLessThanOrEqual(6);
+    expect((await rows()).find(gym => gym.id === older.id)).toMatchObject({ status: 'active' });
+    expect(sandboxSettings((await rows()).find(gym => gym.id === ready.gymId)?.settings)).toMatchObject({ kind: 'pool', ready: true });
+    expect(await f.pool.progress(second.ticket)).toHaveProperty('pending', true);
+  } finally { await release(); }
+  await f.pool.refill();
+  expect(await f.pool.progress(first.ticket)).toMatchObject({ gymId: ready.gymId });
+  expect(await f.pool.progress(second.ticket)).toHaveProperty('gymId');
+});
+
+it('defers a gym whose lease starts during cleanup and deletes it on the next refill', async () => {
+  const f = fixture();
+  const first = await f.service.reserve('pool'), second = await f.service.reserve('pool'), third = await f.service.reserve('pool');
+  const start = f.clock.now().getTime();
+  await db.forSystem(async tx => {
+    await tx.update(gyms).set({ createdAt: new Date(start - 3000) }).where(eq(gyms.id, first.gymId));
+    await tx.update(gyms).set({ createdAt: new Date(start - 2000) }).where(eq(gyms.id, second.gymId));
+    await tx.update(gyms).set({ createdAt: new Date(start - 1000) }).where(eq(gyms.id, third.gymId));
+  });
+  f.clock.advance(86_400_000);
+  const queue = new PostgresJobs({ database: { forGym: db.forGym, forSystem: db.forSystem }, clock: f.clock });
+  const started = latch(), held = latch();
+  queue.handle('pool.hold', async () => { started.resolve(); await held.promise; });
+  let finish: (() => Promise<void>) | undefined;
+  f.removeUploads.mockImplementation(async gymId => {
+    if (gymId !== first.gymId) return;
+    // The lease starts after refill's busy snapshot, while the earlier gym is being removed.
+    await queue.enqueue('pool.hold', {}, { gymId: second.gymId, timezone: 'UTC' });
+    const running = queue.runNext();
+    await started.promise;
+    finish = async () => { held.resolve(); await running; };
+  });
+  try {
+    await f.pool.refill();
+    expect((await rows()).some(gym => gym.id === first.gymId)).toBe(false);
+    expect((await rows()).find(gym => gym.id === second.gymId)).toMatchObject({ status: 'suspended' });
+    expect((await rows()).some(gym => gym.id === third.gymId)).toBe(false);
+  } finally { if (finish) await finish(); }
+  await f.pool.refill();
+  expect((await rows()).some(gym => gym.id === second.gymId)).toBe(false);
+});
+
 it('continues refill and expiry cleanup past an undeletable stale gym', async () => {
   const f = fixture();
   const stale = await f.service.reserve('pool');
@@ -406,6 +597,25 @@ it('continues refill and expiry cleanup past an undeletable stale gym', async ()
   expect((await rows()).some(gym => gym.id === copy.gymId)).toBe(false);
   await f.pool.refill();
   expect(await create(f)).toHaveProperty('gymId');
+});
+
+it('skips a gym with a live job lease during expiry and deletes it on the next run', async () => {
+  const f = fixture(); await f.pool.refill(); const copy = await create(f);
+  f.clock.advance(7_200_000);
+  const queue = new PostgresJobs({ database: { forGym: db.forGym, forSystem: db.forSystem }, clock: f.clock });
+  const started = latch(), held = latch();
+  queue.handle('pool.hold', async () => { started.resolve(); await held.promise; });
+  await queue.enqueue('pool.hold', {}, { gymId: copy.gymId, timezone: 'UTC' });
+  const running = queue.runNext(); await started.promise;
+  registerDemoCleanup(queue, { ...f, system: db.forSystem });
+  try {
+    await queue.enqueueSystem('demo.expire', {}, { timezone: 'UTC' });
+    await queue.runNext();
+    expect((await rows()).some(gym => gym.id === copy.gymId)).toBe(true);
+  } finally { held.resolve(); await running; }
+  await queue.enqueueSystem('demo.expire', {}, { timezone: 'UTC' });
+  await queue.runNext();
+  expect((await rows()).some(gym => gym.id === copy.gymId)).toBe(false);
 });
 
 it('keeps an overdue showcase serving when private copies fill the cap', async () => {

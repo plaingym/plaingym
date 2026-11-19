@@ -2,7 +2,7 @@
 import { forSystem, gyms } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import type { JobRegistration } from '../core/registry.js';
-import type { PostgresJobs } from '../infra/jobs/postgres.js';
+import { gymsWithLiveJobs, type PostgresJobs } from '../infra/jobs/postgres.js';
 import { logError } from '../core/log.js';
 import type { DemoService } from './service.js';
 import type { DemoPool } from './pool.js';
@@ -29,7 +29,10 @@ export function registerDemoCleanup(queue: Pick<PostgresJobs, 'handleSystem' | '
   }
   if (options.config.enabled) queue.handleSystem('demo.expire', async () => {
     const rows = await system((tx) => tx.select({ id: gyms.id, settings: gyms.settings }).from(gyms));
+    const busy = await gymsWithLiveJobs({ clock: options.clock, system });
     for (const gym of rows) {
+      // A running job keeps its gym for now; the next expiry run retries it instead of waiting in this lane.
+      if (busy.has(gym.id)) continue;
       const marker = (gym.settings as { bootstrapOwnerEmail?: unknown }).bootstrapOwnerEmail;
       if (sandboxSettings(gym.settings) || (typeof marker === 'string' && /^demo-(?:reservation|replacement)\.[0-9a-f-]{36}@example[.]invalid$/.test(marker))) {
         try { await options.service.expire(gym.id); }

@@ -126,7 +126,7 @@ it('defers gym work without spending attempts, then executes it once eligible; s
   expect(handler).toHaveBeenCalledOnce();
 });
 
-it('persists growing policy backoff across workers and caps it at a day', async () => {
+it('persists growing policy backoff across workers and caps it at an hour', async () => {
   const enqueue = queue();
   const { jobId } = await enqueue.enqueue('policy.backoff', { original: true }, { ...options, maxAttempts: 1 });
   const handler = vi.fn(async () => {});
@@ -136,13 +136,35 @@ it('persists growing policy backoff across workers and caps it at a day', async 
     const now = clock.now().getTime();
     expect(await q.runNext()).toBe(true);
     const deferred = await row(jobId);
-    const backoff = Math.min(86_400_000, 90_000 * 2 ** n);
+    const backoff = Math.min(3_600_000, 90_000 * 2 ** n);
     expect(deferred).toMatchObject({ status: 'pending', attempts: 0, runAt: new Date(now + backoff),
       payload: { value: { original: true } } });
     expect(await q.runNext()).toBe(false);
     clock.advance(backoff);
   }
   expect(handler).not.toHaveBeenCalled();
+});
+
+it('runs a reactivated gym job within an hour after many deferrals', async () => {
+  const gym = await factory('gyms', uuidv7());
+  const q = queue({ retryBaseMs: 90_000, eligibleGym: createGymJobPolicy({ system: database.forSystem }) }), handler = vi.fn(async () => {});
+  q.handle('policy.reactivated', handler);
+  const { jobId } = await q.enqueue('policy.reactivated', {}, { gymId: gym.id, timezone: 'UTC', maxAttempts: 1 });
+  await database.forGym(gym.id, tx => tx.update(gyms).set({ status: 'suspended' }).where(eq(gyms.id, gym.id)));
+  for (let n = 0; n < 20; n++) {
+    expect(await q.runNext()).toBe(true);
+    const deferred = await row(jobId);
+    expect(deferred).toMatchObject({ status: 'pending', attempts: 0 });
+    const backoff = deferred.runAt.getTime() - clock.now().getTime();
+    expect(backoff).toBeGreaterThan(0);
+    expect(backoff).toBeLessThanOrEqual(3_600_000);
+    clock.advance(backoff);
+  }
+  expect(await row(jobId)).toMatchObject({ runAt: clock.now(), payload: { value: {} } });
+  await database.forGym(gym.id, tx => tx.update(gyms).set({ status: 'active' }).where(eq(gyms.id, gym.id)));
+  expect(await q.runNext()).toBe(true);
+  expect(handler).toHaveBeenCalledExactlyOnceWith({}, expect.objectContaining({ gymId: gym.id, attempt: 1 }));
+  expect(await row(jobId)).toMatchObject({ status: 'succeeded', attempts: 1 });
 });
 
 it('defers a policy error on the final attempt and still runs that attempt when the policy recovers', async () => {
@@ -511,6 +533,22 @@ describe('worker leases, caps, and lifecycle', () => {
       await waiting;
       expect(drained).toBe(true);
     } finally { held.resolve(); await active; }
+  });
+  it('sleeps until the earliest lease instead of polling every 100 ms while a job holds it', async () => {
+    const q = queue(), started = latch(), held = latch();
+    q.handle('drain', async () => { started.resolve(); await held.promise; });
+    await q.enqueue('drain', {}, options);
+    const active = q.runNext(); await started.promise;
+    let reads = 0;
+    const scope: typeof database.forGym = async (gymId, fn) => { reads++; return database.forGym(gymId, fn); };
+    const sleeps: number[] = [];
+    try {
+      await waitForGymJobs(gymA, { clock, scope, sleep: async ms => { sleeps.push(ms); clock.advance(ms); } });
+    } finally { held.resolve(); await active; }
+    expect(sleeps.length).toBeLessThanOrEqual(31);
+    expect(sleeps.every(ms => ms > 0 && ms <= 1000)).toBe(true);
+    expect(reads).toBe(sleeps.length + 1);
+    expect(reads).toBeLessThanOrEqual(32);
   });
   it('bounds the drain wait while a gym still holds a live lease', async () => {
     const q = queue(), started = latch(), held = latch();
