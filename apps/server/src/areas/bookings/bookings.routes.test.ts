@@ -22,7 +22,7 @@ import { FakeJobs } from '../../infra/jobs/index.js';
 import { createMembersRoutes } from '../members/members.routes.js';
 import { createBookingService, promoteWaitlist } from './bookings.js';
 import { createBookingRoutes } from './bookings.routes.js';
-import { createBookingDelivery, noticeJob, type BookingDelivery } from './bookings.delivery.js';
+import { createBookingDelivery, noticeJob, promotionJob, type BookingDelivery } from './bookings.delivery.js';
 import { FakeEmail } from '../../infra/email/index.js';
 import { createPortalBookingService } from '../portal/bookings.js';
 import { createPortalBookingRoutes } from '../portal/bookings.routes.js';
@@ -196,7 +196,7 @@ describe('booking route permissions and production composition', () => {
     for (let n = 0; n < 5; n++) confirmed.push(await book(f, (await factory('members', f.gymId)).id));
     const waiting = await book(f, f.outsider.id);
     await service.cancel(f.actor, confirmed[0]!.id);
-    const enqueue = vi.spyOn(delivery, 'enqueueNotice').mockRejectedValue(new Error('Unavailable'));
+    const enqueue = vi.spyOn(jobs, 'enqueue').mockRejectedValue(new Error('Unavailable'));
     const server = app(f, source === 'staff' ? staffPrincipal(f, 'front_desk') : memberPrincipal(f), false, false, delivery);
     const path = source === 'staff' ? '/api/bookings' : source === 'self' ? '/api/portal/bookings' : `/api/portal/members/${f.sibling.id}/bookings`;
     const input = { sessionId: f.session.id, allowWaitlist: true, ...(source === 'staff' ? { memberId: f.member.id } : {}) };
@@ -206,7 +206,7 @@ describe('booking route permissions and production composition', () => {
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(body.data).toMatchObject({ status: 'waitlisted', memberId: source === 'household' ? f.sibling.id : f.member.id });
-      expect(enqueue).toHaveBeenCalledWith(f.gymId, waiting.id);
+      expect(enqueue).toHaveBeenCalledWith(noticeJob, { bookingId: waiting.id }, expect.objectContaining({ gymId: f.gymId }));
       expect(logs.map(line => JSON.parse(line))).toContainEqual(expect.objectContaining({
         event: 'bookings.notice_enqueue_failed', gymId: f.gymId, bookingId: waiting.id,
       }));
@@ -217,6 +217,35 @@ describe('booking route permissions and production composition', () => {
     } finally { enqueue.mockRestore(); setLogSink(previous); }
     await delivery.sweep(f.gymId);
     expect(jobs.jobs).toMatchObject([{ name: noticeJob, payload: { bookingId: waiting.id } }]);
+  });
+  it.each(['staff', 'self', 'household'] as const)('returns the committed %s cancellation when promotion enqueue fails and the sweep recovers the waitlist', async source => {
+    const f = await fixture(), jobs = new FakeJobs(clock), email = new FakeEmail();
+    const delivery = createBookingDelivery({ scope: db.forGym, clock, jobs, mailer: async () => email });
+    const session = await factory('classSessions', f.gymId, { capacity: 1,
+      startsAt: new Date('2026-10-30T20:00:00Z'), endsAt: new Date('2026-10-30T21:00:00Z') });
+    const memberId = source === 'household' ? f.sibling.id : f.member.id;
+    const booked = (await service.book(f.actor, { memberId, sessionId: session.id, allowWaitlist: true })).booking;
+    const waiting = (await service.book(f.actor, { memberId: f.outsider.id, sessionId: session.id, allowWaitlist: true })).booking;
+    expect(booked.status).toBe('booked'); expect(waiting.status).toBe('waitlisted');
+    const server = app(f, source === 'staff' ? staffPrincipal(f, 'front_desk') : memberPrincipal(f), false, false, delivery);
+    const path = source === 'staff' ? `/api/bookings/${booked.id}/cancel`
+      : source === 'self' ? `/api/portal/bookings/${booked.id}/cancel`
+        : `/api/portal/members/${f.sibling.id}/bookings/${booked.id}/cancel`;
+    const logs: string[] = [], previous = setLogSink(line => logs.push(line));
+    const enqueue = vi.spyOn(jobs, 'enqueue').mockRejectedValue(new Error('Unavailable'));
+    try {
+      const response = await post(server, path);
+      expect(response.status).toBe(200);
+      expect((await response.json()).data).toMatchObject({ id: booked.id, status: 'cancelled' });
+      expect(enqueue).toHaveBeenCalledWith(promotionJob, { sessionId: session.id }, expect.objectContaining({
+        gymId: f.gymId, idempotencyKey: `booking-cancelled:${booked.id}` }));
+      expect(logs.map(line => JSON.parse(line))).toContainEqual(expect.objectContaining({
+        event: 'bookings.promotion_enqueue_failed', gymId: f.gymId, sessionId: session.id, cancellationId: booked.id }));
+      expect((await service.list(f.gymId, { limit: 50, offset: 0 })).data.find(row => row.id === booked.id)?.status).toBe('cancelled');
+    } finally { enqueue.mockRestore(); setLogSink(previous); }
+    await delivery.sweep(f.gymId);
+    expect(jobs.jobs).toMatchObject([{ name: noticeJob, payload: { bookingId: waiting.id } }]);
+    expect((await service.list(f.gymId, { limit: 50, offset: 0 })).data.find(row => row.id === waiting.id)?.status).toBe('booked');
   });
   it.each(['staff', 'self', 'household'] as const)('enqueues inline promotions after the %s booking commits and audits the system actor', async source => {
     const f = await fixture(), jobs = new FakeJobs(clock), email = new FakeEmail();

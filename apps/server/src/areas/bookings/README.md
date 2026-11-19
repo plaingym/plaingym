@@ -34,8 +34,9 @@ members outside the viewer's household, without exposing their identities.
 A new booking first reconciles the queue under the session lock, so it never
 takes a place promotion could fill.
 Inline promotions use the system audit actor. `book` returns `{ booking, promoted }`;
-the staff and portal adapters enqueue each promotion's notice after commit with
-`createBookingDelivery().enqueueNotice`, and expose only the caller's booking.
+the staff and portal adapters pass each promotion's id to
+`createBookingDelivery().enqueueNotices` after commit (a failure is logged and
+the sweep recovers it), and expose only the caller's booking.
 
 `reconcileSessionBookings` is the single rule called **under the session lock**
 by new bookings, both schedule capacity-update paths and promotion. A capacity below the
@@ -115,9 +116,11 @@ Unsent promotions expire after the jobs module's exported succeeded-retention
 default, so recovery stops before a completed notice job's key can be pruned.
 The notice handler logs when it skips a stale or missing promotion.
 The retention test checks that this window matches the runtime queue's effective
-succeeded retention, including an explicit override. A failed notice enqueue
-after a staff or portal booking commits is logged; the response still returns
-the committed booking, and the scan recovers its promotion notice.
+succeeded retention, including an explicit override. A failed notice or
+cancellation-promotion enqueue after a staff or portal booking or cancellation
+commits is logged and swallowed by `BookingDelivery` (`enqueueNotices`,
+`requestPromotion`); the response still returns the committed booking, and the
+scan recovers the promotion notice or the freed place.
 
 `createBookingMailer` uses `createSmtpResolver` for each gym's encrypted SMTP
 settings (with its existing install fallback). The runtime may inject the demo

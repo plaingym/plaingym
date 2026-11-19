@@ -6,7 +6,7 @@ import { idSchema } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
 import { createEmailDeliveries, DeliveryError, SmtpEmail, type Email } from '../../infra/email/index.js';
 import { defaultSucceededRetentionDays, type Jobs } from '../../infra/jobs/index.js';
-import { logInfo } from '../../core/log.js';
+import { logError, logInfo } from '../../core/log.js';
 import { createSmtpResolver } from '../settings/smtp.js';
 import { createGymSettingsAccessor, createSettingsService } from '../settings/settings.js';
 import { renderBookingPromotion } from '../../emails/bookings/bookings.js';
@@ -56,6 +56,20 @@ export function createBookingDelivery(options: BookingDeliveryOptions) {
     const gym = await settings.get(gymId);
     await options.jobs.enqueue(promotionJob, { sessionId }, { gymId, timezone: gym.timezone,
       idempotencyKey: `booking-cancelled:${cancellationId}` });
+  }
+  /**
+   * After-commit enqueues must not undo committed work: a failed notice or promotion request is logged with
+   * identifiers only, and the five-minute recovery sweep owns it.
+   */
+  async function enqueueNotices(gymId: string, bookingIds: readonly string[]) {
+    for (const bookingId of bookingIds) {
+      try { await enqueueNotice(gymId, bookingId); }
+      catch (error) { logError('bookings.notice_enqueue_failed', { gymId, bookingId }, error); }
+    }
+  }
+  async function requestPromotion(gymId: string, sessionId: string, cancellationId: string) {
+    try { await request(gymId, sessionId, cancellationId); }
+    catch (error) { logError('bookings.promotion_enqueue_failed', { gymId, sessionId, cancellationId }, error); }
   }
   /** Promotions recent enough to notify: a notice that never went out is not sent weeks later. */
   const recentPromotion = () => and(eq(auditEvents.action, 'booking.promoted'),
@@ -142,6 +156,6 @@ export function createBookingDelivery(options: BookingDeliveryOptions) {
     try { await sendSms(gymId, bookingId); } catch (error) { failure ??= error; }
     if (failure) throw failure;
   }
-  return { promote, request, sweep, send, enqueueNotice };
+  return { promote, request, requestPromotion, sweep, send, enqueueNotice, enqueueNotices };
 }
 export type BookingDelivery = ReturnType<typeof createBookingDelivery>;

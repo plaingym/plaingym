@@ -5,7 +5,6 @@ import type { RequestContext } from '../../core/context.js';
 import { notFound } from '../../core/interfaces/common.js';
 import { createBookingService } from './bookings.js';
 import type { BookingDelivery } from './bookings.delivery.js';
-import { logError } from '../../core/log.js';
 
 let delivery: BookingDelivery | undefined;
 export function configureBookingRoutes(value: BookingDelivery) { delivery = value; }
@@ -21,15 +20,12 @@ export function createBookingRoutes(service = createBookingService(), readDelive
     route({ ...create, request: { body: { required: true, content: { 'application/json': { schema: create.body } } } }, responses: { 200: { description: 'Booking', content: { 'application/json': { schema: create.response } } } } },
       async c => {
         const actor = staff(c.get('context')), result = await service.book(actor, c.req.valid('json'));
-        for (const row of result.promoted) {
-          try { await readDelivery()?.enqueueNotice(actor.gymId, row.id); }
-          catch (error) { logError('bookings.notice_enqueue_failed', { gymId: actor.gymId, bookingId: row.id }, error); }
-        }
+        await readDelivery()?.enqueueNotices(actor.gymId, result.promoted.map(row => row.id));
         return c.json({ data: result.booking }, 200);
       }),
     route({ ...cancel, request: { params: cancel.params }, responses: { 200: { description: 'Cancelled booking', content: { 'application/json': { schema: cancel.response } } } } }, async c => {
       const actor = staff(c.get('context')), booking = await service.cancel(actor, c.req.valid('param').id);
-      await readDelivery()?.request(actor.gymId, booking.sessionId, booking.id);
+      await readDelivery()?.requestPromotion(actor.gymId, booking.sessionId, booking.id);
       return c.json({ data: booking }, 200);
     }),
     route({ ...roster, request: { params: roster.params, query: roster.query }, responses: { 200: { description: 'Bookings and check-ins', content: { 'application/json': { schema: roster.response } } } } },
