@@ -39,13 +39,13 @@ details use the same visit rule in one read for the displayed member IDs.
 The batch eligibility path reads active programs, their ranks, the active roster,
 and each member's latest promotion in four sequential queries. One grouped query
 counts classes since each candidate's promotion (or creation), including linked
-session programs and the gym's open-mat setting. Its program arms join the
-candidate members' earliest windows inside the read, so members outside the
-candidate list are not read. The criteria registry still validates configuration,
-module availability and provider results. Time, age and extension criteria use
-their existing providers outside the snapshot transaction. Ready-only staff
-eligibility uses the same batch before filtering and paginating; its unfiltered
-pages and portal progress retain their per-page paths.
+session programs and the gym's open-mat setting. Each program arm joins the
+candidate members' earliest windows, so only their attendance enters the batch.
+The criteria registry still validates configuration, module availability and
+provider results. Time, age and extension criteria use their existing providers
+outside the snapshot transaction. Ready-only staff eligibility uses the same
+batch before filtering and paginating. Unfiltered staff eligibility evaluates
+each page's members. Portal progress evaluates one member at a time.
 
 With one built-in class criterion, an owner load of both dashboard endpoints uses
 12 SELECTs at either 300 or 1,000 members and holds at most two of the app pool's
