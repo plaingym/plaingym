@@ -118,11 +118,11 @@ const report = (n: number, day: string, failures: { number: number | null; cause
 const failuresRegion = () => screen.findByRole('region', { name: 'Failed charges' });
 const dismissed = (...ids: string[]) => ok({ data: { dismissed: ids } });
 describe('disk sizes', () => {
+  const tile = (backupStaging: { totalBytes: number; availableBytes: number } | null, sameFilesystem = false) => healthTileSchema.parse({
+    id: 'disk', status: 'warning', checkedAt, message: 'Free space checked.',
+    details: { uploads: { totalBytes: 20_000_000_000, availableBytes: 10_000_000_000 }, backupStaging, sameFilesystem },
+  });
   it('shows each volume with its own figures and hides unconfigured staging', () => {
-    const tile = (backupStaging: { totalBytes: number; availableBytes: number } | null) => healthTileSchema.parse({
-      id: 'disk', status: 'warning', checkedAt, message: 'Free space checked.',
-      details: { uploads: { totalBytes: 20_000_000_000, availableBytes: 10_000_000_000 }, backupStaging },
-    });
     const view = render(<HealthTiles tiles={[tile({ totalBytes: 8_000_000_000, availableBytes: 500_000_000 })]}/>);
     for (const [label, value] of [['Uploads volume capacity', '20 GB'], ['Uploads volume available', '10 GB'],
       ['Backup staging volume capacity', '8 GB'], ['Backup staging volume available', '500 MB']]) {
@@ -133,6 +133,17 @@ describe('disk sizes', () => {
     view.rerender(<HealthTiles tiles={[tile(null)]}/>);
     expect(screen.queryByText('Backup staging volume capacity')).toBeNull();
     expect(screen.queryByText('Unknown')).toBeNull();
+  });
+  it('shows one pair of rows for a shared filesystem instead of the same figures under two names', () => {
+    render(<HealthTiles tiles={[tile({ totalBytes: 20_000_000_000, availableBytes: 10_000_000_000 }, true)]}/>);
+    for (const [label, value] of [['Uploads and backup staging volume capacity', '20 GB'],
+      ['Uploads and backup staging volume free space', '10 GB']]) {
+      expect(screen.getByText(label!).parentElement!.querySelector('dd')!.textContent).toBe(value);
+    }
+    for (const separate of ['Uploads volume capacity', 'Uploads volume available',
+      'Backup staging volume capacity', 'Backup staging volume available']) expect(screen.queryByText(separate)).toBeNull();
+    expect(document.body.textContent).not.toContain('[object Object]');
+    expect(document.body.textContent).not.toContain('health/status:');
   });
   it('moves to the next unit instead of showing 1,000 of one', () => {
     expect(bytesLabel(999)).toBe('999 B');

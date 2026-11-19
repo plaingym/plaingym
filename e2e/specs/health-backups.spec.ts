@@ -86,7 +86,7 @@ for (const viewport of viewports) {
           id: 'disk', status: staging ? 'warning' : 'healthy', checkedAt: now,
           message: staging ? 'Free space: uploads 10 GB; backup staging 0.5 GB.' : 'Free space: uploads 10 GB.',
           details: { uploads: { totalBytes: 20_000_000_000, availableBytes: 10_000_000_000 },
-            backupStaging: staging ? { totalBytes: 8_000_000_000, availableBytes: 500_000_000 } : null },
+            backupStaging: staging ? { totalBytes: 8_000_000_000, availableBytes: 500_000_000 } : null, sameFilesystem: false },
         } : { ...tile, status: 'not_configured', checkedAt: now, details: null, message: 'Not set up' }),
       } } }));
       await page.goto(gymOrigin + '/admin/health');

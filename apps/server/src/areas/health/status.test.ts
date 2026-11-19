@@ -26,7 +26,8 @@ const clock = new TestClock('2026-10-22T12:00:00Z'), key = Buffer.alloc(32, 9);
 const context = (gymId = gymA): StaffProviderContext => ({ gymId, roles: ['owner'], clock });
 const env = { APP_ENCRYPTION_KEY: key.toString('hex'), TENANCY: 'multi', UPLOADS_DIR: '/uploads', BACKUP_STAGING_DIR: '/staging', APP_VERSION: '0.1.0', SOURCE_URL: 'https://example.test/source/v0.1.0' };
 const disk = vi.fn(async () => ({ blocks: 20_000_000, bsize: 1024, bavail: 10_000_000 }));
-const providers = () => createStatusProviders({ env, scope: database.forGym, jobs: new PostgresJobStatsQuery(database), disk });
+const device = vi.fn(async () => 1);
+const providers = () => createStatusProviders({ env, scope: database.forGym, jobs: new PostgresJobStatsQuery(database), disk, device });
 const service = () => createHealthService(providers());
 let userId: string;
 beforeAll(async () => {
@@ -44,7 +45,7 @@ function server(principal: Principal, gymId = gymA) {
 }
 const owner = (gymId = gymA): Principal => ({ kind: 'staff', gymId, userId, roles: ['owner'] });
 async function tile(id: HealthTile['id'], gymId = gymA, options: Parameters<typeof createStatusProviders>[0] = {}) {
-  const list = createStatusProviders({ env, scope: database.forGym, jobs: new PostgresJobStatsQuery(database), disk, ...options });
+  const list = createStatusProviders({ env, scope: database.forGym, jobs: new PostgresJobStatsQuery(database), disk, device, ...options });
   return healthTileSchema.parse(await list.find((provider) => provider.id === id)!.read(context(gymId)));
 }
 
@@ -169,26 +170,49 @@ describe('built-in providers', () => {
   it('checks free space in both directories, including a low staging disk and a full uploads disk', async () => {
     // UPDATE_CHECK=off: reading every tile of a single-gym install would otherwise ask GitHub for the latest release.
     const single = { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' };
+    const separate = vi.fn(async (path: string) => path === '/staging' ? 2 : 1);
     const check = vi.fn(async (path: string) => ({ blocks: 20_000_000, bsize: 1024, bavail: path === '/staging' ? 500_000 : 10_000_000 }));
-    expect(await tile('disk', gymA, { env: single })).toMatchObject({ status: 'healthy', details: {
+    expect(await tile('disk', gymA, { env: single, device: separate })).toMatchObject({ status: 'healthy', details: {
       uploads: { totalBytes: 20_480_000_000, availableBytes: 10_240_000_000 },
       backupStaging: { totalBytes: 20_480_000_000, availableBytes: 10_240_000_000 },
     } });
-    expect(await tile('disk', gymA, { env: single, disk: check })).toMatchObject({ status: 'warning', details: {
+    expect(await tile('disk', gymA, { env: single, disk: check, device: separate })).toMatchObject({ status: 'warning', details: {
       uploads: { totalBytes: 20_480_000_000, availableBytes: 10_240_000_000 },
       backupStaging: { totalBytes: 20_480_000_000, availableBytes: 512_000_000 },
     }, message: expect.stringContaining('staging 0.51 GB') });
     expect(check.mock.calls.map(([path]) => path).sort()).toEqual(['/staging', '/uploads']);
-    expect(await tile('disk', gymA, { env: single, disk: async () => ({ blocks: 1000, bsize: 1024, bavail: 0 }) })).toMatchObject({ status: 'error' });
-    const result = await createHealthService(createStatusProviders({ env: single, disk: async () => { throw new Error('/private/path secret'); } })).get(context());
+    expect(await tile('disk', gymA, { env: single, device: separate, disk: async () => ({ blocks: 1000, bsize: 1024, bavail: 0 }) })).toMatchObject({ status: 'error' });
+    const result = await createHealthService(createStatusProviders({ env: single, device: separate, disk: async () => { throw new Error('/private/path secret'); } })).get(context());
     expect(result.data.tiles.find((t) => t.id === 'disk')).toMatchObject({ status: 'unavailable', details: null });
     expect(JSON.stringify(result)).not.toContain('/private/path');
+  });
+  it('shows when uploads and backup staging are one filesystem while keeping both figures and the status rules', async () => {
+    const single = { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' };
+    const shared = vi.fn(async (_path: string) => 7);
+    expect(await tile('disk', gymA, { env: single, device: shared })).toMatchObject({ status: 'healthy', details: {
+      sameFilesystem: true,
+      uploads: { totalBytes: 20_480_000_000, availableBytes: 10_240_000_000 },
+      backupStaging: { totalBytes: 20_480_000_000, availableBytes: 10_240_000_000 },
+    }, message: 'Free space: uploads and backup staging (one volume) 10.24 GB.' });
+    expect(shared.mock.calls.map(([path]) => path).sort()).toEqual(['/staging', '/uploads']);
+    const separate = vi.fn(async (path: string) => path === '/staging' ? 2 : 1);
+    expect(await tile('disk', gymA, { env: single, device: separate })).toMatchObject({ details: { sameFilesystem: false },
+      message: 'Free space: uploads 10.24 GB; backup staging 10.24 GB.' });
+    const noStaging = vi.fn(async (_path: string) => 7);
+    expect(await tile('disk', gymA, { env: { ...single, BACKUP_STAGING_DIR: undefined }, device: noStaging })).toMatchObject({
+      details: { backupStaging: null, sameFilesystem: false }, message: 'Free space: uploads 10.24 GB.' });
+    expect(noStaging.mock.calls.map(([path]) => path)).toEqual(['/uploads']);
+    // A shared filesystem is still checked as each volume's figures, with the same error and warning thresholds.
+    expect(await tile('disk', gymA, { env: single, device: shared, disk: async () => ({ blocks: 20_000_000, bsize: 1024, bavail: 100 }) }))
+      .toMatchObject({ status: 'error', details: { sameFilesystem: true } });
+    expect(await tile('disk', gymA, { env: single, device: shared, disk: async () => ({ blocks: 20_000_000, bsize: 1024, bavail: 500_000 }) }))
+      .toMatchObject({ status: 'warning', details: { sameFilesystem: true }, message: expect.stringContaining('(one volume)') });
   });
   it('checks the uploads volume alone when no restore staging is kept, as in multi-gym mode', async () => {
     const multi = { ...env, BACKUP_STAGING_DIR: undefined };
     const check = vi.fn(async (_path: string) => ({ blocks: 20_000_000, bsize: 1024, bavail: 500_000 }));
     const result = await tile('disk', gymA, { env: multi, disk: check });
-    expect(result).toMatchObject({ status: 'warning', details: { uploads: { totalBytes: 20_480_000_000, availableBytes: 512_000_000 }, backupStaging: null }, message: 'Free space: uploads 0.51 GB.' });
+    expect(result).toMatchObject({ status: 'warning', details: { uploads: { totalBytes: 20_480_000_000, availableBytes: 512_000_000 }, backupStaging: null, sameFilesystem: false }, message: 'Free space: uploads 0.51 GB.' });
     expect(check.mock.calls.map(([path]) => path)).toEqual(['/uploads']);
     // A nearly full disk still shows its figure rather than rounding to 0 GB.
     expect(await tile('disk', gymA, { env: multi, disk: async () => ({ blocks: 20_000_000, bsize: 1024, bavail: 4_000 }) }))
@@ -207,7 +231,7 @@ describe('built-in providers', () => {
       if (path === '/staging') throw Object.assign(new Error('ENOENT /private/staging'), { code: 'ENOENT' });
       return { blocks: 20_000_000, bsize: 1024, bavail: 10_000_000 };
     });
-    const result = await createHealthService(createStatusProviders({ env: { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' }, disk: check })).get(context());
+    const result = await createHealthService(createStatusProviders({ env: { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' }, device, disk: check })).get(context());
     expect(result.data.tiles.find(t => t.id === 'disk')).toMatchObject({ status: 'unavailable', details: null });
     expect(check.mock.calls.map(([path]) => path).sort()).toEqual(['/staging', '/uploads']);
     expect(JSON.stringify(result)).not.toContain('/private/staging');
@@ -226,7 +250,7 @@ const examples: Record<HealthTile['id'], NonNullable<HealthTile['details']>> = {
   invoice_effects: { exhausted: 0 },
   last_backup: { latestRestorableAt: clock.now().toISOString(), ageSeconds: 0, overdue: false, noneUnderCurrentKey: false, pruningHeld: false, damagedGuardSnapshot: null, missingGuardSnapshot: null, retainedBytes: 1, retentionBudgetBytes: 1000, pruningStopped: false, keyReminder: true },
   failed_jobs: { failed: 0, pending: 0, running: 0, oldestFailureAt: null }, smtp: { configured: true, lastTestAt: null },
-  disk: { uploads: { totalBytes: 100, availableBytes: 50 }, backupStaging: null }, version: { version: '0.1.0', sourceUrl: 'https://example.test/source' },
+  disk: { uploads: { totalBytes: 100, availableBytes: 50 }, backupStaging: null, sameFilesystem: false }, version: { version: '0.1.0', sourceUrl: 'https://example.test/source' },
   stripe_webhooks: { lastReceivedAt: null, lastProcessedAt: null, pending: 0, failed: 0 },
   last_charge_run: { lastStartedAt: null, lastCompletedAt: null, result: 'succeeded', invoicesProcessed: 1, failures: 0 },
   automatic_updates: { enabled: true, lastAttemptAt: null, result: 'up_to_date', fromVersion: null, toVersion: null },

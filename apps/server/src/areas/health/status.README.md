@@ -149,10 +149,14 @@ in `runAt`; pending jobs, install jobs and other gyms never affect this time.
 The tile stays in error while any failed jobs remain, however old the failure is;
 with none, the page leaves out the oldest failure row rather than showing it as unknown.
 Disk details report `uploads` and `backupStaging` separately, each with filesystem
-`totalBytes` and `availableBytes`. These are volume figures, not directory sizes:
-directories on the same filesystem show the same capacity and must not be added.
+`totalBytes` and `availableBytes`, plus `sameFilesystem`: true only when a backup
+staging directory is configured and it is on the same device as the uploads directory. These are volume figures, not
+directory sizes: directories on the same filesystem show the same capacity and must
+not be added. When `sameFilesystem` is true the page shows the uploads figures once,
+labelled for the uploads and backup staging volume, and the message says one volume.
 `backupStaging` is null when no staging directory is configured, including multi-gym
-mode, which ignores `BACKUP_STAGING_DIR`. The page omits staging rows in that case.
+mode, which ignores `BACKUP_STAGING_DIR`; `sameFilesystem` is then false and the page
+omits staging rows.
 A configured directory that is missing or unreadable makes the check unavailable;
 it never substitutes zero or reports a healthy upload volume as the whole check.
 Neither filesystem paths nor job payloads or errors are returned. Disk warning

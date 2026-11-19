@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { statfs } from 'node:fs/promises';
+import { stat, statfs } from 'node:fs/promises';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { runningVersion } from './version.js';
 import { auditEvents, forGym, smsDailyUsage } from '@plaingym/db';
@@ -23,6 +23,8 @@ export interface StatusOptions {
   scope?: typeof forGym;
   jobs?: JobStatsQuery;
   disk?: (path: string) => Promise<{ blocks: number; bsize: number; bavail: number }>;
+  /** The device a configured directory lives on, to tell whether two paths are one filesystem. */
+  device?: (path: string) => Promise<number | bigint>;
 }
 /** Audit rows for submitted SMTP tests, plus legacy saves and removal. */
 /** Decimal GB to two places, with more digits below 0.01 GB so a nearly full disk never reads "0 GB". */
@@ -47,6 +49,7 @@ function latestEmailTest(rows: readonly { action: string; after: unknown; occurr
 export function createStatusProviders(options: StatusOptions = {}) {
   const env = options.env ?? process.env, scope = options.scope ?? forGym;
   const jobs = options.jobs ?? new PostgresJobStatsQuery(), disk = options.disk ?? statfs;
+  const device = options.device ?? ((path: string) => stat(path, { bigint: true }).then((stats) => stats.dev));
   let key: Buffer | undefined;
   const encryptionKey = () => key ??= parseEncryptionKey(env.APP_ENCRYPTION_KEY ?? '');
   let smtp: ReturnType<typeof createSmtpResolver> | undefined;
@@ -125,18 +128,21 @@ export function createStatusProviders(options: StatusOptions = {}) {
       const paths = [env.UPLOADS_DIR, restoreStagingDirectory(env)].filter((path): path is string => !!path);
       if (!env.UPLOADS_DIR) return { id: 'disk', status: 'not_configured', checkedAt: context.clock.now().toISOString(), details: null, message: statusMessage('diskMissing') };
       const volumes = await Promise.all(paths.map(async (path) => {
-        const stats = await disk(path), totalBytes = stats.blocks * stats.bsize, availableBytes = stats.bavail * stats.bsize;
+        const [stats, dev] = await Promise.all([disk(path), device(path)]);
+        const totalBytes = stats.blocks * stats.bsize, availableBytes = stats.bavail * stats.bsize;
         if (!Number.isSafeInteger(totalBytes) || !Number.isSafeInteger(availableBytes) || totalBytes <= 0 || availableBytes < 0 || availableBytes > totalBytes) throw new Error('Invalid disk statistics');
-        return { totalBytes, availableBytes };
+        return { figures: { totalBytes, availableBytes }, dev };
       }));
       const critical = (bytes: number) => bytes < 128 * 1024 * 1024;
-      const low = (volume: typeof volumes[number]) => volume.availableBytes / volume.totalBytes < 0.1 || volume.availableBytes < 1024 * 1024 * 1024;
+      const low = (volume: typeof volumes[number]['figures']) => volume.availableBytes / volume.totalBytes < 0.1 || volume.availableBytes < 1024 * 1024 * 1024;
+      // Both directories on one device mean one filesystem, so the page shows one pair of rows for it.
+      const sameFilesystem = volumes.length > 1 && BigInt(volumes[0]!.dev) === BigInt(volumes[1]!.dev);
       // Keep each volume's capacity and free space together, even when both directories share a filesystem.
-      const details = { uploads: volumes[0]!, backupStaging: volumes[1] ?? null };
+      const details = { uploads: volumes[0]!.figures, backupStaging: volumes[1]?.figures ?? null, sameFilesystem };
       return { id: 'disk', checkedAt: context.clock.now().toISOString(), details,
-        status: volumes.some((v) => critical(v.availableBytes)) ? 'error' : volumes.some(low) ? 'warning' : 'healthy',
-        message: statusMessage(volumes[1] ? 'diskFree' : 'diskFreeUploads', {
-          uploads: gigabytes(volumes[0]!.availableBytes), staging: gigabytes(volumes[1]?.availableBytes ?? 0),
+        status: volumes.some((v) => critical(v.figures.availableBytes)) ? 'error' : volumes.some((v) => low(v.figures)) ? 'warning' : 'healthy',
+        message: statusMessage(sameFilesystem ? 'diskFreeShared' : volumes[1] ? 'diskFree' : 'diskFreeUploads', {
+          uploads: gigabytes(volumes[0]!.figures.availableBytes), staging: gigabytes(volumes[1]?.figures.availableBytes ?? 0),
         }) };
     }),
     healthProvider('version', async (context) => {

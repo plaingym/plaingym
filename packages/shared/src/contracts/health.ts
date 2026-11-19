@@ -33,12 +33,18 @@ export const smsHealthDetailsSchema = z.strictObject({
 const diskVolumeDetailsSchema = z.strictObject({
   totalBytes: count.positive(), availableBytes: count,
 }).refine((value) => value.availableBytes <= value.totalBytes, 'Available space exceeds total space');
-/** Filesystem capacity, not directory sizes. Volumes may share a filesystem; never add their figures. */
+/**
+ * Filesystem capacity, not directory sizes. `sameFilesystem` is true only when an uploads and a backup staging path are
+ * both configured on one filesystem; the page then shows the uploads figures once, labelled for both. Volumes may share
+ * a filesystem; never add their figures.
+ */
 export const diskHealthDetailsSchema = z.strictObject({
   uploads: diskVolumeDetailsSchema,
   /** Null when this install has no backup staging directory configured. */
   backupStaging: diskVolumeDetailsSchema.nullable(),
-});
+  /** The page uses this to show one pair of rows instead of the same capacity twice. */
+  sameFilesystem: z.boolean(),
+}).refine((value) => !value.sameFilesystem || value.backupStaging !== null, 'A shared filesystem requires both volumes');
 export const versionHealthDetailsSchema = z.strictObject({ version: z.string().min(1), sourceUrl: z.url({ protocol: /^https?$/ }) });
 export const webhookHealthDetailsSchema = z.strictObject({
   lastReceivedAt: instantSchema.nullable(), lastProcessedAt: instantSchema.nullable(), pending: count, failed: count,

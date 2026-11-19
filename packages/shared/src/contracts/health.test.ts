@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
 import { healthTileIds, healthTileSchema, healthResponseSchema, healthContracts, chargeFailureReportSchema, chargeFailuresResponseSchema,
   dismissChargeFailuresRequestSchema, dismissChargeFailuresResponseSchema, maxDismissedChargeRuns, autoUpdateContracts,
@@ -12,7 +12,7 @@ const details = {
   failed_jobs: { failed: 0, pending: 2, running: 1, oldestFailureAt: null },
   invoice_effects: { exhausted: 0 },
   smtp: { configured: true, lastTestAt: now },
-  disk: { uploads: { totalBytes: 1000, availableBytes: 800 }, backupStaging: null },
+  disk: { uploads: { totalBytes: 1000, availableBytes: 800 }, backupStaging: null, sameFilesystem: false },
   version: { version: '0.1.0', sourceUrl: 'https://example.com/source' },
   stripe_webhooks: { lastReceivedAt: now, lastProcessedAt: now, pending: 0, failed: 0 },
   last_charge_run: { lastStartedAt: now, lastCompletedAt: now, result: 'succeeded', invoicesProcessed: 1, failures: 0 },
@@ -41,7 +41,7 @@ describe('health contracts', () => {
   });
   it('rejects details for the wrong provider, impossible disk statistics, or secret configuration', () => {
     expect(healthTileSchema.safeParse({ ...tiles[0], details: details.smtp }).success).toBe(false);
-    expect(healthTileSchema.safeParse({ ...tiles[3], details: { uploads: { totalBytes: 100, availableBytes: 101 }, backupStaging: null } }).success).toBe(false);
+    expect(healthTileSchema.safeParse({ ...tiles[3], details: { uploads: { totalBytes: 100, availableBytes: 101 }, backupStaging: null, sameFilesystem: false } }).success).toBe(false);
     expect(healthTileSchema.safeParse({ ...tiles[1], details: { ...details.failed_jobs, failed: -1 } }).success).toBe(false);
     expect(healthTileSchema.safeParse({ ...tiles[2], details: { ...details.smtp, password: 'hidden' } }).success).toBe(false);
     expect(healthTileSchema.safeParse({ ...tiles[5], details: { ...details.stripe_webhooks, payload: {} } }).success).toBe(false);
@@ -50,10 +50,12 @@ describe('health contracts', () => {
     for (const role of staffRoles) expect(canStaff([role], healthContracts.get.permission.capability)).toBe(['owner', 'admin'].includes(role));
   });
   it('keeps disk volumes separate, allows unconfigured staging, and validates both volumes', () => {
-    const disk = (uploads: unknown, backupStaging: unknown) => healthTileSchema.safeParse({ ...tiles[3], details: { uploads, backupStaging } }).success;
+    const tile = (details: unknown) => healthTileSchema.safeParse({ ...tiles[3], details }).success;
+    const disk = (uploads: unknown, backupStaging: unknown, sameFilesystem: unknown = false) => tile({ uploads, backupStaging, sameFilesystem });
     const volume = { totalBytes: 1000, availableBytes: 800 };
     expect(disk(volume, null)).toBe(true);
     expect(disk(volume, { totalBytes: 2000, availableBytes: 500 })).toBe(true);
+    expect(disk(volume, { totalBytes: 2000, availableBytes: 500 }, true)).toBe(true);
     for (const invalid of [{ totalBytes: 0, availableBytes: 0 }, { totalBytes: 1000, availableBytes: -1 },
       { totalBytes: 1000, availableBytes: 1001 }, { ...volume, path: '/private' }]) {
       expect(disk(invalid, null)).toBe(false);
@@ -61,6 +63,10 @@ describe('health contracts', () => {
     }
     expect(disk(volume, undefined)).toBe(false);
     expect(disk(null, volume)).toBe(false);
+    // A response cannot omit the flag: the page needs it to know whether the two figures are one filesystem.
+    expect(tile({ uploads: volume, backupStaging: null })).toBe(false);
+    expect(tile({ uploads: volume, backupStaging: null, sameFilesystem: 'yes' })).toBe(false);
+    expect(tile({ uploads: volume, backupStaging: null, sameFilesystem: true })).toBe(false);
   });
   it('limits the charge failure reports and their dismissal to managers, like the page that shows them', () => {
     for (const contract of [healthContracts.listChargeFailures, healthContracts.dismissChargeFailures]) {
