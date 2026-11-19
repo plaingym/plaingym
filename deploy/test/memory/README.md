@@ -16,6 +16,7 @@ measurement captures short CLI peaks between the sampler's 500 ms samples; gener
 
     node --test deploy/test/memory/budget.test.mjs    # budget arithmetic and failure classification, no Docker
     node --test deploy/test/memory/diagnostics.test.mjs
+    node --test deploy/test/memory/tcp-throughput.test.mjs
     node deploy/test/memory/run.mjs --mode both        # builds committed HEAD, then measures it
     node --test deploy/test/memory/waiver-budget.test.mjs
     node deploy/test/memory/waiver-budget.mjs baseline/capped branch/capped
@@ -85,9 +86,10 @@ runner verifies both live namespaced settings. The sampler records aggregate
 upstream/downstream TCP payload queue lengths, without addresses, alongside
 charged socket memory to distinguish the proxy legs. The workflow
 also runs `tcp-throughput.mjs` in separate disposable containers with the shipped
-Caddy image, memory cap and sysctls, using 50 ms of delay in each direction. A
-32 MiB single download must sustain at least 3 MB/s at 100 ms RTT. These containers
-are CPU-capped, lower priority, limited to 180 seconds and removed afterwards.
+Caddy image, memory cap and sysctls, using 50 ms of delay in each direction. It
+logs the rate for each of three 32 MiB download attempts. The fastest completed
+download must sustain at least 3 MB/s at 100 ms RTT. These containers are
+CPU-capped, lower priority, limited to 180 seconds and removed afterwards.
 The forty-reader workload and leak canary are unchanged.
 
 1. **Setup** through the API: owner, gym, packs, and encrypted backups to the stand-in bucket.

@@ -390,8 +390,7 @@ Startup checks every view, materialized view and foreign table in `public` and
 grants through `PUBLIC`. Startup also fails if `app` is a member of an object's
 owner role with any options (inherit, `SET ROLE` or `ADMIN OPTION`), directly or
 through another role. Inaccessible objects owned by a role outside `app`'s reach
-pass. A
-monitoring extension such as `pg_stat_statements` installed in `public` grants
+pass. A monitoring extension such as `pg_stat_statements` installed in `public` grants
 `SELECT` on its views to `PUBLIC`, so it can stop startup even though those views
 only expose statistics. There is no exception for named extensions.
 

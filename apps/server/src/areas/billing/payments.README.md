@@ -204,10 +204,9 @@ runtime's other job contributions. It schedules `billing.payments.settle_lapsed`
 at minute 43 of every hour for each gym through `Jobs.schedule`. Its payments
 resolver and transitions must be the same ones used by the duplicate worker and
 staff refunds. No provider is required when the gym has no eligible reservations, or
-when they are all on payments marked as test. The window (defined in
-`core/interfaces/invoice-transitions.ts` and re-exported there), the send records and the
-settling rule live in `transitions/lapsed-refunds.ts`, shared by the staff path, the job
-and the duplicate worker.
+when they are all on payments marked as test. The staff path, the job and the duplicate
+worker share the send records and settling rule in `transitions/lapsed-refunds.ts`.
+That module re-exports the window defined in `core/interfaces/invoice-transitions.ts`.
 Routes and the receipt/detach jobs already contribute through their existing area parts.
 The runtime delegates card detachment to the gym's payment adapter. Tests exercise the real area registrations
 through `createApp`, the real PostgreSQL transitions, and the receipt/detach jobs;
