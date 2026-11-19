@@ -24,10 +24,12 @@ pnpm --dir e2e test
 ```
 
 CI runs this suite in the **End-to-end** workflow on every task and integration branch, nightly,
-and on demand. `node e2e/ci.mjs shard-lists` assigns whole files by recorded duration, largest first onto
-the least-loaded stack, counting the setup wizard's cost on stack 1. The checked-in `fileDurations` table in
-`ci.mjs` comes from a merged `results.json`; new files use a 20-second estimate. Refresh the table when
-the suite changes materially. Each stack runs `pnpm --dir e2e test --test-list coverage/shard-N.txt --no-deps`,
+and on demand. `node e2e/ci.mjs shard-lists` places the setup wizard on stack 1, then assigns whole
+files from longest to shortest to the stack with the lowest projected duration. It charges single-gym
+and multi-gym fixture setup once per stack that runs the corresponding project. New files use a
+20-second estimate. When the suite changes materially, refresh `fileDurations` in `ci.mjs` from
+`results.json` and use the shard blobs to estimate and deduct shared setup from the files that ran it.
+Each stack runs `pnpm --dir e2e test --test-list coverage/shard-N.txt --no-deps`,
 with one worker (`fullyParallel: false`). `E2E_SHARD_COUNT` in the workflow is the single count for matrix
 generation and inventory selections; local commands read that workflow default when the environment is unset.
 The local command above still runs the entire suite on one stack. The suite includes portal recovery fixtures at 360 px and 1280 px that

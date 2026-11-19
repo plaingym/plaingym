@@ -93,11 +93,20 @@ test('each scheduled workflow gates the failure job and waits for every other jo
     const next = source.slice(start + 1).search(/\n {2}[\w-]+:\n/);
     // Only the reporter job's own lines, so a later job's settings can't satisfy the checks below.
     const job = next === -1 ? source.slice(start) : source.slice(start, start + 1 + next + 1);
-    assert.match(job, /if: \$\{\{ failure\(\) && !cancelled\(\) && github.event_name == 'schedule' && github.ref == 'refs\/heads\/main' \}\}/);
+    // A job timeout can yield 'cancelled' in needs even when the workflow's cancelled() check is false.
+    assert.match(job, /if: >-\n\s+\$\{\{ !cancelled\(\) && github.event_name == 'schedule' && github.ref == 'refs\/heads\/main' &&\n\s+\(contains\(needs\.\*\.result, 'failure'\) \|\| contains\(needs\.\*\.result, 'cancelled'\)\) \}\}/);
     assert.match(job, /permissions:\n {6}contents: read\n {6}issues: write/);
     assert.match(job, /reportScheduledFailure\(\{ github, context, failed: true \}\)/);
     const dependencies = job.match(/needs: \[([^\]]+)\]/)[1].split(', ');
     const jobs = source.slice(source.indexOf('\njobs:\n'));
     assert.deepEqual(dependencies.sort(), [...jobs.matchAll(/^ {2}([\w-]+):$/gm)].map((match) => match[1]).filter((id) => id !== 'scheduled-failure').sort());
+  }
+});
+
+test('scheduled runs use their own workflow concurrency group when in-progress runs can be cancelled', () => {
+  for (const [name, suffix] of [['e2e', "-${{ inputs.ux_pass && 'ux' || 'suite' }}"], ['image-scan', ''], ['memory', '']]) {
+    const source = readFileSync(new URL(`../../.github/workflows/${name}.yml`, import.meta.url), 'utf8');
+    const scheduleOrRef = "${{ github.event_name == 'schedule' && 'scheduled' || github.ref }}";
+    assert.ok(source.includes(`\nconcurrency:\n  group: ${name}-${scheduleOrRef}${suffix}\n  cancel-in-progress: true\n`), name);
   }
 });

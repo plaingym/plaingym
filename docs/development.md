@@ -204,12 +204,15 @@ in the same test run as the selected tests (or the full suite).
 End-to-end skips Markdown-only pushes too, and still runs nightly, as does the **Memory** workflow, which measures the whole
 stack against its memory budget (`deploy/test/memory/README.md`). On a push to `main`, CI reuses a passing run of the same
 commit (from its integration branch) instead of repeating it.
-Failed scheduled runs on `main` of **Dependency advisories**, **End-to-end**,
-**Image scan**, **Memory**, and **Prerelease** open a GitHub issue with the label
+Scheduled runs of **Dependency advisories**, **End-to-end**, **Image scan**,
+**Memory**, and **Prerelease** on `main` open a GitHub issue when a job fails or
+times out. The issue has the label
 `scheduled-failure` and a fixed title per workflow. Later failures comment on
 that workflow's open issue; closing it lets the next failure open a new one.
 Reports contain only the workflow name, run link (including its attempt), and UTC date.
-Pushes, pull requests, manual runs, and successful or cancelled runs do not report.
+Cancelling an entire workflow run suppresses its report.
+Scheduled **End-to-end**, **Image scan**, and **Memory** runs use their own
+concurrency groups, so a push or manual run cannot cancel them.
 Only each workflow's failure-reporting job receives `issues: write`, using its
 `GITHUB_TOKEN`. Repo compliance tests the shared notifier and prints a read-only
 dry-run plan on task branches without creating an issue or comment.

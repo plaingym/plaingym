@@ -21,12 +21,14 @@ permissions:
 env:
   E2E_SHARD_COUNT: '4'
 concurrency:
-  group: e2e-${{ github.ref }}-${{ inputs.ux_pass && 'ux' || 'suite' }}
+  group: e2e-${{ github.event_name == 'schedule' && 'scheduled' || github.ref }}-${{ inputs.ux_pass && 'ux' || 'suite' }}
   cancel-in-progress: true
 jobs:
   scheduled-failure:
     needs: [shards, reuse, e2e, changed-specs, changed-specs-test, report, ux]
-    if: ${{ failure() && !cancelled() && github.event_name == 'schedule' && github.ref == 'refs/heads/main' }}
+    if: >-
+      ${{ !cancelled() && github.event_name == 'schedule' && github.ref == 'refs/heads/main' &&
+          (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -45,6 +47,8 @@ jobs:
             const { reportScheduledFailure } = await import('${{ github.workspace }}/scripts/release/scheduled-failure.mjs');
             await reportScheduledFailure({ github, context, failed: true });
   shards:
+    needs: reuse
+    if: ${{ !cancelled() && !inputs.ux_pass && needs.reuse.outputs.passed != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -76,7 +80,7 @@ jobs:
           if [ "$count" -gt 0 ]; then echo passed=true; else echo passed=false; fi >> "$GITHUB_OUTPUT"
   e2e:
     needs: [reuse, shards]
-    if: ${{ !cancelled() && !inputs.ux_pass && needs.reuse.outputs.passed != 'true' }}
+    if: ${{ !cancelled() && !inputs.ux_pass && needs.reuse.outputs.passed != 'true' && needs.shards.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -163,8 +167,8 @@ jobs:
           retention-days: 7
           if-no-files-found: error
   report:
-    needs: [reuse, e2e]
-    if: ${{ !cancelled() && !inputs.ux_pass && needs.reuse.outputs.passed != 'true' }}
+    needs: [reuse, shards, e2e]
+    if: ${{ !cancelled() && !inputs.ux_pass && needs.reuse.outputs.passed != 'true' && needs.shards.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:

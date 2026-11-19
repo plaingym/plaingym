@@ -45,9 +45,37 @@ describe('browser CI selection and completeness', () => {
     expect(reportTests({ suites: [{ specs: [], suites: [{ specs: [{ id: 'same', tests: [
       { projectName: 'fresh-setup' }, { projectName: 'members-mat' },
     ] }] }] }] })).toEqual(['fresh-setup:same', 'members-mat:same']);
-    expect(() => reportTests({ errors: [{ message: 'collection failed' }], suites: [] })).toThrow('collect');
-    expect(() => reportTests({ errors: [{ message: 'worker teardown timeout' }], suites: [] }, 'merged run'))
-      .toThrow('merged run had runtime errors: [{"message":"worker teardown timeout"}]');
+  });
+
+  it('reports errors with the collection message or the prefix supplied by the caller', () => {
+    const report = { errors: [{ message: 'worker teardown timeout' }], suites: [] };
+    expect(() => reportTests(report))
+      .toThrow('Playwright could not collect the suite: [{"message":"worker teardown timeout"}]');
+    expect(() => reportTests(report, 'Merged report failed'))
+      .toThrow('Merged report failed: [{"message":"worker teardown timeout"}]');
+  });
+
+  it('charges each shared fixture to a stack only when it takes its first file from that project', () => {
+    const spec = (file: string, projectName: string) => ({ file, id: file, tests: [{ projectName }] });
+    const wizard = 'fresh-setup.spec.ts', first = '../multi/a.spec.ts', second = '../multi/b.spec.ts';
+    const third = '../multi/c.spec.ts', single = 'single.spec.ts';
+    const report = { suites: [{ specs: [
+      spec(wizard, 'fresh-setup'), spec(first, 'multi-gym'), spec(second, 'multi-gym'),
+      spec(third, 'multi-gym'), spec(single, 'members-mat'),
+    ] }] };
+    const durations = { [wizard]: 8_000, [first]: 6_000, [second]: 5_000, [third]: 4_000, [single]: 3_000 };
+    expect(shardFiles(report, 2, durations)).toEqual([
+      [`[fresh-setup] > ${wizard}`, `[multi-gym] > ${third}`],
+      [`[multi-gym] > ${first}`, `[multi-gym] > ${second}`, `[members-mat] > ${single}`],
+    ]);
+    // A single-gym file can also reuse its fixture on a stack that already ran that project.
+    const singleReport = { suites: [{ specs: [
+      spec(wizard, 'fresh-setup'), spec('a.spec.ts', 'members-mat'), spec('b.spec.ts', 'members-mat'),
+    ] }] };
+    expect(shardFiles(singleReport, 2, { [wizard]: 700, 'a.spec.ts': 600, 'b.spec.ts': 500 })).toEqual([
+      [`[fresh-setup] > ${wizard}`],
+      ['[members-mat] > a.spec.ts', '[members-mat] > b.spec.ts'],
+    ]);
   });
 
   it('rejects missing and duplicate tests even when the total count matches', () => {
@@ -99,6 +127,10 @@ describe('browser CI selection and completeness', () => {
     expect(workflow).toContain('shard: ${{ fromJSON(needs.shards.outputs.shards) }}');
     expect(workflow).toContain('run: node e2e/ci.mjs matrix');
     expect(workflow).toContain('run: node e2e/ci.mjs inventory');
+    const shardGate = "!cancelled() && !inputs.ux_pass && needs.reuse.outputs.passed != 'true'";
+    expect(workflow).toContain(`\n  shards:\n    needs: reuse\n    if: \${{ ${shardGate} }}\n`);
+    expect(workflow).toContain(`\n  e2e:\n    needs: [reuse, shards]\n    if: \${{ ${shardGate} && needs.shards.result == 'success' }}\n`);
+    expect(workflow).toContain(`\n  report:\n    needs: [reuse, shards, e2e]\n    if: \${{ ${shardGate} && needs.shards.result == 'success' }}\n`);
     const count = workflow.match(/^ {2}E2E_SHARD_COUNT: '(\d+)'/m)![1]!;
     expect(shardNumbers(count)).toHaveLength(Number(count));
     vi.stubEnv('E2E_SHARD_COUNT', '3');

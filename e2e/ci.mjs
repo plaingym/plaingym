@@ -46,9 +46,8 @@ export function fileFilters(files) {
   return files.map(file => '(^|/)' + file.slice('e2e/'.length).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$');
 }
 
-export function reportTests(report, label = 'collection') {
-  if (report.errors?.length) throw new Error((label === 'merged run'
-    ? 'Playwright merged run had runtime errors: ' : 'Playwright could not collect the suite: ') + JSON.stringify(report.errors));
+export function reportTests(report, errorPrefix = 'Playwright could not collect the suite') {
+  if (report.errors?.length) throw new Error(`${errorPrefix}: ${JSON.stringify(report.errors)}`);
   const tests = [];
   const visit = suite => {
     for (const spec of suite.specs ?? []) {
@@ -77,27 +76,33 @@ export function shardNumbers(value = process.env.E2E_SHARD_COUNT ?? readFileSync
   return Array.from({ length: count }, (_, index) => index + 1);
 }
 
-// Milliseconds summed per file from the merged End-to-end report, run 43987782721.
-// Refresh from results.json when the suite changes materially. New files use a conservative 20s estimate.
+// Shared setup charged once per project per stack. Run 43987782721's blob reports show
+// about 1s for single-gym initialization and about 11s to build both multi-gym fixtures.
+const fixtureDurations = new Map([['members-mat', 1_000], ['multi-gym', 11_000]]);
+
+// Milliseconds summed per file from End-to-end run 43987782721, with the first
+// single-gym and multi-gym fixture setup costs subtracted where they ran.
+// Refresh from results.json and the shard blobs when the suite changes materially.
+// New files use a conservative 20s estimate.
 export const fileDurations = {
-  'account-email.spec.ts': 5661, 'card-removal.spec.ts': 2688, 'customer-card-import.spec.ts': 6605,
+  'account-email.spec.ts': 4757, 'card-removal.spec.ts': 2688, 'customer-card-import.spec.ts': 6605,
   'demo-join.spec.ts': 56153, 'discount-screens.spec.ts': 27015, 'health-backups.spec.ts': 9251,
   'intake-retry.spec.ts': 1340, 'long-names.spec.ts': 25120, 'mobile-admin-phone.spec.ts': 15132,
   'mobile-public.spec.ts': 15874, 'portal-home.spec.ts': 3172, 'responsive.spec.ts': 1081,
   'settings-dashboard.spec.ts': 16057, 'sign-in-limits.spec.ts': 1037, 'website-branding.spec.ts': 2728,
-  '../multi/flows.spec.ts': 38486, '../multi/isolation-beta-alpha-1.spec.ts': 8135,
-  'announcements.spec.ts': 18726, 'changed-fields-saves.spec.ts': 6748, 'demo-copy.spec.ts': 3574,
+  '../multi/flows.spec.ts': 27486, '../multi/isolation-beta-alpha-1.spec.ts': 8135,
+  'announcements.spec.ts': 17753, 'changed-fields-saves.spec.ts': 6748, 'demo-copy.spec.ts': 3574,
   'demo-landing.spec.ts': 24645, 'display-counts.spec.ts': 5564, 'household-isolation.spec.ts': 6263,
   'invoice-filter.spec.ts': 1812, 'mat-flow.spec.ts': 11503, 'mobile-kiosk-keyboard.spec.ts': 8701,
   'mobile.spec.ts': 15885, 'portal-polish.spec.ts': 10568, 'restore-payments.spec.ts': 5995,
   'settings-sign-in.spec.ts': 9908, 'sms-consent.spec.ts': 5134, 'website.spec.ts': 16095,
-  '../multi/isolation-alpha-beta-1.spec.ts': 19729, '../multi/isolation-beta-alpha-2.spec.ts': 8781,
-  'authorization.spec.ts': 52788, 'credit-messages.spec.ts': 2917, 'demo-discovery.spec.ts': 1879,
+  '../multi/isolation-alpha-beta-1.spec.ts': 8729, '../multi/isolation-beta-alpha-2.spec.ts': 8781,
+  'authorization.spec.ts': 51845, 'credit-messages.spec.ts': 2917, 'demo-discovery.spec.ts': 1879,
   'demo-links.spec.ts': 3211, 'downloads.spec.ts': 386, 'imports-catalog.spec.ts': 7289,
   'invoice-void.spec.ts': 2393, 'members-staff-screens.spec.ts': 5623, 'mobile-portal-keyboard.spec.ts': 11456,
   'pack-screens.spec.ts': 18245, 'portal-recovery.spec.ts': 3900, 'schedule-cancel-started.spec.ts': 3908,
-  'settings-sms.spec.ts': 4696, 'sms-go-live.spec.ts': 5711, '../multi/isolation-alpha-beta-2.spec.ts': 19555,
-  '../multi/isolation-beta-alpha-3.spec.ts': 6616, 'fresh-setup.spec.ts': 24919, 'booking-cutoff.spec.ts': 13561,
+  'settings-sms.spec.ts': 4696, 'sms-go-live.spec.ts': 5711, '../multi/isolation-alpha-beta-2.spec.ts': 8555,
+  '../multi/isolation-beta-alpha-3.spec.ts': 6616, 'fresh-setup.spec.ts': 24919, 'booking-cutoff.spec.ts': 12838,
   'csp.spec.ts': 3025, 'demo-isolation.spec.ts': 5708, 'dialog-scroll.spec.ts': 2563, 'freeze-history.spec.ts': 4644,
   'imports-status.spec.ts': 7955, 'leads-leftovers.spec.ts': 8362, 'mobile-admin-desktop.spec.ts': 19057,
   'mobile-portal.spec.ts': 17834, 'pay-link-confirmation.spec.ts': 5033, 'price-change-screens.spec.ts': 10679,
@@ -113,25 +118,36 @@ export function shardFiles(report, count = shardNumbers().length, durations = fi
       const file = spec.file.replaceAll('\\', '/');
       if (!file.endsWith('.spec.ts')) throw new Error(`Test declared outside a spec file: ${file}`);
       if (!files.has(file)) files.set(file, new Set());
-      files.get(file).add(`[${test.projectName}] > ${file}`);
+      files.get(file).add(test.projectName);
     }
     for (const child of suite.suites ?? []) visit(child);
   };
   for (const suite of report.suites) visit(suite);
-  const shards = shardNumbers(count).map(() => []), loads = shards.map(() => 0);
+  const shards = shardNumbers(count).map(() => ({ lines: [], projects: new Set(), duration: 0 }));
   const duration = file => durations[file] ?? 20_000;
-  const wizard = [...files].filter(([, lines]) => [...lines].some(line => line.startsWith('[fresh-setup]')));
+  const wizard = [...files].filter(([, projects]) => projects.has('fresh-setup'));
   if (wizard.length !== 1) throw new Error('Expected exactly one wizard file');
-  shards[0].push(...wizard[0][1]);
-  loads[0] = duration(wizard[0][0]);
-  // Largest files go first onto the least-loaded stack, counting the wizard's cost on stack 1.
-  [...files.keys()].filter(file => file !== wizard[0][0])
-    .sort((a, b) => duration(b) - duration(a) || a.localeCompare(b)).forEach(file => {
-      const index = loads.indexOf(Math.min(...loads));
-      shards[index].push(...files.get(file));
-      loads[index] += duration(file);
+  const remaining = [...files].filter(([file]) => file !== wizard[0][0])
+    .sort(([a], [b]) => duration(b) - duration(a) || a.localeCompare(b));
+  // Pin the wizard to stack 1, then place the largest files where they cost the least total time.
+  for (const [file, projects] of [...wizard, ...remaining]) {
+    const fileCost = duration(file);
+    const totals = shards.map(shard => {
+      let total = shard.duration + fileCost;
+      for (const project of projects) {
+        if (!shard.projects.has(project)) total += fixtureDurations.get(project) ?? 0;
+      }
+      return total;
     });
-  return shards;
+    const index = projects.has('fresh-setup') ? 0 : totals.indexOf(Math.min(...totals));
+    const shard = shards[index];
+    shard.duration = totals[index];
+    for (const project of projects) {
+      shard.projects.add(project);
+      shard.lines.push(`[${project}] > ${file}`);
+    }
+  }
+  return shards.map(shard => shard.lines);
 }
 
 function collect(args = []) {
@@ -180,7 +196,7 @@ function main(command) {
   } else if (command === 'verify-report') {
     const inventory = JSON.parse(readFileSync(resolve(directory, 'coverage/shards/e2e-shard-1/inventory.json'), 'utf8'));
     const report = JSON.parse(readFileSync(resolve(directory, 'coverage/results.json'), 'utf8'));
-    const counts = verifyShards(inventory.tests, [reportTests(report, 'merged run')]);
+    const counts = verifyShards(inventory.tests, [reportTests(report, 'Playwright merged run had runtime errors')]);
     console.log(`Merged report matches single-stack inventory: ${counts.total} tests; ${JSON.stringify(report.stats)}`);
   } else {
     throw new Error('Expected matrix, changed-specs, run-changed, shard-lists, inventory or verify-report');

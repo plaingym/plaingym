@@ -24,7 +24,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: image-scan-${{ github.ref }}
+  group: image-scan-${{ github.event_name == 'schedule' && 'scheduled' || github.ref }}
   cancel-in-progress: true
 env:
   TRIVY_IMAGE: aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
@@ -32,7 +32,9 @@ env:
 jobs:
   scheduled-failure:
     needs: [scan]
-    if: ${{ failure() && !cancelled() && github.event_name == 'schedule' && github.ref == 'refs/heads/main' }}
+    if: >-
+      ${{ !cancelled() && github.event_name == 'schedule' && github.ref == 'refs/heads/main' &&
+          (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

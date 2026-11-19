@@ -16,7 +16,9 @@ concurrency:
 jobs:
   scheduled-failure:
     needs: [prerelease]
-    if: ${{ failure() && !cancelled() && github.event_name == 'schedule' && github.ref == 'refs/heads/main' }}
+    if: >-
+      ${{ !cancelled() && github.event_name == 'schedule' && github.ref == 'refs/heads/main' &&
+          (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
