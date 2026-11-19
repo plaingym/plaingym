@@ -163,7 +163,7 @@ function Signing({ template, memberId, client, close, saved }: { template: Waive
       {template.kind === 'agreement' && <div><Label htmlFor="commitment">{text('commitment')}</Label><Input type="date" id="commitment" name="commitment" /></div>}
       <CheckboxField label={text('typed')} checked={typed} onChange={e => { setTyped(e.target.checked); uploaded.current = null; }} />
       <p>{text('draw')}</p>
-      <canvas ref={canvas} width={600} height={180} aria-label={text('draw')} className="h-36 w-full touch-none rounded-lg border border-border"
+      <canvas ref={canvas} width={600} height={180} aria-label={text('draw')} className="h-36 w-full touch-none rounded-lg border border-border bg-white"
         onPointerDown={e => { if (typed || busy) return; const c = canvas.current!, box = c.getBoundingClientRect(), ctx = c.getContext('2d')!;
           c.setPointerCapture(e.pointerId); ctx.beginPath(); ctx.lineWidth = 3; ctx.moveTo((e.clientX - box.left) * 600 / box.width, (e.clientY - box.top) * 180 / box.height); drawing.current = true; uploaded.current = null; }}
         onPointerMove={e => { if (!drawing.current) return; const c = canvas.current!, box = c.getBoundingClientRect(), ctx = c.getContext('2d')!;

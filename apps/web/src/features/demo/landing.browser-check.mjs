@@ -35,7 +35,7 @@ const discovery = "const expiresAt = new Date(Date.now() + 86400000).toISOString
   + "window.fetch = async (input) => { const path = new URL(input instanceof Request ? input.url : String(input), location.href).pathname; "
   + "return path === '/api/demo' ? Response.json({ data: { mode: 'sandbox', expiresAt, join: new URL(location.href).searchParams.get('join') !== 'false' } }) : path === '/api/demo/menu' ? Response.json({ data: { members, website: true } }) : Response.json({}, { status: 404 }); };";
 server.middlewares.use('/fixture', async (req, res) => {
-  const html = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Demo start page</title><script>' + discovery + '</script></head><body><div id="root"></div><script type="module" src="' + modulePath('apps/web/coverage/demo/fixture.tsx') + '"></script></body></html>';
+  const html = '<!doctype html><html lang="en" class="theme-system"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Demo start page</title><script>' + discovery + '</script></head><body class="bg-background font-sans text-foreground"><div id="root"></div><script type="module" src="' + modulePath('apps/web/coverage/demo/fixture.tsx') + '"></script></body></html>';
   res.setHeader('Content-Type', 'text/html'); res.end(await server.transformIndexHtml(req.url ?? '/', html));
 });
 let browser;
@@ -51,6 +51,7 @@ try {
     page.on('pageerror', error => errors.push(error.message)); page.on('console', message => { if (process.env.DEBUG_CHECK) console.log('console:', message.text()); });
     await page.goto('http://127.0.0.1:' + address.port + '/fixture' + path + '?join=' + join);
     await expect(page.getByRole('heading', { level: 1, name: 'Your demo gym' })).toBeVisible();
+    await expect(page.locator('body')).toHaveCSS('background-color', theme === 'dark' ? 'rgb(12, 21, 20)' : 'rgb(255, 255, 255)');
     await expect(page.locator('main [data-demo-deletion]')).toContainText('Using it moves that time later');
     expect(await page.locator('main [data-demo-deletion]').evaluate(element => element === element.parentElement.lastElementChild)).toBe(true);
     await expect(page.getByText('4242 4242 4242 4242')).toHaveCount(join ? 1 : 0);

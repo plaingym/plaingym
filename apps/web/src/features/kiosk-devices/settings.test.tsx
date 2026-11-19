@@ -84,6 +84,7 @@ describe('kiosk device settings', () => {
     expect(await screen.findByText(link)).toBeDefined();
     const qr = screen.getByAltText('QR code of the kiosk setup link') as HTMLImageElement;
     expect(qr.src.startsWith('data:image/svg+xml')).toBe(true);
+    expect(qr.classList.contains('bg-white')).toBe(true);
     expect(screen.queryByText(token)).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Show token' }));
     expect(screen.getByText(token)).toBeDefined();

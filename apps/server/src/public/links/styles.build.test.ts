@@ -25,6 +25,16 @@ describe('public stylesheet sources', () => {
     expect(names(sources)).toEqual(['../areas/health/build-label.ts', '../areas/staff/profiles.accept.ts', '../demo/copy.page.ts', '../demo/landing.page.ts', '../modules/website/site.page.ts', 'links/page.ts', 'pages/join.page.ts', 'pages/page.ts']);
   });
 
+  it('compiles dark utilities for both the explicit and device-following classes', async () => {
+    const css = await stylesheet([fileURLToPath(new URL('../../demo/landing.page.ts', import.meta.url))]);
+    expect(css).toContain('.dark\\:bg-gray-950:where(.dark, .dark *)');
+    expect(css).toContain('.dark\\:bg-gray-950:where(.theme-system, .theme-system *)');
+    expect(css).toContain('@media screen');
+    expect(css).toContain('@media screen and (prefers-color-scheme: dark)');
+    expect(css).toContain('--color-background: #0c1514');
+    expect(css).toContain('--color-foreground: #e6f0ee');
+  });
+
   it('keeps the staff invitation layout classes even without any other page', async () => {
     const source = fileURLToPath(new URL('../../areas/staff/profiles.accept.ts', import.meta.url));
     expect(await linkStyleSources()).toContain(source);

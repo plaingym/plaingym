@@ -31,6 +31,7 @@ it('shows unsigned state and guardian fields after reviewing the exact current t
   expect(await screen.findByText('No signed copies for this member')).toBeTruthy();
   await user.click(await screen.findByRole('button', { name: 'Review and sign' }));
   const dialog = screen.getByRole('dialog'); expect(within(dialog).getByText('Original text')).toBeTruthy();
+  expect(dialog.querySelector('canvas')!.classList.contains('bg-white')).toBe(true);
   await user.click(within(dialog).getByLabelText('I am signing as a parent or guardian'));
   expect(within(dialog).getByLabelText('Relationship to member')).toBeTruthy();
   expect(within(dialog).getByLabelText('I have read this text and agree to sign it electronically.').hasAttribute('required')).toBe(true);

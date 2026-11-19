@@ -21,12 +21,80 @@
   --color-destructive-foreground: #ffffff;
   --color-success: #146c43;
   --color-warning: #8a5300;
-  --color-border: #d6e1df;
-  --color-input: #a6b9b5;
+  --color-border: #7d918d;
+  --color-input: #6f827f;
   --color-ring: #0f766e;
   --font-sans: ui-sans-serif, system-ui, sans-serif;
   /* Header height; sticky panels below the header offset by it. */
   --spacing-header: 3.5rem;
+}
+/* `dark:` utilities follow the same selectors as the token blocks below: an explicit
+   `dark` class, or `theme-system` while the device asks for a dark scheme. */
+@custom-variant dark {
+  @media screen {
+    &:where(.dark, .dark *) {
+      @slot;
+    }
+  }
+  @media screen and (prefers-color-scheme: dark) {
+    &:where(.theme-system, .theme-system *) {
+      @slot;
+    }
+  }
+}
+/* A page with none of these classes stays light, so the public website, signed-link
+   pages and waiver documents keep their light palette until a page opts in. */
+:root { color-scheme: light; }
+.light { color-scheme: light; }
+/* Printed invitations use the light palette. Keep the two dark token blocks in sync. */
+@media screen {
+  .theme-system { color-scheme: light dark; }
+  .dark {
+    color-scheme: dark;
+    --color-background: #0c1514;
+    --color-foreground: #e6f0ee;
+    --color-card: #111d1c;
+    --color-card-foreground: #e6f0ee;
+    --color-primary: #5ec9ba;
+    --color-primary-foreground: #06201d;
+    --color-secondary: #1b2b29;
+    --color-secondary-foreground: #d7e7e4;
+    --color-muted: #172422;
+    --color-muted-foreground: #a8bdb9;
+    --color-accent: #1b2b29;
+    --color-accent-foreground: #d7e7e4;
+    --color-destructive: #f97066;
+    --color-destructive-foreground: #2a0a08;
+    --color-success: #5fd58a;
+    --color-warning: #fbbf24;
+    --color-border: #526864;
+    --color-input: #6a817c;
+    --color-ring: #5ec9ba;
+  }
+}
+@media screen and (prefers-color-scheme: dark) {
+  .theme-system {
+    color-scheme: dark;
+    --color-background: #0c1514;
+    --color-foreground: #e6f0ee;
+    --color-card: #111d1c;
+    --color-card-foreground: #e6f0ee;
+    --color-primary: #5ec9ba;
+    --color-primary-foreground: #06201d;
+    --color-secondary: #1b2b29;
+    --color-secondary-foreground: #d7e7e4;
+    --color-muted: #172422;
+    --color-muted-foreground: #a8bdb9;
+    --color-accent: #1b2b29;
+    --color-accent-foreground: #d7e7e4;
+    --color-destructive: #f97066;
+    --color-destructive-foreground: #2a0a08;
+    --color-success: #5fd58a;
+    --color-warning: #fbbf24;
+    --color-border: #526864;
+    --color-input: #6a817c;
+    --color-ring: #5ec9ba;
+  }
 }
 /* Native checkboxes, radios, range inputs and progress bars take the theme color, not the browser's own blue or green. */
 @layer base {

@@ -24,8 +24,8 @@ when refreshing the sample date. No production clock or setting changes.
 The ten screens go to `apps/server/src/demo/screenshots/` as WebP at 1x and 2x,
 in light and dark. Portal and waiver screens are 390×844, kiosk 768×900, and
 admin/public join screens 1280×900. The Health overview is 1280×490, excluding
-variable disk and version details below the first row. Screens use actual app theme support:
-the admin currently stays light even when the device prefers dark.
+variable disk and version details below the first row. The admin, portal and kiosk follow the
+device theme. A page without a theme class keeps its light palette.
 `apps/server/src/demo/screenshots.json` records dimensions and content-hashed names.
 A complete run removes obsolete captures. The root `README.md` shows the 1x captures
 too: update its file names after a refresh (`readme.docs.test.ts` fails on a missing one). Review the images before committing:

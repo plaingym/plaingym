@@ -49,7 +49,7 @@ const primary = `${control} ${ring} bg-primary text-white shadow-sm hover:bg-tea
 const secondary = `${control} ${ring} border border-border bg-white text-foreground shadow-sm hover:bg-muted active:bg-secondary dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100 dark:hover:bg-gray-800 dark:active:bg-gray-700`;
 // On the brand band the actions invert, and the keyboard ring is white in both themes.
 const bandRing = 'outline-offset-2 focus-visible:outline-2 focus-visible:outline-white';
-const bandPrimary = `${control} ${bandRing} bg-white text-primary shadow-sm hover:bg-secondary active:bg-teal-100`;
+const bandPrimary = `${control} ${bandRing} bg-white text-teal-900 shadow-sm hover:bg-teal-50 active:bg-teal-100`;
 const bandSecondary = `${control} ${bandRing} border border-white/70 text-white hover:bg-white/15 active:bg-white/25`;
 const navLink = `${control} ${ring} px-3 text-sm text-muted-foreground hover:bg-muted hover:text-foreground active:bg-secondary dark:text-gray-300 dark:hover:bg-gray-800 dark:hover:text-white dark:active:bg-gray-700`;
 // Inside a menu panel the ring sits inside the item, so the panel's edge never clips it.
@@ -120,7 +120,7 @@ export function demoLandingPage(showcaseHref: string, source: string, t: Transla
         h('button', { type: 'button', tabindex: 0, popovertarget: 'shot-' + key, popovertargetaction: 'hide', class: 'demo-close', autofocus: true }, text('close')),
         picture(key, 'expanded')));
   };
-  return '<!doctype html>' + h('html', { lang: 'en' },
+  return '<!doctype html>' + h('html', { lang: 'en', class: 'theme-system' },
     h('head', null, h('meta', { charset: 'utf-8' }), h('meta', { name: 'viewport', content: 'width=device-width, initial-scale=1, viewport-fit=cover' }),
       h('meta', { name: 'color-scheme', content: 'light dark' }), h('meta', { name: 'description', content: text('pitch') }),
       h('title', null, text('title')), h('link', { rel: 'stylesheet', href: '/public/pages/styles.css' }),
@@ -149,10 +149,10 @@ export function demoLandingPage(showcaseHref: string, source: string, t: Transla
                 h('span', { class: 'shrink-0 text-primary dark:text-teal-300' }, icon(key)), h('span', { class: 'min-w-0' }, text(key + 'Title'))))))),
         h('div', { class: container + ' py-4 sm:py-8' }, ...featureKeys.map(feature)),
         h('div', { class: container + ' pb-16 sm:pb-24' },
-          h('section', { class: 'rounded-3xl bg-primary px-6 py-12 text-white sm:px-12 sm:py-16', 'aria-labelledby': 'explore' },
+          h('section', { class: 'rounded-3xl bg-primary px-6 py-12 text-white sm:px-12 sm:py-16 dark:bg-teal-950', 'aria-labelledby': 'explore' },
             h('h2', { id: 'explore', class: sectionTitle }, text('explore')),
             h('ol', { class: 'mt-8 grid gap-8 md:grid-cols-3' }, ...[1, 2, 3].map(step => h('li', { class: 'space-y-3' },
-              h('span', { class: 'inline-flex h-11 w-11 items-center justify-center rounded-full bg-white text-lg font-bold text-primary', 'aria-hidden': 'true' }, step),
+              h('span', { class: 'inline-flex h-11 w-11 items-center justify-center rounded-full bg-white text-lg font-bold text-teal-900', 'aria-hidden': 'true' }, step),
               h('h3', { class: 'text-lg font-semibold' }, text('step' + step + 'Title')), h('p', { class: 'text-teal-50' }, text('step' + step + 'Body'))))),
             h('div', { class: 'mt-10' }, actions(true))))),
       h('footer', { class: 'border-t border-border dark:border-gray-800' },

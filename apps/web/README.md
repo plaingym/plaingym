@@ -151,6 +151,27 @@ section titles `text-lg font-semibold`, body `text-base`, secondary text
 `text-sm text-muted-foreground`. Spacing uses Tailwind's scale: `space-y-6`
 between page sections, `gap-3` within groups, cards `p-4 sm:p-6`.
 
+**Theme.** `<html>` carries exactly one of `theme-system`, `light` or `dark`.
+`theme-system` follows `prefers-color-scheme` in CSS alone, so System follows a
+device change without a reload or script; the other two are explicit per-browser
+choices. A page with no theme class stays light: the public website, waiver
+documents and server-rendered pages opt in one at a time. Printed pages use the
+light palette. `src/lib/theme.ts`
+reads the stored choice, applies the class and keeps both `theme-color` metas in
+step; `setThemeChoice` is the setter a switch uses. The key is
+`plaingym.theme` and its values are `system`, `light` and `dark`. Every read
+and write is guarded, so blocked storage falls back to System, and `/kiosk`
+always follows the device. The blocking `src/lib/theme-init.js` applies the
+stored choice before the first paint; the build emits it content-hashed under
+`/assets/` because the SPA's CSP allows no inline script. Tokens keep their light
+values in `@theme` and matching dark values under `.dark` and, while the device
+asks for dark, `.theme-system`; the contrast test beside `styles.css` keeps every
+surface text token at 4.5:1 on `background`, `card`, `muted` and `secondary`, and
+`primary-foreground` and `destructive-foreground` at 4.5:1 on their own fills
+(`primary`, `destructive`), the only surfaces they are used on. Border, input and
+ring tokens reach 3:1 on `background`. Signature pads and QR images stay dark on
+white in both themes.
+
 **Strings and accessibility.** All visible text goes through `t()`. Interactive
 elements are real buttons and links with accessible names. The production-image
 e2e suite (`e2e/specs/mobile.spec.ts`) checks the admin shell at 360 px and

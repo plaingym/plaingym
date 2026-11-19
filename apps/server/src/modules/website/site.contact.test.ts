@@ -23,6 +23,10 @@ it.each([null, '+1 (604) 555-0100'])('shows visitor-facing contact text with pho
   }
   expect(html).not.toContain('href="mailto:');
 });
+it('leaves the public website on its light palette until a theme is opted in', () => {
+  expect(render(null)).toMatch(/<html lang="en">/);
+  expect(render(null)).not.toMatch(/<html[^>]*class=/);
+});
 it('keeps the contact card from rendering empty when only an address is published', () => {
   const html = render(null, { line1: '1 Main St', city: 'North' });
   expect(html).toContain('1 Main St'); expect(html).not.toContain('The address has not been added yet.');

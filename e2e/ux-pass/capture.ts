@@ -17,7 +17,7 @@ const sizeName = (width: number) => width <= 360 ? 'phone' : width <= 768 ? 'tab
 export interface Shot {
   surface: string; screen: string; state: 'populated' | 'empty'; size: string; width: number; height: number; theme: Theme;
   file: string; bytes: number;
-  /** The light image this dark one matches pixel for pixel (the app has no dark theme), when it does. */
+  /** The matching light image when both captures are identical pixel for pixel. */
   sameAs?: string;
 }
 export interface Gap { surface: string; screen: string; state: 'populated' | 'empty'; reason: string }

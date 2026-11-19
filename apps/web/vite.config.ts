@@ -1,11 +1,39 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { defineConfig, loadEnv } from 'vite';
+import { defineConfig, loadEnv, type Plugin } from 'vite';
 import { tanstackRouter } from '@tanstack/router-plugin/vite';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { developmentProxy } from './dev-proxy.js';
 import { buildInfo } from '../../scripts/release/version.mjs';
+
+/** The theme must apply before the first paint and the SPA's CSP allows no inline script, so the early
+ * script stays a blocking classic file. The build emits its source under /assets/ with a content hash
+ * (cached immutably); `pnpm dev` serves the source path from the tag in index.html. */
+function earlyThemeScript(): Plugin {
+  const sourcePath = fileURLToPath(new URL('./src/lib/theme-init.js', import.meta.url));
+  const asset = () => {
+    const source = readFileSync(sourcePath, 'utf8');
+    return { source, fileName: 'assets/theme-init-' + createHash('sha256').update(source).digest('hex').slice(0, 16) + '.js' };
+  };
+  return {
+    name: 'early-theme-script',
+    generateBundle() {
+      const { source, fileName } = asset();
+      this.emitFile({ type: 'asset', fileName, source });
+    },
+    transformIndexHtml: {
+      order: 'post',
+      handler(html, context) {
+        if (!context.bundle) return html;
+        return html.replace(/<script\b[^>]*\bsrc="\/src\/lib\/theme-init\.js"[^>]*><\/script>/i,
+          '<script src="/' + asset().fileName + '"></script>');
+      },
+    },
+  };
+}
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '../..', '');
@@ -16,6 +44,7 @@ export default defineConfig(({ mode }) => {
   }
   return {
     plugins: [
+      earlyThemeScript(),
       tanstackRouter({
         target: 'react',
         routesDirectory: fileURLToPath(new URL('./src/routes', import.meta.url)),

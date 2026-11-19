@@ -43,6 +43,7 @@ describe('portal check-in code', () => {
   it("shows a member's QR code and creates a child's first code", async () => {
     const user = userEvent.setup(); page();
     expect((await screen.findByAltText('QR check-in code for Pat Parent')).getAttribute('src')).toMatch(/^data:image\/svg\+xml/);
+    expect(screen.getByAltText('QR check-in code for Pat Parent').classList.contains('bg-white')).toBe(true);
     await user.selectOptions(screen.getByLabelText('Code for'), child);
     await screen.findByText(/There is no active check-in code/);
     await user.click(screen.getByRole('button', { name: 'Create a code' }));

@@ -75,6 +75,7 @@ it('has ten linked feature sections, responsive screenshots and native lightboxe
     expect(html).toContain(`sizes="(max-width: 767px) and (orientation: portrait) ${screenshots[key].width}px, 90vw"`);
   }
   expect(html).toContain('prefers-color-scheme: dark');
+  expect(html).toContain('<html lang="en" class="theme-system">');
   expect(Buffer.byteLength(html)).toBeLessThan(100_000);
 });
 it('has a header with section links, a script-free menu and icons on both calls to action', async () => {

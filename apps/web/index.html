@@ -1,9 +1,14 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <!doctype html>
-<html lang="en">
+<html lang="en" class="theme-system">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" data-theme-scheme="light" />
+    <meta name="theme-color" content="#0c1514" media="(prefers-color-scheme: dark)" data-theme-scheme="dark" />
+    <!-- Blocking and external because the SPA's CSP allows no inline script. The build hashes it under /assets/. -->
+    <script src="/src/lib/theme-init.js"></script>
     <title>PlainGym</title>
   </head>
   <body>
