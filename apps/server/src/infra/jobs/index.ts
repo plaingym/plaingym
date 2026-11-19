@@ -63,6 +63,7 @@ export class FakeJobs implements Jobs, JobRecovery {
   readonly #keys = new Map<string, string>();
   readonly #pending = new WeakMap<JobTransaction, { jobs: FakeJob[]; keys: Map<string, string> }>();
   readonly #resets = new WeakMap<JobTransaction, Set<string>>();
+  readonly #resetReservations = new Set<string>();
   readonly #reservations = new Map<string, { transaction: JobTransaction; settled: Promise<void> }>();
   #nextId = 0;
   constructor(readonly clock: Clock = systemClock, readonly perGymConcurrency = 1) {
@@ -175,13 +176,19 @@ export class FakeJobs implements Jobs, JobRecovery {
     if (transaction) assertJobTransaction(transaction, options.gymId);
     else assertNoTransaction('jobs.retryFailed');
     const job = this.#jobs.find((item) => item.id === jobId && item.options.gymId === options.gymId && item.status === 'failed');
-    if (!job || transaction && this.#resets.get(transaction)?.has(jobId)) return false;
-    const reset = () => Object.assign(job, { status: 'queued', attempt: 0, runAt: new Date(options.runAt) });
+    if (!job || this.#resetReservations.has(jobId)) return false;
+    const runAt = new Date(options.runAt);
+    const reset = () => {
+      if (job.status === 'failed') Object.assign(job, { status: 'queued', attempt: 0, runAt });
+    };
     if (transaction) {
       let resets = this.#resets.get(transaction);
       if (!resets) { resets = new Set(); this.#resets.set(transaction, resets); }
       resets.add(jobId);
-      jobTransactionStates.get(transaction)!.committed.push(reset);
+      const state = jobTransactionStates.get(transaction)!;
+      this.#resetReservations.add(jobId);
+      state.committed.push(reset);
+      void state.settled.then(() => this.#resetReservations.delete(jobId));
     }
     else reset();
     return true;

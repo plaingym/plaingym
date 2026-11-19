@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, desc, eq, exists, gt, gte, inArray, isNull, lte, notExists, notInArray } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- Match linked IDs in gym-scoped audit JSON and bound reset history by audit time.
+import { and, asc, eq, exists, gt, gte, inArray, isNull, lte, max, notExists, notInArray, sql, type SQL } from 'drizzle-orm';
 import { auditEvents, classCreditEntries, classPackSales, forGym, invoiceLineItems, invoices, paymentAttempts, payments, refunds, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import type { ExhaustedEffect } from '@plaingym/shared/contracts';
@@ -30,17 +31,24 @@ export const effectRetried = 'billing.transition.effect.retried';
 export const effectRecoveryExhausted = 'billing.transition.effect.recovery_exhausted';
 export const effectStaffRetried = 'billing.transition.effect.staff_retried';
 export const effectDismissed = 'billing.transition.effect.dismissed';
-/** Audit IDs break ties for actions committed at the same clock instant, under the invoice lock. */
-function openExhaustions(tx: Transaction, gymId: string) {
+function openExhaustions(tx: Transaction, gymId: string, effectId?: string) {
   const exhausted = tx.select({ id: auditEvents.id, effectId: auditEvents.targetId, at: auditEvents.occurredAt })
-    .from(auditEvents).where(eq(auditEvents.action, effectRecoveryExhausted)).as('exhausted_effect');
-  const later = (action: string, after = false) => tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
+    .from(auditEvents).where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.action, effectRecoveryExhausted),
+      effectId ? eq(auditEvents.targetId, effectId) : undefined)).as('exhausted_effect');
+  const forEffect = (action: string, match?: SQL) => tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
     eq(auditEvents.gymId, gymId), eq(auditEvents.action, action), eq(auditEvents.targetId, exhausted.effectId),
-    after ? gt(auditEvents.id, exhausted.id) : undefined));
-  return tx.select({ effectId: exhausted.effectId, exhaustedAt: exhausted.at }).from(exhausted).where(and(
-    notExists(later(effectCompleted)), notExists(later(effectDismissed)),
-    notExists(later(effectStaffRetried, true)), notExists(later(effectRecoveryExhausted, true))))
+    match));
+  return tx.select({ id: exhausted.id, effectId: exhausted.effectId, exhaustedAt: exhausted.at }).from(exhausted).where(and(
+    notExists(forEffect(effectCompleted)), notExists(forEffect(effectDismissed)),
+    notExists(forEffect(effectStaffRetried, eq(sql`${auditEvents.after}->>'exhaustedId'`, sql`${exhausted.id}::text`)))))
     .orderBy(asc(exhausted.at), asc(exhausted.id));
+}
+function recoveryHistory(tx: Transaction, gymId: string, effectId: string) {
+  const lastStaffRetry = tx.select({ at: max(auditEvents.occurredAt) }).from(auditEvents).where(and(
+    eq(auditEvents.gymId, gymId), eq(auditEvents.action, effectStaffRetried), eq(auditEvents.targetId, effectId)));
+  return tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
+    eq(auditEvents.gymId, gymId), eq(auditEvents.action, effectRetried), eq(auditEvents.targetId, effectId),
+    gt(auditEvents.occurredAt, sql`coalesce((${lastStaffRetry}), '-infinity'::timestamptz)`))).limit(effectRecoveryLimit);
 }
 /** The Health tile's count: the open exhaustions alone, so the tile stays in error even if the list can't load. */
 export async function countExhaustedEffects(gymId: string, scope: typeof forGym = forGym): Promise<number> {
@@ -88,25 +96,23 @@ export interface TransitionEffectOptions {
 export function createTransitionEffects(options: TransitionEffectOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const credits = createPackCredits({ scope, clock, settings: options.settings });
-  const latest = async (tx: Transaction, action: string, effectId: string) => (await tx.select().from(auditEvents)
-    .where(and(eq(auditEvents.action, action), eq(auditEvents.targetId, effectId))).orderBy(desc(auditEvents.id)).limit(1))[0];
-  async function effectState(tx: Transaction, effectId: string) {
+  async function effectState(tx: Transaction, gymId: string, effectId: string) {
     const event = await recorded(tx, effectCreated, effectId) ?? notFound();
     const work = event.after as TransitionEffect;
     await lockInvoice(tx, work.invoiceId);
     const completed = await recorded(tx, effectCompleted, effectId), dismissed = await recorded(tx, effectDismissed, effectId);
-    const exhausted = await latest(tx, effectRecoveryExhausted, effectId), retried = await latest(tx, effectStaffRetried, effectId);
-    return { work, completed, dismissed, exhausted, retried, open: exhausted !== undefined && (!retried || exhausted.id > retried.id) };
+    const [exhausted] = await openExhaustions(tx, gymId, effectId).limit(1);
+    return { work, completed, dismissed, exhausted };
   }
   async function retryEffect(context: MutationContext, effectId: string) {
     const recovery = options.recovery;
     if (!recovery) conflict('Effect recovery is unavailable');
     const gym = await options.settings.get(context.gymId);
     return withJobTransaction(scope, context.gymId, async transaction => {
-      const { tx } = transaction, state = await effectState(tx, effectId);
+      const { tx } = transaction, state = await effectState(tx, context.gymId, effectId);
       if (state.completed || state.dismissed) conflict('Effect is completed or dismissed');
-      if (!state.open) {
-        if (state.retried) return { changed: false };
+      if (!state.exhausted) {
+        if (await recorded(tx, effectStaffRetried, effectId)) return { changed: false };
         conflict('Effect has not exhausted recovery');
       }
       const [failed] = await recovery.failedJobs(effectJob, [effectId], { gymId: context.gymId }, transaction);
@@ -114,14 +120,14 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
         await options.jobs.enqueue(effectJob, { effectId }, { gymId: context.gymId, timezone: gym.timezone,
         idempotencyKey: effectId, runAt: clock.now(), maxAttempts: effectMaxAttempts }, transaction);
       await audit(tx, context, clock, effectStaffRetried, 'invoice_effect', effectId,
-        { invoiceId: state.work.invoiceId, kind: state.work.kind, exhaustedId: state.exhausted!.id });
+        { invoiceId: state.work.invoiceId, kind: state.work.kind, exhaustedId: state.exhausted.id });
       return { changed: true };
     });
   }
   async function dismissEffect(context: MutationContext, effectId: string) {
     return scope(context.gymId, async tx => {
-      const state = await effectState(tx, effectId);
-      if (state.completed || state.dismissed || !state.open) conflict('Effect is no longer exhausted');
+      const state = await effectState(tx, context.gymId, effectId);
+      if (state.completed || state.dismissed || !state.exhausted) conflict('Effect is no longer exhausted');
       await audit(tx, context, clock, effectDismissed, 'invoice_effect', effectId,
         { invoiceId: state.work.invoiceId, kind: state.work.kind, reason: 'handled_by_hand' });
       return { changed: true };
@@ -176,40 +182,43 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
     for (;;) {
       // Each correlated lookup uses (gym_id, action, target_id), including for old effects.
       const rows = await scope(gymId, tx => {
-        const created = tx.select({ id: auditEvents.id, targetId: auditEvents.targetId, work: auditEvents.after })
+        const created = tx.select({ id: auditEvents.id, targetId: auditEvents.targetId })
           .from(auditEvents).where(eq(auditEvents.action, effectCreated)).as('created_effect');
         const auditFor = (action: string) => tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
           eq(auditEvents.gymId, gymId), eq(auditEvents.action, action), eq(auditEvents.targetId, created.targetId)));
         const open = openExhaustions(tx, gymId).as('open_exhaustions');
-        return tx.select({ id: created.id, effectId: created.targetId, work: created.work })
+        return tx.select({ id: created.id, effectId: created.targetId })
           .from(created).where(and(cursor ? gt(created.id, cursor) : undefined, exists(auditFor(effectPublished)),
             notExists(auditFor(effectCompleted)), notExists(auditFor(effectDismissed)),
             notInArray(created.targetId, tx.select({ effectId: open.effectId }).from(open))))
           .orderBy(asc(created.id)).limit(100);
       });
       if (!rows.length) break;
-      const byId = new Map(rows.map(row => [row.effectId, row.work as TransitionEffect]));
-      for (const job of await recovery.failedJobs(effectJob, [...byId.keys()], { gymId })) {
-        const effectId = job.idempotencyKey, work = byId.get(effectId)!;
+      for (const job of await recovery.failedJobs(effectJob, rows.map(row => row.effectId), { gymId })) {
+        const effectId = job.idempotencyKey;
         try {
+          // A spent budget can be exhausted immediately. Check it without locking the invoice while backoff is active.
+          if (clock.now().getTime() - job.failedAt.getTime() < effectRecoveryDelayMs) {
+            const history = await scope(gymId, tx => recoveryHistory(tx, gymId, effectId));
+            if (history.length < effectRecoveryLimit) continue;
+          }
           const outcome = await withJobTransaction(scope, gymId, async transaction => {
-            const { tx } = transaction, state = await effectState(tx, effectId);
-            if (state.completed || state.dismissed || state.open) return 'none';
+            const { tx } = transaction, state = await effectState(tx, gymId, effectId);
+            if (state.completed || state.dismissed || state.exhausted) return 'none';
             const [current] = await recovery.failedJobs(effectJob, [effectId], { gymId }, transaction);
             if (!current) return 'none';
-            const history = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
-              eq(auditEvents.action, effectRetried), eq(auditEvents.targetId, effectId),
-              state.retried ? gt(auditEvents.id, state.retried.id) : undefined)).limit(effectRecoveryLimit);
+            const { work } = state;
+            const history = await recoveryHistory(tx, gymId, effectId);
             if (history.length >= effectRecoveryLimit) {
               await audit(tx, system(gymId), clock, effectRecoveryExhausted, 'invoice_effect', effectId,
-                { invoiceId: work.invoiceId, kind: work.kind, jobId: job.jobId, resets: history.length });
+                { invoiceId: work.invoiceId, kind: work.kind, jobId: current.jobId, resets: history.length });
               return 'exhausted';
             }
             const now = clock.now(), delayMs = effectRecoveryDelayMs * 2 ** history.length;
             if (now.getTime() - current.failedAt.getTime() < delayMs) return 'none';
             if (!await recovery.retryFailed(current.jobId, { gymId, runAt: now }, transaction)) return 'none';
             await audit(tx, system(gymId), clock, effectRetried, 'invoice_effect', effectId,
-              { invoiceId: work.invoiceId, jobId: job.jobId, delayMs });
+              { invoiceId: work.invoiceId, jobId: current.jobId, delayMs });
             return 'recovered';
           });
           if (outcome === 'exhausted') exhausted++;

@@ -33,3 +33,31 @@ it.each(['postgres', 'fake'] as const)('commits and rolls back recovery with the
   expect(await queue.failedJobs(name, [key], { gymId })).toEqual([]);
   expect(await queue.runNext()).toBe(true);
 });
+
+it('lets only one open transaction stage a fake job reset', async () => {
+  const gymId = uuidv7(), clock = new TestClock('2026-11-01T00:00:00Z'), queue = new FakeJobs(clock);
+  await factory('gyms', gymId);
+  const name = 'test.recovery', key = uuidv7();
+  queue.handle(name, async () => { throw new Error('Job failed'); });
+  const { jobId } = await queue.enqueue(name, {}, { gymId, timezone: 'UTC', idempotencyKey: key, maxAttempts: 1 });
+  await queue.runNext();
+  const staged = Promise.withResolvers<boolean>(), release = Promise.withResolvers<void>();
+  const winnerAt = clock.now(), contenderAt = new Date(winnerAt.getTime() + 1000);
+  const winner = withJobTransaction(db.forGym, gymId, async transaction => {
+    staged.resolve(await queue.retryFailed(jobId, { gymId, runAt: winnerAt }, transaction));
+    await release.promise;
+  });
+  try {
+    expect(await Promise.race([staged.promise, winner])).toBe(true);
+    expect(await withJobTransaction(db.forGym, gymId, async transaction => {
+      expect(await queue.failedJobs(name, [key], { gymId }, transaction)).toHaveLength(1);
+      return queue.retryFailed(jobId, { gymId, runAt: contenderAt }, transaction);
+    })).toBe(false);
+    expect(await queue.retryFailed(jobId, { gymId, runAt: contenderAt })).toBe(false);
+    expect(queue.jobs[0]).toMatchObject({ status: 'failed', attempt: 1 });
+  } finally {
+    release.resolve();
+    await winner;
+  }
+  expect(queue.jobs[0]).toMatchObject({ status: 'queued', attempt: 0, runAt: winnerAt });
+});

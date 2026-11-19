@@ -162,8 +162,9 @@ than the 30-day publication window, in pages of 100. A job that exhausted its
 twelve attempts is reset in place, preserving its ID, payload and idempotency key;
 recovery never enqueues a second effect job. Recovery waits 15 minutes after the
 first failure, then 30, 60, 120 and 240 minutes after subsequent exhausted batches.
-The reset count survives process restarts in `billing.transition.effect.retried`
-audits. After five resets, recovery records
+Within the first 15 minutes the sweep skips the invoice lock and job reread if
+the effect still has resets left. The reset count survives process restarts in
+`billing.transition.effect.retried` audits. After five resets, recovery records
 `billing.transition.effect.recovery_exhausted` once per recovery budget. Health's
 Invoice effects tile and list read this durable audit, so they remain in error
 even after queue retention removes the failed job after 90 days. Completed,
@@ -180,10 +181,12 @@ Settlement or publication failure does not stop this recovery pass.
 Owners and admins can Retry or Dismiss any exhausted effect from Health, however
 old it is. Retry uses that invoice lock and transaction to reset a retained failed
 job or enqueue a missing job under the original effect key, and writes
-`billing.transition.effect.staff_retried` with the staff actor. A concurrent Retry
-while already queued does nothing. Completed and dismissed effects refuse Retry.
-Each staff retry starts a fresh five-reset automatic recovery budget; the list
-shows the effect again only after a new exhaustion. Dismiss writes
+`billing.transition.effect.staff_retried` with the staff actor and the ID of the
+exhaustion it closes. A concurrent Retry while already queued does nothing.
+Completed and dismissed effects refuse Retry.
+Each staff retry starts a fresh five-reset automatic recovery budget. Recovery
+counts reset audits whose occurrence time follows the staff retry. The list shows
+the effect again only after a new exhaustion. Dismiss writes
 `billing.transition.effect.dismissed` (handled by hand) with the staff actor,
 without running the effect or deleting the job. The sweep leaves it alone.
 Duplicate refunds keep their existing reservation, reconciliation and processor

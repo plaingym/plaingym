@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it, vi } from 'vitest';
 import { uuidv7 } from '@plaingym/db';
-import { createTransitionEffects, effectDismissed, effectRecoveryDelayMs, effectRecoveryExhausted,
+import { countExhaustedEffects, createTransitionEffects, effectDismissed, effectJob, effectRecoveryDelayMs, effectRecoveryExhausted,
   effectRecoveryLimit, effectRetried, effectStaffRetried } from './effects.js';
+import * as store from './store.js';
 import { effectCompleted, effectCreated, type TransitionEffect } from './store.js';
 import { useExhaustedFixture } from './exhausted.fixture.test-helper.js';
 
-const { fixture } = useExhaustedFixture();
+const { db, factory, fixture } = useExhaustedFixture();
 it('lists exhausted work oldest first after queue retention, without exposing another gym', async () => {
   const f = await fixture(), foreign = await fixture(), first = await f.create();
   await foreign.create(); f.clock.advance(1000);
@@ -59,6 +60,61 @@ it('starts a new five-reset budget after each staff retry, then lists a new exha
   expect(await f.effects.exhaustedEffects(f.gymId)).toMatchObject([{ effectId: id, exhaustedAt: f.clock.now().toISOString() }]);
   await f.effects.retryEffect(f.context, id); f.options.notifications.receipt.mockResolvedValue(); await f.drain();
   expect(await f.effects.exhaustedEffects(f.gymId)).toEqual([]);
+});
+it('closes the referenced exhaustion and counts resets even when the audit IDs sort out of order', async () => {
+  const f = await fixture(), id = await f.create('receipt', {}, false);
+  const exhaustedId = uuidv7(4_000_000_000_000);
+  for (let n = 0; n < effectRecoveryLimit; n++)
+    await factory('auditEvents', f.gymId, { id: uuidv7(4_000_000_000_000), action: effectRetried,
+      targetId: id, occurredAt: f.clock.now() });
+  await factory('auditEvents', f.gymId, { id: exhaustedId, action: effectRecoveryExhausted,
+    targetId: id, occurredAt: f.clock.now() });
+  expect(await countExhaustedEffects(f.gymId, db.forGym)).toBe(1);
+
+  f.clock.advance(1);
+  expect(await f.effects.retryEffect(f.context, id)).toEqual({ changed: true });
+  const [staffRetry] = await f.audits(effectStaffRetried, id);
+  expect(staffRetry!.id < exhaustedId).toBe(true);
+  expect(staffRetry!.after).toMatchObject({ exhaustedId });
+  expect(await f.effects.exhaustedEffects(f.gymId)).toEqual([]);
+  expect(await countExhaustedEffects(f.gymId, db.forGym)).toBe(0);
+  expect(await f.effects.retryEffect(f.context, id)).toEqual({ changed: false });
+  await expect(f.effects.dismissEffect(f.context, id)).rejects.toMatchObject({ code: 'conflict' });
+
+  f.clock.advance(effectRecoveryDelayMs);
+  // Simulate the first reset from a worker whose UUID clock lags even the staff process.
+  const earlierId = uuidv7(1_000_000_000_000);
+  expect(earlierId < staffRetry!.id).toBe(true);
+  await factory('auditEvents', f.gymId, { id: earlierId, action: effectRetried, targetId: id, occurredAt: f.clock.now() });
+  f.options.notifications.receipt.mockRejectedValue(new Error('Mail unavailable'));
+  await f.drain();
+  const delayMs = effectRecoveryDelayMs * 2;
+  f.clock.advance(delayMs - 1);
+  expect(await f.effects.recoverFailed(f.gymId)).toEqual({ recovered: 0, exhausted: 0 });
+  f.clock.advance(1);
+  expect(await f.effects.recoverFailed(f.gymId)).toEqual({ recovered: 1, exhausted: 0 });
+  const resets = await f.audits(effectRetried, id);
+  expect(resets).toHaveLength(effectRecoveryLimit + 2);
+  expect(resets).toContainEqual(expect.objectContaining({ after: expect.objectContaining({ delayMs }) }));
+  f.options.notifications.receipt.mockResolvedValue();
+  await f.drain();
+});
+it('skips a failed job still inside its minimum backoff without locking or rereading it', async () => {
+  const f = await fixture(), id = await f.create('receipt', {}, false);
+  const lock = vi.spyOn(store, 'lockInvoice'), lookup = vi.spyOn(f.queue, 'failedJobs');
+  try {
+    f.clock.advance(effectRecoveryDelayMs - 1);
+    expect(await f.effects.recoverFailed(f.gymId)).toEqual({ recovered: 0, exhausted: 0 });
+    expect(lock).not.toHaveBeenCalled();
+    expect(lookup.mock.calls).toEqual([[effectJob, [id], { gymId: f.gymId }]]);
+    f.clock.advance(1);
+    expect(await f.effects.recoverFailed(f.gymId)).toEqual({ recovered: 1, exhausted: 0 });
+    expect(lock).toHaveBeenCalledTimes(1);
+    expect(lookup.mock.calls.filter(call => call[3])).toHaveLength(1);
+  } finally {
+    lock.mockRestore(); lookup.mockRestore();
+  }
+  await f.drain();
 });
 it('dismisses durably without deleting or resetting the failed job, and refuses retry', async () => {
   const f = await fixture(), id = await f.create(), before = await f.rows();
