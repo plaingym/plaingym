@@ -45,7 +45,7 @@ prefixed body over 1,600 characters, then sends after these checks commit:
   if they have no phone. Household consent never authorizes announcements.
 * A slot under a row lock on `sms_daily_usage` for the gym's local calendar day.
   The cap is owner-editable from 1 to 100,000 and defaults to 1,000. `sent` counts reserved provider attempts;
-  failures and unknown outcomes retain their slots conservatively. `refused`
+  provider failures and unknown outcomes retain their slots conservatively. `refused`
   counts attempts suppressed by the cap. Retries of accepted delivery keys do
   not enter this wrapper or consume another slot.
 
@@ -57,8 +57,9 @@ with source `provider`. It remains a definite non-send.
 
 Provider resolution, settings reads, consent checks and the daily-usage lock share
 a 15-second preparation deadline. A timeout proves `not_accepted` and permits a
-retry. The abandoned preparation never calls the provider; a transaction still
-waiting for the usage lock rolls back its slot when it resumes. Together with the
+retry. Transaction-local PostgreSQL lock and statement timeouts bound blocked
+queries by the remaining preparation time. When a slot commits after the deadline,
+a short transaction returns that slot to its original local day. Together with the
 provider's 30-second deadline, preparation stays inside the one-minute in-flight
 window. Database outcome writes still use their guarded retries below.
 

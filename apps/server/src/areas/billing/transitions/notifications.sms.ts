@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, inArray } from 'drizzle-orm';
 import { forGym, invoices, smsDeliveries, type Transaction } from '@plaingym/db';
-import { type Clock, type Translator } from '@plaingym/shared';
+import { AppError, type Clock, type Translator } from '@plaingym/shared';
 import { cardChargeIssue, formatMinorUnits } from '@plaingym/shared/money';
 import type { CreateSignedLinkRequest } from '@plaingym/shared/contracts';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
@@ -39,12 +39,15 @@ export function createBillingSmsSender(options: BillingSmsOptions) {
     const { gymId, householdId } = notice;
     if (!(settings ?? await options.settings.get(gymId)).memberSmsEnabled) return;
     const context = { gymId, actor: { kind: 'system' as const } };
-    // Selection is the reservation's first eligibility/recipient check. All credentials commit before preparation.
-    const pendingGroups = await scope(gymId, async tx => {
+    // Select once, then reserve only the group about to send so a crash leaves later groups available.
+    const groups = await scope(gymId, async tx => {
       if (!await notice.eligible(tx)) return [];
-      const groups = await householdNoticePhones(tx, gymId, [householdId]);
-      const pending = [];
-      for (const group of groups) {
+      return householdNoticePhones(tx, gymId, [householdId]);
+    });
+    let preparation: ReturnType<BillingSmsOptions['prepare']> | undefined;
+    let failure: unknown;
+    for (const group of groups) {
+      const pending = await scope(gymId, async tx => {
         // Fallback phones use their consent holder; a billing phone uses its household, never its covered children.
         const key = notice.key(group.consentMemberIds[0] ?? householdId);
         const [previous] = await tx.select().from(smsDeliveries)
@@ -53,10 +56,17 @@ export function createBillingSmsSender(options: BillingSmsOptions) {
         if (old?.suppression) {
           // A retry repairs cleanup only, even if SMTP or a different recipient made the enclosing effect fail.
           for (const id of old.linkIds ?? []) await revokeSignedLinkIn(tx, context, id, clock.now());
-          continue;
+          return;
         }
-        const reservation = await deliveries.reserve(tx, gymId, key);
-        if (!reservation) continue;
+        // An earlier group's send can outlast the notice: check again before reserving and minting for this one.
+        if (!await notice.eligible(tx)) return;
+        // Without a command digest, reserve's only conflict is an attempt still in flight.
+        const reservation = await deliveries.reserve(tx, gymId, key).catch((error: unknown) => {
+          if (error instanceof AppError && error.code === 'conflict') return error;
+          throw error;
+        });
+        if (reservation instanceof AppError) return { inFlight: reservation };
+        if (!reservation) return;
         // A competing first insertion may have settled while reserve waited on the unique key.
         if (!previous) {
           const [claimed] = await tx.select({ result: smsDeliveries.commandResult }).from(smsDeliveries)
@@ -65,20 +75,21 @@ export function createBillingSmsSender(options: BillingSmsOptions) {
           if (old?.suppression) {
             for (const id of old.linkIds ?? []) await revokeSignedLinkIn(tx, context, id, clock.now());
             await tx.update(smsDeliveries).set({ state: 'not_accepted', updatedAt: clock.now() }).where(eq(smsDeliveries.id, reservation.id));
-            continue;
+            return;
           }
         }
         for (const id of old?.linkIds ?? []) await revokeSignedLinkIn(tx, context, id, clock.now());
         const created = await createSignedLinksIn(tx, context, notice.links(), clock.now());
         await deliveries.remember(tx, reservation, { linkIds: created.map(item => item.link.id) });
-        pending.push({ group, reservation, created });
+        return { reservation, created };
+      });
+      if (!pending) continue;
+      // Skip a group still in flight so the others proceed, but fail the effect: if that attempt ends in a
+      // definite non-send, only a retry can send it.
+      if ('inFlight' in pending) {
+        failure ??= pending.inFlight;
+        continue;
       }
-      return pending;
-    });
-    let preparation: ReturnType<BillingSmsOptions['prepare']> | undefined;
-    let failure: unknown;
-    for (const pending of pendingGroups) {
-      const { group } = pending;
       try {
         const current = async (tx: Transaction) => await notice.eligible(tx)
           ? (await householdNoticePhones(tx, gymId, [householdId])).find(candidate => sameRecipient(candidate, group)) : undefined;

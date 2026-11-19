@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { auditEvents, households, members, smsDailyUsage, uuidv7 } from '@plaingym/db';
+import { auditEvents, databaseCode, households, members, smsDailyUsage, uuidv7 } from '@plaingym/db';
 // eslint-disable-next-line database/system-tables -- One extra app-role connection holds the lock in this disposable test database.
 import { openConnection, scopedDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
@@ -119,6 +119,82 @@ it('retries a persisted notice held on the usage lock beyond its in-flight windo
   expect(await scope(f.gymId, tx => deliveries.reserve(tx, f.gymId, key))).toBeUndefined();
   expect(f.sms.messages).toHaveLength(1);
   expect(await f.usage()).toEqual([expect.objectContaining({ sent: 1 })]);
+});
+it('rolls back a blocked preparation and frees its connection while the usage lock is still held', async () => {
+  const f = await fixture();
+  await scope(f.gymId, tx => tx.insert(smsDailyUsage).values({ gymId: f.gymId, day: '2026-11-15', createdAt: f.clock.now() }));
+  const locked = Promise.withResolvers<void>(), unlock = Promise.withResolvers<void>();
+  const holderConnection = openConnection(db.appUrl, 1), senderConnection = openConnection(db.appUrl, 1);
+  const senderScope = scopedDatabase(senderConnection.db).forGym;
+  let lockHeld = false;
+  const holder = scopedDatabase(holderConnection.db).forGym(f.gymId, async tx => {
+    await tx.select().from(smsDailyUsage).for('update');
+    lockHeld = true;
+    locked.resolve();
+    await unlock.promise;
+    lockHeld = false;
+  });
+  // A regression must fail the assertion and clean up the connections while the test still has time left.
+  const release = setTimeout(unlock.resolve, smsDeadlineMs / 2 + 7_000);
+  try {
+    await Promise.race([locked.promise, holder]);
+    const rolledBack = Promise.withResolvers<unknown>();
+    const waitingScope: typeof scope = (gymId, fn) => senderScope(gymId, fn).catch((error: unknown) => {
+      rolledBack.resolve(error);
+      throw error;
+    });
+    await expect(f.sender({ scope: waitingScope }).sendSms(message)).rejects.toMatchObject({ acceptance: 'not_accepted' });
+    const usage = await senderScope(f.gymId, tx => tx.select().from(smsDailyUsage));
+    expect(lockHeld).toBe(true);
+    expect(['55P03', '57014']).toContain(databaseCode(await rolledBack.promise));
+    expect(usage).toEqual([expect.objectContaining({ sent: 0, refused: 0 })]);
+    expect(f.sms.messages).toEqual([]);
+  } finally {
+    clearTimeout(release);
+    unlock.resolve();
+    try { await holder; } finally { await Promise.all([holderConnection.close(), senderConnection.close()]); }
+  }
+});
+it('returns a slot committed after the deadline to the original local day', async () => {
+  const f = await fixture();
+  await scope(f.gymId, tx => tx.insert(smsDailyUsage).values([
+    { gymId: f.gymId, day: '2026-11-15', sent: 1, createdAt: f.clock.now() },
+    { gymId: f.gymId, day: '2026-11-16', sent: 2, createdAt: f.clock.now() },
+  ]));
+  const ready = Promise.withResolvers<boolean>(), commit = Promise.withResolvers<void>(), finished = Promise.withResolvers<void>();
+  let first = true;
+  const gatedScope: typeof scope = (gymId, fn) => {
+    if (!first) return scope(gymId, fn);
+    first = false;
+    return scope(gymId, async tx => {
+      const result = await fn(tx);
+      const [day] = await tx.select().from(smsDailyUsage).where(eq(smsDailyUsage.day, '2026-11-15'));
+      ready.resolve(day?.sent === 2);
+      await commit.promise;
+      return result;
+    }).finally(finished.resolve);
+  };
+
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    const outcome = f.sender({ scope: gatedScope }).sendSms(message).catch((error: unknown) => error);
+    expect(await Promise.race([ready.promise, outcome])).toBe(true);
+    await vi.advanceTimersByTimeAsync(smsDeadlineMs / 2);
+    expect(await outcome).toMatchObject({ acceptance: 'not_accepted', message: 'SMS recipient checks timed out' });
+    f.clock.advance(24 * 60 * 60_000);
+    vi.useRealTimers();
+    commit.resolve();
+    await finished.promise;
+    await vi.waitFor(async () => expect(await f.usage()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ day: '2026-11-15', sent: 1, refused: 0 }),
+      expect.objectContaining({ day: '2026-11-16', sent: 2, refused: 0 }),
+    ])));
+    expect(f.sms.messages).toEqual([]);
+  } finally {
+    vi.useRealTimers();
+    commit.resolve();
+    if (!first) await finished.promise;
+  }
 });
 it('clears every consent at an opted-out number in this gym, auditing identifiers only', async () => {
   const f = await fixture(), other = await fixture();

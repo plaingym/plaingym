@@ -14,13 +14,14 @@ Text recipients come from `householdNoticePhones`, preferring the household's
 consented billing phone over consented members at its billing email. Three children
 on one household produce one text per phone. `MemberSms` checks the switch,
 number-bound notices consent, provider and daily cap immediately before sending.
-The shared card-cycle query reloads the card, household and due-date cycle at reservation and again
-after preparation; a stale or replaced default card sends nothing.
+The shared card-cycle query reloads the card, household and due-date cycle at recipient selection, at each
+group's reservation and again after preparation; a stale or replaced default card sends nothing.
 Text keys are `billing.alert.sms.card_expiry:<paymentMethodId>:<cycle>:<recipientId>`.
 The suffix follows the transition texts' rule: the household for its billing phone,
 the consented member for a fallback phone.
-A text reserves its key and creates its own update-card link in one transaction,
-remembering IDs only. The shared lifecycle in `../transitions/notifications.sms.ts`
+A text reserves its key and creates its own update-card link in one transaction
+just before preparing that group's send, remembering IDs only. An in-flight group
+is skipped and the effect fails, so a retry sends it only after a definite non-send. The shared lifecycle in `../transitions/notifications.sms.ts`
 revokes a definite non-send's links, retains uncertain ones, and never sends or
 mints again for an accepted or unknown attempt. A `cap_reached` or `no_provider`
 suppression is remembered with its link IDs, revokes its links and completes the

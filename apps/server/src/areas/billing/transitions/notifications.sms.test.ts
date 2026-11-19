@@ -9,8 +9,9 @@ import { TestClock } from '../../../core/clock.js';
 import { FakeEmail, DeliveryError } from '../../../infra/email/index.js';
 import { FakeJobs, PostgresJobs } from '../../../infra/jobs/index.js';
 import { FakePayments } from '../../../infra/payments/index.js';
-import { FakeSms, SmsDeliveryError, type Sms } from '../../../infra/sms/index.js';
+import { createSmsDeliveries, FakeSms, SmsDeliveryError, type Sms } from '../../../infra/sms/index.js';
 import { takeSmsSlot } from '../../../infra/sms/daily-cap.js';
+import { smsInFlightMs } from '../../../infra/sms/deliveries.js';
 import { createGymSettingsAccessor } from '../../settings/settings.js';
 import type { SmsResolver } from '../../settings/sms.js';
 import { createSignedLinksService } from '../../links/service.js';
@@ -270,16 +271,66 @@ it('revokes its links and releases a notice when its origin is invalid', async (
   expect(f.text.messages).toEqual([]); expect((await f.links()).every(link => link.revokedAt !== null)).toBe(true);
 });
 
-it('reserves each distinct fallback phone under its consent-holder ID, even for the same three children', async () => {
-  const f = await fixture();
+async function useFallbackPhones(f: Fixture) {
   await scope(f.gymId, async tx => {
     await tx.update(households).set({ smsNoticesConsentAt: null, smsNoticesConsentSource: null }).where(eq(households.id, f.home.id));
     for (const [i, to] of [phone, fallback].entries()) await tx.update(members).set({ ...f.consent,
       email: f.home.email, phone: to, phoneE164: to }).where(eq(members.id, f.children[i]!.id));
   });
+}
+
+it('reserves each distinct fallback phone under its consent-holder ID, even for the same three children', async () => {
+  const f = await fixture();
+  await useFallbackPhones(f);
   await senders[1]!.send(f); await senders[1]!.send(f);
   expect(f.text.messages.map(message => message.to).sort()).toEqual([phone, fallback].sort());
   expect(await f.rows()).toHaveLength(2); expect(await f.links()).toHaveLength(4);
+});
+
+it('sends the later recipient once on retry after a crash at the first reservation', async () => {
+  const f = await fixture();
+  await useFallbackPhones(f);
+  const sender = senders[1]!;
+  const crashAfterReservation: typeof scope = async (gymId, fn) => {
+    const result = await scope(gymId, fn);
+    if ((await f.rows()).length) throw new Error('Worker crashed after commit');
+    return result;
+  };
+  await expect(sender.send(f, { ...f.options, scope: crashAfterReservation })).rejects.toThrow('Worker crashed after commit');
+  expect(await f.rows()).toMatchObject([{ state: 'sending', attempts: 1 }]);
+  expect(await f.links()).toHaveLength(2);
+  expect(f.text.messages).toEqual([]);
+
+  f.clock.advance(smsInFlightMs + 1);
+  await sender.send(f);
+  await sender.send(f);
+  expect(f.text.messages.map(message => message.to)).toEqual([fallback]);
+  expect(await f.links()).toHaveLength(4);
+  expect((await f.rows()).map(row => [row.state, row.attempts]).sort()).toEqual([['accepted', 1], ['sending', 1]]);
+});
+
+it('skips an in-flight reservation, sends the other recipient once, and retries until the first one settles', async () => {
+  const f = await fixture();
+  await useFallbackPhones(f);
+  const deliveries = createSmsDeliveries({ scope, clock: f.clock });
+  const key = `billing.sms.dunning:${f.invoice.id}:${f.notice.generation}:${f.children[0]!.id}`;
+  const reservation = await scope(f.gymId, tx => deliveries.reserve(tx, f.gymId, key));
+
+  // The other attempt is still in flight, so the effect fails and is retried, but the other recipient is not held up.
+  await expect(senders[1]!.send(f)).rejects.toThrow('This sms is still being sent');
+  await expect(senders[1]!.send(f)).rejects.toThrow('This sms is still being sent');
+  expect(await deliveries.state(f.gymId, key)).toBe('sending');
+  expect(f.text.messages.map(message => message.to)).toEqual([fallback]);
+  expect(await f.links()).toHaveLength(2);
+  expect((await f.rows()).map(row => [row.state, row.attempts]).sort()).toEqual([['accepted', 1], ['sending', 1]]);
+
+  // That attempt ends in a definite non-send: the retry texts its recipient once, and the other recipient stays at one text.
+  await deliveries.release(reservation!);
+  await senders[1]!.send(f);
+  await senders[1]!.send(f);
+  expect(f.text.messages.map(message => message.to)).toEqual([fallback, phone]);
+  expect(await f.links()).toHaveLength(4);
+  expect((await f.rows()).map(row => [row.state, row.attempts]).sort()).toEqual([['accepted', 1], ['accepted', 2]]);
 });
 
 it('queues and sends a card text without SMTP readiness or a deliverable household email', async () => {

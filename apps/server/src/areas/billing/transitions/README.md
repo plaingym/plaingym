@@ -19,15 +19,19 @@ SMS keys are `billing.sms.<purpose>:<invoiceId>:<generation>:<recipientId>`
 (`receipt` or `dunning`). The suffix is the household's ID for its billing phone, so
 erasing or adding a covered member never changes it, and the consented member's ID
 for a fallback phone. The final check before sending supplies the covered members.
-The reservation, independent signed pay/update-card links and remembered link IDs
-commit together. No token, phone or message body goes in delivery state. Accepted
+After selection, each recipient group checks the notice is still due, then commits
+its own reservation, signed pay/update-card links and remembered link IDs just
+before preparing its send. A group already in flight is skipped so the other
+groups can proceed, and the effect then fails so a retry can send that group if
+its attempt ends in a definite non-send. No token,
+phone or message body goes in delivery state. Accepted
 and uncertain sends never mint or send again. A `cap_reached` or `no_provider`
 suppression is recorded with the link IDs, revokes its links and completes the
 effect without retry or next-day delivery. An email failure cannot revive that
 text on an effect retry; only its cleanup is repaired. Other definite non-sends revoke their
 links and permit retry; a retry repairs any failed revocation before creating
 fresh links. A crash after reservation commit keeps that attempt uncertain and
-its links usable. SMS never reuses email's token.
+its links usable. Later groups remain available on retry. SMS never reuses email's token.
 
 Dunning notices use the shared card minimum and currency-step check. If an invoice
 cannot be charged, its email and text ask the payer to contact the gym for a manual payment,

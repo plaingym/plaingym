@@ -1,18 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { forGym, members, households, writeAudit } from '@plaingym/db';
-import { and, eq, inArray } from 'drizzle-orm';
+import { forGym, members, households, smsDailyUsage, writeAudit, type Transaction } from '@plaingym/db';
+import { and, eq, gt, inArray } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- SQL only sets local timeouts and atomically decrements gym-scoped SMS usage.
+import { sql } from 'drizzle-orm';
 import type { Clock } from '@plaingym/shared';
 import { normalizePhone } from '@plaingym/shared/phone';
+import { localDate } from '@plaingym/shared/time';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import { clock as systemClock } from '../../core/clock.js';
-import { logInfo } from '../../core/log.js';
+import { logError, logInfo } from '../../core/log.js';
 import type { SmsResolver } from '../../areas/settings/sms.js';
 import { takeSmsSlot } from './daily-cap.js';
 import { smsDeadlineMs } from './constants.js';
 import { DeliveryError, SmsDeliveryError, validateSms, type Sms, type SmsMessage, type SmsResult } from './index.js';
 
 type SuppressionReason = Extract<SmsResult, { status: 'suppressed' }>['reason'];
+function setPreparationTimeouts(tx: Transaction, milliseconds: number) {
+  const timeout = milliseconds + 'ms';
+  // eslint-disable-next-line database/system-tables -- Set connection limits only for this transaction; no table access.
+  return tx.execute(sql`select set_config('lock_timeout', ${timeout}, true), set_config('statement_timeout', ${timeout}, true)`);
+}
+
 export interface SmsSuppression {
   readonly event: 'sms.suppressed'; readonly gymId: string; readonly memberIds: readonly string[]; readonly reason: SuppressionReason;
 }
@@ -36,21 +45,29 @@ export class MemberSms implements Sms {
     const { gymId, memberIds, householdIds, kind, settings, resolver } = this.#options;
     const scope = this.#options.scope ?? forGym, clock = this.#options.clock ?? systemClock;
     // Keep preparation below half a transport deadline: together with the provider's deadline this stays
-    // inside the two-deadline delivery window. A timed-out transaction can finish, but can never send.
+    // inside the two-deadline delivery window. Use a monotonic deadline for the wait, independent of the gym clock.
+    const deadline = performance.now() + smsDeadlineMs / 2;
     let expired = false, timer: ReturnType<typeof setTimeout> | undefined;
     const timedOut = () => new DeliveryError('not_accepted', 'SMS recipient checks timed out');
+    const remaining = () => Math.ceil(deadline - performance.now());
+    const requireTime = () => {
+      const milliseconds = remaining();
+      if (expired || milliseconds <= 0) throw timedOut();
+      return milliseconds;
+    };
     const prepare = async () => {
       // Resolve before the final settings and consent reads so slow credential reads cannot stale those checks.
       const resolved = await resolver.resolve(gymId);
       const gym = await settings.get(gymId);
-      if (expired) throw timedOut();
+      requireTime();
       if (gym.gymId !== gymId || (resolved && resolved.gymId !== gymId)) throw new Error('SMS gym mismatch');
       if (!gym.memberSmsEnabled) return this.#suppressed('disabled');
       if (!resolved) return this.#suppressed('no_provider');
       // Checked with the gym name added, before a cap slot is taken for a message the transport would refuse.
       const outgoing = { ...message, body: `${resolved.name}: ${message.body}` };
       validateSms(outgoing);
-      const reason = await scope(gymId, async tx => {
+      const checked = await scope(gymId, async tx => {
+        await setPreparationTimeouts(tx, requireTime());
         if ((!memberIds.length && !householdIds.length) || (kind === 'announcements' && householdIds.length)) return 'no_consent';
         const homes = householdIds.length ? await tx.select({ phone: households.phone, phoneE164: households.phoneE164,
           smsNoticesConsentAt: households.smsNoticesConsentAt }).from(households).where(inArray(households.id, [...householdIds])) : [];
@@ -69,22 +86,38 @@ export class MemberSms implements Sms {
           if (!(kind === 'notices' ? member.smsNoticesConsentAt : member.smsAnnouncementsConsentAt)) return 'no_consent';
           if (member.phoneE164 !== message.to || normalizePhone(member.phone, gym.country) !== message.to) return 'phone_changed';
         }
-        if (expired) throw timedOut();
-        const allowed = await takeSmsSlot(tx, gymId, clock.now(), gym.timezone, gym.smsDailyCap);
-        // A timeout while waiting for the usage lock rolls back its slot once the lock becomes available.
-        if (expired) throw timedOut();
-        return allowed ? undefined : 'cap_reached';
+        await setPreparationTimeouts(tx, requireTime());
+        requireTime();
+        const now = clock.now();
+        const allowed = await takeSmsSlot(tx, gymId, now, gym.timezone, gym.smsDailyCap);
+        requireTime();
+        return allowed ? { slotDay: localDate(now, gym.timezone) } : 'cap_reached';
       });
-      // A check that finishes after the deadline neither logs a suppression nor sends: its attempt was recorded as a timeout.
-      if (expired) throw timedOut();
-      if (reason) return this.#suppressed(reason);
+      if (expired || remaining() <= 0) {
+        // COMMIT may win at the database after the deadline wins at the caller. Return only a confirmed slot.
+        if (typeof checked === 'object') {
+          try {
+            await scope(gymId, async tx => {
+              await setPreparationTimeouts(tx, 3_000);
+              await tx.update(smsDailyUsage).set({ sent: sql`${smsDailyUsage.sent} - 1` })
+                .where(and(eq(smsDailyUsage.gymId, gymId), eq(smsDailyUsage.day, checked.slotDay), gt(smsDailyUsage.sent, 0)));
+            });
+          } catch (error) {
+            // Retrying an uncertain release could subtract a slot used by a different send.
+            logError('sms.slot_release_failed', { gymId, day: checked.slotDay }, error);
+          }
+        }
+        throw timedOut();
+      }
+      if (typeof checked === 'string') return this.#suppressed(checked);
       return { resolved, outgoing };
     };
     let prepared: Awaited<ReturnType<typeof prepare>>;
     try {
-      prepared = await Promise.race([prepare(), new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => { expired = true; reject(timedOut()); }, smsDeadlineMs / 2);
-      })]);
+      const timeout = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => { expired = true; reject(timedOut()); }, remaining());
+      });
+      prepared = await Promise.race([prepare(), timeout]);
     } catch (error) {
       // validateSms's refusal carries a fixed message; any other failure is replaced.
       throw error instanceof DeliveryError ? error : new DeliveryError('not_accepted', 'SMS recipient checks failed');
