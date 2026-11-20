@@ -2,7 +2,7 @@
 # Staff payments
 
 `createPaymentService` implements the staff invoice list/detail, one-off invoice
-issuance, saved-card collection, cash/check recording, refunds, masked saved-card
+issuance, saved-method collection, cash/check recording, refunds, masked saved-card
 management, and receipt resend. `createPaymentRoutes` mounts the shared billing
 contracts. The invoice navigation and member profile tab are registered by
 `features/billing/invoices/registrations.ts`.
@@ -19,13 +19,14 @@ A failed or action-required positive one-off stays open without dunning.
 `issueOneOff` shares tax locks, detach rechecks, invoice insertion and its audit
 between ordinary one-offs and pack sales.
 
-Card collection calls the injected runner with `{ mode: 'staff', context }`.
+Saved-method collection calls the injected runner with `{ mode: 'staff', context }`.
 The runner owns reservations, provider calls and reconciliation; a staff click
 never adopts or drives an existing pending attempt. All skip reasons use the
 existing error envelope's `details.reason` array. A zero-value invoice is refused
 because the charge response requires an attempt. Without a runner, collection
-returns unavailable. Card charges still require billing enabled, an active saved
-card and no review hold or open dispute.
+returns unavailable. Charges require billing enabled, an active saved method
+and no review hold or open dispute. A settling bank debit returns a processing
+attempt.
 
 Cash/check and runner collection share `releaseActionNeeded` and
 `releaseCheckout`. They cancel action-needed intents and expire open Checkout
@@ -33,7 +34,7 @@ sessions outside transactions, applying outcomes through reconciliation and the
 invoice transitions. Reconciliation clears an expired Checkout reference under
 the invoice lock, so cash works immediately without a webhook. A cancellation or
 expiry that reveals success pays the invoice and refuses cash as already paid.
-Pending attempts still block cash; unavailable Stripe blocks any required release.
+Pending and processing attempts block cash. Unavailable Stripe blocks any required release.
 
 Owners and admins may release a review hold through the audited `release-hold`
 action, which clears `needsReview` under the invoice lock and records the staff
@@ -42,8 +43,8 @@ next daily run unless staff charge or record a payment first. The runner never
 holds a released invoice again.
 They may also void an open or past-due invoice through
 `POST /api/billing/invoices/{invoiceId}/void` (`refunds.create`) with a required
-reason. The transition refuses unresolved card attempts and reserved Checkout,
-audits the reason, revokes pay links and stops dunning and retries. A late card
+reason. The transition refuses unresolved payment attempts and reserved Checkout,
+audits the reason, revokes pay links and stops dunning and retries. A late Stripe
 success is recorded as a duplicate and refunded. Voiding does not cancel a
 membership; cancelling a membership leaves unpaid invoices owed. See
 [invoice transitions](transitions/README.md).
@@ -52,7 +53,7 @@ the recorded payment confirms and clears the hold with an audit linked to that
 payment. The transitions handle a card outcome that races another payment.
 
 Refunds reserve their balance through the transitions before calling Stripe;
-pending refunds count against the refundable balance. A new card reservation is
+pending refunds count against the refundable balance. A new Stripe refund reservation is
 tagged (`refunds.tagged_at`) and its Stripe refund names the row in
 `reservation_id` metadata, so a refund made in Stripe's dashboard during the
 reservation can't take it (see the webhook handlers' README). A retry reads

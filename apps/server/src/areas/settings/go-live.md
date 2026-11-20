@@ -31,8 +31,9 @@ configured; without it, the gym's stored Stripe settings decide.
 
 Webhook readiness uses `WebhookHealthQuery`, implemented by the real inbox by
 default: a processed event and no pending/failed events are ready. It never reads
-webhook payloads. Reconciliation flags pending payment attempts/refunds and any
-restore without a successful latest check reporting zero unresolved objects.
+webhook payloads. Reconciliation flags pending or processing payment attempts,
+processing invoices, pending refunds and any restore whose latest check did
+not succeed with zero unresolved objects.
 Tagged refund reservations without a processor ID settle automatically once they
 are 23 hours old, by the duplicate worker or the next hourly settlement job. Their
 settlement removes that pending-refund blocker; untagged rows and refunds already

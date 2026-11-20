@@ -158,9 +158,9 @@ again, and every change is recorded in the audit log without them.
   the live key is checked, the Stripe customers and saved cards made in test mode
   and the open Stripe payment and card pages are cleared (members get a live
   customer the first time they pay or save a card, and their links keep working);
-  invoices stay, and test card payments stay on them, marked "Stripe test mode"
+  invoices stay, and test Stripe payments stay on them, marked "Stripe test mode"
   (they can't be refunded: no real money moved). Imported Stripe customer IDs and
-  cards stay too, since they may be your live ones. The switch waits while a card
+  cards stay too, since they may be your live ones. The switch waits while a
   payment or refund is still being processed. Once live customers, cards or
   payments exist, a test key is refused. If you skipped Stripe in setup and
   imported households with Stripe customer IDs, a key from any account is

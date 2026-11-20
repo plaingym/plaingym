@@ -37,7 +37,7 @@ After a restore, the app compares its payment records with Stripe. **Settings â†
 items, correct them and use **Check restored payments again**.
 
 * If the gym has no Stripe key (it takes only cash or other manual payments), the check reads
-  only the restored records: with no card payments in progress it is clear and the item reads
+  only the restored records: with no Stripe payments or refunds in progress it is clear and the item reads
   *not applicable*. If the records still refer to Stripe payments, connect Stripe and check
   again.
 * Once Stripe is connected, a check made without it no longer counts. Saving the Stripe
