@@ -22,6 +22,11 @@ and unexpected faults go to the app's error handler. Join cleanup settles interr
 no memberships and reserved no discount uses without counting them as voids.
 See [join.md](join.md) for the submission and cleanup rules.
 
+The join can activate memberships while the first bank debit is processing. The
+welcome page shows the processing notice while the invoice is in that state.
+If the debit later fails, the invoice becomes past due and enters dunning. The
+completed join still shows the welcome page and offers the member's sign-in path.
+
 `configurePublicPages` supplies the real waiver service, gym uploads, a staff
 notifier and an optional `dropInFeeFor(gymId, tx)` projection: `createDropInFee()`
 (`areas/settings/drop-in-fee.ts`) reads the gym's chosen drop-in charge type at its

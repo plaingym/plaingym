@@ -1012,7 +1012,7 @@ describe('public join pages through the production registrations', () => {
     expect(Object.fromEntries(otherApi.data.map(p => [p.name, p.plusTax]))).toEqual({ Plain: true, 'Private other plan': false });
   });
 
-  it('starts the family while its PAD is processing and duns its first invoice after an async failure', async () => {
+  it('keeps the family active and able to sign in while its PAD invoice enters dunning', async () => {
     const f = await fixture();
     await db.forGym(f.gymId, tx => tx.update(gyms).set({ bankDebitsEnabled: true }).where(eq(gyms.id, f.gymId)));
     const { cookie } = await f.submit([adult(), child()]);
@@ -1031,7 +1031,28 @@ describe('public join pages through the production registrations', () => {
     f.provider.settleCharge(session.chargeId!, 'insufficient_funds');
     await f.webhook(sessionId, 'checkout.session.async_payment_failed');
     await f.webhook(sessionId, 'checkout.session.async_payment_failed');
-    expect((await f.rows()).invoices.find(row => row.id === invoice.id)?.status).toBe('past_due');
+    const failed = await f.rows();
+    expect(failed.invoices.find(row => row.id === invoice.id)?.status).toBe('past_due');
+    expect(failed.memberships.filter(row => row.householdId === invoice.householdId).map(row => row.status)).toEqual(['active', 'active']);
+    const joinState = await f.join.state(f.gymId, link.id);
+    expect(joinState).toMatchObject({ status: 'active' });
+    expect(joinState).not.toHaveProperty('processing');
+
+    const returned = await f.get('/join/return', cookie);
+    expect(returned.status).toBe(200);
+    const welcome = await returned.text();
+    expect(welcome).toContain('We sent a sign-in link');
+    expect(welcome).not.toContain('data-join-confirming');
+    expect(welcome).not.toContain('Your bank payment is processing.');
+
+    const sentBeforeResend = f.sent.length;
+    const resent = await f.post('/join/sign-in', undefined, cookie);
+    expect(resent.status).toBe(200);
+    const confirmation = await resent.text();
+    expect(confirmation).toContain('Use the newest email');
+    expect(confirmation).not.toContain('data-join-confirming');
+    expect(confirmation).not.toContain('Your bank payment is processing.');
+    expect(f.sent).toHaveLength(sentBeforeResend + 1);
     expect(f.mail.messages.filter(message => message.text.includes("didn't go through"))).toHaveLength(1);
   });
 

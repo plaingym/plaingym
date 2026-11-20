@@ -65,7 +65,7 @@ const assignmentBillingRead = z.object({ billing: z.object({ description: z.stri
   taxes: z.array(z.object({ id: c.idSchema, name: z.string(), rateMillionths: z.int32().nonnegative(), inclusive: z.boolean() })) }) });
 /** Strict producer schemas for the replayable audit records. */
 export const joinRecordWriteSchemas = { admitted, received, discounted, invoiced };
-/** `closed`: unpaid, and staff voided the invoice or revoked the join's link, so it can no longer be paid here. */
+/** `closed`: incomplete and unpaid, and staff voided the invoice or revoked the join's link, so it can no longer be paid here. */
 export interface JoinInvoice { amountCents: number; currency: string; lines: { description: string; amountCents: number }[] }
 export type JoinState = { status: 'missing' | 'closed' } | { status: 'pending' | 'active' | 'manual'; householdId: string; cardOnly?: boolean; processing?: boolean };
 
@@ -603,22 +603,28 @@ export function createJoinService(options: JoinOptions) {
     async checkout(gymId: string, linkId: string) {
       return (await options.checkout.start(gymId, linkId, false, joinCheckoutFlow)).session.url;
     },
-    /** Read-only: ready only after settlement, membership start and join completion. Trials count as started. */
+    /** Read-only: a completed join stays ready after its first bank debit fails. Trials count as started. */
     async state(gymId: string, linkId: string): Promise<JoinState> {
       return scope(gymId, async tx => {
         const [link] = await tx.select({ householdId: signedLinks.householdId, revokedAt: signedLinks.revokedAt, purpose: signedLinks.purpose }).from(signedLinks).where(eq(signedLinks.id, linkId));
         const record = link ? await recorded(tx, 'public.join.received', link.householdId, receivedRead) : null;
         if (!link || !record || record.linkId !== linkId) return { status: 'missing' };
-        const [bill] = await tx.select({ status: invoices.status, amountCents: invoices.amountCents, currency: invoices.currency }).from(invoices).where(eq(invoices.id, record.invoiceId));
-        // A paid invoice wins over a revoked link: staff may have collected it another way.
+        const [bill] = await tx.select({ status: invoices.status, amountCents: invoices.amountCents, currency: invoices.currency }).from(invoices)
+          .where(and(eq(invoices.id, record.invoiceId), eq(invoices.householdId, link.householdId)));
+        const view = { householdId: link.householdId, cardOnly: link.purpose === 'update_card',
+          ...(bill?.status === 'processing' ? { processing: true } : {}) };
+        // Completion can outlast the first payment's processing state or the join link's availability for payment.
+        if (bill && await marked(tx, 'public.join.completed', link.householdId)) {
+          const rows = await tx.select({ status: memberships.status }).from(memberships)
+            .where(and(eq(memberships.householdId, link.householdId), inArray(memberships.id, record.membershipIds)));
+          if (rows.length === record.membershipIds.length && rows.every(row => row.status !== 'pending'))
+            return { status: 'active', ...view };
+        }
         if (!bill || !settled.includes(bill.status))
           return bill?.status === 'void' || link.revokedAt ? { status: 'closed' }
             : { status: bill && bill.amountCents > 0 && ['open', 'past_due'].includes(bill.status) && cardChargeIssue(bill.amountCents, bill.currency) ? 'manual' : 'pending',
-              householdId: link.householdId, cardOnly: link.purpose === 'update_card' };
-        const rows = await tx.select({ status: memberships.status }).from(memberships).where(inArray(memberships.id, record.membershipIds));
-        const active = rows.length === record.membershipIds.length && rows.every(r => r.status !== 'pending') && await marked(tx, 'public.join.completed', link.householdId);
-        return { status: active ? 'active' : 'pending', householdId: link.householdId, cardOnly: link.purpose === 'update_card',
-          ...(bill.status === 'processing' ? { processing: true } : {}) };
+              ...view };
+        return { status: 'pending', ...view };
       });
     },
     /** The pending join's first invoice for the review step: its lines (a code's discount among them, inclusive taxes left out) and total. */
