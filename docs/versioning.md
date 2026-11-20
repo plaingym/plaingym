@@ -66,10 +66,11 @@ themselves and are allowed without an explicit default. The lint flags
 change the values those inserts receive. It flags `SET EXPRESSION` because it can
 change the generated values older readers see. On existing identity columns it
 flags `RESTART`, `SET START`, `SET INCREMENT BY`, `SET CYCLE`, `SET MAXVALUE`
-and `SET MINVALUE`, and `SET NO` with the last three. It flags `ALTER SEQUENCE` with `RESTART`, `START`,
-`INCREMENT`, `CYCLE`, `MAXVALUE` or `MINVALUE`, including the `NO` variants,
-and calls to `setval`. These changes can exhaust a sequence or cause it to
-generate values that conflict with stored values when older inserts rely on it.
+and `SET MINVALUE`, and `SET NO` with the last three. It flags `ALTER SEQUENCE`
+with `AS` (a type change), `RESTART`, `START`, `INCREMENT`, `CYCLE`, `MAXVALUE`
+or `MINVALUE`, including the `NO` variants, and calls to `setval`. These changes
+can exhaust a sequence or cause it to generate values that conflict with stored
+values when older inserts rely on it.
 The lint also flags
 `SET NOT NULL`, `DROP NOT NULL`, `SET DATA TYPE` (or its `TYPE` shorthand),
 a dropped or `NULL` column default,

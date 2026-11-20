@@ -363,7 +363,8 @@ time. The `maintenance` role (`BYPASSRLS`) runs migrations, backups, restore and
 key rotation. The post-migration catalog check refuses direct or indirect
 membership of `app` in a role with `SUPERUSER`, `BYPASSRLS`, `CREATEROLE`,
 `REPLICATION` or `CREATEDB`. It also refuses membership in `maintenance`,
-`pg_execute_server_program`, `pg_write_server_files` or `pg_read_server_files`.
+`pg_execute_server_program`, `pg_write_server_files`, `pg_read_server_files`,
+`pg_maintain`, `pg_signal_backend`, `pg_create_subscription` or `pg_checkpoint`.
 It counts membership with any options and names each privileged role.
 
 * **Single-gym installs** (`TENANCY=single`, this directory's `compose.yaml`):

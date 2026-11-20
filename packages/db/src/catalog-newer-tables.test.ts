@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { afterAll, afterEach, beforeAll, describe, expect, inject, it } from 'vitest';
+import { afterAll, afterEach, assert, beforeAll, describe, expect, inject, it, TestRunner } from 'vitest';
 import { openConnection, type Connection } from './client.js';
 import { migrateDatabase } from './migrate.js';
 import { assertCatalog } from './security/catalog.js';
@@ -102,6 +102,10 @@ describe('app role memberships at startup', () => {
     ['pg_execute_server_program', null, false],
     ['pg_write_server_files', null, false],
     ['pg_read_server_files', null, false],
+    ['pg_maintain', null, false],
+    ['pg_signal_backend', null, false],
+    ['pg_create_subscription', null, false],
+    ['pg_checkpoint', null, false],
     ['maintenance', null, false],
   ])('refuses %s and names the role', async (name, attributes, indirect) => {
     const admin = openConnection(databaseUrl(inject('testDatabase').adminUrl, database.name), 1);
@@ -110,6 +114,15 @@ describe('app role memberships at startup', () => {
     try {
       // Keep cluster-wide memberships invisible to other test databases.
       await sql`begin`;
+      if (role === 'pg_maintain') {
+        const [server] = await sql`select current_setting('server_version_num')::int as version`;
+        assert(server);
+        if (server.version < 170000) {
+          const test = TestRunner.getCurrentTest();
+          assert(test);
+          test.context.skip('pg_maintain requires PostgreSQL 17 or later');
+        }
+      }
       if (attributes !== null) await sql`create role ${sql(role)} nologin ${sql.unsafe(attributes)}`;
       if (indirect) {
         const intermediate = `${database.name}_intermediate`;

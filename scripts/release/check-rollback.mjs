@@ -4,7 +4,7 @@ import { git } from './version.mjs';
 import { assertMigrationBase, migrations } from './migration-files.mjs';
 
 /** Tokenize declarative migration SQL, keeping literals opaque and statement boundaries intact.
- * Preserve literal spellings separately for naming a sequence in setval findings.
+ * Keep string literal contents separately for naming a sequence in setval findings.
  * @param {string} source
  */
 function statements(source) {
@@ -40,11 +40,14 @@ function statements(source) {
         const end = rest.indexOf(dollar, dollar.length);
         if (end === -1) throw new Error(`Unterminated SQL dollar quote at line ${line}`);
         raw = rest.slice(0, end + dollar.length);
-        literals.set(tokens.length, raw);
+        literals.set(tokens.length, rest.slice(dollar.length, end));
         tokens.push('?');
       } else if (quoted) {
         raw = quoted;
-        if (!raw.startsWith('"')) literals.set(tokens.length, raw);
+        if (!raw.startsWith('"')) {
+          const contentStart = raw.startsWith("'") ? 1 : 2;
+          literals.set(tokens.length, raw.slice(contentStart, -1).replaceAll("''", "'"));
+        }
         tokens.push(raw.startsWith('"') ? raw : '?');
       } else {
         if (/^['"]/.test(rest)) throw new Error(`Unterminated SQL quote at line ${line}`);
@@ -103,7 +106,7 @@ function qualifiedNameEnd(tokens, start) {
   return end;
 }
 
-const sequenceOptions = ['RESTART', 'START', 'INCREMENT', 'CYCLE', 'MAXVALUE', 'MINVALUE'];
+const sequenceOptions = ['AS', 'RESTART', 'START', 'INCREMENT', 'CYCLE', 'MAXVALUE', 'MINVALUE'];
 
 /** @param {string[]} tokens */
 function sequenceAlterations(tokens) {
@@ -114,12 +117,12 @@ function sequenceAlterations(tokens) {
   const rules = [];
   for (let index = end; index < tokens.length; index++) {
     const option = tokens[index];
-    if (option === 'OWNED' || option === 'AS') {
-      const argument = index + (option === 'OWNED' ? 2 : 1);
-      index = qualifiedNameEnd(tokens, argument) - 1;
+    if (option === 'OWNED') {
+      index = qualifiedNameEnd(tokens, index + 2) - 1;
     } else if (sequenceOptions.includes(option)) {
       const label = tokens[index - 1] === 'NO' ? `NO ${option}` : option;
       rules.push(`ALTER SEQUENCE ${label} on ${name}: older inserts may exhaust the sequence or receive conflicting values`);
+      if (option === 'AS') index = qualifiedNameEnd(tokens, index + 1) - 1;
     }
   }
   return rules;
@@ -132,12 +135,16 @@ function setvalCalls(tokens, literals) {
     if (!['SETVAL', '"setval"'].includes(tokens[index]) || tokens[index + 1] !== '(') continue;
     let beforeName = index - 1;
     while (tokens[beforeName] === '.') beforeName -= 2;
+    // ONLY can't precede a function call, only a relation (`CREATE INDEX i ON ONLY setval (a)`).
+    if (tokens[beforeName] === 'ONLY') beforeName--;
     // A relation name may also be followed by a column list.
-    if (['TABLE', 'INTO', 'REFERENCES'].includes(tokens[beforeName]) ||
+    const previous = tokens[beforeName];
+    const indexTarget = previous === 'ON' && tokens[0] === 'CREATE' &&
+      (tokens[1] === 'INDEX' || (tokens[1] === 'UNIQUE' && tokens[2] === 'INDEX'));
+    if (indexTarget || ['TABLE', 'INTO', 'REFERENCES', 'OF', 'VIEW', 'COPY'].includes(previous) ||
         tokens.slice(beforeName - 3, beforeName + 1).join(' ') === 'TABLE IF NOT EXISTS') continue;
     const argument = index + 2;
-    const literal = [',', ':'].includes(tokens[argument + 1]) ? literals.get(argument) : undefined;
-    const name = literal?.startsWith("'") ? literal.slice(1, -1).replaceAll("''", "'") : literal;
+    const name = [',', ':'].includes(tokens[argument + 1]) ? literals.get(argument) : undefined;
     rules.push(`setval on ${name ?? 'a computed sequence'}: older inserts may receive conflicting sequence values`);
   }
   return rules;

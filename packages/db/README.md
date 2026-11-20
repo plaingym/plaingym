@@ -243,9 +243,11 @@ write restrictions. `assertCatalog` then checks actual policies, role properties
 ownership, table and column privileges, tenant keys and foreign keys. It refuses
 direct or indirect membership of `app` in a role with `SUPERUSER`, `BYPASSRLS`,
 `CREATEROLE`, `REPLICATION` or `CREATEDB`. It also refuses membership in
-`maintenance`, `pg_execute_server_program`, `pg_write_server_files` or
-`pg_read_server_files`. It counts membership with any options and names
-each privileged role. A view outside `app`'s reach passes whatever its invoker option.
+`maintenance`, `pg_execute_server_program`, `pg_write_server_files`,
+`pg_read_server_files`, `pg_maintain`, `pg_signal_backend`,
+`pg_create_subscription` or `pg_checkpoint`. It counts membership with any
+options and names each privileged role. A view outside `app`'s reach passes
+whatever its invoker option.
 When `app` holds any privilege,
 including column grants or privileges through `PUBLIC`, the view must have
 `security_invoker`, be owned by `maintenance`, and grant no unexpected privileges.

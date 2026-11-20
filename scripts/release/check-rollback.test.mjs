@@ -95,6 +95,38 @@ for (const sql of [
   });
 }
 
+test('flags a sequence type change', () => {
+  assert.deepEqual(rollbackFindings('ALTER SEQUENCE s AS integer;'), [
+    { line: 1, rule: 'ALTER SEQUENCE AS on s: older inserts may exhaust the sequence or receive conflicting values' },
+  ]);
+});
+
+test('accepts a relation named setval with a column list after ON, OF, VIEW or COPY', () => {
+  for (const sql of [
+    'CREATE INDEX i ON setval (a);',
+    'CREATE INDEX i ON ONLY public.setval (a);',
+    'CREATE TABLE typed_table OF setval (a WITH OPTIONS NOT NULL);',
+    'CREATE VIEW setval (a) AS SELECT 1;',
+    'COPY public."setval" (a) FROM STDIN;',
+  ]) {
+    assert.deepEqual(rollbackFindings(sql), [], sql);
+  }
+});
+
+test('flags a setval call in a join condition', () => {
+  assert.deepEqual(rollbackFindings("SELECT 1 FROM a JOIN b ON setval('s', 1) > 0;"), [
+    { line: 1, rule: 'setval on s: older inserts may receive conflicting sequence values' },
+  ]);
+});
+
+for (const literal of ["E'my_seq'", '$q$my_seq$q$']) {
+  test(`names the setval sequence from ${literal}`, () => {
+    assert.deepEqual(rollbackFindings(`select setval(${literal}, 1);`), [
+      { line: 1, rule: 'setval on my_seq: older inserts may receive conflicting sequence values' },
+    ]);
+  });
+}
+
 test('reviews require a reason and apply to one statement only', () => {
   const sql = 'ALTER TABLE members ADD COLUMN required text NOT NULL;';
   assert.equal(rollbackFindings(`-- rollback-reviewed:\n${sql}`).length, 1);
