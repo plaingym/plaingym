@@ -3,6 +3,7 @@ import '@hono/zod-openapi';
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { setLogSink } from '../../core/log.js';
 import { decryptSecret } from '../../core/secrets.js';
 import { PostgresJobs } from '../../infra/jobs/postgres.js';
 import { useRestoreFixture } from './restore.fixture.test-helper.js';
@@ -12,23 +13,34 @@ let base: string;
 beforeAll(async () => { base = (await f.prepare(() => f.backup().snapshot())).id; });
 
 describe('install restore after an interruption', () => {
-  it('skips abandoned staging cleanup without waiting for an active backup when there is no journal', async () => {
+  it('reports postponed staging cleanup while the backup lock is held and sweeps on retry', async () => {
     const service = f.restore(), staging = service.options.stagingDirectory;
     const abandoned = join(staging, 'restore-abandoned');
     await mkdir(abandoned, { recursive: true });
-    await writeFile(join(abandoned, 'plaintext'), 'staged snapshot');
-    let resumed: Promise<void> | undefined, finished = false;
+    const plaintext = join(abandoned, 'plaintext');
+    await writeFile(plaintext, 'staged snapshot');
+    const lines: string[] = [], previous = setLogSink(line => lines.push(line));
     try {
-      await f.targetMaintenance.locked(async () => {
-        resumed = service.resume().then(() => { finished = true; });
-        await vi.waitFor(() => { expect(finished).toBe(true); }, { timeout: 2_000 });
-        expect(await readdir(staging)).toEqual(['restore-abandoned']);
-        expect(await service.options.gate.isClosed()).toBe(false);
-      });
-    } finally { await resumed; }
-    // The skipped plaintext is swept on a later start once the backup releases its lock.
-    await service.resume();
-    expect(await readdir(staging)).toEqual([]);
+      let resumed: ReturnType<typeof service.resume> | undefined, settled = false;
+      try {
+        await f.targetMaintenance.locked(async () => {
+          resumed = service.resume().finally(() => { settled = true; });
+          void resumed.catch(() => {}); // Observe failures while waiting for completion under the lock.
+          await vi.waitFor(() => { expect(settled).toBe(true); }, { timeout: 2_000 });
+          expect(await resumed).toBe('staging_sweep_skipped');
+          expect(await readdir(staging)).toEqual(['restore-abandoned']);
+          expect(await readFile(plaintext, 'utf8')).toBe('staged snapshot');
+          expect(await service.options.gate.isClosed()).toBe(false);
+          expect(lines.map(line => JSON.parse(line))).toEqual([{
+            time: expect.any(String), level: 'info', event: 'restore.staging_sweep_skipped', reason: 'backup_lock_busy',
+          }]);
+        });
+      } finally { await resumed; }
+      lines.length = 0;
+      expect(await service.resume()).toBeUndefined();
+      expect(await readdir(staging)).toEqual([]);
+      expect(lines).toEqual([]);
+    } finally { setLogSink(previous); }
   });
   it.each(['database_restored', 'secret_field', 'rekeyed', 'old_uploads_renamed', 'new_uploads_renamed', 'billing_reconciliation_queued'] as const)(
     'resumes after interruption at %s', async (stop) => {
@@ -37,7 +49,7 @@ describe('install restore after an interruption', () => {
       await expect(service.restore(base, f.identity)).rejects.toThrow('The staged restore failed; preserve the restore state and check the server before retrying resume');
       expect(interrupted).toBe(true);
       expect(await f.gate().isClosed()).toBe(true);
-      await f.restore().resume();
+      expect(await f.restore().resume()).toBeUndefined();
       const { gym } = await f.secretRows();
       expect(decryptSecret(f.currentKey, f.context('qr_key'), gym.qrKey!)).toBe('stable-qr-secret');
       expect(gym.billingEnabled).toBe(false);

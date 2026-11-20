@@ -178,6 +178,20 @@ describe('restoreFailureReason', () => {
   });
 });
 describe('durable resume hint', () => {
+  it('prints a notice to stderr only when the staging sweep is postponed', async () => {
+    const resume = vi.spyOn(RestoreService.prototype, 'resume')
+      .mockResolvedValueOnce('staging_sweep_skipped').mockResolvedValueOnce(undefined);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await expect(maintenanceCommand(['resume'])).resolves.toBeUndefined();
+      expect(stderr.mock.calls).toEqual([['Restore staging cleanup postponed because the backup lock is busy.\n']]);
+      stderr.mockClear();
+      await expect(maintenanceCommand(['resume'])).resolves.toBeUndefined();
+      expect(stderr).not.toHaveBeenCalled();
+      expect(stdout).not.toHaveBeenCalled();
+    } finally { resume.mockRestore(); stderr.mockRestore(); stdout.mockRestore(); }
+  });
   it('prints only for an unfinished staged restore', async () => {
     const lines: string[] = [], state = join(directory, 'restore-state.json');
     await reportRestoreResume(line => lines.push(line));

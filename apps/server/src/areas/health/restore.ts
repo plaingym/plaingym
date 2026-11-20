@@ -13,6 +13,7 @@ import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { LocalUploads } from '../../infra/storage/index.js';
 import type { BackupObjectStore, S3Uploads } from '../../infra/storage/index.js';
+import { logInfo } from '../../core/log.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
 import { PostgresMaintenance } from './backups.database.js';
 import { atomicJson, childPath, exists, fileStream, missing, privateDirectory, readJson, saveStream } from './backups.files.js';
@@ -183,15 +184,19 @@ export class RestoreService {
     o.checkpoint?.('verified');
     await this.#staged(() => o.database.locked(() => this.#resume(verified.state, verified.manifest)));
   }
-  async resume(): Promise<void> {
+  async resume(): Promise<void | 'staging_sweep_skipped'> {
     const o = this.options;
     if (!await exists(o.gate.statePath)) {
       // Cleanup is optional at startup: don't wait behind an active snapshot. Recheck the journal under the lock.
-      const absent = await o.database.tryLocked(async () => {
+      const swept = await o.database.tryLocked(async () => {
         if (await exists(o.gate.statePath)) return false;
         await this.#sweepStaging(); return true;
       });
-      if (absent !== false) return;
+      if (swept === undefined) {
+        logInfo('restore.staging_sweep_skipped', { reason: 'backup_lock_busy' });
+        return 'staging_sweep_skipped';
+      }
+      if (swept) return;
     }
     await o.gate.close();
     await this.#staged(() => o.database.locked(async () => {

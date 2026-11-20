@@ -163,9 +163,13 @@ completed setup. You work on the server over SSH.
    command again. If it also says a verified restore can be resumed, a restore is staged and a
    new one is refused: finish it as in
    [If a restore is interrupted](restore-reference.md#if-a-restore-is-interrupted).
-   On startup with no restore journal, cleanup of abandoned staging skips a
-   running backup's lock, so the backup does not hold up startup. Cleanup runs
-   again on a later start or restore.
+   With no restore journal, a running backup can postpone cleanup of abandoned
+   staging. The maintenance CLI's `resume` command, which the app runs at each
+   start and an update runs before its snapshot, then prints
+   `Restore staging cleanup postponed because the backup lock is busy.` (in
+   `sudo docker compose logs app` for a start) and exits successfully, so startup
+   can continue. Cleanup runs again on the next start, update or restore; to run
+   it once the backup finishes, restart the app with `sudo docker compose restart app`.
 6. **Delete your copies:** `sudo rm restore.json backup-key.txt`. Keep your original backup
    private key in safe storage.
 

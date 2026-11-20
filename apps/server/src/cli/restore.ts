@@ -130,7 +130,11 @@ async function maintenance(args: readonly string[], environment: ReturnType<type
     const { RestoreService } = await import('../areas/health/restore.js');
     // Resumption uses already authenticated staging; it never requires saving the private age identity.
     const unusedStore = new S3BackupObjectStore({ client: createS3Client({}), bucket: 'unused' });
-    try { await new RestoreService({ ...await restoreOptions(environment), store: unusedStore }).resume(); }
+    try {
+      const outcome = await new RestoreService({ ...await restoreOptions(environment), store: unusedStore }).resume();
+      if (outcome === 'staging_sweep_skipped')
+        process.stderr.write('Restore staging cleanup postponed because the backup lock is busy.\n');
+    }
     finally { unusedStore.options.client.destroy(); }
     return;
   }
