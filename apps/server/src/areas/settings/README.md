@@ -77,8 +77,9 @@ On a multi-gym install email, SMS and payments are read-only for gym owners unle
 SMS provider settings (`integrations.sms.ts`, PUT/DELETE `/api/settings/integrations/sms`)
 also supply PATCH `/api/settings/integrations/sms/cap`: an integer from 1 to
 100,000, default 1,000, using `integrations.manage`, the gym revision and an
-`integrations.sms_daily_cap_updated` audit with the old and new cap only. This
-route is mounted by `createIntegrationsRoutes` and returns the shared gym settings.
+`integrations.sms_daily_cap_updated` audit with the old and new cap and the new gym
+revision. It saves through the shared integration save, like the provider changes.
+This route is mounted by `createIntegrationsRoutes` and returns the shared gym settings.
 The cap remains editable in a sandbox and on an operator-managed install: it changes no credentials.
 Provider changes
 share `integrations.manage`, the gym revision, sandbox refusal and operator policy.

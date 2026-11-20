@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, eq } from 'drizzle-orm';
-import { assertRevised, forGym, gyms, revisionGuard, writeAudit } from '@plaingym/db';
+import { forGym, gyms, writeAudit } from '@plaingym/db';
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import { normalizePhone } from '@plaingym/shared/phone';
@@ -52,21 +51,11 @@ export function createSmsIntegration(options: SmsIntegrationOptions) {
   }
   return { present,
     async updateDailyCap(context: MutationContext, input: UpdateSmsDailyCapRequest) {
-      const userId = options.userOf(context);
+      options.userOf(context);
       const { revision, smsDailyCap } = updateSmsDailyCapRequestSchema.parse(input);
-      return scope(context.gymId, async tx => {
-        const [before] = await tx.select({ revision: gyms.revision, smsDailyCap: gyms.smsDailyCap }).from(gyms)
-          .where(eq(gyms.id, context.gymId)).for('update');
-        if (!before) throw new AppError('not_found', t('settings/integrations:notFound'));
-        assertRevised(before.revision === revision ? [before] : []);
-        const guard = revisionGuard(gyms.revision, revision);
-        assertRevised(await tx.update(gyms).set({ smsDailyCap, revision: guard.next, updatedAt: clock.now() })
-          .where(and(eq(gyms.id, context.gymId), guard.matches)).returning({ id: gyms.id }));
-        await writeAudit(tx, { gymId: context.gymId, actorKind: 'user', actorUserId: userId,
-          action: 'integrations.sms_daily_cap_updated', targetType: 'gym', targetId: context.gymId,
-          before: { smsDailyCap: before.smsDailyCap }, after: { smsDailyCap }, occurredAt: clock.now() });
-        return readGymSettings(tx, context.gymId);
-      });
+      await options.save(context, revision, async before => ({ set: { smsDailyCap },
+        action: 'integrations.sms_daily_cap_updated', before: { smsDailyCap: before.smsDailyCap }, after: () => ({ smsDailyCap }) }));
+      return scope(context.gymId, tx => readGymSettings(tx, context.gymId));
     },
     async save(context: MutationContext, input: SaveSmsIntegrationRequest): Promise<'sent' | 'failed'> {
       options.assertChangeable();

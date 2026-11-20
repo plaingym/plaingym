@@ -82,6 +82,26 @@ describe('SMS integration settings', () => {
     expect((await row()).smsDailyCap).toBe(role === 'owner' ? 12 : 1000);
     expect(send).not.toHaveBeenCalled();
   });
+  it('audits a daily cap update with the new revision', async () => {
+    const app = server(), revision = (await row()).revision;
+    const result = await call(app, 'PATCH', { revision, smsDailyCap: 12 }, '/sms/cap');
+    expect(result.status).toBe(200);
+    const updated = await row();
+    expect(updated.revision).toBe(revision + 1);
+    expect(result.body).toMatchObject({ data: { smsDailyCap: 12, revision: updated.revision } });
+    const audits = await database.forGym(gymId, tx => tx.select().from(auditEvents));
+    expect(audits.map(audit => ({ action: audit.action, before: audit.before, after: audit.after }))).toEqual([
+      { action: 'integrations.sms_daily_cap_updated', before: { smsDailyCap: 1000 }, after: { smsDailyCap: 12, revision: updated.revision } },
+    ]);
+  });
+  it('rejects a stale daily cap revision with 409 and writes no audit', async () => {
+    const app = server(), revision = (await row()).revision;
+    expect((await call(app, 'PATCH', { revision, smsDailyCap: 10 }, '/sms/cap')).status).toBe(200);
+    const audits = await database.forGym(gymId, tx => tx.select().from(auditEvents));
+    expect((await call(app, 'PATCH', { revision, smsDailyCap: 20 }, '/sms/cap')).status).toBe(409);
+    expect((await row()).smsDailyCap).toBe(10);
+    expect(await database.forGym(gymId, tx => tx.select().from(auditEvents))).toHaveLength(audits.length);
+  });
   it('validates cap bounds, checks the gym revision, and audits only the saved cap', async () => {
     const app = server(), revision = (await row()).revision;
     for (const smsDailyCap of [0, -1, 1.5, 100001, '12', null])
@@ -91,8 +111,8 @@ describe('SMS integration settings', () => {
     expect((await call(app, 'PATCH', { revision: revision + 1, smsDailyCap: 100000 }, '/sms/cap')).status).toBe(200);
     const audits = await database.forGym(gymId, tx => tx.select().from(auditEvents));
     expect(audits.map(audit => ({ action: audit.action, before: audit.before, after: audit.after }))).toEqual([
-      { action: 'integrations.sms_daily_cap_updated', before: { smsDailyCap: 1000 }, after: { smsDailyCap: 1 } },
-      { action: 'integrations.sms_daily_cap_updated', before: { smsDailyCap: 1 }, after: { smsDailyCap: 100000 } },
+      { action: 'integrations.sms_daily_cap_updated', before: { smsDailyCap: 1000 }, after: { smsDailyCap: 1, revision: revision + 1 } },
+      { action: 'integrations.sms_daily_cap_updated', before: { smsDailyCap: 1 }, after: { smsDailyCap: 100000, revision: revision + 2 } },
     ]);
   });
   it('keeps another gym cap isolated, ignores a query gym ID and refuses a mismatched principal', async () => {

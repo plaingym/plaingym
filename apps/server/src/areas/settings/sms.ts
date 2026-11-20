@@ -11,17 +11,27 @@ import { clock as systemClock } from '../../core/clock.js';
 import { readStoredSecret } from './unreadable-secret.js';
 
 export const twilioBaseUrl = 'https://api.twilio.com';
+/** One declaration per auth and sender variant: the strict write schema and the loose read schema both use every entry. */
+const authVariants = [
+  z.strictObject({ token: z.string().min(1).max(1024) }),
+  z.strictObject({ apiKey: sid('SK'), secret: z.string().min(1).max(1024) }),
+];
+const senderVariants = [
+  z.strictObject({ from: z.string().regex(/^[+][1-9][0-9]{1,14}$/) }),
+  z.strictObject({ messagingServiceSid: sid('MG') }),
+];
 export const storedSmsSchema = z.strictObject({
   accountSid: sid('AC'),
-  auth: z.union([z.strictObject({ token: z.string().min(1).max(1024) }), z.strictObject({ apiKey: sid('SK'), secret: z.string().min(1).max(1024) })]),
-  sender: z.union([z.strictObject({ from: z.string().regex(/^[+][1-9][0-9]{1,14}$/) }), z.strictObject({ messagingServiceSid: sid('MG') })]),
+  auth: z.union(authVariants),
+  sender: z.union(senderVariants),
   baseUrl: smsBaseUrlSchema.optional(),
 });
 export type StoredSmsConfig = z.infer<typeof storedSmsSchema>;
-// Ignore additional keys written by a newer release, including inside auth and sender.
+// Ignore additional keys written by a newer release, including inside auth and sender. The loose variants keep the
+// write variants' types; TypeScript loses them through the mapped union, so they are asserted back.
 const readSmsSchema = z.object({ ...storedSmsSchema.shape,
-  auth: z.union([z.object(storedSmsSchema.shape.auth.options[0].shape), z.object(storedSmsSchema.shape.auth.options[1].shape)]),
-  sender: z.union([z.object(storedSmsSchema.shape.sender.options[0].shape), z.object(storedSmsSchema.shape.sender.options[1].shape)]),
+  auth: z.union(authVariants.map(variant => z.object(variant.shape))) as unknown as typeof storedSmsSchema.shape.auth,
+  sender: z.union(senderVariants.map(variant => z.object(variant.shape))) as unknown as typeof storedSmsSchema.shape.sender,
 });
 export function readSmsConfig(key: Buffer, tenancy: 'single' | 'multi', gymId: string, stored: string | null): StoredSmsConfig | null {
   return readStoredSecret(key, 'sms_config', gymId, stored, () => {

@@ -6,7 +6,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
 import { setLogSink } from '../../core/log.js';
-import { createSmsResolver, encryptSmsConfig, storedSmsSchema, type StoredSmsConfig } from './sms.js';
+import { createSmsResolver, encryptSmsConfig, readSmsConfig, storedSmsSchema, type StoredSmsConfig } from './sms.js';
 
 const db = useTestDatabase(), make = createFactories(db), scope = db.forGym, key = randomBytes(32);
 const clock = new TestClock('2026-11-16T10:00:00Z');
@@ -41,6 +41,19 @@ it('fails closed for unreadable or transplanted secrets and reports them without
   } finally { setLogSink(previous); }
   expect(logs).toHaveLength(2);
   for (const secret of ['broken-secret', 'test-token', message.to, message.body]) expect(logs.join('\n')).not.toContain(secret);
+});
+it('reads every auth and sender variant the strict write schema declares', () => {
+  const gymId = uuidv7(), accountSid = config.accountSid;
+  const auths: StoredSmsConfig['auth'][] = [{ token: 'test-token' }, { apiKey: 'SK' + '2'.repeat(32), secret: 'test-secret' }];
+  const senders: StoredSmsConfig['sender'][] = [{ from: '+12025550124' }, { messagingServiceSid: 'MG' + '3'.repeat(32) }];
+  // The lists cover the same variants as the write schema; a new variant must extend both before this test can pass.
+  expect(auths).toHaveLength(storedSmsSchema.shape.auth.options.length);
+  expect(senders).toHaveLength(storedSmsSchema.shape.sender.options.length);
+  for (const auth of auths) for (const sender of senders) {
+    const value: StoredSmsConfig = { accountSid, auth, sender };
+    expect(storedSmsSchema.safeParse(value).success).toBe(true);
+    expect(readSmsConfig(key, 'single', gymId, encryptSmsConfig(key, gymId, value))).toEqual(value);
+  }
 });
 it('allows custom HTTPS bases only in single mode', async () => {
   const gymId = uuidv7();
