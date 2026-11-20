@@ -313,10 +313,12 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
     const attempt = request.attemptId ? this.#attempt(context.gymId, invoice.id, request.attemptId, request.paymentIntentId)
       : [...this.#attempts.values()].find(row => row.gymId === context.gymId && row.paymentIntentId === request.paymentIntentId);
     if (attempt && attempt.invoiceId !== invoice.id) notFound();
-    if (terminal.has(invoice.status) || history.includes(request.paymentIntentId) || attempt && attempt.status !== 'pending')
+    // Like the real transition, a terminal invoice skips the history check and only updates a pending attempt.
+    if ((!terminal.has(invoice.status) && history.includes(request.paymentIntentId)) || attempt && attempt.status !== 'pending')
       return this.#result('ignored', invoice);
     if (invoice.status === 'processing') conflict('Another payment is processing');
     if (attempt) this.#attempts.set(scopedKey(context.gymId, attempt.id), { ...attempt, status: 'processing', processingAt: this.clock.now().toISOString() });
+    if (terminal.has(invoice.status)) return this.#result('ignored', invoice);
     this.#processingHistory.set(key, [...history, request.paymentIntentId]);
     const next = { ...invoice, status: 'processing' as const };
     this.#invoices.set(key, next);

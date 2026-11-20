@@ -2,16 +2,118 @@
 import '@hono/zod-openapi';
 import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { allocateInvoiceNumber, invoices, paymentAttempts, payments, uuidv7 } from '@plaingym/db';
+import { allocateInvoiceNumber, invoices, paymentAttempts, paymentMethods, payments, uuidv7 } from '@plaingym/db';
 import { stripeTestPaymentReference } from '@plaingym/shared/contracts';
 import { AppError } from '@plaingym/shared';
 import type { FakePayments } from '../../../infra/payments/index.js';
 import { createChargeRunner } from './index.js';
 import { createRunnerJobs } from './runner.jobs.js';
 import { createRestoreCheckLease } from '../../health/restore.billing-lease.js';
-import { useRunnerFixture, gate } from './runner.fixture.test-helper.js';
+import { useRunnerFixture, gate, type Fixture } from './runner.fixture.test-helper.js';
 
-const { db, factory, fixture, checkout } = useRunnerFixture();
+const { db, factory, fixture, invoice, checkout } = useRunnerFixture();
+
+describe('bank debit reconciliation', () => {
+  const day = 86400_000;
+  const actor = (f: Fixture) => ({ gymId: f.gymId, actor: { kind: 'system' as const } });
+
+  async function processingCheckout(f: Fixture, bill: Awaited<ReturnType<typeof invoice>>, key = 'checkout-debit') {
+    const session = await f.provider.createCheckout({ mode: 'payment', customerId: 'cus_test', invoiceId: bill.id,
+      amount: bill.amountCents, currency: 'usd', bankDebit: { type: 'us_bank_account' },
+      successUrl: 'https://gym.example.invalid/success', cancelUrl: 'https://gym.example.invalid/cancel',
+      saveForOffSession: true, idempotencyKey: key });
+    const paymentIntentId = f.provider.completeCheckout(session.id, { method: 'us_bank_account' }).chargeId!;
+    expect((await f.transitions.paymentProcessing(actor(f), { invoiceId: bill.id, paymentIntentId })).outcome).toBe('applied');
+    return paymentIntentId;
+  }
+
+  it('1. records exactly one bank payment for a Checkout debit that settled without a webhook', async () => {
+    const f = await fixture({ currency: 'USD' }), bill = await invoice(f);
+    const paymentIntentId = await processingCheckout(f, bill);
+    f.clock.advance(4 * day);
+    const paidAt = f.clock.now();
+    f.provider.settleCharge(paymentIntentId, 'succeeded');
+    f.clock.advance(7 * day);
+    const find = vi.spyOn(f.provider, 'findCharge');
+    expect(await f.runner.reconcile(f.gymId)).toEqual({ inspected: 1, issues: [] });
+    expect(await f.runner.reconcile(f.gymId)).toEqual({ inspected: 0, issues: [] });
+    expect(find).toHaveBeenCalledExactlyOnceWith({ kind: 'charge', id: paymentIntentId }, { includeSuccessTime: true });
+    const rows = await f.read();
+    expect(rows.invoices[0]).toMatchObject({ status: 'paid', paidAt });
+    expect(rows.payments).toMatchObject([{ method: 'bank_debit', paymentIntentId, paidAt }]);
+    expect(rows.attempts).toEqual([]);
+  });
+
+  it('2. leaves a still-processing Checkout debit alone after eleven days', async () => {
+    const f = await fixture({ currency: 'USD' }), bill = await invoice(f);
+    const paymentIntentId = await processingCheckout(f, bill);
+    const before = await f.read();
+    f.clock.advance(11 * day);
+    const cancel = vi.spyOn(f.provider, 'cancelCharge'), find = vi.spyOn(f.provider, 'findCharge');
+    expect(await f.runner.reconcile(f.gymId)).toEqual({ inspected: 1, issues: [] });
+    expect(find).toHaveBeenCalledExactlyOnceWith({ kind: 'charge', id: paymentIntentId }, { includeSuccessTime: true });
+    expect(cancel).not.toHaveBeenCalled();
+    expect(await f.read()).toEqual(before);
+  });
+
+  it('3. moves a cycle invoice to past due when its Checkout debit failed without a webhook', async () => {
+    const f = await fixture({ currency: 'USD' }), bill = await invoice(f);
+    const paymentIntentId = await processingCheckout(f, bill);
+    f.provider.settleCharge(paymentIntentId, 'insufficient_funds');
+    f.clock.advance(11 * day);
+    const find = vi.spyOn(f.provider, 'findCharge');
+    expect(await f.runner.reconcile(f.gymId)).toEqual({ inspected: 1, issues: [] });
+    expect(find).toHaveBeenCalledExactlyOnceWith({ kind: 'charge', id: paymentIntentId }, { includeSuccessTime: true });
+    const rows = await f.read();
+    expect(rows.invoices[0]?.status).toBe('past_due');
+    expect(rows.payments).toEqual([]);
+    expect(rows.attempts).toEqual([]);
+  });
+
+  it('4. skips a two-day-old Checkout debit even when an earlier processing audit is stale', async () => {
+    const f = await fixture({ currency: 'USD' }), bill = await invoice(f);
+    const previousIntentId = await processingCheckout(f, bill);
+    f.provider.settleCharge(previousIntentId, 'insufficient_funds');
+    await f.transitions.processingFailed(actor(f), { invoiceId: bill.id, paymentIntentId: previousIntentId, code: 'insufficient_funds' });
+    f.clock.advance(11 * day);
+    await processingCheckout(f, bill, 'checkout-retry');
+    f.clock.advance(2 * day);
+    const find = vi.spyOn(f.provider, 'findCharge');
+    expect(await f.runner.reconcile(f.gymId)).toEqual({ inspected: 0, issues: [] });
+    expect(find).not.toHaveBeenCalled();
+    expect((await f.read()).invoices[0]?.status).toBe('processing');
+  });
+
+  it('5. moves a pending runner attempt to processing after cash was recorded and skips the next hourly sweep', async () => {
+    const f = await fixture({ currency: 'USD' });
+    await db.forGym(f.gymId, tx => tx.update(paymentMethods).set({ type: 'us_bank_account' })
+      .where(eq(paymentMethods.householdId, f.home.id)));
+    f.provider.recordPaymentMethod({ id: 'pm_test', customerId: 'cus_test', type: 'us_bank_account', last4: '6789' });
+    f.provider.loseNextResponse('confirmCharge');
+    await f.runner.daily(f.gymId);
+    const { attempts: [attempt], invoices: [bill] } = await f.read();
+    expect(attempt).toMatchObject({ status: 'pending', processingAt: null });
+    const paymentIntentId = attempt!.paymentIntentId!;
+    expect((await f.provider.findCharge({ kind: 'charge', id: paymentIntentId })).status).toBe('processing');
+    await f.transitions.manualPayment(actor(f), { invoiceId: bill!.id, paymentId: uuidv7(), amountCents: bill!.amountCents,
+      currency: bill!.currency, paidAt: f.clock.now().toISOString(), method: 'cash' });
+
+    const processingAt = f.clock.now();
+    const request = { invoiceId: bill!.id, attemptId: attempt!.id, paymentIntentId };
+    expect(await f.transitions.paymentProcessing(actor(f), request)).toMatchObject({ outcome: 'ignored', invoice: { status: 'paid' } });
+    f.clock.advance(3600_000);
+    expect((await f.transitions.paymentProcessing(actor(f), request)).outcome).toBe('ignored');
+    const find = vi.spyOn(f.provider, 'findCharge');
+    expect(await f.runner.reconcile(f.gymId)).toEqual({ inspected: 0, issues: [] });
+    expect(find).not.toHaveBeenCalled();
+    const rows = await f.read();
+    expect(rows.invoices[0]?.status).toBe('paid');
+    expect(rows.attempts).toMatchObject([{ status: 'processing', processingAt, resolvedAt: null }]);
+    expect(rows.payments).toMatchObject([{ method: 'cash' }]);
+    expect(rows.audits.filter(event => event.action === 'billing.attempt.processing'))
+      .toMatchObject([{ targetId: attempt!.id, occurredAt: processingAt }]);
+  });
+});
 
 describe('charge crashes and reconciliation races', () => {
   it('does not require a provider for an empty sweep, but fails the job for unresolved stored intents', async () => {

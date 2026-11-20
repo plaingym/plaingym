@@ -49,6 +49,16 @@ describe('InvoiceTransitions fake', () => {
     expect((await fake.cardSucceeded(mutation, { ...success, method: 'bank_debit' })).invoice.status).toBe('paid');
     expect(fake.payments).toMatchObject([{ method: 'bank_debit' }]);
   });
+  it('tracks the pending debit after recording cash and preserves its processing time on replay', async () => {
+    const clock = new TestClock('2026-10-21T12:00:00Z'), fake = build({}, undefined, clock);
+    await fake.manualPayment(mutation, { invoiceId, paymentId, amountCents: invoice.amountCents,
+      currency: invoice.currency, paidAt: clock.now().toISOString(), method: 'cash' });
+    const processingAt = clock.now().toISOString(), request = { invoiceId, attemptId, paymentIntentId: 'pi_1' };
+    expect(await fake.paymentProcessing(mutation, request)).toMatchObject({ outcome: 'ignored', invoice: { status: 'paid' } });
+    clock.advance(3600_000);
+    expect((await fake.paymentProcessing(mutation, request)).outcome).toBe('ignored');
+    expect(fake.attempts).toMatchObject([{ status: 'processing', processingAt }]);
+  });
   it('deduplicates success from a runner and webhook by intent even when their local IDs differ', async () => {
     const fake = build();
     expect((await fake.cardSucceeded(mutation, success)).invoice.status).toBe('paid');

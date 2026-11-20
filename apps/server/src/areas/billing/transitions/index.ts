@@ -97,9 +97,9 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
     async paymentProcessing(context, request) {
       return scope(context.gymId, async tx => {
         const invoice = await lockInvoice(tx, request.invoiceId);
-        if (terminal(invoice)) return result('ignored', invoice);
         const row = await attempt(tx, invoice, request.paymentIntentId, request.attemptId);
-        const history = await processingIntents(tx, invoice.id);
+        const isTerminal = terminal(invoice);
+        const history = isTerminal ? [] : await processingIntents(tx, invoice.id);
         if (history.includes(request.paymentIntentId)) return result('ignored', invoice);
         if (invoice.status === 'processing') {
           if (row?.status === 'processing') return result('ignored', invoice);
@@ -109,7 +109,10 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
           const changed = await tx.update(paymentAttempts).set({ status: 'processing', processingAt: clock.now() })
             .where(and(eq(paymentAttempts.id, row.id), eq(paymentAttempts.status, 'pending'), isNull(paymentAttempts.resolvedAt))).returning();
           if (!changed.length) return result('ignored', invoice);
+          if (isTerminal) await audit(tx, context, clock, 'billing.attempt.processing', 'payment_attempt', row.id,
+            { status: 'processing', paymentIntentId: request.paymentIntentId }, { status: row.status });
         }
+        if (isTerminal) return result('ignored', invoice);
         const next = { ...invoice, status: 'processing' };
         await tx.update(invoices).set({ status: next.status }).where(eq(invoices.id, invoice.id));
         await audit(tx, context, clock, invoiceProcessing, 'invoice', invoice.id,

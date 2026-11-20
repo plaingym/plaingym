@@ -56,7 +56,8 @@ or another attempt holding the key); a link that may have been delivered stays u
 sent again.
 
 `paymentProcessing` records the intent on the invoice's processing audit and timestamps
-its pending attempt when present. `cardSucceeded` records a settled debit as
+its pending attempt when present. On a terminal invoice it updates and audits a matching
+pending attempt while leaving the invoice in its terminal state. `cardSucceeded` records a settled debit as
 `bank_debit`. A cycle or assignment invoice returns to past due after a bank
 failure, and a past-due assignment invoice stays past due on a later card
 decline. A one-off charge returns to open. A closed account is revoked by its
