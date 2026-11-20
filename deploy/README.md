@@ -510,11 +510,12 @@ by the active guard is labelled as unprotected and may have been pruned. The che
 reads only the one snapshot and exits within 30 seconds, including database startup
 and cleanup. The 40-second host timeout and five-second kill grace apply directly
 to the Compose client. After a timeout, the updater tries to remove the uniquely
-named one-off container, then checks for a late creation and retries removal if
-it finds the container. If Docker reports that the retry met a removal already
-in progress, the updater checks once more for absence. Each cleanup command has a
-ten-second timeout plus a five-second kill grace. If cleanup remains uncertain, the
-updater names the container for manual removal.
+named one-off container. It checks for a late creation immediately and again
+after one second if the first check did not find it. If it finds the container,
+it retries removal. When Docker reports that removal is already in progress, the
+updater checks for absence up to five times, one second apart. Each Docker cleanup
+command has a ten-second timeout plus a five-second kill grace. If cleanup remains
+uncertain, the updater names the container for manual removal.
 The check does not migrate
 the database, take a snapshot, or change the running services. Startup checks schema
 compatibility before opening the database and points to this availability check.

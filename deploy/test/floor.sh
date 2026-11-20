@@ -32,6 +32,10 @@ cat > "$temporary/bin/docker" <<'MOCK'
 set -eu
 # shellcheck source=deploy/lib.sh
 . "$FIXTURES/lib.sh"
+if [ "${SNAPSHOT_CHECK_PRINT_ARGS:-}" = true ]; then
+  printf '%s\0' "$@" "IMAGE=${APP_IMAGE:-configured}"
+  exit 0
+fi
 printf '%s IMAGE=%s\n' "$*" "${APP_IMAGE:-configured}" >> "$CALLS"
 guard=
 for argument in "$@"; do case "$argument" in *schema-compatibility.yaml) guard=$argument ;; esac; done
@@ -56,6 +60,7 @@ case "$*" in
   'image inspect '*'org.opencontainers.image.version'*) version_of "$3" ;;
   'image inspect '*RepoDigests*) echo "ghcr.io/example/app@$DIGEST" ;;
   *' snapshot-check '*)
+    printf '%s\0' "$@" "IMAGE=${APP_IMAGE:-configured}" > "$SNAPSHOTS/check-args"
     if [ "$PPID" = "${SNAPSHOT_CHECK_TIMEOUT_PID:-}" ]; then
       echo 'snapshot-check client ran directly under timeout' >> "$CALLS"
     fi
@@ -79,8 +84,11 @@ case "$*" in
     if [ -f "$SNAPSHOTS/$3.container" ]; then
       case "${SNAPSHOT_CLEANUP:-}" in
         late-remove-error) echo 'Removal failed' >&2; exit 1 ;;
-        late-removal-finished|late-removal-pending)
-          if [ "$SNAPSHOT_CLEANUP" = late-removal-finished ]; then rm "$SNAPSHOTS/$3.container"; fi
+        late-create|late-removal-finished|late-removal-polls|late-removal-pending)
+          case "$SNAPSHOT_CLEANUP" in
+            late-create|late-removal-finished) rm "$SNAPSHOTS/$3.container" ;;
+            late-removal-polls) printf '2\n' > "$SNAPSHOTS/$3.polls" ;;
+          esac
           echo "Error response from daemon: removal of container $3 is already in progress" >&2
           exit 1 ;;
       esac
@@ -91,7 +99,10 @@ case "$*" in
       fi
     else
       # The create lands after the daemon has looked up the name for the first rm.
-      case "${SNAPSHOT_CLEANUP:-}" in late*) touch "$SNAPSHOTS/$3.container" ;; esac
+      case "${SNAPSHOT_CLEANUP:-}" in
+        late-create) touch "$SNAPSHOTS/$3.creating" ;;
+        late*) touch "$SNAPSHOTS/$3.container" ;;
+      esac
       echo "Error response from daemon: No such container: $3" >&2
       exit 1
     fi ;;
@@ -104,8 +115,30 @@ case "$*" in
       echo "Error: No such container: $3-other" >&2
       exit 1
     fi
-    if [ -f "$SNAPSHOTS/$3.container" ]; then echo '[{}]'
-    else echo '[]'; echo "Error response from daemon: No such container: $3" >&2; exit 1; fi ;;
+    if [ -f "$SNAPSHOTS/$3.polls" ]; then
+      polls_left=$(cat "$SNAPSHOTS/$3.polls")
+      if [ "$polls_left" -eq 0 ]; then
+        rm "$SNAPSHOTS/$3.polls" "$SNAPSHOTS/$3.container"
+      else
+        printf '%s\n' "$((polls_left - 1))" > "$SNAPSHOTS/$3.polls"
+      fi
+    fi
+    if [ -f "$SNAPSHOTS/$3.container" ]; then
+      case "${SNAPSHOT_CLEANUP:-}" in
+        late-create) echo '[{"State":{"Status":"created"}}]' ;;
+        late-removal-polls|late-removal-pending) echo '[{"State":{"Status":"removing"}}]' ;;
+        *) echo '[{}]' ;;
+      esac
+    else
+      if [ -f "$SNAPSHOTS/$3.creating" ]; then
+        # The create lands after this inspect has looked up the name.
+        rm "$SNAPSHOTS/$3.creating"
+        touch "$SNAPSHOTS/$3.container"
+      fi
+      echo '[]'
+      echo "Error response from daemon: No such container: $3" >&2
+      exit 1
+    fi ;;
   *' snapshot pre-upgrade'|*' snapshot manual')
     compatible "${APP_IMAGE:-$PREVIOUS_ID}"
     case "${FAIL_AT:-}" in snapshot|snapshot_rollback) exit 1 ;; esac
@@ -168,7 +201,15 @@ case "$*" in
 esac
 exec /usr/bin/timeout "$@"
 MOCK
-chmod 0700 "$temporary/bin/timeout"
+cat > "$temporary/bin/sleep" <<'MOCK'
+#!/bin/sh
+if [ "${SNAPSHOT_CLEANUP_TEST:-}" = true ] && [ "$*" = 1 ]; then
+  printf 'snapshot-check cleanup sleep: %s\n' "$*" >> "$CALLS"
+  exit 0
+fi
+exec /usr/bin/sleep "$@"
+MOCK
+chmod 0700 "$temporary/bin/timeout" "$temporary/bin/sleep"
 openssl genpkey -algorithm ed25519 -out "$FIXTURES/key.pem" 2>/dev/null
 openssl pkey -in "$FIXTURES/key.pem" -pubout -out "$FIXTURES/public.pem"
 
@@ -566,7 +607,7 @@ snapshot_check_state() {
 before=$(snapshot_check_state)
 refuse_after_failed_check() {
   : > "$CALLS"
-  if env "$@" sh "$case_dir/update.sh" --rollback > "$temporary/output" 2>&1; then
+  if env SNAPSHOT_CLEANUP_TEST=true "$@" sh "$case_dir/update.sh" --rollback > "$temporary/output" 2>&1; then
     echo "Accepted rollback after a failed check: $*" >&2; exit 1
   fi
   said 'Cannot roll back to v1.9.0: the schema requires v2.0.0'
@@ -579,19 +620,28 @@ refuse_after_failed_check() {
   snapshot_container=$(sed -n 's/.* --name \(plaingym-snapshot-check-[^ ]*\) .* snapshot-check .*/\1/p' "$CALLS")
   [ -n "$snapshot_container" ]
   grep -qxF 'snapshot-check client ran directly under timeout' "$CALLS"
-  check_compose="compose --project-directory $case_dir --env-file $case_dir/.env -f $case_dir/compose.yaml"
-  if [ -f "$case_dir/schema-compatibility.yaml" ]; then check_compose="$check_compose -f $case_dir/schema-compatibility.yaml"; fi
   check_image=$(sed -n 's/^APP_IMAGE=//p' "$case_dir/.env")
-  grep -qxF "$check_compose run --rm --name $snapshot_container --no-deps -T --entrypoint node app /app/maintenance.mjs snapshot-check $snapshot IMAGE=$check_image" "$CALLS"
+  (
+    ROOT=$case_dir
+    export APP_IMAGE="$check_image" SNAPSHOT_CHECK_PRINT_ARGS=true
+    # shellcheck source=deploy/lib.sh
+    . "$ROOT/lib.sh"
+    compose_exec run --rm --name "$snapshot_container" --no-deps -T --entrypoint node app /app/maintenance.mjs snapshot-check "$snapshot"
+  ) > "$temporary/expected-check-args"
+  cmp "$temporary/expected-check-args" "$SNAPSHOTS/check-args"
 }
 snapshot_cleanup_calls_are() {
   expected_cleanup=$(
     for operation do
-      printf 'snapshot-check cleanup deadline: -k 5 10 docker %s %s\n' "$operation" "$snapshot_container"
-      printf '%s %s\n' "$operation" "$snapshot_container"
+      case "$operation" in
+        'sleep 1') printf 'snapshot-check cleanup sleep: 1\n' ;;
+        *)
+          printf 'snapshot-check cleanup deadline: -k 5 10 docker %s %s\n' "$operation" "$snapshot_container"
+          printf '%s %s\n' "$operation" "$snapshot_container" ;;
+      esac
     done
   )
-  actual_cleanup=$(sed -n -e '/^snapshot-check cleanup deadline: /p' \
+  actual_cleanup=$(sed -n -e '/^snapshot-check cleanup \(deadline\|sleep\): /p' \
     -e 's/^\(rm -f .*\|container inspect .*\) IMAGE=.*$/\1/p' "$CALLS")
   [ "$actual_cleanup" = "$expected_cleanup" ] || { echo "Unexpected snapshot cleanup calls: $actual_cleanup" >&2; exit 1; }
 }
@@ -608,7 +658,7 @@ cleanup_warnings_are 0
 # Use the real timeout to kill a hung command tree, shortening just the production deadline.
 refuse_after_failed_check SNAPSHOT_CHECK_STALL=true
 grep -q 'snapshot-check deadline: -k 5 40' "$CALLS"
-snapshot_cleanup_calls_are 'rm -f' 'container inspect'
+snapshot_cleanup_calls_are 'rm -f' 'container inspect' 'sleep 1' 'container inspect'
 cleanup_warnings_are 0
 [ ! -e "$SNAPSHOTS/$snapshot_container.container" ]
 
@@ -625,7 +675,7 @@ cleanup_warnings_are 0
 [ ! -e "$SNAPSHOTS/$snapshot_container.container" ]
 
 refuse_after_failed_check SNAPSHOT_CHECK_EXIT=124 SNAPSHOT_CLEANUP=daemon-error
-snapshot_cleanup_calls_are 'rm -f' 'container inspect'
+snapshot_cleanup_calls_are 'rm -f' 'container inspect' 'sleep 1' 'container inspect'
 cleanup_warnings_are 1
 
 refuse_after_failed_check SNAPSHOT_CHECK_EXIT=124 SNAPSHOT_CLEANUP=late-remove-error
@@ -638,17 +688,30 @@ snapshot_cleanup_calls_are 'rm -f' 'container inspect' 'rm -f' 'container inspec
 cleanup_warnings_are 0
 [ ! -e "$SNAPSHOTS/$snapshot_container.container" ]
 
+refuse_after_failed_check SNAPSHOT_CHECK_EXIT=124 SNAPSHOT_CLEANUP=late-removal-polls
+snapshot_cleanup_calls_are 'rm -f' 'container inspect' 'rm -f' \
+  'container inspect' 'sleep 1' 'container inspect' 'sleep 1' 'container inspect'
+cleanup_warnings_are 0
+[ ! -e "$SNAPSHOTS/$snapshot_container.container" ]
+
 refuse_after_failed_check SNAPSHOT_CHECK_EXIT=124 SNAPSHOT_CLEANUP=late-removal-pending
-snapshot_cleanup_calls_are 'rm -f' 'container inspect' 'rm -f' 'container inspect'
+snapshot_cleanup_calls_are 'rm -f' 'container inspect' 'rm -f' \
+  'container inspect' 'sleep 1' 'container inspect' 'sleep 1' 'container inspect' \
+  'sleep 1' 'container inspect' 'sleep 1' 'container inspect'
 cleanup_warnings_are 1
 [ -f "$SNAPSHOTS/$snapshot_container.container" ]
 
+refuse_after_failed_check SNAPSHOT_CHECK_EXIT=124 SNAPSHOT_CLEANUP=late-create
+snapshot_cleanup_calls_are 'rm -f' 'container inspect' 'sleep 1' 'container inspect' 'rm -f' 'container inspect'
+cleanup_warnings_are 0
+[ ! -e "$SNAPSHOTS/$snapshot_container.container" ]
+
 refuse_after_failed_check SNAPSHOT_CHECK_EXIT=124 SNAPSHOT_CLEANUP=inspect-warning
-snapshot_cleanup_calls_are 'rm -f' 'container inspect'
+snapshot_cleanup_calls_are 'rm -f' 'container inspect' 'sleep 1' 'container inspect'
 cleanup_warnings_are 0
 
 refuse_after_failed_check SNAPSHOT_CHECK_EXIT=124 SNAPSHOT_CLEANUP=inspect-other-name
-snapshot_cleanup_calls_are 'rm -f' 'container inspect'
+snapshot_cleanup_calls_are 'rm -f' 'container inspect' 'sleep 1' 'container inspect'
 cleanup_warnings_are 1
 
 # The history fallback still runs the check when there is no compatibility file.

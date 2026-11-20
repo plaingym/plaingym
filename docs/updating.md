@@ -84,11 +84,13 @@ by the guard and may already have been pruned. The check reads only that snapsho
 authenticated references and object sizes, exits within 30 seconds even if Postgres
 is down, and runs the Compose client directly under a 40-second host timeout
 with a five-second kill grace. If the host timeout expires, the updater tries
-to remove the uniquely named one-off container, then checks for a late creation
-and retries removal if it finds the container. If Docker reports that the retry
-met a removal already in progress, the updater checks once more for absence.
-Each cleanup command has a ten-second timeout plus a five-second kill grace.
-If cleanup remains uncertain, the updater names the container for manual removal.
+to remove the uniquely named one-off container. It checks for a late creation
+immediately and again after one second if the first check did not find it. If it
+finds the container, it retries removal. When Docker reports that removal is
+already in progress, the updater checks for absence up to five times, one second
+apart. Each Docker cleanup command has a ten-second timeout plus a five-second
+kill grace. If cleanup remains uncertain, the updater names the container for
+manual removal.
 Startup refuses incompatible
 code before opening the database and directs you to that check.
 

@@ -18,12 +18,15 @@ valid_repository() {
   # Dot-only path segments normalize outside the requested repository.
   ! printf '%s\n' "$1" | grep -Eq '(^|/)\.+(/|$)'
 }
-compose() {
+compose() (
+  # The exec replaces only this subshell, so the calling script can continue.
+  compose_exec "$@"
+)
+compose_exec() {
   if [ -f "$ROOT/schema-compatibility.yaml" ]; then
-    docker compose --project-directory "$ROOT" --env-file "$ROOT/.env" -f "$ROOT/compose.yaml" -f "$ROOT/schema-compatibility.yaml" "$@"
-    return
+    set -- -f "$ROOT/schema-compatibility.yaml" "$@"
   fi
-  docker compose --project-directory "$ROOT" --env-file "$ROOT/.env" -f "$ROOT/compose.yaml" "$@"
+  exec docker compose --project-directory "$ROOT" --env-file "$ROOT/.env" -f "$ROOT/compose.yaml" "$@"
 }
 # A release version: vX.Y.Z without leading zeros or a suffix.
 valid_version() {

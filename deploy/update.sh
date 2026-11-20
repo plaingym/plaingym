@@ -473,15 +473,32 @@ docker_reports() { # STDERR MESSAGE: match a complete Docker error line even whe
 cleanup_snapshot_check() {
   # Docker may still be creating the container when the first removal runs.
   timeout -k 5 10 docker rm -f "$1" >/dev/null 2>&1 || true
-  # Capture stderr while discarding stdout, which can include container configuration.
-  if snapshot_check_error=$(timeout -k 5 10 docker container inspect "$1" 2>&1 >/dev/null); then
-    snapshot_check_error=$(timeout -k 5 10 docker rm -f "$1" 2>&1 >/dev/null) && return 0
-    if docker_reports "$snapshot_check_error" "removal of container $1 is already in progress"; then
-      # Compose or Docker may have started removing the container between inspect and rm.
-      snapshot_check_error=$(timeout -k 5 10 docker container inspect "$1" 2>&1 >/dev/null) && return 1
+  for snapshot_check_attempt in 1 2; do
+    [ "$snapshot_check_attempt" -eq 1 ] || sleep 1
+    # Capture stderr while discarding stdout, which can include container configuration.
+    if snapshot_check_error=$(timeout -k 5 10 docker container inspect "$1" 2>&1 >/dev/null); then
+      break
     fi
+    if [ "$snapshot_check_attempt" -eq 2 ]; then
+      docker_reports "$snapshot_check_error" "No such container: $1"
+      return
+    fi
+  done
+
+  snapshot_check_error=$(timeout -k 5 10 docker rm -f "$1" 2>&1 >/dev/null) && return 0
+  if ! docker_reports "$snapshot_check_error" "removal of container $1 is already in progress"; then
+    docker_reports "$snapshot_check_error" "No such container: $1"
+    return
   fi
-  docker_reports "$snapshot_check_error" "No such container: $1"
+
+  for snapshot_check_poll in 1 2 3 4 5; do
+    [ "$snapshot_check_poll" -eq 1 ] || sleep 1
+    if ! snapshot_check_error=$(timeout -k 5 10 docker container inspect "$1" 2>&1 >/dev/null) &&
+      docker_reports "$snapshot_check_error" "No such container: $1"; then
+      return 0
+    fi
+  done
+  return 1
 }
 # After a successful update, keep the current image and the two before it (the rollback stack's top
 # `rollback_depth` entries, lib.sh). Older entries' images go, the installer's too, and each removed one leaves what
@@ -624,10 +641,8 @@ if [ "$requested_rollback" = true ]; then
       # shellcheck disable=SC2016
       if snapshot_check=$(APP_IMAGE="$check_image" timeout -k 5 40 sh -c '
         ROOT=$1; shift
-        if [ -f "$ROOT/schema-compatibility.yaml" ]; then
-          set -- -f "$ROOT/schema-compatibility.yaml" "$@"
-        fi
-        exec docker compose --project-directory "$ROOT" --env-file "$ROOT/.env" -f "$ROOT/compose.yaml" "$@"
+        . "$ROOT/lib.sh"
+        compose_exec "$@"
       ' sh "$ROOT" run --rm --name "$snapshot_check_name" --no-deps -T --entrypoint node app /app/maintenance.mjs snapshot-check "$restore_snapshot" 2>/dev/null); then
         :
       else
