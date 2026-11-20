@@ -467,6 +467,18 @@ remove_image() { # IMAGE_ID: never forced, and bounded, so maintenance can't hol
   # Docker refuses an image a container uses or that names in other repositories refer to; that refusal stands.
   timeout -k 5 30 docker image rm "$1" >/dev/null 2>&1
 }
+cleanup_snapshot_check() {
+  # Docker may still be creating the container when the first removal runs.
+  timeout -k 5 10 docker rm -f "$1" >/dev/null 2>&1 || true
+  # Capture stderr while discarding stdout, which can include container configuration.
+  if snapshot_check_error=$(timeout -k 5 10 docker container inspect "$1" 2>&1 >/dev/null); then
+    snapshot_check_error=$(timeout -k 5 10 docker rm -f "$1" 2>&1 >/dev/null) && return 0
+  fi
+  case "$snapshot_check_error" in
+    "No such container: $1"|"Error: No such container: $1"|"Error response from daemon: No such container: $1") return 0 ;;
+    *) return 1 ;;
+  esac
+}
 # After a successful update, keep the current image and the two before it (the rollback stack's top
 # `rollback_depth` entries, lib.sh). Older entries' images go, the installer's too, and each removed one leaves what
 # --rollback offers (a `trimmed` history row); so do images this updater pulled that are off the stack (a rolled-back release).
@@ -613,10 +625,14 @@ if [ "$requested_rollback" = true ]; then
       ' sh "$ROOT" run --rm --name "$snapshot_check_name" --no-deps -T --entrypoint node app /app/maintenance.mjs snapshot-check "$restore_snapshot" 2>/dev/null); then
         :
       else
+        snapshot_check_status=$?
         snapshot_check=
-        # A killed Compose client cannot remove its one-off container, even with --rm.
-        timeout -k 5 10 docker rm -f "$snapshot_check_name" >/dev/null 2>&1 \
-          || echo "Could not remove snapshot-check container $snapshot_check_name; remove it when Docker is available." >&2
+        case "$snapshot_check_status" in
+          124|137)
+            # A timed-out Compose client may leave its one-off container behind.
+            cleanup_snapshot_check "$snapshot_check_name" \
+              || echo "Could not remove snapshot-check container $snapshot_check_name; remove it when Docker is available." >&2 ;;
+        esac
       fi
       case "$snapshot_check" in
         'Snapshot availability: available') snapshot_availability='The named snapshot is available at the configured backup destination.' ;;

@@ -83,8 +83,10 @@ because the guard lacks a matching restore point is explicitly labelled as unpro
 by the guard and may already have been pruned. The check reads only that snapshot's
 authenticated references and object sizes, exits within 30 seconds even if Postgres
 is down, and has a 40-second host timeout plus a five-second kill grace.
-If the command fails, the host removes its uniquely named one-off container with
-a ten-second timeout plus a five-second kill grace and reports any cleanup failure.
+If the host timeout expires, the updater removes the uniquely named one-off
+container and checks once for a late creation, removing it if found. Each
+cleanup command has a ten-second timeout plus a five-second kill grace.
+If cleanup remains uncertain, the updater names the container for manual removal.
 Startup refuses incompatible
 code before opening the database and directs you to that check.
 

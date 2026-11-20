@@ -62,12 +62,32 @@ case "$*" in
       checked_snapshot=$1; shift
     done
     case "$check_name" in plaingym-snapshot-check-*) ;; *) echo 'snapshot-check needs its own container name' >&2; exit 1 ;; esac
+    case "${SNAPSHOT_CHECK_EXIT:-0}" in
+      1) echo 'Snapshot availability: available'; exit 1 ;; # Compose already removed the container.
+      124|137) exit "$SNAPSHOT_CHECK_EXIT" ;; # The daemon has not created the container yet.
+    esac
     touch "$SNAPSHOTS/$check_name.container"
     [ "${SNAPSHOT_CHECK_STALL:-}" != true ] || sleep 60
     if [ -f "$SNAPSHOTS/$checked_snapshot" ]; then echo 'Snapshot availability: available'
     else echo 'Snapshot availability: missing or incomplete'; fi
     rm "$SNAPSHOTS/$check_name.container" ;;
-  'rm -f plaingym-snapshot-check-'*) rm -f "$SNAPSHOTS/$3.container" ;;
+  'rm -f plaingym-snapshot-check-'*)
+    [ "${SNAPSHOT_CLEANUP:-}" != daemon-error ] || { echo 'Cannot connect to the Docker daemon' >&2; exit 1; }
+    if [ -f "$SNAPSHOTS/$3.container" ]; then
+      [ "${SNAPSHOT_CLEANUP:-}" != late-remove-error ] || { echo 'Removal failed' >&2; exit 1; }
+      rm "$SNAPSHOTS/$3.container"
+      [ "${SNAPSHOT_CLEANUP:-}" != late-already-removed ] || { echo "Error response from daemon: No such container: $3" >&2; exit 1; }
+    else
+      echo "Error response from daemon: No such container: $3" >&2
+      exit 1
+    fi ;;
+  'container inspect plaingym-snapshot-check-'*)
+    case "${SNAPSHOT_CLEANUP:-}" in
+      daemon-error) echo 'Cannot connect to the Docker daemon' >&2; exit 1 ;;
+      late|late-remove-error|late-already-removed) touch "$SNAPSHOTS/$3.container" ;;
+    esac
+    if [ -f "$SNAPSHOTS/$3.container" ]; then echo '[{}]'
+    else echo '[]'; echo "Error response from daemon: No such container: $3" >&2; exit 1; fi ;;
   *' snapshot pre-upgrade'|*' snapshot manual')
     compatible "${APP_IMAGE:-$PREVIOUS_ID}"
     case "${FAIL_AT:-}" in snapshot|snapshot_rollback) exit 1 ;; esac
@@ -121,6 +141,10 @@ if [ "${SNAPSHOT_CHECK_STALL:-}" = true ] && [ "$*" != "${*#-k 5 40 sh }" ]; the
   shift 3
   exec /usr/bin/timeout -k 1 1 "$@"
 fi
+case "$*" in
+  *' docker rm -f plaingym-snapshot-check-'*|*' docker container inspect plaingym-snapshot-check-'*)
+    printf 'snapshot-check cleanup deadline: %s\n' "$*" >> "$CALLS" ;;
+esac
 exec /usr/bin/timeout "$@"
 MOCK
 chmod 0700 "$temporary/bin/timeout"
@@ -514,16 +538,74 @@ fi
 said "The named snapshot $snapshot is missing or incomplete"
 [ "$before" = "$(cat "$case_dir/.env" "$case_dir/version-history.tsv" | sha256sum)" ]
 
-# A stuck database/configuration check cannot hold the refusal open. The timeout fixture keeps this test fast,
-# verifies the production 40-second deadline, and uses the real timeout to kill the hung command tree.
-if SNAPSHOT_CHECK_STALL=true sh "$case_dir/update.sh" --rollback > "$temporary/output" 2>&1; then
-  echo 'Accepted rollback after a stalled check.' >&2; exit 1
-fi
-said 'Snapshot availability could not be checked'
+snapshot_check_state() {
+  sha256sum "$case_dir/.env" "$case_dir/version-history.tsv" "$case_dir/schema-compatibility.yaml" \
+    "$FIXTURES/schema" "$SNAPSHOTS/count"
+}
+before=$(snapshot_check_state)
+refuse_after_failed_check() {
+  : > "$CALLS"
+  if env "$@" sh "$case_dir/update.sh" --rollback > "$temporary/output" 2>&1; then
+    echo "Accepted rollback after a failed check: $*" >&2; exit 1
+  fi
+  said 'Cannot roll back to v1.9.0: the schema requires v2.0.0'
+  said 'Snapshot availability could not be checked'
+  said 'Nothing was changed'
+  [ "$before" = "$(snapshot_check_state)" ]
+  if grep -Eq 'stop app|up -d|maintenance\.mjs snapshot ' "$CALLS"; then
+    echo 'Changed services or took a snapshot during a refused rollback.' >&2; exit 1
+  fi
+  snapshot_container=$(sed -n 's/.* --name \(plaingym-snapshot-check-[^ ]*\) .* snapshot-check .*/\1/p' "$CALLS")
+  [ -n "$snapshot_container" ]
+}
+snapshot_cleanup_calls_are() {
+  expected_cleanup=$(
+    for operation do
+      printf 'snapshot-check cleanup deadline: -k 5 10 docker %s %s\n' "$operation" "$snapshot_container"
+      printf '%s %s\n' "$operation" "$snapshot_container"
+    done
+  )
+  actual_cleanup=$(sed -n -e '/^snapshot-check cleanup deadline: /p' \
+    -e 's/^\(rm -f .*\|container inspect .*\) IMAGE=.*$/\1/p' "$CALLS")
+  [ "$actual_cleanup" = "$expected_cleanup" ] || { echo "Unexpected snapshot cleanup calls: $actual_cleanup" >&2; exit 1; }
+}
+cleanup_warning='Could not remove snapshot-check container'
+cleanup_warnings_are() {
+  [ "$(grep -cF "$cleanup_warning" "$temporary/output" || true)" -eq "$1" ]
+  if [ "$1" -gt 0 ]; then grep -qxF "$cleanup_warning $snapshot_container; remove it when Docker is available." "$temporary/output"; fi
+}
+
+refuse_after_failed_check SNAPSHOT_CHECK_EXIT=1
+snapshot_cleanup_calls_are
+cleanup_warnings_are 0
+
+# Use the real timeout to kill a hung command tree, shortening just the production deadline.
+refuse_after_failed_check SNAPSHOT_CHECK_STALL=true
 grep -q 'snapshot-check deadline: -k 5 40' "$CALLS"
-grep -q 'rm -f plaingym-snapshot-check-' "$CALLS"
-[ -z "$(find "$SNAPSHOTS" -name '*.container' -print)" ] || { echo 'Left a snapshot-check container after timeout.' >&2; exit 1; }
-[ "$before" = "$(cat "$case_dir/.env" "$case_dir/version-history.tsv" | sha256sum)" ]
+snapshot_cleanup_calls_are 'rm -f' 'container inspect'
+cleanup_warnings_are 0
+[ ! -e "$SNAPSHOTS/$snapshot_container.container" ]
+
+for check_status in 124 137; do
+  refuse_after_failed_check SNAPSHOT_CHECK_EXIT="$check_status" SNAPSHOT_CLEANUP=late
+  snapshot_cleanup_calls_are 'rm -f' 'container inspect' 'rm -f'
+  cleanup_warnings_are 0
+  [ ! -e "$SNAPSHOTS/$snapshot_container.container" ]
+done
+
+refuse_after_failed_check SNAPSHOT_CHECK_EXIT=124 SNAPSHOT_CLEANUP=late-already-removed
+snapshot_cleanup_calls_are 'rm -f' 'container inspect' 'rm -f'
+cleanup_warnings_are 0
+[ ! -e "$SNAPSHOTS/$snapshot_container.container" ]
+
+refuse_after_failed_check SNAPSHOT_CHECK_EXIT=124 SNAPSHOT_CLEANUP=daemon-error
+snapshot_cleanup_calls_are 'rm -f' 'container inspect'
+cleanup_warnings_are 1
+
+refuse_after_failed_check SNAPSHOT_CHECK_EXIT=124 SNAPSHOT_CLEANUP=late-remove-error
+snapshot_cleanup_calls_are 'rm -f' 'container inspect' 'rm -f'
+cleanup_warnings_are 1
+[ -f "$SNAPSHOTS/$snapshot_container.container" ]
 
 # With no floor recorded, as with development builds, nothing bounds a rollback.
 make_install no_floor v2.0.0 v2.0.0

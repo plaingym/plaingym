@@ -509,8 +509,10 @@ finish (including an older image without that command). A history fallback not n
 by the active guard is labelled as unprotected and may have been pruned. The check
 reads only the one snapshot and exits within 30 seconds, including database startup
 and cleanup. The host bounds Compose to 40 seconds plus a five-second kill grace.
-The run has a unique container name; on failure, the host removes it within a
-ten-second timeout plus a five-second kill grace, reporting any cleanup failure.
+If Compose times out, the host removes the uniquely named one-off container,
+then checks once for a late creation and removes it if found. Each cleanup command
+has a ten-second timeout plus a five-second kill grace. If cleanup remains uncertain,
+the updater names the container for manual removal.
 The check does not migrate
 the database, take a snapshot, or change the running services. Startup checks schema
 compatibility before opening the database and points to this availability check.
