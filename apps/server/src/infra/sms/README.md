@@ -57,11 +57,15 @@ with source `provider`. It remains a definite non-send.
 
 Provider resolution, settings reads, consent checks and the daily-usage lock share
 a 15-second preparation deadline. A timeout proves `not_accepted` and permits a
-retry. Transaction-local PostgreSQL lock and statement timeouts bound blocked
-queries by the remaining preparation time. When a slot commits after the deadline,
-a short transaction returns that slot to its original local day. Together with the
-provider's 30-second deadline, preparation stays inside the one-minute in-flight
-window. Database outcome writes still use their guarded retries below.
+retry. Transaction-local PostgreSQL lock and statement timeouts use 250 ms less
+than the remaining preparation time, with a 1 ms minimum. A database timeout
+during preparation also reports `SMS recipient checks timed out`. If a slot or cap
+refusal commits after the deadline, the sender waits for a short transaction to
+reverse that increment on its original local day before reporting the timeout.
+That wait lasts at most 30 seconds, the provider deadline a timed-out attempt
+doesn't use, so either path stays inside the one-minute in-flight window.
+Correction failures are logged. The provider has its own 30-second deadline.
+Database outcome writes still use their guarded retries below.
 
 `createSmsDeliveries({ scope, clock })` uses the shared `infra/delivery-state.ts`
 factory with the SMS table, key validator, in-flight window and safe error policy.

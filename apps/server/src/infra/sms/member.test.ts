@@ -143,7 +143,9 @@ it('rolls back a blocked preparation and frees its connection while the usage lo
       rolledBack.resolve(error);
       throw error;
     });
-    await expect(f.sender({ scope: waitingScope }).sendSms(message)).rejects.toMatchObject({ acceptance: 'not_accepted' });
+    await expect(f.sender({ scope: waitingScope }).sendSms(message)).rejects.toMatchObject({
+      acceptance: 'not_accepted', message: 'SMS recipient checks timed out',
+    });
     const usage = await senderScope(f.gymId, tx => tx.select().from(smsDailyUsage));
     expect(lockHeld).toBe(true);
     expect(['55P03', '57014']).toContain(databaseCode(await rolledBack.promise));
@@ -155,45 +157,75 @@ it('rolls back a blocked preparation and frees its connection while the usage lo
     try { await holder; } finally { await Promise.all([holderConnection.close(), senderConnection.close()]); }
   }
 });
-it('returns a slot committed after the deadline to the original local day', async () => {
-  const f = await fixture();
+it.each(['sent', 'refused'] as const)('reverses a late %s increment on the original local day before rejecting', async counter => {
+  const f = await fixture({ cap: 2 });
+  const sent = counter === 'sent' ? 1 : 2, refused = 3, originalTime = f.clock.now();
+  const day = '2026-11-15', nextDay = '2026-11-16';
   await scope(f.gymId, tx => tx.insert(smsDailyUsage).values([
-    { gymId: f.gymId, day: '2026-11-15', sent: 1, createdAt: f.clock.now() },
-    { gymId: f.gymId, day: '2026-11-16', sent: 2, createdAt: f.clock.now() },
+    { gymId: f.gymId, day, sent, refused, createdAt: originalTime },
+    { gymId: f.gymId, day: nextDay, sent: 2, refused: 1, createdAt: originalTime },
   ]));
-  const ready = Promise.withResolvers<boolean>(), commit = Promise.withResolvers<void>(), finished = Promise.withResolvers<void>();
-  let first = true;
+  const usageWritten = Promise.withResolvers<{ sent: number; refused: number } | undefined>();
+  const commitUsage = Promise.withResolvers<void>();
+  const correctionWritten = Promise.withResolvers<void>(), commitCorrection = Promise.withResolvers<void>();
+  let usageTransaction: Promise<unknown> | undefined, correctionTransaction: Promise<unknown> | undefined;
   const gatedScope: typeof scope = (gymId, fn) => {
-    if (!first) return scope(gymId, fn);
-    first = false;
-    return scope(gymId, async tx => {
+    if (!usageTransaction) {
+      // The real usage write holds the row lock while its commit is delayed past the deadline.
+      const transaction = scope(gymId, async tx => {
+        const result = await fn(tx);
+        const [row] = await tx.select({ sent: smsDailyUsage.sent, refused: smsDailyUsage.refused })
+          .from(smsDailyUsage).where(eq(smsDailyUsage.day, day));
+        usageWritten.resolve(row);
+        await commitUsage.promise;
+        return result;
+      });
+      usageTransaction = transaction;
+      return transaction;
+    }
+    const transaction = scope(gymId, async tx => {
       const result = await fn(tx);
-      const [day] = await tx.select().from(smsDailyUsage).where(eq(smsDailyUsage.day, '2026-11-15'));
-      ready.resolve(day?.sent === 2);
-      await commit.promise;
+      correctionWritten.resolve();
+      await commitCorrection.promise;
       return result;
-    }).finally(finished.resolve);
+    });
+    correctionTransaction = transaction;
+    return transaction;
   };
 
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  let settled = false;
+  const outcome = f.sender({ scope: gatedScope }).sendSms(message).catch((error: unknown) => error)
+    .finally(() => { settled = true; });
   try {
-    const outcome = f.sender({ scope: gatedScope }).sendSms(message).catch((error: unknown) => error);
-    expect(await Promise.race([ready.promise, outcome])).toBe(true);
+    expect(await Promise.race([usageWritten.promise, outcome])).toEqual({ sent, refused, [counter]: (counter === 'sent' ? sent : refused) + 1 });
     await vi.advanceTimersByTimeAsync(smsDeadlineMs / 2);
-    expect(await outcome).toMatchObject({ acceptance: 'not_accepted', message: 'SMS recipient checks timed out' });
+    expect(settled).toBe(false);
     f.clock.advance(24 * 60 * 60_000);
     vi.useRealTimers();
-    commit.resolve();
-    await finished.promise;
-    await vi.waitFor(async () => expect(await f.usage()).toEqual(expect.arrayContaining([
-      expect.objectContaining({ day: '2026-11-15', sent: 1, refused: 0 }),
-      expect.objectContaining({ day: '2026-11-16', sent: 2, refused: 0 }),
-    ])));
-    expect(f.sms.messages).toEqual([]);
+    commitUsage.resolve();
+    expect(await Promise.race([correctionWritten.promise, outcome])).toBeUndefined();
+    expect(settled).toBe(false);
+    commitCorrection.resolve();
+    expect(await outcome).toMatchObject({ acceptance: 'not_accepted', message: 'SMS recipient checks timed out' });
+    f.clock.set(originalTime);
+    if (counter === 'sent') {
+      expect(await f.sender().sendSms(message)).toMatchObject({ status: 'sent' });
+      expect(f.sms.messages).toHaveLength(1);
+    } else {
+      expect(f.sms.messages).toEqual([]);
+    }
+    expect(await f.usage()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ day, sent: 2, refused }),
+      expect.objectContaining({ day: nextDay, sent: 2, refused: 1 }),
+    ]));
+    expect(f.logSuppression).not.toHaveBeenCalled();
   } finally {
     vi.useRealTimers();
-    commit.resolve();
-    if (!first) await finished.promise;
+    commitUsage.resolve();
+    commitCorrection.resolve();
+    await outcome;
+    await Promise.allSettled([usageTransaction, correctionTransaction]);
   }
 });
 it('clears every consent at an opted-out number in this gym, auditing identifiers only', async () => {

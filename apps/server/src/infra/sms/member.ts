@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { forGym, members, households, smsDailyUsage, writeAudit, type Transaction } from '@plaingym/db';
+import { databaseCode, forGym, members, households, smsDailyUsage, writeAudit, type Transaction } from '@plaingym/db';
 import { and, eq, gt, inArray } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- SQL only sets local timeouts and atomically decrements gym-scoped SMS usage.
 import { sql } from 'drizzle-orm';
@@ -16,6 +16,8 @@ import { smsDeadlineMs } from './constants.js';
 import { DeliveryError, SmsDeliveryError, validateSms, type Sms, type SmsMessage, type SmsResult } from './index.js';
 
 type SuppressionReason = Extract<SmsResult, { status: 'suppressed' }>['reason'];
+const preparationTimeoutMarginMs = 250;
+
 function setPreparationTimeouts(tx: Transaction, milliseconds: number) {
   const timeout = milliseconds + 'ms';
   // eslint-disable-next-line database/system-tables -- Set connection limits only for this transaction; no table access.
@@ -47,7 +49,7 @@ export class MemberSms implements Sms {
     // Keep preparation below half a transport deadline: together with the provider's deadline this stays
     // inside the two-deadline delivery window. Use a monotonic deadline for the wait, independent of the gym clock.
     const deadline = performance.now() + smsDeadlineMs / 2;
-    let expired = false, timer: ReturnType<typeof setTimeout> | undefined;
+    let expired = false, usageMayCommit = false, timer: ReturnType<typeof setTimeout> | undefined;
     const timedOut = () => new DeliveryError('not_accepted', 'SMS recipient checks timed out');
     const remaining = () => Math.ceil(deadline - performance.now());
     const requireTime = () => {
@@ -67,7 +69,7 @@ export class MemberSms implements Sms {
       const outgoing = { ...message, body: `${resolved.name}: ${message.body}` };
       validateSms(outgoing);
       const checked = await scope(gymId, async tx => {
-        await setPreparationTimeouts(tx, requireTime());
+        await setPreparationTimeouts(tx, Math.max(1, requireTime() - preparationTimeoutMarginMs));
         if ((!memberIds.length && !householdIds.length) || (kind === 'announcements' && householdIds.length)) return 'no_consent';
         const homes = householdIds.length ? await tx.select({ phone: households.phone, phoneE164: households.phoneE164,
           smsNoticesConsentAt: households.smsNoticesConsentAt }).from(households).where(inArray(households.id, [...householdIds])) : [];
@@ -86,41 +88,58 @@ export class MemberSms implements Sms {
           if (!(kind === 'notices' ? member.smsNoticesConsentAt : member.smsAnnouncementsConsentAt)) return 'no_consent';
           if (member.phoneE164 !== message.to || normalizePhone(member.phone, gym.country) !== message.to) return 'phone_changed';
         }
-        await setPreparationTimeouts(tx, requireTime());
+        await setPreparationTimeouts(tx, Math.max(1, requireTime() - preparationTimeoutMarginMs));
         requireTime();
         const now = clock.now();
         const allowed = await takeSmsSlot(tx, gymId, now, gym.timezone, gym.smsDailyCap);
+        const day = localDate(now, gym.timezone);
         requireTime();
-        return allowed ? { slotDay: localDate(now, gym.timezone) } : 'cap_reached';
+        usageMayCommit = true;
+        return { day, counter: allowed ? 'sent' : 'refused' } as const;
       });
       if (expired || remaining() <= 0) {
-        // COMMIT may win at the database after the deadline wins at the caller. Return only a confirmed slot.
+        // Reverse only an increment confirmed by a committed transaction.
         if (typeof checked === 'object') {
+          const { day, counter } = checked;
           try {
             await scope(gymId, async tx => {
               await setPreparationTimeouts(tx, 3_000);
-              await tx.update(smsDailyUsage).set({ sent: sql`${smsDailyUsage.sent} - 1` })
-                .where(and(eq(smsDailyUsage.gymId, gymId), eq(smsDailyUsage.day, checked.slotDay), gt(smsDailyUsage.sent, 0)));
+              const column = smsDailyUsage[counter];
+              await tx.update(smsDailyUsage).set({ [counter]: sql`${column} - 1` })
+                .where(and(eq(smsDailyUsage.gymId, gymId), eq(smsDailyUsage.day, day), gt(column, 0)));
             });
           } catch (error) {
-            // Retrying an uncertain release could subtract a slot used by a different send.
-            logError('sms.slot_release_failed', { gymId, day: checked.slotDay }, error);
+            // Retrying an uncertain release could subtract another attempt's increment.
+            logError('sms.usage_correction_failed',{ gymId, day, counter }, error);
           }
         }
         throw timedOut();
       }
       if (typeof checked === 'string') return this.#suppressed(checked);
+      if (checked.counter === 'refused') return this.#suppressed('cap_reached');
       return { resolved, outgoing };
     };
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => { expired = true; reject(timedOut()); }, remaining());
+    });
+    const preparation = prepare();
     let prepared: Awaited<ReturnType<typeof prepare>>;
     try {
-      const timeout = new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => { expired = true; reject(timedOut()); }, remaining());
-      });
-      prepared = await Promise.race([prepare(), timeout]);
+      prepared = await Promise.race([preparation, timeout]);
     } catch (error) {
+      // Once the usage write can commit, finish its cleanup before the caller retries or sends another group. Wait at
+      // most the provider deadline this attempt no longer uses, so a stalled commit stays inside the in-flight window.
+      if (expired && usageMayCommit) {
+        let settle: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([preparation.catch(() => undefined),
+          new Promise<void>(resolve => { settle = setTimeout(resolve, smsDeadlineMs); })]);
+        clearTimeout(settle);
+      }
       // validateSms's refusal carries a fixed message; any other failure is replaced.
-      throw error instanceof DeliveryError ? error : new DeliveryError('not_accepted', 'SMS recipient checks failed');
+      if (error instanceof DeliveryError) throw error;
+      const code = databaseCode(error);
+      if (code === '55P03' || code === '57014') throw timedOut();
+      throw new DeliveryError('not_accepted', 'SMS recipient checks failed');
     } finally { clearTimeout(timer); }
     if ('status' in prepared) return prepared;
     // Every read and the cap reservation have committed before this network boundary.
