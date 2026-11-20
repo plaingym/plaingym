@@ -211,20 +211,50 @@ describe('member admin UI', () => {
     dialog = within(screen.getByRole('dialog', { name: title }));
     expect(dialog.getByRole<HTMLInputElement>('textbox').value).toBe('');
   });
-  it('explains a delete refused for billing records and points to Cancel or Erase', async () => {
+  it('keeps the delete confirmation open while pending and explains a refusal for billing records', async () => {
     bootstrap(['owner']);
     const loaded = vi.mocked(memberRequest).getMockImplementation()!;
+    const response = Promise.withResolvers<void>();
     vi.mocked(memberRequest).mockImplementation(async (schema, path, method, ...rest) => {
-      if (method === 'DELETE') throw new ApiError(409, 'conflict', [memberDeleteBlockedReason]);
+      if (method === 'DELETE') {
+        await response.promise;
+        throw new ApiError(409, 'conflict', [memberDeleteBlockedReason]);
+      }
       return loaded(schema, path, method, ...rest);
     });
     view(<MemberProfile memberId={memberId}/>);
     fireEvent.click(await screen.findByRole('button', { name: 'Delete member' }));
-    const dialog = screen.getByRole('dialog');
-    fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: 'Alex Smith' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete member' }));
-    expect((await within(dialog).findByRole('alert')).textContent).toContain('This member has billing records');
+    const dialog = screen.getByRole('dialog', { name: 'Delete this member?' });
+    const controls = within(dialog);
+    const name = controls.getByRole<HTMLInputElement>('textbox');
+    const submit = controls.getByRole<HTMLButtonElement>('button', { name: 'Delete member' });
+    const cancel = controls.getByRole<HTMLButtonElement>('button', { name: 'Cancel' });
+    const close = controls.getByRole<HTMLButtonElement>('button', { name: 'Close dialog' });
+    fireEvent.change(name, { target: { value: 'Alex Smith' } });
+    fireEvent.click(submit);
+
+    fireEvent(dialog, new Event('cancel', { cancelable: true })); // Escape triggers the native dialog cancel event.
+    vi.spyOn(dialog, 'getBoundingClientRect').mockReturnValue({ left: 100, right: 500, top: 100, bottom: 500 } as DOMRect);
+    // Use MouseEvent so jsdom supplies coordinates for the pointerdown.
+    fireEvent(dialog, new MouseEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10 }));
+    fireEvent.click(dialog, { clientX: 10, clientY: 10 });
+    fireEvent.click(close);
+    expect(screen.getByRole('dialog', { name: 'Delete this member?' })).toBe(dialog);
+    expect(controls.queryByText('Discard your unsaved changes?')).toBeNull();
+    expect(close.disabled).toBe(true);
+    expect(cancel.disabled).toBe(true);
+    expect(submit.disabled).toBe(true);
+    expect(name.value).toBe('Alex Smith');
+    expect(vi.mocked(memberRequest).mock.calls.filter(call => call[2] === 'DELETE')).toHaveLength(1);
+
+    response.resolve();
+    expect((await controls.findByRole('alert')).textContent).toContain('This member has billing records');
+    expect(screen.getByRole('dialog', { name: 'Delete this member?' })).toBe(dialog);
+    expect(name.value).toBe('Alex Smith');
+    expect(submit.disabled).toBe(false);
     expect(navigate).not.toHaveBeenCalled();
+    fireEvent.click(cancel);
+    expect(controls.getByText('Discard your unsaved changes?')).toBeDefined();
   });
   it('offers no delete to front desk or coaches', async () => {
     for (const role of ['front_desk', 'coach'] as const) {

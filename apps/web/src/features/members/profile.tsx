@@ -144,7 +144,7 @@ function DeleteMember({ gymId, member }: { gymId: string; member: c.Member }) {
 function DeleteMemberDialog({ gymId, member, onClose }: { gymId: string; member: c.Member; onClose: () => void }) {
   const name = `${member.firstName} ${member.lastName}`, [typed, setTyped] = useState(''), state = useMemberSave();
   const navigate = useNavigate(), client = useQueryClient(), matches = sameName(typed, name);
-  return <Dialog title={text('deleteMemberTitle')} closeLabel={text('closeDialog')} onClose={onClose}>
+  return <Dialog title={text('deleteMemberTitle')} closeLabel={text('closeDialog')} onClose={onClose} dismissible={!state.busy}>
     <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); if (matches) void state.save(async () => {
       await memberRequest(c.membersContracts.deleteMember.response, `/api/members/${member.id}`, 'DELETE', { revision: member.revision });
       // The profile is gone: leave it first, so no mounted observer asks for it again, then drop it before the list reloads.

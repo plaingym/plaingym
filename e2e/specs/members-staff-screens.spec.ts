@@ -16,10 +16,19 @@ for (const width of [360, 1280]) {
     await expect(page.getByRole('tab', { name: 'Profile', exact: true })).toHaveAttribute('aria-selected', 'true');
     expect((await tabs.boundingBox())!.y).toBeLessThan((await page.getByLabel('First name', { exact: true }).boundingBox())!.y);
     const danger = page.getByRole('region', { name: 'Erase or delete member data' });
-    await expect(danger.getByRole('button', { name: 'Delete member', exact: true })).toBeAttached();
+    const deleteMember = danger.getByRole('button', { name: 'Delete member', exact: true });
+    await expect(deleteMember).toBeAttached();
     expect(await danger.evaluate(element => element.parentElement?.lastElementChild === element)).toBe(true);
     await info.attach('member-profile-' + width, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+
+    await deleteMember.click();
+    const deleteDialog = page.getByRole('dialog', { name: 'Delete this member?' });
+    await expect(deleteDialog.getByRole('textbox')).toBeVisible();
+    expect(await deleteDialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await info.attach('delete-member-' + width, { body: await deleteDialog.screenshot(), contentType: 'image/png' });
+    await deleteDialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(deleteDialog).toHaveCount(0);
 
     let standingReads = 0;
     await page.route('**/api/kiosk/standing/*', route => {
