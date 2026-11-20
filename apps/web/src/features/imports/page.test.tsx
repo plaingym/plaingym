@@ -154,6 +154,33 @@ describe('CSV admin workflow', () => {
     expect((screen.getByLabelText('Import type') as HTMLSelectElement).value).toBe('memberships');
   });
   it.each([
+    { label: 'Import type', value: 'memberships' },
+    { label: 'Duplicates', value: 'skip' },
+    { label: 'Name', value: 'lastName' },
+  ])('hides a pending preview failure after editing $label and shows a current failure', async ({ label, value }) => {
+    const pending = Promise.withResolvers<Response>();
+    const currentMessage = 'The preview queue is full. Please try again shortly.';
+    let posts = 0;
+    const fetcher = vi.fn(async (path: string) => {
+      if (path === '/api/imports/uploads') return Response.json({ data: uploaded });
+      return ++posts === 1 ? pending.promise
+        : Response.json({ error: { code: 'unavailable', message: currentMessage } }, { status: 503 });
+    });
+    vi.stubGlobal('fetch', fetcher); start();
+    fireEvent.change(screen.getByLabelText(/CSV file/), { target: { files: [new File(['Name\nTest'], 'people.csv')] } });
+    const button = await screen.findByRole<HTMLButtonElement>('button', { name: 'Preview' });
+    fireEvent.click(button);
+    await waitFor(() => expect(posts).toBe(1));
+    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    expect(button.disabled).toBe(true);
+    pending.resolve(Response.json({ error: { code: 'invalid_request', message: 'The old mapping needs a name column.' } }, { status: 400 }));
+    await waitFor(() => expect(button.disabled).toBe(false));
+    expect(screen.queryByRole('alert')).toBeNull();
+
+    fireEvent.click(button);
+    expect((await screen.findByRole('alert')).textContent).toBe(currentMessage);
+  });
+  it.each([
     { status: 500, code: 'unavailable', message: 'Private server detail' },
     { status: 503, code: 'unknown', message: 'Private server detail' },
     { status: 503, code: 'unavailable', message: 'x'.repeat(2001) },

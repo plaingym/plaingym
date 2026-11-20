@@ -22,12 +22,17 @@ export interface PendingPreview {
   status: 'queued' | 'computing'; admitted: Promise<void>; finished: Promise<StoredPreview>;
 }
 
-/** FIFO admission keeps small previews concurrent without allowing them to starve a large file. */
+type WaitingPreview = { weight: number; start: () => void };
+type GymPreviews = { waiting: WaitingPreview[]; running: number; priority: number };
+
+/** Round-robin admission across gyms, in arrival order within each gym. */
 export class PreviewBudget {
   /** Coalescing belongs to the same coordinator as process-wide admission. Keys include the gym and upload. */
   readonly pending = new Map<string, PendingPreview>();
   #used = 0;
-  readonly #waiting: { gymId: string; weight: number; start: () => void }[] = [];
+  #waitingCount = 0;
+  #admissionSequence = 0;
+  readonly #gyms = new Map<string, GymPreviews>();
   constructor(readonly bytes = PREVIEW_MEMORY_BYTES, readonly queueLimit = PREVIEW_QUEUE_LIMIT,
     readonly gymQueueLimit = PREVIEW_GYM_QUEUE_LIMIT) {
     if (!Number.isSafeInteger(bytes) || bytes < 1) throw new Error('Invalid preview memory budget');
@@ -37,21 +42,45 @@ export class PreviewBudget {
   run<T>(gymId: string, size: number, rows: number, work: () => Promise<T>): Promise<T> {
     // Include per-row overhead for narrow CSVs, whose parsed size is not proportional to their byte size.
     const weight = Math.min(this.bytes, 4 * MIB + size * 8 + rows * 256);
-    const waits = this.#waiting.length > 0 || this.#used + weight > this.bytes;
-    if (waits && (this.#waiting.length >= this.queueLimit
-      || this.#waiting.filter(entry => entry.gymId === gymId).length >= this.gymQueueLimit))
+    const waits = this.#waitingCount > 0 || this.#used + weight > this.bytes;
+    // Give a new gym a turn ahead of the gym just served, while preserving older turns.
+    const gym: GymPreviews = this.#gyms.get(gymId) ?? { waiting: [], running: 0, priority: this.#admissionSequence - 0.5 };
+    if (waits && (this.#waitingCount >= this.queueLimit || gym.waiting.length >= this.gymQueueLimit))
       throw new AppError('unavailable', t('imports/pipeline:previewBusy'));
-    const admitted = new Promise<void>((start) => { this.#waiting.push({ gymId, weight, start }); this.#drain(); });
+    const admitted = new Promise<void>((start) => {
+      gym.waiting.push({ weight, start });
+      this.#gyms.set(gymId, gym);
+      this.#waitingCount++;
+      this.#drain();
+    });
     return (async () => {
       await admitted;
       try { return await work(); }
-      finally { this.#used -= weight; this.#drain(); }
+      finally {
+        this.#used -= weight;
+        gym.running--;
+        if (gym.running === 0 && gym.waiting.length === 0) this.#gyms.delete(gymId);
+        this.#drain();
+      }
     })();
   }
   #drain(): void {
-    while (this.#waiting.length && this.#used + this.#waiting[0]!.weight <= this.bytes) {
-      const next = this.#waiting.shift()!;
-      this.#used += next.weight; next.start();
+    while (this.#waitingCount > 0) {
+      let gym: GymPreviews | undefined;
+      // Equal priorities belong to gyms awaiting their first admission, in request order.
+      for (const candidate of this.#gyms.values()) {
+        if (candidate.waiting.length > 0 && (!gym || candidate.priority < gym.priority)) gym = candidate;
+      }
+      if (!gym) return;
+      const next = gym.waiting[0]!;
+      // Wait for the selected preview to fit before admitting work from a later turn.
+      if (this.#used + next.weight > this.bytes) return;
+      gym.waiting.shift();
+      this.#waitingCount--;
+      gym.running++;
+      gym.priority = ++this.#admissionSequence;
+      this.#used += next.weight;
+      next.start();
     }
   }
 }

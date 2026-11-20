@@ -25,6 +25,61 @@ it('admits small files together, queues a large file fairly, and releases reserv
   large.resolve(); await rejection; await fourth; expect(order).toEqual(['a', 'b', 'large', 'last']);
 });
 
+it('gives a new gym a turn before the second preview from the first gym', async () => {
+  const budget = new PreviewBudget(16 * 1024 * 1024), order: string[] = [];
+  const release = Promise.withResolvers<void>(), large = 20 * 1024 * 1024;
+  const active = budget.run('a', large, 1, async () => { order.push('a1'); await release.promise; });
+  const queued = ['a2', 'a3'].map(name => budget.run('a', large, 1, async () => { order.push(name); }));
+  const small = budget.run('b', 1, 1, async () => { order.push('b'); });
+
+  await Promise.resolve();
+  expect(order).toEqual(['a1']);
+  release.resolve();
+  await Promise.all([active, ...queued, small]);
+  expect(order).toEqual(['a1', 'b', 'a2', 'a3']);
+});
+
+it('admits a new gym beside running work and preserves the older turn after that admission', async () => {
+  const mib = 1024 * 1024, budget = new PreviewBudget(128 * mib), order: string[] = [];
+  const release = Promise.withResolvers<void>();
+  // Each large preview reserves just over 68 MiB, so a small preview fits beside one.
+  const first = budget.run('a', 8 * mib, 1, async () => { order.push('a1'); await release.promise; });
+  const second = budget.run('a', 8 * mib, 1, async () => { order.push('a2'); });
+  const small = budget.run('b', 1, 1, async () => { order.push('b'); });
+  await Promise.resolve();
+  expect(order).toEqual(['a1', 'b']);
+  await small;
+
+  const later = budget.run('c', 1, 1, async () => { order.push('c'); });
+  await Promise.resolve();
+  expect(order).toEqual(['a1', 'b']);
+  release.resolve();
+  await Promise.all([first, second, later]);
+  expect(order).toEqual(['a1', 'b', 'a2', 'c']);
+});
+
+it('keeps three waiting gyms within the shared memory budget', async () => {
+  const budget = new PreviewBudget(12 * 1024 * 1024), order: string[] = [];
+  const release = Promise.withResolvers<void>();
+  const active = budget.run('a', 20 * 1024 * 1024, 1, () => release.promise);
+  const gates = ['a', 'b', 'c'].map(() => Promise.withResolvers<void>());
+  // Each preview reserves just over 4 MiB, so only two fit together.
+  const queued = ['a', 'b', 'c'].map((gym, index) => budget.run(gym, 1, 1, async () => {
+    order.push(gym);
+    await gates[index]!.promise;
+  }));
+
+  release.resolve();
+  await active;
+  expect(order).toEqual(['b', 'c']);
+  gates[1]!.resolve();
+  await queued[1];
+  expect(order).toEqual(['b', 'c', 'a']);
+  gates[0]!.resolve();
+  gates[2]!.resolve();
+  await Promise.all(queued);
+});
+
 it('aborts the computation itself and waits for cancellation before releasing its budget', async () => {
   const budget = new PreviewBudget(1), entered = Promise.withResolvers<void>(), stopping = Promise.withResolvers<void>();
   let stopped = false;
@@ -41,16 +96,23 @@ it('aborts the computation itself and waits for cancellation before releasing it
   expect(started).toBe(false); stopping.resolve(); await rejection; await next;
 });
 
-it('caps each gym waiting behind the shared memory allowance and frees its share on admission', async () => {
-  const budget = new PreviewBudget(1, 16, 2), release = Promise.withResolvers<void>();
+it.each([
+  { limit: undefined, expected: 3 },
+  { limit: 2, expected: 2 },
+])('caps each gym at $expected waiting previews and frees a place on admission', async ({ limit, expected }) => {
+  const budget = new PreviewBudget(1, 16, limit), release = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
   const active = budget.run('a', 1, 1, () => release.promise);
-  const first = budget.run('a', 1, 1, async () => 'a1');
-  const second = budget.run('a', 1, 1, async () => 'a2');
+  const waiting = Array.from({ length: expected }, () => budget.run('a', 1, 1, () => finish.promise));
   expect(() => budget.run('a', 1, 1, async () => 'overflow')).toThrow('queue is full');
   const other = budget.run('b', 1, 1, async () => 'b');
   release.resolve();
-  await active;
-  expect(await Promise.all([first, second, other])).toEqual(['a1', 'a2', 'b']);
+  await Promise.all([active, other]);
+  const next = budget.run('a', 1, 1, async () => 'next');
+  expect(() => budget.run('a', 1, 1, async () => 'overflow')).toThrow('queue is full');
+  finish.resolve();
+  await Promise.all(waiting);
+  expect(await next).toBe('next');
   expect(await budget.run('a', 1, 1, async () => 'free')).toBe('free');
 });
 

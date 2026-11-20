@@ -112,12 +112,16 @@ Large files wait for other previews to finish; small files can run together.
 The page shows queued or preparing progress and checks for the result automatically.
 If the preview queue is full, it asks you to try again shortly; choose **Preview**
 again to retry. Each app process allows at most 16 waiting previews, with at most
-three waiting previews per gym. Preview stays disabled while the upload's previous
-preview is pending, even if you change its settings. The page retries temporary
-network or server errors while checking progress. If the computation stops renewing
-its lease, the ticket reports failure within 30 seconds of the last renewal.
-The page shows the API's explanation when a preview fails. If it says the preview
-took too long, split the file into smaller files and preview each one.
+three waiting previews per gym. Gyms take turns as memory becomes available. A gym
+joining with no previews in progress or queued gets a turn ahead of the gym that
+most recently started a preview. Each gym's previews start in request order.
+Preview stays disabled while the upload's previous preview is pending, even if
+you change its settings.
+The page retries temporary network or server errors while checking progress. If
+the computation stops renewing its lease, the ticket reports failure within 30
+seconds of the last renewal.
+The page shows the API's explanation when a preview for the current plan fails.
+If the preview took too long, split the file into smaller files and preview each one.
 For people, keep every member of a family in the same file: family links work only
 within one file, so relatives in another file would get a separate household. For
 promotion history, keep each member's history for a program together so it can be

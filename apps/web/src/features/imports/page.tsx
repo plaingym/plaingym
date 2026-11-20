@@ -81,23 +81,26 @@ function ImportPanel({ gymId }: { gymId: string }) {
     if (!response.ok) { await reportApiRefusal(response); throw new Error('Upload failed'); }
     return parseResponse(importUploadSchema, (await response.json() as { data: unknown }).data);
   }, onSuccess(data) { setUpload(data); setMapping(data.suggestedMapping ?? []); setPreview(undefined); setPreviewTicket(undefined); setRunId(undefined); setOffset(0); previewRows.reset(); } });
-  const previewRows = useMutation({ mutationFn: async (page: number) => {
+  const previewRows = useMutation({ mutationFn: async ({ page, fingerprint }: { page: number; fingerprint: string }) => {
     const response = await fetch(`/api/imports/preview?offset=${page}&limit=50`, { method: 'POST', credentials: 'same-origin', redirect: 'error',
-      headers: { 'content-type': 'application/json' }, body: JSON.stringify(plan) });
-    return { data: await readPreviewResponse(response), fingerprint, page };
-  }, onMutate() { setPreviewTicket(undefined); }, onSuccess({ data, fingerprint: requestedPlan, page }) {
+      headers: { 'content-type': 'application/json' }, body: fingerprint });
+    return readPreviewResponse(response);
+  }, onMutate() { setPreviewTicket(undefined); }, onSuccess(data, { fingerprint: requestedPlan, page }) {
     if (data.status === 'ready') {
       if (requestedPlan === currentPlan.current) { setPreview(data.preview); setOffset(data.preview.pagination.offset); }
     }
     else setPreviewTicket({ ...data, page, fingerprint: requestedPlan });
   } });
+  const requestPreview = (page: number) => { if (plan) previewRows.mutate({ page, fingerprint }); };
   const start = useMutation({ mutationFn: async (dryRun: boolean) => parseResponse(importJobSchema, (await request<{ data: unknown }>('/api/imports', { ...plan, dryRun })).data),
     onSuccess(data) { setRunId(data.id); setRunPlan(fingerprint); setErrorOffset(0); } });
   const busy = uploadFile.isPending || start.isPending || progress.data?.status === 'pending' || progress.data?.status === 'running';
   const dryRunPassed = progress.data?.dryRun && progress.data.status === 'succeeded' && progress.data.errorCount === 0 && runPlan === fingerprint;
   // A preview's explanation must not stand in for a later failure of another request.
   const otherFailure = uploadFile.isError || start.isError || progress.isError || errors.isError;
-  const previewFailure = ticket ? ticket.fingerprint === fingerprint && previewProgress.isError ? previewProgress.error : undefined : previewRows.error;
+  const previewFailure = ticket
+    ? ticket.fingerprint === fingerprint && previewProgress.isError ? previewProgress.error : undefined
+    : previewRows.variables?.fingerprint === fingerprint ? previewRows.error : undefined;
   const previewPending = previewRows.isPending || !!ticket && !previewProgress.isError;
   const columns = [...new Set(preview?.data.flatMap(row => Object.keys(row.values)) ?? [])];
   return <PageSection title={label('import')} description={label('mapperNotice')}><div className={card}>
@@ -130,7 +133,7 @@ function ImportPanel({ gymId }: { gymId: string }) {
             }}><option value="">{label('ignore')}</option>{importTargetFieldSchema.options.map((field) => <option key={field} value={field}>{label('field.' + field)}</option>)}</Select></Label>)}</div>
       </fieldset>
       <div className="grid gap-2 sm:flex">
-        <Button variant="outline" disabled={!mapping.length || !!busy || previewPending} onClick={() => previewRows.mutate(0)}>{label('preview')}</Button>
+        <Button variant="outline" disabled={!mapping.length || !!busy || previewPending} onClick={() => requestPreview(0)}>{label('preview')}</Button>
         <Button variant="outline" disabled={!mapping.length || !!busy} onClick={() => start.mutate(true)}>{label('dryRun')}</Button>
         <Button disabled={!dryRunPassed || !!busy} onClick={() => start.mutate(false)}>{label('commit')}</Button>
       </div>
@@ -145,7 +148,7 @@ function ImportPanel({ gymId }: { gymId: string }) {
         <thead className="bg-muted"><tr><th scope="col" className="p-2">{label('row')}</th><th scope="col" className="p-2">{label('action')}</th>{columns.map(field => <th scope="col" className="p-2" key={field}>{importTargetFieldSchema.safeParse(field).success ? label('field.' + field) : field}</th>)}</tr></thead>
         <tbody>{preview.data.map((row) => <tr key={row.rowNumber} className="border-t border-border"><td className="p-2 tabular-nums">{row.rowNumber}</td><td className="p-2">{label(row.action)}</td>
           {columns.map(field => <td key={field} className="max-w-xs wrap-anywhere p-2">{row.values[field] ?? '—'}</td>)}</tr>)}</tbody></table></TableContainer>
-      <Pager offset={offset} total={preview.pagination.total} limit={50} onChange={value => previewRows.mutate(value)} disabled={previewPending} previousLabel={label('previous')} nextLabel={label('next')}/>
+      <Pager offset={offset} total={preview.pagination.total} limit={50} onChange={requestPreview} disabled={previewPending} previousLabel={label('previous')} nextLabel={label('next')}/>
     </div>}
     {progress.data && <div role="status" className="space-y-2 rounded-lg border border-border bg-muted p-3 text-sm">
       <p className="font-medium">{label(progress.data.dryRun ? 'dryRun' : 'import')}: {progress.data.status === 'failed' && progress.data.processedRows === progress.data.totalRows && progress.data.errorCount > 0

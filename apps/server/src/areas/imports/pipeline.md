@@ -36,13 +36,17 @@ plan, so a warm page in that process reads only `meta.json` and the row files.
 A preview is served for `PREVIEW_LIFETIME` from when its computation finished, so
 one slower than that is still served for the full lifetime. Two requests for one
 preview in a process share one pass; each plan keeps its own preview while it is
-fresh. A process shares one FIFO memory budget across all pipeline instances:
+fresh. A process shares one memory budget across all pipeline instances:
 one third of V8's heap limit, capped at 128 MiB. A computation reserves 4 MiB plus
 eight times its upload size and 256 bytes per row, up to the whole budget. Small
 previews can run together; a large preview waits for the allowance to be free.
-At most 16 previews may wait in that process's FIFO queue, with at most three
-waiting previews per gym. Running previews do not count against that waiting
-share. Admission beyond either bound answers `503 unavailable` with a safe
+Each gym has a FIFO queue. Waiting gyms take turns in order of their last
+admission. A gym joining the queue with no running or waiting previews takes a
+turn just ahead of the most recent admission, after any older turns. The first
+preview in the selected gym's queue must fit before the next turn can start.
+At most 16 previews may wait in each process, with at most three waiting per
+gym. Running previews do not count against either limit.
+Admission beyond either bound answers `503 unavailable` with a safe
 queue-busy explanation, leaving room for other gyms. A retry for
 the same active plan shares its ticket across pipeline instances and does not
 consume another queue position. This coalescing, like the memory allowance, is
