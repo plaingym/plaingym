@@ -118,9 +118,10 @@ const report = (n: number, day: string, failures: { number: number | null; cause
 const failuresRegion = () => screen.findByRole('region', { name: 'Failed charges' });
 const dismissed = (...ids: string[]) => ok({ data: { dismissed: ids } });
 describe('disk sizes', () => {
-  const tile = (backupStaging: { totalBytes: number; availableBytes: number } | null, sameFilesystem = false) => healthTileSchema.parse({
+  const tile = (backupStaging: { totalBytes: number; availableBytes: number } | null, sameFilesystem = false,
+    uploads = { totalBytes: 20_000_000_000, availableBytes: 10_000_000_000 }) => healthTileSchema.parse({
     id: 'disk', status: 'warning', checkedAt, message: 'Free space checked.',
-    details: { uploads: { totalBytes: 20_000_000_000, availableBytes: 10_000_000_000 }, backupStaging, sameFilesystem },
+    details: { uploads, backupStaging, sameFilesystem },
   });
   it('shows each volume with its own figures and hides unconfigured staging', () => {
     const view = render(<HealthTiles tiles={[tile({ totalBytes: 8_000_000_000, availableBytes: 500_000_000 })]}/>);
@@ -144,6 +145,14 @@ describe('disk sizes', () => {
       'Backup staging volume capacity', 'Backup staging volume available']) expect(screen.queryByText(separate)).toBeNull();
     expect(document.body.textContent).not.toContain('[object Object]');
     expect(document.body.textContent).not.toContain('health/status:');
+  });
+  it('shows the lower free figure and its total for a shared filesystem', () => {
+    // A quota on the same device can leave staging with less free space than uploads, so the one pair of rows follows it.
+    render(<HealthTiles tiles={[tile({ totalBytes: 999, availableBytes: 500 }, true, { totalBytes: 1000, availableBytes: 800 })]}/>);
+    for (const [label, value] of [['Uploads and backup staging volume capacity', '999 B'],
+      ['Uploads and backup staging volume available', '500 B']]) {
+      expect(screen.getByText(label!).parentElement!.querySelector('dd')!.textContent).toBe(value);
+    }
   });
   it('moves to the next unit instead of showing 1,000 of one', () => {
     expect(bytesLabel(999)).toBe('999 B');

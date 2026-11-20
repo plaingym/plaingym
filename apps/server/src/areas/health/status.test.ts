@@ -229,6 +229,46 @@ describe('built-in providers', () => {
     const separate = vi.fn(async (path: string) => path === '/staging' ? 2 : 1);
     expect(await tile('disk', gymA, { env: single, device: separate })).toMatchObject({ details: { sameFilesystem: false } });
   });
+  it('treats totals within 0.1% on one device as one shared volume', async () => {
+    const single = { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' };
+    const shared = vi.fn(async (_path: string) => 7);
+    // 100 GB and 4 KB more: ZFS or btrfs derive the total from used plus free, so two statfs calls can differ by a few KB.
+    const nearlyEqual = vi.fn(async (path: string) => path === '/staging'
+      ? { blocks: 100_000_004, bsize: 1000, bavail: 20_000_000 }
+      : { blocks: 100_000_000, bsize: 1000, bavail: 20_000_000 });
+    expect(await tile('disk', gymA, { env: single, device: shared, disk: nearlyEqual })).toMatchObject({
+      status: 'healthy', details: {
+        sameFilesystem: true,
+        uploads: { totalBytes: 100_000_000_000, availableBytes: 20_000_000_000 },
+        backupStaging: { totalBytes: 100_000_004_000, availableBytes: 20_000_000_000 },
+      }, message: 'Free space: uploads and backup staging (one volume) 20 GB.',
+    });
+    expect(nearlyEqual.mock.calls.map(([path]) => path).sort()).toEqual(['/staging', '/uploads']);
+  });
+  it('keeps volumes separate when their totals differ by more than 0.1%', async () => {
+    const single = { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' };
+    const shared = vi.fn(async (_path: string) => 7);
+    const onePercent = vi.fn(async (path: string) => path === '/staging'
+      ? { blocks: 101_000_000, bsize: 1000, bavail: 10_000_000 }
+      : { blocks: 100_000_000, bsize: 1000, bavail: 10_000_000 });
+    expect(await tile('disk', gymA, { env: single, device: shared, disk: onePercent })).toMatchObject({
+      details: { sameFilesystem: false }, message: 'Free space: uploads 10 GB; backup staging 10 GB.',
+    });
+  });
+  it('shows the lower free figure when a shared volume reports less free space in staging', async () => {
+    const single = { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' };
+    const shared = vi.fn(async (_path: string) => 7);
+    const stagingLower = vi.fn(async (path: string) => path === '/staging'
+      ? { blocks: 100_000_000, bsize: 1000, bavail: 512_000 }
+      : { blocks: 100_000_000, bsize: 1000, bavail: 10_000_000 });
+    expect(await tile('disk', gymA, { env: single, device: shared, disk: stagingLower })).toMatchObject({
+      status: 'warning', details: {
+        sameFilesystem: true,
+        uploads: { totalBytes: 100_000_000_000, availableBytes: 10_000_000_000 },
+        backupStaging: { totalBytes: 100_000_000_000, availableBytes: 512_000_000 },
+      }, message: 'Free space: uploads and backup staging (one volume) 0.51 GB.',
+    });
+  });
   it('checks the uploads volume alone when no restore staging is kept, as in multi-gym mode', async () => {
     const multi = { ...env, BACKUP_STAGING_DIR: undefined };
     const check = vi.fn(async (_path: string) => ({ blocks: 20_000_000, bsize: 1024, bavail: 500_000 }));

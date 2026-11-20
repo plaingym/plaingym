@@ -43,10 +43,15 @@ function detailRows(tile: HealthTile): [key: string, label: string, value: unkno
   if (!tile.details) return [];
   if (tile.id === 'sms') return Object.entries(tile.details).map(([key, value]) => [key, label('sms.field.' + key), value]);
   if (tile.id === 'disk') {
-    if (tile.details.sameFilesystem) return [
-      ['sharedTotalBytes', label('field.sharedTotalBytes'), tile.details.uploads.totalBytes],
-      ['sharedAvailableBytes', label('field.sharedAvailableBytes'), tile.details.uploads.availableBytes],
-    ];
+    if (tile.details.sameFilesystem) {
+      // One shared volume reports the lower free figure, the one the tile's status was based on, with its own total.
+      const shared = tile.details.backupStaging && tile.details.backupStaging.availableBytes < tile.details.uploads.availableBytes
+        ? tile.details.backupStaging : tile.details.uploads;
+      return [
+        ['sharedTotalBytes', label('field.sharedTotalBytes'), shared.totalBytes],
+        ['sharedAvailableBytes', label('field.sharedAvailableBytes'), shared.availableBytes],
+      ];
+    }
     return [
       ['uploadsTotalBytes', label('field.uploadsTotalBytes'), tile.details.uploads.totalBytes],
       ['uploadsAvailableBytes', label('field.uploadsAvailableBytes'), tile.details.uploads.availableBytes],

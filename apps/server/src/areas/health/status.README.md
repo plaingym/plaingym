@@ -151,11 +151,12 @@ with none, the page leaves out the oldest failure row rather than showing it as 
 Disk details report `uploads` and `backupStaging` separately, each with filesystem
 `totalBytes` and `availableBytes`, plus `sameFilesystem`: true only when a backup
 staging directory is configured, it is on the same device as the uploads directory, and both report the same total
-capacity. A staging directory that reports a smaller total because of a quota
-keeps its own rows. Free space is excluded from the comparison because two
+capacity within 0.1% (ZFS or btrfs can report totals a few KB apart). A staging directory that reports a much smaller
+total because of a quota keeps its own rows. Free space is excluded from the comparison because two
 `statfs` calls on a busy disk can differ slightly. Each figure describes the
-volume seen at that path. When `sameFilesystem` is true the page shows the uploads figures once,
-labelled for the uploads and backup staging volume, and the message says one volume.
+volume seen at that path. When `sameFilesystem` is true the page shows one pair of rows with the lower of the two free
+figures (and that volume's total), the figure the status rules used, labelled for the uploads and backup staging volume,
+and the message says one volume.
 `backupStaging` is null when no staging directory is configured, including multi-gym
 mode, which ignores `BACKUP_STAGING_DIR`; `sameFilesystem` is then false and the page
 omits staging rows.

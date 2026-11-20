@@ -135,16 +135,20 @@ export function createStatusProviders(options: StatusOptions = {}) {
       }));
       const critical = (bytes: number) => bytes < 128 * 1024 * 1024;
       const low = (volume: typeof volumes[number]['figures']) => volume.availableBytes / volume.totalBytes < 0.1 || volume.availableBytes < 1024 * 1024 * 1024;
-      // Both directories on one device with the same capacity mean one volume, so the page shows one pair of rows for it.
-      // A staging directory with its own quota on the same device reports a smaller total, so it keeps its own rows.
-      const sameFilesystem = volumes.length > 1 && BigInt(volumes[0]!.dev) === BigInt(volumes[1]!.dev)
-        && volumes[0]!.figures.totalBytes === volumes[1]!.figures.totalBytes;
+      // Both directories on one device with the same capacity (within 0.1%) mean one volume, so the page shows one pair
+      // of rows for it. A staging directory with its own quota on the same device reports a smaller total, so it keeps
+      // its own rows. ZFS and btrfs derive that total from used plus free, so two calls can differ by a few KB.
+      const uploads = volumes[0]!.figures, staging = volumes[1]?.figures;
+      const sameFilesystem = volumes.length > 1 && BigInt(volumes[0]!.dev) === BigInt(volumes[1]!.dev) && !!staging
+        && Math.abs(uploads.totalBytes - staging.totalBytes) <= Math.max(uploads.totalBytes, staging.totalBytes) / 1000;
+      // The lower free figure is the one the status rules used, so it is the one a shared volume reports.
+      const shared = sameFilesystem && staging && staging.availableBytes < uploads.availableBytes ? staging : uploads;
       // Keep each volume's capacity and free space together, even when both directories share a filesystem.
-      const details = { uploads: volumes[0]!.figures, backupStaging: volumes[1]?.figures ?? null, sameFilesystem };
+      const details = { uploads, backupStaging: staging ?? null, sameFilesystem };
       return { id: 'disk', checkedAt: context.clock.now().toISOString(), details,
         status: volumes.some((v) => critical(v.figures.availableBytes)) ? 'error' : volumes.some((v) => low(v.figures)) ? 'warning' : 'healthy',
-        message: statusMessage(sameFilesystem ? 'diskFreeShared' : volumes[1] ? 'diskFree' : 'diskFreeUploads', {
-          uploads: gigabytes(volumes[0]!.figures.availableBytes), staging: gigabytes(volumes[1]?.figures.availableBytes ?? 0),
+        message: statusMessage(sameFilesystem ? 'diskFreeShared' : staging ? 'diskFree' : 'diskFreeUploads', {
+          uploads: gigabytes(shared.availableBytes), staging: gigabytes(staging?.availableBytes ?? 0),
         }) };
     }),
     healthProvider('version', async (context) => {
