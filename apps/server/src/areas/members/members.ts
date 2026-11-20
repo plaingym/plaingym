@@ -180,13 +180,15 @@ export function createMembersService(options: MembersOptions = {}) {
         if (consent && !phoneE164) throw new AppError('invalid_request', 'A valid phone is required for SMS consent');
         const now = clock.now(), guard = revisionGuard(households.revision, revision);
         const unchangedNumber = phoneE164 === before.phoneE164;
-        const after = { at: consent ? (unchangedNumber ? before.smsNoticesConsentAt : null) ?? now : null,
-          source: consent ? (unchangedNumber ? before.smsNoticesConsentSource : null) ?? source : null };
+        const priorConsent = unchangedNumber
+          ? { at: before.smsNoticesConsentAt, source: before.smsNoticesConsentSource }
+          : { at: null, source: null };
+        const after = { at: consent ? priorConsent.at ?? now : null, source: consent ? priorConsent.source ?? source : null };
         if ((!consent || unchangedNumber) && before.smsNoticesConsentAt === after.at && before.smsNoticesConsentSource === after.source) return household(before, country);
         const row = assertRevised(await tx.update(households).set({ phoneE164, revision: guard.next, smsNoticesConsentAt: after.at, smsNoticesConsentSource: after.source })
           .where(and(eq(households.id, id), guard.matches)).returning(householdFields));
-        if (!unchangedNumber && !consent) await auditSmsCleared(tx, context, 'household', id, before, source, now);
-        else await auditSmsConsent(tx, context, 'household', id, 'notices', { at: before.smsNoticesConsentAt, source: before.smsNoticesConsentSource }, after, source, now);
+        if (!unchangedNumber) await auditSmsCleared(tx, context, 'household', id, before, source, now);
+        if (unchangedNumber || consent) await auditSmsConsent(tx, context, 'household', id, 'notices', priorConsent, after, source, now);
         return household(row, country);
       });
     },

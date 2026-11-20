@@ -51,8 +51,13 @@ only explicit choices. Consent writes check the revision. Repeating a choice
 leaves the revision and audit history unchanged when the normalized number still
 matches. A withdrawal refreshes a stale normalized number and clears all consent
 stored against it, even if the requested choice is already off. A withdrawal
-with no stored consent leaves the record unchanged. Staff, portal and join read
-the gym's country only when at least one phone needs it for national parsing.
+with no stored consent leaves the record unchanged. When a household grants
+notices on a different normalized number with existing consent, it writes two
+audit entries with the same time: the old consent clearing, then the fresh grant
+from empty consent. Both commit with the new number and consent in a single
+revision. Staff, portal and
+join read the gym's country only when at least one phone needs it for national
+parsing.
 
 Staff can set a member's status, and that edit stands until their next membership
 change. Assignment, any staff edit of a membership (such as its discount, due date

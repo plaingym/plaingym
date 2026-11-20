@@ -141,6 +141,41 @@ describe('staff SMS consent', () => {
     expect((await withdraw(changed.revision)).revision).toBe(changed.revision);
     expect(await audits()).toEqual(events);
   });
+  it('audits a clear and a fresh grant when the billing phone has changed', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId, { address: { country: 'US' } });
+    const oldConsentAt = new Date('2026-10-21T12:00:00Z');
+    const home = await factory('households', gymId, { phone: '(202) 555-0199', phoneE164: '+12025550123',
+      smsNoticesConsentAt: oldConsentAt, smsNoticesConsentSource: 'join' });
+    const grant = (revision: number) => service.changeHouseholdSmsConsent(context(gymId), home.id, { consent: true, revision }, 'portal');
+    const read = () => database.forGym(gymId, async tx => (await tx.select().from(households).where(eq(households.id, home.id)))[0]);
+    const audits = () => database.forGym(gymId, tx => tx.select().from(auditEvents)
+      .where(eq(auditEvents.action, 'household.sms_consent_changed')).orderBy(auditEvents.id));
+
+    const before = await read();
+    await expect(grant(home.revision + 1)).rejects.toBeInstanceOf(RevisionConflictError);
+    expect(await read()).toEqual(before);
+    expect(await audits()).toEqual([]);
+
+    const at = clock.now(), granted = await grant(home.revision);
+    expect(granted.revision).toBe(home.revision + 1);
+    const stored = await read();
+    expect(stored).toMatchObject({ phoneE164: '+12025550199', revision: granted.revision,
+      smsNoticesConsentAt: at, smsNoticesConsentSource: 'portal' });
+
+    const events = await audits();
+    expect(events).toHaveLength(2);
+    const emptyConsent = { kind: 'notices', at: null, source: null };
+    expect(events.map(({ targetId, before, after }) => ({ targetId, before, after }))).toEqual(expect.arrayContaining([
+      { targetId: home.id, before: { kind: 'notices', at: oldConsentAt.toISOString(), source: 'join' },
+        after: { ...emptyConsent, changeSource: 'portal' } },
+      { targetId: home.id, before: emptyConsent,
+        after: { kind: 'notices', at: at.toISOString(), source: 'portal', changeSource: 'portal' } },
+    ]));
+
+    expect((await grant(granted.revision)).revision).toBe(granted.revision);
+    expect(await read()).toEqual(stored);
+    expect(await audits()).toEqual(events);
+  });
   it('does not transfer another consent when the current phone no longer matches its normalized record', async () => {
     const person = await factory('members', gymA, { phone: '+12025550123', phoneE164: '+12025550123',
       smsAnnouncementsConsentAt: clock.now(), smsAnnouncementsConsentSource: 'portal' });
