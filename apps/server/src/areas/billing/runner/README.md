@@ -92,7 +92,7 @@ must call `collectAssigned` after commit to collect proration and fees immediate
 the daily sweep recovers uncollected assignment invoices after downtime.
 
 `charge(..., { mode: 'staff', context })` is the authorized staff caller's
-"charge saved card" path. The context must contain this gym and a user actor;
+**Charge saved payment method** path. The context must contain this gym and a user actor;
 the route still owns permission enforcement. It allows another attempt after a
 decline, and an explicit charge before the due date, while retaining billing,
 review, unpaid-state and pending-attempt guards. Reservation, intent and result

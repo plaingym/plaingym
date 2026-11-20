@@ -3,7 +3,7 @@
 
 The invoice page and detail route use the shared page/state components. Lists and
 line items use stacked rows. One-off editors use the shared `Dialog` and searchable
-household `Autocomplete`. Receipt, cash/check, saved-card confirmation, refund,
+household `Autocomplete`. Receipt, cash/check, saved payment method confirmation, refund,
 pay-link, void and review-hold views stay inside invoice details,
 with a back control and focus restored to the action that opened the view.
 
@@ -15,8 +15,9 @@ results. The household page has one import control, including when an invoice
 dialog is open. Refresh invalidates only this household's method lists and charge
 eligibility. Default and removal actions require `payments.record`, and refresh
 these queries on success and error because local removal can precede a Stripe outage.
-Card rows show the network, last four digits and expiry. Bank rows show the bank
-name when available and the account's last four digits. Removal help identifies
+Card rows show the network, last four digits and the expiry in MM/YYYY when both
+parts are available. Bank rows show the bank name when available and the
+account's last four digits. Removal help identifies
 the method, and promotion help appears only for the current active default,
 including after a failed removal refresh.
 
@@ -30,20 +31,21 @@ and restart refused cursors at most three times before settling a partial import
 The linked Stripe customer must already be tagged for this gym; conflicting
 household metadata is refused. The campaign's card filter uses stored cards.
 
-In the Packs tab, a successful manual payment, saved-card charge or refund starts
+In the Packs tab, a successful manual payment, saved payment method charge or refund starts
 a minute of follow-up credit reads. The invoice action invalidates billing once;
 the follow-up callback only sets that read window. Failed or pending processor
 answers do not start it. Releasing a hold or sending a pay link may settle much
 later; use Refresh credits after those actions to read the latest balance.
 
 The invoice list and detail show a muted **Processing** badge for processing
-invoices. The API accepts `processing` as a filter value.
+invoices. Select **Processing** in the invoice list's **Status** filter to show
+only processing invoices.
 
 The registered member profile tab resolves the member's household and requests
 that household's invoices. Cache keys include gym, household/member, filters and
-pagination. A created one-off invoice opens its detail so staff can choose cash or
-check, the saved card, or a signed pay link. Currency comes from the bootstrap gym summary;
-a typed amount converts to the currency's minor units with `parseMinorUnits` from
+pagination. A created one-off invoice opens its detail so staff can record cash or
+check, select **Charge saved payment method**, or send a signed pay link. Currency
+comes from the bootstrap gym summary. A typed amount converts to minor units with `parseMinorUnits` from
 `@plaingym/shared/money`, without floating-point rounding. A card refund takes only whole steps
 of the currency, as Stripe does (no 1.255 KWD); a cash or check refund takes any minor unit.
 

@@ -110,7 +110,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
       </dl>
       {invoice.needsReview && <Alert>{text('needsReview')}</Alert>}
       <div className="flex flex-col flex-wrap gap-2 sm:flex-row">
-        {collectible && access.record && <><Button onClick={() => open({ kind: 'cash' })}>{text('recordCash')}</Button><Button variant="outline" disabled={invoice.needsReview || allCards.data !== true} onClick={() => open({ kind: 'charge' })}>{text('chargeCard')}</Button></>}
+        {collectible && access.record && <><Button onClick={() => open({ kind: 'cash' })}>{text('recordCash')}</Button><Button variant="outline" disabled={invoice.needsReview || allCards.data !== true} onClick={() => open({ kind: 'charge' })}>{text('charge')}</Button></>}
         {collectible && invoice.needsReview && access.refund && <Button variant="outline" onClick={() => open({ kind: 'releaseHold' })}>{text('releaseHold')}</Button>}
         {collectible && access.refund && <Button variant="destructive" onClick={() => open({ kind: 'voidInvoice' })}>{text('voidInvoice')}</Button>}
         {collectible && invoice.amountCents > 0 && access.links && <Button variant="outline" onClick={() => open({ kind: 'link' })}>{text('payLink')}</Button>}
@@ -147,7 +147,6 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
         {error && <Alert variant="error" focusOnReveal role="alert">{error}</Alert>}
         <fieldset disabled={busy} className="space-y-4">
           {action.kind !== 'releaseHold' && <p>{action.kind === 'refund' && text('remainingRefundable') + ': '}{money(action.kind === 'refund' ? refundable(data, action.payment) : invoice.amountCents, invoice.currency)}</p>}
-          {/* The billing run charges only a saved default card; when the check says there is none, say what will collect it instead. */}
           {action.kind === 'releaseHold' && <p>{text(allCards.data === false ? 'releaseHoldHelpNoCard' : 'releaseHoldHelp')}</p>}
           {action.kind === 'cash' && <>
             <Label className="block">{text('method')}<Select name="method"><option value="cash">{text('cash')}</option><option value="check">{text('check')}</option></Select></Label>

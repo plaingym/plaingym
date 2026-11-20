@@ -11,6 +11,7 @@ import { canStaff } from '@plaingym/shared';
 import { InvoiceList } from './page.js';
 import { InvoiceDetails } from './detail.js';
 import { HouseholdCards } from './customer-cards.js';
+import { CardList } from './card-list.js';
 import { OneOffEditor } from './editor.js';
 import { createInvoiceClient, InvoiceRequestError } from './api.js';
 import { registration } from './registrations.js';
@@ -34,12 +35,46 @@ it('groups invoice line quantities while keeping invoice identifiers unchanged',
 it('shows a muted Processing badge in the invoice list and detail', async () => {
   const f = transport({ invoice: { ...invoice, status: 'processing' } });
   start(<InvoiceList gymId={gymId} householdId={home} access={desk} custom catalog client={f.client}/>);
-  expect((await screen.findByText('Processing')).classList.contains('bg-muted')).toBe(true);
-  fireEvent.click(screen.getByRole('button', { name: 'View invoice ' + invoice.number }));
+  const row = await screen.findByRole('listitem');
+  expect(within(row).getByText('Processing').classList.contains('bg-muted')).toBe(true);
+  fireEvent.click(within(row).getByRole('button', { name: 'View invoice ' + invoice.number }));
   const dialog = await screen.findByRole('dialog');
   expect((await within(dialog).findByText('Processing')).classList.contains('bg-muted')).toBe(true);
 });
-function transport(initial: Partial<InvoiceDetail> = {}) {
+it('requests Processing invoices when staff select that status', async () => {
+  const f = transport();
+  start(<InvoiceList gymId={gymId} householdId={home} access={desk} custom catalog client={f.client}/>);
+  const filter = screen.getByRole('combobox', { name: 'Status' });
+  expect(within(filter).getByRole('option', { name: 'Processing' })).toHaveProperty('value', 'processing');
+  fireEvent.change(filter, { target: { value: 'processing' } });
+  await waitFor(() => expect(f.fetcher.mock.calls.some(([path]) =>
+    new URL(String(path), 'http://gym.test').searchParams.get('status') === 'processing')).toBe(true));
+});
+it.each(['card', 'us_bank_account'] as const)('offers to charge the saved payment method for a %s default', async type => {
+  const method: MaskedPaymentMethod = type === 'card' ? card : {
+    ...card, type, bankName: 'Example Bank', brand: null, expiryMonth: null, expiryYear: null,
+  };
+  const f = transport({}, [method]);
+  start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={admin} client={f.client}/>);
+  const button = await screen.findByRole('button', { name: 'Charge saved payment method' });
+  await waitFor(() => expect(button).toHaveProperty('disabled', false));
+  fireEvent.click(button);
+  expect(screen.getByText('Confirm this charge to the household’s default saved payment method.')).toBeDefined();
+});
+it('shows a two-digit expiry month only when the card has both expiry fields', async () => {
+  const f = transport({}, [
+    { ...card, expiryMonth: 8 },
+    { ...card, id: id(11), last4: '1111', expiryMonth: null, expiryYear: null, isDefault: false },
+    { ...card, id: id(12), last4: '2222', expiryMonth: 8, expiryYear: null, isDefault: false },
+    { ...card, id: id(13), last4: '3333', expiryMonth: null, isDefault: false },
+  ]);
+  start(<CardList gymId={gymId} householdId={home} allowed={false} client={f.client}/>);
+  expect(await screen.findByText('Visa · 4242 · 08/2030')).toBeDefined();
+  for (const last4 of ['1111', '2222', '3333']) {
+    expect(screen.getByText('Visa · ' + last4)).toBeDefined();
+  }
+});
+function transport(initial: Partial<InvoiceDetail> = {}, methods: MaskedPaymentMethod[] = [card]) {
   const detail: InvoiceDetail = { invoice, lineItems: [{ id: id(7), createdAt, householdId: home, invoiceId: invoice.id, kind: 'charge', description: 'Drop-in',
     membershipId: null, chargeTypeId: null, planId: null, billedUnitAmountCents: null, billedDiscount: null,
     amountCents: 2500, currency: 'USD', quantity: 1200, taxRateId: null, taxRateMillionths: null, taxInclusive: null }], payments: [], refunds: [], ...initial };
@@ -51,7 +86,7 @@ function transport(initial: Partial<InvoiceDetail> = {}) {
     if (url.pathname === '/api/billing/invoices/' + invoice.id && method === 'GET') return Response.json({ data: detail });
     if (url.pathname.endsWith('/release-hold')) { detail.invoice = { ...detail.invoice, needsReview: false }; return Response.json({ data: detail.invoice }); }
     if (url.pathname.endsWith('/void')) { detail.invoice = { ...detail.invoice, status: 'void' }; return Response.json({ data: detail.invoice }); }
-    if (url.pathname.endsWith('/payment-methods')) return Response.json(page([card]));
+    if (url.pathname.endsWith('/payment-methods')) return Response.json(page(methods));
     if (url.pathname === '/api/members') return Response.json(page([]));
     if (url.pathname === '/api/households/' + home) return Response.json({ data: { id: home, name: 'Rivera household', email: null, phone: null, sms: { phoneValid: false, phoneE164: null, notices: null }, address: {}, revision: 1, createdAt } });
     if (url.pathname.endsWith('/payments') && method === 'POST') {
@@ -147,7 +182,7 @@ it.each(['open', 'past_due'] as const)('voids an %s invoice with a reason and re
     method: 'POST', body: JSON.stringify({ reason: 'Issued in error' }),
   }));
   expect(screen.queryByRole('button', { name: 'Void invoice' })).toBeNull();
-  expect(screen.queryByRole('button', { name: 'Charge saved card' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Charge saved payment method' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Record cash or check' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Send or share pay link' })).toBeNull();
 });
@@ -167,7 +202,7 @@ it.each([
 it('does not offer invoice voiding to front desk', async () => {
   const f = transport();
   start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={{ record: true, links: true, refund: false }} client={f.client}/>);
-  await screen.findByRole('button', { name: 'Charge saved card' });
+  await screen.findByRole('button', { name: 'Charge saved payment method' });
   expect(screen.queryByRole('button', { name: 'Void invoice' })).toBeNull();
 });
 it.each(['succeeded', 'failed', 'pending', 'requires_action'] as const)('follows credits only for a successful charge: %s', async status => {
@@ -176,7 +211,7 @@ it.each(['succeeded', 'failed', 'pending', 'requires_action'] as const)('follows
   f.client.call = ((name, ...args) => name === 'chargeInvoice'
     ? Promise.resolve({ data: { status } }) : call(name, ...args)) as typeof f.client.call;
   start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={admin} client={f.client} onCreditChange={changed}/>);
-  const charge = await screen.findByRole('button', { name: 'Charge saved card' });
+  const charge = await screen.findByRole('button', { name: 'Charge saved payment method' });
   await waitFor(() => expect(charge).toHaveProperty('disabled', false));
   fireEvent.click(charge);
   fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
@@ -247,7 +282,7 @@ describe('invoice and household payment UI', () => {
     await screen.findByRole('button', { name: 'View invoice 42' });
     expect(f.fetcher.mock.calls[0]?.[0]).toContain('householdId=' + home);
     expect(within(screen.getByLabelText('Status')).getAllByRole('option').map(option => (option as HTMLOptionElement).value))
-      .toEqual(['', 'draft', 'open', 'past_due', 'paid', 'void', 'partially_refunded', 'refunded']);
+      .toEqual(['', 'draft', 'open', 'processing', 'past_due', 'paid', 'void', 'partially_refunded', 'refunded']);
     // The due date reads as a date, not as YYYY-MM-DD.
     expect(screen.getByText(/Oct 25, 2026/)).toBeDefined();
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
@@ -413,19 +448,19 @@ describe('invoice and household payment UI', () => {
     expect(await screen.findByRole('button', { name: 'Record cash or check' })).toBeDefined();
   });
   it.each([
-    ['billing_disabled', 'Billing is disabled. Enable billing before charging a card.'],
+    ['billing_disabled', 'Billing is disabled. Enable billing before charging a saved payment method.'],
     ['not_payable', 'This invoice is no longer available for collection. Reload it to see its status.'],
-    ['needs_review', 'An owner or admin must release the review hold before charging a card.'],
-    ['pending_attempt', 'The card payment is still being resolved. Check back shortly.'],
-    ['no_saved_card', 'Add an active default card for this household before charging.'],
+    ['needs_review', 'An owner or admin must release the review hold before charging a saved payment method.'],
+    ['pending_attempt', 'The payment is still being resolved. A card payment usually settles within minutes; a bank debit can take a few business days.'],
+    ['no_saved_card', 'Add an active default payment method for this household before charging.'],
     ['already_attempted', 'Automatic collection has already been attempted for this invoice.'],
     ['outside_retry_window', 'This invoice is outside the scheduled retry window.'],
     ['not_auto_collectable', 'This invoice requires a staff payment action.'],
     ['not_due', 'This invoice is not due yet.'],
     ['checkout_changed', 'The pay link changed during collection. Reload the invoice before trying again.'],
-    ['reservation_lost', 'The card charge reservation changed. Check back shortly.'],
+    ['reservation_lost', 'The charge reservation changed. Check back shortly.'],
     ['action_required', 'The existing card payment needs the payer’s authentication.'],
-    ['collection_changed', 'The invoice, customer or saved card changed before confirmation. Reload the invoice.'],
+    ['collection_changed', 'The invoice, customer or saved payment method changed before confirmation. Reload the invoice.'],
     ['below_minimum', 'This invoice is below the smallest card charge Stripe takes in its currency. Record a cash or check payment instead.'],
     ['off_step', 'This invoice amount is finer than a card charge in its currency allows. Record a cash or check payment instead.'],
     ['already_paid', 'This invoice is already paid. Do not take another payment.'],
@@ -435,7 +470,7 @@ describe('invoice and household payment UI', () => {
       ? Response.json({ error: { code: 'conflict', message: 'Server-only message', details: { reason: [reason] } }, requestId: 'request' }, { status: 409 })
       : original(path, options));
     start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={desk} client={f.client}/>);
-    const charge = await screen.findByRole('button', { name: 'Charge saved card' });
+    const charge = await screen.findByRole('button', { name: 'Charge saved payment method' });
     await waitFor(() => expect((charge as HTMLButtonElement).disabled).toBe(false)); fireEvent.click(charge);
     fireEvent.click(within(screen.getByRole('region')).getByRole('button', { name: 'Confirm' }));
     expect((await screen.findByRole('alert')).textContent).toBe(message);
@@ -444,27 +479,27 @@ describe('invoice and household payment UI', () => {
   it.each([desk, admin])('restricts release confirmation to refund-level access: %j', async access => {
     const f = transport({ invoice: { ...invoice, needsReview: true } });
     start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={access} client={f.client}/>);
-    const charge = await screen.findByRole('button', { name: 'Charge saved card' }); expect((charge as HTMLButtonElement).disabled).toBe(true);
+    const charge = await screen.findByRole('button', { name: 'Charge saved payment method' }); expect((charge as HTMLButtonElement).disabled).toBe(true);
     const release = screen.queryByRole('button', { name: 'Release review hold' });
     if (!access.refund) { expect(release).toBeNull(); return; }
     await waitFor(() => expect(f.fetcher.mock.calls.filter(([path]) => String(path).includes('/payment-methods')).length).toBe(2));
     fireEvent.click(release!);
-    expect(screen.getByText('Confirm collection of this overdue invoice. The next billing run will charge the saved card unless you charge it now or record a payment first.')).toBeDefined();
+    expect(screen.getByText('Confirm collection of this overdue invoice. The next billing run will charge the saved payment method unless you charge it now or record a payment first.')).toBeDefined();
     fireEvent.click(within(screen.getByRole('region')).getByRole('button', { name: 'Confirm' }));
-    await screen.findByText('Review hold released. The next billing run will charge the saved card unless you charge it now or record a payment first.');
+    await screen.findByText('Review hold released. The next billing run will charge the saved payment method unless you charge it now or record a payment first.');
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Release review hold' })).toBeNull());
     expect(f.fetcher.mock.calls.some(([path]) => String(path).endsWith('/charge'))).toBe(false);
   });
-  it('says the billing run will not charge a household with no saved card when the hold is released', async () => {
+  it('says the billing run will not charge a household with no active default payment method when the hold is released', async () => {
     const f = transport({ invoice: { ...invoice, needsReview: true } }), original = f.fetcher.getMockImplementation()!;
     f.fetcher.mockImplementation(async (path, options) => String(path).includes('/payment-methods')
       ? Response.json({ data: [], pagination: { offset: 0, limit: 25, total: 0 } }) : original(path, options));
     start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={admin} client={f.client}/>);
     fireEvent.click(await screen.findByRole('button', { name: 'Release review hold' }));
-    await screen.findByText(/This household has no saved card, so the billing run won’t charge it/);
-    expect(screen.queryByText(/will charge the saved card/)).toBeNull();
+    await screen.findByText(/This household has no active default payment method, so the billing run won’t charge it/);
+    expect(screen.queryByText(/will charge the saved payment method/)).toBeNull();
     fireEvent.click(within(screen.getByRole('region')).getByRole('button', { name: 'Confirm' }));
-    await screen.findByText('Review hold released. This household has no saved card, so the billing run won’t charge it: send a pay link or record a payment.');
+    await screen.findByText('Review hold released. This household has no active default payment method, so the billing run won’t charge it. Send a pay link or record a payment.');
   });
   it.each(['missing', 'revoked', 'not_default'])('disables card charging for a %s default card', async state => {
     const f = transport(), original = f.fetcher.getMockImplementation()!;
@@ -473,7 +508,7 @@ describe('invoice and household payment UI', () => {
       pagination: { offset: 0, limit: 25, total: state === 'missing' ? 0 : 1 },
     }) : original(path, options));
     start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={desk} client={f.client}/>);
-    const button = await screen.findByRole('button', { name: 'Charge saved card' });
+    const button = await screen.findByRole('button', { name: 'Charge saved payment method' });
     await waitFor(() => expect(f.fetcher.mock.calls.filter(([path]) => String(path).includes('/payment-methods')).length).toBe(2));
     expect((button as HTMLButtonElement).disabled).toBe(true);
   });
@@ -512,10 +547,10 @@ describe('invoice and household payment UI', () => {
       id: id(30), createdAt, invoiceId: invoice.id, attemptNumber: 1, amountCents: 2500, currency: 'USD', status: 'pending', declineCode: null, resolvedAt: null,
     } }) : original(path, options));
     start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={desk} client={f.client}/>);
-    const charge = await screen.findByRole('button', { name: 'Charge saved card' });
+    const charge = await screen.findByRole('button', { name: 'Charge saved payment method' });
     await waitFor(() => expect((charge as HTMLButtonElement).disabled).toBe(false)); fireEvent.click(charge);
     fireEvent.click(within(screen.getByRole('region')).getByRole('button', { name: 'Confirm' }));
-    await screen.findByText('The card payment is still being resolved. Check back shortly.');
+    await screen.findByText('The payment is still being resolved. A card payment usually settles within minutes; a bank debit can take a few business days.');
   });
 });
 

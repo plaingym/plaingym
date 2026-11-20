@@ -29,6 +29,8 @@
   "expires": "Expires {month}/{year}",
   "updateCard": "Update card",
   "addCard": "Add a card",
+  "useCardInstead": "Use a card instead",
+  "useCardInsteadNote": "Automatic payments will use this card instead of your bank account.",
   "redirecting": "Opening secure checkout…",
   "checkoutNote": "You'll finish on a secure Stripe page, then see a confirmation from your gym. Come back here afterwards; updates can take a moment to appear.",
   "unavailable": "Online payment isn't available right now. Please contact your gym.",

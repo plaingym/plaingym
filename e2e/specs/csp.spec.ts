@@ -87,7 +87,7 @@ test('the portal starts Checkout for an invoice and for a card with a navigation
   await page.getByRole('button', { name: 'Pay now', exact: true }).first().click();
   await page.waitForURL(url => url.origin === stripeOrigin);
   await page.goto(sandbox.origin + '/portal/billing');
-  await page.getByRole('button', { name: /^(Add a card|Update card)$/ }).click();
+  await page.getByRole('button', { name: /^(Add a card|Update card|Use a card instead)$/ }).click();
   await page.waitForURL(url => url.origin === stripeOrigin);
 });
 

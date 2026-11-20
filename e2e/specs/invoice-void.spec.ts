@@ -29,7 +29,7 @@ for (const width of [360, 1280]) {
       await page.getByRole('button', { name: 'Confirm', exact: true }).click();
       await expect(page.getByText('Invoice voided. No payment is owed on this invoice.')).toBeVisible();
       await expect(page.getByRole('button', { name: 'Void invoice', exact: true })).toHaveCount(0);
-      await expect(page.getByRole('button', { name: 'Charge saved card', exact: true })).toHaveCount(0);
+      await expect(page.getByRole('button', { name: 'Charge saved payment method', exact: true })).toHaveCount(0);
       await expect(page.getByRole('button', { name: 'Send or share pay link', exact: true })).toHaveCount(0);
       const detail = await owner.json<{ data: { invoice: { status: string } } }>('/api/billing/invoices/' + bill.id);
       expect(detail.data.invoice.status).toBe('void');

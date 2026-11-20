@@ -48,7 +48,7 @@ export function CardList({ gymId, householdId, allowed, client = invoiceClient }
       {cards.isPending && <LoadingState/>}{cards.isError && <ErrorState onRetry={() => void cards.refetch()}/>}
       {cards.data?.data.length === 0 && <EmptyState title={text('noCards')}/>}
       <StackedList>{cards.data?.data.map(card => <StackedItem key={card.id}>
-        <span className="wrap-anywhere">{paymentMethodLabel(card, text)}{card.type === 'card' && <> · {card.expiryMonth}/{card.expiryYear}</>}</span>
+        <span className="wrap-anywhere">{paymentMethodLabel(card, text)}{card.type === 'card' && card.expiryMonth != null && card.expiryYear != null && <> · {String(card.expiryMonth).padStart(2, '0')}/{card.expiryYear}</>}</span>
         {card.isDefault && <Badge className="self-start">{text('default')}</Badge>}
         {card.revokedAt && <Badge className="self-start">{text('removed')}</Badge>}
         {allowed && <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">

@@ -84,6 +84,7 @@ for (const { name: size, viewport } of viewports) {
     const bank = page.getByRole('listitem').filter({ hasText: bankLabel });
     await expect(bank.getByText('Default payment method', { exact: true })).toBeVisible();
     await expect(bank.getByText(/expir/i)).toHaveCount(0);
+    await expect(page.getByText('Automatic payments will use this card instead of your bank account.')).toBeVisible();
     await accessibleThemes(page, info, size + '-portal-payment-methods');
     // Fake Checkout does not dispatch payment webhooks here; use an already paid sandbox invoice.
     await keyboardActivate(page, page.getByRole('button', { name: 'Download receipt', exact: true }).first());
@@ -94,7 +95,7 @@ for (const { name: size, viewport } of viewports) {
     expect(pdf.contentType).toContain('application/pdf');
     expect(pdf.pdf).toBe(true);
     await accessibleThemes(page, info, size + '-keyboard-receipt');
-    await keyboardActivate(page, page.getByRole('button', { name: /^(Add a card|Update card)$/ }));
+    await keyboardActivate(page, page.getByRole('button', { name: 'Use a card instead', exact: true }));
     await page.waitForURL(url => url.origin === stripeOrigin);
   });
 }

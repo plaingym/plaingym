@@ -46,6 +46,9 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
   if (!gym) return null;
   const instant = (value: string) => dateLabel(value, gym.timezone);
   const failure = checkout.error ?? download.error, unavailableKey = checkout.error ? 'unavailable' : 'receiptUnavailable';
+  const hasCard = methods.data?.some(method => method.type === 'card');
+  const bankOnly = !!methods.data?.length && !hasCard;
+  const cardAction = hasCard ? 'updateCard' : bankOnly ? 'useCardInstead' : 'addCard';
   return <Page className="max-w-3xl"><PortalRecovery moving={scope.moving}>
     <PageHeader title={text('title')} description={context.data ? text(payer ? 'description' : 'creditsDescription') : undefined} />
     {!context.data && (context.isPending || scope.settling ? <LoadingState /> : <ErrorState onRetry={() => void context.refetch()} />)}
@@ -90,7 +93,8 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
       {invoices.data && <Pager offset={offset} total={invoices.data.pagination.total} limit={pageSize} onChange={setOffset} previousLabel={text('previous')} nextLabel={text('next')}/>}
     </PageSection>
     <PageSection title={text('methods')} description={text('checkoutNote')}
-      actions={<Button variant="outline" disabled={checkout.isPending || !methods.isSuccess} onClick={() => checkout.mutate(null)}>{text(methods.data?.some(method => method.type === 'card') ? 'updateCard' : 'addCard')}</Button>}>
+      actions={<Button variant="outline" disabled={checkout.isPending || !methods.isSuccess} onClick={() => checkout.mutate(null)}>{text(cardAction)}</Button>}>
+      {bankOnly && <p className="text-sm text-muted-foreground">{text('useCardInsteadNote')}</p>}
       {(methods.isPending || (!methods.data && scope.settling)) ? <LoadingState /> : methods.isError && <ErrorState onRetry={() => void methods.refetch()} />}
       {methods.data?.length === 0 && <EmptyState title={text('noMethods')} />}
       {!!methods.data?.length && <StackedList>{methods.data.map(method => <StackedItem key={method.id} className="flex-row flex-wrap items-center justify-between gap-2">
