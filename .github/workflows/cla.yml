@@ -67,10 +67,11 @@ jobs:
               if (!version) throw new Error('CLA.md must declare a version');
               const hash = createHash('sha256').update(text).digest('hex');
               const marker = `<!-- plaingym-cla:${hash} -->`;
-              const comments = await github.paginate(api.issues.listComments, { owner, repo, issue_number: issueNumber, per_page: 100 });
+              const listComments = () => github.paginate(api.issues.listComments, { owner, repo, issue_number: issueNumber, per_page: 100 });
               const isOurPrompt = (comment) => comment.user?.login === 'github-actions[bot]'
                 && comment.user?.type === 'Bot' && comment.body?.startsWith('<!-- plaingym-cla:');
-              let prompt = comments.find(isOurPrompt);
+              // The earliest trusted prompt is the one every run keeps and signs against.
+              const listPromptsById = async () => (await listComments()).filter(isOurPrompt).sort((a, b) => a.id - b.id);
 
               async function readLedger() {
                 let stored;
@@ -89,10 +90,10 @@ jobs:
               if (!signed && context.eventName === 'issue_comment') {
                 // Refetch the comment: payload strings are data and are never evaluated as code.
                 const { data: comment } = await api.issues.getComment({ owner, repo, comment_id: context.payload.comment.id });
-                if (comment.user.id === pr.user.id && comment.user.type === 'User' && comment.body.trim() === phrase
-                    && comment.issue_url === `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`
-                    && prompt?.body.startsWith(marker)
-                    && Date.parse(comment.updated_at) >= Date.parse(prompt.updated_at)) {
+                const isCandidate = comment.user.id === pr.user.id && comment.user.type === 'User' && comment.body.trim() === phrase
+                  && comment.issue_url === `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`;
+                const [prompt] = isCandidate ? await listPromptsById() : [];
+                if (prompt?.body.startsWith(marker) && Date.parse(comment.updated_at) >= Date.parse(prompt.updated_at)) {
                   const signature = {
                     userId: pr.user.id, login: pr.user.login, commentId: comment.id,
                     signedAt: comment.updated_at, claVersion: version, claSha256: hash, claBlobSha: agreement.sha,
@@ -138,15 +139,17 @@ jobs:
               }
               if (!signed) {
                 const body = `${marker}\n@${pr.user.login}, please read [Contributor License Agreement v${version}](${context.serverUrl}/${owner}/${repo}/blob/${defaultSha}/CLA.md).\n\nReply with this exact comment to sign:\n\n> ${phrase}\n\nYou keep your copyright. Your signature records this agreement's SHA-256: \`${hash}\`.`;
-                // Another run may have posted the prompt since our initial read.
-                const latestComments = await github.paginate(api.issues.listComments, { owner, repo, issue_number: issueNumber, per_page: 100 });
-                prompt = latestComments.filter(isOurPrompt).sort((a, b) => a.id - b.id)[0];
-                if (!prompt) prompt = (await api.issues.createComment({ owner, repo, issue_number: issueNumber, body })).data;
-                else if (prompt.body !== body) await api.issues.updateComment({ owner, repo, comment_id: prompt.id, body });
-                // If two creates raced, keep the earliest prompt (and its signing timestamp).
-                const prompts = (await github.paginate(api.issues.listComments, { owner, repo, issue_number: issueNumber, per_page: 100 }))
-                  .filter(isOurPrompt).sort((a, b) => a.id - b.id);
-                for (const duplicate of prompts.slice(1)) {
+                const [prompt, ...leftovers] = await listPromptsById();
+                let duplicates = leftovers;
+                if (!prompt) {
+                  await api.issues.createComment({ owner, repo, issue_number: issueNumber, body });
+                  // If two creates raced, keep the earliest prompt (and its signing timestamp).
+                  [, ...duplicates] = await listPromptsById();
+                } else if (prompt.body !== body) {
+                  await api.issues.updateComment({ owner, repo, comment_id: prompt.id, body });
+                }
+                // Also removes a duplicate an earlier run failed to delete, without another scan.
+                for (const duplicate of duplicates) {
                   try {
                     await api.issues.deleteComment({ owner, repo, comment_id: duplicate.id });
                   } catch (error) {

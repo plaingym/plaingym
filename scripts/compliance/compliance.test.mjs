@@ -193,6 +193,7 @@ function claFixture(options = {}) {
   const failures = [];
   const writes = [];
   const comments = options.comments ?? [];
+  const commentCalls = { list: 0, create: 0, update: 0, delete: 0 };
   let ledger = options.ledger;
   let branch = Boolean(ledger);
   let revision = 1, conflicts = options.writeConflicts ?? 0;
@@ -248,12 +249,17 @@ function claFixture(options = {}) {
         issue_url: 'https://api.github.com/repos/plaingym/plaingym/issues/1',
       } }),
       createComment: async (value) => {
+        commentCalls.create++;
         const comment = { ...value, id: Math.max(4, ...comments.map((comment) => comment.id)) + 1, user: { login: 'github-actions[bot]', type: 'Bot' }, updated_at: '2026-01-01T00:00:00Z' };
         comments.push(comment);
         return { data: comment };
       },
-      updateComment: async (value) => { comments.find((comment) => comment.id === value.comment_id).body = value.body; },
+      updateComment: async (value) => {
+        commentCalls.update++;
+        comments.find((comment) => comment.id === value.comment_id).body = value.body;
+      },
       deleteComment: async (value) => {
+        commentCalls.delete++;
         const index = comments.findIndex((comment) => comment.id === value.comment_id);
         if (index < 0) return notFound();
         comments.splice(index, 1);
@@ -261,7 +267,7 @@ function claFixture(options = {}) {
     },
   };
   return {
-    hash, statuses, failures, writes, comments, context,
+    hash, statuses, failures, writes, comments, commentCalls, context,
     ledger: () => ledger,
     run: (hooks = {}) => execute(require, { ...context, ...hooks.context }, {
       rest: {
@@ -284,7 +290,10 @@ function claFixture(options = {}) {
           return api.issues.createComment(value);
         } },
       },
-      paginate: async () => {
+      paginate: async (method, params) => {
+        assert.equal(method, api.issues.listComments);
+        assert.deepEqual(params, { owner: 'plaingym', repo: 'plaingym', issue_number: 1, per_page: 100 });
+        commentCalls.list++;
         const snapshot = structuredClone(comments);
         await hooks.afterListComments?.();
         return snapshot;
@@ -335,13 +344,55 @@ test('an unlisted bot is not exempt, and a bot login only exempts a bot account'
   }
 });
 
-test('unsigned author fails and receives a hash-bound prompt', async () => {
+test('an unsigned pull request creates a hash-bound prompt and lists comments twice', async () => {
   const fixture = claFixture();
   await fixture.run();
   assert.equal(fixture.statuses.at(-1).state, 'failure');
+  assert.equal(fixture.comments.length, 1);
   assert.match(fixture.comments[0].body, new RegExp(fixture.hash));
+  assert.deepEqual(fixture.commentCalls, { list: 2, create: 1, update: 0, delete: 0 });
   assert.equal(fixture.writes.length, 0);
   assert.equal(fixture.statuses.at(-1).sha, 'current-head');
+});
+
+test('an unsigned pull request with a current prompt lists comments once without changing it', async () => {
+  const fixture = claFixture();
+  await fixture.run();
+  await fixture.run();
+  assert.deepEqual(fixture.commentCalls, { list: 3, create: 1, update: 0, delete: 0 });
+  assert.equal(fixture.statuses.at(-1).state, 'failure');
+});
+
+test('an unsigned run updates the earliest trusted prompt and removes a leftover duplicate without another scan', async () => {
+  const fixture = claFixture();
+  await fixture.run();
+  const [earliest] = fixture.comments;
+  const currentBody = earliest.body;
+  const staleBody = '<!-- plaingym-cla:old -->';
+  earliest.body = staleBody;
+  const later = { ...earliest, id: earliest.id + 1 };
+  const untrusted = { ...earliest, id: earliest.id - 1, user: { ...earliest.user, type: 'User' } };
+  fixture.comments.unshift(later, untrusted);
+
+  await fixture.run();
+
+  assert.equal(earliest.body, currentBody);
+  assert.equal(later.body, staleBody);
+  assert.equal(untrusted.body, staleBody);
+  assert.deepEqual(fixture.comments.map((comment) => comment.id), [untrusted.id, earliest.id]);
+  assert.deepEqual(fixture.commentCalls, { list: 3, create: 1, update: 1, delete: 1 });
+});
+
+test('a signing run checks the earliest trusted prompt, whatever order comments are listed in', async () => {
+  const fixture = claFixture({ eventName: 'issue_comment' });
+  await fixture.run({ context: { eventName: 'pull_request_target' } });
+  const [earliest] = fixture.comments;
+  fixture.comments.unshift({ ...earliest, id: earliest.id + 1, body: '<!-- plaingym-cla:old -->' });
+
+  await fixture.run();
+
+  assert.equal(fixture.writes.length, 1);
+  assert.equal(fixture.statuses.at(-1).state, 'success');
 });
 
 test('author signs once; record includes identity, comment, timestamp and agreement version/hash', async () => {
@@ -354,8 +405,10 @@ test('author signs once; record includes identity, comment, timestamp and agreem
     userId: 42, login: 'contributor', commentId: 10, signedAt: '2026-01-02T00:00:00Z',
     claVersion: '1.0', claSha256: fixture.hash, claBlobSha: 'blob',
   });
+  assert.equal(fixture.commentCalls.list, 3);
   await fixture.run();
   assert.equal(fixture.writes.length, 1);
+  assert.equal(fixture.commentCalls.list, 3);
 });
 
 test('an unsigned run rechecks a stale ledger after an interleaved signing run succeeds', async () => {
@@ -374,13 +427,15 @@ test('an unsigned run rechecks a stale ledger after an interleaved signing run s
   assert.equal(fixture.writes.length, 1);
 });
 
-test('an unsigned run reuses a prompt posted after its first comment snapshot', async () => {
+test('an unsigned signing run reuses a prompt posted after its signing snapshot', async () => {
   const fixture = claFixture();
   let lists = 0;
-  await fixture.run({ afterListComments: async () => {
+  await fixture.run({ context: { eventName: 'issue_comment' }, afterListComments: async () => {
     if (++lists === 1) await fixture.run({ context: { runId: 101 } });
   } });
   assert.equal(fixture.comments.length, 1);
+  assert.deepEqual(fixture.commentCalls, { list: 4, create: 1, update: 0, delete: 0 });
+  assert.equal(fixture.writes.length, 0);
 });
 
 test('a signing success during an in-flight failure status is restored as the final status', async () => {
@@ -402,6 +457,7 @@ test('racing unsigned creates leave only the earliest prompt and still allow sig
   await fixture.run({ beforeCreateComment: () => fixture.run({ context: { runId: 101 } }) });
   assert.equal(fixture.comments.length, 1);
   assert.equal(fixture.comments[0].id, 5);
+  assert.deepEqual(fixture.commentCalls, { list: 4, create: 2, update: 0, delete: 1 });
   await fixture.run({ context: { eventName: 'issue_comment' } });
   assert.equal(fixture.statuses.at(-1).state, 'success');
   assert.equal(fixture.writes.length, 1);
@@ -449,11 +505,11 @@ test('signature identity is user ID, never a recycled login', async () => {
 });
 
 test('forged, early, and unrelated signing comments do not grant a signature', async () => {
-  for (const override of [
-    { user: { id: 99, type: 'User' } },
-    { updated_at: '2025-01-01T00:00:00Z' },
-    { issue_url: 'https://api.github.com/repos/plaingym/plaingym/issues/2' },
-    { body: phrase + '; require("node:child_process").execSync("untrusted")' },
+  for (const [override, signingRunLists] of [
+    [{ user: { id: 99, type: 'User' } }, 1],
+    [{ updated_at: '2025-01-01T00:00:00Z' }, 2],
+    [{ issue_url: 'https://api.github.com/repos/plaingym/plaingym/issues/2' }, 1],
+    [{ body: phrase + '; require("node:child_process").execSync("untrusted")' }, 1],
   ]) {
     const comment = { id: 10, user: { id: 42, type: 'User' }, body: phrase, updated_at: '2026-01-02T00:00:00Z', issue_url: 'https://api.github.com/repos/plaingym/plaingym/issues/1', ...override };
     const fixture = claFixture({ comment });
@@ -462,6 +518,7 @@ test('forged, early, and unrelated signing comments do not grant a signature', a
     await fixture.run();
     assert.equal(fixture.statuses.at(-1).state, 'failure');
     assert.equal(fixture.writes.length, 0);
+    assert.equal(fixture.commentCalls.list, 2 + signingRunLists);
   }
 });
 
