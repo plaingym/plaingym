@@ -145,6 +145,52 @@ it('shares the catalog query and does not reload on Cancel, but reloads on a sta
   await waitFor(() => expect(api.discounts.list).toHaveBeenCalledTimes(3));
   expect(api.billing.plans).toHaveBeenCalledTimes(1); expect(api.billing.settings).toHaveBeenCalledTimes(1);
 });
+it('keeps an edited discount draft when Cancel is kept editable, then closes on discard without reloading', async () => {
+  const api = clients();
+  start(<><CatalogWorkspace gymId={id(1)} client={api.billing}/><DiscountCatalog gymId={id(1)} client={api.discounts} billing={api.billing}/></>);
+  fireEvent.click(await screen.findByRole('button', { name: 'Edit ' + discount.name }));
+  const dialog = screen.getByRole('dialog'), form = within(dialog);
+  field('Discount name', 'Renamed', form);
+  fireEvent.click(form.getByRole('button', { name: 'Cancel' }));
+  expect(form.getByText('Discard your unsaved changes?')).toBeDefined();
+  fireEvent.click(form.getByRole('button', { name: 'Keep editing' }));
+  expect((form.getByLabelText('Discount name') as HTMLInputElement).value).toBe('Renamed');
+  expect(screen.getByRole('dialog')).toBe(dialog);
+  expect(api.discounts.list).toHaveBeenCalledTimes(1);
+  fireEvent.click(form.getByRole('button', { name: 'Cancel' }));
+  fireEvent.click(form.getByRole('button', { name: 'Discard changes' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(api.discounts.list).toHaveBeenCalledTimes(1);
+  expect(api.discounts.update).not.toHaveBeenCalled();
+});
+it('closes an unedited discount editor at once through Cancel without reloading its catalog', async () => {
+  const api = clients();
+  start(<><CatalogWorkspace gymId={id(1)} client={api.billing}/><DiscountCatalog gymId={id(1)} client={api.discounts} billing={api.billing}/></>);
+  fireEvent.click(await screen.findByRole('button', { name: 'Edit ' + discount.name }));
+  const dialog = screen.getByRole('dialog'), form = within(dialog);
+  fireEvent.click(form.getByRole('button', { name: 'Cancel' }));
+  expect(screen.queryByText('Discard your unsaved changes?')).toBeNull();
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(api.discounts.list).toHaveBeenCalledTimes(1);
+});
+it('keeps an edited stale discount editor open on Close and reload until discarded, then reloads once', async () => {
+  const api = clients(); vi.mocked(api.discounts.update).mockRejectedValueOnce(new ApiError(409, 'conflict', ['revision_conflict']));
+  start(<><CatalogWorkspace gymId={id(1)} client={api.billing}/><DiscountCatalog gymId={id(1)} client={api.discounts} billing={api.billing}/></>);
+  fireEvent.click(await screen.findByRole('button', { name: 'Edit ' + discount.name }));
+  const dialog = screen.getByRole('dialog'), form = within(dialog);
+  field('Discount name', 'Renamed', form); save();
+  expect(await form.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('Close and reload'));
+  fireEvent.click(form.getByRole('button', { name: 'Close and reload' }));
+  expect(form.getByText('Discard your unsaved changes?')).toBeDefined();
+  fireEvent.click(form.getByRole('button', { name: 'Keep editing' }));
+  expect(screen.getByRole('dialog')).toBe(dialog);
+  expect(form.getByRole('button', { name: 'Close and reload' })).toBeDefined();
+  expect(api.discounts.list).toHaveBeenCalledTimes(1);
+  fireEvent.click(form.getByRole('button', { name: 'Close and reload' }));
+  fireEvent.click(form.getByRole('button', { name: 'Discard changes' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  await waitFor(() => expect(api.discounts.list).toHaveBeenCalledTimes(2));
+});
 it.each(['named', 'code'])('assigns with a discount using %s selection', async mode => {
   const api = panel();
   const form = within((await screen.findByRole('button', { name: 'Assign a plan' })).closest('form')!);

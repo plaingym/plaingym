@@ -2,7 +2,7 @@
 import { useRef, useState, type FormEvent } from 'react';
 import { createDiscountRequestSchema, type Discount, type Plan } from '@plaingym/shared/contracts';
 import { minorUnitsToInput, parseMinorUnits } from '@plaingym/shared/money';
-import { Dialog } from '../../../components/ui/dialog.js';
+import { Dialog, DialogCancel } from '../../../components/ui/dialog.js';
 import { Alert } from '../../../components/ui/alert.js';
 import { Button } from '../../../components/ui/button.js';
 import { Input } from '../../../components/ui/input.js';
@@ -78,7 +78,7 @@ export function DiscountEditor({ record, currency, plans, client, close, saved }
         </fieldset>
         <CheckboxField name="active" label={text('active')} defaultChecked={record?.active ?? true}/>
         <div className="flex flex-col gap-2 sm:col-span-2 sm:flex-row"><Button type="submit" disabled={stale}>{text(busy ? 'saving' : 'save')}</Button>
-          <Button variant="outline" onClick={() => close(stale)}>{text(stale ? 'closeReload' : 'cancel')}</Button></div>
+          <DialogCancel variant="outline">{text(stale ? 'closeReload' : 'cancel')}</DialogCancel></div>
       </fieldset>
     </form>
   </Dialog>;
