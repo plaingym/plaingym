@@ -115,6 +115,12 @@ describe('built-in providers', () => {
     const fallback = { ...env, SMTP_HOST: 'fallback.private', SMTP_FROM: 'install@example.test', SMTP_USER: 'fallback-user', SMTP_PASS: 'fallback-secret' };
     expect(await tile('smtp', gymB, { env: fallback })).toMatchObject({ status: 'healthy', message: expect.stringContaining("install's") });
     expect(await tile('smtp', gymA, { env: fallback })).toMatchObject({ status: 'healthy', message: expect.stringContaining('own SMTP') });
+    const id = uuidv7();
+    await factory('gyms', id, { smtpConfig: 'corrupt-smtp' });
+    expect(await tile('smtp', id, { env: fallback })).toMatchObject({
+      status: 'warning', details: { configured: true, lastTestAt: null },
+      message: "Email uses the install's SMTP settings. The gym's stored SMTP settings could not be read. Replace or remove them in Settings → Email.",
+    });
   });
   it('shows when the gym\'s own SMTP settings last passed a test email', async () => {
     const id = uuidv7(), smtp = { host: 'tested.host', port: 587, security: 'starttls', from: 'owner@example.test', username: 'u', password: 'p' } as const;
@@ -171,7 +177,23 @@ describe('built-in providers', () => {
     const id = uuidv7(); await factory('gyms', id, { smtpConfig: 'sensitive-invalid-ciphertext' });
     const result = await createHealthService(providers()).get(context(id));
     expect(result.data.tiles.find((t) => t.id === 'smtp')).toMatchObject({ status: 'warning', details: { configured: false },
-      message: expect.stringContaining('stored SMTP settings could not be read') });
+      message: "The gym's stored SMTP settings could not be read. Replace or remove them in Settings → Email." });
+    expect(JSON.stringify(result)).not.toContain('sensitive-invalid');
+  });
+  it('keeps the SMS-on warning and latest failed test when saved settings are unreadable', async () => {
+    const id = uuidv7();
+    await factory('gyms', id, { memberSmsEnabled: true, smsConfig: 'sensitive-invalid-ciphertext' });
+    await database.forGym(id, (tx) => writeAudit(tx, { gymId: id, actorKind: 'system', action: 'integrations.sms_tested',
+      targetType: 'gym', targetId: id, after: { test: 'failed' }, occurredAt: clock.now() }));
+    const result = await tile('sms', id);
+    expect(result).toMatchObject({
+      status: 'warning', details: { configured: false, memberSmsEnabled: true, lastTestAt: clock.now().toISOString(), lastTestResult: 'failed' },
+      message: [
+        'Member texts are on, but cannot be sent until a working SMS provider is saved.',
+        'The saved SMS settings could not be read. Replace or remove them in Settings.',
+        'The latest owner test failed. Saved SMS settings were kept.',
+      ].join(' '),
+    });
     expect(JSON.stringify(result)).not.toContain('sensitive-invalid');
   });
   it('checks free space in both directories, including a low staging disk and a full uploads disk', async () => {

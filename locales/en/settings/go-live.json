@@ -10,6 +10,8 @@
   "check.sms_ready.ready": "Text delivery is configured. Members must consent before receiving texts.",
   "check.sms_ready.needs_attention": "Member texts cannot be sent. Save a working SMS provider or turn member texts off.",
   "check.sms_ready.not_applicable": "Member texts are off and no SMS provider is configured.",
+  "check.sms_ready.unreadable": "The saved SMS settings could not be read. Replace or remove them in Settings.",
+  "check.sms_ready.read_failed": "SMS readiness could not be checked. Refresh the checklist to try again.",
   "billingEnabled": "Billing",
   "billingHelp": "Allow automatic collection, retries and staff card charges. Turning billing off pauses new charges; payments already started at Stripe can still complete.",
   "memberEmailsEnabled": "Member emails",

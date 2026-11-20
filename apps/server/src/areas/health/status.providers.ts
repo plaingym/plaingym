@@ -77,10 +77,13 @@ export function createStatusProviders(options: StatusOptions = {}) {
       const rows = await scope(context.gymId, (tx) => tx.select({ action: auditEvents.action, after: auditEvents.after, occurredAt: auditEvents.occurredAt })
         .from(auditEvents).where(inArray(auditEvents.action, emailTestActions)).orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(50));
       const test = latestEmailTest(rows, source === 'gym');
-      const message = statusMessage(configured ? source === 'gym' ? 'smtpGym' : 'smtpInstall' : 'smtpMissing');
       return { id: 'smtp', status: unreadable || test?.failed ? 'warning' : configured ? 'healthy' : 'not_configured', checkedAt: context.clock.now().toISOString(),
-        details: { configured, lastTestAt: test?.at ?? null }, message: message
-          + (unreadable ? ' ' + statusMessage('smtpUnreadable') : '') + (test?.failed ? ' ' + statusMessage('smtpTestFailed') : '') };
+        details: { configured, lastTestAt: test?.at ?? null },
+        message: [
+          configured ? statusMessage(source === 'gym' ? 'smtpGym' : 'smtpInstall') : !unreadable && statusMessage('smtpMissing'),
+          unreadable && statusMessage('smtpUnreadable'),
+          test?.failed && statusMessage('smtpTestFailed'),
+        ].filter(Boolean).join(' ') };
     }),
     healthProvider('sms', async context => {
       const gym = await settings.get(context.gymId), now = context.clock.now();
@@ -104,12 +107,14 @@ export function createStatusProviders(options: StatusOptions = {}) {
         checkedAt: now.toISOString(), details: { configured, memberSmsEnabled: gym.memberSmsEnabled,
           sentToday: usage?.sent ?? 0, refusedToday: refused, smsDailyCap: gym.smsDailyCap,
           lastTestAt: test?.at ?? null, lastTestResult: test?.result ?? null },
-        message: statusMessage(source === 'demo' ? 'smsDemo' : configured ? 'smsConfigured' : 'smsMissing')
-          + (gym.memberSmsEnabled && !configured ? ' ' + statusMessage('smsOnWithoutProvider') : '')
-          + (!gym.memberSmsEnabled ? ' ' + statusMessage('smsOff') : '')
-          + (unreadable ? ' ' + statusMessage('smsUnreadable') : '')
-          + (refused ? ' ' + statusMessage('smsCapReached') : '')
-          + (test?.result === 'failed' ? ' ' + statusMessage('smsTestFailed') : '') };
+        message: [
+          configured ? statusMessage(source === 'demo' ? 'smsDemo' : 'smsConfigured') : !unreadable && statusMessage('smsMissing'),
+          gym.memberSmsEnabled && !configured && statusMessage('smsOnWithoutProvider'),
+          !gym.memberSmsEnabled && statusMessage('smsOff'),
+          unreadable && statusMessage('smsUnreadable'),
+          refused > 0 && statusMessage('smsCapReached'),
+          test?.result === 'failed' && statusMessage('smsTestFailed'),
+        ].filter(Boolean).join(' ') };
     }),
     // A malformed GOOGLE_* variable no longer stops the app: this tile says which one and why, until it is fixed.
     healthProvider('google_login', async (context) => {

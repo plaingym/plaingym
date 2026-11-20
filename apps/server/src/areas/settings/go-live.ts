@@ -14,6 +14,7 @@ import { signedLinkWaiversComplete } from '../waivers/waivers.js';
 import { rerunRestoreReconciliation } from '../billing/runner/runner.jobs.js';
 import { restoreCheckLease, RestoreCheckBusyError, type RestoreCheckLease } from '../health/restore.billing-lease.js';
 import { readRestoreCheck, readSavedStripeMode, restoreCheckCoversStripe } from './go-live.restore.js';
+import type { SmsResolver } from './sms.js';
 
 const t = createTranslator(locales.en ?? {});
 type WireChecklist = ReturnType<typeof goLiveChecklistResponseSchema.parse>['data'];
@@ -72,8 +73,10 @@ export function createGoLiveService(options: {
   scope?: typeof forGym; clock?: Clock; smtpConfigured: (gymId: string) => Promise<boolean>; webhooks?: WebhookHealthQuery;
   /** The runtime's payments resolver; defaults to the gym's stored Stripe settings (demo sandboxes share an install account). */
   paymentsConfigured?: (gymId: string) => Promise<boolean>;
-  /** The SMS resolver's configured check; demo composition supplies its outbox resolver. Absent means unavailable. */
+  /** The SMS enable guard and checklist fallback. Absent means unavailable. */
   smsConfigured?: (gymId: string) => Promise<boolean>;
+  /** The SMS resolver's read-only status for the checklist. */
+  smsStatus?: SmsResolver['status'];
   restoreCheck?: typeof rerunRestoreReconciliation;
   restoreCheckLease?: RestoreCheckLease;
 }) {
@@ -83,10 +86,18 @@ export function createGoLiveService(options: {
     try { return Boolean(await options.smsConfigured?.(gymId)); }
     catch { return false; }
   };
+  async function smsReadiness(gymId: string): Promise<GoLiveChecklistItem | null> {
+    if (!options.smsStatus) return await smsConfigured(gymId) ? item('sms_ready', 'ready') : null;
+    let status: Awaited<ReturnType<SmsResolver['status']>>;
+    try { status = await options.smsStatus(gymId); }
+    catch { return item('sms_ready', 'needs_attention', t('settings/go-live:check.sms_ready.read_failed')); }
+    if (status.unreadable) return item('sms_ready', 'needs_attention', t('settings/go-live:check.sms_ready.unreadable'));
+    return status.source === null ? null : item('sms_ready', 'ready');
+  }
   async function checklist(gymId: string): Promise<Checklist> {
     // These accessors open their own short transactions, so run outside our scope.
-    const [smtp, webhook, payments, sms] = await Promise.all([options.smtpConfigured(gymId), webhooks.get(gymId),
-      options.paymentsConfigured?.(gymId), smsConfigured(gymId)]);
+    const [smtp, webhook, payments, smsCheck] = await Promise.all([options.smtpConfigured(gymId), webhooks.get(gymId),
+      options.paymentsConfigured?.(gymId), smsReadiness(gymId)]);
     return scope(gymId, async (tx) => {
       const [gym] = await tx.select(projection).from(gyms).where(eq(gyms.id, gymId));
       if (!gym) throw new AppError('not_found', t('settings/go-live:notFound'));
@@ -118,7 +129,7 @@ export function createGoLiveService(options: {
         item('waivers_signed', !people.length || !currentWaivers.some(w => !w.retiredAt) ? 'not_applicable'
           : ready(await signedLinkWaiversComplete(tx, people.map(p => p.id)))),
         item('smtp_ready', ready(smtp)),
-        item('sms_ready', !sms && !gym.memberSmsEnabled ? 'not_applicable' : ready(sms)),
+        smsCheck ?? item('sms_ready', gym.memberSmsEnabled ? 'needs_attention' : 'not_applicable'),
         item('backup_ready', ready(gym.backupPublicKey && gym.backupDestination)),
         item('webhook_ready', !stripe ? 'not_applicable'
           : ready(webhook.lastProcessedAt && !webhook.pendingCount && !webhook.failedCount)),

@@ -9,7 +9,7 @@ import { TestClock } from '../../core/clock.js';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { FakeSms, MemberSms } from '../../infra/sms/index.js';
 import { createSmsResolver, encryptSmsConfig } from './sms.js';
-import { createGoLiveService } from './go-live.js';
+import { createGoLiveService, type GoLiveService } from './go-live.js';
 import { createGymSettingsAccessor } from './settings.js';
 
 const db = useTestDatabase(), factory = createFactories(db), key = Buffer.alloc(32, 12);
@@ -20,32 +20,74 @@ async function fixture(demo = false) {
     smsNoticesConsentAt: clock.now(), smsNoticesConsentSource: 'staff' });
   const resolver = createSmsResolver({ key, tenancy: 'single', scope: db.forGym, demo, clock });
   const configured = vi.fn(async (id: string) => { assertNoTransaction('SMS configured'); return resolver.configured(id); });
-  const service = createGoLiveService({ scope: db.forGym, clock, smtpConfigured: async () => false, smsConfigured: configured });
+  const smsStatus = vi.fn(async (id: string) => { assertNoTransaction('SMS status'); return resolver.status(id); });
+  const options = { scope: db.forGym, clock, smtpConfigured: async () => false, smsConfigured: configured };
+  const service = createGoLiveService({ ...options, smsStatus });
   const settings = createGymSettingsAccessor({ scope: db.forGym }), context = { gymId, actor: { kind: 'system' as const } };
   const toggle = async (memberSmsEnabled: boolean) => service.update(context, { revision: (await settings.get(gymId)).revision, memberSmsEnabled });
-  return { gymId, clock, person, resolver, service, settings, context, toggle, configured };
+  return { gymId, clock, person, resolver, service, settings, context, toggle, configured, smsStatus, options };
 }
+const smsItem = (checklist: Awaited<ReturnType<GoLiveService['checklist']>>) =>
+  checklist.items.find(item => item.id === 'sms_ready');
+const unreadable = { status: 'needs_attention', message: 'The saved SMS settings could not be read. Replace or remove them in Settings.' };
+
 describe('member SMS go-live', () => {
   it('enables a saved readable provider without sending a test or a member text', async () => {
     const f = await fixture();
     await db.forGym(f.gymId, tx => tx.update(gyms).set({ smsConfig: encryptSmsConfig(key, f.gymId, {
       accountSid: 'AC' + '1'.repeat(32), auth: { token: 'local-test-token' }, sender: { from: '+12025550111' },
     }) }).where(eq(gyms.id, f.gymId)));
+    const before = await f.service.checklist(f.gymId);
+    expect(before.memberSmsEnabled).toBe(false);
+    expect(smsItem(before)?.status).toBe('ready');
+    expect(f.configured).not.toHaveBeenCalled();
     expect(await f.toggle(true)).toMatchObject({ memberSmsEnabled: true });
-    expect((await f.service.checklist(f.gymId)).items.find(item => item.id === 'sms_ready')?.status).toBe('ready');
+    expect(f.configured).toHaveBeenCalledExactlyOnceWith(f.gymId);
     expect(await db.forGym(f.gymId, tx => tx.select().from(smsDailyUsage))).toEqual([]);
   });
   it('requires an available readable provider, and always allows an up-to-date off request', async () => {
     const f = await fixture();
-    expect((await f.service.checklist(f.gymId)).items.find(item => item.id === 'sms_ready')?.status).toBe('not_applicable');
+    expect(smsItem(await f.service.checklist(f.gymId))).toMatchObject({
+      status: 'not_applicable', message: 'Member texts are off and no SMS provider is configured.',
+    });
     await expect(f.toggle(true)).rejects.toMatchObject({ code: 'conflict', details: { memberSmsEnabled: ['no_provider'] } });
-    await db.forGym(f.gymId, tx => tx.update(gyms).set({ smsConfig: 'unreadable', memberSmsEnabled: true }).where(eq(gyms.id, f.gymId)));
-    await expect(f.toggle(true)).rejects.toMatchObject({ code: 'conflict' });
-    expect((await f.service.checklist(f.gymId)).items.find(item => item.id === 'sms_ready')?.status).toBe('needs_attention');
-    f.configured.mockClear(); await f.toggle(false);
-    // Turning off does not consult the provider before the save; the resulting checklist still checks readiness.
+    await db.forGym(f.gymId, tx => tx.update(gyms).set({ memberSmsEnabled: true }).where(eq(gyms.id, f.gymId)));
+    expect(smsItem(await f.service.checklist(f.gymId))).toMatchObject({
+      status: 'needs_attention', message: 'Member texts cannot be sent. Save a working SMS provider or turn member texts off.',
+    });
+    await db.forGym(f.gymId, tx => tx.update(gyms).set({ smsConfig: 'unreadable' }).where(eq(gyms.id, f.gymId)));
+    await expect(f.toggle(true)).rejects.toMatchObject({ code: 'conflict', details: { memberSmsEnabled: ['no_provider'] } });
+    expect(smsItem(await f.service.checklist(f.gymId))).toMatchObject(unreadable);
+    f.configured.mockClear();
+    const disabled = await f.toggle(false);
+    expect(f.configured).not.toHaveBeenCalled();
     expect((await f.settings.get(f.gymId)).memberSmsEnabled).toBe(false);
-    expect((await f.service.checklist(f.gymId)).items.find(item => item.id === 'sms_ready')?.status).toBe('not_applicable');
+    expect(smsItem(disabled)).toMatchObject(unreadable);
+  });
+  it('reports a failed status read and still accepts a current off request', async () => {
+    const f = await fixture();
+    const error = new Error('internal provider error');
+    f.smsStatus.mockRejectedValue(error);
+    f.configured.mockRejectedValue(error);
+    const failed = { status: 'needs_attention', message: 'SMS readiness could not be checked. Refresh the checklist to try again.' };
+    const before = await f.service.checklist(f.gymId);
+    expect(before.memberSmsEnabled).toBe(false);
+    expect(smsItem(before)).toMatchObject(failed);
+    expect(f.configured).not.toHaveBeenCalled();
+    await expect(f.toggle(true)).rejects.toMatchObject({ code: 'conflict', details: { memberSmsEnabled: ['no_provider'] } });
+    await db.forGym(f.gymId, tx => tx.update(gyms).set({ memberSmsEnabled: true }).where(eq(gyms.id, f.gymId)));
+    f.configured.mockClear();
+    const disabled = await f.toggle(false);
+    expect(disabled.memberSmsEnabled).toBe(false);
+    expect(smsItem(disabled)).toMatchObject(failed);
+    expect(f.configured).not.toHaveBeenCalled();
+  });
+  it('falls back to the configured boolean when no status reader is supplied', async () => {
+    const f = await fixture();
+    const service = createGoLiveService(f.options);
+    expect(smsItem(await service.checklist(f.gymId))?.status).toBe('not_applicable');
+    f.configured.mockResolvedValue(true);
+    expect(smsItem(await service.checklist(f.gymId))?.status).toBe('ready');
   });
   it('keeps a missing switch out of other go-live changes', () => {
     expect(updateGoLiveRequestSchema.parse({ revision: 1, memberEmailsEnabled: true })).toEqual({ revision: 1, memberEmailsEnabled: true });
@@ -56,6 +98,9 @@ describe('member SMS go-live', () => {
     const resolve = vi.fn(async () => ({ gymId: f.gymId, name: 'Sample gym', sms: provider }));
     const sms = new MemberSms({ gymId: f.gymId, memberIds: [f.person.id], householdIds: [], kind: 'notices',
       resolver: { ...f.resolver, resolve }, settings: f.settings, scope: db.forGym, clock: f.clock, logSuppression: () => undefined });
+    const before = await f.service.checklist(f.gymId);
+    expect(before.memberSmsEnabled).toBe(false);
+    expect(smsItem(before)?.status).toBe('ready');
     expect(await sms.sendSms({ to: '+12025550110', body: 'Class reminder' })).toEqual({ status: 'suppressed', reason: 'disabled' });
     expect(provider.messages).toHaveLength(0);
     const enabled = await f.toggle(true);

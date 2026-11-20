@@ -31,12 +31,13 @@ See [invoice effects](../billing/transitions/README.md).
 The SMS tile reads `SmsResolver.status`, the gym's switch and cap, and its
 `sms_daily_usage` for today in the gym timezone. `sentToday` counts reserved send
 attempts, including failures or uncertain outcomes; `refusedToday` counts cap
-refusals. It is healthy with a readable provider and the switch on, warning when
-off, when settings are unreadable, the last owner test failed, or any attempts
-were refused today, and not configured without a provider. Counts and the last
-test time/result are returned, never numbers, bodies or credentials. Removing
-the provider clears older test history. Demo mode reports the outbox as its
-provider and never reads the stored SMS credentials.
+refusals. It is healthy with a readable provider and the switch on. It warns when
+texts are on without a provider, a configured provider has texts off, settings
+are unreadable, the last owner test failed, or attempts were refused today. The
+missing-provider message applies when there is no provider and storage is
+readable. Counts and the last test time/result are returned, never numbers,
+bodies or credentials. Removing the provider clears older test history.
+Demo mode reports the outbox as its provider and skips stored SMS credentials.
 
 The default route uses `createStatusProviders()` with the process environment.
 `configureHealthStatus({ env, providers })` lets runtime supply its explicit environment
@@ -126,9 +127,9 @@ No bucket names, filesystem paths, job errors, or SMTP credentials enter respons
 
 The SMTP check validates configuration rather than attempting a send. It uses
 `SmtpResolver.status(gymId)`, one read and decrypt, to report gym versus install
-configuration; stored gym settings that can't be read give a warning that names
-them, while the message describes the install's settings or none that mail then
-uses. The providers parse `APP_ENCRYPTION_KEY` once, on first use. In demo mode
+configuration. Unreadable gym settings produce a warning about the saved settings.
+When mail can fall back to the install's SMTP settings, the same tile names that
+source. The providers parse `APP_ENCRYPTION_KEY` once, on first use. In demo mode
 (`DEMO_MODE=true`) it reports the in-app outbox as ready without consulting SMTP, since
 demo gyms send no email.
 `lastTestAt` is the latest submitted SMTP test, sent or failed, read from the gym's
