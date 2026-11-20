@@ -196,10 +196,12 @@ Verification generates shared inputs once, then uses the same `test:run` and
 `compliance:run` bodies as `pnpm test` and `pnpm compliance`. Source-reader inventory
 checks also use Vitest's discovery, including database tests in the integration project.
 Database discovery and the source-reader guard follow runtime imports and re-exports
-through `*.test-helper` and fixture modules, skipping type-only edges. The source-reader
-guard classifies named filesystem bindings by their imported names, including destructured
-bindings from literal dynamic imports. Both checks share the import parser and
-source-extension resolver in `scripts/test-imports.ts`.
+through `*.test-helper` and fixture modules, including literal dynamic imports,
+CommonJS `require` calls, and TypeScript `import = require` declarations. They skip
+type-only edges. The source-reader guard also recognizes literal `process.getBuiltinModule`
+calls. It classifies named and destructured filesystem bindings by their imported names,
+treats whole-module bindings conservatively as readers, and ignores bare loads for reader
+classification. Both checks use the parser and resolver in `scripts/test-imports.ts`.
 Verification includes docs specs from Vitest's own discovery
 in the same test run as the selected tests (or the full suite).
 End-to-end skips Markdown-only pushes too, and still runs nightly, as does the **Memory** workflow, which measures the whole

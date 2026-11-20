@@ -13,6 +13,8 @@ function scanVariables(sources: Map<string, string>): Set<string> {
   sources = new Map([...sources].map(([file, source]) => [file.replaceAll('\\', '/'), source]));
   const options: ts.CompilerOptions = { allowJs: true, target: ts.ScriptTarget.ESNext, noResolve: true, types: [] };
   const host = ts.createCompilerHost(options);
+  const fileExists = host.fileExists.bind(host);
+  host.fileExists = file => sources.has(file.replaceAll('\\', '/')) || fileExists(file);
   const getSourceFile = host.getSourceFile.bind(host);
   host.getSourceFile = (file, languageVersion, onError, shouldCreateNewSourceFile) => {
     const source = sources.get(file.replaceAll('\\', '/'));
@@ -56,6 +58,10 @@ function scanVariables(sources: Map<string, string>): Set<string> {
     });
     checkedHelpers.add(fn);
   }
+  function argumentParameters({ parameters }: ts.SignatureDeclaration) {
+    const first = parameters[0];
+    return first && ts.isIdentifier(first.name) && first.name.text === 'this' ? parameters.slice(1) : parameters;
+  }
   function namesAt(expression: ts.Expression, visiting = new Set<ts.Node>()): string[] {
     const names = literalNames(checker.getTypeAtLocation(expression));
     if (names) return names;
@@ -63,7 +69,7 @@ function scanVariables(sources: Map<string, string>): Set<string> {
     if (parameter && ts.isParameter(parameter) && !visiting.has(parameter)) {
       const fn = parameter.parent;
       assertLocalCalls(fn);
-      const index = fn.parameters.indexOf(parameter);
+      const index = argumentParameters(fn).indexOf(parameter);
       const arguments_ = (calls.get(fn) ?? []).map((call) => call.arguments[index]);
       if (arguments_.length && arguments_.every((argument) => argument !== undefined)) {
         return arguments_.flatMap((argument) => namesAt(argument, new Set([...visiting, parameter])));
@@ -102,9 +108,14 @@ function scanVariables(sources: Map<string, string>): Set<string> {
         const receiver = checker.getSymbolAtLocation(callee.expression)?.valueDeclaration;
         return !!receiver && program.isSourceFileDefaultLibrary(receiver.getSourceFile());
       }
-      const parameter = declaration.parameters[index];
-      return 'body' in declaration && !!declaration.body && scannedFiles.has(declaration.getSourceFile())
-        && !!parameter && ts.isIdentifier(parameter.name) && parameter.name.text === 'env';
+      if (!('body' in declaration) || !declaration.body || !scannedFiles.has(declaration.getSourceFile())) return false;
+      const symbol = checker.getSymbolAtLocation(callee);
+      const target = symbol && (symbol.flags & ts.SymbolFlags.Alias) ? checker.getAliasedSymbol(symbol) : symbol;
+      const value = target?.valueDeclaration;
+      const implementation = value && ts.isVariableDeclaration(value) ? value.initializer : value;
+      if (implementation !== declaration) return false;
+      const parameter = argumentParameters(declaration)[index];
+      return !!parameter && ts.isIdentifier(parameter.name) && parameter.name.text === 'env';
     }
     return false;
   }
@@ -215,6 +226,8 @@ describe('docs/configuration.md', () => {
     'const env = {}; let source; source ??= env; source.X;',
     'const env = {}; function read(source = env) { return source.X; }',
     'const env = {}; const read: (env: Record<string, string>) => string = source => source.HIDDEN; read(env);',
+    'function shape(env: Record<string, string>) { return env.VISIBLE; } const read: typeof shape = source => source.HIDDEN; read(process.env);',
+    'function read(this: void, env: Record<string, string>, source: Record<string, string>) { return source.HIDDEN; } read({}, process.env);',
     'export {}; const env = {}; const Object = { values(source: Record<string, string>) { return source.HIDDEN; } }; Object.values(env);',
     'export {}; const env = {}; declare const Object: ObjectConstructor; Object.values(env);',
     "export function required(name: string) { return process.env[name]; } required('LOCAL');",
@@ -234,6 +247,23 @@ describe('docs/configuration.md', () => {
       (options.env ?? process.env).FALLBACK;
       Object.values(env).some(value => value === 'forbidden');
     `]]))].sort()).toEqual(['COPY', 'DEFAULT', 'FALLBACK', 'OPTION', 'STORED']);
+  });
+  it('follows calls to scanned functions and skips an explicit this parameter', () => {
+    expect([...scanVariables(new Map([
+      [resolve(root, 'scan-reader.ts'), `
+        export function read(this: void, env: Record<string, string>, other: object) { return env.READER; }
+      `],
+      [resolve(root, 'scan-caller.ts'), `
+        import { read as importedRead } from './scan-reader.js';
+        importedRead(process.env, {});
+        function read(this: void, env: Record<string, string>, other: object) { return env.LOCAL; }
+        read(process.env, {});
+        const readArrow = (env: Record<string, string>) => env.ARROW;
+        readArrow(process.env);
+        function readKey(this: void, key: string) { return process.env[key]; }
+        readKey('KEY');
+      `],
+    ]))].sort()).toEqual(['ARROW', 'KEY', 'LOCAL', 'READER']);
   });
   it('accepts env declarations in specifiers, destructured parameters and type queries', () => {
     expect([...scanVariables(new Map([[resolve(root, 'scan-shapes.ts'), `

@@ -98,6 +98,11 @@ describe('verification discovery', () => {
     "export * from 'node:fs';",
     "import { default as files } from 'node:fs';",
     "export { default } from 'node:fs/promises';",
+    "const { readFile: read } = require('node:fs');",
+    "let read; ({ readFile: read } = require('node:fs'));",
+    "import fs = require('node:fs');",
+    "const fs = process.getBuiltinModule('fs');",
+    "process.getBuiltinModule('node:fs').readFileSync('fixture.json');",
   ])('recognizes filesystem readers: %s', source => {
     expect(fileReader('fixture.test.ts', () => source)).toBe(true);
   });
@@ -106,6 +111,12 @@ describe('verification discovery', () => {
     "import 'node:fs';",
     "const { writeFile: readFile } = await import('node:fs/promises');",
     "let write; ({ writeFile: write } = await import('fs'));",
+    "await import('node:fs');",
+    "require('node:fs');",
+    "process.getBuiltinModule('fs');",
+    "const { writeFile: readFile } = require('node:fs');",
+    "const { writeFile } = process.getBuiltinModule('node:fs/promises');",
+    "import type fs = require('node:fs');",
   ])('ignores filesystem imports without a reader binding: %s', source => {
     expect(fileReader('fixture.test.ts', () => source)).toBe(false);
   });
@@ -138,6 +149,16 @@ describe('verification discovery', () => {
       ['fixture.mjs', "const fs = await import('node:fs/promises');"]]);
     expect(fileReader('example.test.ts', file => sources.get(file)!, new Set(),
       file => sources.has(relative(root, file).replaceAll('\\', '/')))).toBe(true);
+  });
+  it('follows CommonJS fixture loads for database and filesystem discovery', () => {
+    const sources = new Map([
+      ['example.test.ts', "import fixture = require('./fixture.cjs');"],
+      ['fixture.cjs', "require('@plaingym/db/testing/database'); const { readFile: read } = require('fs');"],
+    ]);
+    const localPath = (file: string) => relative(root, file).replaceAll('\\', '/');
+    const exists = (file: string) => sources.has(localPath(file));
+    expect(usesDatabase(resolve(root, 'example.test.ts'), file => sources.get(localPath(file))!, exists)).toBe(true);
+    expect(fileReader('example.test.ts', file => sources.get(file)!, new Set(), exists)).toBe(true);
   });
   it('traverses helper cycles without losing database use on either side', () => {
     const a = resolve(root, 'a.test-helper.ts'), b = resolve(root, 'b.test-helper.ts');

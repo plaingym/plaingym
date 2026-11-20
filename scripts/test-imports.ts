@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { readFileSync, statSync } from 'node:fs';
+import { isBuiltin } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import ts from 'typescript';
 
@@ -17,7 +18,7 @@ function readsFilesystemProperty(name: ts.Node): boolean {
     ? name.text === 'default' || reader.test(name.text) : false;
 }
 
-function readsDynamicFilesystem(call: ts.CallExpression): boolean {
+function readsFilesystemCall(call: ts.CallExpression): boolean {
   let expression: ts.Expression = call;
   while (ts.isAwaitExpression(expression.parent) || ts.isParenthesizedExpression(expression.parent))
     expression = expression.parent;
@@ -27,10 +28,19 @@ function readsDynamicFilesystem(call: ts.CallExpression): boolean {
   if (ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
     && parent.right === expression && ts.isObjectLiteralExpression(parent.left))
     return parent.left.properties.some(property => ts.isSpreadAssignment(property) || readsFilesystemProperty(property.name));
-  return true;
+  return !ts.isExpressionStatement(parent);
 }
 
-/** Runtime imports and re-exports, including literal dynamic imports. Type-only edges do not execute. */
+function moduleLoadSpecifier(call: ts.CallExpression): string | undefined {
+  const [argument] = call.arguments;
+  if (!argument || !ts.isStringLiteralLike(argument)) return;
+  const callee = call.expression;
+  if (callee.kind === ts.SyntaxKind.ImportKeyword || ts.isIdentifier(callee) && callee.text === 'require') return argument.text;
+  if (ts.isPropertyAccessExpression(callee) && callee.name.text === 'getBuiltinModule'
+    && ts.isIdentifier(callee.expression) && callee.expression.text === 'process' && isBuiltin(argument.text)) return argument.text;
+}
+
+/** Runtime imports, re-exports and literal module loads. Type-only edges do not execute. */
 export function parseTestImports(file: string, text: string) {
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
   const references: ModuleReference[] = [];
@@ -48,10 +58,14 @@ export function parseTestImports(file: string, text: string) {
       references.push({ specifier, readsFiles: filesystem.test(specifier) && (!importing || !!clause) && (defaultImport || !bindings
         || bindings.some(binding => !binding.isTypeOnly && readsFilesystemProperty(binding.propertyName ?? binding.name))) });
     }
-    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword
-      && node.arguments[0] && ts.isStringLiteral(node.arguments[0])) {
-      const specifier = node.arguments[0].text;
-      references.push({ specifier, readsFiles: filesystem.test(specifier) && readsDynamicFilesystem(node) });
+    if (ts.isImportEqualsDeclaration(node) && !node.isTypeOnly && ts.isExternalModuleReference(node.moduleReference)
+      && node.moduleReference.expression && ts.isStringLiteralLike(node.moduleReference.expression)) {
+      const specifier = node.moduleReference.expression.text;
+      references.push({ specifier, readsFiles: filesystem.test(specifier) });
+    }
+    if (ts.isCallExpression(node)) {
+      const specifier = moduleLoadSpecifier(node);
+      if (specifier !== undefined) references.push({ specifier, readsFiles: filesystem.test(specifier) && readsFilesystemCall(node) });
     }
     ts.forEachChild(node, visit);
   }
