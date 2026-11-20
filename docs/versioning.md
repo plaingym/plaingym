@@ -63,8 +63,12 @@ constraint to existing columns. New identity, generated and `serial` columns fil
 themselves and are allowed without an explicit default. The lint flags
 `DROP IDENTITY`, `ADD GENERATED ... AS IDENTITY`, `SET GENERATED ALWAYS` and
 `DROP EXPRESSION` on existing columns because they can reject older inserts or
-change the values those inserts receive. It also flags `SET NOT NULL`, `DROP NOT NULL`,
-`SET DATA TYPE` (or its `TYPE` shorthand), a dropped or `NULL` column default,
+change the values those inserts receive. It flags `SET EXPRESSION` because it can
+change the generated values older readers see. On existing identity columns it
+flags `RESTART`, `SET START` and `SET INCREMENT BY` because sequence values can
+conflict with stored values when older inserts omit the column. It also flags
+`SET NOT NULL`, `DROP NOT NULL`, `SET DATA TYPE` (or its `TYPE` shorthand),
+a dropped or `NULL` column default,
 an added `CHECK`, or a dropped constraint. Relaxing nullability or changing a type
 can store values the previous release's readers reject. A dropped constraint's
 kind is absent from that SQL, so even a

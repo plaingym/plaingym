@@ -86,6 +86,9 @@ function contains(tokens, phrase) {
   return tokens.some((_, index) => phrase.every((token, offset) => tokens[index + offset] === token));
 }
 
+// Identity options can be combined in one ALTER COLUMN action.
+const identityOptions = ['CACHE', 'CYCLE', 'GENERATED', 'INCREMENT', 'LOGGED', 'MAXVALUE', 'MINVALUE', 'NO', 'START', 'UNLOGGED'];
+
 /** Whether the DEFAULT expression starting at `index` is a literal NULL: bare, parenthesized, or cast
  * (`NULL::text`, `(NULL)::text`, `CAST(NULL AS text)`).
  * @param {string[]} tokens @param {number} index
@@ -131,6 +134,16 @@ export function rollbackFindings(source) {
           findings.push({ line, rule: `SET GENERATED ALWAYS on ${name}: older inserts that supply a value are rejected` });
         if (change[0] === 'DROP' && change[1] === 'EXPRESSION')
           findings.push({ line, rule: `DROP EXPRESSION on ${name}: older inserts that omit the column lose its computed value` });
+        if (change[0] === 'SET' && change[1] === 'EXPRESSION')
+          findings.push({ line, rule: `SET EXPRESSION on ${name}: older readers may receive different generated values` });
+        if (change[0] === 'RESTART' || (change[0] === 'SET' && identityOptions.includes(change[1]))) {
+          if (change.includes('RESTART'))
+            findings.push({ line, rule: `RESTART on ${name}: older inserts that omit the column may receive conflicting sequence values` });
+          if (contains(change, ['SET', 'START']))
+            findings.push({ line, rule: `SET START on ${name}: a later restart may give older inserts conflicting sequence values` });
+          if (contains(change, ['SET', 'INCREMENT']))
+            findings.push({ line, rule: `SET INCREMENT BY on ${name}: older inserts that omit the column may receive conflicting sequence values` });
+        }
       }
       if (contains(action, ['DROP', 'DEFAULT']))
         findings.push({ line, rule: 'DROP DEFAULT: older inserts that omit a NOT NULL column fail' });

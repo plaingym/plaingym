@@ -30,8 +30,11 @@ Isolation is enforced in the database, not only in application code.
   grants no gym-owned data.
 * **Database roles.** The app connects as `app`: DML only, no DDL, no
   `BYPASSRLS`, never a superuser. The `maintenance` role (`BYPASSRLS`) runs only
-  migrations, backups and restore. In multi-gym mode the running app never holds
-  the maintenance credentials and refuses to start if they are set.
+  migrations, backups and restore. Startup refuses direct or indirect membership
+  of `app` in `maintenance` or a role with `SUPERUSER`, `BYPASSRLS` or `CREATEROLE`.
+  The check counts membership with any options and names each privileged role.
+  In multi-gym mode the running app never holds the maintenance credentials and
+  refuses to start if they are set.
   Every app, authentication and maintenance pool pins `search_path=public` at
   connection startup, overriding database, role and connection URL defaults.
 * **Composite foreign keys.** References between gym-owned tables include

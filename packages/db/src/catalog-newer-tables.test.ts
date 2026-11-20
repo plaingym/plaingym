@@ -91,9 +91,56 @@ describe('a table this image does not declare', () => {
   });
 });
 
+describe('app role memberships at startup', () => {
+  it.each([
+    ['a superuser role', 'superuser', false],
+    ['an indirect BYPASSRLS role', 'bypassrls', true],
+    ['a CREATEROLE role', 'createrole', false],
+    ['maintenance', null, false],
+  ])('refuses %s and names the role', async (_name, attributes, indirect) => {
+    const admin = openConnection(databaseUrl(inject('testDatabase').adminUrl, database.name), 1);
+    const sql = admin.sql;
+    const role = attributes === null ? 'maintenance' : `${database.name}_privileged`;
+    try {
+      // Keep cluster-wide memberships invisible to other test databases.
+      await sql`begin`;
+      if (attributes !== null) await sql`create role ${sql(role)} nologin ${sql.unsafe(attributes)}`;
+      if (indirect) {
+        const intermediate = `${database.name}_intermediate`;
+        await sql`create role ${sql(intermediate)} nologin`;
+        await sql`grant ${sql(role)} to ${sql(intermediate)} with inherit false, set false`;
+        await sql`grant ${sql(intermediate)} to app`;
+      } else {
+        await sql`grant ${sql(role)} to app`;
+      }
+      await sql`set local role maintenance`;
+      await expect(assertCatalog(sql)).rejects.toThrow(`app is a member of privileged role ${role}`);
+    } finally {
+      try { await sql`rollback`; } finally { await admin.close(); }
+    }
+  });
+
+  it('accepts startup with a plain app membership', async () => {
+    const admin = openConnection(databaseUrl(inject('testDatabase').adminUrl, database.name), 1);
+    const sql = admin.sql;
+    const role = `${database.name}_plain`;
+    try {
+      await sql`create role ${sql(role)} nologin`;
+      await sql`grant ${sql(role)} to app`;
+      await expect(migrateDatabase(database.maintenanceUrl)).resolves.toBeUndefined();
+    } finally {
+      try { await sql`drop role if exists ${sql(role)}`; } finally { await admin.close(); }
+    }
+  });
+});
+
 describe('a view, materialized view, foreign table or function this image does not declare', () => {
   const invokerView = 'create view newer_view with (security_invoker = true) as select id, gym_id from members;';
   const matview = 'create materialized view newer_matview as select id, gym_id from members with no data;';
+  // No handler or remote connection is needed to check catalog privileges.
+  const foreignTable = `create foreign data wrapper newer_fdw;
+    create server newer_server foreign data wrapper newer_fdw;
+    create foreign table newer_foreign (id uuid, gym_id uuid) server newer_server;`;
   const definer = `create function newer_fn() returns bigint language sql security definer as 'select count(*) from members';`;
   afterEach(async () => {
     await maintenance.sql.unsafe('drop trigger if exists newer_trigger on members; drop function if exists newer_trigger_fn(); drop view if exists newer_view; drop materialized view if exists newer_matview; drop function if exists newer_fn()');
@@ -151,20 +198,25 @@ describe('a view, materialized view, foreign table or function this image does n
       await admin.close();
     }
   });
-  it('refuses startup when app is a member of a view owner role, whatever the membership options', async () => {
+  it.each([
+    ['view', 'newer_view', 'create view newer_view as select 1 as probe'],
+    ['materialized view', 'newer_matview', matview],
+    ['foreign table', 'newer_foreign', foreignTable],
+  ])('refuses startup when app is a member of a %s owner role, whatever the membership options', async (kind, name, create) => {
     const owner = `${database.name}_owner`;
     const admin = openConnection(databaseUrl(inject('testDatabase').adminUrl, database.name), 1);
     const sql = admin.sql;
     try {
       await sql`create role ${sql(owner)} nologin`;
-      await sql`create view newer_view as select 1 as probe`;
-      await sql`alter view newer_view owner to ${sql(owner)}`;
-      await sql`revoke all on newer_view from app, public, ${sql(owner)}`;
+      await sql.unsafe(create);
+      if (kind === 'foreign table') await sql`grant usage on foreign server newer_server to ${sql(owner)}`;
+      await sql`alter ${sql.unsafe(kind)} ${sql(name)} owner to ${sql(owner)}`;
+      await sql`revoke all on ${sql(name)} from app, public, ${sql(owner)}`;
       await expect(migrateDatabase(database.maintenanceUrl)).resolves.toBeUndefined();
 
-      const failure = `newer_view: app is a member of owner role ${owner}`;
+      const failure = `${name}: app is a member of owner role ${owner}`;
       const options = async () => (await database.app.sql`
-        select has_table_privilege('app', 'newer_view', 'SELECT') as can_select,
+        select has_table_privilege('app', ${name}::text, 'SELECT') as can_select,
           pg_has_role('app', ${owner}::text, 'USAGE') as can_use,
           pg_has_role('app', ${owner}::text, 'SET') as can_switch,
           pg_has_role('app', ${owner}::text, 'USAGE WITH ADMIN OPTION') as can_grant
@@ -188,7 +240,8 @@ describe('a view, materialized view, foreign table or function this image does n
       await expect(migrateDatabase(database.maintenanceUrl)).rejects.toThrow(failure);
     } finally {
       try {
-        await sql`drop view if exists newer_view`;
+        if (kind === 'foreign table') await sql`drop foreign data wrapper if exists newer_fdw cascade`;
+        else await sql`drop ${sql.unsafe(kind)} if exists ${sql(name)}`;
         await sql`drop role if exists ${sql(owner)}`;
       } finally { await admin.close(); }
     }
@@ -219,11 +272,7 @@ describe('a view, materialized view, foreign table or function this image does n
   it('accepts an inaccessible foreign table owned by another role, but still refuses app privileges and ownership', async () => {
     const admin = openConnection(databaseUrl(inject('testDatabase').adminUrl, database.name), 1);
     try {
-      // No handler or remote connection is needed to check catalog privileges.
-      await admin.sql.unsafe(`create foreign data wrapper newer_fdw;
-        create server newer_server foreign data wrapper newer_fdw;
-        create foreign table newer_foreign (id uuid, gym_id uuid) server newer_server;
-        revoke all on newer_foreign from app, public;`);
+      await admin.sql.unsafe(foreignTable + 'revoke all on newer_foreign from app, public;');
       await expect(assertCatalog(database.app.sql)).resolves.toMatchObject({ tableCount: 73 });
       await expect(migrateDatabase(database.maintenanceUrl)).resolves.toBeUndefined();
       await admin.sql.unsafe('grant select (id) on newer_foreign to app');

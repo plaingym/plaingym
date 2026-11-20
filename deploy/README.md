@@ -360,7 +360,9 @@ does not establish correct role initialization.
 
 The app connects as `app`, which row-level security confines to one gym at a
 time. The `maintenance` role (`BYPASSRLS`) runs migrations, backups, restore and
-key rotation.
+key rotation. Startup refuses direct or indirect membership of `app` in
+`maintenance` or a role with `SUPERUSER`, `BYPASSRLS` or `CREATEROLE`, with any
+membership options, and the catalog error names the privileged role.
 
 * **Single-gym installs** (`TENANCY=single`, this directory's `compose.yaml`):
   the app container holds `MAINTENANCE_PASSWORD` and `MAINTENANCE_DATABASE_URL`.

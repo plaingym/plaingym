@@ -91,6 +91,19 @@ export async function assertCatalog(sql: Sql) {
   `;
   for (const setting of settings) failures.push('Unexpected database or role settings: database ' +
     String(setting.database_name) + ', role ' + String(setting.role_name) + ': ' + String(setting.setting_name));
+  // Follow every membership edge, regardless of INHERIT, SET or ADMIN options.
+  const privilegedRoles = await sql`
+    with recursive memberships(roleid) as (
+      select m.roleid from pg_catalog.pg_auth_members m
+      join pg_catalog.pg_roles r on r.oid = m.member where r.rolname = 'app'
+      union
+      select m.roleid from pg_catalog.pg_auth_members m join memberships on memberships.roleid = m.member
+    )
+    select r.rolname from memberships join pg_catalog.pg_roles r on r.oid = memberships.roleid
+    where r.rolsuper or r.rolbypassrls or r.rolcreaterole or r.rolname = 'maintenance'
+    order by r.rolname
+  `;
+  for (const role of privilegedRoles) failures.push('app is a member of privileged role ' + String(role.rolname));
   const [drizzle] = await sql`
     select has_schema_privilege('app', oid, 'USAGE') as usage, has_schema_privilege('app', oid, 'CREATE') as create
     from pg_catalog.pg_namespace where nspname = 'drizzle'
@@ -119,15 +132,14 @@ export async function assertCatalog(sql: Sql) {
         !role.rolcanlogin || role.rolbypassrls !== (name === 'maintenance')) failures.push('Unsafe role: ' + name);
   }
   const [privileges] = await sql`
-    select pg_has_role('app', 'maintenance', 'MEMBER') as member,
-      has_schema_privilege('app', 'public', 'CREATE') as schema_create,
+    select has_schema_privilege('app', 'public', 'CREATE') as schema_create,
       has_schema_privilege('app', 'public', 'USAGE') as schema_usage,
       has_database_privilege('app', current_database(), 'CREATE') as database_create,
       has_database_privilege('app', current_database(), 'TEMP') as database_temp,
       (select pg_get_userbyid(datdba) from pg_database where datname = current_database()) as database_owner,
       (select pg_get_userbyid(nspowner) from pg_namespace where nspname = 'public') as schema_owner
   `;
-  if (!privileges || privileges.member || privileges.schema_create || !privileges.schema_usage ||
+  if (!privileges || privileges.schema_create || !privileges.schema_usage ||
       privileges.database_create || privileges.database_temp || privileges.database_owner !== 'maintenance' ||
       privileges.schema_owner !== 'maintenance') failures.push('Unsafe database/schema privileges');
   const tables = await sql`
