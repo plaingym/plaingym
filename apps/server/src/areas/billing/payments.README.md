@@ -133,11 +133,13 @@ minor unit. Routes restrict refunds to owners and
 admins; front desk may collect payments and remove a card.
 
 A one-off from a charge type needs only `payments.record`. A custom-amount one-off
-(`source: 'custom'`) also needs `payments.custom`, held by owners and admins: without it
-the route answers 403 and creates nothing, before it validates the body (a malformed
-custom body gets the same 403, and a body that isn't JSON at all gets 400
-`Request body must be JSON`), and the invoice editor hides the custom amount. Charging an existing invoice is unchanged. Front desk therefore bills
-catalog charge types, which managers price.
+(`source: 'custom'`) also needs `payments.custom`, held by owners and admins. For
+staff without that permission, the guard answers 403 for a JSON body that names
+`source: 'custom'` before validating its fields, or 400 `Request body must be JSON`
+when the body cannot be parsed. Owners and admins receive the standard validation
+error for an unparseable body. The invoice editor hides the custom amount from
+front desk, who bill catalog charge types priced by managers. Charging an existing
+invoice is unchanged.
 
 Removing a payment method first revokes it locally and clears its default flag.
 Removing the default promotes the household's newest active method with no stored
