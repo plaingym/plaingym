@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- SQL only reads a transaction-local timeout setting.
+import { sql } from 'drizzle-orm';
 import { auditEvents, databaseCode, households, members, smsDailyUsage, uuidv7 } from '@plaingym/db';
 // eslint-disable-next-line database/system-tables -- One extra app-role connection holds the lock in this disposable test database.
 import { openConnection, scopedDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
+import { setLogSink } from '../../core/log.js';
 import { createGymSettingsAccessor } from '../../areas/settings/settings.js';
 import type { SmsResolver } from '../../areas/settings/sms.js';
 import { createSmsDeliveries, FakeSms, MemberSms, SmsDeliveryError, type MemberSmsOptions } from './index.js';
@@ -228,6 +231,132 @@ it.each(['sent', 'refused'] as const)('reverses a late %s increment on the origi
     await Promise.allSettled([usageTransaction, correctionTransaction]);
   }
 });
+
+async function rejectAfterLateUsage(f: Awaited<ReturnType<typeof fixture>>, correct: typeof scope, lateMs = 0) {
+  const usageWritten = Promise.withResolvers<void>(), commitUsage = Promise.withResolvers<void>();
+  let preparing = true;
+  const gatedScope: typeof scope = (gymId, fn) => {
+    if (!preparing) return correct(gymId, fn);
+    preparing = false;
+    return scope(gymId, async tx => {
+      const result = await fn(tx);
+      usageWritten.resolve();
+      await commitUsage.promise;
+      return result;
+    });
+  };
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+  const outcome = f.sender({ scope: gatedScope }).sendSms(message).catch((error: unknown) => error);
+  try {
+    expect(await Promise.race([usageWritten.promise, outcome])).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(smsDeadlineMs / 2);
+    if (lateMs) await vi.advanceTimersByTimeAsync(lateMs);
+    commitUsage.resolve();
+    expect(await outcome).toMatchObject({ acceptance: 'not_accepted', message: 'SMS recipient checks timed out' });
+    expect(f.sms.messages).toEqual([]);
+  } finally {
+    commitUsage.resolve();
+    vi.useRealTimers();
+  }
+}
+
+it.each([
+  { cap: 2, exhaust: false, description: 'retries after the usage row lock clears within the correction wait' },
+  { cap: 1, exhaust: true, description: 'logs one failure when the usage row stays locked through the correction wait' },
+])('$description', async ({ cap, exhaust }) => {
+  const f = await fixture({ cap });
+  await scope(f.gymId, tx => tx.insert(smsDailyUsage).values({ gymId: f.gymId, day: '2026-11-15', sent: 1, createdAt: f.clock.now() }));
+  const locked = Promise.withResolvers<void>(), unlock = Promise.withResolvers<void>();
+  const log = vi.fn(), previousSink = setLogSink(log);
+  const failures: (string | undefined)[] = [];
+  let attempts = 0, holder: Promise<void> | undefined;
+  const correct: typeof scope = async (gymId, fn) => {
+    attempts++;
+    if (!holder) {
+      // Preparation has committed. Use the other pool connection to block the correction itself.
+      holder = scope(gymId, async tx => {
+        await tx.select().from(smsDailyUsage).for('update');
+        locked.resolve();
+        await unlock.promise;
+      });
+      await Promise.race([locked.promise, holder]);
+    }
+    try {
+      return await scope(gymId, fn);
+    } catch (error) {
+      failures.push(databaseCode(error));
+      if (!exhaust) {
+        unlock.resolve();
+        await holder;
+      } else if (attempts === 1) {
+        // Keep the real lock held through the first timeout, then leave one second of application time.
+        await vi.advanceTimersByTimeAsync(smsDeadlineMs - 1_000);
+      } else if (attempts === 2) {
+        vi.advanceTimersByTime(1_000);
+      }
+      throw error;
+    }
+  };
+  try {
+    await rejectAfterLateUsage(f, correct);
+    if (exhaust) {
+      await vi.waitFor(() => expect(log).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('"event":"sms.usage_correction_failed"')));
+    } else {
+      expect(log).not.toHaveBeenCalled();
+    }
+    expect(attempts).toBe(2);
+    expect(failures).toHaveLength(exhaust ? 2 : 1);
+    for (const code of failures) expect(['55P03', '57014']).toContain(code);
+    expect(await f.usage()).toEqual([expect.objectContaining({ sent: 1, refused: exhaust ? 1 : 0 })]);
+    if (!exhaust) {
+      expect(await f.sender().sendSms(message)).toMatchObject({ status: 'sent' });
+      expect(f.sms.messages).toHaveLength(1);
+      expect(await f.usage()).toEqual([expect.objectContaining({ sent: 2, refused: 0 })]);
+    }
+  } finally {
+    setLogSink(previousSink);
+    unlock.resolve();
+    await holder;
+  }
+});
+
+it('gives a correction committed near the end of the wait its full timeouts', async () => {
+  const f = await fixture();
+  await scope(f.gymId, tx => tx.insert(smsDailyUsage).values({ gymId: f.gymId, day: '2026-11-15', sent: 1, createdAt: f.clock.now() }));
+  const timeouts: string[] = [];
+  const correct: typeof scope = (gymId, fn) => scope(gymId, async tx => {
+    const result = await fn(tx);
+    // eslint-disable-next-line database/system-tables -- Reads the correction's transaction-local timeout; no table access.
+    timeouts.push((await tx.execute<{ timeout: string }>(sql`select current_setting('lock_timeout') as timeout`))[0]!.timeout);
+    return result;
+  });
+  // Preparation commits with five milliseconds of the correction wait left.
+  await rejectAfterLateUsage(f, correct, smsDeadlineMs - 5);
+  expect(timeouts).toEqual(['3s']);
+  expect(await f.usage()).toEqual([expect.objectContaining({ sent: 1, refused: 0 })]);
+});
+
+it('attempts a late usage correction only once when its commit outcome is uncertain', async () => {
+  const f = await fixture();
+  await scope(f.gymId, tx => tx.insert(smsDailyUsage).values({ gymId: f.gymId, day: '2026-11-15', sent: 1, createdAt: f.clock.now() }));
+  const log = vi.fn(), previousSink = setLogSink(log);
+  let attempts = 0;
+  const correct: typeof scope = async (gymId, fn) => {
+    attempts++;
+    await scope(gymId, fn);
+    // PostgreSQL committed the decrement, but the caller received no acknowledgement.
+    throw Object.assign(new Error('connection lost'), { code: '08006' });
+  };
+  try {
+    await rejectAfterLateUsage(f, correct);
+    expect(attempts).toBe(1);
+    expect(log).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('"event":"sms.usage_correction_failed"'));
+    expect(await f.usage()).toEqual([expect.objectContaining({ sent: 1, refused: 0 })]);
+  } finally {
+    setLogSink(previousSink);
+  }
+});
+
 it('clears every consent at an opted-out number in this gym, auditing identifiers only', async () => {
   const f = await fixture(), other = await fixture();
   const second = await make('members', f.gymId, { ...f.consent, smsAnnouncementsConsentAt: f.clock.now(), smsAnnouncementsConsentSource: 'join' });

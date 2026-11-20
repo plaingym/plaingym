@@ -60,8 +60,14 @@ a 15-second preparation deadline. A timeout proves `not_accepted` and permits a
 retry. Transaction-local PostgreSQL lock and statement timeouts use 250 ms less
 than the remaining preparation time, with a 1 ms minimum. A database timeout
 during preparation also reports `SMS recipient checks timed out`. If a slot or cap
-refusal commits after the deadline, the sender waits for a short transaction to
-reverse that increment on its original local day before reporting the timeout.
+refusal commits after the deadline, the sender waits for a correction to reverse
+that increment on its original local day before reporting the timeout. A lock or
+statement timeout rolls back the correction and allows another attempt within
+the same wait. The first attempt sets three-second lock and statement timeouts,
+even when the commit arrives near or after the end of the wait; a retry's are
+shortened to fit the remaining wait. If the commit arrives after the wait has
+ended, the sender makes one correction attempt. Any other error ends the
+correction immediately.
 That wait lasts at most 30 seconds, the provider deadline a timed-out attempt
 doesn't use, so either path stays inside the one-minute in-flight window.
 Correction failures are logged. The provider has its own 30-second deadline.

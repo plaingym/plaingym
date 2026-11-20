@@ -17,11 +17,45 @@ import { DeliveryError, SmsDeliveryError, validateSms, type Sms, type SmsMessage
 
 type SuppressionReason = Extract<SmsResult, { status: 'suppressed' }>['reason'];
 const preparationTimeoutMarginMs = 250;
+const correctionTimeoutMs = 3_000;
 
 function setPreparationTimeouts(tx: Transaction, milliseconds: number) {
   const timeout = milliseconds + 'ms';
   // eslint-disable-next-line database/system-tables -- Set connection limits only for this transaction; no table access.
   return tx.execute(sql`select set_config('lock_timeout', ${timeout}, true), set_config('statement_timeout', ${timeout}, true)`);
+}
+
+function isDatabaseTimeout(error: unknown): boolean {
+  const code = databaseCode(error);
+  return code === '55P03' || code === '57014';
+}
+
+async function correctLateUsage(scope: typeof forGym, gymId: string, day: string,
+  counter: 'sent' | 'refused', remaining: () => number): Promise<void> {
+  const column = smsDailyUsage[counter];
+  let previousTimeout: unknown;
+  for (;;) {
+    try {
+      await scope(gymId, async tx => {
+        const milliseconds = Math.floor(remaining());
+        // The first correction keeps its full timeouts, even when preparation commits near or after the end of
+        // the wait. A retry can spend its remaining time waiting for a connection, and fits the time left.
+        if (previousTimeout !== undefined && milliseconds <= 0) throw previousTimeout;
+        await setPreparationTimeouts(tx, previousTimeout === undefined ? correctionTimeoutMs : Math.min(correctionTimeoutMs, milliseconds));
+        await tx.update(smsDailyUsage).set({ [counter]: sql`${column} - 1` })
+          .where(and(eq(smsDailyUsage.gymId, gymId), eq(smsDailyUsage.day, day), gt(column, 0)));
+      });
+      return;
+    } catch (error) {
+      // These PostgreSQL timeouts abort the transaction. Retrying an uncertain commit could subtract
+      // another attempt's increment.
+      if (!isDatabaseTimeout(error) || remaining() < 1) {
+        logError('sms.usage_correction_failed', { gymId, day, counter }, error);
+        return;
+      }
+      previousTimeout = error;
+    }
+  }
 }
 
 export interface SmsSuppression {
@@ -52,6 +86,7 @@ export class MemberSms implements Sms {
     let expired = false, usageMayCommit = false, timer: ReturnType<typeof setTimeout> | undefined;
     const timedOut = () => new DeliveryError('not_accepted', 'SMS recipient checks timed out');
     const remaining = () => Math.ceil(deadline - performance.now());
+    const correctionRemaining = () => deadline + smsDeadlineMs - performance.now();
     const requireTime = () => {
       const milliseconds = remaining();
       if (expired || milliseconds <= 0) throw timedOut();
@@ -99,20 +134,7 @@ export class MemberSms implements Sms {
       });
       if (expired || remaining() <= 0) {
         // Reverse only an increment confirmed by a committed transaction.
-        if (typeof checked === 'object') {
-          const { day, counter } = checked;
-          try {
-            await scope(gymId, async tx => {
-              await setPreparationTimeouts(tx, 3_000);
-              const column = smsDailyUsage[counter];
-              await tx.update(smsDailyUsage).set({ [counter]: sql`${column} - 1` })
-                .where(and(eq(smsDailyUsage.gymId, gymId), eq(smsDailyUsage.day, day), gt(column, 0)));
-            });
-          } catch (error) {
-            // Retrying an uncertain release could subtract another attempt's increment.
-            logError('sms.usage_correction_failed',{ gymId, day, counter }, error);
-          }
-        }
+        if (typeof checked === 'object') await correctLateUsage(scope, gymId, checked.day, checked.counter, correctionRemaining);
         throw timedOut();
       }
       if (typeof checked === 'string') return this.#suppressed(checked);
@@ -132,13 +154,12 @@ export class MemberSms implements Sms {
       if (expired && usageMayCommit) {
         let settle: ReturnType<typeof setTimeout> | undefined;
         await Promise.race([preparation.catch(() => undefined),
-          new Promise<void>(resolve => { settle = setTimeout(resolve, smsDeadlineMs); })]);
+          new Promise<void>(resolve => { settle = setTimeout(resolve, Math.ceil(correctionRemaining())); })]);
         clearTimeout(settle);
       }
       // validateSms's refusal carries a fixed message; any other failure is replaced.
       if (error instanceof DeliveryError) throw error;
-      const code = databaseCode(error);
-      if (code === '55P03' || code === '57014') throw timedOut();
+      if (isDatabaseTimeout(error)) throw timedOut();
       throw new DeliveryError('not_accepted', 'SMS recipient checks failed');
     } finally { clearTimeout(timer); }
     if ('status' in prepared) return prepared;
