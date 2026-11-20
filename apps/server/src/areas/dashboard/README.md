@@ -39,8 +39,8 @@ details use the same visit rule in one read for the displayed member IDs.
 The batch eligibility path reads active programs, their ranks, the active roster,
 and each member's latest promotion in four sequential queries. One grouped query
 counts classes since each candidate's promotion (or creation), including linked
-session programs and the gym's open-mat setting. Each program arm joins the
-candidate members' earliest windows, so only their attendance enters the batch.
+session programs and the gym's open-mat setting. The batch uses each program's
+candidate share of the active roster to choose its attendance read.
 The criteria registry still validates configuration, module availability and
 provider results. Time, age and extension criteria use their existing providers
 outside the snapshot transaction. Ready-only staff eligibility uses the same

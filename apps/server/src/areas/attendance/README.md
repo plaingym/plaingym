@@ -78,16 +78,14 @@ on the session. Template edits cannot reclassify attendance. Intervals include `
 and exclude `until`; history sorts newest first, then ID ascending.
 
 `promotion.query.ts` batches promotion windows in one scoped read, using
-`attendance.ts`'s `predicate` for program links and open-mat inclusion. Each
-program's union arm joins its bound JSON candidate rows inside the read, using
-each member's earliest window as an indexable lower bound; the outer join applies
-each window's own inclusive `since` and the global exclusive `until`. A member
-outside the candidate rows is never part of the arm, direct and session links
-still count a visit only once, and a second window in the same program reuses the
-member's earliest bound. The filtered rows are materialized once per program
-before joining candidate windows, avoiding repeated scans caused by the
-program-link predicate's subquery. This optimization leaves `AttendanceQueries`
-unchanged.
+`attendance.ts`'s `predicate` for program links, open-mat inclusion, and the
+exclusive `until`. For each program, the share of the active roster that needs
+an attendance count determines the read. At 75% or more it scans the program
+once from the earliest candidate window. Below 75% it joins candidate members
+inside the scan using each member's earliest window as an indexable lower bound.
+The filtered rows are materialized before the outer join applies each
+candidate's own inclusive `since`. Direct and session links count a visit once
+within a window, and only a matched candidate member's visits affect a count.
 
 Household activity is read only with `forHousehold`, reloading grants on every call.
 Its `attendancePage` and `attendanceCount` queries filter, order, page and count in

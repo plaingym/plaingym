@@ -10,7 +10,9 @@ import { countPromotionAttendance, promotionAttendanceKey } from '../attendance/
 
 const targetSchema = z.strictObject({ target: z.int32().nonnegative() });
 const progress = (current: number, target: number) => ({ current, target, met: current >= target });
-interface BatchReads { scope: typeof forGym; gymId: string; until: string; openMatCountsAsClass: boolean; }
+interface BatchReads {
+  scope: typeof forGym; gymId: string; until: string; openMatCountsAsClass: boolean; activeRosterSize?: number;
+}
 /** Optional optimization local to ranks; the public provider interface stays unchanged. */
 export interface BatchCriterionProvider extends PromotionCriterionProvider {
   prepareBatch?(contexts: readonly CriterionContext[], reads: BatchReads): Promise<PromotionCriterionProvider['evaluate']>;
@@ -72,7 +74,8 @@ export function createPromotionCriteria(attendance: AttendanceQueries): Promotio
   const registry = new PromotionCriteria();
   registry.register({ id: 'classes-since-promotion', labelKey: 'ranks/ranks:classes', configSchema: targetSchema,
     async prepareBatch(contexts, reads) {
-      const counts = await countPromotionAttendance(reads.scope, reads.gymId, contexts.map(attendanceRequest), reads.until, reads.openMatCountsAsClass);
+      const counts = await countPromotionAttendance(reads.scope, reads.gymId, contexts.map(attendanceRequest),
+        reads.until, reads.openMatCountsAsClass, reads.activeRosterSize);
       return async (context, value) => progress(counts.get(promotionAttendanceKey(attendanceRequest(context))) ?? 0, targetSchema.parse(value).target);
     },
     async evaluate(context, value) {

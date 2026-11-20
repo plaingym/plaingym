@@ -132,10 +132,13 @@ it.each([false, true])('scopes each promotion window to its own lower bound and 
     clock: new TestClock(until) }));
   const reads = { scope: database.forGym, gymId, until, openMatCountsAsClass };
   const batch = await criteria.prepareBatch(contexts.map(context => ({ context, rank: { criteria: rankCriteria } })), new Set(), reads);
+  const wholeProgramBatch = await criteria.prepareBatch(contexts.map(context => ({ context, rank: { criteria: rankCriteria } })),
+    new Set(), { ...reads, activeRosterSize: roster.length });
   const expected = openMatCountsAsClass ? [4, 4, 1, 0, 4] : [3, 3, 1, 0, 3];
   for (const [index, context] of contexts.entries()) {
     const single = await criteria.evaluate(context, rankCriteria, new Set());
     expect(await batch.evaluate(context, rankCriteria, new Set())).toEqual(single);
+    expect(await wholeProgramBatch.evaluate(context, rankCriteria, new Set())).toEqual(single);
     expect(single[0]).toMatchObject({ current: expected[index], target: 2, met: expected[index]! >= 2 });
   }
   // Two windows for one member and program must not duplicate that member's visits.
@@ -144,6 +147,12 @@ it.each([false, true])('scopes each promotion window to its own lower bound and 
     { memberId: roster[0]!.id, programId: program.id, since: '2026-02-20T00:00:00Z' },
   ], until, openMatCountsAsClass);
   expect([...duplicate.values()].sort((a, b) => a - b)).toEqual([1, openMatCountsAsClass ? 4 : 3]);
+  // The whole-program scan keeps the same two counts when one member holds two windows.
+  const scanned = await countPromotionAttendance(database.forGym, gymId, [
+    { memberId: roster[0]!.id, programId: program.id, since: '2025-12-01T00:00:00Z' },
+    { memberId: roster[0]!.id, programId: program.id, since: '2026-02-20T00:00:00Z' },
+  ], until, openMatCountsAsClass, 1);
+  expect([...scanned.values()].sort((a, b) => a - b)).toEqual([1, openMatCountsAsClass ? 4 : 3]);
 });
 
 
@@ -161,6 +170,9 @@ it('reads only the candidate rows from each program arm', async () => {
   const requests = [{ memberId: candidate.id, programId: program.id, since: '2026-01-15T00:00:00Z' }];
   const counts = await countPromotionAttendance(database.forGym, gymId, requests, until, false);
   expect([...counts.values()]).toEqual([3]);
+  // The whole-program scan counts only the candidate's visits too, though it reads the outside member's rows.
+  const scanCounts = await countPromotionAttendance(database.forGym, gymId, requests, until, false, 1);
+  expect([...scanCounts.values()]).toEqual([3]);
   // The shared CTE builder lets the test count exactly what each union arm admitted; the old query admitted all 2,003.
   // eslint-disable-next-line database/system-tables -- Test hook explains the same bound CTE the batch reads.
   const rows = await database.forGym(gymId, tx => tx.execute<{ member_id: string }>(
