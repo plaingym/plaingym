@@ -1,6 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import type { Page } from '@playwright/test';
 import { expect, gymOrigin, test } from '../support.js';
 import { check, open, viewports } from './mobile-screens.js';
+
+const sourceUrl = 'https://example.test/source/v0.1.0';
+
+function versionTile(checkedAt: string) {
+  return {
+    id: 'version', status: 'healthy', checkedAt, message: 'Running version 0.1.0.',
+    details: { version: '0.1.0', sourceUrl },
+  };
+}
+
+async function checkVersionSource(page: Page) {
+  const link = page.getByRole('region', { name: 'Version', exact: true })
+    .getByRole('link', { name: 'Source code', exact: true });
+  await expect(link).toBeVisible();
+  await expect(link).toHaveAttribute('href', sourceUrl);
+  const box = (await link.boundingBox())!;
+  expect(box.width).toBeGreaterThanOrEqual(44);
+  expect(box.height).toBeGreaterThanOrEqual(44);
+}
 
 for (const viewport of viewports) {
   test(`missing and damaged rollback snapshots at ${viewport.name} width`, async ({ browser, install }, info) => {
@@ -16,11 +36,12 @@ for (const viewport of viewports) {
           details: { latestRestorableAt: now, ageSeconds: 0, overdue: false, retainedBytes: 1024,
             retentionBudgetBytes: 8_000_000_000, pruningStopped: false, keyReminder: true,
             damagedGuardSnapshot: missing ? null : guard, missingGuardSnapshot: missing ? guard : null },
-        } : { ...tile, status: 'not_configured', checkedAt: now, details: null, message: 'Not set up' }),
+        } : tile.id === 'version' ? versionTile(now) : tile),
       } } }));
       await page.goto(gymOrigin + '/admin/health');
       await expect(page.getByText('The rollback snapshot is damaged and cannot be restored.', { exact: true })).toBeVisible();
       await expect(page.getByText(`Rollback snapshot ${guard} is damaged`, { exact: false })).toBeVisible();
+      await checkVersionSource(page);
       await check(page, info, `${viewport.name}-damaged-rollback`);
       missing = true;
       await page.getByRole('button', { name: 'Refresh', exact: true }).click();
@@ -45,7 +66,7 @@ for (const viewport of viewports) {
         details: { latestRestorableAt: now, ageSeconds: 0, overdue: false, noneUnderCurrentKey: false,
           retainedBytes: 1024, retentionBudgetBytes: 8_000_000_000, pruningStopped: false, pruningHeld: true,
           damagedGuardSnapshot: damagedGuard, keyReminder: true },
-      } : { ...tile, status: 'not_configured', checkedAt: now, details: null, message: 'Not set up' });
+      } : tile.id === 'version' ? versionTile(now) : tile);
       await page.route('**/api/health', route => route.fulfill({ json: body }));
       await page.route('**/api/health/backups', route => route.fulfill({ json: { data: control } }));
       await page.route('**/api/health/backups/now', route => {
@@ -60,6 +81,7 @@ for (const viewport of viewports) {
       await expect(page.getByText(/Backup pruning is on hold.*retention budget/)).toBeVisible();
       await expect(page.getByText(`Rollback snapshot ${damagedGuard} is damaged and cannot be restored.`, { exact: false })).toBeVisible();
       await expect(page.getByRole('button', { name: 'Back up now', exact: true })).toBeEnabled();
+      await checkVersionSource(page);
       await check(page, info, `${viewport.name}-backup-hold`);
       await page.getByRole('button', { name: 'Back up now', exact: true }).click();
       await expect(page.getByText(/Unable to confirm the backup request/)).toBeVisible();
