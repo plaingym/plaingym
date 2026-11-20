@@ -13,8 +13,15 @@ export const clearedMemberSms = { smsNoticesConsentAt: null, smsNoticesConsentSo
   smsAnnouncementsConsentAt: null, smsAnnouncementsConsentSource: null };
 export const clearedHouseholdSms = { smsNoticesConsentAt: null, smsNoticesConsentSource: null };
 
-/** Only national numbers need the gym's default region, including legacy records without phone_e164. */
-export const phoneNeedsCountry = (phone: string | null | undefined) => Boolean(phone?.trim() && !phone.trim().startsWith('+'));
+/** Read the gym's default region once when any phone needs it. */
+export async function readPhoneCountry(phones: readonly (string | null | undefined)[],
+  readCountry: () => Promise<string | null | undefined>): Promise<string | null> {
+  const needsCountry = phones.some(phone => {
+    const trimmed = phone?.trim();
+    return trimmed && !trimmed.startsWith('+');
+  });
+  return needsCountry ? (await readCountry()) ?? null : null;
+}
 
 /** Consent belongs to the stored normalized number. A raw edit always refreshes it; invalid numbers clear consent. */
 export function smsPhoneChange(before: { phone: string | null; phoneE164: string | null }, phone: string | null | undefined, country?: string | null) {

@@ -64,7 +64,7 @@ async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29
   waiverOptions: Pick<WaiverOptions, 'preflight' | 'render'> = {}) {
   const gymId = uuidv7(), otherGym = uuidv7(), clock = new TestClock(start);
   await factory('gyms', gymId, { name: 'North <Gym>', currency, timezone: gymTimezone, billingEnabled: true, memberEmailsEnabled: true, websiteEnabled: false,
-    address: { line1: '12 Mat Street' }, settings: { modules: { website: { phone: '+1 (604) 555-0100', email: 'hello@north.example.test' } } } });
+    address: { line1: '12 Mat Street', country: 'CA' }, settings: { modules: { website: { phone: '+1 (604) 555-0100', email: 'hello@north.example.test' } } } });
   await factory('gyms', otherGym, { name: 'Other private gym', currency: 'CAD', timezone: gymTimezone, billingEnabled: true });
   const plan = await factory('plans', gymId, { name: 'Adult monthly', amountCents: 15000, currency, interval: 'monthly', signupFeeCents: 5000 });
   const gst = await factory('taxRates', gymId, { name: 'GST', rateMillionths: 50_000, inclusive: false });
@@ -166,9 +166,15 @@ async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
 describe('join lead intake', () => {
-  it.each([[false, false], [true, false], [false, true], [true, true]])('records separate join SMS choices notices=%s announcements=%s without phone audits', async (smsNoticesConsent, smsAnnouncementsConsent) => {
-    const f = await fixture(), people = [adult(), child()], phone = smsAnnouncementsConsent ? '+1 (202) 555-0123' : '+12025550123';
-    const phoneE164 = '+12025550123';
+  it.each([
+    { smsNoticesConsent: false, smsAnnouncementsConsent: false, phone: '+16045550123' },
+    { smsNoticesConsent: true, smsAnnouncementsConsent: false, phone: '+16045550123' },
+    { smsNoticesConsent: false, smsAnnouncementsConsent: true, phone: '+1 (604) 555-0123' },
+    { smsNoticesConsent: true, smsAnnouncementsConsent: true, phone: '(604) 555-0123' },
+  ])('records join SMS choices notices=$smsNoticesConsent announcements=$smsAnnouncementsConsent for $phone without phone audits', async ({
+    smsNoticesConsent, smsAnnouncementsConsent, phone,
+  }) => {
+    const f = await fixture(), people = [adult(), child()], phoneE164 = '+16045550123';
     const choices = { smsNoticesConsent, smsAnnouncementsConsent };
     const contact = { name: 'Pat Payer', email: 'sms@example.invalid', phone };
     const admission = { planId: f.plan.id, contact, ...choices, honeypot: '', members: people.map(member => ({ member,
@@ -181,7 +187,8 @@ describe('join lead intake', () => {
     expect(refused.status).toBe(404);
     expect((await f.post('/api/public/join', final)).status).toBe(200);
     const rows = await f.rows(), home = rows.homes.find(home => home.email === contact.email)!;
-    expect(home).toMatchObject({ phone, phoneE164, smsNoticesConsentSource: smsNoticesConsent ? 'join' : null });
+    expect(home).toMatchObject({ phone, phoneE164, smsNoticesConsentAt: smsNoticesConsent ? f.clock.now() : null,
+      smsNoticesConsentSource: smsNoticesConsent ? 'join' : null });
     const joined = rows.members.filter(person => person.householdId === home.id);
     expect(joined).toHaveLength(2);
     for (const person of joined) {
@@ -191,7 +198,9 @@ describe('join lead intake', () => {
     }
     const logs = rows.audits.filter(event => event.action.endsWith('.sms_consent_changed'));
     expect(logs).toHaveLength((smsNoticesConsent ? 3 : 0) + (smsAnnouncementsConsent ? 2 : 0));
-    expect(JSON.stringify(logs.map(log => [log.before, log.after]))).not.toContain(phone);
+    const logged = JSON.stringify(logs.map(log => [log.before, log.after]));
+    expect(logged).not.toContain(phone);
+    expect(logged).not.toContain('6045550123');
   });
   it.each(['', 'not a phone'])('refuses join opt-in with an unparseable phone %s before admission', async phone => {
     const f = await fixture(), form = nativeForm(f, f.plan.id, 'sms-invalid@example.invalid');

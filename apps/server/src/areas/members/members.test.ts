@@ -89,6 +89,58 @@ describe('staff SMS consent', () => {
     await expect(service.changeHouseholdSmsConsent(ctx, home.id, { consent, revision: 2 })).rejects.toBeInstanceOf(RevisionConflictError);
     expect(await database.forGym(gymId, tx => tx.select().from(auditEvents))).toEqual([]);
   });
+  it.each(['staff', 'portal'] as const)('clears stale announcements when already-off notices are withdrawn via %s', async source => {
+    const gymId = uuidv7(); await factory('gyms', gymId, { address: { country: 'US' } });
+    const ctx = context(gymId), at = clock.now();
+    const person = await factory('members', gymId, { phone: '(202) 555-0123', phoneE164: '+12025550199',
+      smsAnnouncementsConsentAt: at, smsAnnouncementsConsentSource: 'portal' });
+    const withdraw = (revision: number) => service.changeMemberSmsConsent(ctx, person.id, { kind: 'notices', consent: false, revision }, source);
+    const audits = () => database.forGym(gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'member.sms_consent_changed')));
+
+    const changed = await withdraw(person.revision);
+    expect(changed.revision).toBe(person.revision + 1);
+    const [stored] = await database.forGym(gymId, tx => tx.select().from(members).where(eq(members.id, person.id)));
+    expect(stored).toMatchObject({ phoneE164: '+12025550123', smsNoticesConsentAt: null, smsNoticesConsentSource: null,
+      smsAnnouncementsConsentAt: null, smsAnnouncementsConsentSource: null });
+    const events = await audits();
+    expect(events).toHaveLength(1);
+    expect(events[0]?.targetId).toBe(person.id);
+    expect(events[0]?.before).toEqual({ kind: 'announcements', at: at.toISOString(), source: 'portal' });
+    expect(events[0]?.after).toEqual({ kind: 'announcements', at: null, source: null, changeSource: source });
+
+    expect((await withdraw(changed.revision)).revision).toBe(changed.revision);
+    expect(await audits()).toEqual(events);
+  });
+  it('keeps announcements when withdrawing already-off notices on the same number', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId);
+    const at = clock.now(), person = await factory('members', gymId, { phone: '+1 (202) 555-0123', phoneE164: '+12025550123',
+      smsAnnouncementsConsentAt: at, smsAnnouncementsConsentSource: 'portal' });
+    const changed = await service.changeMemberSmsConsent(context(gymId), person.id, { kind: 'notices', consent: false, revision: person.revision });
+    expect(changed.revision).toBe(person.revision);
+    expect(changed.sms.announcements).toEqual({ at: at.toISOString(), source: 'portal' });
+    expect(await database.forGym(gymId, tx => tx.select().from(auditEvents))).toEqual([]);
+  });
+  it('clears stale billing-phone notices on withdrawal', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId);
+    const ctx = context(gymId), at = clock.now();
+    const home = await factory('households', gymId, { phone: '+12025550199', phoneE164: '+12025550123',
+      smsNoticesConsentAt: at, smsNoticesConsentSource: 'join' });
+    const withdraw = (revision: number) => service.changeHouseholdSmsConsent(ctx, home.id, { consent: false, revision }, 'portal');
+    const audits = () => database.forGym(gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'household.sms_consent_changed')));
+
+    const changed = await withdraw(home.revision);
+    expect(changed.revision).toBe(home.revision + 1);
+    const [stored] = await database.forGym(gymId, tx => tx.select().from(households).where(eq(households.id, home.id)));
+    expect(stored).toMatchObject({ phoneE164: '+12025550199', smsNoticesConsentAt: null, smsNoticesConsentSource: null });
+    const events = await audits();
+    expect(events).toHaveLength(1);
+    expect(events[0]?.targetId).toBe(home.id);
+    expect(events[0]?.before).toEqual({ kind: 'notices', at: at.toISOString(), source: 'join' });
+    expect(events[0]?.after).toEqual({ kind: 'notices', at: null, source: null, changeSource: 'portal' });
+
+    expect((await withdraw(changed.revision)).revision).toBe(changed.revision);
+    expect(await audits()).toEqual(events);
+  });
   it('does not transfer another consent when the current phone no longer matches its normalized record', async () => {
     const person = await factory('members', gymA, { phone: '+12025550123', phoneE164: '+12025550123',
       smsAnnouncementsConsentAt: clock.now(), smsAnnouncementsConsentSource: 'portal' });

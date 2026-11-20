@@ -7,7 +7,8 @@ import { forGym, auditEvents, households, householdUsers, invoices, members, mem
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import * as c from '@plaingym/shared/contracts';
-import { auditSmsConsent, phoneNeedsCountry, smsPhoneChange } from '../../areas/members/member-write.js';
+import { normalizePhone } from '@plaingym/shared/phone';
+import { auditSmsConsent, readPhoneCountry } from '../../areas/members/member-write.js';
 import { localDate } from '@plaingym/shared/time';
 import { z } from 'zod';
 import { clock as defaultClock } from '../../core/clock.js';
@@ -439,9 +440,8 @@ export function createJoinService(options: JoinOptions) {
     async admit(gymId: string, body: unknown, timezone: string, preparedTemplates?: readonly c.WaiverTemplate[]) {
       const input = c.joinAdmissionSchema.parse(body);
       validateFields(input.contact, input.members, timezone);
-      const country = phoneNeedsCountry(input.contact.phone)
-        ? await scope(gymId, async tx => (await readGymSettings(tx, gymId)).address.country) : null;
-      const { phoneE164 } = smsPhoneChange({ phone: null, phoneE164: null }, input.contact.phone, country);
+      const country = await readPhoneCountry([input.contact.phone], async () => (await settings(gymId)).address.country);
+      const phoneE164 = normalizePhone(input.contact.phone, country);
       if ((input.smsNoticesConsent || input.smsAnnouncementsConsent) && !phoneE164)
         throw new AppError('invalid_request', t('public/join:smsPhoneRequired'), { reason: ['sms_phone_required'] });
       await joinableRow(gymId, input.planId);

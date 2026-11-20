@@ -18,7 +18,7 @@ import { billingEmailDigest } from '../../infra/payments/index.js';
 import { detachJob } from '../billing/payments.mutations.js';
 import { unscheduled } from '../billing/memberships.plan-change.js';
 import { endDiscount } from '../billing/discounts/apply.js';
-import { lockMemberForWrite, memberWriteScope, smsState, smsPhoneChange, phoneNeedsCountry, withoutSmsColumns, clearedMemberSms, clearedHouseholdSms, auditSmsCleared, auditSmsConsent, type SmsSource } from './member-write.js';
+import { lockMemberForWrite, memberWriteScope, smsState, smsPhoneChange, readPhoneCountry, withoutSmsColumns, clearedMemberSms, clearedHouseholdSms, auditSmsCleared, auditSmsConsent, type SmsSource } from './member-write.js';
 import { readGymSettings } from '../settings/settings.js';
 
 /** The queue and gym timezone an erasure's cleanup jobs are inserted with. */
@@ -71,8 +71,8 @@ async function queueReleasedFiles(transaction: JobTransaction, cleanup: ErasureQ
 export interface MembersOptions { scope?: typeof forGym; clock?: Clock; pinSecret?: HouseholdPinSecret; billingEmailSecret?: string }
 export function createMembersService(options: MembersOptions = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
-  const phoneCountry = async (tx: Transaction, gymId: string, phones: readonly (string | null | undefined)[]) =>
-    phones.some(phoneNeedsCountry) ? (await readGymSettings(tx, gymId)).address.country : null;
+  const phoneCountry = (tx: Transaction, gymId: string, phones: readonly (string | null | undefined)[]) =>
+    readPhoneCountry(phones, async () => (await readGymSettings(tx, gymId)).address.country);
   const audit = (tx: Transaction, context: MutationContext, action: string, targetType: string, targetId: string, before?: Record<string, string>, after?: Record<string, string | boolean>) =>
     writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
       ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
@@ -155,11 +155,12 @@ export function createMembersService(options: MembersOptions = {}) {
         if (consent && !phoneE164) throw new AppError('invalid_request', 'A valid phone is required for SMS consent');
         const guard = revisionGuard(members.revision, revision), now = clock.now();
         const changedNumber = phoneE164 !== before.phoneE164;
+        const refreshNumber = changedNumber && (consent || before.smsNoticesConsentAt !== null || before.smsAnnouncementsConsentAt !== null);
         const storedAt = kind === 'notices' ? before.smsNoticesConsentAt : before.smsAnnouncementsConsentAt;
         const storedSource = kind === 'notices' ? before.smsNoticesConsentSource : before.smsAnnouncementsConsentSource;
         const at = changedNumber ? null : storedAt, from = changedNumber ? null : storedSource;
         const after = { at: consent ? at ?? now : null, source: consent ? from ?? source : null };
-        if ((!consent || !changedNumber) && storedAt === after.at && storedSource === after.source) return member(await getMemberRow(tx, id), country);
+        if (!refreshNumber && storedAt === after.at && storedSource === after.source) return member(await getMemberRow(tx, id), country);
         const row = assertRevised(await tx.update(members).set({ phoneE164, revision: guard.next,
           ...(changedNumber ? clearedMemberSms : {}),
           ...(kind === 'notices' ? { smsNoticesConsentAt: after.at, smsNoticesConsentSource: after.source }
@@ -173,9 +174,9 @@ export function createMembersService(options: MembersOptions = {}) {
     async changeHouseholdSmsConsent(context: MutationContext, id: string, input: c.ChangeHouseholdSmsConsentRequest, source: 'staff' | 'portal' = 'staff') {
       const { consent, revision } = c.changeHouseholdSmsConsentRequestSchema.parse(input);
       return scope(context.gymId, async tx => {
-        const before = await getHouseholdRow(tx, id), country = await phoneCountry(tx, context.gymId, [before.phone]);
+        const before = await getHouseholdRow(tx, id);
         if (before.revision !== revision) throw new RevisionConflictError();
-        const phoneE164 = normalizePhone(before.phone, country);
+        const country = await phoneCountry(tx, context.gymId, [before.phone]), phoneE164 = normalizePhone(before.phone, country);
         if (consent && !phoneE164) throw new AppError('invalid_request', 'A valid phone is required for SMS consent');
         const now = clock.now(), guard = revisionGuard(households.revision, revision);
         const unchangedNumber = phoneE164 === before.phoneE164;
@@ -184,7 +185,8 @@ export function createMembersService(options: MembersOptions = {}) {
         if ((!consent || unchangedNumber) && before.smsNoticesConsentAt === after.at && before.smsNoticesConsentSource === after.source) return household(before, country);
         const row = assertRevised(await tx.update(households).set({ phoneE164, revision: guard.next, smsNoticesConsentAt: after.at, smsNoticesConsentSource: after.source })
           .where(and(eq(households.id, id), guard.matches)).returning(householdFields));
-        await auditSmsConsent(tx, context, 'household', id, 'notices', { at: before.smsNoticesConsentAt, source: before.smsNoticesConsentSource }, after, source, now);
+        if (!unchangedNumber && !consent) await auditSmsCleared(tx, context, 'household', id, before, source, now);
+        else await auditSmsConsent(tx, context, 'household', id, 'notices', { at: before.smsNoticesConsentAt, source: before.smsNoticesConsentSource }, after, source, now);
         return household(row, country);
       });
     },

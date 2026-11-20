@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { classBookings, members, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { setLogSink } from '../../core/log.js';
-import { memberWriteScope, phoneNeedsCountry, smsPhoneChange } from './member-write.js';
+import { memberWriteScope, readPhoneCountry, smsPhoneChange } from './member-write.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 
@@ -19,10 +19,17 @@ it.each([
   expect(smsPhoneChange({ phone: '2025550123', phoneE164: '+12025550123' }, phone, 'US'))
     .toEqual({ changedPhone: true, phoneE164, changedNumber });
 });
-it('requires a country only for national phone text and clears consent when its stored number differs', () => {
-  for (const phone of [null, undefined, '', '  ', ' +12025550123 ']) expect(phoneNeedsCountry(phone)).toBe(false);
-  expect(phoneNeedsCountry('2025550123')).toBe(true);
+it('treats the number as changed when the stored normalized number differs', () => {
   expect(smsPhoneChange({ phone: '2025550123', phoneE164: '+12025550199' }, '(202) 555-0123', 'US').changedNumber).toBe(true);
+});
+
+it('reads the country once only when a nonblank national phone needs it', async () => {
+  const readCountry = vi.fn(async () => 'US');
+  await expect(readPhoneCountry([], readCountry)).resolves.toBeNull();
+  await expect(readPhoneCountry([null, undefined, '', '  ', ' +12025550123 '], readCountry)).resolves.toBeNull();
+  expect(readCountry).not.toHaveBeenCalled();
+  await expect(readPhoneCountry(['+12025550123', '2025550123', '(202) 555-0199'], readCountry)).resolves.toBe('US');
+  expect(readCountry).toHaveBeenCalledTimes(1);
 });
 
 it('maps a real lost member reference to conflict and logs its constraint without submitted values', async () => {

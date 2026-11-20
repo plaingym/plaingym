@@ -12,7 +12,7 @@ import { clock as defaultClock } from '../../core/clock.js';
 import { createMemberHouseholdContext } from '../members/household-users.context.js';
 import { createMembersService, type MembersService } from '../members/members.js';
 import { needsGuardian } from '../waivers/snapshot.js';
-import { smsState, phoneNeedsCountry, withoutSmsColumns } from '../members/member-write.js';
+import { smsState, readPhoneCountry, withoutSmsColumns } from '../members/member-write.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 
 export type HouseholdQueries = Parameters<Parameters<typeof forHousehold>[1]>[0];
@@ -61,8 +61,8 @@ export function createPortalHouseholdService(options: {
   const clock = options.clock ?? defaultClock, members = options.members ?? createMembersService({ clock });
   const settings = createGymSettingsAccessor();
   const read = householdReader(scope);
-  const phoneCountry = async (gymId: string, phones: readonly (string | null)[]) =>
-    phones.some(phoneNeedsCountry) ? (await settings.get(gymId)).country : null;
+  const phoneCountry = (gymId: string, phones: readonly (string | null)[]) =>
+    readPhoneCountry(phones, async () => (await settings.get(gymId)).country);
   async function member(identity: PortalIdentity, id: string) {
     const [row] = await read(identity, queries => queries.member(id));
     return row ? project(row, await phoneCountry(identity.gymId, [row.phone])) : notFound();

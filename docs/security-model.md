@@ -697,8 +697,11 @@ Old versions and documents referenced by signatures remain retained after retire
   portal roles with the same own-member/managed-child limits; household edits stay
   on payer-only `household.manage`. Consent writes require revisions, reject
   opting in an unparseable phone, and audit kind, before, after and source without a phone.
-  A consent request that already holds checks the revision without changing it or
-  adding an audit. Portal consent changes preserve unsaved household contact edits.
+  Repeating a consent choice checks the revision and leaves the revision and audit
+  history unchanged when the normalized number still matches. If a withdrawal
+  finds consent stored against a stale number, it refreshes the normalized number
+  and audits every consent it clears. A withdrawal with no stored consent leaves
+  the record unchanged. Portal consent changes preserve unsaved household contact edits.
   Staff can text `pay_invoice` and `update_card` links only to the consenting
   billing phone, or otherwise a consenting member at the billing email, as selected
   by `householdNoticePhones`. Other members remain visible but disabled with a
