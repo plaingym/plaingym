@@ -55,6 +55,9 @@ export function PortalSchedulePage({ client = portalClient, now = currentTime }:
   const schedule = useQuery({ queryKey: [...scope.key, 'schedule', range.from], enabled: scope.ready, queryFn: async () => scope.own(await scope.run(() => client.schedule(range.from, range.to))).data, staleTime: 0 });
   useEffect(() => {
     const refresh = () => setTick(value => value + 1);
+    const refreshWhenVisible = () => {
+      if (!document.hidden) refresh();
+    };
     // Roll the shown week over at Monday midnight, and refresh when booking opens or a class starts,
     // without polling the whole page. `instant` is the render's clock read; the timer below reads the
     // clock again so a rerender with the same data never clears and re-arms it.
@@ -65,7 +68,12 @@ export function PortalSchedulePage({ client = portalClient, now = currentTime }:
     // A boundary can pass between rendering and this effect. Refresh immediately rather than skipping it.
     const timer = Number.isFinite(nearest) ? window.setTimeout(refresh, Math.min(2_147_483_647, Math.max(0, nearest - now().getTime()))) : undefined;
     window.addEventListener('focus', refresh);
-    return () => { window.clearTimeout(timer); window.removeEventListener('focus', refresh); };
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+    };
   }, [schedule.data, now, tick, range.from, weekEnd]);
   const change = useMutation({
     mutationFn: async (input: { action: 'book' | 'cancel'; session: PortalScheduleSession; booking?: MemberBooking; context: PortalContext; member: PortalScheduleMember }) =>

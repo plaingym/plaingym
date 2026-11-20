@@ -136,6 +136,41 @@ describe('portal schedule page', () => {
       expect(timeout).toHaveBeenCalledTimes(calls);
     } finally { timeout.mockRestore(); clear.mockRestore(); interval.mockRestore(); }
   });
+  it('refreshes the cancellation cutoff only when the document becomes visible', async () => {
+    vi.useFakeTimers();
+    const cutoff = Date.parse(session.cancelBefore);
+    let instant = new Date(cutoff - 5_000);
+    client.schedule.mockResolvedValue(answer([{ ...session, bookings: [{ ...booking, memberId: parent }] }]));
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+    const listen = vi.spyOn(document, 'addEventListener');
+    const remove = vi.spyOn(document, 'removeEventListener');
+    try {
+      const result = view(<PortalSchedulePage client={client as unknown as PortalClient} now={() => instant} />);
+      await act(() => vi.advanceTimersByTimeAsync(50));
+      const cancelButton = { name: /Cancel booking: Fundamentals/ };
+      expect(screen.getByRole('button', cancelButton)).toBeDefined();
+
+      instant = new Date(cutoff + 1);
+      hidden.mockReturnValue(true);
+      act(() => { document.dispatchEvent(new Event('visibilitychange')); });
+      expect(screen.getByRole('button', cancelButton)).toBeDefined();
+
+      hidden.mockReturnValue(false);
+      act(() => { document.dispatchEvent(new Event('visibilitychange')); });
+      expect(screen.queryByRole('button', cancelButton)).toBeNull();
+
+      const registration = listen.mock.calls.filter(([event]) => event === 'visibilitychange').at(-1);
+      expect(registration).toBeDefined();
+      remove.mockClear();
+      result.unmount();
+      expect(remove).toHaveBeenCalledWith('visibilitychange', registration![1]);
+    } finally {
+      hidden.mockRestore();
+      listen.mockRestore();
+      remove.mockRestore();
+      vi.useRealTimers();
+    }
+  });
   it('shows a full class without a waitlist action after the cutoff', async () => {
     client.schedule.mockResolvedValue(answer([{ ...session, placesLeft: 0 }]));
     view(<PortalSchedulePage client={client as unknown as PortalClient} now={() => new Date(Date.parse(session.cancelBefore) + 1)} />);

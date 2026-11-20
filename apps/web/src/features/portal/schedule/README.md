@@ -14,7 +14,8 @@ Book or Join the waitlist once its booking window opens, and Cancel or Leave the
 waitlist only until its `cancelBefore` instant; after that it says the cutoff has
 passed. A full class stops offering Join the waitlist after that instant; a free
 place still offers Book. An open page updates these actions with one timeout for
-the nearest cutoff, booking opening or session start, and refreshes on window focus.
+the nearest cutoff, booking opening, session start or week rollover. It also
+refreshes on window focus or when the page becomes visible again.
 A conflict from the booking engine shows a general message and refreshes
 the schedule. Household members' places appear with their names. Class and member
 names wrap, even with no break opportunity, rather than truncating or widening the page at 360 px.
