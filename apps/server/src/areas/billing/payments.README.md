@@ -147,20 +147,20 @@ default alone. Removing the only active method leaves no default. The test-to-li
 Stripe switch shares this promotion when it revokes a default and keeps an imported
 active method.
 Customer-card imports also use it after the final page or exhausted cursor restarts.
-Retrying removal of a revoked card
+Retrying removal of a revoked method
 does not change the default or repeat these audits. Removal then queues
 a detach retry and attempts detachment outside the transaction. Revoked rows
 remain visible so staff can retry removal after an outage. No processor IDs leave
 the staff API. `detachCard(gymId, processorId, options?)` delegates to the gym's
-`Payments.detachPaymentMethod`, idempotent for missing and already detached cards.
-A staff removal passes no options and leaves the card's billing details; the detach
+`Payments.detachPaymentMethod`, idempotent for missing and already detached methods.
+A staff removal passes no options and leaves the method's billing details. The detach
 job passes `{ redactBillingDetails: true }` only when its payload carries
 `redactBillingDetails: true`, which only member erasure sets.
 Without that operation removal returns unavailable.
 The Jobs interface rejects enqueue inside a transaction and provides no
 transactional enqueue. If a crash or enqueue failure occurs after local revocation,
-staff can use "Retry card removal" on the retained revoked card; that queues the
-same deduplicated detach job again before the immediate provider call.
+staff can use **Retry payment method removal** on the retained revoked method.
+That queues the same deduplicated detach job again before the immediate provider call.
 
 Erasing a household's last member revokes its active cards, clears its local
 Stripe customer ID, and holds open and past-due invoices for staff review in the
