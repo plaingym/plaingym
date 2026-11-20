@@ -19,10 +19,10 @@ const updateBanner = {
  * loading page would clamp a scroll and make the regression depend on the seed data rather than the shell.
  */
 async function makeScrollable(page: Page) {
-  await page.locator('#main-content').waitFor();
-  await page.evaluate(() => {
-    const main = document.getElementById('main-content');
-    if (!main || document.getElementById('phone-menu-regression-spacer')) return;
+  // The bootstrap screen also renders #main-content. Wait for the phone menu before adding the spacer.
+  await page.getByRole('button', { name: 'Menu', exact: true }).waitFor();
+  await page.locator('#main-content').evaluate((main) => {
+    if (main.querySelector('#phone-menu-regression-spacer')) return;
     const spacer = document.createElement('div');
     spacer.id = 'phone-menu-regression-spacer';
     spacer.setAttribute('aria-hidden', 'true');
