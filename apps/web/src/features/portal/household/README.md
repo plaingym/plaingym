@@ -35,6 +35,11 @@ an existing consent while the phone has unsaved edits. Both billing-phone consen
 actions are disabled during a household contact save or a discard refresh.
 Contact Save and Discard edits are disabled while a billing-phone consent
 change and its refresh are pending.
+Each member's SMS consent controls and that member's editor share one pending
+flag. While either request and its refresh are pending, the other control is
+disabled and sends nothing; after a failure both are available again. The flag
+is per member, so another member's card and editor stay available. Saves still
+send the member revision from the latest read.
 Household and member saves send only changed fields. An unrelated edit preserves
 stored address and emergency-contact keys that the running release cannot read;
 editing either of those fields replaces that entire value.

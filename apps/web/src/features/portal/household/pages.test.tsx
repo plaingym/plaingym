@@ -28,6 +28,12 @@ const person = (memberId: string, firstName: string, dateOfBirth: string | null)
   dateOfBirth, photoKey: null, status: 'active', emergencyContacts: [{ name: 'Grandparent', relationship: null, phone: '555-0100' }], revision: 1 });
 const people = [person(ids.payer, 'Pat', '1980-04-02'), person(ids.child, 'Kim', '2016-06-01'), person(ids.adult, 'Alex', '1990-01-01'), person(id(12), 'Jordan', null)];
 const page = <T,>(data: T[]) => ({ data, pagination: { limit: 100, offset: 0, total: data.length } });
+const contactable = (member: ReturnType<typeof person>): PortalMember => ({ ...member, status: 'active', phone: '+12025550123',
+  sms: { phoneValid: true, phoneE164: '+12025550123', notices: null, announcements: null } });
+function memberRow(name: string) {
+  const items = screen.getAllByRole('listitem').filter(item => within(item).queryByText(/Rivera$/));
+  return items.find(item => within(item).queryByText(new RegExp('^' + name)))!;
+}
 type Handler = (path: string, init?: RequestInit) => unknown;
 function PageHost({ children }: { children: ReactNode }) {
   const scope = usePortalScope(), cache = useQueryClient(), previous = useRef(scope.key[4]);
@@ -614,6 +620,170 @@ describe('portal household page', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(view.calls('PATCH', `/api/portal/members/${ids.child}`)).toHaveLength(1));
     expect(JSON.parse(String(view.calls('PATCH', `/api/portal/members/${ids.child}`)[0]![1]!.body))).toEqual({ firstName: 'Kimberly', revision: 1 });
+  });
+  it('holds a member consent action until that member’s editor save and refresh settle', async () => {
+    let current = contactable(people[1]!);
+    const patchWrite = Promise.withResolvers<void>(), refresh = Promise.withResolvers<void>();
+    const endpoint = `/api/portal/members/${ids.child}`, consentEndpoint = endpoint + '/sms-consent';
+    const view = mount(<PortalHousehold />, async (path, init) => {
+      if (path === '/api/portal/household') return { data: household };
+      if (path.startsWith('/api/portal/members?')) {
+        if (current.revision === 2) await refresh.promise;
+        return page([people[0]!, current, people[2]!, people[3]!]);
+      }
+      if (path === endpoint && init?.method === 'PATCH') {
+        await patchWrite.promise;
+        current = { ...current, firstName: 'Kimberly', revision: 2 };
+        return { data: current };
+      }
+      if (path === consentEndpoint && init?.method === 'PUT') {
+        current = { ...current, revision: 3, sms: { ...current.sms, notices: { at: '2026-11-16T12:00:00Z', source: 'portal' } } };
+        return { data: current };
+      }
+      return undefined;
+    }, { context: payer });
+    const user = userEvent.setup();
+    await screen.findByLabelText('Phone');
+    await user.click(within(memberRow('Kim')).getByRole('button', { name: 'Edit details' }));
+    const dialog = within(screen.getByRole('dialog'));
+    fireEvent.change(dialog.getByLabelText('First name'), { target: { value: 'Kimberly' } });
+    await user.click(dialog.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(view.calls('PATCH', endpoint)).toHaveLength(1));
+    expect(within(memberRow('Kim')).getByRole<HTMLButtonElement>('button', { name: 'Agree to notices' }).disabled).toBe(true);
+    fireEvent.click(within(memberRow('Kim')).getByRole('button', { name: 'Agree to notices' }));
+    expect(view.calls('PUT', consentEndpoint)).toHaveLength(0);
+    await act(async () => { patchWrite.resolve(); });
+    await waitFor(() => expect(view.calls('GET', '/api/portal/members')).toHaveLength(2));
+    expect(within(memberRow('Kim')).getByRole<HTMLButtonElement>('button', { name: 'Agree to notices' }).disabled).toBe(true);
+    fireEvent.click(within(memberRow('Kim')).getByRole('button', { name: 'Agree to notices' }));
+    expect(view.calls('PUT', consentEndpoint)).toHaveLength(0);
+    await act(async () => { refresh.resolve(); });
+    await waitFor(() => expect(within(memberRow('Kim')).getByRole<HTMLButtonElement>('button', { name: 'Agree to notices' }).disabled).toBe(false));
+    await user.click(within(memberRow('Kim')).getByRole('button', { name: 'Agree to notices' }));
+    await waitFor(() => expect(view.calls('PUT', consentEndpoint)).toHaveLength(1));
+    expect(JSON.parse(String(view.calls('PUT', consentEndpoint)[0]![1]!.body))).toEqual({ kind: 'notices', consent: true, revision: 2 });
+  });
+  it('holds an open editor save until that member’s consent and refresh settle', async () => {
+    let current = contactable(people[1]!);
+    const consentWrite = Promise.withResolvers<void>(), refresh = Promise.withResolvers<void>();
+    const endpoint = `/api/portal/members/${ids.child}`, consentEndpoint = endpoint + '/sms-consent';
+    const view = mount(<PortalHousehold />, async (path, init) => {
+      if (path === '/api/portal/household') return { data: household };
+      if (path.startsWith('/api/portal/members?')) {
+        if (current.revision === 2) await refresh.promise;
+        return page([people[0]!, current, people[2]!, people[3]!]);
+      }
+      if (path === consentEndpoint && init?.method === 'PUT') {
+        expect(JSON.parse(String(init.body))).toEqual({ kind: 'notices', consent: true, revision: 1 });
+        await consentWrite.promise;
+        current = { ...current, revision: 2, sms: { ...current.sms, notices: { at: '2026-11-16T12:00:00Z', source: 'portal' } } };
+        return { data: current };
+      }
+      if (path === endpoint && init?.method === 'PATCH') {
+        const input = JSON.parse(String(init.body)) as { firstName: string; revision: number };
+        expect(input.revision).toBe(2);
+        current = { ...current, firstName: input.firstName, revision: 3 };
+        return { data: current };
+      }
+      return undefined;
+    }, { context: payer });
+    const user = userEvent.setup();
+    await screen.findByLabelText('Phone');
+    await user.click(within(memberRow('Kim')).getByRole('button', { name: 'Edit details' }));
+    const dialog = within(screen.getByRole('dialog'));
+    fireEvent.change(dialog.getByLabelText('First name'), { target: { value: 'Kimberly' } });
+    const save = dialog.getByRole<HTMLButtonElement>('button', { name: 'Save' });
+    fireEvent.click(within(memberRow('Kim')).getByRole('button', { name: 'Agree to notices' }));
+    await waitFor(() => expect(view.calls('PUT', consentEndpoint)).toHaveLength(1));
+    expect(save.disabled).toBe(true);
+    fireEvent.submit(save.form!);
+    expect(view.calls('PATCH', endpoint)).toHaveLength(0);
+    await act(async () => { consentWrite.resolve(); });
+    await waitFor(() => expect(view.calls('GET', '/api/portal/members')).toHaveLength(2));
+    expect(save.disabled).toBe(true);
+    fireEvent.submit(save.form!);
+    expect(view.calls('PATCH', endpoint)).toHaveLength(0);
+    await act(async () => { refresh.resolve(); });
+    await waitFor(() => expect(save.disabled).toBe(false));
+    await user.click(save);
+    await waitFor(() => expect(view.calls('PATCH', endpoint)).toHaveLength(1));
+    expect(JSON.parse(String(view.calls('PATCH', endpoint)[0]![1]!.body))).toEqual({ firstName: 'Kimberly', revision: 2 });
+  });
+  it('re-enables the member editor after a failed consent request and keeps its values', async () => {
+    const write = Promise.withResolvers<void>();
+    const endpoint = `/api/portal/members/${ids.child}`, consentEndpoint = endpoint + '/sms-consent';
+    const view = mount(<PortalHousehold />, async (path, init) => {
+      if (path === '/api/portal/household') return { data: household };
+      if (path.startsWith('/api/portal/members?')) return page([people[0]!, contactable(people[1]!), people[2]!, people[3]!]);
+      if (path === consentEndpoint && init?.method === 'PUT') { await write.promise; return new Response(null, { status: 503 }); }
+      if (path === endpoint && init?.method === 'PATCH') return { data: { ...contactable(people[1]!), firstName: 'Kimberly', revision: 2 } };
+      return undefined;
+    }, { context: payer });
+    const user = userEvent.setup();
+    await screen.findByLabelText('Phone');
+    await user.click(within(memberRow('Kim')).getByRole('button', { name: 'Edit details' }));
+    const dialog = within(screen.getByRole('dialog'));
+    fireEvent.change(dialog.getByLabelText('First name'), { target: { value: 'Kimberly' } });
+    const save = dialog.getByRole<HTMLButtonElement>('button', { name: 'Save' });
+    fireEvent.click(within(memberRow('Kim')).getByRole('button', { name: 'Agree to notices' }));
+    await waitFor(() => expect(view.calls('PUT', consentEndpoint)).toHaveLength(1));
+    expect(save.disabled).toBe(true);
+    await act(async () => { write.resolve(); });
+    expect(await screen.findByText('Consent could not be saved. Refresh and try again.')).toBeDefined();
+    await waitFor(() => expect(save.disabled).toBe(false));
+    expect((dialog.getByLabelText('First name') as HTMLInputElement).value).toBe('Kimberly');
+    await user.click(save);
+    await waitFor(() => expect(view.calls('PATCH', endpoint)).toHaveLength(1));
+    expect(JSON.parse(String(view.calls('PATCH', endpoint)[0]![1]!.body))).toEqual({ firstName: 'Kimberly', revision: 1 });
+  });
+  it('keeps another member’s consent and editor available while one request is held', async () => {
+    const write = Promise.withResolvers<void>();
+    const childEndpoint = `/api/portal/members/${ids.child}/sms-consent`;
+    let current = contactable(people[1]!);
+    const view = mount(<PortalHousehold />, async (path, init) => {
+      if (path === '/api/portal/household') return { data: household };
+      if (path.startsWith('/api/portal/members?')) return page([contactable(people[0]!), current, people[2]!, people[3]!]);
+      if (path === childEndpoint && init?.method === 'PUT') {
+        await write.promise;
+        current = { ...current, revision: 2, sms: { ...current.sms, notices: { at: '2026-11-16T12:00:00Z', source: 'portal' } } };
+        return { data: current };
+      }
+      if (path === `/api/portal/members/${ids.payer}/sms-consent` && init?.method === 'PUT') return { data: contactable(people[0]!) };
+      return undefined;
+    }, { context: payer });
+    const user = userEvent.setup();
+    await screen.findByLabelText('Phone');
+    fireEvent.click(within(memberRow('Kim')).getByRole('button', { name: 'Agree to notices' }));
+    await waitFor(() => expect(view.calls('PUT', childEndpoint)).toHaveLength(1));
+    expect(within(memberRow('Kim')).getByRole<HTMLButtonElement>('button', { name: 'Edit details' }).disabled).toBe(true);
+    expect(within(memberRow('Pat')).getByRole<HTMLButtonElement>('button', { name: 'Agree to notices' }).disabled).toBe(false);
+    expect(within(memberRow('Pat')).getByRole<HTMLButtonElement>('button', { name: 'Edit details' }).disabled).toBe(false);
+    await user.click(within(memberRow('Pat')).getByRole('button', { name: 'Agree to notices' }));
+    await waitFor(() => expect(view.calls('PUT', `/api/portal/members/${ids.payer}/sms-consent`)).toHaveLength(1));
+    await act(async () => { write.resolve(); });
+  });
+  it('keeps the editor draft and re-enables consent after a failed member save', async () => {
+    const write = Promise.withResolvers<void>();
+    const endpoint = `/api/portal/members/${ids.child}`;
+    const view = mount(<PortalHousehold />, async (path, init) => {
+      if (path === '/api/portal/household') return { data: household };
+      if (path.startsWith('/api/portal/members?')) return page([people[0]!, contactable(people[1]!), people[2]!, people[3]!]);
+      if (path === endpoint && init?.method === 'PATCH') { await write.promise; return new Response(null, { status: 503 }); }
+      return undefined;
+    }, { context: payer });
+    const user = userEvent.setup();
+    await screen.findByLabelText('Phone');
+    await user.click(within(memberRow('Kim')).getByRole('button', { name: 'Edit details' }));
+    const dialog = within(screen.getByRole('dialog'));
+    fireEvent.change(dialog.getByLabelText('First name'), { target: { value: 'Kimberly' } });
+    await user.click(dialog.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(view.calls('PATCH', endpoint)).toHaveLength(1));
+    expect(within(memberRow('Kim')).getByRole<HTMLButtonElement>('button', { name: 'Agree to notices' }).disabled).toBe(true);
+    await act(async () => { write.resolve(); });
+    expect(await screen.findByText('We couldn\'t save. Check the details and try again.')).toBeDefined();
+    await waitFor(() => expect(within(memberRow('Kim')).getByRole<HTMLButtonElement>('button', { name: 'Agree to notices' }).disabled).toBe(false));
+    expect((dialog.getByLabelText('First name') as HTMLInputElement).value).toBe('Kimberly');
+    expect(screen.getByRole('dialog')).toBeDefined();
   });
   it('shows an adult member only their own profile and consent controls', async () => {
     const view = mount(<PortalHousehold />, path => path === `/api/portal/members/${ids.adult}` ? { data: people[2] } : undefined, { context: adult });

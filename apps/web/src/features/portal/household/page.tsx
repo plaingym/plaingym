@@ -30,11 +30,31 @@ export function PortalHousehold() {
 function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope: PortalScope }) {
   const bootstrap = useBootstrap(), cache = useQueryClient(), { ready, own } = scope, payer = context.role === 'payer';
   const gymName = bootstrap.data?.gym.name ?? '';
-  const [editing, setEditing] = useState<PortalMember | null>(null), [saved, setSaved] = useState<'saved' | 'unchanged' | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null), [saved, setSaved] = useState<'saved' | 'unchanged' | null>(null);
+  // One pending flag per member, shared by their consent controls and editor. The ref guards
+  // handlers before React Query publishes the new pending state.
+  const [pendingMembers, setPendingMembers] = useState<ReadonlySet<string>>(() => new Set());
+  const pendingMembersRef = useRef(new Set<string>());
+  function startMemberAction(memberId: string) {
+    if (pendingMembersRef.current.has(memberId)) return false;
+    pendingMembersRef.current.add(memberId);
+    setPendingMembers(current => new Set(current).add(memberId));
+    return true;
+  }
+  function finishMemberAction(memberId: string) {
+    pendingMembersRef.current.delete(memberId);
+    setPendingMembers(current => {
+      if (!current.has(memberId)) return current;
+      const next = new Set(current); next.delete(memberId);
+      return next;
+    });
+  }
   const household = useQuery({ queryKey: [...scope.key, 'household', 'details'], enabled: ready && payer, queryFn: async () => own(await scope.call(contracts.household)).data });
   const members = useQuery({ queryKey: [...scope.key, 'household', 'members'], enabled: ready, queryFn: async () => payer
     ? own(await scope.call(contracts.members, undefined, {}, { limit: 100, offset: 0 })).data
     : [own(await scope.call(contracts.profile, undefined, { memberId: context.memberId! })).data] });
+  // The editor follows its member's latest read so a save uses the current revision.
+  const editing = editingId ? members.data?.find(member => member.id === editingId) : undefined;
   const timezone = bootstrap.data?.gym.timezone ?? 'UTC', today = gymToday(timezone);
   const editable = (member: PortalMember) => payer && (member.id === context.memberId || knownMinor(member.dateOfBirth, today));
   return <Page className="max-w-3xl"><PortalRecovery moving={scope.moving}>
@@ -46,29 +66,36 @@ function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope
     <PageSection title={text(payer ? 'members' : 'profile')}>
       {members.isPending || (!members.data && scope.settling) ? <LoadingState /> : members.isError && <ErrorState onRetry={() => void members.refetch()} />}
       {members.data?.length === 0 && <EmptyState title={text('noMembers')} />}
-      {!!members.data?.length && <StackedList>{members.data.map(member => <StackedItem key={member.id} className="gap-3">
-        <div className="flex flex-wrap items-start justify-between gap-2">
-          <div className="min-w-0 wrap-anywhere">
-            <p className="font-semibold">{member.firstName} {member.lastName}{member.id === context.memberId && <span className="font-normal text-muted-foreground"> · {text('you')}</span>}</p>
-            {member.dateOfBirth && <p className="text-sm text-muted-foreground">{text('born', { date: date(member.dateOfBirth) })}</p>}
-            {(member.email || member.phone) && <p className="break-all text-sm">{[member.email, member.phone].filter(Boolean).join(' · ')}</p>}
+      {!!members.data?.length && <StackedList>{members.data.map(member => {
+        const pending = pendingMembers.has(member.id);
+        return <StackedItem key={member.id} className="gap-3">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div className="min-w-0 wrap-anywhere">
+              <p className="font-semibold">{member.firstName} {member.lastName}{member.id === context.memberId && <span className="font-normal text-muted-foreground"> · {text('you')}</span>}</p>
+              {member.dateOfBirth && <p className="text-sm text-muted-foreground">{text('born', { date: date(member.dateOfBirth) })}</p>}
+              {(member.email || member.phone) && <p className="break-all text-sm">{[member.email, member.phone].filter(Boolean).join(' · ')}</p>}
+            </div>
+            <Badge tone={member.status === 'active' ? 'success' : 'muted'}>{text('status_' + member.status)}</Badge>
           </div>
-          <Badge tone={member.status === 'active' ? 'success' : 'muted'}>{text('status_' + member.status)}</Badge>
-        </div>
-        {member.emergencyContacts.length > 0 && <div className="text-sm"><p className="font-medium">{text('contacts')}</p>
-          <ul className="space-y-1">{member.emergencyContacts.map((item, index) => <li key={index} className="wrap-anywhere">{item.name}
-            {item.relationship && <span className="text-muted-foreground"> · {item.relationship}</span>} · {item.phone}{item.email && ` · ${item.email}`}</li>)}</ul></div>}
-        <Memberships memberId={member.id} scope={scope} />
-        {(member.id === context.memberId || editable(member)) && <SmsConsentControls sms={member.sms} gymName={gymName}
-          onChange={async (kind, consent) => {
-            own(await scope.call(contracts.changeMemberSmsConsent, { kind, consent, revision: member.revision }, { memberId: member.id }));
-            await cache.invalidateQueries({ queryKey: [...scope.key, 'household'] });
-          }}/>}
-        {editable(member) && <div><Button variant="outline" onClick={() => setEditing(member)}>{text('edit')}</Button></div>}
-      </StackedItem>)}</StackedList>}
+          {member.emergencyContacts.length > 0 && <div className="text-sm"><p className="font-medium">{text('contacts')}</p>
+            <ul className="space-y-1">{member.emergencyContacts.map((item, index) => <li key={index} className="wrap-anywhere">{item.name}
+              {item.relationship && <span className="text-muted-foreground"> · {item.relationship}</span>} · {item.phone}{item.email && ` · ${item.email}`}</li>)}</ul></div>}
+          <Memberships memberId={member.id} scope={scope} />
+          {(member.id === context.memberId || editable(member)) && <SmsConsentControls sms={member.sms} gymName={gymName} disabled={pending}
+            onChange={async (kind, consent) => {
+              if (!startMemberAction(member.id)) return;
+              try {
+                own(await scope.call(contracts.changeMemberSmsConsent, { kind, consent, revision: member.revision }, { memberId: member.id }));
+                await cache.invalidateQueries({ queryKey: [...scope.key, 'household'] });
+              } finally { finishMemberAction(member.id); }
+            }}/>}
+          {editable(member) && <div><Button variant="outline" disabled={pending} onClick={() => setEditingId(member.id)}>{text('edit')}</Button></div>}
+        </StackedItem>;
+      })}</StackedList>}
       <p className="text-sm text-muted-foreground">{text(payer ? 'adultNote' : 'memberNote')}</p>
     </PageSection>
-    {editing && <EditMember key={editing.id} member={editing} scope={scope} close={() => setEditing(null)} />}
+    {editing && <EditMember key={editing.id} member={editing} scope={scope} pending={pendingMembers.has(editing.id)}
+      start={() => startMemberAction(editing.id)} finish={() => finishMemberAction(editing.id)} close={() => setEditingId(null)} />}
   </PortalRecovery></Page>;
 }
 /** Memberships are shown for reference; the gym makes every membership change. */
@@ -178,7 +205,9 @@ function Field({ name, label, value, prefix = 'household', ...props }: { name: s
   & Omit<ComponentProps<typeof Input>, 'name' | 'value' | 'defaultValue' | 'prefix'>) {
   return <div className="min-w-0"><Label htmlFor={`${prefix}-${name}`}>{label}</Label><Input id={`${prefix}-${name}`} name={name} value={value} {...props} /></div>;
 }
-function EditMember({ member, scope, close }: { member: PortalMember; scope: PortalScope; close: () => void }) {
+function EditMember({ member, scope, close, pending, start, finish }: {
+  member: PortalMember; scope: PortalScope; close(): void; pending: boolean; start(): boolean; finish(): void;
+}) {
   const cache = useQueryClient();
   const draft = useDraft({ firstName: member.firstName, lastName: member.lastName, email: member.email,
     phone: member.phone, dateOfBirth: member.dateOfBirth, emergencyContacts: member.emergencyContacts }, value => ({
@@ -195,12 +224,16 @@ function EditMember({ member, scope, close }: { member: PortalMember; scope: Por
     if (!Object.keys(changes).length) return false;
     scope.own(await scope.call(contracts.updateMember, { ...changes, revision: member.revision }, { memberId: member.id }));
     return true;
-  }, onSuccess: async changed => { if (changed) await cache.invalidateQueries({ queryKey: [...scope.key, 'household'] }); close(); } });
+  }, onSuccess: async changed => { if (changed) await cache.invalidateQueries({ queryKey: [...scope.key, 'household'] }); close(); }, onSettled: finish });
   const update = (index: number, field: keyof PortalEmergencyContact, value: string) => {
     setChanged(true); setContacts(contacts.map((item, position) => position === index ? { ...item, [field]: value } : item));
   };
   return <Dialog title={text('editTitle', { name: member.firstName })} closeLabel={text('close')} onClose={close} dismissible={!save.isPending} unsavedChanges={changed} size="wide">
-    <form className="space-y-4" onChange={() => setChanged(true)} onSubmit={event => { event.preventDefault(); save.mutate(); }}>
+    <form className="space-y-4" onChange={() => setChanged(true)} onSubmit={event => {
+      event.preventDefault();
+      if (!start()) return;
+      save.mutate();
+    }}>
       {save.isError && <Alert variant="error" focusOnReveal role="alert">{text(conflict(save.error) ? 'changed' : 'failed')}</Alert>}
       <div className="grid gap-4 sm:grid-cols-2">
         <Field prefix="member" name="firstName" label={text('firstName')} value={draft.values.firstName} onChange={event => draft.set('firstName', event.target.value)} required autoComplete="off" />
@@ -220,7 +253,7 @@ function EditMember({ member, scope, close }: { member: PortalMember; scope: Por
         </div>)}
         <Button type="button" variant="outline" onClick={() => { setChanged(true); setContacts([...contacts, { name: '', relationship: '', phone: '' }]); }}>{text('addContact')}</Button>
       </fieldset>
-      <div className="flex flex-wrap gap-3"><Button type="submit" disabled={save.isPending}>{text('save')}</Button>
+      <div className="flex flex-wrap gap-3"><Button type="submit" disabled={save.isPending || pending}>{text('save')}</Button>
         <DialogCancel variant="outline" disabled={save.isPending}>{text('close')}</DialogCancel></div>
     </form>
   </Dialog>;
