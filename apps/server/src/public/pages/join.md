@@ -161,7 +161,9 @@ replay, a second run or a concurrent one finds the record and releases nothing.
 The people, their signed waivers and leads, and the household stay for staff
 follow-up, as a retained admission's do. Cancelling memberships that never left
 pending keeps their people as prospects, including pending trials with an end
-date. The void also reconciles status against any other memberships, under the
+date, unless an older join's `public.join.member_activated` records that the
+member left pending; that person is cancelled with the void. Each cancellation
+reconciles status against the remaining memberships, under the
 [membership status rule](../../areas/billing/memberships.README.md#member-status).
 The join page then shows the closed page,
 Checkout can't start, and a replayed submission returns the same link without taking

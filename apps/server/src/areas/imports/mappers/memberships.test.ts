@@ -257,6 +257,20 @@ describe('membership renewals through the durable pipeline', () => {
     expect((await read()).memberships).toEqual([expect.objectContaining({ amountCents: 7000, nextDueOn: '2029-02-28', anniversaryOn: '2028-02-29', revision: 2 })]);
     expect((await read()).invoices).toEqual([]);
   });
+  it('plans no member revision and commits stored values that omit it', async () => {
+    const f = await fixture(), batch = await analyzed([{ email: f.member.email!, plan: f.plan.id, nextDueOn: '2026-11-15' }]);
+    expect(batch.planned[0]!.values).not.toHaveProperty('memberRevision');
+    const values = { ...batch.planned[0]!.values };
+    delete values.memberRevision;
+    expect(await batch.commit([{ ...batch.planned[0]!, values }])).toBe(1);
+    expect((await read()).memberships[0]).toMatchObject({ memberId: f.member.id, status: 'active' });
+  });
+  it('still commits a stored plan that carries the member revision', async () => {
+    const f = await fixture(), batch = await analyzed([{ email: f.member.email!, plan: f.plan.id, nextDueOn: '2026-11-15' }]);
+    const values = { ...batch.planned[0]!.values, memberRevision: f.member.revision };
+    expect(await batch.commit([{ ...batch.planned[0]!, values }])).toBe(1);
+    expect((await read()).memberships[0]).toMatchObject({ memberId: f.member.id, status: 'active' });
+  });
   it.each(['price', 'interval', 'unchanged'] as const)('handles a scheduled switch when imported terms are %s', async change => {
     const f = await fixture(), next = await factory('plans', gymId, { amountCents: 15000, interval: 'monthly' });
     const original = await factory('memberships', gymId, { householdId: f.home.id, memberId: f.member.id, planId: f.plan.id,

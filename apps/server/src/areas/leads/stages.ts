@@ -8,13 +8,15 @@ interface StageInput {
   gymId: string; memberId: string; now: Date; occurredAt?: Date; memberStatus?: string;
   actor: AttendanceMutation['actor'];
 }
+interface StageOptions { create?: boolean }
 /** The caller owns the transaction. Lock before deciding so concurrent retries audit once. */
-async function advance(tx: Transaction, input: StageInput, stage: 'trial_attended' | 'won') {
+async function advance(tx: Transaction, input: StageInput, stage: 'trial_attended' | 'won', options: StageOptions = {}) {
   const { gymId, memberId, now, actor } = input;
   const where = and(eq(leads.gymId, gymId), eq(leads.memberId, memberId));
   let [before] = await tx.select().from(leads).where(where).for('update');
   let created = false;
   if (!before) {
+    if (options.create === false) return;
     // Acquire the FK's member lock before reserving a unique lead key. Attendance
     // already holds the member lock; reversing that order can deadlock activation.
     let status = input.memberStatus;
@@ -57,4 +59,4 @@ async function advance(tx: Transaction, input: StageInput, stage: 'trial_attende
 }
 
 export function advanceLeadOnCheckIn(tx: Transaction, input: StageInput) { return advance(tx, input, 'trial_attended'); }
-export function markLeadWon(tx: Transaction, input: StageInput) { return advance(tx, input, 'won'); }
+export function markLeadWon(tx: Transaction, input: StageInput, options: StageOptions = {}) { return advance(tx, input, 'won', options); }

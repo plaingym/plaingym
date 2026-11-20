@@ -109,6 +109,8 @@ membership revision change returns the panel to its first page; paging and refre
 keep the previous list and disable its paging buttons until the new page arrives.
 Malformed audit snapshots are skipped and logged with identifiers only. Pagination
 counts audit rows, including skipped snapshots, so older pages remain reachable.
+The panel says "No freezes recorded." only when that count is zero; a page whose
+entries were all skipped says "Some freeze entries can't be shown." instead.
 
 ## Anniversary dates
 

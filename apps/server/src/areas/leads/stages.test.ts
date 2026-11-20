@@ -152,6 +152,19 @@ describe('automatic lead stages in real PostgreSQL transactions', () => {
     expect((await f.rows()).leads).toHaveLength(1);
     expect((await f.rows()).audits).toHaveLength(1);
   });
+  it('marks a lead won without creating one when the caller opts out', async () => {
+    const f = await fixture(), input = { ...f.context, memberId: f.member.id, now: clock.now() };
+    const audits = () => db.forGym(f.gymId, tx => tx.select().from(auditEvents));
+    await db.forGym(f.gymId, tx => markLeadWon(tx, input, { create: false }));
+    expect(await f.rows()).toEqual({ leads: [], audits: [] });
+    expect(await audits()).toEqual([]);
+    const before = await factory('leads', f.gymId, { memberId: f.member.id, stage: 'contacted' });
+    await db.forGym(f.gymId, tx => markLeadWon(tx, input, { create: false }));
+    const rows = await f.rows();
+    expect(rows.leads[0]).toMatchObject({ id: before.id, stage: 'won', wonAt: clock.now(), revision: 2 });
+    expect(rows.audits).toMatchObject([{ targetId: before.id, before: { stage: 'contacted', revision: 1 }, after: { stage: 'won', revision: 2 } }]);
+    expect(await audits()).toHaveLength(1);
+  });
   it('does not touch gym B or throw for a missing member', async () => {
     const a = await fixture(), b = await fixture();
     await factory('leads', b.gymId, { memberId: b.member.id });

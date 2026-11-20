@@ -24,7 +24,7 @@ export function FreezeHistory({ gymId, membershipId, revision, client }: {
       {history.isPending && <p role="status">{text('loading')}</p>}
       {history.isError && <Alert variant="error" role="alert">{text('error')} <Button variant="outline" onClick={() => void history.refetch()}>{text('retry')}</Button></Alert>}
       {history.data && <>
-        {!history.data.data.length && <p>{text('noFreezes')}</p>}
+        {!history.data.data.length && <p>{text(history.data.pagination.total === 0 ? 'noFreezes' : 'someFreezesHidden')}</p>}
         <ol className="space-y-3">{history.data.data.map(event => <li key={event.id} className="space-y-1 rounded-md bg-muted p-3 text-sm">
           <p>{text('frozenOn', { date: instantLabel(event.occurredAt) })}</p>
           <p>{text('freezeSkipped', { date: calendarDateLabel(event.skippedDueOn) })}</p>

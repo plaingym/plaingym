@@ -120,11 +120,15 @@ membership that was never active resumes (its latest freeze froze a trial
 membership; a frozen member counts as on trial for this), or a class pack's credits are granted on payment. It advances
 any stage except `won`, including `lost`, and clears a lost lead's reason and
 time as reopening does. Trial assignments and the resume of a membership that was
-active do not call it. Imports insert their rows directly and change no stage.
+active do not call it. A membership import calls it when it inserts an active
+membership, with `{ create: false }`: an existing lead is won, and a member
+without one gains none.
 
 Both helpers take the caller's gym transaction, actor and clock time. A missing
 lead is created with a null source only for a prospect or trial member; other
-members with no lead are harmless no-ops. They lock the lead before changing it,
+members with no lead are harmless no-ops. `markLeadWon(..., { create: false })`
+never creates one: with no lead it returns without reading the member or writing
+anything. They lock the lead before changing it,
 bump its revision and write a `lead.stage_changed` audit with the caller's actor,
 without copying contact details or lost reasons. Repeats change and audit nothing.
 Creation also writes `lead.created` with null source and the caller's actor;

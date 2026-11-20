@@ -73,6 +73,19 @@ it('shows an empty history and retries a failed history read', async () => {
   fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
   expect(await screen.findByText('No freezes recorded.')).toBeDefined();
 });
+it('says hidden entries when an empty freeze page has a nonzero total, and none only at a zero total', async () => {
+  const hidden = vi.fn(async () => ({ data: [], pagination: { limit: 10, offset: 0, total: 3 } }));
+  start('front_desk', { history: hidden });
+  fireEvent.click(await screen.findByRole('button', { name: 'Freeze history' }));
+  expect(await screen.findByText("Some freeze entries can't be shown.")).toBeDefined();
+  expect(screen.queryByText('No freezes recorded.')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Older freezes' })).toBeNull();
+  cleanup();
+  start('front_desk', { history: vi.fn(async () => ({ data: [], pagination: { limit: 10, offset: 0, total: 0 } })) });
+  fireEvent.click(await screen.findByRole('button', { name: 'Freeze history' }));
+  expect(await screen.findByText('No freezes recorded.')).toBeDefined();
+  expect(screen.queryByText("Some freeze entries can't be shown.")).toBeNull();
+});
 it('keeps the list while paging and returns to the first page after a freeze', async () => {
   const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const event = { id: id(10), occurredAt: createdAt, skippedDueOn: '2026-02-01', nextDueOn: '2026-03-01' };

@@ -84,14 +84,16 @@ After inserts and updates, the chunk runs billing's shared member-status
 reconciliation under the household and member locks, with a member revision
 guard and an audit when the status changes. An imported active membership makes
 its member active even if the people file omitted status or said cancelled or
-frozen. Active inserts and updates also win the member's lead, as active
-assignment does; pending updates do not win it. Members without an imported
+frozen. Inserted active memberships also win the member's existing lead, as
+active assignment does, but never create one; updates do not win it. Members without an imported
 membership keep their file status. Replays add no duplicate member or lead
 transition audits, and a failed chunk rolls back these changes together.
 
 Each commit processes at most 100 source rows. Household locks serialize imports and runner
-work; member and plan references are locked and revision-checked, as are
-membership updates and household anchor edits. A concurrent insert or replay
+work; members are locked and checked to be unerased and still in the planned
+household, and plans are locked and revision-checked, as are household
+revisions, membership updates and household anchor edits. A member edited
+after preview doesn't conflict: status is derived from the locked member. A concurrent insert or replay
 never creates a second member/plan pair. Domain audits contain only IDs, billing
 dates and the import ID; names, emails, source cells and processor IDs stay out
 of append-only audits. All queries use the supplied gym-scoped transaction, with

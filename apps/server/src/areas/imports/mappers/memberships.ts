@@ -2,7 +2,7 @@
 import { escapeLike } from '../../../lib/escape-like.js';
 import { and, asc, eq, ilike, inArray, isNull, or } from 'drizzle-orm';
 import { z } from 'zod';
-import { households, leads, members, memberships, plans, RevisionConflictError, assertRevised, revisionGuard,
+import { households, members, memberships, plans, RevisionConflictError, assertRevised, revisionGuard,
   uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import { dateSchema, idSchema, type ImportIssue, type ImportPlanRequest, type ImportTargetField } from '@plaingym/shared/contracts';
 import { minorUnitStep, onMinorUnitStep } from '@plaingym/shared/money';
@@ -82,7 +82,7 @@ function sourceFile(context: MapperContext, plan: ImportPlanRequest): SourceInde
 const scheduleUpdatesSchema = z.array(z.object({ id: idSchema, revision: z.int().positive(), oldDueOn: dateSchema, nextDueOn: dateSchema }));
 const committedSchema = z.object({
   memberId: idSchema, householdId: idSchema, planId: idSchema,
-  memberRevision: z.int().positive(), householdRevision: z.int().positive(), planRevision: z.int().positive(),
+  memberRevision: z.int().positive().optional(), householdRevision: z.int().positive(), planRevision: z.int().positive(),
   membershipId: idSchema.nullable(), membershipRevision: z.int().positive().nullable(),
   amountCents: z.int().min(0).max(2147483647), currency: z.string().regex(/^[A-Z]{3}$/),
   interval: z.enum(['monthly', 'annual']), nextDueOn: dateSchema, billingDay: z.int().min(1).max(31).nullable(),
@@ -181,7 +181,7 @@ async function analyze(tx: Reader, rows: readonly CsvRow[], plan: ImportPlanRequ
             fail('nextDueOn', 'conflict', 'existingScheduleConflict');
         }
         Object.assign(values, { memberId: member.id, householdId: home.id, planId: selectedPlan.id,
-          memberRevision: member.revision, householdRevision: home.revision, planRevision: selectedPlan.revision,
+          householdRevision: home.revision, planRevision: selectedPlan.revision,
           membershipId: duplicates.length === 1 ? duplicates[0]!.id : null, membershipRevision: duplicates.length === 1 ? duplicates[0]!.revision : null,
           amountCents: source.amountCents ?? selectedPlan.amountCents, currency: selectedPlan.currency, interval,
           billingDay, anniversaryOn, anniversaryExplicit: source.billingDay !== null,
@@ -233,9 +233,8 @@ async function commit(tx: Transaction, rows: readonly PlannedRow[], context: Map
     // before lead work, matching attendance's and activation's member/lead lock order.
     await tx.select({ id: members.id }).from(members).where(and(eq(members.gymId, gymId), eq(members.id, memberId))).for('update');
     // Imports convert existing leads only on insertion, without creating roster-import leads.
-    if (cause === 'billing.membership.imported' && (await tx.select({ id: leads.id }).from(leads)
-      .where(and(eq(leads.gymId, gymId), eq(leads.memberId, memberId))).limit(1)).length)
-      await markLeadWon(tx, { gymId, actor: context.actor, memberId, now });
+    if (cause === 'billing.membership.imported')
+      await markLeadWon(tx, { gymId, actor: context.actor, memberId, now }, { create: false });
     await reconcileMemberStatus(tx, { gymId, actor: context.actor }, context.clock, memberId, membershipId, cause);
   };
   let count = 0;
