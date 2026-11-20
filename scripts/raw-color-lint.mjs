@@ -6,6 +6,7 @@ const families = 'slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|gre
 const utilities = 'accent|bg|border(?:-[xysetrbl])?|caret|decoration|divide|drop-shadow|fill|from|inset-ring|inset-shadow|outline|placeholder|ring(?:-offset)?|shadow|stroke|text|to|via';
 const palette = new RegExp(`(?:^|[\\s:])!?((?:${utilities})-(?:white|black|(?:${families})-\\d{2,3}))(?=$|[\\s!/])`, 'g');
 const arbitrary = new RegExp(`(?:^|[\\s:])!?(?:${utilities})-\\[([^\\]\\s]+)\\]`, 'g');
+const arbitraryProperty = /\[([a-z-]+):([^\]\s]+)\]/g;
 const cssColor = /(?:#[\da-f]{3}(?:[\da-f]{5}|[\da-f]{3}|[\da-f])?(?![a-z\d-])|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|color-mix)\()/gi;
 const namedColors = new Set(`
   aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond blue blueviolet brown burlywood
@@ -25,7 +26,7 @@ const namedColors = new Set(`
 `.trim().split(/\s+/));
 // Skip quoted strings, URLs, hex values and custom property identifiers before reading color keywords.
 const cssWord = /url\([^)]*\)|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|#[\w-]+|--[\w-]+|[a-z][\w-]*/gi;
-const colorProperty = /^(?:background|border|boxShadow|columnRule|fill|filter|mask|outline|scrollbarColor|stroke|textDecoration|textShadow|color$)|(?:Color|-color)$/;
+const colorProperty = /^(?:background|border|boxShadow|columnRule|fill|filter|outline|scrollbarColor|stroke|textDecoration|textShadow|color$)|(?:Color|-color)$/;
 const classCalls = new Set(['cn', 'clsx', 'cva', 'twMerge']);
 
 // File, element and complete class attribute. Each exception applies only to
@@ -75,11 +76,18 @@ export const rawColorRule = {
     const exception = fixedWhite.get(path.replace(/^(?:.*\/)?src\/features\//, ''));
     const visited = new Map();
     const active = new Set();
+    const reported = new Map();
 
     /** @param {Syntax} node @param {string} text @param {Mode} mode */
     function check(node, text, mode) {
       /** @param {string} color */
-      const report = color => context.report({ node, messageId: 'token', data: { color } });
+      const report = color => {
+        const colors = reported.get(node) ?? new Set();
+        if (colors.has(color)) return;
+        colors.add(color);
+        reported.set(node, colors);
+        context.report({ node, messageId: 'token', data: { color } });
+      };
       /** @param {string} value */
       const checkNames = value => {
         for (const [word] of value.matchAll(cssWord)) if (namedColors.has(word.toLowerCase())) report(word);
@@ -88,6 +96,11 @@ export const rawColorRule = {
       if (mode === 'classes' || mode === 'white') {
         for (const [, color] of text.matchAll(palette)) if (color && (color !== 'bg-white' || mode !== 'white')) report(color);
         for (const [, value] of text.matchAll(arbitrary)) if (value) checkNames(value.replaceAll('_', ' '));
+        for (const [, property, value] of text.matchAll(arbitraryProperty)) {
+          if (!property || !value) continue;
+          const styleProperty = property.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+          if (colorProperty.test(styleProperty)) checkNames(value.replaceAll('_', ' '));
+        }
       }
       if (mode === 'color-style') checkNames(text);
     }
@@ -173,9 +186,9 @@ export const rawColorRule = {
             }
             const key = propertyKey(prop, prop.key);
             if (member !== undefined && key !== undefined && member !== key) continue;
-            const styleProperty = !members.length && !classes && key && !key.startsWith('--');
+            const styleProperty = !members.length && !classes && (key === undefined || (key && !key.startsWith('--')));
             if (!members.length && classes && syntax(prop.key)?.type === 'Literal') inspect(prop.key, mode);
-            inspect(prop.value, styleProperty && !colorProperty.test(key) ? 'style' : mode, rest);
+            inspect(prop.value, styleProperty && (key === undefined || !colorProperty.test(key)) ? 'style' : mode, rest);
           }
           break;
         case 'ArrayExpression': {

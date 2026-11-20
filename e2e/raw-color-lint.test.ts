@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { ESLint } from 'eslint';
 import { expect, it } from 'vitest';
@@ -80,6 +81,44 @@ it('accepts color keywords that adapt, custom properties, and named words used a
       className="text-[var(--red)] bg-[url(/red.svg)] before:content-['red'] bg-[transparent]"
       style={{ color: 'currentColor', backgroundColor: 'var(--white)', fontFamily: 'black' }}/>;
   `)).resolves.toEqual([]);
+});
+
+it('does not treat mask images as color properties', async () => {
+  await expect(violations(`
+    const styles = { maskImage: 'linear-gradient(black, transparent)', mask: 'url(/mask.png)' };
+    export const Example = <div style={styles}/>;
+  `)).resolves.toEqual([]);
+});
+
+it('does not read named colors from an unknown computed style key', async () => {
+  await expect(violations(`
+    export const Example = <div style={{ [fontProp]: 'Arial Black' }}/>;
+  `)).resolves.toEqual([]);
+});
+
+it('rejects named colors in Tailwind arbitrary properties', async () => {
+  const messages = await violations(`
+    export const Example = <div className="[color:red] [background-color:navy] [font-family:Arial_Black] [mask-image:linear-gradient(black,transparent)]"/>;
+  `);
+  expect(messages).toEqual([
+    'Use a theme token in place of red.',
+    'Use a theme token in place of navy.',
+  ]);
+});
+
+it('reports a literal reached through a color and a non-color property once', async () => {
+  const messages = await violations(`
+    const ink = '#123456';
+    export const Example = <div style={{ color: ink, fontFamily: ink }}/>;
+  `);
+  expect(messages).toEqual(['Use a theme token in place of #123456.']);
+});
+
+it('documents that imported or destructured class tables are checked where defined', () => {
+  const readme = readFileSync(fileURLToPath(new URL('../apps/web/README.md', import.meta.url)), 'utf8');
+  expect(readme.replace(/\s+/g, ' ')).toContain(
+    'Class tables imported from another file, or reached through destructuring, are checked only where they are defined',
+  );
 });
 
 it('finds the exact light-media exception when ESLint runs from apps/web', async () => {
