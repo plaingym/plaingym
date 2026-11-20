@@ -180,6 +180,37 @@ describe('member admin UI', () => {
     await waitFor(() => expect(memberRequest).toHaveBeenCalledWith(expect.anything(), '/api/members/' + memberId, 'DELETE', { revision: 1 }));
     await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/admin/members' }));
   });
+  it('guards Cancel after a manager types a member deletion confirmation', async () => {
+    bootstrap(['admin']); view(<MemberProfile memberId={memberId}/>);
+    const open = await screen.findByRole('button', { name: 'Delete member' });
+    const title = 'Delete this member?';
+    fireEvent.click(open);
+    let dialog = within(screen.getByRole('dialog', { name: title }));
+    fireEvent.click(dialog.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog', { name: title })).toBeNull();
+
+    fireEvent.click(open);
+    dialog = within(screen.getByRole('dialog', { name: title }));
+    const name = dialog.getByRole<HTMLInputElement>('textbox');
+    const cancel = dialog.getByRole('button', { name: 'Cancel' });
+    expect(cancel.getAttribute('type')).toBe('button');
+    fireEvent.change(name, { target: { value: 'Alex Smit' } });
+    fireEvent.click(cancel);
+    const prompt = dialog.getByText('Discard your unsaved changes?');
+    fireEvent.click(dialog.getByRole('button', { name: 'Keep editing' }));
+    expect(prompt.isConnected).toBe(false);
+    expect(name.value).toBe('Alex Smit');
+    expect(dialog.getByRole<HTMLButtonElement>('button', { name: 'Delete member' }).disabled).toBe(true);
+
+    fireEvent.click(cancel);
+    fireEvent.click(dialog.getByRole('button', { name: 'Discard changes' }));
+    expect(screen.queryByRole('dialog', { name: title })).toBeNull();
+    expect(vi.mocked(memberRequest).mock.calls.some(call => call[2] === 'DELETE')).toBe(false);
+
+    fireEvent.click(open);
+    dialog = within(screen.getByRole('dialog', { name: title }));
+    expect(dialog.getByRole<HTMLInputElement>('textbox').value).toBe('');
+  });
   it('explains a delete refused for billing records and points to Cancel or Erase', async () => {
     bootstrap(['owner']);
     const loaded = vi.mocked(memberRequest).getMockImplementation()!;

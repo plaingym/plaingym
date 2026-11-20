@@ -14,7 +14,7 @@ import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { Page, PageHeader } from '../../components/ui/page.js';
 import { CheckboxField, Select, Textarea } from '../../components/ui/select.js';
-import { Dialog } from '../../components/ui/dialog.js';
+import { Dialog, DialogCancel } from '../../components/ui/dialog.js';
 import { ErrorState, LoadingState } from '../../components/ui/states.js';
 import { memberRequest, resizeMemberPhoto } from './api.js';
 import { ErrorMessage, Panel, StatusBadge, text, useDraft, useMemberSave } from './common.js';
@@ -155,7 +155,7 @@ function DeleteMemberDialog({ gymId, member, onClose }: { gymId: string; member:
       <Label className="grid gap-2">{t('members/members:deleteMemberConfirm', { name })}<Input value={typed} autoComplete="off" onChange={(event) => setTyped(event.target.value)}/></Label>
       <ErrorMessage error={state.error}/>
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-        <Button variant="outline" disabled={state.busy} onClick={onClose}>{text('cancel')}</Button>
+        <DialogCancel variant="outline" disabled={state.busy}>{text('cancel')}</DialogCancel>
         <Button type="submit" variant="destructive" disabled={!matches || state.busy}>{text('deleteMember')}</Button>
       </div>
     </form>
