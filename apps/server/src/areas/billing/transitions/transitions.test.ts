@@ -45,7 +45,8 @@ it.each([[32, 'CAD'], [1255, 'KWD']] as const)('sends manual payment guidance fo
   }
   expect(await db.forGym(f.gymId, tx => tx.select().from(signedLinks))).toHaveLength(0);
 });
-async function fixture(kind: 'cycle' | 'one_off' = 'cycle', currency = 'CAD') {
+async function fixture(kind: 'cycle' | 'one_off' = 'cycle', currency = 'CAD',
+  { attemptNumber = 1, savedPaymentMethod = 'pm_test' } = {}) {
   const gymId = uuidv7();
   await factory('gyms', gymId, { currency, timezone: 'America/Los_Angeles', billingEnabled: true, memberEmailsEnabled: true });
   const clock = new TestClock('2028-03-10T17:00:00Z'), context = { gymId, actor: { kind: 'system' as const } };
@@ -58,9 +59,9 @@ async function fixture(kind: 'cycle' | 'one_off' = 'cycle', currency = 'CAD') {
   await factory('invoiceLineItems', gymId, { householdId: household.id, invoiceId: invoice.id, membershipId: membership.id, kind: 'membership', currency });
   const provider = new FakePayments(gymId, clock);
   const attemptId = uuidv7();
-  const intent = await provider.createCharge({ amount: invoice.amountCents, currency: currency.toLowerCase(), customerId: 'cus_test', paymentMethodId: 'pm_test',
-    invoiceId: invoice.id, attemptId, idempotencyKey: `${invoice.id}:1:create` });
-  const attempt = await factory('paymentAttempts', gymId, { id: attemptId, invoiceId: invoice.id, paymentIntentId: intent.id });
+  const intent = await provider.createCharge({ amount: invoice.amountCents, currency: currency.toLowerCase(), customerId: 'cus_test', paymentMethodId: savedPaymentMethod,
+    invoiceId: invoice.id, attemptId, idempotencyKey: `${invoice.id}:${attemptNumber}:create` });
+  const attempt = await factory('paymentAttempts', gymId, { id: attemptId, invoiceId: invoice.id, attemptNumber, savedPaymentMethod, paymentIntentId: intent.id });
   const options = { scope: db.forGym, clock }, transitions = createInvoiceTransitions(options);
   const settings = createGymSettingsAccessor({ scope: db.forGym });
   const lifecycle = createMembershipService({ ...options, settings });
@@ -216,11 +217,10 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect((await f.read()).audits.filter(a => a.action === effectCreated && (a.after as InvoiceEffect).kind === 'dunning')).toHaveLength(1);
   });
   it('counts only bank attempts that reached the bank toward the three-attempt cap', async () => {
-    const f = await fixture();
+    const f = await fixture('cycle', 'USD', { attemptNumber: 3, savedPaymentMethod: 'pm_bank' });
     await factory('paymentMethods', f.gymId, { householdId: f.household.id, processorId: 'pm_bank', type: 'us_bank_account', isDefault: true });
     for (const [attemptNumber, declineCode] of [[1, 'create_abandoned'], [2, 'confirm_abandoned']] as const)
       await factory('paymentAttempts', f.gymId, { invoiceId: f.invoice.id, attemptNumber, savedPaymentMethod: 'pm_bank', status: 'failed', declineCode });
-    await db.forGym(f.gymId, tx => tx.update(paymentAttempts).set({ attemptNumber: 3, savedPaymentMethod: 'pm_bank' }).where(eq(paymentAttempts.id, f.attempt.id)));
     expect((await f.transitions.cardFailed(f.context, { ...f.failure, outcome: 'insufficient_funds' })).invoice.status).toBe('past_due');
     const { audits } = await f.read();
     expect(audits.filter(a => a.action === 'billing.invoice.retries_stopped')).toHaveLength(0);
