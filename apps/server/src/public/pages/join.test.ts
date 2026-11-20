@@ -1065,6 +1065,30 @@ describe('public join pages through the production registrations', () => {
     expect(f.mail.messages.filter(message => message.text.includes("didn't go through"))).toHaveLength(1);
   });
 
+  it('uses the pay link and starts the join memberships when the bank method has no last four digits', async () => {
+    const f = await fixture();
+    await db.forGym(f.gymId, tx => tx.update(gyms).set({ bankDebitsEnabled: true }).where(eq(gyms.id, f.gymId)));
+    const { cookie } = await f.submit([adult(), child()]);
+    const redirect = await f.get('/join/checkout', cookie);
+    expect(redirect.status).toBe(303);
+    const sessionId = new URL(redirect.headers.get('location')!).pathname.slice(1);
+    const session = f.provider.completeCheckout(sessionId, { method: 'acss_debit' });
+    f.provider.recordPaymentMethod({ id: session.paymentMethodId!, customerId: session.customerId, last4: '' });
+
+    await f.webhook(sessionId);
+    await f.webhook(sessionId);
+
+    const state = await f.rows(), invoice = state.invoices.find(row => row.id === session.metadata.invoiceId)!;
+    const link = state.links.find(row => row.id === session.metadata.linkId)!;
+    expect(invoice.status).toBe('processing');
+    expect(link.usedAt).toEqual(f.clock.now());
+    expect(state.memberships.filter(row => row.householdId === invoice.householdId).map(row => row.status)).toEqual(['active', 'active']);
+    expect(state.methods).toEqual([]);
+    expect(state.audits.filter(row => row.action === 'signed_link.used' && row.targetId === link.id)).toHaveLength(1);
+    expect(state.audits.filter(row => row.action === 'billing.invoice.processing' && row.targetId === invoice.id)).toHaveLength(1);
+    expect(await f.join.state(f.gymId, link.id)).toMatchObject({ status: 'active', processing: true });
+  });
+
   it.each([false, true])('activates a family only through paid Checkout with immutable waivers (PDF: %s)', async pdfTemplate => {
     const f = await fixture(), create = vi.spyOn(f.provider, 'createCheckout');
     if (pdfTemplate) {

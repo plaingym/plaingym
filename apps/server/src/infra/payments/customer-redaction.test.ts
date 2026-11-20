@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { FakePayments } from './index.js';
 import { StripePayments } from './stripe.js';
 import { StripeFixtures } from './stripe-fixtures.js';
@@ -57,17 +57,40 @@ it('pages past 100 attached cards and avoids repeating cleared writes', async ()
   expect(writes().filter(request => request.path.startsWith('/v1/payment_methods/'))).toHaveLength(102);
 });
 
-it.each([403, 500])('propagates a card clear failure and resumes all cards on retry (%s)', async statusCode => {
+it.each([401, 403])('stops at the first refused method write after deleting tax IDs (%s)', async statusCode => {
+  const fixture = stripe();
+  fixture.transport.objects.set('txi_erased', { id: 'txi_erased', object: 'tax_id', customer: customerId });
+  const error = Object.assign(new Error('Write refused'), { statusCode });
+  const request = vi.fn<PaymentTransport['request']>(async input => {
+    if (input.method === 'POST' && input.path.startsWith('/v1/payment_methods/')) throw error;
+    return fixture.transport.request(input);
+  });
+  const payments = new StripePayments(gymId, { transport: { request }, webhookSecret: 'fixture-secret' });
+  const redaction = payments.redactCustomer(customerId);
+  if (statusCode === 403) await expect(redaction).rejects.toMatchObject({ message: 'Check the Stripe permission for Payment Methods', cause: error });
+  else await expect(redaction).rejects.toBe(error);
+  expect(request.mock.calls.map(([input]) => [input.method, input.path])).toEqual([
+    ['GET', '/v1/customers/' + customerId],
+    ['POST', '/v1/customers/' + customerId],
+    ['GET', '/v1/customers/' + customerId + '/tax_ids'],
+    ['DELETE', '/v1/customers/' + customerId + '/tax_ids/txi_erased'],
+    ['GET', '/v1/payment_methods'],
+    ['POST', '/v1/payment_methods/' + ids[0]],
+  ]);
+  expect(fixture.transport.objects.has('txi_erased')).toBe(false);
+});
+
+it('continues clearing methods after a transient failure and retries the failed method', async () => {
   const fixture = stripe();
   fixture.transport.objects.set('txi_erased', { id: 'txi_erased', object: 'tax_id', customer: customerId, value: 'DE123456789' });
   let fail = true;
   const transport: PaymentTransport = { async request(input) {
     if (fail && input.method === 'POST' && input.path.endsWith('/' + ids[1]))
-      throw Object.assign(new Error('Stripe outage'), { statusCode });
+      throw Object.assign(new Error('Stripe outage'), { statusCode: 500 });
     return fixture.transport.request(input);
   } };
   const payments = new StripePayments(gymId, { transport, webhookSecret: 'fixture-secret' });
-  await expect(payments.redactCustomer(customerId)).rejects.toThrow(statusCode === 403 ? 'Payment Methods' : 'Stripe outage');
+  await expect(payments.redactCustomer(customerId)).rejects.toThrow('Stripe outage');
   expect(fixture.transport.objects.has('txi_erased')).toBe(false);
   expect(fixture.cards()[101]!.details).toEqual({ name: null, email: null, phone: null, address: null });
   fail = false;

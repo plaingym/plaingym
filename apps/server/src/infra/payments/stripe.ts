@@ -8,7 +8,7 @@ import { CustomerCreationInProgress, CustomerDeleted, ERASED_CUSTOMER_NAME, norm
   type PaymentObjectReference, type PaymentObjectResult, type PaymentObject, type PaymentChange,
   type PaymentEvent, type Refund, type RefundRequest, type CustomerMatch, CardImportRefused, CardCursorRefused,
   type CustomerCardPage, type CustomerCardQuery, type PaymentMethod, type PaymentMethodType, type BankPaymentMethod,
-  type BankAccountImportRead, type BankPaymentMethodForImport, BankDebitUnavailable } from './index.js';
+  type BankAccountImportRead, type BankPaymentMethodForImport, BankDebitUnavailable, hasBankLast4 } from './index.js';
 import type { Json, ObjectData, PaymentTransport, ProviderRequest } from './transport.js';
 import { PaymentWebhookError } from './webhook-error.js';
 import { matchesBillingEmail, type ClearCustomerEmail } from './email-erasure.js';
@@ -57,7 +57,9 @@ function timestamp(value: Json | undefined): Date {
   return time;
 }
 class NotForGym extends Error {}
-class IncompleteBankMethod extends NotForGym {}
+class IncompleteBankMethod extends NotForGym {
+  constructor(readonly customerId: string) { super('Bank account has no usable last four digits'); }
+}
 function methodType(method: ObjectData): PaymentMethodType {
   // Older recorded card responses contain the card object without a type discriminator.
   if (method.type === 'card' || (method.type === undefined && method.card)) return 'card';
@@ -69,7 +71,7 @@ function readMethod(method: ObjectData): PaymentMethod {
   const details = type === 'card' ? data(method.card) : data(method[type] ?? {});
   const identity = { id: id(method.id), customerId: id(method.customer), createdAt: timestamp(method.created) };
   if (type !== 'card') {
-    if (typeof details.last4 !== 'string' || !/^\d{4}$/.test(details.last4)) throw new IncompleteBankMethod('Bank account has no usable last four digits');
+    if (!hasBankLast4(details.last4)) throw new IncompleteBankMethod(identity.customerId);
     return { ...identity, type, last4: details.last4, ...(typeof details.bank_name === 'string' ? { bankName: details.bank_name } : {}) };
   }
   return { ...identity, type, last4: String(details.last4), ...(typeof details.brand === 'string' ? { brand: details.brand } : {}),
@@ -78,9 +80,11 @@ function readMethod(method: ObjectData): PaymentMethod {
 function bankOptionRefused(error: unknown): boolean {
   const failure = error as { type?: string; rawType?: string; param?: string; raw?: { type?: string; param?: string } } | null;
   const param = failure?.param ?? failure?.raw?.param;
-  return (failure?.type === 'StripeInvalidRequestError' || failure?.type === 'invalid_request_error'
-    || failure?.rawType === 'invalid_request_error' || failure?.raw?.type === 'invalid_request_error')
-    && typeof param === 'string' && /^(?:(?:allowed_)?payment_method_types(?:\[\d+\])?|payment_method_options\[(?:us_bank_account|acss_debit)\])$/.test(param);
+  const invalidRequest = failure?.type === 'StripeInvalidRequestError' || failure?.type === 'invalid_request_error'
+    || failure?.rawType === 'invalid_request_error' || failure?.raw?.type === 'invalid_request_error';
+  if (!invalidRequest || typeof param !== 'string') return false;
+  return /^(?:allowed_)?payment_method_types(?:\[\d+\])?$/.test(param)
+    || /^payment_method_options\[(?:us_bank_account|acss_debit)\](?!\[mandate_options\])(?:\[[^\]]+\])*$/.test(param);
 }
 function queryString(params: ObjectData): string {
   const query = new URLSearchParams();
@@ -393,7 +397,12 @@ export class StripePayments implements Payments {
   async readPaymentObject(reference: PaymentObjectReference): Promise<PaymentObjectResult> {
     assertNoTransaction('payments.readPaymentObject');
     try { return { status: 'found', value: await this.#read(reference) }; }
-    catch (error) { if (missing(error) || error instanceof NotForGym) return { status: 'unknown', reference }; throw error; }
+    catch (error) {
+      if (error instanceof IncompleteBankMethod)
+        return { status: 'unknown', reference, incompleteBankMethod: { customerId: error.customerId } };
+      if (missing(error) || error instanceof NotForGym) return { status: 'unknown', reference };
+      throw error;
+    }
   }
   async #withPadMandate(method: BankPaymentMethod): Promise<BankPaymentMethodForImport> {
     let cursor: string | undefined;
@@ -435,7 +444,7 @@ export class StripePayments implements Payments {
     const owner = data(object.metadata ?? {}).gym_id, customerId = optionalId(object.customer);
     const { last4 } = data(object[object.type] ?? {});
     if (id(object.id) !== processorId || !customerId || owner !== undefined && owner !== this.gymId
-      || typeof last4 !== 'string' || !/^\d{4}$/.test(last4)) return { status: 'unavailable' };
+      || !hasBankLast4(last4)) return { status: 'unavailable' };
     const customer = await this.#get(this.#path('customers', customerId)).catch(error => {
       if (missing(error)) return null;
       throw error;
@@ -597,7 +606,11 @@ export class StripePayments implements Payments {
             }
             if (holds(method.billing_details)) await this.#post(this.#path('payment_methods', id(method.id)),
               { billing_details: { name: '', email: '', phone: '', address: '' } });
-          } catch (error) { if (!absent(error)) failure ??= error; }
+          } catch (error) {
+            const status = (error as { statusCode?: number } | null)?.statusCode;
+            if (status === 401 || status === 403) throw error;
+            if (!absent(error)) failure ??= error;
+          }
         }
         if (!page.has_more) {
           if (failure !== undefined) throw failure;
@@ -657,10 +670,11 @@ export class StripePayments implements Payments {
     const singleType = types.size === 1 ? [...types][0] : undefined;
     const page = await this.#get('/v1/payment_methods', { customer: customerId, ...(singleType ? { type: singleType } : {}), limit,
       ...(options.cursor ? { starting_after: options.cursor } : {}) }).catch(error => {
-      const refused = error as { statusCode?: number; code?: string; param?: string; raw?: { param?: string } } | null;
+      const refused = error as { statusCode?: number; param?: string; raw?: { param?: string } } | null;
       const parameter = refused?.param ?? refused?.raw?.param;
-      if (options.cursor && [400, 404].includes(refused?.statusCode ?? 0)
-        && (parameter === 'starting_after' || parameter === undefined && refused?.code === 'resource_missing'))
+      const cursorRefused = parameter === undefined ? absent(error)
+        : parameter === 'starting_after' && [400, 404].includes(refused?.statusCode ?? 0);
+      if (options.cursor && cursorRefused)
         throw new CardCursorRefused('Invalid card cursor');
       throw error;
     });

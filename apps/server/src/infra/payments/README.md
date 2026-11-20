@@ -104,10 +104,14 @@ of regular and occasional debits. The session requests instant verification
 and a combined personal mandate. Setup sessions specify CAD on both the
 session and the ACSS option. Payment sessions take currency from the invoice
 line item. A bank-enabled session raises `BankDebitUnavailable` if Stripe
-rejects the payment method types list or the US or Canadian bank option itself.
-A refusal of a nested field such as the PAD mandate description propagates.
-A bank method missing four usable last digits is omitted from listings and
-reported as unavailable on a direct read.
+rejects the payment method types list or a US or Canadian bank option, including
+nested verification, Financial Connections and currency fields. The signed-link
+flow records `billing.bank_debits.unavailable` and opens a card-only Checkout.
+Refusals of mandate options propagate to the caller.
+A bank method missing four usable last digits is omitted from listings. When a
+direct read verifies the method's gym and customer, it reports the incomplete
+bank method separately from other unknown results. Checkout can finish without
+saving that method.
 
 `CheckoutSession.paymentStatus` reports `paid`, `unpaid` or `no_payment_required`.
 A completed bank payment can still be unpaid while its intent processes.
@@ -341,9 +345,11 @@ and clears each method's billing name, email, phone and address without detachin
 using the existing Payment Methods **Write** permission. This covers dashboard-added
 cards, bank accounts and revoked cards whose detach has not succeeded. A method
 tagged for another gym is skipped with an identifier-only warning. Tax IDs are deleted
-before payment-method cleanup; both are attempted even if one fails, and the first
-error is rethrown for retry after attempting the remaining methods. Already cleared details cause no further write, and other
-customers' methods are left alone.
+before payment-method cleanup. Authentication and permission failures stop
+payment-method cleanup immediately. Other method errors allow the remaining
+methods to be attempted before the error is reported for retry. If tax ID
+cleanup also fails, its error takes precedence. Already cleared details cause
+no further write, and other customers' methods are left alone.
 
 `adoptCustomer(id)` raises `CustomerDeleted` (exported from `index.ts`; the fake raises it
 for a customer seeded as `deleted`) when Stripe reports the customer deleted, so callers

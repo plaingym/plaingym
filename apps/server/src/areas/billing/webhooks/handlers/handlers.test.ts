@@ -7,6 +7,7 @@ import { auditEvents, invoices, paymentAttempts, paymentMethods, payments, refun
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../../../core/clock.js';
+import { setLogSink } from '../../../../core/log.js';
 import { createApp } from '../../../../app.js';
 import { createServerRegistry } from '../../../../core/registry.js';
 import { FakeJobs } from '../../../../infra/jobs/index.js';
@@ -360,6 +361,25 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
       await f.run('payment_method.updated', { kind: 'payment_method', id });
       expect(await f.read()).toEqual(recorded);
     }
+  });
+  it('skips an owned incomplete bank method during setup and refuses a different customer', async () => {
+    const f = await fixture(), id = 'pm_usbank_6789';
+    setup(f, 'seti_bank', id);
+    const method = f.transport.objects.get(id)!;
+    method.us_bank_account = { last4: null, bank_name: 'STRIPE TEST BANK' };
+    const lines: string[] = [], previous = setLogSink(line => lines.push(line));
+    try {
+      await f.run('setup_intent.succeeded', { kind: 'setup', id: 'seti_bank' });
+    } finally { setLogSink(previous); }
+    expect((await f.read()).methods).toEqual([]);
+    expect(lines.map(line => JSON.parse(line))).toEqual([
+      { time: expect.any(String), level: 'warn', event: 'billing.payment_method.incomplete_bank', paymentMethodId: id },
+    ]);
+
+    method.customer = 'cus_other';
+    f.transport.objects.set('cus_other', { id: 'cus_other', object: 'customer', metadata: { gym_id: f.gymId } });
+    await expect(f.run('setup_intent.succeeded', { kind: 'setup', id: 'seti_bank' })).rejects.toThrow('Collected payment method is unresolved');
+    expect((await f.read()).methods).toEqual([]);
   });
   it('keeps the newer collected card on reverse delivery, replay, and concurrent collection', async () => {
     const f = await fixture(); setup(f, 'seti_old', 'pm_4242'); setup(f);

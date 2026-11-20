@@ -68,10 +68,14 @@ so a switch after matching but before a payment, refund or card write still skip
 that test event. The signed-link completion hook (`afterCheckoutRecorded`) runs
 after the payment or card is recorded, through its own service, and writes no
 Stripe reference. Stripe calls remain outside transactions.
-Payment Checkout collects only when `session.savesCard` is true; a payment that
-does not save a card can complete without an attached method. A card-saving
-session whose method has not attached remains retryable after its payment commits.
-Replaying it does not pay twice.
+Payment Checkout collects only when `session.savesCard` is true. A session
+that needs to save its method remains retryable after its payment commits if
+the method has not attached. When the provider confirms the bank method
+belongs to the Checkout customer but has no usable last four digits, collection
+logs the method ID and skips saving it without failing the event. A payment
+Checkout still uses its pay link and starts a join's memberships. A card-update
+or onboarding link completes only once a method is saved, so it stays unused.
+Replaying a Checkout does not pay twice.
 
 The method's immutable processor creation time is stored in nullable
 `payment_methods.processor_created_at`. Under the household row lock, a collected

@@ -2,6 +2,7 @@
 import { and, eq, ne } from 'drizzle-orm';
 import { forGym, households, paymentMethods, uuidv7 } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
+import { logWarn } from '../../../../core/log.js';
 import type { PaymentMethod, Payments } from '../../../../infra/payments/index.js';
 import { audit } from '../../transitions/store.js';
 
@@ -54,6 +55,10 @@ export function createCardHandlers(options: { scope: typeof forGym; clock: Clock
   }
   async function collect(gymId: string, provider: Payments, customerId: string, methodId: string, mandateId?: string) {
     const found = await provider.readPaymentObject({ kind: 'payment_method', id: methodId });
+    if (found.status === 'unknown' && found.incompleteBankMethod?.customerId === customerId) {
+      logWarn('billing.payment_method.incomplete_bank', { paymentMethodId: methodId });
+      return;
+    }
     if (found.status !== 'found' || found.value.kind !== 'payment_method' || found.value.object.customerId !== customerId)
       throw new Error('Collected payment method is unresolved');
     await save(gymId, found.value.object, true, mandateId);

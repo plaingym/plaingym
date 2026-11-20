@@ -110,22 +110,57 @@ it.each([
   expect(await payments.findCharge({ kind: 'charge', id: intent.id })).toMatchObject({ status: code ? 'failed' : 'succeeded', paymentMethodType: type,
     ...(code ? { code: code === 'account_closed' ? 'payment_method_unusable' : code } : {}) });
 });
-it.each(['payment_method_types[1]', 'allowed_payment_method_types[1]', 'payment_method_options[us_bank_account]'])(
+it.each([
+  'payment_method_types[1]',
+  'allowed_payment_method_types[1]',
+  'payment_method_options[us_bank_account]',
+  'payment_method_options[us_bank_account][verification_method]',
+  'payment_method_options[us_bank_account][financial_connections][permissions][0]',
+  'payment_method_options[acss_debit][verification_method]',
+  'payment_method_options[acss_debit][currency]',
+])(
   'classifies a bank Checkout refusal for %s without changing a card error', async param => {
     const { transport, payments } = fixture(), send = transport.request.bind(transport);
     const error = Object.assign(new Error('Payment method unavailable'), { type: 'StripeInvalidRequestError', raw: { type: 'invalid_request_error', param } });
     vi.spyOn(transport, 'request').mockImplementation(input => input.path === '/v1/checkout/sessions' ? Promise.reject(error) : send(input));
-    await expect(payments.createCheckout({ ...checkout, bankDebit: { type: 'us_bank_account' } })).rejects.toBeInstanceOf(BankDebitUnavailable);
+    const bankDebit = param.includes('[acss_debit]') ? { type: 'acss_debit' as const, intervalDescription: 'Monthly dues' }
+      : { type: 'us_bank_account' as const };
+    const request = { ...checkout, bankDebit };
+    await expect(payments.createCheckout(request)).rejects.toBeInstanceOf(BankDebitUnavailable);
     const recorder = new FixtureRecorder(gymId);
-    const request = { ...checkout, bankDebit: { type: 'us_bank_account' as const } };
     await expect(recorder.wrap(payments).createCheckout(request)).rejects.toBeInstanceOf(BankDebitUnavailable);
     await expect(replayPayments(recorder.tape, gymId).createCheckout(request)).rejects.toBeInstanceOf(BankDebitUnavailable);
     await expect(payments.createCheckout(checkout)).rejects.toBe(error);
-    error.raw.param = 'payment_method_options[acss_debit][mandate_options][interval_description]';
-    await expect(payments.createCheckout({ ...checkout, bankDebit: { type: 'acss_debit', intervalDescription: 'Monthly dues' } })).rejects.toBe(error);
-    error.raw.param = 'customer';
-    await expect(payments.createCheckout({ ...checkout, bankDebit: { type: 'us_bank_account' } })).rejects.toBe(error);
   });
+it.each([
+  'payment_method_options[acss_debit][mandate_options][payment_schedule]',
+  'payment_method_options[acss_debit][mandate_options]',
+  'payment_method_options[card][request_three_d_secure]',
+  'customer',
+])(
+  'propagates Stripe Checkout refusals for %s', async param => {
+    const { transport, payments } = fixture(), send = transport.request.bind(transport);
+    const error = Object.assign(new Error('Invalid Checkout option'), { type: 'StripeInvalidRequestError', param });
+    vi.spyOn(transport, 'request').mockImplementation(input => input.path === '/v1/checkout/sessions' ? Promise.reject(error) : send(input));
+    await expect(payments.createCheckout({ ...checkout, bankDebit: { type: 'acss_debit', intervalDescription: 'Monthly dues' } })).rejects.toBe(error);
+  });
+it('preserves a rerecorded fake bank method type and clears its old gym tag', async () => {
+  const customerId = charge.customerId, id = 'pm_rerecorded';
+  const payments = new FakePayments(gymId, new TestClock('2026-10-23T12:00:00Z'));
+  payments.seedCustomer({ id: customerId, email: 'payer@example.invalid' });
+  payments.recordPaymentMethod({ id, customerId, type: 'us_bank_account', last4: '6789', gymId: 'other-gym' });
+  const options = { types: ['us_bank_account'] as const };
+  await expect(payments.listCustomerCards(customerId, options)).rejects.toThrow('another customer or gym');
+
+  payments.recordPaymentMethod({ id, customerId, last4: '0123' });
+  const method = { id, customerId, last4: '0123', type: 'us_bank_account', createdAt: new Date('2026-10-23T12:00:00Z') };
+  const reference = { kind: 'payment_method' as const, id };
+  const recorder = new FixtureRecorder(gymId);
+  const read = { status: 'found', value: { kind: 'payment_method', object: method } };
+  expect(await recorder.wrap(payments).readPaymentObject(reference)).toEqual(read);
+  expect(await replayPayments(recorder.tape, gymId).readPaymentObject(reference)).toEqual(read);
+  expect(await payments.listCustomerCards(customerId, options)).toEqual({ cards: [method], nextCursor: null });
+});
 const recordName = 'StripePayments with synthetic API fixtures', replayName = 'StripePayments with recorded API replay';
 const caseName = () => expect.getState().currentTestName!.replace(recordName, '').replace(replayName, '').trim();
 fullPaymentsContract(recordName, async (card) => {
