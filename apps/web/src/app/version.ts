@@ -39,12 +39,12 @@ function markStale(value: boolean) {
 export function checkServerVersion(options: FollowOptions = {}): Promise<void> | undefined {
   if (checking) return checking;
   if (isVersionReloadPending()) return;
-  if (reloadDeadline === undefined && Date.now() < nextCheck) return;
+  if (reloadDeadline === undefined && performance.now() < nextCheck) return;
   // An elapsed reload hold bypasses the normal throttle once.
   reloadDeadline = undefined;
   let answered = false;
   checking = followServerVersion(options, () => { answered = true; })
-    .finally(() => { nextCheck = Date.now() + (answered ? 60_000 : 10_000); checking = undefined; });
+    .finally(() => { nextCheck = performance.now() + (answered ? 60_000 : 10_000); checking = undefined; });
   return checking;
 }
 export function checkOnNavigation({ preload, location }: { preload: boolean; location: { href: string } }, options: FollowOptions & { development?: boolean } = {}) {

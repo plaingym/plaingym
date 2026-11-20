@@ -5,11 +5,12 @@ describe('the shared navigation version check', () => {
   const built = { version: '1.3.0', commit: '3'.repeat(40) };
   const navigation = { preload: false, location: { href: '/portal/schedule?day=2026-11-07#classes' } };
   const reloadKey = 'plaingym-version-reload';
+  const wallStart = 10_000_000;
   let checkOnNavigation: typeof import('./version.js').checkOnNavigation;
   let followServerVersion: typeof import('./version.js').followServerVersion;
   beforeEach(async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(100_000);
+    vi.setSystemTime(wallStart);
     vi.resetModules();
     ({ checkOnNavigation, followServerVersion } = await import('./version.js'));
   });
@@ -19,14 +20,16 @@ describe('the shared navigation version check', () => {
     return { built, destination: navigation.location.href, request: vi.fn(async () => Response.json(remote)) as unknown as typeof fetch,
       reload: vi.fn(), storage: { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } } };
   }
-  it('shares the navigation throttle with kiosk checks', async () => {
+  it('shares the navigation throttle with kiosk checks after a backward wall-clock jump', async () => {
     const { checkServerVersion } = await import('./version.js');
+    const elapsed = vi.spyOn(performance, 'now').mockReturnValue(0);
     const f = fixture(built);
     await checkOnNavigation(navigation, { ...f, development: false });
-    vi.setSystemTime(159_999);
+    elapsed.mockReturnValue(59_999);
+    vi.setSystemTime(wallStart + 59_999 - 3_600_000);
     await checkServerVersion(f);
     expect(f.request).toHaveBeenCalledOnce();
-    vi.setSystemTime(160_000);
+    elapsed.mockReturnValue(60_000);
     await checkServerVersion(f);
     expect(f.request).toHaveBeenCalledTimes(2);
   });
@@ -52,7 +55,7 @@ describe('the shared navigation version check', () => {
     expect(isStaleVersion()).toBe(true);
     expect(changed).toHaveBeenCalled();
 
-    vi.setSystemTime(160_000);
+    elapsed.mockReturnValue(70_000);
     await checkOnNavigation(navigation, { ...f, request: vi.fn(async () => Response.json(built)) });
     expect(isStaleVersion()).toBe(false);
     unsubscribe();
@@ -83,10 +86,10 @@ describe('the shared navigation version check', () => {
     const request = vi.fn().mockRejectedValueOnce(new TypeError('offline')).mockResolvedValueOnce(Response.json(built));
     elapsed.mockReturnValue(10_000);
     await checkServerVersion({ ...f, request });
-    vi.setSystemTime(109_999);
+    elapsed.mockReturnValue(19_999);
     await checkServerVersion({ ...f, request });
     expect(request).toHaveBeenCalledOnce();
-    vi.setSystemTime(110_000);
+    elapsed.mockReturnValue(20_000);
     await checkServerVersion({ ...f, request });
     expect(request).toHaveBeenCalledTimes(2);
     expect(f.storage.getItem(reloadKey)).toBeNull();
@@ -117,13 +120,14 @@ describe('the shared navigation version check', () => {
     expect(navigated.reload).toHaveBeenCalledExactlyOnceWith(navigation.location.href);
   });
   it('checks at most once a minute across paths and search changes', async () => {
+    const elapsed = vi.spyOn(performance, 'now').mockReturnValue(0);
     const f = { ...fixture(built), development: false };
     await checkOnNavigation(navigation, f);
-    vi.setSystemTime(159_999);
+    elapsed.mockReturnValue(59_999);
     await checkOnNavigation({ ...navigation, location: { href: '/portal/schedule?day=2026-11-08' } }, f);
     await checkOnNavigation({ preload: false, location: { href: '/kiosk?mode=pin' } }, f);
     expect(f.request).toHaveBeenCalledOnce();
-    vi.setSystemTime(160_000);
+    elapsed.mockReturnValue(60_000);
     await checkOnNavigation(navigation, f);
     expect(f.request).toHaveBeenCalledTimes(2);
   });
@@ -142,27 +146,30 @@ describe('the shared navigation version check', () => {
     f.request = vi.fn(async () => Response.json(built));
     await checkOnNavigation(navigation, f);
     expect(f.request).not.toHaveBeenCalled();
-    vi.setSystemTime(110_000);
+    const retryAt = performance.now() + 10_000;
+    vi.spyOn(performance, 'now').mockReturnValue(retryAt);
     await checkOnNavigation(navigation, f);
     expect(f.request).toHaveBeenCalledOnce();
   });
-  it.each(['network', 'http', 'malformed'] as const)('waits ten seconds after a failed %s check, then a minute after an answer', async failure => {
+  it.each(['network', 'http', 'malformed'] as const)('keeps the retry throttle after a failed %s check and a forward wall-clock jump', async failure => {
+    const elapsed = vi.spyOn(performance, 'now').mockReturnValue(0);
     const f = { ...fixture(built), development: false };
     const request = vi.fn().mockResolvedValue(Response.json(built));
     if (failure === 'network') request.mockRejectedValueOnce(new TypeError('offline'));
     else request.mockResolvedValueOnce(failure === 'http' ? new Response(null, { status: 503 }) : Response.json({}));
     f.request = request;
     await checkOnNavigation(navigation, f);
-    vi.setSystemTime(109_999);
+    elapsed.mockReturnValue(9_999);
+    vi.setSystemTime(wallStart + 9_999 + 3_600_000);
     await checkOnNavigation(navigation, f);
     expect(request).toHaveBeenCalledOnce();
-    vi.setSystemTime(110_000);
+    elapsed.mockReturnValue(10_000);
     await checkOnNavigation(navigation, f);
     expect(request).toHaveBeenCalledTimes(2);
-    vi.setSystemTime(169_999);
+    elapsed.mockReturnValue(69_999);
     await checkOnNavigation(navigation, f);
     expect(request).toHaveBeenCalledTimes(2);
-    vi.setSystemTime(170_000);
+    elapsed.mockReturnValue(70_000);
     await checkOnNavigation(navigation, f);
     expect(request).toHaveBeenCalledTimes(3);
   });
