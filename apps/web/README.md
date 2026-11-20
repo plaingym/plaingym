@@ -161,11 +161,13 @@ and sign-in email confirmation pages follow the device, as does the demo landing
 page. The public website, uploaded waiver documents and printed pages use the
 light palette. `src/lib/theme.ts`
 reads the stored choice, applies the class and keeps both `theme-color` metas in
-step. The account menu applies the stored choice when it opens and follows
-`storage` events, so a choice made in another tab updates the page and the open
-menu. The key is `plaingym.theme` and its values are `system`, `light` and
-`dark`. If saving fails and an earlier choice is readable, the page applies
-the new choice and tries to remove the stored value. After successful removal,
+step. The account menu applies the stored choice once when the shell mounts and
+holds the page's choice above the menu, so a save that fails is not undone when
+the menu reopens. It follows `storage` events for the whole time the shell is
+mounted, so a choice made in another tab updates the page even while the menu is
+closed, and the open menu shows that choice. The key is `plaingym.theme` and its
+values are `system`, `light` and `dark`. If saving fails and an earlier choice is
+readable, the page applies the new choice and tries to remove the stored value. After successful removal,
 the next load starts from System. A failed save with no readable stored value
 falls back to System on the current page.
 `/kiosk` always follows the device. The blocking `src/lib/theme-init.js` applies the

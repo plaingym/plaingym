@@ -241,20 +241,23 @@ describe('admin shell', () => {
     await waitFor(() => expect(theme.getByRole('radio', { name: 'System', checked: true })).toBeDefined());
     expect(document.documentElement.classList.contains('dark')).toBe(false);
   });
-  it('applies the stored theme when the account menu opens after another tab changed it', async () => {
+  it('applies another tab theme change while the account menu is closed', async () => {
     localStorage.setItem(themeStorageKey, 'light');
     const state = { ...anonymous, session: { userId: 'owner', displayName: 'Test Owner', roles: ['owner'] as const, member: false } };
     start(services(state), '/admin');
     const user = userEvent.setup();
     const account = await screen.findByRole('button', { name: 'Account' });
-    await user.click(account);
-    expect(document.documentElement.classList.contains('light')).toBe(true);
-    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('group', { name: 'Theme' })).toBeNull();
 
     localStorage.setItem(themeStorageKey, 'dark');
+    fireEvent(window, new StorageEvent('storage', {
+      key: themeStorageKey, oldValue: 'light', newValue: 'dark', storageArea: localStorage, url: window.location.href,
+    }));
+    await waitFor(() => expect(document.documentElement.classList.contains('dark')).toBe(true));
+    expect(screen.queryByRole('group', { name: 'Theme' })).toBeNull();
+
     await user.click(account);
     const theme = within(screen.getByRole('group', { name: 'Theme' }));
-    expect(document.documentElement.classList.contains('dark')).toBe(true);
     expect(theme.getByRole('radio', { name: 'Dark', checked: true })).toBeDefined();
   });
   it('shows who is signed in, with every role, in the header outside the collapsed menus on every page', async () => {

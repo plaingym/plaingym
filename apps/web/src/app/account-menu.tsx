@@ -4,7 +4,7 @@ import { Link, useRouterState } from '@tanstack/react-router';
 import { Button } from '../components/ui/button.js';
 import { ChevronDownIcon, UserIcon } from '../components/ui/icons.js';
 import { t } from '../lib/i18n.js';
-import { applyThemeChoice, readThemeChoice, setThemeChoice, themeChoices, themeStorageKey } from '../lib/theme.js';
+import { applyThemeChoice, readThemeChoice, setThemeChoice, themeChoices, themeStorageKey, type ThemeChoice as ThemeChoiceValue } from '../lib/theme.js';
 
 /** Closes an open popover on Escape (returning focus to its trigger) or on a press outside it. */
 export function useDismiss(open: boolean, close: () => void, refs: RefObject<HTMLElement | null>[], trigger: RefObject<HTMLButtonElement | null>) {
@@ -20,25 +20,13 @@ export function useDismiss(open: boolean, close: () => void, refs: RefObject<HTM
   }, [open, close, refs, trigger]);
 }
 
-function ThemeChoice() {
-  const [choice, setChoice] = useState(() => applyThemeChoice(readThemeChoice()));
-  useEffect(() => {
-    const onStorage = (event: StorageEvent) => {
-      // A null key means the other tab cleared its storage, so the choice is gone too.
-      if (event.key !== null && event.key !== themeStorageKey) return;
-      if (event.storageArea && event.storageArea !== window.localStorage) return;
-      const stored = themeChoices.find((option) => option === event.newValue) ?? 'system';
-      setChoice(applyThemeChoice(stored));
-    };
-    window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
-  }, []);
+function ThemeChoice({ choice, onChoose }: { choice: ThemeChoiceValue; onChoose(choice: ThemeChoiceValue): void }) {
   return <fieldset className="mx-1 my-2 min-w-0 border-y border-border px-1 pb-2">
     <legend className="px-1 text-sm text-muted-foreground">{t('shell/shell:theme')}</legend>
     <div className="grid grid-cols-3 gap-1">
       {themeChoices.map((option) => <label key={option} className="relative min-w-11">
         <input type="radio" name="plaingym-theme-choice" value={option} checked={choice === option}
-          onChange={() => setChoice(setThemeChoice(option))}
+          onChange={() => onChoose(option)}
           className="peer absolute inset-0 m-0 size-full cursor-pointer opacity-0" />
         <span className="flex min-h-11 items-center justify-center rounded-md px-1 text-sm
           peer-hover:bg-muted peer-checked:bg-primary peer-checked:font-semibold peer-checked:text-primary-foreground
@@ -56,6 +44,20 @@ export function AccountMenu({ accountPath, identity, onSignOut, signingOut }:
   const trigger = useRef<HTMLButtonElement>(null), panel = useRef<HTMLDivElement>(null);
   const [refs] = useState(() => [trigger, panel]);
   const [close] = useState(() => () => setOpen(false));
+  // The choice outlives the menu, so a failed save is not undone when the menu reopens and another tab's change is seen while it is closed.
+  const [theme, setTheme] = useState(() => applyThemeChoice(readThemeChoice()));
+  const [chooseTheme] = useState(() => (option: ThemeChoiceValue) => setTheme(setThemeChoice(option)));
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      // A null key means the other tab cleared its storage, so the choice is gone too.
+      if (event.key !== null && event.key !== themeStorageKey) return;
+      if (event.storageArea && event.storageArea !== window.localStorage) return;
+      const stored = themeChoices.find((option) => option === event.newValue) ?? 'system';
+      setTheme(applyThemeChoice(stored));
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
   const pathname = useRouterState({ select: (router) => router.location.pathname });
   useEffect(close, [close, pathname]);
   useDismiss(open, close, refs, trigger);
@@ -69,7 +71,7 @@ export function AccountMenu({ accountPath, identity, onSignOut, signingOut }:
       {accountPath && <Button asChild variant="ghost" className="w-full justify-start">
         <Link to={accountPath} activeProps={{ 'aria-current': 'page' }} onClick={close}>{t('auth/account:menuLink')}</Link>
       </Button>}
-      {open && <ThemeChoice />}
+      {open && <ThemeChoice choice={theme} onChoose={chooseTheme} />}
       <Button variant="ghost" className="w-full justify-start" onClick={onSignOut} disabled={signingOut}>{t('shell/shell:signOut')}</Button>
     </div>
   </div>;
