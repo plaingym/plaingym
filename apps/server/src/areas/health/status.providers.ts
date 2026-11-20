@@ -135,8 +135,10 @@ export function createStatusProviders(options: StatusOptions = {}) {
       }));
       const critical = (bytes: number) => bytes < 128 * 1024 * 1024;
       const low = (volume: typeof volumes[number]['figures']) => volume.availableBytes / volume.totalBytes < 0.1 || volume.availableBytes < 1024 * 1024 * 1024;
-      // Both directories on one device mean one filesystem, so the page shows one pair of rows for it.
-      const sameFilesystem = volumes.length > 1 && BigInt(volumes[0]!.dev) === BigInt(volumes[1]!.dev);
+      // Both directories on one device with the same capacity mean one volume, so the page shows one pair of rows for it.
+      // A staging directory with its own quota on the same device reports a smaller total, so it keeps its own rows.
+      const sameFilesystem = volumes.length > 1 && BigInt(volumes[0]!.dev) === BigInt(volumes[1]!.dev)
+        && volumes[0]!.figures.totalBytes === volumes[1]!.figures.totalBytes;
       // Keep each volume's capacity and free space together, even when both directories share a filesystem.
       const details = { uploads: volumes[0]!.figures, backupStaging: volumes[1]?.figures ?? null, sameFilesystem };
       return { id: 'disk', checkedAt: context.clock.now().toISOString(), details,

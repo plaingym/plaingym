@@ -150,7 +150,9 @@ The tile stays in error while any failed jobs remain, however old the failure is
 with none, the page leaves out the oldest failure row rather than showing it as unknown.
 Disk details report `uploads` and `backupStaging` separately, each with filesystem
 `totalBytes` and `availableBytes`, plus `sameFilesystem`: true only when a backup
-staging directory is configured and it is on the same device as the uploads directory. These are volume figures, not
+staging directory is configured, it is on the same device as the uploads directory, and both report the same total
+capacity. A staging directory with its own quota on the same device reports a smaller total, so it keeps its own rows.
+Free space is not compared, since two `statfs` calls on a busy disk differ slightly. These are volume figures, not
 directory sizes: directories on the same filesystem show the same capacity and must
 not be added. When `sameFilesystem` is true the page shows the uploads figures once,
 labelled for the uploads and backup staging volume, and the message says one volume.

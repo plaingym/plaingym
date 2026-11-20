@@ -208,6 +208,27 @@ describe('built-in providers', () => {
     expect(await tile('disk', gymA, { env: single, device: shared, disk: async () => ({ blocks: 20_000_000, bsize: 1024, bavail: 500_000 }) }))
       .toMatchObject({ status: 'warning', details: { sameFilesystem: true }, message: expect.stringContaining('(one volume)') });
   });
+  it('shows one shared volume only when one device reports the same total capacity', async () => {
+    const single = { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' };
+    const shared = vi.fn(async (_path: string) => 7);
+    // A quota or bind mount on the same device reports a smaller total for staging.
+    const quotad = vi.fn(async (path: string) => path === '/staging'
+      ? { blocks: 10_000_000, bsize: 1024, bavail: 5_000_000 }
+      : { blocks: 20_000_000, bsize: 1024, bavail: 10_000_000 });
+    expect(await tile('disk', gymA, { env: single, device: shared, disk: quotad })).toMatchObject({
+      status: 'healthy', details: {
+        sameFilesystem: false,
+        uploads: { totalBytes: 20_480_000_000, availableBytes: 10_240_000_000 },
+        backupStaging: { totalBytes: 10_240_000_000, availableBytes: 5_120_000_000 },
+      }, message: 'Free space: uploads 10.24 GB; backup staging 5.12 GB.',
+    });
+    expect(quotad.mock.calls.map(([path]) => path).sort()).toEqual(['/staging', '/uploads']);
+    // Equal totals on one device are the one shared volume the page can label once.
+    expect(await tile('disk', gymA, { env: single, device: shared })).toMatchObject({ details: { sameFilesystem: true } });
+    // Two devices stay separate even when their totals happen to match.
+    const separate = vi.fn(async (path: string) => path === '/staging' ? 2 : 1);
+    expect(await tile('disk', gymA, { env: single, device: separate })).toMatchObject({ details: { sameFilesystem: false } });
+  });
   it('checks the uploads volume alone when no restore staging is kept, as in multi-gym mode', async () => {
     const multi = { ...env, BACKUP_STAGING_DIR: undefined };
     const check = vi.fn(async (_path: string) => ({ blocks: 20_000_000, bsize: 1024, bavail: 500_000 }));

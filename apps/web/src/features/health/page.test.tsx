@@ -137,7 +137,7 @@ describe('disk sizes', () => {
   it('shows one pair of rows for a shared filesystem instead of the same figures under two names', () => {
     render(<HealthTiles tiles={[tile({ totalBytes: 20_000_000_000, availableBytes: 10_000_000_000 }, true)]}/>);
     for (const [label, value] of [['Uploads and backup staging volume capacity', '20 GB'],
-      ['Uploads and backup staging volume free space', '10 GB']]) {
+      ['Uploads and backup staging volume available', '10 GB']]) {
       expect(screen.getByText(label!).parentElement!.querySelector('dd')!.textContent).toBe(value);
     }
     for (const separate of ['Uploads volume capacity', 'Uploads volume available',

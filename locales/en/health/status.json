@@ -97,7 +97,7 @@
   "field.backupStagingTotalBytes": "Backup staging volume capacity",
   "field.backupStagingAvailableBytes": "Backup staging volume available",
   "field.sharedTotalBytes": "Uploads and backup staging volume capacity",
-  "field.sharedAvailableBytes": "Uploads and backup staging volume free space",
+  "field.sharedAvailableBytes": "Uploads and backup staging volume available",
   "field.version": "Running version",
   "field.sourceUrl": "Source code",
   "field.lastReceivedAt": "Last webhook received",

@@ -72,10 +72,10 @@ for (const viewport of viewports) {
 }
 
 for (const viewport of viewports) {
-  test(`health failure time and separate disk volumes at ${viewport.name} width`, async ({ browser, install }, info) => {
+  test(`health failure time and disk layouts at ${viewport.name} width`, async ({ browser, install }, info) => {
     const [context, page] = await open(browser, install, 'owner', viewport);
     const now = new Date().toISOString(), oldest = '2026-08-01T00:30:00.000Z';
-    let staging = true;
+    let layout: 'separate' | 'uploads' | 'shared' = 'separate';
     try {
       const body = await install.clients.owner.json<{ data: { tiles: { id: string }[] } }>('/api/health');
       await page.route('**/api/health', route => route.fulfill({ json: { data: { ...body.data,
@@ -83,10 +83,13 @@ for (const viewport of viewports) {
           id: 'failed_jobs', status: 'error', checkedAt: now, message: '2 background jobs failed.',
           details: { failed: 2, pending: 1, running: 0, oldestFailureAt: oldest },
         } : tile.id === 'disk' ? {
-          id: 'disk', status: staging ? 'warning' : 'healthy', checkedAt: now,
-          message: staging ? 'Free space: uploads 10 GB; backup staging 0.5 GB.' : 'Free space: uploads 10 GB.',
+          id: 'disk', status: layout === 'uploads' ? 'healthy' : 'warning', checkedAt: now,
+          message: layout === 'shared' ? 'Free space: uploads and backup staging (one volume) 10 GB.'
+            : layout === 'separate' ? 'Free space: uploads 10 GB; backup staging 0.5 GB.' : 'Free space: uploads 10 GB.',
           details: { uploads: { totalBytes: 20_000_000_000, availableBytes: 10_000_000_000 },
-            backupStaging: staging ? { totalBytes: 8_000_000_000, availableBytes: 500_000_000 } : null, sameFilesystem: false },
+            backupStaging: layout === 'uploads' ? null
+              : layout === 'shared' ? { totalBytes: 20_000_000_000, availableBytes: 10_000_000_000 }
+              : { totalBytes: 8_000_000_000, availableBytes: 500_000_000 }, sameFilesystem: layout === 'shared' },
         } : { ...tile, status: 'not_configured', checkedAt: now, details: null, message: 'Not set up' }),
       } } }));
       await page.goto(gymOrigin + '/admin/health');
@@ -101,12 +104,22 @@ for (const viewport of viewports) {
       }
       await expect(page.getByText('[object Object]', { exact: true })).toHaveCount(0);
       await check(page, info, `${viewport.name}-health-volumes`);
-      staging = false;
+      layout = 'uploads';
       await page.getByRole('button', { name: 'Refresh', exact: true }).click();
       await expect(disk.getByText('Backup staging volume capacity', { exact: true })).toHaveCount(0);
       await expect(disk.getByText('Healthy', { exact: true })).toBeVisible();
       await expect(jobs.getByText('Problem detected', { exact: true })).toBeVisible();
       await check(page, info, `${viewport.name}-health-without-staging`);
+      layout = 'shared';
+      await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+      for (const [label, value] of [['Uploads and backup staging volume capacity', '20 GB'],
+        ['Uploads and backup staging volume available', '10 GB']]) {
+        const row = disk.locator('dl > div').filter({ has: page.getByText(label!, { exact: true }) });
+        await expect(row.locator('dd')).toHaveText(value!);
+      }
+      for (const separate of ['Uploads volume capacity', 'Uploads volume available',
+        'Backup staging volume capacity', 'Backup staging volume available']) await expect(disk.getByText(separate, { exact: true })).toHaveCount(0);
+      await check(page, info, `${viewport.name}-health-shared-volume`);
     } finally { await page.unrouteAll({ behavior: 'wait' }); await context.close(); }
   });
 }
