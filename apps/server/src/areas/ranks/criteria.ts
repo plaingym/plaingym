@@ -11,7 +11,7 @@ import { countPromotionAttendance, promotionAttendanceKey } from '../attendance/
 const targetSchema = z.strictObject({ target: z.int32().nonnegative() });
 const progress = (current: number, target: number) => ({ current, target, met: current >= target });
 interface BatchReads {
-  scope: typeof forGym; gymId: string; until: string; openMatCountsAsClass: boolean; activeRosterSize?: number;
+  scope: typeof forGym; gymId: string; until: string; openMatCountsAsClass: boolean;
 }
 /** Optional optimization local to ranks; the public provider interface stays unchanged. */
 export interface BatchCriterionProvider extends PromotionCriterionProvider {
@@ -75,7 +75,7 @@ export function createPromotionCriteria(attendance: AttendanceQueries): Promotio
   registry.register({ id: 'classes-since-promotion', labelKey: 'ranks/ranks:classes', configSchema: targetSchema,
     async prepareBatch(contexts, reads) {
       const counts = await countPromotionAttendance(reads.scope, reads.gymId, contexts.map(attendanceRequest),
-        reads.until, reads.openMatCountsAsClass, reads.activeRosterSize);
+        reads.until, reads.openMatCountsAsClass);
       return async (context, value) => progress(counts.get(promotionAttendanceKey(attendanceRequest(context))) ?? 0, targetSchema.parse(value).target);
     },
     async evaluate(context, value) {

@@ -136,7 +136,7 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
         });
       });
       const batch = await criteria.prepareBatch(candidates, enabledModules, { scope, gymId,
-        until: now.toISOString(), openMatCountsAsClass: gym.openMatCountsAsClass, activeRosterSize: snapshot.roster.length });
+        until: now.toISOString(), openMatCountsAsClass: gym.openMatCountsAsClass });
       const ready = new Map<string, { memberId: string; firstName: string; lastName: string; programId: string; rankId: string }>();
       for (const { member, rank, context } of candidates) {
         const evaluated = await batch.evaluate(context, rank.criteria, enabledModules);
@@ -307,8 +307,7 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
       const selected = query.readyOnly ? candidates : candidates.slice(query.offset, query.offset + query.limit);
       const batch = query.readyOnly && candidates.length ? await criteria.prepareBatch(candidates.map(candidate => ({
         context: candidate.context, rank: { criteria: snapshot.rank.criteria },
-      })), enabledModules, { scope, gymId, until: now.toISOString(), openMatCountsAsClass,
-        activeRosterSize: snapshot.roster.length }) : null;
+      })), enabledModules, { scope, gymId, until: now.toISOString(), openMatCountsAsClass }) : null;
       for (const { member, subRank, context } of selected) {
         const evaluated = batch ? await batch.evaluate(context, snapshot.rank.criteria, enabledModules)
           : await criteria.evaluate(context, snapshot.rank.criteria, enabledModules);

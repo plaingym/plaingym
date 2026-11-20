@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it } from 'vitest';
 // eslint-disable-next-line database/system-tables -- Explain the same scoped promotion read the app runs.
-import { sql, type SQL } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import { attendances, memberRanks, members, memberships, uuidv7, type Transaction } from '@plaingym/db';
 // Test-only app-role pool: measure both endpoints sharing production's eight connections.
 // eslint-disable-next-line no-restricted-imports, database/system-tables
@@ -10,8 +10,8 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
 import { createMembersService } from '../members/members.js';
-import { createAttendanceQueries, predicate } from '../attendance/attendance.js';
-import { promotionAttendanceRead, type PromotionAttendanceRequest } from '../attendance/promotion.query.js';
+import { createAttendanceQueries } from '../attendance/attendance.js';
+import { promotionAttendanceRead, selectPromotionAttendanceRead, type PromotionAttendanceRequest } from '../attendance/promotion.query.js';
 import { createRanksService } from '../ranks/ranks.service.js';
 import { createPromotionCriteria } from '../ranks/criteria.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
@@ -24,49 +24,44 @@ const clock = new TestClock('2026-11-01T12:00:00Z');
 const until = clock.now().toISOString();
 const joinedOn = new Date('2023-01-01Z');
 
-// The previous whole-program batch, for comparison on the same runner and fixture.
-function wholeProgramRead(tx: Transaction, gymId: string, programId: string, requests: readonly PromotionAttendanceRequest[]): SQL {
-  const windows = JSON.stringify(requests.map(({ memberId, since }) => ({ member_id: memberId, program_id: programId, since })));
-  return sql`
-    with eligible as materialized (
-      select ${attendances.id} as id, ${attendances.memberId} as member_id,
-        ${attendances.occurredAt} as occurred_at, ${programId}::uuid as program_id
-      from ${attendances} where ${predicate(tx, gymId, { programId, until, excludeOpenMat: true })}
-    )
-    select c.member_id, c.program_id, c.since, count(e.id)::integer as total
-    from jsonb_to_recordset(${windows}::jsonb) as c(member_id uuid, program_id uuid, since timestamptz)
-    left join eligible e on e.member_id = c.member_id and e.program_id = c.program_id and e.occurred_at >= c.since
-    group by c.member_id, c.program_id, c.since
-  `;
-}
-
-async function explainPromotion(tx: Transaction, size: number, candidateShare: number, gymId: string,
+async function explainPromotion(tx: Transaction, size: number, candidateShare: number, former: number, gymId: string,
   requests: readonly PromotionAttendanceRequest[], programId: string) {
+  const useRosterScan = former === 0 && candidateShare >= 75;
   const variants = [
-    { name: 'before', read: wholeProgramRead(tx, gymId, programId, requests), samples: [] as number[] },
-    { name: 'after', read: promotionAttendanceRead(tx, gymId, requests, until, false, size), samples: [] as number[] },
+    { name: former ? 'candidate_join' : 'roster_switch', read: () =>
+      promotionAttendanceRead(tx, gymId, requests, until, false, useRosterScan ? new Set([programId]) : undefined),
+    samples: [] as { totalMs: number; executionMs: number }[] },
+    { name: 'visitor_switch', read: () => selectPromotionAttendanceRead(tx, gymId, requests, until, false),
+      samples: [] as { totalMs: number; executionMs: number }[] },
   ];
-  // Warm both plans and alternate their order so neither always runs first.
-  for (let round = 0; round < 6; round++) {
+  // Warm both plans, then alternate their order. Wall time includes the visitor probe.
+  for (let round = 0; round < 11; round++) {
     for (const { name, read, samples } of round % 2 ? [...variants].reverse() : variants) {
+      const started = performance.now();
+      const query = read();
       // eslint-disable-next-line database/system-tables -- App-role EXPLAIN with the query's bound values.
-      const rows = await tx.execute<{ 'QUERY PLAN': string }>(sql`explain (analyze, buffers) ${read}`);
+      const rows = await tx.execute<{ 'QUERY PLAN': string }>(sql`explain (analyze, buffers) ${query}`);
+      const totalMs = performance.now() - started;
       const plan = rows.map(row => row['QUERY PLAN']);
-      if (round > 0) samples.push(Number(plan.at(-1)!.match(/Execution Time: ([\d.]+) ms/)![1]));
-      if (round === 5) console.info(name + ' ' + candidateShare + '%\n' + plan.join('\n'));
+      const executionMs = Number(plan.at(-1)!.match(/Execution Time: ([\d.]+) ms/)![1]);
+      if (round > 1) samples.push({ totalMs, executionMs });
+      if (round === 10) console.info(name + ' ' + candidateShare + '%\n' + plan.join('\n'));
     }
   }
+  const median = (values: number[]) => values.sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
   for (const { name, samples } of variants) {
-    const ms = samples.sort((a, b) => a - b)[2];
-    console.info(JSON.stringify({ size, visits: size * 156, candidateShare, plan: name, medianExecutionMs: ms }));
+    console.info(JSON.stringify({ size, former, visits: (size + former) * 156, candidateShare, plan: name,
+      medianTotalMs: median(samples.map(sample => sample.totalMs)), medianExecutionMs: median(samples.map(sample => sample.executionMs)) }));
   }
 }
 
 it.each([
-  { size: 300, candidateShare: 100 },
-  { size: 1000, candidateShare: 100 },
-  { size: 1000, candidateShare: 10 },
-])('measures an owner page at $size members with $candidateShare% promotion candidates', async ({ size, candidateShare }) => {
+  { size: 300, candidateShare: 100, former: 0 },
+  { size: 1000, candidateShare: 100, former: 0 },
+  { size: 1000, candidateShare: 10, former: 0 },
+  { size: 1000, candidateShare: 100, former: 3000 },
+])('measures an owner page at $size active members with $candidateShare% promotion candidates and $former former members',
+  async ({ size, candidateShare, former }) => {
   const gymId = uuidv7();
   await factory('gyms', gymId, { billingEnabled: true });
   const home = await factory('households', gymId), plan = await factory('plans', gymId);
@@ -79,6 +74,11 @@ it.each([
     gymId, householdId: home.id, firstName: 'Member', lastName: String(index).padStart(4, '0'),
     status: 'active', createdAt: joinedOn,
   }))).returning());
+  const pastRoster = former ? await database.forGym(gymId, tx => tx.insert(members).values(
+    Array.from({ length: former }, (_, index) => ({
+      gymId, householdId: home.id, firstName: 'Former member', lastName: String(index), status: 'cancelled',
+      createdAt: joinedOn,
+    }))).returning({ id: members.id })) : [];
   const candidateCount = size * candidateShare / 100;
   const atFinalRank = roster.slice(candidateCount);
   if (atFinalRank.length) await database.forGym(gymId, tx => tx.insert(memberRanks).values(atFinalRank.map(member => ({
@@ -88,7 +88,8 @@ it.each([
   await database.forGym(gymId, tx => tx.insert(memberships).values(roster.map(member => ({ gymId,
     householdId: home.id, memberId: member.id, planId: plan.id, status: 'active', amountCents: 10000,
     currency: 'USD', interval: 'monthly', startsOn: '2023-01-01', nextDueOn: '2026-11-01' }))));
-  for (let week = 0; week < 156; week++) await database.forGym(gymId, tx => tx.insert(attendances).values(roster.map(member => ({
+  const visitors = [...roster, ...pastRoster];
+  for (let week = 0; week < 156; week++) await database.forGym(gymId, tx => tx.insert(attendances).values(visitors.map(member => ({
     gymId, memberId: member.id, programId: program.id, kind: 'class', source: 'import',
     occurredAt: new Date(Date.parse('2023-10-01Z') + week * 7 * 86400000),
   }))));
@@ -106,7 +107,7 @@ it.each([
   const measure = async <T>(surface: string, read: () => Promise<T>) => {
     queries = 0; peak = 0; occupied.clear();
     const start = performance.now(), result = await read();
-    console.info(JSON.stringify({ size, visits: size * 156, candidateShare, surface, ms: Math.round(performance.now() - start), queries, peak }));
+    console.info(JSON.stringify({ size, former, visits: visitors.length * 156, candidateShare, surface, ms: Math.round(performance.now() - start), queries, peak }));
     return result;
   };
   try {
@@ -131,7 +132,7 @@ it.each([
       const requests = roster.slice(0, candidateCount).map(member => ({
         memberId: member.id, programId: program.id, since: joinedOn.toISOString(),
       }));
-      await scope(gymId, tx => explainPromotion(tx, size, candidateShare, gymId, requests, program.id));
+      await scope(gymId, tx => explainPromotion(tx, size, candidateShare, former, gymId, requests, program.id));
     }
   } finally { await connection.close(); }
 }, 120_000);

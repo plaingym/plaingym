@@ -77,15 +77,17 @@ the total and once per distinct program/tag, even when its direct program also a
 on the session. Template edits cannot reclassify attendance. Intervals include `since`
 and exclude `until`; history sorts newest first, then ID ascending.
 
-`promotion.query.ts` batches promotion windows in one scoped read, using
+`promotion.query.ts` batches promotion windows in one scoped statement, using
 `attendance.ts`'s `predicate` for program links, open-mat inclusion, and the
-exclusive `until`. For each program, the share of the active roster that needs
-an attendance count determines the read. At 75% or more it scans the program
-once from the earliest candidate window. Below 75% it joins candidate members
-inside the scan using each member's earliest window as an indexable lower bound.
-The filtered rows are materialized before the outer join applies each
-candidate's own inclusive `since`. Direct and session links count a visit once
-within a window, and only a matched candidate member's visits affect a count.
+exclusive `until`. For each program, it compares the number of distinct
+candidates with the number of distinct members who visited from the earliest
+candidate window, including former and inactive members. The probe stops as
+soon as enough visitors put the candidate share below 75%.
+At 75% or more it scans the program once and joins the filtered rows to the
+candidate windows. Below 75% it joins each candidate window to an indexed
+attendance count for that member. Both paths use each candidate's own inclusive
+`since`. Direct and session links count a visit once within a window, and only
+a matched candidate member's visits affect a count.
 
 Household activity is read only with `forHousehold`, reloading grants on every call.
 Its `attendancePage` and `attendanceCount` queries filter, order, page and count in

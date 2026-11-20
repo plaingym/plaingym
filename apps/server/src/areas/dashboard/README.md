@@ -37,10 +37,11 @@ with a window count, and returns at most 100 rows in name/ID order. Promotion
 details use the same visit rule in one read for the displayed member IDs.
 
 The batch eligibility path reads active programs, their ranks, the active roster,
-and each member's latest promotion in four sequential queries. One grouped query
+and each member's latest promotion in four sequential queries. A grouped query
 counts classes since each candidate's promotion (or creation), including linked
 session programs and the gym's open-mat setting. The batch uses each program's
-candidate share of the active roster to choose its attendance read.
+candidate share of distinct visitors in each program's earliest candidate window
+to choose its attendance read. The probe and count share one scoped statement.
 The criteria registry still validates configuration, module availability and
 provider results. Time, age and extension criteria use their existing providers
 outside the snapshot transaction. Ready-only staff eligibility uses the same

@@ -6,7 +6,7 @@ import { createFactories } from '@plaingym/db/testing/factories';
 import { targetCriterionSchema } from '../../core/interfaces/extensions.js';
 import { TestClock } from '../../core/clock.js';
 import { createAttendanceQueries } from '../attendance/attendance.js';
-import { countPromotionAttendance, promotionAttendanceEligibleQuery } from '../attendance/promotion.query.js';
+import { countPromotionAttendance, promotionAttendanceEligibleQuery, promotionAttendanceKey, promotionAttendanceScanChoices } from '../attendance/promotion.query.js';
 import { createPromotionCriteria } from '../ranks/criteria.js';
 import { createRanksService } from '../ranks/ranks.service.js';
 
@@ -132,13 +132,10 @@ it.each([false, true])('scopes each promotion window to its own lower bound and 
     clock: new TestClock(until) }));
   const reads = { scope: database.forGym, gymId, until, openMatCountsAsClass };
   const batch = await criteria.prepareBatch(contexts.map(context => ({ context, rank: { criteria: rankCriteria } })), new Set(), reads);
-  const wholeProgramBatch = await criteria.prepareBatch(contexts.map(context => ({ context, rank: { criteria: rankCriteria } })),
-    new Set(), { ...reads, activeRosterSize: roster.length });
   const expected = openMatCountsAsClass ? [4, 4, 1, 0, 4] : [3, 3, 1, 0, 3];
   for (const [index, context] of contexts.entries()) {
     const single = await criteria.evaluate(context, rankCriteria, new Set());
     expect(await batch.evaluate(context, rankCriteria, new Set())).toEqual(single);
-    expect(await wholeProgramBatch.evaluate(context, rankCriteria, new Set())).toEqual(single);
     expect(single[0]).toMatchObject({ current: expected[index], target: 2, met: expected[index]! >= 2 });
   }
   // Two windows for one member and program must not duplicate that member's visits.
@@ -147,12 +144,6 @@ it.each([false, true])('scopes each promotion window to its own lower bound and 
     { memberId: roster[0]!.id, programId: program.id, since: '2026-02-20T00:00:00Z' },
   ], until, openMatCountsAsClass);
   expect([...duplicate.values()].sort((a, b) => a - b)).toEqual([1, openMatCountsAsClass ? 4 : 3]);
-  // The whole-program scan keeps the same two counts when one member holds two windows.
-  const scanned = await countPromotionAttendance(database.forGym, gymId, [
-    { memberId: roster[0]!.id, programId: program.id, since: '2025-12-01T00:00:00Z' },
-    { memberId: roster[0]!.id, programId: program.id, since: '2026-02-20T00:00:00Z' },
-  ], until, openMatCountsAsClass, 1);
-  expect([...scanned.values()].sort((a, b) => a - b)).toEqual([1, openMatCountsAsClass ? 4 : 3]);
 });
 
 
@@ -170,13 +161,45 @@ it('reads only the candidate rows from each program arm', async () => {
   const requests = [{ memberId: candidate.id, programId: program.id, since: '2026-01-15T00:00:00Z' }];
   const counts = await countPromotionAttendance(database.forGym, gymId, requests, until, false);
   expect([...counts.values()]).toEqual([3]);
-  // The whole-program scan counts only the candidate's visits too, though it reads the outside member's rows.
-  const scanCounts = await countPromotionAttendance(database.forGym, gymId, requests, until, false, 1);
-  expect([...scanCounts.values()]).toEqual([3]);
-  // The shared CTE builder lets the test count exactly what each union arm admitted; the old query admitted all 2,003.
-  // eslint-disable-next-line database/system-tables -- Test hook explains the same bound CTE the batch reads.
+  // The candidate path admits three visits. A whole-program scan would admit all 2,003.
+  // eslint-disable-next-line database/system-tables -- Test hook uses the candidate count's membership and window filters.
   const rows = await database.forGym(gymId, tx => tx.execute<{ member_id: string }>(
     promotionAttendanceEligibleQuery(tx, gymId, requests, until, false)));
   expect(rows).toHaveLength(3);
   expect(rows.every(row => row.member_id === candidate.id)).toBe(true);
+});
+
+it('chooses a read per program from distinct visitors inside that program window', async () => {
+  const gymId = uuidv7(), since = '2026-02-01T00:00:00Z', until = '2026-04-01T00:00:00Z';
+  await factory('gyms', gymId);
+  const [busy, quiet] = await Promise.all([factory('programs', gymId), factory('programs', gymId)]);
+  const candidates = await Promise.all(Array.from({ length: 3 }, () => factory('members', gymId, { status: 'active' })));
+  const former = await factory('members', gymId, { status: 'cancelled' });
+  const frozen = await factory('members', gymId, { status: 'frozen' });
+  const session = await factory('classSessions', gymId, { startsAt: new Date(since), endsAt: new Date('2026-02-01T01:00:00Z') });
+  await factory('classSessionPrograms', gymId, { sessionId: session.id, programId: busy.id });
+
+  for (const member of candidates) {
+    for (const program of [busy, quiet]) {
+      await factory('attendances', gymId, { memberId: member.id, programId: program.id, occurredAt: new Date(since), kind: 'class' });
+    }
+  }
+  await factory('attendances', gymId, { memberId: former.id, programId: busy.id, occurredAt: new Date(since), kind: 'class' });
+  await factory('attendances', gymId, { memberId: frozen.id, programId: null, sessionId: session.id,
+    occurredAt: new Date(since), kind: 'class' });
+  await factory('attendances', gymId, { memberId: former.id, programId: quiet.id, occurredAt: new Date(since), kind: 'class' });
+  for (const [when, kind] of [['2026-01-31T23:59:59Z', 'class'], [until, 'class'], [since, 'open_mat']] as const) {
+    await factory('attendances', gymId, { memberId: frozen.id, programId: quiet.id, occurredAt: new Date(when), kind });
+  }
+
+  const windows = [busy, quiet].flatMap(program => candidates.map(member => ({ memberId: member.id, programId: program.id, since })));
+  windows.push({ memberId: candidates[0]!.id, programId: busy.id, since: '2026-03-01T00:00:00Z' });
+  windows.push({ memberId: candidates[0]!.id, programId: quiet.id, since: '2026-03-01T00:00:00Z' });
+  const choices = await database.forGym(gymId, tx =>
+    // eslint-disable-next-line database/system-tables -- Inspect the same plan choice the attendance statement uses.
+    tx.execute<{ program_id: string; scan_program: boolean }>(promotionAttendanceScanChoices(tx, gymId, windows, until, false)));
+  expect(new Map(choices.map(row => [row.program_id, row.scan_program]))).toEqual(new Map([[busy.id, false], [quiet.id, true]]));
+  const counts = await countPromotionAttendance(database.forGym, gymId, windows, until, false);
+  expect(counts.size).toBe(windows.length);
+  for (const window of windows) expect(counts.get(promotionAttendanceKey(window))).toBe(Number(window.since === since));
 });
