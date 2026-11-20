@@ -182,6 +182,8 @@ and on operator-managed installs. Settings and delivery share one reader for the
 encrypted provider config, ignoring newer top-level and nested keys after rollback.
 Removing a provider leaves the switch on and Health warns that texts cannot be sent.
 Go-live marks text delivery not applicable when the switch is off with no provider.
+It reports unreadable saved settings and failed status reads as needing attention
+regardless of the switch.
 Class-cancellation and waitlist-promotion
 notice handlers accept an optional gym SMS resolver and keyed phone digest. When
 supplied by the application composition, each handler attempts its text after and

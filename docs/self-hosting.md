@@ -439,6 +439,8 @@ The daily cap remains editable in a demo sandbox and on an operator-managed
 install. Removing the provider leaves the member-text switch on: System health
 warns that texts cannot be sent until a working provider is saved. Go-live marks
 text delivery not applicable when texts are off and no provider is configured.
+If Go-live reports unreadable saved SMS settings, replace or remove the provider
+in **Settings → Integrations → SMS**, even if member texts are off.
 
 ## Running several gyms
 

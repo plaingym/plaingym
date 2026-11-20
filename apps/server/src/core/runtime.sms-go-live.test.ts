@@ -44,7 +44,7 @@ it('turns member texts on only once the runtime finds the gym\'s saved provider'
   expect(login.status).toBe(200);
   const cookie = login.headers.getSetCookie().map((value) => value.split(';')[0]).join('; ');
   const checklist = async () => (await (await request('/api/settings/go-live', 'GET', undefined, cookie)).json() as { data: { revision: number;
-    memberSmsEnabled: boolean; items: { id: string; status: string }[] } }).data;
+    memberSmsEnabled: boolean; items: { id: string; status: string; message: string }[] } }).data;
 
   // Unused SMS is not applicable, and enabling still requires a saved provider.
   const before = await checklist();
@@ -52,6 +52,13 @@ it('turns member texts on only once the runtime finds the gym\'s saved provider'
   expect(before.items.find((item) => item.id === 'sms_ready')?.status).toBe('not_applicable');
   const refused = await request('/api/settings/go-live', 'PATCH', { revision: before.revision, memberSmsEnabled: true }, cookie);
   expect(refused.status, await refused.clone().text()).toBe(409);
+
+  await db.forGym(gymId, (tx) => tx.update(gyms).set({ smsConfig: 'unreadable' }).where(eq(gyms.id, gymId)));
+  const unreadable = await checklist();
+  expect(unreadable.memberSmsEnabled).toBe(false);
+  expect(unreadable.items.find((item) => item.id === 'sms_ready')).toMatchObject({
+    status: 'needs_attention', message: 'The saved SMS settings could not be read. Replace or remove them in Settings.',
+  });
 
   // A saved, readable provider is found through the runtime's key.
   await db.forGym(gymId, (tx) => tx.update(gyms).set({ smsConfig: encryptSmsConfig(key, gymId, { accountSid: 'AC' + '1'.repeat(32),

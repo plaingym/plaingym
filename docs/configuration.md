@@ -127,7 +127,8 @@ The daily cap stays editable in demo sandboxes and on operator-managed installs;
 provider credentials still follow the integration policy. Removing a provider
 leaves member texts on; Health warns that texts cannot be sent until a working
 provider is saved. Go-live marks text delivery not applicable when texts are off
-and no provider is configured.
+and no provider is configured. If saved SMS settings cannot be read, Go-live
+marks them as needing attention even while texts are off.
 
 In multi-gym mode gym owners change email, SMS and payments only when
 `GYM_INTEGRATIONS=gym`; see [Tenancy and demo](#tenancy-and-demo). A gym's own SMTP server there must
