@@ -94,7 +94,7 @@ export const fileDurations = {
   'mobile-admin-phone.spec.ts': 33755,
   'mobile-public.spec.ts': 15874, 'portal-home.spec.ts': 3172, 'responsive.spec.ts': 1081,
   'settings-dashboard.spec.ts': 16057, 'sign-in-limits.spec.ts': 1037, 'website-branding.spec.ts': 2728,
-  '../multi/flows.spec.ts': 27486, '../multi/isolation-beta-alpha-1.spec.ts': 8135,
+  '../multi/bank-debit.spec.ts': 20000, '../multi/flows.spec.ts': 27486, '../multi/isolation-beta-alpha-1.spec.ts': 8135,
   'announcements.spec.ts': 17753, 'changed-fields-saves.spec.ts': 6748, 'demo-copy.spec.ts': 3574,
   'demo-landing.spec.ts': 24645, 'display-counts.spec.ts': 5564, 'household-isolation.spec.ts': 6263,
   'invoice-filter.spec.ts': 1812, 'mat-flow.spec.ts': 11503, 'mobile-kiosk-keyboard.spec.ts': 8701,
@@ -114,6 +114,9 @@ export const fileDurations = {
   '../multi/00-harness.spec.ts': 824, '../multi/isolation-alpha-beta-3.spec.ts': 8555, '../multi/isolation.spec.ts': 486,
 };
 
+// Place the bank debit spec after balancing the existing files so it doesn't move them between shards.
+const filesPlacedLast = new Set(['../multi/bank-debit.spec.ts']);
+
 export function shardFiles(report, count = shardNumbers().length, durations = fileDurations) {
   reportTests(report); // Reject collection errors before writing a partial selection.
   const files = new Map();
@@ -132,7 +135,8 @@ export function shardFiles(report, count = shardNumbers().length, durations = fi
   const wizard = [...files].filter(([, projects]) => projects.has('fresh-setup'));
   if (wizard.length !== 1) throw new Error('Expected exactly one wizard file');
   const remaining = [...files].filter(([file]) => file !== wizard[0][0])
-    .sort(([a], [b]) => duration(b) - duration(a) || a.localeCompare(b));
+    .sort(([a], [b]) => Number(filesPlacedLast.has(a)) - Number(filesPlacedLast.has(b))
+      || duration(b) - duration(a) || a.localeCompare(b));
   // Pin the wizard to stack 1, then place the largest files where they cost the least total time.
   for (const [file, projects] of [...wizard, ...remaining]) {
     const fileCost = duration(file);

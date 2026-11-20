@@ -323,8 +323,11 @@ source of truth; Stripe is the processor. In outline:
   announcement preference through `forHousehold`.
 
 Stripe-hosted Checkout collects cards and, when enabled, US bank accounts for
-USD or Canadian bank accounts for CAD. The app stores processor IDs and masked
-payment method details.
+USD gyms and Canadian pre-authorized debits for CAD gyms. A bank debit can be
+processing after Checkout completes. The member can open the portal while the
+first payment settles, and the invoice updates when Stripe reports the outcome.
+PlainGym stores processor IDs and masked payment details. Full card and bank
+account numbers stay with Stripe. See [Stripe setup](self-hosting.md#stripe).
 
 ## Infrastructure modules
 

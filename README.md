@@ -146,7 +146,7 @@ progress, pay invoices and manage the household.
 ### Waivers and onboarding
 
 Waiver templates with guardian signing for minors and a PDF of each signed copy.
-One link collects a card, a waiver and the portal invite.
+One link collects a payment method and a waiver, and offers a portal invite.
 
 <p align="center">
 <a href="apps/server/src/demo/screenshots/waivers-light-2x-271f7f171557ca3f.webp">

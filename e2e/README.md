@@ -27,7 +27,7 @@ CI runs this suite in the **End-to-end** workflow on every task and integration 
 and on demand. `node e2e/ci.mjs shard-lists` places the setup wizard on stack 1, then assigns whole
 files from longest to shortest to the stack with the lowest projected duration. It charges single-gym
 and multi-gym fixture setup once per stack that runs the corresponding project. New files use a
-20-second estimate. When the suite changes materially, refresh `fileDurations` in `ci.mjs` from
+20-second estimate. The bank debit spec is placed after every other file (`filesPlacedLast` in `ci.mjs`), so adding it doesn't move existing files between shards. When the suite changes materially, refresh `fileDurations` in `ci.mjs` from
 `results.json` and use the shard blobs to estimate and deduct shared setup from the files that ran it.
 Each stack runs `pnpm --dir e2e test --test-list coverage/shard-N.txt --no-deps`,
 with one worker (`fullyParallel: false`). `E2E_SHARD_COUNT` in the workflow is the single count for matrix
@@ -81,12 +81,12 @@ random for each run. Nothing is exposed except port 443 on the loopback address.
 
 The demo install keeps sandbox billing on with a random test key. Its Stripe calls
 reach `stripe/server.mjs`, a small stateful fake of the endpoints the app uses
-(customers, cards, payment intents, Checkout, setup intents, refunds), served as
+(customers, payment methods, payment intents, Checkout, setup intents, refunds), served as
 `api.stripe.com` on the Compose network through a second Caddy whose local CA the
-demo install trusts (`NODE_EXTRA_CA_CERTS`). Like Stripe, an open payment-mode
-Checkout has no PaymentIntent until it is paid. The browser pays on the fake's
-hosted page at `https://stripe.localhost` with `4242 4242 4242 4242`; specs then
-deliver a signed `checkout.session.completed` to the install's `/webhooks/stripe`
+demo install trusts (`NODE_EXTRA_CA_CERTS`). An open payment-mode Checkout has
+no PaymentIntent until the browser submits a payment method. To pay by card on
+the fake's hosted page at `https://stripe.localhost`, use `4242 4242 4242 4242`.
+Specs then deliver a signed `checkout.session.completed` to the install's `/webhooks/stripe`
 with the run's random webhook secret (`portal.ts`). No Stripe account is needed. Chromium's resolver
 maps `*.localhost` to loopback; the API helper connects to loopback while keeping
 the hostname, TLS SNI, Origin and cookies. No public DNS or host-file edits are
@@ -276,6 +276,14 @@ to the gym's own hostname (`deliverStripeEvent` in `portal.ts`, shared with demo
 * Stripe accounts (`flows.spec.ts`, last): each key lists its own customers, Checkout sessions, cards and
   payment intents, none appears in the other account, every object the gym tagged carries its own gym ID, and the
   other key gets 404 for each by ID.
+* Bank payments (`bank-debit.spec.ts`): Alpha's owner enables **Accept bank payments**
+  for a visitor's join. The fake offers **US bank account** alongside the card
+  form when Checkout requests that payment method. The spec delivers signed
+  Checkout and PaymentIntent events, checks portal access and the invoice while
+  the debit is processing, then uses the fake's `/test/settle-bank-checkout` control
+  to test success and insufficient funds. The success case also runs at 360 px.
+  Teardown turns off the switch. Real Stripe, including bank verification,
+  settlement and Canadian mandate emails, is checked by hand.
 * A cross-gym sweep (`isolation-{alpha-beta,beta-alpha}-{1,2,3}.spec.ts`, with public record-ID checks in `isolation.spec.ts`) of every non-public operation of the running OpenAPI document, in both
   directions. Operations are enumerated from the running document: a route added to the application is swept
   without widening a list. Only the demo routes, the single-gym setup wizard and the install's own release state

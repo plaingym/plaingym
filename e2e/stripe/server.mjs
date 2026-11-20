@@ -142,11 +142,13 @@ const routes = [
     if (!find(account, 'cus', body.customer)) return missing(body.customer);
     if (!['payment', 'setup'].includes(body.mode)) throw invalid('Unsupported Checkout mode');
     const id = newId('cs_test'), item = body.line_items?.[0]?.price_data;
+    const methods = body.allowed_payment_method_types ?? body.payment_method_types;
     return store(account, { id, object: 'checkout.session', created: now(), livemode: false, mode: body.mode, status: 'open',
       payment_status: 'unpaid', url: `${checkoutOrigin}/pay/${id}`, customer: body.customer, metadata: body.metadata ?? {},
       success_url: body.success_url, cancel_url: body.cancel_url, payment_intent: null, setup_intent: null,
       expires_at: body.expires_at === undefined ? now() + 86_400 : integer(body.expires_at, 'expires_at'),
       currency: item?.currency ?? null, amount_total: item ? integer(item.unit_amount, 'unit_amount') * integer(body.line_items[0].quantity, 'quantity') : null,
+      _bankDebit: methods?.includes('us_bank_account') ?? false,
       _intentData: body.payment_intent_data ?? {}, _setupData: body.setup_intent_data ?? {} });
   }],
   ['GET', /^\/v1\/checkout\/sessions\/(\w+)$/, (account, _body, _query, id) => find(account, 'cs', id) ?? missing(id)],
@@ -192,24 +194,59 @@ const routes = [
   ['GET', /^\/v1\/events$/, (account, _body, query) => list(account, 'evt', query)],
 ];
 
-/** Completes an open session as Stripe's hosted page would after the visitor pays with the test card. */
-function complete(account, session, number) {
+/** Completes an open session after the visitor chooses a payment method on the hosted page. */
+function complete(account, session, form) {
   if (session.status !== 'open') throw invalid('This Checkout session is no longer open');
-  if (number.replace(/\s+/g, '') !== '4242424242424242') throw new StripeError(402, { type: 'card_error', code: 'card_declined', message: 'Your card was declined.' });
-  const method = paymentMethod(account, session.customer, card('tok_visa'));
+  const bank = form.get('method') === 'us_bank_account';
+  if (bank && !session._bankDebit) throw invalid('US bank account is not offered for this session');
+  if (!bank && (form.get('card') ?? '').replace(/\s+/g, '') !== '4242424242424242')
+    throw new StripeError(402, { type: 'card_error', code: 'card_declined', message: 'Your card was declined.' });
+  const method = bank
+    ? store(account, { id: newId('pm'), object: 'payment_method', type: 'us_bank_account', created: now(), livemode: false, customer: session.customer,
+      metadata: {}, us_bank_account: { bank_name: 'STRIPE TEST BANK', last4: '6789' } })
+    : paymentMethod(account, session.customer, card('tok_visa'));
   if (session.mode === 'payment') {
     const intent = store(account, { id: newId('pi'), object: 'payment_intent', created: now(), livemode: false, amount: session.amount_total,
       currency: session.currency, customer: session.customer, payment_method: method.id, metadata: session._intentData.metadata ?? {},
       setup_future_usage: session._intentData.setup_future_usage ?? null, latest_charge: null, last_payment_error: null, status: 'processing' });
-    succeed(account, intent);
-    Object.assign(session, { payment_intent: intent.id, payment_status: 'paid' });
+    if (bank) {
+      const charge = store(account, { id: newId('ch'), object: 'charge', created: now(), livemode: false, amount: intent.amount,
+        currency: intent.currency, customer: intent.customer, payment_intent: intent.id, payment_method: method.id, status: 'pending', paid: false,
+        payment_method_details: { type: 'us_bank_account', us_bank_account: { mandate: newId('mandate') } } });
+      intent.latest_charge = charge.id;
+      intent.amount_received = 0;
+    } else succeed(account, intent);
+    Object.assign(session, { payment_intent: intent.id, payment_status: bank ? 'unpaid' : 'paid' });
   } else {
     const setup = store(account, { id: newId('seti'), object: 'setup_intent', created: now(), livemode: false, status: 'succeeded',
-      customer: session.customer, payment_method: method.id, metadata: session._setupData.metadata ?? {}, last_setup_error: null });
+      customer: session.customer, payment_method: method.id, metadata: session._setupData.metadata ?? {}, last_setup_error: null,
+      ...(bank ? { mandate: newId('mandate') } : {}) });
     Object.assign(session, { setup_intent: setup.id, payment_status: 'no_payment_required' });
   }
   session.status = 'complete';
   return session.success_url.replace('{CHECKOUT_SESSION_ID}', session.id);
+}
+
+function settleBankCheckout(account, sessionId, outcome) {
+  if (outcome !== 'succeeded' && outcome !== 'insufficient_funds') throw invalid('Unsupported bank settlement outcome');
+  const session = find(account, 'cs', sessionId);
+  if (!session) throw missing(sessionId);
+  const intent = find(account, 'pi', session.payment_intent);
+  const charge = intent && find(account, 'ch', intent.latest_charge);
+  if (intent?.status !== 'processing' || charge?.payment_method_details?.type !== 'us_bank_account')
+    throw invalid('This Checkout session has no processing bank payment');
+  if (outcome === 'succeeded') {
+    Object.assign(charge, { status: 'succeeded', paid: true });
+    Object.assign(intent, { status: 'succeeded', amount_received: intent.amount });
+    session.payment_status = 'paid';
+  } else {
+    Object.assign(charge, { status: 'failed', failure_code: 'insufficient_funds' });
+    Object.assign(intent, { status: 'requires_payment_method', last_payment_error: {
+      type: 'invalid_request_error', code: 'insufficient_funds', payment_method: visible(find(account, 'pm', intent.payment_method)),
+    } });
+    intent.payment_method = null;
+  }
+  return { session: visible(session), intent: visible(intent) };
 }
 const escape = (value) => String(value).replace(/[&<>"']/g, (character) => `&#${character.charCodeAt(0)};`);
 function page(session, message = '') {
@@ -219,7 +256,7 @@ function page(session, message = '') {
 <main><h1>Test checkout</h1>${amount}${message ? `<p role="alert">${escape(message)}</p>` : ''}
 <form method="post"><label for="card">Card number</label><br><input id="card" name="card" autocomplete="cc-number" inputmode="numeric"
 style="font-size:1.25rem;min-height:44px;width:100%;box-sizing:border-box"><br><br><button style="min-height:44px;min-width:44px;font-size:1.25rem">Pay</button></form>
-<p><a href="${escape(session.cancel_url)}">Back</a></p></main></body></html>`;
+${session._bankDebit ? '<form method="post" style="margin-top:1rem"><button name="method" value="us_bank_account" style="min-height:44px;font-size:1.25rem">US bank account</button></form>\n' : ''}<p><a href="${escape(session.cancel_url)}">Back</a></p></main></body></html>`;
 }
 
 async function read(request) {
@@ -244,7 +281,7 @@ createServer(async (request, response) => {
       if (!session) return send(response, 404, 'Unknown session', 'text/plain');
       if (request.method === 'GET') return send(response, 200, page(session), 'text/html; charset=utf-8');
       try {
-        const location = complete(owner, session, new URLSearchParams(text).get('card') ?? '');
+        const location = complete(owner, session, new URLSearchParams(text));
         response.writeHead(303, { location }); return response.end();
       } catch (error) {
         if (error instanceof StripeError) return send(response, error.status, page(session, error.message), 'text/html; charset=utf-8');
@@ -252,6 +289,12 @@ createServer(async (request, response) => {
       }
     }
     const bearer = request.headers.authorization?.startsWith('Bearer ') ? request.headers.authorization.slice(7) : '';
+    if (url.pathname === '/test/settle-bank-checkout' && request.method === 'POST') {
+      if (bearer !== secretKey) return send(response, 401, { error: { message: 'Invalid API Key provided' } });
+      const { key, sessionId, outcome } = JSON.parse(text), account = accountOf(key);
+      if (!account) throw invalid('Unknown test account');
+      return send(response, 200, settleBankCheckout(account, sessionId, outcome));
+    }
     // Test control, for the specs only (they hold the install's secret key): signs a webhook body as Stripe would for the account
     // of `key`, with the signing secret returned when that account's endpoint was created.
     if (url.pathname === '/test/sign-webhook' && request.method === 'POST') {
@@ -292,6 +335,7 @@ createServer(async (request, response) => {
     if (replayKey) account.replies.set(replayKey, [text, status, body]);
     send(response, status, body);
   } catch (error) {
+    if (error instanceof StripeError) return send(response, error.status, { error: error.body });
     console.error(error);
     send(response, 500, { error: { type: 'api_error', message: 'Fake Stripe failure' } });
   }
