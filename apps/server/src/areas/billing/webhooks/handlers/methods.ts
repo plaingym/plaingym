@@ -10,6 +10,7 @@ export function createCardHandlers(options: { scope: typeof forGym; clock: Clock
   const { scope, clock } = options;
   const system = (gymId: string) => ({ gymId, actor: { kind: 'system' as const } });
   async function save(gymId: string, method: PaymentMethod, collect = false) {
+    if (method.type !== 'card') return;
     if (!Number.isFinite(method.createdAt.getTime())) throw new Error('Payment method creation time is unresolved');
     await scope(gymId, async tx => {
       const household = (await tx.select().from(households).where(eq(households.stripeCustomerId, method.customerId)).for('update'))[0];

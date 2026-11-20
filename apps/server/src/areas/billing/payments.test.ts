@@ -243,7 +243,7 @@ describe('staff import of externally attached cards', () => {
     await f.service.importCustomerCards(f.context, f.home.id);
     const list = f.provider.listCustomerCards.bind(f.provider);
     vi.spyOn(f.provider, 'listCustomerCards').mockImplementation((customerId, options) => {
-      if (options.cursor) return Promise.reject(new CardCursorRefused());
+      if (options?.cursor) return Promise.reject(new CardCursorRefused());
       return list(customerId, options);
     });
     for (let i = 0; i < 10 && await f.jobs.runNext(); i++) { /* bounded drain */ }

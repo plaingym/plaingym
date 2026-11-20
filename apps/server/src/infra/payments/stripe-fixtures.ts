@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { isDeepStrictEqual } from 'node:util';
 import type { ObjectData, PaymentTransport, ProviderRequest } from './transport.js';
+import type { PaymentMethodType } from './index.js';
 /** Synthetic API fixtures, never represented as recordings of a real Stripe account. */
 export class StripeFixtures implements PaymentTransport {
   readonly objects = new Map<string, ObjectData>();
@@ -15,8 +16,13 @@ export class StripeFixtures implements PaymentTransport {
     this.#nextId = firstId;
     this.objects.set('cus_fixture', { id: 'cus_fixture', object: 'customer', email: 'payer@example.invalid', metadata: { gym_id: gymId } });
     for (const card of ['4242', '0341', '3155', '3184']) this.objects.set('pm_' + card, {
-      id: 'pm_' + card, object: 'payment_method', created: now, customer: 'cus_fixture', card: { brand: 'visa', last4: card, exp_month: 12, exp_year: 2030 }, metadata: { gym_id: gymId },
+      id: 'pm_' + card, object: 'payment_method', type: 'card', created: now, customer: 'cus_fixture', card: { brand: 'visa', last4: card, exp_month: 12, exp_year: 2030 }, metadata: { gym_id: gymId },
     });
+    for (const [id, type] of [['pm_usbank_6789', 'us_bank_account'], ['pm_usbank_2227', 'us_bank_account'],
+      ['pm_usbank_1113', 'us_bank_account'], ['pm_acss_6789', 'acss_debit']] as const) {
+      this.objects.set(id, { id, type, object: 'payment_method', created: now, customer: 'cus_fixture',
+        metadata: { gym_id: gymId }, [type]: { bank_name: 'STRIPE TEST BANK', last4: id.slice(-4) } });
+    }
   }
   /** A payer's first attempt on an open payment session: like Stripe, its PaymentIntent exists only from then on. */
   attemptCheckout(sessionId: string): ObjectData {
@@ -31,22 +37,55 @@ export class StripeFixtures implements PaymentTransport {
     return intent;
   }
   /** Pays or sets up an open session; returns its intent (PaymentIntent or SetupIntent). */
-  completeCheckout(sessionId: string): ObjectData {
+  completeCheckout(sessionId: string, { method = 'card' }: { method?: PaymentMethodType } = {}): ObjectData {
     const session = this.objects.get(sessionId)!;
     if (session.status !== 'open') throw new Error('Checkout is not open');
+    if (method !== 'card' && !(session.allowed_payment_method_types as string[]).includes(method)) throw new Error('Payment method is not offered by Checkout');
+    const saved = this.objects.get(method === 'card' ? 'pm_3155' : method === 'acss_debit' ? 'pm_acss_6789' : 'pm_usbank_6789')!;
     let intent: ObjectData;
     if (session.mode === 'payment') {
       intent = this.attemptCheckout(sessionId);
-      intent.status = 'succeeded'; intent.payment_method = 'pm_3155';
-      if (!intent.setup_future_usage) intent.payment_method = this.#store('pm', { object: 'payment_method', customer: null,
-        card: { last4: '3155', exp_month: 12, exp_year: 2030 } }).id;
-      intent.latest_charge = this.#store('ch', { object: 'charge', payment_intent: intent.id, metadata: intent.metadata }).id;
+      intent.payment_method = saved.id;
+      if (!intent.setup_future_usage || (method !== 'card' && saved.customer !== session.customer)) {
+        intent.payment_method = this.#store('pm', { object: 'payment_method', type: method,
+          customer: intent.setup_future_usage ? session.customer : null, [method]: saved[method] }).id;
+      }
+      if (method === 'card') {
+        intent.status = 'succeeded';
+        intent.latest_charge = this.#store('ch', { object: 'charge', payment_intent: intent.id, metadata: intent.metadata }).id;
+        session.payment_status = 'paid';
+      } else this.#processBank(intent, method);
     } else {
       intent = this.objects.get(String(session.setup_intent))!;
-      intent.status = 'succeeded'; intent.payment_method = 'pm_3155';
+      intent.status = 'succeeded'; intent.payment_method = saved.id;
+      if (method !== 'card') {
+        intent.mandate = 'mandate_' + String(intent.id);
+        if (saved.customer !== session.customer) intent.payment_method = this.#store('pm', {
+          object: 'payment_method', type: method, customer: session.customer, [method]: saved[method] }).id;
+      }
     }
     session.status = 'complete'; session.url = null;
     return intent;
+  }
+  #processBank(intent: ObjectData, type: 'us_bank_account' | 'acss_debit', mandate = 'mandate_' + String(intent.id)): void {
+    intent.status = 'processing';
+    intent.latest_charge = this.#store('ch', { object: 'charge', payment_intent: intent.id, metadata: intent.metadata,
+      payment_method_details: { type, [type]: { mandate } } }).id;
+  }
+  /** Settle a processing debit and return a Stripe event envelope suitable for signed webhook delivery and replay. */
+  settle(intentId: string) {
+    const intent = this.objects.get(intentId);
+    if (intent?.object !== 'payment_intent' || intent.status !== 'processing') throw new Error('Expected a processing PaymentIntent');
+    const code = intent.payment_method === 'pm_usbank_2227' ? 'insufficient_funds'
+      : intent.payment_method === 'pm_usbank_1113' ? 'account_closed' : undefined;
+    intent.status = code ? 'requires_payment_method' : 'succeeded';
+    if (code) intent.last_payment_error = { code };
+    for (const session of this.objects.values()) {
+      if (session.object === 'checkout.session' && session.payment_intent === intentId) session.payment_status = code ? 'unpaid' : 'paid';
+    }
+    this.#changes.push(intent);
+    return { id: 'evt_settle_' + String(intent.latest_charge), object: 'event', created: this.now, livemode: false,
+      type: code ? 'payment_intent.payment_failed' : 'payment_intent.succeeded', data: { object: structuredClone(intent) } };
   }
   async request(input: ProviderRequest): Promise<ObjectData> {
     this.requests.push(structuredClone(input));
@@ -152,6 +191,11 @@ export class StripeFixtures implements PaymentTransport {
       }
       if (action === 'confirm') {
         if (object.status === 'canceled') throw new Error('Intent canceled');
+        const type = this.objects.get(String(object.payment_method))?.type;
+        if (type === 'us_bank_account' || type === 'acss_debit') {
+          if (object.status !== 'processing') this.#processBank(object, type, typeof params.mandate === 'string' ? params.mandate : undefined);
+          return object;
+        }
         const card = String(object.payment_method).slice(-4);
         object.status = card === '0341' || card === '3184' ? 'requires_payment_method' : 'succeeded';
         if (card === '0341' || card === '3184') {
@@ -175,11 +219,11 @@ export class StripeFixtures implements PaymentTransport {
     if (resource === 'checkout/sessions') {
       // An open payment session has no PaymentIntent yet (completeCheckout creates it); a setup session has its SetupIntent.
       if (params.mode === 'payment') return this.#store('cs', { object: 'checkout.session', ...params, status: 'open',
-        url: 'https://checkout.invalid/fixture', payment_intent: null });
+        url: 'https://checkout.invalid/fixture', payment_intent: null, payment_status: 'unpaid' });
       const setup = this.#store('seti', { object: 'setup_intent', customer: params.customer,
         metadata: (params.setup_intent_data as ObjectData).metadata, status: 'requires_payment_method', payment_method: null });
       return this.#store('cs', { object: 'checkout.session', ...params, status: 'open', url: 'https://checkout.invalid/fixture',
-        setup_intent: setup.id });
+        setup_intent: setup.id, payment_status: 'no_payment_required' });
     }
     if (resource === 'refunds') {
       if (!this.objects.has(String(params.payment_intent))) throw Object.assign(new Error('No intent'), { type: 'StripeInvalidRequestError', code: 'resource_missing', statusCode: 404 });

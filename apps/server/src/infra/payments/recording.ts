@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { isDeepStrictEqual } from 'node:util';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
-import { CardCursorRefused, CardImportRefused, CustomerCreationInProgress, CustomerDeleted, type Payments } from './index.js';
+import { BankDebitUnavailable, CardCursorRefused, CardImportRefused, CustomerCreationInProgress, CustomerDeleted, type Payments } from './index.js';
 
 export interface Exchange {
   operation: string;
   input: unknown;
   output?: unknown;
-  error?: { type: string; code?: string; statusCode?: number; payment_intent?: unknown };
+  error?: { type: string; code?: string; param?: string; statusCode?: number; payment_intent?: unknown };
 }
 export interface Tape { version: 1; gymId: string; exchanges: Exchange[] }
 const paymentMethods = new Set<string>(['createCustomer', 'createCharge', 'confirmCharge', 'cancelCharge', 'findCharge', 'readPaymentObject',
@@ -45,9 +45,12 @@ export class FixtureRecorder {
       const record = error as Exchange['error'];
       const raw = error && typeof error === 'object' && 'raw' in error ? error.raw as Record<string, unknown> : undefined;
       const intent = record?.payment_intent ?? raw?.payment_intent;
+      const param = record?.param ?? raw?.param;
       exchange.error = { type: error instanceof CustomerCreationInProgress ? 'CustomerCreationInProgress' : error instanceof CustomerDeleted ? 'CustomerDeleted'
+        : error instanceof BankDebitUnavailable ? 'BankDebitUnavailable'
         : error instanceof CardImportRefused ? 'CardImportRefused' : error instanceof CardCursorRefused ? 'CardCursorRefused' : record?.type ?? 'Error', ...(record?.code ? { code: record.code } : {}),
         ...(record?.statusCode ? { statusCode: record.statusCode } : {}),
+        ...(typeof param === 'string' ? { param } : {}),
         ...(intent ? { payment_intent: redact(intent) } : {}) };
       throw error;
     }
@@ -74,6 +77,7 @@ export class Replay {
       throw new Error('Fixture request mismatch at exchange ' + this.#position + ': ' + operation);
     if (exchange.error) throw Object.assign(exchange.error.type === 'CustomerCreationInProgress' ? new CustomerCreationInProgress()
       : exchange.error.type === 'CustomerDeleted' ? new CustomerDeleted()
+        : exchange.error.type === 'BankDebitUnavailable' ? new BankDebitUnavailable()
         : exchange.error.type === 'CardImportRefused' ? new CardImportRefused()
           : exchange.error.type === 'CardCursorRefused' ? new CardCursorRefused() : new Error(exchange.error.type), hydrate(exchange.error));
     return hydrate(structuredClone(exchange.output)) as T;

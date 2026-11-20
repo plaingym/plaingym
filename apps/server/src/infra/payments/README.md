@@ -9,6 +9,13 @@ customer or gym, and malformed pages. It never adopts an untagged customer or
 changes Stripe's default. A rejected continuation raises `CardCursorRefused`;
 ownership refusals raise `CardImportRefused`. `FakePayments` implements the same contract.
 
+The provider reads three payment method types. A `card` has expiry fields and
+an optional brand. A `us_bank_account` (ACH) or `acss_debit` (Canadian PAD) has
+the last four digits and an optional bank name. Pass `types` in the listing
+options to include bank accounts. Accounts without last-four digits are
+skipped. In a mixed listing a page can be empty and still have a continuation.
+When a customer's metadata names a household, supply its matching `householdId`.
+
 Staff choose **Import cards from Stripe** on household billing or invoice details
 (`payments.record`). The import commits at most 100 cards per background job,
 atomically queues its continuation, deduplicates processor IDs and keeps revoked
@@ -73,6 +80,33 @@ store it, while existing rows keep their stored value. Checkout requires a
 hours after creation) and is part of the idempotent request; without it the
 provider default applies. The fake reports an open session as expired once its
 clock reaches that time.
+
+`createCheckout` offers cards by default. Pass `bankDebit: { type: 'us_bank_account' }`
+to also offer instant ACH verification with the Financial Connections
+`payment_method` permission. For Canadian PAD, pass
+`bankDebit: { type: 'acss_debit', intervalDescription }` with the gym's description
+of regular and occasional debits. The session requests instant verification
+and a combined personal mandate. Setup sessions specify CAD on both the
+session and the ACSS option. Payment sessions take currency from the invoice
+line item. A bank-enabled session raises `BankDebitUnavailable` if Stripe
+rejects its payment method types or options. Other Stripe errors propagate.
+
+`CheckoutSession.paymentStatus` reports `paid`, `unpaid` or `no_payment_required`.
+A completed bank payment can still be unpaid while its intent processes.
+Payment sessions expose the latest Charge's bank mandate as `mandateId` when
+available. Setup outcomes expose the SetupIntent's mandate. For an off-session
+PAD, supply that ID as `createCharge.mandateId` on the request. The adapter
+stores it in the unconfirmed intent's metadata and sends it as `mandate` on
+confirmation, including after a restart. Stripe refuses to confirm a
+`processing` intent, so `confirmCharge` reports one as it stands without
+another request.
+
+In `StripeFixtures`, bank confirmations start in `processing`.
+`settle(intentId)` updates the intent and returns a Stripe webhook event.
+`pm_usbank_6789` and `pm_acss_6789` succeed. `pm_usbank_2227` fails with
+`insufficient_funds` and `pm_usbank_1113` with `account_closed`.
+Both the fixture and `FakePayments` accept `completeCheckout(id, { method })`
+to select an offered method. The default is a card.
 
 A successful outcome's `succeededAt` is its latest Charge's `created` timestamp.
 Every PaymentIntent read and the confirmation expand `latest_charge`, so a

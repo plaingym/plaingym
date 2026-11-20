@@ -90,6 +90,7 @@ export function createCustomerCardImportJobs(options: CustomerCardImportOptions)
         householdId: paymentMethods.householdId }).from(paymentMethods)
         .where(inArray(paymentMethods.processorId, page.cards.map(card => card.id)))).map(row => [row.processorId, row.householdId]));
       for (const card of page.cards) {
+        if (card.type !== 'card') throw new Error('Expected a card in the card import');
         const owner = stored.get(card.id);
         if (owner !== undefined) {
           if (owner !== household.id) {

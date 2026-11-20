@@ -35,6 +35,7 @@ export interface CreateCharge {
   readonly currency: string;
   readonly customerId: string;
   readonly paymentMethodId: string;
+  readonly mandateId?: string;
   readonly invoiceId: string;
   readonly attemptId: string;
   readonly idempotencyKey: string;
@@ -65,8 +66,10 @@ export class CustomerDeleted extends Error {
     this.name = 'CustomerDeleted';
   }
 }
+export class BankDebitUnavailable extends Error {}
 interface CheckoutOptions {
   readonly mode: 'payment' | 'setup';
+  readonly bankDebit?: { type: 'us_bank_account' } | { type: 'acss_debit'; intervalDescription: string };
   readonly linkId?: string;
   readonly amount?: number;
   readonly currency?: string;
@@ -85,6 +88,8 @@ export interface CheckoutSession {
   readonly savesCard: boolean;
   readonly url: string;
   readonly status: 'open' | 'complete' | 'expired';
+  readonly paymentStatus: 'paid' | 'unpaid' | 'no_payment_required';
+  readonly mandateId?: string;
   readonly chargeId?: string;
   readonly setupId?: string;
   readonly paymentMethodId?: string;
@@ -119,20 +124,30 @@ export interface Dispute {
   readonly amount: number;
   readonly status: 'open' | 'won' | 'lost' | 'closed';
 }
-export interface PaymentMethod {
+export type PaymentMethodType = 'card' | 'us_bank_account' | 'acss_debit';
+interface MethodIdentity {
   readonly id: string;
-  readonly brand?: string;
   readonly createdAt: Date;
   readonly customerId: string;
   readonly last4: string;
+}
+export interface CardPaymentMethod extends MethodIdentity {
+  readonly type: 'card';
+  readonly brand?: string;
   readonly expiresMonth: number;
   readonly expiresYear: number;
 }
+export interface BankPaymentMethod extends MethodIdentity {
+  readonly type: 'us_bank_account' | 'acss_debit';
+  readonly bankName?: string;
+}
+export type PaymentMethod = CardPaymentMethod | BankPaymentMethod;
 export interface SetupOutcome {
   readonly id: string;
   readonly customerId: string;
   readonly status: 'succeeded' | 'pending' | 'action_required' | 'failed';
   readonly paymentMethodId?: string;
+  readonly mandateId?: string;
   readonly metadata: PaymentMetadata;
 }
 export type PaymentObjectReference = {
@@ -167,7 +182,12 @@ export class CardImportRefused extends Error {}
 /** The continuation card no longer exists in the customer's attached-card list. */
 export class CardCursorRefused extends Error {}
 export interface CustomerCardPage { readonly cards: readonly PaymentMethod[]; readonly nextCursor: string | null }
-export interface CustomerCardQuery { readonly householdId: string; readonly cursor?: string; readonly limit?: number }
+export interface CustomerCardQuery {
+  readonly householdId?: string;
+  readonly cursor?: string;
+  readonly limit?: number;
+  readonly types?: readonly PaymentMethodType[];
+}
 export interface Payments {
   /**
    * The key's mode, where the provider knows it. A test key can't see live-mode objects, so a live customer it reads
@@ -204,7 +224,7 @@ export interface Payments {
    */
   adoptCustomer(customerId: string): Promise<{ id: string; email: string | null }>;
   /** One bounded page of attached cards. Requires this gym's tag and refuses another household's metadata. */
-  listCustomerCards(customerId: string, options: CustomerCardQuery): Promise<CustomerCardPage>;
+  listCustomerCards(customerId: string, options?: CustomerCardQuery): Promise<CustomerCardPage>;
   /**
    * Detach a gym-owned card; missing and already detached methods succeed. With `redactBillingDetails` (erasure only, never a
    * staff removal) the card's billing name, email, phone and address are cleared first: the provider updates only an attached
@@ -330,7 +350,6 @@ export class FakePayments implements Payments {
   readonly #refunds = new Map<string, Refund>();
   readonly #methods = new Map<string, PaymentMethod>();
   readonly #methodOwners = new Map<string, string>();
-  readonly #methodTypes = new Map<string, string>();
   readonly #detached = new Set<string>();
   readonly #setups = new Map<string, SetupOutcome>();
   readonly #disputes = new Map<string, Dispute>();
@@ -373,11 +392,14 @@ export class FakePayments implements Payments {
   setBillingDetails(processorId: string, details: BillingDetails): void { this.#billing.set(processorId, structuredClone(details)); }
   /** The card's billing details; absent once erasure cleared them. */
   billingDetails(processorId: string): BillingDetails | undefined { return structuredClone(this.#billing.get(processorId)); }
-  recordPaymentMethod(input: Omit<PaymentMethod, 'createdAt'> & { createdAt?: Date; gymId?: string; type?: string }): void {
-    const { gymId, type = 'card', ...method } = input;
+  recordPaymentMethod(input: (Omit<CardPaymentMethod, 'createdAt' | 'type'> & { type?: 'card' }
+    | Omit<BankPaymentMethod, 'createdAt'>) & { createdAt?: Date; gymId?: string }): void {
+    const { gymId, ...method } = input;
     if (gymId !== undefined) this.#methodOwners.set(method.id, gymId);
-    this.#methodTypes.set(method.id, type);
-    this.#methods.set(method.id, structuredClone({ ...method, createdAt: method.createdAt ?? this.#methods.get(method.id)?.createdAt ?? this.clock.now() }));
+    const createdAt = method.createdAt ?? this.#methods.get(method.id)?.createdAt ?? this.clock.now();
+    this.#methods.set(method.id, structuredClone(method.type === 'card' || method.type === undefined
+      ? { ...method, type: 'card', createdAt } : { id: method.id, customerId: method.customerId, type: method.type,
+        createdAt, last4: method.last4, ...('bankName' in method ? { bankName: method.bankName } : {}) }));
     this.#record('payment_method', method.id);
   }
   recordSetup(setup: SetupOutcome): void {
@@ -455,6 +477,7 @@ export class FakePayments implements Payments {
         request.paymentMethodId,
         request.invoiceId,
         request.attemptId,
+        ...(request.mandateId ? [request.mandateId] : []),
       ]),
       () => {
         const id = this.#id('pi');
@@ -480,7 +503,8 @@ export class FakePayments implements Payments {
       if (!charge || this.#uncertain.has(id)) return { status: 'unknown', reference: { kind: 'charge', id } };
       if (charge.status === 'succeeded' || (charge.status === 'failed' && charge.code === 'canceled'))
         return charge;
-      const response = this.#confirmation;
+      const method = charge.paymentMethodId && this.#methods.get(charge.paymentMethodId);
+      const response = this.#confirmation === 'succeeded' && method && method.type !== 'card' ? 'pending' : this.#confirmation;
       this.#confirmation = 'succeeded';
       if (typeof response === 'object' && response !== null && 'error' in response) {
         if (!needsAuthentication(response.error)) throw response.error;
@@ -587,6 +611,7 @@ export class FakePayments implements Payments {
         request.saveForOffSession,
         request.linkId,
         request.expiresAt?.toISOString(),
+        ...(request.bankDebit ? [request.bankDebit.type, request.bankDebit.type === 'acss_debit' ? request.bankDebit.intervalDescription : null] : []),
       ]),
       () => {
         const id = this.#id('cs');
@@ -598,6 +623,7 @@ export class FakePayments implements Payments {
           savesCard: request.mode === 'setup' || request.saveForOffSession,
           url: `https://checkout.invalid/${id}`,
           status: 'open',
+          paymentStatus: request.mode === 'setup' ? 'no_payment_required' : 'unpaid',
           metadata: { gymId: this.gymId, ...(request.invoiceId ? { invoiceId: request.invoiceId } : {}),
             ...(request.linkId ? { linkId: request.linkId } : {}) },
         };
@@ -609,23 +635,25 @@ export class FakePayments implements Payments {
     );
     return this.#reply('createCheckout', result);
   }
-  completeCheckout(id: string): CheckoutSession {
+  completeCheckout(id: string, { method = 'card' }: { method?: PaymentMethodType } = {}): CheckoutSession {
     this.#lapse(id);
     const session = this.#checkouts.get(id);
     const request = this.#checkoutRequests.get(id);
     if (!session || !request) throw new Error('Unknown Checkout session');
     if (session.status === 'expired') throw new Error('Checkout has expired');
     if (session.status === 'complete') return structuredClone(session);
+    if (method !== 'card' && request.bankDebit?.type !== method) throw new Error('Payment method is not offered by Checkout');
     const chargeId = session.mode === 'payment' ? this.#id('pi') : undefined;
     const paymentMethodId = this.#id('pm');
-    if (session.savesCard) this.recordPaymentMethod({
+    const mandateId = method !== 'card' ? this.#id('mandate') : undefined;
+    if (session.savesCard) this.recordPaymentMethod(method === 'card' ? {
       id: paymentMethodId,
       customerId: session.customerId,
       last4: '4242',
       brand: 'visa',
       expiresMonth: 12,
       expiresYear: this.clock.now().getUTCFullYear() + 3,
-    });
+    } : { id: paymentMethodId, customerId: session.customerId, type: method, last4: '6789', bankName: 'STRIPE TEST BANK' });
     const setupId = session.mode === 'setup' ? this.#id('seti') : undefined;
     if (setupId)
       this.recordSetup({
@@ -633,6 +661,7 @@ export class FakePayments implements Payments {
         customerId: session.customerId,
         status: 'succeeded',
         paymentMethodId,
+        ...(mandateId ? { mandateId } : {}),
         metadata: session.metadata,
       });
     if (chargeId) {
@@ -644,14 +673,15 @@ export class FakePayments implements Payments {
         paymentMethodId,
         latestChargeId: this.#id('ch'),
         metadata: session.metadata,
-        status: 'succeeded',
-        succeededAt: this.clock.now(),
+        ...(method === 'card' ? { status: 'succeeded', succeededAt: this.clock.now() } : { status: 'pending' }),
       });
       this.#record('charge', chargeId);
     }
     const completed: CheckoutSession = {
       ...session,
       status: 'complete',
+      paymentStatus: session.mode === 'setup' ? 'no_payment_required' : method === 'card' ? 'paid' : 'unpaid',
+      ...(chargeId && mandateId ? { mandateId } : {}),
       paymentMethodId,
       ...(setupId ? { setupId } : {}),
       ...(chargeId ? { chargeId } : {}),
@@ -789,7 +819,7 @@ export class FakePayments implements Payments {
     if (options.redactBillingDetails) this.#billing.delete(processorId);
     this.#detached.add(processorId);
   }
-  async listCustomerCards(customerId: string, options: CustomerCardQuery): Promise<CustomerCardPage> {
+  async listCustomerCards(customerId: string, options: CustomerCardQuery = {}): Promise<CustomerCardPage> {
     assertNoTransaction('payments.listCustomerCards');
     const limit = options.limit ?? 100;
     if (!/^[A-Za-z0-9_]+$/.test(customerId) || options.cursor !== undefined && !/^[A-Za-z0-9_]+$/.test(options.cursor))
@@ -799,13 +829,18 @@ export class FakePayments implements Payments {
     if (!customer || customer.deleted || customer.gymId !== this.gymId
       || customer.householdId !== undefined && customer.householdId !== options.householdId)
       throw new CardImportRefused('Customer is not owned by this gym and household');
+    const types = new Set<PaymentMethodType>(options.types ?? ['card']);
+    if (!types.size) return { cards: [], nextCursor: null };
     const methods = [...this.#methods.values()].filter(method => method.customerId === customerId && !this.#detached.has(method.id)
-      && this.#methodTypes.get(method.id) === 'card')
+      && (types.size > 1 || types.has(method.type)))
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id));
     const start = options.cursor ? methods.findIndex(method => method.id === options.cursor) + 1 : 0;
     if (options.cursor && !start) throw new CardCursorRefused('Invalid card cursor');
-    const cards = methods.slice(start, start + limit);
-    return structuredClone({ cards, nextCursor: start + limit < methods.length ? cards.at(-1)!.id : null });
+    const page = methods.slice(start, start + limit);
+    if (page.some(method => this.#methodOwners.has(method.id) && this.#methodOwners.get(method.id) !== this.gymId))
+      throw new CardImportRefused('Card belongs to another customer or gym');
+    const cards = page.filter(method => types.has(method.type) && (method.type === 'card' || method.last4));
+    return structuredClone({ cards, nextCursor: start + limit < methods.length ? page.at(-1)!.id : null });
   }
   /** The stored name, email and personal details, as the provider would show them. */
   customer(customerId: string): ({ name: string | null; email: string | null } & Required<CustomerDetails>) | undefined {

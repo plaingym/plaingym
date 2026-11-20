@@ -7,7 +7,7 @@ import { CustomerCreationInProgress, CustomerDeleted, ERASED_CUSTOMER_NAME, norm
   type CheckoutSession, type CheckoutExpiry, type ChargeReference, type ChargeOutcome, type PaymentMetadata,
   type PaymentObjectReference, type PaymentObjectResult, type PaymentObject, type PaymentChange,
   type PaymentEvent, type Refund, type RefundRequest, type CustomerMatch, CardImportRefused, CardCursorRefused,
-  type CustomerCardPage, type CustomerCardQuery } from './index.js';
+  type CustomerCardPage, type CustomerCardQuery, type PaymentMethod, type PaymentMethodType, BankDebitUnavailable } from './index.js';
 import type { Json, ObjectData, PaymentTransport, ProviderRequest } from './transport.js';
 import { PaymentWebhookError } from './webhook-error.js';
 import { matchesBillingEmail, type ClearCustomerEmail } from './email-erasure.js';
@@ -51,6 +51,29 @@ function timestamp(value: Json | undefined): Date {
   return time;
 }
 class NotForGym extends Error {}
+function methodType(method: ObjectData): PaymentMethodType {
+  // Older recorded card responses contain the card object without a type discriminator.
+  if (method.type === 'card' || (method.type === undefined && method.card)) return 'card';
+  if (method.type === 'us_bank_account' || method.type === 'acss_debit') return method.type;
+  throw new Error('Invalid Stripe object');
+}
+function readMethod(method: ObjectData): PaymentMethod {
+  const type = methodType(method), details = data(method[type]);
+  const identity = { id: id(method.id), customerId: id(method.customer), createdAt: timestamp(method.created) };
+  if (type !== 'card') {
+    if (typeof details.last4 !== 'string' || !/^\d{4}$/.test(details.last4)) throw new Error('Invalid bank account details');
+    return { ...identity, type, last4: details.last4, ...(typeof details.bank_name === 'string' ? { bankName: details.bank_name } : {}) };
+  }
+  return { ...identity, type, last4: String(details.last4), ...(typeof details.brand === 'string' ? { brand: details.brand } : {}),
+    expiresMonth: Number(details.exp_month), expiresYear: Number(details.exp_year) };
+}
+function bankOptionRefused(error: unknown): boolean {
+  const failure = error as { type?: string; rawType?: string; param?: string; raw?: { type?: string; param?: string } } | null;
+  const param = failure?.param ?? failure?.raw?.param;
+  return (failure?.type === 'StripeInvalidRequestError' || failure?.type === 'invalid_request_error'
+    || failure?.rawType === 'invalid_request_error' || failure?.raw?.type === 'invalid_request_error')
+    && typeof param === 'string' && /^(?:allowed_payment_method_types|payment_method_types|payment_method_options)/.test(param);
+}
 function queryString(params: ObjectData): string {
   const query = new URLSearchParams();
   const append = (name: string, value: Json | undefined): void => {
@@ -169,19 +192,23 @@ export class StripePayments implements Payments {
     const payer = method.customer && typeof method.customer === 'object' ? data(method.customer) : undefined;
     if (!payer || id(payer.id) !== request.customerId) throw new Error('Payment method is not attached to payer');
     this.#metadata(payer);
+    const type = methodType(method);
     const result = await this.#post('/v1/payment_intents', { amount: request.amount, currency: request.currency,
-      customer: request.customerId, payment_method: request.paymentMethodId, allowed_payment_method_types: ['card'], confirm: false,
+      customer: request.customerId, payment_method: request.paymentMethodId, allowed_payment_method_types: [type], confirm: false,
       metadata: { gym_id: this.gymId, invoice_id: request.invoiceId, attempt_id: request.attemptId,
+        ...(type !== 'card' && request.mandateId ? { mandate_id: request.mandateId } : {}),
         ...(request.idempotencyKey.match(/:([0-9]+):create$/)?.[1] ? { attempt_n: request.idempotencyKey.match(/:([0-9]+):create$/)![1]! } : {}) } }, request.idempotencyKey);
     this.#metadata(result); return { id: id(result.id) };
   }
   async confirmCharge(objectId: string, options: { idempotencyKey: string }): Promise<ChargeOutcome> {
     assertNoTransaction('payments.confirmCharge'); key(options.idempotencyKey);
     const before = await this.#ownedIntent(objectId);
-    if (before.status === 'succeeded' || before.status === 'canceled') return this.#intent(before);
+    // Stripe refuses to confirm a processing intent (a bank debit settles for days), so it is reported as it stands.
+    if (before.status === 'succeeded' || before.status === 'canceled' || before.status === 'processing') return this.#intent(before);
+    const mandate = data(before.metadata).mandate_id;
     // As in intent reads, the expanded Charge returns the success time, so recording it needs no further reads.
     try { return this.#intent(await this.#post(this.#path('payment_intents', objectId) + '/confirm',
-      { off_session: true, expand: ['latest_charge'] }, options.idempotencyKey)); }
+      { off_session: true, expand: ['latest_charge'], ...(typeof mandate === 'string' ? { mandate } : {}) }, options.idempotencyKey)); }
     catch (error) {
       // Card errors embed the authoritative intent; network/permission errors remain errors, never declines.
       const record = error && typeof error === 'object' ? error as Record<string, unknown> : {};
@@ -230,8 +257,17 @@ export class StripePayments implements Payments {
     // set at creation from the same request as the intent's setup_future_usage, says whether it saves the card.
     let paymentMethodId: string | undefined, savesCard = object.mode === 'setup'
       || (object.mode === 'payment' && data(object.metadata ?? {}).saves_card === 'off_session');
+    // Card recordings made before payment_status was captured use the intent's actual state.
+    let paymentStatus = object.payment_status ?? (object.mode === 'setup' ? 'no_payment_required' : 'unpaid');
+    let mandateId: string | undefined;
     if (chargeId) {
       const intent = await this.#ownedIntent(chargeId);
+      if (object.payment_status === undefined && intent.status === 'succeeded') paymentStatus = 'paid';
+      const charge = intent.latest_charge && typeof intent.latest_charge === 'object' ? data(intent.latest_charge) : undefined;
+      if (charge && optionalId(charge.payment_intent) === chargeId && charge.payment_method_details) {
+        const details = data(charge.payment_method_details), type = details.type;
+        if ((type === 'us_bank_account' || type === 'acss_debit') && details[type]) mandateId = optionalId(data(details[type]).mandate);
+      }
       paymentMethodId = optionalId(intent.payment_method);
       savesCard = intent.setup_future_usage === 'off_session' || intent.setup_future_usage === 'on_session';
     }
@@ -241,7 +277,9 @@ export class StripePayments implements Payments {
     }
     if (!['open', 'complete', 'expired'].includes(String(object.status)) || !['setup', 'payment'].includes(String(object.mode)))
       throw new Error('Invalid Checkout state');
-    return { id: id(object.id), mode: object.mode as 'payment' | 'setup', url: String(object.url ?? ''),
+    if (paymentStatus !== 'paid' && paymentStatus !== 'unpaid' && paymentStatus !== 'no_payment_required') throw new Error('Invalid Checkout payment status');
+    return { id: id(object.id), mode: object.mode as 'payment' | 'setup', url: String(object.url ?? ''), paymentStatus,
+      ...(mandateId ? { mandateId } : {}),
       status: object.status as CheckoutSession['status'], customerId: id(object.customer), metadata, savesCard,
       ...(chargeId ? { chargeId } : {}), ...(setupId ? { setupId } : {}), ...(paymentMethodId ? { paymentMethodId } : {}) };
   }
@@ -254,8 +292,9 @@ export class StripePayments implements Payments {
     await this.#ownedCustomer(customer);
     const metadata = { gym_id: this.gymId, ...(request.invoiceId ? { invoice_id: request.invoiceId } : {}),
       ...(request.linkId ? { link_id: request.linkId } : {}) };
+    const bank = request.bankDebit;
     const params: ObjectData = { mode: request.mode, customer, success_url: request.successUrl, cancel_url: request.cancelUrl,
-      allowed_payment_method_types: ['card'],
+      allowed_payment_method_types: bank ? ['card', bank.type] : ['card'],
       metadata: request.mode === 'payment' && request.saveForOffSession ? { ...metadata, saves_card: 'off_session' } : metadata,
       ...(request.expiresAt ? { expires_at: Math.floor(request.expiresAt.getTime() / 1000) } : {}),
       ...(request.mode === 'payment' ? { payment_intent_data: { metadata,
@@ -263,7 +302,20 @@ export class StripePayments implements Payments {
       line_items: [{ quantity: 1, price_data: { currency: request.currency!, unit_amount: request.amount!,
         product_data: { name: 'Invoice payment', metadata } } }] }
       : { setup_intent_data: { metadata } }) };
-    return this.#checkout(await this.#post('/v1/checkout/sessions', params, request.idempotencyKey));
+    if (bank?.type === 'us_bank_account') {
+      params.payment_method_options = { us_bank_account: { verification_method: 'instant', financial_connections: { permissions: ['payment_method'] } } };
+    } else if (bank?.type === 'acss_debit') {
+      params.payment_method_options = { acss_debit: { verification_method: 'instant', ...(request.mode === 'setup' ? { currency: 'cad' } : {}),
+        mandate_options: { payment_schedule: 'combined', interval_description: bank.intervalDescription, transaction_type: 'personal' } } };
+      if (request.mode === 'setup') params.currency = 'cad';
+    }
+    let session: ObjectData;
+    try { session = await this.#post('/v1/checkout/sessions', params, request.idempotencyKey); }
+    catch (error) {
+      if (bank && bankOptionRefused(error)) throw new BankDebitUnavailable('Bank debit is unavailable for Checkout', { cause: error });
+      throw error;
+    }
+    return this.#checkout(session);
   }
   async expireCheckout(objectId: string): Promise<CheckoutExpiry> {
     assertNoTransaction('payments.expireCheckout');
@@ -344,6 +396,7 @@ export class StripePayments implements Payments {
         const object = await this.#get(this.#path('setup_intents', reference.id));
         const metadata = this.#metadata(object);
         value = { kind: 'setup', object: { id: id(object.id), customerId: id(object.customer), metadata,
+          ...(object.mandate ? { mandateId: id(object.mandate) } : {}),
           status: object.status === 'succeeded' ? 'succeeded' : object.status === 'requires_action' ? 'action_required'
             : object.status === 'canceled' || (object.status === 'requires_payment_method' && object.last_setup_error) ? 'failed' : 'pending',
           ...(object.payment_method ? { paymentMethodId: id(object.payment_method) } : {}) } }; break;
@@ -353,10 +406,7 @@ export class StripePayments implements Payments {
         if (data(object.metadata ?? {}).gym_id) this.#metadata(object);
         if (!object.customer) throw new NotForGym('Payment method has no customer');
         await this.#ownedCustomer(id(object.customer));
-        const card = data(object.card);
-        value = { kind: 'payment_method', object: { id: id(object.id), createdAt: timestamp(object.created), customerId: id(object.customer), last4: String(card.last4),
-          ...(typeof card.brand === 'string' ? { brand: card.brand } : {}),
-          expiresMonth: Number(card.exp_month), expiresYear: Number(card.exp_year) } }; break;
+        value = { kind: 'payment_method', object: readMethod(object) }; break;
       }
     }
     return value;
@@ -524,7 +574,7 @@ export class StripePayments implements Payments {
     if (owner === undefined) await this.#post(path, { metadata: { gym_id: this.gymId } }, 'customer:' + customerId + ':adopt');
     return { id: id(customer.id), email: typeof customer.email === 'string' ? customer.email : null };
   }
-  async listCustomerCards(customerId: string, options: CustomerCardQuery): Promise<CustomerCardPage> {
+  async listCustomerCards(customerId: string, options: CustomerCardQuery = {}): Promise<CustomerCardPage> {
     assertNoTransaction('payments.listCustomerCards');
     const path = this.#path('customers', customerId), limit = options.limit ?? 100;
     if (options.cursor !== undefined) this.#path('payment_methods', options.cursor);
@@ -533,7 +583,11 @@ export class StripePayments implements Payments {
     if (customer.deleted === true || metadata.gym_id !== this.gymId
       || metadata.household_id !== undefined && metadata.household_id !== options.householdId)
       throw new CardImportRefused('Customer is not owned by this gym and household');
-    const page = await this.#get('/v1/payment_methods', { customer: customerId, type: 'card', limit,
+    const types = new Set<PaymentMethodType>(options.types ?? ['card']);
+    if (!types.size) return { cards: [], nextCursor: null };
+    // Stripe filters on a single type. A mixed page uses its customer-wide cursor, including skipped methods.
+    const singleType = types.size === 1 ? [...types][0] : undefined;
+    const page = await this.#get('/v1/payment_methods', { customer: customerId, ...(singleType ? { type: singleType } : {}), limit,
       ...(options.cursor ? { starting_after: options.cursor } : {}) }).catch(error => {
       const refused = error as { statusCode?: number; code?: string; param?: string; raw?: { param?: string } } | null;
       const parameter = refused?.param ?? refused?.raw?.param;
@@ -543,20 +597,26 @@ export class StripePayments implements Payments {
       throw error;
     });
     if (!Array.isArray(page.data) || page.data.length > limit || typeof page.has_more !== 'boolean') throw new Error('Invalid card page');
-    const cards = page.data.map(value => {
-      const method = data(value), card = data(method.card), owner = data(method.metadata ?? {}).gym_id;
+    const ids = new Set<string>(), cards: PaymentMethod[] = [];
+    for (const value of page.data) {
+      const method = data(value), owner = data(method.metadata ?? {}).gym_id;
       if (id(method.customer) !== customerId || owner !== undefined && owner !== this.gymId)
         throw new CardImportRefused('Card belongs to another customer or gym');
       const methodId = id(method.id); this.#path('payment_methods', methodId);
-      if (method.type !== 'card' || typeof card.last4 !== 'string' || !/^[0-9]{4}$/.test(card.last4)
-        || !Number.isInteger(card.exp_month) || Number(card.exp_month) < 1 || Number(card.exp_month) > 12
-        || !Number.isInteger(card.exp_year) || Number(card.exp_year) < 2000) throw new Error('Invalid card details');
-      return { id: methodId, customerId, createdAt: timestamp(method.created), last4: card.last4,
-        ...(typeof card.brand === 'string' ? { brand: card.brand } : {}), expiresMonth: Number(card.exp_month), expiresYear: Number(card.exp_year) };
-    });
-    const nextCursor = page.has_more ? cards.at(-1)?.id : null;
-    if (nextCursor === undefined || nextCursor === options.cursor || new Set(cards.map(card => card.id)).size !== cards.length)
-      throw new Error('Invalid card pagination');
+      if (ids.has(methodId)) throw new Error('Invalid card pagination');
+      ids.add(methodId);
+      if (singleType && method.type !== singleType) throw new Error('Invalid card details');
+      if (!types.has(method.type as PaymentMethodType)) continue;
+      if (method.type === 'card') {
+        const card = data(method.card);
+        if (typeof card.last4 !== 'string' || !/^[0-9]{4}$/.test(card.last4)
+          || !Number.isInteger(card.exp_month) || Number(card.exp_month) < 1 || Number(card.exp_month) > 12
+          || !Number.isInteger(card.exp_year) || Number(card.exp_year) < 2000) throw new Error('Invalid card details');
+      } else if (!data(method[String(method.type)] ?? {}).last4) continue;
+      cards.push(readMethod(method));
+    }
+    const nextCursor = page.has_more ? [...ids].at(-1) : null;
+    if (nextCursor === undefined || nextCursor === options.cursor) throw new Error('Invalid card pagination');
     return { cards, nextCursor };
   }
   async findCustomerByEmail(email: string): Promise<readonly CustomerMatch[]> {

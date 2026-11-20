@@ -187,6 +187,14 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
     await f.run('payment_method.updated', { kind: 'payment_method', id: 'pm_3155' });
     expect((await f.read()).methods[0]).toMatchObject({ brand: null, expiryYear: 2035 });
   });
+  it.each(['pm_usbank_6789', 'pm_acss_6789'])('ignores updates and collections for bank method %s', async id => {
+    const f = await fixture();
+    setup(f, 'seti_bank', id);
+    const before = await f.read();
+    await f.run('payment_method.updated', { kind: 'payment_method', id });
+    await f.run('setup_intent.succeeded', { kind: 'setup', id: 'seti_bank' });
+    expect(await f.read()).toEqual(before);
+  });
   it('keeps the newer collected card on reverse delivery, replay, and concurrent collection', async () => {
     const f = await fixture(); setup(f, 'seti_old', 'pm_4242'); setup(f);
     f.transport.objects.get('pm_4242')!.created = f.transport.now - 86400;

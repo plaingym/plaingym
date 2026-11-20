@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
 import { paymentsContract } from '../../core/registry-infra-contracts.js';
-import type { Payments, CreateCharge, CheckoutRequest } from './index.js';
+import type { Payments, CreateCharge, CheckoutRequest, CustomerCardPage, PaymentMethodType } from './index.js';
 import type { ClearCustomerEmail } from './email-erasure.js';
 import { runInTransaction } from '@plaingym/shared/transaction';
 
@@ -117,6 +117,57 @@ export function customerCardRedactionContract(name: string, create: () => Custom
   });
 }
 export type Card = '4242' | '0341' | '3155' | '3184';
+export function bankDebitContract(name: string, create: () => {
+  payments: Payments; charge: CreateCharge; checkout: CheckoutRequest;
+  completeCheckout(id: string, options: { method: PaymentMethodType }): void;
+}) {
+  describe(name + ' bank debit', () => {
+    it.each([['us_bank_account', 'pm_usbank_6789'], ['acss_debit', 'pm_acss_6789']] as const)(
+      'reads and confirms an attached %s', async (type, id) => {
+        const { payments, charge } = create();
+        expect(await payments.readPaymentObject({ kind: 'payment_method', id })).toMatchObject({
+          status: 'found', value: { kind: 'payment_method', object: { id, type, customerId: charge.customerId, last4: '6789', bankName: 'STRIPE TEST BANK' } } });
+        const intent = await payments.createCharge({ ...charge, currency: type === 'acss_debit' ? 'cad' : 'usd', paymentMethodId: id,
+          ...(type === 'acss_debit' ? { mandateId: 'mandate_setup' } : {}) });
+        expect(await payments.confirmCharge(intent.id, { idempotencyKey: 'confirm' })).toMatchObject({ id: intent.id, status: 'pending' });
+      });
+    it('lists cards by default and includes only requested kinds across bounded mixed pages', async () => {
+      const { payments, charge: { customerId } } = create();
+      expect((await payments.listCustomerCards(customerId)).cards.map(method => method.type)).toEqual(['card']);
+      const types = ['card', 'us_bank_account'] as const, found: string[] = [];
+      let cursor: string | null = null;
+      for (let page = 0; page < 8; page++) {
+        const result: CustomerCardPage = await payments.listCustomerCards(customerId, { types, limit: 1, ...(cursor ? { cursor } : {}) });
+        found.push(...result.cards.map(method => method.id));
+        cursor = result.nextCursor;
+        if (!cursor) break;
+      }
+      expect(cursor).toBeNull();
+      expect(found.sort()).toEqual(['pm_3155', 'pm_usbank_6789']);
+      expect(await payments.listCustomerCards(customerId, { types: [] })).toEqual({ cards: [], nextCursor: null });
+    });
+    it.each(['card', 'us_bank_account', 'acss_debit'] as const)('reports payment status and bank mandates after %s Checkout', async method => {
+      const { payments, checkout, completeCheckout } = create();
+      const bankDebit = method === 'acss_debit' ? { type: method, intervalDescription: 'Monthly dues and occasional fees' } : { type: 'us_bank_account' as const };
+      for (const mode of ['payment', 'setup'] as const) {
+        const session = await payments.createCheckout({ ...checkout, mode, bankDebit, currency: method === 'acss_debit' ? 'cad' : 'usd', idempotencyKey: mode });
+        completeCheckout(session.id, { method });
+        const read = await payments.readPaymentObject({ kind: 'checkout', id: session.id });
+        if (read.status !== 'found' || read.value.kind !== 'checkout') throw new Error('Checkout missing');
+        const completed = read.value.object;
+        expect(completed).toMatchObject({ status: 'complete', savesCard: true,
+          paymentStatus: mode === 'setup' ? 'no_payment_required' : method === 'card' ? 'paid' : 'unpaid' });
+        if (mode === 'payment') {
+          expect(await payments.findCharge({ kind: 'charge', id: completed.chargeId! })).toMatchObject({ status: method === 'card' ? 'succeeded' : 'pending' });
+          if (method !== 'card') expect(completed.mandateId).toMatch(/^mandate_/);
+        } else if (method !== 'card') {
+          expect(await payments.readPaymentObject({ kind: 'setup', id: completed.setupId! })).toMatchObject({
+            status: 'found', value: { kind: 'setup', object: { mandateId: expect.stringMatching(/^mandate_/) } } });
+        }
+      }
+    });
+  });
+}
 export interface ContractHarness {
   payments: Payments; charge: CreateCharge; checkout: CheckoutRequest;
   detach: { owned: string; foreign: string };

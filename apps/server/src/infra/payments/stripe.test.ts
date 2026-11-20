@@ -4,12 +4,12 @@ import { randomUUID, createHmac } from 'node:crypto';
 import { afterAll, expect, it, vi } from 'vitest';
 import Stripe from 'stripe';
 import { runInTransaction } from '@plaingym/shared/transaction';
-import { CustomerCreationInProgress, CustomerDeleted, FakePayments, isProviderOutage } from './index.js';
+import { BankDebitUnavailable, CustomerCreationInProgress, CustomerDeleted, FakePayments, isProviderOutage } from './index.js';
 import { FixtureRecorder, replayPayments } from './recording.js';
 import { recordingTransport, replayTransport, type PaymentTransport } from './transport.js';
 import { StripePayments, STRIPE_API_VERSION, stripeTransport } from './stripe.js';
 import { StripeFixtures } from './stripe-fixtures.js';
-import { fullPaymentsContract, type Card } from './payments.contract.js';
+import { bankDebitContract, fullPaymentsContract, type Card } from './payments.contract.js';
 import { stripeProvisioner, permissionProbes } from './setup.js';
 import { webhookEndpointContract } from './webhook-endpoints.contract.js';
 import { PaymentWebhookError } from './webhook-error.js';
@@ -57,6 +57,72 @@ function fixture(card: Card = '4242') {
       cancel: (id: string) => { transport.objects.get(id)!.status = 'canceled'; } } };
 }
 const recordings = new Map<string, FixtureRecorder>();
+bankDebitContract('FakePayments', () => {
+  const payments = new FakePayments(gymId), customerId = charge.customerId;
+  payments.seedCustomer({ id: customerId, email: 'payer@example.invalid' });
+  payments.recordPaymentMethod({ id: 'pm_3155', customerId, expiresMonth: 12, expiresYear: 2030, last4: '3155' });
+  payments.recordPaymentMethod({ id: 'pm_usbank_6789', customerId, type: 'us_bank_account', last4: '6789', bankName: 'STRIPE TEST BANK' });
+  payments.recordPaymentMethod({ id: 'pm_acss_6789', customerId, type: 'acss_debit', last4: '6789', bankName: 'STRIPE TEST BANK' });
+  payments.recordPaymentMethod({ id: 'pm_without_digits', customerId, type: 'us_bank_account', last4: '' });
+  return { payments, charge, checkout, completeCheckout: (id, options) => payments.completeCheckout(id, options) };
+});
+bankDebitContract('StripePayments', () => {
+  const f = fixture();
+  for (const id of ['pm_0341', 'pm_4242', 'pm_3184', 'pm_usbank_1113', 'pm_usbank_2227']) {
+    f.transport.objects.get(id)!.customer = null;
+  }
+  f.transport.objects.set('pm_without_digits', { ...f.transport.objects.get('pm_usbank_6789')!, id: 'pm_without_digits', us_bank_account: {} });
+  return { ...f, completeCheckout: (id, options) => f.transport.completeCheckout(id, options) };
+});
+it.each(['payment', 'setup'] as const)('sends bank options on %s Checkout', async mode => {
+  const { payments, transport } = fixture();
+  async function open(bankDebit: { type: 'us_bank_account' } | { type: 'acss_debit'; intervalDescription: string }) {
+    await payments.createCheckout({ ...checkout, mode, bankDebit, currency: bankDebit.type === 'acss_debit' ? 'cad' : 'usd', idempotencyKey: bankDebit.type });
+    return transport.requests.filter(r => r.method === 'POST' && r.path === '/v1/checkout/sessions').at(-1)!.params!;
+  }
+  const us = await open({ type: 'us_bank_account' });
+  expect(us.allowed_payment_method_types).toEqual(['card', 'us_bank_account']);
+  expect(us.payment_method_options).toEqual({ us_bank_account: { verification_method: 'instant', financial_connections: { permissions: ['payment_method'] } } });
+  const pad = await open({ type: 'acss_debit', intervalDescription: 'Monthly dues and occasional fees' });
+  expect(pad.allowed_payment_method_types).toEqual(['card', 'acss_debit']);
+  expect(pad.payment_method_options).toEqual({ acss_debit: { ...(mode === 'setup' ? { currency: 'cad' } : {}), verification_method: 'instant',
+    mandate_options: { payment_schedule: 'combined', interval_description: 'Monthly dues and occasional fees', transaction_type: 'personal' } } });
+  if (mode === 'setup') expect(pad.currency).toBe('cad');
+  else expect(pad.line_items).toMatchObject([{ price_data: { currency: 'cad' } }]);
+});
+it.each([
+  ['pm_usbank_6789', 'us_bank_account', undefined], ['pm_acss_6789', 'acss_debit', undefined],
+  ['pm_usbank_2227', 'us_bank_account', 'insufficient_funds'], ['pm_usbank_1113', 'us_bank_account', 'account_closed'],
+] as const)('confirms then settles %s and exposes the event snapshot', async (id, type, code) => {
+  const { payments, transport } = fixture(), mandateId = type === 'acss_debit' ? 'mandate_setup' : undefined;
+  const intent = await payments.createCharge({ ...charge, paymentMethodId: id, currency: type === 'acss_debit' ? 'cad' : 'usd', ...(mandateId ? { mandateId } : {}) });
+  expect(transport.requests.at(-1)?.params?.allowed_payment_method_types).toEqual([type]);
+  expect(transport.requests.at(-1)?.params).not.toHaveProperty('mandate');
+  await payments.confirmCharge(intent.id, { idempotencyKey: 'confirm' });
+  expect(transport.requests.at(-1)?.params?.mandate).toBe(mandateId);
+  expect(transport.objects.get(intent.id)?.status).toBe('processing');
+  const confirms = transport.requests.filter(r => r.method === 'POST' && r.path.endsWith('/confirm')).length;
+  expect(await payments.confirmCharge(intent.id, { idempotencyKey: 'confirm-again' })).toMatchObject({ id: intent.id, status: 'pending' });
+  expect(transport.requests.filter(r => r.method === 'POST' && r.path.endsWith('/confirm'))).toHaveLength(confirms);
+  const event = transport.settle(intent.id);
+  expect(event).toMatchObject({ object: 'event', type: code ? 'payment_intent.payment_failed' : 'payment_intent.succeeded', livemode: false,
+    data: { object: { id: intent.id, status: code ? 'requires_payment_method' : 'succeeded', ...(code ? { last_payment_error: { code } } : {}) } } });
+  expect(await payments.findCharge({ kind: 'charge', id: intent.id })).toMatchObject({ status: code ? 'failed' : 'succeeded' });
+});
+it.each(['payment_method_types[1]', 'allowed_payment_method_types[1]', 'payment_method_options[us_bank_account]'])(
+  'classifies a bank Checkout refusal for %s without changing a card error', async param => {
+    const { transport, payments } = fixture(), send = transport.request.bind(transport);
+    const error = Object.assign(new Error('Payment method unavailable'), { type: 'StripeInvalidRequestError', raw: { type: 'invalid_request_error', param } });
+    vi.spyOn(transport, 'request').mockImplementation(input => input.path === '/v1/checkout/sessions' ? Promise.reject(error) : send(input));
+    await expect(payments.createCheckout({ ...checkout, bankDebit: { type: 'us_bank_account' } })).rejects.toBeInstanceOf(BankDebitUnavailable);
+    const recorder = new FixtureRecorder(gymId);
+    const request = { ...checkout, bankDebit: { type: 'us_bank_account' as const } };
+    await expect(recorder.wrap(payments).createCheckout(request)).rejects.toBeInstanceOf(BankDebitUnavailable);
+    await expect(replayPayments(recorder.tape, gymId).createCheckout(request)).rejects.toBeInstanceOf(BankDebitUnavailable);
+    await expect(payments.createCheckout(checkout)).rejects.toBe(error);
+    error.raw.param = 'customer';
+    await expect(payments.createCheckout({ ...checkout, bankDebit: { type: 'us_bank_account' } })).rejects.toBe(error);
+  });
 const recordName = 'StripePayments with synthetic API fixtures', replayName = 'StripePayments with recorded API replay';
 const caseName = () => expect.getState().currentTestName!.replace(recordName, '').replace(replayName, '').trim();
 fullPaymentsContract(recordName, async (card) => {
