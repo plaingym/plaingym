@@ -14,6 +14,23 @@ const updateBanner = {
     releaseUrl: 'https://github.com/plaingym/plaingym/releases/tag/v1.3.0' },
 };
 
+/**
+ * Gives the page behind the menu a stable scroll range. The admin screens load their data after the shell, so a short
+ * loading page would clamp a scroll and make the regression depend on the seed data rather than the shell.
+ */
+async function makeScrollable(page: Page) {
+  await page.locator('#main-content').waitFor();
+  await page.evaluate(() => {
+    const main = document.getElementById('main-content');
+    if (!main || document.getElementById('phone-menu-regression-spacer')) return;
+    const spacer = document.createElement('div');
+    spacer.id = 'phone-menu-regression-spacer';
+    spacer.setAttribute('aria-hidden', 'true');
+    spacer.style.height = '2000px';
+    main.append(spacer);
+  });
+}
+
 /** Opens the phone menu and checks it is the only scrolling surface, with Settings in reach. */
 async function openPhoneMenu(page: Page, withBanner: boolean): Promise<Locator> {
   const nav = page.getByRole('navigation', { name: 'Gym navigation' });
@@ -66,6 +83,7 @@ test('phone menu reaches Settings, hides the group headings and leaves the page 
   const owner = await demoClient(sandbox, 'owner');
   await owner.browser(page.context());
   await page.goto(sandbox.origin + '/admin');
+  await makeScrollable(page);
 
   let settings = await openPhoneMenu(page, false);
   await settings.click();
@@ -73,6 +91,7 @@ test('phone menu reaches Settings, hides the group headings and leaves the page 
   const nav = page.getByRole('navigation', { name: 'Gym navigation' });
   await expect(nav).toBeHidden();
   expect(await page.evaluate(() => getComputedStyle(document.documentElement).overflowY)).not.toBe('hidden');
+  await makeScrollable(page);
   await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
   expect(await page.evaluate(() => window.scrollY), 'the page scrolls again once the menu closes').toBeGreaterThan(0);
 
@@ -92,20 +111,62 @@ test('phone menu reaches Settings, hides the group headings and leaves the page 
   await expect(nav).toBeHidden();
   expect(await page.evaluate(() => getComputedStyle(document.documentElement).overflowY)).not.toBe('hidden');
 
-  // Reaching the desktop breakpoint closes it, restores the sidebar and releases the page.
+  // The `md` breakpoint shows the group headings and closes the menu together: just below it, both stay in the phone
+  // layout; at it, the sidebar appears and the page is released.
+  const gymHeading = nav.getByRole('heading', { name: 'Gym', exact: true });
   await page.getByRole('button', { name: 'Menu', exact: true }).click();
   await expect(nav).toBeVisible();
-  await page.setViewportSize({ width: 900, height: 640 });
+  await expect(gymHeading).toBeHidden();
+  await page.setViewportSize({ width: 767, height: 640 });
+  await expect(page.locator('button[aria-controls="admin-navigation"]')).toHaveAttribute('aria-expanded', 'true');
+  await expect(gymHeading).toBeHidden();
+  await page.setViewportSize({ width: 768, height: 640 });
   await expect(page.locator('button[aria-controls="admin-navigation"]')).toHaveAttribute('aria-expanded', 'false');
   await expect(nav).toHaveCSS('position', 'sticky');
+  await expect(gymHeading).toBeVisible();
   expect(await page.evaluate(() => getComputedStyle(document.documentElement).overflowY)).not.toBe('hidden');
   await page.setViewportSize({ width: 360, height: 640 });
   await expect(nav).toBeHidden();
+
+  // Showing the update banner and scrolling while the menu is open re-measures its top from the current scroll, so it
+  // stays against the header bottom rather than using the offset from when it opened.
+  let showBanner!: () => void;
+  const bannerGate = new Promise<void>((resolve) => { showBanner = resolve; });
+  await page.route('**/api/health/update', async (route) => {
+    await bannerGate;
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: updateBanner }) });
+  });
+  await page.goto(sandbox.origin + '/admin');
+  await makeScrollable(page);
+  const banner = page.getByTestId('update-banner');
+  await expect(banner).toBeHidden();
+  await page.evaluate(() => window.scrollTo(0, 300));
+  expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+  await page.getByRole('button', { name: 'Menu', exact: true }).click();
+  await expect(nav).toBeVisible();
+  showBanner();
+  await expect(banner).toBeVisible();
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(300);
+  await expect.poll(async () => {
+    const [header, menu] = await Promise.all([page.locator('header').boundingBox(), nav.boundingBox()]);
+    return menu!.y >= header!.y + header!.height - 1 && menu!.y <= header!.y + header!.height + 1;
+  }, { message: 'the menu moves with the current scroll to sit at the header bottom' }).toBe(true);
+  await expect(gymHeading).toBeHidden();
+  await page.setViewportSize({ width: 767, height: 640 });
+  await expect(page.locator('button[aria-controls="admin-navigation"]')).toHaveAttribute('aria-expanded', 'true');
+  await expect(gymHeading).toBeHidden();
+  await page.setViewportSize({ width: 768, height: 640 });
+  await expect(page.locator('button[aria-controls="admin-navigation"]')).toHaveAttribute('aria-expanded', 'false');
+  await expect(gymHeading).toBeVisible();
+  await page.unroute('**/api/health/update');
+  await page.setViewportSize({ width: 360, height: 640 });
 
   // The same with the update banner between the header and the menu.
   await page.route('**/api/health/update', (route) => route.fulfill({ status: 200, contentType: 'application/json',
     body: JSON.stringify({ data: updateBanner }) }));
   await page.goto(sandbox.origin + '/admin');
+  await makeScrollable(page);
   await expect(page.getByTestId('update-banner')).toBeVisible();
   settings = await openPhoneMenu(page, true);
   await settings.click();

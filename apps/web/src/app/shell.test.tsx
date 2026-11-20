@@ -331,6 +331,77 @@ describe('admin shell', () => {
       else delete (window as unknown as Record<string, unknown>).scrollY;
     }
   });
+  it('measures the phone menu from the current scroll and again after closing and reopening', async () => {
+    const offsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+    const offsetTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetTop');
+    const scrollY = Object.getOwnPropertyDescriptor(window, 'scrollY');
+    let contentTop = 1000, currentScroll = 300;
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get() { return this.tagName === 'HEADER' ? 56 : 0; } });
+    Object.defineProperty(HTMLElement.prototype, 'offsetTop', { configurable: true, get() { return this.classList.contains('relative') ? contentTop : 0; } });
+    Object.defineProperty(window, 'scrollY', { configurable: true, get: () => currentScroll });
+    try {
+      const state = { ...anonymous, session: { userId: 'coach', displayName: 'Test User', roles: ['coach'] as const, member: false } };
+      const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}><p>Child content</p></AdminShell> });
+      render(<RouterProvider router={createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ['/'] }) })} />);
+      const user = userEvent.setup();
+      const menu = await screen.findByRole('button', { name: 'Menu' });
+      const navigation = screen.getByRole('navigation', { name: 'Gym navigation' });
+      await user.click(menu);
+      await waitFor(() => expect(navigation.style.top).toBe('700px'));
+      // The scroll moves while the menu is open (a layout change can clamp it), so the next measurement must use it.
+      currentScroll = 950;
+      fireEvent.scroll(window);
+      await waitFor(() => expect(navigation.style.top).toBe('56px'));
+      // Closing drops the cached top; reopening measures the current scroll and content, not the old top.
+      await user.keyboard('{Escape}');
+      expect(menu.getAttribute('aria-expanded')).toBe('false');
+      contentTop = 1300; currentScroll = 100;
+      await user.click(menu);
+      await waitFor(() => expect(navigation.style.top).toBe('1200px'));
+    } finally {
+      for (const [key, descriptor] of [['offsetHeight', offsetHeight], ['offsetTop', offsetTop]] as const)
+        if (descriptor) Object.defineProperty(HTMLElement.prototype, key, descriptor);
+        else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[key];
+      if (scrollY) Object.defineProperty(window, 'scrollY', scrollY);
+      else delete (window as unknown as Record<string, unknown>).scrollY;
+    }
+  });
+  it('re-measures the phone menu when the content container changes size', async () => {
+    const offsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+    const offsetTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetTop');
+    const scrollY = Object.getOwnPropertyDescriptor(window, 'scrollY');
+    let contentTop = 1000;
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get() { return this.tagName === 'HEADER' ? 56 : 0; } });
+    Object.defineProperty(HTMLElement.prototype, 'offsetTop', { configurable: true, get() { return this.classList.contains('relative') ? contentTop : 0; } });
+    Object.defineProperty(window, 'scrollY', { configurable: true, get: () => 300 });
+    const observed = new Set<Element>(), callbacks = new Set<ResizeObserverCallback>();
+    class FakeResizeObserver {
+      constructor(callback: ResizeObserverCallback) { callbacks.add(callback); }
+      observe(element: Element) { observed.add(element); }
+      disconnect() { callbacks.clear(); }
+    }
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    try {
+      const state = { ...anonymous, session: { userId: 'coach', displayName: 'Test User', roles: ['coach'] as const, member: false } };
+      const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}><p>Child content</p></AdminShell> });
+      render(<RouterProvider router={createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ['/'] }) })} />);
+      const user = userEvent.setup();
+      await user.click(await screen.findByRole('button', { name: 'Menu' }));
+      const navigation = screen.getByRole('navigation', { name: 'Gym navigation' });
+      await waitFor(() => expect(navigation.style.top).toBe('700px'));
+      expect(observed).toContain(navigation.parentElement);
+      // A banner appearing above the content moves it down; the measured top follows.
+      contentTop = 1300;
+      for (const callback of callbacks) callback([], {} as ResizeObserver);
+      await waitFor(() => expect(navigation.style.top).toBe('1000px'));
+    } finally {
+      for (const [key, descriptor] of [['offsetHeight', offsetHeight], ['offsetTop', offsetTop]] as const)
+        if (descriptor) Object.defineProperty(HTMLElement.prototype, key, descriptor);
+        else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[key];
+      if (scrollY) Object.defineProperty(window, 'scrollY', scrollY);
+      else delete (window as unknown as Record<string, unknown>).scrollY;
+    }
+  });
   it('locks the page behind the phone menu without a scrollbar shift and releases it on Escape, outside press and navigation', async () => {
     const width = window.innerWidth;
     const clientWidth = Object.getOwnPropertyDescriptor(document.documentElement, 'clientWidth');
@@ -366,25 +437,29 @@ describe('admin shell', () => {
       else delete (document.documentElement as unknown as Record<string, unknown>).clientWidth;
     }
   });
-  it('closes the phone menu and releases the page when the screen reaches the desktop breakpoint', async () => {
-    const width = window.innerWidth;
-    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 360 });
-    try {
-      const state = { ...anonymous, session: { userId: 'coach', displayName: 'Test User', roles: ['coach'] as const, member: false } };
-      const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}><p>Child content</p></AdminShell> });
-      render(<RouterProvider router={createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ['/'] }) })} />);
-      const user = userEvent.setup();
-      const menu = await screen.findByRole('button', { name: 'Menu' });
-      await user.click(menu);
-      expect(document.documentElement.style.overflow).toBe('hidden');
-      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 768 });
-      fireEvent(window, new Event('resize'));
-      await waitFor(() => expect(menu.getAttribute('aria-expanded')).toBe('false'));
-      expect(document.documentElement.style.overflow).toBe('');
-      expect(document.body.style.overflow).toBe('');
-    } finally {
-      Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
-    }
+  it('closes the phone menu and releases the page when the md media query changes', async () => {
+    let matches = false;
+    const listeners = new Set<() => void>();
+    const query = vi.fn((media: string) => ({
+      get matches() { return matches; }, media,
+      addEventListener: (type: string, listener: () => void) => { if (type === 'change') listeners.add(listener); },
+      removeEventListener: (type: string, listener: () => void) => { if (type === 'change') listeners.delete(listener); },
+    }));
+    vi.stubGlobal('matchMedia', query);
+    const state = { ...anonymous, session: { userId: 'coach', displayName: 'Test User', roles: ['coach'] as const, member: false } };
+    const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}><p>Child content</p></AdminShell> });
+    render(<RouterProvider router={createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ['/'] }) })} />);
+    const user = userEvent.setup();
+    const menu = await screen.findByRole('button', { name: 'Menu' });
+    await user.click(menu);
+    expect(document.documentElement.style.overflow).toBe('hidden');
+    expect(query).toHaveBeenCalledWith('(min-width: 48rem)');
+    matches = true;
+    for (const listener of listeners) listener();
+    await waitFor(() => expect(menu.getAttribute('aria-expanded')).toBe('false'));
+    expect(document.documentElement.style.overflow).toBe('');
+    expect(document.body.style.overflow).toBe('');
+    expect(listeners.size).toBe(0);
   });
   it('redirects anonymous admin visits to login', async () => {
     const router = start(services(), '/admin/members');

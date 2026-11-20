@@ -46,33 +46,40 @@ export function AdminShell({ state, entries = createRegistries().adminNav.all(),
   useDismiss(open, close, refs, menuButton);
   // Any navigation, including back/forward, closes the phone menu.
   useEffect(() => { setOpen(false); }, [pathname]);
-  // A resize past the phone breakpoint shows the sidebar, so the menu is no longer open.
+  // Tailwind's `md` breakpoint shows the sidebar, so the menu is no longer open. Read the same media query the
+  // layout uses instead of repeating its pixel width.
   useEffect(() => {
     if (!open) return;
-    const closeOnDesktop = () => { if (window.innerWidth >= 768) setOpen(false); };
-    window.addEventListener('resize', closeOnDesktop);
-    return () => window.removeEventListener('resize', closeOnDesktop);
+    const desktop = typeof window.matchMedia === 'function' ? window.matchMedia('(min-width: 48rem)') : null;
+    const closeOnDesktop = () => { if (desktop?.matches) setOpen(false); };
+    closeOnDesktop();
+    desktop?.addEventListener('change', closeOnDesktop);
+    return () => desktop?.removeEventListener('change', closeOnDesktop);
   }, [open]);
   // Anchor the menu below whatever chrome is above the content: the header, the demo row and the update banner.
-  // Measure in document coordinates: the header is sticky, and the scroll lock below changes where a sticky header
-  // reports itself once the page is scrolled, which used to put the menu above the screen.
-  const scrollAtOpen = useRef(0);
+  // The menu is fixed, so convert the content's document top to viewport coordinates with the scroll at measure time.
+  // The content container is observed too: showing or hiding a banner above it moves the menu without resizing the header.
   useLayoutEffect(() => {
-    if (!open) return;
-    scrollAtOpen.current = window.scrollY;
+    if (!open) { setMenuTop(undefined); return; }
     const measure = () => {
       const headerHeight = header.current?.offsetHeight ?? 0;
       let contentTop = 0;
       for (let node: HTMLElement | null = content.current; node; node = node.offsetParent as HTMLElement | null) contentTop += node.offsetTop;
-      const top = Math.max(headerHeight, contentTop - scrollAtOpen.current);
+      const top = Math.max(headerHeight, contentTop - window.scrollY);
       setMenuTop((current) => current === top ? current : top);
     };
     measure();
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
     if (header.current) observer?.observe(header.current);
     if (bannerRef.current) observer?.observe(bannerRef.current);
+    if (content.current) observer?.observe(content.current);
     window.addEventListener('resize', measure);
-    return () => { observer?.disconnect(); window.removeEventListener('resize', measure); };
+    window.addEventListener('scroll', measure, { passive: true });
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('scroll', measure);
+    };
   }, [open]);
   // The page behind the menu must not scroll or show a scrollbar. Padding keeps its content where it was.
   // Clip the body instead of hiding it: hiding it makes the body a scroll container, which breaks the sticky header.
