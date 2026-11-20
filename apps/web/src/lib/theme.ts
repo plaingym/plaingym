@@ -25,6 +25,7 @@ function isThemeChoice(value: unknown): value is ThemeChoice {
 
 /** A failed save this page kept, with the storage value left by the clear attempt. */
 let failedSave: { choice: ThemeChoice; storageBaseline: string | null } | undefined;
+let listeningForStorageChanges = false;
 
 /** Clears the page's own choice. A full reload does this; exported so tests can simulate one. */
 export function resetThemeChoice(): void {
@@ -43,6 +44,17 @@ export function effectiveThemeChoice(choice: ThemeChoice, pathname = window.loca
 /** Reading `window.localStorage` itself can throw when storage is blocked, not only `getItem`. */
 function browserStorage(): Storage | undefined {
   try { return window.localStorage; } catch { return undefined; }
+}
+
+/** Invalidate a failed pick even when neither shell is mounted to handle the event. */
+function watchStorageChanges(): void {
+  if (listeningForStorageChanges || typeof window === 'undefined') return;
+  window.addEventListener('storage', (event) => {
+    if (event.key !== null && event.key !== themeStorageKey) return;
+    if (event.storageArea && event.storageArea !== browserStorage()) return;
+    resetThemeChoice();
+  });
+  listeningForStorageChanges = true;
 }
 
 /**
@@ -127,5 +139,6 @@ export function setThemeChoice(choice: ThemeChoice, environment: ThemeEnvironmen
   const outcome = writeThemeChoiceOutcome(choice, environment);
   const chosen = applyThemeChoice(outcome.choice, environment);
   failedSave = outcome.storageBaseline === undefined ? undefined : { choice: chosen, storageBaseline: outcome.storageBaseline };
+  if (failedSave) watchStorageChanges();
   return chosen;
 }

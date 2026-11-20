@@ -164,11 +164,12 @@ the demo landing page. The public website, uploaded waiver documents and printed
 pages use the light palette. `src/lib/theme.ts` reads the stored choice, applies
 the class and keeps both `theme-color` metas in step. On mount, the admin and
 portal shells read storage without writing to it. A failed local pick survives
-shell changes until the shell reads a valid choice different from the value left
-by the failed save's clear attempt. A full reload starts from the stored choice
-or System. The page follows `storage` events for the whole time a shell is
-mounted, so a choice made in another tab updates the page even while the menu is
-closed, and that event supersedes a failed local pick. The key is
+shell changes until a shell reads a valid choice different from the value left
+by the failed save's clear attempt, or another tab changes the theme key or
+clears local storage. Those events discard the failed pick even between shell
+mounts. A mounted shell also updates the page and menu selection when it
+receives the event, even while the menu is closed. A full reload starts from
+the stored choice or System. The key is
 `plaingym.theme` and its values are `system`, `light` and `dark`. If saving fails
 and an earlier choice is readable, the page applies the new choice and tries to
 remove the stored value. After successful removal, the next load starts from

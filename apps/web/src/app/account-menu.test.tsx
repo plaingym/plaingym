@@ -25,6 +25,7 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   localStorage.clear();
+  sessionStorage.clear();
   resetThemeChoice();
   document.documentElement.classList.remove('theme-system', 'light', 'dark');
 });
@@ -147,6 +148,52 @@ it('uses a different valid choice stored after a failed clear when a shell mount
   expect(portalTheme.getByRole('radio', { name: 'System', checked: true })).toBeDefined();
   expect(document.documentElement.classList.contains('dark')).toBe(false);
   expect(mountWrite).not.toHaveBeenCalled();
+});
+
+it.each([
+  { change: 'local theme entries', area: 'local', key: themeStorageKey, values: ['system', 'light'], choice: 'Light', themeClass: 'light' },
+  { change: 'all local entries', area: 'local', key: null, values: [], choice: 'System', themeClass: 'theme-system' },
+  { change: 'an unrelated local entry', area: 'local', key: 'unrelated', values: ['system'], choice: 'Dark', themeClass: 'dark' },
+  { change: 'a session theme entry', area: 'session', key: themeStorageKey, values: ['system'], choice: 'Dark', themeClass: 'dark' },
+])('mounts the portal with $choice after storage events for $change', async ({ area, key, values, choice, themeClass }) => {
+  localStorage.setItem(themeStorageKey, 'light');
+  const user = userEvent.setup();
+  renderMenu('admin');
+  const { theme } = await openThemeMenu(user);
+  const failedWrite = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota'); });
+  const failedClear = vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => { throw new Error('read-only'); });
+
+  await user.click(theme.getByRole('radio', { name: 'Dark' }));
+  expect(document.documentElement.classList.contains('dark')).toBe(true);
+  expect(localStorage.getItem(themeStorageKey)).toBe('light');
+  cleanup();
+  failedWrite.mockRestore();
+  failedClear.mockRestore();
+
+  const setItem = vi.spyOn(Storage.prototype, 'setItem');
+  const removeItem = vi.spyOn(Storage.prototype, 'removeItem');
+  const clear = vi.spyOn(Storage.prototype, 'clear');
+  const storageArea = area === 'session' ? sessionStorage : localStorage;
+  if (key === null) {
+    storageArea.clear();
+    clear.mockClear();
+    fireEvent(window, new StorageEvent('storage', { storageArea }));
+  } else {
+    for (const newValue of values) {
+      const oldValue = storageArea.getItem(key);
+      storageArea.setItem(key, newValue);
+      setItem.mockClear();
+      fireEvent(window, new StorageEvent('storage', { key, oldValue, newValue, storageArea }));
+      expect(setItem).not.toHaveBeenCalled();
+    }
+  }
+  renderMenu('portal');
+  const { theme: portalTheme } = await openThemeMenu(user);
+  expect(portalTheme.getByRole('radio', { name: choice, checked: true })).toBeDefined();
+  expect(document.documentElement.classList.contains(themeClass)).toBe(true);
+  expect(setItem).not.toHaveBeenCalled();
+  expect(removeItem).not.toHaveBeenCalled();
+  expect(clear).not.toHaveBeenCalled();
 });
 
 it('lets a valid storage event supersede a failed local pick for later mounts', async () => {
