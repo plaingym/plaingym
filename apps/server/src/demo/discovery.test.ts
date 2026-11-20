@@ -99,10 +99,11 @@ describe.each([undefined, ordinaryOrigin])('ordinary multi-tenant runtime discov
 });
 
 describe('demo runtime discovery', () => {
+  const sourceUrl = 'https://gitlab.com/example/group/gym/-/tree/release';
   beforeAll(async () => {
     runtime = await startRuntime({ ...env(), PUBLIC_ORIGIN: demoOrigin, TENANCY: 'multi', DEMO_MODE: 'true',
       DEMO_DOMAIN: new URL(demoOrigin).hostname, UPLOADS_S3_BUCKET: 'demo-uploads', UPLOADS_S3_ENDPOINT: 'http://127.0.0.1:1',
-      UPLOADS_S3_ACCESS_KEY_ID: 'test', UPLOADS_S3_SECRET_ACCESS_KEY: 'test' });
+      UPLOADS_S3_ACCESS_KEY_ID: 'test', UPLOADS_S3_SECRET_ACCESS_KEY: 'test', SOURCE_URL: sourceUrl });
   });
   afterAll(async () => { await runtime?.stop(); });
 
@@ -110,6 +111,14 @@ describe('demo runtime discovery', () => {
     const response = await get(demoOrigin);
     expect(response.status).toBe(200);
     expect(demoEntryResponse.parse(await response.json())).toEqual({ data: { mode: 'entry' } });
+  });
+  it('uses the configured source URL on the demo entry page and the source redirect', async () => {
+    const landing = await get(demoOrigin, '/');
+    expect(landing.status).toBe(200);
+    expect(await landing.text()).toContain(`href="${sourceUrl}"`);
+    const redirect = await get(demoOrigin, '/source');
+    expect(redirect.status).toBe(302);
+    expect(redirect.headers.get('location')).toBe(sourceUrl);
   });
   it('renders only the demo entry root before tenant resolution', async () => {
     const response = await get(demoOrigin, '/');
