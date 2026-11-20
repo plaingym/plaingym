@@ -77,7 +77,7 @@ function findHorizontalOverflow(): string | undefined {
 export const horizontalOverflow = (page: Page) => page.evaluate(findHorizontalOverflow);
 
 /** Browser-only helpers: this package is installed independently of the application. */
-export async function accessibleLayout(page: Page, info: TestInfo, name: string) {
+export async function accessibleLayout(page: Page, info: TestInfo, name: string, axeExclude?: string) {
   await expect(page.locator('html'), name + ': document language').toHaveAttribute('lang', /\S+/);
   // Let finite CSS transitions and animations settle first: axe measuring a button mid-transition reports
   // colors nobody sees at rest. Infinite ones (spinners) never finish, so they're skipped.
@@ -112,8 +112,9 @@ export async function accessibleLayout(page: Page, info: TestInfo, name: string)
   expect(small, name + ': targets smaller than 44px').toEqual([]);
   // Message previews deliberately forbid scripts. Audit the surrounding app and
   // dialog without trying to inject axe into the untrusted email document.
-  const result = await new AxeBuilder({ page }).exclude('iframe[sandbox]')
-    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+  const axe = new AxeBuilder({ page }).exclude('iframe[sandbox]');
+  if (axeExclude) axe.exclude(axeExclude);
+  const result = await axe.withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
   await info.attach(name + '-axe', { body: JSON.stringify(result.violations, null, 2), contentType: 'application/json' });
   expect(result.violations, name + ': axe A/AA').toEqual([]);
 }
@@ -122,6 +123,7 @@ export async function accessibleLayout(page: Page, info: TestInfo, name: string)
 export async function accessibleThemes(page: Page, info: TestInfo, name: string, options: {
   checkPalette?: (scheme: 'light' | 'dark') => Promise<void>;
   mask?: Locator[];
+  axeExclude?: string;
 } = {}) {
   const original = await page.evaluate(() => matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   // Media changes can schedule transitions after getAnimations() takes its snapshot.
@@ -137,7 +139,7 @@ export async function accessibleThemes(page: Page, info: TestInfo, name: string,
     for (const colorScheme of ['light', 'dark'] as const) {
       await page.emulateMedia({ colorScheme });
       await options.checkPalette?.(colorScheme);
-      await accessibleLayout(page, info, name + '-' + colorScheme);
+      await accessibleLayout(page, info, name + '-' + colorScheme, options.axeExclude);
       await info.attach(name + '-' + colorScheme, { body: await page.screenshot({ fullPage: true, mask: options.mask }), contentType: 'image/png' });
     }
   } finally {

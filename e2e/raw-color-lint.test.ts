@@ -34,6 +34,54 @@ it('rejects every palette family Tailwind ships and modern color functions', asy
   }
 });
 
+it.each(['routes/login.tsx', 'routes/__root.tsx', 'app/admin-shell.tsx'])('checks styling in %s', async path => {
+  await expect(violations('export const Example = <div className="bg-red-500"/>;', path))
+    .resolves.toEqual(['Use a theme token in place of bg-red-500.']);
+});
+
+it('follows computed and static member lookups, joins and twMerge arguments', async () => {
+  const messages = await violations(`
+    const tones = ['text-primary', 'dark:text-pink-500'] as const;
+    const badges = { active: 'bg-foreground', inactive: 'bg-gray-500' } as const;
+    const presets = { default: { ring: 'ring-indigo-500' }, other: { ring: 'ring-border' } };
+    const classes = [tones[index], badges[status], presets.default.ring].join(' ');
+    const merged = twMerge(classes, 'border-cyan-300');
+    export const Example = <div className={merged}/>;
+  `);
+  expect(messages).toHaveLength(4);
+  for (const color of ['text-pink-500', 'bg-gray-500', 'ring-indigo-500', 'border-cyan-300']) {
+    expect(messages).toContain('Use a theme token in place of ' + color + '.');
+  }
+});
+
+it('only reads selected static members, and handles cyclic lookups', async () => {
+  await expect(violations(`
+    const tones = [, 'text-primary', 'text-pink-500'];
+    const badges = { active: 'bg-foreground', inactive: 'bg-gray-500' };
+    const cyclic = { next: cyclic.next, tone: 'text-foreground' };
+    export const Example = <div className={cn(tones[1], badges['active'], cyclic.next)}/>;
+  `)).resolves.toEqual([]);
+});
+
+it('rejects CSS named colors in arbitrary utility values and inline styles', async () => {
+  const messages = await violations(`
+    const styles = { border: '1px solid RebeccaPurple', background: 'white', color: 'navy' };
+    export const Example = <div className="bg-[red] dark:bg-[linear-gradient(cornflowerblue,white)]" style={styles}/>;
+  `);
+  expect(messages).toHaveLength(6);
+  for (const color of ['red', 'cornflowerblue', 'white', 'RebeccaPurple', 'navy']) {
+    expect(messages).toContain('Use a theme token in place of ' + color + '.');
+  }
+});
+
+it('accepts color keywords that adapt, custom properties, and named words used as data', async () => {
+  await expect(violations(`
+    export const Example = <div
+      className="text-[var(--red)] bg-[url(/red.svg)] before:content-['red'] bg-[transparent]"
+      style={{ color: 'currentColor', backgroundColor: 'var(--white)', fontFamily: 'black' }}/>;
+  `)).resolves.toEqual([]);
+});
+
 it('finds the exact light-media exception when ESLint runs from apps/web', async () => {
   const webLint = new ESLint({ cwd: fileURLToPath(new URL('../apps/web/', import.meta.url)) });
   const [result] = await webLint.lintText('export const Example = <img className="mx-auto h-auto w-full max-w-72 rounded-lg bg-white p-2"/>;', {

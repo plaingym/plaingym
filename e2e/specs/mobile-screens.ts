@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import type { BrowserContext, Locator, Page, TestInfo } from '@playwright/test';
+import type { BrowserContext, Page, TestInfo } from '@playwright/test';
 import { expect, gymOrigin, type Install } from '../support.js';
 import { accessibleThemes } from '../responsive.js';
 
@@ -9,10 +9,12 @@ export const viewports = [
   { name: 'desktop', viewport: { width: 1280, height: 800 }, hasTouch: false },
 ] as const;
 
-export async function check(page: Page, info: TestInfo, name: string, mask: Locator[] = []) {
+export async function check(page: Page, info: TestInfo, name: string, privateText?: string) {
+  // The marker covers the shared loading state; the text wait covers the plain "Loading..." statuses that don't carry it.
+  await expect(page.locator('[data-loading]')).toHaveCount(0);
   await expect(page.getByRole('status').filter({ hasText: /^Loading\b/i })).toHaveCount(0);
   // Checks page width, touch targets, language and axe, and attaches a screenshot, per color preference.
-  await accessibleThemes(page, info, name, { mask });
+  await accessibleThemes(page, info, name, privateText ? { mask: [page.locator(privateText)], axeExclude: privateText } : undefined);
 }
 export async function open(browser: import('@playwright/test').Browser, install: Install, role: 'owner' | 'coach', options: { viewport: { width: number; height: number }; hasTouch: boolean }): Promise<[BrowserContext, Page]> {
   const context = await browser.newContext({ ...options, timezoneId: browserZone, ignoreHTTPSErrors: true });

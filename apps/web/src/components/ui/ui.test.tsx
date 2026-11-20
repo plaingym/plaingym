@@ -78,6 +78,7 @@ describe('shared page components', () => {
     const retry = vi.fn();
     render(<><LoadingState /><ErrorState message="Check your connection." onRetry={retry} /></>);
     expect(screen.getByRole('status').textContent).toContain('Loading...');
+    expect(screen.getByRole('status').hasAttribute('data-loading')).toBe(true);
     const alert = screen.getByRole('alert');
     expect(alert.textContent).toContain('Something went wrong');
     expect(alert.textContent).toContain('Check your connection.');

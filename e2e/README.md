@@ -159,8 +159,11 @@ The checks cover:
   Keyboard-only flows cover kiosk check-in, portal booking/cancellation, invoice Checkout
   and card updates, visible focus, and trapping/restoring focus in a profile dialog.
   The website's six pages also run axe with both color preferences. Screenshots and
-  axe results are attached for each audited preference. The only frame exclusion is the script-blocked email
-  preview in `responsive.ts`, whose surrounding dialog is still audited.
+  axe results are attached for each audited preference. The capture helper waits for
+  loading states marked with `data-loading` and for status text that starts with
+  "Loading". In the outbox capture, screenshots mask
+  message bodies and axe excludes them. Axe also excludes the script-blocked email
+  preview iframe in `responsive.ts` and audits the surrounding dialog.
 * Restored-payment notices before and after connecting Stripe at 360 px and 1280 px
   (`restore-payments.spec.ts`), with fixture reports, screenshots and layout checks.
 * Every portal and signed-link route in the inventory, both ways between two

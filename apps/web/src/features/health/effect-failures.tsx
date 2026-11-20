@@ -39,7 +39,7 @@ export function EffectFailures({ gymId, reporting, timezone }: { gymId: string; 
   const close = () => { reset(); setConfirming(null); };
   if (!reporting && !mutation.isPending) return null;
   if (query.isError && !confirming) return <p role="status" className="mt-4 text-sm">{label('loadFailed')}</p>;
-  if (query.isPending) return <p role="status" className="mt-4 text-sm">{label('loading')}</p>;
+  if (query.isPending) return <p role="status" data-loading className="mt-4 text-sm">{label('loading')}</p>;
   // The tile and the list refresh separately: a stale error tile shows nothing rather than an empty heading.
   if (!query.data?.length && !confirming) return null;
   const time = (effect: ExhaustedEffect) => label('exhaustedAgo', { age: elapsed(effect.exhaustedAt), at: instantLabel(effect.exhaustedAt, timezone) });

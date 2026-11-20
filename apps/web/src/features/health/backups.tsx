@@ -41,7 +41,7 @@ export function BackupActions({ gymId, owner, onConfirmed }: { gymId: string; ow
     cache.setQueryData(key, parseResponse(backupControlResponseSchema, result.data).data);
     setConfirming(null); onConfirmed?.();
   }, onSettled: refresh });
-  if (query.isPending) return <p role="status" className="text-sm">{label('loading')}</p>;
+  if (query.isPending) return <p role="status" data-loading className="text-sm">{label('loading')}</p>;
   if (query.isError) return <p role="status" className="text-sm">{label('loadFailed')}</p>;
   const state = query.data;
   if (!state.available) return null;

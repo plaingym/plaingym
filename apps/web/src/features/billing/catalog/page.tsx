@@ -111,7 +111,7 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
   const notice = (message || stale) && <Alert variant={!stale && message === text('reloaded') ? 'info' : 'error'} focusOnReveal className="space-y-3"><p>{message || text('conflict')}</p>{stale && <Button className="w-full sm:w-auto" variant="outline" disabled={busy} onClick={() => void reloadEditor()}>{text('reloadRecord')}</Button>}</Alert>;
   return <div className={cn('min-w-0 space-y-5', userNames)}>
     <div><h1 className="text-2xl font-semibold">{text('title')}</h1><p className="mt-1 text-muted-foreground">{text('help')}</p></div>
-    {data.isPending && <p role="status">{text('loading')}</p>}
+    {data.isPending && <p role="status" data-loading>{text('loading')}</p>}
     {data.isError && <Alert variant="error" role="alert">{text('error')} <Button variant="outline" onClick={() => void data.refetch()}>{text('retry')}</Button></Alert>}
     {data.data && <>
 
@@ -159,7 +159,7 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
 }
 export function CatalogPage() {
   const bootstrap = useBootstrap();
-  if (bootstrap.isPending) return <p role="status">{text('loading')}</p>;
+  if (bootstrap.isPending) return <p role="status" data-loading>{text('loading')}</p>;
   if (!bootstrap.data?.session || !canStaff(bootstrap.data.session.roles, 'plans.manage')) return <Alert variant="error">{text('noAccess')}</Alert>;
   return <div className="space-y-5" key={bootstrap.data.gym.id}><CatalogWorkspace gymId={bootstrap.data.gym.id}/><PackCatalog gymId={bootstrap.data.gym.id}/><DiscountCatalog gymId={bootstrap.data.gym.id}/></div>;
 }

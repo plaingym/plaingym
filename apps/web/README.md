@@ -178,9 +178,9 @@ surface text token at 4.5:1 on `background`, `card`, `muted` and `secondary`, an
 (`primary`, `destructive`), the only surfaces they are used on. Border, input and
 ring tokens reach 3:1 on `background`.
 
-`pnpm lint` checks class names and inline styles in `src/features/` and
-`src/components/` with `theme/raw-color`. Use semantic tokens in place of
-Tailwind palette utilities and literal hex, RGB or HSL colors. Color input
+`pnpm lint` checks class names and inline styles throughout `src/` with
+`theme/raw-color`. Use semantic tokens in place of Tailwind palette utilities,
+literal CSS color values and named colors. Color input
 defaults and canvas ink are data and drawing instructions.
 
 The rule allows white on the following elements in both themes.

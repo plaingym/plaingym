@@ -6,7 +6,7 @@ import { Button } from './button.js';
 import { AlertIcon, InboxIcon } from './icons.js';
 /** Shown while a page or section loads. Announced politely to screen readers. */
 export function LoadingState({ label = t('shell/shell:loading'), className }: { label?: ReactNode; className?: string }) {
-  return <div role="status" className={cn('flex items-center gap-3 rounded-xl border border-dashed border-border p-6 text-sm text-muted-foreground', className)}>
+  return <div role="status" data-loading className={cn('flex items-center gap-3 rounded-xl border border-dashed border-border p-6 text-sm text-muted-foreground', className)}>
     <span aria-hidden="true" className="size-4 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent motion-reduce:animate-none" />
     <span>{label}</span>
   </div>;

@@ -35,6 +35,7 @@ const sourceScanningTests = [
   'apps/server/test/contracts.test.ts',
   'apps/server/test/packs.test.ts',
   'e2e/ci.test.ts',
+  'e2e/raw-color-lint.test.ts',
   'packages/db/src/budget.test.ts',
   'packages/shared/src/contracts/imports.test.ts',
   'packages/shared/src/money.sweep.test.ts',

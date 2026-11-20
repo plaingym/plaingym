@@ -77,7 +77,7 @@ const maintenanceLazyImports = [
 
 export default defineConfig(
   {
-    files: ['apps/web/src/{features,components}/**/*.{js,jsx,ts,tsx,mjs,mts}'],
+    files: ['apps/web/src/**/*.{js,jsx,ts,tsx,mjs,mts,cjs,cts}'],
     ignores: ['**/*.{test,spec}.*', '**/{test,tests,__tests__}/**'],
     plugins: { theme: { rules: { 'raw-color': rawColorRule } } },
     rules: { 'theme/raw-color': 'error' },

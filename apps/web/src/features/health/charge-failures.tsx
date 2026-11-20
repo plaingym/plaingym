@@ -52,7 +52,7 @@ export function ChargeFailures({ gymId, reporting }: { gymId: string; reporting:
   useEffect(() => { if (!reporting) { reset(); setConfirming(null); } }, [reporting, reset]);
   if (!reporting) return null;
   if (query.isError) return <p role="status" className="mt-4 text-sm">{label('loadFailed')}</p>;
-  if (query.isPending) return <p role="status" className="mt-4 text-sm">{label('loading')}</p>;
+  if (query.isPending) return <p role="status" data-loading className="mt-4 text-sm">{label('loading')}</p>;
   if (!reports.length) return null;
   return <section aria-label={label('title')} className="mt-4 space-y-3 border-t border-border pt-4">
     <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
