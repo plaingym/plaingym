@@ -26,7 +26,7 @@ type FollowOptions = {
 let nextCheck = -Infinity;
 let checking: Promise<void> | undefined;
 let reloadDeadline: number | undefined;
-export const isVersionReloadPending = () => reloadDeadline !== undefined && Date.now() < reloadDeadline;
+export const isVersionReloadPending = () => reloadDeadline !== undefined && performance.now() < reloadDeadline;
 let stale = false;
 const listeners = new Set<() => void>();
 export const subscribeToStaleVersion = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
@@ -38,8 +38,9 @@ function markStale(value: boolean) {
 /** Navigation and kiosk requests share one bounded check. A pending reload must still block credentials. */
 export function checkServerVersion(options: FollowOptions = {}): Promise<void> | undefined {
   if (checking) return checking;
-  // If this document survives a reload attempt, check as soon as its deadline passes.
-  if (Date.now() < (reloadDeadline ?? nextCheck)) return;
+  if (isVersionReloadPending()) return;
+  if (reloadDeadline === undefined && Date.now() < nextCheck) return;
+  // An elapsed reload hold bypasses the normal throttle once.
   reloadDeadline = undefined;
   let answered = false;
   checking = followServerVersion(options, () => { answered = true; })
@@ -91,7 +92,7 @@ export async function followServerVersion(options: FollowOptions = {}, received:
     if (storage.getItem(key) === target) throw new Error('The page could not load the server version');
     storage.setItem(key, target);
   } catch (error) { throw matches ? error : unresolved(error); }
-  reloadDeadline = Date.now() + 10_000;
+  reloadDeadline = performance.now() + 10_000;
   try { (options.reload ?? reloadDestination)(options.destination ?? window.location.href); }
   catch (error) { throw unresolved(error); }
 }
