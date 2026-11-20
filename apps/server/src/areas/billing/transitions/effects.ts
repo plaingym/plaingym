@@ -286,8 +286,9 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
     } else if (work.kind === 'reverse_credits') {
       await credits.reverse(gymId, invoice.id);
     } else if (work.kind === 'dunning') {
-      if ((invoice.kind === 'cycle' || work.bankCode) && ['open', 'past_due'].includes(invoice.status)
-        && (work.bankCode && !work.attemptId || attempt?.id === latestAttempt?.id))
+      const bankFailure = work.bankCode || work.checkoutBankFailure;
+      if ((invoice.kind === 'cycle' || bankFailure) && ['open', 'past_due'].includes(invoice.status)
+        && (bankFailure && !work.attemptId || attempt?.id === latestAttempt?.id))
         await options.notifications.dunning({ ...data, actionRequired: attempt?.status === 'requires_action',
           ...(work.bankCode ? { bankCode: work.bankCode } : {}) });
     } else if (work.kind === 'retry') {

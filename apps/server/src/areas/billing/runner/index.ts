@@ -5,7 +5,7 @@ import type { Clock } from '@plaingym/shared';
 import { addDays, localDate } from '@plaingym/shared/time';
 import { clock as defaultClock } from '../../../core/clock.js';
 import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
-import type { InvoiceTransitions } from '../../../core/interfaces/invoice-transitions.js';
+import type { BillingInvoiceTransitions } from '../transitions/index.js';
 import type { JobContext, Jobs } from '../../../infra/jobs/index.js';
 import type { Payments } from '../../../infra/payments/index.js';
 import type { MutationContext } from '../../../core/interfaces/common.js';
@@ -40,7 +40,7 @@ export interface RunnerOptions {
   scope?: typeof forGym;
   clock?: Clock;
   settings: GymSettingsAccessor;
-  transitions: InvoiceTransitions;
+  transitions: BillingInvoiceTransitions;
   jobs: Pick<Jobs, 'enqueue'>;
   payments(gymId: string): Promise<Payments>;
   /** Publishes owner alerts for disputes that restore reconciliation records. */

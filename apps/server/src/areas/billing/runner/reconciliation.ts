@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, desc, eq, inArray, isNull, lt, lte, not, notExists, or } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- Extract two fields from the gym-scoped late processing audit to match its intent and Stripe generation.
+import { sql } from 'drizzle-orm';
 import { AppError } from '@plaingym/shared';
 import { auditEvents, households, invoices, paymentAttempts, payments, refunds, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import type { ChargeOutcome, PaymentObject, PaymentObjectReference, Payments } from '../../../infra/payments/index.js';
-import { invoiceProcessing } from '../transitions/bank.js';
+import { invoiceLateProcessing, invoiceProcessing } from '../transitions/bank.js';
 import { applyChargeOutcome } from '../transitions/outcomes.js';
-import { createAbandoned, terminal } from '../transitions/store.js';
+import { createAbandoned, terminal, terminalInvoiceStatuses } from '../transitions/store.js';
 import { createDisputeRefundWriter } from '../disputes-refunds.js';
 import { testModeDispute } from '../alerts/disputes.query.js';
 import { latestTestSwitchId, stripeWriteScope, StripeTestModeSwitched, withStripeTestWrites } from '../stripe-writes.js';
@@ -18,7 +20,14 @@ export interface ReconciliationIssue { kind: string; id: string; reason: string;
 export interface RestoreCheck { inspected: number; readyForOwnerReview: boolean; issues: ReconciliationIssue[]; stripeConfigured?: boolean; stripeMode?: 'test' | 'live' | null; }
 /** A stored Stripe reference on a gym with no payments provider: connecting Stripe and checking again resolves it. */
 export const notConfigured = 'stripe_not_configured';
+const checkoutReviewReasons = ['customer_mismatch', 'pending', 'attempt_resolved'] as const;
+type CheckoutReview = (typeof checkoutReviewReasons)[number];
+export function checkoutNeedsReview(issue: ReconciliationIssue) {
+  return issue.kind === 'checkout_debit' && checkoutReviewReasons.some(reason => reason === issue.reason);
+}
+const checkoutReviewAction = 'billing.runner.checkout_debit_unresolved';
 type Options = Omit<RunnerOptions, 'jobs'> & Required<Pick<RunnerOptions, 'scope' | 'clock'>>;
+type CheckoutDebit = { invoiceId: string; paymentIntentId: string; late: boolean };
 /**
  * The open disputes restore reads with the gym's key. One on a Stripe test-mode payment (marked by a switch to live) is in
  * the test account, which the live key can't read; the switch closed those it found. A dispute's own payment is recorded
@@ -30,7 +39,7 @@ async function restorableDisputes(tx: Transaction, gymId: string) {
     .where(and(eq(invoices.disputeStatus, 'open'), not(testModeDispute(tx, gymId))));
 }
 
-async function staleProcessingCheckouts(tx: Transaction, before: Date) {
+async function staleProcessingCheckouts(tx: Transaction, before: Date): Promise<CheckoutDebit[]> {
   const inFlight = tx.select({ id: paymentAttempts.id }).from(paymentAttempts)
     .where(and(eq(paymentAttempts.gymId, invoices.gymId), eq(paymentAttempts.invoiceId, invoices.id),
       inArray(paymentAttempts.status, ['pending', 'processing'])));
@@ -47,7 +56,20 @@ async function staleProcessingCheckouts(tx: Transaction, before: Date) {
       latest.set(invoiceId, { ...event, occurredAt });
   }
   return [...latest].flatMap(([invoiceId, event]) => event.occurredAt < before
-    ? [{ invoiceId, paymentIntentId: event.paymentIntentId }] : []);
+    ? [{ invoiceId, paymentIntentId: event.paymentIntentId, late: false }] : []);
+}
+
+async function staleLateCheckouts(tx: Transaction, before: Date, switched: string | null): Promise<CheckoutDebit[]> {
+  const paymentIntentId = sql<string>`${auditEvents.after}->>'paymentIntentId'`;
+  const generation = sql<string>`${auditEvents.after}->>'stripeTestSwitchId'`;
+  const paid = tx.select({ id: payments.id }).from(payments)
+    .where(and(eq(payments.gymId, invoices.gymId), eq(payments.paymentIntentId, paymentIntentId)));
+  const rows = await tx.select({ invoiceId: invoices.id, paymentIntentId }).from(invoices)
+    .innerJoin(auditEvents, and(eq(auditEvents.gymId, invoices.gymId), eq(auditEvents.targetId, invoices.id),
+      eq(auditEvents.targetType, 'invoice'), eq(auditEvents.action, invoiceLateProcessing)))
+    .where(and(inArray(invoices.status, terminalInvoiceStatuses), lt(auditEvents.occurredAt, before),
+      switched === null ? isNull(generation) : eq(generation, switched), notExists(paid)));
+  return rows.map(row => ({ ...row, late: true }));
 }
 
 export function createReconciliation(options: Options) {
@@ -64,12 +86,12 @@ export function createReconciliation(options: Options) {
     try { return await options.payments(gymId) as Payments | null; }
     catch (error) { if (error instanceof AppError && error.code === 'unavailable') return null; throw error; }
   }
-  /** Returns false for unknown, unconfirmed or unmatched objects. Never guesses from search. */
-  async function apply(gymId: string, outcome: ChargeOutcome, context: MutationContext = system(gymId),
-    checkoutInvoiceId?: string): Promise<boolean> {
+  /** Returns an issue for an outcome that cannot be applied. Never guesses from search. */
+  async function applyOutcome(gymId: string, outcome: ChargeOutcome, context: MutationContext,
+    checkout?: CheckoutDebit): Promise<'unresolved' | CheckoutReview | undefined> {
     if (context.gymId !== gymId) throw new Error('Payment outcome actor gym mismatch');
-    if (outcome.status === 'unknown' || outcome.status === 'pending') return false;
-    if (outcome.metadata.gymId !== gymId) return false;
+    if (outcome.status === 'unknown' || (checkout ? outcome.id !== checkout.paymentIntentId : outcome.status === 'pending')) return 'unresolved';
+    if (outcome.metadata.gymId !== gymId) return 'unresolved';
     let paidAt: string;
     if (outcome.status === 'succeeded') {
       // Confirm/cancel responses may omit the Charge timestamp. Resolve it by ID,
@@ -85,42 +107,63 @@ export function createReconciliation(options: Options) {
         ...(outcome.metadata.attemptId ? [eq(paymentAttempts.id, outcome.metadata.attemptId)] : []))))[0];
       const payment = (await tx.select().from(payments).where(eq(payments.paymentIntentId, outcome.id)))[0];
       const invoiceId = attempt?.invoiceId ?? payment?.invoiceId ?? outcome.metadata.invoiceId;
-      if (!invoiceId) return null;
+      if (!invoiceId) return 'unresolved';
       const invoice = (await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).for('update'))[0];
       if (!invoice || invoice.status === 'draft'
         || (outcome.metadata.invoiceId !== undefined && invoice.id !== outcome.metadata.invoiceId)
-        || (checkoutInvoiceId !== undefined && (invoice.id !== checkoutInvoiceId || attempt))
-        || (outcome.metadata.attemptId && outcome.metadata.attemptId !== attempt?.id)) return null;
+        || (checkout && invoice.id !== checkout.invoiceId)
+        || (outcome.metadata.attemptId && outcome.metadata.attemptId !== attempt?.id)) return 'unresolved';
+      const reportCheckout = async (reason: CheckoutReview) => {
+        // The invoice lock serializes the first audit, including two sweeps of the same invoice.
+        const previous = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
+          eq(auditEvents.targetType, 'invoice'), eq(auditEvents.targetId, invoice.id), eq(auditEvents.action, checkoutReviewAction)));
+        if (!previous.some(event => (event.after as { reason?: CheckoutReview } | null)?.reason === reason))
+          await audit(tx, context, clock, checkoutReviewAction, 'invoice', invoice.id, { reason, paymentIntentId: outcome.id });
+        return reason;
+      };
+      if (checkout && !checkout.late && invoice.status !== 'processing' && outcome.status !== 'succeeded') return undefined;
+      if (checkout && attempt) {
+        // A newly in-flight attempt belongs to the runner on the next sweep.
+        if (attempt.status === 'pending' || attempt.status === 'processing') return undefined;
+        return reportCheckout('attempt_resolved');
+      }
       // Late success still needs its duplicate refund. Any other outcome on a terminal invoice only closes a still-unresolved
       // attempt; one already resolved is ignored before ID recovery, so it is never rewritten.
-      if (terminal(invoice) && outcome.status !== 'succeeded' && outcome.status !== 'processing'
-        && !(attempt && ['pending', 'processing', 'requires_action'].includes(attempt.status))) return null;
+      if (!checkout?.late && terminal(invoice) && outcome.status !== 'succeeded' && outcome.status !== 'processing'
+        && !(attempt && ['pending', 'processing', 'requires_action'].includes(attempt.status))) return 'unresolved';
       const home = (await tx.select().from(households).where(eq(households.id, invoice.householdId)))[0]!;
-      if ((attempt?.stripeCustomerId ?? home.stripeCustomerId) !== outcome.customerId || invoice.currency !== outcome.currency.toUpperCase()
-        || invoice.amountCents !== outcome.amount) return null;
+      if (invoice.currency !== outcome.currency.toUpperCase() || invoice.amountCents !== outcome.amount) return 'unresolved';
+      if ((attempt?.stripeCustomerId ?? home.stripeCustomerId) !== outcome.customerId)
+        return checkout ? reportCheckout('customer_mismatch') : 'unresolved';
+      if (outcome.status === 'pending') return reportCheckout('pending');
+      if (checkout?.late && outcome.status !== 'succeeded') return undefined;
       if (attempt) {
         if (attempt.amountCents !== outcome.amount || attempt.currency !== outcome.currency.toUpperCase()
           || attempt.stripeCustomerId !== outcome.customerId
-          || (outcome.paymentMethodId && outcome.paymentMethodId !== attempt.savedPaymentMethod)) return null;
+          || (outcome.paymentMethodId && outcome.paymentMethodId !== attempt.savedPaymentMethod)) return 'unresolved';
         if (attempt.paymentIntentId !== outcome.id) {
           // A restored snapshot can predate the worker's ID commit. Only an unresolved reservation can be recovered.
           const changed = await tx.update(paymentAttempts).set({ paymentIntentId: outcome.id }).where(and(
             eq(paymentAttempts.id, attempt.id), eq(paymentAttempts.status, 'pending'),
             isNull(paymentAttempts.paymentIntentId), isNull(paymentAttempts.resolvedAt))).returning();
-          if (!changed.length) return null;
+          if (!changed.length) return 'unresolved';
           await audit(tx, context, clock, 'billing.runner.intent_recovered', 'payment_attempt', attempt.id,
             { paymentIntentId: outcome.id });
         }
       } else if (outcome.status !== 'succeeded' && outcome.status !== 'processing'
-        && !(outcome.status === 'failed' && (outcome.code === 'insufficient_funds' || outcome.code === 'payment_method_unusable'))) return false;
+        && !(outcome.status === 'failed' && (checkout || outcome.code === 'insufficient_funds'
+          || outcome.code === 'payment_method_unusable'))) return 'unresolved';
       return { invoice, attempt };
     });
-    if (!linked) return false;
+    if (typeof linked !== 'object') return linked;
     await applyChargeOutcome(options.transitions, context, { invoiceId: linked.invoice.id, paymentId: uuidv7(),
       ...(linked.attempt ? { attemptId: linked.attempt.id } : {}), paidAt },
     // The stored processor ID can supply missing optional invoice metadata; conflicting metadata was rejected above.
     { ...outcome, metadata: { ...outcome.metadata, invoiceId: linked.invoice.id } });
-    return true;
+    return undefined;
+  }
+  async function apply(gymId: string, outcome: ChargeOutcome, context: MutationContext = system(gymId)) {
+    return await applyOutcome(gymId, outcome, context) === undefined;
   }
   async function checkout(gymId: string, id: string, provider: Payments, context: MutationContext = system(gymId)) {
     const found = await provider.readPaymentObject({ kind: 'checkout', id });
@@ -166,26 +209,29 @@ export function createReconciliation(options: Options) {
   async function pending(gymId: string, resolved?: Payments | null) {
     const now = clock.now().getTime();
     const before = new Date(now - staleAfterMs), processingBefore = new Date(now - 10 * 86400_000);
-    const { attempts, checkouts, switched } = await scope(gymId, async tx => ({
-      attempts: await tx.select().from(paymentAttempts).where(or(and(eq(paymentAttempts.status, 'pending'), lte(paymentAttempts.createdAt, before)),
-        and(eq(paymentAttempts.status, 'processing'), lt(paymentAttempts.processingAt, processingBefore)))),
-      checkouts: await staleProcessingCheckouts(tx, processingBefore),
-      switched: await latestTestSwitchId(tx, gymId),
-    }));
+    const { attempts, checkouts, switched } = await scope(gymId, async tx => {
+      const switched = await latestTestSwitchId(tx, gymId);
+      const attempts = await tx.select().from(paymentAttempts).where(or(and(eq(paymentAttempts.status, 'pending'), lte(paymentAttempts.createdAt, before)),
+        and(eq(paymentAttempts.status, 'processing'), lt(paymentAttempts.processingAt, processingBefore))));
+      const checkouts = [...await staleProcessingCheckouts(tx, processingBefore), ...await staleLateCheckouts(tx, processingBefore, switched)];
+      return { attempts, checkouts, switched };
+    });
     let provider = resolved;
     const issues: ReconciliationIssue[] = [];
-    async function refresh(id: string, handle: (outcome: ChargeOutcome, provider: Payments) => Promise<boolean>) {
+    async function refresh(kind: 'charge' | 'checkout_debit', id: string,
+      handle: (outcome: ChargeOutcome, provider: Payments) => Promise<string | undefined>) {
       try {
         if (provider === undefined) provider = await configuredProvider(gymId);
-        if (!provider) { issues.push({ kind: 'charge', id, reason: notConfigured }); return; }
+        if (!provider) { issues.push({ kind, id, reason: notConfigured }); return; }
         const current = provider;
         const read = async () => {
           const outcome = await current.findCharge({ kind: 'charge', id }, { includeSuccessTime: true });
-          if (!await handle(outcome, current)) issues.push({ kind: 'charge', id, reason: 'unresolved' });
+          const reason = await handle(outcome, current);
+          if (reason) issues.push({ kind, id, reason });
         };
         if (current.keyMode === 'test') await withStripeTestWrites(gymId, switched, read);
         else await read();
-      } catch { issues.push({ kind: 'charge', id, reason: 'provider_or_transition_error' }); }
+      } catch { issues.push({ kind, id, reason: 'provider_or_transition_error' }); }
     }
     for (const attempt of attempts) {
       if (!attempt.paymentIntentId) {
@@ -198,12 +244,12 @@ export function createReconciliation(options: Options) {
         });
         continue;
       }
-      await refresh(attempt.paymentIntentId, (outcome, current) => object(gymId, { kind: 'charge', object: outcome }, current));
+      await refresh('charge', attempt.paymentIntentId, async (outcome, current) =>
+        await object(gymId, { kind: 'charge', object: outcome }, current) ? undefined : 'unresolved');
     }
-    for (const { invoiceId, paymentIntentId } of checkouts) {
+    for (const checkout of checkouts) {
       // Read only. Even an unexpected unconfirmed snapshot of a Checkout debit cannot reach cancellation.
-      await refresh(paymentIntentId, async outcome => outcome.status !== 'unknown' && outcome.id === paymentIntentId
-        && apply(gymId, outcome, system(gymId), invoiceId));
+      await refresh('checkout_debit', checkout.paymentIntentId, outcome => applyOutcome(gymId, outcome, system(gymId), checkout));
     }
     return { inspected: attempts.length + checkouts.length, issues };
   }

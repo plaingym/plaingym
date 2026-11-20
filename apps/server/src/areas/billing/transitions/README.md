@@ -57,17 +57,21 @@ sent again.
 
 `paymentProcessing` records the intent on the invoice's processing audit and timestamps
 its pending attempt when present. On a terminal invoice it updates and audits a matching
-pending attempt while leaving the invoice in its terminal state. `cardSucceeded` records a settled debit as
+pending attempt, or writes a late processing audit for an unrecorded Checkout
+intent without an attempt. The invoice keeps its terminal state. `cardSucceeded` records a settled debit as
 `bank_debit`. A cycle or assignment invoice returns to past due after a bank
 failure, and a past-due assignment invoice stays past due on a later card
 decline. A one-off charge returns to open. A closed account is revoked by its
 processor method ID and the household receives an update-method link. The
 invoice's stopped-retry audit also cancels work already queued. `processingFailed`
-handles Checkout failures without creating a runner attempt. For an unusable
-Checkout method it retrieves the failed intent before starting the transaction.
+handles a reported failure or cancellation for the current processing Checkout
+intent. It records the normalized failure code in the invoice audit. For an
+unusable Checkout method it retrieves the failed intent before starting the
+transaction.
 
 `createInvoiceTransitions({ scope?, clock?, paymentsFor? })` implements the frozen
-`InvoiceTransitions` interface. Issued invoices are locked for every payment,
+`InvoiceTransitions` interface. Its billing-local type, `BillingInvoiceTransitions`,
+widens `processingFailed` to accept every normalized Checkout failure code. Issued invoices are locked for every payment,
 failure and refund. Processor intent/Charge IDs and local payment/refund UUIDs
 deduplicate commands. Reusing an identity with different money or ownership is
 a conflict. Payment timestamps can differ between a runner result and a webhook;

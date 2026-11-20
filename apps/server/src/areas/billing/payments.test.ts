@@ -703,6 +703,21 @@ describe('one-off collection and payment durability', () => {
     expect(detail.payments[0]?.method).toBe(completed ? 'card' : 'check');
     if (!completed) expect((await db.forGym(f.gymId, tx => tx.select().from(invoices).where(eq(invoices.id, f.invoice.id))))[0]?.checkoutSessionId).toBeNull();
   });
+  it('blocks cash after bank Checkout completes, even before the processing webhook', async () => {
+    const f = await fixture();
+    const session = await f.provider.createCheckout({ mode: 'payment', customerId: 'cus_fixture', amount: 2500, currency: 'usd',
+      invoiceId: f.invoice.id, bankDebit: { type: 'us_bank_account' }, saveForOffSession: true,
+      successUrl: origin + '/success', cancelUrl: origin + '/cancel', idempotencyKey: f.invoice.id + ':checkout' });
+    await db.forGym(f.gymId, tx => tx.update(invoices).set({ checkoutSessionId: session.id }).where(eq(invoices.id, f.invoice.id)));
+    f.provider.completeCheckout(session.id, { method: 'us_bank_account' });
+    expect((await f.service.getInvoice(f.gymId, f.invoice.id)).invoice.status).toBe('open');
+
+    await expect(f.service.manualPayment(f.context, f.invoice.id,
+      { amountCents: 2500, currency: 'USD', method: 'cash', paidAt: f.clock.now().toISOString() })).rejects.toMatchObject({ code: 'conflict' });
+    const detail = await f.service.getInvoice(f.gymId, f.invoice.id);
+    expect(detail.invoice.status).toBe('processing');
+    expect(detail.payments).toEqual([]);
+  });
   it('blocks pending cash without provider I/O and reports unavailable when an action-needed release cannot reach Stripe', async () => {
     const f = await fixture(); f.provider.respondNextConfirmation('pending'); await f.service.charge(f.context, f.invoice.id);
     const cancel = vi.spyOn(f.provider, 'cancelCharge');

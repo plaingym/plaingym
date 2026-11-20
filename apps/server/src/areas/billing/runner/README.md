@@ -20,7 +20,7 @@ exposes the same controllable entry points used by the jobs and PostgreSQL scena
 | `charge(gymId, invoiceId, options?)` | Collect an eligible issued invoice. Returns an outcome object, or `{ status: 'skipped', reason }`. Provider errors propagate and leave any committed reservation for reconciliation. |
 | `collectAssigned(gymId, householdId)` | Immediately collect that household's open, unattempted assignment one-offs after the assignment transaction commits. Returns collection counts and errors; never call it from `onAssigned`. |
 | `retry(invoiceId, jobContext)` | Transition-effects callback. Recheck the original first-failure date and the invoice's saved retry windows at 09:00 gym time, then expire/reconcile Checkout before reserving another attempt. |
-| `reconcile(gymId)` | Read stale pending attempts and bank debits in processing for more than ten days by intent ID. Bank debits include runner attempts and Checkout payments without an attempt. Returns unresolved references. Works while billing is disabled. |
+| `reconcile(gymId)` | Read stale pending attempts and bank debits in processing for more than ten days by intent ID. The result reports issues for runner charges and Checkout debits separately. Works while billing is disabled. |
 | `postRestore(gymId, snapshotAt)` | Require billing disabled; refresh unresolved IDs and enumerate provider changes with a five-minute overlap. Return `readyForOwnerReview`, unresolved references and `stripeConfigured`; record the report in an immutable audit event. Never enable billing. A gym with no payments provider is checked against the database only (below). |
 | `chargeFailures(gymId)` | The last 90 days' stopped-run failure reports, oldest first, each with only the invoices that still need staff. |
 | `dismissChargeFailures(context, runIds)` | Staff (a user actor) dismiss what the named reports still list, with an audit per report; a report written after the caller read the list is not named, so it stays open. The gym's dismissals run one at a time (a transaction-level advisory lock), so two at once write one audit per report; the lock is the gym's `chargeFailures` entry in `gymAdvisoryLocks` (`packages/db/src/locks.ts`), and the dismissal reads only the named runs under it. Foreign, unknown, expired and already-dismissed runs are skipped; the response names only invoices actually dismissed. |
@@ -192,9 +192,23 @@ and skips further collection while the debit settles. A Canadian PAD confirm use
 the saved mandate. Webhooks apply settlement and the hourly job retrieves the intent
 by ID after more than ten days in processing. For a processing invoice without an
 in-flight runner attempt, the hourly job uses the intent ID and time from the latest
-invoice processing audit. Checkout reconciliation reads that intent and applies the
-current outcome. Reconciliation leaves a processing intent at Stripe. A restore
-still counts the local attempt as unresolved until settlement.
+invoice processing audit. It records a payment when Stripe reports success and
+applies the processing-failure transition when Stripe reports a failure or
+cancellation. The invoice failure audit carries the normalized failure code.
+For `customer_mismatch`, `pending` or `attempt_resolved`, the sweep leaves the
+invoice unchanged, reports the intent as `checkout_debit` and writes one
+`billing.runner.checkout_debit_unresolved` audit per invoice and reason. The
+hourly job completes for these findings and can check the intent again on its
+next run. An intent Stripe still reports as `processing` continues settling.
+A restore still counts an unsettled invoice as unresolved.
+
+When a Checkout debit starts processing on an already closed invoice, the
+transition records the intent in `billing.invoice.late_processing`. After ten
+days the hourly job reads it by ID. If it settled, the invoice retains its
+state and the transition records the duplicate payment and reserves its refund.
+The sweep skips recorded payments and late processing audits from cleared
+Stripe test mode.
+
 Insufficient funds permits up to three failed bank attempts on the invoice;
 an abandoned attempt, or one cancelled before it was confirmed, doesn't count. An
 unusable account stops automatic retries and another active method can become default.
@@ -368,8 +382,9 @@ queue that registers it without the lane makes them wait for the run.
    records `stripeConfigured: false`, which go-live stops counting once Stripe is
    connected. Saving Stripe after such a check pauses billing with an audit in
    the same transaction. The hourly reconcile also lists unread stored intents
-   as `stripe_not_configured` without failing the job; a real provider error or
-   another unresolved issue still fails it. The public `reconcile(gymId)` method
+   as `stripe_not_configured` and completes the job. A provider error or other
+   unresolved issue fails the hourly job with the affected sources named as
+   `payment_attempts`, Checkout bank debits, or both. The public `reconcile(gymId)` method
    always resolves the gym's provider itself. Managers can rerun via go-live
    while billing is paused, using `rerunRestoreReconciliation`, which resolves the
    same configured runner as the worker. Rerunning never enables billing.

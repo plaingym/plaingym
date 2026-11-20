@@ -288,10 +288,16 @@ source of truth; Stripe is the processor. In outline:
 * **Invoicing** (`areas/billing/invoicing/`): pure calculation of invoice lines and tax.
 * **Charge runner** (`areas/billing/runner/`) creates and confirms a PaymentIntent
   with separate idempotency keys. A settling bank debit puts the invoice and
-  attempt in `processing`. Webhooks record settlement. The hourly sweep checks
-  a debit older than ten days by intent ID. A failed bank payment can be retried
-  on the gym's schedule until three bank attempts have failed. An unusable bank
-  account is revoked and its invoice's automatic retries stop.
+  attempt, when present, in `processing`. Webhooks record settlement. The hourly
+  sweep checks a debit older than ten days by intent ID. For a Checkout debit it
+  records a confirmed settlement or applies a reported failure or cancellation.
+  A customer mismatch, a pending intent, or an already resolved runner attempt
+  produces one audit per invoice and reason, and the hourly job continues.
+  It also checks late processing audits on terminal invoices. A settled debit
+  on one of those invoices is recorded as a duplicate and reserved for refund.
+  A failed bank payment can be retried on the gym's schedule until three bank
+  attempts have failed. An unusable bank account is revoked and its invoice's
+  automatic retries stop.
 * **Transitions** (`areas/billing/transitions/`): the only code that changes invoice
   state; its effects (receipts, dunning, membership activation, class credit grants
   and full-refund reversals)

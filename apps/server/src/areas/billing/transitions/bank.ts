@@ -9,6 +9,7 @@ import { abandonedAttempt, audit, canceledAttempt, type InvoiceRow } from './sto
 
 export const retriesStopped = 'billing.invoice.retries_stopped';
 export const invoiceProcessing = 'billing.invoice.processing';
+export const invoiceLateProcessing = 'billing.invoice.late_processing';
 
 /** The invoice lock serializes the intent history, including Checkout payments without a runner attempt. */
 export async function processingIntents(tx: Transaction, invoiceId: string) {

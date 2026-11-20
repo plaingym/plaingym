@@ -5,7 +5,7 @@ import { dateSchema, instantSchema, idSchema } from '@plaingym/shared/contracts'
 import { chargeFailuresJob, dailyRunJob, retryJob, type ChargeRunner } from './index.js';
 import { gymSettingsAccessor } from '../../settings/settings.js';
 import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
-import { notConfigured } from './reconciliation.js';
+import { checkoutNeedsReview, notConfigured } from './reconciliation.js';
 import { restoreCheckLease, RestoreCheckBusyError, type RestoreCheckLease } from '../../health/restore.billing-lease.js';
 
 let configured: ChargeRunner | undefined;
@@ -37,7 +37,12 @@ export function createRunnerJobs(read: () => ChargeRunner | undefined = () => co
     } },
     { id: 'billing.runner.reconcile', cron: '17 * * * *', async handler(_payload, context) {
       const result = await (await scheduled(context.gymId))?.reconcile(context.gymId);
-      if (result?.issues.some(issue => issue.reason !== notConfigured)) throw new Error('Payment attempts remain unresolved');
+      const unresolved = result?.issues.filter(issue => issue.reason !== notConfigured && !checkoutNeedsReview(issue)) ?? [];
+      const sources = [
+        ...(unresolved.some(issue => issue.kind === 'charge') ? ['payment_attempts'] : []),
+        ...(unresolved.some(issue => issue.kind === 'checkout_debit') ? ['Checkout bank debits'] : []),
+      ];
+      if (sources.length) throw new Error(`${sources.join(' and ')} remain unresolved`);
     } },
     // Queued by the previous release for a stopped run's other failures: it records them as that run's report.
     { id: chargeFailuresJob, async handler(payload, context) {

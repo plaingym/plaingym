@@ -20,6 +20,7 @@ export interface TransitionEffect {
   refundId?: string;
   retryDay?: number;
   bankCode?: BankFailureCode;
+  checkoutBankFailure?: true;
   /** A staff notice's subject; absent on older notices, which all report a duplicate payment. */
   notice?: 'refund_canceled' | 'refund_failed' | 'refund_released' | 'refund_arrived' | 'duplicate_released' | 'credits_not_granted';
 }
@@ -31,7 +32,8 @@ export const abandonedAttempt = (row: { declineCode: string | null }) =>
 /** A cancelled intent never pays, whether or not its cancellation was a decline. */
 export const canceledAttempt = (row: { declineCode: string | null }) =>
   row.declineCode === 'intent_canceled' || row.declineCode === confirmAbandoned;
-export const terminal = (invoice: InvoiceRow) => ['paid', 'partially_refunded', 'refunded', 'void'].includes(invoice.status);
+export const terminalInvoiceStatuses = ['paid', 'partially_refunded', 'refunded', 'void'];
+export const terminal = (invoice: InvoiceRow) => terminalInvoiceStatuses.includes(invoice.status);
 export function snapshot(row: InvoiceRow): InvoiceSnapshot {
   if (row.status === 'draft' || row.number === null) throw new Error('Invoice must be issued before payment');
   return { id: row.id, householdId: row.householdId, number: row.number, kind: row.kind as InvoiceSnapshot['kind'],

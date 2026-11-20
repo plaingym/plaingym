@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, desc, eq, isNull, or } from 'drizzle-orm';
-import { forGym, invoices, paymentAttempts, payments, refunds, uuidv7, type Transaction } from '@plaingym/db';
+import { auditEvents, forGym, invoices, paymentAttempts, payments, refunds, uuidv7, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { idSchema } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../../core/clock.js';
 import { conflict, instant, notFound, requireMoney, type MutationContext } from '../../../core/interfaces/common.js';
-import type { BankFailureCode, CardSuccess, CardFailure, ManualPayment, RefundTransition, ProcessorRefundTransition, InvoiceTransitions, InvoiceTransitionResult } from '../../../core/interfaces/invoice-transitions.js';
+import type { CardSuccess, CardFailure, ManualPayment, ProcessingFailure, RefundTransition, ProcessorRefundTransition, InvoiceTransitions, InvoiceTransitionResult } from '../../../core/interfaces/invoice-transitions.js';
+import type { ChargeOutcome } from '../../../infra/payments/index.js';
 import type { PaymentsResolver } from '../webhooks/inbox.js';
 import { isAssignmentInvoice } from '../assignment-invoices.js';
-import { bankAttemptsExhausted, invoiceProcessing, processingIntents, retriesStopped, revokeBankMethod } from './bank.js';
+import { bankAttemptsExhausted, invoiceLateProcessing, invoiceProcessing, processingIntents, retriesStopped, revokeBankMethod } from './bank.js';
 import { logError } from '../../../core/log.js';
 import { readBillingRules } from '../../settings/settings.js';
 import { applyProcessorRefund, applyRefund } from './refunds.js';
 import { createInvoiceVoid } from './void.js';
-import { stripeWriteScope } from '../stripe-writes.js';
+import { latestTestSwitchId, stripeWriteScope } from '../stripe-writes.js';
 import { accepted, audit, canceledAttempt, confirmAbandoned, effect, lockInvoice, paymentRecorded, recorded, result, snapshot, terminal,
   type InvoiceRow } from './store.js';
 
@@ -25,7 +26,12 @@ export interface TransitionOptions {
   afterCommit?: (gymId: string) => Promise<unknown>;
 }
 type PaymentRow = typeof payments.$inferSelect;
-export function createInvoiceTransitions(options: TransitionOptions = {}): InvoiceTransitions {
+type CheckoutFailureCode = Extract<ChargeOutcome, { status: 'failed' }>['code'];
+type CheckoutProcessingFailure = Omit<ProcessingFailure, 'code'> & { code: CheckoutFailureCode };
+export type BillingInvoiceTransitions = Omit<InvoiceTransitions, 'processingFailed'> & {
+  processingFailed: (context: MutationContext, request: CheckoutProcessingFailure) => Promise<InvoiceTransitionResult>;
+};
+export function createInvoiceTransitions(options: TransitionOptions = {}): BillingInvoiceTransitions {
   const scope = stripeWriteScope(options.scope ?? forGym), clock = options.clock ?? defaultClock;
   async function attempt(tx: Transaction, invoice: InvoiceRow, intentId: string, attemptId?: string) {
     const row = (await tx.select().from(paymentAttempts).where(attemptId === undefined
@@ -93,12 +99,22 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
     await audit(tx, context, clock, 'billing.attempt.resolved', 'payment_attempt', row.id,
       { status, declineCode }, { status: row.status, declineCode: row.declineCode });
   }
-  const service: InvoiceTransitions = {
+  const service: BillingInvoiceTransitions = {
     async paymentProcessing(context, request) {
       return scope(context.gymId, async tx => {
         const invoice = await lockInvoice(tx, request.invoiceId);
         const row = await attempt(tx, invoice, request.paymentIntentId, request.attemptId);
         const isTerminal = terminal(invoice);
+        if (isTerminal && !row) {
+          const [payment] = await tx.select({ id: payments.id }).from(payments).where(eq(payments.paymentIntentId, request.paymentIntentId));
+          if (payment) return result('ignored', invoice);
+          const after = { paymentIntentId: request.paymentIntentId, stripeTestSwitchId: await latestTestSwitchId(tx, context.gymId) };
+          const [previous] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
+            eq(auditEvents.targetType, 'invoice'), eq(auditEvents.targetId, invoice.id), eq(auditEvents.action, invoiceLateProcessing),
+            eq(auditEvents.after, after))).limit(1);
+          if (!previous) await audit(tx, context, clock, invoiceLateProcessing, 'invoice', invoice.id, after);
+          return result('ignored', invoice);
+        }
         const history = isTerminal ? [] : await processingIntents(tx, invoice.id);
         if (history.includes(request.paymentIntentId)) return result('ignored', invoice);
         if (invoice.status === 'processing') {
@@ -212,18 +228,22 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
     },
   };
   async function failedInvoice(tx: Transaction, context: MutationContext, invoice: InvoiceRow, attemptId?: string,
-    bankCode?: BankFailureCode, processorId?: string) {
+    failureCode?: CheckoutFailureCode, processorId?: string) {
+    const bankCode = failureCode === 'insufficient_funds' || failureCode === 'payment_method_unusable' ? failureCode : undefined;
+    const checkoutFailureCode = attemptId ? undefined : failureCode;
     // An assignment invoice a bank failure made past due stays past due on a later card failure, so its retries continue.
-    const recurring = invoice.kind === 'cycle' || (!!bankCode || invoice.status === 'past_due') && await isAssignmentInvoice(tx, invoice.id);
+    const recurring = invoice.kind === 'cycle' || (!!failureCode || invoice.status === 'past_due') && await isAssignmentInvoice(tx, invoice.id);
     const next = { ...invoice, status: recurring ? 'past_due' : 'open' };
     if (next.status !== invoice.status) {
       await tx.update(invoices).set({ status: next.status, ...(!attemptId ? { checkoutSessionId: null, checkoutExpiresAt: null } : {}) }).where(eq(invoices.id, invoice.id));
-      await audit(tx, context, clock, 'billing.invoice.payment_failed', 'invoice', invoice.id, snapshot(next), snapshot(invoice));
+      await audit(tx, context, clock, 'billing.invoice.payment_failed', 'invoice', invoice.id,
+        { ...snapshot(next), ...(checkoutFailureCode ? { failureCode: checkoutFailureCode } : {}) }, snapshot(invoice));
     }
     if (bankCode === 'payment_method_unusable' && processorId) await revokeBankMethod(tx, context, clock, invoice, processorId);
     const stop = bankCode === 'payment_method_unusable' || bankCode === 'insufficient_funds' && await bankAttemptsExhausted(tx, invoice);
     if (stop && !await recorded(tx, retriesStopped, invoice.id)) await audit(tx, context, clock, retriesStopped, 'invoice', invoice.id, { bankCode });
-    const source = { ...(attemptId ? { attemptId } : {}), ...(bankCode ? { bankCode } : {}) };
+    const source = { ...(attemptId ? { attemptId } : {}), ...(bankCode ? { bankCode } : {}),
+      ...(checkoutFailureCode && !bankCode ? { checkoutBankFailure: true as const } : {}) };
     if (recurring || bankCode === 'payment_method_unusable')
       await effect(tx, context, clock, { kind: 'dunning', invoiceId: invoice.id, ...source });
     if (recurring && !stop && !await recorded(tx, 'billing.invoice.dunning_started', invoice.id) && !await recorded(tx, retriesStopped, invoice.id)) {

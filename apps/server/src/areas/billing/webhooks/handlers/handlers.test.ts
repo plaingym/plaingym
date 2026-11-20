@@ -194,6 +194,25 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
     await f.run('checkout.session.async_payment_succeeded', { kind: 'checkout', id: session.id });
     expect((await f.read()).payments.map(row => row.method)).toEqual(['bank_debit']);
   });
+  it('applies a canceled Checkout debit through its intent webhook and ignores replay', async () => {
+    const f = await fixture();
+    const session = await f.provider.createCheckout({ mode: 'payment', customerId: 'cus_fixture', invoiceId: f.invoice.id, amount: 10000, currency: 'usd',
+      bankDebit: { type: 'us_bank_account' }, saveForOffSession: true, idempotencyKey: 'bank', successUrl: 'https://gym.invalid/ok', cancelUrl: 'https://gym.invalid/cancel' });
+    const intent = f.transport.completeCheckout(session.id, { method: 'us_bank_account' });
+    const ref = { kind: 'charge' as const, id: String(intent.id) };
+    await f.run('payment_intent.processing', ref);
+    expect((await f.read()).invoice.status).toBe('processing');
+
+    intent.status = 'canceled';
+    await f.run('payment_intent.payment_failed', ref);
+    await f.run('payment_intent.payment_failed', ref);
+    const rows = await f.read();
+    expect(rows.invoice.status).toBe('past_due');
+    expect(rows.payments).toEqual([]);
+    expect(rows.audits.filter(row => row.action === 'billing.invoice.payment_failed')).toMatchObject([
+      { after: { status: 'past_due', failureCode: 'canceled' } },
+    ]);
+  });
   it('replays a recorded processing event read against its runner reservation', async () => {
     const f = await fixture('cycle', 'pm_usbank_6789');
     const tape = (await readFile(new URL('./stripe.processing.synthetic.json', import.meta.url), 'utf8'))

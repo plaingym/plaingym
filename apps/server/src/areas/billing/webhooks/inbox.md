@@ -101,9 +101,14 @@ or completed events to run again. The gym must own the event; there is no raw-bo
 or signature input, and replay never runs a handler in the CLI process.
 
 The ordinary hourly `billing.runner.reconcile` sweep inspects stale `pending`
-payment attempts, resolving charge outcomes by PaymentIntent ID or abandoning
-creates that never saved an ID. It does not scan action-needed attempts, Checkout
-sessions, refunds, disputes, SetupIntents or payment-method updates. The separate
+payment attempts and bank debits in `processing` for more than ten days,
+including those started in Checkout. It also reads, after ten days, a Checkout
+debit that started processing on an already paid or void invoice
+(`billing.invoice.late_processing`), and records a settled one as a duplicate
+payment with its refund reserved. It resolves charge outcomes by PaymentIntent
+ID and abandons stale creates that never saved an ID. It does not scan
+action-needed attempts, Checkout sessions, refunds, disputes, SetupIntents or
+payment-method updates. The separate
 lapsed-refund sweep covers tagged, pending reservations past the retry window that
 still have no processor ID (see [transitions](../transitions/README.md)). Broader
 charge, Checkout, refund and dispute reconciliation runs after a restore; card

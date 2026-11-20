@@ -3,7 +3,7 @@ import { and, eq, or } from 'drizzle-orm';
 import { auditEvents, forGym, households, invoices, paymentAttempts, payments, uuidv7 } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { clock as defaultClock } from '../../../../core/clock.js';
-import type { InvoiceTransitions } from '../../../../core/interfaces/invoice-transitions.js';
+import type { BillingInvoiceTransitions } from '../../transitions/index.js';
 import type { ChargeOutcome, CheckoutSession, PaymentMetadata, Payments, PaymentObjectReference, Refund } from '../../../../infra/payments/index.js';
 import type { WebhookHandler, WebhookInbox } from '../inbox.js';
 import { applyChargeOutcome } from '../../transitions/outcomes.js';
@@ -19,7 +19,7 @@ export const billingWebhookTypes = [
   'charge.dispute.created', 'charge.dispute.updated', 'charge.dispute.closed',
 ] as const;
 export interface HandlerOptions {
-  transitions: InvoiceTransitions;
+  transitions: BillingInvoiceTransitions;
   afterCheckoutRecorded?(gymId: string, linkId: string, sessionId: string): Promise<void>;
   disputeAlerts?: DisputeRefundOptions['disputeAlerts'];
   scope?: typeof forGym;
@@ -98,8 +98,7 @@ export function registerBillingWebhookHandlers(inbox: Pick<WebhookInbox, 'regist
       throw new Error('Webhook payment amount mismatch');
     if (matched.attempt && outcome.paymentMethodType && outcome.paymentMethodType !== 'card' && outcome.paymentMethodId
       && matched.attempt.savedPaymentMethod !== outcome.paymentMethodId) throw new Error('Webhook bank account mismatch');
-    if (!matched.attempt && outcome.status !== 'succeeded' && outcome.status !== 'processing'
-      && !(outcome.status === 'failed' && (outcome.code === 'insufficient_funds' || outcome.code === 'payment_method_unusable'))) return;
+    if (!matched.attempt && (outcome.status === 'action_required' || outcome.status === 'pending')) return;
     await applyChargeOutcome(options.transitions, system(gymId), {
       invoiceId: matched.invoice.id, paymentId: matched.payment?.id ?? uuidv7(),
       ...(matched.attempt ? { attemptId: matched.attempt.id } : {}),
