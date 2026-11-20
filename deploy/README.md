@@ -360,9 +360,9 @@ does not establish correct role initialization.
 
 The app connects as `app`, which row-level security confines to one gym at a
 time. The `maintenance` role (`BYPASSRLS`) runs migrations, backups, restore and
-key rotation. Startup refuses direct or indirect membership of `app` in
-`maintenance` or a role with `SUPERUSER`, `BYPASSRLS` or `CREATEROLE`, with any
-membership options, and the catalog error names the privileged role.
+key rotation. The post-migration catalog check refuses direct or indirect
+membership of `app` in `maintenance` or a role with `SUPERUSER`, `BYPASSRLS`
+or `CREATEROLE`, with any membership options, and names the privileged role.
 
 * **Single-gym installs** (`TENANCY=single`, this directory's `compose.yaml`):
   the app container holds `MAINTENANCE_PASSWORD` and `MAINTENANCE_DATABASE_URL`.
@@ -387,9 +387,9 @@ membership options, and the catalog error names the privileged role.
 
 ### Monitoring extensions
 
-Startup checks every view, materialized view and foreign table in `public` and
+The post-migration catalog check inspects every view, materialized view and foreign table in `public` and
 `drizzle` that `app` owns or holds any privilege on, including column grants and
-grants through `PUBLIC`. Startup also fails if `app` is a member of an object's
+grants through `PUBLIC`. The check also fails if `app` is a member of an object's
 owner role with any options (inherit, `SET ROLE` or `ADMIN OPTION`), directly or
 through another role. Inaccessible objects owned by a role outside `app`'s reach
 pass. A monitoring extension such as `pg_stat_statements` installed in `public` grants

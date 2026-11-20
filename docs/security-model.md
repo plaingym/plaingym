@@ -30,18 +30,21 @@ Isolation is enforced in the database, not only in application code.
   grants no gym-owned data.
 * **Database roles.** The app connects as `app`: DML only, no DDL, no
   `BYPASSRLS`, never a superuser. The `maintenance` role (`BYPASSRLS`) runs only
-  migrations, backups and restore. Startup refuses direct or indirect membership
-  of `app` in `maintenance` or a role with `SUPERUSER`, `BYPASSRLS` or `CREATEROLE`.
-  The check counts membership with any options and names each privileged role.
+  migrations, backups and restore. The post-migration catalog check refuses
+  direct or indirect membership of `app` in `maintenance` or a role with
+  `SUPERUSER`, `BYPASSRLS` or `CREATEROLE`. It counts membership with any
+  options and names each privileged role.
   In multi-gym mode the running app never holds the maintenance credentials and
   refuses to start if they are set.
   Every app, authentication and maintenance pool pins `search_path=public` at
   connection startup, overriding database, role and connection URL defaults.
 * **Composite foreign keys.** References between gym-owned tables include
   `gym_id`, so a row can't point at another gym's row even through a bug.
-* **Checked on every start.** After migrations, a catalog check compares every
-  table's policies, `ENABLE`/`FORCE` flags, privileges, ownership and tenant keys
-  with what the schema declares, and startup fails on any difference. A table the
+* **Checked after migrations.** A catalog check compares every table's policies,
+  `ENABLE`/`FORCE` flags, privileges, ownership and tenant keys with what the
+  schema declares. A difference blocks startup. The single-gym entrypoint runs
+  this check on each start. In multi-gym mode the one-shot migrate service runs
+  it before the app first starts. A table the
   running version doesn't declare (a newer release's, after a rollback) passes only
   with exactly the gym policy or a system access kind's policies, forced, for the
   `app` role alone, and no more than ordinary table privileges. The schema declares
