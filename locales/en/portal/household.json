@@ -53,6 +53,8 @@
   "unchanged": "Nothing changed.",
   "close": "Close",
   "changed": "These details were changed somewhere else. Close and reopen them, then try again.",
+  "contactConflict": "These details changed while you were editing. Discard your edits to load the latest details.",
+  "discardEdits": "Discard edits",
   "failed": "We couldn't save. Check the details and try again.",
   "firstName": "First name",
   "lastName": "Last name",

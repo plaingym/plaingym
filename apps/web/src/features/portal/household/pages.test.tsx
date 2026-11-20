@@ -724,6 +724,51 @@ describe('portal household page', () => {
     expect(JSON.parse(String(init?.body))).toEqual({ consent: false, revision: 3 });
     expect(new Headers(init?.headers).get('X-Portal-Household')).toBe(ids.household);
   });
+  it.each([false, true])('pauses household consent during a contact save (notices already granted: %s)', async granted => {
+    let current: Household = { ...household, phone: '+12025550123', sms: { phoneValid: true, phoneE164: '+12025550123',
+      notices: granted ? { at: '2026-11-16T12:00:00Z', source: 'portal' } : null } };
+    const contactSave = Promise.withResolvers<void>(), contactRead = Promise.withResolvers<void>();
+    const endpoint = '/api/portal/household', consentEndpoint = endpoint + '/sms-consent';
+    const view = mount(<PortalHousehold />, async (path, init) => {
+      if (path === endpoint && init?.method === 'PATCH') {
+        await contactSave.promise;
+        current = { ...current, name: 'New name', revision: 4 };
+        return { data: current };
+      }
+      if (path === endpoint) {
+        if (current.revision === 4) await contactRead.promise;
+        return { data: current };
+      }
+      if (path === consentEndpoint && init?.method === 'PUT') {
+        current = { ...current, revision: 5, sms: { ...current.sms,
+          notices: granted ? null : { at: '2026-11-16T12:00:00Z', source: 'portal' } } };
+        return { data: current };
+      }
+      return path.startsWith('/api/portal/members?') ? page([]) : undefined;
+    }, { context: payer });
+    const user = userEvent.setup();
+    const name = await screen.findByLabelText('Household name');
+    const consent = screen.getByRole<HTMLButtonElement>('button', { name: granted ? 'Withdraw notices consent' : 'Agree to notices' });
+    expect(consent.disabled).toBe(false);
+    fireEvent.change(name, { target: { value: 'New name' } });
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(view.calls('PATCH', endpoint)).toHaveLength(1));
+    expect(consent.disabled).toBe(true);
+    await user.click(consent);
+    expect(view.calls('PUT', consentEndpoint)).toHaveLength(0);
+    await act(async () => { contactSave.resolve(); });
+    await waitFor(() => expect(view.calls('GET', endpoint)).toHaveLength(2));
+    expect(consent.disabled).toBe(true);
+    await user.click(consent);
+    expect(view.calls('PUT', consentEndpoint)).toHaveLength(0);
+    await act(async () => { contactRead.resolve(); });
+    await waitFor(() => expect(consent.disabled).toBe(false));
+    await user.click(consent);
+    await screen.findByRole('button', { name: granted ? 'Agree to notices' : 'Withdraw notices consent' });
+    const requests = view.calls('PUT', consentEndpoint);
+    expect(requests).toHaveLength(1);
+    expect(JSON.parse(String(requests[0]![1]?.body))).toEqual({ consent: !granted, revision: 4 });
+  });
   it.each([false, true])('retains later edits after a household save (concurrent change: %s)', async concurrent => {
     let current: Household = household;
     const firstSave = Promise.withResolvers<void>();
@@ -757,15 +802,72 @@ describe('portal household page', () => {
     await waitFor(() => expect(save.disabled).toBe(false));
     await user.click(save);
     if (concurrent) {
-      await screen.findByText(/changed somewhere else/i);
+      await screen.findByText('These details changed while you were editing. Discard your edits to load the latest details.');
       expect(view.calls('PATCH', endpoint)).toHaveLength(1);
       expect(name.value).toBe('Later edit');
       expect(phone.value).toBe('+12025550199');
+      await user.click(screen.getByRole('button', { name: 'Discard edits' }));
+      await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+      expect(name.value).toBe('Another save');
+      expect(phone.value).toBe('');
+      fireEvent.change(name, { target: { value: 'New edit' } });
+      await user.click(save);
+      await screen.findByText('Saved.');
+      expect(JSON.parse(String(view.calls('PATCH', endpoint)[1]![1]!.body))).toEqual({ name: 'New edit', revision: 5 });
     } else {
       await waitFor(() => expect(view.calls('PATCH', endpoint)).toHaveLength(2));
       expect(JSON.parse(String(view.calls('PATCH', endpoint)[1]![1]!.body))).toEqual({ name: 'Later edit', phone: '+12025550199', revision: 4 });
       await screen.findByText('Saved.');
     }
+  });
+  it('keeps a server-conflicted contact draft until discard successfully refreshes it', async () => {
+    let current: Household = household;
+    const failedRead = Promise.withResolvers<Response>();
+    let failNextRead = false;
+    const endpoint = '/api/portal/household';
+    const view = mount(<PortalHousehold />, (path, init) => {
+      if (path === endpoint && init?.method === 'PATCH') {
+        const { revision, ...changes } = JSON.parse(String(init.body)) as { revision: number; email?: string };
+        if (revision !== current.revision) {
+          return Response.json({ error: { code: 'conflict' } }, { status: 409 });
+        }
+        current = { ...current, ...changes, revision: revision + 1 };
+        return { data: current };
+      }
+      if (path === endpoint) {
+        if (failNextRead) { failNextRead = false; return failedRead.promise; }
+        return { data: current };
+      }
+      return path.startsWith('/api/portal/members?') ? page([]) : undefined;
+    }, { context: payer });
+    const user = userEvent.setup();
+    const name = await screen.findByLabelText<HTMLInputElement>('Household name');
+    const email = screen.getByLabelText<HTMLInputElement>('Email');
+    const save = screen.getByRole<HTMLButtonElement>('button', { name: 'Save' });
+    fireEvent.change(name, { target: { value: 'My draft' } });
+    current = { ...current, name: 'Saved elsewhere', email: 'new@example.test', revision: 4 };
+    await user.click(save);
+    const discard = await screen.findByRole<HTMLButtonElement>('button', { name: 'Discard edits' });
+    expect(view.calls('PATCH', endpoint)).toHaveLength(1);
+    failNextRead = true;
+    await user.click(discard);
+    await waitFor(() => expect(view.calls('GET', endpoint)).toHaveLength(2));
+    expect(discard.disabled).toBe(true);
+    await user.click(discard);
+    expect(view.calls('GET', endpoint)).toHaveLength(2);
+    await act(async () => { failedRead.resolve(new Response(null, { status: 503 })); });
+    await waitFor(() => expect(discard.disabled).toBe(false));
+    expect(name.value).toBe('My draft');
+    expect(email.value).toBe(household.email);
+    expect(discard.closest('[role="alert"]')?.textContent).toContain('These details changed while you were editing.');
+    await user.click(discard);
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(name.value).toBe('Saved elsewhere');
+    expect(email.value).toBe('new@example.test');
+    fireEvent.change(email, { target: { value: 'retry@example.test' } });
+    await user.click(save);
+    await screen.findByText('Saved.');
+    expect(JSON.parse(String(view.calls('PATCH', endpoint)[1]![1]!.body))).toEqual({ email: 'retry@example.test', revision: 4 });
   });
   it('rebases later edits on the saved household when the refetch after a save fails', async () => {
     let current: Household = household, failRead = false;
@@ -801,7 +903,7 @@ describe('portal household page', () => {
     await user.click(save);
     await waitFor(() => expect(view.calls('PATCH', endpoint)).toHaveLength(2));
     expect(JSON.parse(String(view.calls('PATCH', endpoint)[1]![1]!.body))).toEqual({ phone: '+12025550199', revision: 4 });
-    expect(screen.queryByText(/changed somewhere else/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Discard edits' })).toBeNull();
   });
   it('saves and withdraws each adult SMS choice with the profile revision and open household', async () => {
     let current: PortalMember = { ...people[2]!, status: 'active', phone: '+12025550123', sms: { phoneValid: true, phoneE164: '+12025550123', notices: null, announcements: null } };

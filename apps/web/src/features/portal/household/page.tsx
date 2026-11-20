@@ -40,7 +40,8 @@ function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope
   return <Page className="max-w-3xl"><PortalRecovery moving={scope.moving}>
     <PageHeader title={text(payer ? 'title' : 'profileTitle')} description={text(payer ? 'description' : 'profileDescription')} />
     {/* A failed refetch keeps its data, so the form and its draft stay. */}
-    {payer && (household.data ? <HouseholdForm key={household.data.id} household={household.data} scope={scope} gymName={gymName} saved={saved} setSaved={setSaved} />
+    {payer && (household.data ? <HouseholdForm key={household.data.id} household={household.data} scope={scope} gymName={gymName}
+      saved={saved} setSaved={setSaved} refetch={() => household.refetch({ throwOnError: true })} />
       : household.isPending || scope.settling ? <LoadingState /> : <ErrorState onRetry={() => void household.refetch()} />)}
     <PageSection title={text(payer ? 'members' : 'profile')}>
       {members.isPending || (!members.data && scope.settling) ? <LoadingState /> : members.isError && <ErrorState onRetry={() => void members.refetch()} />}
@@ -95,7 +96,10 @@ const householdContact = ({ name, email, phone, address }: PortalHousehold) => (
 const normalizeHousehold = (value: ReturnType<typeof householdContact>) => ({
   name: value.name.trim(), email: value.email?.trim() || null, phone: normalizedPhone(value.phone), address: normalizeAddress(value.address),
 });
-function HouseholdForm({ household, scope, gymName, saved, setSaved }: { household: PortalHousehold; scope: PortalScope; gymName: string; saved: 'saved' | 'unchanged' | null; setSaved(value: 'saved' | 'unchanged' | null): void }) {
+function HouseholdForm({ household, scope, gymName, saved, setSaved, refetch }: {
+  household: PortalHousehold; scope: PortalScope; gymName: string; saved: 'saved' | 'unchanged' | null;
+  setSaved(value: 'saved' | 'unchanged' | null): void; refetch(): Promise<unknown>;
+}) {
   const cache = useQueryClient();
   const draft = useDraft(householdContact(household), normalizeHousehold);
   const phoneChanged = normalizedPhone(draft.values.phone) !== normalizedPhone(household.phone);
@@ -114,10 +118,20 @@ function HouseholdForm({ household, scope, gymName, saved, setSaved }: { househo
     } else draft.reset();
     setSaved(result ? 'saved' : 'unchanged');
   } });
-  function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setSaved(null); save.mutate(); }
+  const discard = useMutation({ mutationFn: refetch, onSuccess: () => { draft.reset(); save.reset(); } });
+  const hasConflict = save.isError && conflict(save.error);
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (save.isPending || discard.isPending) return;
+    setSaved(null);
+    save.mutate();
+  }
   return <><Card className="p-4 sm:p-6"><form className="space-y-4" onSubmit={submit} aria-labelledby="household-contact">
     <h2 id="household-contact" className="text-lg font-semibold">{text('contactTitle')}</h2>
-    {save.isError && <Alert variant="error" focusOnReveal role="alert">{text(conflict(save.error) ? 'changed' : 'failed')}</Alert>}
+    {save.isError && <Alert variant="error" focusOnReveal role="alert">
+      <p>{text(hasConflict ? 'contactConflict' : 'failed')}</p>
+      {hasConflict && <Button type="button" variant="outline" disabled={discard.isPending} onClick={() => discard.mutate()}>{text('discardEdits')}</Button>}
+    </Alert>}
     {saved && <Alert role="status">{text(saved)}</Alert>}
     <div className="grid gap-4 sm:grid-cols-2">
       <Field name="name" label={text('householdName')} value={draft.values.name} onChange={event => draft.set('name', event.target.value)} required />
@@ -128,10 +142,11 @@ function HouseholdForm({ household, scope, gymName, saved, setSaved }: { househo
         {...(field === 'countryCode' ? { maxLength: 2, pattern: '[A-Za-z]{2}' } : {})} />)}
     </div>
     <p className="text-sm text-muted-foreground">{text('billingNote')}</p>
-    <Button type="submit" disabled={save.isPending}>{text('save')}</Button>
+    <Button type="submit" disabled={save.isPending || discard.isPending}>{text('save')}</Button>
   </form></Card>
-    <SmsConsentControls sms={household.sms} gymName={gymName} {...(phoneChanged ? { grantBlockedHint: text('savePhoneBeforeConsent') } : {})}
+    <SmsConsentControls sms={household.sms} gymName={gymName} disabled={save.isPending} {...(phoneChanged ? { grantBlockedHint: text('savePhoneBeforeConsent') } : {})}
       onChange={async (_kind, consent) => {
+        if (save.isPending) return;
         scope.own(await scope.call(contracts.changeHouseholdSmsConsent, { consent, revision: household.revision }));
         await refreshHousehold();
       }}/>
