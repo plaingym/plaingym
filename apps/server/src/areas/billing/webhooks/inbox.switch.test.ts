@@ -41,11 +41,17 @@ async function fixture(type: string, checkoutMode: 'payment' | 'setup' = 'paymen
       amount: 10000, currency: 'usd', status: 'needs_response', metadata: {}, created: transport.now });
     if (type.startsWith('refund.')) reference = { kind: 'refund', id: 're_test' };
     if (type.startsWith('charge.dispute.')) reference = { kind: 'dispute', id: 'dp_test' };
-  } else if (type === 'checkout.session.completed') {
+  } else if (type.startsWith('checkout.session.')) {
+    const asyncDebit = type.startsWith('checkout.session.async_payment_');
     const session = await provider.createCheckout({ mode: checkoutMode, amount: 10000, currency: 'usd', invoiceId: invoice.id,
+      ...(asyncDebit ? { bankDebit: { type: 'us_bank_account' as const } } : {}),
       customerId: 'cus_fixture', successUrl: 'https://gym.invalid/ok', cancelUrl: 'https://gym.invalid/cancel',
       saveForOffSession: true, idempotencyKey: 'checkout' });
-    transport.completeCheckout(session.id);
+    const intent = transport.completeCheckout(session.id, { method: asyncDebit ? 'us_bank_account' : 'card' });
+    if (asyncDebit) {
+      if (type === 'checkout.session.async_payment_failed') intent.payment_method = 'pm_usbank_2227';
+      transport.settle(String(intent.id));
+    }
     reference = { kind: 'checkout', id: session.id };
   } else if (type === 'setup_intent.succeeded') {
     transport.objects.set('seti_test', { id: 'seti_test', object: 'setup_intent', customer: 'cus_fixture', status: 'succeeded',

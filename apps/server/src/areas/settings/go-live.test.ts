@@ -51,6 +51,13 @@ const patch = (app: ReturnType<typeof server>, body: unknown) => app.request('/a
 const status = (checklist: Awaited<ReturnType<typeof service.checklist>>) => Object.fromEntries(checklist.items.map((item) => [item.id, item.status]));
 
 describe('go-live switches and checklist', () => {
+  it.each([['CAD', true, true], ['USD', true, false], ['CAD', false, false]] as const)('shows the PAD email note for %s with bank debits %s', async (currency, bankDebitsEnabled, shown) => {
+    const gymId = uuidv7();
+    await factory('gyms', gymId, { currency, bankDebitsEnabled });
+    const stripe = (await service.checklist(gymId)).items.find(item => item.id === 'stripe_ready')!;
+    expect(stripe.message.includes("Keep Stripe's pre-authorized debit emails on")).toBe(shown);
+    expect(stripe.status).toBe('needs_attention');
+  });
   it('reports readiness from this gym only and never exposes credentials', async () => {
     const a = await service.checklist(gymA), b = await service.checklist(gymB);
     expect(status(a)).toEqual({ gym_details: 'ready', members_imported: 'ready', schedule_ready: 'ready', stripe_ready: 'ready',

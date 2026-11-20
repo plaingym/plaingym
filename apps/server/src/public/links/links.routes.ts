@@ -122,12 +122,15 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
     publicRoute(route({ method: 'get', path: '/l/{token}', permission: { kind: 'public' },
       request: { params: z.object({ token: z.string().max(128) }), query: z.strictObject({ tablet: z.literal('1').optional(), returned: z.literal('1').optional() }) }, responses: textResponses }, async c => {
       const ctx = c.get('context'), config = options();
-      const resolution = await config.links.resolve(ctx.gym.gymId, c.req.valid('param').token);
+      const token = c.req.valid('param').token;
+      const receipt = config.receipts.open(getCookie(c, receiptCookie), ctx.clock.now(), { gymId: ctx.gym.gymId });
+      const resolution = await config.links.resolve(ctx.gym.gymId, token, receipt?.token === token ? receipt : undefined);
       const common = { ...await presentation(c), tablet: c.req.valid('query').tablet === '1' };
       if (resolution.status !== 'active') {
         // This is static guidance, never proof a credential or household exists. Other gyms see the same page.
         const replaced = resolution.status === 'not_found' && /^campaign_[A-Za-z0-9_-]{43}$/.test(c.req.valid('param').token);
-        return html(c, { ...common, state: resolution.status === 'used' ? 'alreadyDone' : replaced ? 'replaced' : 'unavailable' }, resolution.status === 'used' ? 200 : 404);
+        return html(c, { ...common, state: resolution.status === 'used' ? 'alreadyDone' : replaced ? 'replaced' : 'unavailable',
+          processing: resolution.status === 'used' && Boolean(resolution.processing) }, resolution.status === 'used' ? 200 : 404);
       }
       try {
         const verified = { ...ctx, principal: resolution.principal };
@@ -224,6 +227,14 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
       const receipt = config.receipts.open(getCookie(c, receiptCookie), ctx.clock.now(), { gymId: p.gymId, linkId: p.linkId });
       const sessionId = receipt?.gymId === p.gymId && receipt.linkId === p.linkId ? receipt.sessionId : null;
       const completed = await config.service.complete(ctx, sessionId);
+      if (completed && receipt && p.link.purpose === 'pay_invoice') {
+        const resolution = await config.links.resolve(p.gymId, receipt.token, receipt);
+        if (resolution.status === 'used' && resolution.processing) {
+          // Keep the authenticated receipt for the read-only processing page.
+          c.header('Content-Location', '/l/return');
+          return c.json({ data: { completed } }, 200);
+        }
+      }
       if (completed) deleteCookie(c, receiptCookie, { path: '/' });
       return c.json({ data: { completed } }, 200);
     })));

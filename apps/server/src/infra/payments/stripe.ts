@@ -51,6 +51,7 @@ function timestamp(value: Json | undefined): Date {
   return time;
 }
 class NotForGym extends Error {}
+class IncompleteBankMethod extends NotForGym {}
 function methodType(method: ObjectData): PaymentMethodType {
   // Older recorded card responses contain the card object without a type discriminator.
   if (method.type === 'card' || (method.type === undefined && method.card)) return 'card';
@@ -58,10 +59,11 @@ function methodType(method: ObjectData): PaymentMethodType {
   throw new Error('Invalid Stripe object');
 }
 function readMethod(method: ObjectData): PaymentMethod {
-  const type = methodType(method), details = data(method[type]);
+  const type = methodType(method);
+  const details = type === 'card' ? data(method.card) : data(method[type] ?? {});
   const identity = { id: id(method.id), customerId: id(method.customer), createdAt: timestamp(method.created) };
   if (type !== 'card') {
-    if (typeof details.last4 !== 'string' || !/^\d{4}$/.test(details.last4)) throw new Error('Invalid bank account details');
+    if (typeof details.last4 !== 'string' || !/^\d{4}$/.test(details.last4)) throw new IncompleteBankMethod('Bank account has no usable last four digits');
     return { ...identity, type, last4: details.last4, ...(typeof details.bank_name === 'string' ? { bankName: details.bank_name } : {}) };
   }
   return { ...identity, type, last4: String(details.last4), ...(typeof details.brand === 'string' ? { brand: details.brand } : {}),
@@ -72,7 +74,7 @@ function bankOptionRefused(error: unknown): boolean {
   const param = failure?.param ?? failure?.raw?.param;
   return (failure?.type === 'StripeInvalidRequestError' || failure?.type === 'invalid_request_error'
     || failure?.rawType === 'invalid_request_error' || failure?.raw?.type === 'invalid_request_error')
-    && typeof param === 'string' && /^(?:allowed_payment_method_types|payment_method_types|payment_method_options)/.test(param);
+    && typeof param === 'string' && /^(?:(?:allowed_)?payment_method_types(?:\[\d+\])?|payment_method_options\[(?:us_bank_account|acss_debit)\])$/.test(param);
 }
 function queryString(params: ObjectData): string {
   const query = new URLSearchParams();
@@ -619,8 +621,9 @@ export class StripePayments implements Payments {
         if (typeof card.last4 !== 'string' || !/^[0-9]{4}$/.test(card.last4)
           || !Number.isInteger(card.exp_month) || Number(card.exp_month) < 1 || Number(card.exp_month) > 12
           || !Number.isInteger(card.exp_year) || Number(card.exp_year) < 2000) throw new Error('Invalid card details');
-      } else if (!data(method[String(method.type)] ?? {}).last4) continue;
-      cards.push(readMethod(method));
+      }
+      try { cards.push(readMethod(method)); }
+      catch (error) { if (!(error instanceof IncompleteBankMethod)) throw error; }
     }
     const nextCursor = page.has_more ? [...ids].at(-1) : null;
     if (nextCursor === undefined || nextCursor === options.cursor) throw new Error('Invalid card pagination');
@@ -719,7 +722,14 @@ export class StripePayments implements Payments {
       const reference = await this.#reference(object);
       if (!reference) throw new PaymentWebhookError('webhook_not_for_gym');
       if (data(object.metadata ?? {}).gym_id) this.#metadata(object);
-      else await this.#read(reference);
+      else {
+        try { await this.#read(reference); }
+        catch (error) {
+          // The method's customer was verified before its missing last four digits were discovered.
+          if (!(error instanceof IncompleteBankMethod && reference.kind === 'payment_method'
+            && ['payment_method.updated', 'payment_method.automatically_updated'].includes(event.type))) throw error;
+        }
+      }
       return { id: event.id, type: event.type, gymId: this.gymId, objectId: reference.id, objectKind: reference.kind };
     } catch (error) {
       if (error instanceof NotForGym) throw new PaymentWebhookError('webhook_not_for_gym');

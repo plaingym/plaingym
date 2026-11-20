@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "gymId": "00000000-0000-7000-8000-000000000001",
+  "exchanges": [
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "POST",
+        "path": "/v1/checkout/sessions",
+        "params": {
+          "mode": "payment",
+          "customer": "cus_fixture",
+          "success_url": "https://gym.example.test/l/return",
+          "cancel_url": "https://gym.example.test/l/return",
+          "allowed_payment_method_types": [
+            "card",
+            "acss_debit"
+          ],
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001",
+            "invoice_id": "00000000-0000-7000-8000-000000000002",
+            "link_id": "00000000-0000-7000-8000-000000000003"
+          },
+          "payment_intent_data": {
+            "metadata": {
+              "gym_id": "00000000-0000-7000-8000-000000000001",
+              "invoice_id": "00000000-0000-7000-8000-000000000002",
+              "link_id": "00000000-0000-7000-8000-000000000003"
+            }
+          },
+          "line_items": [
+            {
+              "quantity": 1,
+              "price_data": {
+                "currency": "cad",
+                "unit_amount": 100,
+                "product_data": {
+                  "name": "Invoice payment",
+                  "metadata": {
+                    "gym_id": "00000000-0000-7000-8000-000000000001",
+                    "invoice_id": "00000000-0000-7000-8000-000000000002",
+                    "link_id": "00000000-0000-7000-8000-000000000003"
+                  }
+                }
+              }
+            }
+          ],
+          "payment_method_options": {
+            "acss_debit": {
+              "verification_method": "instant",
+              "mandate_options": {
+                "payment_schedule": "combined",
+                "interval_description": "Membership dues on each billing date, and other charges you approve",
+                "transaction_type": "personal"
+              }
+            }
+          }
+        },
+        "idempotencyKey": "invoice:00000000-0000-7000-8000-000000000002:checkout:2026-10-28T11:00:00.000Z"
+      },
+      "output": {
+        "id": "cs_1",
+        "created": 1793102400,
+        "livemode": false,
+        "object": "checkout.session",
+        "mode": "payment",
+        "customer": "cus_fixture",
+        "success_url": "https://gym.example.test/l/return",
+        "cancel_url": "https://gym.example.test/l/return",
+        "allowed_payment_method_types": [
+          "card",
+          "acss_debit"
+        ],
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002",
+          "link_id": "00000000-0000-7000-8000-000000000003"
+        },
+        "payment_intent_data": {
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001",
+            "invoice_id": "00000000-0000-7000-8000-000000000002",
+            "link_id": "00000000-0000-7000-8000-000000000003"
+          }
+        },
+        "line_items": [
+          {
+            "quantity": 1,
+            "price_data": {
+              "currency": "cad",
+              "unit_amount": 100,
+              "product_data": {
+                "name": "Invoice payment",
+                "metadata": {
+                  "gym_id": "00000000-0000-7000-8000-000000000001",
+                  "invoice_id": "00000000-0000-7000-8000-000000000002",
+                  "link_id": "00000000-0000-7000-8000-000000000003"
+                }
+              }
+            }
+          }
+        ],
+        "payment_method_options": {
+          "acss_debit": {
+            "verification_method": "instant",
+            "mandate_options": {
+              "payment_schedule": "combined",
+              "interval_description": "Membership dues on each billing date, and other charges you approve",
+              "transaction_type": "personal"
+            }
+          }
+        },
+        "status": "open",
+        "url": "https://checkout.invalid/fixture",
+        "payment_intent": null,
+        "payment_status": "unpaid"
+      }
+    }
+  ]
+}

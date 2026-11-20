@@ -65,13 +65,13 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
     });
   } });
   const gymOf = (ctx: Context<RequestEnvironment>) => ctx.get('context').gym.gymId;
-  async function page(ctx: Context<RequestEnvironment>, state: JoinPageState, status: 200 | 400 | 413 | 429 | 503 = 200, linkId?: string) {
+  async function page(ctx: Context<RequestEnvironment>, state: JoinPageState, status: 200 | 400 | 413 | 429 | 503 = 200, linkId?: string, processing = false) {
     const config = options();
     // Only the steps that lead to payment show the hint, so the other pages skip the lookup.
     const testCardHint = config.testCardHint && ['continue', 'cancelled', 'card', 'cancelledCard'].includes(state) ? await config.testCardHint(gymOf(ctx)) : undefined;
     // The review step: the first invoice, with any code's discount, before payment or card setup.
     const invoice = linkId && ['continue', 'card', 'manual'].includes(state) ? await config.service.firstInvoice(gymOf(ctx), linkId) : null;
-    return ctx.html(joinStatusPage({ gym: await config.service.branding(gymOf(ctx)), t: config.t ?? translator, state, testCardHint, invoice }), status);
+    return ctx.html(joinStatusPage({ gym: await config.service.branding(gymOf(ctx)), t: config.t ?? translator, state, testCardHint, invoice, processing }), status);
   }
   /** HttpOnly, Secure, SameSite=Lax (it survives the return from Checkout), signed, short-lived and scoped to /join. */
   function remember(ctx: Context<RequestEnvironment>, linkId: string) {
@@ -200,7 +200,7 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
       if (state.status === 'missing' || state.status === 'closed') return page(ctx, state.status);
       if (state.status === 'pending') return page(ctx, state.cardOnly ? 'confirmingCard' : 'confirming');
       if (state.status === 'manual') return page(ctx, 'manual');
-      return page(ctx, await service.passwordMode(gymOf(ctx)) ? 'welcomePassword' : 'welcomeEmail');
+      return page(ctx, await service.passwordMode(gymOf(ctx)) ? 'welcomePassword' : 'welcomeEmail', 200, undefined, 'processing' in state && state.processing);
     }),
     route({ method: 'get', path: '/join/cancelled', permission: { kind: 'public' }, responses: html }, async ctx => {
       const linkId = pending(ctx), state = linkId ? await options().service.state(gymOf(ctx), linkId) : { status: 'missing' as const };
@@ -210,17 +210,20 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
     route({ method: 'post', path: '/join/sign-in', permission: { kind: 'public' }, middleware: [steps], responses: html }, async ctx => {
       const linkId = pending(ctx);
       if (!linkId) return page(ctx, 'missing');
-      try { await options().service.resend(gymOf(ctx), linkId); }
-      catch (error) { if (settledOrGone(error)) return ctx.redirect('/join/return', 303); throw error; }
-      return page(ctx, 'resent');
+      try {
+        const state = await options().service.resend(gymOf(ctx), linkId);
+        return page(ctx, 'resent', 200, undefined, state.processing);
+      } catch (error) { if (settledOrGone(error)) return ctx.redirect('/join/return', 303); throw error; }
     }),
     route({ method: 'post', path: '/join/portal-login', permission: { kind: 'public' }, middleware: [steps], responses: html }, async ctx => {
       const linkId = pending(ctx);
       if (!linkId) return page(ctx, 'missing');
       // Issues nothing: in password mode the gym checks the person and then issues the printed portal invitation.
       const service = options().service, gymId = gymOf(ctx);
-      if (!await service.passwordMode(gymId) || (await service.state(gymId, linkId)).status !== 'active') return ctx.redirect('/join/return', 303);
-      return page(ctx, 'welcomePassword');
+      if (!await service.passwordMode(gymId)) return ctx.redirect('/join/return', 303);
+      const state = await service.state(gymId, linkId);
+      if (state.status !== 'active') return ctx.redirect('/join/return', 303);
+      return page(ctx, 'welcomePassword', 200, undefined, state.processing);
     }),
     route({ method: 'get', path: '/join/client.js', permission: { kind: 'public' }, responses: { 200: { description: 'Progressive form enhancement' } } }, ctx => {
       ctx.header('Content-Type', 'text/javascript; charset=utf-8'); return ctx.body(joinBrowserScript);

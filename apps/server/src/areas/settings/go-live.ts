@@ -25,6 +25,7 @@ const ready = (value: unknown): Status => value ? 'ready' : 'needs_attention';
 /** Credentials and opaque settings are read here, never returned or audited. */
 const projection = {
   revision: gyms.revision, timezone: gyms.timezone, billingEnabled: gyms.billingEnabled, memberEmailsEnabled: gyms.memberEmailsEnabled, memberSmsEnabled: gyms.memberSmsEnabled,
+  currency: gyms.currency, bankDebitsEnabled: gyms.bankDebitsEnabled,
   settings: gyms.settings, stripeConfigured: gyms.stripeConfig, backupPublicKey: gyms.backupPublicKey, backupDestination: gyms.backupDestination,
 };
 const switches = (row: { billingEnabled: boolean; memberEmailsEnabled: boolean; memberSmsEnabled: boolean }) =>
@@ -109,7 +110,8 @@ export function createGoLiveService(options: {
         item('gym_details', ready(!setup || setup.completed)),
         item('members_imported', ready(member)),
         item('schedule_ready', ready(template)),
-        item('stripe_ready', ready(stripe)),
+        item('stripe_ready', ready(stripe), gym.bankDebitsEnabled && gym.currency === 'CAD'
+          ? t('settings/go-live:check.stripe_ready.' + ready(stripe)) + ' ' + t('settings/go-live:padEmails') : undefined),
         item('cards_collected', !stripe || !billable.length ? 'not_applicable'
           : ready(billable.every(home => home.customerId && cards.some(card => card.householdId === home.householdId
             && (!card.expiryYear || !card.expiryMonth || `${card.expiryYear}-${String(card.expiryMonth).padStart(2, '0')}` >= thisMonth))))),

@@ -28,7 +28,8 @@ export const signedLinkExpiryDays = campaignLimits.expiryDays;
 export type SignedLinkPrincipal = Extract<Principal, { kind: 'signed_link' }>;
 export type SignedLinkResolution =
   | { readonly status: 'active'; readonly principal: SignedLinkPrincipal }
-  | { readonly status: 'not_found' | 'expired' | 'used' | 'revoked' };
+  | { readonly status: 'used'; readonly processing?: true }
+  | { readonly status: 'not_found' | 'expired' | 'revoked' };
 export interface LinkScope { readonly gymId: string; readonly linkId: string }
 /** What a send command remembers for its replay. */
 const sentLinkSchema = z.strictObject({ linkId: idSchema });
@@ -229,7 +230,7 @@ export function createSignedLinksService(options: {
         return { data: rows.map(metadata), pagination: { limit: query.limit, offset: query.offset, total: total!.count } };
       });
     },
-    async resolve(gymId: string, token: string): Promise<SignedLinkResolution> {
+    async resolve(gymId: string, token: string, receipt?: { linkId: string; sessionId: string }): Promise<SignedLinkResolution> {
       // Avoid unbounded hashing and never reveal whether a malformed credential has a row.
       if (!/^[A-Za-z0-9_-]{32,256}$/.test(token)) return { status: 'not_found' };
       return scope(gymId, async (tx) => {
@@ -238,6 +239,12 @@ export function createSignedLinksService(options: {
         ));
         if (!row) return { status: 'not_found' };
         const status = state(row, clock.now());
+        if (status === 'used' && receipt?.linkId === row.id && row.purpose === 'pay_invoice' && row.invoiceId
+          && !row.revokedAt && row.expiresAt > clock.now()) {
+          const [settling] = await tx.select({ id: invoices.id }).from(invoices).where(and(eq(invoices.id, row.invoiceId),
+            eq(invoices.householdId, row.householdId), eq(invoices.checkoutSessionId, receipt.sessionId), eq(invoices.status, 'processing')));
+          if (settling) return { status, processing: true };
+        }
         return status === 'active' ? { status, principal: principal(row) } : { status };
       });
     },

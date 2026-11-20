@@ -6,7 +6,11 @@ another system each paying household needs to save a card with you once. This gu
 sends them a link that does it. Members enter card details only on Stripe's hosted
 pages; PlainGym stores a Stripe reference, never the card number.
 
-This is done **before** you turn billing on: saving a card charges nothing.
+This is done **before** you turn billing on. Saving a payment method charges nothing.
+For USD or CAD, enable **Accept bank payments** in **Settings → Integrations → Payments**
+and enable the matching method in Stripe. Members can then save a US or Canadian
+bank account on update and onboarding links. The link shows the bank name, when
+available, and the last four digits. Cards remain available if Stripe refuses bank payments.
 
 ## Before you start
 

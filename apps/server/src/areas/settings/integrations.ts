@@ -3,11 +3,13 @@ import { and, count, desc, eq, exists, gt, inArray, isNotNull, isNull, ne, notEx
 import { z } from 'zod';
 import { auditEvents, forGym, gyms, households, invoices, paymentAttempts, paymentMethods, payments, refunds, revisionGuard, assertRevised,
   signedLinks, writeAudit, type Transaction } from '@plaingym/db';
-import { AppError, type Clock } from '@plaingym/shared';
+import { AppError, createTranslator, type Clock } from '@plaingym/shared';
+import { locales } from '@plaingym/shared/locales';
+import { gymProjection, presentGym } from './settings.js';
 import { backupDestinationSchema, type BackupsIntegration, type ConfirmBackupKeyRequest, type CreateBackupKeyRequest, type EmailIntegration,
   type Integrations, type RemoveEmailIntegrationRequest, type SaveEmailIntegrationRequest, type SaveStripeIntegrationRequest, type StripeTestData,
   type GoogleLogin, type RemoveGoogleLoginRequest, type SaveGoogleLoginRequest,
-  type SaveSmsIntegrationRequest, type RemoveSmsIntegrationRequest, type UpdateSmsDailyCapRequest,
+  type SaveSmsIntegrationRequest, type RemoveSmsIntegrationRequest, type UpdateSmsDailyCapRequest, updateBankDebitsRequestSchema,
   stripeTestPaymentReference, terminalDisputeStatuses } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
@@ -32,6 +34,8 @@ import { createGoogleClientResolver, encryptGoogleConfig, readGoogleConfig, requ
 import { readStoredSecret } from './unreadable-secret.js';
 import { requireBackupDestination, type CheckBackupDestination } from './backup-destination.js';
 import { createSmsIntegration, type SmsIntegrationOptions } from './integrations.sms.js';
+
+const t = createTranslator(locales.en ?? {});
 
 /** Validates the integration policy before runtime opens the database. */
 export function checkIntegrationsEnvironment(mode: AuthConfig['tenancy'], env: NodeJS.ProcessEnv): void {
@@ -459,6 +463,31 @@ export function createIntegrationsService(options: IntegrationsOptions) {
   }
 
   return {
+    async bankDebitStatus(gymId: string) {
+      return scope(gymId, async tx => {
+        const [latest] = await tx.select({ action: auditEvents.action, occurredAt: auditEvents.occurredAt }).from(auditEvents)
+          .where(and(eq(auditEvents.gymId, gymId), inArray(auditEvents.action, ['billing.bank_debits.unavailable', 'settings.bank_debits.changed'])))
+          .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1);
+        return { unavailableAt: latest?.action === 'billing.bank_debits.unavailable' ? latest.occurredAt.toISOString() : null };
+      });
+    },
+    async updateBankDebits(context: MutationContext, input: z.infer<typeof updateBankDebitsRequestSchema>) {
+      assertChangeable();
+      const { revision, bankDebitsEnabled } = updateBankDebitsRequestSchema.parse(input);
+      const userId = userOf(context);
+      return scope(context.gymId, async tx => {
+        const [before] = await readGym(tx, context.gymId).for('update');
+        if (!before) throw new AppError('not_found', 'Gym not found');
+        assertRevised(before.revision === revision ? [before] : []);
+        if (bankDebitsEnabled && !['USD', 'CAD'].includes(before.currency)) throw new AppError('conflict', t('settings/integrations:bankDebitsCurrency'));
+        const guard = revisionGuard(gyms.revision, revision);
+        const after = assertRevised(await tx.update(gyms).set({ bankDebitsEnabled, revision: guard.next, updatedAt: clock.now() })
+          .where(and(eq(gyms.id, context.gymId), guard.matches)).returning(gymProjection));
+        await writeAudit(tx, { gymId: context.gymId, actorKind: 'user', actorUserId: userId, action: 'settings.bank_debits.changed',
+          targetType: 'gym', targetId: context.gymId, before: { bankDebitsEnabled: before.bankDebitsEnabled }, after: { bankDebitsEnabled }, occurredAt: clock.now() });
+        return presentGym(after);
+      });
+    },
     updateSmsDailyCap(context: MutationContext, input: UpdateSmsDailyCapRequest) { return sms.updateDailyCap(context, input); },
     async saveSms(context: MutationContext, input: SaveSmsIntegrationRequest) {
       const test = await sms.save(context, input);

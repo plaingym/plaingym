@@ -237,7 +237,10 @@ renews after that. Setup reservations also persist their exact expiry and attemp
 identity before provider calls, so concurrent clicks and a lost creation response
 reuse identical parameters.
 
-Only a recorded payment or zero settlement starts a membership. However the invoice is paid (its own
+A bank debit in processing also starts the membership. The welcome page tells
+the payer how long settlement usually takes. An async success records the payment,
+and a failure on the first invoice makes it past due and starts dunning.
+For a recorded payment or zero settlement, however the invoice is paid (its own
 Checkout's `checkout.session.completed`, a later pay link, or cash or a check staff
 record), the invoice transitions activate non-trial pending memberships, and their paid-invoice
 effect then calls `afterInvoicePaid(gymId, invoiceId)`. Trial invoices contain only

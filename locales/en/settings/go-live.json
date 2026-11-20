@@ -1,4 +1,5 @@
 {
+  "padEmails": "Keep Stripe's pre-authorized debit emails on (Stripe Dashboard → Settings → Customer emails). They send your members the mandate confirmation and debit notices.",
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
   "title": "Go-live",
   "help": "Run alongside your old system until you are ready. Billing, member emails and member texts stay off until you turn them on here.",

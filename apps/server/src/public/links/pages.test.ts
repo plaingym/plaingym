@@ -21,7 +21,13 @@ describe('signed-link presentation and return receipts', () => {
       id: 'invoice', number: 1, kind: 'one_off', status, dueOn: '2026-10-25', amountCents: 2500, currency: 'USD', paidAt: null,
     } } } });
     expect(page).not.toContain('data-checkout');
+    expect(page.includes('Your bank payment is processing.')).toBe(status === 'processing');
     expect(page).toMatch(/class="[^"]*bg-primary[^"]*" data-complete/);
+  });
+  it.each([['Example Bank', 'Example Bank account ending 6789'], [null, 'Bank account ending 6789']] as const)('labels a bank account with bank name %s', (bankName, label) => {
+    const page = linkPage({ now, timezone: 'UTC', t, data: { purpose: 'update_card', paymentMethods: [{ id: 'method',
+      type: 'acss_debit', bankName, last4: '6789', brand: null, expiryMonth: null, expiryYear: null, isDefault: true }] } });
+    expect(page).toContain(label);
   });
   it('gives onboarding one primary action when login, card and several signatures are offered', () => {
     const page = linkPage({ now, timezone: 'UTC', t, portalClaim: { password: true }, data: { purpose: 'onboarding', paymentMethods: [], signatures: [],

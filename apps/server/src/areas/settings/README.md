@@ -1,5 +1,12 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 
+**Accept bank payments** uses `PUT /api/settings/payments/bank-debits` with
+`integrations.manage`, the current gym revision and `bankDebitsEnabled`. The
+default is off. Enabling requires USD or CAD and writes `settings.bank_debits.changed`.
+GET on the same resource returns the time of the most recent bank payment refusal
+when it follows the last switch change. Payments shows the Stripe Dashboard step
+and that warning. The CAD go-live checklist also reminds the owner about mandate emails.
+
 After a restore, a payment check counts only for the Stripe mode it read. The
 report records `stripeMode` from the payments adapter; older reports without a
 mode need a rerun before billing can be enabled with Stripe. Both credential save

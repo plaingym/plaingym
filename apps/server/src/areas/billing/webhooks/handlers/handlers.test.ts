@@ -154,6 +154,46 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
     const actor = { gymId: f.gymId, actor: { kind: 'system' as const } };
     expect((await f.composed.transitions.paymentProcessing(actor, { invoiceId: f.invoice.id, paymentIntentId: 'pi_1' })).outcome).toBe('ignored');
   });
+  it.each(['succeeded', 'insufficient_funds'] as const)('replays a processing Checkout and its async %s settlement', async outcome => {
+    const f = await fixture();
+    await db.forGym(f.gymId, tx => tx.update(paymentAttempts).set({ paymentIntentId: 'pi_runner' }).where(eq(paymentAttempts.id, f.attempt.id)));
+    const session = await f.provider.createCheckout({ mode: 'payment', customerId: 'cus_fixture', invoiceId: f.invoice.id, amount: 10000, currency: 'usd',
+      bankDebit: { type: 'us_bank_account' }, saveForOffSession: true, idempotencyKey: 'bank-checkout', successUrl: 'https://gym.invalid/ok', cancelUrl: 'https://gym.invalid/cancel' });
+    const intent = f.transport.completeCheckout(session.id, { method: 'us_bank_account' });
+    if (outcome === 'insufficient_funds') intent.payment_method = 'pm_usbank_2227';
+    const recorder = new FixtureRecorder(f.gymId), recording = process.env.RECORD_HANDLER_FIXTURES === '1';
+    const location = new URL('./stripe.checkout.' + outcome + '.synthetic.json', import.meta.url);
+    const gym = '00000000-0000-7000-8000-000000000001', invoice = '00000000-0000-7000-8000-000000000002';
+    const replay = recording ? undefined : replayTransport(JSON.parse((await readFile(location, 'utf8')).replaceAll(gym, f.gymId).replaceAll(invoice, f.invoice.id)) as Tape, f.gymId);
+    const provider = new StripePayments(f.gymId, { clock: f.clock, webhookSecret: secret, transport: replay ?? recordingTransport(f.transport, recorder) });
+    const ref = { kind: 'checkout' as const, id: session.id };
+    await f.run('checkout.session.completed', ref, provider);
+    await f.run('checkout.session.completed', ref, provider);
+    const before = await f.read();
+    expect(before.invoice.status).toBe('processing');
+    expect(before.methods).toMatchObject([{ type: 'us_bank_account', isDefault: true, bankName: 'STRIPE TEST BANK', mandateId: expect.stringMatching(/^mandate_/) }]);
+    expect(before.audits.filter(row => row.action === 'billing.invoice.processing')).toHaveLength(1);
+    f.transport.settle(String(intent.id));
+    const type = outcome === 'succeeded' ? 'checkout.session.async_payment_succeeded' : 'checkout.session.async_payment_failed';
+    await f.run(type, ref, provider);
+    await f.run(type, ref, provider);
+    if (outcome === 'succeeded') await f.run('payment_intent.succeeded', { kind: 'charge', id: String(intent.id) }, provider);
+    const after = await f.read();
+    expect(after.invoice.status).toBe(outcome === 'succeeded' ? 'paid' : 'past_due');
+    expect(after.payments.map(row => row.method)).toEqual(outcome === 'succeeded' ? ['bank_debit'] : []);
+    if (recording) await writeFile(location, JSON.stringify(recorder.tape, null, 2).replaceAll(f.gymId, gym).replaceAll(f.invoice.id, invoice) + '\n');
+    else replay!.assertConsumed();
+  });
+  it('accepts the intent success before async Checkout success without a second payment', async () => {
+    const f = await fixture();
+    const session = await f.provider.createCheckout({ mode: 'payment', customerId: 'cus_fixture', invoiceId: f.invoice.id, amount: 10000, currency: 'usd',
+      bankDebit: { type: 'us_bank_account' }, saveForOffSession: true, idempotencyKey: 'bank', successUrl: 'https://gym.invalid/ok', cancelUrl: 'https://gym.invalid/cancel' });
+    const intent = f.transport.completeCheckout(session.id, { method: 'us_bank_account' });
+    f.transport.settle(String(intent.id));
+    await f.run('payment_intent.succeeded', { kind: 'charge', id: String(intent.id) });
+    await f.run('checkout.session.async_payment_succeeded', { kind: 'checkout', id: session.id });
+    expect((await f.read()).payments.map(row => row.method)).toEqual(['bank_debit']);
+  });
   it('replays a recorded processing event read against its runner reservation', async () => {
     const f = await fixture('cycle', 'pm_usbank_6789');
     const tape = (await readFile(new URL('./stripe.processing.synthetic.json', import.meta.url), 'utf8'))
@@ -280,13 +320,27 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
     await f.run('payment_method.updated', { kind: 'payment_method', id: 'pm_3155' });
     expect((await f.read()).methods[0]).toMatchObject({ brand: null, expiryYear: 2035 });
   });
-  it.each(['pm_usbank_6789', 'pm_acss_6789'])('ignores updates and collections for bank method %s', async id => {
+  it.each(['pm_usbank_6789', 'pm_acss_6789'])('collects %s with its mandate and only refreshes known bank details', async id => {
     const f = await fixture();
     setup(f, 'seti_bank', id);
+    f.transport.objects.get('seti_bank')!.mandate = 'mandate_setup';
+    const method = f.transport.objects.get(id)!, details = method[String(method.type)] as ObjectData;
     const before = await f.read();
     await f.run('payment_method.updated', { kind: 'payment_method', id });
-    await f.run('setup_intent.succeeded', { kind: 'setup', id: 'seti_bank' });
     expect(await f.read()).toEqual(before);
+    await f.run('setup_intent.succeeded', { kind: 'setup', id: 'seti_bank' });
+    const [saved] = (await f.read()).methods;
+    expect(saved).toMatchObject({ type: method.type, bankName: details.bank_name, last4: '6789', isDefault: true,
+      expiryMonth: null, expiryYear: null, mandateId: 'mandate_setup' });
+    Object.assign(details, { last4: '0123', bank_name: 'Example Bank' });
+    await f.run('payment_method.updated', { kind: 'payment_method', id });
+    expect((await f.read()).methods).toEqual([{ ...saved, last4: '0123', bankName: 'Example Bank' }]);
+    for (const incomplete of [null, {}, { last4: '123' }, { last4: '1x34' }]) {
+      method[String(method.type)] = incomplete;
+      const recorded = await f.read();
+      await f.run('payment_method.updated', { kind: 'payment_method', id });
+      expect(await f.read()).toEqual(recorded);
+    }
   });
   it('keeps the newer collected card on reverse delivery, replay, and concurrent collection', async () => {
     const f = await fixture(); setup(f, 'seti_old', 'pm_4242'); setup(f);

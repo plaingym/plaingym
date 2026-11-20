@@ -1,4 +1,5 @@
 {
+  "padInterval": "Membership dues on each billing date, and other charges you approve",
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
   "importCards": "Import cards from Stripe",
   "refreshCards": "Refresh payment methods",

@@ -31,6 +31,9 @@ export function linkBrowser() {
       say(result.cardSetupUnavailable ? 'customerMissing' : response.status === 429 ? busy ? 'retry' : 'limited' : response.status === 409 ? 'conflict' : 'failed');
       throw new Error('request failed');
     }
+    if (!tablet && path === '/complete' && response.headers.get('Content-Location') === '/l/return') {
+      location.replace('/l/return');
+    }
     return response.json() as Promise<{ data: Record<string, unknown> }>;
   }
   async function busy(element: HTMLButtonElement, run: () => Promise<void>, status = 'busy') {

@@ -1012,6 +1012,29 @@ describe('public join pages through the production registrations', () => {
     expect(Object.fromEntries(otherApi.data.map(p => [p.name, p.plusTax]))).toEqual({ Plain: true, 'Private other plan': false });
   });
 
+  it('starts the family while its PAD is processing and duns its first invoice after an async failure', async () => {
+    const f = await fixture();
+    await db.forGym(f.gymId, tx => tx.update(gyms).set({ bankDebitsEnabled: true }).where(eq(gyms.id, f.gymId)));
+    const { cookie } = await f.submit([adult(), child()]);
+    const redirect = await f.get('/join/checkout', cookie), sessionId = new URL(redirect.headers.get('location')!).pathname.slice(1);
+    const session = f.provider.completeCheckout(sessionId, { method: 'acss_debit' });
+    await f.webhook(sessionId); await f.webhook(sessionId);
+    const state = await f.rows(), invoice = state.invoices.find(row => row.id === session.metadata.invoiceId)!;
+    expect(invoice.status).toBe('processing');
+    expect(state.memberships.filter(row => row.householdId === invoice.householdId).map(row => row.status)).toEqual(['active', 'active']);
+    expect(state.methods).toMatchObject([{ type: 'acss_debit', bankName: 'STRIPE TEST BANK', last4: '6789', mandateId: session.mandateId, isDefault: true }]);
+    const link = state.links.find(row => row.id === session.metadata.linkId)!;
+    expect(link.usedAt).not.toBeNull();
+    expect(await f.join.state(f.gymId, link.id)).toMatchObject({ status: 'active', processing: true });
+    expect(await (await f.get('/join/return', cookie)).text()).toContain('Your bank payment is processing.');
+    expect(await (await f.post('/join/sign-in', undefined, cookie)).text()).toContain('Your bank payment is processing.');
+    f.provider.settleCharge(session.chargeId!, 'insufficient_funds');
+    await f.webhook(sessionId, 'checkout.session.async_payment_failed');
+    await f.webhook(sessionId, 'checkout.session.async_payment_failed');
+    expect((await f.rows()).invoices.find(row => row.id === invoice.id)?.status).toBe('past_due');
+    expect(f.mail.messages.filter(message => message.text.includes("didn't go through"))).toHaveLength(1);
+  });
+
   it.each([false, true])('activates a family only through paid Checkout with immutable waivers (PDF: %s)', async pdfTemplate => {
     const f = await fixture(), create = vi.spyOn(f.provider, 'createCheckout');
     if (pdfTemplate) {

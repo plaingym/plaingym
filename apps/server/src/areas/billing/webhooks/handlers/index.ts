@@ -13,7 +13,8 @@ import { stripeWriteScope } from '../../stripe-writes.js';
 
 export const billingWebhookTypes = [
   'payment_intent.succeeded', 'payment_intent.payment_failed', 'payment_intent.requires_action', 'payment_intent.processing',
-  'checkout.session.completed', 'setup_intent.succeeded', 'payment_method.updated', 'payment_method.automatically_updated',
+  'checkout.session.completed', 'checkout.session.async_payment_succeeded', 'checkout.session.async_payment_failed',
+  'setup_intent.succeeded', 'payment_method.updated', 'payment_method.automatically_updated',
   'charge.refunded', 'refund.created', 'refund.updated', 'refund.failed',
   'charge.dispute.created', 'charge.dispute.updated', 'charge.dispute.closed',
 ] as const;
@@ -123,9 +124,16 @@ export function registerBillingWebhookHandlers(inbox: Pick<WebhookInbox, 'regist
     const expected = event.type.startsWith('payment_intent.') || event.type === 'charge.refunded' ? 'charge'
       : event.type.startsWith('charge.dispute.') ? 'dispute'
       : event.type.startsWith('refund.') ? 'refund'
-      : event.type === 'checkout.session.completed' ? 'checkout'
+      : event.type.startsWith('checkout.session.') ? 'checkout'
       : event.type === 'setup_intent.succeeded' ? 'setup' : 'payment_method';
     if (event.objectKind !== expected) throw new Error('Webhook object kind mismatch');
+    if (expected === 'payment_method') {
+      const found = await provider.readPaymentObject({ kind: expected, id: event.objectId });
+      if (found.status === 'unknown') return;
+      if (found.value.kind !== 'payment_method') throw new Error('Webhook object kind mismatch');
+      await cards.update(gymId, found.value.object);
+      return;
+    }
     const current = await readCurrent(provider, { kind: expected, id: event.objectId });
     if (event.type === 'charge.refunded') {
       if (current.kind !== 'charge') throw new Error('Expected PaymentIntent');
@@ -155,14 +163,25 @@ export function registerBillingWebhookHandlers(inbox: Pick<WebhookInbox, 'regist
         const { invoice, payment } = await match(gymId, outcome);
         if (session.metadata.invoiceId !== invoice.id || session.customerId !== (outcome.status === 'unknown' ? '' : outcome.customerId)
           || (invoice.checkoutSessionId && invoice.checkoutSessionId !== session.id)) throw new Error('Checkout invoice mismatch');
-        if (outcome.status !== 'succeeded' || !outcome.latestChargeId) throw new Error('Completed Checkout payment is unresolved');
-        await options.transitions.cardSucceeded(system(gymId), { invoiceId: invoice.id, paymentId: payment?.id ?? uuidv7(),
-          paymentIntentId: outcome.id, chargeId: outcome.latestChargeId, amountCents: outcome.amount,
-          currency: outcome.currency.toUpperCase(), paidAt: successTime(outcome),
-          method: outcome.paymentMethodType && outcome.paymentMethodType !== 'card' ? 'bank_debit' : 'card' });
+        if (outcome.status === 'unknown' || outcome.amount !== invoice.amountCents || outcome.currency.toUpperCase() !== invoice.currency)
+          throw new Error('Checkout payment amount mismatch');
+        if (outcome.status === 'failed' && (outcome.code === 'insufficient_funds' || outcome.code === 'payment_method_unusable')) {
+          // Delivery can start after the debit has already failed. Establish the intent once so the
+          // failure has its processing predecessor; a replay is ignored by both transitions.
+          const identity = { invoiceId: invoice.id, paymentIntentId: outcome.id };
+          const processing = await options.transitions.paymentProcessing(system(gymId), identity);
+          if (processing.invoice.status === 'processing')
+            await afterCheckoutRecorded(gymId, provider, session.metadata, { kind: 'checkout', id: session.id }, session);
+          await options.transitions.processingFailed(system(gymId), { ...identity, code: outcome.code });
+          return;
+        }
+        if (outcome.status !== 'succeeded' && !(outcome.status === 'processing' && session.paymentStatus === 'unpaid'))
+          throw new Error('Completed Checkout payment is unresolved');
+        await applyChargeOutcome(options.transitions, system(gymId), { invoiceId: invoice.id, paymentId: payment?.id ?? uuidv7(),
+          paidAt: outcome.status === 'succeeded' ? successTime(outcome) : clock.now().toISOString() }, outcome);
         if (session.savesCard) {
           if (!session.paymentMethodId) throw new Error('Collected payment method is unresolved');
-          await cards.collect(gymId, provider, session.customerId, session.paymentMethodId);
+          await cards.collect(gymId, provider, session.customerId, session.paymentMethodId, session.mandateId);
         }
       } else {
         if (!session.setupId) throw new Error('Completed Checkout setup is unresolved');
@@ -173,7 +192,7 @@ export function registerBillingWebhookHandlers(inbox: Pick<WebhookInbox, 'regist
       await cards.setup(gymId, provider, current.object.id);
       if (current.object.status === 'succeeded')
         await afterCheckoutRecorded(gymId, provider, current.object.metadata, { kind: 'setup', id: current.object.id });
-    } else if (current.kind === 'payment_method') await cards.update(gymId, current.object);
+    }
   };
   for (const type of billingWebhookTypes) inbox.register(type, handle);
 }

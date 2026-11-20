@@ -1,4 +1,5 @@
 {
+  "bankProcessing": "Your bank payment is processing. It usually takes up to 4 business days (7 in Canada). We'll email you if it doesn't go through.",
   "smsNoticesConsent": "I agree to receive class, booking and billing notices and links from {gym} for each member joining and on the billing phone. Message and data rates may apply. Reply STOP to opt out.",
   "smsAnnouncementsConsent": "I agree to receive news from {gym} for each member joining. Message and data rates may apply. Reply STOP to opt out.",
   "smsPhoneRequired": "To agree to texts, enter a valid contact phone number, including its country code if needed.",

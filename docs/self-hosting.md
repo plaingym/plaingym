@@ -188,6 +188,12 @@ no form: see [Google sign-in](configuration.md#google-sign-in).
 
 ## Stripe
 
+To collect from bank accounts, enable **ACH Direct Debit** for USD or
+**Pre-authorized debits** for CAD in the Stripe Dashboard, then enable
+**Accept bank payments** in **Settings → Integrations → Payments**. Leave
+Stripe's pre-authorized debit emails enabled for Canadian accounts so members
+receive mandate confirmations and debit notices.
+
 Each gym uses its own Stripe account, and payments go straight to it. In the
 Stripe dashboard, create a restricted key with:
 

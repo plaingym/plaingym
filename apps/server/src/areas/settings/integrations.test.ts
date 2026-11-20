@@ -111,6 +111,38 @@ describe('integration settings permissions', () => {
   });
 });
 
+describe('bank debit settings', () => {
+  const path = '/api/settings/payments/bank-debits';
+  const put = (app: ReturnType<typeof server>, revision: number, bankDebitsEnabled = true) =>
+    app.request(path, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ revision, bankDebitsEnabled }) });
+  it('guards both bank routes, revisions and currency, and isolates and clears refusal warnings', async () => {
+    const gymId = uuidv7();
+    const gym = await factory('gyms', gymId, { currency: 'USD' });
+    const app = server({ gymId, userId: owner });
+    for (const role of ['coach', 'front_desk'] as const) {
+      const denied = server({ gymId, role, userId: owner });
+      expect((await put(denied, gym.revision)).status).toBe(403);
+      expect((await denied.request(path)).status).toBe(403);
+    }
+    const foreign = server({ gymId, principalGym: gymA, userId: owner });
+    expect((await put(foreign, gym.revision)).status).toBe(404);
+    expect((await foreign.request(path)).status).toBe(404);
+    await database.forGym(gymId, tx => tx.insert(auditEvents).values({ gymId, actorKind: 'system', action: 'billing.bank_debits.unavailable',
+      targetType: 'signed_link', targetId: uuidv7(), occurredAt: new Date(clock.now().getTime() - 1000) }));
+    expect(await (await app.request(path)).json()).toMatchObject({ data: { unavailableAt: expect.any(String) } });
+    expect(await (await server().request(path)).json()).toEqual({ data: { unavailableAt: null } });
+    const response = await put(app, gym.revision);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ data: { bankDebitsEnabled: true, revision: gym.revision + 1 } });
+    expect(await (await app.request(path)).json()).toEqual({ data: { unavailableAt: null } });
+    expect((await put(app, gym.revision, false)).status).toBe(409);
+    const events = await database.forGym(gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'settings.bank_debits.changed')));
+    expect(events).toMatchObject([{ actorUserId: owner, before: { bankDebitsEnabled: false }, after: { bankDebitsEnabled: true } }]);
+    const eur = uuidv7(), other = await factory('gyms', eur, { currency: 'EUR' });
+    expect((await put(server({ gymId: eur, userId: owner }), other.revision)).status).toBe(409);
+  });
+});
+
 describe('Settings → Email', () => {
   it('saves only after the test message is accepted, and shows the change of sign-in method', async () => {
     const before = await read();

@@ -1,4 +1,7 @@
 {
+  "bankProcessing": "Your bank payment is processing. It usually takes up to 4 business days (7 in Canada). We'll email you if it doesn't go through.",
+  "savedBank": "{bank} account ending {last4}",
+  "unnamedBank": "Bank account ending {last4}",
   "zeroInvoice": "No payment is needed for this invoice.",
   "replaced": "This link was replaced",
   "replacedBody": "Use the link in the newest email or text from your gym. If you cannot find it, contact the gym for help.",

@@ -20,6 +20,7 @@ export interface PageInput {
   portalClaim?: { password: boolean } | undefined;
   data?: PortalSignedLinkData;
   state?: 'alreadyDone' | 'unavailable' | 'replaced' | 'cleared';
+  processing?: boolean;
   tablet?: boolean;
   now: Date;
   timezone: string;
@@ -27,7 +28,7 @@ export interface PageInput {
   t: Translator;
 }
 /** Server-rendered Hono JSX; dynamic terms and names are escaped as text. */
-export function linkPage({ data, state, portalClaim, tablet = false, now, timezone, locale = 'en', t, documentBase, gymName, logoKey }: PageInput) {
+export function linkPage({ data, state, portalClaim, processing = false, tablet = false, now, timezone, locale = 'en', t, documentBase, gymName, logoKey }: PageInput) {
   const text = (key: string, values?: Record<string, string | number>) => t('public/links:' + key, values);
   const unsigned = data && (data.purpose === 'onboarding' || data.purpose === 'sign_waiver')
     && (data.purpose === 'onboarding' ? data.members : [data.member]).some(member => data.templates.some(template =>
@@ -43,12 +44,16 @@ export function linkPage({ data, state, portalClaim, tablet = false, now, timezo
   const money = (value: number, currency: string) => formatMoney(value, currency, locale);
   const date = (value: string) => new Intl.DateTimeFormat(locale, { dateStyle: 'long', timeZone: timezone })
     .format(zonedInstant(value, '12:00', timezone, { gap: 'shift' })!);
-  const notice = state ? h('section', { class: panel }, h('h1', { class: 'text-2xl font-bold' }, title), h('p', null, text(state + 'Body'))) : null;
+  const settling = processing || (data?.purpose === 'pay_invoice' && data.invoice.invoice.status === 'processing');
+  const notice = state ? h('section', { class: panel }, h('h1', { class: 'text-2xl font-bold' }, title), h('p', null, text(settling ? 'bankProcessing' : state + 'Body'))) : null;
   const card = data && (data.purpose === 'update_card' || data.purpose === 'onboarding')
     ? h('section', { class: panel, 'data-card-panel': true }, h('h2', { class: 'text-xl font-semibold' }, text('card')),
       h('p', null, text('cardHelp')),
       data.paymentMethods.length === 0 ? h('p', { 'data-card-status': true }, text('noCard')) : null,
-      ...data.paymentMethods.map(c => h('p', { 'data-card-status': true }, c.last4 ? text('savedCard', { last4: c.last4 }) : text('noCard'))),
+      ...data.paymentMethods.map(method => h('p', { 'data-card-status': true }, !method.last4 ? text('noCard')
+        : method.type === 'us_bank_account' || method.type === 'acss_debit'
+          ? text(method.bankName ? 'savedBank' : 'unnamedBank', { bank: method.bankName ?? '', last4: method.last4 })
+          : text('savedCard', { last4: method.last4 }))),
       h('button', { type: 'button', class: primaryAction === 'card' ? button : secondaryButton, 'data-checkout': true }, text('setupCard'))) : null;
   const invoice = data?.purpose === 'pay_invoice' ? h('section', { class: panel },
     h('h2', { class: 'text-xl font-semibold' }, text('invoice', { number: data.invoice.invoice.number })),
@@ -62,7 +67,7 @@ export function linkPage({ data, state, portalClaim, tablet = false, now, timezo
         : cardChargeIssue(data.invoice.invoice.amountCents, data.invoice.invoice.currency)
         ? h('p', { role: 'status' }, text('manualPayment'))
         : h('button', { type: 'button', class: button, 'data-checkout': true }, text('pay'))
-      : h('p', null, text(['paid', 'partially_refunded', 'refunded'].includes(data.invoice.invoice.status) ? 'alreadyDoneBody' : 'paymentPending'))) : null;
+      : h('p', null, text(settling ? 'bankProcessing' : ['paid', 'partially_refunded', 'refunded'].includes(data.invoice.invoice.status) ? 'alreadyDoneBody' : 'paymentPending'))) : null;
   const previewed = new Set<string>();
   let primarySignature = false;
   function form(member: { id: string; firstName: string; lastName: string; dateOfBirth: string | null }, template: WaiverTemplate) {
@@ -131,7 +136,7 @@ export function linkPage({ data, state, portalClaim, tablet = false, now, timezo
         h('footer', { class: 'flex flex-wrap gap-x-4' }, h('a', { href: '/source', rel: 'noreferrer', class: 'inline-flex min-h-11 items-center underline' }, text('source')), buildLabelItem())),
       data?.purpose !== 'unsubscribe' ? h('template', { id: 'completed-message' }, h('section', { class: panel, tabindex: -1 },
         h('h1', { class: 'text-2xl font-bold' }, text('completedTitle')),
-        h('p', null, text('completed_' + (data?.purpose ?? 'onboarding'))),
+        h('p', null, text(settling ? 'bankProcessing' : 'completed_' + (data?.purpose ?? 'onboarding'))),
         h('a', { class: button, href: '/portal' }, text('portalSignIn')))) : null,
       ...['failed', 'conflict', 'retry', 'limited', 'customerMissing', 'busy', 'confirming', 'signatureRequired', 'incomplete', 'done', 'doneBody', 'portalReady', 'portalEmailSent'].map(key => h('span', { hidden: true, 'data-message': key }, text(key))))).toString();
 }

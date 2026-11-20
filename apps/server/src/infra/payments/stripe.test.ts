@@ -121,6 +121,8 @@ it.each(['payment_method_types[1]', 'allowed_payment_method_types[1]', 'payment_
     await expect(recorder.wrap(payments).createCheckout(request)).rejects.toBeInstanceOf(BankDebitUnavailable);
     await expect(replayPayments(recorder.tape, gymId).createCheckout(request)).rejects.toBeInstanceOf(BankDebitUnavailable);
     await expect(payments.createCheckout(checkout)).rejects.toBe(error);
+    error.raw.param = 'payment_method_options[acss_debit][mandate_options][interval_description]';
+    await expect(payments.createCheckout({ ...checkout, bankDebit: { type: 'acss_debit', intervalDescription: 'Monthly dues' } })).rejects.toBe(error);
     error.raw.param = 'customer';
     await expect(payments.createCheckout({ ...checkout, bankDebit: { type: 'us_bank_account' } })).rejects.toBe(error);
   });

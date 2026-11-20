@@ -18,6 +18,14 @@ are on **Settings → Go live**.
 
 Turning billing off later pauses new charges at once; it is the emergency brake.
 
+To offer bank payments on join, onboarding, payment-method update and invoice links,
+turn on **Accept bank payments** under **Settings → Integrations → Payments**.
+Enable ACH Direct Debit for USD or Canadian pre-authorized debits for CAD in the
+Stripe Dashboard. For CAD, keep Stripe's mandate confirmation and debit emails
+enabled under **Settings → Customer emails**. A bank payment can take up to four
+business days to settle in the US or seven in Canada. The first processing
+payment starts the membership. A later failure enters the usual billing follow-up.
+
 ## 1. Try it in test mode (optional)
 
 1. In the Stripe dashboard, create a **test-mode** restricted key with the permissions

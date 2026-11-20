@@ -189,8 +189,11 @@ setup for the gym and household customer with an unrevoked recorded card.
 Onboarding still requires its current waivers. Tagged sessions always require
 the exact link and persisted start association.
 
-Invoice completion requires the matching session and paid invoice; card
-completion requires the matching setup session and recorded method. Onboarding
+Pay links complete when the matching Checkout and invoice are paid or the bank debit
+is processing. A returning payer's matching encrypted receipt can show the processing
+notice after the link has been consumed. A used token alone shows generic completion.
+Setup completion requires the matching session and recorded method. A bank setup
+saves the bank name, last four digits and mandate when available. Onboarding
 additionally checks current signatures and stays pending until those are signed.
 Only then does a locked, audited transaction use the link. Replay and concurrent
 browser return succeed without a second consumption; revoked and expired links

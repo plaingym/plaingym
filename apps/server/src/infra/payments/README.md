@@ -89,7 +89,10 @@ of regular and occasional debits. The session requests instant verification
 and a combined personal mandate. Setup sessions specify CAD on both the
 session and the ACSS option. Payment sessions take currency from the invoice
 line item. A bank-enabled session raises `BankDebitUnavailable` if Stripe
-rejects its payment method types or options. Other Stripe errors propagate.
+rejects the payment method types list or the US or Canadian bank option itself.
+A refusal of a nested field such as the PAD mandate description propagates.
+A bank method missing four usable last digits is omitted from listings and
+reported as unavailable on a direct read.
 
 `CheckoutSession.paymentStatus` reports `paid`, `unpaid` or `no_payment_required`.
 A completed bank payment can still be unpaid while its intent processes.

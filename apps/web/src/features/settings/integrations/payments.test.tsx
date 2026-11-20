@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { Integrations } from '@plaingym/shared/contracts';
-import { health, integrations, refusal, renderSection, reply, serve } from './fixtures.test-helper.js';
+import { health, integrations, refusal, renderSection, reply, serve, settings } from './fixtures.test-helper.js';
 import { holdTimeouts, stalledRequests } from '../save-timeout.test-helper.js';
 import { GoLiveSettings } from '../go-live.js';
 const client = vi.hoisted(() => ({ GET: vi.fn(), PUT: vi.fn(), POST: vi.fn(), DELETE: vi.fn() }));
@@ -25,6 +25,23 @@ async function submit(user: ReturnType<typeof userEvent.setup>, key: string) {
 }
 
 describe('Settings → Payments', () => {
+  it.each(['USD', 'CAD', 'EUR'])('shows the refusal and saves bank payments only for supported currencies (%s)', async currency => {
+    const get = client.GET.getMockImplementation()!;
+    client.GET.mockImplementation((path: string) => path === '/api/settings' ? Promise.resolve(reply(200, { data: { ...settings, currency } }))
+      : path === '/api/settings/payments/bank-debits' ? Promise.resolve(reply(200, { data: { unavailableAt: '2026-11-09T12:00:00Z' } })) : get(path));
+    client.PUT.mockResolvedValue(reply(200, { data: { ...settings, currency, bankDebitsEnabled: true, revision: settings.revision + 1 } }));
+    renderSection();
+    const toggle = await screen.findByRole('switch', { name: 'Accept bank payments' });
+    await screen.findByText(/Stripe refused bank payments on Nov 9, 2026/);
+    if (currency === 'EUR') {
+      expect((toggle as HTMLInputElement).disabled).toBe(true);
+      expect(screen.getByText('Bank payments are available for USD and CAD.')).toBeTruthy();
+    } else {
+      await userEvent.setup().click(toggle);
+      await waitFor(() => expect((toggle as HTMLInputElement).checked).toBe(true));
+      expect(client.PUT).toHaveBeenCalledWith('/api/settings/payments/bank-debits', { signal: expect.any(AbortSignal), body: { revision: settings.revision, bankDebitsEnabled: true } });
+    }
+  });
   it.each([true, false])('shares the checklist and clears mode notices after a rerun, with Payments configured: %s', async configured => {
     current = configured ? live : integrations;
     const get = client.GET.getMockImplementation()!;

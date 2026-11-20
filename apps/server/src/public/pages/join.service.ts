@@ -42,7 +42,7 @@ const t = createTranslator(locales.en ?? {});
 export const joinCheckoutFlow: CheckoutReturn = { successPath: '/join/return', cancelPath: '/join/cancelled', lifetimeMs: 60 * 60 * 1000 };
 /** Join's form and admission bodies: a family's chosen PNG files (256 KB each) or dozens of drawn signatures. */
 export const joinBodyBytes = 4 * 1024 * 1024;
-const linkLifetimeMs = 24 * 60 * 60 * 1000, settled = ['paid', 'partially_refunded', 'refunded'];
+const linkLifetimeMs = 24 * 60 * 60 * 1000, settled = ['processing', 'paid', 'partially_refunded', 'refunded'];
 // Join records are audits on the new household: identifiers only, never contact details.
 // `discountId` is the discount a code named at admission; older admissions have none.
 const admitted = z.strictObject({ planId: c.idSchema, joinedOn: c.dateSchema, memberIds: z.array(c.idSchema), membershipIds: z.array(c.idSchema),
@@ -67,7 +67,7 @@ const assignmentBillingRead = z.object({ billing: z.object({ description: z.stri
 export const joinRecordWriteSchemas = { admitted, received, discounted, invoiced };
 /** `closed`: unpaid, and staff voided the invoice or revoked the join's link, so it can no longer be paid here. */
 export interface JoinInvoice { amountCents: number; currency: string; lines: { description: string; amountCents: number }[] }
-export type JoinState ={ status: 'missing' | 'closed' } | { status: 'pending' | 'active' | 'manual'; householdId: string; cardOnly?: boolean };
+export type JoinState = { status: 'missing' | 'closed' } | { status: 'pending' | 'active' | 'manual'; householdId: string; cardOnly?: boolean; processing?: boolean };
 
 export interface JoinOptions {
   scope?: typeof forGym;
@@ -348,12 +348,22 @@ export function createJoinService(options: JoinOptions) {
    * Passwordless, the payer's sign-in link goes out with it; in password mode the address awaits staff confirmation. */
   async function complete(gymId: string, find: (tx: Transaction) => Promise<{ householdId: string; invoiceId?: string } | undefined>) {
     // Every paid invoice and link-tagged Checkout reaches this: one short read, and only an unfinished join goes on.
-    const householdId = await scope(gymId, async tx => {
+    const join = await scope(gymId, async tx => {
       const found = await find(tx), record = found ? await recorded(tx, 'public.join.received', found.householdId, receivedRead) : null;
-      return found && record && (!found.invoiceId || record.invoiceId === found.invoiceId) && !await marked(tx, 'public.join.completed', found.householdId)
-        ? found.householdId : null;
+      if (!found || !record || (found.invoiceId && record.invoiceId !== found.invoiceId) || await marked(tx, 'public.join.completed', found.householdId)) return null;
+      const [invoice] = await tx.select({ status: invoices.status }).from(invoices).where(eq(invoices.id, record.invoiceId));
+      return { id: found.householdId, pendingDebit: invoice?.status === 'processing' ? record.membershipIds : [] };
     });
-    if (!householdId) return;
+    if (!join) return;
+    const householdId = join.id;
+    for (const id of join.pendingDebit) {
+      const membership = await lifecycle.get(gymId, id);
+      if (membership.householdId !== householdId) throw new Error('Join membership household mismatch');
+      if (membership.status === 'pending' && !membership.trialEndsOn) {
+        try { await lifecycle.activate(system(gymId), { membershipId: id, revision: membership.revision }); }
+        catch (error) { if (!(error instanceof AppError && error.code === 'conflict') || (await lifecycle.get(gymId, id)).status === 'pending') throw error; }
+      }
+    }
     const passwordMode = await options.invitations.passwordRequired(gymId);
     const completed = await scope(gymId, async tx => {
       await tx.select({ id: households.id }).from(households).where(eq(households.id, householdId)).for('update');
@@ -607,7 +617,8 @@ export function createJoinService(options: JoinOptions) {
               householdId: link.householdId, cardOnly: link.purpose === 'update_card' };
         const rows = await tx.select({ status: memberships.status }).from(memberships).where(inArray(memberships.id, record.membershipIds));
         const active = rows.length === record.membershipIds.length && rows.every(r => r.status !== 'pending') && await marked(tx, 'public.join.completed', link.householdId);
-        return { status: active ? 'active' : 'pending', householdId: link.householdId, cardOnly: link.purpose === 'update_card' };
+        return { status: active ? 'active' : 'pending', householdId: link.householdId, cardOnly: link.purpose === 'update_card',
+          ...(bill.status === 'processing' ? { processing: true } : {}) };
       });
     },
     /** The pending join's first invoice for the review step: its lines (a code's discount among them, inclusive taxes left out) and total. */
@@ -646,6 +657,7 @@ export function createJoinService(options: JoinOptions) {
       const state = await service.state(gymId, linkId);
       if (state.status !== 'active') throw new AppError('conflict', 'The membership is not active yet');
       await signIn(gymId, state.householdId);
+      return state;
     },
   };
   return service;

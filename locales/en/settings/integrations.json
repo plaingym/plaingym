@@ -1,4 +1,8 @@
 {
+  "bankDebitsCurrency": "Bank payments are available for USD and CAD.",
+  "bankDebitsLabel": "Accept bank payments",
+  "bankDebitsHelp": "US bank accounts (ACH) for USD, Canadian bank accounts (pre-authorized debit) for CAD. Also turn the payment method on in your Stripe Dashboard.",
+  "bankDebitsWarning": "Stripe refused bank payments on {date}, so members were offered cards only. Turn on ACH Direct Debit or Pre-authorized debits in your Stripe Dashboard.",
   "notFound": "Gym not found",
   "sms.capForm": "SMS daily cap",
   "sms.dailyCap": "Daily text cap",

@@ -3,6 +3,7 @@ import { formatCount } from '../../../lib/count.js';
 import { useGymTime } from '../../../lib/instant.js';
 import { restrictedKeyPattern } from '@plaingym/shared/contracts';
 import { useState, type FormEvent } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import type { PaymentsIntegration } from '@plaingym/shared/contracts';
 import { api } from '../../../lib/api.js';
 import { t } from '../../../lib/i18n.js';
@@ -36,11 +37,26 @@ function refusal(reply: ChangeResult<unknown>, mode: PaymentsIntegration['mode']
 export function PaymentsIntegrationSection({ payments, editable, lastEventAt, state }: {
   payments: PaymentsIntegration; editable: boolean; lastEventAt: string | null | undefined; state: ReturnType<typeof useIntegrations>;
 }) {
-  const { instantLabel } = useGymTime();
+  const { instantLabel, dateLabel } = useGymTime();
   const [key, setKey] = useState(''), [busy, setBusy] = useState(false), [switchKey, setSwitchKey] = useState<string | null>(null);
   const [message, setMessage] = useState<Message | null>(null);
   const gym = useGymSettings();
   const checklist = useGoLiveChecklist(gym.settings?.revision, gym.epoch, editable && payments.configured);
+  const bankStatus = useQuery({ queryKey: ['bank-debit-status', gym.settings?.id, gym.settings?.revision], enabled: Boolean(gym.settings),
+    queryFn: async () => {
+      const result = await api.GET('/api/settings/payments/bank-debits');
+      if (!result.response.ok) throw new Error('Could not read bank payment status');
+      return result.data?.data.unavailableAt ?? null;
+    } });
+  const eligible = gym.settings?.currency === 'USD' || gym.settings?.currency === 'CAD';
+  async function toggleBankDebits(bankDebitsEnabled: boolean) {
+    setBusy(true); setMessage(null);
+    try {
+      const result = await gym.save((revision, signal) => api.PUT('/api/settings/payments/bank-debits', { signal, body: { revision, bankDebitsEnabled } }));
+      if (result.status >= 300) setMessage({ kind: 'alert', text: refusedText(result) });
+    } catch (error) { setMessage({ kind: 'alert', text: failedText(error) }); }
+    finally { setBusy(false); }
+  }
   const restore = checklist.data?.restoreReconciliation;
   const reconciliation = checklist.data?.items.find(item => item.id === 'reconciliation_complete');
   const send = (restrictedKey: string, clearTestData: boolean) => state.change((revision, signal) => api.PUT('/api/settings/integrations/stripe',
@@ -80,6 +96,12 @@ export function PaymentsIntegrationSection({ payments, editable, lastEventAt, st
     {editable && payments.configured && restore?.stripeConfigured === false && <p className="wrap-anywhere text-sm" role="note">
       {t('settings/go-live:reconcileStripeConnected')}</p>}
     {editable && payments.configured && reconciliation && hasRestoreModeNote(reconciliation.message) && <p className="wrap-anywhere text-sm" role="note">{reconciliation.message}</p>}
+    {gym.settings && <div className="grid min-w-0 gap-1">
+      <CheckboxField role="switch" label={text('bankDebitsLabel')} checked={gym.settings.bankDebitsEnabled && eligible}
+        disabled={!editable || !eligible || busy || gym.failed} aria-describedby="bank-debits-help" onChange={event => void toggleBankDebits(event.target.checked)}/>
+      <p id="bank-debits-help" className="text-sm text-muted-foreground">{text(eligible ? 'bankDebitsHelp' : 'bankDebitsCurrency')}</p>
+      {bankStatus.data && <p role="alert" className="text-sm">{text('bankDebitsWarning', { date: dateLabel(bankStatus.data) })}</p>}
+    </div>}
     <FormMessage message={message}/>
     {!editable ? null : switchKey ? <form onSubmit={(event) => void confirmSwitch(event)} aria-label={label('switchTitle')}>
       <fieldset disabled={busy} className="grid min-w-0 gap-4 rounded-md border border-border p-3">

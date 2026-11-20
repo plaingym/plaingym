@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { Context } from 'hono';
 import { AppError } from '@plaingym/shared';
-import { integrationsContracts, settingsContracts } from '@plaingym/shared/contracts';
+import { z } from 'zod';
+import { gymSettingsResponseSchema, instantSchema, integrationsContracts, settingsContracts, updateBankDebitsRequestSchema } from '@plaingym/shared/contracts';
 import type { RequestEnvironment } from '../../core/context.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { route, type RouteRegistration } from '../../core/registry.js';
@@ -16,12 +17,28 @@ function owner(c: Context<RequestEnvironment>): MutationContext & { actor: { kin
 const response = <T>(schema: T, description: string) => ({ 200: { description, content: { 'application/json': { schema } } } });
 const body = <T>(schema: T) => ({ body: { required: true as const, content: { 'application/json': { schema } } } });
 
+/** A foreign staff session cannot address this gym's bank payment settings. */
+function gymResource(entry: RouteRegistration): RouteRegistration {
+  return { ...entry, mount(app, authorize) {
+    entry.mount(app, permission => async (c, next) => {
+      const { gym, principal } = c.get('context');
+      if (principal.kind === 'staff' && principal.gymId !== gym.gymId) throw new AppError('not_found', 'Gym not found');
+      return authorize(permission)(c, next);
+    });
+  } };
+}
+
 /** Tests pass a service; otherwise the routes use the one the runtime configures. */
 export function createIntegrationsRoutes(service?: IntegrationsService): RouteRegistration[] {
   const current = () => service ?? integrationsService();
   const cap = settingsContracts.updateSmsDailyCap;
   const { get, saveEmail, removeEmail, saveSms, removeSms, saveStripe, createBackupKey, confirmBackupKey, getGoogle, saveGoogle, removeGoogle } = integrationsContracts;
+  const bankDebits = { path: '/api/settings/payments/bank-debits', permission: saveStripe.permission } as const;
   return [
+    gymResource(route({ ...bankDebits, method: 'get', responses: response(z.object({ data: z.object({ unavailableAt: instantSchema.nullable() }) }), 'Latest outstanding bank payment refusal') },
+      async c => c.json({ data: await current().bankDebitStatus(owner(c).gymId) }, 200))),
+    gymResource(route({ ...bankDebits, method: 'put', request: body(updateBankDebitsRequestSchema), responses: response(gymSettingsResponseSchema, 'Updated gym settings') },
+      async c => c.json({ data: await current().updateBankDebits(owner(c), c.req.valid('json')) }, 200))),
     route({ ...cap, request: body(cap.body), responses: response(cap.response, 'Updated SMS daily cap') },
       async c => c.json({ data: await current().updateSmsDailyCap(owner(c), c.req.valid('json')) }, 200)),
     route({ ...get, responses: response(get.response, 'Email, SMS, payments and backups') }, async (c) => {

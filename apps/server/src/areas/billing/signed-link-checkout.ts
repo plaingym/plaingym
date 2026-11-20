@@ -2,18 +2,25 @@
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { auditEvents, forGym, households, invoices, members, paymentAttempts, paymentMethods, signedLinks, uuidv7, writeAudit } from '@plaingym/db';
 import type { Transaction } from '@plaingym/db';
-import { AppError, type Clock } from '@plaingym/shared';
+import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { cardChargeIssue } from '@plaingym/shared/money';
-import type { Payments, CheckoutSession } from '../../infra/payments/index.js';
+import { BankDebitUnavailable, type Payments, type CheckoutSession, type CheckoutRequest } from '../../infra/payments/index.js';
+import { locales } from '@plaingym/shared/locales';
 import { clock as defaultClock } from '../../core/clock.js';
 import { logError } from '../../core/log.js';
 import { signedLinkWaiversComplete } from '../waivers/waivers.js';
 import { createCustomersService, customerUnlinkedAction, CustomerUnavailable } from './customers.js';
 import { isAssignmentInvoice } from './assignment-invoices.js';
-import { createGymSettingsAccessor } from '../settings/settings.js';
+import { readGymSettings } from '../settings/settings.js';
 import { createCardHandlers } from './webhooks/handlers/methods.js';
 import { completeCampaignIn } from '../links/campaigns.model.js';
 
+const t = createTranslator(locales.en ?? {});
+function bankDebitFor(gym: { bankDebitsEnabled: boolean; currency: string }): CheckoutRequest['bankDebit'] {
+  if (gym.bankDebitsEnabled && gym.currency === 'USD') return { type: 'us_bank_account' };
+  if (gym.bankDebitsEnabled && gym.currency === 'CAD') return { type: 'acss_debit', intervalDescription: t('billing/payments:padInterval') };
+  return undefined;
+}
 function missing(): never { throw new AppError('not_found', 'Signed link or resource not found'); }
 function unavailable(): never { throw new AppError('unavailable', 'Checkout is not available'); }
 export class CustomerNotLinked extends AppError {
@@ -38,10 +45,10 @@ export interface SignedCheckoutOptions {
 export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const customers = createCustomersService({ scope, clock, paymentsFor: options.paymentsFor });
-  const settings = createGymSettingsAccessor({ scope, clock });
+  const settings = (gymId: string) => scope(gymId, tx => readGymSettings(tx, gymId));
   const cards = createCardHandlers({ scope, clock });
   async function checkBilling(gymId: string, payment: boolean) {
-    if (payment && !(await settings.get(gymId)).billingEnabled) unavailable();
+    if (payment && !(await settings(gymId)).billingEnabled) unavailable();
   }
   async function locked(tx: Transaction, gymId: string, linkId: string, completing = false) {
     const [link] = await tx.select().from(signedLinks).where(eq(signedLinks.id, linkId)).for('update');
@@ -103,9 +110,37 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
     const setup = result.value.object;
     if (setup.status !== 'succeeded' || setup.metadata.gymId !== gymId || setup.metadata.linkId !== linkId
       || setup.customerId !== session.customerId || setup.paymentMethodId !== session.paymentMethodId) unavailable();
-    await cards.collect(gymId, provider, session.customerId, session.paymentMethodId);
+    await cards.collect(gymId, provider, session.customerId, session.paymentMethodId, setup.mandateId);
   }
-  async function startCard(gymId: string, linkId: string, customerId: string, provider: Payments, successUrl: string, cancelUrl: string, flow?: CheckoutReturn) {
+  async function createCheckout(provider: Payments, gymId: string, bankDebit: CheckoutRequest['bankDebit'], request: CheckoutRequest & { linkId: string }) {
+    // A lost response retries the original options, even if the gym toggled bank payments or
+    // enabled the method at Stripe in the meantime. The link lock serializes the choice.
+    const target = { attemptKey: request.idempotencyKey };
+    const choice = await scope(gymId, async tx => {
+      await tx.select({ id: signedLinks.id }).from(signedLinks).where(eq(signedLinks.id, request.linkId)).for('update');
+      const [saved] = await tx.select({ action: auditEvents.action, after: auditEvents.after }).from(auditEvents).where(and(
+        eq(auditEvents.targetType, 'signed_link'), eq(auditEvents.targetId, request.linkId), eq(auditEvents.before, target),
+        inArray(auditEvents.action, ['billing.checkout.methods_reserved', 'billing.bank_debits.unavailable'])))
+        .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1);
+      if (saved) return { fallback: saved.action === 'billing.bank_debits.unavailable',
+        bank: (saved.after as { bankDebit?: CheckoutRequest['bankDebit'] } | null)?.bankDebit };
+      await writeAudit(tx, { gymId, actorKind: 'system', action: 'billing.checkout.methods_reserved', targetType: 'signed_link',
+        targetId: request.linkId, before: target, after: bankDebit ? { bankDebit } : {}, occurredAt: clock.now() });
+      return { fallback: false, bank: bankDebit };
+    });
+    const card = { ...request, idempotencyKey: request.idempotencyKey + ':card' };
+    if (choice.fallback) return provider.createCheckout(card);
+    if (!choice.bank) return provider.createCheckout(request);
+    try { return await provider.createCheckout({ ...request, bankDebit: choice.bank }); }
+    catch (error) {
+      if (!(error instanceof BankDebitUnavailable)) throw error;
+      await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'billing.bank_debits.unavailable',
+        targetType: 'signed_link', targetId: request.linkId, before: target, occurredAt: clock.now() }));
+      return provider.createCheckout(card);
+    }
+  }
+  async function startCard(gymId: string, linkId: string, customerId: string, provider: Payments, successUrl: string, cancelUrl: string,
+    bankDebit: CheckoutRequest['bankDebit'], flow?: CheckoutReturn) {
     // The persisted start association also supplies the next attempt's stable key. Concurrent
     // clicks and lost creation responses retry one attempt; terminal sessions advance the key.
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -151,7 +186,7 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
           occurredAt: clock.now(), after: { attemptKey, expiresAt: expiresAt.toISOString(), customerId } });
         return { id, expiresAt };
       }) : null;
-      const session = await provider.createCheckout({ mode: 'setup', customerId, linkId, successUrl,
+      const session = await createCheckout(provider, gymId, bankDebit, { mode: 'setup', customerId, linkId, successUrl,
         cancelUrl, saveForOffSession: true,
         ...(reservation ? { expiresAt: reservation.expiresAt } : {}),
         idempotencyKey: attemptKey + (reservation ? `:reservation:${reservation.id}` : '') });
@@ -186,11 +221,11 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
     const returnUrl = new URL('/l/return', origin).href;
     const successUrl = flow ? new URL(flow.successPath, origin).href : returnUrl, cancelUrl = flow ? new URL(flow.cancelPath, origin).href : returnUrl;
     const windowMs = flow?.lifetimeMs ?? 23 * 60 * 60 * 1000;
-    const billingEnabled = (await settings.get(gymId)).billingEnabled;
+    const gym = await settings(gymId), bankDebit = bankDebitFor(gym);
     const prepared = await scope(gymId, async tx => {
       const { link, household } = await locked(tx, gymId, linkId);
       if (link.purpose !== 'pay_invoice') return { link, customerId: household.stripeCustomerId, invoice: null, savesCard: true };
-      if (!billingEnabled) unavailable();
+      if (!gym.billingEnabled) unavailable();
       const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.id, link.invoiceId!), eq(invoices.householdId, link.householdId))).for('update');
       if (!invoice) missing();
       await payable(tx, invoice);
@@ -236,7 +271,7 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
     }
     let session: CheckoutSession;
     await checkBilling(gymId, !!prepared.invoice);
-    if (!prepared.invoice) return startCard(gymId, linkId, customerId, provider, successUrl, cancelUrl, flow);
+    if (!prepared.invoice) return startCard(gymId, linkId, customerId, provider, successUrl, cancelUrl, bankDebit, flow);
     if (prepared.invoice.checkoutSessionId) {
       const found = await provider.readPaymentObject({ kind: 'checkout', id: prepared.invoice.checkoutSessionId });
       if (found.status !== 'found' || found.value.kind !== 'checkout') unavailable();
@@ -271,7 +306,7 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
       if (session.status !== 'open') throw new AppError('conflict', 'Checkout is no longer open');
     } else {
       const invoice = prepared.invoice;
-      session = await provider.createCheckout({
+      session = await createCheckout(provider, gymId, bankDebit, {
         mode: 'payment', customerId, linkId: prepared.reservationLinkId ?? linkId,
         invoiceId: invoice.id, amount: invoice.amountCents, currency: invoice.currency.toLowerCase(),
         successUrl, cancelUrl, saveForOffSession: prepared.savesCard,
@@ -341,7 +376,8 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
         const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.id, link.invoiceId!), eq(invoices.householdId, link.householdId)));
         if (!invoice) missing();
         if (tagged && (session.mode !== 'payment' || session.metadata.invoiceId !== invoice.id || invoice.checkoutSessionId !== session.id)) return false;
-        if (!['paid', 'partially_refunded', 'refunded'].includes(invoice.status)) return false;
+        // Only this link's own tagged Checkout can leave the invoice processing; another debit's doesn't use the link.
+        if (!(tagged ? ['processing', 'paid', 'partially_refunded', 'refunded'] : ['paid', 'partially_refunded', 'refunded']).includes(invoice.status)) return false;
       } else {
         if (session.status !== 'complete' || session.mode !== 'setup' || session.metadata.gymId !== gymId
           || session.customerId !== household.stripeCustomerId || !session.paymentMethodId) return false;

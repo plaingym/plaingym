@@ -11,7 +11,7 @@ import { TestClock } from '../../core/clock.js';
 import { createApp } from '../../app.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
 import { FakeEmail } from '../../infra/email/index.js';
-import { FakePayments, type CheckoutSession, type Payments } from '../../infra/payments/index.js';
+import { BankDebitUnavailable, FakePayments, type CheckoutSession, type Payments } from '../../infra/payments/index.js';
 import { StripePayments } from '../../infra/payments/stripe.js';
 import { StripeFixtures } from '../../infra/payments/stripe-fixtures.js';
 import { FixtureRecorder, type Tape } from '../../infra/payments/recording.js';
@@ -88,9 +88,9 @@ it('replays short card setup with a persisted expiry after a lost response, and 
   expect(spy.mock.calls.at(-1)![0].idempotencyKey).not.toBe(firstKey);
 });
 const origin = 'https://gym.example.test', secret = 'synthetic-signing-secret';
-async function fixture(purpose: 'pay_invoice' | 'update_card' | 'onboarding' = 'update_card', stripe = false, currency = 'USD') {
+async function fixture(purpose: 'pay_invoice' | 'update_card' | 'onboarding' = 'update_card', stripe = false, currency = 'USD', bankDebitsEnabled = false) {
   const gymId = uuidv7(), clock = new TestClock('2026-10-27T12:00:00Z');
-  await factory('gyms', gymId, { currency, billingEnabled: true, memberEmailsEnabled: true });
+  await factory('gyms', gymId, { currency, billingEnabled: true, memberEmailsEnabled: true, bankDebitsEnabled });
   const household = await factory('households', gymId, { stripeCustomerId: 'cus_fixture', email: 'payer@example.test' });
   const member = await factory('members', gymId, { householdId: household.id });
   const invoice = await factory('invoices', gymId, { householdId: household.id, number: 1, status: 'open', amountCents: 100, kind: 'one_off' });
@@ -165,6 +165,58 @@ async function tapeFor(f: Awaited<ReturnType<typeof fixture>>, name: string, ext
     else replay!.assertConsumed();
   };
 }
+
+describe('bank-enabled signed Checkout', () => {
+  for (const purpose of ['update_card', 'pay_invoice'] as const) it.each(['USD', 'CAD'])('offers bank payment in ' + purpose + ' for %s', async currency => {
+    const f = await fixture(purpose, true, currency, true);
+    const recorder = new FixtureRecorder(f.gymId);
+    f.setProvider(new StripePayments(f.gymId, { clock: f.clock, webhookSecret: secret, transport: recordingTransport(f.transport, recorder) }));
+    const { session } = await f.checkout.start(f.gymId, f.linkId);
+    const exchanges = recorder.tape.exchanges.filter(entry => (entry.input as { method: string }).method === 'POST');
+    expect(exchanges).toHaveLength(1);
+    const wire = JSON.stringify({ ...recorder.tape, exchanges }, null, 2).replaceAll(f.gymId, '00000000-0000-7000-8000-000000000001')
+      .replaceAll(f.invoice.id, '00000000-0000-7000-8000-000000000002').replaceAll(f.linkId, '00000000-0000-7000-8000-000000000003') + '\n';
+    const location = new URL('./signed-link-checkout.' + purpose + '.' + currency + '.synthetic.json', import.meta.url);
+    if (process.env.RECORD_LINK_CHECKOUT_FIXTURES === '1') await writeFile(location, wire);
+    expect(JSON.parse(wire)).toEqual(JSON.parse(await readFile(location, 'utf8')));
+    const method = currency === 'USD' ? 'us_bank_account' : 'acss_debit';
+    expect(exchanges[0]!.input).toMatchObject({ params: { allowed_payment_method_types: ['card', method],
+      ...(currency === 'CAD' ? { payment_method_options: { acss_debit: { mandate_options: {
+        interval_description: 'Membership dues on each billing date, and other charges you approve' } } } } : {}) } });
+    f.transport.completeCheckout(session.id, { method });
+    await f.dispatch(await f.deliver(session));
+    expect(await f.used()).toHaveLength(1);
+    if (purpose === 'pay_invoice') {
+      expect(await f.links.resolve(f.gymId, f.created.token, { linkId: f.linkId, sessionId: session.id })).toEqual({ status: 'used', processing: true });
+      expect(await f.links.resolve(f.gymId, f.created.token)).toEqual({ status: 'used' });
+      expect(await f.links.resolve(f.gymId, f.created.token, { linkId: f.linkId, sessionId: 'wrong' })).toEqual({ status: 'used' });
+    }
+  });
+  it('reuses a card fallback after the provider creates it but its reply is lost', async () => {
+    const f = await fixture('pay_invoice', false, 'USD', true);
+    const send = f.fake.createCheckout.bind(f.fake);
+    let created: CheckoutSession | undefined;
+    const create = vi.spyOn(f.fake, 'createCheckout').mockRejectedValueOnce(new BankDebitUnavailable()).mockImplementationOnce(async request => {
+      created = await send(request);
+      throw new Error('Reply lost');
+    });
+    await expect(f.checkout.start(f.gymId, f.linkId)).rejects.toThrow('Reply lost');
+    expect((await f.checkout.start(f.gymId, f.linkId)).session.id).toBe(created!.id);
+    expect(create.mock.calls[2]).toEqual(create.mock.calls[1]);
+  });
+  it.each(['pay_invoice', 'update_card', 'onboarding'] as const)('falls back to a card for %s and audits the refused link', async purpose => {
+    const f = await fixture(purpose, false, 'USD', true);
+    const create = vi.spyOn(f.fake, 'createCheckout').mockRejectedValueOnce(new BankDebitUnavailable());
+    const { session } = await f.checkout.start(f.gymId, f.linkId);
+    expect(session.status).toBe('open');
+    const [bank, card] = create.mock.calls.map(([request]) => request);
+    const { bankDebit, ...request } = bank!;
+    expect(bankDebit).toEqual({ type: 'us_bank_account' });
+    expect(card).toEqual({ ...request, idempotencyKey: bank!.idempotencyKey + ':card' });
+    expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.bank_debits.unavailable'))))
+      .toMatchObject([{ targetId: f.linkId }]);
+  });
+});
 
 describe('signed-link audit regressions with real PostgreSQL', () => {
   it.each([[32, 'CAD', 'below_minimum'], [1255, 'KWD', 'off_step']] as const)(
@@ -293,6 +345,13 @@ describe('signed-link audit regressions with real PostgreSQL', () => {
         successUrl: origin, cancelUrl: origin, idempotencyKey: 'legacy' });
       const session = await f.finish(legacy.id);
       expect(await f.checkout.complete(f.gymId, f.linkId, session.id)).toBe(false); // Webhook writes are still required.
+      if (purpose === 'pay_invoice' && !stripe) { // The recorded tapes replay their reads in order.
+        // Another debit leaving the invoice processing doesn't complete an untagged Checkout.
+        const [before] = await db.forGym(f.gymId, tx => tx.select({ status: invoices.status }).from(invoices).where(eq(invoices.id, f.invoice.id)));
+        await db.forGym(f.gymId, tx => tx.update(invoices).set({ status: 'processing' }).where(eq(invoices.id, f.invoice.id)));
+        expect(await f.checkout.complete(f.gymId, f.linkId, session.id)).toBe(false);
+        await db.forGym(f.gymId, tx => tx.update(invoices).set({ status: before!.status }).where(eq(invoices.id, f.invoice.id)));
+      }
       await f.dispatch(await f.deliver(session));
       expect(f.callback).not.toHaveBeenCalled();
       if (purpose === 'onboarding') {

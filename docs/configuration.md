@@ -9,6 +9,10 @@ and backups in the setup wizard (and changes them later in the admin's
 billing rules in the admin's **Settings**. They are stored in the database, encrypted where
 secret.
 
+**Settings → Integrations → Payments** includes **Accept bank payments**, off by
+default. USD gyms can offer ACH and CAD gyms can offer Canadian pre-authorized
+debits in Checkout after enabling the matching method in Stripe.
+
 Settings opens with Gym details and a section menu. Gym details contains the
 single brand-color control; Website links back to it. The advanced logo setting
 is a storage reference for an existing upload. Use Website to upload a logo.
