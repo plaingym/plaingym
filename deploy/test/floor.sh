@@ -56,6 +56,9 @@ case "$*" in
   'image inspect '*'org.opencontainers.image.version'*) version_of "$3" ;;
   'image inspect '*RepoDigests*) echo "ghcr.io/example/app@$DIGEST" ;;
   *' snapshot-check '*)
+    if [ "$PPID" = "${SNAPSHOT_CHECK_TIMEOUT_PID:-}" ]; then
+      echo 'snapshot-check client ran directly under timeout' >> "$CALLS"
+    fi
     check_name=
     while [ "$#" -gt 0 ]; do
       case "$1" in --name) check_name=$2; shift ;; esac
@@ -74,18 +77,33 @@ case "$*" in
   'rm -f plaingym-snapshot-check-'*)
     [ "${SNAPSHOT_CLEANUP:-}" != daemon-error ] || { echo 'Cannot connect to the Docker daemon' >&2; exit 1; }
     if [ -f "$SNAPSHOTS/$3.container" ]; then
-      [ "${SNAPSHOT_CLEANUP:-}" != late-remove-error ] || { echo 'Removal failed' >&2; exit 1; }
+      case "${SNAPSHOT_CLEANUP:-}" in
+        late-remove-error) echo 'Removal failed' >&2; exit 1 ;;
+        late-removal-finished|late-removal-pending)
+          if [ "$SNAPSHOT_CLEANUP" = late-removal-finished ]; then rm "$SNAPSHOTS/$3.container"; fi
+          echo "Error response from daemon: removal of container $3 is already in progress" >&2
+          exit 1 ;;
+      esac
       rm "$SNAPSHOTS/$3.container"
-      [ "${SNAPSHOT_CLEANUP:-}" != late-already-removed ] || { echo "Error response from daemon: No such container: $3" >&2; exit 1; }
+      if [ "${SNAPSHOT_CLEANUP:-}" = late-already-removed ]; then
+        printf 'WARNING: Docker configuration could not be loaded\nError response from daemon: No such container: %s\n' "$3" >&2
+        exit 1
+      fi
     else
+      # The create lands after the daemon has looked up the name for the first rm.
+      case "${SNAPSHOT_CLEANUP:-}" in late*) touch "$SNAPSHOTS/$3.container" ;; esac
       echo "Error response from daemon: No such container: $3" >&2
       exit 1
     fi ;;
   'container inspect plaingym-snapshot-check-'*)
     case "${SNAPSHOT_CLEANUP:-}" in
       daemon-error) echo 'Cannot connect to the Docker daemon' >&2; exit 1 ;;
-      late|late-remove-error|late-already-removed) touch "$SNAPSHOTS/$3.container" ;;
+      inspect-warning|inspect-other-name) echo 'WARNING: Docker configuration could not be loaded' >&2 ;;
     esac
+    if [ "${SNAPSHOT_CLEANUP:-}" = inspect-other-name ]; then
+      echo "Error: No such container: $3-other" >&2
+      exit 1
+    fi
     if [ -f "$SNAPSHOTS/$3.container" ]; then echo '[{}]'
     else echo '[]'; echo "Error response from daemon: No such container: $3" >&2; exit 1; fi ;;
   *' snapshot pre-upgrade'|*' snapshot manual')
@@ -136,12 +154,15 @@ chmod 0700 "$temporary/bin/docker" "$temporary/bin/curl"
 cat > "$temporary/bin/timeout" <<'MOCK'
 #!/bin/sh
 set -eu
-if [ "${SNAPSHOT_CHECK_STALL:-}" = true ] && [ "$*" != "${*#-k 5 40 sh }" ]; then
-  printf 'snapshot-check deadline: %s\n' "$1 $2 $3" >> "$CALLS"
-  shift 3
-  exec /usr/bin/timeout -k 1 1 "$@"
-fi
 case "$*" in
+  '-k 5 40 sh '*)
+    SNAPSHOT_CHECK_TIMEOUT_PID=$$
+    export SNAPSHOT_CHECK_TIMEOUT_PID
+    if [ "${SNAPSHOT_CHECK_STALL:-}" = true ]; then
+      printf 'snapshot-check deadline: %s\n' "$1 $2 $3" >> "$CALLS"
+      shift 3
+      exec /usr/bin/timeout -k 1 1 "$@"
+    fi ;;
   *' docker rm -f plaingym-snapshot-check-'*|*' docker container inspect plaingym-snapshot-check-'*)
     printf 'snapshot-check cleanup deadline: %s\n' "$*" >> "$CALLS" ;;
 esac
@@ -539,8 +560,8 @@ said "The named snapshot $snapshot is missing or incomplete"
 [ "$before" = "$(cat "$case_dir/.env" "$case_dir/version-history.tsv" | sha256sum)" ]
 
 snapshot_check_state() {
-  sha256sum "$case_dir/.env" "$case_dir/version-history.tsv" "$case_dir/schema-compatibility.yaml" \
-    "$FIXTURES/schema" "$SNAPSHOTS/count"
+  sha256sum "$case_dir/.env" "$case_dir/version-history.tsv" "$FIXTURES/schema" "$SNAPSHOTS/count"
+  if [ -f "$case_dir/schema-compatibility.yaml" ]; then sha256sum "$case_dir/schema-compatibility.yaml"; fi
 }
 before=$(snapshot_check_state)
 refuse_after_failed_check() {
@@ -557,6 +578,11 @@ refuse_after_failed_check() {
   fi
   snapshot_container=$(sed -n 's/.* --name \(plaingym-snapshot-check-[^ ]*\) .* snapshot-check .*/\1/p' "$CALLS")
   [ -n "$snapshot_container" ]
+  grep -qxF 'snapshot-check client ran directly under timeout' "$CALLS"
+  check_compose="compose --project-directory $case_dir --env-file $case_dir/.env -f $case_dir/compose.yaml"
+  if [ -f "$case_dir/schema-compatibility.yaml" ]; then check_compose="$check_compose -f $case_dir/schema-compatibility.yaml"; fi
+  check_image=$(sed -n 's/^APP_IMAGE=//p' "$case_dir/.env")
+  grep -qxF "$check_compose run --rm --name $snapshot_container --no-deps -T --entrypoint node app /app/maintenance.mjs snapshot-check $snapshot IMAGE=$check_image" "$CALLS"
 }
 snapshot_cleanup_calls_are() {
   expected_cleanup=$(
@@ -606,6 +632,32 @@ refuse_after_failed_check SNAPSHOT_CHECK_EXIT=124 SNAPSHOT_CLEANUP=late-remove-e
 snapshot_cleanup_calls_are 'rm -f' 'container inspect' 'rm -f'
 cleanup_warnings_are 1
 [ -f "$SNAPSHOTS/$snapshot_container.container" ]
+
+refuse_after_failed_check SNAPSHOT_CHECK_EXIT=124 SNAPSHOT_CLEANUP=late-removal-finished
+snapshot_cleanup_calls_are 'rm -f' 'container inspect' 'rm -f' 'container inspect'
+cleanup_warnings_are 0
+[ ! -e "$SNAPSHOTS/$snapshot_container.container" ]
+
+refuse_after_failed_check SNAPSHOT_CHECK_EXIT=124 SNAPSHOT_CLEANUP=late-removal-pending
+snapshot_cleanup_calls_are 'rm -f' 'container inspect' 'rm -f' 'container inspect'
+cleanup_warnings_are 1
+[ -f "$SNAPSHOTS/$snapshot_container.container" ]
+
+refuse_after_failed_check SNAPSHOT_CHECK_EXIT=124 SNAPSHOT_CLEANUP=inspect-warning
+snapshot_cleanup_calls_are 'rm -f' 'container inspect'
+cleanup_warnings_are 0
+
+refuse_after_failed_check SNAPSHOT_CHECK_EXIT=124 SNAPSHOT_CLEANUP=inspect-other-name
+snapshot_cleanup_calls_are 'rm -f' 'container inspect'
+cleanup_warnings_are 1
+
+# The history fallback still runs the check when there is no compatibility file.
+rm "$case_dir/schema-compatibility.yaml"
+before=$(snapshot_check_state)
+refuse_after_failed_check SNAPSHOT_CHECK_EXIT=1
+said 'This history snapshot is not protected by the active schema guard'
+snapshot_cleanup_calls_are
+cleanup_warnings_are 0
 
 # With no floor recorded, as with development builds, nothing bounds a rollback.
 make_install no_floor v2.0.0 v2.0.0

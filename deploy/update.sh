@@ -467,17 +467,21 @@ remove_image() { # IMAGE_ID: never forced, and bounded, so maintenance can't hol
   # Docker refuses an image a container uses or that names in other repositories refer to; that refusal stands.
   timeout -k 5 30 docker image rm "$1" >/dev/null 2>&1
 }
+docker_reports() { # STDERR MESSAGE: match a complete Docker error line even when warnings precede it.
+  printf '%s\n' "$1" | grep -Fxq -e "$2" -e "Error: $2" -e "Error response from daemon: $2"
+}
 cleanup_snapshot_check() {
   # Docker may still be creating the container when the first removal runs.
   timeout -k 5 10 docker rm -f "$1" >/dev/null 2>&1 || true
   # Capture stderr while discarding stdout, which can include container configuration.
   if snapshot_check_error=$(timeout -k 5 10 docker container inspect "$1" 2>&1 >/dev/null); then
     snapshot_check_error=$(timeout -k 5 10 docker rm -f "$1" 2>&1 >/dev/null) && return 0
+    if docker_reports "$snapshot_check_error" "removal of container $1 is already in progress"; then
+      # Compose or Docker may have started removing the container between inspect and rm.
+      snapshot_check_error=$(timeout -k 5 10 docker container inspect "$1" 2>&1 >/dev/null) && return 1
+    fi
   fi
-  case "$snapshot_check_error" in
-    "No such container: $1"|"Error: No such container: $1"|"Error response from daemon: No such container: $1") return 0 ;;
-    *) return 1 ;;
-  esac
+  docker_reports "$snapshot_check_error" "No such container: $1"
 }
 # After a successful update, keep the current image and the two before it (the rollback stack's top
 # `rollback_depth` entries, lib.sh). Older entries' images go, the installer's too, and each removed one leaves what
@@ -616,12 +620,14 @@ if [ "$requested_rollback" = true ]; then
       check_image=$current
       [ -z "$recovery_version" ] || check_image=$(cut -f4 "$RECOVERY")
       snapshot_check_name="plaingym-snapshot-check-$$-$(date +%s)"
-      # Expand positional parameters in the timed child shell, keeping ROOT and the snapshot separate from code.
+      # Replace the timed shell so the deadline follows the Compose client through signal handling.
       # shellcheck disable=SC2016
       if snapshot_check=$(APP_IMAGE="$check_image" timeout -k 5 40 sh -c '
         ROOT=$1; shift
-        . "$ROOT/lib.sh"
-        compose "$@"
+        if [ -f "$ROOT/schema-compatibility.yaml" ]; then
+          set -- -f "$ROOT/schema-compatibility.yaml" "$@"
+        fi
+        exec docker compose --project-directory "$ROOT" --env-file "$ROOT/.env" -f "$ROOT/compose.yaml" "$@"
       ' sh "$ROOT" run --rm --name "$snapshot_check_name" --no-deps -T --entrypoint node app /app/maintenance.mjs snapshot-check "$restore_snapshot" 2>/dev/null); then
         :
       else
