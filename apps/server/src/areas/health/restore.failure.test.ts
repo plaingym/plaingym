@@ -290,7 +290,7 @@ it('reports an oversized lease without snapshot advice', async () => {
 });
 it.each([false, true])('reports a failed database tool after activation (resume: %s)', async resume => {
   if (resume) await stage();
-  const database = new PostgresMaintenance(f.targetMaintenance.url, (tool, env) => ({
+  const database = new PostgresMaintenance(f.targetMaintenance.url, (_tool, { env }) => ({
     command: process.execPath, args: ['-e', 'process.exit(1)'], env,
   }));
   const service = new RestoreService({ ...f.restore().options, database });

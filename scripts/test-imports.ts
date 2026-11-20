@@ -7,6 +7,29 @@ interface ModuleReference { specifier: string; readsFiles: boolean }
 const reader = /^(?:readFile(?:Sync)?|readdir(?:Sync)?|glob(?:Sync)?|createReadStream|open(?:Sync)?|opendir(?:Sync)?|promises)$/;
 const filesystem = /^(?:node:)?fs(?:\/promises)?$/;
 
+function readsFilesystemProperty(name: ts.Node): boolean {
+  if (ts.isComputedPropertyName(name)) {
+    if (ts.isStringLiteralLike(name.expression)) name = name.expression;
+    else return !ts.isNumericLiteral(name.expression);
+  }
+  // The default export exposes the full filesystem API.
+  return ts.isIdentifier(name) || ts.isStringLiteralLike(name)
+    ? name.text === 'default' || reader.test(name.text) : false;
+}
+
+function readsDynamicFilesystem(call: ts.CallExpression): boolean {
+  let expression: ts.Expression = call;
+  while (ts.isAwaitExpression(expression.parent) || ts.isParenthesizedExpression(expression.parent))
+    expression = expression.parent;
+  const parent = expression.parent;
+  if (ts.isVariableDeclaration(parent) && ts.isObjectBindingPattern(parent.name))
+    return parent.name.elements.some(binding => !!binding.dotDotDotToken || readsFilesystemProperty(binding.propertyName ?? binding.name));
+  if (ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+    && parent.right === expression && ts.isObjectLiteralExpression(parent.left))
+    return parent.left.properties.some(property => ts.isSpreadAssignment(property) || readsFilesystemProperty(property.name));
+  return true;
+}
+
 /** Runtime imports and re-exports, including literal dynamic imports. Type-only edges do not execute. */
 export function parseTestImports(file: string, text: string) {
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
@@ -22,13 +45,13 @@ export function parseTestImports(file: string, text: string) {
       const defaultImport = importing && !!node.importClause?.name;
       if (!defaultImport && bindings?.length && bindings.every(binding => binding.isTypeOnly)) return;
       const specifier = node.moduleSpecifier.text;
-      references.push({ specifier, readsFiles: filesystem.test(specifier) && (defaultImport || !bindings
-        || bindings.some(binding => !binding.isTypeOnly && reader.test((binding.propertyName ?? binding.name).text))) });
+      references.push({ specifier, readsFiles: filesystem.test(specifier) && (!importing || !!clause) && (defaultImport || !bindings
+        || bindings.some(binding => !binding.isTypeOnly && readsFilesystemProperty(binding.propertyName ?? binding.name))) });
     }
     if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword
       && node.arguments[0] && ts.isStringLiteral(node.arguments[0])) {
       const specifier = node.arguments[0].text;
-      references.push({ specifier, readsFiles: filesystem.test(specifier) });
+      references.push({ specifier, readsFiles: filesystem.test(specifier) && readsDynamicFilesystem(node) });
     }
     ts.forEachChild(node, visit);
   }
@@ -64,8 +87,8 @@ export function usesDatabase(file: string, read = (path: string) => readFileSync
     }
     return injectsDatabase(source) || references.some(({ specifier }) => {
       if (/^@plaingym\/db\/testing(?:\/|$)|(?:^|\/)testing\/database/.test(specifier)) return true;
-      const helper = testHelper(specifier) ? resolveTestImport(file, specifier, exists) : undefined;
-      return helper !== undefined && usesDatabase(helper, read, exists, visiting);
+      const support = testSupport(specifier) ? resolveTestImport(file, specifier, exists) : undefined;
+      return support !== undefined && usesDatabase(support, read, exists, visiting);
     });
   } finally { visiting.delete(file); }
 }

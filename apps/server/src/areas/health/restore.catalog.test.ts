@@ -121,7 +121,7 @@ it.each(['database', 'role'])('clears a stored read-only %s default that would b
     else await admin.sql`alter role maintenance in database ${admin.sql(f.target.name)} set default_transaction_read_only to on`;
     let pgOptions: string | undefined;
     const maintenance = new PostgresMaintenance(
-      f.target.maintenanceUrl, (tool, env) => { if (tool === 'pg_restore') pgOptions = env.PGOPTIONS; return f.targetMaintenance.tools(tool, env); });
+      f.target.maintenanceUrl, (tool, options) => { if (tool === 'pg_restore') pgOptions = options.env.PGOPTIONS; return f.targetMaintenance.tools(tool, options); });
     await maintenance.restore(good);
     expect(pgOptions).toContain('-c default_transaction_read_only=off');
     expect(pgOptions).toContain('-c statement_timeout=0');

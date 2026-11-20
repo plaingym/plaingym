@@ -12,7 +12,7 @@ const files = globSync(['apps/**/*.test.ts', 'apps/**/*.test.tsx', 'packages/**/
   .map((file) => file.replaceAll('\\', '/')).filter((file) => !selected || selected.has(file));
 /**
  * A test file needs the database when it uses the test database helpers or the injected template, or when a
- * test helper it imports or re-exports (directly or through another helper) does.
+ * test helper or fixture module it imports or re-exports (directly or through another one) does.
  * A file that reaches the database through other modules names the helpers itself.
  */
 const integration = files.filter((file) => usesDatabase(file)), unit = files.filter((file) => !integration.includes(file));

@@ -96,8 +96,8 @@ async function walkSecrets(database: Connection['db'], visit: (row: SecretRow, f
 }
 
 export interface ToolCommand { command: string; args: string[]; env: NodeJS.ProcessEnv }
-export type ToolRunner = (tool: 'pg_dump' | 'pg_restore', env: NodeJS.ProcessEnv) => ToolCommand;
-const nativeTools: ToolRunner = (tool, env) => ({ command: tool, args: [], env });
+export type ToolRunner = (tool: 'pg_dump' | 'pg_restore', options: { env: NodeJS.ProcessEnv }) => ToolCommand;
+const nativeTools: ToolRunner = (tool, { env }) => ({ command: tool, args: [], env });
 export class PostgresMaintenance {
   /** The database the URL names, for the tools and for `GRANT`/`REVOKE CONNECT`. */
   readonly databaseName: string;
@@ -137,7 +137,7 @@ export class PostgresMaintenance {
       PGPASSWORD: decodeURIComponent(url.password), PGCONNECT_TIMEOUT: '10',
       ...(tool === 'pg_restore' ? { PGOPTIONS: Object.entries(restoreOverrides).map(([name, value]) => `-c ${name}=${value}`).join(' ') } : {}),
       ...(url.searchParams.get('sslmode') ? { PGSSLMODE: url.searchParams.get('sslmode')! } : {}) };
-    const command = this.tools(tool, env);
+    const command = this.tools(tool, { env });
     const child = spawn(command.command, [...command.args, ...args], {
       env: command.env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
     });

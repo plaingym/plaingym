@@ -16,7 +16,7 @@ import { workflowFixture } from './workflow-fixture.js';
 
 const db = useTestDatabase();
 // Real pg_dump/pg_restore, with disposable, named clients and no host PostgreSQL prerequisite.
-const dockerTools: ToolRunner = (tool, env) => ({ command: 'docker', args: ['run', '--rm', '-i',
+const dockerTools: ToolRunner = (tool, { env }) => ({ command: 'docker', args: ['run', '--rm', '-i',
   '--name', `plaingym-billing-restore-${tool}-${randomBytes(6).toString('hex')}`, '--cpus', '1',
   ...(process.platform === 'linux' ? ['--network', 'host'] : []), '-e', 'PGHOST', '-e', 'PGPORT', '-e', 'PGDATABASE',
   '-e', 'PGUSER', '-e', 'PGPASSWORD', '-e', 'PGCONNECT_TIMEOUT', '-e', 'PGOPTIONS',

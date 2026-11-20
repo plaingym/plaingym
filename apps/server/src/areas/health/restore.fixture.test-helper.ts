@@ -28,7 +28,7 @@ type StoredObject = Bucket['objects'] extends Map<string, infer T> ? T : never;
 /** A stored object with its own bytes, since tests tamper with them in place. */
 const copyOf = (object: StoredObject): StoredObject => ({ ...object, bytes: Buffer.from(object.bytes) });
 const downloadUrl = 'https://gym.example.test/uploads';
-export const dockerTools: ToolRunner = (tool, env) => ({
+export const dockerTools: ToolRunner = (tool, { env }) => ({
   command: 'docker', args: ['run', '--rm', '-i', ...(process.platform === 'linux' ? ['--network', 'host'] : []), '-e', 'PGHOST', '-e', 'PGPORT',
     '-e', 'PGDATABASE', '-e', 'PGUSER', '-e', 'PGPASSWORD', '-e', 'PGCONNECT_TIMEOUT', '-e', 'PGOPTIONS',
     'postgres:18@sha256:1267c7e692de235fda2a50dbcdbcbca4672ea6a0298576a6bd9d07cafc319b32', tool],

@@ -90,12 +90,24 @@ describe('verification discovery', () => {
     "import { promises as files } from 'node:fs';",
     "const files = await import('node:fs');",
     "const { readFile } = await import('node:fs/promises');",
+    "const { readFile: read } = await import('fs/promises');",
+    "let read; ({ ['readFile']: read } = await import('node:fs'));",
+    "const { default: files } = await import('node:fs');",
+    "const { ...files } = await import('node:fs');",
     "export { readFile as read } from 'node:fs/promises';",
+    "export * from 'node:fs';",
+    "import { default as files } from 'node:fs';",
+    "export { default } from 'node:fs/promises';",
   ])('recognizes filesystem readers: %s', source => {
     expect(fileReader('fixture.test.ts', () => source)).toBe(true);
   });
-  it('ignores fixture writers and reader names mentioned only as text', () => {
-    expect(fileReader('fixture.test.ts', () => "import { writeFile } from 'node:fs/promises'; const text = 'readFile';")).toBe(false);
+  it.each([
+    "import { writeFile } from 'node:fs/promises'; const text = 'readFile';",
+    "import 'node:fs';",
+    "const { writeFile: readFile } = await import('node:fs/promises');",
+    "let write; ({ writeFile: write } = await import('fs'));",
+  ])('ignores filesystem imports without a reader binding: %s', source => {
+    expect(fileReader('fixture.test.ts', () => source)).toBe(false);
   });
   it('follows file reads through test helpers', () => {
     // This existing helper provides a real path for resolution; contents are supplied by the fixture.
@@ -111,6 +123,15 @@ describe('verification discovery', () => {
   it('ignores type-only helper and database imports', () => {
     expect(usesDatabase('fixture.test.ts', () => "export type { X } from '@plaingym/db/testing/database'; import { type Y } from '@plaingym/db/testing/database';")).toBe(false);
     expect(fileReader('fixture.test.ts', () => "import type { readFile } from 'node:fs';")).toBe(false);
+  });
+  it.each([['import', true], ['import type', false]])('classifies database fixtures reached by %s', (keyword, expected) => {
+    const file = resolve(root, 'example.test.ts');
+    const sources = new Map([
+      [file, `${keyword} { fixture } from './fixture.mjs';`],
+      [resolve(root, 'fixture.ts'), "import { useTestDatabase } from '@plaingym/db/testing/database';"],
+      [resolve(root, 'fixture.mjs'), 'export const fixture = {};'],
+    ]);
+    expect(usesDatabase(file, path => sources.get(path)!, path => sources.has(path))).toBe(expected);
   });
   it('resolves JavaScript fixture modules without a test-helper suffix', () => {
     const sources = new Map([['example.test.ts', "import { read } from './fixture.mjs';"],
