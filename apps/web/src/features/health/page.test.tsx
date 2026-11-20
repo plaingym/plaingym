@@ -154,6 +154,14 @@ describe('disk sizes', () => {
       expect(screen.getByText(label!).parentElement!.querySelector('dd')!.textContent).toBe(value);
     }
   });
+  it('shows one pair of rows with the uploads capacity when shared free space ties', () => {
+    const { container } = render(<HealthTiles tiles={[tile({ totalBytes: 999, availableBytes: 500 }, true, { totalBytes: 1000, availableBytes: 500 })]}/>);
+    for (const [label, value] of [['Uploads and backup staging volume capacity', '1 kB'],
+      ['Uploads and backup staging volume available', '500 B']]) {
+      expect(screen.getByText(label!).parentElement!.querySelector('dd')!.textContent).toBe(value);
+    }
+    expect(container.querySelectorAll('dt')).toHaveLength(2);
+  });
   it('moves to the next unit instead of showing 1,000 of one', () => {
     expect(bytesLabel(999)).toBe('999 B');
     expect(bytesLabel(999_950)).toBe('1 MB');

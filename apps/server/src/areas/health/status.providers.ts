@@ -135,13 +135,13 @@ export function createStatusProviders(options: StatusOptions = {}) {
       }));
       const critical = (bytes: number) => bytes < 128 * 1024 * 1024;
       const low = (volume: typeof volumes[number]['figures']) => volume.availableBytes / volume.totalBytes < 0.1 || volume.availableBytes < 1024 * 1024 * 1024;
-      // Both directories on one device with the same capacity (within 0.1%) mean one volume, so the page shows one pair
-      // of rows for it. A staging directory with its own quota on the same device reports a smaller total, so it keeps
-      // its own rows. ZFS and btrfs derive that total from used plus free, so two calls can differ by a few KB.
+      // ZFS and btrfs can report slightly different totals for the same volume. Cap the 0.1% tolerance at 64 MiB
+      // so a staging quota on a large device can still have its own rows.
       const uploads = volumes[0]!.figures, staging = volumes[1]?.figures;
       const sameFilesystem = volumes.length > 1 && BigInt(volumes[0]!.dev) === BigInt(volumes[1]!.dev) && !!staging
-        && Math.abs(uploads.totalBytes - staging.totalBytes) <= Math.max(uploads.totalBytes, staging.totalBytes) / 1000;
-      // A shared volume reports the lower free figure.
+        && Math.abs(uploads.totalBytes - staging.totalBytes)
+          <= Math.min(Math.max(uploads.totalBytes, staging.totalBytes) / 1000, 64 * 1024 * 1024);
+      // A shared volume reports the lower free figure and uses uploads on ties.
       const shared = sameFilesystem && staging && staging.availableBytes < uploads.availableBytes ? staging : uploads;
       // Keep each volume's capacity and free space together, even when both directories share a filesystem.
       const details = { uploads, backupStaging: staging ?? null, sameFilesystem };

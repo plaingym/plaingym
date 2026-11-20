@@ -229,7 +229,7 @@ describe('built-in providers', () => {
     const separate = vi.fn(async (path: string) => path === '/staging' ? 2 : 1);
     expect(await tile('disk', gymA, { env: single, device: separate })).toMatchObject({ details: { sameFilesystem: false } });
   });
-  it('treats totals within 0.1% on one device as one shared volume', async () => {
+  it('treats totals within both bounds on one device as one shared volume', async () => {
     const single = { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' };
     const shared = vi.fn(async (_path: string) => 7);
     // 100 GB and 4 KB more: ZFS or btrfs derive the total from used plus free, so two statfs calls can differ by a few KB.
@@ -249,12 +249,28 @@ describe('built-in providers', () => {
     const single = { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' };
     const shared = vi.fn(async (_path: string) => 7);
     const onePercent = vi.fn(async (path: string) => path === '/staging'
-      ? { blocks: 101_000_000, bsize: 1000, bavail: 10_000_000 }
-      : { blocks: 100_000_000, bsize: 1000, bavail: 10_000_000 });
+      ? { blocks: 5_050_000, bsize: 1000, bavail: 2_000_000 }
+      : { blocks: 5_000_000, bsize: 1000, bavail: 2_000_000 });
     expect(await tile('disk', gymA, { env: single, device: shared, disk: onePercent })).toMatchObject({
-      details: { sameFilesystem: false }, message: 'Free space: uploads 10 GB; backup staging 10 GB.',
+      details: { sameFilesystem: false }, message: 'Free space: uploads 2 GB; backup staging 2 GB.',
     });
   });
+  it.each([
+    { difference: 67_108_864, sameFilesystem: true },
+    { difference: 67_112_960, sameFilesystem: false },
+  ])('reports sameFilesystem as $sameFilesystem for a $difference-byte capacity gap on a 10 TB device',
+    async ({ difference, sameFilesystem }) => {
+      const single = { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' };
+      const uploadsTotal = 10_000_000_000_000;
+      const bsize = 4096;
+      const disk = async (path: string) => ({
+        blocks: (path === '/staging' ? uploadsTotal - difference : uploadsTotal) / bsize,
+        bsize,
+        bavail: 1_000_000_000,
+      });
+      expect(await tile('disk', gymA, { env: single, device: async () => 7, disk }))
+        .toMatchObject({ details: { sameFilesystem } });
+    });
   it('shows the lower free figure when a shared volume reports less free space in staging', async () => {
     const single = { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' };
     const shared = vi.fn(async (_path: string) => 7);
