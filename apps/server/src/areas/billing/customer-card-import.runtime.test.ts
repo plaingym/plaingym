@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { jsonInit, requestWithLength } from '../../../test/request.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -8,8 +9,11 @@ import { eq } from 'drizzle-orm';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { paymentMethods, uuidv7 } from '@plaingym/db';
-import { startRuntime } from '../../core/runtime.js';
+import { importPreviewStateSchema, importUploadSchema } from '@plaingym/shared/contracts';
+import { startRuntime, type Runtime } from '../../core/runtime.js';
 import { clock } from '../../core/clock.js';
+import { createAccountService } from '../../infra/auth/accounts.js';
+import { authConfig } from '../../infra/auth/config.js';
 import { FakePayments, type Payments } from '../../infra/payments/index.js';
 import type { StripePayments } from '../../infra/payments/stripe.js';
 import { PostgresJobs } from '../../infra/jobs/postgres.js';
@@ -18,7 +22,7 @@ import * as stripeStep from '../setup/stripe-step.js';
 import { customerCardImportJob } from './customer-card-import.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
-it('registers the import job on the batch lane and imports a household card and bank account', async () => {
+it('imports household cards and bank accounts on the batch lane and checks CSV bank accounts in preview', async () => {
   const gymId = uuidv7(); await factory('gyms', gymId, { currency: 'USD', billingEnabled: true });
   const household = await factory('households', gymId, { stripeCustomerId: 'cus_fixture' });
   const fake = new FakePayments(gymId, clock, 'synthetic-runtime-secret');
@@ -34,10 +38,16 @@ it('registers the import job on the batch lane and imports a household card and 
   });
   vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
   const directory = await mkdtemp(join(tmpdir(), 'plaingym-card-import-runtime-'));
+  let runtime: Runtime | undefined;
   try {
-    await startRuntime({ DATABASE_URL: db.appUrl, APP_ENCRYPTION_KEY: 'ab'.repeat(32),
+    const env = { DATABASE_URL: db.appUrl, APP_ENCRYPTION_KEY: 'ab'.repeat(32),
       AUTH_SECRET: 'runtime-secret-with-at-least-32-characters', TENANCY: 'single', PUBLIC_ORIGIN: 'https://gym.example.test',
-      NODE_ENV: 'production', AUTH_PASSWORD_LOGIN: 'on', UPLOADS_DIR: directory });
+      NODE_ENV: 'production', AUTH_PASSWORD_LOGIN: 'on', UPLOADS_DIR: directory };
+    const password = 'original-owner-password';
+    const owner = await createAccountService(authConfig(env), () => db.system.db)
+      .createPasswordUser(gymId, 'owner@example.test', 'Owner', password, clock);
+    await factory('staffRoles', gymId, { userId: owner.userId, role: 'owner' });
+    runtime = await startRuntime(env);
     const registered = handlers.get(customerCardImportJob);
     expect(registered).toBeDefined();
     expect(registered!.options).toMatchObject({ lane: 'batch' });
@@ -54,5 +64,45 @@ it('registers the import job on the batch lane and imports a household card and 
     expect(imported).toEqual(expect.arrayContaining([
       card, expect.objectContaining({ processorId: 'pm_bank', type: 'us_bank_account', bankName: 'Test bank', last4: '1234', isDefault: false }),
     ]));
-  } finally { vi.restoreAllMocks(); await rm(directory, { recursive: true, force: true }); }
+
+    fake.seedCustomer({ id: 'cus_csv', email: 'csv@example.test', gymId: null });
+    fake.recordPaymentMethod({ id: 'pm_canadian', customerId: 'cus_csv', type: 'acss_debit', last4: '4321' });
+    const { app } = runtime;
+    const origin = env.PUBLIC_ORIGIN;
+    const headers = { host: 'gym.example.test', origin };
+    const login = jsonInit({ email: 'owner@example.test', password });
+    const session = await app.request(origin + '/api/auth/sign-in/email', {
+      ...login, method: 'POST', headers: { ...headers, ...login.headers },
+    });
+    expect(session.status, await session.clone().text()).toBe(200);
+    const cookie = session.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
+    const form = new FormData();
+    form.set('file', new File([
+      'First Name,Last Name,Stripe Customer ID,Stripe Payment Method ID\nTest,Imported,cus_csv,pm_canadian\n',
+    ], 'people.csv'));
+    const uploaded = await app.request(await requestWithLength(origin + '/api/imports/uploads', {
+      method: 'POST', headers: { ...headers, cookie }, body: form,
+    }));
+    expect(uploaded.status, await uploaded.clone().text()).toBe(200);
+    const upload = importUploadSchema.parse((await uploaded.json()).data);
+    const plan = jsonInit({ uploadId: upload.id, mapper: 'people', duplicatePolicy: 'error', mapping: [
+      { sourceColumn: 'First Name', targetField: 'firstName' },
+      { sourceColumn: 'Last Name', targetField: 'lastName' },
+      { sourceColumn: 'Stripe Customer ID', targetField: 'stripeCustomerId' },
+      { sourceColumn: 'Stripe Payment Method ID', targetField: 'stripePaymentMethodId' },
+    ] });
+    const requested = await app.request(origin + '/api/imports/preview', {
+      ...plan, method: 'POST', headers: { ...headers, cookie, ...plan.headers },
+    });
+    expect(requested.status, await requested.clone().text()).toBe(200);
+    const preview = importPreviewStateSchema.parse(await requested.json());
+    if (!('id' in preview)) throw new Error('A new upload should start a new preview');
+    const path = '/api/imports/uploads/' + upload.id + '/previews/' + preview.id;
+    await expect.poll(async () => (await (await app.request(origin + path, { headers: { ...headers, cookie } })).json()))
+      .toMatchObject({ status: 'ready', preview: { summary: { errors: 1 }, data: [{ rowNumber: 2, action: 'error' }] } });
+  } finally {
+    await runtime?.stop();
+    vi.restoreAllMocks();
+    await rm(directory, { recursive: true, force: true });
+  }
 });

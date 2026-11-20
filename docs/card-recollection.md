@@ -76,24 +76,25 @@ address, or invite its payer to the portal.
 
 ## Cards already in your Stripe account
 
-If your old system used **your own Stripe account** (the one connected here), the
-cards may already exist:
+If your old system used **your own Stripe account** (the one connected here),
+you may be able to reuse its saved cards and compatible bank accounts:
 
 * Map **Stripe customer ID** and **Stripe payment method ID** columns in the people
-  import ([importing.md](importing.md)). Imported IDs are kept as given, and a
-  household with an imported card counts as having one.
+  import. A usable imported default counts toward the *Saved cards* check.
+  The [import guide](importing.md) explains the currency and mandate checks for bank accounts.
 * Without those columns, customers created by another system are **not** matched by
-  email, even when the address is identical, and their cards aren't reused. Only
+  email, even when the address is identical, and their payment methods aren't reused. Only
   customers PlainGym itself tagged for your gym are matched. Opening a link then
   creates a new customer.
 
 ## Afterwards
 
-Staff with payment collection permission can import attached cards from the linked,
-gym-tagged Stripe customer on a member's **Invoices** tab or in invoice details.
+Staff with payment collection permission can import attached cards and compatible
+bank accounts from the linked, gym-tagged Stripe customer on a member's
+**Invoices** tab or in invoice details.
 Choose **Import cards from Stripe**, then **Refresh payment methods** after the background
 import finishes. Both views let staff make a payment method default or remove it, including
-before the first invoice. Import outcomes and skipped cards appear in the audit trail.
+before the first invoice. The audit trail records import outcomes and skipped payment methods.
 
 Removing a default payment method promotes the newest remaining method with no expiry
 or whose stored expiry has not passed in the gym's timezone. Methods are ordered by processor creation time

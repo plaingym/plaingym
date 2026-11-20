@@ -328,12 +328,12 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   configurePublicStaffNotices(publicNotices);
   // The public drop-in page shows the price of the charge type the gym chose in settings.
   configurePublicPages({ clock, waivers, uploadsFor: uploads.forGym, notifyStaff: publicNotices.publish, dropInFeeFor: createDropInFee() });
-  const importPipeline = createImportPipeline({ uploadsFor: uploads.forGym, jobs: queue, clock });
+  // Normal installs use stored gym credentials; sandboxes resolve the shared test account.
+  const paymentsFor = demo?.payments.paymentsFor ?? createPaymentsResolver({ key, clock });
+  const importPipeline = createImportPipeline({ uploadsFor: uploads.forGym, jobs: queue, clock, paymentsFor });
   const exportService = createExportService({ uploadsFor: uploads.forGym, jobs: queue, clock });
   // Setup step 8 finishes with a committed run from this pipeline.
   configureImportStep({ imports: importPipeline, clock });
-  // Normal installs use stored gym credentials; sandboxes resolve the shared test account.
-  const paymentsFor = demo?.payments.paymentsFor ?? createPaymentsResolver({ key, clock });
   const restoreCheckLease = createRestoreCheckLease(() => env.DATABASE_URL);
   configureGoLive({ clock, smtpConfigured, restoreCheckLease, smsConfigured: gymId => smsResolver.configured(gymId),
     smsStatus: gymId => smsResolver.status(gymId), paymentsConfigured: async gymId => Boolean(await paymentsFor(gymId)) });
