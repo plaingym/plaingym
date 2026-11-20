@@ -81,13 +81,17 @@ export function shardNumbers(value = process.env.E2E_SHARD_COUNT ?? readFileSync
 const fixtureDurations = new Map([['members-mat', 1_000], ['multi-gym', 11_000]]);
 
 // Milliseconds summed per file from End-to-end run 43987782721, with the first
-// single-gym and multi-gym fixture setup costs subtracted where they ran.
+// single-gym and multi-gym fixture setup costs subtracted where they ran, except
+// where a line below names another run.
 // Refresh from results.json and the shard blobs when the suite changes materially.
 // New files use a conservative 20s estimate.
 export const fileDurations = {
   'account-email.spec.ts': 4757, 'card-removal.spec.ts': 2688, 'customer-card-import.spec.ts': 6605,
   'demo-join.spec.ts': 56153, 'discount-screens.spec.ts': 27015, 'health-backups.spec.ts': 9251,
-  'intake-retry.spec.ts': 1340, 'long-names.spec.ts': 25120, 'mobile-admin-phone.spec.ts': 15132,
+  'intake-retry.spec.ts': 1340, 'long-names.spec.ts': 25120,
+  // End-to-end run 44655594877, shard 4: the spec's two tests, one passing first attempt each
+  // (32250 + 1505 ms, no retries), with no shared setup inside them to subtract.
+  'mobile-admin-phone.spec.ts': 33755,
   'mobile-public.spec.ts': 15874, 'portal-home.spec.ts': 3172, 'responsive.spec.ts': 1081,
   'settings-dashboard.spec.ts': 16057, 'sign-in-limits.spec.ts': 1037, 'website-branding.spec.ts': 2728,
   '../multi/flows.spec.ts': 27486, '../multi/isolation-beta-alpha-1.spec.ts': 8135,
