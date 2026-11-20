@@ -123,6 +123,7 @@ it('filters unknown datasets in legacy export manifests before reading or stream
   expect(exportJobSchema.parse(await exports.get(gymId, id)).datasets).toEqual(['members']);
   await exports.run(gymId, id);
   expect(exportJobSchema.parse(await exports.get(gymId, id))).toMatchObject({ status: 'succeeded', datasets: ['members'] });
+  expect((await store.get<ExportJob>(gymId, key('finished.json'))).datasets).toEqual(['members']);
   const raw = await new Response(await storage.get(key('export.zip'))).text();
   expect(raw).toContain('members.csv');
   expect(raw).not.toContain('unknown_dataset.csv');
@@ -133,4 +134,24 @@ it('filters unknown datasets in legacy export manifests before reading or stream
     completedAt: clock.now().toISOString(), downloadUrl: 'https://uploads.invalid/legacy.zip',
     expiresAt: new Date(clock.now().getTime() + 3600_000).toISOString() });
   expect(exportJobSchema.parse(await exports.get(gymId, other)).datasets).toEqual(['members']);
+});
+
+it('fails a legacy export manifest with no dataset this release can write, without an archive', async () => {
+  const { gymId, clock, store, storage, options } = await fixture(), id = uuidv7();
+  const message = 'This export lists no data this version can export.';
+  const job: ExportJob = { id, datasets: ['unknown_dataset', 'toString'] as unknown as ExportJob['datasets'], status: 'pending',
+    createdAt: clock.now().toISOString(), completedAt: null, downloadUrl: null, expiresAt: null };
+  const key = (file: string) => store.key(gymId, 'exports', id, file), exports = createExportService(options);
+  await store.put(gymId, key('pending.json'), job);
+  await exports.run(gymId, id);
+  expect(await store.get<ExportJob & { message?: string }>(gymId, key('finished.json')))
+    .toMatchObject({ status: 'failed', datasets: [], completedAt: expect.any(String), message });
+  expect(await storage.head(key('export.zip'))).toBeNull();
+  await expect(exports.get(gymId, id)).rejects.toMatchObject({ code: 'conflict', message });
+  // A manifest an older release finished with an empty archive also reads as a failed request, not an empty job.
+  const older = uuidv7();
+  await store.put(gymId, store.key(gymId, 'exports', older, 'finished.json'), { ...job, id: older, status: 'succeeded',
+    completedAt: clock.now().toISOString(), downloadUrl: 'https://uploads.invalid/legacy.zip',
+    expiresAt: new Date(clock.now().getTime() + 3600_000).toISOString() });
+  await expect(exports.get(gymId, older)).rejects.toMatchObject({ code: 'conflict', message });
 });

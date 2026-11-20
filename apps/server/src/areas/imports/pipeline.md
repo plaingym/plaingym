@@ -192,8 +192,13 @@ transactions, and stream an uncompressed ZIP with one CSV per dataset. Empty
 datasets still have headers. Saved manifests retain their dataset order. Dataset
 names unknown to the running release are omitted from the archive and returned
 manifest, so queued exports can finish after a rollback to a release with a
-smaller catalog. Rows created after the request are excluded; individual pages
-are read at their query time, so the archive is not a database
+smaller catalog. Completion stores that filtered list with the run, in the
+database row and in a legacy finished manifest, so a later roll-forward still
+reports only the datasets its archive holds. When no saved dataset is known, the
+run fails before an archive is written with "This export lists no data this
+version can export."; reading it reports that failure instead of returning a
+manifest without datasets. Rows created after the request are excluded;
+individual pages are read at their query time, so the archive is not a database
 snapshot. CSV string formulas are escaped for spreadsheet safety. Encrypted
 fields, credential hashes, audit before/after payloads, processor error text and
 email subject/body fields are excluded. Audit and email metadata remain present.

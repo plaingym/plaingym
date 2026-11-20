@@ -14,6 +14,8 @@ import { archiveStream, type ArchiveEntry } from './export.zip.js';
 export const EXPORT_JOB = 'imports.export';
 export const EXPORT_EXPIRY_JOB = 'imports.export.expire';
 const DOWNLOAD_LIFETIME = 60 * 60;
+/** A failed export has no dataset list a client can act on, so it is reported as a failed request instead. */
+export const EMPTY_EXPORT_MESSAGE = t('imports/export:empty');
 /** A saved manifest can come from a release with a larger catalog. Keep its supported subset in manifest order. */
 function supportedJob(job: ExportJob): ExportJob {
   return { ...job, datasets: job.datasets.filter(name => Object.hasOwn(exportCatalog, name)) };
@@ -22,6 +24,10 @@ function exportJob(row: typeof exportRuns.$inferSelect): ExportJob {
   return supportedJob({ id: row.id, status: row.status, datasets: row.datasets, createdAt: row.createdAt.toISOString(),
     completedAt: row.completedAt?.toISOString() ?? null, downloadUrl: row.downloadUrl, expiresAt: row.expiresAt?.toISOString() ?? null });
 }
+function exportable(job: ExportJob): ExportJob {
+  if (!job.datasets.length) throw new AppError('conflict', EMPTY_EXPORT_MESSAGE);
+  return job;
+}
 export function createExportService(options: { uploadsFor: UploadsFor; jobs: Jobs; scope?: typeof forGym; clock?: Clock }) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock, store = new PipelineStore(options.uploadsFor);
   const key = (gymId: string, id: string, file: string) => store.key(gymId, 'exports', id, file);
@@ -29,10 +35,15 @@ export function createExportService(options: { uploadsFor: UploadsFor; jobs: Job
   const findRun = (gymId: string, id: string) => scope(gymId, async (tx) =>
     (await tx.select().from(exportRuns).where(whereRun(gymId, id)))[0]);
   async function finish(gymId: string, job: ExportJob, stored: boolean, expected: 'pending' | 'running' = 'running') {
-    if (!stored) { await store.put(gymId, key(gymId, job.id, 'finished.json'), job); return true; }
-    const changed = await scope(gymId, (tx) => tx.update(exportRuns).set({ status: job.status, updatedAt: clock.now(),
-      completedAt: job.completedAt ? new Date(job.completedAt) : null, downloadUrl: job.downloadUrl,
-      expiresAt: job.expiresAt ? new Date(job.expiresAt) : null })
+    const filtered = supportedJob(job);
+    if (!stored) {
+      await store.put(gymId, key(gymId, job.id, 'finished.json'),
+        filtered.datasets.length ? filtered : { ...filtered, message: EMPTY_EXPORT_MESSAGE });
+      return true;
+    }
+    const changed = await scope(gymId, (tx) => tx.update(exportRuns).set({ status: filtered.status, datasets: filtered.datasets,
+      updatedAt: clock.now(), completedAt: filtered.completedAt ? new Date(filtered.completedAt) : null, downloadUrl: filtered.downloadUrl,
+      expiresAt: filtered.expiresAt ? new Date(filtered.expiresAt) : null })
       .where(and(whereRun(gymId, job.id), eq(exportRuns.status, expected))).returning({ id: exportRuns.id }));
     return changed.length > 0;
   }
@@ -94,14 +105,14 @@ export function createExportService(options: { uploadsFor: UploadsFor; jobs: Job
         const job = exportJob(row);
         if (job.expiresAt && Date.parse(job.expiresAt) <= clock.now().getTime())
           throw new AppError('not_found', t('imports/export:expired'));
-        return job;
+        return exportable(job);
       }
       for (const state of ['finished', 'running', 'pending']) {
         if (await store.exists(gymId, key(gymId, id, state + '.json'))) {
-          const job = await store.get<ExportJob>(gymId, key(gymId, id, state + '.json'));
+          const job = supportedJob(await store.get<ExportJob>(gymId, key(gymId, id, state + '.json')));
           if (job.expiresAt && Date.parse(job.expiresAt) <= clock.now().getTime())
             throw new AppError('not_found', t('imports/export:expired'));
-          return supportedJob(job);
+          return exportable(job);
         }
       }
       throw new AppError('not_found', t('imports/pipeline:notFound'));
@@ -116,6 +127,10 @@ export function createExportService(options: { uploadsFor: UploadsFor; jobs: Job
       } else {
         if (!(await store.claim(gymId, key(gymId, id, 'claim.json')))) return;
         await store.put(gymId, key(gymId, id, 'running.json'), { ...job, status: 'running' });
+      }
+      if (!job.datasets.length) {
+        await finish(gymId, { ...job, status: 'failed', completedAt: clock.now().toISOString() }, !!row);
+        return;
       }
       const uploads = await options.uploadsFor(gymId), archiveKey = key(gymId, id, 'export.zip');
       try {

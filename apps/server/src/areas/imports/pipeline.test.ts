@@ -211,9 +211,13 @@ describe('full CSV exports', () => {
     expect(exportJobSchema.parse(await exports.get(gymA, job.id)).datasets).toEqual(['members', 'households']);
     await jobs.runNext();
     expect(exportJobSchema.parse(await exports.get(gymA, job.id))).toMatchObject({ status: 'succeeded', datasets: ['members', 'households'] });
+    expect(await database.forGym(gymA, (tx) => tx.select({ datasets: exportRuns.datasets }).from(exportRuns).where(eq(exportRuns.id, job.id))))
+      .toEqual([{ datasets: ['members', 'households'] }]);
     const raw = await new Response(await (await uploadsFor(gymA)).get(`${gymA}/imports/exports/${job.id}/export.zip`)).text();
     for (const name of ['members', 'households']) expect(raw).toContain(name + '.csv');
     for (const name of ['future_dataset', 'toString', '__proto__']) expect(raw).not.toContain(name + '.csv');
+    const audits = await database.forGym(gymA, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.targetId, job.id)));
+    expect(audits).toMatchObject([{ action: 'exports.requested', after: { datasets: exportDatasets.length } }]);
   });
   it('finishes a pending export with its saved manifest across a catalog upgrade', async () => {
     const { exports, jobs } = services(), job = await exports.create(actor, 'UTC');
@@ -224,10 +228,26 @@ describe('full CSV exports', () => {
     await jobs.runNext();
     const finished = exportJobSchema.parse(await exports.get(gymA, job.id));
     expect(finished).toMatchObject({ status: 'succeeded', datasets });
+    expect(await database.forGym(gymA, (tx) => tx.select({ datasets: exportRuns.datasets }).from(exportRuns).where(eq(exportRuns.id, job.id))))
+      .toEqual([{ datasets }]);
     const storage = await uploadsFor(gymA);
     const raw = await new Response(await storage.get(`${gymA}/imports/exports/${job.id}/export.zip`)).text();
     for (const dataset of datasets) expect(raw).toContain(dataset + '.csv');
     for (const dataset of ['announcements', 'announcement_opt_outs', 'leads', 'lead_contacts']) expect(raw).not.toContain(dataset + '.csv');
+  });
+  it('fails an export with no dataset this release can write before writing an archive', async () => {
+    const { exports, jobs } = services(), job = await exports.create(actor, 'UTC');
+    const message = 'This export lists no data this version can export.';
+    // Simulate a saved manifest written by a later release whose datasets this one has no selector for.
+    await database.forGym(gymA, tx => tx.update(exportRuns).set({ datasets: ['future_dataset', 'toString'] as unknown as typeof job.datasets })
+      .where(eq(exportRuns.id, job.id)));
+    await jobs.runNext();
+    expect(await database.forGym(gymA, (tx) => tx.select().from(exportRuns).where(eq(exportRuns.id, job.id))))
+      .toMatchObject([{ status: 'failed', datasets: [], downloadUrl: null, expiresAt: null, completedAt: expect.any(Date) }]);
+    const storage = await uploadsFor(gymA);
+    expect(await storage.head(`${gymA}/imports/exports/${job.id}/export.zip`)).toBeNull();
+    expect(await storage.list(`${gymA}/imports/exports/${job.id}/`)).toEqual([]);
+    await expect(exports.get(gymA, job.id)).rejects.toMatchObject({ code: 'conflict', message });
   });
   it('exports all datasets and excludes other gyms, credentials, and nested secret carriers', async () => {
     const b = await factory('members', gymB, { firstName: 'OTHER_GYM_PRIVATE' });
@@ -322,6 +342,13 @@ describe('HTTP permissions and gym isolation', () => {
     expect((await mismatch.request('/api/imports/uploads', { method: 'POST', body: form })).status).toBe(404);
     for (const path of ['/api/imports/preview', '/api/imports', '/api/exports']) expect((await post(mismatch, path, {})).status).toBe(404);
     for (const path of [`/api/imports/${run.id}`, `/api/imports/${run.id}/errors`, `/api/exports/${exported.id}`, previewPath]) expect((await mismatch.request(path)).status).toBe(404);
+  });
+  it('answers an export with no supported datasets as a failed request instead of a server error', async () => {
+    const message = 'This export lists no data this version can export.';
+    const run = await factory('exportRuns', gymA, { status: 'failed', datasets: [], completedAt: clock.now(), updatedAt: clock.now() });
+    const response = await server('owner').request(`/api/exports/${run.id}`);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: 'conflict', message } });
   });
 });
 describe('OpenAPI documentation for composed routes', () => {
