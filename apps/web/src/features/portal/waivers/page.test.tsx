@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { WaiverTemplate } from '@plaingym/shared/contracts';
 import { SignWaiver } from './page.js';
@@ -30,4 +31,20 @@ it('keeps the signature pad dark ink on white in either theme', () => {
   const canvas = document.querySelector('canvas');
   expect(canvas).not.toBeNull();
   expect(canvas!.classList.contains('bg-white')).toBe(true);
+});
+
+it('asks before discarding a started signature through the dialog Close button', async () => {
+  const close = vi.fn(), user = userEvent.setup();
+  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <SignWaiver template={template} member={member} minor={false} endpoints={{} as PortalWaiverEndpoints} scope={scope}
+      close={close} saved={async () => undefined} />
+  </QueryClientProvider>);
+  const dialog = screen.getByRole('dialog'), form = within(dialog), signer = form.getByLabelText('Your full name');
+  await user.type(signer, 'Ava Chen');
+  await user.click(form.getAllByRole('button', { name: 'Close' }).at(-1)!);
+  expect(form.getByText('Discard your unsaved changes?')).toBeDefined();
+  expect(close).not.toHaveBeenCalled();
+  await user.click(form.getByRole('button', { name: 'Keep editing' }));
+  expect((signer as HTMLInputElement).value).toBe('Ava Chen');
+  expect(screen.getByRole('dialog')).toBe(dialog);
 });

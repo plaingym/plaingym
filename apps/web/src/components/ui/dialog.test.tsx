@@ -3,7 +3,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { useRef } from 'react';
-import { Dialog, DialogRecoveryContext, useDialogOperation, useDialogSaved } from './dialog.js';
+import { Dialog, DialogCancel, DialogRecoveryContext, useDialogOperation, useDialogSaved } from './dialog.js';
 
 afterEach(cleanup);
 it('owns suspension, preserving only dialog scroll and focus, and keeps a new dialog closed until recovery ends', () => {
@@ -90,6 +90,34 @@ it('supports Escape and protects unsaved work with an inline confirmation', () =
   expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Keep editing' }));
   fireEvent.click(screen.getByRole('button', { name: 'Keep editing' })); expect(document.activeElement).toBe(input);
   backdrop(); fireEvent.click(screen.getByRole('button', { name: 'Discard changes' })); expect(close).toHaveBeenCalledOnce();
+});
+it('routes a cancel button through the same unsaved-work guard and keeps edits when staying', () => {
+  const close = vi.fn();
+  render(<Dialog title="Edit" closeLabel="Close" onClose={close}><input aria-label="Name" /><DialogCancel>Cancel</DialogCancel></Dialog>);
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Draft' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(close).not.toHaveBeenCalled(); expect(screen.getByText('Discard your unsaved changes?')).toBeDefined();
+  fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+  expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('Draft');
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }));
+  expect(close).toHaveBeenCalledOnce();
+});
+it('returns focus to the edited field after a second Cancel click and Keep editing', () => {
+  render(<Dialog title="Edit" closeLabel="Close" onClose={vi.fn()}><input aria-label="Name" /><DialogCancel>Cancel</DialogCancel></Dialog>);
+  const input = screen.getByRole('textbox') as HTMLInputElement;
+  input.focus(); fireEvent.change(input, { target: { value: 'Draft' } });
+  const cancel = screen.getByRole('button', { name: 'Cancel' });
+  fireEvent.click(cancel);
+  cancel.focus(); fireEvent.click(cancel);
+  fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+  expect(document.activeElement).toBe(input);
+});
+it('closes at once from a cancel button when nothing changed', () => {
+  const close = vi.fn();
+  render(<Dialog title="Edit" closeLabel="Close" onClose={close}><DialogCancel>Cancel</DialogCancel></Dialog>);
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(close).toHaveBeenCalledOnce(); expect(screen.queryByRole('alert')).toBeNull();
 });
 it('blocks Escape, backdrop and close during operations, then permits dismissal', () => {
   const close = vi.fn();

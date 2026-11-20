@@ -6,7 +6,7 @@ import { localDate } from '@plaingym/shared/time';
 import { ApiError } from '../../lib/api.js';
 import { Alert } from '../../components/ui/alert.js';
 import { Button } from '../../components/ui/button.js';
-import { Dialog } from '../../components/ui/dialog.js';
+import { Dialog, DialogCancel } from '../../components/ui/dialog.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { Select, Textarea } from '../../components/ui/select.js';
@@ -67,7 +67,7 @@ export function BookDialog({ lead, client, timezone, onClose, onDone }: DialogPr
       {!loading && !error && sessions.length === 0 && <p className="text-sm">{text('noSessions')}</p>}
       <div className="flex flex-wrap gap-2">
         <Button type="submit" className="w-full sm:w-auto" disabled={saving || loading || !session}>{text('book')}</Button>
-        <Button type="button" variant="outline" className="w-full sm:w-auto" disabled={saving} onClick={onClose}>{text('cancel')}</Button>
+        <DialogCancel variant="outline" className="w-full sm:w-auto" disabled={saving}>{text('cancel')}</DialogCancel>
       </div>
     </form>
   </Dialog>;
@@ -92,7 +92,7 @@ export function LostDialog({ lead, client, onClose, onDone }: DialogProps) {
         <Textarea id={id + '-reason'} required value={reason} disabled={saving} onChange={event => setReason(event.target.value)} /></div>
       <div className="flex flex-wrap gap-2">
         <Button type="submit" variant="destructive" className="w-full sm:w-auto" disabled={saving || !reason.trim()}>{text('lost')}</Button>
-        <Button type="button" variant="outline" className="w-full sm:w-auto" disabled={saving} onClick={onClose}>{text('cancel')}</Button>
+        <DialogCancel variant="outline" className="w-full sm:w-auto" disabled={saving}>{text('cancel')}</DialogCancel>
       </div>
     </form>
   </Dialog>;

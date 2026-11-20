@@ -36,6 +36,17 @@ it('shows unsigned state and guardian fields after reviewing the exact current t
   expect(within(dialog).getByLabelText('Relationship to member')).toBeTruthy();
   expect(within(dialog).getByLabelText('I have read this text and agree to sign it electronically.').hasAttribute('required')).toBe(true);
 });
+it('asks before discarding a started signature through the dialog Close button', async () => {
+  const f = fixture(), user = userEvent.setup(); mount(<MemberWaivers gymId="gym" memberId={template.id} manage client={f.client} />);
+  await user.click(await screen.findByRole('button', { name: 'Review and sign' }));
+  const dialog = screen.getByRole('dialog'), form = within(dialog), signer = form.getByLabelText('Signer’s full name');
+  await user.type(signer, 'Daniel Chen');
+  await user.click(form.getAllByRole('button', { name: 'Close' }).at(-1)!);
+  expect(form.getByText('Discard your unsaved changes?')).toBeDefined();
+  await user.click(form.getByRole('button', { name: 'Keep editing' }));
+  expect((signer as HTMLInputElement).value).toBe('Daniel Chen');
+  expect(screen.getByRole('dialog')).toBe(dialog);
+});
 it('shows the publication validation message and keeps the unsupported draft editable', async () => {
   const f = fixture(), user = userEvent.setup(), original = f.fetcher.getMockImplementation()!;
   f.fetcher.mockImplementation((url, init) => init?.method === 'POST'

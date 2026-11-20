@@ -4,7 +4,7 @@ import type { Rank, CreateRankRequest } from '@plaingym/shared/contracts';
 import { t } from '../../lib/i18n.js';
 import { useDraft } from '../../lib/use-draft.js';
 import { Button } from '../../components/ui/button.js';
-import { Dialog, DialogActions } from '../../components/ui/dialog.js';
+import { Dialog, DialogActions, DialogCancel } from '../../components/ui/dialog.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { CheckboxField } from '../../components/ui/select.js';
@@ -75,10 +75,7 @@ export function RankEditor({ rank, rankSystemId, nextPosition, busy, create, upd
           {(rank?.criteria ?? []).filter((criterion) => !coreCriteria.some((core) => core.id === criterion.providerId)).map((criterion, index) =>
             <p key={index} className="text-sm">{text('moduleCriterion')}: {criterion.providerId}</p>)}
         </fieldset>
-        <DialogActions><Button type="submit">{text('save')}</Button><Button variant="outline" onClick={event => {
-          // Use the dialog's guarded cancellation path, just like Escape and its close button.
-          event.currentTarget.closest('dialog')?.dispatchEvent(new Event('cancel', { cancelable: true }));
-        }}>{text('cancel')}</Button></DialogActions>
+        <DialogActions><Button type="submit">{text('save')}</Button><DialogCancel variant="outline">{text('cancel')}</DialogCancel></DialogActions>
       </fieldset>
     </form>
   </Dialog>;

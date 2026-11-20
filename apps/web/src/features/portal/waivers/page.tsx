@@ -9,7 +9,7 @@ import { t } from '../../../lib/i18n.js';
 import { ApiError } from '../../../lib/api.js';
 import { Button } from '../../../components/ui/button.js';
 import { Alert } from '../../../components/ui/alert.js';
-import { Dialog } from '../../../components/ui/dialog.js';
+import { Dialog, DialogCancel } from '../../../components/ui/dialog.js';
 import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
 import { CheckboxField } from '../../../components/ui/select.js';
@@ -127,7 +127,7 @@ export function SignWaiver({ template, member, minor, endpoints, scope, close, s
         <Button type="button" variant="outline" disabled={busy} onClick={() => { canvas.current?.getContext('2d')?.clearRect(0, 0, 600, 180); hasInk.current = false; reset(); }}>{text('clear')}</Button></>}
       {typed && <canvas ref={canvas} width={600} height={180} className="hidden" aria-hidden="true" />}
       <CheckboxField label={template.document ? t('waivers/waivers:documentConsent') : text('consent')} required />
-      <div className="flex flex-wrap gap-3"><Button type="submit" disabled={busy || !!template.document && !document.data}>{text('sign')}</Button><Button type="button" variant="outline" disabled={busy} onClick={close}>{text('close')}</Button></div>
+      <div className="flex flex-wrap gap-3"><Button type="submit" disabled={busy || !!template.document && !document.data}>{text('sign')}</Button><DialogCancel variant="outline" disabled={busy}>{text('close')}</DialogCancel></div>
     </form>
   </Dialog>;
 }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { createContext, useContext, useEffect, useLayoutEffect, useId, useRef, useState, type Dispatch, type SetStateAction, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useLayoutEffect, useId, useRef, useState, type ComponentProps, type Dispatch, type SetStateAction, type ReactNode } from 'react';
 import { t } from '../../lib/i18n.js';
 import { cn } from '../../lib/utils.js';
 import { Button } from './button.js';
@@ -7,10 +7,16 @@ import { userNames } from './page.js';
 import { CloseIcon } from './icons.js';
 const OperationContext = createContext<Dispatch<SetStateAction<number>> | undefined>(undefined);
 const DraftContext = createContext<((form?: HTMLFormElement) => void) | undefined>(undefined);
+const CancelContext = createContext<(() => void) | undefined>(undefined);
 
 /** Keep a long dialog's actions visible inside its single scrolling body. */
 export function DialogActions({ children, className }: { children: ReactNode; className?: string }) {
   return <div className={cn('sticky bottom-0 z-10 flex flex-col gap-3 border-t border-border bg-background py-3 sm:flex-row sm:flex-wrap', className)}>{children}</div>;
+}
+/** A Cancel or Close button that asks through the dialog's guarded dismissal, so edits are not discarded silently. */
+export function DialogCancel({ onClick, ...props }: ComponentProps<typeof Button>) {
+  const requestClose = useContext(CancelContext);
+  return <Button {...props} onClick={event => { onClick?.(event); if (!event.defaultPrevented) requestClose?.(); }} />;
 }
 /** Temporarily release modal focus containment while the containing page recovers. */
 export const DialogRecoveryContext = createContext<{ suspended: boolean; notice?: ReactNode; registerDialog?: () => () => void }>({ suspended: false });
@@ -46,7 +52,7 @@ export function Dialog({ title, description, closeLabel, onClose, size = 'defaul
     if (!dismissible || busy) return;
     // Saved or discarded subviews unmount their fields. They no longer contain a draft.
     for (const field of dirty.current) if (!ref.current?.contains(field)) dirty.current.delete(field);
-    if (dirty.current.size || unsavedChanges) { dismissOrigin.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setConfirm(true); }
+    if (dirty.current.size || unsavedChanges) { if (!confirm) dismissOrigin.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setConfirm(true); }
     else onClose();
   }
   useEffect(() => { if (confirm) keep.current?.focus(); }, [confirm]);
@@ -118,7 +124,7 @@ export function Dialog({ title, description, closeLabel, onClose, size = 'defaul
             <Button variant="destructive" disabled={!dismissible || busy > 0} onClick={onClose}>{t('shell/shell:discard')}</Button>
           </div>
         </div>}
-        <OperationContext.Provider value={setBusy}><DraftContext.Provider value={saved}>{children}</DraftContext.Provider></OperationContext.Provider>
+        <CancelContext.Provider value={requestClose}><OperationContext.Provider value={setBusy}><DraftContext.Provider value={saved}>{children}</DraftContext.Provider></OperationContext.Provider></CancelContext.Provider>
       </div>
     </div>
   </dialog>;

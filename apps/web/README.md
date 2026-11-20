@@ -125,6 +125,7 @@ API:
 | `Autocomplete` | One searchable selection input; keyboard arrows, Enter and Escape, selected label, loading/empty feedback; suggestions flow within scrollable dialogs |
 | `TableContainer`, `StackedList`, `StackedItem` | Wide tables and their phone layout |
 | `Dialog` | A modal open while mounted: full screen on phones, a centered panel from `sm` (`size="wide"` for more room); Escape, the backdrop and close button request dismissal, with inline confirmation for changed inputs; focus returns to the opener. Use `dismissible={false}` or `useDialogOperation` during operations. |
+| `DialogCancel` | A Cancel or Close button inside a `Dialog`; its click uses the dialog's guarded dismissal, so it asks before discarding changed inputs like Escape and the close button. |
 | `DialogActions` | Sticky actions within a dialog's scrolling body; keep them inside their form so native submission and validation still work |
 | `Pager` | Previous/Next for a list, hidden on one page; supply offset, total, limit and onChange, plus disabled during an operation |
 

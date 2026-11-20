@@ -299,6 +299,22 @@ describe('book a trial class', () => {
     finish({});
     expect(await screen.findByText('Trial class booked.')).toBeDefined();
   });
+  it('asks before discarding a chosen booking through Cancel, and keeps the choice when staying', async () => {
+    const client = fixture(sample()); const dialog = await openBooking(client);
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(within(dialog).getByText('Discard your unsaved changes?')).toBeDefined();
+    expect(client.book).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Keep editing' }));
+    expect(screen.getByRole('dialog')).toBe(dialog);
+    expect((within(dialog).getByLabelText('Upcoming class') as HTMLSelectElement).value).toBe(session.id);
+  });
+  it('closes an unedited booking dialog at once through Cancel', async () => {
+    const client = fixture(sample()); mount(client); await screen.findByText('Lead No1');
+    await userEvent.click(within(card('Lead No1')).getByRole('button', { name: 'Book a trial class for Lead No1' }));
+    const dialog = await screen.findByRole('dialog');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).toBeNull(); expect(client.book).not.toHaveBeenCalled();
+  });
   it('says when no class can be booked on the chosen date', async () => {
     const client = fixture(sample()); client.sessions.mockResolvedValue([]); mount(client);
     await screen.findByText('Lead No1');
@@ -310,6 +326,25 @@ describe('book a trial class', () => {
 });
 
 describe('mark lost and reopen', () => {
+  it('asks before discarding an edited lost reason through Cancel, and keeps edits when staying', async () => {
+    const client = fixture(sample()); mount(client); await screen.findByText('Lead No2');
+    await userEvent.click(within(card('Lead No2')).getByRole('button', { name: 'Mark lost: Lead No2' }));
+    const dialog = await screen.findByRole('dialog'), reason = within(dialog).getByLabelText('Reason');
+    fireEvent.change(reason, { target: { value: 'Moved away' } });
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(within(dialog).getByText('Discard your unsaved changes?')).toBeDefined();
+    expect(client.lost).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Keep editing' }));
+    expect((reason as HTMLTextAreaElement).value).toBe('Moved away');
+    expect(screen.getByRole('dialog')).toBe(dialog);
+  });
+  it('closes an unedited lost dialog at once through Cancel', async () => {
+    const client = fixture(sample()); mount(client); await screen.findByText('Lead No2');
+    await userEvent.click(within(card('Lead No2')).getByRole('button', { name: 'Mark lost: Lead No2' }));
+    const dialog = await screen.findByRole('dialog');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).toBeNull(); expect(client.lost).not.toHaveBeenCalled();
+  });
   it('counts a lost reason in code points and allows 500 emoji', async () => {
     const client = fixture(sample()); mount(client); await screen.findByText('Lead No2');
     await userEvent.click(within(card('Lead No2')).getByRole('button', { name: 'Mark lost: Lead No2' }));

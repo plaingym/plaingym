@@ -9,7 +9,7 @@ import { useBootstrap } from '../../../app/context.js';
 import { t } from '../../../lib/i18n.js';
 import { Button } from '../../../components/ui/button.js';
 import { Alert } from '../../../components/ui/alert.js';
-import { Dialog } from '../../../components/ui/dialog.js';
+import { Dialog, DialogCancel } from '../../../components/ui/dialog.js';
 import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
 import { Card } from '../../../components/ui/card.js';
@@ -171,7 +171,7 @@ function EditMember({ member, scope, close }: { member: PortalMember; scope: Por
         <Button type="button" variant="outline" onClick={() => { setChanged(true); setContacts([...contacts, { name: '', relationship: '', phone: '' }]); }}>{text('addContact')}</Button>
       </fieldset>
       <div className="flex flex-wrap gap-3"><Button type="submit" disabled={save.isPending}>{text('save')}</Button>
-        <Button type="button" variant="outline" disabled={save.isPending} onClick={close}>{text('close')}</Button></div>
+        <DialogCancel variant="outline" disabled={save.isPending}>{text('close')}</DialogCancel></div>
     </form>
   </Dialog>;
 }

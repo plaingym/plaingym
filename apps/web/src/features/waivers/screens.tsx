@@ -10,7 +10,7 @@ import type { ExtensionViewProps } from '../../lib/registries.js';
 import { Page, PageHeader } from '../../components/ui/page.js';
 import { Button } from '../../components/ui/button.js';
 import { Pager } from '../../components/ui/pager.js';
-import { Dialog } from '../../components/ui/dialog.js';
+import { Dialog, DialogCancel } from '../../components/ui/dialog.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { Select, Textarea, CheckboxField } from '../../components/ui/select.js';
@@ -171,7 +171,7 @@ function Signing({ template, memberId, client, close, saved }: { template: Waive
         onPointerUp={() => { drawing.current = false; }} onPointerCancel={() => { drawing.current = false; }} />
       <Button type="button" variant="outline" disabled={busy} onClick={() => { canvas.current?.getContext('2d')?.clearRect(0, 0, 600, 180); hasInk.current = false; uploaded.current = null; }}>{text('clear')}</Button>
       <CheckboxField label={text(template.document ? 'documentConsent' : 'consent')} required />
-      <div className="flex flex-wrap gap-3"><Button type="submit" disabled={busy || !!template.document && !document.data}>{text('sign')}</Button><Button type="button" variant="outline" disabled={busy} onClick={close}>{text('close')}</Button></div>
+      <div className="flex flex-wrap gap-3"><Button type="submit" disabled={busy || !!template.document && !document.data}>{text('sign')}</Button><DialogCancel variant="outline" disabled={busy}>{text('close')}</DialogCancel></div>
     </form>
   </Dialog>;
 }

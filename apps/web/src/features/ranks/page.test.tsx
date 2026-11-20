@@ -64,6 +64,18 @@ describe('rank management', () => {
     expect(cancel).toHaveBeenCalledOnce();
     expect(save).not.toHaveBeenCalled();
   });
+  it('asks through the dialog guard from Cancel without dispatching a synthetic cancel event', () => {
+    const cancel = vi.fn(), save = vi.fn(async () => {});
+    render(<RankEditor rank={rank} rankSystemId={system.id} nextPosition={1} busy={false} create={save} update={save} cancel={cancel}/>);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Our foundation' } });
+    const dialog = screen.getByRole('dialog'), dispatch = vi.spyOn(dialog, 'dispatchEvent');
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByText('Discard your unsaved changes?')).toBeDefined();
+    expect(cancel).not.toHaveBeenCalled();
+    expect(dispatch.mock.calls.some(([event]) => (event as Event).type === 'cancel')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Our foundation');
+  });
   it('edits names, belt colors and sub-ranks, preserving module criteria and stable sub-rank IDs', async () => {
     const save = vi.fn(async () => {});
     render(<RankEditor rank={rank} rankSystemId={system.id} nextPosition={1} busy={false} create={save} update={save} cancel={() => {}}/>);

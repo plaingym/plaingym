@@ -473,6 +473,19 @@ describe('portal household page', () => {
       expect(JSON.parse(String(view.calls('PATCH', `/api/portal/members/${ids.child}`)[0]![1]!.body))).toEqual({ revision: 1, emergencyContacts: [] });
     }
   });
+  it('asks before discarding member edits through the dialog Close button', async () => {
+    mount(<PortalHousehold />, path => path === '/api/portal/household' ? { data: household }
+      : path.startsWith('/api/portal/members?') ? page(people) : undefined, { context: payer });
+    const user = userEvent.setup();
+    await user.click((await screen.findAllByRole('button', { name: 'Edit details' }))[0]!);
+    const dialog = screen.getByRole('dialog'), form = within(dialog), first = form.getByLabelText('First name');
+    await user.type(first, ' Changed');
+    await user.click(form.getAllByRole('button', { name: 'Close' }).at(-1)!);
+    expect(form.getByText('Discard your unsaved changes?')).toBeDefined();
+    await user.click(form.getByRole('button', { name: 'Keep editing' }));
+    expect((first as HTMLInputElement).value).toContain('Changed');
+    expect(screen.getByRole('dialog')).toBe(dialog);
+  });
   it('shows a cached read failure only in the open editor, without rewinding shell scrolling', async () => {
     let down = false;
     const view = mount(<PortalHousehold />, path => {
