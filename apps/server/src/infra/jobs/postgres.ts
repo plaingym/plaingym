@@ -7,12 +7,13 @@ import { AppError, type Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import type { JobStatsQuery, JobStats } from '../../core/interfaces/job-stats.js';
 import type { Id } from '@plaingym/shared/contracts';
-import { instantSchema, idSchema, storedTimezoneSchema } from '@plaingym/shared/contracts';
+import { instantSchema, idSchema } from '@plaingym/shared/contracts';
 import { clock as systemClock } from '../../core/clock.js';
 import { describeError, logError } from '../../core/log.js';
 import type { Jobs, JobOptions, JobHandler, HandleOptions, JobContext, JobRecovery, FailedJob } from './index.js';
 import { assertJobTransaction, type JobTransaction } from './transaction.js';
 import { cronOccurrences, occurrenceKey, validateCron } from './cron.js';
+import { assertStoredTimezone } from './timezone.js';
 
 type Scope = { forGym: typeof forGym; forSystem: typeof forSystem };
 type Row = typeof jobs.$inferSelect;
@@ -162,7 +163,7 @@ export class PostgresJobs implements Jobs, JobRecovery {
   async #enqueue(name: string, payload: unknown, options: SystemJobOptions, gymId: string | null,
     schedule?: Envelope['schedule'] & { name: string }, transaction?: Tx): Promise<{ jobId: string }> {
     if (!name) throw new Error('Job name is required');
-    storedTimezoneSchema.parse(options.timezone);
+    assertStoredTimezone(options.timezone);
     const maxAttempts = positive(options.maxAttempts ?? 3, 'maxAttempts');
     const now = this.clock.now(), runAt = options.runAt ?? now;
     if (!Number.isFinite(runAt.getTime())) throw new Error('Invalid job time');
@@ -374,7 +375,7 @@ export class PostgresJobs implements Jobs, JobRecovery {
     const cursors = Map.groupBy(await this.#database.forSystem((tx) => tx.select().from(jobScheduleCursors)
       .where(inArray(jobScheduleCursors.gymId, gyms.map((gym) => gym.gymId)))), (row) => row.gymId);
     for (const gym of gyms) await this.#isolate({ gymId: gym.gymId }, async () => {
-      storedTimezoneSchema.parse(gym.timezone);
+      assertStoredTimezone(gym.timezone);
       const current = new Map((cursors.get(gym.gymId) ?? []).filter((row) => row.timezone === gym.timezone
         && row.expression === this.#schedules.get(row.name)).map((row) => [row.name, row.lastOccurrence]));
       const missing = [...this.#schedules].filter(([name]) => !current.has(name));

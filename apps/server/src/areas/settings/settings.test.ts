@@ -139,6 +139,22 @@ describe('settings service and routes', () => {
     expect((await empty.json() as { error: { details?: unknown } }).error.details).toBeUndefined();
     expect(await service.get(gymId)).toEqual(before);
   });
+  it('answers a malformed settings body with the shared body reader and keeps the body validation answer', async () => {
+    const before = await service.get(gymA), app = server('owner');
+    for (const path of ['/api/settings', '/api/settings/billing']) {
+      const response = await app.request(path, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: '{"revision":' });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        error: { code: 'invalid_request', message: 'Request body must be JSON' },
+      });
+    }
+    expect(await service.get(gymA)).toEqual(before);
+    const invalid = await patch(server('owner'), '/api/settings', { revision: before.revision, timezone: 'Mars/Olympus' });
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toMatchObject({
+      error: { code: 'invalid_request', details: { timezone: ['invalid_timezone'] } },
+    });
+  });
   it('serializes racing saves so only one update wins', async () => {
     const revision = (await service.get(gymA)).revision;
     const results = await Promise.allSettled([service.update(mutation, 'booking', { revision, bookingWindowDays: 10 }), service.update(mutation, 'booking', { revision, bookingWindowDays: 20 })]);

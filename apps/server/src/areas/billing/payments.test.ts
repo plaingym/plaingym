@@ -562,6 +562,17 @@ describe('payment route permissions and tenant isolation', () => {
     // Anonymous callers are asked to sign in before the body is looked at.
     expect((await post(app(f, { kind: 'anonymous' }), bodies[0])).status).toBe(401);
   });
+  it('answers a malformed one-off body with the shared body reader', async () => {
+    const f = await fixture();
+    // The custom-charge guard reads this body: front desk has no payments.custom, so it runs before validation.
+    const response = await app(f, staff(f, 'front_desk')).request(origin + '/api/billing/invoices/one-off', {
+      method: 'POST', headers: { 'content-type': 'application/json', origin }, body: '{"source":',
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: { code: 'invalid_request', message: 'Request body must be JSON' },
+    });
+  });
   it('limits front desk to catalog charge types and existing invoices, while owner and admin may bill a custom amount', async () => {
     const f = await fixture(), charge = await factory('chargeTypes', f.gymId, { amountCents: 1000, name: 'Mat fee', currency: 'USD' });
     const post = (server: ReturnType<typeof app>, path: string, body: unknown) => server.request(origin + path, { method: 'POST',

@@ -265,10 +265,24 @@ describe.each(['fake', 'postgres'] as const)('%s caller-transaction enqueue cont
 describe('Postgres enqueue and execution', () => {
   it('validates enqueued timezones with the stored timezone schema, retaining supported legacy names', async () => {
     const q = queue();
-    await expect(q.enqueue('zone', {}, { ...options, timezone: 'Invalid/Timezone' })).rejects.toThrow('Use a supported IANA timezone');
+    const refusal = await q.enqueue('zone', {}, { ...options, timezone: 'Not/AZone' }).then(() => undefined, error => error);
+    expect(refusal).toBeInstanceOf(Error);
+    expect(refusal).toMatchObject({ name: 'Error', message: 'Use a supported IANA timezone' });
     expect(await rows()).toHaveLength(0);
+    await q.enqueue('zone', {}, { ...options, timezone: 'America/Vancouver' });
     await q.enqueue('zone', {}, { ...options, timezone: 'CET' });
-    expect((await rows())[0]!.payload).toMatchObject({ timezone: 'CET' });
+    // Rows come back in no set order.
+    expect((await rows()).map(row => (row.payload as { timezone: string }).timezone).sort()).toEqual(['America/Vancouver', 'CET']);
+  });
+  it('refuses an unsupported timezone from the fake queue with the same plain error', async () => {
+    const q = new FakeJobs(clock);
+    const refusal = await q.enqueue('zone', {}, { ...options, timezone: 'Not/AZone' }).then(() => undefined, error => error);
+    expect(refusal).toBeInstanceOf(Error);
+    expect(refusal).toMatchObject({ name: 'Error', message: 'Use a supported IANA timezone' });
+    expect(q.jobs).toHaveLength(0);
+    await q.enqueue('zone', {}, { ...options, timezone: 'America/Vancouver' });
+    await q.enqueue('zone', {}, { ...options, timezone: 'CET' });
+    expect(q.jobs.map(job => job.options.timezone)).toEqual(['America/Vancouver', 'CET']);
   });
   it('retries the insert when retention deletes the conflicting row before its lookup', async () => {
     const opts = { ...options, idempotencyKey: 'retention-race' };

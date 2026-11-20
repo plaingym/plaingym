@@ -3,6 +3,7 @@ import { AppError } from '@plaingym/shared';
 import { settingsContracts, updateBillingRulesRequestSchema, updateGymSettingsRequestSchema } from '@plaingym/shared/contracts';
 import type { MiddlewareHandler } from 'hono';
 import type { RequestEnvironment } from '../../core/context.js';
+import { readJsonBody } from '../../core/errors.js';
 import { route } from '../../core/registry.js';
 import { createSettingsService } from './settings.js';
 /** The field an issue is about: its path up to the first list index (`address.country`, and `retryDays` for `retryDays.1`). */
@@ -18,7 +19,7 @@ const fieldOf = (path: readonly PropertyKey[]) => {
  */
 const fieldErrors = (schema: typeof updateBillingRulesRequestSchema | typeof updateGymSettingsRequestSchema, codes: Record<string, string>): MiddlewareHandler<RequestEnvironment> =>
   async (c, next) => {
-    const parsed = schema.safeParse(await c.req.json().catch(() => null));
+    const parsed = schema.safeParse(await readJsonBody(c.req));
     const details: Record<string, string[]> = {};
     for (const issue of parsed.error?.issues ?? []) {
       const field = fieldOf(issue.path);

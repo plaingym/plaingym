@@ -3,6 +3,7 @@ import type { MiddlewareHandler } from 'hono';
 import { AppError, canStaff } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import type { RequestEnvironment } from '../../core/context.js';
+import { readJsonBody } from '../../core/errors.js';
 import { billingMutation, billingRoute } from './catalog.routes.js';
 import { createPaymentService, type PaymentService } from './payments.js';
 
@@ -13,7 +14,7 @@ import { createPaymentService, type PaymentService } from './payments.js';
 const customAmountGuard: MiddlewareHandler<RequestEnvironment> = async (ctx, next) => {
   const { principal, gym } = ctx.get('context');
   if (principal.kind === 'staff' && principal.gymId === gym?.gymId && !canStaff(principal.roles, 'payments.custom')) {
-    const body: unknown = await ctx.req.json().catch(() => undefined);
+    const body = await readJsonBody(ctx.req);
     if (typeof body === 'object' && body !== null && (body as { source?: unknown }).source === 'custom') throw new AppError('forbidden', 'Access denied');
   }
   await next();

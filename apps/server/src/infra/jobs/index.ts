@@ -3,6 +3,7 @@ import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { clock as systemClock } from '../../core/clock.js';
 import { assertJobTransaction, jobTransactionStates, type JobTransaction } from './transaction.js';
+import { assertStoredTimezone } from './timezone.js';
 
 export { assertJobTransaction, withJobTransaction, type JobTransaction } from './transaction.js';
 export interface JobOptions {
@@ -97,7 +98,7 @@ export class FakeJobs implements Jobs, JobRecovery {
     if (transaction) assertJobTransaction(transaction, options.gymId);
     else assertNoTransaction('jobs.enqueue');
     if (!name || !options.gymId) throw new Error('Job name and gym are required');
-    new Intl.DateTimeFormat('en', { timeZone: options.timezone });
+    assertStoredTimezone(options.timezone);
     if (
       options.maxAttempts !== undefined &&
       (!Number.isSafeInteger(options.maxAttempts) || options.maxAttempts < 1)
