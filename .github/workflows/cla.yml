@@ -56,11 +56,24 @@ jobs:
               }
 
               const { data: repository } = await api.repos.get({ owner, repo });
-              const { data: defaultRef } = await api.git.getRef({ owner, repo, ref: `heads/${repository.default_branch}` });
-              const defaultSha = defaultRef.object.sha;
+              const readDefaultSha = async () => {
+                const { data: ref } = await api.git.getRef({ owner, repo, ref: `heads/${repository.default_branch}` });
+                return ref.object.sha;
+              };
+              const defaultSha = await readDefaultSha();
               // Read the agreement from the trusted default branch, pinned to one commit.
-              const { data: agreement } = await api.repos.getContent({ owner, repo, path: 'CLA.md', ref: defaultSha });
+              const readAgreement = async (ref) => {
+                const { data } = await api.repos.getContent({ owner, repo, path: 'CLA.md', ref });
+                return data;
+              };
+              const agreement = await readAgreement(defaultSha);
               if (Array.isArray(agreement) || agreement.type !== 'file' || agreement.encoding !== 'base64') throw new Error('Cannot read CLA.md');
+              const isAgreementCurrent = async () => {
+                const currentSha = await readDefaultSha();
+                if (currentSha === defaultSha) return true;
+                const currentAgreement = await readAgreement(currentSha);
+                return currentAgreement.type === 'file' && currentAgreement.sha === agreement.sha;
+              };
               const text = Buffer.from(agreement.content, 'base64').toString('utf8');
               if (/\[TODO[^\]]*\]/i.test(text)) throw new Error('CLA.md has unresolved publication placeholders; a maintainer must complete it');
               const version = /^Version\s+(\S+)/m.exec(text)?.[1];
@@ -139,21 +152,30 @@ jobs:
               }
               if (!signed) {
                 const body = `${marker}\n@${pr.user.login}, please read [Contributor License Agreement v${version}](${context.serverUrl}/${owner}/${repo}/blob/${defaultSha}/CLA.md).\n\nReply with this exact comment to sign:\n\n> ${phrase}\n\nYou keep your copyright. Your signature records this agreement's SHA-256: \`${hash}\`.`;
-                const [prompt, ...leftovers] = await listPromptsById();
-                let duplicates = leftovers;
+                let [prompt, ...duplicates] = await listPromptsById();
+                let createdPromptId;
                 if (!prompt) {
-                  await api.issues.createComment({ owner, repo, issue_number: issueNumber, body });
-                  // If two creates raced, keep the earliest prompt (and its signing timestamp).
-                  [, ...duplicates] = await listPromptsById();
-                } else if (prompt.body !== body) {
-                  await api.issues.updateComment({ owner, repo, comment_id: prompt.id, body });
+                  // Leave a signing prompt even if the default branch moved since the initial read.
+                  const { data: createdPrompt } = await api.issues.createComment({ owner, repo, issue_number: issueNumber, body });
+                  createdPromptId = createdPrompt.id;
+                  // A concurrent create may have posted the earliest prompt for another revision.
+                  [prompt, ...duplicates] = await listPromptsById();
                 }
-                // Also removes a duplicate an earlier run failed to delete, without another scan.
-                for (const duplicate of duplicates) {
-                  try {
-                    await api.issues.deleteComment({ owner, repo, comment_id: duplicate.id });
-                  } catch (error) {
-                    if (error.status !== 404) throw error; // Another run already removed it.
+                if (prompt && (prompt.body !== body || duplicates.length > 0)) {
+                  if (await isAgreementCurrent()) {
+                    if (prompt.body !== body) {
+                      await api.issues.updateComment({ owner, repo, comment_id: prompt.id, body });
+                    }
+                  } else {
+                    // An obsolete run may remove only its own prompt when a trusted comment precedes it.
+                    duplicates = duplicates.filter((duplicate) => duplicate.id === createdPromptId);
+                  }
+                  for (const duplicate of duplicates) {
+                    try {
+                      await api.issues.deleteComment({ owner, repo, comment_id: duplicate.id });
+                    } catch (error) {
+                      if (error.status !== 404) throw error; // Another run already removed it.
+                    }
                   }
                 }
                 // A signing run may have completed while we were preparing the prompt.

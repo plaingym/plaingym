@@ -185,6 +185,7 @@ const script = workflow.split('          script: |\n')[1].split('\n').map((line)
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const execute = new AsyncFunction('require', 'context', 'github', 'core', script);
 const phrase = 'I have read the CLA Document and I hereby sign the CLA';
+const revisedAgreement = 'Version 2.0\nRevised fixture contributor agreement.\n';
 
 function claFixture(options = {}) {
   const text = options.text ?? 'Version 1.0\nPublic fixture contributor agreement.\n';
@@ -194,6 +195,8 @@ function claFixture(options = {}) {
   const writes = [];
   const comments = options.comments ?? [];
   const commentCalls = { list: 0, create: 0, update: 0, delete: 0 };
+  let defaultSha = 'default-sha';
+  const agreements = new Map([[defaultSha, text]]);
   let ledger = options.ledger;
   let branch = Boolean(ledger);
   let revision = 1, conflicts = options.writeConflicts ?? 0;
@@ -204,7 +207,7 @@ function claFixture(options = {}) {
     runId: 100, serverUrl: 'https://github.com',
     payload: { pull_request: { number: 1 }, issue: { number: 1, pull_request: {} }, comment: { id: 10 } },
   };
-  const file = (content) => ({ type: 'file', sha: 'blob', encoding: 'base64', content: Buffer.from(content).toString('base64') });
+  const file = (content, sha = `blob-${sha256(content)}`) => ({ type: 'file', sha, encoding: 'base64', content: Buffer.from(content).toString('base64') });
   const notFound = () => { throw Object.assign(new Error('Not found'), { status: 404 }); };
   const api = {
     pulls: { get: async () => ({ data: pr }) },
@@ -213,11 +216,16 @@ function claFixture(options = {}) {
       getCollaboratorPermissionLevel: async () => ({ data: { permission: options.permission ?? 'none' } }),
       get: async () => ({ data: { default_branch: 'main' } }),
       getContent: async (value) => {
-        if (value.path === 'CLA.md') { assert.equal(value.ref, 'default-sha'); return { data: file(text) }; }
+        if (value.path === 'CLA.md') {
+          assert.equal(value.owner, context.repo.owner);
+          assert.equal(value.repo, context.repo.repo);
+          assert.ok(agreements.has(value.ref), 'agreement read must use a pinned revision');
+          return { data: file(agreements.get(value.ref)) };
+        }
         assert.equal(value.path, 'signatures/cla.json');
         assert.equal(value.ref, 'cla-signatures');
         if (!ledger) return notFound();
-        return { data: { ...file(JSON.stringify(ledger)), sha: 'ledger-' + revision } };
+        return { data: file(JSON.stringify(ledger), 'ledger-' + revision) };
       },
       createOrUpdateFileContents: async (value) => {
         if (options.writeError) throw new Error('Write unavailable');
@@ -235,8 +243,13 @@ function claFixture(options = {}) {
       },
     },
     git: {
-      getRef: async (value) => value.ref === 'heads/main' ? { data: { object: { sha: 'default-sha' } } }
-        : branch ? { data: {} } : notFound(),
+      getRef: async (value) => {
+        assert.equal(value.owner, context.repo.owner);
+        assert.equal(value.repo, context.repo.repo);
+        if (value.ref === 'heads/main') return { data: { object: { sha: defaultSha } } };
+        assert.equal(value.ref, 'heads/cla-signatures');
+        return branch ? { data: {} } : notFound();
+      },
       createRef: async (value) => {
         assert.equal(value.ref, 'refs/heads/cla-signatures'); branch = true;
         if (options.branchConflict) throw Object.assign(new Error('Reference already exists'), { status: 422 });
@@ -267,8 +280,12 @@ function claFixture(options = {}) {
     },
   };
   return {
-    hash, statuses, failures, writes, comments, commentCalls, context,
+    text, hash, statuses, failures, writes, comments, commentCalls, context,
     ledger: () => ledger,
+    setAgreement: (sha, content) => {
+      agreements.set(sha, content);
+      defaultSha = sha;
+    },
     run: async (hooks = {}) => {
       let firstAssertion;
       const captureAssertion = (call) => async (...args) => {
@@ -298,7 +315,7 @@ function claFixture(options = {}) {
             }),
             createOrUpdateFileContents: captureAssertion(api.repos.createOrUpdateFileContents),
           },
-          git: { ...api.git, createRef: captureAssertion(api.git.createRef) },
+          git: { getRef: captureAssertion(api.git.getRef), createRef: captureAssertion(api.git.createRef) },
           issues: { ...api.issues, createComment: captureAssertion(async (value) => {
             await hooks.beforeCreateComment?.();
             return api.issues.createComment(value);
@@ -400,6 +417,58 @@ test('an unsigned run updates the earliest trusted prompt and removes a leftover
   assert.deepEqual(fixture.commentCalls, { list: 3, create: 1, update: 1, delete: 1 });
 });
 
+test('an unsigned run cannot overwrite a prompt updated for a newer agreement', async () => {
+  const fixture = claFixture();
+  await fixture.run();
+  const [{ id }] = fixture.comments;
+  let currentBody;
+
+  await fixture.run({ afterLedgerRead: async () => {
+    if (currentBody) return;
+    fixture.setAgreement('revised-sha', revisedAgreement);
+    await fixture.run({ context: { runId: 101 } });
+    currentBody = fixture.comments[0].body;
+    assert.ok(currentBody.startsWith(`<!-- plaingym-cla:${sha256(revisedAgreement)} -->`));
+  } });
+
+  assert.deepEqual(fixture.comments.map((comment) => [comment.id, comment.body]), [[id, currentBody]]);
+  assert.deepEqual(fixture.commentCalls, { list: 4, create: 1, update: 1, delete: 0 });
+});
+
+test('an obsolete creator keeps the only signing prompt', async () => {
+  const fixture = claFixture();
+  await fixture.run({ afterListComments: () => fixture.setAgreement('revised-sha', revisedAgreement) });
+  assert.equal(fixture.comments.length, 1);
+  assert.ok(fixture.comments[0].body.startsWith(`<!-- plaingym-cla:${fixture.hash} -->`));
+  assert.deepEqual(fixture.commentCalls, { list: 2, create: 1, update: 0, delete: 0 });
+});
+
+test('an obsolete creator removes its own later prompt and keeps the current prompt', async () => {
+  const fixture = claFixture();
+  await fixture.run({ beforeCreateComment: async () => {
+    fixture.setAgreement('revised-sha', revisedAgreement);
+    await fixture.run({ context: { runId: 101 } });
+  } });
+
+  assert.deepEqual(fixture.comments.map((comment) => comment.id), [5]);
+  assert.ok(fixture.comments[0].body.startsWith(`<!-- plaingym-cla:${sha256(revisedAgreement)} -->`));
+  assert.deepEqual(fixture.commentCalls, { list: 4, create: 2, update: 0, delete: 1 });
+});
+
+test('a move of the default ref with the same agreement still allows a prompt refresh and duplicate removal', async () => {
+  const fixture = claFixture();
+  await fixture.run();
+  const [earliest] = fixture.comments;
+  const currentBody = earliest.body;
+  earliest.body = '<!-- plaingym-cla:old -->';
+  fixture.comments.push({ ...earliest, id: earliest.id + 1 });
+
+  await fixture.run({ afterListComments: () => fixture.setAgreement('unrelated-sha', fixture.text) });
+
+  assert.deepEqual(fixture.comments.map((comment) => [comment.id, comment.body]), [[earliest.id, currentBody]]);
+  assert.deepEqual(fixture.commentCalls, { list: 3, create: 1, update: 1, delete: 1 });
+});
+
 test('a signing run checks the earliest trusted prompt, whatever order comments are listed in', async () => {
   const fixture = claFixture({ eventName: 'issue_comment' });
   await fixture.run({ context: { eventName: 'pull_request_target' } });
@@ -420,7 +489,7 @@ test('author signs once; record includes identity, comment, timestamp and agreem
   assert.equal(fixture.statuses.at(-1).state, 'success');
   assert.deepEqual(fixture.ledger().signatures[0], {
     userId: 42, login: 'contributor', commentId: 10, signedAt: '2026-01-02T00:00:00Z',
-    claVersion: '1.0', claSha256: fixture.hash, claBlobSha: 'blob',
+    claVersion: '1.0', claSha256: fixture.hash, claBlobSha: `blob-${fixture.hash}`,
   });
   assert.equal(fixture.commentCalls.list, 3);
   await fixture.run();
@@ -478,6 +547,28 @@ test('racing unsigned creates leave only the earliest prompt and still allow sig
   await fixture.run({ context: { eventName: 'issue_comment' } });
   assert.equal(fixture.statuses.at(-1).state, 'success');
   assert.equal(fixture.writes.length, 1);
+});
+
+test('racing creates refresh the earliest trusted prompt for the current agreement', async () => {
+  const fixture = claFixture();
+  let currentRun;
+  const olderRun = fixture.run({ beforeCreateComment: async () => {
+    fixture.setAgreement('revised-sha', revisedAgreement);
+    const currentCreate = Promise.withResolvers();
+    currentRun = fixture.run({ context: { runId: 101 }, beforeCreateComment: async () => {
+      currentCreate.resolve();
+      await olderRun;
+    } });
+    // Both lists were empty. Let the older create finish before issuing the current create.
+    await Promise.race([currentCreate.promise, currentRun]);
+  } });
+  await olderRun;
+  await currentRun;
+
+  assert.deepEqual(fixture.comments.map((comment) => comment.id), [5]);
+  assert.ok(fixture.comments[0].body.startsWith(`<!-- plaingym-cla:${sha256(revisedAgreement)} -->`));
+  assert.ok(fixture.comments[0].body.includes('/blob/revised-sha/CLA.md'));
+  assert.deepEqual(fixture.commentCalls, { list: 4, create: 2, update: 1, delete: 1 });
 });
 
 test('concurrent CLA writes merge the latest ledger and preserve both signers', async () => {
