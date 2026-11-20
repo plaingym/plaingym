@@ -185,7 +185,7 @@ ring tokens reach 3:1 on `background`.
 literal CSS color values and named colors. Color input
 defaults and canvas ink are data and drawing instructions. Class tables imported
 from another file, or reached through destructuring, are checked only where they
-are defined; the rule does not follow an imported table to its use.
+are defined, and only when the definition appears in a context the rule scans.
 
 The rule allows white on the following elements in both themes.
 

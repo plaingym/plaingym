@@ -141,7 +141,7 @@ export function createStatusProviders(options: StatusOptions = {}) {
       const uploads = volumes[0]!.figures, staging = volumes[1]?.figures;
       const sameFilesystem = volumes.length > 1 && BigInt(volumes[0]!.dev) === BigInt(volumes[1]!.dev) && !!staging
         && Math.abs(uploads.totalBytes - staging.totalBytes) <= Math.max(uploads.totalBytes, staging.totalBytes) / 1000;
-      // The lower free figure is the one the status rules used, so it is the one a shared volume reports.
+      // A shared volume reports the lower free figure.
       const shared = sameFilesystem && staging && staging.availableBytes < uploads.availableBytes ? staging : uploads;
       // Keep each volume's capacity and free space together, even when both directories share a filesystem.
       const details = { uploads, backupStaging: staging ?? null, sameFilesystem };

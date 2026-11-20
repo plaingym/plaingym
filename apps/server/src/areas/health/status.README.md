@@ -154,9 +154,9 @@ staging directory is configured, it is on the same device as the uploads directo
 capacity within 0.1% (ZFS or btrfs can report totals a few KB apart). A staging directory that reports a much smaller
 total because of a quota keeps its own rows. Free space is excluded from the comparison because two
 `statfs` calls on a busy disk can differ slightly. Each figure describes the
-volume seen at that path. When `sameFilesystem` is true the page shows one pair of rows with the lower of the two free
-figures (and that volume's total), the figure the status rules used, labelled for the uploads and backup staging volume,
-and the message says one volume.
+volume seen at that path. When `sameFilesystem` is true, the message reports the
+lower free figure and the page shows it alongside that path's total. The status
+still checks each path's own free bytes and free-space percentage.
 `backupStaging` is null when no staging directory is configured, including multi-gym
 mode, which ignores `BACKUP_STAGING_DIR`; `sameFilesystem` is then false and the page
 omits staging rows.
