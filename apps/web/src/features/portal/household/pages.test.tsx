@@ -650,7 +650,9 @@ describe('portal household page', () => {
     await user.click(screen.getByRole('button', { name: 'Withdraw notices consent' }));
     await screen.findByRole('button', { name: 'Agree to notices' });
     expect((name as HTMLInputElement).value).toBe('Unsaved household');
-    await user.click(screen.getByRole('button', { name: 'Save' }));
+    const save = screen.getByRole<HTMLButtonElement>('button', { name: 'Save' });
+    await waitFor(() => expect(save.disabled).toBe(false));
+    await user.click(save);
     await screen.findByText('Saved.');
     expect(JSON.parse(String(view.calls('PATCH', '/api/portal/household')[0]![1]!.body))).toEqual({ name: 'Unsaved household', revision: 5 });
   });
@@ -769,6 +771,53 @@ describe('portal household page', () => {
     expect(requests).toHaveLength(1);
     expect(JSON.parse(String(requests[0]![1]?.body))).toEqual({ consent: !granted, revision: 4 });
   });
+  it.each([false, true])('pauses contact Save during billing-phone consent (write fails: %s)', async fails => {
+    let current: Household = { ...household, phone: '+12025550123', sms: { phoneValid: true, phoneE164: '+12025550123', notices: null } };
+    const consentWrite = Promise.withResolvers<void>(), consentRead = Promise.withResolvers<void>();
+    const endpoint = '/api/portal/household', consentEndpoint = endpoint + '/sms-consent';
+    const view = mount(<PortalHousehold />, async (path, init) => {
+      if (path === consentEndpoint && init?.method === 'PUT') {
+        await consentWrite.promise;
+        if (fails) return new Response(null, { status: 503 });
+        current = { ...current, revision: 4, sms: { ...current.sms, notices: { at: '2026-11-16T12:00:00Z', source: 'portal' } } };
+        return { data: current };
+      }
+      if (path === endpoint && init?.method === 'PATCH') {
+        current = { ...current, name: 'My draft', revision: current.revision + 1 };
+        return { data: current };
+      }
+      if (path === endpoint) {
+        if (current.revision === 4 && current.sms.notices) await consentRead.promise;
+        return { data: current };
+      }
+      return path.startsWith('/api/portal/members?') ? page([]) : undefined;
+    }, { context: payer });
+    const user = userEvent.setup();
+    const name = await screen.findByLabelText('Household name');
+    const save = screen.getByRole<HTMLButtonElement>('button', { name: 'Save' });
+    fireEvent.change(name, { target: { value: 'My draft' } });
+    await user.click(screen.getByRole('button', { name: 'Agree to notices' }));
+    await waitFor(() => expect(view.calls('PUT', consentEndpoint)).toHaveLength(1));
+    expect(JSON.parse(String(view.calls('PUT', consentEndpoint)[0]![1]?.body))).toEqual({ consent: true, revision: 3 });
+    expect(save.disabled).toBe(true);
+    fireEvent.submit(save.form!);
+    expect(view.calls('PATCH', endpoint)).toHaveLength(0);
+    await act(async () => { consentWrite.resolve(); });
+    if (fails) {
+      await screen.findByText('Consent could not be saved. Refresh and try again.');
+    } else {
+      await waitFor(() => expect(view.calls('GET', endpoint)).toHaveLength(2));
+      expect(save.disabled).toBe(true);
+      fireEvent.submit(save.form!);
+      expect(view.calls('PATCH', endpoint)).toHaveLength(0);
+      await act(async () => { consentRead.resolve(); });
+    }
+    await waitFor(() => expect(save.disabled).toBe(false));
+    expect(view.calls('PATCH', endpoint)).toHaveLength(0);
+    await user.click(save);
+    await screen.findByText('Saved.');
+    expect(JSON.parse(String(view.calls('PATCH', endpoint)[0]![1]?.body))).toEqual({ name: 'My draft', revision: fails ? 3 : 4 });
+  });
   it.each([false, true])('retains later edits after a household save (concurrent change: %s)', async concurrent => {
     let current: Household = household;
     const firstSave = Promise.withResolvers<void>();
@@ -820,11 +869,12 @@ describe('portal household page', () => {
       await screen.findByText('Saved.');
     }
   });
-  it('keeps a server-conflicted contact draft until discard successfully refreshes it', async () => {
-    let current: Household = household;
-    const failedRead = Promise.withResolvers<Response>();
-    let failNextRead = false;
-    const endpoint = '/api/portal/household';
+  it('reports a failed discard, pauses billing-phone consent while refreshing, and retries with the latest contact details', async () => {
+    let current: Household = { ...household, phone: '+12025550123', sms: { phoneValid: true, phoneE164: '+12025550123', notices: null } };
+    const failedRead = Promise.withResolvers<Response>(), retryRead = Promise.withResolvers<{ data: Household }>();
+    let heldRead: Promise<Response | { data: Household }> | undefined;
+    const endpoint = '/api/portal/household', consentEndpoint = endpoint + '/sms-consent';
+    const failureText = "We couldn't save. Check the details and try again.";
     const view = mount(<PortalHousehold />, (path, init) => {
       if (path === endpoint && init?.method === 'PATCH') {
         const { revision, ...changes } = JSON.parse(String(init.body)) as { revision: number; email?: string };
@@ -835,7 +885,15 @@ describe('portal household page', () => {
         return { data: current };
       }
       if (path === endpoint) {
-        if (failNextRead) { failNextRead = false; return failedRead.promise; }
+        if (heldRead) {
+          const response = heldRead;
+          heldRead = undefined;
+          return response;
+        }
+        return { data: current };
+      }
+      if (path === consentEndpoint && init?.method === 'PUT') {
+        current = { ...current, revision: 5, sms: { ...current.sms, notices: { at: '2026-11-16T12:00:00Z', source: 'portal' } } };
         return { data: current };
       }
       return path.startsWith('/api/portal/members?') ? page([]) : undefined;
@@ -845,29 +903,46 @@ describe('portal household page', () => {
     const email = screen.getByLabelText<HTMLInputElement>('Email');
     const save = screen.getByRole<HTMLButtonElement>('button', { name: 'Save' });
     fireEvent.change(name, { target: { value: 'My draft' } });
+    fireEvent.change(email, { target: { value: 'draft@example.test' } });
     current = { ...current, name: 'Saved elsewhere', email: 'new@example.test', revision: 4 };
     await user.click(save);
     const discard = await screen.findByRole<HTMLButtonElement>('button', { name: 'Discard edits' });
     expect(view.calls('PATCH', endpoint)).toHaveLength(1);
-    failNextRead = true;
+    heldRead = failedRead.promise;
     await user.click(discard);
     await waitFor(() => expect(view.calls('GET', endpoint)).toHaveLength(2));
     expect(discard.disabled).toBe(true);
     await user.click(discard);
     expect(view.calls('GET', endpoint)).toHaveLength(2);
     await act(async () => { failedRead.resolve(new Response(null, { status: 503 })); });
+    expect(await screen.findByText(failureText)).toBeDefined();
     await waitFor(() => expect(discard.disabled).toBe(false));
     expect(name.value).toBe('My draft');
-    expect(email.value).toBe(household.email);
+    expect(email.value).toBe('draft@example.test');
     expect(discard.closest('[role="alert"]')?.textContent).toContain('These details changed while you were editing.');
+    const consent = screen.getByRole<HTMLButtonElement>('button', { name: 'Agree to notices' });
+    expect(consent.disabled).toBe(false);
+    heldRead = retryRead.promise;
     await user.click(discard);
+    await waitFor(() => expect(view.calls('GET', endpoint)).toHaveLength(3));
+    expect(screen.queryByText(failureText)).toBeNull();
+    expect(name.value).toBe('My draft');
+    expect(consent.disabled).toBe(true);
+    await user.click(consent);
+    expect(view.calls('PUT', consentEndpoint)).toHaveLength(0);
+    await act(async () => { retryRead.resolve({ data: current }); });
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
     expect(name.value).toBe('Saved elsewhere');
     expect(email.value).toBe('new@example.test');
+    await waitFor(() => expect(consent.disabled).toBe(false));
+    await user.click(consent);
+    await screen.findByRole('button', { name: 'Withdraw notices consent' });
+    expect(JSON.parse(String(view.calls('PUT', consentEndpoint)[0]![1]?.body))).toEqual({ consent: true, revision: 4 });
     fireEvent.change(email, { target: { value: 'retry@example.test' } });
+    await waitFor(() => expect(save.disabled).toBe(false));
     await user.click(save);
     await screen.findByText('Saved.');
-    expect(JSON.parse(String(view.calls('PATCH', endpoint)[1]![1]!.body))).toEqual({ email: 'retry@example.test', revision: 4 });
+    expect(JSON.parse(String(view.calls('PATCH', endpoint)[1]![1]!.body))).toEqual({ email: 'retry@example.test', revision: 5 });
   });
   it('rebases later edits on the saved household when the refetch after a save fails', async () => {
     let current: Household = household, failRead = false;

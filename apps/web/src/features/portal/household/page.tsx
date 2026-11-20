@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { calendarDateLabel as date } from '../../../lib/instant.js';
 import { PortalRecovery } from './recovery.js';
-import { useState, type ComponentProps, type FormEvent } from 'react';
+import { useRef, useState, type ComponentProps, type FormEvent } from 'react';
 import { useDraft } from '../../../lib/use-draft.js';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { portalContracts as contracts, type PortalContext, type PortalEmergencyContact, type PortalHousehold, type PortalMember } from '@plaingym/shared/contracts';
@@ -104,6 +104,9 @@ function HouseholdForm({ household, scope, gymName, saved, setSaved, refetch }: 
   const draft = useDraft(householdContact(household), normalizeHousehold);
   const phoneChanged = normalizedPhone(draft.values.phone) !== normalizedPhone(household.phone);
   const refreshHousehold = () => cache.invalidateQueries({ queryKey: [...scope.key, 'household'] });
+  // The ref guards handlers before React Query publishes the new pending state.
+  const actionPending = useRef(false);
+  const finishAction = () => { actionPending.current = false; };
   const save = useMutation({ mutationFn: async () => {
     const changes = draft.changes();
     if (!Object.keys(changes).length) return null;
@@ -117,20 +120,41 @@ function HouseholdForm({ household, scope, gymName, saved, setSaved, refetch }: 
       draft.reconcileSaved(result.changes, householdContact(refetched?.status === 'success' && refetched.data ? refetched.data : result.data));
     } else draft.reset();
     setSaved(result ? 'saved' : 'unchanged');
-  } });
-  const discard = useMutation({ mutationFn: refetch, onSuccess: () => { draft.reset(); save.reset(); } });
+  }, onSettled: finishAction });
+  const discard = useMutation({
+    mutationFn: refetch,
+    onSuccess: () => { draft.reset(); save.reset(); },
+    onSettled: finishAction,
+  });
+  const changeConsent = useMutation({
+    mutationFn: async (consent: boolean) => {
+      scope.own(await scope.call(contracts.changeHouseholdSmsConsent, { consent, revision: household.revision }));
+      await refreshHousehold();
+    },
+    onSettled: finishAction,
+  });
+  const busy = save.isPending || discard.isPending || changeConsent.isPending;
   const hasConflict = save.isError && conflict(save.error);
+  function startAction() {
+    if (busy || actionPending.current) return false;
+    actionPending.current = true;
+    return true;
+  }
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (save.isPending || discard.isPending) return;
+    if (!startAction()) return;
     setSaved(null);
+    discard.reset();
     save.mutate();
   }
   return <><Card className="p-4 sm:p-6"><form className="space-y-4" onSubmit={submit} aria-labelledby="household-contact">
     <h2 id="household-contact" className="text-lg font-semibold">{text('contactTitle')}</h2>
     {save.isError && <Alert variant="error" focusOnReveal role="alert">
       <p>{text(hasConflict ? 'contactConflict' : 'failed')}</p>
-      {hasConflict && <Button type="button" variant="outline" disabled={discard.isPending} onClick={() => discard.mutate()}>{text('discardEdits')}</Button>}
+      {hasConflict && discard.isError && <p>{text('failed')}</p>}
+      {hasConflict && <Button type="button" variant="outline" disabled={busy} onClick={() => {
+        if (startAction()) discard.mutate();
+      }}>{text('discardEdits')}</Button>}
     </Alert>}
     {saved && <Alert role="status">{text(saved)}</Alert>}
     <div className="grid gap-4 sm:grid-cols-2">
@@ -142,13 +166,11 @@ function HouseholdForm({ household, scope, gymName, saved, setSaved, refetch }: 
         {...(field === 'countryCode' ? { maxLength: 2, pattern: '[A-Za-z]{2}' } : {})} />)}
     </div>
     <p className="text-sm text-muted-foreground">{text('billingNote')}</p>
-    <Button type="submit" disabled={save.isPending || discard.isPending}>{text('save')}</Button>
+    <Button type="submit" disabled={busy}>{text('save')}</Button>
   </form></Card>
-    <SmsConsentControls sms={household.sms} gymName={gymName} disabled={save.isPending} {...(phoneChanged ? { grantBlockedHint: text('savePhoneBeforeConsent') } : {})}
+    <SmsConsentControls sms={household.sms} gymName={gymName} disabled={busy} {...(phoneChanged ? { grantBlockedHint: text('savePhoneBeforeConsent') } : {})}
       onChange={async (_kind, consent) => {
-        if (save.isPending) return;
-        scope.own(await scope.call(contracts.changeHouseholdSmsConsent, { consent, revision: household.revision }));
-        await refreshHousehold();
+        if (startAction()) await changeConsent.mutateAsync(consent);
       }}/>
   </>;
 }

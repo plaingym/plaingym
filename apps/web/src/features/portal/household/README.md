@@ -32,7 +32,9 @@ for themselves and children they manage, but cannot consent for another adult.
 Billing-phone notices consent stays payer-only under `household.manage`.
 Payers save a changed billing phone before agreeing to notices and can withdraw
 an existing consent while the phone has unsaved edits. Both billing-phone consent
-actions are disabled while a household contact save is pending.
+actions are disabled during a household contact save or a discard refresh.
+Contact Save and Discard edits are disabled while a billing-phone consent
+change and its refresh are pending.
 Household and member saves send only changed fields. An unrelated edit preserves
 stored address and emergency-contact keys that the running release cannot read;
 editing either of those fields replaces that entire value.
@@ -41,7 +43,8 @@ in the form. A newer edit to a submitted field can be saved against the refreshe
 revision when the refetch confirms the submitted value. A concurrent change to
 that field still triggers a conflict. Payers can choose **Discard edits** after a
 contact conflict to load the latest stored contact details and revision. If the
-refresh fails, the draft and the discard action stay available for a retry.
+refresh fails, the form shows the failure alongside the conflict and keeps the
+draft and Discard edits available for a retry.
 Saves with no changes send no request and do not refetch: the household form says
 "Nothing changed." and the member editor closes.
 
