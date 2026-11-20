@@ -35,8 +35,10 @@ refusals. It is healthy with a readable provider and the switch on. It warns whe
 texts are on without a provider, a configured provider has texts off, settings
 are unreadable, the last owner test failed, or attempts were refused today. The
 missing-provider message applies when there is no provider and storage is
-readable. Counts and the last test time/result are returned, never numbers,
-bodies or credentials. Removing the provider clears older test history.
+readable. The invitation to turn on texts appears only when the provider is
+readable and texts are off. Counts and the last test time/result are returned,
+never numbers, bodies or credentials. Removing the provider clears older test
+history.
 Demo mode reports the outbox as its provider and skips stored SMS credentials.
 
 The default route uses `createStatusProviders()` with the process environment.

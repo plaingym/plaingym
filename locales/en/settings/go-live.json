@@ -6,6 +6,7 @@
   "memberSmsEnabled": "Member texts",
   "memberSmsHelp": "Allow texts to members who have consented. Save an SMS provider first. The daily cap in SMS settings limits send attempts; owner test texts are exempt.",
   "smsProviderRequired": "Save a working SMS provider in Settings before turning member texts on.",
+  "smsProviderReadFailed": "The SMS provider could not be checked. Try turning member texts on again.",
   "item.sms_ready": "Text delivery",
   "check.sms_ready.ready": "Text delivery is configured. Members must consent before receiving texts.",
   "check.sms_ready.needs_attention": "Member texts cannot be sent. Save a working SMS provider or turn member texts off.",

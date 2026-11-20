@@ -9,14 +9,15 @@ return 503. Route generation can discover both endpoints without opening a datab
 or loading credentials.
 
 `memberSmsEnabled` is separate from member email and defaults off. Enabling it
-requires the requesting gym's saved, readable SMS provider (`SmsResolver.configured`);
-demo composition supplies its outbox resolver. An absent or failed configured
-check refuses enabling. Disabling needs no provider. The gym revision guards the
-change and `settings.go_live.updated` audits all three switches. With the optional
-`smsStatus` reader, `sms_ready` is ready for a readable gym or demo provider,
-and needs attention when saved settings are unreadable or the status read fails.
-A missing provider is not applicable with texts off and needs attention with
-texts on. Without `smsStatus`, the checklist falls back to `smsConfigured`.
+requires a readable gym or demo provider. The checklist and enable check both
+prefer `smsStatus` and fall back to `smsConfigured` when no status reader is
+supplied. Omitting both means no provider. The enable check reads the provider
+before the write transaction. After the revision guard, a missing or unreadable
+provider returns `no_provider` and a failed read returns `unavailable`. Disabling
+needs no provider. `settings.go_live.updated` audits all three switches.
+With `smsStatus`, `sms_ready` needs attention when saved settings are unreadable
+or the status read fails. A missing provider is not applicable with texts off
+and needs attention with texts on.
 Readiness checks configuration without sending a text or checking individual consent.
 Restore turns billing, member emails and member texts off in the same transaction and
 records all three in `restore.completed`. Shut down the old server before enabling them again.

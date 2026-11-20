@@ -73,21 +73,22 @@ export function createGoLiveService(options: {
   scope?: typeof forGym; clock?: Clock; smtpConfigured: (gymId: string) => Promise<boolean>; webhooks?: WebhookHealthQuery;
   /** The runtime's payments resolver; defaults to the gym's stored Stripe settings (demo sandboxes share an install account). */
   paymentsConfigured?: (gymId: string) => Promise<boolean>;
-  /** The SMS enable guard and checklist fallback. Absent means unavailable. */
+  /** The SMS readiness fallback when no status reader is supplied. Absent means no provider. */
   smsConfigured?: (gymId: string) => Promise<boolean>;
-  /** The SMS resolver's read-only status for the checklist. */
+  /** The SMS resolver's read-only status for the checklist and enable guard. */
   smsStatus?: SmsResolver['status'];
   restoreCheck?: typeof rerunRestoreReconciliation;
   restoreCheckLease?: RestoreCheckLease;
 }) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const webhooks = options.webhooks ?? createWebhookHealthQuery(scope);
-  const smsConfigured = async (gymId: string) => {
-    try { return Boolean(await options.smsConfigured?.(gymId)); }
-    catch { return false; }
-  };
+  async function canEnableSms(gymId: string): Promise<boolean> {
+    if (!options.smsStatus) return await options.smsConfigured?.(gymId) ?? false;
+    const { source, unreadable } = await options.smsStatus(gymId);
+    return source !== null && !unreadable;
+  }
   async function smsReadiness(gymId: string): Promise<GoLiveChecklistItem | null> {
-    if (!options.smsStatus) return await smsConfigured(gymId) ? item('sms_ready', 'ready') : null;
+    if (!options.smsStatus) return await canEnableSms(gymId).catch(() => false) ? item('sms_ready', 'ready') : null;
     let status: Awaited<ReturnType<SmsResolver['status']>>;
     try { status = await options.smsStatus(gymId); }
     catch { return item('sms_ready', 'needs_attention', t('settings/go-live:check.sms_ready.read_failed')); }
@@ -175,16 +176,17 @@ export function createGoLiveService(options: {
     },
     async update(context: MutationContext, input: UpdateGoLiveRequest): Promise<Checklist> {
       const { revision, confirmedPastDueDates, ...changes } = updateGoLiveRequestSchema.parse(input);
-      // Opens its own transaction, so resolve it first; only turning billing on reads it.
+      // Resolver reads can open their own transactions. Defer any SMS error until after the revision check.
       const payments = changes.billingEnabled ? await options.paymentsConfigured?.(context.gymId) : undefined;
-      const sms = changes.memberSmsEnabled ? await smsConfigured(context.gymId) : undefined;
+      const sms = changes.memberSmsEnabled ? await canEnableSms(context.gymId).catch(() => null) : undefined;
       await scope(context.gymId, async (tx) => {
         const [before] = await tx.select(projection).from(gyms).where(eq(gyms.id, context.gymId)).for('update');
         if (!before) throw new AppError('not_found', t('settings/go-live:notFound'));
         const guard = revisionGuard(gyms.revision, revision);
         // Check revisions first, even if the stale request also needs a date confirmation.
         if (before.revision !== revision) assertRevised([]);
-        if (changes.memberSmsEnabled && !sms)
+        if (sms === null) throw new AppError('unavailable', t('settings/go-live:smsProviderReadFailed'));
+        if (sms === false)
           throw new AppError('conflict', t('settings/go-live:smsProviderRequired'), { memberSmsEnabled: ['no_provider'] });
         let confirmed: ReturnType<typeof dates> | undefined;
         if (!before.billingEnabled && changes.billingEnabled) {

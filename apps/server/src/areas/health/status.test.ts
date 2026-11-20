@@ -13,6 +13,7 @@ import { TestClock } from '../../core/clock.js';
 import { createServerRegistry } from '../../core/registry.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { encryptSmtpConfig } from '../settings/smtp.js';
+import { encryptSmsConfig } from '../settings/sms.js';
 import { encryptGoogleConfig } from '../settings/google-login.js';
 import { PostgresJobStatsQuery } from '../../infra/jobs/postgres.js';
 import { createStatusProviders } from './status.providers.js';
@@ -179,6 +180,24 @@ describe('built-in providers', () => {
     expect(result.data.tiles.find((t) => t.id === 'smtp')).toMatchObject({ status: 'warning', details: { configured: false },
       message: "The gym's stored SMTP settings could not be read. Replace or remove them in Settings → Email." });
     expect(JSON.stringify(result)).not.toContain('sensitive-invalid');
+  });
+  it('invites the owner to turn texts on when the saved provider is readable', async () => {
+    const id = uuidv7();
+    await factory('gyms', id, { memberSmsEnabled: false, smsConfig: encryptSmsConfig(key, id, {
+      accountSid: 'AC' + '1'.repeat(32), auth: { token: 'local-test-token' }, sender: { from: '+12025550111' },
+    }) });
+    expect(await tile('sms', id, { env: { ...env, TENANCY: 'single' } })).toMatchObject({
+      status: 'warning', details: { configured: true, memberSmsEnabled: false },
+      message: "The gym's saved provider handles member texts. Member texts are off. Turn them on in Go-live when ready.",
+    });
+  });
+  it.each([
+    { smsConfig: null, status: 'not_configured', message: 'No SMS provider is configured.' },
+    { smsConfig: 'sensitive-invalid-ciphertext', status: 'warning', message: 'The saved SMS settings could not be read. Replace or remove them in Settings.' },
+  ])('reports $status without an invitation to turn texts on', async ({ smsConfig, status, message }) => {
+    const id = uuidv7();
+    await factory('gyms', id, { memberSmsEnabled: false, smsConfig });
+    expect(await tile('sms', id)).toMatchObject({ status, details: { configured: false, memberSmsEnabled: false }, message });
   });
   it('keeps the SMS-on warning and latest failed test when saved settings are unreadable', async () => {
     const id = uuidv7();

@@ -110,7 +110,7 @@ export function createStatusProviders(options: StatusOptions = {}) {
         message: [
           configured ? statusMessage(source === 'demo' ? 'smsDemo' : 'smsConfigured') : !unreadable && statusMessage('smsMissing'),
           gym.memberSmsEnabled && !configured && statusMessage('smsOnWithoutProvider'),
-          !gym.memberSmsEnabled && statusMessage('smsOff'),
+          configured && !unreadable && !gym.memberSmsEnabled && statusMessage('smsOff'),
           unreadable && statusMessage('smsUnreadable'),
           refused > 0 && statusMessage('smsCapReached'),
           test?.result === 'failed' && statusMessage('smsTestFailed'),
