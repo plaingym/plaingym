@@ -72,7 +72,19 @@ for (const { name: size, viewport } of viewports) {
     await page.waitForURL(url => url.origin === sandbox.origin && url.pathname.startsWith('/l/'));
     await expect(page.locator('main h1')).toBeVisible();
     await accessibleThemes(page, info, size + '-keyboard-payment-return');
+    const bankLabel = 'Example Bank account ending 6789';
+    await page.route('**/api/portal/payment-methods', async route => {
+      const response = await route.fetch();
+      const body = await response.json();
+      body.data = [{ id: crypto.randomUUID(), type: 'us_bank_account', bankName: 'Example Bank', brand: null, last4: '6789',
+        expiryMonth: null, expiryYear: null, isDefault: true }];
+      await route.fulfill({ response, json: body });
+    });
     await page.goto(sandbox.origin + '/portal/billing');
+    const bank = page.getByRole('listitem').filter({ hasText: bankLabel });
+    await expect(bank.getByText('Default payment method', { exact: true })).toBeVisible();
+    await expect(bank.getByText(/expir/i)).toHaveCount(0);
+    await accessibleThemes(page, info, size + '-portal-payment-methods');
     // Fake Checkout does not dispatch payment webhooks here; use an already paid sandbox invoice.
     await keyboardActivate(page, page.getByRole('button', { name: 'Download receipt', exact: true }).first());
     const receipt = page.getByRole('link', { name: 'Open receipt', exact: true });

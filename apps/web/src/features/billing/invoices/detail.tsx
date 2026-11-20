@@ -104,7 +104,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
     <PageSection title={household.data?.name ?? text('household')}>
       <dl className="grid min-w-0 gap-3 sm:grid-cols-2">
         <div><dt>{text('number')}</dt><dd>{invoice.number ?? text('draft')}</dd></div>
-        <div><dt>{text('status')}</dt><dd><Badge>{text(invoice.status)}</Badge></dd></div>
+        <div><dt>{text('status')}</dt><dd><Badge tone={invoice.status === 'processing' ? 'muted' : 'default'}>{text(invoice.status)}</Badge></dd></div>
         <div><dt>{text('amount')}</dt><dd>{money(invoice.amountCents, invoice.currency)}</dd></div>
         <div><dt>{text('dueOn')}</dt><dd>{calendarDateLabel(invoice.dueOn)}</dd></div>
       </dl>

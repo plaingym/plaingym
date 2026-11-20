@@ -16,7 +16,7 @@ for (const width of [360, 1280]) {
       const page = await context.newPage();
       await page.goto(gymOrigin + '/admin/members/' + member.id + '#memberTabs.invoices');
       await expect(page.getByRole('button', { name: 'Import cards from Stripe', exact: true })).toBeVisible();
-      await expect(page.getByText('No saved cards', { exact: true })).toBeVisible();
+      await expect(page.getByText('No saved payment methods', { exact: true })).toBeVisible();
       await page.route(`**/api/billing/households/${household.id}/payment-methods/import`, route => route.fulfill({ json: { data: { queued: true } } }));
       await page.getByRole('button', { name: 'Import cards from Stripe', exact: true }).click();
       await expect(page.getByText(/Card import queued/)).toBeVisible();
@@ -26,7 +26,7 @@ for (const width of [360, 1280]) {
         { id: firstId, createdAt: new Date().toISOString(), householdId: household.id,
           type: 'card', bankName: null, brand: 'visa', last4: '4242', expiryMonth: 12, expiryYear: 2035, isDefault: !selected || removed, revokedAt: null },
         { id: secondId, createdAt: new Date().toISOString(), householdId: household.id,
-          type: 'card', bankName: null, brand: 'visa', last4: '4444', expiryMonth: 12, expiryYear: 2035, isDefault: selected && !removed, revokedAt: removed ? new Date().toISOString() : null },
+          type: 'acss_debit', bankName: null, brand: null, last4: '4444', expiryMonth: null, expiryYear: null, isDefault: selected && !removed, revokedAt: removed ? new Date().toISOString() : null },
       ];
       await page.route(url => url.pathname === `/api/billing/households/${household.id}/payment-methods`, route => route.fulfill({ json: {
         data: cards(), pagination: { total: 2, offset: 0, limit: 25 },
@@ -37,21 +37,23 @@ for (const width of [360, 1280]) {
       await page.route(`**/api/billing/households/${household.id}/payment-methods/${secondId}/revoke`, route => {
         removed = true; return route.fulfill({ status: 503, json: {} });
       });
-      await page.getByRole('button', { name: 'Refresh cards', exact: true }).click();
+      await page.getByRole('button', { name: 'Refresh payment methods', exact: true }).click();
       await expect(page.getByText(/4242/)).toBeVisible();
-      await expect(page.getByText('Default card', { exact: true })).toBeVisible();
+      await expect(page.getByText('Default payment method', { exact: true })).toBeVisible();
       await page.getByRole('button', { name: 'Make default', exact: true }).click();
       await page.getByRole('button', { name: 'Confirm', exact: true }).click();
-      const second = page.getByRole('listitem').filter({ hasText: '4444' });
-      await expect(second.getByText('Default card', { exact: true })).toBeVisible();
-      await second.getByRole('button', { name: 'Remove card', exact: true }).click();
+      const second = page.getByRole('listitem').filter({ hasText: 'Bank account ending 4444' });
+      await expect(second.getByText('Default payment method', { exact: true })).toBeVisible();
+      await second.getByRole('button', { name: 'Remove payment method', exact: true }).click();
+      await expect(page.getByRole('region', { name: 'Remove saved payment method' }).getByText(/^Bank account ending 4444 · Remove/)).toBeVisible();
       await accessibleLayout(page, info, 'household-card-confirm-' + width);
       await page.getByRole('button', { name: 'Confirm', exact: true }).click();
       await expect(page.getByRole('alert')).toBeVisible();
-      await page.getByRole('button', { name: 'Back to cards', exact: true }).click();
+      await page.getByRole('button', { name: 'Back to payment methods', exact: true }).click();
       await expect(second.getByText('Removed', { exact: true })).toBeVisible();
-      await expect(second.getByText('Default card', { exact: true })).toHaveCount(0);
+      await expect(second.getByText('Default payment method', { exact: true })).toHaveCount(0);
       await accessibleLayout(page, info, 'household-card-import-' + width);
+      await info.attach('household-payment-methods-' + width, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
       await mkdir('coverage/customer-card-import', { recursive: true });
       await writeFile(`coverage/customer-card-import/${width}-household.png`, await page.screenshot({ fullPage: true }));
       const settings = (await owner.json<{ data: { currency: string } }>('/api/settings')).data;
@@ -92,7 +94,7 @@ for (const width of [360, 1280]) {
       });
       await page.getByRole('button', { name: 'Import cards from Stripe', exact: true }).click();
       await expect(page.getByText(/Card import queued/)).toBeVisible();
-      await page.getByRole('button', { name: 'Refresh cards', exact: true }).click();
+      await page.getByRole('button', { name: 'Refresh payment methods', exact: true }).click();
       await accessibleLayout(page, info, 'customer-card-import-' + width);
       await mkdir('coverage/customer-card-import', { recursive: true });
       await writeFile(`coverage/customer-card-import/${width}.png`, await page.screenshot({ fullPage: true }));

@@ -7,16 +7,18 @@ household `Autocomplete`. Receipt, cash/check, saved-card confirmation, refund,
 pay-link, void and review-hold views stay inside invoice details,
 with a back control and focus restored to the action that opened the view.
 
-Household billing and invoice details share `CardList`, including saved-card
-confirmations, before an invoice exists. Staff with
+Household billing and invoice details share `CardList` for payment methods and
+their confirmations. Household billing is available before an invoice exists. Staff with
 `payments.record` can choose **Import cards from Stripe** there or in invoice
-details. The action queues bounded jobs and offers **Refresh cards** to read their
+details. The action queues bounded jobs and offers **Refresh payment methods** to read their
 results. The household page has one import control, including when an invoice
-dialog is open. Refresh invalidates only this household's card lists and charge
+dialog is open. Refresh invalidates only this household's method lists and charge
 eligibility. Default and removal actions require `payments.record`, and refresh
 these queries on success and error because local removal can precede a Stripe outage.
-Removal help starts with the card's last four digits; promotion help appears only
-for the current active default, including after a failed removal refresh.
+Card rows show the network, last four digits and expiry. Bank rows show the bank
+name when available and the account's last four digits. Removal help identifies
+the method, and promotion help appears only for the current active default,
+including after a failed removal refresh.
 
 Imports preserve the selected default and never restore a removed card. When a
 default needs replacing, import, removal and test-card clearing share the newest-first
@@ -34,8 +36,8 @@ the follow-up callback only sets that read window. Failed or pending processor
 answers do not start it. Releasing a hold or sending a pay link may settle much
 later; use Refresh credits after those actions to read the latest balance.
 
-The invoice status filter lists only statuses the app writes. The API still accepts
-the unused `processing` filter value for compatibility.
+The invoice list and detail show a muted **Processing** badge for processing
+invoices. The API accepts `processing` as a filter value.
 
 The registered member profile tab resolves the member's household and requests
 that household's invoices. Cache keys include gym, household/member, filters and

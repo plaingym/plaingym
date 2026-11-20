@@ -30,7 +30,7 @@ from the member's profile, on its **Portal access** tab:
 1. Open **Members**, then the member (or the household's payer).
 2. On **Portal access**, enter the **Login email** and choose the access:
    * **Whole household (payer)**: manages everyone in the household, sees invoices
-     and cards, signs for children;
+     and saved payment methods, signs for children;
    * **This member only**: an adult sees only their own profile and bookings. It needs
      a date of birth showing the person is at least 18. Children use their payer's
      login.
@@ -84,6 +84,10 @@ app* option.
 Paid, partially refunded and fully refunded invoices offer **Download receipt**.
 The PDF includes the total successfully refunded amount when there is one;
 pending or unsuccessful refunds do not count. Receipts also work in demo sandboxes.
+
+The payer's **Payment methods** section marks the household default. It shows a
+card's network, last four digits and expiry. Saved bank accounts show the bank
+name when available and the account's last four digits.
 
 ## How booking works
 

@@ -31,6 +31,14 @@ it('groups invoice line quantities while keeping invoice identifiers unchanged',
   start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} client={f.client} access={desk}/>);
   expect(await screen.findByText(/1,200 ×/)).toBeDefined();
 });
+it('shows a muted Processing badge in the invoice list and detail', async () => {
+  const f = transport({ invoice: { ...invoice, status: 'processing' } });
+  start(<InvoiceList gymId={gymId} householdId={home} access={desk} custom catalog client={f.client}/>);
+  expect((await screen.findByText('Processing')).classList.contains('bg-muted')).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: 'View invoice ' + invoice.number }));
+  const dialog = await screen.findByRole('dialog');
+  expect((await within(dialog).findByText('Processing')).classList.contains('bg-muted')).toBe(true);
+});
 function transport(initial: Partial<InvoiceDetail> = {}) {
   const detail: InvoiceDetail = { invoice, lineItems: [{ id: id(7), createdAt, householdId: home, invoiceId: invoice.id, kind: 'charge', description: 'Drop-in',
     membershipId: null, chargeTypeId: null, planId: null, billedUnitAmountCents: null, billedDiscount: null,
@@ -67,7 +75,7 @@ it('offers one import control when opening an invoice from household billing', a
     <InvoiceList gymId={gymId} householdId={home} access={desk} custom catalog client={f.client}/></>);
   fireEvent.click(await screen.findByRole('button', { name: 'View invoice ' + invoice.number }));
   const dialog = await screen.findByRole('dialog');
-  await within(dialog).findByRole('button', { name: 'Remove card' });
+  await within(dialog).findByRole('button', { name: 'Remove payment method' });
   expect(within(dialog).queryByRole('button', { name: 'Import cards from Stripe' })).toBeNull();
   expect(screen.getAllByRole('button', { name: 'Import cards from Stripe', hidden: true })).toHaveLength(1);
 });

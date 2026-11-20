@@ -99,6 +99,16 @@ describe('billing alerts with the real PostgreSQL queue and RLS', () => {
     await restarted.alerts.cardExpiry(f.gymId); await drain(restarted.queue);
     expect(await f.readJobs()).toHaveLength(2); expect(f.email.messages).toHaveLength(2);
   });
+  it.each(['us_bank_account', 'acss_debit'] as const)('does not queue or send an expiry email for a default %s', async type => {
+    const f = await fixture();
+    await db.forGym(f.gymId, tx => tx.update(paymentMethods).set({
+      type, brand: null, bankName: 'Example Bank', expiryMonth: null, expiryYear: null,
+    }).where(eq(paymentMethods.id, f.card.id)));
+    await f.alerts.cardExpiry(f.gymId);
+    await drain(f.queue);
+    expect(await f.readJobs()).toHaveLength(0);
+    expect(f.email.messages).toHaveLength(0);
+  });
   it.each(['card', 'dispute'] as const)('waits for mail readiness without consuming the %s delivery key', async kind => {
     const f = await fixture();
     if (kind === 'dispute') await factory('invoices', f.gymId, { disputeId: 'dp_ready', disputeStatus: 'open' });

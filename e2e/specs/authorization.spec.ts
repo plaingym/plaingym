@@ -531,7 +531,7 @@ for (const width of [360, 1280]) test('portal class credits respect payer and ad
   await expect(page.getByText('12 classes left', { exact: true })).toBeVisible();
   await expect(page.getByText('Kim Credit reader', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Invoices', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: 'Saved cards', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Payment methods', exact: true })).toHaveCount(0);
   await accessibleLayout(page, info, 'adult-credits-' + width);
   await page.screenshot({ path: info.outputPath('adult-credits-' + width + '.png'), fullPage: true });
   await owner.json('/api/billing/credits/adjust', 'POST', { memberId: adult.id, credits: -12, reason: 'Classes used', adjustmentId: crypto.randomUUID() });

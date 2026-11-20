@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClientProvider } from '@tanstack/react-query';
+import type { PortalPaymentMethod } from '@plaingym/shared/contracts';
 import { ShellServicesContext } from '../../../app/context.js';
 import type { ShellServices } from '../../../app/services.js';
 import { portalHouseholdsKey, portalLoginKey } from '../household/api.js';
@@ -13,8 +14,9 @@ import { registration } from './registrations.js';
 const id = (n: number) => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
 const gymId = id(1), userId = id(2), householdId = id(3);
 const row = { memberId: id(4), firstName: 'Alex', lastName: 'Rivera', balance: 1200, soonestExpiry: '2026-11-12T08:00:00Z' };
-function mount({ data = [row], role = 'payer', answeredFor = householdId, fail = false, contextResponse }: {
+function mount({ data = [row], methods = [], role = 'payer', answeredFor = householdId, fail = false, contextResponse }: {
   data?: (typeof row | Omit<typeof row, 'soonestExpiry'> & { soonestExpiry: null })[];
+  methods?: PortalPaymentMethod[];
   role?: 'payer' | 'member'; answeredFor?: string; fail?: boolean; contextResponse?: () => Promise<Response>;
 } = {}) {
   const cache = portalTestCache(gymId, userId, householdId, { defaultOptions: { queries: { retry: false } } });
@@ -24,7 +26,7 @@ function mount({ data = [row], role = 'payer', answeredFor = householdId, fail =
     if (path === '/api/portal/context') return contextResponse ? contextResponse() : Response.json({ data: { role, memberId: role === 'member' ? row.memberId : null }, householdId });
     if (path === '/api/portal/credits') return fail ? new Response(null, { status: 503 }) : Response.json({ data, householdId: answeredFor });
     if (path.startsWith('/api/portal/invoices?')) return Response.json({ data: [], pagination: { limit: 20, offset: 0, total: 0 }, householdId });
-    if (path === '/api/portal/payment-methods') return Response.json({ data: [], householdId });
+    if (path === '/api/portal/payment-methods') return Response.json({ data: methods, householdId });
     return new Response(null, { status: 503 });
   });
   vi.stubGlobal('fetch', fetcher);
@@ -35,6 +37,20 @@ function mount({ data = [row], role = 'payer', answeredFor = householdId, fail =
   return { cache, fetcher };
 }
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+it('shows a bank account as the default without expiry and keeps the card label and expiry', async () => {
+  mount({ data: [], methods: [
+    { id: id(5), type: 'acss_debit', bankName: null, brand: null, last4: '6789', expiryMonth: null, expiryYear: null, isDefault: true },
+    { id: id(6), type: 'card', bankName: null, brand: 'visa', last4: '4242', expiryMonth: 8, expiryYear: 2030, isDefault: false },
+  ] });
+  const bank = await screen.findByText('Bank account ending 6789');
+  const method = within(bank.closest('li')!);
+  expect(screen.getByRole('heading', { name: 'Payment methods' })).toBeTruthy();
+  expect(method.getByText('Default payment method')).toBeTruthy();
+  expect(method.queryByText(/expir/i)).toBeNull();
+  expect(screen.getByText('Visa •••• 4242')).toBeTruthy();
+  expect(screen.getByText('Expires 08/2030')).toBeTruthy();
+});
 
 it('waits for the role before showing either billing layout, and retries a failed context alone', async () => {
   let release!: (response: Response) => void;
@@ -70,7 +86,7 @@ it('lets adult members read credits without fetching or showing invoices, cards 
   expect(await screen.findByText('1,200 classes left')).toBeTruthy();
   expect(f.fetcher.mock.calls.map(([path]) => String(path))).toEqual(expect.arrayContaining(['/api/portal/credits', '/api/portal/context']));
   expect(screen.queryByRole('heading', { name: 'Invoices' })).toBeNull();
-  expect(screen.queryByRole('heading', { name: 'Saved cards' })).toBeNull();
+  expect(screen.queryByRole('heading', { name: 'Payment methods' })).toBeNull();
   expect(screen.queryByRole('button', { name: /Pay|card/ })).toBeNull();
   expect(registration.portalNav?.[0]?.permission).toEqual({ kind: 'member', capability: 'profile.read' });
   expect(registration.portalPages?.[0]?.permission).toEqual({ kind: 'member', capability: 'profile.read' });

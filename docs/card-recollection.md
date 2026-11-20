@@ -87,17 +87,17 @@ cards may already exist:
 
 Staff with payment collection permission can import attached cards from the linked,
 gym-tagged Stripe customer on a member's **Invoices** tab or in invoice details.
-Choose **Import cards from Stripe**, then **Refresh cards** after the background
-import finishes. Both views let staff make a card default or remove it, including
+Choose **Import cards from Stripe**, then **Refresh payment methods** after the background
+import finishes. Both views let staff make a payment method default or remove it, including
 before the first invoice. Import outcomes and skipped cards appear in the audit trail.
 
-Removing a default card promotes the newest remaining card whose stored expiry
-has not passed in the gym's timezone. Cards are ordered by processor creation time
+Removing a default payment method promotes the newest remaining method with no expiry
+or whose stored expiry has not passed in the gym's timezone. Methods are ordered by processor creation time
 when known (local creation time otherwise), then local creation time and row ID.
-If all remaining cards have expired, the newest is promoted. If none remain,
-automatic card payments stop until another card is saved. A Stripe detach error
+If all remaining methods have expired, the newest is promoted. If none remain,
+automatic payments stop until another method is saved. A Stripe detach error
 can occur after the local removal; refresh shows that change and staff can retry
-the detach with **Retry card removal**.
+the detach with **Retry payment method removal**.
 
 * A card whose expiry month has passed makes the *Saved cards* check show *Needs
   attention*, and members get card-expiry emails while member emails are on.

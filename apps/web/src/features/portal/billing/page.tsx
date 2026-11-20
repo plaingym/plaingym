@@ -2,7 +2,7 @@
 import { formatCount } from '../../../lib/count.js';
 import { calendarDateLabel as date, dateLabel } from '../../../lib/instant.js';
 import { PortalRecovery } from '../household/recovery.js';
-import { cardBrand } from '../../../lib/card-brand.js';
+import { paymentMethodLabel } from '../../../lib/card-brand.js';
 import { useState } from 'react';
 import { cardChargeIssue } from '@plaingym/shared/money';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -34,7 +34,7 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
   const [offset, setOffset] = useState(0), [open, setOpen] = useState<string | null>(null), [receipt, setReceipt] = useState<string | null>(null);
   const credits = useQuery({ queryKey: [...scope.key, 'billing', 'credits'], enabled: ready, queryFn: async () => own(await scope.call(contracts.classCredits)).data });
   const invoices = useQuery({ queryKey: [...scope.key, 'billing', 'invoices', offset], enabled: ready && payer, queryFn: async () => own(await scope.call(contracts.invoices, undefined, {}, { limit: pageSize, offset })) });
-  const cards = useQuery({ queryKey: [...scope.key, 'billing', 'cards'], enabled: ready && payer, queryFn: async () => own(await scope.call(contracts.paymentMethods)).data });
+  const methods = useQuery({ queryKey: [...scope.key, 'billing', 'cards'], enabled: ready && payer, queryFn: async () => own(await scope.call(contracts.paymentMethods)).data });
   const checkout = useMutation({ mutationFn: async (invoiceId: string | null) => {
     // A Checkout started for another household than this page's is never followed.
     const started = own(invoiceId ? await scope.call(contracts.payInvoice, undefined, { invoiceId }) : await scope.call(contracts.updateCard));
@@ -89,14 +89,14 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
       </StackedItem>)}</StackedList>}
       {invoices.data && <Pager offset={offset} total={invoices.data.pagination.total} limit={pageSize} onChange={setOffset} previousLabel={text('previous')} nextLabel={text('next')}/>}
     </PageSection>
-    <PageSection title={text('cards')} description={text('checkoutNote')}
-      actions={<Button variant="outline" disabled={checkout.isPending || !cards.isSuccess} onClick={() => checkout.mutate(null)}>{text(cards.data?.length ? 'updateCard' : 'addCard')}</Button>}>
-      {(cards.isPending || (!cards.data && scope.settling)) ? <LoadingState /> : cards.isError && <ErrorState onRetry={() => void cards.refetch()} />}
-      {cards.data?.length === 0 && <EmptyState title={text('noCards')} />}
-      {!!cards.data?.length && <StackedList>{cards.data.map(card => <StackedItem key={card.id} className="flex-row flex-wrap items-center justify-between gap-2">
-        <span className="min-w-0 wrap-anywhere">{card.brand ? cardBrand(card.brand) : text('card')} •••• {card.last4 ?? '????'}
-          {card.expiryMonth && card.expiryYear && <span className="block text-sm text-muted-foreground">{text('expires', { month: String(card.expiryMonth).padStart(2, '0'), year: card.expiryYear })}</span>}</span>
-        {card.isDefault && <Badge tone="success">{text('default')}</Badge>}
+    <PageSection title={text('methods')} description={text('checkoutNote')}
+      actions={<Button variant="outline" disabled={checkout.isPending || !methods.isSuccess} onClick={() => checkout.mutate(null)}>{text(methods.data?.some(method => method.type === 'card') ? 'updateCard' : 'addCard')}</Button>}>
+      {(methods.isPending || (!methods.data && scope.settling)) ? <LoadingState /> : methods.isError && <ErrorState onRetry={() => void methods.refetch()} />}
+      {methods.data?.length === 0 && <EmptyState title={text('noMethods')} />}
+      {!!methods.data?.length && <StackedList>{methods.data.map(method => <StackedItem key={method.id} className="flex-row flex-wrap items-center justify-between gap-2">
+        <span className="min-w-0 wrap-anywhere">{paymentMethodLabel(method, text)}
+          {method.type === 'card' && method.expiryMonth && method.expiryYear && <span className="block text-sm text-muted-foreground">{text('expires', { month: String(method.expiryMonth).padStart(2, '0'), year: method.expiryYear })}</span>}</span>
+        {method.isDefault && <Badge tone="success">{text('default')}</Badge>}
       </StackedItem>)}</StackedList>}
     </PageSection>
     </>}

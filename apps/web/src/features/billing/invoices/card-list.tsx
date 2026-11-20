@@ -8,7 +8,7 @@ import { Badge, StackedItem, StackedList } from '../../../components/ui/table.js
 import { Pager } from '../../../components/ui/pager.js';
 import { LoadingState, ErrorState, EmptyState } from '../../../components/ui/states.js';
 import { useDialogOperation } from '../../../components/ui/dialog.js';
-import { cardBrand } from '../../../lib/card-brand.js';
+import { paymentMethodLabel } from '../../../lib/card-brand.js';
 import { invoiceClient, invoiceError, type InvoiceClient } from './api.js';
 import { text } from './format.js';
 
@@ -48,7 +48,7 @@ export function CardList({ gymId, householdId, allowed, client = invoiceClient }
       {cards.isPending && <LoadingState/>}{cards.isError && <ErrorState onRetry={() => void cards.refetch()}/>}
       {cards.data?.data.length === 0 && <EmptyState title={text('noCards')}/>}
       <StackedList>{cards.data?.data.map(card => <StackedItem key={card.id}>
-        <span>{card.brand ? cardBrand(card.brand) : text('card')} · {card.last4 ?? text('unknownCard')} · {card.expiryMonth}/{card.expiryYear}</span>
+        <span className="wrap-anywhere">{paymentMethodLabel(card, text)}{card.type === 'card' && <> · {card.expiryMonth}/{card.expiryYear}</>}</span>
         {card.isDefault && <Badge className="self-start">{text('default')}</Badge>}
         {card.revokedAt && <Badge className="self-start">{text('removed')}</Badge>}
         {allowed && <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
@@ -64,7 +64,8 @@ export function CardList({ gymId, householdId, allowed, client = invoiceClient }
       <h3 id={title} ref={heading} tabIndex={-1} className="text-lg font-semibold">{text(action.kind)}</h3>
       <form onSubmit={event => void submit(event)} className="space-y-4">
         {error && <Alert variant="error" focusOnReveal>{error}</Alert>}
-        <p>{selectedCard.last4 ?? text('unknownCard')} · {text(action.kind === 'revoke' ? 'removeHelp' : 'defaultHelp')}</p>
+        <p className="wrap-anywhere">{paymentMethodLabel(selectedCard, (key, values) => text(key === 'cardLabel' ? 'cardConfirmationLabel' : key, values))}
+          {' · '}{text(action.kind === 'revoke' ? 'removeHelp' : 'defaultHelp')}</p>
         {action.kind === 'revoke' && selectedCard.isDefault && !selectedCard.revokedAt && <p>{text('removeDefaultHelp')}</p>}
         <Button type="submit" disabled={busy || !allowed} className="w-full sm:w-auto">{text(busy ? 'saving' : 'confirm')}</Button>
       </form>

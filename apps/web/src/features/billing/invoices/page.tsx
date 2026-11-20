@@ -38,7 +38,7 @@ export function InvoiceList({ gymId, householdId, access, custom, catalog, clien
     {rows.isPending && <LoadingState/>}{rows.isError && <ErrorState onRetry={() => void rows.refetch()}/>}
     {rows.data?.data.length === 0 && <EmptyState title={text(status ? 'empty' : 'emptyAll')} description={status ? text('emptyHelp') : undefined}/>}
     <StackedList>{rows.data?.data.map(invoice => <StackedItem key={invoice.id}>
-      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2"><span className="font-semibold">{text('number')} {invoice.number ?? text('draft')}</span><Badge>{text(invoice.status)}</Badge></div>
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2"><span className="font-semibold">{text('number')} {invoice.number ?? text('draft')}</span><Badge tone={invoice.status === 'processing' ? 'muted' : 'default'}>{text(invoice.status)}</Badge></div>
       {!householdId && <HouseholdName gymId={gymId} householdId={invoice.householdId} client={client}/>}
       <p>{money(invoice.amountCents, invoice.currency)} · {calendarDateLabel(invoice.dueOn)}</p>
       <Button variant="outline" onClick={() => setSelected(invoice.id)}>{text('viewInvoice')} {invoice.number ?? text('draft')}</Button>
