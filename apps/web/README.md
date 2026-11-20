@@ -10,7 +10,9 @@ navigation in admin, portal and kiosk; a different server identity reloads the p
 A second mismatch stops admin and portal navigation rather than repeatedly reloading stale assets.
 A link's preload doesn't run the check, and `pnpm dev` turns it off.
 Navigation and kiosk requests share successful checks for a minute; after a failed or timed-out check,
-the next attempt waits ten seconds. A pending reload blocks kiosk credentials.
+the next attempt waits ten seconds. After scheduling a reload, the guard skips
+navigation checks and holds kiosk credentials for ten seconds. If the same page is
+still open, the next navigation or kiosk request can check again immediately.
 If reloading leaves the tablet on an older bundle, check-in remains available
 with a notice asking staff to reload the tablet. A fragment-only destination also reloads the bundle;
 removing a fragment replaces the URL before reloading, without leaving a trailing `#`.

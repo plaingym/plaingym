@@ -1,47 +1,92 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { followServerVersion } from './version.js';
 
 describe('the shared navigation version check', () => {
   const built = { version: '1.3.0', commit: '3'.repeat(40) };
   const navigation = { preload: false, location: { href: '/portal/schedule?day=2026-11-07#classes' } };
+  const reloadKey = 'plaingym-version-reload';
   let checkOnNavigation: typeof import('./version.js').checkOnNavigation;
-  beforeEach(async () => { vi.resetModules(); ({ checkOnNavigation } = await import('./version.js')); });
-  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+  let followServerVersion: typeof import('./version.js').followServerVersion;
+  beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(100_000);
+    vi.resetModules();
+    ({ checkOnNavigation, followServerVersion } = await import('./version.js'));
+  });
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
   function fixture(remote: typeof built) {
     const values = new Map<string, string>();
     return { built, destination: navigation.location.href, request: vi.fn(async () => Response.json(remote)) as unknown as typeof fetch,
       reload: vi.fn(), storage: { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } } };
   }
-  it('shares the navigation throttle with kiosk checks and supports an explicit forced check', async () => {
+  it('shares the navigation throttle with kiosk checks', async () => {
     const { checkServerVersion } = await import('./version.js');
-    const now = vi.spyOn(Date, 'now').mockReturnValue(100_000);
     const f = fixture(built);
     await checkOnNavigation(navigation, { ...f, development: false });
-    now.mockReturnValue(159_999);
+    vi.setSystemTime(159_999);
     await checkServerVersion(f);
     expect(f.request).toHaveBeenCalledOnce();
-    await checkServerVersion({ ...f, force: true });
+    vi.setSystemTime(160_000);
+    await checkServerVersion(f);
     expect(f.request).toHaveBeenCalledTimes(2);
-    now.mockReturnValue(219_999);
-    await checkServerVersion(f);
-    expect(f.request).toHaveBeenCalledTimes(3);
   });
-  it('announces a stale bundle after an unsuccessful reload and clears the notice when versions match', async () => {
-    const { checkServerVersion, isStaleVersion, subscribeToStaleVersion } = await import('./version.js');
-    const f = fixture({ ...built, version: '1.4.0' }), changed = vi.fn();
+  it('skips navigation checks during the reload hold and reports the same mismatch at the deadline', async () => {
+    const { isStaleVersion, isVersionReloadPending, subscribeToStaleVersion } = await import('./version.js');
+    const f = { ...fixture({ ...built, version: '1.4.0' }), development: false }, changed = vi.fn();
     const unsubscribe = subscribeToStaleVersion(changed);
-    await checkServerVersion(f);
-    // The ordinary reload after a release is not announced.
+    await checkOnNavigation(navigation, f);
+    vi.setSystemTime(109_999);
+    await checkOnNavigation({ ...navigation, location: { href: '/login' } }, f);
+    expect(f.request).toHaveBeenCalledOnce();
     expect(f.reload).toHaveBeenCalledOnce();
+    expect(isVersionReloadPending()).toBe(true);
     expect(isStaleVersion()).toBe(false);
     expect(changed).not.toHaveBeenCalled();
-    await expect(checkServerVersion(f)).rejects.toThrow('could not load');
+
+    vi.setSystemTime(110_000);
+    await expect(checkOnNavigation(navigation, f)).rejects.toThrow('could not load');
+    expect(f.request).toHaveBeenCalledTimes(2);
+    expect(f.reload).toHaveBeenCalledOnce();
+    expect(isVersionReloadPending()).toBe(false);
     expect(isStaleVersion()).toBe(true);
     expect(changed).toHaveBeenCalled();
-    await checkServerVersion({ ...f, force: true, request: vi.fn(async () => Response.json(built)) });
+
+    vi.setSystemTime(170_000);
+    await checkOnNavigation(navigation, { ...f, request: vi.fn(async () => Response.json(built)) });
     expect(isStaleVersion()).toBe(false);
     unsubscribe();
+  });
+  it('shares the deadline probe and clears the reload marker when versions match', async () => {
+    const { checkServerVersion, isVersionReloadPending } = await import('./version.js');
+    const f = fixture({ ...built, version: '1.4.0' });
+    await checkServerVersion(f);
+    expect(f.storage.getItem(reloadKey)).toBe('1.4.0:' + built.commit);
+    vi.setSystemTime(110_000);
+    const reply = Promise.withResolvers<Response>();
+    const request = vi.fn(() => reply.promise);
+    const pending = checkServerVersion({ ...f, request });
+    expect(checkServerVersion({ ...f, request })).toBe(pending);
+    expect(request).toHaveBeenCalledOnce();
+    reply.resolve(Response.json(built));
+    await pending;
+    expect(f.storage.getItem(reloadKey)).toBeNull();
+    expect(isVersionReloadPending()).toBe(false);
+    expect(f.reload).toHaveBeenCalledOnce();
+  });
+  it('consumes the reload deadline when the probe fails and retries ten seconds later', async () => {
+    const { checkServerVersion } = await import('./version.js');
+    const f = fixture({ ...built, version: '1.4.0' });
+    await checkServerVersion(f);
+    const request = vi.fn().mockRejectedValueOnce(new TypeError('offline')).mockResolvedValueOnce(Response.json(built));
+    vi.setSystemTime(110_000);
+    await checkServerVersion({ ...f, request });
+    vi.setSystemTime(119_999);
+    await checkServerVersion({ ...f, request });
+    expect(request).toHaveBeenCalledOnce();
+    vi.setSystemTime(120_000);
+    await checkServerVersion({ ...f, request });
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(f.storage.getItem(reloadKey)).toBeNull();
   });
   it('announces a stale bundle when blocked storage stops the reload', async () => {
     const { checkServerVersion, isStaleVersion, isVersionReloadPending } = await import('./version.js');
@@ -54,7 +99,7 @@ describe('the shared navigation version check', () => {
   });
   it.each(['/kiosk', '/kiosk?mode=pin', '/kiosk/'])('lets the tablet render its stale notice after a reload fails at %s', async href => {
     const f = fixture({ ...built, version: '1.4.0' });
-    f.storage.setItem('plaingym-version-reload', '1.4.0:' + built.commit);
+    f.storage.setItem(reloadKey, '1.4.0:' + built.commit);
     await expect(checkOnNavigation({ preload: false, location: { href } }, { ...f, development: false })).resolves.toBeUndefined();
     const { isStaleVersion } = await import('./version.js');
     expect(isStaleVersion()).toBe(true);
@@ -69,19 +114,17 @@ describe('the shared navigation version check', () => {
     expect(navigated.reload).toHaveBeenCalledExactlyOnceWith(navigation.location.href);
   });
   it('checks at most once a minute across paths and search changes', async () => {
-    const now = vi.spyOn(Date, 'now').mockReturnValue(100_000);
     const f = { ...fixture(built), development: false };
     await checkOnNavigation(navigation, f);
-    now.mockReturnValue(159_999);
+    vi.setSystemTime(159_999);
     await checkOnNavigation({ ...navigation, location: { href: '/portal/schedule?day=2026-11-08' } }, f);
     await checkOnNavigation({ preload: false, location: { href: '/kiosk?mode=pin' } }, f);
     expect(f.request).toHaveBeenCalledOnce();
-    now.mockReturnValue(160_000);
+    vi.setSystemTime(160_000);
     await checkOnNavigation(navigation, f);
     expect(f.request).toHaveBeenCalledTimes(2);
   });
   it('bounds a stalled check and does not let another navigation start a check', async () => {
-    const now = vi.spyOn(Date, 'now').mockReturnValue(100_000);
     const f = { ...fixture(built), development: false };
     f.request = vi.fn((_url, init) => new Promise<Response>((_resolve, reject) => {
       init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
@@ -96,28 +139,27 @@ describe('the shared navigation version check', () => {
     f.request = vi.fn(async () => Response.json(built));
     await checkOnNavigation(navigation, f);
     expect(f.request).not.toHaveBeenCalled();
-    now.mockReturnValue(110_000);
+    vi.setSystemTime(110_000);
     await checkOnNavigation(navigation, f);
     expect(f.request).toHaveBeenCalledOnce();
   });
   it.each(['network', 'http', 'malformed'] as const)('waits ten seconds after a failed %s check, then a minute after an answer', async failure => {
-    const now = vi.spyOn(Date, 'now').mockReturnValue(100_000);
     const f = { ...fixture(built), development: false };
     const request = vi.fn().mockResolvedValue(Response.json(built));
     if (failure === 'network') request.mockRejectedValueOnce(new TypeError('offline'));
     else request.mockResolvedValueOnce(failure === 'http' ? new Response(null, { status: 503 }) : Response.json({}));
     f.request = request;
     await checkOnNavigation(navigation, f);
-    now.mockReturnValue(109_999);
+    vi.setSystemTime(109_999);
     await checkOnNavigation(navigation, f);
     expect(request).toHaveBeenCalledOnce();
-    now.mockReturnValue(110_000);
+    vi.setSystemTime(110_000);
     await checkOnNavigation(navigation, f);
     expect(request).toHaveBeenCalledTimes(2);
-    now.mockReturnValue(169_999);
+    vi.setSystemTime(169_999);
     await checkOnNavigation(navigation, f);
     expect(request).toHaveBeenCalledTimes(2);
-    now.mockReturnValue(170_000);
+    vi.setSystemTime(170_000);
     await checkOnNavigation(navigation, f);
     expect(request).toHaveBeenCalledTimes(3);
   });

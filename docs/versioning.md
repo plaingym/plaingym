@@ -197,9 +197,11 @@ and kiosk: a successful check holds for a minute, a check waits at most a second
 version or commit loads the destination of the navigation instead of the page being
 left. Preloads and the development server don't check, and a failed or timed-out check leaves
 navigation alone and waits ten seconds before another navigation can check again.
-Kiosk requests share this throttle and hold member credentials while a reload
-is pending. If the reload leaves an older bundle running, the kiosk keeps
-check-in available and asks staff to reload the tablet.
+Kiosk requests share this throttle. For ten seconds after scheduling a reload,
+the guard skips navigation checks and holds kiosk credentials. If the same page
+is still open at the deadline, the next navigation or kiosk request checks again.
+If the reload leaves an older bundle running, the kiosk keeps check-in available
+with strict response parsing and asks staff to reload the tablet.
 The portal service worker does not cache application pages or API responses.
 
 Versions with `+` build metadata are development builds. The release checker and

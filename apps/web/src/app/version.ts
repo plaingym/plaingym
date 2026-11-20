@@ -25,8 +25,8 @@ type FollowOptions = {
  */
 let nextCheck = -Infinity;
 let checking: Promise<void> | undefined;
-let reloadPending = false;
-export const isVersionReloadPending = () => reloadPending;
+let reloadDeadline: number | undefined;
+export const isVersionReloadPending = () => reloadDeadline !== undefined && Date.now() < reloadDeadline;
 let stale = false;
 const listeners = new Set<() => void>();
 export const subscribeToStaleVersion = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
@@ -36,9 +36,11 @@ function markStale(value: boolean) {
   for (const listener of listeners) listener();
 }
 /** Navigation and kiosk requests share one bounded check. A pending reload must still block credentials. */
-export function checkServerVersion(options: FollowOptions & { force?: boolean } = {}): Promise<void> | undefined {
+export function checkServerVersion(options: FollowOptions = {}): Promise<void> | undefined {
   if (checking) return checking;
-  if (!options.force && !reloadPending && Date.now() < nextCheck) return;
+  // If this document survives a reload attempt, check as soon as its deadline passes.
+  if (Date.now() < (reloadDeadline ?? nextCheck)) return;
+  reloadDeadline = undefined;
   let answered = false;
   checking = followServerVersion(options, () => { answered = true; })
     .finally(() => { nextCheck = Date.now() + (answered ? 60_000 : 10_000); checking = undefined; });
@@ -81,15 +83,15 @@ export async function followServerVersion(options: FollowOptions = {}, received:
   if (matches) markStale(false);
   // The notice is for a mismatch the reload cannot fix (blocked storage, a reload that failed or did not help), not
   // for the ordinary reload that follows a release.
-  const unresolved = (error: unknown) => { reloadPending = false; markStale(true); return error; };
+  const unresolved = (error: unknown) => { reloadDeadline = undefined; markStale(true); return error; };
   const key = 'plaingym-version-reload', target = `${remote.version}:${remote.commit}`;
   try {
     const storage = options.storage ?? sessionStorage;
-    if (matches) { reloadPending = false; storage.removeItem(key); return; }
+    if (matches) { reloadDeadline = undefined; storage.removeItem(key); return; }
     if (storage.getItem(key) === target) throw new Error('The page could not load the server version');
     storage.setItem(key, target);
   } catch (error) { throw matches ? error : unresolved(error); }
-  reloadPending = true;
+  reloadDeadline = Date.now() + 10_000;
   try { (options.reload ?? reloadDestination)(options.destination ?? window.location.href); }
   catch (error) { throw unresolved(error); }
 }

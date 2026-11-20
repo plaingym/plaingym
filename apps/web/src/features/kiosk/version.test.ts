@@ -6,7 +6,12 @@ import { KioskReloadError, kioskApi } from './api.js';
 import { qrCheckin } from './qr.api.js';
 
 vi.mock('../../app/version.js', () => ({ checkServerVersion: vi.fn(), isVersionReloadPending: vi.fn(() => false) }));
-afterEach(() => { vi.resetAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+afterEach(() => {
+  vi.useRealTimers(); vi.resetAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs();
+  // A test that drives the real version module gets a fresh copy of its throttle and stale state.
+  vi.resetModules();
+  sessionStorage.removeItem('plaingym-version-reload');
+});
 const calls = [
   () => kioskApi.lookup('device', 'Name', '1234'),
   () => kioskApi.checkin('device', { name: 'Name', pin: '1234', checkins: [] }),
@@ -32,12 +37,17 @@ it.each(calls)('checks the release before each kiosk request', async (call) => {
   expect(checkServerVersion).toHaveBeenCalledOnce();
   expect(fetcher).toHaveBeenCalledOnce();
 });
-it.each(calls)('does not send credentials when the release guard stops the old bundle', async (call) => {
+it.each(calls)('holds credentials when the shared check schedules a fresh reload', async (call) => {
   vi.stubEnv('DEV', false);
   vi.mocked(isVersionReloadPending).mockReturnValue(false);
   const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher);
-  vi.mocked(checkServerVersion).mockRejectedValue(new KioskReloadError('Loading the current kiosk'));
-  await expect(call()).rejects.toThrow('Loading the current kiosk');
+  const probe = Promise.withResolvers<void>();
+  vi.mocked(checkServerVersion).mockReturnValue(probe.promise);
+  const pending = call();
+  expect(fetcher).not.toHaveBeenCalled();
+  vi.mocked(isVersionReloadPending).mockReturnValue(true);
+  probe.resolve();
+  await expect(pending).rejects.toBeInstanceOf(KioskReloadError);
   expect(fetcher).not.toHaveBeenCalled();
 });
 it.each(calls)('still sends the request when the release guard itself fails', async (call) => {
@@ -48,4 +58,36 @@ it.each(calls)('still sends the request when the release guard itself fails', as
   vi.mocked(checkServerVersion).mockRejectedValue(new Error('The page could not load the server version'));
   await call().catch(() => undefined);
   expect(fetcher).toHaveBeenCalledOnce();
+});
+it('rechecks at the reload deadline and parses lookup replies strictly in the stale bundle', async () => {
+  vi.stubEnv('DEV', false);
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(100_000);
+  const version = await vi.importActual<typeof import('../../app/version.js')>('../../app/version.js');
+  const built = { version: '1.3.0', commit: '3'.repeat(40) };
+  const remote = { ...built, version: '1.4.0' };
+  const reload = vi.fn();
+  const fetcher = vi.fn()
+    .mockResolvedValueOnce(Response.json(remote))
+    .mockResolvedValueOnce(Response.json(remote))
+    .mockResolvedValueOnce(Response.json({ data: { status: 'see_front_desk' } }))
+    .mockResolvedValueOnce(Response.json({ data: { status: 'see_front_desk', amount: 42 } }));
+  vi.stubGlobal('fetch', fetcher);
+  vi.mocked(checkServerVersion).mockImplementation(options => version.checkServerVersion({ ...options, built }));
+  vi.mocked(isVersionReloadPending).mockImplementation(version.isVersionReloadPending);
+
+  await version.checkOnNavigation({ preload: false, location: { href: '/kiosk' } }, { built, reload, development: false });
+  vi.setSystemTime(109_999);
+  await expect(kioskApi.lookup('device', 'Name', '1234')).rejects.toBeInstanceOf(KioskReloadError);
+  expect(fetcher).toHaveBeenCalledOnce();
+
+  vi.setSystemTime(110_000);
+  await expect(kioskApi.lookup('device', 'Name', '1234')).resolves.toEqual({ status: 'see_front_desk' });
+  expect(fetcher.mock.calls.map(([path]) => path)).toEqual(['/healthz', '/healthz', '/api/kiosk/lookup']);
+  expect(version.isStaleVersion()).toBe(true);
+  expect(reload).toHaveBeenCalledOnce();
+  await expect(kioskApi.lookup('device', 'Name', '1234')).rejects.toMatchObject({
+    issues: [expect.objectContaining({ code: 'unrecognized_keys', keys: ['amount'] })],
+  });
+  expect(fetcher).toHaveBeenCalledTimes(4);
 });

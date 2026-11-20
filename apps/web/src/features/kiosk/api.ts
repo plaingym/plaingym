@@ -36,9 +36,10 @@ export class KioskReloadError extends Error {}
 export async function checkKioskVersion() {
   if (import.meta.env.DEV) return;
   try {
+    // Once the hold expires, this request can recheck even if the kiosk never left the page.
     if (isVersionReloadPending()) throw new KioskReloadError('Loading the current kiosk');
     await checkServerVersion({ reload: () => window.location.reload() });
-    // Navigation is asynchronous: do not send credentials from the old bundle meanwhile.
+    // The check can schedule a fresh reload and start another hold.
     if (isVersionReloadPending()) throw new KioskReloadError('Loading the current kiosk');
   } catch (error) {
     // A guard that cannot act (blocked session storage, a reload that did not fix the mismatch) must not
