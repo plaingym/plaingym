@@ -100,7 +100,8 @@ export async function assertCatalog(sql: Sql) {
       select m.roleid from pg_catalog.pg_auth_members m join memberships on memberships.roleid = m.member
     )
     select r.rolname from memberships join pg_catalog.pg_roles r on r.oid = memberships.roleid
-    where r.rolsuper or r.rolbypassrls or r.rolcreaterole or r.rolname = 'maintenance'
+    where r.rolsuper or r.rolbypassrls or r.rolcreaterole or r.rolreplication or r.rolcreatedb
+      or r.rolname in ('maintenance', 'pg_execute_server_program', 'pg_write_server_files', 'pg_read_server_files')
     order by r.rolname
   `;
   for (const role of privilegedRoles) failures.push('app is a member of privileged role ' + String(role.rolname));

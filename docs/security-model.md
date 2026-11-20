@@ -31,9 +31,11 @@ Isolation is enforced in the database, not only in application code.
 * **Database roles.** The app connects as `app`: DML only, no DDL, no
   `BYPASSRLS`, never a superuser. The `maintenance` role (`BYPASSRLS`) runs only
   migrations, backups and restore. The post-migration catalog check refuses
-  direct or indirect membership of `app` in `maintenance` or a role with
-  `SUPERUSER`, `BYPASSRLS` or `CREATEROLE`. It counts membership with any
-  options and names each privileged role.
+  direct or indirect membership of `app` in a role with `SUPERUSER`,
+  `BYPASSRLS`, `CREATEROLE`, `REPLICATION` or `CREATEDB`. It also refuses
+  membership in `maintenance`, `pg_execute_server_program`,
+  `pg_write_server_files` or `pg_read_server_files`. It counts membership
+  with any options and names each privileged role.
   In multi-gym mode the running app never holds the maintenance credentials and
   refuses to start if they are set.
   Every app, authentication and maintenance pool pins `search_path=public` at

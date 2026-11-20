@@ -4,15 +4,16 @@ import { git } from './version.mjs';
 import { assertMigrationBase, migrations } from './migration-files.mjs';
 
 /** Tokenize declarative migration SQL, keeping literals opaque and statement boundaries intact.
+ * Preserve literal spellings separately for naming a sequence in setval findings.
  * @param {string} source
  */
 function statements(source) {
   const result = [];
   // `trailing` is set after a `;` until the next line, so a comment after a statement can't review the next one.
-  let tokens = [], line = 1, start = 1, reviewed = '', index = 0, trailing = false;
+  let tokens = [], literals = new Map(), line = 1, start = 1, reviewed = '', index = 0, trailing = false;
   const finish = () => {
-    if (tokens.length) result.push({ tokens, line: start, reviewed });
-    tokens = []; reviewed = ''; trailing = true;
+    if (tokens.length) result.push({ tokens, literals, line: start, reviewed });
+    tokens = []; literals = new Map(); reviewed = ''; trailing = true;
   };
   while (index < source.length) {
     const rest = source.slice(index);
@@ -38,9 +39,13 @@ function statements(source) {
       if (dollar) {
         const end = rest.indexOf(dollar, dollar.length);
         if (end === -1) throw new Error(`Unterminated SQL dollar quote at line ${line}`);
-        raw = rest.slice(0, end + dollar.length); tokens.push('?');
+        raw = rest.slice(0, end + dollar.length);
+        literals.set(tokens.length, raw);
+        tokens.push('?');
       } else if (quoted) {
-        raw = quoted; tokens.push(raw.startsWith('"') ? raw : '?');
+        raw = quoted;
+        if (!raw.startsWith('"')) literals.set(tokens.length, raw);
+        tokens.push(raw.startsWith('"') ? raw : '?');
       } else {
         if (/^['"]/.test(rest)) throw new Error(`Unterminated SQL quote at line ${line}`);
         raw = /^[a-z_][a-z_0-9$]*/i.exec(rest)?.[0] ?? rest[0];
@@ -86,6 +91,58 @@ function contains(tokens, phrase) {
   return tokens.some((_, index) => phrase.every((token, offset) => tokens[index + offset] === token));
 }
 
+/** @param {string} token */
+function identifierName(token) {
+  return token.startsWith('"') ? token : token.toLowerCase();
+}
+
+/** @param {string[]} tokens @param {number} start */
+function qualifiedNameEnd(tokens, start) {
+  let end = start + 1;
+  while (tokens[end] === '.') end += 2;
+  return end;
+}
+
+const sequenceOptions = ['RESTART', 'START', 'INCREMENT', 'CYCLE', 'MAXVALUE', 'MINVALUE'];
+
+/** @param {string[]} tokens */
+function sequenceAlterations(tokens) {
+  const start = tokens[2] === 'IF' && tokens[3] === 'EXISTS' ? 4 : 2;
+  const end = qualifiedNameEnd(tokens, start);
+  if (['OWNER', 'RENAME', 'SET'].includes(tokens[end])) return [];
+  const name = tokens.slice(start, end).map(identifierName).join('');
+  const rules = [];
+  for (let index = end; index < tokens.length; index++) {
+    const option = tokens[index];
+    if (option === 'OWNED' || option === 'AS') {
+      const argument = index + (option === 'OWNED' ? 2 : 1);
+      index = qualifiedNameEnd(tokens, argument) - 1;
+    } else if (sequenceOptions.includes(option)) {
+      const label = tokens[index - 1] === 'NO' ? `NO ${option}` : option;
+      rules.push(`ALTER SEQUENCE ${label} on ${name}: older inserts may exhaust the sequence or receive conflicting values`);
+    }
+  }
+  return rules;
+}
+
+/** @param {string[]} tokens @param {Map<number, string>} literals */
+function setvalCalls(tokens, literals) {
+  const rules = [];
+  for (let index = 0; index < tokens.length; index++) {
+    if (!['SETVAL', '"setval"'].includes(tokens[index]) || tokens[index + 1] !== '(') continue;
+    let beforeName = index - 1;
+    while (tokens[beforeName] === '.') beforeName -= 2;
+    // A relation name may also be followed by a column list.
+    if (['TABLE', 'INTO', 'REFERENCES'].includes(tokens[beforeName]) ||
+        tokens.slice(beforeName - 3, beforeName + 1).join(' ') === 'TABLE IF NOT EXISTS') continue;
+    const argument = index + 2;
+    const literal = [',', ':'].includes(tokens[argument + 1]) ? literals.get(argument) : undefined;
+    const name = literal?.startsWith("'") ? literal.slice(1, -1).replaceAll("''", "'") : literal;
+    rules.push(`setval on ${name ?? 'a computed sequence'}: older inserts may receive conflicting sequence values`);
+  }
+  return rules;
+}
+
 // Identity options can be combined in one ALTER COLUMN action.
 const identityOptions = ['CACHE', 'CYCLE', 'GENERATED', 'INCREMENT', 'LOGGED', 'MAXVALUE', 'MINVALUE', 'NO', 'START', 'UNLOGGED'];
 
@@ -107,8 +164,14 @@ function nullDefault(tokens, index) {
 export function rollbackFindings(source) {
   const findings = [];
   for (const statement of statements(source)) {
-    const { tokens, line, reviewed } = statement;
-    if (tokens[0] !== 'ALTER' || tokens[1] !== 'TABLE' || reviewed) continue;
+    const { tokens, literals, line, reviewed } = statement;
+    if (reviewed) continue;
+    for (const rule of setvalCalls(tokens, literals)) findings.push({ line, rule });
+    if (tokens[0] !== 'ALTER') continue;
+    if (tokens[1] === 'SEQUENCE') {
+      for (const rule of sequenceAlterations(tokens)) findings.push({ line, rule });
+    }
+    if (tokens[1] !== 'TABLE') continue;
     for (const action of actions(tokens, line)) {
       // A removed constraint may be a CHECK; its kind is not in DROP CONSTRAINT SQL.
       if (action.includes('CHECK') || contains(action, ['DROP', 'CONSTRAINT']))
@@ -123,7 +186,7 @@ export function rollbackFindings(source) {
       if (alteration[0] === 'COLUMN') alteration.shift();
       const [alteredColumn, ...change] = alteration;
       if (alteredColumn && !['TABLE', 'CONSTRAINT'].includes(alteredColumn)) {
-        const name = alteredColumn.startsWith('"') ? alteredColumn : alteredColumn.toLowerCase();
+        const name = identifierName(alteredColumn);
         if (change[0] === 'TYPE' || contains(change, ['SET', 'DATA', 'TYPE']))
           findings.push({ line, rule: 'SET DATA TYPE (or TYPE): older readers may reject new stored values' });
         if (change[0] === 'DROP' && change[1] === 'IDENTITY')
@@ -143,6 +206,16 @@ export function rollbackFindings(source) {
             findings.push({ line, rule: `SET START on ${name}: a later restart may give older inserts conflicting sequence values` });
           if (contains(change, ['SET', 'INCREMENT']))
             findings.push({ line, rule: `SET INCREMENT BY on ${name}: older inserts that omit the column may receive conflicting sequence values` });
+          if (contains(change, ['SET', 'CYCLE']))
+            findings.push({ line, rule: `SET CYCLE on ${name}: older inserts may receive conflicting sequence values after wraparound` });
+          for (const bound of ['MAXVALUE', 'MINVALUE']) {
+            if (contains(change, ['SET', bound]))
+              findings.push({ line, rule: `SET ${bound} on ${name}: older inserts may exhaust the sequence or receive conflicting values` });
+          }
+          for (const option of ['CYCLE', 'MAXVALUE', 'MINVALUE']) {
+            if (contains(change, ['SET', 'NO', option]))
+              findings.push({ line, rule: `SET NO ${option} on ${name}: older inserts may exhaust the sequence or receive conflicting values` });
+          }
         }
       }
       if (contains(action, ['DROP', 'DEFAULT']))

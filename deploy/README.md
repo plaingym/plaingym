@@ -361,8 +361,10 @@ does not establish correct role initialization.
 The app connects as `app`, which row-level security confines to one gym at a
 time. The `maintenance` role (`BYPASSRLS`) runs migrations, backups, restore and
 key rotation. The post-migration catalog check refuses direct or indirect
-membership of `app` in `maintenance` or a role with `SUPERUSER`, `BYPASSRLS`
-or `CREATEROLE`, with any membership options, and names the privileged role.
+membership of `app` in a role with `SUPERUSER`, `BYPASSRLS`, `CREATEROLE`,
+`REPLICATION` or `CREATEDB`. It also refuses membership in `maintenance`,
+`pg_execute_server_program`, `pg_write_server_files` or `pg_read_server_files`.
+It counts membership with any options and names each privileged role.
 
 * **Single-gym installs** (`TENANCY=single`, this directory's `compose.yaml`):
   the app container holds `MAINTENANCE_PASSWORD` and `MAINTENANCE_DATABASE_URL`.

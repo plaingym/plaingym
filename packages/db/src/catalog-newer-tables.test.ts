@@ -96,11 +96,17 @@ describe('app role memberships at startup', () => {
     ['a superuser role', 'superuser', false],
     ['an indirect BYPASSRLS role', 'bypassrls', true],
     ['a CREATEROLE role', 'createrole', false],
+    ['a REPLICATION role', 'replication', false],
+    ['an indirect REPLICATION role', 'replication', true],
+    ['a CREATEDB role', 'createdb', false],
+    ['pg_execute_server_program', null, false],
+    ['pg_write_server_files', null, false],
+    ['pg_read_server_files', null, false],
     ['maintenance', null, false],
-  ])('refuses %s and names the role', async (_name, attributes, indirect) => {
+  ])('refuses %s and names the role', async (name, attributes, indirect) => {
     const admin = openConnection(databaseUrl(inject('testDatabase').adminUrl, database.name), 1);
     const sql = admin.sql;
-    const role = attributes === null ? 'maintenance' : `${database.name}_privileged`;
+    const role = attributes === null ? name : `${database.name}_privileged`;
     try {
       // Keep cluster-wide memberships invisible to other test databases.
       await sql`begin`;

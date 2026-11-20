@@ -67,6 +67,15 @@ for (const sql of [
   'ALTER TABLE members ADD COLUMN optional text;',
   'ALTER TABLE type ADD COLUMN optional text;',
   'CREATE TABLE newer (id uuid NOT NULL, status text NOT NULL, CHECK (status IN (\'new\')));',
+  'CREATE TABLE newer (id bigint GENERATED ALWAYS AS IDENTITY (CYCLE MAXVALUE 10 MINVALUE 1));',
+  'CREATE TABLE setval (id bigint GENERATED ALWAYS AS IDENTITY (CYCLE));',
+  'CREATE TABLE IF NOT EXISTS public.setval (id bigint PRIMARY KEY);',
+  'INSERT INTO public.setval (id) VALUES (1);',
+  'ALTER TABLE members ADD CONSTRAINT setval_fk FOREIGN KEY (id) REFERENCES public.setval (id);',
+  'CREATE SEQUENCE s START WITH 5 INCREMENT BY 2 CYCLE;',
+  'ALTER SEQUENCE s RENAME TO start;',
+  'ALTER SEQUENCE cycle CACHE 5 OWNED BY members.maxvalue;',
+  "SELECT nextval('s'), 'setval(''s'', 1)', $$setval('s', 1)$$; -- SELECT setval('s', 1);",
   'ALTER TABLE members ADD CONSTRAINT other_fk FOREIGN KEY (id) REFERENCES other(id);',
   'ALTER TABLE members VALIDATE CONSTRAINT status_check;',
   "-- ALTER TABLE members ADD COLUMN required text NOT NULL;\nSELECT 1;",
@@ -167,6 +176,12 @@ for (const [alter, rule] of [
   ['ALTER COLUMN member_id SET START 5', 'SET START on member_id: a later restart may give older inserts conflicting sequence values'],
   ['ALTER COLUMN member_id SET INCREMENT BY 2', 'SET INCREMENT BY on member_id: older inserts that omit the column may receive conflicting sequence values'],
   ['ALTER member_id SET INCREMENT 2', 'SET INCREMENT BY on member_id: older inserts that omit the column may receive conflicting sequence values'],
+  ['ALTER COLUMN member_id SET CYCLE', 'SET CYCLE on member_id: older inserts may receive conflicting sequence values after wraparound'],
+  ['ALTER COLUMN member_id SET MAXVALUE 10', 'SET MAXVALUE on member_id: older inserts may exhaust the sequence or receive conflicting values'],
+  ['ALTER COLUMN member_id SET MINVALUE 1', 'SET MINVALUE on member_id: older inserts may exhaust the sequence or receive conflicting values'],
+  ['ALTER COLUMN member_id SET NO CYCLE', 'SET NO CYCLE on member_id: older inserts may exhaust the sequence or receive conflicting values'],
+  ['ALTER COLUMN member_id SET NO MAXVALUE', 'SET NO MAXVALUE on member_id: older inserts may exhaust the sequence or receive conflicting values'],
+  ['ALTER COLUMN member_id SET NO MINVALUE', 'SET NO MINVALUE on member_id: older inserts may exhaust the sequence or receive conflicting values'],
 ]) {
   test(`flags ${alter} on an existing column`, () => {
     const sql = `ALTER TABLE members ADD COLUMN optional text, ${alter};`;
@@ -186,6 +201,46 @@ test('flags each rollback risk when identity options are combined', () => {
 test('accepts identity options in a new column definition alongside another ALTER action', () => {
   const sql = 'ALTER TABLE members ADD COLUMN sequence_id bigint GENERATED ALWAYS AS IDENTITY (START WITH 5 INCREMENT BY 2), ALTER COLUMN status SET DEFAULT restart();';
   assert.deepEqual(rollbackFindings(sql), []);
+});
+
+for (const [option, change] of [
+  ['RESTART', 'RESTART WITH 5'],
+  ['START', 'START WITH 5'],
+  ['INCREMENT', 'INCREMENT BY 2'],
+  ['CYCLE', 'CYCLE'],
+  ['MAXVALUE', 'MAXVALUE 10'],
+  ['MINVALUE', 'MINVALUE 1'],
+]) {
+  test(`flags ALTER SEQUENCE with ${change}`, () => {
+    assert.deepEqual(rollbackFindings(`ALTER SEQUENCE s ${change};`), [
+      { line: 1, rule: `ALTER SEQUENCE ${option} on s: older inserts may exhaust the sequence or receive conflicting values` },
+    ]);
+  });
+}
+
+test('names a qualified sequence and flags combined sequence options', () => {
+  assert.deepEqual(rollbackFindings('ALTER SEQUENCE IF EXISTS public."Member Id" OWNED BY members.id RESTART NO CYCLE;'), [
+    { line: 1, rule: 'ALTER SEQUENCE RESTART on public."Member Id": older inserts may exhaust the sequence or receive conflicting values' },
+    { line: 1, rule: 'ALTER SEQUENCE NO CYCLE on public."Member Id": older inserts may exhaust the sequence or receive conflicting values' },
+  ]);
+});
+
+test('flags setval and names the sequence', () => {
+  assert.deepEqual(rollbackFindings("select setval('s', 1);"), [
+    { line: 1, rule: 'setval on s: older inserts may receive conflicting sequence values' },
+  ]);
+});
+
+test('flags qualified setval calls with literal or computed sequence arguments', () => {
+  const sql = `SELECT pg_catalog."setval"('public."Member Id"'::regclass, 1), setval(sequence_name::regclass, 2) FROM sequences;`;
+  assert.deepEqual(rollbackFindings(sql), [
+    { line: 1, rule: 'setval on public."Member Id": older inserts may receive conflicting sequence values' },
+    { line: 1, rule: 'setval on a computed sequence: older inserts may receive conflicting sequence values' },
+  ]);
+});
+
+test('accepts an annotated sequence alteration and setval call', () => {
+  assert.deepEqual(rollbackFindings("-- rollback-reviewed: sequence has no older writers\nALTER SEQUENCE s RESTART;\n-- rollback-reviewed: sequence has no older writers\nSELECT setval('s', 1);"), []);
 });
 
 test('flags a NULL default set on an existing column, which acts like a dropped default', () => {
