@@ -59,10 +59,11 @@ confirmation pages follow the device's color scheme, as does the demo landing
 page; a waiver's text body is part of the page and follows it. The public
 website, uploaded waiver documents, emails, receipts and PDFs use a light palette.
 CSS reuses the signed-link Tailwind asset. `/public/pages/theme.css` serves the
-gym's validated brand color and chooses a contrasting button foreground. In
-dark mode it lightens the color when needed for 4.5:1 text contrast on both
-the page and card backgrounds, then picks the foreground for the adjusted
-color. The saved brand color is used as-is in light mode.
+gym's validated brand color. In light mode it darkens pale colors as needed
+for 3:1 contrast against white for primary fills and checked controls. In dark
+mode it lightens the saved color as needed for 4.5:1 text contrast on both the
+page and card backgrounds. Each mode picks a contrasting button foreground
+for its rendered color. The saved brand color stays as configured.
 Core public pages and signed links show the logo on a light tile.
 Logos are streamed through the gym upload wrapper; foreign keys and SVG are refused.
 Core pages address logos by a short hash of their immutable upload key, so unrelated

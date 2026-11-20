@@ -103,7 +103,7 @@ try {
       await page.goto(base + `/join?plan=${plan.id}`); await check(page, width + '-form-' + plan.trialDays);
     }
     await page.goto(base + '/join');
-    expect(await page.locator('a', { hasText: 'Choose Adult' }).evaluate(e => getComputedStyle(e).backgroundColor)).toBe('rgb(255, 255, 0)');
+    expect(await page.locator('a', { hasText: 'Choose Adult' }).evaluate(e => getComputedStyle(e).backgroundColor)).toBe('rgb(154, 154, 0)');
     await page.locator('a', { hasText: 'Choose Adult' }).click(); await page.waitForURL('**/join?plan=*');
     await page.locator('#members').selectOption('2'); await page.locator('button', { hasText: 'Update' }).click(); await page.waitForURL('**members=2');
     await check(page, width + '-form');

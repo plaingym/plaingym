@@ -54,7 +54,7 @@ try {
     const context = await browser.newContext({ viewport: { width, height: 900 } }), page = await context.newPage();
     page.setDefaultTimeout(10_000); page.on('pageerror', e => errors.push(e.message));
     await page.goto(base + '/trial'); await check(page, width + '-trial');
-    expect(await page.locator('button[type=submit]').evaluate(e => getComputedStyle(e).backgroundColor)).toBe('rgb(255, 255, 0)');
+    expect(await page.locator('button[type=submit]').evaluate(e => getComputedStyle(e).backgroundColor)).toBe('rgb(154, 154, 0)');
     await fill(page); await page.locator('button[type=submit]').click(); await page.waitForURL('**/trial/received'); await check(page, width + '-trial-received');
     await page.goto(base + '/drop-in'); await fill(page); await page.locator('[name=waiver-0-name]').fill('New Visitor'); await page.locator('[name=waiver-0-consent]').check();
     await page.locator('button[type=submit]').click(); await expect(page.locator('#feedback')).toContainText('draw or choose');

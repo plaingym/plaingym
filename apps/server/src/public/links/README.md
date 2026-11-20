@@ -238,7 +238,7 @@ node apps/server/src/public/links/styles.build.mjs apps/web/dist
 ```
 
 Signed-link pages follow the device's color scheme. They load the gym's brand
-colors from `/public/pages/theme.css`, which adjusts dark-mode contrast, and
+colors from `/public/pages/theme.css`, which adjusts contrast in both modes, and
 show the gym logo on a light tile. A waiver's text body is part of the page and
 follows it; an uploaded waiver document, emails, receipts and PDFs keep a light
 palette.

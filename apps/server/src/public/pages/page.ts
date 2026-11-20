@@ -118,20 +118,29 @@ function luminance(channels: number[]) {
 // Match background and card in apps/web/src/app/styles.css. The lighter surface sets the minimum.
 const darkSurface = Math.max(luminance(rgb('#0c1514')), luminance(rgb('#111d1c')));
 const darkTextMinimum = 4.5 * (darkSurface + 0.05) - 0.05;
+const lightAccentMaximum = (luminance(rgb('#ffffff')) + 0.05) / 3 - 0.05;
+const hexColor = (channels: number[]) =>
+  '#' + channels.map(channel => channel.toString(16).padStart(2, '0')).join('');
 const colorTokens = (color: string, brightness: number) =>
   `--color-primary:${color};--color-primary-foreground:${brightness > 0.179 ? '#000000' : '#ffffff'}`;
 
 /** Strict external stylesheet: only validated color tokens can enter CSS. */
 export function themeCss(primary: string | null) {
   if (!primary || !/^#[0-9a-f]{6}$/i.test(primary)) return '';
-  const original = rgb(primary), light = luminance(original);
-  let dark = light, darkPrimary = primary;
+  const original = rgb(primary), originalLuminance = luminance(original);
+  let light = originalLuminance, lightPrimary = primary;
   // Check the rounded sRGB channels that the browser will actually render.
+  for (let step = 1; light > lightAccentMaximum; step++) {
+    const mixed = original.map(channel => Math.round(channel * (255 - step) / 255));
+    light = luminance(mixed);
+    lightPrimary = hexColor(mixed);
+  }
+  let dark = originalLuminance, darkPrimary = primary;
   for (let step = 1; dark < darkTextMinimum; step++) {
     const mixed = original.map(channel => Math.round(channel + (255 - channel) * step / 255));
     dark = luminance(mixed);
-    darkPrimary = '#' + mixed.map(channel => channel.toString(16).padStart(2, '0')).join('');
+    darkPrimary = hexColor(mixed);
   }
   const darkTokens = colorTokens(darkPrimary, dark);
-  return `:root{${colorTokens(primary, light)}}@media screen{.dark{${darkTokens}}}@media screen and (prefers-color-scheme: dark){.theme-system{${darkTokens}}}`;
+  return `:root{${colorTokens(lightPrimary, light)}}@media screen{.dark{${darkTokens}}}@media screen and (prefers-color-scheme: dark){.theme-system{${darkTokens}}}`;
 }

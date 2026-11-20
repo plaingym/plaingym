@@ -28,21 +28,22 @@ function contrast(a: string, b: string) {
 }
 
 it.each([
-  ['navy', '#08152E', true],
-  ['black', '#000000', true],
-  ['pale yellow', '#fff9a8', false],
-  ['mid-tone', '#6587a8', false],
-] as const)('keeps the light %s and gives it accessible dark tokens', (_name, primary, adjusted) => {
+  ['navy', '#08152E', '#08152E', true],
+  ['black', '#000000', '#000000', true],
+  ['pale yellow', '#fff9a8', '#9a9665', false],
+  ['mid-tone', '#6587a8', '#6587a8', false],
+] as const)('gives %s accessible light and dark tokens', (_name, primary, expectedLight, darkAdjusted) => {
   const css = themeCss(primary);
   const rule = /--color-primary:(#[0-9a-f]{6});--color-primary-foreground:(#[0-9a-f]{6})/i;
   const light = css.match(new RegExp('^:root\\{' + rule.source, 'i'));
   const dark = css.match(new RegExp('@media screen\\{\\.dark\\{' + rule.source, 'i'));
   const device = css.match(new RegExp('@media screen and \\(prefers-color-scheme: dark\\)\\{\\.theme-system\\{' + rule.source, 'i'));
-  expect(light?.[1]).toBe(primary);
+  expect(light?.[1]).toBe(expectedLight);
+  expect(contrast(light![1]!, '#ffffff')).toBeGreaterThanOrEqual(3);
   expect(contrast(light![1]!, light![2]!)).toBeGreaterThanOrEqual(4.5);
   expect(device?.slice(1)).toEqual(dark?.slice(1));
   const [, darkPrimary, darkForeground] = dark!;
-  expect(darkPrimary !== primary).toBe(adjusted);
+  expect(darkPrimary !== primary).toBe(darkAdjusted);
   for (const surface of ['#0c1514', '#111d1c']) expect(contrast(darkPrimary!, surface)).toBeGreaterThanOrEqual(4.5);
   expect(contrast(darkPrimary!, darkForeground!)).toBeGreaterThanOrEqual(4.5);
 });

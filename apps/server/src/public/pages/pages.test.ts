@@ -280,8 +280,9 @@ describe('core public pages through the production registrations', () => {
       if (path === '/drop-in') { expect(html).toContain('$25.00'); expect(html).toContain('&lt;script&gt;bad()&lt;/script&gt;'); expect(html).not.toContain('<script>bad()'); }
     }
     const theme = await f.server.request(origin + '/public/pages/theme.css');
-    expect(await theme.text()).toContain('--color-primary:#ffff00;--color-primary-foreground:#000000');
+    expect(await theme.text()).toMatch(/^:root\{--color-primary:#9a9a00;--color-primary-foreground:#000000\}/);
     const settings = createSettingsService({ scope: db.forGym, clock: f.clock });
+    expect((await settings.get(f.gymId)).branding.primaryColor).toBe('#ffff00');
     const primaryColor = '#08152e';
     await settings.update({ gymId: f.gymId, actor: { kind: 'system' } }, 'general', { revision: 1, branding: { primaryColor } });
     expect(await (await f.server.request(origin + '/public/pages/theme.css')).text()).toMatch(/^:root\{--color-primary:#08152e;[^}]+\}@media screen\{\.dark\{--color-primary:(?!#08152e)/);
@@ -294,6 +295,7 @@ describe('core public pages through the production registrations', () => {
     for (const path of ['/trial', '/drop-in', '/trial/received', '/drop-in/received', '/api/public/config', '/api/public/waivers', '/public/pages/theme.css']) {
       const response = await other.request(origin + path), text = await response.text();
       expect(response.status).toBe(200); expect(text).not.toContain('North'); expect(text).not.toContain(f.template.id); expect(text).not.toContain('#ffff00');
+      if (path === '/public/pages/theme.css') expect(text).not.toContain('#9a9a00');
       expect(text).not.toContain('12 Mat Street'); expect(text).not.toContain('hello@north.example.test');
     }
     const path = origin + '/public/pages/logo/' + logoVersion(f.gymId + '/logo.png');
