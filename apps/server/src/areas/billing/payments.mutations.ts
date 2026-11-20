@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, desc, eq, isNull } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- Ordering expressions use only payment-method columns and a bound gym month.
+import { sql } from 'drizzle-orm';
 import { forGym, paymentMethods, payments, refunds, uuidv7, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
@@ -36,17 +38,19 @@ const masked = (r: typeof paymentMethods.$inferSelect) => c.maskedPaymentMethodS
 /** Caller holds the household lock. Preserve a chosen default; prefer an unexpired replacement in the gym's month. */
 export async function promoteDefaultCard(tx: Transaction, context: MutationContext, clock: Clock, householdId: string,
   timezone: string, requestId?: string) {
-  const cards = await tx.select({ id: paymentMethods.id, isDefault: paymentMethods.isDefault,
-    processorCreatedAt: paymentMethods.processorCreatedAt, createdAt: paymentMethods.createdAt,
-    expiryMonth: paymentMethods.expiryMonth, expiryYear: paymentMethods.expiryYear }).from(paymentMethods)
-    .where(and(eq(paymentMethods.householdId, householdId), isNull(paymentMethods.revokedAt)));
-  if (cards.some(card => card.isDefault)) return;
-  // Use the processor's date when known, otherwise the local date; local date and row ID break ties.
-  cards.sort((a, b) => (b.processorCreatedAt ?? b.createdAt).getTime() - (a.processorCreatedAt ?? a.createdAt).getTime()
-    || b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id));
+  const active = and(eq(paymentMethods.householdId, householdId), isNull(paymentMethods.revokedAt));
+  const [current] = await tx.select({ id: paymentMethods.id }).from(paymentMethods)
+    .where(and(active, eq(paymentMethods.isDefault, true))).limit(1);
+  if (current) return;
+
   const month = localDate(clock.now(), timezone).slice(0, 7);
-  const replacement = cards.find(card => card.expiryYear === null || card.expiryMonth === null
-    || `${card.expiryYear}-${String(card.expiryMonth).padStart(2, '0')}` >= month) ?? cards[0];
+  // Compare the stored year and padded month as text. A missing expiry component counts as unexpired.
+  const expiry = sql`(${paymentMethods.expiryYear}::text || '-' || lpad(${paymentMethods.expiryMonth}::text, 2, '0')) collate "C"`;
+  // Compare instants at millisecond precision, as the app's Date values carry them; local time, then row ID, break ties.
+  const [replacement] = await tx.select({ id: paymentMethods.id }).from(paymentMethods).where(active)
+    .orderBy(asc(sql`coalesce(${expiry} < ${month}, false)`),
+      desc(sql`date_trunc('milliseconds', coalesce(${paymentMethods.processorCreatedAt}, ${paymentMethods.createdAt}))`),
+      desc(sql`date_trunc('milliseconds', ${paymentMethods.createdAt})`), desc(paymentMethods.id)).limit(1);
   if (replacement) {
     await tx.update(paymentMethods).set({ isDefault: true }).where(eq(paymentMethods.id, replacement.id));
     await catalogAudit(tx, context, clock, 'billing.card.default_changed', 'payment_method', replacement.id, undefined,

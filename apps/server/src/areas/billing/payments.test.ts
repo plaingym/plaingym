@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import '@hono/zod-openapi';
 import { describe, expect, it, vi } from 'vitest';
-// eslint-disable-next-line database/system-tables -- One test reads backend PIDs to see a refund wait on the gym row lock.
+// eslint-disable-next-line database/system-tables -- One test reads backend PIDs to see a refund wait on the gym row lock; one shifts card times by a microsecond.
 import { eq, sql } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- One test holds the gym row the way a settings save does.
 import { auditEvents, gyms, households, invoices, paymentAttempts, paymentMethods, payments, refunds, signedLinks, uuidv7 } from '@plaingym/db';
@@ -421,6 +421,22 @@ describe('staff import of externally attached cards', () => {
       await f.service.importCustomerCards(f.context, f.home.id); await f.jobs.runNext();
     }
     expect((await rows(f)).filter(card => card.isDefault).map(card => card.id)).toEqual([local.id]);
+  });
+  it.each([0, 1])('promotes the higher ID when processor and local times tie to the millisecond (offset %i μs)', async offset => {
+    const f = await fixture(), timestamp = f.clock.now();
+    const higherId = uuidv7(timestamp.getTime() + 1), lowerId = uuidv7(timestamp.getTime());
+    await factory('paymentMethods', f.gymId, { id: higherId,
+      householdId: f.home.id, processorId: 'pm_higher_id', processorCreatedAt: timestamp, createdAt: timestamp });
+    await factory('paymentMethods', f.gymId, { id: lowerId,
+      householdId: f.home.id, processorId: 'pm_lower_id', processorCreatedAt: timestamp, createdAt: timestamp });
+    if (offset) await db.forGym(f.gymId, tx => tx.update(paymentMethods).set({
+      processorCreatedAt: sql`${paymentMethods.processorCreatedAt} + ${offset}::int * interval '1 microsecond'`,
+      createdAt: sql`${paymentMethods.createdAt} + ${offset}::int * interval '1 microsecond'`,
+    }).where(eq(paymentMethods.id, lowerId)));
+
+    await f.service.revokeCard(f.context, f.home.id, f.card.id);
+
+    expect((await rows(f)).filter(card => card.isDefault).map(card => card.id)).toEqual([higherId]);
   });
   it('leaves no imported rows when a customer changes during provider I/O', async () => {
     const f = await fixture(); attached(f, 'pm_stale');
