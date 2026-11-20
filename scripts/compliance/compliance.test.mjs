@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import assert from 'node:assert/strict';
+import assert, { AssertionError } from 'node:assert/strict';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -269,36 +269,53 @@ function claFixture(options = {}) {
   return {
     hash, statuses, failures, writes, comments, commentCalls, context,
     ledger: () => ledger,
-    run: (hooks = {}) => execute(require, { ...context, ...hooks.context }, {
-      rest: {
-        ...api,
-        repos: { ...api.repos, createCommitStatus: async (value) => {
-          await hooks.beforeStatus?.(value);
-          return api.repos.createCommitStatus(value);
-        }, getContent: async (value) => {
-          let result;
-          try { result = await api.repos.getContent(value); }
-          catch (error) {
-            if (value.path === 'signatures/cla.json') await hooks.afterLedgerRead?.();
-            throw error;
-          }
-          if (value.path === 'signatures/cla.json') await hooks.afterLedgerRead?.();
-          return result;
-        } },
-        issues: { ...api.issues, createComment: async (value) => {
-          await hooks.beforeCreateComment?.();
-          return api.issues.createComment(value);
-        } },
-      },
-      paginate: async (method, params) => {
-        assert.equal(method, api.issues.listComments);
-        assert.deepEqual(params, { owner: 'plaingym', repo: 'plaingym', issue_number: 1, per_page: 100 });
-        commentCalls.list++;
-        const snapshot = structuredClone(comments);
-        await hooks.afterListComments?.();
-        return snapshot;
-      },
-    }, { setFailed: (message) => failures.push(message) }),
+    run: async (hooks = {}) => {
+      let firstAssertion;
+      const captureAssertion = (call) => async (...args) => {
+        try {
+          return await call(...args);
+        } catch (error) {
+          if (error instanceof AssertionError) firstAssertion ??= error;
+          throw error;
+        }
+      };
+      const getContent = captureAssertion(api.repos.getContent);
+      await execute(require, { ...context, ...hooks.context }, {
+        rest: {
+          ...api,
+          repos: {
+            ...api.repos,
+            createCommitStatus: captureAssertion(async (value) => {
+              await hooks.beforeStatus?.(value);
+              return api.repos.createCommitStatus(value);
+            }),
+            getContent: captureAssertion(async (value) => {
+              try {
+                return await getContent(value);
+              } finally {
+                if (value.path === 'signatures/cla.json') await hooks.afterLedgerRead?.();
+              }
+            }),
+            createOrUpdateFileContents: captureAssertion(api.repos.createOrUpdateFileContents),
+          },
+          git: { ...api.git, createRef: captureAssertion(api.git.createRef) },
+          issues: { ...api.issues, createComment: captureAssertion(async (value) => {
+            await hooks.beforeCreateComment?.();
+            return api.issues.createComment(value);
+          }) },
+        },
+        paginate: captureAssertion(async (method, params) => {
+          assert.equal(method, api.issues.listComments);
+          assert.deepEqual(params, { owner: 'plaingym', repo: 'plaingym', issue_number: 1, per_page: 100 });
+          commentCalls.list++;
+          const snapshot = structuredClone(comments);
+          await hooks.afterListComments?.();
+          return snapshot;
+        }),
+      }, { setFailed: (message) => failures.push(message) });
+      // The workflow can catch a fixture assertion and report an ordinary failed status.
+      if (firstAssertion) throw firstAssertion;
+    },
   };
 }
 
@@ -486,6 +503,19 @@ test('a concurrent signature for the same author is reused without another write
   assert.equal(fixture.ledger().signatures.length, 1);
 });
 
+test('a caught CLA fixture assertion rejects its run even after a failure status', async () => {
+  const fixture = claFixture();
+  const payload = { pull_request: { number: 2 } };
+  await assert.rejects(fixture.run({ context: { payload } }), (error) => {
+    assert.ok(error instanceof AssertionError);
+    assert.equal(error.actual.issue_number, 2);
+    assert.equal(error.expected.issue_number, 1);
+    assert.deepEqual(fixture.failures, [error.message]);
+    return true;
+  });
+  assert.equal(fixture.statuses.at(-1).state, 'failure');
+});
+
 test('repeated ledger conflicts stop after a bounded retry and fail closed', async () => {
   const fixture = claFixture({ writeConflicts: 5 });
   await fixture.run();
@@ -542,6 +572,7 @@ test('publication placeholders and storage failures fail closed', async () => {
   await fixture.run();
   assert.equal(fixture.statuses.at(-1).state, 'failure');
   assert.equal(fixture.writes.length, 0);
+  assert.equal(fixture.failures.at(-1), 'Write unavailable');
 });
 test('fallback reads an actual license file, with no manifest metadata', (t) => {
   const path = temporary(t);
