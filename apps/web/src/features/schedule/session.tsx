@@ -55,7 +55,8 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
   const [now, setNow] = useState(Date.now);
   // The start the server refused a cancel for; a session moved since then (here or elsewhere) is judged afresh.
   const [serverStartedAt, setServerStartedAt] = useState<string | null>(null);
-  const started = serverStartedAt === session.startsAt || Date.parse(session.startsAt) <= now;
+  const startsAt = Date.parse(session.startsAt);
+  const started = serverStartedAt === session.startsAt || startsAt <= now;
   const staffProfileId = useBootstrap().data?.session?.staffProfileId;
   // Booking numbers come from whichever session panel publishes them (the bookings panel), not from an import.
   const [counts, setCounts] = useState<SessionCounts | null>(null), [changed, setChanged] = useState(0);
@@ -76,13 +77,24 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
     if (started || session.status === 'cancelled') return;
     // The timer catches the start while the page is awake; focus and visibility do it after a sleep,
     // when the timer's own deadline may already be in the past.
+    const showStarted = (instant: number) => {
+      setNow(instant);
+      if (startNotice.current) setNotice(startNotice.current);
+    };
     const refresh = () => {
       const instant = Date.now();
-      setNow(instant);
-      if (startNotice.current && instant >= Date.parse(session.startsAt)) setNotice(startNotice.current);
+      if (instant >= startsAt) showStarted(instant);
     };
     const visible = () => { if (!document.hidden) refresh(); };
-    const timer = window.setTimeout(refresh, Math.min(2_147_483_647, Math.max(0, Date.parse(session.startsAt) - Date.now())));
+    let timer: number;
+    const schedule = (delay: number) => {
+      timer = window.setTimeout(() => {
+        const instant = Date.now();
+        if (instant < startsAt) schedule(startsAt - instant);
+        else showStarted(instant);
+      }, Math.min(2_147_483_647, delay));
+    };
+    schedule(Math.max(0, startsAt - Date.now()));
     window.addEventListener('focus', refresh);
     document.addEventListener('visibilitychange', visible);
     return () => {
@@ -90,7 +102,7 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
       window.removeEventListener('focus', refresh);
       document.removeEventListener('visibilitychange', visible);
     };
-  }, [started, session.startsAt, session.status, now]);
+  }, [started, startsAt, session.status]);
   async function change(kind: 'coach' | 'notes' | 'capacity' | 'cancel', event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
     const formElement = event?.currentTarget, form = formElement ? new FormData(formElement) : null;

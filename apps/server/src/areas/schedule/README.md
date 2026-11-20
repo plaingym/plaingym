@@ -48,7 +48,9 @@ The session dialog hides cancellation controls for started sessions and shows
 the specific refusal if the session starts while a request is in flight, then
 hides the controls for that start time even if the browser clock is behind; a
 session moved since then offers them again. A single timer targets the start
-time; reaching it tells a user who could cancel why the controls went away. Both
+time and stays armed when the window regains focus or the page becomes visible
+before the start. At or after the start, the timer and those events update the
+dialog and tell a user who could cancel why the controls went away. Both
 messages say the cancellation note was not sent only when one was being written.
 If another caller already cancelled it, the dialog shows that no cancellation
 notice was queued and refreshes the session instead of showing a generic conflict.

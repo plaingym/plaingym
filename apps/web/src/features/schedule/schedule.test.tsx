@@ -98,16 +98,24 @@ describe('schedule calendar and session detail', () => {
     expect(screen.getByRole('button', { name: 'Cancel session' })).toBeTruthy();
   });
   it.each(['visibilitychange', 'focus'] as const)('hides the cancel form when the clock jumps past the start and %s', eventName => {
-    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-03-02T15:00:00Z'));
-    render(<SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={vi.fn()} registries={noticeRegistries()}/>);
-    expect(screen.getByRole('button', { name: 'Cancel session' })).toBeDefined();
-    vi.setSystemTime(new Date(Date.parse(session.startsAt) + 1_000));
-    act(() => {
-      if (eventName === 'focus') window.dispatchEvent(new Event('focus'));
-      else document.dispatchEvent(new Event('visibilitychange'));
-    });
-    expect(screen.queryByRole('button', { name: 'Cancel session' })).toBeNull();
-    expect(screen.getByText('This session has started and cannot be cancelled.')).toBeDefined();
+    const start = Date.parse(session.startsAt);
+    vi.useFakeTimers(); vi.setSystemTime(new Date(start - 5_000));
+    const timeout = vi.spyOn(window, 'setTimeout'), clearTimeout = vi.spyOn(window, 'clearTimeout');
+    try {
+      render(<SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={vi.fn()} registries={noticeRegistries()}/>);
+      expect(screen.getByRole('button', { name: 'Cancel session' })).toBeDefined();
+      const startTimer = timeout.mock.results[timeout.mock.calls.findIndex(([, delay]) => delay === 5_000)];
+      expect(startTimer?.type).toBe('return');
+      vi.setSystemTime(new Date(start + 1_000));
+      act(() => {
+        if (eventName === 'focus') window.dispatchEvent(new Event('focus'));
+        else document.dispatchEvent(new Event('visibilitychange'));
+      });
+      expect(screen.queryByRole('button', { name: 'Cancel session' })).toBeNull();
+      expect(screen.getByText('This session has started and cannot be cancelled.')).toBeDefined();
+      expect(clearTimeout).toHaveBeenCalledWith(startTimer?.value);
+      expect(api.POST).not.toHaveBeenCalled();
+    } finally { timeout.mockRestore(); clearTimeout.mockRestore(); }
   });
   it('tells nobody without the cancel form that a note was not sent when the start passes', () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date(Date.parse(session.startsAt) - 5_000));
@@ -128,9 +136,14 @@ describe('schedule calendar and session detail', () => {
       fireEvent.click(screen.getByRole('checkbox', { name: 'Email the 1 booked or waitlisted member' }));
       fireEvent.change(screen.getByLabelText(/Optional cancellation note/), { target: { value: 'Please save this note' } });
       const renders = rendered.mock.calls.length;
-      act(() => vi.advanceTimersByTime(4_000));
+      act(() => vi.advanceTimersByTime(1_000));
+      act(() => { window.dispatchEvent(new Event('focus')); });
+      act(() => { document.dispatchEvent(new Event('visibilitychange')); });
+      expect(screen.getByRole('button', { name: 'Cancel session' })).toBeDefined();
+      expect(timeout.mock.calls.map(([, delay]) => delay)).toEqual([5_000]);
+      expect(vi.getTimerCount()).toBe(1);
+      act(() => vi.advanceTimersByTime(3_000));
       expect(rendered).toHaveBeenCalledTimes(renders);
-      expect(timeout.mock.calls.filter(([, delay]) => delay === 5_000)).toHaveLength(1);
       expect(interval).not.toHaveBeenCalled();
       act(() => vi.advanceTimersByTime(1_000));
       expect(screen.queryByRole('button', { name: 'Cancel session' })).toBeNull();
@@ -138,6 +151,22 @@ describe('schedule calendar and session detail', () => {
       expect(api.POST).not.toHaveBeenCalled();
       view.unmount(); expect(vi.getTimerCount()).toBe(0);
     } finally { timeout.mockRestore(); interval.mockRestore(); }
+  });
+  it('schedules the remaining time when the capped start timeout fires before the session starts', () => {
+    const cap = 2_147_483_647, remaining = 5_000;
+    vi.useFakeTimers(); vi.setSystemTime(new Date(Date.parse(session.startsAt) - cap - remaining));
+    const timeout = vi.spyOn(window, 'setTimeout');
+    try {
+      render(<SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={vi.fn()} registries={noticeRegistries()}/>);
+      expect(timeout.mock.calls.map(([, delay]) => delay)).toEqual([cap]);
+      act(() => vi.advanceTimersByTime(cap));
+      expect(screen.getByRole('button', { name: 'Cancel session' })).toBeDefined();
+      expect(timeout.mock.calls.map(([, delay]) => delay)).toEqual([cap, remaining]);
+      act(() => vi.advanceTimersByTime(remaining));
+      expect(screen.queryByRole('button', { name: 'Cancel session' })).toBeNull();
+      expect(timeout.mock.calls.map(([, delay]) => delay)).toEqual([cap, remaining]);
+      expect(api.POST).not.toHaveBeenCalled();
+    } finally { timeout.mockRestore(); }
   });
   it.each(['started', 'cancelled'] as const)('does not schedule a start timer for a %s session', kind => {
     vi.useFakeTimers(); vi.setSystemTime(new Date(kind === 'started' ? session.startsAt : '2026-03-02T15:00:00Z'));
