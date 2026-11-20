@@ -30,9 +30,15 @@ An adult member sees their own profile and can give or withdraw their own notice
 and announcements SMS consent through `sms_consent.manage`. Payers can do the same
 for themselves and children they manage, but cannot consent for another adult.
 Billing-phone notices consent stays payer-only under `household.manage`.
+Payers save a changed billing phone before agreeing to notices and can withdraw
+an existing consent while the phone has unsaved edits.
 Household and member saves send only changed fields. An unrelated edit preserves
 stored address and emergency-contact keys that the running release cannot read;
 editing either of those fields replaces that entire value.
+After a household contact save and refetch, edits made during the request remain
+in the form. A newer edit to a submitted field can be saved against the refreshed
+revision when the refetch confirms the submitted value. A concurrent change to
+that field still triggers a conflict.
 Saves with no changes send no request and do not refetch: the household form says
 "Nothing changed." and the member editor closes.
 

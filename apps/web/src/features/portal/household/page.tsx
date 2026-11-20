@@ -29,6 +29,7 @@ export function PortalHousehold() {
 }
 function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope: PortalScope }) {
   const bootstrap = useBootstrap(), cache = useQueryClient(), { ready, own } = scope, payer = context.role === 'payer';
+  const gymName = bootstrap.data?.gym.name ?? '';
   const [editing, setEditing] = useState<PortalMember | null>(null), [saved, setSaved] = useState<'saved' | 'unchanged' | null>(null);
   const household = useQuery({ queryKey: [...scope.key, 'household', 'details'], enabled: ready && payer, queryFn: async () => own(await scope.call(contracts.household)).data });
   const members = useQuery({ queryKey: [...scope.key, 'household', 'members'], enabled: ready, queryFn: async () => payer
@@ -39,13 +40,8 @@ function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope
   return <Page className="max-w-3xl"><PortalRecovery moving={scope.moving}>
     <PageHeader title={text(payer ? 'title' : 'profileTitle')} description={text(payer ? 'description' : 'profileDescription')} />
     {/* A failed refetch keeps its data, so the form and its draft stay. */}
-    {payer && (household.data ? <HouseholdForm key={household.data.id} household={household.data} scope={scope} saved={saved} setSaved={setSaved} />
+    {payer && (household.data ? <HouseholdForm key={household.data.id} household={household.data} scope={scope} gymName={gymName} saved={saved} setSaved={setSaved} />
       : household.isPending || scope.settling ? <LoadingState /> : <ErrorState onRetry={() => void household.refetch()} />)}
-    {payer && household.data && <SmsConsentControls sms={household.data.sms} gymName={bootstrap.data?.gym.name ?? ''}
-      onChange={async (_kind, consent) => {
-        own(await scope.call(contracts.changeHouseholdSmsConsent, { consent, revision: household.data.revision }));
-        await cache.invalidateQueries({ queryKey: [...scope.key, 'household'] });
-      }}/>}
     <PageSection title={text(payer ? 'members' : 'profile')}>
       {members.isPending || (!members.data && scope.settling) ? <LoadingState /> : members.isError && <ErrorState onRetry={() => void members.refetch()} />}
       {members.data?.length === 0 && <EmptyState title={text('noMembers')} />}
@@ -62,7 +58,7 @@ function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope
           <ul className="space-y-1">{member.emergencyContacts.map((item, index) => <li key={index} className="wrap-anywhere">{item.name}
             {item.relationship && <span className="text-muted-foreground"> · {item.relationship}</span>} · {item.phone}{item.email && ` · ${item.email}`}</li>)}</ul></div>}
         <Memberships memberId={member.id} scope={scope} />
-        {(member.id === context.memberId || editable(member)) && <SmsConsentControls sms={member.sms} gymName={bootstrap.data?.gym.name ?? ''}
+        {(member.id === context.memberId || editable(member)) && <SmsConsentControls sms={member.sms} gymName={gymName}
           onChange={async (kind, consent) => {
             own(await scope.call(contracts.changeMemberSmsConsent, { kind, consent, revision: member.revision }, { memberId: member.id }));
             await cache.invalidateQueries({ queryKey: [...scope.key, 'household'] });
@@ -94,21 +90,32 @@ const addressFields = ['line1', 'line2', 'city', 'region', 'postalCode', 'countr
 const normalizeAddress = (address: PortalHousehold['address']) => Object.fromEntries(addressFields
   .map(field => [field, field === 'countryCode' ? address[field]?.trim().toUpperCase() : address[field]?.trim()])
   .filter(([, value]) => value)) as PortalHousehold['address'];
-const normalizeHousehold = (value: Pick<PortalHousehold, 'name' | 'email' | 'phone' | 'address'>) => ({
-  name: value.name.trim(), email: value.email?.trim() || null, phone: value.phone?.trim() || null, address: normalizeAddress(value.address),
+const normalizedPhone = (phone: PortalHousehold['phone']) => phone?.trim() || null;
+const householdContact = ({ name, email, phone, address }: PortalHousehold) => ({ name, email, phone, address });
+const normalizeHousehold = (value: ReturnType<typeof householdContact>) => ({
+  name: value.name.trim(), email: value.email?.trim() || null, phone: normalizedPhone(value.phone), address: normalizeAddress(value.address),
 });
-/** The draft survives consent revisions; a successful contact save clears the whole draft once the stored values are refetched. */
-function HouseholdForm({ household, scope, saved, setSaved }: { household: PortalHousehold; scope: PortalScope; saved: 'saved' | 'unchanged' | null; setSaved(value: 'saved' | 'unchanged' | null): void }) {
+function HouseholdForm({ household, scope, gymName, saved, setSaved }: { household: PortalHousehold; scope: PortalScope; gymName: string; saved: 'saved' | 'unchanged' | null; setSaved(value: 'saved' | 'unchanged' | null): void }) {
   const cache = useQueryClient();
-  const draft = useDraft({ name: household.name, email: household.email, phone: household.phone, address: household.address }, normalizeHousehold);
+  const draft = useDraft(householdContact(household), normalizeHousehold);
+  const phoneChanged = normalizedPhone(draft.values.phone) !== normalizedPhone(household.phone);
+  const refreshHousehold = () => cache.invalidateQueries({ queryKey: [...scope.key, 'household'] });
   const save = useMutation({ mutationFn: async () => {
     const changes = draft.changes();
-    if (!Object.keys(changes).length) return false;
-    scope.own(await scope.call(contracts.updateHousehold, { ...changes, revision: household.revision }));
-    return true;
-  }, onSuccess: async changed => { setSaved(changed ? 'saved' : 'unchanged'); if (changed) await cache.invalidateQueries({ queryKey: [...scope.key, 'household'] }); draft.reset(); } });
+    if (!Object.keys(changes).length) return null;
+    const { data } = scope.own(await scope.call(contracts.updateHousehold, { ...changes, revision: household.revision }));
+    return { changes, data };
+  }, onSuccess: async result => {
+    if (result) {
+      await refreshHousehold();
+      const refetched = cache.getQueryState<PortalHousehold>([...scope.key, 'household', 'details']);
+      // A failed refetch falls back to the saved household, so retained edits rebase on the new revision once it loads.
+      draft.reconcileSaved(result.changes, householdContact(refetched?.status === 'success' && refetched.data ? refetched.data : result.data));
+    } else draft.reset();
+    setSaved(result ? 'saved' : 'unchanged');
+  } });
   function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setSaved(null); save.mutate(); }
-  return <Card className="p-4 sm:p-6"><form className="space-y-4" onSubmit={submit} aria-labelledby="household-contact">
+  return <><Card className="p-4 sm:p-6"><form className="space-y-4" onSubmit={submit} aria-labelledby="household-contact">
     <h2 id="household-contact" className="text-lg font-semibold">{text('contactTitle')}</h2>
     {save.isError && <Alert variant="error" focusOnReveal role="alert">{text(conflict(save.error) ? 'changed' : 'failed')}</Alert>}
     {saved && <Alert role="status">{text(saved)}</Alert>}
@@ -122,7 +129,13 @@ function HouseholdForm({ household, scope, saved, setSaved }: { household: Porta
     </div>
     <p className="text-sm text-muted-foreground">{text('billingNote')}</p>
     <Button type="submit" disabled={save.isPending}>{text('save')}</Button>
-  </form></Card>;
+  </form></Card>
+    <SmsConsentControls sms={household.sms} gymName={gymName} {...(phoneChanged ? { grantBlockedHint: text('savePhoneBeforeConsent') } : {})}
+      onChange={async (_kind, consent) => {
+        scope.own(await scope.call(contracts.changeHouseholdSmsConsent, { consent, revision: household.revision }));
+        await refreshHousehold();
+      }}/>
+  </>;
 }
 function Field({ name, label, value, prefix = 'household', ...props }: { name: string; label: string; value: string; prefix?: string }
   & Omit<ComponentProps<typeof Input>, 'name' | 'value' | 'defaultValue' | 'prefix'>) {

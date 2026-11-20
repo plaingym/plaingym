@@ -56,7 +56,7 @@ function mount(element: ReactNode, handle: Handler, { context, answeredFor, hous
     if (path === '/api/portal/credits') return Response.json({ data: [], householdId: answeredFor ?? current });
     // The role comes from the open household; the page's own reads are what a test may answer for another one.
     if (path === '/api/portal/context' && (context || (element as { type?: unknown }).type === PortalBillingPage)) return Response.json({ data: context ?? payer, householdId: current });
-    const result = handle(path, init);
+    const result = await handle(path, init);
     return result instanceof Response ? result : result === undefined ? new Response(null, { status: 404 }) : Response.json({ ...result as object, householdId: answeredFor ?? current });
   });
   vi.stubGlobal('fetch', fetcher);
@@ -653,6 +653,155 @@ describe('portal household page', () => {
     await user.click(screen.getByRole('button', { name: 'Save' }));
     await screen.findByText('Saved.');
     expect(JSON.parse(String(view.calls('PATCH', '/api/portal/household')[0]![1]!.body))).toEqual({ name: 'Unsaved household', revision: 5 });
+  });
+  it('requires the payer to save a changed phone before granting notices consent', async () => {
+    let current: Household = { ...household, phone: '+12025550123', sms: { phoneValid: true, phoneE164: '+12025550123', notices: null } };
+    const endpoint = '/api/portal/household/sms-consent';
+    const view = mount(<PortalHousehold />, (path, init) => {
+      if (path === '/api/portal/household' && init?.method === 'PATCH') {
+        const input = JSON.parse(String(init.body)) as { phone: string; revision: number };
+        expect(input).toEqual({ phone: '+12025550199', revision: 3 });
+        current = { ...current, phone: input.phone, sms: { ...current.sms, phoneE164: input.phone }, revision: 4 };
+      }
+      if (path === endpoint && init?.method === 'PUT') {
+        current = { ...current, revision: 5, sms: { ...current.sms, notices: { at: '2026-11-16T12:00:00Z', source: 'portal' } } };
+        return { data: current };
+      }
+      if (path === '/api/portal/household') return { data: current };
+      return path.startsWith('/api/portal/members?') ? page([]) : undefined;
+    }, { context: payer });
+    const user = userEvent.setup();
+    const phone = await screen.findByLabelText('Phone');
+    const agree = screen.getByRole<HTMLButtonElement>('button', { name: 'Agree to notices' });
+    const hint = 'Save your phone number before agreeing to text notices.';
+    fireEvent.change(phone, { target: { value: ' +12025550123 ' } });
+    expect(agree.disabled).toBe(false);
+    expect(screen.queryByText(hint)).toBeNull();
+    fireEvent.change(phone, { target: { value: ' +12025550199 ' } });
+    expect(agree.disabled).toBe(true);
+    expect(screen.getByText(hint)).toBeDefined();
+    await user.click(agree);
+    expect(view.calls('PUT', endpoint)).toHaveLength(0);
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('Saved.');
+    expect(view.calls('GET', '/api/portal/household')).toHaveLength(2);
+    expect((phone as HTMLInputElement).value).toBe('+12025550199');
+    expect(agree.disabled).toBe(false);
+    expect(screen.queryByText(hint)).toBeNull();
+    expect(view.calls('PUT', endpoint)).toHaveLength(0);
+    await user.click(agree);
+    await screen.findByRole('button', { name: 'Withdraw notices consent' });
+    const [, init] = view.calls('PUT', endpoint)[0]!;
+    expect(JSON.parse(String(init?.body))).toEqual({ consent: true, revision: 4 });
+    expect(new Headers(init?.headers).get('X-Portal-Household')).toBe(ids.household);
+  });
+  it('lets a payer withdraw notices and keeps their unsaved phone after refetch', async () => {
+    let current: Household = { ...household, phone: '+12025550123', sms: { phoneValid: true, phoneE164: '+12025550123',
+      notices: { at: '2026-11-16T12:00:00Z', source: 'portal' } } };
+    const endpoint = '/api/portal/household/sms-consent';
+    const view = mount(<PortalHousehold />, (path, init) => {
+      if (path === endpoint && init?.method === 'PUT') {
+        current = { ...current, revision: 4, sms: { ...current.sms, notices: null } };
+        return { data: current };
+      }
+      if (path === '/api/portal/household') return { data: current };
+      return path.startsWith('/api/portal/members?') ? page([]) : undefined;
+    }, { context: payer });
+    const user = userEvent.setup();
+    const phone = await screen.findByLabelText<HTMLInputElement>('Phone');
+    fireEvent.change(phone, { target: { value: '+12025550199' } });
+    const withdraw = screen.getByRole<HTMLButtonElement>('button', { name: 'Withdraw notices consent' });
+    const hint = 'Save your phone number before agreeing to text notices.';
+    expect(withdraw.disabled).toBe(false);
+    expect(screen.queryByText(hint)).toBeNull();
+    await user.click(withdraw);
+    expect((await screen.findByRole<HTMLButtonElement>('button', { name: 'Agree to notices' })).disabled).toBe(true);
+    expect(screen.getByText(hint)).toBeDefined();
+    expect(view.calls('GET', '/api/portal/household')).toHaveLength(2);
+    expect(phone.value).toBe('+12025550199');
+    expect(view.calls('PATCH', '/api/portal/household')).toHaveLength(0);
+    const [, init] = view.calls('PUT', endpoint)[0]!;
+    expect(JSON.parse(String(init?.body))).toEqual({ consent: false, revision: 3 });
+    expect(new Headers(init?.headers).get('X-Portal-Household')).toBe(ids.household);
+  });
+  it.each([false, true])('retains later edits after a household save (concurrent change: %s)', async concurrent => {
+    let current: Household = household;
+    const firstSave = Promise.withResolvers<void>();
+    const endpoint = '/api/portal/household';
+    const view = mount(<PortalHousehold />, async (path, init) => {
+      if (path === endpoint && init?.method === 'PATCH') {
+        const { revision, ...changes } = JSON.parse(String(init.body)) as { name: string; phone?: string; revision: number };
+        expect(revision).toBe(current.revision);
+        if (revision === 3) await firstSave.promise;
+        const saved = { ...current, ...changes, revision: revision + 1 };
+        current = concurrent && revision === 3 ? { ...saved, name: 'Another save', revision: 5 } : saved;
+        return { data: saved };
+      }
+      if (path === endpoint) return { data: current };
+      return path.startsWith('/api/portal/members?') ? page([]) : undefined;
+    }, { context: payer });
+    const user = userEvent.setup();
+    const name = await screen.findByLabelText<HTMLInputElement>('Household name');
+    const phone = screen.getByLabelText<HTMLInputElement>('Phone');
+    const save = screen.getByRole<HTMLButtonElement>('button', { name: 'Save' });
+    fireEvent.change(name, { target: { value: 'First edit' } });
+    await user.click(save);
+    await waitFor(() => expect(view.calls('PATCH', endpoint)).toHaveLength(1));
+    expect(JSON.parse(String(view.calls('PATCH', endpoint)[0]![1]!.body))).toEqual({ name: 'First edit', revision: 3 });
+    fireEvent.change(phone, { target: { value: '+12025550199' } });
+    fireEvent.change(name, { target: { value: 'Later edit' } });
+    await act(async () => { firstSave.resolve(); });
+    await screen.findByText('Saved.');
+    expect(name.value).toBe('Later edit');
+    expect(phone.value).toBe('+12025550199');
+    await waitFor(() => expect(save.disabled).toBe(false));
+    await user.click(save);
+    if (concurrent) {
+      await screen.findByText(/changed somewhere else/i);
+      expect(view.calls('PATCH', endpoint)).toHaveLength(1);
+      expect(name.value).toBe('Later edit');
+      expect(phone.value).toBe('+12025550199');
+    } else {
+      await waitFor(() => expect(view.calls('PATCH', endpoint)).toHaveLength(2));
+      expect(JSON.parse(String(view.calls('PATCH', endpoint)[1]![1]!.body))).toEqual({ name: 'Later edit', phone: '+12025550199', revision: 4 });
+      await screen.findByText('Saved.');
+    }
+  });
+  it('rebases later edits on the saved household when the refetch after a save fails', async () => {
+    let current: Household = household, failRead = false;
+    const firstSave = Promise.withResolvers<void>();
+    const endpoint = '/api/portal/household';
+    const view = mount(<PortalHousehold />, async (path, init) => {
+      if (path === endpoint && init?.method === 'PATCH') {
+        const { revision, ...changes } = JSON.parse(String(init.body)) as { name?: string; phone?: string; revision: number };
+        expect(revision).toBe(current.revision);
+        if (revision === 3) { await firstSave.promise; failRead = true; }
+        current = { ...current, ...changes, revision: revision + 1 };
+        return { data: current };
+      }
+      if (path === endpoint && failRead) { failRead = false; return new Response(null, { status: 500 }); }
+      if (path === endpoint) return { data: current };
+      return path.startsWith('/api/portal/members?') ? page([]) : undefined;
+    }, { context: payer });
+    const user = userEvent.setup();
+    const name = await screen.findByLabelText<HTMLInputElement>('Household name');
+    const phone = screen.getByLabelText<HTMLInputElement>('Phone');
+    const save = screen.getByRole<HTMLButtonElement>('button', { name: 'Save' });
+    fireEvent.change(name, { target: { value: 'First edit' } });
+    await user.click(save);
+    await waitFor(() => expect(view.calls('PATCH', endpoint)).toHaveLength(1));
+    fireEvent.change(phone, { target: { value: '+12025550199' } });
+    await act(async () => { firstSave.resolve(); });
+    await screen.findByText('Saved.');
+    expect(view.calls('GET', endpoint)).toHaveLength(2);
+    expect(phone.value).toBe('+12025550199');
+    await act(async () => { await view.cache.invalidateQueries(); });
+    await waitFor(() => expect(name.value).toBe('First edit'));
+    expect(phone.value).toBe('+12025550199');
+    await user.click(save);
+    await waitFor(() => expect(view.calls('PATCH', endpoint)).toHaveLength(2));
+    expect(JSON.parse(String(view.calls('PATCH', endpoint)[1]![1]!.body))).toEqual({ phone: '+12025550199', revision: 4 });
+    expect(screen.queryByText(/changed somewhere else/i)).toBeNull();
   });
   it('saves and withdraws each adult SMS choice with the profile revision and open household', async () => {
     let current: PortalMember = { ...people[2]!, status: 'active', phone: '+12025550123', sms: { phoneValid: true, phoneE164: '+12025550123', notices: null, announcements: null } };
