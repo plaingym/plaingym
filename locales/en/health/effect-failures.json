@@ -11,7 +11,7 @@
   "dismiss": "Dismiss",
   "retryTitle": "Run this invoice effect again?",
   "dismissTitle": "Mark this effect as handled by hand?",
-  "dismissHelp": "Dismiss removes this effect from Health and stops its automatic recovery. It does not run the effect or change the invoice. Use this only if it was handled by hand or no longer needs to run.",
+  "dismissHelp": "Dismiss removes this effect from Health, stops its automatic recovery and clears its failed job from the failed-jobs count. It does not run the effect or change the invoice. Use this only if it was handled by hand or no longer needs to run.",
   "recoveryBudget": "If this run fails, automatic recovery gets five more resets. It will appear here again if those are exhausted.",
   "actionFailed": "The action could not be completed. Refresh to check whether this effect was already retried, completed or dismissed.",
   "working": "Working…",

@@ -48,7 +48,7 @@ it('confirms dismissal as handled by hand and refreshes the Health queries', asy
   const { client } = start(), invalidate = vi.spyOn(client, 'invalidateQueries');
   fireEvent.click(await screen.findByRole('button', { name: 'Dismiss' }));
   const dialog = screen.getByRole('dialog');
-  expect(within(dialog).getByText(/stops its automatic recovery/)).toBeDefined();
+  expect(within(dialog).getByText('Dismiss removes this effect from Health, stops its automatic recovery and clears its failed job from the failed-jobs count. It does not run the effect or change the invoice. Use this only if it was handled by hand or no longer needs to run.')).toBeDefined();
   expect(POST).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole('button', { name: 'Dismiss' }));
   await waitFor(() => expect(POST).toHaveBeenCalledWith('/api/health/effect-failures/dismiss', { body: { effectId: id } }));

@@ -40,19 +40,22 @@ worker starts much later.
 `JobRecovery` (implemented by `PostgresJobs` and `FakeJobs`) lets a producer
 recover its own exhausted jobs without reading queue rows: `failedJobs(name,
 keys, { gymId })` returns the gym's failed jobs of that name among the caller's
-idempotency keys, with their failure time, and `retryFailed(jobId, { gymId,
-runAt })` atomically resets one such job to pending with fresh attempts, keeping
-its ID and key. Both see only rows marked failed, never a running job. A final
-attempt whose lease expired counts once the next claim marks it failed; as with
-any expired lease, its handler may still be running, so a retried job's handler
-needs the same idempotency as any other. `retryFailed` returns false for any
-other job.
+idempotency keys, including acknowledged jobs, with their failure time.
+`retryFailed(jobId, { gymId, runAt })` resets one failed job to pending with
+fresh attempts and clears its acknowledgment, keeping its ID and key.
+`acknowledgeFailed(jobId, { gymId, at })` sets the acknowledgment timestamp only
+on a failed job that has none. `JobStatsQuery` excludes acknowledged failures
+from the failed count and oldest failure time. Retention uses the same schedule
+for failed jobs with or without an acknowledgment. An expired final attempt
+counts once the next claim marks it failed. Its handler may still be running,
+so a retried job's handler needs the same idempotency as any other.
+`retryFailed` returns false for a job that is missing or has another status.
 
-Both recovery methods accept an optional `JobTransaction` as their last argument,
+All three methods accept an optional `JobTransaction` as their last argument,
 validated like `enqueue`'s. Invoice effect recovery takes its invoice lock in that
-transaction, then resets the job and writes its audit together. Failed-job reads
-use the same handle; rollback keeps the job failed. The fake stages resets until
-commit and exposes them to subsequent reads in that transaction.
+transaction and uses the same handle for queue reads, resets or acknowledgments,
+and the staff audit. The fake stages writes until commit and reflects a staged
+reset in subsequent failed-job reads in that transaction.
 
 Install-level work uses `enqueueSystem` and `handleSystem`, with `gymId: null` in
 the handler context. These separate methods keep the gym-required `Jobs` contract

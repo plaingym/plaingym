@@ -267,6 +267,13 @@
       "when": 1795133572496,
       "tag": "0038_bank_debit",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1795162486432,
+      "tag": "0039_job_acknowledged",
+      "breakpoints": true
     }
   ]
 }

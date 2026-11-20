@@ -202,8 +202,12 @@ Completed and dismissed effects refuse Retry.
 Each staff retry starts a fresh five-reset automatic recovery budget. Recovery
 counts reset audits whose occurrence time follows the staff retry. The list shows
 the effect again only after a new exhaustion. Dismiss writes
-`billing.transition.effect.dismissed` (handled by hand) with the staff actor,
-without running the effect or deleting the job. The sweep leaves it alone.
+`billing.transition.effect.dismissed` (handled by hand) with the staff actor
+and acknowledges the effect's retained failed job in the same transaction. The
+failed-jobs tile stops counting the job, and retention deletes it on its usual
+schedule. A job whose effect was dismissed by a release that did not yet
+acknowledge jobs on Dismiss stays counted until retention deletes it. The sweep
+leaves dismissed effects alone.
 Duplicate refunds keep their existing reservation, reconciliation and processor
 idempotency key; a staff retry cannot reserve or refund the money a second time.
 

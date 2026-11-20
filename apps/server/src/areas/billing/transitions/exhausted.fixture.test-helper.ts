@@ -2,7 +2,7 @@
 import { vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { auditEvents, uuidv7 } from '@plaingym/db';
-// eslint-disable-next-line database/system-tables -- Isolated test queue rows simulate retention and inspect atomic retry.
+// eslint-disable-next-line database/system-tables -- Isolated test queue rows simulate retention and inspect atomic recovery writes.
 import { jobs } from '@plaingym/db';
 import { PostgresJobs } from '../../../infra/jobs/index.js';
 import { createMembershipService } from '../memberships.js';

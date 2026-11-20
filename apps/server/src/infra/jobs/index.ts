@@ -44,6 +44,8 @@ export interface JobRecovery {
   failedJobs(name: string, idempotencyKeys: readonly string[], options: { gymId: string }, transaction?: JobTransaction): Promise<FailedJob[]>;
   /** Resets one failed job to pending; an active caller transaction commits the reset with application writes. */
   retryFailed(jobId: string, options: { gymId: string; runAt: Date }, transaction?: JobTransaction): Promise<boolean>;
+  /** Marks one retained failed job so it no longer counts in job statistics. */
+  acknowledgeFailed?(jobId: string, options: { gymId: string; at: Date }, transaction?: JobTransaction): Promise<boolean>;
 }
 export interface FakeJob {
   id: string;
@@ -53,6 +55,7 @@ export interface FakeJob {
   runAt: Date;
   attempt: number;
   status: 'queued' | 'running' | 'completed' | 'failed';
+  acknowledgedAt?: Date;
 }
 
 export class FakeJobs implements Jobs, JobRecovery {
@@ -63,7 +66,8 @@ export class FakeJobs implements Jobs, JobRecovery {
   readonly #keys = new Map<string, string>();
   readonly #pending = new WeakMap<JobTransaction, { jobs: FakeJob[]; keys: Map<string, string> }>();
   readonly #resets = new WeakMap<JobTransaction, Set<string>>();
-  readonly #resetReservations = new Set<string>();
+  // Reserve staged recovery writes until commit or rollback. The owner can reset a staged acknowledgment.
+  readonly #recoveryReservations = new Map<string, JobTransaction>();
   readonly #reservations = new Map<string, { transaction: JobTransaction; settled: Promise<void> }>();
   #nextId = 0;
   constructor(readonly clock: Clock = systemClock, readonly perGymConcurrency = 1) {
@@ -176,22 +180,41 @@ export class FakeJobs implements Jobs, JobRecovery {
     if (transaction) assertJobTransaction(transaction, options.gymId);
     else assertNoTransaction('jobs.retryFailed');
     const job = this.#jobs.find((item) => item.id === jobId && item.options.gymId === options.gymId && item.status === 'failed');
-    if (!job || this.#resetReservations.has(jobId)) return false;
+    const reserved = this.#recoveryReservations.get(jobId);
+    if (!job || (reserved && reserved !== transaction) || (transaction && this.#resets.get(transaction)?.has(jobId)))
+      return false;
     const runAt = new Date(options.runAt);
     const reset = () => {
-      if (job.status === 'failed') Object.assign(job, { status: 'queued', attempt: 0, runAt });
+      Object.assign(job, { status: 'queued', attempt: 0, runAt });
+      delete job.acknowledgedAt;
     };
     if (transaction) {
       let resets = this.#resets.get(transaction);
       if (!resets) { resets = new Set(); this.#resets.set(transaction, resets); }
       resets.add(jobId);
-      const state = jobTransactionStates.get(transaction)!;
-      this.#resetReservations.add(jobId);
-      state.committed.push(reset);
-      void state.settled.then(() => this.#resetReservations.delete(jobId));
+      this.#stageRecovery(jobId, transaction, reset);
     }
     else reset();
     return true;
+  }
+  async acknowledgeFailed(jobId: string, options: { gymId: string; at: Date }, transaction?: JobTransaction): Promise<boolean> {
+    if (transaction) assertJobTransaction(transaction, options.gymId);
+    else assertNoTransaction('jobs.acknowledgeFailed');
+    if (!Number.isFinite(options.at.getTime())) throw new Error('Invalid job time');
+    const job = this.#jobs.find(item => item.id === jobId && item.options.gymId === options.gymId && item.status === 'failed');
+    if (!job || job.acknowledgedAt || this.#recoveryReservations.has(jobId)) return false;
+    const at = new Date(options.at);
+    const acknowledge = () => { job.acknowledgedAt = at; };
+    if (transaction) this.#stageRecovery(jobId, transaction, acknowledge);
+    else acknowledge();
+    return true;
+  }
+  #stageRecovery(jobId: string, transaction: JobTransaction, update: () => void): void {
+    const state = jobTransactionStates.get(transaction)!;
+    state.committed.push(update);
+    if (this.#recoveryReservations.has(jobId)) return;
+    this.#recoveryReservations.set(jobId, transaction);
+    void state.settled.then(() => this.#recoveryReservations.delete(jobId));
   }
   async runNext(): Promise<boolean> {
     assertNoTransaction('jobs.runNext');

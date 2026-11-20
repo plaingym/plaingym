@@ -23,8 +23,10 @@ key, atomically with its staff audit under the invoice lock. An already queued
 retry does nothing; completed or dismissed effects return conflict. Retry starts
 a fresh five-reset automatic recovery budget, and a new exhaustion lists again.
 Dismiss records handled by hand, removes the effect from the list and stops its
-recovery without deleting its job or changing the invoice. Both actions retain
-the staff actor in the audit. See [invoice effects](../billing/transitions/README.md).
+recovery. It acknowledges the effect's retained failed job in the same
+transaction, so the failed-jobs tile stops counting it. Retention still deletes
+the job on its usual schedule. Both actions retain the staff actor in the audit.
+See [invoice effects](../billing/transitions/README.md).
 
 The SMS tile reads `SmsResolver.status`, the gym's switch and cap, and its
 `sms_daily_usage` for today in the gym timezone. `sentToday` counts reserved send
@@ -144,10 +146,13 @@ the ignored variables; without one it reports an error. Multi-gym owners see onl
 their effective Google configuration; the malformed variables stay in startup logs.
 
 `JobStatsQuery.oldestFailureAt` is the oldest final failure time among this gym's
-retained failed jobs, or null when none remain. The worker records final completion
-in `runAt`; pending jobs, install jobs and other gyms never affect this time.
-The tile stays in error while any failed jobs remain, however old the failure is;
-with none, the page leaves out the oldest failure row rather than showing it as unknown.
+retained failed jobs that are not acknowledged, or null when none remain. The
+worker records final completion in `runAt`. Pending jobs, install jobs and other
+gyms never affect this time.
+The tile stays in error while any unacknowledged failed jobs remain, however old
+the failure is. With none, the page leaves out the oldest failure row. A failed
+job whose effect was dismissed by a release that did not yet acknowledge jobs on
+Dismiss has no acknowledgment, so it stays counted until retention deletes it.
 Disk details report `uploads` and `backupStaging` separately, each with filesystem
 `totalBytes` and `availableBytes`, plus `sameFilesystem`: true only when a backup
 staging directory is configured on the same device as the uploads directory and the

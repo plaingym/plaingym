@@ -116,17 +116,50 @@ it('skips a failed job still inside its minimum backoff without locking or rerea
   }
   await f.drain();
 });
-it('dismisses durably without deleting or resetting the failed job, and refuses retry', async () => {
+it('dismisses durably and only acknowledges the retained failed job', async () => {
   const f = await fixture(), id = await f.create(), before = await f.rows();
+  f.clock.advance(1000);
+  const acknowledged = [{ ...before[0]!, acknowledgedAt: f.clock.now() }];
   expect(await f.effects.dismissEffect(f.context, id)).toEqual({ changed: true });
   expect(await f.effects.exhaustedEffects(f.gymId)).toEqual([]);
   expect(await f.effects.recoverFailed(f.gymId)).toEqual({ recovered: 0, exhausted: 0 });
-  expect(await f.rows()).toEqual(before);
+  expect(await f.rows()).toEqual(acknowledged);
+  f.clock.advance(1000);
   await expect(f.effects.retryEffect(f.context, id)).rejects.toMatchObject({ code: 'conflict' });
   await expect(f.effects.dismissEffect(f.context, id)).rejects.toMatchObject({ code: 'conflict' });
-  expect(await f.audits(effectDismissed, id)).toMatchObject([{ actorKind: 'user', actorUserId: f.user.id, after: { reason: 'handled_by_hand' } }]);
+  expect(await f.rows()).toEqual(acknowledged);
+  expect(await f.audits(effectDismissed, id)).toMatchObject([{ actorKind: 'user', actorUserId: f.user.id,
+    after: { invoiceId: f.bill.id, kind: 'receipt', reason: 'handled_by_hand' } }]);
   await f.effects.run(id, { gymId: f.gymId, timezone: 'UTC', clock: f.clock, jobId: before[0]!.id, attempt: 1 });
   expect(f.options.notifications.receipt).not.toHaveBeenCalled();
+});
+it('records dismissal after retention has removed the failed job', async () => {
+  const f = await fixture(), id = await f.create();
+  await f.removeJobs();
+  expect(await f.effects.dismissEffect(f.context, id)).toEqual({ changed: true });
+  expect(await f.rows()).toEqual([]);
+  expect(await f.audits(effectDismissed, id)).toHaveLength(1);
+});
+it.each([false, true])('records dismissal without acknowledgment support, with recovery: %s', async hasRecovery => {
+  const f = await fixture(), id = await f.create(), before = await f.rows();
+  const { recovery: queue, ...options } = f.options;
+  const recovery = hasRecovery ? {
+    failedJobs: vi.fn(queue.failedJobs.bind(queue)),
+    retryFailed: queue.retryFailed.bind(queue),
+  } : undefined;
+  const effects = createTransitionEffects(recovery ? { ...options, recovery } : options);
+  expect(await effects.dismissEffect(f.context, id)).toEqual({ changed: true });
+  if (recovery) expect(recovery.failedJobs).not.toHaveBeenCalled();
+  expect(await f.rows()).toEqual(before);
+  expect(await f.audits(effectDismissed, id)).toHaveLength(1);
+});
+it('rolls acknowledgment and the dismissal audit back together on a write failure', async () => {
+  const f = await fixture(), id = await f.create(), before = await f.rows();
+  const scope: typeof f.options.scope = (gymId, work) => f.options.scope(gymId, async tx => { await work(tx); throw new Error('Commit failed'); });
+  await expect(createTransitionEffects({ ...f.options, scope }).dismissEffect(f.context, id)).rejects.toThrow('Commit failed');
+  expect(await f.rows()).toEqual(before);
+  expect(await f.audits(effectDismissed, id)).toEqual([]);
+  expect(await f.effects.exhaustedEffects(f.gymId)).toHaveLength(1);
 });
 it('rolls the queue reset and the staff audit back together on a write failure', async () => {
   const f = await fixture(), id = await f.create(), before = await f.rows();

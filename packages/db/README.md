@@ -184,6 +184,9 @@ debit fields to billing. Existing methods keep their card details and read as
 `processing` attempt requires `processing_at`. The app role can update this
 timestamp when a pending bank payment enters processing.
 
+Migration `0039_job_acknowledged.sql` adds the nullable `jobs.acknowledged_at`
+timestamp. Existing jobs start without an acknowledgment.
+
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver

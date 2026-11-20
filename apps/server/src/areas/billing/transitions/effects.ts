@@ -126,9 +126,14 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
     });
   }
   async function dismissEffect(context: MutationContext, effectId: string) {
-    return scope(context.gymId, async tx => {
-      const state = await effectState(tx, context.gymId, effectId);
+    const recovery = options.recovery;
+    return withJobTransaction(scope, context.gymId, async transaction => {
+      const { tx } = transaction, state = await effectState(tx, context.gymId, effectId);
       if (state.completed || state.dismissed || !state.exhausted) conflict('Effect is no longer exhausted');
+      if (recovery?.acknowledgeFailed) {
+        const [failed] = await recovery.failedJobs(effectJob, [effectId], { gymId: context.gymId }, transaction);
+        if (failed) await recovery.acknowledgeFailed(failed.jobId, { gymId: context.gymId, at: clock.now() }, transaction);
+      }
       await audit(tx, context, clock, effectDismissed, 'invoice_effect', effectId,
         { invoiceId: state.work.invoiceId, kind: state.work.kind, reason: 'handled_by_hand' });
       return { changed: true };

@@ -8,7 +8,7 @@ export interface JobStats {
   readonly succeeded: number;
   readonly failed: number;
   readonly oldestPendingAt: IsoInstant | null;
-  /** Final failure time of the oldest retained failed job, or null when none remain. */
+  /** Final failure time of the oldest unacknowledged failed job, or null when none remain. */
   readonly oldestFailureAt: IsoInstant | null;
 }
 /** Implemented by the jobs module; callers never read jobs rows. */
@@ -17,6 +17,7 @@ export interface JobStatsFixture {
   readonly gymId: Id | null;
   readonly status: 'pending' | 'running' | 'succeeded' | 'failed';
   readonly runAt: IsoInstant;
+  readonly acknowledged?: boolean;
 }
 export class FakeJobStatsQuery implements JobStatsQuery {
   readonly #jobs: readonly JobStatsFixture[];
@@ -26,7 +27,7 @@ export class FakeJobStatsQuery implements JobStatsQuery {
       pending: 0, running: 0, succeeded: 0, failed: 0, oldestPendingAt: null, oldestFailureAt: null,
     };
     for (const job of this.#jobs) {
-      if (job.gymId !== gymId) continue;
+      if (job.gymId !== gymId || (job.status === 'failed' && job.acknowledged)) continue;
       result[job.status]++;
       if (job.status === 'pending' && (result.oldestPendingAt === null || instant(job.runAt) < instant(result.oldestPendingAt)))
         result.oldestPendingAt = job.runAt;

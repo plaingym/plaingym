@@ -320,10 +320,20 @@ export class PostgresJobs implements Jobs, JobRecovery {
     idSchema.parse(options.gymId);
     if (!Number.isFinite(options.runAt.getTime())) throw new Error('Invalid job time');
     const update = (tx: Tx) => tx.update(jobs).set({ status: 'pending', attempts: 0,
-      runAt: options.runAt, lockedUntil: null, lockToken: null, lastError: null })
+      runAt: options.runAt, lockedUntil: null, lockToken: null, lastError: null, acknowledgedAt: null })
       .where(and(eq(jobs.id, jobId), eq(jobs.status, 'failed'))).returning({ id: jobs.id });
     const reset = await (transaction ? update(transaction.tx) : this.#database.forGym(options.gymId, update));
     return reset.length > 0;
+  }
+  async acknowledgeFailed(jobId: string, options: { gymId: string; at: Date }, transaction?: JobTransaction): Promise<boolean> {
+    if (transaction) assertJobTransaction(transaction, options.gymId);
+    else assertNoTransaction('jobs.acknowledgeFailed');
+    idSchema.parse(options.gymId);
+    if (!Number.isFinite(options.at.getTime())) throw new Error('Invalid job time');
+    const update = (tx: Tx) => tx.update(jobs).set({ acknowledgedAt: options.at })
+      .where(and(eq(jobs.id, jobId), eq(jobs.status, 'failed'), isNull(jobs.acknowledgedAt))).returning({ id: jobs.id });
+    const acknowledged = await (transaction ? update(transaction.tx) : this.#database.forGym(options.gymId, update));
+    return acknowledged.length === 1;
   }
   /** Only schedules without a cursor inherit the occurrence watermark used by earlier releases. */
   async #seed(gym: Gym, missing: readonly (readonly [string, string])[], existing: ReadonlySet<string>, now: Date): Promise<Map<string, Date>> {
@@ -532,14 +542,15 @@ export class PostgresJobStatsQuery implements JobStatsQuery {
   constructor(readonly database: Pick<Scope, 'forSystem'> = { forSystem }) {}
   async get(gymId: Id): Promise<JobStats> {
     idSchema.parse(gymId);
+    const unacknowledgedFailure = sql`${jobs.status} = 'failed' and ${jobs.acknowledgedAt} is null`;
     return this.database.forSystem(async (tx) => {
       const [row] = await tx.select({
         pending: sql<number>`count(*) filter (where ${jobs.status} = 'pending')::int`,
         running: sql<number>`count(*) filter (where ${jobs.status} = 'running')::int`,
         succeeded: sql<number>`count(*) filter (where ${jobs.status} = 'succeeded')::int`,
-        failed: sql<number>`count(*) filter (where ${jobs.status} = 'failed')::int`,
+        failed: sql<number>`count(*) filter (where ${unacknowledgedFailure})::int`,
         oldest: sql<string | null>`min(${jobs.runAt}) filter (where ${jobs.status} = 'pending')`,
-        oldestFailure: sql<string | null>`min(${jobs.runAt}) filter (where ${jobs.status} = 'failed')`,
+        oldestFailure: sql<string | null>`min(${jobs.runAt}) filter (where ${unacknowledgedFailure})`,
       }).from(jobs).where(eq(jobs.gymId, gymId));
       if (!row) throw new Error('Missing job statistics');
       return { pending: row.pending, running: row.running, succeeded: row.succeeded, failed: row.failed,

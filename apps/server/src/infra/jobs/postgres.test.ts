@@ -948,6 +948,14 @@ describe('retention', () => {
     runAt: new Date(clock.now().getTime() - days * 86_400_000), idempotencyKey: uuidv7(), ...extra });
   const occurrence = (gymId: string, days: number) => finished('succeeded', days, { gymId, name: 'tick',
     payload: { version: 1, timezone: 'UTC', value: {}, schedule: { expression: '* * * * *', at: '2025-01-01T00:00:00.000Z' } } });
+  it('retains acknowledged failures by their failure time', async () => {
+    const acknowledgedAt = clock.now();
+    const [, recent] = await database.forSystem(tx => tx.insert(jobs).values([
+      finished('failed', 91, { acknowledgedAt }), finished('failed', 89, { acknowledgedAt }),
+    ]).returning({ id: jobs.id }));
+    expect(await queue({ retention: { keep: [] } }).prune()).toBe(1);
+    expect(await rows()).toMatchObject([{ id: recent!.id, status: 'failed', acknowledgedAt }]);
+  });
   it('deletes old finished jobs in batches, keeping active rows, protected names and unseeded cron history', async () => {
     clock.set('2026-06-01T00:00:00Z');
     const q = queue({ retention: { keep: ['billing.alerts.send'], batchSize: 2 } });
@@ -1070,6 +1078,50 @@ function recoveryContract(name: string, create: (clock: TestClock) => Jobs & Job
 describe('failed job recovery', () => {
   recoveryContract('FakeJobs', (c) => new FakeJobs(c));
   recoveryContract('PostgresJobs', () => queue());
+  it('acknowledges a retained failure and counts it again if a retry fails', async () => {
+    const q = queue(), stats = new PostgresJobStatsQuery(database);
+    q.handle('send', async () => { throw new Error('Delivery failed'); });
+    const { jobId } = await q.enqueue('send', { message: 'hello' }, { ...options, idempotencyKey: 'send', maxAttempts: 1 });
+    await q.runNext();
+    const before = await row(jobId);
+    expect(await stats.get(gymA)).toMatchObject({ failed: 1, oldestFailureAt: before.runAt.toISOString() });
+    clock.advance(1000);
+    const at = clock.now();
+    expect(await q.acknowledgeFailed(jobId, { gymId: gymB, at })).toBe(false);
+    expect(await row(jobId)).toEqual(before);
+    expect(await q.acknowledgeFailed(jobId, { gymId: gymA, at })).toBe(true);
+    expect(await q.acknowledgeFailed(jobId, { gymId: gymA, at: new Date(at.getTime() + 1000) })).toBe(false);
+    expect(await row(jobId)).toEqual({ ...before, status: 'failed', acknowledgedAt: at });
+    expect(await q.failedJobs('send', ['send'], options)).toEqual([{ jobId, idempotencyKey: 'send', failedAt: before.runAt }]);
+    expect(await stats.get(gymA)).toMatchObject({ failed: 0, oldestFailureAt: null });
+
+    expect(await q.retryFailed(jobId, { gymId: gymA, runAt: at })).toBe(true);
+    expect(await row(jobId)).toMatchObject({ status: 'pending', acknowledgedAt: null });
+    await q.runNext();
+    expect(await stats.get(gymA)).toMatchObject({ failed: 1, oldestFailureAt: at.toISOString() });
+  });
+  it.each(['postgres', 'fake'] as const)('leaves pending, running and succeeded jobs untouched: %s', async provider => {
+    const q = provider === 'postgres' ? queue() : new FakeJobs(clock);
+    const snapshot = (jobId: string) => q instanceof FakeJobs ? q.jobs.find(job => job.id === jobId) : row(jobId);
+    const verify = async (jobId: string) => {
+      const before = await snapshot(jobId);
+      expect(before).toBeDefined();
+      expect(await q.acknowledgeFailed(jobId, { gymId: gymA, at: clock.now() })).toBe(false);
+      expect(await snapshot(jobId)).toEqual(before);
+    };
+    const started = latch(), held = latch();
+    q.handle('send', async () => { started.resolve(); await held.promise; });
+    const { jobId } = await q.enqueue('send', {}, options);
+    await verify(jobId);
+    const running = q.runNext();
+    try {
+      await Promise.race([started.promise, running]);
+      expect(await snapshot(jobId)).toMatchObject({ status: 'running' });
+      await verify(jobId);
+    } finally { held.resolve(); await running; }
+    expect(await snapshot(jobId)).toMatchObject({ status: provider === 'postgres' ? 'succeeded' : 'completed' });
+    await verify(jobId);
+  });
   it('leaves a running final attempt alone until a claim marks its expired lease failed, and fences its old handler', async () => {
     const q = queue({ leaseMs: 1000 }); const started = latch(), held = latch();
     q.handle('work', async () => { started.resolve(); await held.promise; });

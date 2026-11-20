@@ -83,6 +83,13 @@ describe('built-in providers', () => {
     await factory('jobs', gymId, { status: 'pending', runAt: new Date('2026-07-01T00:00:00Z') });
     expect(await tile('failed_jobs', gymId)).toMatchObject({ status: 'error', details: { failed: 2, pending: 1, oldestFailureAt: '2026-08-01T00:00:00.000Z' } });
   });
+  it('leaves acknowledged failures out of the tile status and oldest failure time', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId);
+    await factory('jobs', gymId, { status: 'failed', runAt: new Date('2026-08-01T00:00:00Z'), acknowledgedAt: clock.now() });
+    expect(await tile('failed_jobs', gymId)).toMatchObject({ status: 'healthy', details: { failed: 0, oldestFailureAt: null } });
+    await factory('jobs', gymId, { status: 'failed', runAt: new Date('2026-09-01T00:00:00Z') });
+    expect(await tile('failed_jobs', gymId)).toMatchObject({ status: 'error', details: { failed: 1, oldestFailureAt: '2026-09-01T00:00:00.000Z' } });
+  });
   it('names unreadable SMTP settings, parses the key once and logs once across polls', async () => {
     const gymId = uuidv7(); await factory('gyms', gymId, { smtpConfig: 'corrupt-smtp' });
     const lines: string[] = [], previous = setLogSink(line => lines.push(line));
