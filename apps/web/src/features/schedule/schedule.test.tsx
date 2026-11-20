@@ -97,6 +97,18 @@ describe('schedule calendar and session detail', () => {
     view.rerender(<SessionDetail session={{ ...session, startsAt: '2026-03-09T23:00:00Z', endsAt: '2026-03-10T00:00:00Z', revision: 5 }} options={options} roles={['owner']} enabledModules={[]} onSaved={onSaved} registries={registries}/>);
     expect(screen.getByRole('button', { name: 'Cancel session' })).toBeTruthy();
   });
+  it.each(['visibilitychange', 'focus'] as const)('hides the cancel form when the clock jumps past the start and %s', eventName => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-03-02T15:00:00Z'));
+    render(<SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={vi.fn()} registries={noticeRegistries()}/>);
+    expect(screen.getByRole('button', { name: 'Cancel session' })).toBeDefined();
+    vi.setSystemTime(new Date(Date.parse(session.startsAt) + 1_000));
+    act(() => {
+      if (eventName === 'focus') window.dispatchEvent(new Event('focus'));
+      else document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(screen.queryByRole('button', { name: 'Cancel session' })).toBeNull();
+    expect(screen.getByText('This session has started and cannot be cancelled.')).toBeDefined();
+  });
   it('tells nobody without the cancel form that a note was not sent when the start passes', () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date(Date.parse(session.startsAt) - 5_000));
     render(<SessionDetail session={session} options={options} roles={['front_desk']} enabledModules={[]} onSaved={vi.fn()} registries={createWebRegistries<ExtensionView>([])}/>);

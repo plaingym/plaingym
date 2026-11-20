@@ -74,12 +74,22 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
   useEffect(() => { startNotice.current = manage ? text(notifying ? 'sessionStartedNoteLost' : 'sessionStarted') : ''; }, [manage, notifying]);
   useEffect(() => {
     if (started || session.status === 'cancelled') return;
-    const timer = window.setTimeout(() => {
+    // The timer catches the start while the page is awake; focus and visibility do it after a sleep,
+    // when the timer's own deadline may already be in the past.
+    const refresh = () => {
       const instant = Date.now();
       setNow(instant);
       if (startNotice.current && instant >= Date.parse(session.startsAt)) setNotice(startNotice.current);
-    }, Math.min(2_147_483_647, Math.max(0, Date.parse(session.startsAt) - Date.now())));
-    return () => window.clearTimeout(timer);
+    };
+    const visible = () => { if (!document.hidden) refresh(); };
+    const timer = window.setTimeout(refresh, Math.min(2_147_483_647, Math.max(0, Date.parse(session.startsAt) - Date.now())));
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', visible);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', visible);
+    };
   }, [started, session.startsAt, session.status, now]);
   async function change(kind: 'coach' | 'notes' | 'capacity' | 'cancel', event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();

@@ -50,19 +50,23 @@ export function PortalSchedulePage({ client = portalClient, now = currentTime }:
   const [tick, setTick] = useState(0);
   const current = now(), instant = current.getTime();
   const range = weekRange(localDate(current, timezone), week, timezone);
+  // The real week's end, whichever week is shown: the page's relative week moves when it passes.
+  const weekEnd = week === 0 ? range.to : weekRange(localDate(current, timezone), 0, timezone).to;
   const schedule = useQuery({ queryKey: [...scope.key, 'schedule', range.from], enabled: scope.ready, queryFn: async () => scope.own(await scope.run(() => client.schedule(range.from, range.to))).data, staleTime: 0 });
   useEffect(() => {
     const refresh = () => setTick(value => value + 1);
-    // Also refresh when booking opens or a class starts, without polling the whole page.
-    const boundaries = (schedule.data ?? []).filter(session => session.status !== 'cancelled')
-      .flatMap(session => [Date.parse(session.cancelBefore) + 1, Date.parse(session.bookingOpensAt), Date.parse(session.startsAt)])
+    // Roll the shown week over at Monday midnight, and refresh when booking opens or a class starts,
+    // without polling the whole page. `instant` is the render's clock read; the timer below reads the
+    // clock again so a rerender with the same data never clears and re-arms it.
+    const boundaries = [Date.parse(weekEnd), ...(schedule.data ?? []).filter(session => session.status !== 'cancelled')
+      .flatMap(session => [Date.parse(session.cancelBefore) + 1, Date.parse(session.bookingOpensAt), Date.parse(session.startsAt)])]
       .filter(at => at > instant);
     const nearest = Math.min(...boundaries);
     // A boundary can pass between rendering and this effect. Refresh immediately rather than skipping it.
     const timer = Number.isFinite(nearest) ? window.setTimeout(refresh, Math.min(2_147_483_647, Math.max(0, nearest - now().getTime()))) : undefined;
     window.addEventListener('focus', refresh);
     return () => { window.clearTimeout(timer); window.removeEventListener('focus', refresh); };
-  }, [schedule.data, now, tick, instant]);
+  }, [schedule.data, now, tick, range.from, weekEnd]);
   const change = useMutation({
     mutationFn: async (input: { action: 'book' | 'cancel'; session: PortalScheduleSession; booking?: MemberBooking; context: PortalContext; member: PortalScheduleMember }) =>
       scope.run(() => input.action === 'book' ? client.book(input.context, input.member.id, input.session.id, scope.key[4]!) : client.cancel(input.context, input.member.id, input.booking!.id, scope.key[4]!)),

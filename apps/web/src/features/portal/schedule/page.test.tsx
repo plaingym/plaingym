@@ -15,7 +15,8 @@ import { registration } from './registrations.js';
 import { registration as checkin } from '../checkin/registrations.js';
 import { registration as progress } from '../progress/registrations.js';
 
-vi.mock('../../../app/context.js', () => ({ useBootstrap: () => ({ data: { gym: { id: 'gym', timezone: 'UTC' }, session: { userId: 'user' } }, isPending: false, isError: false }) }));
+const bootstrapTimezone = vi.hoisted(() => ({ value: 'UTC' }));
+vi.mock('../../../app/context.js', () => ({ useBootstrap: () => ({ data: { gym: { id: 'gym', timezone: bootstrapTimezone.value }, session: { userId: 'user' } }, isPending: false, isError: false }) }));
 const parent = '00000000-0000-7000-8000-000000000001', child = '00000000-0000-7000-8000-000000000002', id = '00000000-0000-7000-8000-000000000003';
 const now = new Date('2026-10-29T16:00:00Z');
 const session: PortalScheduleSession = { id, name: 'Fundamentals', startsAt: '2026-10-30T18:00:00.000Z', endsAt: '2026-10-30T19:00:00.000Z', coachId: null,
@@ -31,7 +32,7 @@ beforeEach(() => {
   client.book.mockResolvedValue(booking);
   client.cancel.mockResolvedValue({ ...booking, status: 'cancelled', cancelledAt: now.toISOString() });
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 function view(node: ReactNode) {
   const cache = portalTestCache('gym', 'user', 'household', { defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(<QueryClientProvider client={cache}>{node}</QueryClientProvider>);
@@ -61,6 +62,38 @@ describe('portal schedule actions', () => {
   });
 });
 describe('portal schedule page', () => {
+  it('rolls the shown week over at gym-local midnight without a focus event', async () => {
+    vi.useFakeTimers();
+    bootstrapTimezone.value = 'America/New_York';
+    try {
+      // Sunday 23:59 in the gym; the clocks fell back earlier that day.
+      vi.setSystemTime(new Date('2026-11-02T04:59:00Z'));
+      client.schedule.mockResolvedValue(answer([]));
+      view(<PortalSchedulePage client={client as unknown as PortalClient} />);
+      await act(() => vi.advanceTimersByTimeAsync(50));
+      expect(screen.getByText('Week of Monday, October 26')).toBeDefined();
+      expect(client.schedule).toHaveBeenLastCalledWith('2026-10-26T04:00:00.000Z', '2026-11-02T05:00:00.000Z');
+      await act(() => vi.advanceTimersByTimeAsync(60_000));
+      expect(screen.getByText('Week of Monday, November 2')).toBeDefined();
+      expect(client.schedule).toHaveBeenLastCalledWith('2026-11-02T05:00:00.000Z', '2026-11-09T05:00:00.000Z');
+    } finally { bootstrapTimezone.value = 'UTC'; vi.useRealTimers(); }
+  });
+  it('does not re-arm its timer when the same data renders again', async () => {
+    vi.useFakeTimers();
+    const timeout = vi.spyOn(window, 'setTimeout');
+    try {
+      vi.setSystemTime(now);
+      const cache = portalTestCache('gym', 'user', 'household', { defaultOptions: { queries: { retry: false } } });
+      const tree = () => <QueryClientProvider client={cache}><PortalSchedulePage client={client as unknown as PortalClient} /></QueryClientProvider>;
+      const result = render(tree());
+      await act(() => vi.advanceTimersByTimeAsync(50));
+      expect(screen.getByText('Fundamentals')).toBeDefined();
+      const calls = timeout.mock.calls.length;
+      vi.setSystemTime(new Date(now.getTime() + 1_000));
+      result.rerender(tree());
+      expect(timeout).toHaveBeenCalledTimes(calls);
+    } finally { timeout.mockRestore(); vi.useRealTimers(); }
+  });
   it('schedules only the nearest boundary, advances to the next cutoff, and refreshes on focus', async () => {
     let instant = now;
     let crossDuringEffect = false;
