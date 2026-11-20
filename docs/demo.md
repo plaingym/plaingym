@@ -2,10 +2,12 @@
 # Running a demo
 
 A demo lets people try PlainGym without an account of their own. Its entry host's
-root is a server-rendered product page with **Try the demo** and **GitHub** as its
-first two links; old entry-host `/demo` links redirect there. **Try the demo**
-opens a shared, read-only showcase with sample data and one-click owner, coach
-and student logins. Choose **Make my own copy** to edit a private sandbox.
+root is a server-rendered product page. **Try the demo** opens a shared, read-only
+showcase with sample data and one-click owner, coach and student logins. The
+button is disabled while the showcase starts, and a note asks visitors to
+reload. The next link opens the repository configured for the install. Old
+entry-host `/demo` links redirect to the product page. Choose **Make my own copy**
+to edit a private sandbox.
 Copies expire after two idle hours and at most 24 hours after allocation.
 Each private copy keeps its start page at `/demo`, ending with the current deletion
 time and a reminder that using the copy moves that time later, up to 24 hours

@@ -10,7 +10,7 @@ import type { RequestEnvironment } from '../../core/context.js';
 import { publicIntakeRefusal } from '../../core/rate-limit-intake.js';
 import { documentReadLimit } from '../../areas/waivers/document-read.js';
 import { setPolicy } from '../../core/csp.js';
-import { cachedLinkAsset } from '../links/assets.js';
+import { readSharedStylesheet } from '../links/assets.js';
 import { createPublicPagesService, type PublicPagesOptions, type PublicPagesService } from './service.js';
 import { intakePage, publicPageDirectives, themeCss } from './page.js';
 import { publicBrowserScript } from './browser.js';
@@ -19,9 +19,11 @@ import messages from '../../../../../locales/en/public/pages.json' with { type: 
 import waiverMessages from '../../../../../locales/en/waivers/waivers.json' with { type: 'json' };
 
 const translator = createTranslator({ 'public/pages': messages, 'waivers/waivers': waiverMessages });
-const stylesheet = cachedLinkAsset('./public/links.css');
 interface PublicRoutesOptions { service: PublicPagesService; t?: Translator; stylesheet?: () => Promise<string> }
 let configured: PublicRoutesOptions | undefined;
+export function readPublicStylesheet(options = configured) {
+  return (options?.stylesheet ?? readSharedStylesheet)();
+}
 /** Integration supplies the same waiver/upload service and gym mail used by signed links. */
 export function configurePublicPages(options: PublicPagesOptions & { t?: Translator; stylesheet?: () => Promise<string> }) {
   const service = createPublicPagesService(options);
@@ -76,7 +78,7 @@ export function createPublicRoutes(supplied?: PublicRoutesOptions): readonly Rou
       ctx.header('Content-Type', 'text/javascript; charset=utf-8'); return ctx.body(publicBrowserScript);
     }),
     route({ method: 'get', path: '/public/pages/styles.css', permission: { kind: 'public' }, responses: { 200: { description: 'Shared public styles' } } }, async ctx => {
-      ctx.header('Content-Type', 'text/css; charset=utf-8'); return ctx.body(await (options().stylesheet ?? stylesheet)());
+      ctx.header('Content-Type', 'text/css; charset=utf-8'); return ctx.body(await readPublicStylesheet(options()));
     }),
     route({ method: 'get', path: '/public/pages/theme.css', permission: { kind: 'public' }, responses: { 200: { description: 'Gym colors' } } }, async ctx => {
       ctx.header('Content-Type', 'text/css; charset=utf-8'); return ctx.body(themeCss((await options().service.config(ctx.get('context').gym.gymId)).data.gym.primaryColor));

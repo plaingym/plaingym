@@ -4,12 +4,15 @@
    wins over those utilities where both apply. The public stylesheet's class scanner skips `,` and `+`, so rules with
    max() or calc() of two values live here too. */
 
-/* A section reached from a link stops below the sticky header (4rem, plus the safe area on a notched phone). */
-html { scroll-padding-top: calc(5rem + env(safe-area-inset-top)); }
-/* Without script a followed link can't close the phone menu, so while it is open the section stops below the panel
-   (header 4rem, five 44 px items and padding, about 15rem) instead of under it. Escape or a tap outside closes it. */
-html:has(#site-menu:popover-open) { scroll-padding-top: calc(20rem + env(safe-area-inset-top)); }
-html:has(.demo-menu-fallback[open]) { scroll-padding-top: calc(20rem + env(safe-area-inset-top)); }
+/* A section reached from a link stops below the sticky header and, if open, below the bounded menu panel. */
+html {
+  --demo-menu-max-height: min(16rem, 40vh);
+  scroll-padding-top: calc(5rem + env(safe-area-inset-top));
+}
+@media (max-width: 767.98px) {
+  html:has(#site-menu:popover-open) { scroll-padding-top: calc(5rem + var(--demo-menu-max-height) + env(safe-area-inset-top)); }
+  html:has(.demo-menu-fallback[open]) { scroll-padding-top: calc(5rem + var(--demo-menu-max-height) + env(safe-area-inset-top)); }
+}
 /* The call-to-action icons are 20 px (the icon component's own size is 24 px; the class scanner can't build `*:h-5`). */
 .demo-icon > svg { width: 1.25rem; height: 1.25rem; }
 /* Page gutters clear a notch in landscape: the viewport covers the safe areas (viewport-fit=cover). */
@@ -51,8 +54,11 @@ html:has(.demo-menu-fallback[open]) { scroll-padding-top: calc(20rem + env(safe-
 
 /* Phone menu: a popover fixed just below the sticky header wherever the page is scrolled (details where popovers are missing). */
 .demo-menu, .demo-menu-fallback { display: none; }
+.demo-menu, .demo-menu-fallback-panel {
+  max-height: var(--demo-menu-max-height); overflow-y: auto; overscroll-behavior: contain;
+}
 .demo-menu:popover-open {
-  display: block; position: fixed; inset: auto; top: calc(4rem + env(safe-area-inset-top) + 4px);
+  display: block; position: fixed; inset: auto; top: calc(4rem + env(safe-area-inset-top) + 0.25rem);
   right: max(1rem, env(safe-area-inset-right)); margin: 0;
 }
 .demo-menu::backdrop { background: transparent; pointer-events: none; }
@@ -66,7 +72,7 @@ html:has(.demo-menu-fallback[open]) { scroll-padding-top: calc(20rem + env(safe-
   .demo-menu-button { display: none; }
   .demo-menu-fallback { display: block; }
 }
-@media (min-width: 1024px) {
+@media (min-width: 768px) {
   .demo-menu, .demo-menu-fallback { display: none !important; }
 }
 

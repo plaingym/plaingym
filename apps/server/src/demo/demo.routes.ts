@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { MiddlewareHandler } from 'hono';
-import { readFile } from 'node:fs/promises';
 import type { RequestEnvironment } from '../core/context.js';
 import { AppError, type Translator } from '@plaingym/shared';
 import { route, type RouteRegistration } from '../core/registry.js';
@@ -15,18 +14,24 @@ import type { DemoPool } from './pool.js';
 import { demoLoginRateLimit, demoLoginRedirect, joinedMembers } from './identities.js';
 import type { forGym } from '@plaingym/db';
 import { clock as defaultClock, type Clock } from '../core/clock.js';
-import { cachedLinkAsset } from '../public/links/assets.js';
-import { demoLandingDirectives, demoLandingPage, landingStylesheet } from './landing.page.js';
+import { defaultSourceUrl } from '../core/source-link.js';
+import { readPublicStylesheet } from '../public/pages/pages.routes.js';
+import { createLandingAssets, type readLandingAsset } from './landing.assets.js';
+import { demoLandingDirectives, demoLandingPage } from './landing.page.js';
 import screenshots from './screenshots.json' with { type: 'json' };
 
-const publicStylesheet = cachedLinkAsset('./public/links.css');
 const screenshotFiles = new Set(Object.values(screenshots).flatMap(shot => [...shot.light, ...shot.dark]));
+const landingAssets = createLandingAssets();
 
 /** A captured email's own policy: inline styles and data: images only, no script (sandbox), framed only by the app. */
 export const outboxPreviewDirectives = ["default-src 'none'", "style-src 'unsafe-inline'", 'img-src data:', "base-uri 'none'",
   "form-action 'none'", 'sandbox', "frame-ancestors 'self'"];
 
-export function createDemoRoutes(service: DemoService, options: { installOrigin: string; pool?: DemoPool; enabled?: boolean; tenancy?: TenancyMode; clientIp?: ClientIpOptions; outbox?: ReturnType<typeof createOutboxQuery>; scope?: typeof forGym }) {
+export function createDemoRoutes(service: DemoService, options: {
+  installOrigin: string; sourceUrl?: string; pool?: DemoPool; enabled?: boolean; tenancy?: TenancyMode; clientIp?: ClientIpOptions;
+  outbox?: ReturnType<typeof createOutboxQuery>; scope?: typeof forGym; readAsset?: typeof readLandingAsset;
+}) {
+  const assets = options.readAsset ? createLandingAssets(options.readAsset) : landingAssets;
   const limiter = rateLimit({ ...options.clientIp, sharedKey: 'demo.create', limit: 3, windowMs: 60 * 60 * 1000 });
   const loginLimiter = rateLimit({ ...options.clientIp, sharedKey: 'demo.login', limit: demoLoginRateLimit.max, windowMs: demoLoginRateLimit.window * 1000 });
   const guard = csrf(c => options.pool && (c.req.header('host') ?? new URL(c.req.url).host) === options.pool.showcaseHostname
@@ -131,10 +136,12 @@ export function createDemoRoutes(service: DemoService, options: { installOrigin:
         app.get('/demo-assets/:file', async (c, next) => {
           if (!isInstallHost(c.req.header('host') ?? new URL(c.req.url).host)) return next();
           // The page stylesheet is named by its content hash, so it caches as long as the images.
-          const file = c.req.param('file'), css = file === landingStylesheet.file;
+          const file = c.req.param('file'), css = /^landing-[a-f0-9]{16}\.css$/.test(file);
           if (!css && !screenshotFiles.has(file)) return c.notFound();
           await authorize({ kind: 'public' })(c, async () => {
-            const body = css ? landingStylesheet.body : await readFile(new URL('./screenshots/' + file, import.meta.url));
+            const stylesheet = css ? await assets.stylesheet() : undefined;
+            const body = css ? (file === stylesheet?.file ? stylesheet.body : undefined) : await assets.asset(file);
+            if (!body) { c.res = await c.notFound(); return; }
             c.header('content-type', css ? 'text/css; charset=utf-8' : 'image/webp');
             c.header('x-content-type-options', 'nosniff');
             c.header('cache-control', 'public, max-age=31536000, immutable');
@@ -150,18 +157,16 @@ export function createDemoRoutes(service: DemoService, options: { installOrigin:
         app.get('/public/pages/styles.css', async (c, next) => {
           if (!isInstallHost(c.req.header('host') ?? new URL(c.req.url).host)) return next();
           await authorize({ kind: 'public' })(c, async () => {
-            c.header('content-type', 'text/css; charset=utf-8'); c.res = c.body(await publicStylesheet());
+            c.header('content-type', 'text/css; charset=utf-8'); c.res = c.body(await readPublicStylesheet());
           });
           return c.res;
         });
         app.get('/', async (c, next) => {
           if (!isInstallHost(c.req.header('host') ?? new URL(c.req.url).host)) return next();
           await authorize({ kind: 'public' })(c, async () => {
-            // Read the install's mounted source redirect so SOURCE_URL and release tags agree with the footer.
-            const source = await app.request(new URL('/source', c.req.url));
-            const showcase = await options.pool?.showcase() ?? `https://showcase.${new URL(options.installOrigin).hostname}/demo`;
+            const [showcase, stylesheet] = await Promise.all([options.pool?.showcase(), assets.stylesheet()]);
             c.header('cache-control', 'no-store'); setPolicy(c, demoLandingDirectives);
-            c.res = c.html(demoLandingPage(showcase, source.headers.get('location')!));
+            c.res = c.html(demoLandingPage(showcase, options.sourceUrl ?? defaultSourceUrl, { stylesheetFile: stylesheet?.file }));
           });
           return c.res;
         });

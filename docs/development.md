@@ -76,8 +76,9 @@ pnpm dev:proxy:trust
 
 Trust the CA once per machine/user, then **fully quit and restart Chrome** (or
 your Chromium browser). Open **https://demo.localhost/** and click **Try the
-demo**. The showcase refuses edits; **Make my own copy** opens a private sandbox
-signed in as the selected role. Five gyms are seeded ahead, one at a time. Copies
+demo**. If the demo is starting, reload in a minute. The showcase refuses edits.
+**Make my own copy** opens a private sandbox signed in as the selected role.
+Five gyms are seeded ahead, one at a time. Copies
 expire after two idle hours, at most 24 hours after allocation.
 The demo domain's root is the server-rendered product page and its old `/demo`
 address redirects there: with `DEMO_MODE=true`, Vite forwards that host's `/`,

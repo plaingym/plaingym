@@ -1,10 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { Locator, Page } from '@playwright/test';
-import { test, expect } from '../support.js';
+import { Client, test, expect } from '../support.js';
 import { accessibleLayout, horizontalOverflow, tabTo } from '../responsive.js';
 
 const themes = ['light', 'dark'] as const;
 type Theme = typeof themes[number];
+const entryOrigin = 'https://demo.localhost';
+const showcaseLink = /^https:\/\/showcase\.demo\.localhost\/demo#kioskToken=.+$/;
+
+test.beforeAll(async () => {
+  test.setTimeout(180_000);
+  const client = new Client(entryOrigin);
+  await expect.poll(async () => {
+    const { status, body } = await client.request<{ data?: { showcase?: string } }>('/api/demo');
+    return status === 200 && showcaseLink.test(body?.data?.showcase ?? '');
+  }, { timeout: 150_000, intervals: [2_000], message: 'The showcase is ready with a kiosk token' }).toBe(true);
+});
 
 async function open(page: Page, width: number, colorScheme: Theme, height = 900) {
   // An implicit icon request is unrelated to this page's stylesheet and CSP.
@@ -12,7 +23,7 @@ async function open(page: Page, width: number, colorScheme: Theme, height = 900)
   await page.setViewportSize({ width, height });
   // Reduced motion turns the page's colour transitions off, so a state is measured as it settles.
   await page.emulateMedia({ colorScheme, reducedMotion: 'reduce' });
-  const response = await page.goto('https://demo.localhost/');
+  const response = await page.goto(entryOrigin + '/');
   expect(response?.status()).toBe(200);
   return response!;
 }
@@ -68,7 +79,7 @@ for (const width of [360, 768, 1280]) for (const colorScheme of themes) {
     await expect(page.getByRole('heading', { level: 1, name: 'PlainGym', exact: true })).toBeVisible();
     const links = page.getByRole('main').getByRole('link');
     await expect(links.nth(0)).toHaveText('Try the demo');
-    await expect(links.nth(0)).toHaveAttribute('href', /^https:\/\/showcase\.demo\.localhost\/demo#kioskToken=.+$/);
+    await expect(links.nth(0)).toHaveAttribute('href', showcaseLink);
     await expect(links.nth(1)).toHaveText('GitHub');
     await expect(links.nth(1)).toHaveAttribute('href', 'https://github.com/plaingym/plaingym');
     await expect(page.getByRole('link', { name: 'Source code', exact: true })).toHaveAttribute('href', '/source');
@@ -91,10 +102,12 @@ for (const width of [360, 768, 1280]) for (const colorScheme of themes) {
     await expect.poll(async () => (await box(header(page))).y).toBe(0);
     expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(1000);
 
-    // Phone and tablet widths: the menu opens just below the header wherever the page is scrolled, and stays there.
+    // On phones the menu opens just below the header wherever the page is scrolled, and stays there.
     const menuButton = page.getByRole('button', { name: 'Menu', exact: true });
     const menu = page.locator('#site-menu');
-    if (width < 1024) {
+    const row = header(page).getByRole('navigation', { name: 'Main' });
+    if (width < 768) {
+      await expect(row).toBeHidden();
       const scrolled = await page.evaluate(() => window.scrollY);
       // Tap where the button is on screen: Playwright's own click scrolls the page to a control in a sticky header first.
       const tap = await box(menuButton);
@@ -108,17 +121,25 @@ for (const width of [360, 768, 1280]) for (const colorScheme of themes) {
       await page.screenshot({ path: info.outputPath(`product-${width}-${colorScheme}-menu.png`) });
       await page.keyboard.press('Escape');
       await expect(menu).toBeHidden();
-    } else await expect(menuButton).toBeHidden();
+    } else {
+      await expect(menuButton).toBeHidden();
+      await expect(header(page).locator('.demo-menu-fallback')).toBeHidden();
+      await expect(row).toBeVisible();
+      const bounds = await box(row);
+      expect(bounds.x).toBeGreaterThanOrEqual(0);
+      expect(bounds.x + bounds.width).toBeLessThanOrEqual(width);
+      expect(await horizontalOverflow(page)).toBeUndefined();
+    }
 
     // Each header link brings its section's heading fully into view below the header.
     for (const [name, id] of [['Why PlainGym', 'strengths'], ['Features', 'features'], ['How the demo works', 'explore']] as const) {
       await page.evaluate(() => window.scrollTo(0, 0));
-      if (width < 1024) { await menuButton.click(); await menu.getByRole('link', { name, exact: true }).click(); }
-      else await header(page).getByRole('navigation').getByRole('link', { name, exact: true }).click();
+      if (width < 768) { await menuButton.click(); await menu.getByRole('link', { name, exact: true }).click(); }
+      else await row.getByRole('link', { name, exact: true }).click();
       await expect(page).toHaveURL(new RegExp(`#${id}$`));
       const heading = page.locator('#' + id);
       // Without script a followed link leaves the phone menu open, so the heading must clear the panel as well.
-      const covers = width < 1024 ? [header(page), menu] : [header(page)];
+      const covers = width < 768 ? [header(page), menu] : [header(page)];
       await expect.poll(async () => {
         const target = await box(heading);
         let bottom = 0;
@@ -126,7 +147,7 @@ for (const width of [360, 768, 1280]) for (const colorScheme of themes) {
         return target.y >= bottom && target.y + target.height <= (page.viewportSize()?.height ?? 0);
       }, `${id} heading below the header`).toBe(true);
       // Escape (or a tap outside) closes the menu.
-      if (width < 1024) { await expect(menu).toBeVisible(); await page.keyboard.press('Escape'); await expect(menu).toBeHidden(); }
+      if (width < 768) { await expect(menu).toBeVisible(); await page.keyboard.press('Escape'); await expect(menu).toBeHidden(); }
     }
 
     await page.evaluate(() => window.scrollTo(0, 0));
@@ -140,7 +161,7 @@ for (const width of [360, 768, 1280]) for (const colorScheme of themes) {
     await open(page, width, colorScheme);
     const controls = page.locator('body > header :is(a, button, summary):visible, main > header a, body > footer a');
     const count = await controls.count();
-    expect(count).toBeGreaterThanOrEqual(width < 1024 ? 8 : 11);
+    expect(count).toBeGreaterThanOrEqual(width < 768 ? 8 : 11);
     const failures: string[] = [];
     for (let index = 0; index < count; index++) {
       const control = controls.nth(index);
@@ -163,6 +184,37 @@ for (const width of [360, 768, 1280]) for (const colorScheme of themes) {
     expect(failures).toEqual([]);
   });
 }
+
+test.describe('demo product phone menu', () => {
+  test.use({ hasTouch: true });
+
+  test('stays below the header with a wrapped label, and dismisses with Escape and an outside tap at 360px', async ({ page }, info) => {
+    await open(page, 360, 'light', 440);
+    const menuButton = header(page).getByRole('button', { name: 'Menu', exact: true });
+    const menu = header(page).locator('#site-menu');
+    await expect(header(page).getByRole('navigation', { name: 'Main' })).toBeHidden();
+    await expect(header(page).locator('.demo-menu-fallback')).toBeHidden();
+    expect(await horizontalOverflow(page)).toBeUndefined();
+    await page.evaluate(() => { document.documentElement.style.fontSize = '20px'; });
+    const wrapped = menu.locator('a[href="#strengths"]');
+    await wrapped.evaluate(link => { link.textContent = 'Why you can run your gym on your own terms with PlainGym'; });
+    await menuButton.tap();
+    await expect(menu).toBeVisible();
+    const panel = await box(menu);
+    expect(panel.y).toBeGreaterThanOrEqual((await box(header(page))).height);
+    expect(panel.x + panel.width).toBeLessThanOrEqual(360);
+    const item = menu.getByRole('link', { name: 'Why you can run your gym on your own terms with PlainGym' });
+    expect((await box(item)).height).toBeGreaterThan(55);
+    expect(await menu.evaluate(node => node.scrollHeight > node.clientHeight)).toBe(true);
+    await page.screenshot({ path: info.outputPath('product-360-wrapped-menu.png') });
+    await page.keyboard.press('Escape');
+    await expect(menu).toBeHidden();
+    await menuButton.tap();
+    await expect(menu).toBeVisible();
+    await page.touchscreen.tap(10, 425);
+    await expect(menu).toBeHidden();
+  });
+});
 
 // T1029: on a phone held upright, an opened screenshot is shown large enough to read and scrolls inside the lightbox.
 for (const width of [360, 390]) for (const colorScheme of themes) {

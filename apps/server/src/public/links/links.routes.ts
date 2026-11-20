@@ -16,7 +16,7 @@ import { createSettingsService } from '../../areas/settings/settings.js';
 import { createLinkPageService, linkPrincipal, type LinkPageOptions, type LinkPageService } from './service.js';
 import { checkoutReceipts } from './receipt.js';
 import { linkPage } from './page.js';
-import { cachedLinkAsset } from './assets.js';
+import { cachedLinkAsset, readSharedStylesheet } from './assets.js';
 import messages from '../../../../../locales/en/public/links.json' with { type: 'json' };
 import waiverMessages from '../../../../../locales/en/waivers/waivers.json' with { type: 'json' };
 import unsubscribeMessages from '../../../../../locales/en/links/unsubscribe.json' with { type: 'json' };
@@ -26,7 +26,7 @@ const settings = createSettingsService();
 export const receiptCookie = 'plaingym_link_checkout';
 /** One-click POSTs with unknown or malformed tokens, per client and gym each minute. */
 export const oneClickGuessBudget = 300;
-const stylesheet = cachedLinkAsset('./public/links.css'), browserScript = cachedLinkAsset('./public/links.js');
+const browserScript = cachedLinkAsset('./public/links.js');
 /** Signed-link pages load their script, styles and images (`data:` QR codes) from the app only. */
 const linkPageDirectives = ["default-src 'none'", "script-src 'self'", "style-src 'self'", "connect-src 'self'", "img-src 'self' data:", "base-uri 'none'",
   "form-action 'self'", "frame-src 'self'", "frame-ancestors 'none'"];
@@ -108,7 +108,7 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
     })),
     publicRoute(route({ method: 'get', path: '/l/styles.css', permission: { kind: 'public' }, responses: { 200: { description: 'Signed-link styles' } } }, async c => {
       c.header('Content-Type', 'text/css; charset=utf-8');
-      return c.body(await (options().stylesheet ?? stylesheet)());
+      return c.body(await (options().stylesheet ?? readSharedStylesheet)());
     })),
     publicRoute(route({ method: 'get', path: '/l/cleared', permission: { kind: 'public' }, responses: textResponses }, async c => {
       deleteCookie(c, receiptCookie, { path: '/' });

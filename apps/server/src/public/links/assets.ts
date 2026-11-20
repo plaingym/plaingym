@@ -12,3 +12,5 @@ export function cachedLinkAsset(path: string, read = () => readFile(path, 'utf8'
     throw new AppError('unavailable', 'Signed-link assets are unavailable; build the assets and restart the server');
   });
 }
+
+export const readSharedStylesheet = cachedLinkAsset('./public/links.css');

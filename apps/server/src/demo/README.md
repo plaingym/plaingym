@@ -2,18 +2,21 @@
 # Demo mode
 
 The demo entry host's root serves a server-rendered product page. **Try the demo**
-opens the showcase start page directly, followed by a **GitHub** repository link;
-both lead with an inline SVG icon, in the hero, the "How the demo works" section
-and the header. The hero shows the schedule screenshot beside the pitch.
+opens the showcase start page directly. While the showcase is starting, the button
+is disabled and the page asks visitors to reload in a minute. The repository link
+is labelled **GitHub** for a GitHub repository and **Repository** for other source URLs.
+Both controls lead with an inline SVG icon in the hero, the "How the demo works"
+section and the header. The hero shows the schedule screenshot beside the pitch.
 The header is sticky at the top of the screen on every width and links to the three
 top-level sections; the page's scroll padding stops a section reached from a link
-below it. From the `lg` breakpoint the header is a row; below that it keeps **Try
+below it. From the `md` breakpoint the header is a row. Below that it keeps **Try
 the demo** and a menu button that opens the same links in a popover, fixed just
 below the header wherever the page is scrolled, with a `<details>` fallback where
 popovers are missing. Escape or a tap outside closes the popover. Without script a
-followed link leaves it open, so while it is open the scroll padding grows and the
-section stops below the panel. The footer lists the source, license and self-hosting links
-with the running version beside them.
+followed link leaves it open, so the scroll padding accounts for the panel's maximum
+height. Longer menus scroll inside the panel. The footer lists source, license and
+self-hosting links beside the running version. For other source URLs the license and
+guide links open the configured source via `/source`.
 The page uses the public stylesheet, native links and a policy that forbids scripts.
 Its controls have their own hover, active and keyboard-focus styles in light and
 dark, and colour transitions stop under reduced motion.
@@ -25,7 +28,9 @@ its own width and scrolls both ways inside the lightbox, with the close button f
 in view. Full-size links work in browsers without popover support.
 Only the entry host serves `/demo-assets/:file`, from an exact asset allowlist.
 Content-hashed WebP images and the page's own stylesheet, `screenshots/landing.css`
-served as `landing-<hash>.css` (hashed when the server starts), cache for a year.
+served as `landing-<hash>.css` cache for a year. The server reads each asset on
+first use and caches it in memory. A missing deployment asset returns a 404 and
+is logged once.
 That stylesheet holds only what the public stylesheet's utilities can't: popovers,
 backdrops, the fallbacks, the scroll padding and safe-area gutters.
 The server build copies these files beside the bundle in `screenshots/`.

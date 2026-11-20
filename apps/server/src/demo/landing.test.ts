@@ -1,27 +1,39 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
+import { html as htmlTemplate } from 'hono/html';
 import { createDemoRoutes } from './demo.routes.js';
 import type { DemoService } from './service.js';
 import type { RequestEnvironment } from '../core/context.js';
 import type { PermissionMiddleware } from '../core/registry.js';
 import { mountSourceLink } from '../core/source-link.js';
-import { bulletKeys, demoLandingPage, featureKeys, landingStylesheet, repositoryUrl } from './landing.page.js';
+import { setLogSink } from '../core/log.js';
+import { demoLandingPage, featureKeys } from './landing.page.js';
+import { createLandingAssets } from './landing.assets.js';
 import { readFile, readdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import screenshots from './screenshots.json' with { type: 'json' };
+import messages from '../../../../locales/en/demo/product.json' with { type: 'json' };
 
 const origin = 'https://demo.example.test';
 const source = 'https://github.com/plaingym/plaingym/tree/v1.2.3';
-function appFor(enabled: boolean) {
+const showcase = 'https://showcase.demo.example.test/demo#kioskToken=device';
+const cssFile = new URL('./screenshots/landing.css', import.meta.url);
+const stylesheetName = (css: Buffer) => `landing-${createHash('sha256').update(css).digest('hex').slice(0, 16)}.css`;
+function appFor(enabled: boolean, { sourceUrl = source, ready = true, mountSource = true, readAsset }: {
+  sourceUrl?: string; ready?: boolean; mountSource?: boolean;
+  readAsset?: NonNullable<Parameters<typeof createDemoRoutes>[1]['readAsset']>;
+} = {}) {
   const app = new OpenAPIHono<RequestEnvironment>();
   const authorize: PermissionMiddleware = permission => async (_c, next) => {
     expect(permission.kind).toBe('public'); await next();
   };
-  // Landing mounts never read a tenant, session, or demo service.
+  // Landing mounts only use the pool's showcase discovery.
   const service = new Proxy({} as DemoService, { get: () => { throw new Error('Unexpected demo service access'); } });
-  mountSourceLink(app, source, authorize);
-  for (const route of createDemoRoutes(service, { installOrigin: origin, enabled })) route.mount(app, authorize);
+  const pool = { showcase: async () => ready ? showcase : undefined } as NonNullable<Parameters<typeof createDemoRoutes>[1]['pool']>;
+  if (mountSource) mountSourceLink(app, sourceUrl, authorize);
+  for (const route of createDemoRoutes(service, { installOrigin: origin, enabled, sourceUrl, pool, ...(readAsset ? { readAsset } : {}) }))
+    route.mount(app, authorize);
   app.get('/', c => c.text('gym root'));
   app.get('/demo', c => c.text('SPA start page'));
   return app;
@@ -39,8 +51,7 @@ it('serves the entry root as HTML with ordered CTAs, the showcase start URL, sou
   const links = [...html.replace(/<svg\b.*?<\/svg>/g, '').replace(/<span class="shrink-0[^"]*"><\/span>/g, '')
     .matchAll(/<a href="([^"]+)"[^>]*>([^<]+)<\/a>/g)].map(match => [match[1], match[2]]);
   expect(links).toEqual(expect.arrayContaining([
-    ['https://showcase.demo.example.test/demo', 'Try the demo'], ['https://github.com/plaingym/plaingym', 'GitHub'],
-    ['https://showcase.demo.example.test/demo', 'Try the demo'], ['https://github.com/plaingym/plaingym', 'GitHub'],
+    [showcase, 'Try the demo'], ['https://github.com/plaingym/plaingym', 'GitHub'],
     ['/source', 'Source code'],
   ]));
   expect(html).not.toMatch(/<script|\sstyle\s*=/i);
@@ -49,6 +60,27 @@ it('serves the entry root as HTML with ordered CTAs, the showcase start URL, sou
     expect(['https://showcase.demo.example.test', 'https://github.com']).toContain(new URL(url!).origin);
   }
   for (const [svg] of html.matchAll(/<svg\b[^>]*>/g)) expect(svg).toContain('aria-hidden="true"');
+});
+it('shows a disabled Try the demo with a startup note while the showcase is unready', async () => {
+  const response = await appFor(true, { ready: false }).request(origin + '/');
+  expect(response.status).toBe(200);
+  const html = await response.text();
+  const actions = [...html.matchAll(/<button type="button" disabled=""[^>]*>.*?<\/span>Try the demo<\/button>/g)];
+  expect(actions).toHaveLength(6);
+  expect(html).toContain('The demo is starting. Reload in a minute.');
+  expect(html).not.toContain('href="https://showcase.');
+});
+it('renders without a mounted source link and uses a non-GitHub source URL as provided', async () => {
+  const sourceUrl = 'https://gitlab.com/org/subgroup/repo/-/tree/release?view=files';
+  const app = appFor(true, { sourceUrl, mountSource: false });
+  expect((await app.request(origin + '/source')).status).toBe(404);
+  const response = await app.request(origin + '/');
+  expect(response.status).toBe(200);
+  const html = await response.text();
+  expect(html).toMatch(/<a href="https:\/\/gitlab\.com\/org\/subgroup\/repo\/-\/tree\/release\?view=files"[^>]*><span[^>]*>.*?<\/span>Repository<\/a>/);
+  expect(html).toMatch(/<a href="\/source"[^>]*>AGPL-3\.0 license<\/a>/);
+  expect(html).toMatch(/<a href="\/source"[^>]*>Self-hosting guide<\/a>/);
+  expect(html).not.toContain('/blob/main/');
 });
 it('has ten linked feature sections, responsive screenshots and native lightboxes with fallbacks', () => {
   const html = demoLandingPage('/demo', source);
@@ -110,7 +142,8 @@ it('has a header with section links, a script-free menu and icons on both calls 
   // The header stays at the top on every width, and a section reached from a link stops below it.
   const header = html.match(/<header class="sticky top-0[^>]*>.*?<\/header>/s)?.[0] ?? '';
   expect(header).not.toBe('');
-  expect(landingStylesheet.body.toString()).toMatch(/html \{ scroll-padding-top: calc\(5rem \+ env\(safe-area-inset-top\)\); \}/);
+  const css = await readFile(cssFile);
+  expect(css.toString()).toContain('scroll-padding-top: calc(5rem + env(safe-area-inset-top));');
   expect(html.indexOf(header)).toBeLessThan(html.indexOf('<main'));
   expect(header).toContain('>PlainGym</a>');
   // The desktop row and both phone menus list the same links, each a target the page defines.
@@ -135,7 +168,7 @@ it('has a header with section links, a script-free menu and icons on both calls 
   }
   // Every menu control is a 44 px target, and the page links its own stylesheet by content hash.
   expect(header).not.toMatch(/<(?:a|button|summary)\b(?![^>]*min-h-11)[^>]*>/);
-  expect(html).toContain(`<link rel="stylesheet" href="/demo-assets/${landingStylesheet.file}"/>`);
+  expect(html).toContain(`<link rel="stylesheet" href="/demo-assets/${stylesheetName(css)}"/>`);
   expect(response.headers.get('content-security-policy')).toContain("script-src 'none'");
   expect(html).not.toMatch(/<script|\sstyle\s*=|\sonclick=/i);
 });
@@ -181,9 +214,14 @@ it('serves only the manifest assets on the entry host with immutable image cachi
   expect((await app.request(origin + '/demo-assets/%2e%2e%2fpackage.json')).status).toBe(404);
 });
 it('names the page stylesheet by its content hash and caches it like the images', async () => {
-  const css = await readFile(new URL('./screenshots/landing.css', import.meta.url));
-  expect(landingStylesheet.file).toBe(`landing-${createHash('sha256').update(css).digest('hex').slice(0, 16)}.css`);
-  const app = appFor(true), response = await app.request(origin + '/demo-assets/' + landingStylesheet.file);
+  const css = await readFile(cssFile);
+  const readAsset = vi.fn(async (_file: string) => css);
+  const app = appFor(true, { readAsset });
+  expect(readAsset).not.toHaveBeenCalled();
+  const page = await app.request(origin + '/');
+  const file = stylesheetName(css);
+  expect(await page.text()).toContain(`href="/demo-assets/${file}"`);
+  const response = await app.request(origin + '/demo-assets/' + file);
   expect(response.status).toBe(200);
   expect(response.headers.get('content-type')).toBe('text/css; charset=utf-8');
   expect(response.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
@@ -191,17 +229,76 @@ it('names the page stylesheet by its content hash and caches it like the images'
   expect(Buffer.from(await response.arrayBuffer())).toEqual(css);
   // The unhashed name and other hashes aren't served, and the stylesheet stays off gym hosts.
   for (const file of ['landing.css', 'landing-0000000000000000.css']) expect((await app.request(origin + '/demo-assets/' + file)).status).toBe(404);
-  expect((await app.request('https://showcase.demo.example.test/demo-assets/' + landingStylesheet.file)).status).toBe(404);
+  expect((await app.request('https://showcase.demo.example.test/demo-assets/' + file)).status).toBe(404);
+  expect(readAsset.mock.calls).toEqual([['landing.css']]);
+});
+it('shares in-flight asset reads and logs a missing manifest asset once', async () => {
+  const present = screenshots.members.light[0]!, missing = screenshots.members.light[1]!;
+  const readAsset = vi.fn(async (file: string) => {
+    if (file === missing) throw Object.assign(new Error('Missing file'), { code: 'ENOENT' });
+    return Buffer.from('image');
+  });
+  const lines: string[] = [];
+  const previous = setLogSink(line => { lines.push(line); });
+  try {
+    const app = appFor(true, { readAsset });
+    const get = (file: string) => app.request(origin + '/demo-assets/' + file);
+    const responses = await Promise.all([get(present), get(present), get(missing), get(missing)]);
+    expect(responses.map(response => response.status)).toEqual([200, 200, 404, 404]);
+    expect(readAsset.mock.calls).toEqual([[present], [missing]]);
+    expect(responses[2]?.headers.get('cache-control')).toBeNull();
+    expect(lines.map(line => JSON.parse(line))).toEqual([
+      expect.objectContaining({ event: 'demo.asset_unavailable', asset: missing, error: expect.objectContaining({ code: 'ENOENT' }) }),
+    ]);
+  } finally { setLogSink(previous); }
+});
+it('renders the landing page and logs once when its stylesheet is missing', async () => {
+  const readAsset = vi.fn(async (_file: string) => {
+    throw Object.assign(new Error('Missing file'), { code: 'ENOENT' });
+  });
+  const logs = vi.fn();
+  const previous = setLogSink(logs);
+  try {
+    const app = appFor(true, { readAsset });
+    const page = await app.request(origin + '/');
+    expect(page.status).toBe(200);
+    expect(await page.text()).not.toContain('href="/demo-assets/landing-');
+    const file = stylesheetName(await readFile(cssFile));
+    expect((await app.request(origin + '/demo-assets/' + file)).status).toBe(404);
+    expect(readAsset.mock.calls).toEqual([['landing.css']]);
+    expect(logs).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('"asset":"landing.css"'));
+  } finally { setLogSink(previous); }
+});
+it('reads an asset again after a failure other than a missing file', async () => {
+  const previous = setLogSink(vi.fn());
+  try {
+    const read = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('Too many open files'), { code: 'EMFILE' }))
+      .mockResolvedValue(Buffer.from('body'));
+    const assets = createLandingAssets(read);
+    expect(await assets.asset('landing.css')).toBeUndefined();
+    expect((await assets.asset('landing.css'))?.toString()).toBe('body');
+    expect(read).toHaveBeenCalledTimes(2);
+    expect((await assets.asset('landing.css'))?.toString()).toBe('body');
+    expect(read).toHaveBeenCalledTimes(2);
+  } finally { setLogSink(previous); }
 });
 it('lists each feature\'s bullets from the locale file, in order', () => {
   const html = demoLandingPage('/demo', source);
-  expect(bulletKeys('billing')).toEqual(['billingBullet1', 'billingBullet2', 'billingBullet3', 'billingBullet4', 'billingBullet5']);
   for (const key of featureKeys) {
     const section = html.match(new RegExp(`<section id="feature-${key}".*?</section>`, 's'))?.[0] ?? '';
     const items = [...section.matchAll(/<li>([^<]+)<\/li>/g)].map(match => match[1]);
     expect(items.length).toBeGreaterThanOrEqual(3);
-    expect(items).toHaveLength(bulletKeys(key).length);
+    const expected = Object.entries(messages).filter(([name]) => name.startsWith(key + 'Bullet'))
+      .map(([, text]) => String(htmlTemplate`${text}`));
+    expect(items).toEqual(expected);
   }
+});
+it('translates and orders the feature bullets from the supplied catalogue', () => {
+  const catalog = { 'demo/product': { membersBullet10: 'Dixième', membersBullet2: 'Deuxième' } };
+  const html = demoLandingPage('/demo', source, { catalog });
+  const members = html.match(/<section id="feature-members".*?<\/section>/s)?.[0] ?? '';
+  expect([...members.matchAll(/<li>([^<]+)<\/li>/g)].map(match => match[1])).toEqual(['Deuxième', 'Dixième']);
 });
 it('redirects old entry links while preserving every gym root and start page', async () => {
   const app = appFor(true), response = await app.request(origin + '/demo');
@@ -216,12 +313,11 @@ it('leaves ordinary installs untouched', async () => {
   expect(await (await app.request(origin + '/')).text()).toBe('gym root');
   expect(await (await app.request(origin + '/demo')).text()).toBe('SPA start page');
 });
-it('uses a modified installs repository root without losing its release source link', async () => {
+it('uses a GitHub fork repository root without losing its release source link', async () => {
   const custom = 'https://github.com/example/gym/tree/custom?view=1#file';
-  expect(repositoryUrl(custom)).toBe('https://github.com/example/gym');
-  const html = demoLandingPage('https://showcase.example.test/demo#kioskToken=public-device', custom, key => `<${key}>`);
+  const html = demoLandingPage('https://showcase.example.test/demo#kioskToken=public-device', custom, { catalog: { 'demo/product': { pitch: '<pitch>' } } });
   expect(html).toContain('href="https://showcase.example.test/demo#kioskToken=public-device"');
   expect(html).toContain('href="https://github.com/example/gym"');
-  expect(html).toContain('&lt;demo/product:pitch&gt;');
-  expect(html).not.toContain('<demo/product:pitch>');
+  expect(html).toContain('&lt;pitch&gt;');
+  expect(html).not.toContain('<pitch>');
 });

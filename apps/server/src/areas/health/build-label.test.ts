@@ -21,12 +21,11 @@ describe('buildLabel', () => {
     expect(String(buildLabelItem('c', buildLabel('0.4.0+1', 'https://github.com/a/b')))).toBe(
       '<span role="note" class="c" aria-label="Version 0.4.0+1">0.4.0+1</span>');
   });
-  it('shows the label in the product page footer, linked to the install\'s own repository', () => {
+  it('links the label in the product page footer through the source redirect for a non-GitHub repository', () => {
     process.env.APP_VERSION = '0.5.0';
     try {
       const html = demoLandingPage('https://showcase.example.test/demo', 'https://git.example.org/acme/gym');
-      expect(html).toContain('href="https://git.example.org/acme/gym/releases/tag/v0.5.0"');
-      expect(html).toContain('aria-label="Version v0.5.0"');
+      expect(html).toMatch(/<a href="\/source"[^>]+aria-label="Version v0\.5\.0">v0\.5\.0<\/a>/);
     } finally { delete process.env.APP_VERSION; }
   });
 });

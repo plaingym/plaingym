@@ -3,6 +3,7 @@ import { forSystem, gyms } from '@plaingym/db';
 import { createTranslator } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import { clock as defaultClock } from '../core/clock.js';
+import { sourceUrl } from '../core/source-link.js';
 import { tenancyMode } from '../core/tenancy.js';
 import type { ClientIpOptions } from '../core/rate-limit.js';
 import { decryptSecret, parseEncryptionKey } from '../core/secrets.js';
@@ -44,7 +45,8 @@ export async function createDemoRuntime(options: {
   const service = createDemoService({ config, key, clock: defaultClock, deletion, identities,
     seed: context => runSeeds(context, undefined, { env, clock: defaultClock, billingPaymentsFor: payments.forSeed }) });
   const pool = createDemoPool({ config, service, key, clock: defaultClock });
-  configureDemoRoutes(service, { pool, installOrigin: options.installOrigin, ...(options.clientIp ? { clientIp: options.clientIp } : {}) });
+  configureDemoRoutes(service, { pool, installOrigin: options.installOrigin, sourceUrl: sourceUrl(env.SOURCE_URL),
+    ...(options.clientIp ? { clientIp: options.clientIp } : {}) });
   configureGymDeletion(deletion);
   const t = createTranslator(locales.en ?? {});
   const emailFor = (gymId: string) => new OutboxEmail(gymId, defaultClock);

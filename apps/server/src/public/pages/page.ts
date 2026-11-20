@@ -17,8 +17,10 @@ export function waiverDocumentView(template: WaiverTemplate, t: Translator, href
 /** The public pages' own policy (`/trial`, `/drop-in`, `/join`): script, styles and images from the app only. */
 export const publicPageDirectives = ["default-src 'none'", "script-src 'self'", "style-src 'self'", "connect-src 'self'", "img-src 'self'", "base-uri 'none'",
   "form-action 'self'", "frame-src 'self'", "frame-ancestors 'none'"];
-export const button = 'inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg bg-primary px-4 py-3 text-center font-semibold text-primary-foreground disabled:opacity-50';
-export const secondaryButton = 'inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg border border-border bg-background px-4 py-3 text-center font-semibold text-foreground disabled:opacity-50';
+export const buttonControl = 'inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-center font-semibold disabled:opacity-50 transition-colors motion-reduce:transition-none';
+const buttonFocus = 'outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring dark:focus-visible:outline-teal-300';
+export const button = `${buttonControl} ${buttonFocus} bg-primary px-4 py-3 text-primary-foreground hover:not-disabled:bg-primary/90 active:not-disabled:bg-primary/80`;
+export const secondaryButton = `${buttonControl} ${buttonFocus} border border-border bg-background px-4 py-3 text-foreground hover:not-disabled:bg-muted active:not-disabled:bg-secondary`;
 /** Shared with other server-rendered pages (the staff invitation): this file's classes are the ones the public stylesheet holds. */
 export const inputClass = 'block min-h-11 w-full rounded-md border border-border bg-background px-3 py-2 text-base';
 export const panel = 'min-w-0 space-y-4 rounded-xl border border-border bg-card p-4 sm:p-6';
