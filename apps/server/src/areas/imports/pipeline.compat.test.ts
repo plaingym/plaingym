@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { importRuns, importChunks, exportRuns, memberTags, uuidv7, writeAudit } from '@plaingym/db';
+import { importRuns, importChunks, exportRuns, members, memberTags, uuidv7, writeAudit } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { exportDatasets, exportJobSchema, type ExportJob, type ImportJob } from '@plaingym/shared/contracts';
 import { TestClock } from '../../core/clock.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
+import { FakePayments } from '../../infra/payments/index.js';
 import { FakeUploads } from '../../infra/storage/index.js';
 import { createImportPipeline } from './pipeline.js';
+import { autoMatch, parseCsv } from './pipeline.csv.js';
 import { createExportService } from './export.js';
 import { PipelineStore } from './pipeline.store.js';
 import { MapperRegistry, type CsvMapper } from './mappers/registry.js';
@@ -67,6 +69,28 @@ it('continues a legacy import while the previous release is still writing checkp
   await store.put(gymId, key('issues-00000100.json'), [issue]);
   expect(await restarted.errors(gymId, id, { offset: 0, limit: 1 })).toEqual({ data: [issue], pagination: { offset: 0, limit: 1, total: 1 } });
   expect((await storage.list(key(''))).length).toBeGreaterThan(0);
+});
+
+it('isolates Stripe lookup failures in a queued legacy people import', async () => {
+  const { gymId, clock, store, options, context } = await fixture();
+  const provider = new FakePayments(gymId, clock);
+  vi.spyOn(provider, 'readBankAccountForImport').mockRejectedValue(new Error('Stripe unavailable'));
+  const pipeline = createImportPipeline({ ...options, paymentsFor: async () => provider });
+  const csv = 'First Name,Last Name,Stripe Customer ID,Stripe Payment Method ID\nFirst,Person,cus_First,pm_Failure\nSecond,Person,,\n';
+  const upload = await pipeline.upload(context, new File([csv], 'people.csv'));
+  const id = uuidv7();
+  const input = { uploadId: upload.id, mapper: 'people', dryRun: false, duplicatePolicy: 'error',
+    mapping: autoMatch(parseCsv(csv).columns) };
+  const job: ImportJob = { id, uploadId: upload.id, mapper: 'people', dryRun: false, status: 'pending', totalRows: 2,
+    processedRows: 0, committedRows: 0, errorCount: 0, createdAt: clock.now().toISOString(), completedAt: null };
+  await store.put(gymId, store.key(gymId, 'runs', id, 'run.json'), { job, input, actor: context.actor, chunkIds: [uuidv7()] });
+  await store.put(gymId, store.key(gymId, 'runs', id, 'state-00000000.json'), job);
+
+  await pipeline.run(gymId, id);
+  expect(await pipeline.get(gymId, id)).toMatchObject({ status: 'failed', processedRows: 2, committedRows: 1, errorCount: 1 });
+  expect((await pipeline.errors(gymId, id, { offset: 0, limit: 10 })).data)
+    .toMatchObject([{ rowNumber: 2, message: "Stripe couldn't check this payment method. Try again later." }]);
+  expect(await database.forGym(gymId, tx => tx.select({ firstName: members.firstName }).from(members))).toEqual([{ firstName: 'Second' }]);
 });
 
 it('runs a queued legacy export and reads completion still written by the previous release', async () => {

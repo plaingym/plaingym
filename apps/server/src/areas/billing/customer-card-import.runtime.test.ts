@@ -18,8 +18,8 @@ import * as stripeStep from '../setup/stripe-step.js';
 import { customerCardImportJob } from './customer-card-import.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
-it('registers the card import job with the runtime, on the batch lane, and imports a household cards through it', async () => {
-  const gymId = uuidv7(); await factory('gyms', gymId, { billingEnabled: true });
+it('registers the import job on the batch lane and imports a household card and bank account', async () => {
+  const gymId = uuidv7(); await factory('gyms', gymId, { currency: 'USD', billingEnabled: true });
   const household = await factory('households', gymId, { stripeCustomerId: 'cus_fixture' });
   const fake = new FakePayments(gymId, clock, 'synthetic-runtime-secret');
   fake.seedCustomer({ id: 'cus_fixture', email: 'payer@example.test' });
@@ -41,9 +41,18 @@ it('registers the card import job with the runtime, on the batch lane, and impor
     const registered = handlers.get(customerCardImportJob);
     expect(registered).toBeDefined();
     expect(registered!.options).toMatchObject({ lane: 'batch' });
-    await registered!.handler({ householdId: household.id, customerId: 'cus_fixture', requestId: uuidv7(), switched: null },
+    const importOnce = () => registered!.handler({ householdId: household.id, customerId: 'cus_fixture', requestId: uuidv7(), switched: null },
       { gymId, timezone: 'UTC', jobId: uuidv7(), attempt: 1, clock });
-    const cards = await db.forGym(gymId, tx => tx.select().from(paymentMethods).where(eq(paymentMethods.householdId, household.id)));
-    expect(cards.map(card => [card.processorId, card.isDefault])).toEqual([['pm_outside', true]]);
+    const methods = () => db.forGym(gymId, tx => tx.select().from(paymentMethods).where(eq(paymentMethods.householdId, household.id)));
+    const card = expect.objectContaining({ processorId: 'pm_outside', type: 'card', isDefault: true });
+    await importOnce();
+    expect(await methods()).toEqual([card]);
+    fake.recordPaymentMethod({ id: 'pm_bank', customerId: 'cus_fixture', type: 'us_bank_account', bankName: 'Test bank', last4: '1234' });
+    await importOnce();
+    const imported = await methods();
+    expect(imported).toHaveLength(2);
+    expect(imported).toEqual(expect.arrayContaining([
+      card, expect.objectContaining({ processorId: 'pm_bank', type: 'us_bank_account', bankName: 'Test bank', last4: '1234', isDefault: false }),
+    ]));
   } finally { vi.restoreAllMocks(); await rm(directory, { recursive: true, force: true }); }
 });

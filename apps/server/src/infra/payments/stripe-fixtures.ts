@@ -131,6 +131,8 @@ export class StripeFixtures implements PaymentTransport {
       if (params.email) objects = objects.filter((object) => object.email === params.email);
       if (resource === 'payment_methods' && params.customer) objects = objects.filter(object => object.customer === params.customer);
       if (resource === 'payment_methods' && params.type) objects = objects.filter(object => (object.type ?? 'card') === params.type);
+      if (resource === 'setup_intents' && params.customer) objects = objects.filter(object => object.customer === params.customer);
+      if (resource === 'setup_intents' && params.payment_method) objects = objects.filter(object => object.payment_method === params.payment_method);
       if (resource === 'refunds' && params.payment_intent) objects = objects.filter(object =>
         (object.payment_intent ?? this.objects.get(String(object.charge))?.payment_intent) === params.payment_intent);
       const after = params.starting_after ? objects.findIndex((object) => object.id === params.starting_after) + 1 : 0;

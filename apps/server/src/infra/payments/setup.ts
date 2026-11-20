@@ -13,6 +13,8 @@ export const permissionProbes: readonly { resource: string; request: ProviderReq
   { resource: 'Checkout Sessions', request: { method: 'GET', path: '/v1/checkout/sessions', params: { limit: 1 } } },
   { resource: 'Checkout Sessions', request: { method: 'POST', path: '/v1/checkout/sessions/cs_PlainGymPermissionProbe/expire', params: {} } },
   { resource: 'Setup Intents', request: { method: 'GET', path: '/v1/setup_intents', params: { limit: 1 } } },
+  // Stripe exposes a retrieve endpoint for mandates. A missing object confirms the read was authorized.
+  { resource: 'Mandates', request: { method: 'GET', path: '/v1/mandates/mandate_PlainGymPermissionProbe' } },
   { resource: 'Payment Methods', request: { method: 'GET', path: '/v1/payment_methods', params: { type: 'card', limit: 1 } } },
   { resource: 'Payment Methods', request: { method: 'POST', path: '/v1/payment_methods/pm_PlainGymPermissionProbe/detach', params: {} } },
   { resource: 'Charges and Refunds', request: { method: 'GET', path: '/v1/charges', params: { limit: 1 } } },
@@ -87,6 +89,7 @@ export function stripeProvisioner(transport: PaymentTransport, mode: 'test' | 'l
       for (const probe of permissionProbes) {
         try { await transport.request(probe.request); }
         catch (error) {
+          if (probe.resource === 'Mandates' && isMissing(error)) continue;
           const value = error as { type?: string; statusCode?: number; code?: string };
           if (probe.request.method === 'POST' && value.type === 'StripeInvalidRequestError'
             && value.code === 'resource_missing' && [400, 404].includes(value.statusCode ?? 0)) continue;

@@ -142,7 +142,15 @@ export interface CardPaymentMethod extends MethodIdentity {
 export interface BankPaymentMethod extends MethodIdentity {
   readonly type: 'us_bank_account' | 'acss_debit';
   readonly bankName?: string;
+  readonly mandateId?: string;
 }
+export interface BankPaymentMethodForImport extends BankPaymentMethod {
+  /** Stripe denied the read of this Canadian account's mandate. */
+  readonly mandateReadDenied?: true;
+}
+/** Staff-supplied IDs can also refer to legacy cards. A known bank account that fails verification is unavailable. */
+export type BankAccountImportRead = { status: 'found'; method: BankPaymentMethodForImport; householdId?: string }
+  | { status: 'unavailable' } | null;
 export type PaymentMethod = CardPaymentMethod | BankPaymentMethod;
 export interface SetupOutcome {
   readonly id: string;
@@ -183,12 +191,13 @@ export interface DetachOptions { readonly redactBillingDetails?: boolean }
 export class CardImportRefused extends Error {}
 /** The continuation card no longer exists in the customer's attached-card list. */
 export class CardCursorRefused extends Error {}
-export interface CustomerCardPage { readonly cards: readonly PaymentMethod[]; readonly nextCursor: string | null }
+export interface CustomerCardPage { readonly cards: readonly (CardPaymentMethod | BankPaymentMethodForImport)[]; readonly nextCursor: string | null }
 export interface CustomerCardQuery {
   readonly householdId?: string;
   readonly cursor?: string;
   readonly limit?: number;
   readonly types?: readonly PaymentMethodType[];
+  readonly includeMandates?: boolean;
 }
 export interface Payments {
   /**
@@ -207,6 +216,8 @@ export interface Payments {
   listRefunds(chargeId: string): Promise<readonly Refund[]>;
   /** Re-fetches the referenced object at the adapter's pinned API version. */
   readPaymentObject(reference: PaymentObjectReference): Promise<PaymentObjectResult>;
+  /** Read a bank account for staff import, allowing an untagged customer. The importer verifies its household. */
+  readBankAccountForImport(processorId: string, includeMandate: boolean): Promise<BankAccountImportRead>;
   listChangesSince(
     since: Date,
     options?: { cursor?: string; limit?: number },
@@ -360,7 +371,7 @@ export class FakePayments implements Payments {
   readonly #detached = new Set<string>();
   readonly #setups = new Map<string, SetupOutcome>();
   readonly #disputes = new Map<string, Dispute>();
-  readonly #customers: ({ id: string; email: string | null; gymId: string; name?: string; householdId?: string; deleted?: boolean } & CustomerDetails)[] = [];
+  readonly #customers: ({ id: string; email: string | null; gymId: string | null; name?: string; householdId?: string; deleted?: boolean } & CustomerDetails)[] = [];
   readonly #billing = new Map<string, BillingDetails>();
   readonly #changes: ChangeRecord[] = [];
   readonly #idempotency = new Map<string, IdempotentRecord>();
@@ -392,8 +403,8 @@ export class FakePayments implements Payments {
     else this.#uncertain.delete(id);
   }
   /** `deleted` seeds a customer the provider has deleted: reads of it raise `CustomerDeleted`. */
-  seedCustomer(customer: { id: string; email: string; name?: string; gymId?: string; householdId?: string; deleted?: boolean } & CustomerDetails): void {
-    this.#customers.push({ ...customer, gymId: customer.gymId ?? this.gymId });
+  seedCustomer(customer: { id: string; email: string; name?: string; gymId?: string | null; householdId?: string; deleted?: boolean } & CustomerDetails): void {
+    this.#customers.push({ ...customer, gymId: customer.gymId === undefined ? this.gymId : customer.gymId });
   }
   /** Sets what an attached card holds about its owner (its billing details), as a dashboard or Checkout would. */
   setBillingDetails(processorId: string, details: BillingDetails): void { this.#billing.set(processorId, structuredClone(details)); }
@@ -599,8 +610,12 @@ export class FakePayments implements Payments {
         if (this.#setups.has(id)) value = { kind: 'setup', object: this.#setups.get(id)! };
         break;
       case 'payment_method':
-        if (this.#detached.has(id)) return { status: 'unknown', reference };
-        if (this.#methods.has(id)) value = { kind: 'payment_method', object: this.#methods.get(id)! };
+        {
+          const method = this.#methods.get(id), owner = this.#methodOwners.get(id);
+          const customer = method && this.#customers.find(item => item.id === method.customerId);
+          if (method && customer?.gymId === this.gymId && !customer.deleted && !this.#detached.has(id)
+            && (owner === undefined || owner === this.gymId)) value = { kind: 'payment_method', object: method };
+        }
         break;
       case 'refund':
         if (this.#refunds.has(id)) value = { kind: 'refund', object: this.#refunds.get(id)! };
@@ -610,6 +625,24 @@ export class FakePayments implements Payments {
         break;
     }
     return structuredClone(value ? { status: 'found', value } : { status: 'unknown', reference });
+  }
+  #bankWithMandate(method: BankPaymentMethod): BankPaymentMethod {
+    const setup = [...this.#setups.values()].reverse().find(item => item.status === 'succeeded' && item.mandateId
+      && item.customerId === method.customerId && item.paymentMethodId === method.id && item.metadata.gymId === this.gymId);
+    return setup?.mandateId ? { ...method, mandateId: setup.mandateId } : method;
+  }
+  async readBankAccountForImport(processorId: string, includeMandate: boolean): Promise<BankAccountImportRead> {
+    assertNoTransaction('payments.readBankAccountForImport');
+    if (!/^[A-Za-z0-9_]+$/.test(processorId)) throw new Error('Invalid processor ID');
+    const method = this.#methods.get(processorId), owner = this.#methodOwners.get(processorId);
+    if (!method || method.type === 'card' || this.#uncertain.has(processorId)) return null;
+    const customer = this.#customers.find(item => item.id === method.customerId);
+    if (!customer || customer.deleted || customer.gymId !== null && customer.gymId !== this.gymId
+      || owner !== undefined && owner !== this.gymId || this.#detached.has(processorId) || !/^\d{4}$/.test(method.last4))
+      return { status: 'unavailable' };
+    return structuredClone({ status: 'found',
+      method: includeMandate && method.type === 'acss_debit' ? this.#bankWithMandate(method) : method,
+      ...(customer.householdId !== undefined ? { householdId: customer.householdId } : {}) });
   }
   async createCheckout(request: CheckoutRequest): Promise<CheckoutSession> {
     assertNoTransaction('payments.createCheckout');
@@ -818,13 +851,13 @@ export class FakePayments implements Payments {
         .map(({ id, email, householdId }) => ({ id, email: email!, ...(householdId ? { householdId } : {}) })),
     );
   }
-  /** Seeded customers belong to this gym; unknown IDs fail like a missing Stripe customer. */
   async adoptCustomer(customerId: string): Promise<{ id: string; email: string | null }> {
     assertNoTransaction('payments.adoptCustomer');
     const customer = this.#customers.find((item) => item.id === customerId);
     if (!customer) throw new Error('No such customer');
     if (customer.deleted) throw new CustomerDeleted();
-    if (customer.gymId !== this.gymId) throw new Error('Customer belongs to another gym');
+    if (customer.gymId !== null && customer.gymId !== this.gymId) throw new Error('Customer belongs to another gym');
+    customer.gymId = this.gymId;
     return { id: customer.id, email: customer.email };
   }
   async detachPaymentMethod(processorId: string, options: DetachOptions = {}): Promise<void> {
@@ -857,7 +890,8 @@ export class FakePayments implements Payments {
     const page = methods.slice(start, start + limit);
     if (page.some(method => this.#methodOwners.has(method.id) && this.#methodOwners.get(method.id) !== this.gymId))
       throw new CardImportRefused('Card belongs to another customer or gym');
-    const cards = page.filter(method => types.has(method.type) && (method.type === 'card' || method.last4));
+    const cards = page.filter(method => types.has(method.type) && (method.type === 'card' || method.last4))
+      .map(method => options.includeMandates && method.type === 'acss_debit' ? this.#bankWithMandate(method) : method);
     return structuredClone({ cards, nextCursor: start + limit < methods.length ? page.at(-1)!.id : null });
   }
   /** The stored name, email and personal details, as the provider would show them. */

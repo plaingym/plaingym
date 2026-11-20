@@ -12,7 +12,8 @@ import { createSetupClient } from './api.js';
 import { SetupActions } from './actions.js';
 
 const label = (key: string) => t('setup/stripe-step:' + key);
-const permissions = ['customers', 'intents', 'checkout', 'setupIntents', 'methods', 'refunds', 'webhooks', 'events', 'disputes'];
+const permissions = ['customers', 'intents', 'checkout', 'setupIntents', 'mandates', 'methods', 'refunds', 'webhooks', 'events', 'disputes'];
+const readPermissions = new Set(['setupIntents', 'mandates', 'events', 'disputes']);
 export function StripeStep({ fetcher = fetch, onComplete }: { fetcher?: typeof fetch; onComplete?: () => void }) {
   const formId = useId();
   const [client] = useState(() => createSetupClient(fetcher));
@@ -39,7 +40,7 @@ export function StripeStep({ fetcher = fetch, onComplete }: { fetcher?: typeof f
       <h3 className="font-semibold">{label('permissions')}</h3>
       <dl className="space-y-2 rounded-md border p-3 text-sm">
         {permissions.map((resource) => <div key={resource} className="flex min-w-0 flex-wrap justify-between gap-x-4 gap-y-1">
-          <dt className="wrap-anywhere">{label(resource)}</dt><dd className="font-medium">{label(['setupIntents', 'events', 'disputes'].includes(resource) ? 'read' : 'write')}</dd>
+          <dt className="wrap-anywhere">{label(resource)}</dt><dd className="font-medium">{label(readPermissions.has(resource) ? 'read' : 'write')}</dd>
         </div>)}
       </dl><p className="text-sm">{label('other')}</p>
       {failure && <Alert variant="error" focusOnReveal>{label(failure)}</Alert>}

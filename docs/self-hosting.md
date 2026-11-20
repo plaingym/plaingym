@@ -206,6 +206,7 @@ Stripe dashboard, create a restricted key with:
 | Charges and Refunds | Write |
 | Webhook Endpoints | Write |
 | Setup Intents | Read |
+| Mandates | Read |
 | Events | Read |
 | Disputes | Read |
 

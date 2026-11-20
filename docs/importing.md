@@ -44,6 +44,25 @@ can change any match.
 | Email opt-out, Tags | Optional. Opt-out accepts yes/no, true/false, 1/0. |
 | Stripe customer ID, Stripe payment method ID | Optional, and only useful when your old system used **your own Stripe account** ([card-recollection.md](card-recollection.md#cards-already-in-your-stripe-account)). |
 
+People CSVs can bring in saved Stripe bank accounts for a linked customer. Use
+a US bank account for a USD gym or a Canadian bank account for a CAD gym. Connect
+the Stripe account that holds the payment method so PlainGym can check its type
+and the customer it belongs to, including customers brought over from another
+system. An incompatible bank account is a row error. A Canadian bank account
+also needs an active, reusable mandate from a successful Stripe setup for
+off-session payments. The CSV flags that row if the importer cannot find a
+reusable mandate or if the Stripe key lacks **Mandates** read access. If Stripe
+cannot check a saved payment method, preview marks the affected row as an error.
+The dry run and import results show the reason for each affected row, and the
+import saves the other valid rows.
+
+Staff can also import saved cards and compatible bank accounts from the
+household's linked Stripe customer in Billing. A Canadian bank account without a
+reusable mandate is skipped. If an existing Stripe key lacks **Mandates** read
+access, the job skips the affected accounts and continues importing cards and
+other eligible accounts. The completion entry in the audit trail shows separate
+card and bank-account counts and counts accounts skipped for missing permission.
+
 PINs and medical notes are never imported: remove those columns, and any unrelated
 ones, from the mapping.
 
@@ -160,3 +179,6 @@ link expires after an hour; create another export if it has. Credentials, secret
 hashes, audit payloads and email bodies are not included. Technical details of the
 import and export pipeline are in `apps/server/src/areas/imports/pipeline.md` and
 the mapper notes next to it.
+
+`payment_methods.csv` includes the method type, bank name and Stripe mandate ID
+when present. `payment_attempts.csv` includes when a bank debit started processing.

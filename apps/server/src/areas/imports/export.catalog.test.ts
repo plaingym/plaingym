@@ -106,7 +106,21 @@ describe('export schema coverage and secret exclusions', () => {
       expect.objectContaining({ id: membership.id, anniversary_on: '2024-02-29' }),
     ]);
     expect(await exportCatalog.payment_methods.page(database.forGym, gymA, cutoff)).toEqual([
-      expect.objectContaining({ id: card.id, processor_created_at: processorCreatedAt }),
+      expect.objectContaining({ id: card.id, processor_created_at: processorCreatedAt, type: 'card' }),
+    ]);
+  });
+  it('exports a bank method and the processing timestamp of its debit attempt', async () => {
+    const gymId = uuidv7(), processingAt = new Date('2026-10-01T12:00:00Z');
+    await factory('gyms', gymId);
+    const bank = await factory('paymentMethods', gymId, { processorId: 'pm_bank', type: 'us_bank_account',
+      brand: null, bankName: 'Test bank', mandateId: 'mandate_fixture' });
+    const attempt = await factory('paymentAttempts', gymId, { status: 'processing', processingAt, savedPaymentMethod: bank.processorId });
+    const cutoff = new Date('2099-01-01T00:00:00Z');
+    expect(await exportCatalog.payment_methods.page(database.forGym, gymId, cutoff)).toEqual([
+      expect.objectContaining({ id: bank.id, type: 'us_bank_account', bank_name: 'Test bank', mandate_id: 'mandate_fixture' }),
+    ]);
+    expect(await exportCatalog.payment_attempts.page(database.forGym, gymId, cutoff)).toEqual([
+      expect.objectContaining({ id: attempt.id, status: 'processing', processing_at: processingAt }),
     ]);
   });
   it('exports the scheduled plan switch, the override reason and each line plan only for the requested gym', async () => {
@@ -137,9 +151,7 @@ describe('export schema coverage and secret exclusions', () => {
       members: ['checkin_code_version', 'checkin_code_hash', 'last_name_folded', 'email_folded', 'email_address'],
       kiosk_devices: ['token_hash'],
       signed_links: ['token_hash'],
-      // Bank debit fields are reserved in the schema. The export retains its current columns.
-      payment_methods: ['type', 'bank_name', 'mandate_id'],
-      payment_attempts: ['error', 'processing_at'],
+      payment_attempts: ['error'],
       audit_events: ['before', 'after'],
       email_outbox: ['subject', 'html', 'text'],
       sms_outbox: ['body'],

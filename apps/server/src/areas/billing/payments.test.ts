@@ -34,14 +34,14 @@ import { createChargeRunner, type ChargeResult } from './runner/index.js';
 import { configurePayments, createPaymentRoutes } from './payments.routes.js';
 import { createLapsedRefundJobs, createPaymentJobs, lapsedRefundJob } from './payments.jobs.js';
 import { detachJob } from './payments.mutations.js';
-import { createCustomerCardImportJobs, customerCardImportJob } from './customer-card-import.js';
+import { createCustomerCardImportJobs, customerCardImportJob, customerCardRestartLimit } from './customer-card-import.js';
 import { stripeTestClearedAction } from './stripe-writes.js';
 import { refundSending, refundSendLeaseMs, refundSent, refundSettleSkewMs } from './transitions/lapsed-refunds.js';
 
 const db = useTestDatabase(), factory = createFactories(db), origin = 'https://gym.example.test';
-async function fixture() {
+async function fixture(currency: 'USD' | 'CAD' | 'GBP' = 'USD') {
   const gymId = uuidv7(), clock = new TestClock('2026-10-25T12:00:00Z');
-  await factory('gyms', gymId, { currency: 'USD', billingEnabled: true, memberEmailsEnabled: true });
+  await factory('gyms', gymId, { currency, billingEnabled: true, memberEmailsEnabled: true });
   const user = await factory('authUser', gymId), home = await factory('households', gymId, { stripeCustomerId: 'cus_fixture', email: 'payer@example.invalid' });
   const card = await factory('paymentMethods', gymId, { householdId: home.id, processorId: 'pm_4242', isDefault: true });
   const provider = new FakePayments(gymId, clock); provider.seedCustomer({ id: 'cus_fixture', email: 'payer@example.invalid' });
@@ -52,9 +52,9 @@ async function fixture() {
     transitions: createInvoiceTransitions({ scope: db.forGym, clock }) };
   const runner = createChargeRunner({ ...options, payments: async () => provider });
   const service = createPaymentService({ ...options, runner });
-  const create = () => service.createOneOff(context, { source: 'custom', householdId: home.id, dueOn: '2026-10-25', description: 'Drop-in', amountCents: 2500, currency: 'USD' });
+  const create = () => service.createOneOff(context, { source: 'custom', householdId: home.id, dueOn: '2026-10-25', description: 'Drop-in', amountCents: 2500, currency });
   const invoice = await create(), paid = await create();
-  const payment = await service.manualPayment(context, paid.id, { amountCents: 2500, currency: 'USD', method: 'cash', paidAt: clock.now().toISOString() });
+  const payment = await service.manualPayment(context, paid.id, { amountCents: 2500, currency, method: 'cash', paidAt: clock.now().toISOString() });
   const notifications = createTransitionNotifications({ scope: db.forGym, clock, settings,
     prepare: async () => ({ email, origin }), staffRecipients: async () => ['owner@example.invalid'] });
   createServerRegistry({ jobs: [...createPaymentJobs({ scope: db.forGym, detachCard, notifications }),
@@ -96,6 +96,123 @@ describe('staff import of externally attached cards', () => {
     f.provider.recordPaymentMethod({ id, customerId, createdAt, brand: 'visa', last4: '4242', expiresMonth: 12, expiresYear: 2035 });
   }
   async function empty(f: Fixture) { await db.forGym(f.gymId, tx => tx.delete(paymentMethods)); }
+  it.each([
+    ['USD', 'us_bank_account', 'acss_debit'],
+    ['CAD', 'acss_debit', 'us_bank_account'],
+  ] as const)('imports a card and the compatible bank account in %s and counts the other account as skipped', async (currency, type, otherType) => {
+    const f = await fixture(currency); await empty(f);
+    attached(f, 'pm_imported_card', new Date('2026-10-01T00:00:00Z'));
+    f.provider.recordPaymentMethod({ id: 'pm_matching_bank', customerId: 'cus_fixture', type, bankName: 'Test bank', last4: '1234' });
+    f.provider.recordPaymentMethod({ id: 'pm_other_bank', customerId: 'cus_fixture', type: otherType, bankName: 'Other bank', last4: '4321' });
+    const mandateId = type === 'acss_debit' ? 'mandate_imported' : null;
+    if (mandateId) f.provider.recordSetup({ id: 'seti_imported', customerId: 'cus_fixture', status: 'succeeded',
+      paymentMethodId: 'pm_matching_bank', mandateId, metadata: { gymId: f.gymId } });
+    const list = vi.spyOn(f.provider, 'listCustomerCards');
+    const summary = () => db.forGym(f.gymId, tx => tx.select({ details: auditEvents.after }).from(auditEvents)
+      .where(eq(auditEvents.action, 'billing.card.import_finished')));
+    await f.service.importCustomerCards(f.context, f.home.id);
+    await f.jobs.runNext();
+    expect(list).toHaveBeenCalledWith('cus_fixture', expect.objectContaining({ types: ['card', type] }));
+    expect(await rows(f)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ processorId: 'pm_imported_card', type: 'card', isDefault: false }),
+      expect.objectContaining({ processorId: 'pm_matching_bank', type, bankName: 'Test bank', last4: '1234',
+        expiryMonth: null, expiryYear: null, mandateId, isDefault: true }),
+    ]));
+    expect(await rows(f)).toHaveLength(2);
+    expect(await summary()).toMatchObject([{ details: { importedCards: 1, importedBankAccounts: 1,
+      skippedBankAccounts: 1, summary: '1 card and 1 bank account' } }]);
+    await f.service.importCustomerCards(f.context, f.home.id);
+    await f.jobs.runNext();
+    expect(await rows(f)).toHaveLength(2);
+    expect(await summary()).toContainEqual(expect.objectContaining({ details: expect.objectContaining({
+      importedCards: 0, importedBankAccounts: 0, skippedBankAccounts: 1,
+    }) }));
+    const createCharge = vi.spyOn(f.provider, 'createCharge');
+    expect(await f.service.charge(f.context, f.invoice.id)).toMatchObject({ status: 'processing' });
+    expect(createCharge).toHaveBeenCalledWith(expect.objectContaining({ paymentMethodId: 'pm_matching_bank',
+      ...(mandateId ? { mandateId } : {}) }));
+  });
+  it('counts a CAD account without a reusable mandate as skipped and charges the imported card', async () => {
+    const f = await fixture('CAD'); await empty(f);
+    attached(f, 'pm_imported_card', new Date('2026-10-01T00:00:00Z'));
+    f.provider.recordPaymentMethod({ id: 'pm_unmandated', customerId: 'cus_fixture', type: 'acss_debit', last4: '1234' });
+    await f.service.importCustomerCards(f.context, f.home.id);
+    await f.jobs.runNext();
+    expect(await rows(f)).toMatchObject([{ processorId: 'pm_imported_card', isDefault: true }]);
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.card.import_finished')));
+    expect(audits).toMatchObject([{ after: { importedCards: 1, importedBankAccounts: 0, skippedBankAccounts: 1 } }]);
+    expect(await f.service.charge(f.context, f.invoice.id)).toMatchObject({ status: 'succeeded' });
+  });
+  it('counts a denied mandate read and still imports the household card', async () => {
+    const f = await fixture('CAD'); await empty(f);
+    const customer = 'cus_fixture', bankId = 'pm_pad', cardId = 'pm_card', mandateId = 'mandate_pad';
+    const stripe = new StripeFixtures(f.gymId);
+    stripe.objects.clear();
+    stripe.objects.set(customer, { id: customer, object: 'customer', metadata: { gym_id: f.gymId, household_id: f.home.id } });
+    stripe.objects.set(bankId, { id: bankId, object: 'payment_method', customer, created: stripe.now,
+      type: 'acss_debit', acss_debit: { last4: '1234' } });
+    stripe.objects.set(cardId, { id: cardId, object: 'payment_method', customer, created: stripe.now,
+      type: 'card', card: { last4: '4242', exp_month: 12, exp_year: 2035 } });
+    stripe.objects.set('seti_pad', { id: 'seti_pad', object: 'setup_intent', customer, payment_method: bankId,
+      status: 'succeeded', usage: 'off_session', mandate: mandateId });
+    const request = vi.fn(async (input: Parameters<StripeFixtures['request']>[0]) => {
+      if (input.path === '/v1/mandates/' + mandateId) throw Object.assign(new Error('Forbidden'), { statusCode: 403 });
+      return stripe.request(input);
+    });
+    const provider = new StripePayments(f.gymId, { transport: { request }, webhookSecret: 'fixture-signing-secret' });
+    vi.spyOn(f.provider, 'listCustomerCards').mockImplementation(provider.listCustomerCards.bind(provider));
+    await f.service.importCustomerCards(f.context, f.home.id);
+    await f.jobs.runNext();
+    expect(request).toHaveBeenCalledWith({ method: 'GET', path: '/v1/mandates/' + mandateId });
+    expect(await rows(f)).toMatchObject([{ processorId: cardId, type: 'card', isDefault: true }]);
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents));
+    expect(audits).toContainEqual(expect.objectContaining({ action: 'billing.card.import_skipped',
+      after: expect.objectContaining({ processorId: bankId, reason: 'mandate_read_denied' }) }));
+    expect(audits).toContainEqual(expect.objectContaining({ action: 'billing.card.import_finished',
+      after: expect.objectContaining({ importedCards: 1, importedBankAccounts: 0, skippedBankAccounts: 1, skippedMandatePermissions: 1,
+        summary: '1 card and 0 bank accounts. Skipped 1 — needs Mandates read access on the Stripe key.' }) }));
+  });
+  it('finishes card-only continuations queued before bank imports at the restart limit', async () => {
+    const f = await fixture('CAD'); await empty(f);
+    attached(f, 'pm_cursor', new Date('2026-10-30T00:00:00Z'));
+    for (let i = 0; i < 101; i++) attached(f, 'pm_legacy_' + i);
+    f.provider.recordPaymentMethod({ id: 'pm_unmandated', customerId: 'cus_fixture', type: 'acss_debit',
+      createdAt: new Date('2026-10-28T00:00:00Z'), last4: '1234' });
+    const list = vi.spyOn(f.provider, 'listCustomerCards');
+    await f.jobs.enqueue(customerCardImportJob, { householdId: f.home.id, customerId: 'cus_fixture', requestId: uuidv7(),
+      switched: null, cursor: 'pm_cursor', restarts: customerCardRestartLimit, skippedCards: 1 }, { gymId: f.gymId, timezone: 'UTC' });
+    await f.jobs.runNext();
+    await f.jobs.runNext();
+    expect(await rows(f)).toHaveLength(101);
+    expect(list.mock.calls.map(([, options]) => options?.types)).toEqual([['card'], ['card']]);
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.card.import_finished')));
+    expect(audits).toMatchObject([{ after: { outcome: 'finished', restarts: customerCardRestartLimit, skippedCards: 1 } }]);
+  });
+  it('continues an eligible listing when the provider cursor belongs to a filtered bank account', async () => {
+    const f = await fixture(); await empty(f);
+    attached(f, 'pm_new_card', new Date('2026-10-30T00:00:00Z'));
+    attached(f, 'pm_old_card', new Date('2026-10-01T00:00:00Z'));
+    for (let index = 0; index < 100; index++)
+      f.provider.recordPaymentMethod({ id: 'pm_ca_' + index, customerId: 'cus_fixture', type: 'acss_debit', last4: '4321' });
+    await f.service.importCustomerCards(f.context, f.home.id);
+    await f.jobs.runNext();
+    expect((await rows(f)).map(method => method.processorId)).toEqual(['pm_new_card']);
+    await f.jobs.runNext();
+    expect((await rows(f)).map(method => method.processorId).sort()).toEqual(['pm_new_card', 'pm_old_card']);
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.card.import_finished')));
+    expect(audits).toMatchObject([{ after: { importedCards: 2, importedBankAccounts: 0, skippedBankAccounts: 100 } }]);
+  });
+  it('lists cards only for a gym outside USD and CAD', async () => {
+    const f = await fixture('GBP'); await empty(f);
+    attached(f, 'pm_card');
+    f.provider.recordPaymentMethod({ id: 'pm_bank', customerId: 'cus_fixture', type: 'acss_debit', last4: '4321' });
+    const list = vi.spyOn(f.provider, 'listCustomerCards');
+    await f.service.importCustomerCards(f.context, f.home.id);
+    list.mockClear();
+    await f.jobs.runNext();
+    expect(list).toHaveBeenCalledExactlyOnceWith('cus_fixture', expect.objectContaining({ types: ['card'] }));
+    expect(await rows(f)).toMatchObject([{ processorId: 'pm_card', type: 'card', isDefault: true }]);
+  });
   it('imports dashboard-added cards once, safely repeats, and the runner charges the imported default', async () => {
     const f = await fixture(); await empty(f);
     attached(f, 'pm_old', new Date('2026-01-01T00:00:00Z')); attached(f, 'pm_new');

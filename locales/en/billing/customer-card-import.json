@@ -1,0 +1,9 @@
+{
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "summary": "{cards} and {bankAccounts}",
+  "summaryWithMandateReadSkips": "{imported}. Skipped {count} — needs Mandates read access on the Stripe key.",
+  "card": "{count} card",
+  "cards": "{count} cards",
+  "bankAccount": "{count} bank account",
+  "bankAccounts": "{count} bank accounts"
+}

@@ -129,3 +129,19 @@ changed details, import races and gym isolation against PostgreSQL.
 the registered signed-link routes, webhook replay, card setup, onboarding and
 next-cycle collection. The payments contract runs creation against the fake,
 synthetic Stripe API and serialized transport replay.
+
+## Importing saved payment methods
+
+The household import job lists cards and the currency's bank account type
+for a Stripe customer already linked to the household. USD imports US bank
+accounts and CAD imports Canadian bank accounts. The job counts the other bank
+account type as skipped. Gyms using other currencies list cards only.
+
+Imported bank accounts store the masked digits and bank name supplied by Stripe
+and use the same default selection as cards. The job stores a Canadian bank
+account only when Stripe returns an active reusable mandate from off-session
+setup. It counts an account without one as skipped. The completion audit shows
+separate card and bank-account counts when the job imports or skips a bank
+account. It also counts accounts skipped because an existing Stripe key lacks
+Mandates read access. Repeat requests keep the existing payment methods and
+their default.

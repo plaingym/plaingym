@@ -9,11 +9,12 @@ import { importPlanRequestSchema, startImportRequestSchema, type ImportUpload, t
 import { clock as defaultClock } from '../../core/clock.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import type { Jobs } from '../../infra/jobs/index.js';
+import type { Payments } from '../../infra/payments/index.js';
 import type { Uploads } from '../../infra/storage/index.js';
 import { parseCsv, autoMatch, MAX_CSV_BYTES, type CsvDocument } from './pipeline.csv.js';
 import { PipelineStore, type UploadsFor } from './pipeline.store.js';
-import { MapperRegistry, type MapperContext, type PlannedRow } from './mappers/registry.js';
-import { peopleMapper } from './mappers/people.js';
+import { ImportPreparationChanged, MapperRegistry, type MapperContext, type PlannedRow } from './mappers/registry.js';
+import { createPeopleMapper } from './mappers/people.js';
 import { matMapper } from './mappers/mat.js';
 import { membershipsMapper } from './mappers/memberships.js';
 import { previewBudget, previewDeadline, PREVIEW_CLEANUP_MS, PREVIEW_TIMEOUT_MS, PREVIEW_LEASE_INTERVAL_MS,
@@ -55,6 +56,7 @@ async function decode(file: File): Promise<string> {
 export interface PipelineOptions {
   uploadsFor: UploadsFor; jobs: Jobs; scope?: typeof forGym; clock?: Clock; mappers?: MapperRegistry;
   previewBudget?: PreviewBudget; previewTimeoutMs?: number;
+  paymentsFor?(gymId: string): Promise<Payments | null>;
 }
 export function createImportPipeline(options: PipelineOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
@@ -65,7 +67,7 @@ export function createImportPipeline(options: PipelineOptions) {
   // Retention excludes the preview subtree when finding an upload's original age.
   const ticketPrefix = (gymId: string, uploadId: string, id: string) => store.key(gymId, 'uploads', uploadId, `preview/requests/${id}`);
   const ticketKey = (gymId: string, uploadId: string, id: string, file: string) => `${ticketPrefix(gymId, uploadId, id)}/${file}.json`;
-  const mappers = options.mappers ?? new MapperRegistry([peopleMapper, matMapper, membershipsMapper]);
+  const mappers = options.mappers ?? new MapperRegistry([createPeopleMapper(scope, options.paymentsFor), matMapper, membershipsMapper]);
   const key = (gymId: string, id: string, file: string) => store.key(gymId, 'runs', id, file);
   const stateKey = (gymId: string, id: string, index: number) => key(gymId, id, `state-${String(index).padStart(8, '0')}.json`);
   const runWhere = (gymId: string, id: string) => and(eq(importRuns.gymId, gymId), eq(importRuns.id, id));
@@ -108,7 +110,9 @@ export function createImportPipeline(options: PipelineOptions) {
     for (let i = 0; i < document.rows.length; i += IMPORT_CHUNK_SIZE) {
       check();
       const rows = document.rows.slice(i, i + IMPORT_CHUNK_SIZE);
-      const planned = await scope(context.gymId, (tx) => mapper.analyze(tx, rows, plan, context));
+      const prepared = await mapper.prepare?.(rows, plan, context) ?? context;
+      check();
+      const planned = await scope(context.gymId, (tx) => mapper.analyze(tx, rows, plan, prepared));
       check();
       if (planned.length !== rows.length || planned.some((row, index) => row.rowNumber !== rows[index]!.rowNumber))
         throw new Error('Mapper must return one result per source row in order');
@@ -366,7 +370,9 @@ export function createImportPipeline(options: PipelineOptions) {
       const chunks = await scope(gymId, (tx) => tx.select().from(importChunks)
         .where(and(eq(importChunks.gymId, gymId), eq(importChunks.runId, id))).orderBy(asc(importChunks.position)));
       for (const chunk of chunks) {
+        if (chunk.completedAt) continue;
         const source = document.rows.slice(chunk.position * IMPORT_CHUNK_SIZE, (chunk.position + 1) * IMPORT_CHUNK_SIZE);
+        const prepared = await mapper.prepare?.(source, saved.input, context) ?? context;
         async function commitChunk(failure?: ChunkResult): Promise<void> {
           await scope(gymId, async (tx) => {
             // A short run-row lock serializes deliveries and counters. Domain writes, chunk result and
@@ -378,11 +384,11 @@ export function createImportPipeline(options: PipelineOptions) {
             if (!current || current.completedAt) return;
             let result = failure;
             if (!result) {
-              const planned = policy(await mapper.analyze(tx, source, saved.input, context), saved.input);
+              const planned = policy(await mapper.analyze(tx, source, saved.input, prepared), saved.input);
               if (planned.length !== source.length || planned.some((row, index) => row.rowNumber !== source[index]!.rowNumber))
                 throw new Error('Invalid mapper results');
               const valid = planned.filter((row) => !row.issues.length && (row.action === 'create' || row.action === 'update'));
-              const count = saved.dryRun || !valid.length ? 0 : await mapper.commit(tx, valid, context);
+              const count = saved.dryRun || !valid.length ? 0 : await mapper.commit(tx, valid, prepared);
               if (!Number.isInteger(count) || count < 0 || count > valid.length) throw new Error('Invalid mapper commit count');
               result = { count, issues: planned.flatMap((row) => row.issues) };
             }
@@ -400,7 +406,8 @@ export function createImportPipeline(options: PipelineOptions) {
           });
         }
         try { await commitChunk(); }
-        catch {
+        catch (error) {
+          if (error instanceof ImportPreparationChanged) throw error;
           // The domain transaction rolled back. Safe issues are durable in the same transaction as progress.
           // If another worker won, commitChunk observes the completed chunk and leaves its result intact.
           await commitChunk({ count: 0, issues: source.map((row) => ({ rowNumber: row.rowNumber, column: null,
@@ -513,18 +520,21 @@ export function createImportPipeline(options: PipelineOptions) {
               .where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.id, chunkId)));
             return row ? row.result as ChunkResult : undefined;
           };
+          const prior = mapper.prepare && !saved.input.dryRun ? await scope(gymId, existing) : undefined;
+          const prepared = !prior ? await mapper.prepare?.(source, saved.input, context) ?? context : context;
           try {
-            result = await scope(gymId, async (tx) => {
-              if (!saved.input.dryRun) { const prior = await existing(tx); if (prior) return prior; }
-              const planned = policy(await mapper.analyze(tx, source, saved.input, context), saved.input);
+            result = prior ?? await scope(gymId, async (tx) => {
+              if (!saved.input.dryRun) { const committed = await existing(tx); if (committed) return committed; }
+              const planned = policy(await mapper.analyze(tx, source, saved.input, prepared), saved.input);
               if (planned.length !== source.length || planned.some((row, index) => row.rowNumber !== source[index]!.rowNumber))
                 throw new Error('Invalid mapper results');
               const valid = planned.filter((row) => !row.issues.length && (row.action === 'create' || row.action === 'update'));
-              const count = saved.input.dryRun || !valid.length ? 0 : await mapper.commit(tx, valid, context);
+              const count = saved.input.dryRun || !valid.length ? 0 : await mapper.commit(tx, valid, prepared);
               if (!Number.isInteger(count) || count < 0 || count > valid.length) throw new Error('Invalid mapper commit count');
               return checkpoint(tx, { count, issues: planned.flatMap((row) => row.issues) });
             });
-          } catch {
+          } catch (error) {
+            if (error instanceof ImportPreparationChanged) throw error;
             // The entire short transaction rolled back. Never echo SQL or uploaded PII.
             result = { count: 0, issues: source.map((row) => ({ rowNumber: row.rowNumber, column: null,
               code: 'conflict', message: t('imports/pipeline:chunkFailed') })) };

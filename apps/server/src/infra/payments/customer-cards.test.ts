@@ -48,6 +48,40 @@ it('sends only customer-scoped card filters and never adopts or writes a custome
   ]);
   expect(f.transport.requests.every(request => request.method === 'GET')).toBe(true);
 });
+
+it('reads an untagged Canadian bank account only for import, and requires an active reusable mandate', async () => {
+  const f = stripe();
+  const customer = f.transport.objects.get(customerId)!, processorId = 'pm_pad';
+  customer.metadata = {};
+  f.transport.objects.set(processorId, { id: processorId, object: 'payment_method', customer: customerId,
+    type: 'acss_debit', created: f.transport.now, acss_debit: { last4: '1234', bank_name: 'Test bank' } });
+  const setup = { id: 'seti_pad', object: 'setup_intent', customer: customerId, payment_method: processorId,
+    status: 'succeeded', usage: 'off_session', mandate: 'mandate_pad' };
+  const mandate = { id: 'mandate_pad', object: 'mandate', payment_method: processorId, type: 'multi_use', status: 'inactive' };
+  f.transport.objects.set(setup.id, setup);
+  f.transport.objects.set(mandate.id, mandate);
+  const reference = { kind: 'payment_method', id: processorId } as const;
+  expect(await f.payments.readPaymentObject(reference)).toEqual({ status: 'unknown', reference });
+  const unchargeable = await f.payments.readBankAccountForImport(processorId, true);
+  expect(unchargeable).toMatchObject({ status: 'found', method: { customerId, last4: '1234' } });
+  expect(unchargeable).not.toHaveProperty('method.mandateId');
+  mandate.status = 'active';
+  const recorder = new FixtureRecorder(gymId);
+  const chargeable = await recorder.wrap(f.payments).readBankAccountForImport(processorId, true);
+  expect(chargeable).toMatchObject({ status: 'found', method: { mandateId: mandate.id } });
+  expect(await replayPayments(recorder.tape, gymId).readBankAccountForImport(processorId, true)).toEqual(chargeable);
+  expect(f.transport.requests).toContainEqual({ path: '/v1/setup_intents', method: 'GET', params: {
+    customer: customerId, payment_method: processorId, limit: 100,
+  } });
+  expect(f.transport.requests).toContainEqual({ path: '/v1/mandates/' + mandate.id, method: 'GET' });
+  expect(customer.metadata).toEqual({});
+  customer.metadata = { gym_id: gymId, household_id: householdId };
+  expect(await f.payments.listCustomerCards(customerId, { householdId, types: ['acss_debit'], includeMandates: true }))
+    .toMatchObject({ cards: [{ id: processorId, mandateId: mandate.id }] });
+  customer.metadata = { gym_id: 'other-gym' };
+  expect(await f.payments.readBankAccountForImport(processorId, true)).toEqual({ status: 'unavailable' });
+  expect(f.transport.requests.every(request => request.method === 'GET')).toBe(true);
+});
 it.each([
   { statusCode: 400, code: 'resource_missing' },
   { statusCode: 400, param: 'starting_after' },

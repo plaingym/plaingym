@@ -5,11 +5,11 @@ The whole-file index retains shared families and compact per-row flags. A
 customer-keyed family of one is rebuilt from its source row during analysis,
 including when the member has an independent external ID.
 
-`peopleMapper` plugs into the existing import pipeline without additional runtime
-wiring. It analyzes with the supplied read-only handle and writes only inside
-the pipeline's transaction, in chunks of at most 100 rows. Preview and dry runs
-do not change domain data. Importing stores processor IDs; it makes no payment,
-email, storage or HTTP calls.
+`createPeopleMapper` lets the import pipeline resolve new Stripe payment method
+IDs before opening each chunk's database transaction. The mapper analyzes with
+the supplied read-only handle and writes in chunks of at most 100 rows. Preview
+and dry runs do not change domain data. Importing stores processor references for
+later billing.
 
 Map the source columns to first and last name, optional contact details, birth
 date, status, email opt-out, tags, household references/name/billing day and Stripe
@@ -69,3 +69,16 @@ day or fill a missing customer ID. A customer or payment
 method already owned by another household is rejected. Existing saved methods,
 including revoked methods, are preserved; new methods only become default if
 the household has no default. Stripe IDs remain case-sensitive.
+
+For a verified bank account, the type must match the gym's currency (US bank
+account for USD or Canadian bank account for CAD) and the Stripe customer must
+match the household's. The Stripe import read accepts an untagged customer in
+the gym's account. It refuses bank accounts tagged for another gym and enforces
+the customer's household tag when present. A Canadian bank account without an
+active reusable mandate from off-session setup produces a row error. A denied
+mandate read and other provider lookup failures produce row-specific errors
+while valid rows proceed. The mapper writes the bank type, bank name, masked
+digits and any mandate ID supplied by Stripe. Unresolved references keep the
+existing ID-only import behavior. If
+the gym settings revision changes before a prepared bank account is written,
+the job rolls back the chunk and prepares it again on retry.

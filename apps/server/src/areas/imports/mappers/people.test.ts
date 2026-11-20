@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { asc, eq } from 'drizzle-orm';
 import { auditEvents, households, members, memberTags, memberTagLinks, paymentMethods, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
@@ -7,7 +7,11 @@ import { createFactories } from '@plaingym/db/testing/factories';
 import type { ImportPlanRequest } from '@plaingym/shared/contracts';
 import { TestClock } from '../../../core/clock.js';
 import { FakeJobs } from '../../../infra/jobs/index.js';
+import { FakePayments } from '../../../infra/payments/index.js';
+import { StripeFixtures } from '../../../infra/payments/stripe-fixtures.js';
+import { StripePayments } from '../../../infra/payments/stripe.js';
 import { FakeUploads } from '../../../infra/storage/index.js';
+import { createSettingsService } from '../../settings/settings.js';
 import { autoMatch, csvLine, parseCsv } from '../pipeline.csv.js';
 import { createImportPipeline } from '../pipeline.js';
 import { peopleMapper } from './people.js';
@@ -21,9 +25,9 @@ beforeEach(async () => {
   gymA = uuidv7(); gymB = uuidv7();
   await factory('gyms', gymA, { address: { country: 'GB' } }); await factory('gyms', gymB, { address: { country: 'GB' } });
 });
-function services() {
+function services(paymentsFor?: NonNullable<Parameters<typeof createImportPipeline>[0]['paymentsFor']>) {
   const stores = new Map<string, FakeUploads>(), jobs = new FakeJobs(clock);
-  const pipeline = createImportPipeline({ scope: database.forGym, clock, jobs, uploadsFor: async (gymId) => {
+  const pipeline = createImportPipeline({ scope: database.forGym, clock, jobs, ...(paymentsFor ? { paymentsFor } : {}), uploadsFor: async (gymId) => {
     if (!stores.has(gymId)) stores.set(gymId, new FakeUploads(gymId, clock));
     return stores.get(gymId)!;
   } });
@@ -55,6 +59,150 @@ const snapshot = (gymId = gymA) => database.forGym(gymId, async (tx) => ({
   methods: await tx.select().from(paymentMethods).orderBy(asc(paymentMethods.id)), tags: await tx.select().from(memberTags).orderBy(asc(memberTags.id)),
   links: await tx.select().from(memberTagLinks).orderBy(asc(memberTagLinks.id)), audits: await tx.select().from(auditEvents).orderBy(asc(auditEvents.id)),
 }));
+
+it.each([
+  ['USD', 'us_bank_account', 'acss_debit'],
+  ['CAD', 'acss_debit', 'us_bank_account'],
+] as const)('validates Stripe bank accounts against %s in the dry run and commit', async (currency, type, otherType) => {
+  const gymId = uuidv7();
+  await factory('gyms', gymId, { currency, bankDebitsEnabled: false });
+  const provider = new FakePayments(gymId, clock);
+  provider.seedCustomer({ id: 'cus_Match', email: 'match@example.test', gymId: null });
+  provider.seedCustomer({ id: 'cus_Other', email: 'other@example.test', gymId: null });
+  provider.seedCustomer({ id: 'cus_Foreign', email: 'foreign@example.test', gymId: null });
+  provider.recordPaymentMethod({ id: 'pm_Match', customerId: 'cus_Match', type, bankName: 'Test bank', last4: '1234' });
+  provider.recordPaymentMethod({ id: 'pm_WrongCurrency', customerId: 'cus_Other', type: otherType, last4: '4321' });
+  provider.recordPaymentMethod({ id: 'pm_WrongCustomer', customerId: 'cus_Match', type, last4: '4321' });
+  const mandateId = type === 'acss_debit' ? 'mandate_csv' : null;
+  if (mandateId) provider.recordSetup({ id: 'seti_csv', customerId: 'cus_Match', paymentMethodId: 'pm_Match',
+    status: 'succeeded', mandateId, metadata: { gymId } });
+  const reference = { kind: 'payment_method', id: 'pm_Match' } as const;
+  expect(await provider.readPaymentObject(reference)).toEqual({ status: 'unknown', reference });
+  const { load } = services(async id => id === gymId ? provider : null);
+  const csv = csvLine(['First Name', 'Last Name', 'Stripe Customer ID', 'Stripe Payment Method ID'])
+    + csvLine(['First', 'Family', 'cus_Match', 'pm_Match']) + csvLine(['Second', 'Family', 'cus_Other', 'pm_WrongCurrency'])
+    + csvLine(['Third', 'Family', 'cus_Foreign', 'pm_WrongCustomer']);
+  const input = await load(csv, { duplicatePolicy: 'skip' }, gymId);
+  expect((await input.preview()).data.map(row => row.action)).toEqual(['create', 'error', 'error']);
+  const wrongCurrency = { column: 'Stripe Payment Method ID', code: 'invalid_value', message: `This bank account can't be charged in ${currency}.` };
+  const wrongCustomer = { column: 'Stripe Payment Method ID', code: 'conflict', message: 'This bank account belongs to a different Stripe customer.' };
+  expect((await input.run(true)).issues).toMatchObject([wrongCurrency, wrongCustomer]);
+  expect((await snapshot(gymId)).methods).toHaveLength(0);
+  const committed = await input.run();
+  expect(committed.job).toMatchObject({ committedRows: 1, errorCount: 2 });
+  expect(committed.issues).toMatchObject([wrongCurrency, wrongCustomer]);
+  const saved = (await snapshot(gymId)).methods;
+  expect(saved).toMatchObject([{ processorId: 'pm_Match', type, bankName: 'Test bank',
+    last4: '1234', expiryMonth: null, expiryYear: null, mandateId, isDefault: true }]);
+  expect((await input.run()).job.committedRows).toBe(0);
+  const settings = createSettingsService({ scope: database.forGym, clock });
+  await settings.update(input.actor, 'currency', { revision: (await settings.get(gymId)).revision, currency: currency === 'USD' ? 'CAD' : 'USD' });
+  const savedRow = await load(csvLine(['First Name', 'Last Name', 'Stripe Customer ID', 'Stripe Payment Method ID'])
+    + csvLine(['First', 'Family', 'cus_Match', 'pm_Match']), { duplicatePolicy: 'skip' }, gymId);
+  const rerun = await savedRow.run();
+  expect(rerun.job.committedRows).toBe(0);
+  expect(rerun.issues).toEqual([]);
+  expect((await snapshot(gymId)).methods).toEqual(saved);
+});
+
+it('reports a Canadian bank account with no mandate and imports the card in its household', async () => {
+  const gymId = uuidv7();
+  await factory('gyms', gymId, { currency: 'CAD' });
+  const provider = new FakePayments(gymId, clock);
+  provider.seedCustomer({ id: 'cus_Family', email: 'family@example.test', gymId: null });
+  provider.recordPaymentMethod({ id: 'pm_Unmandated', customerId: 'cus_Family', type: 'acss_debit', last4: '1234' });
+  const { load } = services(async () => provider);
+  const csv = csvLine(['First Name', 'Last Name', 'Stripe Customer ID', 'Stripe Payment Method ID'])
+    + csvLine(['First', 'Family', 'cus_Family', 'pm_Unmandated']) + csvLine(['Second', 'Family', 'cus_Family', 'pm_Card']);
+  const input = await load(csv, {}, gymId);
+  const expected = { column: 'Stripe Payment Method ID', code: 'invalid_value', message: 'This Canadian bank account needs a reusable Stripe mandate.' };
+  expect((await input.preview()).data.map(row => row.action)).toEqual(['error', 'create']);
+  expect((await input.run(true)).issues).toMatchObject([expected]);
+  expect((await input.run()).issues).toMatchObject([expected]);
+  expect((await snapshot(gymId)).methods).toMatchObject([{ type: 'card', processorId: 'pm_Card', isDefault: true }]);
+});
+
+it.each([{ statusCode: 403 }, { rawType: 'permission_error' }])('reports a denied mandate read (%j) on the Canadian bank account row and imports the card', async failure => {
+  const gymId = uuidv7();
+  await factory('gyms', gymId, { currency: 'CAD' });
+  const customer = 'cus_Family', bankId = 'pm_Pad', mandateId = 'mandate_pad';
+  const stripe = new StripeFixtures(gymId);
+  stripe.objects.set(customer, { id: customer, object: 'customer', metadata: {} });
+  stripe.objects.set(bankId, { id: bankId, object: 'payment_method', customer, created: stripe.now,
+    type: 'acss_debit', acss_debit: { last4: '1234' } });
+  stripe.objects.set('seti_pad', { id: 'seti_pad', object: 'setup_intent', customer, payment_method: bankId,
+    status: 'succeeded', usage: 'off_session', mandate: mandateId });
+  const provider = new StripePayments(gymId, { webhookSecret: 'fixture-signing-secret', transport: {
+    async request(input) {
+      if (input.path === '/v1/mandates/' + mandateId) throw Object.assign(new Error('Forbidden'), failure);
+      return stripe.request(input);
+    },
+  } });
+  const { load } = services(async () => provider);
+  const input = await load(csvLine(['First Name', 'Last Name', 'Stripe Customer ID', 'Stripe Payment Method ID'])
+    + csvLine(['First', 'Family', customer, bankId]) + csvLine(['Second', 'Family', customer, 'pm_Card']), {}, gymId);
+  expect((await input.preview()).data.map(row => row.action)).toEqual(['error', 'create']);
+  const result = await input.run();
+  expect(result.job).toMatchObject({ status: 'failed', processedRows: 2, committedRows: 1, errorCount: 1 });
+  expect(result.issues).toMatchObject([{ rowNumber: 2, column: 'Stripe Payment Method ID',
+    message: 'Give the Stripe key Mandates read access to import this Canadian bank account.' }]);
+  expect((await snapshot(gymId)).methods).toMatchObject([{ type: 'card', processorId: 'pm_Card', isDefault: true }]);
+});
+
+it('shows a Stripe lookup failure in preview and imports other rows with and without payment methods', async () => {
+  const gymId = uuidv7();
+  await factory('gyms', gymId, { currency: 'USD' });
+  const provider = new FakePayments(gymId, clock);
+  provider.seedCustomer({ id: 'cus_Family', email: 'family@example.test', gymId: null });
+  provider.recordPaymentMethod({ id: 'pm_Bank', customerId: 'cus_Family', type: 'us_bank_account', last4: '1234' });
+  const read = provider.readBankAccountForImport.bind(provider);
+  vi.spyOn(provider, 'readBankAccountForImport').mockImplementation(async (id, includeMandate) => {
+    if (id === 'pm_Failure') throw new Error('Stripe unavailable');
+    return read(id, includeMandate);
+  });
+  const { load } = services(async () => provider);
+  const input = await load(csvLine(['First Name', 'Last Name', 'Stripe Customer ID', 'Stripe Payment Method ID'])
+    + csvLine(['First', 'Family', 'cus_Family', 'pm_Failure']) + csvLine(['Second', 'Family', 'cus_Family', 'pm_Bank'])
+    + csvLine(['Third', 'Person', '', '']), {}, gymId);
+  const preview = await input.preview();
+  expect(preview.summary).toMatchObject({ errors: 1, create: 2 });
+  expect(preview.data.map(row => row.action)).toEqual(['error', 'create', 'create']);
+  const expected = [{ rowNumber: 2, column: 'Stripe Payment Method ID',
+    message: "Stripe couldn't check this payment method. Try again later." }];
+  expect((await input.run(true)).issues).toMatchObject(expected);
+  const result = await input.run();
+  expect(result.job).toMatchObject({ status: 'failed', processedRows: 3, committedRows: 2, errorCount: 1 });
+  expect(result.issues).toMatchObject(expected);
+  const { members, methods } = await snapshot(gymId);
+  expect(members.map(member => member.firstName)).toEqual(['Second', 'Third']);
+  expect(methods).toMatchObject([{ type: 'us_bank_account', processorId: 'pm_Bank', isDefault: true }]);
+});
+
+it('retries preparation when gym settings change and commits the unaffected rows', async () => {
+  const gymId = uuidv7();
+  await factory('gyms', gymId, { currency: 'USD' });
+  const provider = new FakePayments(gymId, clock);
+  provider.seedCustomer({ id: 'cus_Family', email: 'family@example.test', gymId: null });
+  provider.recordPaymentMethod({ id: 'pm_Bank', customerId: 'cus_Family', type: 'us_bank_account', last4: '1234' });
+  const { load, pipeline } = services(async () => provider);
+  const csv = csvLine(['First Name', 'Last Name', 'Stripe Customer ID', 'Stripe Payment Method ID'])
+    + csvLine(['First', 'Family', 'cus_Family', 'pm_Bank']) + csvLine(['Second', 'Person', '', '']);
+  const { actor, plan } = await load(csv, {}, gymId);
+  const job = await pipeline.start(actor, { ...plan, dryRun: false }, 'UTC');
+  const settings = createSettingsService({ scope: database.forGym, clock }), original = provider.readBankAccountForImport.bind(provider);
+  vi.spyOn(provider, 'readBankAccountForImport').mockImplementationOnce(async (...args) => {
+    const result = await original(...args);
+    await settings.update(actor, 'currency', { revision: (await settings.get(gymId)).revision, currency: 'CAD' });
+    return result;
+  });
+  await expect(pipeline.run(gymId, job.id)).rejects.toThrow('Gym settings changed');
+  expect(await pipeline.get(gymId, job.id)).toMatchObject({ processedRows: 0, committedRows: 0, errorCount: 0 });
+  await pipeline.run(gymId, job.id, 2);
+  expect(await pipeline.get(gymId, job.id)).toMatchObject({ processedRows: 2, committedRows: 1, errorCount: 1 });
+  expect((await pipeline.errors(gymId, job.id, { limit: 100, offset: 0 })).data)
+    .toMatchObject([{ message: "This bank account can't be charged in CAD." }]);
+  expect((await snapshot(gymId)).members).toMatchObject([{ firstName: 'Second' }]);
+});
 
 async function consentedContacts(gymId = gymA) {
   const consent = { phone: '020 7946 0018', phoneE164: '+442079460018',

@@ -158,6 +158,7 @@ const routes = [
     session.status = 'expired'; return session;
   }],
   ['GET', /^\/v1\/setup_intents\/(\w+)$/, (account, _body, _query, id) => find(account, 'seti', id) ?? missing(id)],
+  ['GET', /^\/v1\/mandates\/(\w+)$/, (account, _body, _query, id) => find(account, 'mandate', id) ?? missing(id)],
   ['POST', /^\/v1\/refunds$/, (account, body) => {
     const intent = find(account, 'pi', body.payment_intent ?? ''); if (!intent) return missing(body.payment_intent);
     return store(account, { id: newId('re'), object: 'refund', created: now(), livemode: false, amount: integer(body.amount ?? intent.amount, 'amount'),

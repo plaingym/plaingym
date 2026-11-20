@@ -20,5 +20,11 @@
   "customerConflict": "This household already has a different Stripe customer.",
   "paymentMethodInUse": "This payment method already belongs to another household.",
   "paymentMethodNeedsCustomer": "A saved payment method needs the household's Stripe customer ID.",
+  "paymentMethodCheckFailed": "Stripe couldn't check this payment method. Try again later.",
+  "bankAccountCurrency": "This bank account can't be charged in {currency}.",
+  "bankAccountCustomer": "This bank account belongs to a different Stripe customer.",
+  "bankAccountUnavailable": "Stripe couldn't verify this bank account for import.",
+  "bankAccountMandate": "This Canadian bank account needs a reusable Stripe mandate.",
+  "bankAccountMandatePermission": "Give the Stripe key Mandates read access to import this Canadian bank account.",
   "unnamedHousehold": "Imported household"
 }

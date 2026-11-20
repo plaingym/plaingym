@@ -10,7 +10,7 @@ export interface Exchange {
   error?: { type: string; code?: string; param?: string; statusCode?: number; payment_intent?: unknown };
 }
 export interface Tape { version: 1; gymId: string; exchanges: Exchange[] }
-const paymentMethods = new Set<string>(['createCustomer', 'createCharge', 'confirmCharge', 'cancelCharge', 'findCharge', 'readPaymentObject',
+const paymentMethods = new Set<string>(['createCustomer', 'createCharge', 'confirmCharge', 'cancelCharge', 'findCharge', 'readPaymentObject', 'readBankAccountForImport',
   'listChangesSince', 'listRefunds', 'refund', 'createCheckout', 'expireCheckout', 'findCustomerByEmail', 'adoptCustomer', 'listCustomerCards', 'detachPaymentMethod', 'redactCustomer', 'clearCustomerEmail', 'parseWebhook']);
 /** Fixtures contain synthetic test-account data only. Credentials never enter the transport. */
 export function redact(value: unknown): unknown {

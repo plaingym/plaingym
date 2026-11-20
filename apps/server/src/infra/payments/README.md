@@ -15,6 +15,21 @@ the last four digits and an optional bank name. Pass `types` in the listing
 options to include bank accounts. Accounts without last-four digits are
 skipped. In a mixed listing a page can be empty and still have a continuation.
 When a customer's metadata names a household, supply its matching `householdId`.
+Pass `includeMandates` to resolve Canadian PAD mandates from the customer's
+successful off-session SetupIntents. The adapter retrieves the mandate by ID
+and verifies that it is active, reusable and references the same payment method.
+With an existing restricted key that lacks **Mandates** read access, the adapter
+marks the affected Canadian account as permission denied. The household import
+skips and counts that account and continues with the other methods.
+
+The people CSV mapper uses `readBankAccountForImport` for new Stripe payment
+method IDs. The read accepts an untagged customer in the configured Stripe
+account, enforces gym tags when present and returns the customer and optional
+household tag for comparison with the CSV row. The ordinary payment-object read
+still requires gym ownership. The import read never changes Stripe metadata.
+The CSV preview marks a row as an error after a denied mandate read or other
+provider failure. Dry runs and both run protocols record the row-specific
+message, and other valid rows remain eligible to commit.
 
 Staff choose **Import cards from Stripe** on household billing or invoice details
 (`payments.record`). The import commits at most 100 cards per background job,
@@ -205,9 +220,10 @@ parameters as a body only for POST. Read filters retain Stripe's bracket notatio
 for creation bounds and pagination.
 
 `stripeProvisioner` probes the complete restricted-key profile with reads and
-nonexistent-ID write probes; it never creates payments or changes a real object to
-test permissions. The Webhook Endpoints write probe posts an update to the
-nonexistent endpoint `we_PlainGymPermissionProbe`, and a key without write access
+nonexistent-ID write probes. The Mandates read probe retrieves a nonexistent
+mandate and accepts Stripe's missing-resource response. The Webhook Endpoints
+write probe posts an update to the nonexistent endpoint
+`we_PlainGymPermissionProbe`, and a key without write access
 fails with `Check the Stripe permission for Webhook Endpoints`.
 
 ## Webhook endpoint lifecycle
@@ -422,6 +438,7 @@ permission table in `STRIPE_PERMISSIONS`:
 | Payment Intents | Write |
 | Checkout Sessions | Write |
 | Setup Intents | Read |
+| Mandates | Read |
 | Payment Methods | Write |
 | Charges and Refunds | Write |
 | Webhook Endpoints | Write |

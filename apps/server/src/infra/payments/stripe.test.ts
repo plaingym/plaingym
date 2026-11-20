@@ -496,8 +496,8 @@ it.each([
     transport: { async request(input) { if (input.path === '/v1/refunds/re_fixture') return refund; throw error; } } });
   await expect(payments.parseWebhook(...signedEvent(refund))).rejects.toBe(error);
 });
-it('validates every permission including Setup Intents, Events and Disputes, and refuses incomplete profiles', async () => {
-  for (const denied of ['Setup Intents', 'Events', 'Disputes', 'Charges and Refunds']) {
+it('validates the complete restricted-key profile and refuses incomplete profiles', async () => {
+  for (const denied of ['Setup Intents', 'Mandates', 'Events', 'Disputes', 'Charges and Refunds']) {
     const transport = new StripeFixtures(gymId), observed: string[] = [];
     const restricted: PaymentTransport = { async request(input) {
       const resource = permissionProbes.find((probe) => probe.request.path === input.path && probe.request.method === input.method)!.resource;
@@ -508,7 +508,9 @@ it('validates every permission including Setup Intents, Events and Disputes, and
     await expect(stripeProvisioner(restricted).validate()).rejects.toThrow(denied);
     expect(observed).toContain(denied);
   }
-  await stripeProvisioner(new StripeFixtures(gymId)).validate();
+  const transport = new StripeFixtures(gymId);
+  await stripeProvisioner(transport).validate();
+  expect(transport.requests).toContainEqual({ method: 'GET', path: '/v1/mandates/mandate_PlainGymPermissionProbe' });
 });
 it('adopts an imported customer once, so charges and email matching accept it, and refuses customers of other gyms', async () => {
   const { payments, transport } = fixture();

@@ -17,6 +17,7 @@ function setup(failure = 0) {
 it('shows the full permission table, masks the key, and sends the current revision', async () => {
   const { fetcher, user } = setup();
   for (const resource of ['Setup Intents', 'Events', 'Disputes', 'Charges and Refunds']) expect(screen.getByText(resource)).toBeDefined();
+  expect(screen.getByText('Mandates').nextElementSibling?.textContent).toBe('Read');
   const field = screen.getByLabelText('Restricted Stripe key') as HTMLInputElement;
   expect(field.type).toBe('password');
   await user.type(field, 'rk_test_SYNTHETIC');

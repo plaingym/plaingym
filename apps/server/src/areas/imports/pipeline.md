@@ -2,7 +2,8 @@
 # CSV pipeline
 
 Compose `createImportPipeline` and `createExportService` with the runtime's
-`uploadsFor(gymId)` and `Jobs`. Mount `createPipelineRoutes` and
+`uploadsFor(gymId)` and `Jobs`. Pass the gym's `paymentsFor(gymId)` resolver to
+`createImportPipeline` so the people mapper can resolve bank accounts. Mount `createPipelineRoutes` and
 `createExportRoutes`; register `createPipelineJobs` and `createExportJobs` through
 the server registry. The static part exports stay empty until this composition
 is wired. Do not register both static and composed routes. Import and export

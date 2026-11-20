@@ -32,7 +32,7 @@ const statuses: Record<string, MemberStatus> = {
 const booleans: Record<string, boolean> = { yes: true, y: true, true: true, '1': true, no: false, n: false, false: false, '0': false };
 const email = z.email();
 const customerId = /^cus_[A-Za-z0-9]{1,250}$/;
-const paymentMethodId = /^(?:pm|card|ba|src)_[A-Za-z0-9]{1,250}$/;
+export const paymentMethodId = /^(?:pm|card|ba|src)_[A-Za-z0-9]{1,250}$/;
 
 export type DateOrder = 'dmy' | 'mdy' | null;
 const isoDate = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/;

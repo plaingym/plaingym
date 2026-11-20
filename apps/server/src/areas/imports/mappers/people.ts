@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
-import { households, members, memberTags, memberTagLinks, paymentMethods, revisionGuard, assertRevised, uuidv7, writeAudit,
+import { households, members, memberTags, memberTagLinks, paymentMethods, revisionGuard, assertRevised, uuidv7, writeAudit, type forGym,
   type Transaction } from '@plaingym/db';
 import type { ImportIssue, ImportPlanRequest, ImportPreviewRow } from '@plaingym/shared/contracts';
 import { normalizePhone } from '@plaingym/shared/phone';
+import type { BankAccountImportRead, Payments } from '../../../infra/payments/index.js';
+import { bankAccountType, importedBankDetails } from '../../billing/customer-card-import.js';
 import { auditSmsCleared, clearedMemberSms, smsPhoneChange } from '../../members/member-write.js';
-import { readGymSettings } from '../../settings/settings.js';
+import { holdGymSettings, readGymSettings } from '../../settings/settings.js';
 import { t } from '../pipeline.messages.js';
 import { csvValue, type CsvRow } from '../pipeline.csv.js';
-import type { CsvMapper, MapperContext, PlannedRow } from './registry.js';
-import { detectDateOrder, householdKey, knownKeys, lookupKeys, mapPerson, tagKey, type DateOrder, type MemberStatus, type Person } from './people.parse.js';
+import { ImportPreparationChanged, type CsvMapper, type MapperContext, type PlannedRow } from './registry.js';
+import { detectDateOrder, householdKey, knownKeys, lookupKeys, mapPerson, paymentMethodId, tagKey, type DateOrder, type MemberStatus, type Person } from './people.parse.js';
 
 /**
  * Household values shared by every row of a family, taken from its first row that has each one, and what finds the family's
@@ -188,11 +190,13 @@ async function analyze(tx: Reader, rows: readonly CsvRow[], plan: ImportPlanRequ
   const householdCustomers = new Map((householdIds.length ? await tx.select({ id: households.id, customer: households.stripeCustomerId })
     .from(households).where(inArray(households.id, householdIds)) : []).map((row) => [row.id, row.customer]));
   const methodIds = [...new Set(chunk.flatMap(({ person }) => person.stripePaymentMethodId ? [person.stripePaymentMethodId] : []))];
-  const methodOwners = new Map((methodIds.length ? await tx.select({ id: paymentMethods.processorId, householdId: paymentMethods.householdId })
-    .from(paymentMethods).where(inArray(paymentMethods.processorId, methodIds)) : []).map((row) => [row.id, row.householdId]));
+  const savedMethods = new Map((methodIds.length ? await tx.select({ id: paymentMethods.processorId,
+    householdId: paymentMethods.householdId })
+    .from(paymentMethods).where(inArray(paymentMethods.processorId, methodIds)) : []).map((row) => [row.id, row]));
   return targets.map(({ person, family, duplicates, householdId }) => {
     const issues: ImportIssue[] = [...person.issues];
-    const issue = (field: string, code: ImportIssue['code'], key: string) => issues.push({ rowNumber: person.rowNumber, column: column(field), code, message: message(key) });
+    const issue = (field: string, code: ImportIssue['code'], key: string, values?: Record<string, string>) =>
+      issues.push({ rowNumber: person.rowNumber, column: column(field), code, message: message(key, values) });
     if ((familyHouseholds.get(family.key)?.length ?? 0) > 1) issue('householdExternalId', 'conflict', 'ambiguousFamily');
     const customer = family.stripeCustomerId, current = householdId ? householdCustomers.get(householdId) ?? null : null;
     if (customer) {
@@ -201,9 +205,27 @@ async function analyze(tx: Reader, rows: readonly CsvRow[], plan: ImportPlanRequ
       else if (current && current !== customer) issue('stripeCustomerId', 'conflict', 'customerConflict');
     }
     if (person.stripePaymentMethodId) {
-      const owner = methodOwners.get(person.stripePaymentMethodId);
-      if (owner !== undefined && owner !== householdId) issue('stripePaymentMethodId', 'conflict', 'paymentMethodInUse');
-      if (!customer && !current) issue('stripeCustomerId', 'missing_required', 'paymentMethodNeedsCustomer');
+      const id = person.stripePaymentMethodId;
+      const saved = savedMethods.get(id);
+      const bank = context.stripePaymentMethods?.banks.get(id);
+      const stripeCustomer = customer ?? current;
+      if (saved && saved.householdId !== householdId)
+        issue('stripePaymentMethodId', 'conflict', 'paymentMethodInUse');
+      else if (!saved && context.stripePaymentMethods?.failedChecks.has(id))
+        issue('stripePaymentMethodId', 'invalid_value', 'paymentMethodCheckFailed');
+      else if (!saved && bank) {
+        const { currency } = context.stripePaymentMethods!;
+        if (bank.status === 'unavailable') issue('stripePaymentMethodId', 'invalid_value', 'bankAccountUnavailable');
+        else if (bank.method.customerId !== stripeCustomer)
+          issue('stripePaymentMethodId', 'conflict', 'bankAccountCustomer');
+        else if (bank.householdId !== undefined && bank.householdId !== householdId)
+          issue('stripePaymentMethodId', 'conflict', 'paymentMethodInUse');
+        else if (bank.method.type !== bankAccountType(currency))
+          issue('stripePaymentMethodId', 'invalid_value', 'bankAccountCurrency', { currency });
+        else if (bank.method.type === 'acss_debit' && !bank.method.mandateId)
+          issue('stripePaymentMethodId', 'invalid_value', bank.method.mandateReadDenied ? 'bankAccountMandatePermission' : 'bankAccountMandate');
+      }
+      if (!stripeCustomer) issue('stripeCustomerId', 'missing_required', 'paymentMethodNeedsCustomer');
     }
     const values: ImportPreviewRow['values'] = Object.fromEntries(Object.entries({
       externalId: person.externalId, firstName: person.firstName, lastName: person.lastName, email: person.email,
@@ -232,7 +254,13 @@ function planned(row: PlannedRow) {
 
 async function commit(tx: Transaction, rows: readonly PlannedRow[], context: MapperContext): Promise<number> {
   const now = context.clock.now();
-  const country = (await readGymSettings(tx, context.gymId)).address.country;
+  const verified = context.stripePaymentMethods;
+  const writesBank = verified && rows.some(row => typeof row.values.stripePaymentMethodId === 'string'
+    && verified.banks.has(row.values.stripePaymentMethodId));
+  if (writesBank) await holdGymSettings(tx, context.gymId);
+  const { address: { country }, currency, revision } = await readGymSettings(tx, context.gymId);
+  if (writesBank && revision !== verified.settingsRevision)
+    throw new ImportPreparationChanged('Gym settings changed after reading payment methods');
   // Audits name the import run and the target, never personal details.
   const audit = (action: string, targetType: string, targetId: string) => writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
     ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
@@ -314,11 +342,17 @@ async function commit(tx: Transaction, rows: readonly PlannedRow[], context: Map
         .where(eq(paymentMethods.processorId, value.stripePaymentMethodId));
       if (method && method.householdId !== householdId) throw new Error('Payment method belongs to another household');
       if (!method) {
+        const bank = verified?.banks.get(value.stripePaymentMethodId);
+        if (bank && (bank.status !== 'found' || bank.method.type !== bankAccountType(currency)
+          || bank.method.customerId !== (home.customer ?? value.stripeCustomerId)
+          || bank.householdId !== undefined && bank.householdId !== householdId
+          || bank.method.type === 'acss_debit' && !bank.method.mandateId))
+          throw new ImportPreparationChanged('Bank account currency, customer or mandate changed after analysis');
         const [preferred] = await tx.select({ id: paymentMethods.id }).from(paymentMethods)
           .where(and(eq(paymentMethods.householdId, householdId), eq(paymentMethods.isDefault, true))).for('update');
         const id = uuidv7();
         await tx.insert(paymentMethods).values({ id, gymId: context.gymId, householdId, processorId: value.stripePaymentMethodId,
-          isDefault: !preferred, createdAt: now });
+          ...(bank ? importedBankDetails(bank.method) : {}), isDefault: !preferred, createdAt: now });
         await audit('payment_method.created', 'payment_method', id);
       }
     }
@@ -327,3 +361,38 @@ async function commit(tx: Transaction, rows: readonly PlannedRow[], context: Map
 }
 
 export const peopleMapper: CsvMapper = { id: 'people', available: true, analyze, commit };
+
+export function createPeopleMapper(scope: typeof forGym, paymentsFor?: (gymId: string) => Promise<Payments | null>): CsvMapper {
+  return { ...peopleMapper, async prepare(rows, plan, context) {
+    const column = plan.mapping.find(item => item.targetField === 'stripePaymentMethodId')?.sourceColumn;
+    if (!column) return context;
+    const ids = unique(rows.map(row => csvValue(row, column).trim()).filter(value => paymentMethodId.test(value)));
+    if (!ids.length) return context;
+    const { currency, settingsRevision, stored } = await scope(context.gymId, async tx => {
+      const { currency, revision: settingsRevision } = await readGymSettings(tx, context.gymId);
+      const stored = await tx.select({ id: paymentMethods.processorId }).from(paymentMethods).where(inArray(paymentMethods.processorId, ids));
+      return { currency, settingsRevision, stored: new Set(stored.map(row => row.id)) };
+    });
+    const pending = ids.filter(id => id.startsWith('pm_') && !stored.has(id));
+    const banks = new Map<string, NonNullable<BankAccountImportRead>>();
+    const failedChecks = new Set<string>();
+    if (pending.length && paymentsFor) {
+      const provider = Promise.resolve().then(() => paymentsFor(context.gymId));
+      const concurrency = 4;
+      for (let offset = 0; offset < pending.length; offset += concurrency) {
+        await Promise.all(pending.slice(offset, offset + concurrency).map(async id => {
+          let result: BankAccountImportRead | undefined;
+          try { result = await (await provider)?.readBankAccountForImport(id, currency === 'CAD'); }
+          catch (error) {
+            if (error instanceof ImportPreparationChanged) throw error;
+            failedChecks.add(id);
+            return;
+          }
+          if (result?.status === 'found' && result.method.id !== id) throw new Error('Unresolved Stripe payment method identity');
+          if (result) banks.set(id, result);
+        }));
+      }
+    }
+    return { ...context, stripePaymentMethods: { currency, settingsRevision, banks, failedChecks } };
+  } };
+}

@@ -5,6 +5,7 @@ import type { Clock } from '@plaingym/shared';
 import type { ImportIssue, ImportMapper, ImportPlanRequest, ImportPreviewRow } from '@plaingym/shared/contracts';
 import type { MutationContext } from '../../../core/interfaces/common.js';
 import type { CsvRow } from '../pipeline.csv.js';
+import type { BankAccountImportRead } from '../../../infra/payments/index.js';
 
 export interface PlannedRow extends ImportPreviewRow { issues: ImportIssue[] }
 export interface MapperContext extends MutationContext {
@@ -14,11 +15,21 @@ export interface MapperContext extends MutationContext {
   timezone: string;
   /** Complete immutable source for deterministic within-file duplicate detection after a restart. */
   sourceRows: readonly CsvRow[];
+  stripePaymentMethods?: {
+    currency: string;
+    settingsRevision: number;
+    banks: ReadonlyMap<string, NonNullable<BankAccountImportRead>>;
+    failedChecks: ReadonlySet<string>;
+  };
 }
+/** The job must prepare the chunk again after the mapper's inputs changed. */
+export class ImportPreparationChanged extends Error {}
 /** Analyze must be read-only. Commit uses only the supplied short transaction and audits its domain writes. */
 export interface CsvMapper {
   id: ImportMapper;
   available: boolean;
+  /** Resolve external references for this chunk before opening its database transaction. */
+  prepare?(rows: readonly CsvRow[], plan: ImportPlanRequest, context: MapperContext): Promise<MapperContext>;
   analyze(tx: Pick<Transaction, 'select'>, rows: readonly CsvRow[], plan: ImportPlanRequest, context: MapperContext): Promise<PlannedRow[]>;
   commit(tx: Transaction, rows: readonly PlannedRow[], context: MapperContext): Promise<number>;
 }

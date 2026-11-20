@@ -7,7 +7,8 @@ import { CustomerCreationInProgress, CustomerDeleted, ERASED_CUSTOMER_NAME, norm
   type CheckoutSession, type CheckoutExpiry, type ChargeReference, type ChargeOutcome, type PaymentMetadata,
   type PaymentObjectReference, type PaymentObjectResult, type PaymentObject, type PaymentChange,
   type PaymentEvent, type Refund, type RefundRequest, type CustomerMatch, CardImportRefused, CardCursorRefused,
-  type CustomerCardPage, type CustomerCardQuery, type PaymentMethod, type PaymentMethodType, BankDebitUnavailable } from './index.js';
+  type CustomerCardPage, type CustomerCardQuery, type PaymentMethod, type PaymentMethodType, type BankPaymentMethod,
+  type BankAccountImportRead, type BankPaymentMethodForImport, BankDebitUnavailable } from './index.js';
 import type { Json, ObjectData, PaymentTransport, ProviderRequest } from './transport.js';
 import { PaymentWebhookError } from './webhook-error.js';
 import { matchesBillingEmail, type ClearCustomerEmail } from './email-erasure.js';
@@ -16,7 +17,7 @@ import { logWarn } from '../../core/log.js';
 export const STRIPE_API_VERSION = '2026-09-30.endive' as const;
 export const STRIPE_PERMISSIONS = [
   ['Customers', 'Write'], ['Payment Intents', 'Write'], ['Checkout Sessions', 'Write'],
-  ['Setup Intents', 'Read'], ['Payment Methods', 'Write'], ['Charges and Refunds', 'Write'], ['Webhook Endpoints', 'Write'],
+  ['Setup Intents', 'Read'], ['Mandates', 'Read'], ['Payment Methods', 'Write'], ['Charges and Refunds', 'Write'], ['Webhook Endpoints', 'Write'],
   ['Events', 'Read'], ['Disputes', 'Read'],
 ] as const;
 export const STRIPE_EVENTS = ['payment_intent.created', 'payment_intent.succeeded', 'payment_intent.payment_failed',
@@ -35,6 +36,11 @@ function optionalId(value: Json | undefined): string | undefined { return value 
 function missing(error: unknown): boolean {
   return !!error && typeof error === 'object' && 'code' in error && error.code === 'resource_missing'
     && 'statusCode' in error && error.statusCode === 404;
+}
+function permissionDenied(error: unknown): boolean {
+  const failure = error as { statusCode?: number; code?: string; type?: string; rawType?: string; raw?: { type?: string } } | null;
+  return failure?.statusCode === 403 || failure?.type === 'StripePermissionError'
+    || [failure?.code, failure?.type, failure?.rawType, failure?.raw?.type].includes('permission_error');
 }
 // Amounts go to Stripe exactly as stored: integers in the currency's minor units (500 is ¥500, $5.00 or 0.500 KWD).
 function money(amount: number | undefined, currency: string | undefined): void {
@@ -389,6 +395,59 @@ export class StripePayments implements Payments {
     try { return { status: 'found', value: await this.#read(reference) }; }
     catch (error) { if (missing(error) || error instanceof NotForGym) return { status: 'unknown', reference }; throw error; }
   }
+  async #withPadMandate(method: BankPaymentMethod): Promise<BankPaymentMethodForImport> {
+    let cursor: string | undefined;
+    do {
+      const page = await this.#get('/v1/setup_intents', { customer: method.customerId, payment_method: method.id,
+        limit: 100, ...(cursor ? { starting_after: cursor } : {}) });
+      if (!Array.isArray(page.data) || typeof page.has_more !== 'boolean') throw new Error('Invalid Stripe setup page');
+      const setups = page.data.map(data);
+      for (const setup of setups) {
+        const owner = data(setup.metadata ?? {}).gym_id;
+        if (setup.status !== 'succeeded' || setup.usage !== 'off_session' || optionalId(setup.customer) !== method.customerId
+          || optionalId(setup.payment_method) !== method.id || owner !== undefined && owner !== this.gymId
+          || typeof setup.mandate !== 'string' || !/^mandate_[A-Za-z0-9_]+$/.test(setup.mandate)) continue;
+        const mandateId = setup.mandate;
+        let mandate: ObjectData;
+        try { mandate = await this.#get(this.#path('mandates', mandateId)); }
+        catch (error) {
+          if (permissionDenied(error)) return { ...method, mandateReadDenied: true };
+          if (missing(error)) continue;
+          throw error;
+        }
+        if (mandate.status === 'active' && mandate.type === 'multi_use' && optionalId(mandate.payment_method) === method.id
+          && mandate.id === mandateId)
+          return { ...method, mandateId };
+      }
+      const next = page.has_more ? id(setups.at(-1)?.id) : undefined;
+      if (next !== undefined && (!/^seti_[A-Za-z0-9_]+$/.test(next) || next === cursor)) throw new Error('Invalid Stripe setup cursor');
+      cursor = next;
+    } while (cursor);
+    return method;
+  }
+  async readBankAccountForImport(processorId: string, includeMandate: boolean): Promise<BankAccountImportRead> {
+    assertNoTransaction('payments.readBankAccountForImport');
+    const object = await this.#get(this.#path('payment_methods', processorId)).catch(error => {
+      if (missing(error)) return null;
+      throw error;
+    });
+    if (!object || object.type !== 'us_bank_account' && object.type !== 'acss_debit') return null;
+    const owner = data(object.metadata ?? {}).gym_id, customerId = optionalId(object.customer);
+    const { last4 } = data(object[object.type] ?? {});
+    if (id(object.id) !== processorId || !customerId || owner !== undefined && owner !== this.gymId
+      || typeof last4 !== 'string' || !/^\d{4}$/.test(last4)) return { status: 'unavailable' };
+    const customer = await this.#get(this.#path('customers', customerId)).catch(error => {
+      if (missing(error)) return null;
+      throw error;
+    });
+    if (!customer || customer.deleted === true || id(customer.id) !== customerId) return { status: 'unavailable' };
+    const metadata = data(customer.metadata ?? {});
+    if (metadata.gym_id !== undefined && metadata.gym_id !== this.gymId
+      || metadata.household_id !== undefined && typeof metadata.household_id !== 'string') return { status: 'unavailable' };
+    const method = readMethod(object) as BankPaymentMethod;
+    return { status: 'found', method: includeMandate && method.type === 'acss_debit' ? await this.#withPadMandate(method) : method,
+      ...(typeof metadata.household_id === 'string' ? { householdId: metadata.household_id } : {}) };
+  }
   async #read(reference: PaymentObjectReference): Promise<PaymentObject> {
     let value: PaymentObject;
     switch (reference.kind) {
@@ -606,7 +665,7 @@ export class StripePayments implements Payments {
       throw error;
     });
     if (!Array.isArray(page.data) || page.data.length > limit || typeof page.has_more !== 'boolean') throw new Error('Invalid card page');
-    const ids = new Set<string>(), cards: PaymentMethod[] = [];
+    const ids = new Set<string>(), cards: CustomerCardPage['cards'][number][] = [];
     for (const value of page.data) {
       const method = data(value), owner = data(method.metadata ?? {}).gym_id;
       if (id(method.customer) !== customerId || owner !== undefined && owner !== this.gymId)
@@ -627,6 +686,14 @@ export class StripePayments implements Payments {
     }
     const nextCursor = page.has_more ? [...ids].at(-1) : null;
     if (nextCursor === undefined || nextCursor === options.cursor) throw new Error('Invalid card pagination');
+    if (options.includeMandates) {
+      const concurrency = 4;
+      for (let offset = 0; offset < cards.length; offset += concurrency) {
+        await Promise.all(cards.slice(offset, offset + concurrency).map(async (method, index) => {
+          if (method.type === 'acss_debit') cards[offset + index] = await this.#withPadMandate(method);
+        }));
+      }
+    }
     return { cards, nextCursor };
   }
   async findCustomerByEmail(email: string): Promise<readonly CustomerMatch[]> {
