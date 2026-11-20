@@ -23,6 +23,21 @@ function isThemeChoice(value: unknown): value is ThemeChoice {
   return typeof value === 'string' && (themeChoices as readonly string[]).includes(value);
 }
 
+/** The choice this loaded page applied for itself, held above the admin and portal shell lifetimes. */
+let appliedThemeChoice: ThemeChoice | undefined;
+let keepAppliedThemeChoice = false;
+
+function rememberAppliedThemeChoice(choice: ThemeChoice, keep: boolean): void {
+  appliedThemeChoice = choice;
+  keepAppliedThemeChoice = keep;
+}
+
+/** Clears the page's own choice. A full reload does this; exported so tests can simulate one. */
+export function resetThemeChoice(): void {
+  appliedThemeChoice = undefined;
+  keepAppliedThemeChoice = false;
+}
+
 /** The kiosk always follows the device, whatever a browser on the tablet stored for another surface. */
 export function isKioskPath(pathname = window.location.pathname): boolean {
   return pathname === '/kiosk' || pathname.startsWith('/kiosk/');
@@ -37,31 +52,45 @@ function browserStorage(): Storage | undefined {
   try { return window.localStorage; } catch { return undefined; }
 }
 
-/** The stored choice, or System when nothing valid is stored or storage is unavailable. */
+/**
+ * The choice a shell mount should use: a pick whose save failed in this page, else the stored
+ * choice, else System when nothing valid is stored or storage is unavailable.
+ */
 export function readThemeChoice(pathname = window.location.pathname, storage = browserStorage()): ThemeChoice {
   if (isKioskPath(pathname)) return 'system';
+  if (keepAppliedThemeChoice && appliedThemeChoice !== undefined) return appliedThemeChoice;
   try {
     const stored = storage?.getItem(themeStorageKey);
     return isThemeChoice(stored) ? stored : 'system';
   } catch { return 'system'; }
 }
 
-/** Stores a choice outside the kiosk. A failed write clears an older choice and keeps the pick for this page; unavailable or unreadable storage returns System. */
-export function writeThemeChoice(choice: ThemeChoice, environment: ThemeEnvironment = {}): ThemeChoice {
-  if (isKioskPath(environment.pathname)) return 'system';
+interface ThemeWriteOutcome {
+  readonly choice: ThemeChoice;
+  /** A failed write kept a pick the page must reuse when the shell remounts. */
+  readonly keep: boolean;
+}
+
+function writeThemeChoiceOutcome(choice: ThemeChoice, environment: ThemeEnvironment): ThemeWriteOutcome {
+  if (isKioskPath(environment.pathname)) return { choice: 'system', keep: false };
   const storage = environment.storage ?? browserStorage();
-  if (!storage) return 'system';
+  if (!storage) return { choice: 'system', keep: false };
   try {
     storage.setItem(themeStorageKey, choice);
-    return choice;
+    return { choice, keep: false };
   } catch {
     // A failed write must not leave an older choice behind to return on the next load.
     let previous: string | null;
-    try { previous = storage.getItem(themeStorageKey); } catch { return 'system'; }
-    if (previous === null) return 'system'; // Nothing stale to clear; keep the existing System fallback.
+    try { previous = storage.getItem(themeStorageKey); } catch { return { choice: 'system', keep: false }; }
+    if (previous === null) return { choice: 'system', keep: false }; // Nothing stale to clear; keep the existing System fallback.
     try { storage.removeItem(themeStorageKey); } catch { /* Read-only storage keeps the old value; this page still shows the pick. */ }
-    return choice;
+    return { choice, keep: true };
   }
+}
+
+/** Stores a choice outside the kiosk. A failed write clears an older choice and keeps the pick for this page; unavailable or unreadable storage returns System. */
+export function writeThemeChoice(choice: ThemeChoice, environment: ThemeEnvironment = {}): ThemeChoice {
+  return writeThemeChoiceOutcome(choice, environment).choice;
 }
 
 /** The colour for the current scheme, or the forced scheme when the choice is explicit. */
@@ -89,7 +118,18 @@ export function applyThemeChoice(choice: ThemeChoice, environment: ThemeEnvironm
   return chosen;
 }
 
-/** The setter a theme switch uses: apply now, then remember the choice for this browser. */
+/** Applies a value another tab stored and makes it this page's choice, replacing a failed local pick. */
+export function syncThemeChoiceFromStorage(value: string | null, environment: ThemeEnvironment = {}): ThemeChoice {
+  const stored = isThemeChoice(value) ? value : 'system';
+  const chosen = applyThemeChoice(stored, environment);
+  rememberAppliedThemeChoice(chosen, false);
+  return chosen;
+}
+
+/** The setter a theme switch uses: apply now, remember the choice for this browser and keep a failed save for this page. */
 export function setThemeChoice(choice: ThemeChoice, environment: ThemeEnvironment = {}): ThemeChoice {
-  return applyThemeChoice(writeThemeChoice(choice, environment), environment);
+  const outcome = writeThemeChoiceOutcome(choice, environment);
+  const chosen = applyThemeChoice(outcome.choice, environment);
+  rememberAppliedThemeChoice(chosen, outcome.keep);
+  return chosen;
 }

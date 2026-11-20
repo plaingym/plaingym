@@ -11,7 +11,7 @@ import type { ShellBootstrap, ShellServices } from './services.js';
 import { createWebRegistries } from '@plaingym/shared';
 import { AdminShell, adminNavigationGroups, visibleAdminNavigation } from './admin-shell.js';
 import { sessionName } from './identity.js';
-import { themeStorageKey } from '../lib/theme.js';
+import { resetThemeChoice, themeStorageKey } from '../lib/theme.js';
 import { RootError, SourceFooter } from '../routes/__root.js';
 
 // The real root shell discovers capabilities independently of the injected
@@ -40,6 +40,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   localStorage.removeItem(themeStorageKey);
+  resetThemeChoice();
   document.documentElement.classList.remove('theme-system', 'light', 'dark');
 });
 

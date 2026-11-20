@@ -3,7 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import {
-  applyThemeChoice, effectiveThemeChoice, isKioskPath, readThemeChoice, setThemeChoice,
+  applyThemeChoice, effectiveThemeChoice, isKioskPath, readThemeChoice, resetThemeChoice, setThemeChoice,
   syncThemeColor, themeColors, themeStorageKey, writeThemeChoice,
 } from './theme.js';
 
@@ -17,11 +17,13 @@ function resetDocument() {
 
 beforeEach(() => {
   localStorage.clear();
+  resetThemeChoice();
   resetDocument();
 });
 afterEach(() => {
   vi.restoreAllMocks();
   localStorage.clear();
+  resetThemeChoice();
   resetDocument();
 });
 
@@ -80,11 +82,54 @@ it('applies a failed write even when the stale key cannot be removed', () => {
   expect(localStorage.getItem(themeStorageKey)).toBe('dark');
 });
 
+it('keeps a failed-save pick for a later shell mount in the same page', () => {
+  localStorage.setItem(themeStorageKey, 'light');
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota'); });
+
+  expect(setThemeChoice('dark', { pathname: '/admin' })).toBe('dark');
+  expect(localStorage.getItem(themeStorageKey)).toBeNull();
+  expect(readThemeChoice('/admin')).toBe('dark');
+});
+
+it('does not let an earlier saved pick override storage on a later mount', () => {
+  localStorage.setItem(themeStorageKey, 'light');
+  expect(setThemeChoice('dark', { pathname: '/admin' })).toBe('dark');
+  localStorage.setItem(themeStorageKey, 'light');
+  expect(readThemeChoice('/admin')).toBe('light');
+});
+
+it('starts a full reload from storage or System, not a failed in-page pick', async () => {
+  localStorage.setItem(themeStorageKey, 'light');
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota'); });
+  expect(setThemeChoice('dark', { pathname: '/admin' })).toBe('dark');
+  expect(readThemeChoice('/admin')).toBe('dark');
+  vi.restoreAllMocks();
+
+  localStorage.setItem(themeStorageKey, 'dark');
+  vi.resetModules();
+  const stored = await import('./theme.js');
+  expect(stored.readThemeChoice('/admin')).toBe('dark');
+
+  localStorage.removeItem(themeStorageKey);
+  vi.resetModules();
+  const empty = await import('./theme.js');
+  expect(empty.readThemeChoice('/admin')).toBe('system');
+});
+
 it('keeps System when a failed write cannot read the stored choice either', () => {
   vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
   vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
 
   expect(setThemeChoice('dark')).toBe('system');
+  expect(themeClasses()).toEqual(['theme-system']);
+});
+
+it('keeps the kiosk on System even when the page holds a failed admin pick', () => {
+  localStorage.setItem(themeStorageKey, 'light');
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota'); });
+  expect(setThemeChoice('dark', { pathname: '/admin' })).toBe('dark');
+  expect(readThemeChoice('/kiosk')).toBe('system');
+  expect(applyThemeChoice(readThemeChoice('/kiosk'), { pathname: '/kiosk' })).toBe('system');
   expect(themeClasses()).toEqual(['theme-system']);
 });
 

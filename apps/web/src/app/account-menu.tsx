@@ -4,7 +4,7 @@ import { Link, useRouterState } from '@tanstack/react-router';
 import { Button } from '../components/ui/button.js';
 import { ChevronDownIcon, UserIcon } from '../components/ui/icons.js';
 import { t } from '../lib/i18n.js';
-import { applyThemeChoice, readThemeChoice, setThemeChoice, themeChoices, themeStorageKey, type ThemeChoice as ThemeChoiceValue } from '../lib/theme.js';
+import { applyThemeChoice, readThemeChoice, setThemeChoice, syncThemeChoiceFromStorage, themeChoices, themeStorageKey, type ThemeChoice as ThemeChoiceValue } from '../lib/theme.js';
 
 /** Closes an open popover on Escape (returning focus to its trigger) or on a press outside it. */
 export function useDismiss(open: boolean, close: () => void, refs: RefObject<HTMLElement | null>[], trigger: RefObject<HTMLButtonElement | null>) {
@@ -44,16 +44,16 @@ export function AccountMenu({ accountPath, identity, onSignOut, signingOut }:
   const trigger = useRef<HTMLButtonElement>(null), panel = useRef<HTMLDivElement>(null);
   const [refs] = useState(() => [trigger, panel]);
   const [close] = useState(() => () => setOpen(false));
-  // The choice outlives the menu, so a failed save is not undone when the menu reopens and another tab's change is seen while it is closed.
-  const [theme, setTheme] = useState(() => applyThemeChoice(readThemeChoice()));
+  // The choice outlives both shell lifetimes, so a failed save is not undone when the menu reopens or the other shell mounts.
+  const [theme, setTheme] = useState<ThemeChoiceValue>('system');
   const [chooseTheme] = useState(() => (option: ThemeChoiceValue) => setTheme(setThemeChoice(option)));
   useEffect(() => {
+    setTheme(applyThemeChoice(readThemeChoice()));
     const onStorage = (event: StorageEvent) => {
       // A null key means the other tab cleared its storage, so the choice is gone too.
       if (event.key !== null && event.key !== themeStorageKey) return;
       if (event.storageArea && event.storageArea !== window.localStorage) return;
-      const stored = themeChoices.find((option) => option === event.newValue) ?? 'system';
-      setTheme(applyThemeChoice(stored));
+      setTheme(syncThemeChoiceFromStorage(event.newValue));
     };
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
