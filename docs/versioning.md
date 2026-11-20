@@ -68,7 +68,9 @@ change the generated values older readers see. On existing identity columns it
 flags `RESTART`, `SET START`, `SET INCREMENT BY`, `SET CYCLE`, `SET MAXVALUE`
 and `SET MINVALUE`, and `SET NO` with the last three. It flags `ALTER SEQUENCE`
 with `AS` (a type change), `RESTART`, `START`, `INCREMENT`, `CYCLE`, `MAXVALUE`
-or `MINVALUE`, including the `NO` variants, and calls to `setval`. These changes
+or `MINVALUE`, including the `NO` variants, and calls to `setval`. It reports a
+`setval` call inside a dollar-quoted `DO` or function body as
+`setval in a dollar-quoted body`. These changes
 can exhaust a sequence or cause it to generate values that conflict with stored
 values when older inserts rely on it.
 The lint also flags
@@ -79,8 +81,12 @@ can store values the previous release's readers reject. A dropped constraint's
 kind is absent from that SQL, so even a
 foreign-key drop needs review. Constraints and required columns
 inside a new `CREATE TABLE` are allowed because older code does not use that table.
-The lint ignores comments and quoted text and handles multiple ALTER actions;
-it does not execute SQL, inspect procedural/dynamic SQL, or prove reader compatibility.
+The lint ignores comments and treats ordinary quoted text as opaque; it scans
+dollar-quoted text for `setval`. To name a sequence from an `E'...'` literal it
+decodes `\\` and `\'` and drops the backslash of any other escape. It handles
+multiple ALTER actions; it does not execute SQL, apply its other rules inside
+`DO` or function bodies, inspect single-quoted bodies, follow dynamic SQL, or
+prove reader compatibility.
 Keep migration changes declarative and review the data readers as well.
 
 An intentional finding needs a comment on its own line immediately before that

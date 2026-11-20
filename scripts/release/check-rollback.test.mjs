@@ -75,7 +75,7 @@ for (const sql of [
   'CREATE SEQUENCE s START WITH 5 INCREMENT BY 2 CYCLE;',
   'ALTER SEQUENCE s RENAME TO start;',
   'ALTER SEQUENCE cycle CACHE 5 OWNED BY members.maxvalue;',
-  "SELECT nextval('s'), 'setval(''s'', 1)', $$setval('s', 1)$$; -- SELECT setval('s', 1);",
+  "SELECT nextval('s'), 'setval(''s'', 1)', $$opaque body$$; -- SELECT setval('s', 1);",
   'ALTER TABLE members ADD CONSTRAINT other_fk FOREIGN KEY (id) REFERENCES other(id);',
   'ALTER TABLE members VALIDATE CONSTRAINT status_check;',
   "-- ALTER TABLE members ADD COLUMN required text NOT NULL;\nSELECT 1;",
@@ -126,6 +126,27 @@ for (const literal of ["E'my_seq'", '$q$my_seq$q$']) {
     ]);
   });
 }
+
+test('decodes backslash escapes in E literals before naming the setval sequence', () => {
+  for (const [literal, name] of [
+    ["E'my\\_seq'", 'my_seq'],
+    ["E'my\\\\_seq'", 'my\\_seq'],
+    ["E'my\\'seq'", "my'seq"],
+    ["E'my\\tseq'", 'mytseq'],
+    ["E'my''seq'", "my'seq"],
+    ["E'my\\'\\'seq'", "my''seq"],
+  ]) {
+    assert.deepEqual(rollbackFindings(`select setval(${literal}, 1);`), [
+      { line: 1, rule: `setval on ${name}: older inserts may receive conflicting sequence values` },
+    ], literal);
+  }
+});
+
+test('keeps a plain literal sequence name unchanged', () => {
+  assert.deepEqual(rollbackFindings("select setval('my\\_seq', 1);"), [
+    { line: 1, rule: 'setval on my\\_seq: older inserts may receive conflicting sequence values' },
+  ]);
+});
 
 test('reviews require a reason and apply to one statement only', () => {
   const sql = 'ALTER TABLE members ADD COLUMN required text NOT NULL;';
@@ -273,6 +294,45 @@ test('flags qualified setval calls with literal or computed sequence arguments',
 
 test('accepts an annotated sequence alteration and setval call', () => {
   assert.deepEqual(rollbackFindings("-- rollback-reviewed: sequence has no older writers\nALTER SEQUENCE s RESTART;\n-- rollback-reviewed: sequence has no older writers\nSELECT setval('s', 1);"), []);
+});
+
+test('flags setval inside a dollar-quoted DO or function body', () => {
+  for (const sql of [
+    "DO $$ BEGIN PERFORM setval('s', 1); END $$;",
+    "CREATE FUNCTION reset_sequence() RETURNS void AS $fn$ SELECT SETVAL('s', 1) $fn$ LANGUAGE sql;",
+    `DO $$ BEGIN PERFORM "setval"('s', 1); END $$;`,
+    `DO $$ BEGIN PERFORM pg_catalog."setval"('s', 1); END $$;`,
+  ]) {
+    assert.deepEqual(rollbackFindings(sql), [
+      { line: 1, rule: 'setval in a dollar-quoted body' },
+    ], sql);
+  }
+});
+
+test('flags each dollar-quoted body that calls setval', () => {
+  const sql = "DO $$ BEGIN PERFORM setval('s', 1); END $$;\nDO $body$ BEGIN PERFORM setval('t', 1); END $body$;";
+  assert.deepEqual(rollbackFindings(sql), [
+    { line: 1, rule: 'setval in a dollar-quoted body' },
+    { line: 2, rule: 'setval in a dollar-quoted body' },
+  ]);
+});
+
+test('reports a dollar-quoted body finding on its statement line', () => {
+  assert.deepEqual(rollbackFindings("-- heading\nDO $$ BEGIN\n PERFORM setval('s', 1);\nEND $$;"), [
+    { line: 2, rule: 'setval in a dollar-quoted body' },
+  ]);
+});
+
+test('accepts dollar-quoted bodies that do not call setval', () => {
+  for (const sql of [
+    "DO $$ BEGIN RAISE NOTICE 'x'; END $$;",
+    "DO $body$ BEGIN PERFORM nextval('s'); END $body$;",
+    "CREATE FUNCTION noop() RETURNS void AS $$ BEGIN NULL; END $$ LANGUAGE plpgsql;",
+  ]) assert.deepEqual(rollbackFindings(sql), [], sql);
+});
+
+test('a reviewed statement exempts setval in a dollar-quoted body', () => {
+  assert.deepEqual(rollbackFindings("-- rollback-reviewed: sequence has no older writers\nDO $$ BEGIN PERFORM setval('s', 1); END $$;"), []);
 });
 
 test('flags a NULL default set on an existing column, which acts like a dropped default', () => {

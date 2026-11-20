@@ -10,10 +10,10 @@ import { assertMigrationBase, migrations } from './migration-files.mjs';
 function statements(source) {
   const result = [];
   // `trailing` is set after a `;` until the next line, so a comment after a statement can't review the next one.
-  let tokens = [], literals = new Map(), line = 1, start = 1, reviewed = '', index = 0, trailing = false;
+  let tokens = [], literals = new Map(), dollarBodies = [], line = 1, start = 1, reviewed = '', index = 0, trailing = false;
   const finish = () => {
-    if (tokens.length) result.push({ tokens, literals, line: start, reviewed });
-    tokens = []; literals = new Map(); reviewed = ''; trailing = true;
+    if (tokens.length) result.push({ tokens, literals, dollarBodies, line: start, reviewed });
+    tokens = []; literals = new Map(); dollarBodies = []; reviewed = ''; trailing = true;
   };
   while (index < source.length) {
     const rest = source.slice(index);
@@ -40,13 +40,19 @@ function statements(source) {
         const end = rest.indexOf(dollar, dollar.length);
         if (end === -1) throw new Error(`Unterminated SQL dollar quote at line ${line}`);
         raw = rest.slice(0, end + dollar.length);
-        literals.set(tokens.length, rest.slice(dollar.length, end));
+        const body = rest.slice(dollar.length, end);
+        literals.set(tokens.length, body);
+        dollarBodies.push(body);
         tokens.push('?');
       } else if (quoted) {
         raw = quoted;
         if (!raw.startsWith('"')) {
           const contentStart = raw.startsWith("'") ? 1 : 2;
-          literals.set(tokens.length, raw.slice(contentStart, -1).replaceAll("''", "'"));
+          const escaped = /^e'/i.test(raw);
+          const content = raw.slice(contentStart, -1);
+          // One pass, so an escaped quote next to another one isn't collapsed as a doubled quote.
+          const text = escaped ? content.replace(/''|\\([\s\S])/g, (_, char) => char ?? "'") : content.replaceAll("''", "'");
+          literals.set(tokens.length, text);
         }
         tokens.push(raw.startsWith('"') ? raw : '?');
       } else {
@@ -171,9 +177,13 @@ function nullDefault(tokens, index) {
 export function rollbackFindings(source) {
   const findings = [];
   for (const statement of statements(source)) {
-    const { tokens, literals, line, reviewed } = statement;
+    const { tokens, literals, dollarBodies, line, reviewed } = statement;
     if (reviewed) continue;
     for (const rule of setvalCalls(tokens, literals)) findings.push({ line, rule });
+    for (const body of dollarBodies) {
+      // Also matches the quoted identifier `"setval"(`, which the token scan flags outside a body.
+      if (/\bsetval"?\s*\(/i.test(body)) findings.push({ line, rule: 'setval in a dollar-quoted body' });
+    }
     if (tokens[0] !== 'ALTER') continue;
     if (tokens[1] === 'SEQUENCE') {
       for (const rule of sequenceAlterations(tokens)) findings.push({ line, rule });
