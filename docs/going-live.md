@@ -47,7 +47,7 @@ Work down the **Readiness checklist** on **Settings → Go live**. Each line say
 | Members | Members are in the app ([importing.md](importing.md)). |
 | Schedule | Your classes are added. |
 | Payments | A Stripe key is configured. A test key counts too, so check that it is your **live** key (step 1 below). |
-| Saved cards | Every household with a paid membership has a saved default card ([card-recollection.md](card-recollection.md)). |
+| Saved cards | Every household with a paid membership has a usable default payment method ([card-recollection.md](card-recollection.md)). |
 | Waivers | Active members have signed every current waiver. |
 | Email delivery | Email is set up and a test message arrived. |
 | Backups | Backups are set up and the key is stored safely. |
@@ -88,13 +88,13 @@ Then:
 3. **Check past billing dates.** Memberships whose next due date has already passed will
    be invoiced for each missed period once billing is on. Reconcile them against your
    old system now ([importing.md](importing.md#memberships-columns)).
-4. **Collect cards and turn member emails on** ([card-recollection.md](card-recollection.md)).
+4. **Collect payment methods and turn member emails on** ([card-recollection.md](card-recollection.md)).
    Tell members first: what the new emails are, and that their old system stops
    charging them on a date you name. Campaign links are only sent while member emails
    are on.
 5. **Check the Stripe webhook.** The Payments section should show the endpoint as
    registered. The *Payment notifications* item needs a processed event: the first
-   card a member saves through a campaign link gives it one.
+   payment method a member saves through a campaign link gives it one.
 
 ## 3. Switch over
 

@@ -121,12 +121,13 @@ payer details, configuration failures and unresolved creation keep the translate
 contact-the-gym state and emit a diagnostic log with identifiers and a reason.
 See `areas/billing/customers.README.md` for reservation safety and staff recovery.
 
-Pay links save a card for off-session use only for cycle invoices or assignment
-invoices (nonempty lines containing only membership, sign-up fee, discount and
-tax), matching the daily runner's shared rule. Other one-off pay links do not save
-the card or change the household's default. Card and onboarding links use setup
-mode and keep saving cards. The returned or reused Checkout session must match
-the expected card-saving policy.
+Pay links save a payment method for off-session use only for cycle invoices or
+assignment invoices (nonempty lines containing only membership, sign-up fee,
+discount and tax), matching the daily runner's shared rule. Other one-off pay
+links leave the household's saved methods and default alone. Update-card and
+onboarding links use setup mode. When the gym enables bank payments, both modes
+offer ACH for USD or pre-authorized debits for CAD beside cards. A refusal of the
+bank payment method records an audit and retries Checkout with cards.
 
 Setup links reuse an open session only after retrieving its current provider state.
 The persisted start association identifies the current attempt. A completed or
@@ -139,13 +140,15 @@ sessions stay unavailable until their state can be resolved.
 An authenticated setup return, or restarting a completed setup, can recover a
 missed webhook. It verifies the gym, link, household customer, persisted session
 association, successful SetupIntent and attached method before calling the same
-idempotent card writer used by webhooks. Revoked cards remain revoked and late
-webhooks remain safe. Invoice payment completion still waits for its accounting
-writes. An onboarding return refreshes the page after its bounded checks even
-when waivers remain, so the saved card becomes visible without completing the
-unfinished onboarding or clearing a signing tablet. Only the server-rendered
-card status is updated in place; waiver inputs, signature canvases and the
-existing Checkout button remain intact during automatic or manual checks.
+idempotent payment method writer used by webhooks. Revoked methods remain revoked
+and late webhooks remain safe. Invoice link completion waits for the accounting
+writes. The link's own tagged bank Checkout can complete the link while the
+invoice is processing. An onboarding return refreshes the page after its bounded
+checks even when waivers remain, so the saved payment method becomes visible
+without completing the unfinished onboarding or clearing a signing tablet.
+Only the server-rendered payment method status is updated in place. Waiver
+inputs, signature canvases and the existing Checkout button remain intact
+during automatic or manual checks.
 
 Invoice Checkout reserves its idempotency window in `checkout_expires_at`, then
 calls the payment provider outside the transaction. The returned session ID is

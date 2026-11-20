@@ -321,8 +321,9 @@ source of truth; Stripe is the processor. In outline:
   Their page and strict one-click POST change only the linked member's separate
   announcement preference through `forHousehold`.
 
-Cards are collected only on Stripe-hosted pages; the app stores processor IDs,
-never card numbers.
+Stripe-hosted Checkout collects cards and, when enabled, US bank accounts for
+USD or Canadian bank accounts for CAD. The app stores processor IDs and masked
+payment method details.
 
 ## Infrastructure modules
 

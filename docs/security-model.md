@@ -584,10 +584,11 @@ Old versions and documents referenced by signatures remain retained after retire
   finishes on the next run (`deploy/README.md`, "Rotating the encryption key").
   The new key protects what is stored from then on; credentials a copy of the old
   database holds must be replaced at their provider.
-* **Cards.** Cards are entered only on Stripe-hosted pages. PlainGym stores
-  Stripe's IDs (`cus_…`, `pm_…`) and the card's brand, last four digits and
-  expiry, never a card number. Each gym uses its own Stripe account; the app
-  registers its webhook endpoint and verifies every event's signature.
+* **Payment details.** Members enter card and bank account details only on
+  Stripe-hosted pages. PlainGym stores Stripe's IDs (`cus_…`, `pm_…`), the last
+  four digits, the card's brand and expiry or the bank name and available
+  mandate reference. Each gym uses its own Stripe account. The app registers
+  its webhook endpoint and verifies every event's signature.
 * **Backups** are encrypted with [age](https://age-encryption.org) to a public key
   whose private half the owner keeps; the server can write backups but can't read
   them. Each backup also carries `APP_ENCRYPTION_KEY`, encrypted the same way, so a

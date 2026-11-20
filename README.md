@@ -88,8 +88,9 @@ own, a cancellation cutoff, and attendance taken by coaches.
 
 ### Billing with your own Stripe
 
-Memberships, signup fees, family discounts, promo codes and class packs. Card details
-stay with Stripe; failed payments retry with a payment link.
+Memberships, signup fees, family discounts, promo codes and class packs. Stripe
+collects card details and, when enabled, US or Canadian bank account details
+through Checkout. Failed payments can be retried through a payment link.
 
 <p align="center">
 <a href="apps/server/src/demo/screenshots/billing-light-2x-df8e853ff278efa0.webp">

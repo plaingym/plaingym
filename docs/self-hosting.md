@@ -29,7 +29,7 @@ For building images and the installer's internals, see
 * **An email sending service** (Postmark, Brevo, Amazon SES or similar), for sign-in
   links, receipts and reminders. Optional: without email, staff sign in with
   passwords and the app sends nothing.
-* **A Stripe account**, to take card payments. Optional: without it, billing stays
+* **A Stripe account**, to take online payments. Optional: without it, billing stays
   off and staff record cash and checks.
 * **An S3-compatible bucket for backups** (Cloudflare R2, Backblaze B2, AWS S3,
   MinIO or similar), with an access key that can read, write, list and delete in
@@ -215,7 +215,7 @@ moving money (a missing one is named), then registers its webhook endpoint at
 `https://gym.example.org/webhooks/stripe`. Use a test key (`rk_test_…`) to try
 billing first; a live key (`rk_live_…`) takes real payments, and replaces the
 test key in **Settings → Integrations** once you confirm clearing
-the test data. Members enter cards only on Stripe's hosted pages.
+the test data. Members enter card and bank account details on Stripe's hosted pages.
 
 ## Sign-in
 

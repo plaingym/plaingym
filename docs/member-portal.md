@@ -88,8 +88,10 @@ pending or unsuccessful refunds do not count. Receipts also work in demo sandbox
 The payer's **Payment methods** section marks the household default. It shows a
 card's network, last four digits and expiry. Saved bank accounts show the bank
 name when available and the account's last four digits. If the household has
-only saved bank accounts, **Use a card instead** opens Stripe to save a card for
-automatic payments. A household without saved payment methods sees **Add a card**.
+only saved bank accounts, **Use a card instead** opens Stripe Checkout to
+choose a payment method for automatic payments. A household without saved
+payment methods sees **Add a card**. Stripe also offers an eligible bank
+account when the gym has enabled bank payments.
 
 ## How booking works
 
