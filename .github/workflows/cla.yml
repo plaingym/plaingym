@@ -41,6 +41,7 @@ jobs:
               target_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
             });
             await status('pending', 'Checking contributor agreement');
+            let isAgreementCurrent;
             try {
               // Exemptions use authenticated GitHub identities, never a PR's branch or title.
               const maintainerIds = (process.env.CLA_MAINTAINER_IDS ?? '').split(',').map((id) => id.trim()).filter(Boolean);
@@ -68,11 +69,15 @@ jobs:
               };
               const agreement = await readAgreement(defaultSha);
               if (Array.isArray(agreement) || agreement.type !== 'file' || agreement.encoding !== 'base64') throw new Error('Cannot read CLA.md');
-              const isAgreementCurrent = async () => {
+              isAgreementCurrent = async () => {
                 const currentSha = await readDefaultSha();
-                if (currentSha === defaultSha) return true;
-                const currentAgreement = await readAgreement(currentSha);
-                return currentAgreement.type === 'file' && currentAgreement.sha === agreement.sha;
+                try {
+                  const currentAgreement = await readAgreement(currentSha);
+                  return currentAgreement.type === 'file' && currentAgreement.sha === agreement.sha;
+                } catch (error) {
+                  if (error.status === 404) return false;
+                  throw error;
+                }
               };
               const text = Buffer.from(agreement.content, 'base64').toString('utf8');
               if (/\[TODO[^\]]*\]/i.test(text)) throw new Error('CLA.md has unresolved publication placeholders; a maintainer must complete it');
@@ -151,24 +156,28 @@ jobs:
                 }
               }
               if (!signed) {
-                const body = `${marker}\n@${pr.user.login}, please read [Contributor License Agreement v${version}](${context.serverUrl}/${owner}/${repo}/blob/${defaultSha}/CLA.md).\n\nReply with this exact comment to sign:\n\n> ${phrase}\n\nYou keep your copyright. Your signature records this agreement's SHA-256: \`${hash}\`.`;
+                const agreementMarkers = `${marker}\n<!-- plaingym-cla-blob:${agreement.sha} -->\n`;
+                const body = `${agreementMarkers}@${pr.user.login}, please read [Contributor License Agreement v${version}](${context.serverUrl}/${owner}/${repo}/blob/${defaultSha}/CLA.md).\n\nReply with this exact comment to sign:\n\n> ${phrase}\n\nYou keep your copyright. Your signature records this agreement's SHA-256: \`${hash}\`.`;
                 let [prompt, ...duplicates] = await listPromptsById();
-                let createdPromptId;
                 if (!prompt) {
                   // Leave a signing prompt even if the default branch moved since the initial read.
-                  const { data: createdPrompt } = await api.issues.createComment({ owner, repo, issue_number: issueNumber, body });
-                  createdPromptId = createdPrompt.id;
+                  await api.issues.createComment({ owner, repo, issue_number: issueNumber, body });
+                  const agreementCurrent = await isAgreementCurrent();
                   // A concurrent create may have posted the earliest prompt for another revision.
                   [prompt, ...duplicates] = await listPromptsById();
+                  if (!agreementCurrent) return;
                 }
-                if (prompt && (prompt.body !== body || duplicates.length > 0)) {
-                  if (await isAgreementCurrent()) {
-                    if (prompt.body !== body) {
-                      await api.issues.updateComment({ owner, repo, comment_id: prompt.id, body });
+                if (prompt) {
+                  const needsRefresh = !prompt.body.startsWith(agreementMarkers);
+                  if (needsRefresh || duplicates.length > 0) {
+                    if (!await isAgreementCurrent()) return;
+                  }
+                  if (needsRefresh) {
+                    await api.issues.updateComment({ owner, repo, comment_id: prompt.id, body });
+                    if (!await isAgreementCurrent()) {
+                      await listPromptsById();
+                      return;
                     }
-                  } else {
-                    // An obsolete run may remove only its own prompt when a trusted comment precedes it.
-                    duplicates = duplicates.filter((duplicate) => duplicate.id === createdPromptId);
                   }
                   for (const duplicate of duplicates) {
                     try {
@@ -182,13 +191,20 @@ jobs:
                 signed = (await readLedger()).ledger.signatures.some((entry) => entry.userId === pr.user.id && entry.claSha256 === hash);
               }
               if (!signed) {
+                if (!await isAgreementCurrent()) return;
                 await status('failure', 'CLA signature required; see the signing comment');
                 // Also repair a failure request that was in flight when signing succeeded.
                 signed = (await readLedger()).ledger.signatures.some((entry) => entry.userId === pr.user.id && entry.claSha256 === hash);
                 if (!signed) core.setFailed('The pull request author must sign CLA.md');
               }
-              if (signed) await status('success', 'Contributor agreement signed');
+              if (signed && await isAgreementCurrent()) await status('success', 'Contributor agreement signed');
             } catch (error) {
-              await status('failure', 'CLA check needs maintainer attention');
+              let agreementCurrent = true;
+              try {
+                if (isAgreementCurrent) agreementCurrent = await isAgreementCurrent();
+              } catch {
+                // The recheck failed too: still report the original error.
+              }
+              if (agreementCurrent) await status('failure', 'CLA check needs maintainer attention');
               core.setFailed(error.message);
             }

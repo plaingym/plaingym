@@ -196,6 +196,7 @@ function claFixture(options = {}) {
   const comments = options.comments ?? [];
   const commentCalls = { list: 0, create: 0, update: 0, delete: 0 };
   let defaultSha = 'default-sha';
+  let refError;
   const agreements = new Map([[defaultSha, text]]);
   let ledger = options.ledger;
   let branch = Boolean(ledger);
@@ -246,7 +247,10 @@ function claFixture(options = {}) {
       getRef: async (value) => {
         assert.equal(value.owner, context.repo.owner);
         assert.equal(value.repo, context.repo.repo);
-        if (value.ref === 'heads/main') return { data: { object: { sha: defaultSha } } };
+        if (value.ref === 'heads/main') {
+          if (refError) throw refError;
+          return { data: { object: { sha: defaultSha } } };
+        }
         assert.equal(value.ref, 'heads/cla-signatures');
         return branch ? { data: {} } : notFound();
       },
@@ -269,7 +273,9 @@ function claFixture(options = {}) {
       },
       updateComment: async (value) => {
         commentCalls.update++;
-        comments.find((comment) => comment.id === value.comment_id).body = value.body;
+        const comment = comments.find((comment) => comment.id === value.comment_id);
+        comment.body = value.body;
+        comment.updated_at = new Date(Math.max(Date.parse('2026-01-03T00:00:00Z'), Date.parse(comment.updated_at) + 1000)).toISOString();
       },
       deleteComment: async (value) => {
         commentCalls.delete++;
@@ -286,6 +292,7 @@ function claFixture(options = {}) {
       agreements.set(sha, content);
       defaultSha = sha;
     },
+    setRefError: (error) => { refError = error; },
     run: async (hooks = {}) => {
       let firstAssertion;
       const captureAssertion = (call) => async (...args) => {
@@ -316,10 +323,17 @@ function claFixture(options = {}) {
             createOrUpdateFileContents: captureAssertion(api.repos.createOrUpdateFileContents),
           },
           git: { getRef: captureAssertion(api.git.getRef), createRef: captureAssertion(api.git.createRef) },
-          issues: { ...api.issues, createComment: captureAssertion(async (value) => {
-            await hooks.beforeCreateComment?.();
-            return api.issues.createComment(value);
-          }) },
+          issues: {
+            ...api.issues,
+            createComment: captureAssertion(async (value) => {
+              await hooks.beforeCreateComment?.();
+              return api.issues.createComment(value);
+            }),
+            updateComment: captureAssertion(async (value) => {
+              await hooks.beforeUpdateComment?.();
+              return api.issues.updateComment(value);
+            }),
+          },
         },
         paginate: captureAssertion(async (method, params) => {
           assert.equal(method, api.issues.listComments);
@@ -384,6 +398,7 @@ test('an unsigned pull request creates a hash-bound prompt and lists comments tw
   assert.equal(fixture.statuses.at(-1).state, 'failure');
   assert.equal(fixture.comments.length, 1);
   assert.match(fixture.comments[0].body, new RegExp(fixture.hash));
+  assert.ok(fixture.comments[0].body.includes(`<!-- plaingym-cla-blob:blob-${fixture.hash} -->`));
   assert.deepEqual(fixture.commentCalls, { list: 2, create: 1, update: 0, delete: 0 });
   assert.equal(fixture.writes.length, 0);
   assert.equal(fixture.statuses.at(-1).sha, 'current-head');
@@ -397,12 +412,30 @@ test('an unsigned pull request with a current prompt lists comments once without
   assert.equal(fixture.statuses.at(-1).state, 'failure');
 });
 
+test('a new default commit with the same agreement leaves a pending signature valid', async () => {
+  const fixture = claFixture();
+  await fixture.run();
+  const [prompt] = fixture.comments;
+  const { body, updated_at } = prompt;
+  fixture.setAgreement('unrelated-sha', fixture.text);
+
+  await fixture.run();
+
+  assert.equal(prompt.body, body);
+  assert.equal(prompt.updated_at, updated_at);
+  assert.deepEqual(fixture.commentCalls, { list: 3, create: 1, update: 0, delete: 0 });
+
+  await fixture.run({ context: { eventName: 'issue_comment' } });
+  assert.equal(fixture.writes.length, 1);
+  assert.equal(fixture.statuses.at(-1).state, 'success');
+});
+
 test('an unsigned run updates the earliest trusted prompt and removes a leftover duplicate without another scan', async () => {
   const fixture = claFixture();
   await fixture.run();
   const [earliest] = fixture.comments;
   const currentBody = earliest.body;
-  const staleBody = '<!-- plaingym-cla:old -->';
+  const staleBody = currentBody.replace(`<!-- plaingym-cla-blob:blob-${fixture.hash} -->\n`, '');
   earliest.body = staleBody;
   const later = { ...earliest, id: earliest.id + 1 };
   const untrusted = { ...earliest, id: earliest.id - 1, user: { ...earliest.user, type: 'User' } };
@@ -435,6 +468,87 @@ test('an unsigned run cannot overwrite a prompt updated for a newer agreement', 
   assert.deepEqual(fixture.commentCalls, { list: 4, create: 1, update: 1, delete: 0 });
 });
 
+test('an obsolete run leaves the latest final status for the same pull request head', async () => {
+  const originalAgreement = 'Version 1.0\nPublic fixture contributor agreement.\n';
+  for (const olderAgreementSigned of [false, true]) {
+    const signedAgreement = olderAgreementSigned ? originalAgreement : revisedAgreement;
+    const fixture = claFixture({ text: originalAgreement, ledger: {
+      schemaVersion: 1, signatures: [{ userId: 42, claSha256: sha256(signedAgreement) }],
+    } });
+    if (!olderAgreementSigned) await fixture.run();
+    const statusCount = fixture.statuses.length;
+    let reads = 0;
+
+    await fixture.run({ afterLedgerRead: async () => {
+      // Pause just before the older run would publish success or signature required.
+      if (++reads !== (olderAgreementSigned ? 1 : 2)) return;
+      fixture.setAgreement('revised-sha', revisedAgreement);
+      await fixture.run({ context: { runId: 101 } });
+    } });
+
+    assert.deepEqual(
+      fixture.statuses.slice(statusCount).filter((status) => status.target_url.endsWith('/100')).map((status) => status.state),
+      ['pending'],
+    );
+    assert.equal(fixture.statuses.at(-1).state, olderAgreementSigned ? 'failure' : 'success');
+    assert.equal(fixture.statuses.at(-1).sha, 'current-head');
+    assert.ok(fixture.statuses.at(-1).target_url.endsWith('/101'));
+  }
+});
+
+test('an error in an obsolete run leaves the current agreement status in place', async () => {
+  const fixture = claFixture({ ledger: {
+    schemaVersion: 1, signatures: [{ userId: 42, claSha256: sha256(revisedAgreement) }],
+  } });
+  await fixture.run({ afterLedgerRead: async () => {
+    fixture.setAgreement('revised-sha', revisedAgreement);
+    await fixture.run({ context: { runId: 101 } });
+    throw new Error('Ledger unavailable');
+  } });
+
+  assert.deepEqual(fixture.failures, ['Ledger unavailable']);
+  assert.deepEqual(fixture.statuses.map((status) => status.state), ['pending', 'pending', 'success']);
+});
+
+test('an error whose agreement recheck also fails still reports the original error', async () => {
+  const fixture = claFixture();
+  await fixture.run({ afterLedgerRead: async () => {
+    fixture.setRefError(Object.assign(new Error('Service unavailable'), { status: 503 }));
+    throw new Error('Ledger unavailable');
+  } });
+
+  assert.deepEqual(fixture.failures, ['Ledger unavailable']);
+  assert.deepEqual(fixture.statuses.map((status) => [status.state, status.description]), [
+    ['pending', 'Checking contributor agreement'],
+    ['failure', 'CLA check needs maintainer attention'],
+  ]);
+});
+
+test('an obsolete prompt update re-lists and leaves further writes to a current run', async () => {
+  const fixture = claFixture();
+  await fixture.run();
+  const [earliest] = fixture.comments;
+  const olderBody = earliest.body;
+  earliest.body = `<!-- plaingym-cla:${fixture.hash} -->`;
+  fixture.comments.push({ ...earliest, id: earliest.id + 1 });
+  let currentBody;
+
+  await fixture.run({ beforeUpdateComment: async () => {
+    fixture.setAgreement('revised-sha', revisedAgreement);
+    await fixture.run({ context: { runId: 101 } });
+    currentBody = earliest.body;
+    assert.ok(currentBody.startsWith(`<!-- plaingym-cla:${sha256(revisedAgreement)} -->`));
+  } });
+
+  assert.deepEqual(fixture.comments.map((comment) => [comment.id, comment.body]), [[earliest.id, olderBody]]);
+  assert.deepEqual(fixture.commentCalls, { list: 5, create: 1, update: 2, delete: 1 });
+  assert.ok(fixture.statuses.at(-1).target_url.endsWith('/101'));
+
+  await fixture.run({ context: { runId: 102 } });
+  assert.deepEqual(fixture.comments.map((comment) => [comment.id, comment.body]), [[earliest.id, currentBody]]);
+  assert.deepEqual(fixture.commentCalls, { list: 6, create: 1, update: 3, delete: 1 });
+});
+
 test('an obsolete creator keeps the only signing prompt', async () => {
   const fixture = claFixture();
   await fixture.run({ afterListComments: () => fixture.setAgreement('revised-sha', revisedAgreement) });
@@ -443,16 +557,21 @@ test('an obsolete creator keeps the only signing prompt', async () => {
   assert.deepEqual(fixture.commentCalls, { list: 2, create: 1, update: 0, delete: 0 });
 });
 
-test('an obsolete creator removes its own later prompt and keeps the current prompt', async () => {
+test('an obsolete creator leaves duplicate cleanup for a current run', async () => {
   const fixture = claFixture();
   await fixture.run({ beforeCreateComment: async () => {
     fixture.setAgreement('revised-sha', revisedAgreement);
     await fixture.run({ context: { runId: 101 } });
   } });
 
-  assert.deepEqual(fixture.comments.map((comment) => comment.id), [5]);
+  assert.deepEqual(fixture.comments.map((comment) => comment.id), [5, 6]);
   assert.ok(fixture.comments[0].body.startsWith(`<!-- plaingym-cla:${sha256(revisedAgreement)} -->`));
-  assert.deepEqual(fixture.commentCalls, { list: 4, create: 2, update: 0, delete: 1 });
+  assert.deepEqual(fixture.commentCalls, { list: 4, create: 2, update: 0, delete: 0 });
+  assert.ok(fixture.statuses.at(-1).target_url.endsWith('/101'));
+
+  await fixture.run({ context: { runId: 102 } });
+  assert.deepEqual(fixture.comments.map((comment) => comment.id), [5]);
+  assert.deepEqual(fixture.commentCalls, { list: 5, create: 2, update: 0, delete: 1 });
 });
 
 test('a move of the default ref with the same agreement still allows a prompt refresh and duplicate removal', async () => {
