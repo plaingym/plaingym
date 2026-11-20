@@ -31,7 +31,8 @@ export function createStaffProfileService(baseScope = forGym) {
       if (!role) throw new AppError('not_found', 'Staff account not found');
     }
     if (input.memberId) {
-      await lockMemberForWrite(tx, input.memberId, 'share');
+      const member = await lockMemberForWrite(tx, input.memberId, 'share');
+      if (member.anonymizedAt) throw new AppError('not_found', 'Member not found');
     }
   }
   // Only attachPhoto passes a new key; requests may at most clear one, which is rechecked here for direct callers.
@@ -39,10 +40,16 @@ export function createStaffProfileService(baseScope = forGym) {
     if (typeof input.photoKey === 'string' && !photo) throw new AppError('invalid_request', 'Use the profile photo upload endpoint');
     return scope(actor.gymId, async (tx) => {
       await assertStaffManager(tx, actor.actorUserId);
+      // Member deletion and erasure lock the member before unlinking profiles.
+      // Keep missing-profile and stale-revision errors ahead of link validation errors.
+      const linkError = await links(tx, input).catch((error: unknown) => {
+        if (error instanceof AppError) return error;
+        throw error;
+      });
       const [existing] = await tx.select().from(staffProfiles).where(eq(staffProfiles.id, id)).for('update');
       if (!existing) throw new AppError('not_found', 'Staff profile not found');
       if (existing.revision !== input.revision) throw new AppError('conflict', 'The record changed; reload before saving');
-      await links(tx, input);
+      if (linkError) throw linkError;
       if (input.userId && (await tx.select({ id: staffProfiles.id }).from(staffProfiles).where(eq(staffProfiles.userId, input.userId))).some((row) => row.id !== id))
         throw new AppError('conflict', 'Account already has a staff profile');
       const guard = revisionGuard(staffProfiles.revision, input.revision);

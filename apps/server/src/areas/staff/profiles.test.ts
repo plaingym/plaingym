@@ -2,7 +2,7 @@
 import { afterAll, beforeAll, expect, it, onTestFinished, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
-import { staffRoles, auditEvents, uuidv7 } from '@plaingym/db';
+import { staffRoles, staffProfiles, auditEvents, households, members, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 // eslint-disable-next-line no-restricted-imports -- Initialize real database pools for the configured route composition test.
 import { closeDatabase, initializeDatabase } from '@plaingym/db/client';
@@ -14,6 +14,8 @@ import { createStaffProfileService } from './profiles.js';
 import { configureStaffProfiles, createStaffProfileRoutes } from './profiles.routes.js';
 import { createStaffInvitationService } from './profiles.invitations.js';
 import { FakeUploads } from '../../infra/storage/index.js';
+import { FakeJobs } from '../../infra/jobs/index.js';
+import { createMembersService } from '../members/members.js';
 import { createServerRegistry } from '../../core/registry.js';
 import { errorHandler } from '../../core/errors.js';
 import { TestClock } from '../../core/clock.js';
@@ -74,6 +76,62 @@ it('isolates every read, write and account/member link by gym', async () => {
     ['POST', '/api/staff/roles', { userId: otherOwner, role: 'admin' }], ['PATCH', '/api/staff/roles/' + foreignRole.id, { revision: 1, role: 'coach' }], ['DELETE', '/api/staff/roles/' + foreignRole.id, { revision: 1 }]];
   for (const [method, path, body] of cases) expect((await request(app, method, path, body)).status, path).toBe(404);
   expect((await service.getProfile(gymB, foreign.id)).data).toEqual(foreign);
+});
+it('links, resends and clears a local member link and refuses a cross-gym link on update', async () => {
+  const person = await factory('members', gymA);
+  const foreign = await factory('members', gymB);
+  const profile = await factory('staffProfiles', gymA);
+  const app = server(), path = '/api/staff/profiles/' + profile.id;
+  for (const [revision, memberId] of [[1, person.id], [2, person.id], [3, null]] as const) {
+    const response = await request(app, 'PATCH', path, { revision, memberId });
+    expect(response.status).toBe(200);
+    expect(staffProfileResponseSchema.parse(await response.json()).data).toMatchObject({ memberId, revision: revision + 1 });
+  }
+  expect((await request(app, 'PATCH', path, { revision: 4, memberId: foreign.id })).status).toBe(404);
+  expect((await service.getProfile(gymA, profile.id)).data).toMatchObject({ memberId: null, revision: 4 });
+});
+it.each(['erase', 'delete'] as const)('waits for member %s before locking a profile that resends its existing link', async kind => {
+  const home = await factory('households', gymA);
+  const person = await factory('members', gymA, { householdId: home.id });
+  const profile = await factory('staffProfiles', gymA, { memberId: person.id });
+  const locked = Promise.withResolvers<void>();
+  const resume = Promise.withResolvers<void>();
+  const scope: typeof db.forGym = (gymId, fn) => db.forGym(gymId, async tx => {
+    await tx.select().from(households).where(eq(households.id, home.id)).for('update');
+    await tx.select().from(members).where(eq(members.id, person.id)).for('update');
+    locked.resolve();
+    await resume.promise;
+    // The PATCH must leave the profile available while it waits for the member.
+    await tx.select().from(staffProfiles).where(eq(staffProfiles.id, profile.id)).for('update', { noWait: true });
+    return fn(tx);
+  });
+  const memberService = createMembersService({ scope, clock });
+  const context = { gymId: gymA, actor: { kind: 'system' as const } };
+  const cleanup = { jobs: new FakeJobs(clock), timezone: 'UTC' };
+  const removing = kind === 'erase'
+    ? memberService.eraseMember(context, person.id, { revision: person.revision }, cleanup)
+    : memberService.deleteMember(context, person.id, person.revision, cleanup);
+  const app = server(), path = '/api/staff/profiles/' + profile.id;
+  await Promise.race([locked.promise, removing.then(() => { throw new Error('Member removal finished before the lock was held'); })]);
+  const saving = request(app, 'PATCH', path, { revision: profile.revision, memberId: person.id, displayName: 'Concurrent edit' });
+  try {
+    await expect.poll(async () => {
+      const [row] = await db.system.sql`select exists (select 1 from pg_stat_activity
+        where datname = current_database() and wait_event_type = 'Lock'
+        and query ilike '%"members"%' and query ilike '%for share%') as waiting`;
+      return row!.waiting;
+    }, { timeout: 5000 }).toBe(true);
+  } finally {
+    resume.resolve();
+    await Promise.allSettled([removing, saving]);
+  }
+  expect(await removing).toMatchObject(kind === 'erase' ? { householdErased: true } : { householdDeleted: true });
+  const response = await saving;
+  expect(response.status).toBe(409);
+  expect(await response.json()).toMatchObject({ error: { code: 'conflict', message: 'The record changed; reload before saving' } });
+  const revision = profile.revision + 1;
+  expect((await request(app, 'PATCH', path, { revision, memberId: person.id })).status).toBe(404);
+  expect((await service.getProfile(gymA, profile.id)).data).toMatchObject({ memberId: null, revision, displayName: profile.displayName });
 });
 it('stores profile fields, filters and paginates, and atomically rejects stale saves', async () => {
   const member = await factory('members', gymA), user = await factory('staffRoles', gymA);
