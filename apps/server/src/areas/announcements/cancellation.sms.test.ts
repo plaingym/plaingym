@@ -13,6 +13,7 @@ import { FakeJobs } from '../../infra/jobs/index.js';
 import { createSmsPhoneDigest, DeliveryError, FakeSms } from '../../infra/sms/index.js';
 import { smsInFlightMs } from '../../infra/sms/deliveries.js';
 import { createScheduleService } from '../schedule/schedule.js';
+import { createMembersService } from '../members/members.js';
 import { createCancellationNotice } from './cancellation.js';
 import { createAnnouncementJobs } from './jobs.js';
 
@@ -131,6 +132,22 @@ it('deduplicates the parent destination after the original first child leaves th
   const f = await fixture(); await f.run();
   await db.forGym(f.gymId, tx => tx.update(members).set({ anonymizedAt: f.clock.now() }).where(eq(members.id, f.children[0]!.id)));
   await f.run(); expect(f.sms.messages).toHaveLength(1);
+});
+
+it.each([false, true])('erases the cancellation phone digest and prevents replay (legacy=%s)', async legacy => {
+  const f = await fixture(), foreign = await fixture();
+  const person = f.children[0]!, key = `schedule-cancel-sms:${f.session.id}:${person.id}`;
+  const commandDigest = `schedule-cancel-sms:${f.session.id}:${digest(phone)}`;
+  if (legacy) await factory('smsDeliveries', f.gymId, { key, commandDigest, state: 'accepted' });
+  else await f.run();
+  await factory('smsDeliveries', foreign.gymId, { key, commandDigest, state: 'accepted' });
+  await createMembersService({ scope: db.forGym, clock: f.clock }).eraseMember(
+    { gymId: f.gymId, actor: { kind: 'system' } }, person.id, { revision: 1 }, { jobs: f.jobs, timezone: 'America/New_York' });
+  await f.run();
+  expect(f.sms.messages).toHaveLength(legacy ? 0 : 1);
+  const deliveries = (gymId: string) => db.forGym(gymId, tx => tx.select().from(smsDeliveries));
+  expect(await deliveries(f.gymId)).toEqual([expect.objectContaining({ key, commandDigest: null, state: 'accepted' })]);
+  expect(await deliveries(foreign.gymId)).toEqual([expect.objectContaining({ key, commandDigest })]);
 });
 
 it('never includes a different household or gym and refuses a foreign session payload', async () => {

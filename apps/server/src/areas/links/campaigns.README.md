@@ -6,7 +6,9 @@ the helper selects consented members matching the billing email and deduplicates
 phones. The delivery boundary rechecks payer selection after provider preparation.
 `MemberSms` rechecks consent, phone, the member-text switch and the daily
 cap. Configure the service's `smsDelivery` and `smsPhoneDigest` (the HMAC helper
-`createSmsPhoneDigest(AUTH_SECRET)`) in runtime composition.
+`createSmsPhoneDigest(AUTH_SECRET)`) in runtime composition. The digest helper
+looks up existing reservations. New text keys use the household ID for a billing
+phone or the first consenting member ID for a fallback phone.
 
 The delivery step still holds its rotated token, so SMS and email share that
 token and the original campaign link row. No second link is minted; expiry and

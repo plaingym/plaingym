@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { announcementOptOuts, announcementSmsRecipients, announcements, members, smsDailyUsage, smsDeliveries, uuidv7 } from '@plaingym/db';
+import { announcementOptOuts, announcementSmsRecipients, members, smsDailyUsage, smsDeliveries, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { createMembersService } from '../members/members.js';
@@ -19,7 +19,6 @@ import { createAnnouncementJobs } from './jobs.js';
 import { createAnnouncementRoutes } from './send.routes.js';
 import { createAnnouncementsService } from './send.js';
 import { announcementSmsJob, announcementSmsKey, nextAnnouncementSmsTime } from './send.sms.js';
-import { forgetErasedAddressDigests } from './erasure.js';
 
 const db = useTestDatabase(), factory = createFactories(db), phone = '+12025550123';
 const digest = createSmsPhoneDigest('announcement-text-tests');
@@ -149,16 +148,67 @@ it('isolates announcement texts and program selection across gyms', async () => 
     body: JSON.stringify({ ...draft, testTo: phone, audience: { ...draft.audience, programIds: [foreign.id] } }) });
   expect(response.status).toBe(404); expect(a.sms.messages).toHaveLength(0);
 });
-it('clears a shared phone digest when either snapshotted member is erased', async () => {
-  const f = await fixture(); await f.member(); const sibling = await f.member(), row = await f.send(); await f.run(row.id);
-  await db.forGym(f.gymId, tx => forgetErasedAddressDigests(tx, f.gymId, sibling.id));
-  expect((await db.forGym(f.gymId, tx => tx.select().from(smsDeliveries)))[0]?.commandDigest).toBeNull();
-  expect((await db.forGym(f.gymId, tx => tx.select().from(announcementSmsRecipients)))[0]?.phoneDigest).toBeNull();
-  expect((await db.forGym(f.gymId, tx => tx.select().from(announcements)))[0]?.smsSent).toBe(1);
+function memberRemoval(f: Awaited<ReturnType<typeof fixture>>) {
+  const service = createMembersService({ scope: db.forGym, clock: f.clock });
+  const context = { gymId: f.gymId, actor: { kind: 'user' as const, userId: f.actor.userId } };
+  const cleanup = { jobs: f.jobs, timezone: 'America/New_York' };
+  return {
+    erase: (id: string) => service.eraseMember(context, id, { revision: 1 }, cleanup),
+    remove: (id: string) => service.deleteMember(context, id, 1, cleanup),
+    recipients: () => db.forGym(f.gymId, tx => tx.select().from(announcementSmsRecipients)),
+    deliveries: () => db.forGym(f.gymId, tx => tx.select().from(smsDeliveries)),
+  };
+}
+
+it('erases the first member of a pending shared text and sends it once to the remaining member', async () => {
+  const f = await fixture(), first = await f.member(), sibling = await f.member(), row = await f.send();
+  const removal = memberRemoval(f), [before] = await removal.recipients();
+  expect(before).toMatchObject({ memberId: first.id, memberIds: [first.id, sibling.id], phoneDigest: digest(phone) });
+  await removal.erase(first.id);
+  expect(await removal.recipients()).toEqual([expect.objectContaining({ id: before!.id, memberId: sibling.id,
+    memberIds: [sibling.id], phoneDigest: digest(phone), state: 'pending' })]);
+  await f.run(row.id); await f.run(row.id);
+  expect(f.sms.messages).toEqual([{ to: phone, body: announcementSmsBody('Cedar Gym', draft.sms!.body) }]);
+});
+
+it('clears transport digests during erasure and keeps the snapshot digest until the last member leaves', async () => {
+  const f = await fixture(), first = await f.member(), sibling = await f.member(), row = await f.send();
+  const removal = memberRemoval(f);
+  await f.run(row.id);
+  await removal.erase(sibling.id);
+  expect(await removal.deliveries()).toEqual([expect.objectContaining({ commandDigest: null, state: 'accepted' })]);
+  expect(await removal.recipients()).toEqual([expect.objectContaining({ memberIds: [first.id], phoneDigest: digest(phone) })]);
+  await removal.erase(first.id);
+  expect(await removal.recipients()).toEqual([expect.objectContaining({ phoneDigest: null, state: 'sent' })]);
+  expect(await f.service.get(f.gymId, row.id)).toMatchObject({ smsSent: 1 });
+});
+
+it.each([false, true])('keeps the shared row and removes a deleted member (first=%s)', async deleteFirst => {
+  const f = await fixture(), first = await f.member(), second = await f.member(), row = await f.send();
+  const removal = memberRemoval(f), [before] = await removal.recipients();
+  const remaining = deleteFirst ? second : first;
+  await removal.remove(deleteFirst ? first.id : second.id);
+  expect(await removal.recipients()).toEqual([expect.objectContaining({ id: before!.id, memberId: remaining.id,
+    memberIds: [remaining.id], phoneDigest: digest(phone) })]);
+  await f.run(row.id);
+  expect(f.sms.messages).toHaveLength(1);
+});
+
+it.each(['accepted', 'not_accepted'] as const)('preserves a legacy %s reservation after deleting its anchor', async state => {
+  const f = await fixture(), first = await f.member(), second = await f.member(), row = await f.send();
+  const removal = memberRemoval(f), [before] = await removal.recipients();
+  const delivery = await factory('smsDeliveries', f.gymId, { key: announcementSmsKey(row.id, first.id),
+    commandDigest: `announcement-sms:${row.id}:${digest(phone)}`, state });
+  await removal.remove(first.id);
+  expect(await removal.recipients()).toEqual([expect.objectContaining({ memberId: second.id, memberIds: [second.id] })]);
+  await f.run(row.id); await f.run(row.id);
+  expect(f.sms.messages).toHaveLength(state === 'accepted' ? 0 : 1);
+  expect(await removal.deliveries()).toEqual([expect.objectContaining({ id: delivery.id, key: announcementSmsKey(row.id, before!.id),
+    commandDigest: null, state: 'accepted' })]);
 });
 it('keeps unbilled member deletion working after a text recipient was snapshotted', async () => {
   const f = await fixture(), person = await f.member(); await f.send();
-  const service = createMembersService({ scope: db.forGym, clock: f.clock });
-  await service.deleteMember({ gymId: f.gymId, actor: { kind: 'user', userId: f.actor.userId } }, person.id, 1, { jobs: f.jobs, timezone: 'America/New_York' });
-  expect(await db.forGym(f.gymId, tx => tx.select().from(announcementSmsRecipients))).toEqual([]);
+  const removal = memberRemoval(f);
+  await removal.remove(person.id);
+  expect(await removal.recipients()).toEqual([]);
 });

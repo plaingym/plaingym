@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { auditEvents, households, members, signedLinks, uuidv7 } from '@plaingym/db';
+import { auditEvents, households, members, signedLinks, smsDeliveries, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { createTranslator } from '@plaingym/shared';
@@ -12,6 +12,7 @@ import { DeliveryError, FakeEmail } from '../../infra/email/index.js';
 import { FakeSms, createSmsPhoneDigest } from '../../infra/sms/index.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
 import { FakePayments } from '../../infra/payments/index.js';
+import { createMembersService } from '../members/members.js';
 import { createGoLiveService } from '../settings/go-live.js';
 import { createCampaignsService, campaignSendJob } from './campaigns.js';
 import { createCampaignJobs } from './campaigns.jobs.js';
@@ -20,6 +21,7 @@ import { credentialDisclosed, deliveryHistory } from './campaigns.attempts.js';
 import { createSignedLinksService } from './service.js';
 
 const db = useTestDatabase(), make = createFactories(db), t = createTranslator(locales.en ?? {});
+const phoneDigest = createSmsPhoneDigest('campaign-test-secret');
 async function fixture(emailEnabled = true, purpose: 'update_card' | 'onboarding' = 'update_card') {
   const gymId = uuidv7(), clock = new TestClock('2026-11-16T12:00:00Z');
   await make('gyms', gymId, { memberSmsEnabled: true, memberEmailsEnabled: emailEnabled });
@@ -34,7 +36,7 @@ async function fixture(emailEnabled = true, purpose: 'update_card' | 'onboarding
   const prepareSms = vi.fn(async () => ({ gymId, origin: 'https://gym.example.test', t, resolver }));
   const service = createCampaignsService({ scope: db.forGym, clock, jobs, paymentsFor: async () => payments,
     delivery: { prepare: prepareEmail }, smsDelivery: { prepare: prepareSms },
-    smsPhoneDigest: createSmsPhoneDigest('campaign-test-secret') });
+    smsPhoneDigest: phoneDigest });
   createServerRegistry({ jobs: createCampaignJobs(() => service) }).registerJobs(jobs, new Set());
   const context = { gymId, actor: { kind: 'system' as const } };
   const campaign = await service.create(context, { purpose, name: 'Collect cards', expiresAt: '2026-12-01T12:00:00Z',
@@ -64,6 +66,9 @@ describe('card campaigns by text', () => {
     expect(f.email.messages).toHaveLength(1);
     expect(f.email.messages[0]!.text).toContain('/l/' + f.smsToken());
     expect(f.sms.messages[0]!.to).toBe(f.home.phoneE164);
+    const [delivery] = await db.forGym(f.gymId, tx => tx.select().from(smsDeliveries));
+    expect(delivery).toMatchObject({ key: `links.campaign.sms:${f.work.campaignId}:${f.home.id}:initial:${f.home.id}`,
+      commandDigest: null, state: 'accepted' });
     expect((await f.service.recipients(f.gymId, f.campaign.campaign.id)).data[0]).toMatchObject({ smsState: 'sent' });
     expect(await db.forGym(f.gymId, tx => tx.select().from(signedLinks))).toHaveLength(1);
     f.clock.advance(3 * 86400_000);
@@ -75,6 +80,25 @@ describe('card campaigns by text', () => {
     f.clock.advance(86400_000);
     await f.service.remindCampaign(f.context, f.campaign.campaign.id); await f.drain();
     expect(f.sms.messages).toHaveLength(2);
+  });
+  it.each([false, true])('replays a legacy accepted text without sending again (erased=%s)', async erase => {
+    const f = await fixture(false), prefix = `links.campaign.sms:${f.work.campaignId}:${f.home.id}:initial:`;
+    const key = prefix + phoneDigest(f.home.phoneE164!);
+    const accepted = await make('smsDeliveries', f.gymId, { key, state: 'accepted' });
+    if (erase) {
+      await make('members', f.gymId, { householdId: f.home.id });
+      await createMembersService({ scope: db.forGym, clock: f.clock }).eraseMember(
+        f.context, f.person.id, { revision: 1 }, { jobs: f.jobs, timezone: 'UTC' });
+    }
+    const readLink = () => db.forGym(f.gymId, tx => tx.select({ tokenHash: signedLinks.tokenHash }).from(signedLinks).where(eq(signedLinks.id, f.link.id)));
+    const original = await readLink();
+    await f.drain();
+    expect(f.sms.messages).toHaveLength(0);
+    expect(await readLink()).toEqual(original);
+    expect((await f.service.recipients(f.gymId, f.campaign.campaign.id)).data[0]).toMatchObject({ smsState: 'sent' });
+    expect(await db.forGym(f.gymId, tx => tx.select().from(smsDeliveries))).toEqual([
+      expect.objectContaining({ id: accepted.id, key: erase ? prefix + 'erased:' + accepted.id : key, state: 'accepted' }),
+    ]);
   });
   it('texts without preparing SMTP when member emails are switched off', async () => {
     const f = await fixture(false);
@@ -94,6 +118,9 @@ describe('card campaigns by text', () => {
     await f.drain();
     expect(f.sms.messages).toHaveLength(1);
     expect(f.sms.messages[0]!.to).toBe(f.person.phoneE164);
+    const [delivery] = await db.forGym(f.gymId, tx => tx.select().from(smsDeliveries));
+    expect(delivery).toMatchObject({ key: `links.campaign.sms:${f.work.campaignId}:${f.home.id}:initial:${f.person.id}`,
+      commandDigest: null, state: 'accepted' });
   });
   it('keeps a possibly delivered text usable and never resends that occurrence', async () => {
     const f = await fixture(false);

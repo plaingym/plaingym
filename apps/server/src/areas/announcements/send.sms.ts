@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, count, eq } from 'drizzle-orm';
+import { and, asc, count, eq, inArray } from 'drizzle-orm';
 import { announcementSmsRecipients as recipients, announcements, smsDeliveries, writeAudit, type forGym, type Transaction } from '@plaingym/db';
 import { announcementSmsBody, announcementStopLine, AppError, type Clock } from '@plaingym/shared';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import { withJobTransaction, type Jobs } from '../../infra/jobs/index.js';
 import { createSmsDeliveries, deliveryAcceptance, DeliveryError, MemberSms } from '../../infra/sms/index.js';
+import { smsInFlightMs } from '../../infra/sms/deliveries.js';
 import type { SmsResolver } from '../settings/sms.js';
 import { readSmsAudience } from './audience.js';
 
 export const announcementSmsJob = 'announcements.send-sms';
-export const announcementSmsKey = (id: string, memberId: string) => `announcement-sms:${id}:${memberId}`;
+export const announcementSmsKey = (id: string, recipientId: string) => `announcement-sms:${id}:${recipientId}`;
 export const announcementSmsJobKey = (id: string, scheduledFor: Date | null) => scheduledFor ? `${id}:${scheduledFor.getTime()}` : id;
 /** Compare instants made by the shared wall-time conversion, including both daylight-saving transitions. */
 export function nextAnnouncementSmsTime(now: Date, timezone: string): Date | null {
@@ -80,19 +81,26 @@ export function createAnnouncementSmsDelivery(options: {
             await tx.select({ id: announcements.id }).from(announcements).where(eq(announcements.id, id)).for('update');
             const [row] = await tx.select().from(recipients).where(eq(recipients.id, snapshot.id)).for('update');
             if (!row || row.state !== 'pending') return;
-            const key = announcementSmsKey(id, row.memberId), previous = await deliveries.state(tx, gymId, key);
-            if (previous === 'sending') throw new AppError('conflict', 'Announcement text is in flight');
-            if (previous === 'accepted' || previous === 'unknown') {
-              await decide(tx, gymId, row, { state: previous === 'accepted' ? 'sent' : 'failed', reason: previous === 'accepted' ? null : 'unknown' }); return;
+            const legacyKey = announcementSmsKey(id, row.memberId), recipientKey = announcementSmsKey(id, row.id);
+            const priorRows = await tx.select({ key: smsDeliveries.key, state: smsDeliveries.state, updatedAt: smsDeliveries.updatedAt })
+              .from(smsDeliveries).where(and(eq(smsDeliveries.gymId, gymId), inArray(smsDeliveries.key, [legacyKey, recipientKey])));
+            const previous = priorRows.find(delivery => delivery.key === legacyKey) ?? priorRows[0];
+            const key = previous?.key ?? recipientKey;
+            if (previous?.state === 'sending' && previous.updatedAt.getTime() > clock.now().getTime() - smsInFlightMs)
+              throw new AppError('conflict', 'Announcement text is in flight');
+            if (previous && previous.state !== 'not_accepted') {
+              await decide(tx, gymId, row, { state: previous.state === 'accepted' ? 'sent' : 'failed', reason: previous.state === 'accepted' ? null : 'unknown' }); return;
             }
-            const groups = await readSmsAudience(tx, announcement.audience, currentGym.country, row.memberIds);
+            const groups = await readSmsAudience(tx, announcement.audience, currentGym.country, { memberIds: row.memberIds });
             const group = groups.find(group => sms.phoneDigest(group.phone) === row.phoneDigest);
             if (!group) { await decide(tx, gymId, row, { state: 'skipped', reason: 'ineligible' }); return; }
             const digest = `announcement-sms:${id}:${row.phoneDigest}`;
             const [duplicate] = await tx.select({ key: smsDeliveries.key }).from(smsDeliveries)
               .where(and(eq(smsDeliveries.gymId, gymId), eq(smsDeliveries.commandDigest, digest)));
             if (duplicate && duplicate.key !== key) { await decide(tx, gymId, row, { state: 'skipped', reason: 'duplicate_phone' }); return; }
-            return { row, group, reserved: await deliveries.reserve(tx, gymId, key, digest) };
+            // A definite non-send can retry after erasure without restoring a cleared digest.
+            const reserved = previous ? await deliveries.reserve(tx, gymId, key) : await deliveries.reserve(tx, gymId, key, digest);
+            if (reserved) return { row, group, reserved };
           });
           if (!reservation) continue;
           let quiet: { runAt: Date; timezone: string } | undefined;

@@ -42,11 +42,15 @@ preparation crossing 21:00. Independent `announcement_sms_recipients` rows and
 persisted SMS counts leave email outcomes unchanged. `smsCompletedAt` marks text
 completion, independently of the email `status`.
 
-Text reservations use `announcement-sms:<announcementId>:<firstMemberId>` and
-a keyed phone digest under the announcement lock. Accepted or uncertain attempts
-never send again after a crash. Member delivery uses `MemberSms` with kind
-`announcements`; suppression and failures record safe reason codes only. Erasure
-clears the group's phone digest and transport digest for either snapshotted member.
+Text reservations use `announcement-sms:<announcementId>:<recipientRowId>` and
+a keyed phone digest under the announcement lock. Existing member-keyed
+reservations still prevent replay. Member delivery uses `MemberSms` with kind
+`announcements`. Suppression and failures record safe reason codes only. Erasure
+and deletion remove a departing member from a shared recipient group and clear
+the transport digest. A pending group keeps its phone digest for the remaining
+members. Erasure clears the snapshot digest when the last member leaves, while
+hard deletion removes the empty group. Accepted or uncertain attempts never send
+again after a crash.
 Recovery retries exhausted SMS jobs with their original scheduled key.
 Gym CSV exports include the announcement's text body, counts and schedule;
 per-phone recipient groups remain operational send state, like email recipients.
@@ -207,6 +211,8 @@ destination after the first member leaves the group or groups converge. Neither
 the phone nor message content is stored in those keys or digests. Live attempts
 defer to a retry; accepted and uncertain attempts never resend. Only a definite
 non-send can retry. A failure on one phone does not strand the remaining phones.
+Erasure clears cancellation delivery digests on the erased member's keys.
+Accepted or uncertain reservations can still prevent replay using member IDs.
 The optional constructor `sms: { resolver, phoneDigest }` enables this pass:
 `resolver` is the gym-aware `SmsResolver` and `phoneDigest` comes from
 `createSmsPhoneDigest(AUTH_SECRET)`. Without that injection the service sends only

@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash, randomBytes } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
-import { invoices, signedLinks, type forGym, type Transaction, uuidv7, writeAudit } from '@plaingym/db';
+import { and, eq, like, ne, or } from 'drizzle-orm';
+import { invoices, signedLinks, smsDeliveries, type forGym, type Transaction, uuidv7, writeAudit } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { deliveryAcceptance, type Email } from '../../infra/email/index.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { householdNoticePhones } from '../members/sms-recipients.js';
-import { createSmsDeliveries, MemberSms } from '../../infra/sms/index.js';
+import { createSmsDeliveries, DeliveryError, MemberSms, type RecordedSmsResult } from '../../infra/sms/index.js';
+import { smsInFlightMs } from '../../infra/sms/deliveries.js';
+import { escapeLike } from '../../lib/escape-like.js';
 import { checkoutInProgress, credentialDisclosed, deliveryBlocked, deliveryHistory } from './campaigns.attempts.js';
 import { campaignRecipient, completeCampaignIn } from './campaigns.model.js';
 import { deliverSignedLink, householdBoundSmsResolver, validateSignedLinkDelivery, validateSignedLinkOrigin,
@@ -128,6 +130,7 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
     else outcome = 'uncertain';
   }
   if (!reservation) return;
+  let keepCredential = outcome === 'sent' || outcome === 'uncertain';
   // The token exists only in this send step. Text the same credential before it is discarded;
   // recording another link would split the campaign's completion tracking.
   if (preparedSms && reservation.mode === 'link') {
@@ -135,16 +138,30 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
     if (row && campaignRecipient(row, clock.now()).state === 'pending') {
       const groups = await scope(gymId, tx => householdNoticePhones(tx, gymId, [row.householdId]));
       const deliveries = createSmsDeliveries({ scope, clock }), settings = createGymSettingsAccessor({ scope });
+      const prefix = `links.campaign.sms:${campaignId}:${row.householdId}:${occurrence}:`;
       for (const group of groups) {
         let smsOutcome: 'sent' | 'unknown' | 'not_accepted' = 'not_accepted';
         try {
-          const result = await deliveries.send(gymId, `links.campaign.sms:${campaignId}:${row.householdId}:${occurrence}:${options.smsPhoneDigest!(group.phoneE164)}`,
-            new MemberSms({ gymId, memberIds: group.consentMemberIds, householdIds: group.consentHouseholdIds,
-              kind: 'notices', resolver: householdBoundSmsResolver(preparedSms.resolver, scope, gymId, row.householdId, group.consentMemberIds, 'update_card'), settings, scope, clock }),
-            { to: group.phoneE164, body: `${preparedSms.t('links/service:update_card.subject')}: ${new URL(`/l/${token}`, preparedSms.origin).href} ${preparedSms.t('links/campaigns:smsReplacementNotice')}` });
+          const legacyKey = prefix + options.smsPhoneDigest!(group.phoneE164);
+          const previous = await scope(gymId, tx => tx.select({ state: smsDeliveries.state, updatedAt: smsDeliveries.updatedAt })
+            .from(smsDeliveries).where(and(eq(smsDeliveries.gymId, gymId), ne(smsDeliveries.state, 'not_accepted'),
+              or(eq(smsDeliveries.key, legacyKey), like(smsDeliveries.key, escapeLike(prefix) + 'erased:%')))))
+            .catch(() => { throw new DeliveryError('not_accepted', 'Campaign text history could not be read'); });
+          // Erasure leaves only the legacy occurrence's IDs. An accepted or uncertain attempt still bars replay.
+          if (previous.some(text => text.state === 'sending' && text.updatedAt.getTime() > clock.now().getTime() - smsInFlightMs))
+            throw new DeliveryError('not_accepted', 'Campaign text is in flight');
+          const recipientId = group.consentMemberIds[0] ?? row.householdId;
+          const result: RecordedSmsResult = previous.length
+            ? { status: 'skipped', state: previous.some(text => text.state === 'accepted') ? 'accepted' : 'unknown' }
+            : await deliveries.send(gymId, prefix + recipientId,
+              new MemberSms({ gymId, memberIds: group.consentMemberIds, householdIds: group.consentHouseholdIds,
+                kind: 'notices', resolver: householdBoundSmsResolver(preparedSms.resolver, scope, gymId, row.householdId, group.consentMemberIds, 'update_card'), settings, scope, clock }),
+              { to: group.phoneE164, body: `${preparedSms.t('links/service:update_card.subject')}: ${new URL(`/l/${token}`, preparedSms.origin).href} ${preparedSms.t('links/campaigns:smsReplacementNotice')}` });
+          if (result.status === 'sent') keepCredential = true;
           smsOutcome = result.status === 'sent' ? 'sent' : result.status === 'skipped' ? result.state === 'accepted' ? 'sent' : 'unknown' : 'not_accepted';
         } catch (error) {
           smsOutcome = deliveryAcceptance(error) === 'not_accepted' ? 'not_accepted' : 'unknown';
+          if (smsOutcome === 'unknown') keepCredential = true;
           if (smsOutcome === 'not_accepted' && outcome !== 'sent' && outcome !== 'uncertain') {
             outcome = 'not_accepted'; failure = error;
           }
@@ -160,8 +177,8 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
     // Only a notice that reached SMTP closes the credential; a suppressed one stays pending for the next reminder.
     if (revokeUndisclosed && (outcome === 'manual' || outcome === 'uncertain'))
       await revokeSignedLinkIn(tx, { gymId, actor: { kind: 'system' } }, linkId, clock.now());
-    if (outcome !== 'sent' && outcome !== 'uncertain') {
-      // A definite non-send must preserve the earlier email. Never overwrite a newer attempt.
+    if (!keepCredential) {
+      // A replay or definite non-send preserves the old credential. Never overwrite a newer attempt.
       await tx.update(signedLinks).set({ tokenHash: previousHash })
         .where(and(eq(signedLinks.id, linkId), eq(signedLinks.tokenHash, tokenHash)));
     }

@@ -61,15 +61,18 @@ export async function readAudience(tx: Transaction, audience: AnnouncementAudien
 }
 
 /** Texts use announcements consent only; email preferences and household notice consent do not apply. */
-export async function readSmsAudience(tx: Transaction, audience: AnnouncementAudience, country: string | null | undefined, memberIds?: string[]) {
+export async function readSmsAudience(tx: Transaction, audience: AnnouncementAudience, country: string | null | undefined,
+  { memberIds, snapshot = false }: { memberIds?: string[]; snapshot?: boolean } = {}) {
   if (audience.programIds.length) {
     const existing = await tx.select({ id: programs.id }).from(programs).where(inArray(programs.id, audience.programIds));
     if (!memberIds && existing.length !== new Set(audience.programIds).size) throw new AppError('not_found', 'Program not found');
   }
-  const rows = await tx.select({ id: members.id, phone: members.phone, phoneE164: members.phoneE164 }).from(members)
+  const candidates = tx.select({ id: members.id, phone: members.phone, phoneE164: members.phoneE164 }).from(members)
     .where(and(isNull(members.anonymizedAt), isNotNull(members.smsAnnouncementsConsentAt),
       inArray(members.status, audience.statuses), memberIds ? inArray(members.id, memberIds) : undefined))
     .orderBy(asc(members.id));
+  // Confirmation must keep every snapshotted member, including later group members, in sync with erasure and deletion.
+  const rows = await (snapshot ? candidates.for('key share') : candidates);
   const ranked = audience.programIds.length && rows.length ? new Set((await tx.select({ id: memberRanks.memberId }).from(memberRanks)
     .where(and(inArray(memberRanks.programId, audience.programIds), inArray(memberRanks.memberId, rows.map(row => row.id)))))
     .map(row => row.id)) : undefined;

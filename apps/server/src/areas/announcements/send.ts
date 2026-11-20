@@ -155,6 +155,7 @@ export function createAnnouncementsService(options: AnnouncementsOptions) {
           if (!previous) throw new AppError('conflict', 'Announcement generation disappeared');
           return previous;
         }
+        const smsGroups = draft.sms ? await readSmsAudience(tx, draft.audience, gym.country, { snapshot: true }) : [];
         const { recipients } = await readAudience(tx, draft.audience);
         for (let offset = 0; offset < recipients.length; offset += 100) await tx.insert(announcementRecipients)
           .values(recipients.slice(offset, offset + 100).map(recipient => ({ gymId: actor.gymId, announcementId: id,
@@ -165,7 +166,7 @@ export function createAnnouncementsService(options: AnnouncementsOptions) {
           gymId: actor.gymId, timezone: gym.timezone, idempotencyKey: id, maxAttempts: 12,
         }, transaction);
         if (draft.sms) {
-          const groups = await readSmsAudience(tx, draft.audience, gym.country);
+          const groups = smsGroups;
           for (let offset = 0; offset < groups.length; offset += 100) await tx.insert(announcementSmsRecipients)
             .values(groups.slice(offset, offset + 100).map(group => ({ gymId: actor.gymId, announcementId: id,
               memberId: group.memberIds[0]!, memberIds: group.memberIds, phoneDigest: options.sms!.phoneDigest(group.phone), createdAt: clock.now(), updatedAt: clock.now() })));

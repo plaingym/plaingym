@@ -713,8 +713,11 @@ Old versions and documents referenced by signatures remain retained after retire
   clears normalized numbers and both consents, and clears the household's when its
   last member is erased. Provider error 21610 withdraws all consents at that number
   in the gym, with identifier-only audits. `sms_deliveries` holds no readable phone
-  or body: phone identifiers and command digests use `createKeyedCommandDigest`
-  under `AUTH_SECRET`, never an enumerable plain phone hash. Delivery state is
+  or body. Phone digests use `createKeyedCommandDigest` under `AUTH_SECRET`.
+  Erasure clears the keyed phone digests from the member's announcement and
+  member-keyed class cancellation delivery records. New card campaign deliveries
+  use recipient IDs, and erasure replaces older digest-keyed reservations in
+  that household with identifier-only keys that still prevent replay. Delivery state is
   retained permanently; daily usage is install-local. Neither is exported. Demo
   texts are captured only in the scoped outbox, whose body is excluded from exports.
   SMS preparation has a 15-second deadline, including waits for the usage-row lock.
@@ -746,9 +749,10 @@ Old versions and documents referenced by signatures remain retained after retire
   email unsubscribe preferences. Each normalized phone receives one announcement;
   a durable reservation prevents replay after an accepted or uncertain outcome.
   Gym-scoped recipient groups store IDs and keyed phone digests, with forced RLS
-  and composite references. Erasure clears the group's digest and transport digest
-  when either snapshotted member is erased. Quiet hours use the gym timezone and
-  are checked again immediately before provider delivery.
+  and composite references. Erasure removes the member from shared groups and
+  clears the transport digest. The snapshot keeps its digest while another
+  snapshotted member remains. Quiet hours use the gym timezone
+  and are checked again immediately before provider delivery.
 * **Medical notes** are readable only by owners, admins and coaches, and are never
   returned to signed links or the portal's household view.
 * **Audit.** State-changing actions write an `audit_events` row (the app role can
