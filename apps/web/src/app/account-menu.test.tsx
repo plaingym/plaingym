@@ -70,16 +70,22 @@ it('keeps a failed-save pick across menu close and reopen when the stale key can
   expect(reopened.getByRole('radio', { name: 'Dark', checked: true })).toBeDefined();
 });
 
-it('keeps a failed-save pick when the account menu mounts for the other shell', async () => {
+it.each([
+  { clear: 'succeeds', stored: null },
+  { clear: 'fails', stored: 'light' },
+])('keeps a failed-save pick on the other shell when clearing storage $clear', async ({ stored }) => {
   localStorage.setItem(themeStorageKey, 'light');
   const user = userEvent.setup();
   renderMenu('admin');
   const { theme } = await openThemeMenu(user);
   const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota'); });
+  if (stored !== null) {
+    vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => { throw new Error('read-only'); });
+  }
 
   await user.click(theme.getByRole('radio', { name: 'Dark' }));
   expect(document.documentElement.classList.contains('dark')).toBe(true);
-  expect(localStorage.getItem(themeStorageKey)).toBeNull();
+  expect(localStorage.getItem(themeStorageKey)).toBe(stored);
 
   setItem.mockClear();
   cleanup();
@@ -92,6 +98,55 @@ it('keeps a failed-save pick when the account menu mounts for the other shell', 
   await otherUser.click(account);
   const reopened = within(screen.getByRole('group', { name: 'Theme' }));
   expect(reopened.getByRole('radio', { name: 'Dark', checked: true })).toBeDefined();
+});
+
+it('uses a newer choice stored between shell mounts without writing it back', async () => {
+  localStorage.setItem(themeStorageKey, 'light');
+  const user = userEvent.setup();
+  renderMenu('admin');
+  const { theme } = await openThemeMenu(user);
+  const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota'); });
+
+  await user.click(theme.getByRole('radio', { name: 'Dark' }));
+  expect(document.documentElement.classList.contains('dark')).toBe(true);
+  expect(localStorage.getItem(themeStorageKey)).toBeNull();
+
+  cleanup();
+  setItem.mockRestore();
+  localStorage.setItem(themeStorageKey, 'light');
+  fireEvent(window, new StorageEvent('storage', {
+    key: themeStorageKey, oldValue: null, newValue: 'light', storageArea: localStorage, url: window.location.href,
+  }));
+  const mountWrite = vi.spyOn(Storage.prototype, 'setItem');
+  renderMenu('portal');
+  const { theme: portalTheme } = await openThemeMenu(user);
+  expect(portalTheme.getByRole('radio', { name: 'Light', checked: true })).toBeDefined();
+  expect(document.documentElement.classList.contains('light')).toBe(true);
+  expect(mountWrite).not.toHaveBeenCalled();
+});
+
+it('uses a different valid choice stored after a failed clear when a shell mounts', async () => {
+  localStorage.setItem(themeStorageKey, 'light');
+  const user = userEvent.setup();
+  renderMenu('admin');
+  const { theme } = await openThemeMenu(user);
+  const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota'); });
+  const removeItem = vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => { throw new Error('read-only'); });
+
+  await user.click(theme.getByRole('radio', { name: 'Dark' }));
+  expect(document.documentElement.classList.contains('dark')).toBe(true);
+  expect(localStorage.getItem(themeStorageKey)).toBe('light');
+
+  cleanup();
+  setItem.mockRestore();
+  removeItem.mockRestore();
+  localStorage.setItem(themeStorageKey, 'system');
+  const mountWrite = vi.spyOn(Storage.prototype, 'setItem');
+  renderMenu('portal');
+  const { theme: portalTheme } = await openThemeMenu(user);
+  expect(portalTheme.getByRole('radio', { name: 'System', checked: true })).toBeDefined();
+  expect(document.documentElement.classList.contains('dark')).toBe(false);
+  expect(mountWrite).not.toHaveBeenCalled();
 });
 
 it('lets a valid storage event supersede a failed local pick for later mounts', async () => {

@@ -160,11 +160,11 @@ choices. Open **Account** in the admin or member portal to choose **System**,
 staff invitation and sign-in email confirmation pages follow the device, as does
 the demo landing page. The public website, uploaded waiver documents and printed
 pages use the light palette. `src/lib/theme.ts` reads the stored choice, applies
-the class and keeps both `theme-color` metas in step. A shell mount applies the
-stored choice, or a failed local pick, from an effect. The page's choice is held
-above the admin and portal shell lifetimes, so a save that fails survives moving
-between `/admin` and `/portal` without a reload; a full reload starts from the
-stored value or System. It follows `storage` events for the whole time a shell is
+the class and keeps both `theme-color` metas in step. On mount, the admin and
+portal shells read storage without writing to it. A failed local pick survives
+shell changes until the shell reads a valid choice different from the value left
+by the failed save's clear attempt. A full reload starts from the stored choice
+or System. The page follows `storage` events for the whole time a shell is
 mounted, so a choice made in another tab updates the page even while the menu is
 closed, and that event supersedes a failed local pick. The key is
 `plaingym.theme` and its values are `system`, `light` and `dark`. If saving fails

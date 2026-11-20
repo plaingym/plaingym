@@ -23,19 +23,12 @@ function isThemeChoice(value: unknown): value is ThemeChoice {
   return typeof value === 'string' && (themeChoices as readonly string[]).includes(value);
 }
 
-/** The choice this loaded page applied for itself, held above the admin and portal shell lifetimes. */
-let appliedThemeChoice: ThemeChoice | undefined;
-let keepAppliedThemeChoice = false;
-
-function rememberAppliedThemeChoice(choice: ThemeChoice, keep: boolean): void {
-  appliedThemeChoice = choice;
-  keepAppliedThemeChoice = keep;
-}
+/** A failed save this page kept, with the storage value left by the clear attempt. */
+let failedSave: { choice: ThemeChoice; storageBaseline: string | null } | undefined;
 
 /** Clears the page's own choice. A full reload does this; exported so tests can simulate one. */
 export function resetThemeChoice(): void {
-  appliedThemeChoice = undefined;
-  keepAppliedThemeChoice = false;
+  failedSave = undefined;
 }
 
 /** The kiosk always follows the device, whatever a browser on the tablet stored for another surface. */
@@ -53,38 +46,41 @@ function browserStorage(): Storage | undefined {
 }
 
 /**
- * The choice a shell mount should use: a pick whose save failed in this page, else the stored
- * choice, else System when nothing valid is stored or storage is unavailable.
+ * A valid stored choice supersedes a failed pick if it differs from the failed save's baseline.
+ * Without a kept pick, missing, invalid or unreadable storage gives System.
  */
 export function readThemeChoice(pathname = window.location.pathname, storage = browserStorage()): ThemeChoice {
   if (isKioskPath(pathname)) return 'system';
-  if (keepAppliedThemeChoice && appliedThemeChoice !== undefined) return appliedThemeChoice;
   try {
     const stored = storage?.getItem(themeStorageKey);
-    return isThemeChoice(stored) ? stored : 'system';
-  } catch { return 'system'; }
+    if (isThemeChoice(stored) && stored !== failedSave?.storageBaseline) {
+      resetThemeChoice();
+      return stored;
+    }
+  } catch { /* An unreadable value cannot supersede a failed pick. */ }
+  return failedSave?.choice ?? 'system';
 }
 
 interface ThemeWriteOutcome {
   readonly choice: ThemeChoice;
-  /** A failed write kept a pick the page must reuse when the shell remounts. */
-  readonly keep: boolean;
+  /** Present when the page kept the pick after a failed write. */
+  readonly storageBaseline?: string | null;
 }
 
 function writeThemeChoiceOutcome(choice: ThemeChoice, environment: ThemeEnvironment): ThemeWriteOutcome {
-  if (isKioskPath(environment.pathname)) return { choice: 'system', keep: false };
+  if (isKioskPath(environment.pathname)) return { choice: 'system' };
   const storage = environment.storage ?? browserStorage();
-  if (!storage) return { choice: 'system', keep: false };
+  if (!storage) return { choice: 'system' };
   try {
     storage.setItem(themeStorageKey, choice);
-    return { choice, keep: false };
+    return { choice };
   } catch {
     // A failed write must not leave an older choice behind to return on the next load.
     let previous: string | null;
-    try { previous = storage.getItem(themeStorageKey); } catch { return { choice: 'system', keep: false }; }
-    if (previous === null) return { choice: 'system', keep: false }; // Nothing stale to clear; keep the existing System fallback.
-    try { storage.removeItem(themeStorageKey); } catch { /* Read-only storage keeps the old value; this page still shows the pick. */ }
-    return { choice, keep: true };
+    try { previous = storage.getItem(themeStorageKey); } catch { return { choice: 'system' }; }
+    if (previous === null) return { choice: 'system' }; // Nothing stale to clear; keep the existing System fallback.
+    try { storage.removeItem(themeStorageKey); } catch { return { choice, storageBaseline: previous }; }
+    return { choice, storageBaseline: null };
   }
 }
 
@@ -122,7 +118,7 @@ export function applyThemeChoice(choice: ThemeChoice, environment: ThemeEnvironm
 export function syncThemeChoiceFromStorage(value: string | null, environment: ThemeEnvironment = {}): ThemeChoice {
   const stored = isThemeChoice(value) ? value : 'system';
   const chosen = applyThemeChoice(stored, environment);
-  rememberAppliedThemeChoice(chosen, false);
+  resetThemeChoice();
   return chosen;
 }
 
@@ -130,6 +126,6 @@ export function syncThemeChoiceFromStorage(value: string | null, environment: Th
 export function setThemeChoice(choice: ThemeChoice, environment: ThemeEnvironment = {}): ThemeChoice {
   const outcome = writeThemeChoiceOutcome(choice, environment);
   const chosen = applyThemeChoice(outcome.choice, environment);
-  rememberAppliedThemeChoice(chosen, outcome.keep);
+  failedSave = outcome.storageBaseline === undefined ? undefined : { choice: chosen, storageBaseline: outcome.storageBaseline };
   return chosen;
 }
