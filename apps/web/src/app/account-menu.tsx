@@ -4,7 +4,7 @@ import { Link, useRouterState } from '@tanstack/react-router';
 import { Button } from '../components/ui/button.js';
 import { ChevronDownIcon, UserIcon } from '../components/ui/icons.js';
 import { t } from '../lib/i18n.js';
-import { readThemeChoice, setThemeChoice, themeChoices } from '../lib/theme.js';
+import { applyThemeChoice, readThemeChoice, setThemeChoice, themeChoices, themeStorageKey } from '../lib/theme.js';
 
 /** Closes an open popover on Escape (returning focus to its trigger) or on a press outside it. */
 export function useDismiss(open: boolean, close: () => void, refs: RefObject<HTMLElement | null>[], trigger: RefObject<HTMLButtonElement | null>) {
@@ -21,7 +21,18 @@ export function useDismiss(open: boolean, close: () => void, refs: RefObject<HTM
 }
 
 function ThemeChoice() {
-  const [choice, setChoice] = useState(() => readThemeChoice());
+  const [choice, setChoice] = useState(() => applyThemeChoice(readThemeChoice()));
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      // A null key means the other tab cleared its storage, so the choice is gone too.
+      if (event.key !== null && event.key !== themeStorageKey) return;
+      if (event.storageArea && event.storageArea !== window.localStorage) return;
+      const stored = themeChoices.find((option) => option === event.newValue) ?? 'system';
+      setChoice(applyThemeChoice(stored));
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
   return <fieldset className="mx-1 my-2 min-w-0 border-y border-border px-1 pb-2">
     <legend className="px-1 text-sm text-muted-foreground">{t('shell/shell:theme')}</legend>
     <div className="grid grid-cols-3 gap-1">

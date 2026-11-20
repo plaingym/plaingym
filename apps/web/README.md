@@ -160,10 +160,13 @@ and sign-in email confirmation pages follow the device, as does the demo landing
 page. The public website, uploaded waiver documents and printed pages use the
 light palette. `src/lib/theme.ts`
 reads the stored choice, applies the class and keeps both `theme-color` metas in
-step. The account menu uses `setThemeChoice` to apply and save the choice. The key is
-`plaingym.theme` and its values are `system`, `light` and `dark`. Every read
-and write is guarded, so blocked storage falls back to System, and `/kiosk`
-always follows the device. The blocking `src/lib/theme-init.js` applies the
+step. The account menu applies the stored choice when it opens and follows
+`storage` events, so a choice made in another tab updates the page and the open
+menu. The key is `plaingym.theme` and its values are `system`, `light` and
+`dark`. Every read and write is guarded, so blocked storage falls back to
+System; if a save fails while storage is still readable, the menu clears the old
+key so a reload starts from System while this page keeps the picked choice.
+`/kiosk` always follows the device. The blocking `src/lib/theme-init.js` applies the
 stored choice before the first paint; the build emits it content-hashed under
 `/assets/` because the SPA's CSP allows no inline script. Tokens keep their light
 values in `@theme` and matching dark values under `.dark` and, while the device

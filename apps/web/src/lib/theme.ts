@@ -46,7 +46,7 @@ export function readThemeChoice(pathname = window.location.pathname, storage = b
   } catch { return 'system'; }
 }
 
-/** Stores a choice outside the kiosk and returns System when storage is unavailable. */
+/** Stores a choice outside the kiosk. A failed write clears an older choice and keeps the pick for this page; unavailable or unreadable storage returns System. */
 export function writeThemeChoice(choice: ThemeChoice, environment: ThemeEnvironment = {}): ThemeChoice {
   if (isKioskPath(environment.pathname)) return 'system';
   const storage = environment.storage ?? browserStorage();
@@ -54,7 +54,14 @@ export function writeThemeChoice(choice: ThemeChoice, environment: ThemeEnvironm
   try {
     storage.setItem(themeStorageKey, choice);
     return choice;
-  } catch { return 'system'; }
+  } catch {
+    // A failed write must not leave an older choice behind to return on the next load.
+    let previous: string | null;
+    try { previous = storage.getItem(themeStorageKey); } catch { return 'system'; }
+    if (previous === null) return 'system'; // Nothing stale to clear; keep the existing System fallback.
+    try { storage.removeItem(themeStorageKey); } catch { /* Read-only storage keeps the old value; this page still shows the pick. */ }
+    return choice;
+  }
 }
 
 /** The colour for the current scheme, or the forced scheme when the choice is explicit. */

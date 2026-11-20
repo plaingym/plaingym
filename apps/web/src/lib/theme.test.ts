@@ -61,6 +61,33 @@ it('falls back to System when a storage read or write throws', () => {
   expect(themeClasses()).toEqual(['theme-system']);
 });
 
+it('applies a failed write and clears the readable stored choice so a reload starts from System', () => {
+  localStorage.setItem(themeStorageKey, 'dark');
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota'); });
+
+  expect(setThemeChoice('light')).toBe('light');
+  expect(themeClasses()).toEqual(['light']);
+  expect(localStorage.getItem(themeStorageKey)).toBeNull();
+});
+
+it('applies a failed write even when the stale key cannot be removed', () => {
+  localStorage.setItem(themeStorageKey, 'dark');
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota'); });
+  vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => { throw new Error('read-only'); });
+
+  expect(setThemeChoice('light')).toBe('light');
+  expect(themeClasses()).toEqual(['light']);
+  expect(localStorage.getItem(themeStorageKey)).toBe('dark');
+});
+
+it('keeps System when a failed write cannot read the stored choice either', () => {
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
+  vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
+
+  expect(setThemeChoice('dark')).toBe('system');
+  expect(themeClasses()).toEqual(['theme-system']);
+});
+
 it('always follows the device on the kiosk, whatever this browser stored', () => {
   localStorage.setItem(themeStorageKey, 'dark');
   expect(isKioskPath('/kiosk')).toBe(true);
