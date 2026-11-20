@@ -376,7 +376,8 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
     paymentMethods: async () => {
       requireAccess(grant.cards, 'payer_access_required');
       return tx.select({
-        id: paymentMethods.id, brand: paymentMethods.brand, last4: paymentMethods.last4,
+        id: paymentMethods.id, type: paymentMethods.type, bankName: paymentMethods.bankName,
+        brand: paymentMethods.brand, last4: paymentMethods.last4,
         expiryMonth: paymentMethods.expiryMonth, expiryYear: paymentMethods.expiryYear, isDefault: paymentMethods.isDefault,
       }).from(paymentMethods).where(and(eq(paymentMethods.gymId, grant.gymId), eq(paymentMethods.householdId, grant.householdId),
         isNull(paymentMethods.revokedAt)));

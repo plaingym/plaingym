@@ -14,7 +14,7 @@ const gym = { id: '00000000-0000-7000-8000-000000000001', name: 'A long gym name
 const session = { userId: '00000000-0000-7000-8000-000000000002', displayName: 'Owner', roles: ['owner'], member: false };
 const settings = { id: gym.id, name: gym.name, slug: 'gym', timezone: 'UTC', currency: 'USD', address: {}, branding: {}, websiteEnabled: false,
   existingSiteUrl: null, bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false, billingEnabled: false,
-  memberEmailsEnabled: false, retryDays: [3, 7], dropInChargeTypeId: null, revision: 3, createdAt: '2026-11-01T12:00:00Z', updatedAt: '2026-11-01T12:00:00Z' };
+  memberEmailsEnabled: false, memberSmsEnabled: false, smsDailyCap: 1000, bankDebitsEnabled: false, retryDays: [3, 7], dropInChargeTypeId: null, revision: 3, createdAt: '2026-11-01T12:00:00Z', updatedAt: '2026-11-01T12:00:00Z' };
 const signIn = { password: false, magicLink: true };
 const installEmail = { source: 'install', host: null, port: null, security: null, from: null, signIn, signInAfterSave: signIn, signInAfterRemove: null, removeBlocked: false };
 const noStripe = { configured: false, mode: null, webhookRegistered: false, accountLocked: false, testData: null, importedCustomersOnly: false };

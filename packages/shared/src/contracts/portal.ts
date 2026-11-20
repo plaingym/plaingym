@@ -14,6 +14,7 @@ import {
   waiverUploadRequestSchema, waiverUploadResponseSchema,
 } from './waivers.js';
 import { memberBookingSchema } from './bookings.js';
+import { paymentMethodTypeSchema } from './billing/payments.js';
 import { rankSchema } from './ranks.js';
 
 /** Portal writes name the household the page expects; the session remains the source of authority. */
@@ -163,7 +164,8 @@ export const portalReceiptResponseSchema = z.strictObject({
   data: z.strictObject({ url: z.url({ protocol: /^https?$/ }), expiresAt: instantSchema }),
 });
 export const portalPaymentMethodSchema = z.strictObject({
-  id: idSchema, brand: z.string().nullable(), last4: z.string().regex(/^[0-9]{4}$/).nullable(),
+  id: idSchema, type: paymentMethodTypeSchema, bankName: z.string().nullable(),
+  brand: z.string().nullable(), last4: z.string().regex(/^[0-9]{4}$/).nullable(),
   expiryMonth: z.int32().min(1).max(12).nullable(), expiryYear: z.int32().min(2000).nullable(), isDefault: z.boolean(),
 });
 export const portalPaymentMethodsResponseSchema = z.strictObject({ data: z.array(portalPaymentMethodSchema)

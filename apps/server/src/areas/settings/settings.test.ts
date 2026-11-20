@@ -49,6 +49,9 @@ describe('settings service and routes', () => {
   it('projects only explicit safe settings and never returns another gym or opaque config', async () => {
     const a = await service.get(gymA), b = await service.get(gymB);
     expect(a.name).toBe('Gym A'); expect(b.name).toBe('Gym B');
+    const response = await server('owner').request('/api/settings');
+    expect(response.status).toBe(200);
+    expect(gymSettingsResponseSchema.parse(await response.json()).data.bankDebitsEnabled).toBe(false);
     expect(JSON.stringify(a)).not.toMatch(/smtp|password|privateConfig|secret/);
     const accessor = createGymSettingsAccessor({ scope: database.forGym });
     expect(Object.keys(await accessor.get(gymA)).sort()).toEqual(['gymId', 'timezone', 'currency', 'billingEnabled', 'memberEmailsEnabled', 'memberSmsEnabled', 'smsDailyCap', 'country', 'websiteEnabled', 'bookingWindowDays', 'cancellationCutoffMinutes', 'openMatCountsAsClass', 'revision'].sort());

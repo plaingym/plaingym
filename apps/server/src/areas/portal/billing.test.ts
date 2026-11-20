@@ -171,7 +171,8 @@ describe('portal billing routes', () => {
     expect(detail.data.lines.map(line => line.description)).toEqual(['Mat fee']);
     expect((await server.request(`/api/portal/invoices/${f.draft.id}`)).status).toBe(404);
     const cards = await json(await server.request('/api/portal/payment-methods'), contracts.paymentMethods.response);
-    expect(cards.data).toEqual([{ id: f.card.id, brand: 'visa', last4: '4242', expiryMonth: 4, expiryYear: 2029, isDefault: true }]);
+    expect(cards.data).toEqual([{ id: f.card.id, type: 'card', bankName: null, brand: 'visa', last4: '4242',
+      expiryMonth: 4, expiryYear: 2029, isDefault: true }]);
   });
   it('pays an open invoice through the shared Checkout; only the webhook transitions change the invoice', async () => {
     const f = await fixture(), server = f.app(payerPrincipal(f));

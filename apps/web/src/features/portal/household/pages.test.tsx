@@ -211,7 +211,7 @@ describe('portal billing page', () => {
     if (path === `/api/portal/invoices/${ids.invoice}`) return { data: { invoice: invoice(ids.invoice, 7, 'past_due', null), lines: [{ id: id(20), kind: 'charge', description: 'Mat fee', amountCents: 2500, currency: 'USD', quantity: 1200, taxRateMillionths: null, taxInclusive: null }] } };
     if (path === `/api/portal/invoices/${ids.invoice}/checkout` && init?.method === 'POST') return { data: { url: 'https://checkout.example.test/pay', expiresAt: '2026-10-30T00:00:00.000Z' } };
     if (path === `/api/portal/invoices/${ids.paid}/receipt`) return { data: { url: 'https://files.example.test/receipt.pdf', expiresAt: '2026-10-30T00:00:00.000Z' } };
-    if (path === '/api/portal/payment-methods') return { data: [{ id: ids.card, brand: 'visa', last4: '4242', expiryMonth: 4, expiryYear: 2029, isDefault: true }] };
+    if (path === '/api/portal/payment-methods') return { data: [{ id: ids.card, type: 'card', bankName: null, brand: 'visa', last4: '4242', expiryMonth: 4, expiryYear: 2029, isDefault: true }] };
     if (path === '/api/portal/payment-methods/checkout') return Response.json({ error: { code: 'unavailable', message: 'Card setup is not available yet' } }, { status: 503 });
     return undefined;
   };

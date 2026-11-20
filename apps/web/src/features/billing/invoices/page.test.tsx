@@ -21,9 +21,9 @@ const createdAt = '2026-10-25T12:00:00Z', gymId = id(1), home = id(2);
 const invoice: Invoice = { id: id(3), createdAt, householdId: home, kind: 'one_off', status: 'open', number: 42,
   dueOn: '2026-10-25', periodStartsOn: null, periodEndsOn: null, amountCents: 2500, currency: 'USD', paidAt: null, needsReview: false, disputeId: null, disputeStatus: null };
 const payment: Payment = { id: id(4), createdAt, invoiceId: invoice.id, amountCents: 2500, currency: 'USD', method: 'cash', reference: null, paidAt: createdAt };
-const card: MaskedPaymentMethod = { id: id(5), createdAt, householdId: home, brand: 'Visa', last4: '4242', expiryMonth: 12, expiryYear: 2030, isDefault: true, revokedAt: null };
+const card: MaskedPaymentMethod = { id: id(5), createdAt, householdId: home, type: 'card', bankName: null, brand: 'Visa', last4: '4242', expiryMonth: 12, expiryYear: 2030, isDefault: true, revokedAt: null };
 const settings: GymSettings = { id: gymId, name: 'Gym', slug: 'gym', currency: 'USD', timezone: 'America/Vancouver', address: {}, branding: {}, websiteEnabled: false, existingSiteUrl: null,
-  bookingWindowDays: 7, cancellationCutoffMinutes: 0, openMatCountsAsClass: false, billingEnabled: true, memberEmailsEnabled: true, memberSmsEnabled: false, smsDailyCap: 1000, retryDays: [3, 7], dropInChargeTypeId: null, revision: 1, createdAt, updatedAt: createdAt };
+  bookingWindowDays: 7, cancellationCutoffMinutes: 0, openMatCountsAsClass: false, billingEnabled: true, bankDebitsEnabled: false, memberEmailsEnabled: true, memberSmsEnabled: false, smsDailyCap: 1000, retryDays: [3, 7], dropInChargeTypeId: null, revision: 1, createdAt, updatedAt: createdAt };
 const desk = { record: true, refund: false, links: true }, admin = { ...desk, refund: true };
 
 it('groups invoice line quantities while keeping invoice identifiers unchanged', async () => {

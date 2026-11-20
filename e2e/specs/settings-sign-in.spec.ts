@@ -7,7 +7,7 @@ const session = { userId: '00000000-0000-7000-8000-000000000002', displayName: '
 const login = { password: true, magicLink: false };
 const settings = { ...gym, slug: 'settings-test', address: {}, branding: {}, websiteEnabled: false, existingSiteUrl: null,
   bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false, billingEnabled: false, memberEmailsEnabled: false,
-  memberSmsEnabled: false, smsDailyCap: 1000,
+  memberSmsEnabled: false, smsDailyCap: 1000, bankDebitsEnabled: false,
   retryDays: [3, 7], dropInChargeTypeId: null, revision: 3, createdAt: '2026-11-01T12:00:00Z', updatedAt: '2026-11-01T12:00:00Z' };
 const google = { source: 'none', editable: true, unreadable: false, clientId: null, clientSecretSet: false, removeBlocked: false, revision: 3 };
 const integrations = { email: { source: 'gym', unreadable: false, googleConfigured: true, host: 'smtp.example.invalid', port: 587, security: 'starttls', from: 'owner@example.invalid',

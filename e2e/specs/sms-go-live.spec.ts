@@ -6,7 +6,7 @@ const gym = { id: '00000000-0000-7000-8000-000000000001', name: 'Sample gym', ti
 const session = { userId: '00000000-0000-7000-8000-000000000002', displayName: 'Owner', roles: ['owner'], member: false };
 const login = { password: true, magicLink: false }, now = '2026-11-16T04:00:00Z';
 const initial = { ...gym, slug: 'sample-gym', address: {}, branding: {}, websiteEnabled: false, existingSiteUrl: null,
-  bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false, billingEnabled: false, memberEmailsEnabled: false,
+  bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false, billingEnabled: false, bankDebitsEnabled: false, memberEmailsEnabled: false,
   memberSmsEnabled: false, smsDailyCap: 1000, retryDays: [3, 7], dropInChargeTypeId: null, revision: 3, createdAt: now, updatedAt: now };
 const integrations = { email: { source: 'none', unreadable: false, googleConfigured: false, host: null, port: null, security: null, from: null,
   signIn: login, signInAfterSave: login, signInAfterRemove: null, removeBlocked: false },

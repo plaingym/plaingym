@@ -24,9 +24,9 @@ for (const width of [360, 1280]) {
       let selected = false, removed = false;
       const cards = () => [
         { id: firstId, createdAt: new Date().toISOString(), householdId: household.id,
-          brand: 'visa', last4: '4242', expiryMonth: 12, expiryYear: 2035, isDefault: !selected || removed, revokedAt: null },
+          type: 'card', bankName: null, brand: 'visa', last4: '4242', expiryMonth: 12, expiryYear: 2035, isDefault: !selected || removed, revokedAt: null },
         { id: secondId, createdAt: new Date().toISOString(), householdId: household.id,
-          brand: 'visa', last4: '4444', expiryMonth: 12, expiryYear: 2035, isDefault: selected && !removed, revokedAt: removed ? new Date().toISOString() : null },
+          type: 'card', bankName: null, brand: 'visa', last4: '4444', expiryMonth: 12, expiryYear: 2035, isDefault: selected && !removed, revokedAt: removed ? new Date().toISOString() : null },
       ];
       await page.route(url => url.pathname === `/api/billing/households/${household.id}/payment-methods`, route => route.fulfill({ json: {
         data: cards(), pagination: { total: 2, offset: 0, limit: 25 },

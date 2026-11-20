@@ -103,7 +103,7 @@ describe('signed-link household grants', () => {
       }
       if (purpose === 'update_card' || purpose === 'onboarding') {
         expect(await queries.paymentMethods()).toEqual([{
-          id: data.card.id, brand: 'visa', last4: '4242', expiryMonth: null, expiryYear: null, isDefault: false,
+          id: data.card.id, type: 'card', bankName: null, brand: 'visa', last4: '4242', expiryMonth: null, expiryYear: null, isDefault: false,
         }]);
       } else {
         await expect(queries.paymentMethods()).rejects.toThrow('Payer access required');

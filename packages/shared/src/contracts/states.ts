@@ -10,6 +10,6 @@ export const classKindSchema = z.enum(['class', 'open_mat']);
 export const billingIntervalSchema = z.enum(['monthly', 'annual']);
 export const membershipStatusSchema = z.enum(['pending', 'trial', 'active', 'frozen', 'cancelled']);
 export const invoiceKindSchema = z.enum(['cycle', 'one_off']);
-// `processing` is unused; retained so existing API clients can still send it as a filter.
+// A bank payment's invoice is `processing` while the payment settles.
 export const invoiceStatusSchema = z.enum(['draft', 'open', 'processing', 'past_due', 'paid', 'void', 'partially_refunded', 'refunded']);
-export const paymentAttemptStatusSchema = z.enum(['pending', 'succeeded', 'failed', 'requires_action']);
+export const paymentAttemptStatusSchema = z.enum(['pending', 'processing', 'succeeded', 'failed', 'requires_action']);

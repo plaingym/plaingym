@@ -41,7 +41,7 @@ const deferred = () => { let resolve!: () => void; const promise = new Promise<v
 beforeEach(() => {
   server.GET.mockReset(); server.PATCH.mockReset(); billing.charges.mockReset(); billing.charges.mockResolvedValue([mat]);
   gym = { id: id(1), name: 'Gym', slug: 'gym', timezone: 'America/Vancouver', currency: 'CAD', address: {}, branding: {}, websiteEnabled: false,
-    existingSiteUrl: null, bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false, billingEnabled: false,
+    existingSiteUrl: null, bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false, billingEnabled: false, bankDebitsEnabled: false,
     memberEmailsEnabled: false, memberSmsEnabled: false, smsDailyCap: 1000, retryDays: [3, 7], dropInChargeTypeId: null, revision: 3, createdAt: '2026-10-26T12:00:00Z', updatedAt: '2026-10-26T12:00:00Z' };
   fakeServer();
 });

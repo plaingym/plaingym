@@ -18,6 +18,7 @@ export const gyms = pgTable('gyms', {
   backupRetentionBytes: bigint('backup_retention_bytes', { mode: 'bigint' }),
   currency: text('currency').notNull().default('USD'),
   billingEnabled: boolean('billing_enabled').notNull().default(false),
+  bankDebitsEnabled: boolean('bank_debits_enabled').notNull().default(false),
   retryDays: integer('retry_days').array().notNull().default([3, 7]),
   memberEmailsEnabled: boolean('member_emails_enabled').notNull().default(false),
   smsConfig: text('sms_config_encrypted'),

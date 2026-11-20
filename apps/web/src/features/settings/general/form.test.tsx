@@ -16,7 +16,7 @@ vi.mock('../../../lib/api.js', async (original) => ({ ...await original<typeof i
 const id = (n: number) => '01900000-0000-7000-8000-' + String(n).padStart(12, '0');
 const settings: GymSettings = { id: id(1), name: 'Gym', slug: 'gym', timezone: 'America/Vancouver', currency: 'CAD', address: {}, branding: {},
   websiteEnabled: false, existingSiteUrl: null, bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false,
-  billingEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: false, smsDailyCap: 1000, retryDays: [3, 7], dropInChargeTypeId: null, revision: 3,
+  billingEnabled: false, bankDebitsEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: false, smsDailyCap: 1000, retryDays: [3, 7], dropInChargeTypeId: null, revision: 3,
   createdAt: '2026-10-26T12:00:00Z', updatedAt: '2026-10-26T12:00:00Z' };
 const reply = (status: number, data?: unknown) => ({ response: { ok: status < 300, status }, data });
 const empty = { data: [], pagination: { limit: 100, offset: 0, total: 0 } };

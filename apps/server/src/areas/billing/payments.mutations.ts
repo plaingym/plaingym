@@ -28,7 +28,8 @@ export const detachJob = 'billing.payments.detach';
 const retryable = (gymId: string, row: typeof refunds.$inferSelect) =>
   row.processorId === null || row.id !== processorRefundId(gymId, row.processorId);
 const masked = (r: typeof paymentMethods.$inferSelect) => c.maskedPaymentMethodSchema.parse({
-  id: r.id, createdAt: r.createdAt.toISOString(), householdId: r.householdId, brand: r.brand, last4: r.last4,
+  id: r.id, createdAt: r.createdAt.toISOString(), householdId: r.householdId,
+  type: r.type, bankName: r.bankName, brand: r.brand, last4: r.last4,
   expiryMonth: r.expiryMonth, expiryYear: r.expiryYear, isDefault: r.isDefault, revokedAt: r.revokedAt?.toISOString() ?? null,
 });
 

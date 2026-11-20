@@ -341,6 +341,13 @@ function request(server: ReturnType<typeof app>, operation: Operation, f: Fixtur
 }
 
 describe('payment route permissions and tenant isolation', () => {
+  it('lists existing cards with their method type and a null bank name', async () => {
+    const f = await fixture();
+    const response = await request(app(f, staff(f, 'owner')), 'listPaymentMethods', f);
+    expect(response.status).toBe(200);
+    const { data } = contracts.listPaymentMethods.response.parse(await response.json());
+    expect(data).toMatchObject([{ id: f.card.id, type: 'card', bankName: null }]);
+  });
   it('filters only open disputes before pagination and counting, preserving gym isolation', async () => {
     const f = await fixture(), other = await fixture();
     let number = 1000;

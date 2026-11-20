@@ -13,7 +13,7 @@ describe('client answer parsing', () => {
     expect(portalContracts.context.response.safeParse(answer).success).toBe(false);
   });
   it('accepts new fields in array records while preserving required fields and validation', () => {
-    const answer = { data: [{ id, brand: 'visa', last4: '4242', expiryMonth: 4, expiryYear: 2029, isDefault: true, added: 'field' }], householdId: id };
+    const answer = { data: [{ id, type: 'card', bankName: null, brand: 'visa', last4: '4242', expiryMonth: 4, expiryYear: 2029, isDefault: true, added: 'field' }], householdId: id };
     expect(parseResponse(portalContracts.paymentMethods.response, answer).data[0]).not.toHaveProperty('added');
     expect(() => parseResponse(portalContracts.paymentMethods.response, { ...answer, householdId: undefined })).toThrow();
     expect(() => parseResponse(portalContracts.paymentMethods.response, { ...answer, data: [{ ...answer.data[0], last4: 'wrong' }] })).toThrow();

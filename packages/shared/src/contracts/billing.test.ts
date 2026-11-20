@@ -17,7 +17,7 @@ import {
   invoiceLineItemSchema, invoiceListQuerySchema, invoiceListResponseSchema, invoiceSchema,
   maskedPaymentMethodSchema, membershipResponseSchema, membershipStatusSchema, membershipSwitchPreviewQuerySchema,
   membershipSwitchPreviewResponseSchema, membershipSwitchResponseSchema, switchMembershipPlanRequestSchema,
-  paymentAttemptSchema, paymentMethodListResponseSchema, planResponseSchema,
+  paymentAttemptSchema, paymentMethodListResponseSchema, paymentSchema, planResponseSchema,
   recordManualPaymentRequestSchema, refundResponseSchema, resumeMembershipRequestSchema,
   taxRateResponseSchema, updateChargeTypeRequestSchema,
   updateMembershipRequestSchema, updatePlanRequestSchema, updateTaxRateRequestSchema, taxRateUsageResponseSchema,
@@ -69,7 +69,7 @@ const refund: Refund = {
 };
 const card: MaskedPaymentMethod = {
   id: ids.other, createdAt: now, householdId: ids.household, brand: 'visa', last4: '4242',
-  expiryMonth: 12, expiryYear: 2028, isDefault: true, revokedAt: null,
+  type: 'card', bankName: null, expiryMonth: 12, expiryYear: 2028, isDefault: true, revokedAt: null,
 };
 const page = { limit: 50, offset: 0, total: 1 };
 const detail = { invoice, lineItems: [line], payments: [payment], refunds: [refund] };
@@ -244,7 +244,14 @@ describe('masked cards, payments, refunds, and Checkout', () => {
     expect(paymentMethodListResponseSchema.safeParse({ data: [card, { ...card, id: ids.tax }], pagination: { ...page, total: 2 } }).success).toBe(false);
     expect(paymentMethodListResponseSchema.safeParse({ data: [card, { ...card, householdId: ids.other }], pagination: { ...page, total: 2 } }).success).toBe(true);
   });
-  it.each(['processorId', 'stripeCustomerId', 'token', 'tokenHash', 'cardNumber', 'cvc'])('rejects card field %s instead of silently stripping it', (field) => {
+  it('requires the method type and accepts a masked bank debit method', () => {
+    const withoutType: Partial<MaskedPaymentMethod> = { ...card };
+    delete withoutType.type;
+    expect(maskedPaymentMethodSchema.safeParse(withoutType).success).toBe(false);
+    const bank = { ...card, type: 'acss_debit', bankName: 'RBC', brand: null, last4: '6789', expiryMonth: null, expiryYear: null };
+    expect(maskedPaymentMethodSchema.parse(bank)).toEqual(bank);
+  });
+  it.each(['processorId', 'stripeCustomerId', 'mandateId', 'token', 'tokenHash', 'cardNumber', 'cvc'])('rejects private field %s instead of silently stripping it', (field) => {
     expect(maskedPaymentMethodSchema.safeParse({ ...card, [field]: 'secret' }).success).toBe(false);
   });
   it('records manual tender only and requires explicit positive integer cents and currency', () => {
@@ -252,7 +259,8 @@ describe('masked cards, payments, refunds, and Checkout', () => {
     for (const method of ['cash', 'check', 'other']) {
       expect(recordManualPaymentRequestSchema.safeParse({ ...request, method }).success).toBe(true);
     }
-    for (const changes of [{ method: 'card' }, { amountCents: 0 }, { amountCents: -1 },
+    expect(paymentSchema.parse({ ...payment, method: 'bank_debit' }).method).toBe('bank_debit');
+    for (const changes of [{ method: 'card' }, { method: 'bank_debit' }, { amountCents: 0 }, { amountCents: -1 },
       { amountCents: 1.5 }, { currency: undefined }, { paymentIntentId: 'pi_forged' }]) {
       expect(recordManualPaymentRequestSchema.safeParse({ ...request, ...changes }).success).toBe(false);
     }
@@ -266,6 +274,7 @@ describe('masked cards, payments, refunds, and Checkout', () => {
     const attempt = { id: ids.other, createdAt: now, invoiceId: ids.invoice, ...price,
       attemptNumber: 1, status: 'requires_action', declineCode: 'authentication_required', resolvedAt: now };
     expect(paymentAttemptSchema.parse(attempt).status).toBe('requires_action');
+    expect(paymentAttemptSchema.parse({ ...attempt, status: 'processing', declineCode: null, resolvedAt: null }).status).toBe('processing');
     for (const field of ['savedPaymentMethod', 'stripeCustomerId', 'error']) {
       expect(paymentAttemptSchema.safeParse({ ...attempt, [field]: 'private' }).success).toBe(false);
     }

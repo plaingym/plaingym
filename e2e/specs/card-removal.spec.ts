@@ -19,7 +19,7 @@ for (const width of [360, 1280]) {
       // Only the saved-card read is a fixture: this checks the rendered confirmation without detaching a real card.
       await page.route(`**/api/billing/households/${household.id}/payment-methods*`, route => route.fulfill({ json: {
         data: [{ id: crypto.randomUUID(), createdAt: new Date().toISOString(), householdId: household.id,
-          brand: 'visa', last4: '4242', expiryMonth: 12, expiryYear: 2030, isDefault: true, revokedAt: null }],
+          type: 'card', bankName: null, brand: 'visa', last4: '4242', expiryMonth: 12, expiryYear: 2030, isDefault: true, revokedAt: null }],
         pagination: { limit: 25, offset: 0, total: 1 },
       } }));
       await page.goto(gymOrigin + '/admin/billing/invoices');

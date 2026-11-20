@@ -19,7 +19,7 @@ it('queues an import for this household and refreshes cards without needing an i
   const fetcher = vi.fn<typeof fetch>(async (input, init) => {
     if (String(input).endsWith('/import')) return Response.json({ data: { queued: true } });
     const data = imported ? [{ id: '00000000-0000-7000-8000-000000000003', householdId, createdAt: '2026-01-01T00:00:00Z',
-      brand: 'visa', last4: '4242', expiryMonth: 12, expiryYear: 2035, isDefault: true, revokedAt: null }] : [];
+      type: 'card', bankName: null, brand: 'visa', last4: '4242', expiryMonth: 12, expiryYear: 2035, isDefault: true, revokedAt: null }] : [];
     expect(init?.method).toBe('GET');
     return Response.json({ data, pagination: { total: data.length, offset: 0, limit: 25 } });
   });
@@ -34,7 +34,7 @@ it('queues an import for this household and refreshes cards without needing an i
   expect(screen.getByText('Default card')).toBeDefined();
 });
 const card = { id: '00000000-0000-7000-8000-000000000003', householdId, createdAt: '2026-01-01T00:00:00Z',
-  brand: 'visa', last4: '4242', expiryMonth: 12, expiryYear: 2035, isDefault: false, revokedAt: null as string | null };
+  type: 'card', bankName: null, brand: 'visa', last4: '4242', expiryMonth: 12, expiryYear: 2035, isDefault: false, revokedAt: null as string | null };
 const page = (data: typeof card[]) => Response.json({ data, pagination: { total: data.length, offset: 0, limit: 25 } });
 it('refreshes only this household card lists and charge eligibility', async () => {
   const { cache } = start(vi.fn<typeof fetch>(), true);

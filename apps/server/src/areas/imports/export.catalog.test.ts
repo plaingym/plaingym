@@ -137,7 +137,9 @@ describe('export schema coverage and secret exclusions', () => {
       members: ['checkin_code_version', 'checkin_code_hash', 'last_name_folded', 'email_folded', 'email_address'],
       kiosk_devices: ['token_hash'],
       signed_links: ['token_hash'],
-      payment_attempts: ['error'],
+      // Bank debit fields are reserved in the schema. The export retains its current columns.
+      payment_methods: ['type', 'bank_name', 'mandate_id'],
+      payment_attempts: ['error', 'processing_at'],
       audit_events: ['before', 'after'],
       email_outbox: ['subject', 'html', 'text'],
       sms_outbox: ['body'],

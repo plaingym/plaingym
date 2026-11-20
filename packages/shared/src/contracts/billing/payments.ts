@@ -5,29 +5,32 @@ import {
   amountCentsSchema, idSchema, instantSchema, listResponseSchema, moneySchema, paginationSchema,
 } from '../common.js';
 
-// Safe to share with the payer portal: no processor ID or customer ID.
+export const paymentMethodTypeSchema = z.enum(['card', 'us_bank_account', 'acss_debit']);
+// Safe to share with the payer portal: no processor ID, customer ID, or mandate ID.
 export const maskedPaymentMethodSchema = z.strictObject({
   id: idSchema,
   createdAt: instantSchema,
   householdId: idSchema,
+  type: paymentMethodTypeSchema,
+  bankName: z.string().nullable(),
   brand: z.string().nullable(),
   last4: z.string().regex(/^[0-9]{4}$/).nullable(),
   expiryMonth: z.int32().min(1).max(12).nullable(),
   expiryYear: z.int32().min(2000).nullable(),
   isDefault: z.boolean(),
   revokedAt: instantSchema.nullable(),
-}).refine((value) => !value.isDefault || value.revokedAt === null, 'A revoked card cannot be the default.');
+}).refine((value) => !value.isDefault || value.revokedAt === null, 'A revoked payment method cannot be the default.');
 export const paymentMethodResponseSchema = z.strictObject({ data: maskedPaymentMethodSchema });
 export const paymentMethodListResponseSchema = listResponseSchema(maskedPaymentMethodSchema).refine(
   (page) => {
     const defaults = page.data.filter((method) => method.isDefault).map((method) => method.householdId);
     return new Set(defaults).size === defaults.length;
-  }, 'A household has at most one default card.',
+  }, 'A household has at most one default payment method.',
 );
 export const billingPaymentMethodListQuerySchema = paginationSchema;
 export const billingEmptyRequestSchema = z.strictObject({});
 
-export const billingPaymentMethodSchema = z.enum(['card', 'cash', 'check', 'other']);
+export const billingPaymentMethodSchema = z.enum(['card', 'bank_debit', 'cash', 'check', 'other']);
 export const paymentSchema = z.strictObject({
   id: idSchema,
   createdAt: instantSchema,

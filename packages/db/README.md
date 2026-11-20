@@ -178,6 +178,12 @@ Migration `0037_webhook_dispatch_recovery.sql` adds two partial indexes on
 an error marker and the other covers rows awaiting dispatch or missing a marker.
 The hourly recovery sweep pages both sets without reading processed history.
 
+Migration `0038_bank_debit.sql` adds a disabled-by-default gym setting and bank
+debit fields to billing. Existing methods keep their card details and read as
+`card` with a null bank name and mandate. Non-card methods have no expiry, and a
+`processing` attempt requires `processing_at`. The migration reserves these
+values in the schema. Payment collection continues to use its existing methods.
+
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver
@@ -458,9 +464,9 @@ clock and cryptographic randomness. UUIDs are not a total ordering within a mill
 | invoices | Household billing records, display numbers, cycle periods and payment state |
 | invoice_sequences | Per-gym invoice number allocation |
 | invoice_line_items | Membership, charge, discount and tax lines, with each tax's rate snapshot |
-| payment_methods | Tokenized processor references, display-only card details and the default flag |
-| payment_attempts | Immutable charge requests and mutable processor outcomes |
-| payments | Card and manually recorded payments |
+| payment_methods | Tokenized processor references, method type, masked display details, mandate reference and the default flag |
+| payment_attempts | Immutable charge requests, processor outcomes and the time an attempt entered processing |
+| payments | Recorded payments with a method of card, bank debit, cash, check or other |
 | refunds | Partial or full refund records |
 | waiver_templates | Versioned waiver and agreement text, retirable per family |
 | waiver_signatures | Immutable signing snapshot bytes, hashes and storage references |
@@ -502,14 +508,15 @@ can share a due date. Issued invoices carry a per-gym display number from
 `allocateInvoiceNumber(tx, gymId)`, called in the issuing transaction: it locks the
 gym's sequence row, so numbers are never reused (a rolled-back issue rolls back its
 number too). Drafts have no number; delete abandoned drafts rather than voiding
-them. Look invoices up and authorize them by UUID, never by number. Only one pending attempt exists per invoice. Attempt number,
-amount, currency, customer and saved payment method cannot be updated by app.
+them. Look invoices up and authorize them by UUID, never by number. At most one
+attempt per invoice may be pending or processing. Attempt number, amount,
+currency, customer and saved payment method cannot be updated by app.
 An active booking is unique per member/session; capacity still requires the service
 to lock the session row for every booking or capacity change. Waitlist positions
 keep gaps: allocate the maximum plus one under that lock, promote the lowest, and
 never renumber; show queue rank separately.
 
-A household has at most one default card (`payment_methods.is_default`), which can't
+A household has at most one default payment method (`payment_methods.is_default`), which can't
 be revoked; since the flag is on the household's own row, the default always
 belongs to the household. A member has at most one portal login; a household may
 have several payers. A staff profile needs no login. A promotion records its rank

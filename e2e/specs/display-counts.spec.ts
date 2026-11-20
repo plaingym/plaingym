@@ -33,7 +33,7 @@ for (const width of [360, 1280]) {
       if (path === '/api/portal/invoices') return answer([invoice], { limit: 20, offset: 0, total: 1 });
       if (path === '/api/portal/invoices/' + invoiceId) return answer({ invoice, lines: [{ id: id(10), kind: 'charge', description: 'Mat fee', amountCents: 2500,
         currency: 'USD', quantity: 5600, taxRateMillionths: null, taxInclusive: null }] });
-      if (path === '/api/portal/payment-methods') return answer([{ id: id(11), brand: 'visa', last4: '1200', expiryMonth: 4, expiryYear: 2029, isDefault: true }]);
+      if (path === '/api/portal/payment-methods') return answer([{ id: id(11), type: 'card', bankName: null, brand: 'visa', last4: '1200', expiryMonth: 4, expiryYear: 2029, isDefault: true }]);
       if (path.endsWith('/progress')) return answer({ history: [], programs: [], ranks: [], criteria: [] });
       if (path.endsWith('/attendance')) return answer([{ id: id(12), memberId, sessionId, sessionName: 'Evening fundamentals', programId: null,
         occurredAt: startsAt, source: 'kiosk', kind: 'class' }], { limit: 20, offset: 0, total: 6800 });

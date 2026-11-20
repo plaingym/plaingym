@@ -3,7 +3,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { gyms } from '../../../db/src/schema/index.js';
 import {
   gymBrandingSchema, setupGymDetailsSchema, gymSettingsSchema, gymTimezoneSchema, setupTimezoneSchema,
-  updateGymSettingsRequestSchema, updateBookingRulesRequestSchema,
+  updateGymSettingsRequestSchema, updateBookingRulesRequestSchema, updateBankDebitsRequestSchema,
   updateGymCurrencyRequestSchema, updateGoLiveRequestSchema, updateDropInSettingsRequestSchema, settingsContracts,
   errorResponse, AppError, type GymSettings, type BookingRules, type GoLiveSwitches,
 } from './index.js';
@@ -13,7 +13,7 @@ const settings = {
   id: '019a08bf-1234-7000-8000-000000000001', name: 'The Gym', slug: 'the-gym', timezone: 'America/Vancouver',
   address: {}, branding: {}, websiteEnabled: false, existingSiteUrl: null, currency: 'CAD',
   bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false, billingEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: false, smsDailyCap: 1000, retryDays: [3, 7], dropInChargeTypeId: null,
-  revision: 1, createdAt: '2026-10-21T20:00:00Z', updatedAt: '2026-10-21T20:00:00Z',
+  bankDebitsEnabled: false, revision: 1, createdAt: '2026-10-21T20:00:00Z', updatedAt: '2026-10-21T20:00:00Z',
 };
 
 describe('gym settings contracts', () => {
@@ -37,6 +37,7 @@ describe('gym settings contracts', () => {
   });
   it('projects only existing, non-secret gym columns', () => {
     expect(gymSettingsSchema.parse(settings)).toEqual(settings);
+    expect(settingsContracts.get.response.parse({ data: settings }).data.bankDebitsEnabled).toBe(false);
     type Row = typeof gyms.$inferSelect;
     expectTypeOf<Omit<GymSettings, 'createdAt' | 'updatedAt'>>().toExtend<
       Pick<Row, Exclude<keyof GymSettings, 'createdAt' | 'updatedAt'>>>();
@@ -56,6 +57,7 @@ describe('gym settings contracts', () => {
       [updateGymCurrencyRequestSchema, { currency: 'CAD' }],
       [updateDropInSettingsRequestSchema, { dropInChargeTypeId: null }],
       [updateGoLiveRequestSchema, { billingEnabled: true }],
+      [updateBankDebitsRequestSchema, { bankDebitsEnabled: true }],
     ] as const) {
       expect(schema.safeParse(body).success).toBe(false);
       expect(schema.safeParse({ ...body, revision: 1 }).success).toBe(true);
@@ -63,6 +65,8 @@ describe('gym settings contracts', () => {
     }
     expect(updateGymSettingsRequestSchema.safeParse({ revision: 1, currency: 'USD' }).success).toBe(false);
     expect(updateGymSettingsRequestSchema.safeParse({ revision: 1, billingEnabled: true }).success).toBe(false);
+    expect(updateGymSettingsRequestSchema.safeParse({ revision: 1, name: 'New', bankDebitsEnabled: true }).success).toBe(false);
+    expect(updateBankDebitsRequestSchema.safeParse({ revision: 1, bankDebitsEnabled: true, billingEnabled: true }).success).toBe(false);
     expect(updateGymSettingsRequestSchema.safeParse({ revision: 1 }).success).toBe(false);
     // The drop-in setting names a charge type; there is no separate price, and the general patch can't set it.
     expect(updateDropInSettingsRequestSchema.safeParse({ revision: 1 }).success).toBe(false);

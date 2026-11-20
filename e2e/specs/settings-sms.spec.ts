@@ -8,7 +8,7 @@ const session = { userId: '00000000-0000-7000-8000-000000000002', displayName: '
 const login = { password: true, magicLink: false };
 const settings = { ...gym, slug: 'sms-settings', address: {}, branding: {}, websiteEnabled: false, existingSiteUrl: null,
   bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false, billingEnabled: false, memberEmailsEnabled: false,
-  memberSmsEnabled: false, smsDailyCap: 1000,
+  memberSmsEnabled: false, smsDailyCap: 1000, bankDebitsEnabled: false,
   retryDays: [3, 7], dropInChargeTypeId: null, revision: 3, createdAt: '2026-11-01T12:00:00Z', updatedAt: '2026-11-01T12:00:00Z' };
 const sms = { configured: false, provider: 'twilio', unreadable: false, accountSid: null as string | null,
   authKind: null as 'token' | 'apiKey' | null, from: null as string | null, messagingServiceSid: null as string | null, baseUrl: 'https://api.twilio.com' };

@@ -196,8 +196,11 @@ export const invoiceLineItems = pgTable('invoice_line_items', {
   currencyCheck('invoice_line_items_currency_check', t.currency), check('invoice_line_items_quantity_check', sql`${t.quantity} > 0`),
 ]).enableRLS();
 /** is_default marks the card the charge runner uses; the row itself belongs to the household, so the default always does. */
+const paymentMethodTypes = ['card', 'us_bank_account', 'acss_debit'] as const;
 export const paymentMethods = pgTable('payment_methods', {
   ...base(), householdId: uuid('household_id').notNull(), processorId: text('processor_id').notNull(),
+  type: text('type', { enum: paymentMethodTypes }).notNull().default('card'),
+  bankName: text('bank_name'), mandateId: text('mandate_id'),
   brand: text('brand'), last4: text('last4'), expiryMonth: integer('expiry_month'), expiryYear: integer('expiry_year'),
   isDefault: boolean('is_default').notNull().default(false), revokedAt: instant('revoked_at'),
   processorCreatedAt: instant('processor_created_at'),
@@ -207,19 +210,24 @@ export const paymentMethods = pgTable('payment_methods', {
   uniqueIndex('payment_methods_default_key').on(t.gymId, t.householdId).where(sql`${t.isDefault}`),
   check('payment_methods_default_check', sql`not ${t.isDefault} or ${t.revokedAt} is null`),
   check('payment_methods_last4_check', sql`${t.last4} ~ '^[0-9]{4}$'`),
-  check('payment_methods_expiry_check', sql`${t.expiryMonth} between 1 and 12 and ${t.expiryYear} >= 2000`)]).enableRLS();
+  check('payment_methods_expiry_check', sql`${t.expiryMonth} between 1 and 12 and ${t.expiryYear} >= 2000`),
+  choice('payment_methods_type_check', t.type, paymentMethodTypes),
+  check('payment_methods_bank_expiry_check', sql`${t.type} = 'card' or (${t.expiryMonth} is null and ${t.expiryYear} is null)`),
+]).enableRLS();
 export const paymentAttempts = pgTable('payment_attempts', {
   ...base(), invoiceId: uuid('invoice_id').notNull(), attemptNumber: integer('attempt_number').notNull(),
   amountCents: integer('amount_cents').notNull(), currency: text('currency').notNull(),
   savedPaymentMethod: text('saved_payment_method').notNull(), stripeCustomerId: text('stripe_customer_id').notNull(),
   paymentIntentId: text('payment_intent_id'), status: text('status').notNull().default('pending'),
   declineCode: text('decline_code'), error: text('error'), resolvedAt: instant('resolved_at'),
+  processingAt: instant('processing_at'),
 }, (t) => [...scoped('payment_attempts', t),
   foreignKey({ name: 'payment_attempts_invoice_fk', columns: [t.gymId, t.invoiceId, t.currency], foreignColumns: [invoices.gymId, invoices.id, invoices.currency] }),
   unique('payment_attempts_number_key').on(t.gymId, t.invoiceId, t.attemptNumber),
   unique('payment_attempts_intent_key').on(t.gymId, t.paymentIntentId),
-  uniqueIndex('payment_attempts_pending_key').on(t.gymId, t.invoiceId).where(sql`${t.status} = 'pending'`),
-  choice('payment_attempts_status_check', t.status, ['pending', 'succeeded', 'failed', 'requires_action']),
+  uniqueIndex('payment_attempts_unresolved_key').on(t.gymId, t.invoiceId).where(sql`${t.status} in ('pending', 'processing')`),
+  choice('payment_attempts_status_check', t.status, ['pending', 'processing', 'succeeded', 'failed', 'requires_action']),
+  check('payment_attempts_processing_check', sql`${t.status} <> 'processing' or ${t.processingAt} is not null`),
   currencyCheck('payment_attempts_currency_check', t.currency),
   check('payment_attempts_amount_check', sql`${t.amountCents} >= 0 and ${t.attemptNumber} > 0`),
 ]).enableRLS();
@@ -235,7 +243,7 @@ export const payments = pgTable('payments', {
   unique('payments_charge_key').on(t.gymId, t.chargeId),
   index('payments_invoice_idx').on(t.gymId, t.invoiceId),
   index('payments_gym_paid_at_idx').on(t.gymId, t.paidAt),
-  choice('payments_method_check', t.method, ['card', 'cash', 'check', 'other']),
+  choice('payments_method_check', t.method, ['card', 'bank_debit', 'cash', 'check', 'other']),
   currencyCheck('payments_currency_check', t.currency), check('payments_amount_check', sql`${t.amountCents} > 0`)]).enableRLS();
 export const refunds = pgTable('refunds', {
   ...base(), paymentId: uuid('payment_id').notNull(), amountCents: integer('amount_cents').notNull(),

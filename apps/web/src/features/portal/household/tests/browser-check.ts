@@ -34,7 +34,7 @@ const api = (path: string): unknown => {
   if (path === `/api/portal/invoices/${ids.invoice}`) return { data: { invoice: invoice(ids.invoice, 1042, 'past_due', null), lines: [
     { id: id(20), kind: 'membership', description: 'Unlimited adult membership with a long plan name', amountCents: 10_000, currency: 'USD', quantity: 1, taxRateMillionths: null, taxInclusive: null },
     { id: id(21), kind: 'tax', description: 'Sales tax', amountCents: 2500, currency: 'USD', quantity: 1, taxRateMillionths: 25_000, taxInclusive: false }] } };
-  if (path === '/api/portal/payment-methods') return { data: [{ id: id(30), brand: 'visa', last4: '4242', expiryMonth: 4, expiryYear: 2029, isDefault: true }, { id: id(31), brand: null, last4: null, expiryMonth: null, expiryYear: null, isDefault: false }] };
+  if (path === '/api/portal/payment-methods') return { data: [{ id: id(30), type: 'card', bankName: null, brand: 'visa', last4: '4242', expiryMonth: 4, expiryYear: 2029, isDefault: true }, { id: id(31), type: 'card', bankName: null, brand: null, last4: null, expiryMonth: null, expiryYear: null, isDefault: false }] };
   if (path === '/api/portal/household') return { data: { id: ids.household, name: 'Rivera household', email: 'payer@example.test', phone: null, sms: { phoneValid: false, phoneE164: null, notices: null }, address: { line1: '1 Main St', city: 'Springfield', countryCode: 'US' }, billingDay: 1, revision: 1 } };
   if (path === '/api/portal/members') return list(people);
   if (path === `/api/portal/members/${ids.adult}`) return { data: people[2] };

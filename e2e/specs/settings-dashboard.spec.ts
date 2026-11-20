@@ -6,7 +6,7 @@ const gym = { id: '00000000-0000-7000-8000-000000000001', name: 'A gym getting r
 const session = { userId: '00000000-0000-7000-8000-000000000002', displayName: 'Owner', roles: ['owner'], member: false };
 const settings = { id: gym.id, name: gym.name, timezone: 'UTC', currency: 'USD', slug: 'first-gym', address: {}, branding: { primaryColor: '#155e55' },
   websiteEnabled: true, existingSiteUrl: null, bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false,
-  billingEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: false, smsDailyCap: 1000, retryDays: [3, 7], dropInChargeTypeId: null, revision: 3,
+  billingEnabled: false, bankDebitsEnabled: false, memberEmailsEnabled: false, memberSmsEnabled: false, smsDailyCap: 1000, retryDays: [3, 7], dropInChargeTypeId: null, revision: 3,
   createdAt: '2026-11-01T12:00:00Z', updatedAt: '2026-11-01T12:00:00Z' };
 
 // Fixtures exercise the production bundle without adding data to the shared install.

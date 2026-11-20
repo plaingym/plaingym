@@ -16,7 +16,7 @@ const other = '019a08bf-1234-7000-8000-000000000002';
 const member = { id, firstName: 'Alex', lastName: 'Example', email: null, phone: null, sms: { phoneValid: false, phoneE164: null, notices: null, announcements: null }, dateOfBirth: '2015-10-21', photoKey: null, status: 'active', emergencyContacts: [{ name: 'Parent', relationship: 'parent', phone: '555-0100' }], revision: 2 };
 const invoice = { id, number: 12, kind: 'cycle', status: 'paid', dueOn: '2026-10-21', amountCents: 1000, currency: 'CAD', paidAt: '2026-10-21T12:00:00Z' };
 const line = { id, kind: 'membership', description: 'Training', amountCents: 1000, currency: 'CAD', quantity: 1, taxRateMillionths: null, taxInclusive: null };
-const card = { id, brand: 'visa', last4: '4242', expiryMonth: 12, expiryYear: 2030, isDefault: true };
+const card = { id, type: 'card', bankName: null, brand: 'visa', last4: '4242', expiryMonth: 12, expiryYear: 2030, isDefault: true };
 
 describe('portal access and safe projections', () => {
   it('exposes only a positive class balance and expiry per visible member, to payers and adult members', () => {
@@ -121,7 +121,9 @@ describe('portal access and safe projections', () => {
     expect(portalPaymentMethodsResponseSchema.safeParse({ data: [card] }).success).toBe(true);
     expect(portalPaymentMethodsResponseSchema.safeParse({ data: [card, { ...card, id: other }] }).success).toBe(false);
     expect(portalPaymentMethodsResponseSchema.safeParse({ data: [card, { ...card, id: other, isDefault: false }] }).success).toBe(true);
-    for (const field of ['processorId', 'pan', 'stripeCustomerId']) {
+    const bank = { ...card, type: 'us_bank_account', bankName: 'Example Bank', brand: null, expiryMonth: null, expiryYear: null };
+    expect(portalPaymentMethodSchema.parse(bank)).toEqual(bank);
+    for (const field of ['processorId', 'pan', 'stripeCustomerId', 'mandateId']) {
       expect(portalPaymentMethodSchema.safeParse({ ...card, [field]: 'secret' }).success).toBe(false);
     }
   });

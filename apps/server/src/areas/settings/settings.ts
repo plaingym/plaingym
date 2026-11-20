@@ -16,6 +16,7 @@ const projection = {
   bookingWindowDays: gyms.bookingWindowDays, cancellationCutoffMinutes: gyms.cancellationCutoffMinutes,
   openMatCountsAsClass: gyms.openMatCountsAsClass,
   billingEnabled: gyms.billingEnabled, memberEmailsEnabled: gyms.memberEmailsEnabled, memberSmsEnabled: gyms.memberSmsEnabled, smsDailyCap: gyms.smsDailyCap,
+  bankDebitsEnabled: gyms.bankDebitsEnabled,
   retryDays: gyms.retryDays, dropInChargeTypeId: gyms.dropInChargeTypeId,
   revision: gyms.revision, createdAt: gyms.createdAt, updatedAt: gyms.updatedAt,
 };

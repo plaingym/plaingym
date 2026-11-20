@@ -13,7 +13,7 @@ const gym = { id: '00000000-0000-7000-8000-000000000001', name: 'A long gym name
 let session = null, login = { password: false, magicLink: true, google: true };
 const settings = { id: gym.id, name: gym.name, slug: 'gym', timezone: 'UTC', currency: 'USD', address: {}, branding: {}, websiteEnabled: false,
   existingSiteUrl: null, bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false, billingEnabled: false,
-  memberEmailsEnabled: false, retryDays: [3, 7], dropInChargeTypeId: null, revision: 3, createdAt: '2026-11-01T12:00:00Z', updatedAt: '2026-11-01T12:00:00Z' };
+  memberEmailsEnabled: false, memberSmsEnabled: false, smsDailyCap: 1000, bankDebitsEnabled: false, retryDays: [3, 7], dropInChargeTypeId: null, revision: 3, createdAt: '2026-11-01T12:00:00Z', updatedAt: '2026-11-01T12:00:00Z' };
 const googleOff = { source: 'none', editable: true, clientId: null, clientSecretSet: false, removeBlocked: false, revision: 3 };
 let google = googleOff;
 const api = (path) => {
