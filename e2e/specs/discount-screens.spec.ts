@@ -64,7 +64,11 @@ for (const width of [360, 1280]) {
       await expect(dialog.getByText(/The new price, .* applies when the membership is next billed as active, on or after/)).toBeVisible();
       await expect(dialog.getByText(/The new price, .* starts on/)).toHaveCount(0);
       await expect(dialog.getByText('The discount is kept on the new plan.', { exact: true })).toBeVisible(); await check(page, info, 'switch-kept-' + width);
+      // Back is a guarded dismissal now: the edited plan choice asks before it is discarded.
       await dialog.getByRole('button', { name: 'Go back', exact: true }).click();
+      await expect(dialog.getByText('Discard your unsaved changes?')).toBeVisible();
+      await dialog.getByRole('button', { name: 'Discard changes', exact: true }).click();
+      await expect(page.getByRole('dialog')).toHaveCount(0);
       await page.route('**/switch/preview?*', route => route.fulfill({ status: 409, contentType: 'application/json',
         body: JSON.stringify({ error: { code: 'conflict', message: 'Change unavailable', details: { reason: ['unknown_reason'] } } }) }));
       // Reopening within the app's cache window reuses the quote; reload so this assertion exercises a refused request.
@@ -77,7 +81,9 @@ for (const width of [360, 1280]) {
       await page.unroute('**/switch/preview?*');
       await dialog.getByRole('button', { name: 'Try again', exact: true }).click();
       await expect(dialog.getByText('The discount is kept on the new plan.', { exact: true })).toBeVisible();
+      // Retrying the preview edits no field, so this Back is an unedited dismissal and closes at once.
       await dialog.getByRole('button', { name: 'Go back', exact: true }).click();
+      await expect(page.getByRole('dialog')).toHaveCount(0);
       await page.getByRole('button', { name: 'Change discount', exact: true }).click();
       const change = page.locator('form').filter({ has: page.getByRole('button', { name: 'Apply discount', exact: true }) });
       await change.getByRole('combobox', { name: /^Discount/ }).selectOption('code'); await change.getByLabel('Discount code', { exact: true }).fill('WAIVER-' + width);
@@ -92,6 +98,9 @@ for (const width of [360, 1280]) {
       await dialog.getByRole('combobox', { name: /^New plan/ }).selectOption(nextPlan.id);
       await expect(dialog.getByText('The discount ends because it does not apply to the new plan.', { exact: true })).toBeVisible();
       await check(page, info, 'switch-ended-' + width); await dialog.getByRole('button', { name: 'Go back', exact: true }).click();
+      await expect(dialog.getByText('Discard your unsaved changes?')).toBeVisible();
+      await dialog.getByRole('button', { name: 'Discard changes', exact: true }).click();
+      await expect(page.getByRole('dialog')).toHaveCount(0);
       await page.getByRole('button', { name: 'Remove discount', exact: true }).click(); await check(page, info, 'removal-' + width);
       await page.getByRole('button', { name: 'Remove discount', exact: true }).click(); await expect(page.getByRole('button', { name: 'Add discount', exact: true })).toBeVisible();
       await page.goto(gymOrigin + '/admin/billing/plans'); await page.getByRole('button', { name: 'Edit Replacement ' + width, exact: true }).click();

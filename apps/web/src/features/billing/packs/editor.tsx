@@ -2,7 +2,7 @@
 import { useRef, useState, type FormEvent } from 'react';
 import { createClassPackRequestSchema, updateClassPackRequestSchema, type ClassPack, type TaxRate } from '@plaingym/shared/contracts';
 import { amountInputStep, minorUnitsToInput, parseMinorUnits } from '@plaingym/shared/money';
-import { Dialog } from '../../../components/ui/dialog.js';
+import { Dialog, DialogCancel } from '../../../components/ui/dialog.js';
 import { Alert } from '../../../components/ui/alert.js';
 import { Button } from '../../../components/ui/button.js';
 import { Input } from '../../../components/ui/input.js';
@@ -55,7 +55,7 @@ export function PackEditor({ record, currency, taxes, client, close, saved }: {
         <CheckboxField name="active" defaultChecked={record?.active ?? true} label={text('active')}/>
         <div className="flex flex-col gap-2 sm:col-span-2 sm:flex-row">
           <Button type="submit" disabled={stale}>{text(busy ? 'working' : 'save')}</Button>
-          <Button variant="outline" onClick={close}>{text(stale ? 'closeReload' : 'cancel')}</Button>
+          <DialogCancel variant="outline">{text(stale ? 'closeReload' : 'cancel')}</DialogCancel>
         </div>
       </fieldset>
     </form>

@@ -131,7 +131,7 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
       <div hidden={!!priceChange} className="space-y-4">
       {notice}
       {archive && <ArchiveConfirmation rate={archive.rate} usage={archive.usage} busy={busy} confirm={confirmArchive} cancel={() => { setArchive(null); setMessage(''); }}/>}
-      {editor && <CatalogEditor key={kind + (editor === 'new' ? 'new' : editor.id)} kind={kind} {...(editor === 'new' ? {} : { record: editor })} currency={data.data.settings.currency} taxes={data.data.taxes} busy={busy} locked={archive !== null} stale={stale} save={save} cancel={closeEditor}/>}
+      {editor && <CatalogEditor key={kind + (editor === 'new' ? 'new' : editor.id)} kind={kind} {...(editor === 'new' ? {} : { record: editor })} currency={data.data.settings.currency} taxes={data.data.taxes} busy={busy} locked={archive !== null} stale={stale} save={save}/>}
       </div></div></Dialog>}
       {!editor && !archive && <Button onClick={() => { setEditor('new'); setStale(false); }}>{text('create.' + kind)}</Button>}
       {!data.data[kind].length && <EmptyState title={text('empty.' + kind)} description={text('emptyHelp.' + kind)}/>}

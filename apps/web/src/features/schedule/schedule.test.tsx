@@ -2,7 +2,7 @@
 // @vitest-environment jsdom
 import { sessionTimes } from './session.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryObserver } from '@tanstack/react-query';
 import { createWebRegistries, type StaffRole } from '@plaingym/shared';
 import type { ClassSession } from '@plaingym/shared/contracts';
@@ -12,6 +12,7 @@ import type { ShellBootstrap } from '../../app/services.js';
 import { createRegistries, type ExtensionView } from '../../lib/registries.js';
 import { usePublishSessionCounts, useSessionChanged } from '../../lib/session-summary.js';
 import { SchedulePage, SessionDetail, SessionForm, SessionPanels } from './page.js';
+import { ClassEditor } from './editor.js';
 import { calendarDate, calendarInstant, localTime, shiftDate, weekStart } from './calendar.js';
 vi.mock('../../app/context.js', () => ({ useBootstrap: vi.fn() }));
 vi.mock('../../lib/api.js', async (importOriginal) => ({ ...await importOriginal<typeof import('../../lib/api.js')>(), api: { GET: vi.fn(), POST: vi.fn(), PATCH: vi.fn(), PUT: vi.fn(), DELETE: vi.fn() } }));
@@ -333,6 +334,25 @@ describe('schedule calendar and session detail', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save session' }));
     expect((await screen.findByRole('alert')).textContent).toContain('clocks change');
     expect(api.PUT).not.toHaveBeenCalled();
+  });
+  it('asks before discarding class editor edits through Close and keeps them when staying', () => {
+    const onClose = vi.fn();
+    render(<ClassEditor options={options} tags={[]} onSaved={vi.fn()} onClose={onClose}/>);
+    const dialog = screen.getByRole('dialog'), form = within(dialog);
+    fireEvent.change(form.getByLabelText('Name'), { target: { value: 'Changed class' } });
+    fireEvent.click(form.getByRole('button', { name: 'Close' }));
+    expect(form.getByText('Discard your unsaved changes?')).toBeDefined();
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(form.getByRole('button', { name: 'Keep editing' }));
+    expect((form.getByLabelText('Name') as HTMLInputElement).value).toBe('Changed class');
+    expect(screen.getByRole('dialog')).toBe(dialog);
+  });
+  it('closes an unedited class editor at once through Close', () => {
+    const onClose = vi.fn();
+    render(<ClassEditor options={options} tags={[]} onSaved={vi.fn()} onClose={onClose}/>);
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close' }));
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(screen.queryByText('Discard your unsaved changes?')).toBeNull();
   });
   it('opens the edit form from session detail for schedule managers only', () => {
     const { rerender } = render(<SessionDetail session={session} options={options} roles={['front_desk']} enabledModules={[]} onSaved={vi.fn()}/>);

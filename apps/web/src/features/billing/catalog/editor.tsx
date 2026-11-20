@@ -6,7 +6,7 @@ import { Button } from '../../../components/ui/button.js';
 import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
 import { Alert } from '../../../components/ui/alert.js';
-import { DialogActions } from '../../../components/ui/dialog.js';
+import { DialogActions, DialogCancel } from '../../../components/ui/dialog.js';
 import { t } from '../../../lib/i18n.js';
 import { amountInputStep, decimalUnits, minorUnitsToInput, parseMinorUnits, say, selectClass, text } from './format.js';
 
@@ -54,12 +54,12 @@ function sameDraftValue(field: keyof ReturnType<typeof catalogDraft>, left: unkn
   }
   return JSON.stringify(left) === JSON.stringify(right);
 }
-export function CatalogEditor({ kind, record, currency, taxes, busy, locked = false, stale = false, save, cancel }: {
+export function CatalogEditor({ kind, record, currency, taxes, busy, locked = false, stale = false, save }: {
   kind: CatalogKind; record?: CatalogRecord; currency: string; taxes: TaxRate[]; busy: boolean;
   /** Holds the draft while a confirmation for it is open, so the confirmed values are the ones on screen. */
   locked?: boolean;
   stale?: boolean;
-  save: (data: Record<string, unknown>) => Promise<void>; cancel: () => void;
+  save: (data: Record<string, unknown>) => Promise<void>;
 }) {
   const [invalid, setInvalid] = useState(false);
   const [source, setSource] = useState(record), [draft, setDraft] = useState(() => catalogDraft(record, currency));
@@ -134,7 +134,7 @@ export function CatalogEditor({ kind, record, currency, taxes, busy, locked = fa
         </fieldset>
       </>}
       <div className="min-w-0"><Label className="flex min-h-11 items-center gap-3"><input className="size-5" type="checkbox" name="active" checked={draft.active} onChange={event => change('active', event.target.checked)}/>{text('active')}</Label>{latest('active')}</div>
-      <DialogActions className="sm:col-span-2"><Button type="submit" disabled={stale}>{text(busy ? 'saving' : 'save')}</Button><Button variant="outline" onClick={cancel}>{text('cancel')}</Button></DialogActions>
+      <DialogActions className="sm:col-span-2"><Button type="submit" disabled={stale}>{text(busy ? 'saving' : 'save')}</Button><DialogCancel variant="outline">{text('cancel')}</DialogCancel></DialogActions>
     </fieldset>
   </form>;
 }

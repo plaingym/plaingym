@@ -13,7 +13,7 @@ const tax: TaxRate = { id: plan.id, createdAt: plan.createdAt, revision: 1, name
 
 describe('catalog draft reloads', () => {
   it('compares amounts and sign-up fees by parsed value when reloading and clearing clashes', () => {
-    const props = { kind: 'plans' as const, currency: 'USD', taxes: [], busy: false, save: vi.fn(), cancel: vi.fn() };
+    const props = { kind: 'plans' as const, currency: 'USD', taxes: [], busy: false, save: vi.fn() };
     const { rerender } = render(<CatalogEditor {...props} record={plan}/>);
     fireEvent.change(screen.getByLabelText('Amount (USD)'), { target: { value: '50' } });
     fireEvent.change(screen.getByLabelText('Sign-up fee (USD)'), { target: { value: '10.0' } });
@@ -31,14 +31,14 @@ describe('catalog draft reloads', () => {
     expect(screen.queryByRole('note')).toBeNull();
   });
   it('compares tax rates by decimal units rather than the number of written decimals', () => {
-    const props = { kind: 'taxes' as const, currency: 'USD', taxes: [], busy: false, save: vi.fn(), cancel: vi.fn() };
+    const props = { kind: 'taxes' as const, currency: 'USD', taxes: [], busy: false, save: vi.fn() };
     const { rerender } = render(<CatalogEditor {...props} record={tax}/>);
     fireEvent.change(screen.getByLabelText('Tax rate (%)'), { target: { value: '8.250' } });
     rerender(<CatalogEditor {...props} record={{ ...tax, revision: 2, rateMillionths: 82500 }}/>);
     expect(screen.queryByRole('note')).toBeNull();
   });
   it('shows the latest same-field value next to the retained draft, keeps it across reloads and clears it on agreement', () => {
-    const props = { kind: 'plans' as const, currency: 'USD', taxes: [], busy: false, save: vi.fn(), cancel: vi.fn() };
+    const props = { kind: 'plans' as const, currency: 'USD', taxes: [], busy: false, save: vi.fn() };
     const { rerender } = render(<CatalogEditor {...props} record={plan}/>);
     fireEvent.change(screen.getByLabelText('Amount (USD)'), { target: { value: '45.00' } });
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'My draft' } });
@@ -58,7 +58,7 @@ describe('catalog draft reloads', () => {
     expect(screen.queryByRole('note')).toBeNull();
   });
   it('marks a tax rate changed by both editors', () => {
-    const props = { kind: 'taxes' as const, currency: 'USD', taxes: [], busy: false, save: vi.fn(), cancel: vi.fn() };
+    const props = { kind: 'taxes' as const, currency: 'USD', taxes: [], busy: false, save: vi.fn() };
     const { rerender } = render(<CatalogEditor {...props} record={tax}/>);
     fireEvent.change(screen.getByLabelText('Tax rate (%)'), { target: { value: '7.5' } });
     rerender(<CatalogEditor {...props} record={{ ...tax, revision: 2, rateMillionths: 82500 }}/>);
@@ -67,7 +67,7 @@ describe('catalog draft reloads', () => {
   });
   it.each(['plans', 'taxes', 'charges'] as const)('saves controlled %s values even when DOM form values differ', async kind => {
     const save = vi.fn().mockResolvedValue(undefined);
-    render(<CatalogEditor kind={kind} currency="USD" taxes={[]} busy={false} save={save} cancel={vi.fn()}/>);
+    render(<CatalogEditor kind={kind} currency="USD" taxes={[]} busy={false} save={save}/>);
     const name = screen.getByLabelText('Name') as HTMLInputElement;
     fireEvent.change(name, { target: { value: ' Draft name ' } });
     fireEvent.click(screen.getByLabelText('Active'));

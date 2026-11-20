@@ -7,7 +7,7 @@ import { t } from '../../../lib/i18n.js';
 import { ApiError } from '../../../lib/api.js';
 import { Alert } from '../../../components/ui/alert.js';
 import { Button } from '../../../components/ui/button.js';
-import { Dialog } from '../../../components/ui/dialog.js';
+import { Dialog, DialogCancel } from '../../../components/ui/dialog.js';
 import { Label } from '../../../components/ui/label.js';
 import { Textarea } from '../../../components/ui/select.js';
 import type { BillingClient } from '../catalog/api.js';
@@ -106,7 +106,7 @@ export function ChangePlanDialog({ row, plans, client, close, changed, reload, g
           onChange={event => setReason(event.target.value)}/></Label>}
         <div className="flex flex-col gap-2 sm:flex-row">
           <Button type="submit" disabled={!data || (needsReason && !reason.trim())}>{text(busy ? 'saving' : 'changePlanConfirm')}</Button>
-          <Button variant="outline" onClick={close}>{text('back')}</Button>
+          <DialogCancel variant="outline">{text('back')}</DialogCancel>
         </div>
       </fieldset>}
     </form>

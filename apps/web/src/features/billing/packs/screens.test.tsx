@@ -45,6 +45,25 @@ const field = (label: string | RegExp, value: string) => fireEvent.change(screen
 const submit = () => fireEvent.submit(screen.getByRole('button', { name: 'Save' }).closest('form')!);
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
+it('asks before discarding pack edits through Cancel and keeps them when staying', () => {
+  const api = client(), close = vi.fn();
+  start(<PackEditor record={pack} currency="CAD" taxes={[]} client={api} close={close} saved={vi.fn()}/>);
+  field('Name', 'Changed pack');
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(screen.getByText('Discard your unsaved changes?')).toBeDefined();
+  expect(close).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+  expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Changed pack');
+  expect(screen.getByRole('dialog')).toBeDefined();
+});
+it('closes an unedited pack editor at once through Cancel', () => {
+  const api = client(), close = vi.fn();
+  start(<PackEditor record={pack} currency="CAD" taxes={[]} client={api} close={close} saved={vi.fn()}/>);
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(close).toHaveBeenCalledOnce();
+  expect(screen.queryByText('Discard your unsaved changes?')).toBeNull();
+});
+
 it('groups pack catalog and sale option credits without changing the option value', async () => {
   const api = client(), large = { ...pack, credits: 1200, expiryDays: 2400 };
   vi.mocked(api.packs).mockResolvedValue([large]);

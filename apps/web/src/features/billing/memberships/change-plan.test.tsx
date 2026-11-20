@@ -52,6 +52,24 @@ async function openDialog() {
 }
 const calls = (call: ReturnType<typeof start>['call'], name: string) => call.mock.calls.filter(item => item[0] === name);
 
+it('asks before discarding a plan change through Back and keeps the choice when staying', async () => {
+  start();
+  const dialog = await openDialog();
+  fireEvent.click(dialog.getByRole('radio', { name: 'Now' }));
+  fireEvent.click(dialog.getByRole('button', { name: 'Go back' }));
+  expect(dialog.getByText('Discard your unsaved changes?')).toBeDefined();
+  expect(screen.getByRole('dialog')).toBeDefined();
+  fireEvent.click(dialog.getByRole('button', { name: 'Keep editing' }));
+  expect((dialog.getByRole('radio', { name: 'Now' }) as HTMLInputElement).checked).toBe(true);
+  expect(screen.getByRole('dialog')).toBeDefined();
+});
+it('closes an unedited plan change at once through Back', async () => {
+  start();
+  const dialog = await openDialog();
+  fireEvent.click(dialog.getByRole('button', { name: 'Go back' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+
 it('preselects the next billing date and previews the switch', async () => {
   const { call } = start();
   const dialog = await openDialog();

@@ -3,7 +3,7 @@ import { useState, type FormEvent } from 'react';
 import { createClassSessionRequestSchema, createClassTemplateRequestSchema, type ClassTag, type ClassTemplate } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
 import { Button } from '../../components/ui/button.js';
-import { Dialog, DialogActions } from '../../components/ui/dialog.js';
+import { Dialog, DialogActions, DialogCancel } from '../../components/ui/dialog.js';
 import { Input } from '../../components/ui/input.js';
 import { Select, Textarea } from '../../components/ui/select.js';
 import { calendarInstant } from './calendar.js';
@@ -59,7 +59,7 @@ export function ClassEditor({ template, options, tags, onSaved, onClose, standal
       <p className="text-sm text-muted-foreground">{options.timezone} · {text('timeHelp')}</p>
       <DialogActions>
         <Button type="submit" disabled={busy}>{text('save')}</Button>
-        <Button variant="outline" onClick={onClose} disabled={busy}>{text('close')}</Button>
+        <DialogCancel variant="outline" disabled={busy}>{text('close')}</DialogCancel>
       </DialogActions>
     </form>
   </Dialog>;

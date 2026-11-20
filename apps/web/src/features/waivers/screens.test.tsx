@@ -26,6 +26,24 @@ it('edits in the shared dialog and preserves the draft on a stale save', async (
   const call = f.fetcher.mock.calls.find(([, init]) => init?.method === 'POST')!;
   expect(JSON.parse(String(call[1]?.body))).toEqual({ name: template.name, kind: 'waiver', body: 'Changed terms', expectedVersion: 2 });
 });
+it('asks before discarding template edits through the template editor Close button, and keeps the draft when staying', async () => {
+  const f = fixture(), user = userEvent.setup(); mount(<Templates gymId="gym" manage client={f.client} />);
+  await user.click(await screen.findByRole('button', { name: 'Edit template' }));
+  const dialog = screen.getByRole('dialog'), form = within(dialog), body = form.getByLabelText('Agreement text');
+  await user.clear(body); await user.type(body, 'Changed terms');
+  await user.click(form.getAllByRole('button', { name: 'Close' }).at(-1)!);
+  expect(form.getByText('Discard your unsaved changes?')).toBeDefined();
+  await user.click(form.getByRole('button', { name: 'Keep editing' }));
+  expect((body as HTMLTextAreaElement).value).toBe('Changed terms');
+  expect(screen.getByRole('dialog')).toBe(dialog);
+});
+it('closes an unedited template editor at once through Close', async () => {
+  const f = fixture(), user = userEvent.setup(); mount(<Templates gymId="gym" manage client={f.client} />);
+  await user.click(await screen.findByRole('button', { name: 'Edit template' }));
+  const dialog = screen.getByRole('dialog');
+  await user.click(within(dialog).getAllByRole('button', { name: 'Close' }).at(-1)!);
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
 it('shows unsigned state and guardian fields after reviewing the exact current text', async () => {
   const f = fixture(), user = userEvent.setup(); mount(<MemberWaivers gymId="gym" memberId={template.id} manage client={f.client} />);
   expect(await screen.findByText('No signed copies for this member')).toBeTruthy();

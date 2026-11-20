@@ -81,7 +81,7 @@ function TemplateEditor({ row, client, close, saved }: { row: WaiverTemplate | '
         </div>}
       <div className="flex flex-wrap gap-3"><Button type="submit" disabled={busy}>{text('publish')}</Button>
         {row !== 'new' && !row.retiredAt && <Button type="button" variant="destructive" disabled={busy} onClick={() => void retire()}>{text('retire')}</Button>}
-        <Button type="button" variant="outline" disabled={busy} onClick={close}>{text('close')}</Button></div>
+        <DialogCancel variant="outline" disabled={busy}>{text('close')}</DialogCancel></div>
     </form>
   </Dialog>;
 }

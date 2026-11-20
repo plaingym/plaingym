@@ -66,7 +66,7 @@ describe('catalog and member billing screens', () => {
   });
   it('prunes tax selections when only the tax list changes and keeps them pruned after reactivation', async () => {
     const save = vi.fn(async () => {}), extra = { ...tax, id: id(90), name: 'Extra tax' };
-    const props = { kind: 'plans' as const, record: plan, currency: 'CAD', busy: false, save, cancel: vi.fn() };
+    const props = { kind: 'plans' as const, record: plan, currency: 'CAD', busy: false, save };
     const view = render(<CatalogEditor {...props} taxes={[tax, extra]}/>);
     fireEvent.click(screen.getByLabelText('Extra tax (9.975%, Tax added)'));
     view.rerender(<CatalogEditor {...props} taxes={[tax, { ...extra, active: false }]}/>);
@@ -356,6 +356,22 @@ describe('catalog and member billing screens', () => {
       expect.objectContaining({ revision: 1, name: 'Sales tax', active: false, detach: true }), { taxRateId: tax.id }));
     await waitFor(() => expect(screen.queryByRole('region', { name: 'Archive Sales tax?' })).toBeNull());
   });
+  it('asks before discarding catalog edits through the editor Cancel and keeps the draft when staying', async () => {
+    const api = client(); start(<CatalogWorkspace gymId={id(1)} client={api}/>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit Unlimited' }));
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Draft plan' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByText('Discard your unsaved changes?')).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Draft plan');
+    expect(screen.getByRole('dialog')).toBeDefined();
+  });
+  it('closes an unedited catalog editor at once through Cancel', async () => {
+    const api = client(); start(<CatalogWorkspace gymId={id(1)} client={api}/>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit Unlimited' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
   it('cancels the archive confirmation without saving and keeps the draft', async () => {
     const api = client(); answering(api, usage); await archiveFromEditor(api);
     const panel = await screen.findByRole('region', { name: 'Archive Sales tax?' });
@@ -365,6 +381,9 @@ describe('catalog and member billing screens', () => {
     expect(screen.queryByRole('region', { name: 'Archive Sales tax?' })).toBeNull();
     expect(screen.getByLabelText('Name').matches(':disabled')).toBe(false);
     expect((screen.getByLabelText('Active') as HTMLInputElement).checked).toBe(false);
+    // Backing out of the confirmation returns to the editor; it does not ask to discard the draft.
+    expect(screen.queryByText('Discard your unsaved changes?')).toBeNull();
+    expect(screen.getByRole('dialog')).toBeDefined();
     expect(api.call).not.toHaveBeenCalledWith('updateTaxRate', expect.anything(), expect.anything());
   });
   it('archives a tax rate nothing carries without asking', async () => {
