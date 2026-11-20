@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { forGym } from '@plaingym/db';
 import { type MembersReportQuery, type MembersReportResponse } from '@plaingym/shared/contracts';
-import { zonedInstant } from '@plaingym/shared/time';
+import { localMidnight } from '@plaingym/shared/time';
 import { membersHistory, type MembersHistory } from './members.query.js';
 import { reportBuckets, type ReportContext } from './range.js';
 
@@ -44,7 +44,7 @@ function activity(history: MembersHistory, timezone: string): Activity[] {
       || event.action === 'billing.membership.frozen' && status(event, 'before') === 'trial');
     if (!evidence && (knownInactive || row.status !== 'active' && row.status !== 'frozen')) continue;
     const start = activation?.occurredAt.getTime()
-      ?? zonedInstant(row.startsOn, '00:00', timezone, { gap: 'shift' })!.getTime();
+      ?? localMidnight(row.startsOn, timezone).getTime();
     const end = row.cancelledAt?.getTime() ?? Infinity;
     if (start >= end) continue;
     const member = members.get(row.memberId) ?? { live: [], frozen: [], unfrozen: [] };

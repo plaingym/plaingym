@@ -21,6 +21,7 @@ const sourceScanningTests = [
   'apps/server/src/areas/bookings/bookings.retention.test.ts',
   'apps/web/src/features/portal/household/keys.test.ts',
   'apps/server/src/areas/imports/export.catalog.test.ts',
+  'apps/server/src/areas/reports/local-midnight.test.ts',
   'apps/server/src/areas/settings/go-live.inventory.test.ts',
   'apps/server/src/areas/waivers/pdf.test.ts',
   'apps/server/src/core/cloudflare.test.ts',

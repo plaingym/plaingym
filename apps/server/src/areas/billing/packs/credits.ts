@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, isNull, or } from 'drizzle-orm';
 import { classCreditEntries, classPackSales, forGym, uuidv7 } from '@plaingym/db';
-import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
+import { addDays, localDate, localMidnight } from '@plaingym/shared/time';
 import { clock as defaultClock } from '../../../core/clock.js';
 import { gymSettingsAccessor } from '../../settings/settings.js';
 import type { CatalogOptions } from '../catalog.js';
@@ -39,7 +39,7 @@ export function createPackCredits(options: CatalogOptions = {}) {
         const paidOn = localDate(invoice.paidAt, gym.timezone), grantedOn = localDate(clock.now(), gym.timezone);
         const startsOn = paidOn > grantedOn ? paidOn : grantedOn;
         const expiresAt = sale.expiryDays === null ? null
-          : zonedInstant(addDays(startsOn, sale.expiryDays), '00:00', gym.timezone, { gap: 'shift' });
+          : localMidnight(addDays(startsOn, sale.expiryDays), gym.timezone);
         const [entry] = await tx.insert(classCreditEntries).values({ id: uuidv7(), gymId, memberId: sale.memberId,
           kind: 'grant', credits: sale.credits, saleId: sale.id, expiresAt, createdAt: clock.now() }).onConflictDoNothing().returning();
         if (!entry) return;

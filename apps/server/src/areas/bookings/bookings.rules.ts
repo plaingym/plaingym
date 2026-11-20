@@ -3,7 +3,7 @@ import { and, asc, eq, isNull, ne } from 'drizzle-orm';
 import { classBookings, classSessions, members, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, createTranslator } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
-import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
+import { addDays, localDate, localMidnight } from '@plaingym/shared/time';
 import type { GymSettings } from '../../core/interfaces/gym-settings.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { readBookingRules } from '../settings/settings.js';
@@ -16,7 +16,7 @@ export function bookingConflict(key: string): never { throw new AppError('confli
 
 /** Days are gym-local calendar days; the opening instant is local midnight. Cutoffs are elapsed minutes. */
 export function bookingOpensAt(startsAt: Date, settings: Pick<GymSettings, 'bookingWindowDays' | 'timezone'>): Date {
-  return zonedInstant(addDays(localDate(startsAt, settings.timezone), -settings.bookingWindowDays), '00:00', settings.timezone, { gap: 'shift' })!;
+  return localMidnight(addDays(localDate(startsAt, settings.timezone), -settings.bookingWindowDays), settings.timezone);
 }
 export function assertBookable(session: SessionRow, settings: GymSettings, now: Date) {
   if (session.status !== 'scheduled' || session.startsAt <= now) bookingConflict('sessionClosed');

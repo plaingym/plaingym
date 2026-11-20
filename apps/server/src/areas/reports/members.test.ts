@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { auditEvents, memberships, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError, errorResponse, staffRoles, type StaffRole } from '@plaingym/shared';
 import { membersReportResponseSchema, type MembersReportQuery } from '@plaingym/shared/contracts';
+import { localMidnight } from '@plaingym/shared/time';
 import { TestClock } from '../../core/clock.js';
 import type { Principal, RequestEnvironment } from '../../core/context.js';
 import { createServerRegistry } from '../../core/registry.js';
@@ -14,13 +15,18 @@ import { createMembersReportService } from './members.js';
 import { createMembersReportRoutes } from './members.routes.js';
 import { measureReportStatements } from './statements.test-helper.js';
 
+vi.mock('@plaingym/shared/time', async importOriginal => {
+  const actual = await importOriginal<typeof import('@plaingym/shared/time')>();
+  return { ...actual, localMidnight: vi.fn(actual.localMidnight) };
+});
+
 const database = useTestDatabase(), factory = createFactories(database);
 const clock = new TestClock('2026-12-01T00:30:00Z'); // November in New York.
 const service = createMembersReportService(database.forGym);
 const query: MembersReportQuery = { from: '2026-03', to: '2026-05' };
-async function fixture() {
-  const gymId = uuidv7(); await factory('gyms', gymId, { timezone: 'America/New_York' });
-  return { gymId, timezone: 'America/New_York', clock };
+async function fixture(timezone = 'America/New_York') {
+  const gymId = uuidv7(); await factory('gyms', gymId, { timezone });
+  return { gymId, timezone, clock };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 type Row = typeof memberships.$inferSelect;
@@ -164,6 +170,17 @@ describe('members report with real PostgreSQL and RLS', () => {
     const result = await service.get(f, { from: '2026-10', to: '2026-11' }); identity(result);
     expect(result.data.buckets.map(b => [b.activeAtStart, b.new, b.cancelled, b.activeAtEnd])).toEqual([[0, 1, 0, 1], [1, 3, 1, 3]]);
     expect(result.data.buckets[1]).toMatchObject({ startsAt: '2026-11-01T04:00:00.000Z', endsAt: '2026-12-01T05:00:00.000Z' });
+  });
+  it('keeps a Vancouver seed fallback on the spring DST-gap day at that day’s local midnight', async () => {
+    const f = await fixture('America/Vancouver');
+    // No audit events: the report falls back to starts_on at local midnight.
+    await membership(f, { startsOn: '2026-03-08' });
+    const result = await service.get(f, { from: '2026-02', to: '2026-04' }); identity(result);
+    expect(result.data.buckets.map(({ activeAtStart, new: added, activeAtEnd }) => [activeAtStart, added, activeAtEnd]))
+      .toEqual([[0, 0, 0], [0, 1, 1], [1, 0, 1]]);
+    expect(vi.mocked(localMidnight)).toHaveBeenCalledWith('2026-03-08', 'America/Vancouver');
+    // The old zonedInstant(..., '00:00', ..., { gap: 'shift' }) expression names this instant too.
+    expect(localMidnight('2026-03-08', 'America/Vancouver').toISOString()).toBe('2026-03-08T08:00:00.000Z');
   });
   it('isolates memberships and audit histories across gyms on service and HTTP paths', async () => {
     const a = await fixture(), b = await fixture();

@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { formatCount } from '../../../lib/count.js';
 import { useEffect } from 'react';
-import { instantLabel } from '../../../lib/instant.js';
+import { useGymTime } from '../../../lib/instant.js';
 import { Link } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import { portalContracts as contracts } from '@plaingym/shared/contracts';
-import { useBootstrap } from '../../../app/context.js';
 import { t } from '../../../lib/i18n.js';
 import { Button } from '../../../components/ui/button.js';
 import { ErrorState, LoadingState } from '../../../components/ui/states.js';
@@ -21,7 +20,8 @@ const text = (key: string, values?: Record<string, string | number>) => t('porta
 const card = 'min-w-0 space-y-3 rounded-xl border border-border p-4';
 /** All summaries use the open household's key and check each answer before it enters the cache. */
 export function PortalHome({ client = portalClient }: { client?: PortalClient }) {
-  const bootstrap = useBootstrap(), { scope, context, members, memberId, choose } = usePortalMembers(client);
+  const { scope, context, members, memberId, choose } = usePortalMembers(client);
+  const { instantLabel } = useGymTime();
   const payer = context.data?.role === 'payer';
   const schedule = useQuery({ queryKey: [...scope.key, 'home', 'schedule'], enabled: scope.ready,
     queryFn: async () => {
@@ -60,14 +60,13 @@ export function PortalHome({ client = portalClient }: { client?: PortalClient })
     wait();
     return () => clearTimeout(timer);
   }, [next, schedule.refetch]);
-  const date = (value: string) => instantLabel(value, bootstrap.data?.gym.timezone ?? 'UTC');
   const waiting = (query: { isPending: boolean; data: unknown }) => query.isPending || (query.data === undefined && scope.settling);
   return <Page className="max-w-3xl"><PortalRecovery moving={scope.moving}>
     <PageHeader title={text('welcome')} description={text('homeDescription')} />
     <div className="grid gap-4 sm:grid-cols-2">
       <PageSection className={card} title={text('nextClass')}>
         {waiting(schedule) ? <LoadingState /> : schedule.isError ? <ErrorState onRetry={() => void schedule.refetch()} />
-          : next ? <><p className="wrap-anywhere font-semibold">{next.name}</p><p>{date(next.startsAt)}</p>
+          : next ? <><p className="wrap-anywhere font-semibold">{next.name}</p><p>{instantLabel(next.startsAt)}</p>
             <ul className="text-sm text-muted-foreground">{next.bookings.filter(booking => booking.status === 'booked').flatMap(booking => {
               const name = members.data?.find(member => member.id === booking.memberId)?.name;
               return name ? [<li key={booking.id}>{name}</li>] : [];
