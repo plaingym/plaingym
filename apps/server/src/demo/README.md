@@ -227,7 +227,10 @@ Every page of a sandbox starts with one slim row (`DemoNotice`): the sandbox, it
 expiry and a **Demo menu** button. The menu (a bottom sheet on phones, a side panel on
 wider screens) groups **Sign in as** (the three roles and the joined members),
 **Go to** (start page, admin, member portal, kiosk, the join page when the sandbox
-takes joins, the website when it's on, outbox) and **About this demo**. Each hint
+takes joins, the website when it's on, outbox) and **About this demo**. From
+**Go to**, **Gym admin** signs a signed-out visitor in as the owner and **Member
+portal** signs them in as the student. Visitors with a session keep their
+current identity when following either link. Each hint
 shows only where it is used: the sample household on the kiosk's Name and PIN search,
 the test card on the start page's join step, and the outbox note on `/login`. No
 command line setup is needed in a sandbox.

@@ -19,11 +19,18 @@ await writeFile(resolve(work, 'fixture.tsx'), `
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { ShellServicesContext } from '${modulePath('apps/web/src/app/context.tsx')}';
+import { createShellServices } from '${modulePath('apps/web/src/app/services.ts')}';
 import { DemoShell } from '${modulePath('apps/web/src/features/demo/notice.tsx')}';
 import { DemoPage } from '${modulePath('apps/web/src/features/demo/landing.tsx')}';
 import '${modulePath('apps/web/src/app/styles.css')}';
+const services = createShellServices(async () => ({
+  gym: { id: '019a0000-0000-7000-8000-0000000000ac', name: 'Demo gym', timezone: 'UTC', currency: 'USD', enabledModules: [] },
+  session: null, login: { password: false, magicLink: true },
+}));
 createRoot(document.getElementById('root')).render(<QueryClientProvider client={new QueryClient()}>
-  <DemoShell><DemoPage /></DemoShell></QueryClientProvider>);
+  <ShellServicesContext.Provider value={services}><DemoShell><DemoPage /></DemoShell></ShellServicesContext.Provider>
+</QueryClientProvider>);
 `);
 // The banner reads only the current path from the router.
 const router = { name: 'demo-router-fixture', enforce: 'pre', resolveId: id => id === '@tanstack/react-router' ? '\0demo-router' : undefined,

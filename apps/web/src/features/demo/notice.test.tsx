@@ -4,15 +4,31 @@ import { afterAll, afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { StrictMode } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { focusManager, onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { ShellServicesContext } from '../../app/context.js';
+import { createShellServices, type ShellBootstrap, type ShellServices } from '../../app/services.js';
 
 const fetcher = vi.fn();
+const loadBootstrap = vi.fn<ShellServices['loadBootstrap']>();
+const signedOutBootstrap: ShellBootstrap = {
+  gym: { id: '019a0000-0000-7000-8000-0000000000ab', name: 'Demo gym', timezone: 'UTC', currency: 'USD', enabledModules: [] },
+  session: null, login: { password: false, magicLink: true },
+};
 const route = vi.hoisted(() => ({ pathname: '/admin' }));
 vi.mock('@tanstack/react-router', () => ({ useRouterState: () => route.pathname }));
 vi.stubGlobal('fetch', fetcher);
 const { DemoShell, DemoKioskHint, TryDemoButton, useDemoLogin, useDemoSandbox } = await import('./notice.js');
 const { readToken } = await import('../kiosk/api.js');
-beforeEach(() => { fetcher.mockReset(); localStorage.clear(); route.pathname = '/admin'; window.history.replaceState(null, '', '/admin'); });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); focusManager.setFocused(undefined); onlineManager.setOnline(true); });
+beforeEach(() => {
+  fetcher.mockReset();
+  loadBootstrap.mockReset().mockResolvedValue({
+    ...signedOutBootstrap, session: { userId: '019a0000-0000-7000-8000-0000000000ac', displayName: 'Demo owner', roles: ['owner'], member: false },
+  });
+  localStorage.clear(); route.pathname = '/admin'; window.history.replaceState(null, '', '/admin');
+});
+afterEach(() => {
+  cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); focusManager.setFocused(undefined); onlineManager.setOnline(true);
+  vi.unstubAllGlobals(); vi.stubGlobal('fetch', fetcher);
+});
 afterAll(() => vi.unstubAllGlobals());
 it('announces showcase preparation, prevents repeat activation, and opens the shared demo once ready', async () => {
   let finish!: (response: Response) => void;
@@ -46,7 +62,9 @@ function Consumer() {
   return <p>{useDemoSandbox() ? 'Sandbox consumer' : 'Ordinary consumer'}</p>;
 }
 function start(client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } }), children = <><p>Login screen</p><Consumer /></>) {
-  const view = render(<StrictMode><QueryClientProvider client={client}><DemoShell>{children}</DemoShell></QueryClientProvider></StrictMode>);
+  const view = render(<StrictMode><QueryClientProvider client={client}>
+    <ShellServicesContext.Provider value={createShellServices(loadBootstrap)}><DemoShell>{children}</DemoShell></ShellServicesContext.Provider>
+  </QueryClientProvider></StrictMode>);
   return { ...view, client };
 }
 it('keeps a failed kiosk handoff in the fragment and explains blocked storage before mounting a route', async () => {
@@ -192,10 +210,17 @@ it('opens the demo menu with its labelled groups and returns focus to the bar on
   for (const role of ['owner', 'coach', 'student']) expect(within(signIn).getByRole('button', { name: 'Sign in as ' + role })).toBeDefined();
   expect(await within(signIn).findByRole('button', { name: 'Sign in as Riley Visitor' })).toBeDefined();
   const goTo = within(menu).getByRole('navigation', { name: 'Go to' });
+  const admin = await within(goTo).findByRole('link', { name: 'Gym admin' });
+  const portal = within(goTo).getByRole('link', { name: 'Member portal' });
   expect(within(goTo).getAllByRole('link').map((link) => [link.textContent?.replace('→', ''), link.getAttribute('href')])).toEqual([
     ['Start page', '/demo'], ['Gym admin', '/admin'], ['Member portal', '/portal'], ['Kiosk', '/kiosk'], ['Join page', '/join'], ['Demo outbox', '/admin/outbox']]);
-  expect(within(goTo).getByRole('link', { name: 'Member portal' }).getAttribute('aria-current')).toBe('page');
-  expect(within(goTo).getByRole('link', { name: 'Gym admin' }).getAttribute('aria-current')).toBeNull();
+  expect(portal.getAttribute('aria-current')).toBe('page');
+  expect(admin.getAttribute('aria-current')).toBeNull();
+  for (const link of [admin, portal]) {
+    link.addEventListener('click', event => event.preventDefault(), { once: true });
+    fireEvent.click(link);
+  }
+  expect(fetcher.mock.calls.filter(([path]) => path === '/api/demo/login')).toHaveLength(0);
   const about = within(menu).getByRole('region', { name: 'About this demo' });
   expect(within(about).getByText(/^Expires: /)).toBeDefined();
   expect(within(about).getByText(/Using it moves that time later/)).toBeDefined();
@@ -203,6 +228,41 @@ it('opens the demo menu with its labelled groups and returns focus to the bar on
   fireEvent.click(within(menu).getByRole('button', { name: 'Close demo menu' }));
   expect(screen.queryByRole('dialog')).toBeNull();
   expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Demo menu' }));
+});
+const protectedDestinations = [
+  ['Gym admin', 'owner', '/admin'],
+  ['Member portal', 'student', '/portal'],
+] as const;
+it.each(protectedDestinations)('signs in from %s as the seeded %s', async (name, role, redirect) => {
+  const assign = vi.fn();
+  vi.stubGlobal('location', { ...window.location, assign });
+  loadBootstrap.mockResolvedValue(signedOutBootstrap);
+  route.pathname = '/demo';
+  serve({ login: async () => Response.json({ data: { redirect } }) });
+  start();
+  const goTo = within(within(await openMenu()).getByRole('navigation', { name: 'Go to' }));
+  await waitFor(() => expect((goTo.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(goTo.getByRole('button', { name }));
+  await waitFor(() => expect(assign).toHaveBeenCalledExactlyOnceWith(redirect));
+  const calls = fetcher.mock.calls.filter(([path]) => path === '/api/demo/login');
+  expect(calls.map(([, init]) => JSON.parse(String(init.body)))).toEqual([{ role }]);
+});
+it('disables guarded destinations during bootstrap and offers links when it fails', async () => {
+  let fail!: (reason: Error) => void;
+  loadBootstrap.mockImplementation(() => new Promise((_resolve, reject) => { fail = reject; }));
+  serve();
+  start();
+  const goTo = within(within(await openMenu()).getByRole('navigation', { name: 'Go to' }));
+  for (const [name] of protectedDestinations) {
+    const button = goTo.getByRole('button', { name }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+  }
+  expect(fetcher.mock.calls.filter(([path]) => path === '/api/demo/login')).toHaveLength(0);
+  await act(async () => { fail(new Error('Bootstrap unavailable')); });
+  for (const [name, , href] of protectedDestinations) {
+    expect((await goTo.findByRole('link', { name })).getAttribute('href')).toBe(href);
+  }
 });
 it.each([[true, true], [false, false]] as const)('lists the website only when it is on (%s), and the join page only when joining is', async (on, join) => {
   serve({ website: on, join });
@@ -221,7 +281,6 @@ it('signs in as a joined member from the menu', async () => {
   await waitFor(() => expect(assign).toHaveBeenCalledWith('/portal'));
   const call = fetcher.mock.calls.find(([path]) => path === '/api/demo/login')!;
   expect(JSON.parse((call[1] as RequestInit).body as string)).toEqual({ member: riley.id });
-  vi.unstubAllGlobals(); vi.stubGlobal('fetch', fetcher);
 });
 function PageSignIn() {
   const { login, pending } = useDemoLogin();
@@ -247,20 +306,23 @@ it('shares one sign-in state between the menu and a page inside the shell, and r
 });
 it('disables every sign-in while one is pending and restores them after a failure', async () => {
   let fail!: (reason: Error) => void;
+  loadBootstrap.mockResolvedValue(signedOutBootstrap);
   serve({ members: [riley], login: () => new Promise<Response>((_resolve, reject) => { fail = reject; }) });
   start();
   const menu = await openMenu();
   await within(menu).findByRole('button', { name: 'Sign in as Riley Visitor' });
+  const names = ['Sign in as owner', 'Sign in as coach', 'Sign in as student', 'Sign in as Riley Visitor', ...protectedDestinations.map(([name]) => name)];
+  const buttons = names.map(name => within(menu).getByRole('button', { name }) as HTMLButtonElement);
+  await waitFor(() => expect(buttons.every(button => !button.disabled)).toBe(true));
   fireEvent.click(within(menu).getByRole('button', { name: 'Sign in as coach' }));
-  for (const name of ['Sign in as owner', 'Sign in as coach', 'Sign in as student', 'Sign in as Riley Visitor']) {
-    const button = within(menu).getByRole('button', { name }) as HTMLButtonElement;
+  for (const button of buttons) {
     expect(button.disabled).toBe(true);
     fireEvent.click(button);
   }
   expect(fetcher.mock.calls.filter(([path]) => path === '/api/demo/login')).toHaveLength(1);
   await act(async () => { fail(new TypeError('Offline')); });
   await within(menu).findByRole('alert');
-  expect((within(menu).getByRole('button', { name: 'Sign in as owner' }) as HTMLButtonElement).disabled).toBe(false);
+  expect(buttons.every(button => !button.disabled)).toBe(true);
 });
 it.each(['disabled', 'entry', 'sandbox'] as const)('shows the kiosk hint only for a sandbox (%s)', async (mode) => {
   route.pathname = '/kiosk';

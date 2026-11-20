@@ -36,8 +36,11 @@ use a test Stripe key ([going-live.md](going-live.md#1-try-it-in-test-mode-optio
   joined in the sandbox, on its start page (`/demo`) and in the **Demo menu**. A slim
   bar at the top of every page shows when the sandbox expires and opens the menu,
   which also goes to the start page, the admin, the member portal, the kiosk, the join
-  page, the gym's website (when it's on) and the outbox. The sample kiosk members
-  check in by full name and PIN `2468`; the kiosk's name search shows one.
+  page, the gym's website (when it's on) and the outbox. If you're signed out,
+  **Gym admin** signs you in as the owner and **Member portal** signs you in as
+  the student. If you're signed in, both links use your current session. The
+  sample kiosk members check in by full name and PIN `2468`; the kiosk's name
+  search shows one.
 * **No outside effects.** Emails and texts are captured in an in-app **outbox** the owner
   and admins can read. On `/login`, after **Email me a sign-in link**, **Open my
   sign-in link** opens the link sent to the address you entered, without the owner. General uploads are off. A demo refuses to start with a

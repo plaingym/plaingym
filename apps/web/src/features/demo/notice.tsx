@@ -6,6 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useRouterState } from '@tanstack/react-router';
 import { demoEntryResponse, demoMenuResponse, demoHandoffResponse, type DemoLoginTarget, type DemoRole } from '@plaingym/shared/contracts';
 import { CopyPrompt, CreateCopyButton, rememberDemoRole } from './copy.js';
+import { useBootstrap } from '../../app/context.js';
 import { Button } from '../../components/ui/button.js';
 import { Alert } from '../../components/ui/alert.js';
 import { Dialog } from '../../components/ui/dialog.js';
@@ -152,11 +153,18 @@ export function useDemoMenu(enabled = true) {
 }
 /** The demo's one navigation style, in the menu and on the start page alike: a full-width link with a forward arrow. */
 export function DemoMenuLink({ href, children, current = false }: { href: string; children: ReactNode; current?: boolean }) {
-  return <a href={href} {...(current ? { 'aria-current': 'page' as const } : {})}
-    className={cn('flex min-h-11 w-full items-center justify-between gap-3 rounded-md border border-border bg-background px-3 py-2 text-sm font-medium',
-      'hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring', current && 'bg-muted')}>
-    <span className="min-w-0">{children}</span><span aria-hidden="true">→</span>
-  </a>;
+  return <DemoMenuControl href={href} current={current}>{children}</DemoMenuControl>;
+}
+type DemoMenuControlProps = { children: ReactNode; current: boolean } &
+  ({ href: string } | { onClick: () => void; disabled: boolean });
+function DemoMenuControl({ children, current, ...action }: DemoMenuControlProps) {
+  const props = {
+    'aria-current': current ? 'page' as const : undefined,
+    className: cn('flex min-h-11 w-full items-center justify-between gap-3 rounded-md border border-border bg-background px-3 py-2 text-left text-sm font-medium',
+      'hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring', current && 'bg-muted'),
+  };
+  const label = <><span className="min-w-0">{children}</span><span aria-hidden="true">→</span></>;
+  return 'href' in action ? <a {...props} href={action.href}>{label}</a> : <Button {...props} {...action} variant="outline">{label}</Button>;
 }
 const roles = ['owner', 'coach', 'student'] as const;
 /** The seeded roles and joined members as sign-in buttons, one style wherever they appear. */
@@ -190,10 +198,13 @@ export function DemoNotice() {
 /** The demo's navigation: a bottom sheet on phones and a side panel on wider screens, on the shared dialog. */
 function DemoMenu({ expires, onClose }: { expires: string | undefined; onClose: () => void }) {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const menu = useDemoMenu(), join = useDemoJoin(), { error } = useDemoLogin();
+  const menu = useDemoMenu(), join = useDemoJoin(), { login, pending, error } = useDemoLogin();
+  const bootstrap = useBootstrap();
+  const signedOut = bootstrap.isSuccess && !bootstrap.data.session;
   const within = (path: string) => pathname === path || pathname.startsWith(path + '/');
-  const destinations: [string, string, boolean][] = [
-    ['/demo', 'startPage', pathname === '/demo'], ['/admin', 'admin', within('/admin') && !within('/admin/outbox')], ['/portal', 'portal', within('/portal')],
+  const destinations: [string, string, boolean, DemoRole?][] = [
+    ['/demo', 'startPage', pathname === '/demo'], ['/admin', 'admin', within('/admin') && !within('/admin/outbox'), 'owner'],
+    ['/portal', 'portal', within('/portal'), 'student'],
     ['/kiosk', 'kiosk', within('/kiosk')], ...join ? [['/join', 'join', false] as [string, string, boolean]] : [],
     ...menu.data?.website ? [['/', 'website', false] as [string, string, boolean]] : [], ['/admin/outbox', 'outbox', within('/admin/outbox')],
   ];
@@ -207,8 +218,11 @@ function DemoMenu({ expires, onClose }: { expires: string | undefined; onClose: 
         <DemoSignInButtons members={menu.data?.members ?? []} />
       </section>
       <nav className={section} aria-labelledby="demo-menu-go-to"><h3 id="demo-menu-go-to" className={heading}>{t('demo/demo:goTo')}</h3>
-        <ul className="space-y-2">{destinations.map(([href, key, current]) => <li key={href}>
-          <DemoMenuLink href={href} current={current}>{t(`demo/demo:${key}`)}</DemoMenuLink></li>)}</ul>
+        <ul className="space-y-2">{destinations.map(([href, key, current, role]) => <li key={href}>
+          {role && (bootstrap.isPending || signedOut)
+            ? <DemoMenuControl current={current} disabled={bootstrap.isPending || pending} onClick={() => { void login(role); }}>{t(`demo/demo:${key}`)}</DemoMenuControl>
+            : <DemoMenuLink href={href} current={current}>{t(`demo/demo:${key}`)}</DemoMenuLink>}
+        </li>)}</ul>
       </nav>
       <section className={section} aria-labelledby="demo-menu-about"><h3 id="demo-menu-about" className={heading}>{t('demo/demo:about')}</h3>
         {expires ? <><p className="text-sm">{t('demo/demo:expires', { time: instantLabel(expires) })}</p>
