@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, desc, eq, inArray, isNull, lte, not, or } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, lt, lte, not, or } from 'drizzle-orm';
 import { AppError } from '@plaingym/shared';
 import { auditEvents, households, invoices, paymentAttempts, payments, refunds, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import type { ChargeOutcome, PaymentObject, PaymentObjectReference, Payments } from '../../../infra/payments/index.js';
@@ -42,7 +42,7 @@ export function createReconciliation(options: Options) {
     try { return await options.payments(gymId) as Payments | null; }
     catch (error) { if (error instanceof AppError && error.code === 'unavailable') return null; throw error; }
   }
-  /** Returns false for unknown, unmatched, or still-processing objects. Never guesses from search. */
+  /** Returns false for unknown, unconfirmed or unmatched objects. Never guesses from search. */
   async function apply(gymId: string, outcome: ChargeOutcome, context: MutationContext = system(gymId)): Promise<boolean> {
     if (context.gymId !== gymId) throw new Error('Payment outcome actor gym mismatch');
     if (outcome.status === 'unknown' || outcome.status === 'pending') return false;
@@ -69,7 +69,8 @@ export function createReconciliation(options: Options) {
         || (outcome.metadata.attemptId && outcome.metadata.attemptId !== attempt?.id)) return null;
       // Late success still needs its duplicate refund. Any other outcome on a terminal invoice only closes a still-unresolved
       // attempt; one already resolved is ignored before ID recovery, so it is never rewritten.
-      if (terminal(invoice) && outcome.status !== 'succeeded' && !(attempt && ['pending', 'requires_action'].includes(attempt.status))) return null;
+      if (terminal(invoice) && outcome.status !== 'succeeded' && outcome.status !== 'processing'
+        && !(attempt && ['pending', 'processing', 'requires_action'].includes(attempt.status))) return null;
       const home = (await tx.select().from(households).where(eq(households.id, invoice.householdId)))[0]!;
       if ((attempt?.stripeCustomerId ?? home.stripeCustomerId) !== outcome.customerId || invoice.currency !== outcome.currency.toUpperCase()
         || invoice.amountCents !== outcome.amount) return null;
@@ -86,7 +87,8 @@ export function createReconciliation(options: Options) {
           await audit(tx, context, clock, 'billing.runner.intent_recovered', 'payment_attempt', attempt.id,
             { paymentIntentId: outcome.id });
         }
-      } else if (outcome.status !== 'succeeded') return false;
+      } else if (outcome.status !== 'succeeded' && outcome.status !== 'processing'
+        && !(outcome.status === 'failed' && (outcome.code === 'insufficient_funds' || outcome.code === 'payment_method_unusable'))) return false;
       return { invoice, attempt };
     });
     if (!linked) return false;
@@ -120,7 +122,7 @@ export function createReconciliation(options: Options) {
       // Cancel only stale/unconfirmed work; the adapter serializes cancel against confirm and re-reads races.
       const attempt = await scope(gymId, async tx => (await tx.select().from(paymentAttempts)
         .where(eq(paymentAttempts.paymentIntentId, outcome.id)))[0]);
-      if (attempt && attempt.createdAt.getTime() > clock.now().getTime() - staleAfterMs) return false;
+      if (attempt && (attempt.status === 'processing' || attempt.createdAt.getTime() > clock.now().getTime() - staleAfterMs)) return false;
       const canceled = await provider.cancelCharge(outcome.id);
       if (await apply(gymId, canceled)) return true;
       // An orphan can safely be discarded only after Stripe confirms cancellation.
@@ -140,7 +142,8 @@ export function createReconciliation(options: Options) {
   async function pending(gymId: string, resolved?: Payments | null) {
     const before = new Date(clock.now().getTime() - staleAfterMs);
     const { attempts, switched } = await scope(gymId, async tx => ({
-      attempts: await tx.select().from(paymentAttempts).where(and(eq(paymentAttempts.status, 'pending'), lte(paymentAttempts.createdAt, before))),
+      attempts: await tx.select().from(paymentAttempts).where(or(and(eq(paymentAttempts.status, 'pending'), lte(paymentAttempts.createdAt, before)),
+        and(eq(paymentAttempts.status, 'processing'), lt(paymentAttempts.processingAt, new Date(clock.now().getTime() - 10 * 86400_000))))),
       switched: await latestTestSwitchId(tx, gymId),
     }));
     if (!attempts.length) return { inspected: 0, issues: [] };
@@ -197,9 +200,9 @@ export function createReconciliation(options: Options) {
         const issues: ReconciliationIssue[] = [];
         const references = await scope(gymId, async tx => {
           const attempts = await tx.select({ paymentIntentId: paymentAttempts.paymentIntentId }).from(paymentAttempts)
-            .where(inArray(paymentAttempts.status, ['pending', 'requires_action']));
+            .where(inArray(paymentAttempts.status, ['pending', 'processing', 'requires_action']));
           const checkouts = await tx.select({ checkoutSessionId: invoices.checkoutSessionId }).from(invoices)
-            .where(inArray(invoices.status, ['open', 'past_due']));
+            .where(inArray(invoices.status, ['open', 'past_due', 'processing']));
           const disputes = await restorableDisputes(tx, gymId);
           const returns = await tx.select({ processorId: refunds.processorId }).from(refunds).where(eq(refunds.status, 'pending'));
           return [
@@ -245,9 +248,12 @@ export function createReconciliation(options: Options) {
         } while (cursor);
         const pendingResult = await pending(gymId, provider);
         issues.push(...pendingResult.issues);
-        const remaining = await scope(gymId, tx => tx.select({ id: paymentAttempts.id }).from(paymentAttempts)
-          .where(eq(paymentAttempts.status, 'pending')));
+        const remaining = await scope(gymId, tx => tx.select({ id: paymentAttempts.id, invoiceId: paymentAttempts.invoiceId }).from(paymentAttempts)
+          .where(inArray(paymentAttempts.status, ['pending', 'processing'])));
         issues.push(...remaining.map(row => ({ kind: 'attempt', id: row.id, reason: 'unresolved' })));
+        const unresolvedInvoices = new Set(remaining.map(row => row.invoiceId));
+        const settling = await scope(gymId, tx => tx.select({ id: invoices.id }).from(invoices).where(eq(invoices.status, 'processing')));
+        for (const row of settling) if (!unresolvedInvoices.has(row.id)) issues.push({ kind: 'invoice', id: row.id, reason: 'unresolved' });
         const pendingRefunds = await scope(gymId, tx => tx.select({ id: refunds.id }).from(refunds).where(eq(refunds.status, 'pending')));
         issues.push(...pendingRefunds.map(row => ({ kind: 'refund', id: row.id, reason: 'unresolved' })));
         const unique = [...new Map(issues.map(issue => [`${issue.kind}:${issue.id}`, issue])).values()];

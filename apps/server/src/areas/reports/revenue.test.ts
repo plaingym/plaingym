@@ -279,7 +279,7 @@ describe('revenue report with real PostgreSQL and RLS', () => {
     await payment(f, excessBill.id, 130, '2026-03-04T12:00:00Z', 'other');
     await transitions.manualPayment(context, { invoiceId: bill.id, paymentId: uuidv7(), amountCents: 100, currency: 'USD', method: 'other', paidAt: '2026-03-04T12:00:00Z' });
     const duplicate = uuidv7();
-    await transitions.cardSucceeded(context, { invoiceId: bill.id, paymentId: duplicate, amountCents: 100, currency: 'USD',
+    await transitions.cardSucceeded(context, { method: 'card', invoiceId: bill.id, paymentId: duplicate, amountCents: 100, currency: 'USD',
       paymentIntentId: 'pi_' + uuidv7(), chargeId: 'ch_' + uuidv7(), paidAt: '2026-03-05T12:00:00Z' });
     const march = (await service.get(f, query)).data.currencies[0]!.buckets[1]!;
     expect(march.groups).toEqual(expect.arrayContaining([

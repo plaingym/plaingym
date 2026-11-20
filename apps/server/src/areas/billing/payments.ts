@@ -61,7 +61,7 @@ export async function requireCollectible(tx: Transaction, invoice: typeof invoic
   if (hasOpenDispute(invoice)) paymentConflict('open_dispute', 'Invoice has an open dispute');
   if (invoice.checkoutSessionId) paymentConflict('checkout_changed', 'Resolve the existing Checkout before recording another payment');
   if ((await tx.select({ id: paymentAttempts.id }).from(paymentAttempts).where(and(eq(paymentAttempts.invoiceId, invoice.id),
-    inArray(paymentAttempts.status, ['pending', 'requires_action']))).limit(1)).length) chargeSkipped('pending_attempt');
+    inArray(paymentAttempts.status, ['pending', 'processing', 'requires_action']))).limit(1)).length) chargeSkipped('pending_attempt');
 }
 const presentAttempt = (r: typeof paymentAttempts.$inferSelect) => c.paymentAttemptSchema.parse({
   id: r.id, createdAt: r.createdAt.toISOString(), invoiceId: r.invoiceId, attemptNumber: r.attemptNumber,
@@ -133,7 +133,7 @@ export function createPaymentService(options: PaymentOptions = {}) {
       switch (result.status) {
         case 'skipped': return chargeSkipped(result.reason);
         case 'settled_zero': return paymentConflict('zero_invoice', 'A zero-value invoice has no card attempt');
-        case 'succeeded': case 'failed': case 'action_required': case 'pending': case 'unknown':
+        case 'succeeded': case 'failed': case 'action_required': case 'pending': case 'processing': case 'unknown':
           return scope(context.gymId, async tx => presentAttempt((await tx.select().from(paymentAttempts)
             .where(eq(paymentAttempts.invoiceId, invoiceId)).orderBy(desc(paymentAttempts.attemptNumber)).limit(1))[0] ?? notFound()));
         default: { const exhaustive: never = result; return exhaustive; }

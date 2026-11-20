@@ -199,7 +199,7 @@ describe('class pack invoice effects', () => {
 
   it.each([false, true])('a full refund that later fails never restores credits (grant already ran: %s)', async activated => {
     const f = await fixture();
-    const success = { ...f.manual, paymentIntentId: 'pi_' + uuidv7(), chargeId: 'ch_' + uuidv7() };
+    const success = { ...f.manual, method: 'card' as const, paymentIntentId: 'pi_' + uuidv7(), chargeId: 'ch_' + uuidv7() };
     await f.transitions.cardSucceeded(f.context, success);
     if (activated) await f.run('activate_memberships');
     const refund = { ...f.refund(), processorId: 're_' + uuidv7() };
@@ -288,7 +288,7 @@ describe('class pack invoice effects', () => {
 
   it('names the credits a full refund reversed in the notice when that refund later fails', async () => {
     const f = await fixture();
-    const success = { ...f.manual, paymentIntentId: 'pi_' + uuidv7(), chargeId: 'ch_' + uuidv7() };
+    const success = { ...f.manual, method: 'card' as const, paymentIntentId: 'pi_' + uuidv7(), chargeId: 'ch_' + uuidv7() };
     await f.transitions.cardSucceeded(f.context, success);
     await f.run('activate_memberships');
     const refund = { ...f.refund(), processorId: 're_' + uuidv7() };

@@ -187,6 +187,15 @@ the invoice lock with an audit, without waiting for a webhook. All terminal
 provider results use `applyChargeOutcome` with the provider's `latestChargeId`.
 The runner does not set invoice processing, paid or failed states itself.
 
+A saved bank account enters `processing` on confirmation. The runner ends the job
+and skips further collection while the debit settles. A Canadian PAD confirm uses
+the saved mandate. Webhooks apply settlement and the hourly job retrieves the intent
+by ID after ten days in processing. Reconciliation leaves a processing intent at
+Stripe. A restore still counts the local attempt as unresolved until settlement.
+Insufficient funds permits up to three failed bank attempts on the invoice;
+an abandoned attempt, or one cancelled before it was confirmed, doesn't count. An
+unusable account stops automatic retries and another active method can become default.
+
 The default stale threshold is fifteen minutes, above the adapter's 20-second
 request timeout. No-ID attempts are invalidated with a compare-and-set and an
 audit; no charge could have been confirmed without saving the ID first. These

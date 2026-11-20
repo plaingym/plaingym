@@ -4,7 +4,7 @@ import { createTranslator, type Clock, type Translator } from '@plaingym/shared'
 import { locales } from '@plaingym/shared/locales';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { cardChargeIssue } from '@plaingym/shared/money';
-import type { InvoiceSnapshot } from '../../../core/interfaces/invoice-transitions.js';
+import type { BankFailureCode, InvoiceSnapshot } from '../../../core/interfaces/invoice-transitions.js';
 import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
 import { createEmailDeliveries, DeliveryError, deliveryAcceptance, recipientDigest, type Email } from '../../../infra/email/index.js';
 import { clock as defaultClock } from '../../../core/clock.js';
@@ -13,6 +13,7 @@ import { createSignedLinksIn, createSignedLinksService } from '../../links/servi
 import { householdRecipient } from '../../members/household-recipient.js';
 
 export interface TransitionNotice {
+  bankCode?: BankFailureCode;
   gymId: string;
   /** The persisted work this notice belongs to, stable across its job's retries: the effect, or a resend request's job.
    * Each failed charge and each requested receipt has its own, so a reminder or a resend gets its own send key. */
@@ -46,6 +47,9 @@ export function billingTranslator(translator?: Translator): Translator {
     const translated = translator?.(key, values);
     return translated && translated !== key ? translated : defaultTranslator(key, values);
   };
+}
+export function bankFailureMessage(code: BankFailureCode) {
+  return code === 'payment_method_unusable' ? 'bankUnusable' : 'bankFailed';
 }
 export function trustedBillingOrigin(value: string): URL {
   const origin = new URL(value);
@@ -87,7 +91,7 @@ export function createTransitionNotifications(options: {
     let preparation: Promise<Awaited<ReturnType<typeof options.prepare>>> | undefined;
     const prepare = () => preparation ??= options.prepare(gymId);
     const context = { gymId, actor: { kind: 'system' as const } };
-    const manualPayment = (kind === 'action' || kind === 'failed') && !!cardChargeIssue(invoice.amountCents, invoice.currency);
+    const manualPayment = !notice.bankCode && (kind === 'action' || kind === 'failed') && !!cardChargeIssue(invoice.amountCents, invoice.currency);
     let failure: unknown;
     for (const to of new Set(recipients)) {
       try {
@@ -123,7 +127,7 @@ export function createTransitionNotifications(options: {
           const updateUrl = pending.created[1] ? new URL(`/l/${pending.created[1].token}`, origin).href : '';
           const values = { number: invoice.number, amount: formatMoney(amountCents ?? notice.payment?.amountCents ?? invoice.amountCents, invoice.currency),
             payUrl, updateUrl, credits: credits ?? 0 };
-          const message = manualPayment ? 'manual' : kind;
+          const message = notice.bankCode ? bankFailureMessage(notice.bankCode) : manualPayment ? 'manual' : kind;
           const title = t(`billing/transitions:${message}Subject`, values);
           const creditsNote = credits && (kind === 'refundFailed' || kind === 'refundReversed') ? '\n\n' + t('billing/transitions:creditsReversedNote', values) : '';
           const text = t(`billing/transitions:${message}Body`, values) + creditsNote;
@@ -132,7 +136,14 @@ export function createTransitionNotifications(options: {
             return;
           }
           attempted = true;
-          const sent = await deliveries.attempt(pending.reservation, prepared.email, { to, subject: title, text, html: `<p>${escape(text).replaceAll('\n', '<br>')}</p>` });
+          let html = escape(text).replaceAll('\n', '<br>');
+          if (notice.bankCode) {
+            for (const url of [payUrl, updateUrl].filter(Boolean)) {
+              const href = escape(url);
+              html = html.replaceAll(href, `<a href="${href}" style="word-break:break-all">${href}</a>`);
+            }
+          }
+          const sent = await deliveries.attempt(pending.reservation, prepared.email, { to, subject: title, text, html: `<p>${html}</p>` });
           if (sent.status === 'suppressed' && (staff || pending.created.length))
             throw new DeliveryError('not_accepted', staff ? 'Staff notice was suppressed' : 'Dunning email was suppressed');
         } catch (error) {

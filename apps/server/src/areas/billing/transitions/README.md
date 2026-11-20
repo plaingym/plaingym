@@ -55,7 +55,17 @@ accepted, mints no links. Dunning links are revoked when nothing was sent (a ref
 or another attempt holding the key); a link that may have been delivered stays usable and is never
 sent again.
 
-`createInvoiceTransitions({ scope?, clock? })` implements the frozen
+`paymentProcessing` records the intent on the invoice's processing audit and timestamps
+its pending attempt when present. `cardSucceeded` records a settled debit as
+`bank_debit`. A cycle or assignment invoice returns to past due after a bank
+failure, and a past-due assignment invoice stays past due on a later card
+decline. A one-off charge returns to open. A closed account is revoked by its
+processor method ID and the household receives an update-method link. The
+invoice's stopped-retry audit also cancels work already queued. `processingFailed`
+handles Checkout failures without creating a runner attempt. For an unusable
+Checkout method it retrieves the failed intent before starting the transaction.
+
+`createInvoiceTransitions({ scope?, clock?, paymentsFor? })` implements the frozen
 `InvoiceTransitions` interface. Issued invoices are locked for every payment,
 failure and refund. Processor intent/Charge IDs and local payment/refund UUIDs
 deduplicate commands. Reusing an identity with different money or ownership is
@@ -356,7 +366,7 @@ A refund that names a released tagged reservation and later succeeds is recorded
 as an external refund. `notice: 'refund_arrived'` tells staff it reached Stripe,
 correcting the release notice once; a durable audit marker deduplicates this follow-up.
 A terminal invoice never moves for failed, action-needed and cancellation outcomes.
-An attempt already resolved on it stays as recorded; one still pending or action-needed
+An attempt already resolved on it stays as recorded. An attempt still pending, processing or action-needed
 (a charge that crossed a manual payment, say) is closed, so reconciliation stops
 listing it. Late card successes still record and refund duplicates.
 

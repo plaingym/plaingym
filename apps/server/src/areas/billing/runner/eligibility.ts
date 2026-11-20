@@ -8,6 +8,7 @@ import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
 import type { GymSettings } from '../../../core/interfaces/gym-settings.js';
 import { isAssignmentInvoice } from '../assignment-invoices.js';
 import { abandonedAttempt, recorded } from '../transitions/store.js';
+import { bankAttemptsExhausted, retriesStopped } from '../transitions/bank.js';
 export { assignmentInvoiceCondition, isAssignmentInvoice } from '../assignment-invoices.js';
 
 export type ChargeMode = 'automatic' | 'retry' | 'staff';
@@ -20,7 +21,7 @@ export interface Eligible {
   status: 'eligible';
   invoice: typeof invoices.$inferSelect;
   latest: typeof paymentAttempts.$inferSelect | undefined;
-  payment: { customerId: string; methodId: string } | null;
+  payment: { customerId: string; methodId: string; mandateId: string | null } | null;
 }
 /** Exactly the same rules before provider I/O and again under the reservation lock. */
 export async function eligibility(tx: Transaction, gym: GymSettings, clock: Clock, invoiceId: string,
@@ -35,9 +36,9 @@ export async function eligibility(tx: Transaction, gym: GymSettings, clock: Cloc
     return skipped('not_auto_collectable');
   const attempts = await tx.select().from(paymentAttempts).where(eq(paymentAttempts.invoiceId, invoice.id))
     .orderBy(asc(paymentAttempts.attemptNumber));
-  if (attempts.some(row => row.status === 'pending')) return skipped('pending_attempt');
+  if (attempts.some(row => row.status === 'pending' || row.status === 'processing')) return skipped('pending_attempt');
   if (mode === 'retry') {
-    if (invoice.kind !== 'cycle') return skipped('not_auto_collectable');
+    if (invoice.kind !== 'cycle' && !(invoice.status === 'past_due' && await isAssignmentInvoice(tx, invoiceId))) return skipped('not_auto_collectable');
     const deadline = (await retryDeadlines(tx, gym, invoiceId)).filter(date => date <= clock.now()).at(-1);
     if (!deadline || retryWindowUsed(attempts, deadline))
       return skipped('outside_retry_window');
@@ -51,12 +52,15 @@ export async function eligibility(tx: Transaction, gym: GymSettings, clock: Cloc
   const method = (await tx.select().from(paymentMethods).where(and(eq(paymentMethods.householdId, home.id),
     eq(paymentMethods.isDefault, true), isNull(paymentMethods.revokedAt))))[0];
   if (!home.stripeCustomerId || !method) return skipped('no_saved_card');
-  return { status: 'eligible', invoice, latest, payment: { customerId: home.stripeCustomerId, methodId: method.processorId } };
+  if (method.type !== 'card' && await bankAttemptsExhausted(tx, invoice)) return skipped('already_attempted');
+  if (method.type === 'acss_debit' && !method.mandateId) return skipped('no_saved_card');
+  return { status: 'eligible', invoice, latest, payment: { customerId: home.stripeCustomerId, methodId: method.processorId,
+    mandateId: method.type === 'acss_debit' ? method.mandateId : null } };
 }
 /** The invoice's retry windows: each saved retry day at 09:00 gym time, counted from its first failure. None before one. */
 export async function retryDeadlines(tx: Transaction, gym: GymSettings, invoiceId: string) {
   const anchor = await recorded(tx, 'billing.invoice.dunning_started', invoiceId);
-  if (!anchor) return [];
+  if (!anchor || await recorded(tx, retriesStopped, invoiceId)) return [];
   const firstDate = localDate(anchor.occurredAt, gym.timezone);
   // Legacy invoices have no saved days; an explicitly empty schedule must stay empty.
   const saved = (anchor.after as { retryDays?: unknown } | null)?.retryDays;
@@ -66,7 +70,7 @@ export async function retryDeadlines(tx: Transaction, gym: GymSettings, invoiceI
 /** The first unused retry window; an abandoned create never consumes a window. Pending outcomes need reconciliation. */
 export async function nextRetryDeadline(tx: Transaction, gym: GymSettings, invoiceId: string,
   attempts: readonly (typeof paymentAttempts.$inferSelect)[]) {
-  if (attempts.some(row => row.status === 'pending')) return undefined;
+  if (attempts.some(row => row.status === 'pending' || row.status === 'processing')) return undefined;
   return (await retryDeadlines(tx, gym, invoiceId)).find(date =>
     !retryWindowUsed(attempts, date));
 }

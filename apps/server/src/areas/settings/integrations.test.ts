@@ -420,7 +420,12 @@ describe('Settings → Payments: test to live', () => {
     expect([...account('rk_live_gymc').objects.values()].some((object) => object.object === 'webhook_endpoint')).toBe(false);
     expect(await snapshot(gymC)).toEqual({ ...before, attempts: [...before.attempts, pending] });
     expect(await row(gymC)).toEqual(gym);
-    await database.forGym(gymC, (tx) => tx.update(paymentAttempts).set({ status: 'failed', resolvedAt: clock.now() }).where(eq(paymentAttempts.id, pending.id)));
+    await database.forGym(gymC, tx => tx.update(paymentAttempts).set({ status: 'processing', processingAt: clock.now() }).where(eq(paymentAttempts.id, pending.id)));
+    expect((await saveTo(appC(), 'rk_live_gymc', { clearTestData: true })).json?.error?.details).toEqual({ restrictedKey: ['payments_in_progress'] });
+    await database.forGym(gymC, tx => tx.update(paymentAttempts).set({ status: 'failed', resolvedAt: clock.now() }).where(eq(paymentAttempts.id, pending.id)));
+    await database.forGym(gymC, tx => tx.update(invoices).set({ status: 'processing' }).where(eq(invoices.id, open.id)));
+    expect((await saveTo(appC(), 'rk_live_gymc', { clearTestData: true })).json?.error?.details).toEqual({ restrictedKey: ['payments_in_progress'] });
+    await database.forGym(gymC, tx => tx.update(invoices).set({ status: 'open' }).where(eq(invoices.id, open.id)));
     // So does a refund reservation, until it's released.
     const transitions = createInvoiceTransitions({ scope: database.forGym, clock }), system = { gymId: gymC, actor: { kind: 'system' as const } };
     const stuck = { invoiceId: paid.id, paymentId: cardPayment.id, refundId: uuidv7(), amountCents: 100, currency: cardPayment.currency };

@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { auditEvents, households, paymentAttempts, paymentMethods, type Transaction } from '@plaingym/db';
+import type { Clock } from '@plaingym/shared';
+import type { MutationContext } from '../../../core/interfaces/common.js';
+import { readGymSettings } from '../../settings/settings.js';
+import { promoteDefaultCard } from '../payments.mutations.js';
+import { abandonedAttempt, audit, canceledAttempt, type InvoiceRow } from './store.js';
+
+export const retriesStopped = 'billing.invoice.retries_stopped';
+export const invoiceProcessing = 'billing.invoice.processing';
+
+/** The invoice lock serializes the intent history, including Checkout payments without a runner attempt. */
+export async function processingIntents(tx: Transaction, invoiceId: string) {
+  const rows = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
+    eq(auditEvents.targetId, invoiceId), eq(auditEvents.action, invoiceProcessing)));
+  return rows.map(row => row.after as { paymentIntentId: string; sequence: number })
+    .sort((first, second) => first.sequence - second.sequence).map(event => event.paymentIntentId);
+}
+
+/** Three failed debits that reached the bank; an abandoned or cancelled-before-confirm attempt never did. */
+export async function bankAttemptsExhausted(tx: Transaction, invoice: InvoiceRow) {
+  const failed = await tx.select({ declineCode: paymentAttempts.declineCode }).from(paymentAttempts).innerJoin(paymentMethods, and(
+    eq(paymentMethods.gymId, paymentAttempts.gymId), eq(paymentMethods.processorId, paymentAttempts.savedPaymentMethod)))
+    .where(and(eq(paymentAttempts.invoiceId, invoice.id), eq(paymentMethods.householdId, invoice.householdId),
+      eq(paymentAttempts.status, 'failed'), inArray(paymentMethods.type, ['us_bank_account', 'acss_debit'])));
+  return failed.filter(row => !abandonedAttempt(row) && !canceledAttempt(row)).length >= 3;
+}
+
+export async function revokeBankMethod(tx: Transaction, context: MutationContext, clock: Clock, invoice: InvoiceRow, processorId: string) {
+  await tx.select({ id: households.id }).from(households).where(eq(households.id, invoice.householdId)).for('update');
+  const [removed] = await tx.update(paymentMethods).set({ revokedAt: clock.now(), isDefault: false }).where(and(
+    eq(paymentMethods.householdId, invoice.householdId), eq(paymentMethods.processorId, processorId),
+    inArray(paymentMethods.type, ['us_bank_account', 'acss_debit']), isNull(paymentMethods.revokedAt))).returning();
+  if (!removed) return; // Checkout can use an account the household never saved.
+  await audit(tx, context, clock, 'billing.payment_method.revoked', 'payment_method', removed.id, { invoiceId: invoice.id });
+  const gym = await readGymSettings(tx, context.gymId);
+  await promoteDefaultCard(tx, context, clock, invoice.householdId, gym.timezone);
+}

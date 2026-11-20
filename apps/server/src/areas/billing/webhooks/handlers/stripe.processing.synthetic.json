@@ -1,0 +1,41 @@
+{
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only; recorded synthetic StripeFixtures API exchanges, no live account",
+  "version": 1,
+  "gymId": "00000000-0000-7000-8000-000000000001",
+  "exchanges": [
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
+      },
+      "output": {
+        "id": "pi_1",
+        "object": "payment_intent",
+        "status": "processing",
+        "customer": "cus_fixture",
+        "amount": 10000,
+        "currency": "usd",
+        "payment_method": "pm_usbank_6789",
+        "latest_charge": {
+          "id": "ch_2",
+          "object": "charge",
+          "payment_intent": "pi_1",
+          "payment_method_details": {
+            "type": "us_bank_account"
+          }
+        },
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002",
+          "attempt_id": "00000000-0000-7000-8000-000000000003"
+        }
+      }
+    }
+  ]
+}

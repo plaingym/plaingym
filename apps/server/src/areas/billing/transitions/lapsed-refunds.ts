@@ -83,7 +83,7 @@ export async function settleLapsed(options: LapsedRefundOptions, context: Mutati
   if (payment.gymId !== context.gymId || !payment.paymentIntentId) notFound();
   const release = (row: RefundRow, own?: Refund) => options.transitions.refund(context, { invoiceId: payment.invoiceId, paymentId: payment.id,
     refundId: row.id, amountCents: row.amountCents, currency: row.currency, ...(own ? { processorId: own.id, status: own.status } : { status: 'failed' as const }) });
-  if (payment.method === 'card' && payment.reference === stripeTestPaymentReference) {
+  if ((payment.method === 'card' || payment.method === 'bank_debit') && payment.reference === stripeTestPaymentReference) {
     await settleEach(eligible, row => release(row));
     return deferred;
   }

@@ -28,13 +28,13 @@ import { createCampaignsService } from '../../../links/campaigns.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 const secret = 'whsec_SYNTHETIC';
-async function fixture(kind: 'cycle' | 'one_off' = 'cycle') {
+async function fixture(kind: 'cycle' | 'one_off' = 'cycle', savedMethod = 'pm_test') {
   const gymId = uuidv7(), clock = new TestClock('2026-10-25T12:00:00Z');
   await factory('gyms', gymId, { currency: 'USD', billingEnabled: true, memberEmailsEnabled: true });
   const household = await factory('households', gymId, { stripeCustomerId: 'cus_fixture', email: 'payer@example.invalid' });
   const invoice = await factory('invoices', gymId, { householdId: household.id, currency: 'USD', status: 'open', kind,
     number: 1, periodStartsOn: '2026-10-01', periodEndsOn: '2026-11-01' });
-  const attempt = await factory('paymentAttempts', gymId, { invoiceId: invoice.id, currency: 'USD', paymentIntentId: 'pi_1' });
+  const attempt = await factory('paymentAttempts', gymId, { invoiceId: invoice.id, currency: 'USD', paymentIntentId: 'pi_1', savedPaymentMethod: savedMethod });
   const transport = new StripeFixtures(gymId, Math.floor(clock.now().getTime() / 1000));
   const metadata = { gym_id: gymId, invoice_id: invoice.id, attempt_id: attempt.id };
   transport.objects.set('pi_1', { id: 'pi_1', object: 'payment_intent', amount: 10000, currency: 'usd', customer: 'cus_fixture',
@@ -92,6 +92,99 @@ async function recordedIntent(f: Fixture, card: string) {
 }
 
 describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures', () => {
+  it.each(['succeeded', 'insufficient_funds', 'account_closed'] as const)('settles a bank debit once on %s', async outcome => {
+    const bank = 'pm_usbank_1113', f = await fixture('cycle', bank);
+    const intent = f.transport.objects.get('pi_1')!, charge = f.transport.objects.get('ch_2')!;
+    Object.assign(intent, { status: 'processing', payment_method: bank });
+    charge.payment_method_details = { type: 'us_bank_account' };
+    await factory('paymentMethods', f.gymId, { householdId: f.household.id, processorId: bank, type: 'us_bank_account', isDefault: true });
+    const card = await factory('paymentMethods', f.gymId, { householdId: f.household.id, processorId: 'pm_replacement' });
+    await f.run('payment_intent.processing'); await f.run('payment_intent.processing');
+    expect((await f.read()).audits.filter(row => row.action === 'billing.invoice.processing')).toHaveLength(1);
+    intent.status = outcome === 'succeeded' ? 'succeeded' : 'requires_payment_method';
+    if (outcome !== 'succeeded') intent.last_payment_error = { code: outcome };
+    const event = outcome === 'succeeded' ? 'payment_intent.succeeded' : 'payment_intent.payment_failed';
+    await f.run(event); await f.run(event); await f.drain();
+    const rows = await f.read();
+    expect(f.email.messages).toHaveLength(1);
+    if (outcome === 'succeeded') {
+      expect(rows.payments).toMatchObject([{ method: 'bank_debit' }]);
+      expect(rows.attempts).toMatchObject([{ status: 'succeeded' }]);
+      Object.assign(intent, { status: 'requires_payment_method', last_payment_error: { code: 'account_closed' } });
+      await f.run('payment_intent.payment_failed'); await f.drain();
+      expect((await f.read()).invoice.status).toBe('paid');
+      expect(f.email.messages).toHaveLength(1);
+    } else {
+      expect(rows.invoice.status).toBe('past_due');
+      expect(f.email.messages[0]!.text).toMatch(/bank payment.*invoice 1 didn't go through/);
+      const retries = f.jobs.jobs.filter(job => job.runAt > f.clock.now());
+      if (outcome === 'account_closed') {
+        expect(rows.methods.find(row => row.processorId === bank)).toMatchObject({ isDefault: false, revokedAt: f.clock.now() });
+        expect(rows.methods.find(row => row.id === card.id)?.isDefault).toBe(true);
+        expect(f.email.messages[0]!.text).toMatch(/add a new payment method at https:\/\/gym\.example\.invalid\/l\//);
+        expect(f.email.messages[0]!.html).toContain('<a href="https://gym.example.invalid/l/');
+        expect(retries).toHaveLength(0);
+      } else {
+        expect(rows.methods.find(row => row.processorId === bank)?.isDefault).toBe(true);
+        expect(retries).toHaveLength(2);
+      }
+    }
+  });
+  it.each([
+    ['cycle', 'insufficient_funds'], ['cycle', 'account_closed'],
+    ['assignment', 'insufficient_funds'], ['one_off', 'insufficient_funds'],
+  ] as const)('recovers a %s Checkout debit without an attempt after %s', async (kind, code) => {
+    const f = await fixture(kind === 'cycle' ? 'cycle' : 'one_off'), intent = f.transport.objects.get('pi_1')!;
+    if (kind === 'assignment') await factory('invoiceLineItems', f.gymId, { householdId: f.household.id, invoiceId: f.invoice.id, kind: 'signup_fee' });
+    await db.forGym(f.gymId, tx => tx.update(paymentAttempts).set({ status: 'failed', paymentIntentId: 'pi_old' }).where(eq(paymentAttempts.id, f.attempt.id)));
+    const bank = await factory('paymentMethods', f.gymId, { householdId: f.household.id, processorId: 'pm_bank', type: 'us_bank_account' });
+    const other = await factory('paymentMethods', f.gymId, { householdId: f.household.id, processorId: 'pm_other', type: 'us_bank_account', isDefault: true });
+    Object.assign(intent, { status: 'processing', metadata: { gym_id: f.gymId, invoice_id: f.invoice.id }, payment_method: 'pm_bank' });
+    f.transport.objects.get('ch_2')!.payment_method_details = { type: 'us_bank_account' };
+    await f.run('payment_intent.processing');
+    expect((await f.read()).invoice.status).toBe('processing');
+    Object.assign(intent, { status: 'requires_payment_method', last_payment_error: { code } });
+    await f.run('payment_intent.payment_failed'); await f.run('payment_intent.payment_failed'); await f.drain();
+    const rows = await f.read();
+    expect(rows.invoice.status).toBe(kind === 'one_off' ? 'open' : 'past_due');
+    expect(rows.attempts).toMatchObject([{ id: f.attempt.id, paymentIntentId: 'pi_old' }]);
+    expect(rows.methods.find(row => row.id === bank.id)?.revokedAt).toEqual(code === 'account_closed' ? f.clock.now() : null);
+    expect(rows.methods.find(row => row.id === other.id)).toMatchObject({ isDefault: true, revokedAt: null });
+    expect(f.email.messages).toHaveLength(kind === 'one_off' ? 0 : 1);
+    const actor = { gymId: f.gymId, actor: { kind: 'system' as const } };
+    expect((await f.composed.transitions.paymentProcessing(actor, { invoiceId: f.invoice.id, paymentIntentId: 'pi_1' })).outcome).toBe('ignored');
+  });
+  it('replays a recorded processing event read against its runner reservation', async () => {
+    const f = await fixture('cycle', 'pm_usbank_6789');
+    const tape = (await readFile(new URL('./stripe.processing.synthetic.json', import.meta.url), 'utf8'))
+      .replaceAll('00000000-0000-7000-8000-000000000001', f.gymId).replaceAll('00000000-0000-7000-8000-000000000002', f.invoice.id)
+      .replaceAll('00000000-0000-7000-8000-000000000003', f.attempt.id);
+    const transport = replayTransport(JSON.parse(tape) as Tape, f.gymId);
+    await f.run('payment_intent.processing', { kind: 'charge', id: 'pi_1' }, new StripePayments(f.gymId, { transport, clock: f.clock, webhookSecret: secret }));
+    expect((await f.read()).attempts).toMatchObject([{ status: 'processing', processingAt: f.clock.now() }]);
+    transport.assertConsumed();
+  });
+  it('cancels outstanding retry effects when a later bank attempt reports a closed account', async () => {
+    const f = await fixture(), first = f.transport.objects.get('pi_1')!;
+    Object.assign(first, { status: 'requires_payment_method', last_payment_error: { code: 'card_declined' } });
+    await f.run('payment_intent.payment_failed');
+    const scheduled = f.jobs.jobs.filter(job => job.runAt > f.clock.now());
+    expect(scheduled).toHaveLength(2);
+    const bank = await factory('paymentMethods', f.gymId, { householdId: f.household.id, processorId: 'pm_closed', type: 'us_bank_account', isDefault: true });
+    const attempt = await factory('paymentAttempts', f.gymId, { invoiceId: f.invoice.id, attemptNumber: 2, paymentIntentId: 'pi_bank', savedPaymentMethod: bank.processorId });
+    f.transport.objects.set('pi_bank', { ...first, id: 'pi_bank', status: 'processing', payment_method: bank.processorId, latest_charge: 'ch_bank',
+      metadata: { gym_id: f.gymId, invoice_id: f.invoice.id, attempt_id: attempt.id } });
+    f.transport.objects.set('ch_bank', { id: 'ch_bank', payment_intent: 'pi_bank', payment_method_details: { type: 'us_bank_account' } });
+    const ref = { kind: 'charge' as const, id: 'pi_bank' };
+    await f.run('payment_intent.processing', ref);
+    Object.assign(f.transport.objects.get(ref.id)!, { status: 'requires_payment_method', last_payment_error: { code: 'account_closed' } });
+    await f.run('payment_intent.payment_failed', ref);
+    const retry = vi.fn(async () => {});
+    f.composed.attachRetry(retry);
+    f.clock.advance(8 * 86400_000);
+    for (const job of scheduled) await f.composed.effects.run((job.payload as { effectId: string }).effectId, f.context);
+    expect(retry).not.toHaveBeenCalled();
+  });
   it('records a late success webhook on a void invoice as a duplicate and refunds it once', async () => {
     const f = await fixture();
     const context = { gymId: f.gymId, actor: { kind: 'system' as const } };

@@ -11,7 +11,7 @@ import { createSmsDeliveries, deliveryAcceptance, MemberSms } from '../../../inf
 import { createSignedLinksIn, revokeSignedLinkIn } from '../../links/service.js';
 import { householdNoticePhones, type SmsRecipientGroup } from '../../members/sms-recipients.js';
 import type { SmsResolver } from '../../settings/sms.js';
-import { billingTranslator, trustedBillingOrigin, type TransitionNotice } from './notifications.js';
+import { bankFailureMessage, billingTranslator, trustedBillingOrigin, type TransitionNotice } from './notifications.js';
 
 export interface BillingSmsOptions {
   scope?: typeof forGym;
@@ -159,7 +159,7 @@ export function createTransitionSmsNotifications(options: BillingSmsOptions) {
     const invoice = await scope(notice.gymId, async tx => (await tx.select().from(invoices)
       .where(and(eq(invoices.id, notice.invoice.id), eq(invoices.householdId, notice.invoice.householdId))))[0]);
     if (!invoice) return;
-    const manual = kind !== 'receipt' && !!cardChargeIssue(invoice.amountCents, invoice.currency);
+    const manual = !notice.bankCode && kind !== 'receipt' && !!cardChargeIssue(invoice.amountCents, invoice.currency);
     await send({ gymId: notice.gymId, householdId: invoice.householdId,
       key: first => `billing.sms.${kind === 'receipt' ? 'receipt' : 'dunning'}:${invoice.id}:${notice.generation}:${first}`,
       eligible: async tx => !!(await tx.select({ id: invoices.id }).from(invoices).where(and(eq(invoices.id, invoice.id),
@@ -169,7 +169,7 @@ export function createTransitionSmsNotifications(options: BillingSmsOptions) {
         const fields = { householdId: invoice.householdId, expiresAt: new Date(clock.now().getTime() + 21 * 86400_000).toISOString() };
         return [{ ...fields, purpose: 'pay_invoice', invoiceId: invoice.id }, { ...fields, purpose: 'update_card' }];
       },
-      body: (t, urls) => t(`billing/sms:${manual ? 'manual' : kind}`, { number: invoice.number ?? invoice.id,
+      body: (t, urls) => t(`billing/sms:${notice.bankCode ? bankFailureMessage(notice.bankCode) : manual ? 'manual' : kind}`, { number: invoice.number ?? invoice.id,
         amount: formatMinorUnits(notice.payment?.invoiceId === invoice.id ? notice.payment.amountCents : invoice.amountCents, invoice.currency),
         payUrl: urls[0] ?? '', updateUrl: urls[1] ?? '' }),
     });

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import '@hono/zod-openapi';
 import { describe, expect, it, vi } from 'vitest';
-import { uuidv7 } from '@plaingym/db';
+import { eq } from 'drizzle-orm';
+import { paymentMethods, uuidv7 } from '@plaingym/db';
 import { FakeJobs, PostgresJobs } from '../../../infra/jobs/index.js';
 import { FakeEmail } from '../../../infra/email/index.js';
 import { createMembershipService } from '../memberships.js';
@@ -13,9 +14,30 @@ import { createWebhookInbox } from '../webhooks/inbox.js';
 import { composeBillingWebhooks } from '../webhooks/handlers/composition.js';
 import { useRunnerFixture } from './runner.fixture.test-helper.js';
 
-const { db, factory, fixture, checkout } = useRunnerFixture();
+const { db, factory, fixture, checkout, invoice } = useRunnerFixture();
 
 describe('retry schedule and Checkout exclusion', () => {
+  it('stops scheduled and staff bank collection after three insufficient-funds attempts', async () => {
+    const f = await fixture({ currency: 'USD' }), bill = await invoice(f);
+    const method = { type: 'us_bank_account' as const, id: 'pm_usbank_2227', customerId: 'cus_test', last4: '2227', bankName: 'Test bank' };
+    f.provider.recordPaymentMethod(method);
+    await db.forGym(f.gymId, tx => tx.update(paymentMethods).set({ type: method.type, processorId: method.id }).where(eq(paymentMethods.householdId, f.home.id)));
+    const actor = { gymId: f.gymId, actor: { kind: 'user' as const, userId: (await factory('authUser', f.gymId)).id } };
+    for (let n = 1; n <= 3; n++) {
+      expect(await f.runner.charge(f.gymId, bill.id, { mode: 'staff', context: actor })).toEqual({ status: 'processing' });
+      const attempt = (await f.read()).attempts.at(-1)!;
+      await f.transitions.cardFailed(actor, { invoiceId: bill.id, attemptId: attempt.id,
+        paymentIntentId: attempt.paymentIntentId!, outcome: 'insufficient_funds' });
+    }
+    const rows = await f.read();
+    expect(rows.attempts.map(row => row.declineCode)).toEqual(Array(3).fill('insufficient_funds'));
+    expect(rows.audits.filter(row => row.action === 'billing.invoice.retries_stopped')).toHaveLength(1);
+    f.clock.advance(7 * 86400_000);
+    await f.runner.retry(bill.id, f.context);
+    expect(await f.runner.charge(f.gymId, bill.id, { mode: 'staff', context: actor })).toEqual({ status: 'skipped', reason: 'already_attempted' });
+    expect((await f.read()).attempts).toHaveLength(3);
+    expect(f.serviceOptions.jobs.jobs).toHaveLength(0);
+  });
   it('shares webhook transitions for assignment collection and attaches the real retry to the effect worker', async () => {
     const f = await fixture(), jobs = new FakeJobs(f.clock), email = new FakeEmail();
     const paymentsFor = async () => f.provider;

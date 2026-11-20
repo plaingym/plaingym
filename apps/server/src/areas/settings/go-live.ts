@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, desc, eq, gt, inArray, isNull, lt } from 'drizzle-orm';
-import { forGym, gyms, members, households, classTemplates, memberships, plans, paymentMethods, paymentAttempts,
+import { forGym, gyms, invoices, members, households, classTemplates, memberships, plans, paymentMethods, paymentAttempts,
   refunds, waiverTemplates, revisionGuard, assertRevised, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { localDate } from '@plaingym/shared/time';
@@ -47,22 +47,24 @@ async function pastDue(tx: Transaction, today: string, lock = false) {
  * atomically in their audit, so this gate checks it under the same gym lock as enabling billing.
  */
 async function reconciliation(tx: Transaction, stripe: boolean) {
-  const [pending] = await tx.select({ id: paymentAttempts.id }).from(paymentAttempts).where(eq(paymentAttempts.status, 'pending')).limit(1);
+  const [pending] = await tx.select({ id: paymentAttempts.id }).from(paymentAttempts).where(inArray(paymentAttempts.status, ['pending', 'processing'])).limit(1);
+  const [processingInvoice] = await tx.select({ id: invoices.id }).from(invoices).where(eq(invoices.status, 'processing')).limit(1);
   const [pendingRefund] = await tx.select({ id: refunds.id }).from(refunds).where(eq(refunds.status, 'pending')).limit(1);
   const { restore, request, checked, report } = await readRestoreCheck(tx);
   const snapshotAt = (request?.after as { snapshotAt?: string } | undefined)?.snapshotAt ?? null;
   const savedMode = await readSavedStripeMode(tx);
   const clear = report?.unresolved === 0 && restoreCheckCoversStripe(report, stripe, savedMode);
-  return { applicable: !!restore || !!pending || !!pendingRefund, restored: !!restore,
+  const inFlight = !!pending || !!processingInvoice || !!pendingRefund;
+  return { applicable: !!restore || inFlight, restored: !!restore,
     modeMessage: stripe && savedMode && report?.stripeMode && savedMode !== report.stripeMode ? t('settings/go-live:reconcileModeChanged', {
       checkedMode: t('settings/integrations:payments.mode_' + report.stripeMode), savedMode: t('settings/integrations:payments.mode_' + savedMode),
     }) : undefined,
     detail: restore ? { restoreId: restore.id, snapshotAt, checkedAt: checked?.occurredAt.toISOString() ?? null,
       inspected: report?.inspected ?? null, unresolved: report?.unresolved ?? null, stripeConfigured: report?.stripeConfigured ?? null,
       stripeMode: report?.stripeMode ?? null } : null,
-    ready: !pending && !pendingRefund && (!restore || clear),
+    ready: !inFlight && (!restore || clear),
     // Nothing was left to reconcile: no pending work, and any restore's check found no payment objects at all.
-    empty: !pending && !pendingRefund && (!restore || (clear && report.inspected === 0)) };
+    empty: !inFlight && (!restore || (clear && report.inspected === 0)) };
 }
 
 export function createGoLiveService(options: {

@@ -15,10 +15,11 @@ export interface InvoiceSnapshot extends Money {
   readonly householdId: Id;
   readonly number: number;
   readonly kind: 'cycle' | 'one_off';
-  readonly status: 'open' | 'past_due' | 'paid' | 'void' | 'partially_refunded' | 'refunded';
+  readonly status: 'open' | 'processing' | 'past_due' | 'paid' | 'void' | 'partially_refunded' | 'refunded';
   readonly paidAt: IsoInstant | null;
 }
 export interface CardSuccess extends Money {
+  readonly method: 'card' | 'bank_debit';
   readonly invoiceId: Id;
   readonly paymentId: Id;
   readonly paymentIntentId: string;
@@ -35,8 +36,11 @@ export interface CardFailure {
    * never confirmed) gets declineCode confirm_abandoned and leaves the invoice, dunning and retries untouched; any
    * other cancellation gets intent_canceled and is a decline.
    * The adapter normalizes every authentication_required shape to requires_action. */
-  readonly outcome: 'failed' | 'requires_action' | 'canceled';
+  readonly outcome: 'failed' | 'requires_action' | 'canceled' | BankFailureCode;
 }
+export type BankFailureCode = 'insufficient_funds' | 'payment_method_unusable';
+export interface ProcessingPayment { invoiceId: Id; paymentIntentId: string; attemptId?: Id }
+export interface ProcessingFailure { invoiceId: Id; paymentIntentId: string; code: BankFailureCode }
 export interface ManualPayment extends Money {
   readonly invoiceId: Id;
   /** Local UUID, reused when the same command is retried. */
@@ -83,6 +87,8 @@ export interface InvoiceTransitionResult {
  * A full refund queues reverse_credits only when the invoice has a class pack sale.
  */
 export interface InvoiceTransitions {
+  paymentProcessing(context: MutationContext, request: ProcessingPayment): Promise<InvoiceTransitionResult>;
+  processingFailed(context: MutationContext, request: ProcessingFailure): Promise<InvoiceTransitionResult>;
   voidInvoice(context: MutationContext, request: VoidInvoiceRequest & { invoiceId: Id }): Promise<InvoiceTransitionResult>;
   settleZero(context: MutationContext, request: { invoiceId: Id }): Promise<InvoiceTransitionResult>;
   cardSucceeded(context: MutationContext, request: CardSuccess): Promise<InvoiceTransitionResult>;
@@ -105,7 +111,8 @@ export interface InvoiceAttemptFixture {
   readonly id: Id;
   readonly number: number;
   readonly paymentIntentId: string;
-  readonly status: 'pending' | 'succeeded' | 'failed' | 'requires_action';
+  readonly status: 'pending' | 'processing' | 'succeeded' | 'failed' | 'requires_action';
+  readonly processingAt?: IsoInstant;
   /** Persisted diagnostic; intent_canceled and confirm_abandoned prevent stale successes resurrecting an intent. */
   readonly declineCode?: string | null;
 }
@@ -116,6 +123,7 @@ export type InvoiceEffect = {
   readonly paymentId?: Id;
 };
 interface StoredPayment extends Money {
+  method: CardSuccess['method'] | ManualPayment['method'];
   invoiceId: Id; id: Id; accepted: boolean; fingerprint: string; paymentIntentId?: string; chargeId?: string;
 }
 export interface InvoiceRefundFixture {
@@ -142,8 +150,9 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
   readonly #refunds = new Map<string, StoredRefund>();
   readonly #processorRefunds = new Map<string, string>();
   readonly #effects: InvoiceEffect[] = [];
+  readonly #processingHistory = new Map<string, string[]>();
   constructor(invoices: readonly InvoiceFixture[] = [], attempts: readonly InvoiceAttemptFixture[] = [], private readonly clock: Clock = defaultClock,
-    private readonly options: { packSale?: (invoiceId: Id) => boolean } = {}) {
+    private readonly options: { packSale?: (invoiceId: Id) => boolean; assignmentInvoice?: (invoiceId: Id) => boolean } = {}) {
     invoices.forEach(({ gymId, invoice, checkoutSessionId, checkoutExpiresAt }) => {
       const key = scopedKey(gymId, invoice.id);
       this.#invoices.set(key, structuredClone(invoice));
@@ -175,8 +184,8 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
   get effects(): readonly InvoiceEffect[] { return structuredClone(this.#effects); }
   get refunds(): RefundTransition[] { return structuredClone([...this.#refunds.values()].map(row => row.request)); }
   get payments(): readonly Omit<StoredPayment, 'fingerprint'>[] {
-    return [...this.#payments.values()].map(({ invoiceId, id, amountCents, currency, accepted }) =>
-      ({ invoiceId, id, amountCents, currency, accepted }));
+    return [...this.#payments.values()].map(({ invoiceId, id, amountCents, currency, accepted, method }) =>
+      ({ invoiceId, id, amountCents, currency, accepted, method }));
   }
   read(gymId: Id, invoiceId: Id): InvoiceSnapshot { return structuredClone(this.#invoice(gymId, invoiceId)); }
   #invoice(gymId: Id, invoiceId: Id): InvoiceSnapshot {
@@ -193,7 +202,7 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
   #effect(gymId: Id, invoiceId: Id, kind: InvoiceEffect['kind'], paymentId?: Id): void {
     this.#effects.push({ gymId, invoiceId, kind, ...(paymentId === undefined ? {} : { paymentId }) });
   }
-  #recordPayment(context: MutationContext, request: CardSuccess | ManualPayment, method: 'card' | ManualPayment['method']) {
+  #recordPayment(context: MutationContext, request: CardSuccess | ManualPayment, method: CardSuccess['method'] | ManualPayment['method']) {
     const invoice = this.#invoice(context.gymId, request.invoiceId);
     requireMoney(invoice, request);
     if (request.amountCents <= 0) conflict('Payment must be positive');
@@ -217,10 +226,13 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
         }
       }
     }
-    if (invoice.status === 'void' && method !== 'card') conflict('Void invoice cannot accept a payment');
-    if (terminal.has(invoice.status) && method !== 'card') conflict('Invoice is already paid');
+    if (!('paymentIntentId' in request)) {
+      if (invoice.status === 'processing') conflict('Payment is processing');
+      if (invoice.status === 'void') conflict('Void invoice cannot accept a payment');
+      if (terminal.has(invoice.status)) conflict('Invoice is already paid');
+    }
     const accepted = !terminal.has(invoice.status);
-    this.#payments.set(key, { id: request.paymentId, invoiceId: invoice.id, accepted, fingerprint,
+    this.#payments.set(key, { id: request.paymentId, invoiceId: invoice.id, accepted, fingerprint, method,
       amountCents: request.amountCents, currency: request.currency,
       ...('paymentIntentId' in request ? { paymentIntentId: request.paymentIntentId, chargeId: request.chargeId } : {}) });
     if ('paymentIntentId' in request) {
@@ -260,7 +272,7 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
       if (canceled(attempt) && this.#invoice(context.gymId, request.invoiceId).status !== 'void')
         return this.#result('ignored', this.#invoice(context.gymId, request.invoiceId));
     }
-    const result = this.#recordPayment(context, request, 'card');
+    const result = this.#recordPayment(context, request, request.method);
     if (request.attemptId !== undefined) {
       const key = scopedKey(context.gymId, request.attemptId);
       this.#attempts.set(key, { ...this.#attempts.get(key)!, status: 'succeeded' });
@@ -271,27 +283,60 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
     const invoice = this.#invoice(context.gymId, request.invoiceId);
     const attempt = this.#attempt(context.gymId, invoice.id, request.attemptId, request.paymentIntentId);
     // A terminal invoice never moves; only an attempt still unresolved on it is closed.
-    if (terminal.has(invoice.status) && !['pending', 'requires_action'].includes(attempt.status)) return this.#result('ignored', invoice);
+    if (terminal.has(invoice.status) && !['pending', 'processing', 'requires_action'].includes(attempt.status)) return this.#result('ignored', invoice);
     if (attempt.status === 'succeeded' || canceled(attempt) || (attempt.status === 'requires_action' && request.outcome === 'failed')) return this.#result('ignored', invoice);
     // A cancelled, never-confirmed attempt never reached the card: close it without touching the invoice or dunning.
     if (request.outcome === 'canceled' && attempt.status === 'pending') {
       this.#attempts.set(scopedKey(context.gymId, attempt.id), { ...attempt, status: 'failed', declineCode: 'confirm_abandoned' });
       return this.#result('applied', invoice);
     }
-    const status = request.outcome === 'canceled' ? 'failed' : request.outcome;
+    const status = request.outcome === 'requires_action' ? 'requires_action' : 'failed';
     const alreadyResolved = attempt.status === status;
     this.#attempts.set(scopedKey(context.gymId, attempt.id), { ...attempt, status,
-      ...(request.outcome === 'canceled' ? { declineCode: 'intent_canceled' } : {}) });
+      ...(request.outcome === 'canceled' ? { declineCode: 'intent_canceled' } :
+        request.outcome === 'insufficient_funds' || request.outcome === 'payment_method_unusable' ? { declineCode: request.outcome } : {}) });
     const latest = Math.max(...[...this.#attempts.values()].filter((item) => item.gymId === context.gymId
       && item.invoiceId === invoice.id).map((item) => item.number));
     if (terminal.has(invoice.status) || attempt.number < latest || alreadyResolved) return this.#result('ignored', invoice);
-    const next: InvoiceSnapshot = { ...invoice, status: invoice.kind === 'cycle' ? 'past_due' : 'open' };
-    this.#invoices.set(scopedKey(context.gymId, invoice.id), next);
-    if (invoice.kind === 'cycle') this.#effect(context.gymId, invoice.id, 'dunning');
-    return this.#result('applied', next);
+    const key = scopedKey(context.gymId, invoice.id);
+    if (invoice.status === 'processing' && attempt.status !== 'processing' && this.#processingHistory.get(key)?.at(-1) !== request.paymentIntentId)
+      return this.#result('ignored', invoice);
+    const bankCode = request.outcome === 'insufficient_funds' || request.outcome === 'payment_method_unusable' ? request.outcome : undefined;
+    return this.#failInvoice(context.gymId, invoice, bankCode);
   }
   async manualPayment(context: MutationContext, request: ManualPayment): Promise<InvoiceTransitionResult> {
     return this.#recordPayment(context, request, request.method);
+  }
+  async paymentProcessing(context: MutationContext, request: ProcessingPayment): Promise<InvoiceTransitionResult> {
+    const invoice = this.#invoice(context.gymId, request.invoiceId), key = scopedKey(context.gymId, invoice.id);
+    const history = this.#processingHistory.get(key) ?? [];
+    const attempt = request.attemptId ? this.#attempt(context.gymId, invoice.id, request.attemptId, request.paymentIntentId)
+      : [...this.#attempts.values()].find(row => row.gymId === context.gymId && row.paymentIntentId === request.paymentIntentId);
+    if (attempt && attempt.invoiceId !== invoice.id) notFound();
+    if (terminal.has(invoice.status) || history.includes(request.paymentIntentId) || attempt && attempt.status !== 'pending')
+      return this.#result('ignored', invoice);
+    if (invoice.status === 'processing') conflict('Another payment is processing');
+    if (attempt) this.#attempts.set(scopedKey(context.gymId, attempt.id), { ...attempt, status: 'processing', processingAt: this.clock.now().toISOString() });
+    this.#processingHistory.set(key, [...history, request.paymentIntentId]);
+    const next = { ...invoice, status: 'processing' as const };
+    this.#invoices.set(key, next);
+    return this.#result('applied', next);
+  }
+  async processingFailed(context: MutationContext, request: ProcessingFailure): Promise<InvoiceTransitionResult> {
+    const invoice = this.#invoice(context.gymId, request.invoiceId), key = scopedKey(context.gymId, invoice.id);
+    if (invoice.status !== 'processing' || this.#processingHistory.get(key)?.at(-1) !== request.paymentIntentId)
+      return this.#result('ignored', invoice);
+    if ([...this.#attempts.values()].some(row => row.gymId === context.gymId && row.paymentIntentId === request.paymentIntentId))
+      conflict('Runner failure requires its attempt');
+    this.#checkouts.delete(key);
+    return this.#failInvoice(context.gymId, invoice, request.code);
+  }
+  #failInvoice(gymId: Id, invoice: InvoiceSnapshot, bankCode?: BankFailureCode): InvoiceTransitionResult {
+    const recurring = invoice.kind === 'cycle' || (!!bankCode || invoice.status === 'past_due') && this.options.assignmentInvoice?.(invoice.id);
+    const next: InvoiceSnapshot = { ...invoice, status: recurring ? 'past_due' : 'open' };
+    this.#invoices.set(scopedKey(gymId, invoice.id), next);
+    if (recurring || bankCode === 'payment_method_unusable') this.#effect(gymId, invoice.id, 'dunning');
+    return this.#result('applied', next);
   }
   async settleZero(context: MutationContext, request: { invoiceId: Id }): Promise<InvoiceTransitionResult> {
     const invoice = this.#invoice(context.gymId, request.invoiceId);
@@ -312,6 +357,7 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
   }
   #applyRefund(context: MutationContext, request: RefundTransition, appCreated = false): InvoiceTransitionResult {
     const invoice = this.#invoice(context.gymId, request.invoiceId);
+    if (invoice.status === 'processing') conflict('Payment is processing');
     const payment = this.#payments.get(scopedKey(context.gymId, request.paymentId)) ?? notFound();
     if (payment.invoiceId !== invoice.id) notFound();
     moneySchema.parse({ amountCents: request.amountCents, currency: request.currency });

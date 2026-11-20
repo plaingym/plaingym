@@ -12,6 +12,7 @@ import { accepted, audit, duplicateReservation, effect, recorded, result, snapsh
 export async function applyRefund(tx: Transaction, context: MutationContext, clock: Clock, invoice: InvoiceRow,
   request: RefundTransition, appCreated = false): Promise<InvoiceTransitionResult> {
   idSchema.parse(request.refundId); moneySchema.parse({ amountCents: request.amountCents, currency: request.currency });
+  if (invoice.status === 'processing') conflict('Payment is processing');
   if (request.amountCents <= 0 || !['pending', 'succeeded', 'failed', 'canceled'].includes(request.status)) conflict('Invalid refund');
   if (request.status === 'canceled' && request.processorId === undefined) conflict('Only a processor refund can be canceled');
   const payment = (await tx.select().from(payments).where(eq(payments.id, request.paymentId)))[0] ?? notFound();

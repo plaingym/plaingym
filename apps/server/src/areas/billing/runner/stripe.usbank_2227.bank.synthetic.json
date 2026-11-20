@@ -1,0 +1,294 @@
+{
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only; recorded synthetic StripeFixtures API exchanges, no live account",
+  "version": 1,
+  "gymId": "00000000-0000-7000-8000-000000000001",
+  "exchanges": [
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/customers/cus_test"
+      },
+      "output": {
+        "id": "cus_test",
+        "object": "customer",
+        "email": "payer@example.invalid",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_methods/pm_usbank_2227",
+        "params": {
+          "expand": [
+            "customer"
+          ]
+        }
+      },
+      "output": {
+        "id": "pm_usbank_2227",
+        "type": "us_bank_account",
+        "object": "payment_method",
+        "created": 1835542800,
+        "customer": {
+          "id": "cus_test",
+          "object": "customer",
+          "email": "payer@example.invalid",
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001"
+          }
+        },
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        },
+        "us_bank_account": {
+          "bank_name": "STRIPE TEST BANK",
+          "last4": "2227"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "POST",
+        "path": "/v1/payment_intents",
+        "params": {
+          "amount": 10000,
+          "currency": "usd",
+          "customer": "cus_test",
+          "payment_method": "pm_usbank_2227",
+          "allowed_payment_method_types": [
+            "us_bank_account"
+          ],
+          "confirm": false,
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001",
+            "invoice_id": "00000000-0000-7000-8000-000000000002",
+            "attempt_id": "00000000-0000-7000-8000-000000000003",
+            "attempt_n": "1"
+          }
+        },
+        "idempotencyKey": "00000000-0000-7000-8000-000000000002:1:create"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1835542800,
+        "livemode": false,
+        "object": "payment_intent",
+        "amount": 10000,
+        "currency": "usd",
+        "customer": "cus_test",
+        "payment_method": "pm_usbank_2227",
+        "allowed_payment_method_types": [
+          "us_bank_account"
+        ],
+        "confirm": false,
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002",
+          "attempt_id": "00000000-0000-7000-8000-000000000003",
+          "attempt_n": "1"
+        },
+        "status": "requires_confirmation"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1835542800,
+        "livemode": false,
+        "object": "payment_intent",
+        "amount": 10000,
+        "currency": "usd",
+        "customer": "cus_test",
+        "payment_method": "pm_usbank_2227",
+        "allowed_payment_method_types": [
+          "us_bank_account"
+        ],
+        "confirm": false,
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002",
+          "attempt_id": "00000000-0000-7000-8000-000000000003",
+          "attempt_n": "1"
+        },
+        "status": "requires_confirmation"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "POST",
+        "path": "/v1/payment_intents/pi_1/confirm",
+        "params": {
+          "off_session": true,
+          "expand": [
+            "latest_charge"
+          ]
+        },
+        "idempotencyKey": "00000000-0000-7000-8000-000000000002:1:confirm"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1835542800,
+        "livemode": false,
+        "object": "payment_intent",
+        "amount": 10000,
+        "currency": "usd",
+        "customer": "cus_test",
+        "payment_method": "pm_usbank_2227",
+        "allowed_payment_method_types": [
+          "us_bank_account"
+        ],
+        "confirm": false,
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002",
+          "attempt_id": "00000000-0000-7000-8000-000000000003",
+          "attempt_n": "1"
+        },
+        "status": "processing",
+        "latest_charge": {
+          "id": "ch_2",
+          "created": 1835542800,
+          "livemode": false,
+          "object": "charge",
+          "payment_intent": "pi_1",
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001",
+            "invoice_id": "00000000-0000-7000-8000-000000000002",
+            "attempt_id": "00000000-0000-7000-8000-000000000003",
+            "attempt_n": "1"
+          },
+          "payment_method_details": {
+            "type": "us_bank_account",
+            "us_bank_account": {
+              "mandate": "mandate_pi_1"
+            }
+          }
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1835542800,
+        "livemode": false,
+        "object": "payment_intent",
+        "amount": 10000,
+        "currency": "usd",
+        "customer": "cus_test",
+        "payment_method": "pm_usbank_2227",
+        "allowed_payment_method_types": [
+          "us_bank_account"
+        ],
+        "confirm": false,
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002",
+          "attempt_id": "00000000-0000-7000-8000-000000000003",
+          "attempt_n": "1"
+        },
+        "status": "processing",
+        "latest_charge": {
+          "id": "ch_2",
+          "created": 1835542800,
+          "livemode": false,
+          "object": "charge",
+          "payment_intent": "pi_1",
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001",
+            "invoice_id": "00000000-0000-7000-8000-000000000002",
+            "attempt_id": "00000000-0000-7000-8000-000000000003",
+            "attempt_n": "1"
+          },
+          "payment_method_details": {
+            "type": "us_bank_account",
+            "us_bank_account": {
+              "mandate": "mandate_pi_1"
+            }
+          }
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1835542800,
+        "livemode": false,
+        "object": "payment_intent",
+        "amount": 10000,
+        "currency": "usd",
+        "customer": "cus_test",
+        "payment_method": "pm_usbank_2227",
+        "allowed_payment_method_types": [
+          "us_bank_account"
+        ],
+        "confirm": false,
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002",
+          "attempt_id": "00000000-0000-7000-8000-000000000003",
+          "attempt_n": "1"
+        },
+        "status": "requires_payment_method",
+        "latest_charge": {
+          "id": "ch_2",
+          "created": 1835542800,
+          "livemode": false,
+          "object": "charge",
+          "payment_intent": "pi_1",
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001",
+            "invoice_id": "00000000-0000-7000-8000-000000000002",
+            "attempt_id": "00000000-0000-7000-8000-000000000003",
+            "attempt_n": "1"
+          },
+          "payment_method_details": {
+            "type": "us_bank_account",
+            "us_bank_account": {
+              "mandate": "mandate_pi_1"
+            }
+          }
+        },
+        "last_payment_error": {
+          "code": "insufficient_funds"
+        }
+      }
+    }
+  ]
+}

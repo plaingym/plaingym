@@ -133,10 +133,11 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
         const invoice = await loadInvoice(tx, payment.invoiceId, true);
         if (request.currency !== payment.currency || request.amountCents > payment.amountCents) paymentConflict('refund_mismatch', 'Refund amount or currency does not match');
         // Stripe refuses a card refund off the currency's step (5.50 ISK, 1.255 KWD); a manual refund may take any minor unit.
-        if (payment.method === 'card' && !onMinorUnitStep(request.amountCents, request.currency))
-          paymentConflict('refund_off_step', 'A card refund must be a whole step of its currency');
+        const processorPayment = payment.method === 'card' || payment.method === 'bank_debit';
+        if (processorPayment && !onMinorUnitStep(request.amountCents, request.currency))
+          paymentConflict('refund_off_step', 'A processor refund must be a whole step of its currency');
         // Marked by a switch to live: the payment is in the test account, which the gym's live key can't refund.
-        if (payment.method === 'card' && payment.reference === c.stripeTestPaymentReference)
+        if (processorPayment && payment.reference === c.stripeTestPaymentReference)
           paymentConflict('test_payment', 'A Stripe test-mode payment can’t be refunded with the live key');
         const open = await tx.select().from(refunds).where(and(eq(refunds.paymentId, paymentId), eq(refunds.status, 'pending'))).orderBy(asc(refunds.id));
         // Duplicate refunds use the worker's key and lane, including settlement. Staff never list or send them.
@@ -147,11 +148,11 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
         const pending = open.find(row => retryable(context.gymId, row));
         if (!lapsed.length && open.length && (!pending || pending.amountCents !== request.amountCents
           || pending.reason !== null && pending.reason !== request.reason)) paymentConflict('pending_refund', 'Resolve the pending refund first');
-        return { payment, invoice, pending, lapsed, switched: await latestTestSwitchId(tx, context.gymId) };
+        return { payment, invoice, pending, lapsed, processorPayment, switched: await latestTestSwitchId(tx, context.gymId) };
       });
-      const { payment, invoice, pending, lapsed, switched } = loaded;
-      const provider = payment.method === 'card' ? await paymentsFor?.(context.gymId) : null;
-      if (payment.method === 'card' && (!provider || !payment.paymentIntentId)) paymentUnavailable('payments_unavailable', 'Payments are not configured');
+      const { payment, invoice, pending, lapsed, processorPayment, switched } = loaded;
+      const provider = processorPayment ? await paymentsFor?.(context.gymId) : null;
+      if (processorPayment && (!provider || !payment.paymentIntentId)) paymentUnavailable('payments_unavailable', 'Payments are not configured');
       if (provider && lapsed.length) {
         const unsettled = await settleLapsed({ scope, clock, transitions }, context, async () => provider, payment, lapsed);
         if (unsettled.length) paymentConflict('refund_in_progress', 'A refund request for this payment is still being sent to Stripe. Try again in a minute');
@@ -171,7 +172,7 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
         await loadInvoice(tx, invoice.id, true);
         const current = (await tx.select().from(refunds).where(eq(refunds.id, refundId)))[0] ?? notFound();
         const [paid] = await tx.select({ reference: payments.reference }).from(payments).where(eq(payments.id, paymentId));
-        if (payment.method === 'card' && (!currentMode || paid?.reference === c.stripeTestPaymentReference))
+        if (processorPayment && (!currentMode || paid?.reference === c.stripeTestPaymentReference))
           return { released: current.status === 'pending' && current.processorId === null, tag: {}, sendId: null };
         // A webhook released the reservation after it was read: its amount is no longer held, so nothing may be sent.
         if (c.refundReleased(current)) paymentConflict('refund_released', 'The pending refund was released. Check the payment, and refund again only if it is still owed');

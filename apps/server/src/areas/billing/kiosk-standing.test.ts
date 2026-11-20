@@ -99,6 +99,7 @@ describe('past-due kiosk standing', () => {
   });
   for (const scenario of [
     { name: 'open due today', timezone: 'UTC', status: 'open', dueOn: '2026-10-26', amountCents: 100, blocked: false },
+    { name: 'processing past its due date', timezone: 'UTC', status: 'processing', dueOn: '2026-10-25', amountCents: 100, blocked: false },
     { name: 'open due yesterday locally but today in UTC', timezone: 'Pacific/Auckland', status: 'open', dueOn: '2026-10-26', amountCents: 100, blocked: true },
     { name: 'zero past-due balance', timezone: 'UTC', status: 'past_due', dueOn: '2026-10-25', amountCents: 0, blocked: false },
     { name: 'zero open overdue balance', timezone: 'UTC', status: 'open', dueOn: '2026-10-25', amountCents: 0, blocked: false },

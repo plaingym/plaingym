@@ -241,7 +241,8 @@ describe('fake payment outcomes', () => {
       customerId: 'cus',
       metadata: { gymId: 'gym' },
     };
-    for (const status of ['requires_action', 'requires_payment_method', 'processing']) {
+    expect(normalizeChargeOutcome({ ...identity, status: 'processing' })).toMatchObject({ status: 'processing' });
+    for (const status of ['requires_action', 'requires_payment_method']) {
       expect(
         normalizeChargeOutcome({
           ...identity,

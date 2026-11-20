@@ -116,7 +116,8 @@ refunds send no cancellation notice. Stripe does not identify who canceled the r
 Older pending refunds, untagged or already
 at Stripe, require reconciliation. If a webhook releases the reservation between the
 two steps of a request, nothing is sent to Stripe (`refund_released`). A pending refund
-with a null reason can resume after a crash and save the requested reason. A card
+with a null reason can resume after a crash and save the requested reason. Settled
+bank debits use the same Stripe refund path as card payments. A processor
 payment marked `Stripe test mode` by a switch from test to live is refused
 (`test_payment`) before anything is reserved: it lives in the test account, which
 the gym's live key can't refund. Once the reservation commits, and before Stripe is
@@ -124,7 +125,7 @@ called, the refund uses `stripeWriteCurrent` to take `holdGymSettings`, compare 
 switch audit read before resolving Stripe, and check the payment again: a switch in
 progress holds the gym row, so it either sees the pending refund (and refuses to
 run) or commits first, marking the payment; the refund is then refused
-(`test_payment`) and its reservation ends `failed`, with no processor refund. A card refund must be a whole step of its currency (whole ISK or UGX, a last
+(`test_payment`) and its reservation ends `failed`, with no processor refund. A Stripe refund must be a whole step of its currency (whole ISK or UGX, a last
 digit of 0 in KWD), as Stripe refuses others: one off the step is refused (`refund_off_step`)
 before anything is reserved. Manual refunds record money already returned to the payer, in any
 minor unit. Routes restrict refunds to owners and

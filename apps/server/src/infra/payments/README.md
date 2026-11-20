@@ -101,6 +101,11 @@ confirmation, including after a restart. Stripe refuses to confirm a
 `processing` intent, so `confirmCharge` reports one as it stands without
 another request.
 
+The normalized outcome carries the bank method type and `processing` while
+the debit settles. Insufficient funds maps to `insufficient_funds`. Other bank
+failures that require a new method map to `payment_method_unusable`.
+`FakePayments.settleCharge` accepts either failure or `succeeded`.
+
 In `StripeFixtures`, bank confirmations start in `processing`.
 `settle(intentId)` updates the intent and returns a Stripe webhook event.
 `pm_usbank_6789` and `pm_acss_6789` succeed. `pm_usbank_2227` fails with

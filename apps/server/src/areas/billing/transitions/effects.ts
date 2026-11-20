@@ -16,6 +16,7 @@ import { withJobTransaction } from '../../../infra/jobs/index.js';
 import type { Payments, Refund } from '../../../infra/payments/index.js';
 import type { TransitionNotifications } from './notifications.js';
 import { retryAt } from '../runner/eligibility.js';
+import { retriesStopped } from './bank.js';
 import { createPackCredits } from '../packs/credits.js';
 import { pastRefundWindow, sameRefund, settleLapsed } from './lapsed-refunds.js';
 import { abandonedAttempt, audit, effectCompleted, effectCreated, effectPublished, lockInvoice, recorded, snapshot, systemContext as system, terminal,
@@ -162,9 +163,10 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
       .orderBy(asc(auditEvents.occurredAt), asc(auditEvents.id)).limit(100));
     for (const row of rows) {
       const work = row.after as TransitionEffect;
+      const canceled = work.kind === 'retry' && await scope(gymId, tx => recorded(tx, retriesStopped, work.invoiceId));
       const runAt = work.kind === 'retry' ? retryAt(localDate(row.occurredAt, gym.timezone), work.retryDay!, gym.timezone)
         : clock.now();
-      await options.jobs.enqueue(effectJob, { effectId: row.targetId },
+      if (!canceled) await options.jobs.enqueue(effectJob, { effectId: row.targetId },
         { gymId, timezone: gym.timezone, runAt, idempotencyKey: row.targetId, maxAttempts: effectMaxAttempts });
       await scope(gymId, async tx => {
         await lockInvoice(tx, work.invoiceId);
@@ -259,7 +261,8 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
       const reversedCredits = sale && work.notice === 'refund_failed'
         ? (await tx.select({ credits: classCreditEntries.credits }).from(classCreditEntries).where(and(
           eq(classCreditEntries.saleId, sale.id), eq(classCreditEntries.kind, 'reverse')))).reduce((total, row) => total - row.credits, 0) : 0;
-      return { event, work, invoice, payment, refund, refunded, reversed, attempt, latestAttempt, lines, sale, reversedCredits };
+      const retryStopped = work.kind === 'retry' && await recorded(tx, retriesStopped, invoice.id);
+      return { event, work, invoice, payment, refund, refunded, reversed, attempt, latestAttempt, lines, sale, reversedCredits, retryStopped };
     });
     if (!loaded) return;
     const { work, invoice, payment, refund, refunded, reversed, attempt, latestAttempt, lines, sale, reversedCredits } = loaded;
@@ -278,10 +281,13 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
     } else if (work.kind === 'reverse_credits') {
       await credits.reverse(gymId, invoice.id);
     } else if (work.kind === 'dunning') {
-      if (invoice.kind === 'cycle' && !terminal(invoice) && attempt?.id === latestAttempt?.id)
-        await options.notifications.dunning({ ...data, actionRequired: attempt?.status === 'requires_action' });
+      if ((invoice.kind === 'cycle' || work.bankCode) && ['open', 'past_due'].includes(invoice.status)
+        && (work.bankCode && !work.attemptId || attempt?.id === latestAttempt?.id))
+        await options.notifications.dunning({ ...data, actionRequired: attempt?.status === 'requires_action',
+          ...(work.bankCode ? { bankCode: work.bankCode } : {}) });
     } else if (work.kind === 'retry') {
-      if (invoice.kind === 'cycle' && !terminal(invoice) && (await options.settings.get(gymId)).billingEnabled)
+      if (!loaded.retryStopped && (invoice.kind === 'cycle' || invoice.status === 'past_due') && !terminal(invoice)
+        && invoice.status !== 'processing' && (await options.settings.get(gymId)).billingEnabled)
         await options.retry(invoice.id, context);
     } else if (work.kind === 'staff_notice') {
       if (work.notice === 'duplicate_released') {

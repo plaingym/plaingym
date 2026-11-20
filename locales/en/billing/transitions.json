@@ -1,5 +1,9 @@
 {
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "bankFailedSubject": "Bank payment failed for invoice {number}",
+  "bankFailedBody": "Your bank payment of {amount} for invoice {number} didn't go through. You can pay this invoice at {payUrl} or update your payment method at {updateUrl}.",
+  "bankUnusableSubject": "New payment method needed for invoice {number}",
+  "bankUnusableBody": "Your bank payment of {amount} for invoice {number} didn't go through. We can't charge this bank account again. Please add a new payment method at {updateUrl}.",
   "manualSubject": "Payment needed for invoice {number}",
   "manualBody": "Invoice {number} for {amount} cannot be paid by card. Contact the gym to arrange a manual payment.",
   "receiptSubject": "Receipt for invoice {number}",

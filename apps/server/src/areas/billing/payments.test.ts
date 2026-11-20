@@ -581,6 +581,23 @@ describe('one-off collection and payment durability', () => {
     expect(refund).toHaveBeenCalledTimes(1);
     expect((await f.service.getInvoice(f.gymId, f.invoice.id)).refunds).toHaveLength(1);
   });
+  it('refunds a settled bank payment through the processor', async () => {
+    const f = await fixture();
+    const bank = { id: 'pm_usbank_6789', type: 'us_bank_account' as const, customerId: 'cus_fixture', last4: '6789', bankName: 'Test bank' };
+    f.provider.recordPaymentMethod(bank);
+    await db.forGym(f.gymId, tx => tx.update(paymentMethods).set({ type: bank.type, processorId: bank.id }).where(eq(paymentMethods.id, f.card.id)));
+    const attempt = await f.service.charge(f.context, f.invoice.id);
+    expect(attempt.status).toBe('processing');
+    const [row] = await db.forGym(f.gymId, tx => tx.select().from(paymentAttempts).where(eq(paymentAttempts.id, attempt.id)));
+    f.provider.settleCharge(row!.paymentIntentId!, 'succeeded');
+    f.clock.advance(11 * 86400_000);
+    expect((await f.runner.reconcile(f.gymId)).issues).toEqual([]);
+    const [payment] = (await f.service.getInvoice(f.gymId, f.invoice.id)).payments;
+    expect(payment?.method).toBe('bank_debit');
+    const refund = vi.spyOn(f.provider, 'refund');
+    expect(await f.service.refund(f.context, payment!.id, { amountCents: 500, currency: 'USD', reason: 'Returned item' })).toMatchObject({ status: 'succeeded' });
+    expect(refund).toHaveBeenCalledOnce();
+  });
   it('retries a reservation from before the marker with its original request, and leaves it unmarked', async () => {
     const f = await fixture(); await f.service.charge(f.context, f.invoice.id);
     const payment = (await f.service.getInvoice(f.gymId, f.invoice.id)).payments[0]!, refundId = uuidv7();

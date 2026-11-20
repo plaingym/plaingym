@@ -119,7 +119,7 @@ export function createDisputeRefundWriter(options: DisputeRefundOptions) {
       await stripeWriteCurrent(tx, gymId);
       const invoice = await lockInvoice(tx, payment.invoiceId);
       const [current] = await tx.select({ method: payments.method, reference: payments.reference }).from(payments).where(eq(payments.id, payment.id));
-      if (current?.method === 'card' && current.reference === stripeTestPaymentReference) return 'unchanged' as const;
+      if ((current?.method === 'card' || current?.method === 'bank_debit') && current.reference === stripeTestPaymentReference) return 'unchanged' as const;
       if (invoice.disputeId && invoice.disputeId !== value.id) return 'conflict' as const;
       if (invoice.disputeId === value.id && (invoice.disputeStatus === value.status || isTerminalDispute(invoice.disputeStatus)))
         return 'unchanged' as const;

@@ -104,6 +104,27 @@ function stripeSettings(gymId: string, userId: string) {
 }
 
 describe('restore check without Stripe', () => {
+  it('keeps a processing attempt unresolved, including one created after a clear check', async () => {
+    const { gymId, userId, job } = await restoredGym();
+    await job();
+    expect(await item(gymId)).toBe('not_applicable');
+    const attempt = await factory('paymentAttempts', gymId, { status: 'processing', paymentIntentId: 'pi_settling', processingAt: clock.now() });
+    expect(await item(gymId)).toBe('needs_attention');
+    expect((await enable(server('owner', gymId, userId), gymId)).status).toBe(409);
+    await job();
+    expect((await reports(gymId)).some(row => (row.after as { issues: { id: string }[] }).issues.some(issue => issue.id === attempt.id))).toBe(true);
+  });
+  it('keeps a settling Checkout invoice unresolved without a runner attempt', async () => {
+    const { gymId, userId, job } = await restoredGym();
+    await job();
+    const number = await scope(gymId, tx => allocateInvoiceNumber(tx, gymId));
+    const invoice = await factory('invoices', gymId, { status: 'processing', number });
+    expect(await item(gymId)).toBe('needs_attention');
+    expect((await enable(server('owner', gymId, userId), gymId)).status).toBe(409);
+    await job();
+    expect((await reports(gymId)).some(row => (row.after as { issues: { kind: string; id: string }[] }).issues
+      .some(issue => issue.kind === 'invoice' && issue.id === invoice.id))).toBe(true);
+  });
   it('is clear with no payment records, so the job succeeds and billing can be turned on', async () => {
     const { gymId, userId, job } = await restoredGym();
     expect(await item(gymId)).toBe('needs_attention'); // No result yet.

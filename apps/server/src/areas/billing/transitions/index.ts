@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { desc, eq, or } from 'drizzle-orm';
+import { and, desc, eq, isNull, or } from 'drizzle-orm';
 import { forGym, invoices, paymentAttempts, payments, refunds, uuidv7, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { idSchema } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../../core/clock.js';
 import { conflict, instant, notFound, requireMoney, type MutationContext } from '../../../core/interfaces/common.js';
-import type { CardSuccess, CardFailure, ManualPayment, RefundTransition, ProcessorRefundTransition, InvoiceTransitions, InvoiceTransitionResult } from '../../../core/interfaces/invoice-transitions.js';
+import type { BankFailureCode, CardSuccess, CardFailure, ManualPayment, RefundTransition, ProcessorRefundTransition, InvoiceTransitions, InvoiceTransitionResult } from '../../../core/interfaces/invoice-transitions.js';
+import type { PaymentsResolver } from '../webhooks/inbox.js';
+import { isAssignmentInvoice } from '../assignment-invoices.js';
+import { bankAttemptsExhausted, invoiceProcessing, processingIntents, retriesStopped, revokeBankMethod } from './bank.js';
 import { logError } from '../../../core/log.js';
 import { readBillingRules } from '../../settings/settings.js';
 import { applyProcessorRefund, applyRefund } from './refunds.js';
@@ -15,6 +18,7 @@ import { accepted, audit, canceledAttempt, confirmAbandoned, effect, lockInvoice
   type InvoiceRow } from './store.js';
 
 export interface TransitionOptions {
+  paymentsFor?: PaymentsResolver;
   scope?: typeof forGym;
   clock?: Clock;
   /** Runs after every transition commits, outside its transaction: publishes the follow-up work it recorded. */
@@ -40,7 +44,8 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
       if (card && (!request.paymentIntentId || !request.chargeId)) conflict('Processor payment IDs are required');
       const linkedAttempt = card ? await attempt(tx, invoice, request.paymentIntentId, request.attemptId) : undefined;
       if (linkedAttempt && canceledAttempt(linkedAttempt) && invoice.status !== 'void') return result('ignored', invoice);
-      const method = card ? 'card' : request.method;
+      const method = request.method;
+      if (!card && invoice.status === 'processing') conflict('Payment is processing');
       const previous = await tx.select().from(payments).where(or(eq(payments.id, request.paymentId),
         ...(card ? [eq(payments.paymentIntentId, request.paymentIntentId), eq(payments.chargeId, request.chargeId)] : [])));
       if (previous.length) {
@@ -89,6 +94,54 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
       { status, declineCode }, { status: row.status, declineCode: row.declineCode });
   }
   const service: InvoiceTransitions = {
+    async paymentProcessing(context, request) {
+      return scope(context.gymId, async tx => {
+        const invoice = await lockInvoice(tx, request.invoiceId);
+        if (terminal(invoice)) return result('ignored', invoice);
+        const row = await attempt(tx, invoice, request.paymentIntentId, request.attemptId);
+        const history = await processingIntents(tx, invoice.id);
+        if (history.includes(request.paymentIntentId)) return result('ignored', invoice);
+        if (invoice.status === 'processing') {
+          if (row?.status === 'processing') return result('ignored', invoice);
+          conflict('Another payment is processing');
+        }
+        if (row) {
+          const changed = await tx.update(paymentAttempts).set({ status: 'processing', processingAt: clock.now() })
+            .where(and(eq(paymentAttempts.id, row.id), eq(paymentAttempts.status, 'pending'), isNull(paymentAttempts.resolvedAt))).returning();
+          if (!changed.length) return result('ignored', invoice);
+        }
+        const next = { ...invoice, status: 'processing' };
+        await tx.update(invoices).set({ status: next.status }).where(eq(invoices.id, invoice.id));
+        await audit(tx, context, clock, invoiceProcessing, 'invoice', invoice.id,
+          { ...snapshot(next), paymentIntentId: request.paymentIntentId, sequence: history.length + 1 }, snapshot(invoice));
+        return result('applied', next);
+      });
+    },
+    async processingFailed(context, request) {
+      // A Checkout attempt has no saved-method snapshot. Resolve its exact method before opening the write transaction.
+      let processorId: string | undefined;
+      if (request.code === 'payment_method_unusable') {
+        const ignored = await scope(context.gymId, async tx => {
+          const invoice = await lockInvoice(tx, request.invoiceId);
+          return invoice.status === 'processing' && (await processingIntents(tx, invoice.id)).at(-1) === request.paymentIntentId
+            ? undefined : result('ignored', invoice);
+        });
+        if (ignored) return ignored;
+        const provider = await options.paymentsFor?.(context.gymId);
+        const current = await provider?.findCharge({ kind: 'charge', id: request.paymentIntentId });
+        if (current?.status !== 'failed' || current.code !== request.code || current.id !== request.paymentIntentId
+          || current.metadata.gymId !== context.gymId || current.metadata.invoiceId !== request.invoiceId || !current.paymentMethodId)
+          conflict('Failed bank payment method is unresolved');
+        processorId = current.paymentMethodId;
+      }
+      return scope(context.gymId, async tx => {
+        const invoice = await lockInvoice(tx, request.invoiceId);
+        if (invoice.status !== 'processing' || (await processingIntents(tx, invoice.id)).at(-1) !== request.paymentIntentId)
+          return result('ignored', invoice);
+        if (await attempt(tx, invoice, request.paymentIntentId)) conflict('Runner failure requires its attempt');
+        return failedInvoice(tx, context, invoice, undefined, request.code, processorId);
+      });
+    },
     voidInvoice: createInvoiceVoid(scope, clock),
     cardSucceeded: pay,
     manualPayment: pay,
@@ -111,13 +164,13 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
     },
     async cardFailed(context: MutationContext, request: CardFailure) {
       idSchema.parse(request.attemptId);
-      if (!['failed', 'requires_action', 'canceled'].includes(request.outcome)) conflict('Invalid payment outcome');
+      if (!['failed', 'requires_action', 'canceled', 'insufficient_funds', 'payment_method_unusable'].includes(request.outcome)) conflict('Invalid payment outcome');
       return scope(context.gymId, async tx => {
         const invoice = await lockInvoice(tx, request.invoiceId);
         const row = await attempt(tx, invoice, request.paymentIntentId, request.attemptId) ?? notFound();
         // A terminal invoice never moves, and an attempt already resolved on it stays as recorded. One still unresolved
         // (a charge that crossed a manual payment, say) is closed below, so reconciliation stops listing it.
-        if (terminal(invoice) && !['pending', 'requires_action'].includes(row.status)) return result('ignored', invoice);
+        if (terminal(invoice) && !['pending', 'processing', 'requires_action'].includes(row.status)) return result('ignored', invoice);
         if (row.status === 'succeeded' || canceledAttempt(row)
           || (row.status === 'requires_action' && request.outcome === 'failed')) return result('ignored', invoice);
         // An intent cancelled before it was confirmed never reached the member's card: close the attempt without
@@ -127,32 +180,19 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
           await resolveAttempt(tx, context, row, 'failed', confirmAbandoned);
           return result('applied', invoice);
         }
-        const status = request.outcome === 'canceled' ? 'failed' : request.outcome;
+        const bankCode = request.outcome === 'insufficient_funds' || request.outcome === 'payment_method_unusable' ? request.outcome : undefined;
+        const status = request.outcome === 'requires_action' ? 'requires_action' : 'failed';
         const declineCode = request.outcome === 'canceled' ? 'intent_canceled'
-          : request.outcome === 'requires_action' ? 'authentication_required' : null;
+          : request.outcome === 'requires_action' ? 'authentication_required' : bankCode ?? null;
         if (row.status === status && row.declineCode === declineCode) return result('ignored', invoice);
         const alreadyResolved = row.status === status;
         await resolveAttempt(tx, context, row, status, declineCode);
         const latest = (await tx.select().from(paymentAttempts).where(eq(paymentAttempts.invoiceId, invoice.id))
           .orderBy(desc(paymentAttempts.attemptNumber)).limit(1))[0]!;
         if (terminal(invoice) || row.attemptNumber < latest.attemptNumber || alreadyResolved) return result('ignored', invoice);
-        const next = { ...invoice, status: invoice.kind === 'cycle' ? 'past_due' : 'open' };
-        if (next.status !== invoice.status) {
-          await tx.update(invoices).set({ status: next.status }).where(eq(invoices.id, invoice.id));
-          await audit(tx, context, clock, 'billing.invoice.payment_failed', 'invoice', invoice.id, snapshot(next), snapshot(invoice));
-        }
-        if (invoice.kind === 'cycle') {
-          await effect(tx, context, clock, { kind: 'dunning', invoiceId: invoice.id, attemptId: row.id });
-          // One retry schedule per invoice, anchored to its first failure rather than reset on every attempt.
-          if (!await recorded(tx, 'billing.invoice.dunning_started', invoice.id)) {
-            const { retryDays } = await readBillingRules(tx, context.gymId);
-            await audit(tx, context, clock, 'billing.invoice.dunning_started', 'invoice', invoice.id, { attemptId: row.id, retryDays });
-            // Effects convert these local calendar days to instants using the gym timezone.
-            for (const day of retryDays) await effect(tx, context, clock,
-              { kind: 'retry', invoiceId: invoice.id, retryDay: day });
-          }
-        }
-        return result('applied', next);
+        if (invoice.status === 'processing' && row.status !== 'processing' && (await processingIntents(tx, invoice.id)).at(-1) !== request.paymentIntentId)
+          return result('ignored', invoice);
+        return failedInvoice(tx, context, invoice, row.id, bankCode, row.savedPaymentMethod);
       });
     },
     async refund(context: MutationContext, request: RefundTransition) {
@@ -168,7 +208,29 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
       });
     },
   };
-  // The transition has committed; a failed publish is recovered by the hourly sweep, never by failing the caller.
+  async function failedInvoice(tx: Transaction, context: MutationContext, invoice: InvoiceRow, attemptId?: string,
+    bankCode?: BankFailureCode, processorId?: string) {
+    // An assignment invoice a bank failure made past due stays past due on a later card failure, so its retries continue.
+    const recurring = invoice.kind === 'cycle' || (!!bankCode || invoice.status === 'past_due') && await isAssignmentInvoice(tx, invoice.id);
+    const next = { ...invoice, status: recurring ? 'past_due' : 'open' };
+    if (next.status !== invoice.status) {
+      await tx.update(invoices).set({ status: next.status, ...(!attemptId ? { checkoutSessionId: null, checkoutExpiresAt: null } : {}) }).where(eq(invoices.id, invoice.id));
+      await audit(tx, context, clock, 'billing.invoice.payment_failed', 'invoice', invoice.id, snapshot(next), snapshot(invoice));
+    }
+    if (bankCode === 'payment_method_unusable' && processorId) await revokeBankMethod(tx, context, clock, invoice, processorId);
+    const stop = bankCode === 'payment_method_unusable' || bankCode === 'insufficient_funds' && await bankAttemptsExhausted(tx, invoice);
+    if (stop && !await recorded(tx, retriesStopped, invoice.id)) await audit(tx, context, clock, retriesStopped, 'invoice', invoice.id, { bankCode });
+    const source = { ...(attemptId ? { attemptId } : {}), ...(bankCode ? { bankCode } : {}) };
+    if (recurring || bankCode === 'payment_method_unusable')
+      await effect(tx, context, clock, { kind: 'dunning', invoiceId: invoice.id, ...source });
+    if (recurring && !stop && !await recorded(tx, 'billing.invoice.dunning_started', invoice.id) && !await recorded(tx, retriesStopped, invoice.id)) {
+      const { retryDays } = await readBillingRules(tx, context.gymId);
+      await audit(tx, context, clock, 'billing.invoice.dunning_started', 'invoice', invoice.id, { ...source, retryDays });
+      for (const day of retryDays) await effect(tx, context, clock, { kind: 'retry', invoiceId: invoice.id, retryDay: day });
+    }
+    return result('applied', next);
+  }
+  // The transition has committed; a failed publish is recovered by the hourly sweep.
   async function published(context: MutationContext, work: Promise<InvoiceTransitionResult>) {
     const value = await work;
     try { await options.afterCommit?.(context.gymId); }
@@ -177,6 +239,8 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
   }
   return {
     voidInvoice: (context, request) => published(context, service.voidInvoice(context, request)),
+    paymentProcessing: (context, request) => published(context, service.paymentProcessing(context, request)),
+    processingFailed: (context, request) => published(context, service.processingFailed(context, request)),
     settleZero: (context, request) => published(context, service.settleZero(context, request)),
     cardSucceeded: (context, request) => published(context, service.cardSucceeded(context, request)),
     manualPayment: (context, request) => published(context, service.manualPayment(context, request)),

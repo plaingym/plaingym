@@ -2,7 +2,7 @@
 # Billing webhook handlers
 
 `registerBillingWebhookHandlers(inbox, { transitions, disputeAlerts?, scope?, clock? })` registers
-intent success/failure/action-needed events, completed Checkout, successful setup,
+intent processing/success/failure/action-needed events, completed Checkout, successful setup,
 manual and automatic payment-method updates, Charge refunds, refund lifecycle
 events, and dispute created/updated/closed events. Call it before starting the
 worker. Handlers retrieve current provider objects from verified references;
@@ -15,7 +15,9 @@ an attempt ID. Charge IDs come from `latestChargeId`. Both paths request
 replay. A missing success timestamp is retryable, never replaced by processing
 time. Matching checks the gym, invoice, stored attempt/payment identities and
 household customer. Missing invoice metadata can be recovered from the stored
-payment or attempt. Failures without a runner attempt do not start dunning.
+payment or attempt. A settling Checkout debit can enter processing and then
+fail without a runner attempt. The failure starts dunning for cycle and assignment
+invoices. An unusable bank account prompts the household to update its payment method.
 
 Dashboard refunds and disputes match through their parent PaymentIntent, not
 their own metadata. `charge.refunded` uses the intent-scoped, paginated

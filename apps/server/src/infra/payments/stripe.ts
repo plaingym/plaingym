@@ -149,10 +149,16 @@ export class StripePayments implements Payments {
     // An expanded Charge (intent reads and confirmation request it) carries the success time. If it is missing,
     // belongs to another intent or has no valid time, the outcome has none and findCharge reads the Charge itself.
     const charge = object.latest_charge && typeof object.latest_charge === 'object' ? data(object.latest_charge) : undefined;
+    const errorMethod = object.last_payment_error && data(object.last_payment_error).payment_method;
+    const method = object.payment_method ?? errorMethod ?? charge?.payment_method;
+    const type = (method && typeof method === 'object' ? data(method).type : undefined)
+      ?? (errorMethod && typeof errorMethod === 'object' ? data(errorMethod).type : undefined)
+      ?? (charge?.payment_method_details && data(charge.payment_method_details).type);
     const succeededAt = object.status === 'succeeded' && charge && optionalId(charge.payment_intent) === id(object.id)
       ? optionalTimestamp(charge.created) : undefined;
     return normalizeChargeOutcome({ id: id(object.id), amount: Number(object.amount), currency: String(object.currency),
-      customerId: id(object.customer), ...(object.payment_method ? { paymentMethodId: id(object.payment_method) } : {}),
+      customerId: id(object.customer), ...(method ? { paymentMethodId: id(method) } : {}),
+      ...(type === 'card' || type === 'us_bank_account' || type === 'acss_debit' ? { paymentMethodType: type } : {}),
       ...(object.latest_charge ? { latestChargeId: id(object.latest_charge) } : {}), ...(succeededAt ? { succeededAt } : {}),
       metadata: this.#metadata(object), status: String(object.status),
       ...(object.last_payment_error ? { last_payment_error: data(object.last_payment_error) as { code?: string } } : {}) }, error);
@@ -193,6 +199,7 @@ export class StripePayments implements Payments {
     if (!payer || id(payer.id) !== request.customerId) throw new Error('Payment method is not attached to payer');
     this.#metadata(payer);
     const type = methodType(method);
+    if (type === 'acss_debit' && !request.mandateId) throw new Error('A saved PAD mandate is required');
     const result = await this.#post('/v1/payment_intents', { amount: request.amount, currency: request.currency,
       customer: request.customerId, payment_method: request.paymentMethodId, allowed_payment_method_types: [type], confirm: false,
       metadata: { gym_id: this.gymId, invoice_id: request.invoiceId, attempt_id: request.attemptId,
@@ -222,11 +229,11 @@ export class StripePayments implements Payments {
     assertNoTransaction('payments.cancelCharge');
     try {
       const before = await this.#ownedIntent(objectId);
-      if (before.status === 'succeeded' || before.status === 'canceled') return this.#intent(before);
+      if (before.status === 'succeeded' || before.status === 'canceled' || before.status === 'processing') return this.#intent(before);
       try { return this.#intent(await this.#post(this.#path('payment_intents', objectId) + '/cancel', {})); }
       catch (error) {
         const after = await this.#ownedIntent(objectId);
-        if (after.status === 'succeeded' || after.status === 'canceled') return this.#intent(after);
+        if (after.status === 'succeeded' || after.status === 'canceled' || after.status === 'processing') return this.#intent(after);
         throw error;
       }
     } catch (error) { if (missing(error) || error instanceof NotForGym) return { status: 'unknown', reference: { kind: 'charge', id: objectId } }; throw error; }

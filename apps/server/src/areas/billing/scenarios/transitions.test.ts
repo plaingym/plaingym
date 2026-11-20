@@ -48,7 +48,7 @@ async function fixture(kind: InvoiceSnapshot['kind'] = 'cycle', paid = false) {
   if (confirmed.status !== 'succeeded' || !confirmed.latestChargeId) throw new Error('Scenario charge did not succeed');
   const attempt = await factory('paymentAttempts', gymId, { id: attemptId, invoiceId: invoice.id,
     amountCents: invoice.amountCents, currency: invoice.currency, paymentIntentId: intent.id, status: paid ? 'succeeded' : 'pending' });
-  const success: CardSuccess = { invoiceId: invoice.id, attemptId: attempt.id, paymentId: uuidv7(),
+  const success: CardSuccess = { method: 'card', invoiceId: invoice.id, attemptId: attempt.id, paymentId: uuidv7(),
     paymentIntentId: intent.id, chargeId: confirmed.latestChargeId, paidAt: clock.now().toISOString(), amountCents: invoice.amountCents, currency: 'CAD' };
   // A restored/older payment has no attribution audit; refund transitions must still accept it.
   if (paid) await factory('payments', gymId, { id: success.paymentId, invoiceId: invoice.id, method: 'card',
@@ -238,7 +238,7 @@ describe('billing scenarios: PostgreSQL invoice transitions and published effect
       paidAt: f.clock.now().toISOString(), method };
     await f.transitions.manualPayment(f.context, manual);
     expect((await f.transitions.manualPayment(f.context, manual)).outcome).toBe('ignored');
-    const checkoutSuccess: CardSuccess = { invoiceId: f.invoice.id, paymentId: f.success.paymentId,
+    const checkoutSuccess: CardSuccess = { method: 'card', invoiceId: f.invoice.id, paymentId: f.success.paymentId,
       paymentIntentId: f.success.paymentIntentId, chargeId: f.success.chargeId, paidAt: f.success.paidAt,
       amountCents: f.success.amountCents, currency: f.success.currency };
     expect(await f.transitions.cardSucceeded(f.context, checkoutSuccess)).toMatchObject({ outcome: 'duplicate_payment', invoice: { status: 'paid' } });

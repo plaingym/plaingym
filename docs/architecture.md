@@ -284,9 +284,12 @@ source of truth; Stripe is the processor. In outline:
   front desk. See the
   [membership status rule](../apps/server/src/areas/billing/memberships.README.md#member-status).
 * **Invoicing** (`areas/billing/invoicing/`): pure calculation of invoice lines and tax.
-* **Charge runner** (`areas/billing/runner/`): the daily run charges saved cards in
-  two steps (create, then confirm) with idempotency keys, retries on the gym's
-  schedule, and reconciles uncertain attempts with Stripe by ID.
+* **Charge runner** (`areas/billing/runner/`) creates and confirms a PaymentIntent
+  with separate idempotency keys. A settling bank debit puts the invoice and
+  attempt in `processing`. Webhooks record settlement. The hourly sweep checks
+  a debit older than ten days by intent ID. A failed bank payment can be retried
+  on the gym's schedule until three bank attempts have failed. An unusable bank
+  account is revoked and its invoice's automatic retries stop.
 * **Transitions** (`areas/billing/transitions/`): the only code that changes invoice
   state; its effects (receipts, dunning, membership activation, class credit grants
   and full-refund reversals)

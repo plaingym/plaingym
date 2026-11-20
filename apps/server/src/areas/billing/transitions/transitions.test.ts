@@ -53,7 +53,7 @@ async function fixture(kind: 'cycle' | 'one_off' = 'cycle', currency = 'CAD') {
   const member = await factory('members', gymId, { householdId: household.id, email: household.email });
   const plan = await factory('plans', gymId, { currency });
   const membership = await factory('memberships', gymId, { householdId: household.id, memberId: member.id, planId: plan.id, currency });
-  const invoice = await factory('invoices', gymId, { householdId: household.id, kind, status: 'processing', number: 1, currency,
+  const invoice = await factory('invoices', gymId, { householdId: household.id, kind, status: 'open', number: 1, currency,
     dueOn: '2028-03-10', periodStartsOn: '2028-03-10', periodEndsOn: '2028-04-10' });
   await factory('invoiceLineItems', gymId, { householdId: household.id, invoiceId: invoice.id, membershipId: membership.id, kind: 'membership', currency });
   const provider = new FakePayments(gymId, clock);
@@ -70,7 +70,7 @@ async function fixture(kind: 'cycle' | 'one_off' = 'cycle', currency = 'CAD') {
   const effectOptions = { ...options, jobs, settings, transitions, memberships: lifecycle, async payments() { return provider; }, notifications, retry };
   const effects = createTransitionEffects(effectOptions);
   for (const job of createTransitionJobs(() => effects)) jobs.handle(job.id, job.handler);
-  const success = { invoiceId: invoice.id, paymentId: uuidv7(), attemptId, paymentIntentId: intent.id,
+  const success = { method: 'card' as const, invoiceId: invoice.id, paymentId: uuidv7(), attemptId, paymentIntentId: intent.id,
     chargeId: 'ch_' + intent.id, amountCents: invoice.amountCents, currency, paidAt: clock.now().toISOString() };
   const failure = { invoiceId: invoice.id, attemptId, paymentIntentId: intent.id, outcome: 'failed' as const };
   const manual = { invoiceId: invoice.id, paymentId: uuidv7(), amountCents: invoice.amountCents, currency,
@@ -208,6 +208,23 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect(after.audits.filter(a => a.action === effectCreated)).toHaveLength(3);
     expect(after.attempts.find(a => a.id === f.attempt.id)!.status).toBe('requires_action');
     await f.drain(); expect(f.email.messages).toEqual([]);
+  });
+  it('keeps a past-due assignment invoice past due and notified when a later card retry declines', async () => {
+    const f = await fixture('one_off');
+    await db.forGym(f.gymId, tx => tx.update(invoices).set({ status: 'past_due' }).where(eq(invoices.id, f.invoice.id)));
+    expect((await f.transitions.cardFailed(f.context, f.failure)).invoice.status).toBe('past_due');
+    expect((await f.read()).audits.filter(a => a.action === effectCreated && (a.after as InvoiceEffect).kind === 'dunning')).toHaveLength(1);
+  });
+  it('counts only bank attempts that reached the bank toward the three-attempt cap', async () => {
+    const f = await fixture();
+    await factory('paymentMethods', f.gymId, { householdId: f.household.id, processorId: 'pm_bank', type: 'us_bank_account', isDefault: true });
+    for (const [attemptNumber, declineCode] of [[1, 'create_abandoned'], [2, 'confirm_abandoned']] as const)
+      await factory('paymentAttempts', f.gymId, { invoiceId: f.invoice.id, attemptNumber, savedPaymentMethod: 'pm_bank', status: 'failed', declineCode });
+    await db.forGym(f.gymId, tx => tx.update(paymentAttempts).set({ attemptNumber: 3, savedPaymentMethod: 'pm_bank' }).where(eq(paymentAttempts.id, f.attempt.id)));
+    expect((await f.transitions.cardFailed(f.context, { ...f.failure, outcome: 'insufficient_funds' })).invoice.status).toBe('past_due');
+    const { audits } = await f.read();
+    expect(audits.filter(a => a.action === 'billing.invoice.retries_stopped')).toHaveLength(0);
+    expect(audits.filter(a => a.action === effectCreated && (a.after as { kind: string }).kind === 'retry').length).toBeGreaterThan(0);
   });
   it('keeps paid final while closing a still-pending attempt on failure', async () => {
     const f = await fixture(); await f.transitions.manualPayment(f.context, f.manual);
@@ -496,7 +513,7 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect((await f.transitions.refund(f.context, { ...request, status: 'succeeded' })).outcome).toBe('ignored');
     expect((await f.transitions.refund(f.context, { ...request, refundId: uuidv7(), processorId: 're_b', amountCents: 10000, status: 'succeeded' })).invoice.status).toBe('refunded');
   });
-  it.each([[false, 'confirm_abandoned', 'processing'], [true, 'intent_canceled', 'past_due']] as const)(
+  it.each([[false, 'confirm_abandoned', 'open'], [true, 'intent_canceled', 'past_due']] as const)(
     'treats a cancelled intent as declined only when a confirmation reached the card (charge: %s)', async (charged, code, status) => {
       const f = await fixture();
       const canceled = normalizeChargeOutcome({ id: f.success.paymentIntentId, status: 'canceled', amount: 10000, currency: 'cad',

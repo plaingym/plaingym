@@ -102,12 +102,13 @@ it.each([
   expect(transport.requests.at(-1)?.params?.mandate).toBe(mandateId);
   expect(transport.objects.get(intent.id)?.status).toBe('processing');
   const confirms = transport.requests.filter(r => r.method === 'POST' && r.path.endsWith('/confirm')).length;
-  expect(await payments.confirmCharge(intent.id, { idempotencyKey: 'confirm-again' })).toMatchObject({ id: intent.id, status: 'pending' });
+  expect(await payments.confirmCharge(intent.id, { idempotencyKey: 'confirm-again' })).toMatchObject({ id: intent.id, status: 'processing', paymentMethodType: type });
   expect(transport.requests.filter(r => r.method === 'POST' && r.path.endsWith('/confirm'))).toHaveLength(confirms);
   const event = transport.settle(intent.id);
   expect(event).toMatchObject({ object: 'event', type: code ? 'payment_intent.payment_failed' : 'payment_intent.succeeded', livemode: false,
     data: { object: { id: intent.id, status: code ? 'requires_payment_method' : 'succeeded', ...(code ? { last_payment_error: { code } } : {}) } } });
-  expect(await payments.findCharge({ kind: 'charge', id: intent.id })).toMatchObject({ status: code ? 'failed' : 'succeeded' });
+  expect(await payments.findCharge({ kind: 'charge', id: intent.id })).toMatchObject({ status: code ? 'failed' : 'succeeded', paymentMethodType: type,
+    ...(code ? { code: code === 'account_closed' ? 'payment_method_unusable' : code } : {}) });
 });
 it.each(['payment_method_types[1]', 'allowed_payment_method_types[1]', 'payment_method_options[us_bank_account]'])(
   'classifies a bank Checkout refusal for %s without changing a card error', async param => {

@@ -149,7 +149,7 @@ it('queues one duplicate refund under concurrent staff retries, and reconciles r
   const intent = await f.provider.createCharge({ amount: f.bill.amountCents, currency: f.bill.currency.toLowerCase(),
     customerId: 'cus_test', paymentMethodId: 'pm_test', invoiceId: f.bill.id, attemptId: uuidv7(), idempotencyKey: 'duplicate-create' });
   await f.provider.confirmCharge(intent.id, { idempotencyKey: 'duplicate-confirm' });
-  await f.transitions.cardSucceeded(f.context, { invoiceId: f.bill.id, paymentId: uuidv7(), paymentIntentId: intent.id,
+  await f.transitions.cardSucceeded(f.context, { method: 'card', invoiceId: f.bill.id, paymentId: uuidv7(), paymentIntentId: intent.id,
     chargeId: 'ch_' + intent.id, amountCents: f.bill.amountCents, currency: f.bill.currency, paidAt: f.clock.now().toISOString() });
   const original = (await f.read()).audits.find(row => row.action === effectCreated && (row.after as TransitionEffect).kind === 'refund_duplicate')!;
   const id = await f.create('refund_duplicate', original.after as TransitionEffect);

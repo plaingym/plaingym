@@ -2,7 +2,7 @@
 import type { Sql } from '../client.js';
 /** Restricted columns remain immutable for app, even through raw SQL. */
 export const mutableColumns: Readonly<Record<string, readonly string[]>> = {
-  payment_attempts: ['payment_intent_id', 'status', 'decline_code', 'error', 'resolved_at'],
+  payment_attempts: ['payment_intent_id', 'status', 'decline_code', 'error', 'resolved_at', 'processing_at'],
   class_credit_entries: ['reason'],
 };
 export const appendOnlyTables = ['audit_events', 'waiver_signatures', 'class_credit_entries'] as const;
@@ -26,12 +26,12 @@ export async function applySecurity(sql: Sql) {
       await tx`revoke update, delete on table public.${tx(table)} from app`;
       const columns = await tx`select column_name from information_schema.columns where table_schema = 'public' and table_name = ${table}`;
       await tx`revoke update (${tx(columns.map((column) => column.column_name))}) on public.${tx(table)} from app`;
+      // Historical upgrade fixtures can apply security before the bank debit timestamp exists.
+      const allowed = mutableColumns[table]?.filter(column => column !== 'processing_at' || columns.some(row => row.column_name === column));
+      if (allowed?.length) await tx`grant update (${tx(allowed)}) on public.${tx(table)} to app`;
     }
     for (const table of deletableAppendOnlyTables) {
       if (existing.has(table)) await tx`grant delete on table public.${tx(table)} to app`;
-    }
-    for (const [table, columns] of Object.entries(mutableColumns)) {
-      if (existing.has(table)) await tx`grant update (${tx([...columns])}) on public.${tx(table)} to app`;
     }
   });
 }

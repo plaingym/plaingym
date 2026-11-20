@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, isNotNull, isNull, lte } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNotNull, isNull, lte } from 'drizzle-orm';
 import { forGym, invoices, paymentMethods, payments, refunds } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { idSchema } from '@plaingym/shared/contracts';
@@ -22,7 +22,7 @@ export function createLapsedRefundJobs(options: { scope?: typeof forGym; clock: 
     const rows = await scope(context.gymId, tx => tx.select({ reservation: refunds, payment: payments }).from(refunds)
       .innerJoin(payments, eq(payments.id, refunds.paymentId)).where(and(eq(refunds.status, 'pending'), isNotNull(refunds.taggedAt),
         isNull(refunds.processorId), lte(refunds.createdAt, new Date(options.clock.now().getTime() - refundRetryWindowMs - refundSettleSkewMs)),
-        eq(payments.method, 'card'))).orderBy(asc(refunds.createdAt), asc(refunds.id)).limit(100));
+        inArray(payments.method, ['card', 'bank_debit']))).orderBy(asc(refunds.createdAt), asc(refunds.id)).limit(100));
     // Resolve the provider only when a payment needs Stripe; a gym without Stripe has nothing to settle, and a payment
     // marked as test is released without it.
     let provider: Promise<Payments> | undefined;

@@ -14,6 +14,7 @@ import { createInvoiceTransitions } from '../transitions/index.js';
 import { createChargeRunner } from './index.js';
 
 export interface FixtureOptions {
+  currency?: 'USD' | 'CAD';
   now?: string; dueOn?: string; interval?: string; anniversaryOn?: string | null;
   startsOn?: string; status?: string; enabled?: boolean; amount?: number; timezone?: string;
 }
@@ -26,7 +27,7 @@ export function useRunnerFixture() {
   const db = useTestDatabase(), factory = createFactories(db);
   async function fixture(options: FixtureOptions = {}) {
     const gymId = uuidv7();
-    await factory('gyms', gymId, { currency: 'CAD', timezone: options.timezone ?? 'America/Vancouver', billingEnabled: options.enabled ?? true });
+    await factory('gyms', gymId, { currency: options.currency ?? 'CAD', timezone: options.timezone ?? 'America/Vancouver', billingEnabled: options.enabled ?? true });
     const clock = new TestClock(options.now ?? '2028-03-01T17:00:00Z');
     const home = await factory('households', gymId, { billingDay: 1, stripeCustomerId: 'cus_test' });
     const member = await factory('members', gymId, { householdId: home.id });

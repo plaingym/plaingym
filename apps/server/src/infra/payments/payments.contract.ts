@@ -129,7 +129,7 @@ export function bankDebitContract(name: string, create: () => {
           status: 'found', value: { kind: 'payment_method', object: { id, type, customerId: charge.customerId, last4: '6789', bankName: 'STRIPE TEST BANK' } } });
         const intent = await payments.createCharge({ ...charge, currency: type === 'acss_debit' ? 'cad' : 'usd', paymentMethodId: id,
           ...(type === 'acss_debit' ? { mandateId: 'mandate_setup' } : {}) });
-        expect(await payments.confirmCharge(intent.id, { idempotencyKey: 'confirm' })).toMatchObject({ id: intent.id, status: 'pending' });
+        expect(await payments.confirmCharge(intent.id, { idempotencyKey: 'confirm' })).toMatchObject({ id: intent.id, status: 'processing', paymentMethodType: type });
       });
     it('lists cards by default and includes only requested kinds across bounded mixed pages', async () => {
       const { payments, charge: { customerId } } = create();
@@ -158,7 +158,7 @@ export function bankDebitContract(name: string, create: () => {
         expect(completed).toMatchObject({ status: 'complete', savesCard: true,
           paymentStatus: mode === 'setup' ? 'no_payment_required' : method === 'card' ? 'paid' : 'unpaid' });
         if (mode === 'payment') {
-          expect(await payments.findCharge({ kind: 'charge', id: completed.chargeId! })).toMatchObject({ status: method === 'card' ? 'succeeded' : 'pending' });
+          expect(await payments.findCharge({ kind: 'charge', id: completed.chargeId! })).toMatchObject({ status: method === 'card' ? 'succeeded' : 'processing' });
           if (method !== 'card') expect(completed.mandateId).toMatch(/^mandate_/);
         } else if (method !== 'card') {
           expect(await payments.readPaymentObject({ kind: 'setup', id: completed.setupId! })).toMatchObject({

@@ -12,7 +12,7 @@ import { createCardHandlers } from './methods.js';
 import { stripeWriteScope } from '../../stripe-writes.js';
 
 export const billingWebhookTypes = [
-  'payment_intent.succeeded', 'payment_intent.payment_failed', 'payment_intent.requires_action',
+  'payment_intent.succeeded', 'payment_intent.payment_failed', 'payment_intent.requires_action', 'payment_intent.processing',
   'checkout.session.completed', 'setup_intent.succeeded', 'payment_method.updated', 'payment_method.automatically_updated',
   'charge.refunded', 'refund.created', 'refund.updated', 'refund.failed',
   'charge.dispute.created', 'charge.dispute.updated', 'charge.dispute.closed',
@@ -93,8 +93,12 @@ export function registerBillingWebhookHandlers(inbox: Pick<WebhookInbox, 'regist
   async function applyIntent(gymId: string, outcome: ChargeOutcome) {
     const matched = await match(gymId, outcome);
     if (outcome.status === 'unknown') throw new Error('Webhook PaymentIntent is unresolved');
-    // Checkout failures have no runner attempt and must not start dunning.
-    if (!matched.attempt && outcome.status !== 'succeeded') return;
+    if (matched.invoice.amountCents !== outcome.amount || matched.invoice.currency !== outcome.currency.toUpperCase())
+      throw new Error('Webhook payment amount mismatch');
+    if (matched.attempt && outcome.paymentMethodType && outcome.paymentMethodType !== 'card' && outcome.paymentMethodId
+      && matched.attempt.savedPaymentMethod !== outcome.paymentMethodId) throw new Error('Webhook bank account mismatch');
+    if (!matched.attempt && outcome.status !== 'succeeded' && outcome.status !== 'processing'
+      && !(outcome.status === 'failed' && (outcome.code === 'insufficient_funds' || outcome.code === 'payment_method_unusable'))) return;
     await applyChargeOutcome(options.transitions, system(gymId), {
       invoiceId: matched.invoice.id, paymentId: matched.payment?.id ?? uuidv7(),
       ...(matched.attempt ? { attemptId: matched.attempt.id } : {}),
@@ -154,7 +158,8 @@ export function registerBillingWebhookHandlers(inbox: Pick<WebhookInbox, 'regist
         if (outcome.status !== 'succeeded' || !outcome.latestChargeId) throw new Error('Completed Checkout payment is unresolved');
         await options.transitions.cardSucceeded(system(gymId), { invoiceId: invoice.id, paymentId: payment?.id ?? uuidv7(),
           paymentIntentId: outcome.id, chargeId: outcome.latestChargeId, amountCents: outcome.amount,
-          currency: outcome.currency.toUpperCase(), paidAt: successTime(outcome) });
+          currency: outcome.currency.toUpperCase(), paidAt: successTime(outcome),
+          method: outcome.paymentMethodType && outcome.paymentMethodType !== 'card' ? 'bank_debit' : 'card' });
         if (session.savesCard) {
           if (!session.paymentMethodId) throw new Error('Collected payment method is unresolved');
           await cards.collect(gymId, provider, session.customerId, session.paymentMethodId);

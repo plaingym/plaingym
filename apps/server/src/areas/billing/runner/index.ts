@@ -25,7 +25,7 @@ export { releaseActionNeeded, releaseCheckout } from './releases.js';
 
 /** A retry names its callback's job, so the job and its replays recognize the attempts it reserved. */
 export type ChargeOptions = { mode?: 'automatic' } | { mode: 'retry'; jobId?: string } | { mode: 'staff'; context: MutationContext };
-export type ChargeResult = Skipped | { status: 'succeeded' | 'failed' | 'action_required' | 'pending' | 'unknown' | 'settled_zero' };
+export type ChargeResult = Skipped | { status: 'succeeded' | 'failed' | 'action_required' | 'processing' | 'pending' | 'unknown' | 'settled_zero' };
 export interface CollectionError { invoiceId: string; cause: ChargeFailureCause; }
 /** The daily run's job. A stopped collection enqueues it again as its continuation. */
 export const dailyRunJob = 'billing.runner.daily';
@@ -76,7 +76,7 @@ export function createChargeRunner(options: RunnerOptions) {
         status: 'pending', createdAt: clock.now() }).returning())[0]!;
       await audit(tx, context, clock, reserved, 'payment_attempt', attempt.id,
         { invoiceId, attemptNumber: attempt.attemptNumber, mode, ...(jobId ? { jobId } : {}) });
-      return { status: 'reserved' as const, attempt };
+      return { status: 'reserved' as const, attempt, mandateId: payment.mandateId };
     });
   }
   /**
@@ -142,6 +142,7 @@ export function createChargeRunner(options: RunnerOptions) {
       const key = `${invoiceId}:${attempt.attemptNumber}`;
       const intent = await provider.createCharge({ amount: attempt.amountCents, currency: attempt.currency.toLowerCase(),
         customerId: attempt.stripeCustomerId, paymentMethodId: attempt.savedPaymentMethod,
+        ...(reservation.mandateId ? { mandateId: reservation.mandateId } : {}),
         invoiceId, attemptId: attempt.id, idempotencyKey: `${key}:create` });
       const saved = await scope(gymId, async tx => {
         const changed = await tx.update(paymentAttempts).set({ paymentIntentId: intent.id }).where(and(

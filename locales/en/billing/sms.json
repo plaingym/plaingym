@@ -1,5 +1,7 @@
 {
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "bankFailed": "Your bank payment of {amount} for invoice {number} didn't go through. Pay the invoice at {payUrl}.",
+  "bankUnusable": "Your bank payment of {amount} for invoice {number} didn't go through. Add a new payment method at {updateUrl}.",
   "receipt": "Payment of {amount} received for invoice {number}. Thank you.",
   "failed": "Payment of {amount} for invoice {number} failed. Pay: {payUrl}\nUpdate your card: {updateUrl}",
   "action": "Your bank requires authentication for invoice {number} ({amount}). Complete payment: {payUrl}\nUpdate your card: {updateUrl}",

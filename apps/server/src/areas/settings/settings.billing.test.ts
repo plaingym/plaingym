@@ -52,7 +52,7 @@ async function fixture(executeRetries = false) {
   });
   for (const job of createTransitionJobs(() => effects)) jobs.handle(job.id, job.handler);
   let number = 0;
-  const invoice = () => factory('invoices', gymId, { householdId: household.id, kind: 'cycle', status: executeRetries ? 'open' : 'processing', number: ++number,
+  const invoice = () => factory('invoices', gymId, { householdId: household.id, kind: 'cycle', status: 'open', number: ++number,
     dueOn: addDays('2028-03-10', number - 1), periodStartsOn: '2028-03-10', periodEndsOn: '2028-04-10' });
   async function failure(invoiceId: string, attemptNumber = 1) {
     const attempt = await factory('paymentAttempts', gymId, { invoiceId, attemptNumber, paymentIntentId: 'pi_' + uuidv7() });

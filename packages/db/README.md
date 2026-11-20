@@ -181,8 +181,8 @@ The hourly recovery sweep pages both sets without reading processed history.
 Migration `0038_bank_debit.sql` adds a disabled-by-default gym setting and bank
 debit fields to billing. Existing methods keep their card details and read as
 `card` with a null bank name and mandate. Non-card methods have no expiry, and a
-`processing` attempt requires `processing_at`. The migration reserves these
-values in the schema. Payment collection continues to use its existing methods.
+`processing` attempt requires `processing_at`. The app role can update this
+timestamp when a pending bank payment enters processing.
 
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 

@@ -1,0 +1,301 @@
+{
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only; recorded synthetic StripeFixtures API exchanges, no live account",
+  "version": 1,
+  "gymId": "00000000-0000-7000-8000-000000000001",
+  "exchanges": [
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/customers/cus_test"
+      },
+      "output": {
+        "id": "cus_test",
+        "object": "customer",
+        "email": "payer@example.invalid",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_methods/pm_acss_6789",
+        "params": {
+          "expand": [
+            "customer"
+          ]
+        }
+      },
+      "output": {
+        "id": "pm_acss_6789",
+        "type": "acss_debit",
+        "object": "payment_method",
+        "created": 1835542800,
+        "customer": {
+          "id": "cus_test",
+          "object": "customer",
+          "email": "payer@example.invalid",
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001"
+          }
+        },
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        },
+        "acss_debit": {
+          "bank_name": "STRIPE TEST BANK",
+          "last4": "6789"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "POST",
+        "path": "/v1/payment_intents",
+        "params": {
+          "amount": 10000,
+          "currency": "cad",
+          "customer": "cus_test",
+          "payment_method": "pm_acss_6789",
+          "allowed_payment_method_types": [
+            "acss_debit"
+          ],
+          "confirm": false,
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001",
+            "invoice_id": "00000000-0000-7000-8000-000000000002",
+            "attempt_id": "00000000-0000-7000-8000-000000000003",
+            "mandate_id": "mandate_saved",
+            "attempt_n": "1"
+          }
+        },
+        "idempotencyKey": "00000000-0000-7000-8000-000000000002:1:create"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1835542800,
+        "livemode": false,
+        "object": "payment_intent",
+        "amount": 10000,
+        "currency": "cad",
+        "customer": "cus_test",
+        "payment_method": "pm_acss_6789",
+        "allowed_payment_method_types": [
+          "acss_debit"
+        ],
+        "confirm": false,
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002",
+          "attempt_id": "00000000-0000-7000-8000-000000000003",
+          "mandate_id": "mandate_saved",
+          "attempt_n": "1"
+        },
+        "status": "requires_confirmation"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1835542800,
+        "livemode": false,
+        "object": "payment_intent",
+        "amount": 10000,
+        "currency": "cad",
+        "customer": "cus_test",
+        "payment_method": "pm_acss_6789",
+        "allowed_payment_method_types": [
+          "acss_debit"
+        ],
+        "confirm": false,
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002",
+          "attempt_id": "00000000-0000-7000-8000-000000000003",
+          "mandate_id": "mandate_saved",
+          "attempt_n": "1"
+        },
+        "status": "requires_confirmation"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "POST",
+        "path": "/v1/payment_intents/pi_1/confirm",
+        "params": {
+          "off_session": true,
+          "expand": [
+            "latest_charge"
+          ],
+          "mandate": "mandate_saved"
+        },
+        "idempotencyKey": "00000000-0000-7000-8000-000000000002:1:confirm"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1835542800,
+        "livemode": false,
+        "object": "payment_intent",
+        "amount": 10000,
+        "currency": "cad",
+        "customer": "cus_test",
+        "payment_method": "pm_acss_6789",
+        "allowed_payment_method_types": [
+          "acss_debit"
+        ],
+        "confirm": false,
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002",
+          "attempt_id": "00000000-0000-7000-8000-000000000003",
+          "mandate_id": "mandate_saved",
+          "attempt_n": "1"
+        },
+        "status": "processing",
+        "latest_charge": {
+          "id": "ch_2",
+          "created": 1835542800,
+          "livemode": false,
+          "object": "charge",
+          "payment_intent": "pi_1",
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001",
+            "invoice_id": "00000000-0000-7000-8000-000000000002",
+            "attempt_id": "00000000-0000-7000-8000-000000000003",
+            "mandate_id": "mandate_saved",
+            "attempt_n": "1"
+          },
+          "payment_method_details": {
+            "type": "acss_debit",
+            "acss_debit": {
+              "mandate": "mandate_saved"
+            }
+          }
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1835542800,
+        "livemode": false,
+        "object": "payment_intent",
+        "amount": 10000,
+        "currency": "cad",
+        "customer": "cus_test",
+        "payment_method": "pm_acss_6789",
+        "allowed_payment_method_types": [
+          "acss_debit"
+        ],
+        "confirm": false,
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002",
+          "attempt_id": "00000000-0000-7000-8000-000000000003",
+          "mandate_id": "mandate_saved",
+          "attempt_n": "1"
+        },
+        "status": "processing",
+        "latest_charge": {
+          "id": "ch_2",
+          "created": 1835542800,
+          "livemode": false,
+          "object": "charge",
+          "payment_intent": "pi_1",
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001",
+            "invoice_id": "00000000-0000-7000-8000-000000000002",
+            "attempt_id": "00000000-0000-7000-8000-000000000003",
+            "mandate_id": "mandate_saved",
+            "attempt_n": "1"
+          },
+          "payment_method_details": {
+            "type": "acss_debit",
+            "acss_debit": {
+              "mandate": "mandate_saved"
+            }
+          }
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1835542800,
+        "livemode": false,
+        "object": "payment_intent",
+        "amount": 10000,
+        "currency": "cad",
+        "customer": "cus_test",
+        "payment_method": "pm_acss_6789",
+        "allowed_payment_method_types": [
+          "acss_debit"
+        ],
+        "confirm": false,
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002",
+          "attempt_id": "00000000-0000-7000-8000-000000000003",
+          "mandate_id": "mandate_saved",
+          "attempt_n": "1"
+        },
+        "status": "succeeded",
+        "latest_charge": {
+          "id": "ch_2",
+          "created": 1835542800,
+          "livemode": false,
+          "object": "charge",
+          "payment_intent": "pi_1",
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001",
+            "invoice_id": "00000000-0000-7000-8000-000000000002",
+            "attempt_id": "00000000-0000-7000-8000-000000000003",
+            "mandate_id": "mandate_saved",
+            "attempt_n": "1"
+          },
+          "payment_method_details": {
+            "type": "acss_debit",
+            "acss_debit": {
+              "mandate": "mandate_saved"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

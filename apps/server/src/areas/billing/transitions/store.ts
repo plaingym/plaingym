@@ -4,7 +4,7 @@ import { auditEvents, invoices, uuidv7, writeAudit, type Transaction } from '@pl
 import type { Clock } from '@plaingym/shared';
 import type { MutationContext } from '../../../core/interfaces/common.js';
 import { notFound } from '../../../core/interfaces/common.js';
-import type { InvoiceSnapshot, InvoiceTransitionResult } from '../../../core/interfaces/invoice-transitions.js';
+import type { BankFailureCode, InvoiceSnapshot, InvoiceTransitionResult } from '../../../core/interfaces/invoice-transitions.js';
 
 export const effectCreated = 'billing.transition.effect.created';
 export const effectPublished = 'billing.transition.effect.published';
@@ -19,6 +19,7 @@ export interface TransitionEffect {
   attemptId?: string;
   refundId?: string;
   retryDay?: number;
+  bankCode?: BankFailureCode;
   /** A staff notice's subject; absent on older notices, which all report a duplicate payment. */
   notice?: 'refund_canceled' | 'refund_failed' | 'refund_released' | 'refund_arrived' | 'duplicate_released' | 'credits_not_granted';
 }

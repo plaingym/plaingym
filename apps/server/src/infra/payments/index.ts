@@ -15,6 +15,7 @@ export interface PaymentMetadata {
   readonly attemptId?: string;
 }
 export interface ChargeIdentity {
+  readonly paymentMethodType?: PaymentMethodType;
   readonly id: string;
   readonly amount: number;
   readonly currency: string;
@@ -26,7 +27,8 @@ export interface ChargeIdentity {
 }
 export type ChargeOutcome =
   | (ChargeIdentity & { status: 'succeeded'; succeededAt?: Date })
-  | (ChargeIdentity & { status: 'failed'; code: 'declined' | 'canceled' | 'provider_error' })
+  | (ChargeIdentity & { status: 'processing' })
+  | (ChargeIdentity & { status: 'failed'; code: 'declined' | 'canceled' | 'provider_error' | 'insufficient_funds' | 'payment_method_unusable' })
   | (ChargeIdentity & { status: 'action_required'; code: 'authentication_required' })
   | (ChargeIdentity & { status: 'pending' })
   | { status: 'unknown'; reference: ChargeReference };
@@ -280,12 +282,17 @@ export function normalizeChargeOutcome(charge: ProviderChargeState, error?: unkn
     amount: charge.amount,
     currency: charge.currency,
     customerId: charge.customerId,
+    ...(charge.paymentMethodType ? { paymentMethodType: charge.paymentMethodType } : {}),
     ...(charge.paymentMethodId ? { paymentMethodId: charge.paymentMethodId } : {}),
     ...(charge.latestChargeId ? { latestChargeId: charge.latestChargeId } : {}),
     metadata: { ...charge.metadata },
   };
   if (charge.status === 'succeeded') return { ...identity, status: 'succeeded', ...(charge.succeededAt ? { succeededAt: charge.succeededAt } : {}) };
   if (charge.status === 'canceled') return { ...identity, status: 'failed', code: 'canceled' };
+  if (charge.status === 'processing') return { ...identity, status: 'processing' };
+  if (charge.status === 'requires_payment_method' && charge.last_payment_error && charge.paymentMethodType && charge.paymentMethodType !== 'card') {
+    return { ...identity, status: 'failed', code: charge.last_payment_error.code === 'insufficient_funds' ? 'insufficient_funds' : 'payment_method_unusable' };
+  }
   if (
     charge.status === 'requires_action' ||
     needsAuthentication(charge.last_payment_error) ||
@@ -466,6 +473,8 @@ export class FakePayments implements Payments {
   async createCharge(request: CreateCharge): Promise<{ id: string }> {
     assertNoTransaction('payments.createCharge');
     if (this.#detached.has(request.paymentMethodId)) throw new Error('Payment method is detached');
+    const type = this.#methods.get(request.paymentMethodId)?.type ?? 'card';
+    if (type === 'acss_debit' && !request.mandateId) throw new Error('A saved PAD mandate is required');
     money(request.amount, request.currency);
     const result = this.#once(
       'create',
@@ -477,7 +486,7 @@ export class FakePayments implements Payments {
         request.paymentMethodId,
         request.invoiceId,
         request.attemptId,
-        ...(request.mandateId ? [request.mandateId] : []),
+        ...(type !== 'card' && request.mandateId ? [request.mandateId] : []),
       ]),
       () => {
         const id = this.#id('pi');
@@ -487,6 +496,7 @@ export class FakePayments implements Payments {
           currency: request.currency,
           customerId: request.customerId,
           paymentMethodId: request.paymentMethodId,
+          ...(type !== 'card' ? { paymentMethodType: type } : {}),
           metadata: { gymId: this.gymId, invoiceId: request.invoiceId, attemptId: request.attemptId },
           status: 'pending',
         });
@@ -501,10 +511,10 @@ export class FakePayments implements Payments {
     const result = this.#once<ChargeOutcome>('confirm', options.idempotencyKey, id, () => {
       const charge = this.#charges.get(id);
       if (!charge || this.#uncertain.has(id)) return { status: 'unknown', reference: { kind: 'charge', id } };
-      if (charge.status === 'succeeded' || (charge.status === 'failed' && charge.code === 'canceled'))
+      if (charge.status === 'succeeded' || charge.status === 'processing' || (charge.status === 'failed' && charge.code === 'canceled'))
         return charge;
       const method = charge.paymentMethodId && this.#methods.get(charge.paymentMethodId);
-      const response = this.#confirmation === 'succeeded' && method && method.type !== 'card' ? 'pending' : this.#confirmation;
+      const response = this.#confirmation === 'succeeded' && method && method.type !== 'card' ? 'processing' : this.#confirmation;
       this.#confirmation = 'succeeded';
       if (typeof response === 'object' && response !== null && 'error' in response) {
         if (!needsAuthentication(response.error)) throw response.error;
@@ -514,17 +524,18 @@ export class FakePayments implements Payments {
           ? 'succeeded'
           : response === 'declined'
             ? 'failed'
-            : response === 'pending'
-              ? 'pending'
+            : response === 'pending' || response === 'processing'
+              ? response
               : 'action_required';
       const identity: ChargeIdentity = {
         id: charge.id,
         amount: charge.amount,
         currency: charge.currency,
         customerId: charge.customerId,
+        ...(charge.paymentMethodType ? { paymentMethodType: charge.paymentMethodType } : {}),
         ...(charge.paymentMethodId ? { paymentMethodId: charge.paymentMethodId } : {}),
         // As at Stripe, a confirmation that reached the card network created a charge.
-        ...(status === 'succeeded' || status === 'failed' ? { latestChargeId: this.#id('ch') } : {}),
+        ...(status === 'succeeded' || status === 'failed' || status === 'processing' ? { latestChargeId: this.#id('ch') } : {}),
         metadata: charge.metadata,
       };
       const next: StoredCharge =
@@ -534,7 +545,7 @@ export class FakePayments implements Payments {
             ? { ...identity, status, code: 'authentication_required' }
             : status === 'succeeded'
               ? { ...identity, status: 'succeeded', succeededAt: this.clock.now() }
-              : { ...identity, status: 'pending' };
+              : { ...identity, status };
       this.#charges.set(id, next);
       this.#record('charge', id);
       return next;
@@ -545,7 +556,7 @@ export class FakePayments implements Payments {
     assertNoTransaction('payments.cancelCharge');
     const charge = this.#charges.get(id);
     if (!charge || this.#uncertain.has(id)) return { status: 'unknown', reference: { kind: 'charge', id } };
-    if (charge.status === 'succeeded') return structuredClone(charge);
+    if (charge.status === 'succeeded' || charge.status === 'processing') return structuredClone(charge);
     const result: StoredCharge = { ...charge, status: 'failed', code: 'canceled' };
     this.#charges.set(id, result);
     this.#record('charge', id);
@@ -558,6 +569,13 @@ export class FakePayments implements Payments {
       return { status: 'unknown', reference: { ...reference } };
     }
     return structuredClone(this.#charges.get(id) ?? { status: 'unknown', reference });
+  }
+  settleCharge(id: string, outcome: 'succeeded' | 'insufficient_funds' | 'payment_method_unusable'): void {
+    const charge = this.#charges.get(id);
+    if (charge?.status !== 'processing') throw new Error('Expected a processing charge');
+    this.#charges.set(id, outcome === 'succeeded' ? { ...charge, status: 'succeeded', succeededAt: this.clock.now() }
+      : { ...charge, status: 'failed', code: outcome });
+    this.#record('charge', id);
   }
   async listRefunds(chargeId: string): Promise<readonly Refund[]> {
     assertNoTransaction('payments.listRefunds');
@@ -673,7 +691,7 @@ export class FakePayments implements Payments {
         paymentMethodId,
         latestChargeId: this.#id('ch'),
         metadata: session.metadata,
-        ...(method === 'card' ? { status: 'succeeded', succeededAt: this.clock.now() } : { status: 'pending' }),
+        ...(method === 'card' ? { status: 'succeeded', succeededAt: this.clock.now() } : { status: 'processing', paymentMethodType: method }),
       });
       this.#record('charge', chargeId);
     }

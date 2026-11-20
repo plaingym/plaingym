@@ -763,6 +763,12 @@ describe('signed-link webhook completion with real PostgreSQL', () => {
 });
 
 describe('fixed return flows with real PostgreSQL', () => {
+  it('refuses to open a pay link while its invoice is processing', async () => {
+    const f = await fixture('pay_invoice'), create = vi.spyOn(f.fake, 'createCheckout');
+    await db.forGym(f.gymId, tx => tx.update(invoices).set({ status: 'processing' }).where(eq(invoices.id, f.invoice.id)));
+    await expect(f.checkout.start(f.gymId, f.linkId)).rejects.toThrow();
+    expect(create).not.toHaveBeenCalled();
+  });
   const flow = { successPath: '/join/return', cancelPath: '/join/cancelled', lifetimeMs: 60 * 60 * 1000 };
   const saved = (f: Awaited<ReturnType<typeof fixture>>) => db.forGym(f.gymId, async tx => (await tx.select().from(invoices).where(eq(invoices.id, f.invoice.id)))[0]!);
   it('keeps pay links on /l/return, the provider default expiry and the 23-hour reservation without a flow', async () => {

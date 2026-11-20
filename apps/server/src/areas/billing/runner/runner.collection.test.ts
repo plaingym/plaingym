@@ -47,13 +47,16 @@ describe('charge runner with PostgreSQL', () => {
   });
   it.each([
     ['4242', 'direct'], ['0341', 'direct'], ['3184', 'direct'], ['4242', 'pending'], ['4242', 'restore'],
-  ])('replays recorded Stripe card %s through %s collection and reconciliation', async (card, mode) => {
-    const f = await fixture(), location = new URL(`./stripe.${card}.${mode}.synthetic.json`, import.meta.url);
+    ['usbank_6789', 'bank'], ['usbank_2227', 'bank'], ['usbank_1113', 'bank'], ['acss_6789', 'bank'],
+  ])('replays recorded Stripe method %s through %s collection and reconciliation', async (card, mode) => {
+    const bank = mode === 'bank', pad = card.startsWith('acss');
+    const f = await fixture({ currency: bank && !pad ? 'USD' : 'CAD' }), location = new URL(`./stripe.${card}.${mode}.synthetic.json`, import.meta.url);
     const recording = process.env.RECORD_RUNNER_FIXTURES === '1', recorder = new FixtureRecorder(f.gymId);
     const transport = new StripeFixtures(f.gymId, Math.floor(f.clock.now().getTime() / 1000));
     transport.objects.set('cus_test', { ...transport.objects.get('cus_fixture')!, id: 'cus_test' });
     // Keep the fixture card ID so its synthetic processor selects the expected outcome.
-    await db.forGym(f.gymId, tx => tx.update(paymentMethods).set({ processorId: `pm_${card}` }).where(eq(paymentMethods.householdId, f.home.id)));
+    await db.forGym(f.gymId, tx => tx.update(paymentMethods).set({ processorId: `pm_${card}`,
+      ...(bank ? { type: pad ? 'acss_debit' as const : 'us_bank_account' as const, mandateId: pad ? 'mandate_saved' : null } : {}) }).where(eq(paymentMethods.householdId, f.home.id)));
     transport.objects.set(`pm_${card}`, { ...transport.objects.get(`pm_${card}`)!, customer: 'cus_test' });
     let replay: ReturnType<typeof replayTransport> | undefined;
     const recorded = recordingTransport(transport, recorder);
@@ -70,26 +73,48 @@ describe('charge runner with PostgreSQL', () => {
         return replay.request(input);
       },
     } });
-    if (mode !== 'direct') {
+    if (!bank && mode !== 'direct') {
       const confirm = provider.confirmCharge.bind(provider);
       vi.spyOn(provider, 'confirmCharge').mockImplementationOnce(async (id, options) => {
         await confirm(id, options); throw new Error('Confirmation response lost');
       });
     }
     const runner = createChargeRunner({ ...f.serviceOptions, transitions: f.transitions, payments: async () => provider });
-    expect((await runner.daily(f.gymId)).errors).toHaveLength(mode === 'direct' ? 0 : 1);
+    expect((await runner.daily(f.gymId)).errors).toHaveLength(bank || mode === 'direct' ? 0 : 1);
     const succeededAt = f.clock.now();
-    if (mode !== 'direct') {
+    if (bank) {
+      const rows = await f.read(), bill = rows.invoices[0]!, attempt = rows.attempts[0]!;
+      expect(bill.status).toBe('processing');
+      expect(attempt).toMatchObject({ status: 'processing', processingAt: f.clock.now(), resolvedAt: null });
+      expect(await runner.charge(f.gymId, bill.id)).toEqual({ status: 'skipped', reason: 'not_payable' });
+      await runner.retry(bill.id, f.context);
+      expect(f.serviceOptions.jobs.jobs).toHaveLength(0);
+      const actor = { gymId: f.gymId, actor: { kind: 'system' as const } };
+      await expect(f.transitions.manualPayment(actor, { invoiceId: bill.id, paymentId: uuidv7(), amountCents: bill.amountCents,
+        currency: bill.currency, paidAt: f.clock.now().toISOString(), method: 'cash' })).rejects.toMatchObject({ code: 'conflict' });
+      await expect(f.transitions.voidInvoice(actor, { invoiceId: bill.id, reason: 'Requested by payer' })).rejects.toMatchObject({ code: 'conflict' });
+      const cancel = vi.spyOn(provider, 'cancelCharge'), find = vi.spyOn(provider, 'findCharge');
+      f.clock.advance(3600_000);
+      expect(await runner.reconcile(f.gymId)).toEqual({ inspected: 0, issues: [] });
+      expect(find).not.toHaveBeenCalled();
+      f.clock.advance(11 * 86400_000);
+      expect(await runner.reconcile(f.gymId)).toEqual({ inspected: 1, issues: [] });
+      expect((await f.read()).attempts[0]).toEqual(attempt);
+      if (recording) transport.settle(attempt.paymentIntentId!);
+      expect(await runner.reconcile(f.gymId)).toEqual({ inspected: 1, issues: [] });
+      expect(cancel).not.toHaveBeenCalled();
+    } else if (mode !== 'direct') {
       f.clock.advance(3 * 86400000); await f.enable(false);
       if (mode === 'pending') expect((await runner.reconcile(f.gymId)).issues).toEqual([]);
       else expect(await runner.postRestore(f.gymId, succeededAt)).toMatchObject({ readyForOwnerReview: true, issues: [] });
     }
     const rows = await f.read(), attempt = rows.attempts[0]!;
-    expect(rows.invoices[0]!.status).toBe(card === '4242' ? 'paid' : 'past_due');
-    expect(attempt.status).toBe(card === '4242' ? 'succeeded' : card === '3184' ? 'requires_action' : 'failed');
-    if (card === '4242') {
+    const success = card === '4242' || card.endsWith('6789');
+    expect(rows.invoices[0]!.status).toBe(success ? 'paid' : 'past_due');
+    expect(attempt.status).toBe(success ? 'succeeded' : card === '3184' ? 'requires_action' : 'failed');
+    if (success) {
       expect(rows.payments).toHaveLength(1);
-      expect(rows.payments[0]).toMatchObject({ chargeId: 'ch_2', paidAt: succeededAt });
+      expect(rows.payments[0]).toMatchObject({ chargeId: 'ch_2', paidAt: succeededAt, method: bank ? 'bank_debit' : 'card' });
       expect(rows.invoices[0]!.paidAt).toEqual(succeededAt);
     }
     if (recording) await writeFile(location, JSON.stringify({

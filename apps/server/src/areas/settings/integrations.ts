@@ -197,8 +197,8 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     }
     return [...latest.values()];
   }
-  /** Card payments a switch would mark as test: recorded through Stripe and never marked by an earlier switch. */
-  const unmarkedCardPayments = and(eq(payments.method, 'card'), isNull(payments.reference),
+  /** Processor payments a switch would mark as test. */
+  const unmarkedCardPayments = and(inArray(payments.method, ['card', 'bank_debit']), isNull(payments.reference),
     or(isNotNull(payments.paymentIntentId), isNotNull(payments.chargeId)));
   /**
    * The invoices whose dispute a switch would close: an open dispute (any status that isn't final) on an invoice with a
@@ -230,9 +230,10 @@ export function createIntegrationsService(options: IntegrationsOptions) {
   }
   /** The switch waits while a charge or refund is in flight: its outcome would be recorded against the cleared references. */
   async function assertSettled(tx: Transaction) {
-    const [inFlight] = [...await tx.select({ id: paymentAttempts.id }).from(paymentAttempts).where(eq(paymentAttempts.status, 'pending')).limit(1),
+    const [inFlight] = [...await tx.select({ id: paymentAttempts.id }).from(paymentAttempts).where(inArray(paymentAttempts.status, ['pending', 'processing'])).limit(1),
+      ...await tx.select({ id: invoices.id }).from(invoices).where(eq(invoices.status, 'processing')).limit(1),
       ...await tx.select({ id: refunds.id }).from(refunds).where(eq(refunds.status, 'pending')).limit(1)];
-    if (inFlight) throw new AppError('conflict', 'A card payment or refund is still being processed. A refund reservation that never reached Stripe clears automatically after 23 hours, within the next hourly check. If still blocked after 24 hours, ask an owner or admin to check Stripe and payment reconciliation.',
+    if (inFlight) throw new AppError('conflict', 'A payment or refund is still being processed. A refund reservation that never reached Stripe clears automatically after 23 hours, within the next hourly check. If still blocked after 24 hours, ask an owner or admin to check Stripe and payment reconciliation.',
       { restrictedKey: ['payments_in_progress'] });
   }
   /**

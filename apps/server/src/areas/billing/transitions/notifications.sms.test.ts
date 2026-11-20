@@ -65,6 +65,15 @@ const senders = [
   { name: 'card expiry', count: 1, send: (f: Fixture, options = f.options) => createCardExpirySms(options).send(f.gymId, f.card.id, '2026-12-01') },
 ];
 
+it.each(['insufficient_funds', 'payment_method_unusable'] as const)('texts the bank failure and recovery link for %s', async bankCode => {
+  const f = await fixture();
+  await createTransitionSmsNotifications(f.options).dunning({ ...f.notice, actionRequired: false, bankCode });
+  const body = f.text.messages[0]!.body;
+  expect(body).toContain("didn't go through");
+  expect(body).toContain(bankCode === 'insufficient_funds' ? 'Pay the invoice' : 'Add a new payment method');
+  expect(body).toContain('/l/');
+});
+
 describe.each(senders)('$name SMS with real Postgres and RLS', sender => {
   it('texts a billing parent with no member record once for three children across concurrent retries and restart', async () => {
     const f = await fixture();

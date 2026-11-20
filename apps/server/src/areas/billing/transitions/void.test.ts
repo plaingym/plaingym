@@ -188,7 +188,7 @@ describe('staff invoice void with real PostgreSQL', () => {
     await f.transitions.voidInvoice(f.context, f.request);
     const outcome = await f.provider.confirmCharge(intent.id, { idempotencyKey: 'late:confirm' });
     if (outcome.status !== 'succeeded') throw new Error('Expected successful card fixture');
-    const request = { invoiceId: f.invoice.id, attemptId, paymentId: uuidv7(), paymentIntentId: intent.id,
+    const request = { method: 'card' as const, invoiceId: f.invoice.id, attemptId, paymentId: uuidv7(), paymentIntentId: intent.id,
       chargeId: outcome.latestChargeId!, amountCents: f.invoice.amountCents, currency: 'USD', paidAt: f.clock.now().toISOString() };
     const refund = vi.spyOn(f.provider, 'refund');
     const reconciliation = createReconciliation({ ...f.options, settings: f.settings, transitions: f.transitions, payments: async () => f.provider });

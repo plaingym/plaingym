@@ -11,7 +11,7 @@ const attemptId = id(21);
 const paymentId = id(22);
 const invoice: InvoiceSnapshot = { id: invoiceId, householdId: household, number: 100,
   kind: 'cycle', status: 'open', amountCents: 10000, currency: 'CAD', paidAt: null };
-const success: CardSuccess = { invoiceId, attemptId, paymentId, paymentIntentId: 'pi_1', chargeId: 'ch_1',
+const success: CardSuccess = { method: 'card', invoiceId, attemptId, paymentId, paymentIntentId: 'pi_1', chargeId: 'ch_1',
   amountCents: 10000, currency: 'CAD', paidAt: '2026-10-21T12:00:00Z' };
 const failure = { invoiceId, attemptId, paymentIntentId: 'pi_1', outcome: 'failed' as const };
 const refund: RefundTransition = { invoiceId, paymentId, refundId: id(30), processorId: 're_1',
@@ -24,6 +24,31 @@ const build = (overrides: Partial<InvoiceSnapshot> = {}, options?: {
   clock, { packSale: id => id === invoiceId && options?.packSale === true },
 );
 describe('InvoiceTransitions fake', () => {
+  it.each([true, false])('restores the correct one-off invoice state after a Checkout debit fails (assignment %s)', async assignment => {
+    const fake = new FakeInvoiceTransitions([{ gymId: gym, invoice: { ...invoice, kind: 'one_off' } }], [], undefined,
+      { assignmentInvoice: id => assignment && id === invoiceId });
+    const request = { invoiceId, paymentIntentId: 'pi_checkout' };
+    await fake.paymentProcessing(mutation, request);
+    expect((await fake.processingFailed(mutation, { ...request, code: 'insufficient_funds' })).invoice.status).toBe(assignment ? 'past_due' : 'open');
+    expect(fake.effects.filter(effect => effect.kind === 'dunning')).toHaveLength(assignment ? 1 : 0);
+  });
+  it('keeps a past-due assignment invoice past due when a later card retry declines', async () => {
+    const fake = new FakeInvoiceTransitions([{ gymId: gym, invoice: { ...invoice, kind: 'one_off', status: 'past_due' } }],
+      [{ gymId: gym, invoiceId, id: attemptId, number: 1, paymentIntentId: 'pi_1', status: 'pending' }], undefined,
+      { assignmentInvoice: id => id === invoiceId });
+    expect((await fake.cardFailed(mutation, failure)).invoice.status).toBe('past_due');
+    expect(fake.effects.filter(effect => effect.kind === 'dunning')).toHaveLength(1);
+  });
+  it('tracks the same processing intent across replay, failure and success', async () => {
+    const fake = build(), request = { invoiceId, attemptId, paymentIntentId: 'pi_1' };
+    expect((await fake.paymentProcessing(mutation, request)).invoice.status).toBe('processing');
+    expect((await fake.paymentProcessing(mutation, request)).outcome).toBe('ignored');
+    expect(fake.attempts[0]?.processingAt).toBe('2026-10-21T12:00:00.000Z');
+    expect((await fake.cardFailed(mutation, { ...request, outcome: 'insufficient_funds' })).invoice.status).toBe('past_due');
+    expect((await fake.paymentProcessing(mutation, request)).outcome).toBe('ignored');
+    expect((await fake.cardSucceeded(mutation, { ...success, method: 'bank_debit' })).invoice.status).toBe('paid');
+    expect(fake.payments).toMatchObject([{ method: 'bank_debit' }]);
+  });
   it('deduplicates success from a runner and webhook by intent even when their local IDs differ', async () => {
     const fake = build();
     expect((await fake.cardSucceeded(mutation, success)).invoice.status).toBe('paid');
