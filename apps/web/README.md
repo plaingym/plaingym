@@ -163,9 +163,10 @@ reads the stored choice, applies the class and keeps both `theme-color` metas in
 step. The account menu applies the stored choice when it opens and follows
 `storage` events, so a choice made in another tab updates the page and the open
 menu. The key is `plaingym.theme` and its values are `system`, `light` and
-`dark`. Every read and write is guarded, so blocked storage falls back to
-System; if a save fails while storage is still readable, the menu clears the old
-key so a reload starts from System while this page keeps the picked choice.
+`dark`. If saving fails and an earlier choice is readable, the page applies
+the new choice and tries to remove the stored value. After successful removal,
+the next load starts from System. A failed save with no readable stored value
+falls back to System on the current page.
 `/kiosk` always follows the device. The blocking `src/lib/theme-init.js` applies the
 stored choice before the first paint; the build emits it content-hashed under
 `/assets/` because the SPA's CSP allows no inline script. Tokens keep their light
