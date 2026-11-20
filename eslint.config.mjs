@@ -48,6 +48,7 @@ const rawNames = {
   message: 'Use forGym or forHousehold; raw database handles stay in database/core infrastructure.',
 };
 const rawDatabase = [rawClient, rawNames];
+const serverImportPatterns = [vendor, temporal, driver, ...rawDatabase];
 const featureModules = { regex: '(^|/)modules(/|$)', message: 'Core must not depend on feature modules.' };
 const dynamicImportGuard = {
   selector: 'ImportExpression',
@@ -112,7 +113,7 @@ export default defineConfig(
   {
     files: ['apps/server/src/**'],
     rules: {
-      'no-restricted-imports': ['error', { patterns: [vendor, temporal, driver, ...rawDatabase] }],
+      'no-restricted-imports': ['error', { patterns: serverImportPatterns }],
     },
   },
   {
@@ -148,13 +149,13 @@ export default defineConfig(
   },
   {
     files: ['apps/server/src/areas/**'],
-    rules: { 'no-restricted-imports': ['error', { patterns: [vendor, temporal, driver, ...rawDatabase, featureModules] }] },
+    rules: { 'no-restricted-imports': ['error', { patterns: [...serverImportPatterns, featureModules] }] },
   },
   {
     files: ['apps/server/src/areas/portal/**', 'apps/server/src/public/links/**'],
     rules: {
       'no-restricted-imports': ['error', { patterns: [
-        vendor, temporal, driver, ...rawDatabase, featureModules,
+        ...serverImportPatterns, featureModules,
         {
           // Any core module could forward forGym; schema namespaces stay allowed.
           regex: [...databaseEntrypoints, '(?:^|/)core/'].join('|'),

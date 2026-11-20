@@ -294,6 +294,9 @@ to the gym's own hostname (`deliverStripeEvent` in `portal.ts`, shared with demo
   a positive control first proves that each gym's signing link reads its own uploaded PDF.
   The sweep creates an adult member login for the self-service document read, since the household's
   payer login has no member identity; that same credential supplies its positive and cross-gym controls.
+  For the authenticated website preview probe, the sweep reuses an existing photo or creates one in each
+  fixture gym. The photo stays available to the slices in that stack and is removed when `run.mjs` tears
+  down the disposable stack (`docker compose down --volumes`).
   Each direction partitions the complete operation list into three disjoint groups by position, one file per group;
   public reads use the same three-way partition. Every file checks that all six files exist and each sweeps its own group. Each file snapshots both gyms across the full route inventory.
   The sweep prepares four staff-issued signed-link purposes and a real announcement-issued unsubscribe token.
@@ -309,8 +312,11 @@ to the gym's own hostname (`deliverStripeEvent` in `portal.ts`, shared with demo
   guard fails until the route is added to `ownPathRoutes`.
 * Every ID-free read and public page of a gym is checked for the other gym's IDs and names, with and without a
   filter naming the other gym's records. Controls prove the same credentials read each of their own records
-  (every GET with an ID in its path, but the photos nobody uploaded). The full, unfiltered lists of both gyms (IDs,
-  and revisions of the records staff edit) are the same afterwards.
+  (every GET with an ID in its path). Only what a fresh gym lacks may answer 404: member and staff photos
+  nobody uploaded, the household login's own self-signed waiver PDFs, and the lead record and contact log of
+  the fixture's student, who is a member and not a lead. The plan switch preview answers 409, since the gym's
+  only plan is the membership's own. The full, unfiltered lists of both gyms (IDs and revisions of the records
+  staff edit) are the same afterwards.
 
 Browser specs and their helpers import only e2e tooling and local test helpers.
 The End-to-end workflow installs this package independently of the application.
