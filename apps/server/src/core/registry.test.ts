@@ -6,11 +6,13 @@ import { membersContracts } from '@plaingym/shared/contracts';
 import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
 import { readFile, readdir } from 'node:fs/promises';
-import { createServerRegistry, route, type PermissionMiddleware } from './registry.js';
+import { createServerRegistry, route, type PermissionMiddleware, type RouteRegistration } from './registry.js';
 import type { RequestEnvironment } from './context.js';
 import { TestClock } from './clock.js';
 import { FakeJobs } from '../infra/jobs/index.js';
 import { areaContributions } from './registry-areas.js';
+// eslint-disable-next-line no-restricted-imports -- Test-only: verify the real website module's settings routes against the registry.
+import { websiteModule } from '../modules/website/index.js';
 import { generateApiSource } from '../../../../scripts/generate-api.mjs';
 
 const fixture = () =>
@@ -219,8 +221,34 @@ describe('route declarations and server composition', () => {
     const module = { id: 'website', schemaFile: null, routes: [], jobs: [], emails: [], web: {} };
     const publicRoute = route({ method: 'get', path: '/optional', permission: { kind: 'public' },
       responses: { 200: { description: 'Public page' } } }, () => new Response());
+    const restricted = route({ method: 'get', path: '/optional', permission: { kind: 'staff', capability: 'settings.manage' },
+      responses: { 200: { description: 'Preparation' } } }, () => new Response());
     expect(() => createServerRegistry({ modules: [{ ...module, settingsRoutes: [publicRoute] }] })).toThrow('staff permission');
-    expect(() => createServerRegistry({ routes: [fixture()], modules: [{ ...module, settingsRoutes: [fixture()] }] })).toThrow('Duplicate');
+    expect(() => createServerRegistry({ routes: [restricted], modules: [{ ...module, settingsRoutes: [restricted] }] })).toThrow('Duplicate');
+  });
+  const moduleWithoutRoutes = { id: 'website', schemaFile: null, routes: [], jobs: [], emails: [], web: {} };
+  const preparation = (path: string) => route({ method: 'get', path,
+    permission: { kind: 'staff', capability: 'settings.manage' }, responses: { 200: { description: 'Preparation' } } }, () => new Response());
+  const withPermission = (path: string, permission: unknown) => {
+    const entry = preparation(path);
+    return { ...entry, definition: { ...entry.definition, permission } } as unknown as RouteRegistration;
+  };
+  it('refuses a module settings route without a capability, naming the module and route', () => {
+    expect(() => createServerRegistry({ modules: [{ ...moduleWithoutRoutes, settingsRoutes: [withPermission('/api/prepare', { kind: 'staff' })] }] }))
+      .toThrow(/website.*GET \/api\/prepare/);
+  });
+  it('refuses a module settings route whose capability every staff role holds, naming the module and route', () => {
+    expect(() => createServerRegistry({ modules: [{ ...moduleWithoutRoutes, settingsRoutes: [withPermission('/api/every-role', { kind: 'staff', capability: 'members.read' })] }] }))
+      .toThrow(/website.*GET \/api\/every-role/);
+  });
+  it('registers a module settings route with a capability some staff roles lack', () => {
+    expect(() => createServerRegistry({ modules: [{ ...moduleWithoutRoutes, settingsRoutes: [preparation('/api/prepare')] }] })).not.toThrow();
+  });
+  it('registers the website module\'s real settings routes', () => {
+    const registry = createServerRegistry({ modules: [websiteModule] });
+    const registered = new Set(registry.routes.all().map((entry) => entry.id));
+    expect(websiteModule.settingsRoutes?.length ?? 0).toBeGreaterThan(0);
+    for (const entry of websiteModule.settingsRoutes ?? []) expect(registered.has(entry.id), entry.id).toBe(true);
   });
   it('hands a job registration\'s lane to the queue, for plain, scheduled and module jobs alike', () => {
     const handler = async () => {};

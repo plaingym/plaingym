@@ -130,7 +130,8 @@ sit behind a per-gym switch in `gyms`, and aren't imported by core or areas
 the gym revision and audits each save. The public website
 (`apps/server/src/modules/website/README.md`) is the first module.
 Modules can register staff-only preparation routes in `settingsRoutes`; the registry
-rejects other permission kinds and mounts these routes independently of the gym's switch.
+rejects other permission kinds, and a staff route whose capability is missing or is granted to
+every staff role, and mounts these routes independently of the gym's switch.
 The website uses this field for `/api/website` preparation and
 `GET /api/website/photos/{photoId}` private previews (`settings.manage`, `no-store`).
 Preparing content does not enable the public pages or public photo routes.

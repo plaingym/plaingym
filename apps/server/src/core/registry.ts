@@ -2,8 +2,10 @@
 import { createRoute, type OpenAPIHono, type RouteConfig, type RouteHandler } from '@hono/zod-openapi';
 import type { Context, MiddlewareHandler } from 'hono';
 import {
+  canStaff,
   isRoutePermission,
   Registry,
+  staffRoles,
   type RegistryEntry,
   type RoutePermission,
   type Translator,
@@ -86,7 +88,11 @@ export function createServerRegistry(contributions: ServerContributions) {
   for (const module of contributions.modules ?? []) {
     modules.register(module);
     for (const entry of module.settingsRoutes ?? []) {
-      if (entry.definition.permission.kind !== 'staff') throw new Error('Module settings routes must require staff permission');
+      const permission = entry.definition.permission;
+      if (permission.kind !== 'staff') throw new Error(`Module ${module.id} settings route ${entry.id} must require staff permission`);
+      if (!isRoutePermission(permission)) throw new Error(`Module ${module.id} settings route ${entry.id} must name a staff capability`);
+      if (staffRoles.every((role) => canStaff([role], permission.capability)))
+        throw new Error(`Module ${module.id} settings route ${entry.id} capability ${permission.capability} is granted to every staff role`);
       // Preparation is authenticated independently of the module's public switch.
       const preparation = { ...entry };
       delete preparation.moduleId;
