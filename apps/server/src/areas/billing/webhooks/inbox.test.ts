@@ -164,7 +164,7 @@ it('builds failure diagnostics without reading message text, top level or nested
     evt_query: new Error('Failed query: select * from payer where email = alice@example.com'),
     evt_cause: new Error('Webhook gym mismatch', { cause: new Error('secret and payer details\n    at x (pm_999:1:1)') }),
     // A handler's own fixed text, but not letters and spaces only.
-    evt_dispute: new Error('Invoice has another dispute; staff resolution required'),
+    evt_punctuated: new Error('Invoice has another dispute; staff resolution required'),
   };
   const { output, byEvent } = await failAndLog(failures);
   const fixed = byEvent.get('evt_fixed')!;
@@ -177,8 +177,8 @@ it('builds failure diagnostics without reading message text, top level or nested
   expect(output).not.toContain('alice@example.com');
   expect(byEvent.get('evt_cause')).toMatchObject({ errorName: 'Error', causeName: 'Error' });
   expect(output).not.toMatch(/secret and payer details|pm_999/);
-  expect(byEvent.get('evt_dispute')).not.toHaveProperty('reason');
-  expect(output).not.toMatch(/dispute|staff resolution/);
+  expect(byEvent.get('evt_punctuated')).not.toHaveProperty('reason');
+  expect(output).not.toMatch(/another dispute|staff resolution/);
 });
 it('can replay an exhausted handler and retries a failed replay too', async () => {
   let fail = true;
