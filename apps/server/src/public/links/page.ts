@@ -7,9 +7,8 @@ import { cardChargeIssue } from '@plaingym/shared/money';
 import { needsGuardian } from '../../areas/waivers/snapshot.js';
 import { formatMoney } from '../../core/money.js';
 import { buildLabelItem } from '../../areas/health/build-label.js';
-import { gymLogo, secondaryButton, waiverDocumentView } from '../pages/page.js';
+import { button, gymLogo, secondaryButton, waiverDocumentView } from '../pages/page.js';
 
-const button = 'inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg bg-primary px-4 py-3 text-center font-semibold text-primary-foreground disabled:opacity-50';
 const input = 'block min-h-11 w-full rounded-md border border-border bg-background px-3 py-2 text-base';
 const panel = 'space-y-4 rounded-xl border border-border bg-card p-4 sm:p-6';
 const h = jsx;

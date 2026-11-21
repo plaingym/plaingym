@@ -19,7 +19,8 @@ const request = createJsonTransport();
 type DemoDiscovery = ReturnType<typeof demoEntryResponse.parse>['data'];
 const DemoContext = createContext<DemoDiscovery | undefined>(undefined);
 export const useDemoMode = () => useContext(DemoContext)?.mode;
-export const useDemoExpiry = () => { const demo = useContext(DemoContext); return demo?.mode === 'sandbox' ? demo.expiresAt : undefined; };
+const sandboxExpiry = (demo: DemoDiscovery | undefined) => demo?.mode === 'sandbox' ? demo.expiresAt : undefined;
+export const useDemoExpiry = () => sandboxExpiry(useContext(DemoContext));
 /** Whether this sandbox takes test-card joins (the shared Stripe test account is configured). */
 export const useDemoJoin = () => { const discovery = useContext(DemoContext); return (discovery?.mode === 'sandbox' || discovery?.mode === 'showcase') && discovery.join; };
 export const useDemoSandbox = () => { const mode = useDemoMode(); return mode === 'sandbox' || mode === 'showcase'; };
@@ -56,7 +57,7 @@ export function DemoShell({ children }: { children: ReactNode }) {
     refetchInterval: 300_000,
   });
   const mode = discovery.data?.data;
-  const expires = mode?.mode === 'sandbox' ? mode.expiresAt : undefined;
+  const expires = sandboxExpiry(mode);
   const [expiredAt, setExpiredAt] = useState<string>();
   const login = useLoginState();
   const { refetch } = discovery;
@@ -227,7 +228,7 @@ function DemoMenu({ expires, onClose }: { expires: string | undefined; onClose: 
       </nav>
       <section className={section} aria-labelledby="demo-menu-about"><h3 id="demo-menu-about" className={heading}>{t('demo/demo:about')}</h3>
         {expires ? <><p className="text-sm">{t('demo/demo:expires', { time: instantLabel(expires) })}</p>
-          <p className="text-sm">{t('demo/demo:banner', { time: instantLabel(expires) })}</p></> : <p className="text-sm">{t('demo/demo:copyHelp')}</p>}
+          <p className="text-sm">{t('demo/demo:bannerRule')}</p></> : <p className="text-sm">{t('demo/demo:copyHelp')}</p>}
         <p className="text-sm">{t('demo/demo:roleHelp')}</p>
       </section>
     </div>

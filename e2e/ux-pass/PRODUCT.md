@@ -54,12 +54,12 @@ node apps/web/src/features/demo/landing.browser-check.mjs
 ```
 
 The first checks the real renderer and committed assets in three browsers, both
-themes and 360/1280-pixel viewports, under `script-src 'none'`. Chromium additionally
-disables JavaScript in the context; Firefox's automation evaluation can stall with
-that context setting. It exercises every
-popover's image, close control, Esc, and returned focus, plus outside click on
-desktop. It checks CSP and page overflow and enforces the 300,000-byte initial
-HTML/CSS budget.
+themes and 360/1280-pixel viewports. The page's `script-src 'self'` policy allows
+its phone menu script. The check disables JavaScript in Chromium to exercise the
+native controls. Firefox's automation evaluation can stall with that context
+setting. The check exercises every popover's image, close control, Esc, and
+returned focus, plus outside click on desktop. It checks CSP and page overflow
+and enforces the 300,000-byte initial HTML, CSS and JavaScript budget.
 The second reviews the sandbox start page and menu with fixture discovery.
 Images and JSON results go in `coverage/demo/product/` and `coverage/demo/browser/`.
 Product review images come from Chromium and Firefox. WebKit runs every layout,

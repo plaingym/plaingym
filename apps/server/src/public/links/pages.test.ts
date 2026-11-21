@@ -13,7 +13,8 @@ describe('signed-link presentation and return receipts', () => {
     const page = linkPage({ now, timezone: 'UTC', t, data: { purpose: 'pay_invoice', invoice: { lines: [], invoice: {
       id: 'invoice', number: 1, kind: 'one_off', status: 'open', dueOn: '2026-10-25', amountCents: 2500, currency: 'USD', paidAt: null,
     } } } });
-    expect(page).toMatch(/class="[^"]*bg-primary[^"]*" data-checkout/);
+    const checkoutClasses = page.match(/class="([^"]*)" data-checkout/)?.[1]?.split(' ');
+    expect(checkoutClasses).toEqual(expect.arrayContaining(['bg-primary', 'focus-visible:outline-2', 'hover:not-disabled:bg-primary/90']));
     expect(page).toMatch(/class="[^"]*border-border bg-background[^"]*" data-complete/);
   });
   it.each(['paid', 'processing'] as const)('makes completion primary when a %s invoice offers no payment', status => {
@@ -33,7 +34,8 @@ describe('signed-link presentation and return receipts', () => {
     const page = linkPage({ now, timezone: 'UTC', t, portalClaim: { password: true }, data: { purpose: 'onboarding', paymentMethods: [], signatures: [],
       members: [{ id: 'member', firstName: 'Alex', lastName: 'Example', dateOfBirth: '2000-01-01', revision: 1 }],
       templates: ['one', 'two'].map(id => ({ id, name: 'Terms', kind: 'waiver', version: 1, body: 'Terms', retiredAt: null, createdAt: now.toISOString() })) } });
-    expect(page.split('</main>')[0]!.match(/\bbg-primary\b/g)).toHaveLength(1);
+    const controls = [...page.split('</main>')[0]!.matchAll(/<(?:a|button)\b[^>]*\bclass="([^"]*)"/g)];
+    expect(controls.filter(([, classes]) => classes?.split(' ').includes('bg-primary'))).toHaveLength(1);
     expect(page).toMatch(/class="[^"]*bg-background[^"]*" data-clear-signature/);
   });
   it.each(['alreadyDone', 'unavailable', 'replaced', 'cleared'] as const)('keeps gym branding on the %s page', state => {

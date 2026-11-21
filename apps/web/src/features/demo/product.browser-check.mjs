@@ -12,17 +12,22 @@ const root = fileURLToPath(new URL('../../../../../', import.meta.url)), output 
 const { chromium, firefox, webkit, expect } = await import(new URL('e2e/node_modules/@playwright/test/index.mjs', 'file:///' + root.replaceAll('\\', '/')).href);
 await mkdir(output, { recursive: true });
 await buildLinkStyles(resolve(output, 'styles.css'));
-const landingStylesheet = await createLandingAssets().stylesheet();
-if (!landingStylesheet) throw new Error('Demo landing stylesheet is unavailable');
-const html = demoLandingPage('/sandbox', 'https://github.com/plaingym/plaingym', { stylesheetFile: landingStylesheet.file });
+const assets = createLandingAssets();
+const [landingStylesheet, menuScript] = await Promise.all([assets.stylesheet(), assets.menuScript()]);
+if (!landingStylesheet || !menuScript) throw new Error('Demo landing assets are unavailable');
+const html = demoLandingPage('/sandbox', 'https://github.com/plaingym/plaingym', {
+  stylesheetFile: landingStylesheet.file, menuScriptFile: menuScript.file,
+});
 const css = await readFile(resolve(output, 'styles.css'));
 const extra = landingStylesheet.body;
-expect(Buffer.byteLength(html) + css.length + extra.length).toBeLessThan(300_000);
+const initialBytes = Buffer.byteLength(html) + css.length + extra.length + menuScript.body.length;
+expect(initialBytes).toBeLessThan(300_000);
 const server = createServer(async (req, res) => {
   try {
     const path = new URL(req.url, 'http://localhost').pathname;
     if (path === '/') { res.setHeader('Content-Security-Policy', demoLandingDirectives.join('; ')); res.setHeader('Content-Type', 'text/html'); res.end(html); }
     else if (path === '/public/pages/styles.css' || path === '/demo-assets/' + landingStylesheet.file) { res.setHeader('Content-Type', 'text/css'); res.end(path.startsWith('/demo-assets/') ? extra : css); }
+    else if (path === '/demo-assets/' + menuScript.file) { res.setHeader('Content-Type', 'text/javascript; charset=utf-8'); res.end(menuScript.body); }
     else if (/^\/demo-assets\/[a-z0-9-]+\.webp$/.test(path)) { res.setHeader('Content-Type', 'image/webp'); res.end(await readFile(resolve(root, 'apps/server/src/demo/screenshots', path.split('/').pop()))); }
     else res.writeHead(404).end();
   } catch { res.writeHead(500).end(); }
@@ -37,7 +42,7 @@ try {
     try {
       for (const width of [360, 1280]) for (const theme of ['light', 'dark']) {
         // Firefox's automation evaluation can stall with context-wide scripting disabled.
-        // The response's script-src 'none' forbids page scripts in every engine; Chromium also disables the context.
+        // The response's script-src 'self' allows the phone menu script. Chromium disables page scripts to check native controls.
         const context = await browser.newContext({ viewport: { width, height: 900 }, colorScheme: theme, reducedMotion: 'reduce', javaScriptEnabled: name !== 'chromium' });
         const page = await context.newPage(), failures = [], requests = [];
         page.setDefaultTimeout(12_000);
@@ -84,6 +89,6 @@ try {
       }
     } finally { await browser.close(); }
   }
-  await writeFile(resolve(output, 'results.json'), JSON.stringify({ initialBytes: Buffer.byteLength(html) + css.length + extra.length, results }, null, 2));
+  await writeFile(resolve(output, 'results.json'), JSON.stringify({ initialBytes, results }, null, 2));
   console.log(JSON.stringify(results));
 } finally { clearTimeout(timer); await new Promise(resolve => server.close(resolve)); }

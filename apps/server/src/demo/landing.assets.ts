@@ -21,11 +21,21 @@ export function createLandingAssets(read = readLandingAsset) {
     cache.set(file, pending);
     return pending;
   }
-  let stylesheet: Promise<{ file: string; body: Asset } | undefined> | undefined;
+  const hashedAsset = (name: string, extension: string) => asset(`${name}.${extension}`).then(body => body && ({
+    file: `${name}-${createHash('sha256').update(body).digest('hex').slice(0, 16)}.${extension}`, body,
+  }));
+  // Keep the hashed result once there is one. A missing result is not kept, so `asset` alone decides whether it
+  // stays missing (a file that isn't there) or is read again (any other failure).
+  function hashedOnce(name: string, extension: string) {
+    let hashed: ReturnType<typeof hashedAsset> | undefined;
+    return () => hashed ??= hashedAsset(name, extension).then(result => {
+      if (!result) hashed = undefined;
+      return result;
+    });
+  }
   return {
     asset,
-    stylesheet: () => stylesheet ??= asset('landing.css').then(body => body && ({
-      file: `landing-${createHash('sha256').update(body).digest('hex').slice(0, 16)}.css`, body,
-    })),
+    stylesheet: hashedOnce('landing', 'css'),
+    menuScript: hashedOnce('landing-menu', 'js'),
   };
 }

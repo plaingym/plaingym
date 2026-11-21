@@ -9,7 +9,7 @@ import type { PermissionMiddleware } from '../core/registry.js';
 import { mountSourceLink } from '../core/source-link.js';
 import { setLogSink } from '../core/log.js';
 import { demoLandingPage, featureKeys } from './landing.page.js';
-import { createLandingAssets } from './landing.assets.js';
+import { createLandingAssets, readLandingAsset } from './landing.assets.js';
 import { readFile, readdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import screenshots from './screenshots.json' with { type: 'json' };
@@ -45,7 +45,7 @@ it('serves the entry root as HTML with ordered CTAs, the showcase start URL, sou
   expect(response.headers.get('content-type')).toContain('text/html');
   expect(response.headers.get('cache-control')).toBe('no-store');
   expect(response.headers.get('content-security-policy')?.split(';').map(part => part.trim()).filter(part => !part.startsWith('report-'))).toEqual([
-    "default-src 'none'", "script-src 'none'", "style-src 'self'", "img-src 'self'", "base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'",
+    "default-src 'none'", "script-src 'self'", "style-src 'self'", "img-src 'self'", "base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'",
   ]);
   const html = await response.text();
   const links = [...html.replace(/<svg\b.*?<\/svg>/g, '').replace(/<span class="shrink-0[^"]*"><\/span>/g, '')
@@ -54,7 +54,7 @@ it('serves the entry root as HTML with ordered CTAs, the showcase start URL, sou
     [showcase, 'Try the demo'], ['https://github.com/plaingym/plaingym', 'GitHub'],
     ['/source', 'Source code'],
   ]));
-  expect(html).not.toMatch(/<script|\sstyle\s*=/i);
+  expect(html).not.toMatch(/\sstyle\s*=/i);
   expect(html.match(/<h1\b/g)).toHaveLength(1);
   for (const [, url] of html.matchAll(/(?:href|src)="(https?:[^"]+)"/g)) {
     expect(['https://showcase.demo.example.test', 'https://github.com']).toContain(new URL(url!).origin);
@@ -136,7 +136,7 @@ it('uses the fallback image directly when the same files serve both themes', () 
     shot.dark = dark;
   }
 });
-it('has a header with section links, a script-free menu and icons on both calls to action', async () => {
+it('has a header with section links, native phone menus and icons on both calls to action', async () => {
   const response = await appFor(true).request(origin + '/');
   const html = await response.text();
   // The header stays at the top on every width, and a section reached from a link stops below it.
@@ -157,10 +157,14 @@ it('has a header with section links, a script-free menu and icons on both calls 
       expect(html).toMatch(new RegExp(`<h2 id="${target.slice(1)}"`));
     }
   }
-  // Popover API menu, with no script: the button names it, the popover is auto (Escape and outside taps close it).
+  // The button opens the native popover. Escape and outside taps close it.
   expect(header).toMatch(/<button type="button" popovertarget="site-menu"[^>]*aria-label="Menu"/);
   expect(header).toMatch(/<div id="site-menu" popover="auto"/);
   expect(header).toMatch(/<summary[^>]*aria-label="Menu"/);
+  for (const panel of [/id="site-menu"[^>]*class="([^"]*)"/, /<ul class="([^"]*\bdemo-menu-fallback-panel\b[^"]*)"/]) {
+    expect(header.match(panel)?.[1]?.split(' ')).toEqual(expect.arrayContaining(['overflow-y-auto', 'overscroll-contain']));
+  }
+  expect(css.toString()).toMatch(/\.demo-menu, \.demo-menu-fallback-panel\s*\{\s*max-height: var\(--demo-menu-max-height\);\s*\}/);
   // Both calls to action, in the hero, the explore section and the header, lead with an aria-hidden icon and keep their text.
   for (const [label, count] of [['Try the demo', 6], ['GitHub', 5]] as const) {
     const withIcon = [...html.matchAll(/<a href="[^"]+"[^>]*><span class="shrink-0[^"]*"><svg\b[^>]*aria-hidden="true"[^>]*>.*?<\/svg><\/span>([^<]+)<\/a>/g)].filter(match => match[1] === label);
@@ -169,8 +173,8 @@ it('has a header with section links, a script-free menu and icons on both calls 
   // Every menu control is a 44 px target, and the page links its own stylesheet by content hash.
   expect(header).not.toMatch(/<(?:a|button|summary)\b(?![^>]*min-h-11)[^>]*>/);
   expect(html).toContain(`<link rel="stylesheet" href="/demo-assets/${stylesheetName(css)}"/>`);
-  expect(response.headers.get('content-security-policy')).toContain("script-src 'none'");
-  expect(html).not.toMatch(/<script|\sstyle\s*=|\sonclick=/i);
+  expect(response.headers.get('content-security-policy')).toContain("script-src 'self'");
+  expect(html).not.toMatch(/\sstyle\s*=|\sonclick=/i);
 });
 it('keeps the running version in the footer after the source, license and self-hosting links', () => {
   const html = demoLandingPage('/demo', source), footer = html.match(/<footer.*?<\/footer>/s)?.[0] ?? '';
@@ -215,7 +219,7 @@ it('serves only the manifest assets on the entry host with immutable image cachi
 });
 it('names the page stylesheet by its content hash and caches it like the images', async () => {
   const css = await readFile(cssFile);
-  const readAsset = vi.fn(async (_file: string) => css);
+  const readAsset = vi.fn(readLandingAsset);
   const app = appFor(true, { readAsset });
   expect(readAsset).not.toHaveBeenCalled();
   const page = await app.request(origin + '/');
@@ -230,7 +234,32 @@ it('names the page stylesheet by its content hash and caches it like the images'
   // The unhashed name and other hashes aren't served, and the stylesheet stays off gym hosts.
   for (const file of ['landing.css', 'landing-0000000000000000.css']) expect((await app.request(origin + '/demo-assets/' + file)).status).toBe(404);
   expect((await app.request('https://showcase.demo.example.test/demo-assets/' + file)).status).toBe(404);
-  expect(readAsset.mock.calls).toEqual([['landing.css']]);
+  expect(readAsset.mock.calls).toEqual([['landing.css'], ['landing-menu.js']]);
+});
+it('loads one deferred phone menu script from the entry host with immutable caching', async () => {
+  const readAsset = vi.fn(readLandingAsset);
+  const app = appFor(true, { readAsset });
+  const page = await app.request(origin + '/');
+  const scripts = [...(await page.text()).matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
+  expect(scripts).toHaveLength(1);
+  const [, attributes, inline] = scripts[0]!;
+  expect(attributes).toMatch(/\bdefer(?:="")?(?:\s|$)/);
+  expect(inline).toBe('');
+  const path = attributes?.match(/\bsrc="([^"]+)"/)?.[1];
+  const body = await readLandingAsset('landing-menu.js');
+  const hash = createHash('sha256').update(body).digest('hex').slice(0, 16);
+  expect(path).toBe(`/demo-assets/landing-menu-${hash}.js`);
+  const response = await app.request(origin + path);
+  expect(response.status).toBe(200);
+  expect(response.headers.get('content-type')).toBe('text/javascript; charset=utf-8');
+  expect(response.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+  expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+  expect(Buffer.from(await response.arrayBuffer())).toEqual(body);
+  expect((await app.request(origin + '/demo-assets/landing-menu-0000000000000000.js')).status).toBe(404);
+  expect((await app.request(origin + '/demo-assets/landing-menu.js')).status).toBe(404);
+  expect((await app.request('https://showcase.demo.example.test' + path)).status).toBe(404);
+  expect((await appFor(false).request(origin + path)).status).toBe(404);
+  expect(readAsset.mock.calls.filter(([file]) => file === 'landing-menu.js')).toHaveLength(1);
 });
 it('shares in-flight asset reads and logs a missing manifest asset once', async () => {
   const present = screenshots.members.light[0]!, missing = screenshots.members.light[1]!;
@@ -253,8 +282,9 @@ it('shares in-flight asset reads and logs a missing manifest asset once', async 
   } finally { setLogSink(previous); }
 });
 it('renders the landing page and logs once when its stylesheet is missing', async () => {
-  const readAsset = vi.fn(async (_file: string) => {
-    throw Object.assign(new Error('Missing file'), { code: 'ENOENT' });
+  const readAsset = vi.fn(async (file: string) => {
+    if (file === 'landing.css') throw Object.assign(new Error('Missing file'), { code: 'ENOENT' });
+    return readLandingAsset(file);
   });
   const logs = vi.fn();
   const previous = setLogSink(logs);
@@ -265,8 +295,23 @@ it('renders the landing page and logs once when its stylesheet is missing', asyn
     expect(await page.text()).not.toContain('href="/demo-assets/landing-');
     const file = stylesheetName(await readFile(cssFile));
     expect((await app.request(origin + '/demo-assets/' + file)).status).toBe(404);
-    expect(readAsset.mock.calls).toEqual([['landing.css']]);
+    expect(readAsset.mock.calls).toEqual([['landing.css'], ['landing-menu.js']]);
     expect(logs).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('"asset":"landing.css"'));
+  } finally { setLogSink(previous); }
+});
+it('keeps the native menus when the phone menu script is missing', async () => {
+  const previous = setLogSink(vi.fn());
+  try {
+    const app = appFor(true, { readAsset: async file => {
+      if (file === 'landing-menu.js') throw Object.assign(new Error('Missing file'), { code: 'ENOENT' });
+      return readLandingAsset(file);
+    } });
+    const page = await app.request(origin + '/');
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    expect(html).not.toMatch(/<script\b/i);
+    expect(html).toContain('id="site-menu" popover="auto"');
+    expect(html).toContain('<details class="demo-menu-fallback">');
   } finally { setLogSink(previous); }
 });
 it('reads an asset again after a failure other than a missing file', async () => {
@@ -283,11 +328,31 @@ it('reads an asset again after a failure other than a missing file', async () =>
     expect(read).toHaveBeenCalledTimes(2);
   } finally { setLogSink(previous); }
 });
+it('hashes the stylesheet and menu script again after a failure other than a missing file', async () => {
+  const previous = setLogSink(vi.fn());
+  try {
+    const read = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('Too many open files'), { code: 'EMFILE' }))
+      .mockRejectedValueOnce(Object.assign(new Error('Too many open files'), { code: 'EMFILE' }))
+      .mockResolvedValue(Buffer.from('body'));
+    const assets = createLandingAssets(read);
+    expect(await assets.stylesheet()).toBeUndefined();
+    expect(await assets.menuScript()).toBeUndefined();
+    expect((await assets.stylesheet())?.file).toMatch(/^landing-[a-f0-9]{16}\.css$/);
+    expect((await assets.menuScript())?.file).toMatch(/^landing-menu-[a-f0-9]{16}\.js$/);
+    expect(read).toHaveBeenCalledTimes(4);
+    await assets.stylesheet(); await assets.menuScript();
+    expect(read).toHaveBeenCalledTimes(4);
+  } finally { setLogSink(previous); }
+});
+function featureBullets(html: string, key: typeof featureKeys[number]) {
+  const section = html.match(new RegExp(`<section id="feature-${key}".*?</section>`, 's'))?.[0] ?? '';
+  return [...section.matchAll(/<li>([^<]+)<\/li>/g)].map(match => match[1]);
+}
 it('lists each feature\'s bullets from the locale file, in order', () => {
   const html = demoLandingPage('/demo', source);
   for (const key of featureKeys) {
-    const section = html.match(new RegExp(`<section id="feature-${key}".*?</section>`, 's'))?.[0] ?? '';
-    const items = [...section.matchAll(/<li>([^<]+)<\/li>/g)].map(match => match[1]);
+    const items = featureBullets(html, key);
     expect(items.length).toBeGreaterThanOrEqual(3);
     const expected = Object.entries(messages).filter(([name]) => name.startsWith(key + 'Bullet'))
       .map(([, text]) => String(htmlTemplate`${text}`));
@@ -297,8 +362,14 @@ it('lists each feature\'s bullets from the locale file, in order', () => {
 it('translates and orders the feature bullets from the supplied catalogue', () => {
   const catalog = { 'demo/product': { membersBullet10: 'Dixième', membersBullet2: 'Deuxième' } };
   const html = demoLandingPage('/demo', source, { catalog });
-  const members = html.match(/<section id="feature-members".*?<\/section>/s)?.[0] ?? '';
-  expect([...members.matchAll(/<li>([^<]+)<\/li>/g)].map(match => match[1])).toEqual(['Deuxième', 'Dixième']);
+  const defaultPage = demoLandingPage('/demo', source);
+  expect(featureBullets(html, 'members')).toEqual(['Deuxième', 'Dixième']);
+  for (const key of featureKeys.filter(key => key !== 'members')) {
+    const englishBullets = featureBullets(defaultPage, key);
+    expect(englishBullets.length).toBeGreaterThan(0);
+    expect(featureBullets(html, key)).toEqual(englishBullets);
+  }
+  expect(demoLandingPage('/demo', source, { catalog: { 'demo/product': messages } })).toBe(defaultPage);
 });
 it('redirects old entry links while preserving every gym root and start page', async () => {
   const app = appFor(true), response = await app.request(origin + '/demo');
