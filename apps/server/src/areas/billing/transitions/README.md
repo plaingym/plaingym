@@ -313,15 +313,20 @@ one invoice lock and transaction, so the notice counts the refund that caused th
 release once it has succeeded. If recording fails, all releases and their notices roll back too.
 Processor-bound pending refunds are read outside the transaction and terminal outcomes
 are reconciled under the lock before deciding which unsent reservations no longer fit.
-A pending row the processor reports missing (the read answers unknown: the object was
-deleted, or isn't this Stripe account's) is released only when the external refund needs
+A pending row the processor reports missing (the read answers unknown with `missing: true`:
+Stripe answered not found for the refund itself, because it was deleted or the Stripe
+account changed) is released only when the external refund needs
 its room, newest first and before any unsent reservation, and only as far as that need
 goes. Each such release records the row `failed` and queues one `notice: 'refund_missing'`
 staff notice naming the invoice and amount; a replayed webhook finds the row failed and
 queues none. A missing row the external refund fits beside stays `pending`. A read that
 throws fails the whole write, so a network error never releases anything.
-An unread or mismatched pending row still reserves its full amount. It forces a retry
-only when that total would require releasing an unsent reservation; an external refund
+An unread, unverified or mismatched pending row still reserves its full amount. Unverified
+means any other unknown read: the refund's charge or parent intent is missing, its gym
+metadata isn't this gym's, or the read is uncertain. Such a row forces a retry only when
+that total would require releasing an unsent reservation, and each refusal logs
+`billing.refunds.unverified` at warn with the gym, invoice and refund row IDs; once the
+processor confirms the refund, its outcome is recorded as usual. An external refund
 that fits records normally, including when a pending row was linked after those reads.
 The named `InvoiceTransitions.processorRefund` method accepts the processor refund,
 those reads and the processor IDs reported missing; it first refuses as not found a refund whose gym metadata, charge or

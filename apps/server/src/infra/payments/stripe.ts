@@ -57,6 +57,12 @@ function timestamp(value: Json | undefined): Date {
   return time;
 }
 class NotForGym extends Error {}
+// The GET of the referenced refund itself answered not found. It keeps the 404's code, so `missing` still matches it.
+class RefundMissing extends Error {
+  readonly code = 'resource_missing';
+  readonly statusCode = 404;
+  constructor(cause: unknown) { super('Stripe refund not found', { cause }); }
+}
 class IncompleteBankMethod extends NotForGym {
   constructor(readonly customerId: string) { super('Bank account has no usable last four digits'); }
 }
@@ -400,6 +406,8 @@ export class StripePayments implements Payments {
     catch (error) {
       if (error instanceof IncompleteBankMethod)
         return { status: 'unknown', reference, incompleteBankMethod: { customerId: error.customerId } };
+      // Only a not-found for the refund itself is `missing`; its charge or parent intent missing is unverified.
+      if (error instanceof RefundMissing) return { status: 'unknown', reference, missing: true };
       if (missing(error) || error instanceof NotForGym) return { status: 'unknown', reference };
       throw error;
     }
@@ -462,7 +470,11 @@ export class StripePayments implements Payments {
     switch (reference.kind) {
       case 'charge': value = { kind: 'charge', object: this.#intent(await this.#ownedIntent(reference.id)) }; break;
       case 'checkout': value = { kind: 'checkout', object: await this.#checkout(await this.#get(this.#path('checkout/sessions', reference.id))) }; break;
-      case 'refund': value = { kind: 'refund', object: await this.#refund(await this.#get(this.#path('refunds', reference.id))) }; break;
+      case 'refund': {
+        const object = await this.#get(this.#path('refunds', reference.id))
+          .catch((error: unknown) => { throw missing(error) ? new RefundMissing(error) : error; });
+        value = { kind: 'refund', object: await this.#refund(object) }; break;
+      }
       case 'dispute': {
         const object = await this.#get(this.#path('disputes', reference.id)), parent = await this.#parentIntent(object);
         value = { kind: 'dispute', object: { id: id(object.id), chargeId: id(parent.id), amount: Number(object.amount),

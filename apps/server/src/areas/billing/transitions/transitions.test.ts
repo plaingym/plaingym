@@ -703,6 +703,35 @@ describe('invoice transitions with real PostgreSQL', () => {
     await expect(writer.refund(f.gymId, payment, external, provider)).rejects.toBe(failure);
     expect(await f.read()).toEqual(before);
   });
+  // A refund whose parent or ownership check failed is unverified, not missing: it keeps blocking, and its later
+  // verified success is still recorded.
+  it('keeps an unverified pending processor refund and records its later success', async () => {
+    const f = await fixture(); await succeed(f); await f.transitions.cardSucceeded(f.context, f.success);
+    const payment = (await f.read()).payments[0]!, unverifiedId = uuidv7(), unsentId = uuidv7();
+    const base = { invoiceId: f.invoice.id, paymentId: payment.id, currency: 'CAD' };
+    await f.transitions.refund(f.context, { ...base, refundId: unverifiedId, amountCents: 2000, status: 'pending', processorId: 're_unverified' });
+    await f.transitions.refund(f.context, { ...base, refundId: unsentId, amountCents: 6000, status: 'pending', tagged: true });
+    const external = await f.provider.refund({ chargeId: f.success.paymentIntentId, amount: 3000, idempotencyKey: 'external' });
+    const provider: Pick<typeof f.provider, 'readPaymentObject'> = { readPaymentObject: async reference =>
+      reference.id === 're_unverified' ? { status: 'unknown', reference } : f.provider.readPaymentObject(reference) };
+    const writer = createDisputeRefundWriter({ ...f.options, transitions: f.transitions }), before = await f.read();
+    const lines: string[] = [], previous = setLogSink(line => { lines.push(line); });
+    try {
+      await expect(writer.refund(f.gymId, payment, external, provider)).rejects.toMatchObject({ code: 'conflict' });
+    } finally { setLogSink(previous); }
+    expect(await f.read()).toEqual(before);
+    // Identifiers only: no amount, email or other field.
+    expect(lines.map(line => JSON.parse(line) as Record<string, unknown>)).toEqual([{ time: expect.any(String),
+      level: 'warn', event: 'billing.refunds.unverified', gymId: f.gymId, invoiceId: f.invoice.id, refundId: unverifiedId }]);
+    const verified = { ...external, id: 're_unverified', amount: 2000, status: 'succeeded' as const };
+    expect(await writer.refund(f.gymId, payment, verified, provider)).toBe(true);
+    expect((await f.read()).refunds.find(row => row.id === unverifiedId)).toMatchObject({ status: 'succeeded', processorId: 're_unverified' });
+    expect(await writer.refund(f.gymId, payment, external, provider)).toBe(true);
+    const rows = await f.read();
+    expect(rows.refunds.find(row => row.processorId === external.id)).toMatchObject({ status: 'succeeded', amountCents: 3000 });
+    expect(rows.refunds.find(row => row.id === unsentId)).toMatchObject({ status: 'failed' });
+    expect(rows.audits.filter(row => row.action === effectCreated && (row.after as { notice?: string }).notice === 'refund_missing')).toEqual([]);
+  });
   it.each([true, false])('rechecks a processor row linked after the reads, with room for the external refund: %s', async fits => {
     const f = await fixture(); await succeed(f); await f.transitions.cardSucceeded(f.context, f.success);
     const payment = (await f.read()).payments[0]!, unsentId = uuidv7();

@@ -177,7 +177,9 @@ export type PaymentObject =
 export type PaymentObjectResult =
   | { status: 'found'; value: PaymentObject }
   // An incomplete bank method is identified only after the provider verifies its gym ownership.
-  | { status: 'unknown'; reference: PaymentObjectReference; incompleteBankMethod?: { customerId: string } };
+  // missing: the processor answered that the object itself doesn't exist (never a parent, ownership or uncertain read).
+  // Providers set it on refund reads.
+  | { status: 'unknown'; reference: PaymentObjectReference; incompleteBankMethod?: { customerId: string }; missing?: true };
 export type PaymentChange =
   | { kind: 'charge'; changedAt: Date; object: ChargeOutcome }
   | { kind: 'checkout'; changedAt: Date; object: CheckoutSession }
@@ -633,7 +635,9 @@ export class FakePayments implements Payments {
         break;
       }
       case 'refund':
-        if (this.#refunds.has(id)) value = { kind: 'refund', object: this.#refunds.get(id)! };
+        // A refund the fake holds nowhere is the processor's not-found answer for the object itself.
+        if (!this.#refunds.has(id)) return { status: 'unknown', reference: { ...reference }, missing: true };
+        value = { kind: 'refund', object: this.#refunds.get(id)! };
         break;
       case 'dispute':
         if (this.#disputes.has(id)) value = { kind: 'dispute', object: this.#disputes.get(id)! };

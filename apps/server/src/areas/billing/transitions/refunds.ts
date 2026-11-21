@@ -4,6 +4,7 @@ import { auditEvents, classPackSales, invoices, payments, refunds, type Transact
 import type { Clock } from '@plaingym/shared';
 import { idSchema, moneySchema, refundReleased } from '@plaingym/shared/contracts';
 import { conflict, notFound, type MutationContext } from '../../../core/interfaces/common.js';
+import { logWarn } from '../../../core/log.js';
 import type { RefundTransition, ProcessorRefundTransition, InvoiceTransitionResult } from '../../../core/interfaces/invoice-transitions.js';
 import { pastRefundWindow, sameRefund } from './lapsed-refunds.js';
 import { accepted, audit, duplicateReservation, effect, recorded, result, snapshot, type InvoiceRow } from './store.js';
@@ -113,7 +114,7 @@ export async function applyProcessorRefund(tx: Transaction, context: MutationCon
     // Count unread processor rows as pending. They only force a retry when releasing an unsent reservation would
     // depend on their outcome, including a row linked after the processor reads and before this lock. A row the
     // processor reported missing is released, newest first, only as far as this refund needs its room.
-    let unread = false;
+    const unread: string[] = [];
     const missing: (typeof refunds.$inferSelect)[] = [];
     for (const row of rows.filter(row => row.processorId !== null && row.status === 'pending')) {
       const current = input.pendingRefunds.find(refund => refund.id === row.processorId);
@@ -122,7 +123,7 @@ export async function applyProcessorRefund(tx: Transaction, context: MutationCon
         continue;
       }
       if (!current || !sameRefund(current, row, payment, context.gymId)) {
-        unread = true;
+        unread.push(row.id);
         continue;
       }
       if (refundReleased(current)) await applyRefund(tx, context, clock, invoice, { ...request,
@@ -138,7 +139,11 @@ export async function applyProcessorRefund(tx: Transaction, context: MutationCon
         processorId: row.processorId!, amountCents: row.amountCents, currency: row.currency, status: 'failed' }, false, true);
       excess -= row.amountCents;
     }
-    if (excess > 0 && unread) conflict('Pending refund must be reconciled before recording an external refund');
+    if (excess > 0 && unread.length) {
+      // An unverified row (an unread, unknown or mismatched read) blocks until the processor confirms it.
+      for (const refundId of unread) logWarn('billing.refunds.unverified', { gymId: context.gymId, invoiceId: invoice.id, refundId });
+      conflict('Pending refund must be reconciled before recording an external refund');
+    }
     const outrun = [...reservations].sort(newestFirst);
     if (excess > outrun.reduce((sum, row) => sum + row.amountCents, 0)) conflict('Refund exceeds payment');
     for (const row of outrun) {

@@ -78,16 +78,18 @@ export function createDisputeRefundWriter(options: DisputeRefundOptions) {
       || ![payment.paymentIntentId, payment.chargeId].includes(value.chargeId)) return false;
     // Processor reads stay outside the transaction. The transition rechecks the selected reservation and every
     // pending amount under the invoice lock, then releases and records atomically. A refund the processor reports
-    // missing is passed apart from the found ones: the transition releases it only as far as an external refund needs
-    // its room, with a staff notice. A read that throws fails this write before the transition runs, even for the
-    // app's own refund or a replay. Once the reads finish, those paths do not need to release other reservations.
+    // missing (not found for the refund itself) is passed apart from the found ones: the transition releases it only
+    // as far as an external refund needs its room, with a staff notice. Any other unknown read (a missing parent,
+    // another gym's metadata, an uncertain object) goes in neither list, so the row counts as unread and blocks a
+    // release. A read that throws fails this write before the transition runs, even for the app's own refund or a
+    // replay. Once the reads finish, those paths do not need to release other reservations.
     const pending = refundReleased(value) ? [] : await scope(gymId, tx => tx.select().from(refunds)
       .where(eq(refunds.paymentId, payment.id)));
     const pendingRefunds: Refund[] = [];
     const missingRefunds: string[] = [];
     for (const row of pending.filter(row => row.status === 'pending' && row.processorId !== null && row.processorId !== value.id)) {
       const found = await provider.readPaymentObject({ kind: 'refund', id: row.processorId! });
-      if (found.status === 'unknown') missingRefunds.push(row.processorId!);
+      if (found.status === 'unknown' && found.missing === true) missingRefunds.push(row.processorId!);
       else if (found.status === 'found' && found.value.kind === 'refund') pendingRefunds.push(found.value.object);
     }
     const request: ProcessorRefundTransition = { invoiceId: payment.invoiceId, paymentId: payment.id,

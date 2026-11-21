@@ -109,10 +109,11 @@ that releases any unsent reservations they leave no room for. If the external re
 still exceeds the payment after removing those reservations, nothing is released.
 The writer reads processor-bound pending refunds before the transaction and reconciles
 failed or canceled ones under the lock, so a stale pending amount does not displace a
-live reservation. A pending refund Stripe reports missing is released (newest first,
-before any unsent reservation, and only as far as an external refund needs its room) with
-one `refund_missing` staff notice; one whose read doesn't match still blocks only such an
-external refund, never the app's own, and a read that throws fails the write. Release notices run immediately after commit and count the
+live reservation. A pending refund Stripe answers not found for (the refund itself, not its
+parent) is released (newest first, before any unsent reservation, and only as far as an
+external refund needs its room) with one `refund_missing` staff notice; one whose read is
+otherwise unknown or doesn't match still blocks only such an external refund, never the
+app's own, with a `billing.refunds.unverified` warn line, and a read that throws fails the write. Release notices run immediately after commit and count the
 refund once it has succeeded (a pending one still doesn't count). If a staff refund or an automatic duplicate-payment refund ends canceled in
 Stripe, staff receive one notice naming the invoice and amount; externally created
 refunds send no cancellation notice. Stripe does not identify who canceled the refund.
