@@ -16,8 +16,12 @@ replay. A missing success timestamp is retryable, never replaced by processing
 time. Matching checks the gym, invoice, stored attempt/payment identities and
 household customer. Missing invoice metadata can be recovered from the stored
 payment or attempt. A settling Checkout debit can enter processing and then
-fail without a runner attempt. The failure starts dunning for cycle and assignment
-invoices. An unusable bank account prompts the household to update its payment method.
+fail without a runner attempt. If the intent already failed when Checkout
+completion arrives, the handler records processing and applies the normalized
+failure code. Replays leave both transitions unchanged. A cycle invoice becomes
+past due and a one-off invoice reopens. The failure starts dunning for cycle and
+assignment invoices. An unusable bank account prompts the household to update
+its payment method.
 
 Dashboard refunds and disputes match through their parent PaymentIntent, not
 their own metadata. `charge.refunded` uses the intent-scoped, paginated

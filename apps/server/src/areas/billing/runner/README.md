@@ -200,14 +200,18 @@ invoice unchanged, reports the intent as `checkout_debit` and writes one
 `billing.runner.checkout_debit_unresolved` audit per invoice and reason. The
 hourly job completes for these findings and can check the intent again on its
 next run. An intent Stripe still reports as `processing` continues settling.
-A restore still counts an unsettled invoice as unresolved.
+Staff with billing access see the affected invoices in the dashboard's bank
+payment count. A restore still counts an unsettled invoice as unresolved.
 
 When a Checkout debit starts processing on an already closed invoice, the
 transition records the intent in `billing.invoice.late_processing`. After ten
 days the hourly job reads it by ID. If it settled, the invoice retains its
 state and the transition records the duplicate payment and reserves its refund.
-The sweep skips recorded payments and late processing audits from cleared
-Stripe test mode.
+If Stripe reports a failure, the sweep records one
+`billing.invoice.late_processing_resolved` audit per invoice and intent under
+the invoice lock. Future sweeps skip that intent. The sweep also skips recorded
+payments and late processing audits from cleared Stripe test mode. It continues
+reading processing intents and settled intents with a customer mismatch.
 
 Insufficient funds permits up to three failed bank attempts on the invoice;
 an abandoned attempt, or one cancelled before it was confirmed, doesn't count. An

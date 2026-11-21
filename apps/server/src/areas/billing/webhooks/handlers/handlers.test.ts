@@ -214,6 +214,28 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
       { after: { status: 'past_due', failureCode: 'canceled' } },
     ]);
   });
+  it.each([['cycle', 'past_due'], ['one_off', 'open']] as const)(
+    'applies an already canceled bank Checkout to a %s invoice and ignores replay', async (kind, status) => {
+      const f = await fixture(kind);
+      const session = await f.provider.createCheckout({ mode: 'payment', customerId: 'cus_fixture', invoiceId: f.invoice.id,
+        amount: 10000, currency: 'usd', bankDebit: { type: 'us_bank_account' }, saveForOffSession: true,
+        idempotencyKey: 'bank', successUrl: 'https://gym.invalid/ok', cancelUrl: 'https://gym.invalid/cancel' });
+      await db.forGym(f.gymId, tx => tx.update(invoices).set({ checkoutSessionId: session.id }).where(eq(invoices.id, f.invoice.id)));
+      const intent = f.transport.completeCheckout(session.id, { method: 'us_bank_account' });
+      intent.status = 'canceled';
+      const ref = { kind: 'checkout' as const, id: session.id };
+
+      await f.run('checkout.session.completed', ref);
+      const rows = await f.read();
+      expect(rows.invoice).toMatchObject({ status, checkoutSessionId: null });
+      expect(rows.payments).toEqual([]);
+      expect(rows.audits.filter(row => row.action === 'billing.invoice.payment_failed')).toMatchObject([
+        { after: { status, failureCode: 'canceled' } },
+      ]);
+
+      await f.run('checkout.session.completed', ref);
+      expect(await f.read()).toEqual(rows);
+    });
   it('replays a recorded processing event read against its runner reservation', async () => {
     const f = await fixture('cycle', 'pm_usbank_6789');
     const tape = (await readFile(new URL('./stripe.processing.synthetic.json', import.meta.url), 'utf8'))
