@@ -99,9 +99,11 @@ An update for a customer that matches no household (its household was erased,
 which unlinks the customer and redacts its cards, or a card added in the Stripe
 dashboard on a customer the app never linked) changes, creates and audits
 nothing: it is logged at info as `billing.payment_method.household_unresolved`
-with the gym, method, customer and event IDs, and the event is finished. A
-collection (a completed setup, or a Checkout that saves its method) for such a
-customer still fails, so the inbox retries it.
+with the gym, method, customer and event IDs, and the event is finished. If a
+completed setup or a saving Checkout resolves the method but finds no household,
+the inbox retries the collection. If the bank method lacks usable last four
+digits and the customer has no linked household, collection logs the incomplete
+method and finishes without a skip audit.
 
 ## Production composition
 
