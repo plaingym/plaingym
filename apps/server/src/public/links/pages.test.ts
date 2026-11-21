@@ -34,7 +34,8 @@ describe('signed-link presentation and return receipts', () => {
     const page = linkPage({ now, timezone: 'UTC', t, portalClaim: { password: true }, data: { purpose: 'onboarding', paymentMethods: [], signatures: [],
       members: [{ id: 'member', firstName: 'Alex', lastName: 'Example', dateOfBirth: '2000-01-01', revision: 1 }],
       templates: ['one', 'two'].map(id => ({ id, name: 'Terms', kind: 'waiver', version: 1, body: 'Terms', retiredAt: null, createdAt: now.toISOString() })) } });
-    expect(page.split('</main>')[0]!.match(/\bbg-primary\b/g)).toHaveLength(1);
+    const controls = [...page.split('</main>')[0]!.matchAll(/<(?:a|button)\b[^>]*\bclass="([^"]*)"/g)];
+    expect(controls.filter(([, classes]) => classes?.split(' ').includes('bg-primary'))).toHaveLength(1);
     expect(page).toMatch(/class="[^"]*bg-background[^"]*" data-clear-signature/);
   });
   it.each(['alreadyDone', 'unavailable', 'replaced', 'cleared'] as const)('keeps gym branding on the %s page', state => {

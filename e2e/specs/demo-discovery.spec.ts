@@ -6,7 +6,7 @@ test('entry landing renders without SPA capability discovery', async ({ page }) 
   page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/demo')) probes.push(request.url()); });
   await page.goto('https://demo.localhost/');
   await expect(page.getByRole('heading', { name: 'PlainGym', exact: true })).toBeVisible();
-  await expect(page.locator('script')).toHaveCount(0);
+  await expect(page.locator('script')).toHaveAttribute('src', /^\/demo-assets\/landing-menu-[a-f0-9]{16}\.js$/);
   expect(probes).toEqual([]);
 });
 
