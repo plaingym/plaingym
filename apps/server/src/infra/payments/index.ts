@@ -829,7 +829,11 @@ export class FakePayments implements Payments {
       limit > 1000
     )
       throw new Error('Invalid change page');
-    const records = this.#changes.filter((change) => change.changedAt >= since);
+    const records = this.#changes.filter((change) => change.changedAt >= since).filter((change) => {
+      if (change.kind !== 'payment_method') return true;
+      const { method } = this.#methods.get(change.id)!;
+      return method.type === 'card' || hasBankLast4(method.last4);
+    });
     const page = records.slice(start, start + limit);
     const changes: PaymentChange[] = page.map((record) => {
       switch (record.kind) {

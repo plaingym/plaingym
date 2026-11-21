@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, ne } from 'drizzle-orm';
-import { forGym, households, paymentMethods, uuidv7 } from '@plaingym/db';
+import { auditEvents, forGym, households, paymentMethods, uuidv7, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { logWarn } from '../../../../core/log.js';
 import type { PaymentMethod, Payments } from '../../../../infra/payments/index.js';
@@ -10,6 +10,15 @@ import { audit } from '../../transitions/store.js';
 export function createCardHandlers(options: { scope: typeof forGym; clock: Clock }) {
   const { scope, clock } = options;
   const system = (gymId: string) => ({ gymId, actor: { kind: 'system' as const } });
+  const incompleteBankSkipped = 'billing.payment_method.incomplete_bank_skipped';
+  // Both callers hold the household row lock.
+  async function findIncompleteBankSkip(tx: Transaction, householdId: string, methodId: string) {
+    const rows = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
+      eq(auditEvents.action, incompleteBankSkipped), eq(auditEvents.targetType, 'household'),
+      eq(auditEvents.targetId, householdId)));
+    return rows.map(row => row.after as { paymentMethodId?: unknown; mandateId?: unknown } | null)
+      .find(after => after?.paymentMethodId === methodId);
+  }
   async function save(gymId: string, method: PaymentMethod, collect = false, mandateId?: string) {
     if (!Number.isFinite(method.createdAt.getTime())) throw new Error('Payment method creation time is unresolved');
     await scope(gymId, async tx => {
@@ -18,8 +27,14 @@ export function createCardHandlers(options: { scope: typeof forGym; clock: Clock
       const existing = (await tx.select().from(paymentMethods).where(eq(paymentMethods.processorId, method.id)).for('update'))[0];
       if (existing && existing.householdId !== household.id) throw new Error('Saved card household mismatch');
       if (existing?.revokedAt) return;
-      // An update refreshes an already-known card; it is not consent to collect a new card.
-      if (!collect && !existing) return;
+      // An update can finish a bank collection previously skipped for missing digits.
+      if (!collect && !existing) {
+        if (method.type === 'card') return;
+        const skipped = await findIncompleteBankSkip(tx, household.id, method.id);
+        if (!skipped) return;
+        collect = true;
+        if (typeof skipped.mandateId === 'string') mandateId ??= skipped.mandateId;
+      }
       if (!collect && method.type !== 'card' && existing) {
         const bankName = method.bankName ?? null;
         if (existing.bankName !== bankName || existing.last4 !== method.last4) {
@@ -56,7 +71,14 @@ export function createCardHandlers(options: { scope: typeof forGym; clock: Clock
   async function collect(gymId: string, provider: Payments, customerId: string, methodId: string, mandateId?: string) {
     const found = await provider.readPaymentObject({ kind: 'payment_method', id: methodId });
     if (found.status === 'unknown' && found.incompleteBankMethod?.customerId === customerId) {
-      logWarn('billing.payment_method.incomplete_bank', { paymentMethodId: methodId });
+      logWarn('billing.payment_method.incomplete_bank', { gymId, paymentMethodId: methodId });
+      await scope(gymId, async tx => {
+        const household = (await tx.select({ id: households.id }).from(households)
+          .where(eq(households.stripeCustomerId, customerId)).for('update'))[0];
+        if (!household || await findIncompleteBankSkip(tx, household.id, methodId)) return;
+        await audit(tx, system(gymId), clock, incompleteBankSkipped, 'household', household.id,
+          { paymentMethodId: methodId, ...(mandateId ? { mandateId } : {}) });
+      });
       return;
     }
     if (found.status !== 'found' || found.value.kind !== 'payment_method' || found.value.object.customerId !== customerId)
