@@ -11,10 +11,11 @@ are available for isolated composition.
 The runtime (`core/runtime.ts`) builds one inbox from `createPaymentsResolver`, the
 Postgres queue and the gym settings accessor, configures the route and dispatcher
 job, and configures replay for the command line. The route is served on each gym's
-own host, after tenant resolution. No billing handlers are registered yet, so
-stored events are marked processed without side effects. The install-level demo
-route below is not mounted: sandboxes have no Stripe settings, so their deliveries
-answer 503.
+own host, after tenant resolution. Before the worker starts,
+`composeBillingWebhooks` registers the [billing handlers](handlers/README.md).
+Stored events with unregistered types are marked processed without side effects.
+Demo installs with shared Stripe test credentials use the install-level route
+described below.
 
 The public POST `/webhooks/stripe` reads the body once as bytes and delegates all
 signature and ownership verification to `payments.parseWebhook`. Only
@@ -107,7 +108,9 @@ metadata only chooses a candidate from the supplied active sandbox list; the
 provider must verify the unchanged bytes and confirm ownership before insertion.
 Untagged events try the sandbox providers in turn, letting the provider resolve
 refunds and disputes through their parent objects. Unexpected lookup errors remain
-retryable. With no available sandbox provider, the endpoint returns 503.
+retryable. The install-level middleware acknowledges deliveries when no sandboxes
+are active. With active sandboxes and no available provider, the endpoint returns
+503.
 
 Replay a stored event with `pnpm cli replay --gym <gym-id> <event-id>`. Runtime
 composition supplies `configureWebhookReplay(inbox)` in the CLI process too. Replay
