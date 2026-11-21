@@ -328,6 +328,23 @@ it('reads an asset again after a failure other than a missing file', async () =>
     expect(read).toHaveBeenCalledTimes(2);
   } finally { setLogSink(previous); }
 });
+it('hashes the stylesheet and menu script again after a failure other than a missing file', async () => {
+  const previous = setLogSink(vi.fn());
+  try {
+    const read = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('Too many open files'), { code: 'EMFILE' }))
+      .mockRejectedValueOnce(Object.assign(new Error('Too many open files'), { code: 'EMFILE' }))
+      .mockResolvedValue(Buffer.from('body'));
+    const assets = createLandingAssets(read);
+    expect(await assets.stylesheet()).toBeUndefined();
+    expect(await assets.menuScript()).toBeUndefined();
+    expect((await assets.stylesheet())?.file).toMatch(/^landing-[a-f0-9]{16}\.css$/);
+    expect((await assets.menuScript())?.file).toMatch(/^landing-menu-[a-f0-9]{16}\.js$/);
+    expect(read).toHaveBeenCalledTimes(4);
+    await assets.stylesheet(); await assets.menuScript();
+    expect(read).toHaveBeenCalledTimes(4);
+  } finally { setLogSink(previous); }
+});
 function featureBullets(html: string, key: typeof featureKeys[number]) {
   const section = html.match(new RegExp(`<section id="feature-${key}".*?</section>`, 's'))?.[0] ?? '';
   return [...section.matchAll(/<li>([^<]+)<\/li>/g)].map(match => match[1]);
