@@ -21,6 +21,18 @@ class SnapshotTests(unittest.TestCase):
                 self.assertEqual(sorted(path.name for path in directory.iterdir()),
                                  [f"pre-update-{index}.dump" for index in range(6 - keep, 6)])
 
+    def test_protects_oldest_snapshot_in_addition_to_newest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            snapshots = [directory / f"pre-update-{index}.dump" for index in range(4)]
+            for index, path in enumerate(snapshots, start=1):
+                path.write_bytes(b"PGDMP")
+                os.utime(path, (index, index))
+            prune(directory, 2, protect=directory / ".." / directory.name / snapshots[0].name)
+            self.assertEqual(set(directory.iterdir()), {snapshots[0], *snapshots[-2:]})
+            prune(directory, 2, protect=directory / "pre-update-missing.dump")
+            self.assertEqual(set(directory.iterdir()), set(snapshots[-2:]))
+
     def test_invalid_count_never_deletes_and_other_files_are_preserved(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

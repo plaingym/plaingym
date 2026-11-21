@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 
 
@@ -75,7 +76,13 @@ def journal_command(command, root, directory, source="", target=""):
         helper = root / "base-lib.sh"
     # Source-tree unit fixtures do not have an installed base-lib.sh.
     if not helper.is_file():
-        helper = Path(__file__).resolve().parent.parent / "lib.sh"
+        here = Path(__file__).resolve().parent
+        shared = here.parent / "lib.sh"
+        if here.name != "demo" or here.parent.name != "deploy" or not shared.is_file():
+            print(f"{root}/base-lib.sh is missing, so the demo cannot run. "
+                  "Run install.sh again from the demo bundle, which restores it.", file=sys.stderr)
+            sys.exit(1)
+        helper = shared
     directory.mkdir(parents=True, exist_ok=True)
     subprocess.run(["sh", "-c", JOURNAL_BRIDGE, "demo-journal", str(root), str(helper), command,
                     " ".join(mapping(False).values()), " ".join(UNITS), str(source), target],
@@ -87,6 +94,11 @@ def recover(root, directory):
     retired = root / ".demo-deploy-retired"
     if retired.exists():
         shutil.rmtree(retired)
+    stale = root / ".demo-deploy-next"
+    if stale.is_dir() and not stale.is_symlink():
+        shutil.rmtree(stale)
+    elif stale.is_symlink() or stale.exists():
+        stale.unlink()
     journal = root / ".demo-deploy-update"
     if journal.exists():
         if not (journal / "target").is_file() or not any(

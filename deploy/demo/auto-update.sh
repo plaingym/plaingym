@@ -54,22 +54,32 @@ demo_release_context() {
   work=$(mktemp -d "$ROOT/.demo-release.XXXXXXXX")
 }
 
-demo_release_list() {
-  # Follow all pages before selecting the oldest newer prerelease. A truncated
-  # history must never silently jump over an intermediate rollback floor.
+demo_release_list() { # RUNNING_VERSION
+  # Read through the running version before selecting the oldest newer release.
+  # A truncated history could hide an intermediate rollback floor.
   page=1
   printf '[]\n' > "$work/releases.json"
   while :; do
     url="https://api.github.com/repos/$repository/releases?per_page=100"
     [ "$page" -eq 1 ] || url="$url&page=$page"
     download "$url" "$work/page.json" 5000000 || demo_auto_finish skipped release_list_unavailable
-    count=$(python3 -c 'import json,sys
+    page_summary=$(python3 -c 'import json,re,sys
 page=json.load(open(sys.argv[1])); path=sys.argv[2]
 if not isinstance(page,list) or any(not isinstance(r,dict) for r in page): raise ValueError("Invalid release list")
 previous=json.load(open(path))
 with open(path,"w") as output: json.dump(previous+page,output)
-print(len(page))' "$work/page.json" "$work/releases.json") || demo_auto_finish skipped release_list_invalid
-    [ "$count" -ge 100 ] && [ "$channel" = prerelease ] || break
+def version(tag):
+    return tuple(map(int,tag[1:].split(".")))
+current=version(sys.argv[3])
+reached_running=False
+for release in page:
+    tag=release.get("tag_name")
+    if release.get("draft") or not isinstance(tag,str) or not re.fullmatch(sys.argv[4],tag): continue
+    if version(tag)<=current:
+        reached_running=True
+        break
+print(len(page),int(reached_running))' "$work/page.json" "$work/releases.json" "$1" "$version_pattern") || demo_auto_finish skipped release_list_invalid
+    [ "${page_summary% *}" -ge 100 ] && [ "$channel" = prerelease ] && [ "${page_summary##* }" -eq 0 ] || break
     # Bound the API work; refuse an incomplete history rather than skipping it.
     [ "$page" -lt 10 ] || demo_auto_finish skipped release_list_incomplete
     page=$((page + 1))
@@ -96,8 +106,12 @@ demo_prepare_release() {
   release_work="$work/$tag"
   mkdir "$release_work"
   signing_key="$ROOT/release-signing.pem"
-  [ "$release_kind" != prerelease ] || signing_key="$ROOT/prerelease-signing.pem"
-  [ -f "$signing_key" ] || demo_auto_finish skipped no_signing_key
+  missing_key=no_signing_key
+  if [ "$release_kind" = prerelease ]; then
+    signing_key="$ROOT/prerelease-signing.pem"
+    missing_key=no_prerelease_key
+  fi
+  [ -f "$signing_key" ] || demo_auto_finish skipped "$missing_key"
   base="https://github.com/$repository/releases/download/$tag"
   { download "$base/release-manifest.txt" "$release_work/manifest" && download "$base/release-manifest.txt.sig" "$release_work/manifest.sig"; } || demo_auto_finish skipped manifest_unavailable
   manifest_verify "$signing_key" "$release_work/manifest" "$release_work/manifest.sig" || demo_refuse signature_invalid
@@ -161,7 +175,8 @@ demo_auto_run() {
   channel=$(read_env DEMO_RELEASE_CHANNEL); channel=${channel:-prerelease}
   case "$channel" in stable|prerelease) ;; *) demo_auto_finish skipped invalid_release_channel ;; esac
   demo_release_context
-  demo_release_list
+  demo_release_list "$from_version"
+  local protect_snapshot='' snapshot_pruner="$work/snapshots.py"
   updated=false
   while :; do
     selection=$(demo_select_release "$from_version" "$work/releases.json" "$channel") || demo_auto_finish skipped release_list_invalid
@@ -181,9 +196,12 @@ demo_auto_run() {
     fi
     # A stopped demo uses no attempt. Count before stopping, including killed updaters.
     compose ps --status running --services | grep -qx app || demo_auto_finish skipped app_not_running
+    # A release archive can replace the installed helper with an older CLI mid-run.
+    if [ "$updated" = false ]; then cp "$ROOT/snapshots.py" "$snapshot_pruner"; fi
     demo_state_set "attempts.$tag" "$((failures + 1))"
     auto_attempt=true
     demo_apply_update "$target" "$deploy_source"
+    if [ "$updated" = false ]; then protect_snapshot=$snapshot; fi
     demo_auto_report updated -
     auto_attempt=false
     updated=true

@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Demo channel separation, ordered catch-up and the explicit bundle switch."""
 import json
+from pathlib import Path
+
 from test_auto_update import DIGEST, IMAGE, UpdateFixture
 
 
@@ -58,6 +60,17 @@ class PrereleaseTests(UpdateFixture):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("updated; from=v0.1.0 to=v0.2.0", self.status())
 
+    def test_missing_prerelease_key_is_reported_and_holds_the_chain(self):
+        self.chain()
+        (self.root / "prerelease-signing.pem").unlink()
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("skipped; from=v0.1.0 to=v0.2.0 reason=no_prerelease_key", self.status())
+        self.assertEqual(result.stdout, self.status())
+        self.assertEqual((self.root / ".env").read_text(), self.initial)
+        self.assertNotIn("release-manifest", self.calls())
+        self.assertNotIn("kill --signal", self.calls())
+
     def test_signed_channel_must_match_github_flag(self):
         for prerelease, signed_channel in ((True, ""), (False, "prerelease")):
             with self.subTest(prerelease=prerelease):
@@ -79,6 +92,26 @@ class PrereleaseTests(UpdateFixture):
             self.assertIn(f"attempts.{tag}=1", state)
         self.assertEqual(self.calls().count("kill --signal SIGTERM"), 2)
         self.assertEqual(len(list((self.root / "snapshots").glob("*.dump"))), 2)
+
+    def test_catchup_keeps_starting_snapshot_and_two_newest(self):
+        def legacy_pruner(stage):
+            path = stage / "deploy/demo/snapshots.py"
+            path.write_text(path.read_text().replace('    parser.add_argument("--protect", type=Path)\n', "")
+                            .replace("prune(args.directory, args.keep, args.protect)", "prune(args.directory, args.keep)"))
+
+        for minor in range(2, 6):
+            self.publish(f"v0.{minor}.0", prerelease=True, floor=f"v0.{minor - 1}.0", mutate=legacy_pruner)
+            self.keep_release()
+        self.tags([{"tag_name": f"v0.{minor}.0", "prerelease": True} for minor in range(5, 0, -1)])
+        result = self.run_update(DEMO_SNAPSHOT_RETENTION="2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([line.split(" to=")[1].split()[0] for line in result.stdout.splitlines()
+                          if line.startswith("Demo release update: updated;")],
+                         [f"v0.{minor}.0" for minor in range(2, 6)])
+        marker = "Pre-update snapshot: "
+        snapshots = [Path(line.split(marker, 1)[1]) for line in result.stdout.splitlines() if marker in line]
+        self.assertEqual(len(snapshots), 4)
+        self.assertEqual(set((self.root / "snapshots").iterdir()), {snapshots[0], *snapshots[-2:]})
 
     def test_second_failure_keeps_first_release_running_and_limits_attempts_per_tag(self):
         self.chain()
@@ -164,13 +197,39 @@ class PrereleaseTests(UpdateFixture):
         self.assertIn("caddy_image_required", self.status())
         self.assertNotIn("kill --signal", self.calls())
 
+    def test_pagination_stops_on_a_full_page_that_contains_running_version(self):
+        self.chain()
+        self.tags([{"tag_name": tag, "prerelease": True} for tag in ("v0.3.0", "v0.2.0", "v0.1.0")]
+                  + [{"tag_name": f"v0.0.{index}", "prerelease": True} for index in range(97)])
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(result.stdout.index("to=v0.2.0"), result.stdout.index("to=v0.3.0"))
+        self.assertNotIn("&page=2", self.calls())
+
     def test_pagination_finds_intermediate_prerelease_on_later_page(self):
         self.chain()
         first = [{"tag_name": "v0.3.0", "prerelease": True}]
-        first += [{"tag_name": f"v0.0.{index}", "prerelease": True} for index in range(99)]
+        first += [{"tag_name": f"v0.0.{index}", "draft": True} for index in range(99)]
         self.tags(first)
-        (self.release / "releases-page2.json").write_text(json.dumps([{"tag_name": "v0.2.0", "prerelease": True}]))
+        second = [{"tag_name": tag, "prerelease": True} for tag in ("v0.2.0", "v0.1.0")]
+        (self.release / "releases-page2.json").write_text(json.dumps(second))
         result = self.run_update()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertLess(result.stdout.index("to=v0.2.0"), result.stdout.index("to=v0.3.0"))
         self.assertIn("&page=2", self.calls())
+
+    def test_full_pages_without_running_version_stop_at_safety_cap(self):
+        full_page = [{"tag_name": "v0.2.0", "prerelease": True},
+                     {"tag_name": "v0.0.0-local"}]
+        full_page += [{"tag_name": f"v0.0.{index}", "draft": True} for index in range(98)]
+        self.tags(full_page)
+        for page in range(2, 11):
+            (self.release / f"releases-page{page}.json").write_text(json.dumps(full_page))
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("skipped; from=v0.1.0 to=- reason=release_list_incomplete", self.status())
+        self.assertEqual(result.stdout, self.status())
+        self.assertEqual(self.calls().count("/releases?per_page=100"), 10)
+        self.assertIn("&page=10", self.calls())
+        self.assertNotIn("release-manifest", self.calls())
+        self.assertNotIn("kill --signal", self.calls())

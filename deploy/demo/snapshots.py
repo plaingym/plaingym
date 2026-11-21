@@ -12,21 +12,24 @@ def retention(value):
     return int(value)
 
 
-def prune(directory, keep):
+def prune(directory, keep, protect=None):
     keep = retention(keep)
     directory = Path(directory)
+    protected = Path(protect).resolve() if protect is not None else None
     # Include the previous installer's encrypted snapshots in the same quota.
     snapshots = [path for path in directory.iterdir()
                  if path.name.startswith("pre-update-") and path.name.endswith((".dump", ".dump.enc"))
                  and not path.is_symlink() and path.is_file()]
     snapshots.sort(key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True)
     for path in snapshots[keep:]:
-        path.unlink()
+        if protected is None or path.resolve() != protected:
+            path.unlink()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--directory", type=Path, required=True)
     parser.add_argument("--keep", required=True)
+    parser.add_argument("--protect", type=Path)
     args = parser.parse_args()
-    prune(args.directory, args.keep)
+    prune(args.directory, args.keep, args.protect)

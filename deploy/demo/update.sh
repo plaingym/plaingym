@@ -138,7 +138,7 @@ demo_apply_update() { # TARGET [PREPARED_DEPLOY_DIRECTORY]
   # Retire this committed generation before catch-up can open the next journal.
   if [ -d "$ROOT/.demo-deploy-update" ]; then python3 "$ROOT/deploy-files.py" recover "$ROOT"; fi
   rm -f "$ROOT/.demo-update.inflight"
-  python3 "$ROOT/snapshots.py" --directory "$ROOT/snapshots" --keep "$keep"
+  python3 "${snapshot_pruner:-$ROOT/snapshots.py}" --directory "$ROOT/snapshots" --keep "$keep" ${protect_snapshot:+--protect "$protect_snapshot"}
   printf 'Updated demo to %s. Pre-update snapshot: %s\n' "$target" "$snapshot"
   demo_link
 }

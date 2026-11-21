@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -116,7 +117,11 @@ if '/releases/tags/' in url:
     if release is None: sys.exit(22)
     destination.write_text(json.dumps(release))
 else:
-    name=('releases-page2.json' if '&page=2' in url else 'releases.json') if 'api.github.com' in url else url.rsplit('/',1)[1]
+    if 'api.github.com' in url:
+        page=url.partition('&page=')[2]
+        name=f'releases-page{page}.json' if page else 'releases.json'
+    else:
+        name=url.rsplit('/',1)[1]
     directory=base/'release'
     if '/download/' in url:
         tagged=directory/url.split('/download/')[1].split('/')[0]
@@ -394,6 +399,62 @@ class AutoUpdateTests(UpdateFixture):
 
 
 class DeployArchiveTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix", "Shared host helpers require POSIX.")
+    def test_prepared_file_modes_agree_with_shared_host_modes(self):
+        for local in (True, False):
+            for target in deploy_files.mapping(local).values():
+                name = Path(target).name
+                with self.subTest(local=local, name=name):
+                    result = subprocess.run(["bash", "-c", '. deploy/lib.sh; host_mode "$1"', "_", name],
+                                            cwd=DEPLOY.parent, check=True, capture_output=True, text=True, timeout=10)
+                    self.assertEqual(oct(deploy_files.mode(name)), "0o" + result.stdout.strip().removeprefix("0"))
+
+    @unittest.skipUnless(os.name == "posix", "Shared journal requires POSIX.")
+    def test_missing_installed_base_lib_is_refused_before_starting_a_shell(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root, binaries = base / "installed", base / "bin"
+            root.mkdir()
+            binaries.mkdir()
+            shutil.copyfile(HERE / "deploy-files.py", root / "deploy-files.py")
+            (base / "lib.sh").touch()
+            log = base / "calls"
+            for shell in ("sh", "bash"):
+                executable(binaries / shell, '#!/bin/sh\nprintf "%s\\n" "$0" >> "$CALL_LOG"\n')
+            env = {**os.environ, "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
+                   "CALL_LOG": str(log), "SYSTEMD_UNIT_DIR": str(base / "units")}
+            result = subprocess.run([sys.executable, str(root / "deploy-files.py"), "recover", str(root)],
+                                    env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("base-lib.sh is missing", result.stderr)
+            self.assertFalse(log.exists(), log.read_text() if log.exists() else "")
+
+    @unittest.skipUnless(os.name == "posix", "Shared journal requires POSIX.")
+    def test_recover_removes_only_the_stale_next_entry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root, units, outside = base / "installed", base / "units", base / "outside"
+            root.mkdir()
+            outside.mkdir()
+            original = outside / "x"
+            original.write_text("keep")
+            stale = root / ".demo-deploy-next"
+            (stale / "files").mkdir(parents=True)
+            (stale / "files/x").touch()
+            deploy_files.recover(root, units)
+            self.assertFalse(stale.exists())
+            deploy_files.recover(root, units)
+            self.assertEqual(list(root.iterdir()), [])
+            stale.touch()
+            deploy_files.recover(root, units)
+            self.assertFalse(stale.exists())
+            for target in (outside, outside / "missing"):
+                with self.subTest(target=target):
+                    stale.symlink_to(target)
+                    deploy_files.recover(root, units)
+                    self.assertFalse(stale.is_symlink())
+                    self.assertEqual(original.read_text(), "keep")
+
     @unittest.skipUnless(os.name == "posix", "Shared host helpers require POSIX.")
     def test_tag_selection_uses_stable_newer_versions_in_the_running_major(self):
         with tempfile.TemporaryDirectory() as directory:

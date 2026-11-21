@@ -160,9 +160,10 @@ delay; it acts once between 02:00 and 05:00 in `DEMO_UPDATE_TIMEZONE` (default
 By default the demo follows published prereleases and stable releases with the
 running image's major version. It installs the **next** newer version, then the
 next, in order while each update succeeds and the nightly window remains open.
-Release history is paginated before selection (at most 1,000 entries; an
-incomplete history is skipped). `DEMO_RELEASE_CHANNEL=stable` instead follows
-the newest stable patch **or minor** release, as a single update. A new major
+The updater reads release pages through the first page containing a published
+`vX.Y.Z` release at or below the running version. It skips an incomplete
+history at the 1,000-entry safety cap. `DEMO_RELEASE_CHANNEL=stable` instead
+follows the newest stable patch **or minor** release, as a single update. A new major
 requires an explicit operator update. Tags and image labels use plain `vX.Y.Z`,
 including nightly `v0.Y.Z` prereleases; development/bundle labels are skipped.
 Set these host-only options in the root-only installed `.env`:
@@ -175,7 +176,10 @@ Set these host-only options in the root-only installed `.env`:
 | `RELEASE_REPOSITORY` | `plaingym/plaingym` | Repository publishing releases, including for forks. |
 
 The GitHub prerelease flag selects one installed key: `prerelease-signing.pem`
-for prereleases, `release-signing.pem` for stable releases. The signed manifest
+for prereleases, `release-signing.pem` for stable releases. A missing stable key
+is reported as `no_signing_key`. A missing `prerelease-signing.pem` is reported
+as `no_prerelease_key` and stops catch-up at that release. Run `install.sh`
+again from the demo bundle to restore the prerelease key. The signed manifest
 must also have `channel=prerelease` for a prerelease and no channel for a stable
 release. The keys are never tried interchangeably. The updater reuses the
 self-hosted manifest/signature, deploy-archive checks, host-file journal and
@@ -240,13 +244,17 @@ substitute the newest published prerelease's actual tag. Refresh the demo bundle
 first to install these scripts and both public keys. The update installs the
 deploy files from that release's archive, so pick a prerelease that already
 includes this updater: an older one would put back an updater that ignores
-prereleases. Explicit `IMAGE:vX.Y.Z` updates
-look up that published tag and perform the same signature, channel, archive,
-digest, label and Caddy checks as automatic updates, then pin the signed digest.
-They accept a prerelease even when the automatic channel is `stable` and can
+prereleases. Explicit `IMAGE:vX.Y.Z` updates without `--bundle` always look up
+the published signed release for that tag. They perform the same signature,
+channel, archive, digest, label and Caddy checks as automatic updates, then pin
+the signed digest. Another image name is refused with `image_mismatch`.
+Signed explicit updates accept a prerelease even when the automatic channel is `stable` and can
 cross its rollback floor; they do not depend on a release label on the running
 bundle image. The operator runs this switch; the nightly updater keeps skipping
 the bundle image until then.
+
+Use a suffixed tag such as `v0.2.1-local` for a local build. An explicit
+`IMAGE:X.Y.Z` tag without the `v` is applied without the published-release check.
 
 For another unpublished build, use the same bootstrap command with the **new**
 bundle URL and SHA256, adding `--update plaingym:v0.0.1-local`. No manual image
@@ -265,10 +273,12 @@ Changes must retain the app's expand-only
 migration compatibility for rollback. The demo uses this snapshot path because
 its disposable gyms have no backup destination configured.
 
-After each successful update, retention keeps the **newest 3** snapshots. Failed
-updates keep their snapshot and do not prune anything. Existing `.dump.enc` files
-count toward retention too; they are not converted. Choose another positive
-count at initial install with `-- --snapshot-retention 5`, or for an update with
+After each successful update, retention keeps the **newest 3** snapshots by
+default. During a nightly catch-up, it also keeps the snapshot from the starting
+version. That snapshot is eligible for pruning on the next night's update.
+Failed updates keep their snapshot and do not prune anything. Existing
+`.dump.enc` files count toward retention too. Choose another positive count at
+initial install with `-- --snapshot-retention 5`, or for an update with
 `sudo env DEMO_SNAPSHOT_RETENTION=5 /opt/plaingym-demo/update.sh IMAGE`. For a
 bundle update, put `sudo env DEMO_SNAPSHOT_RETENTION=5 sh -s -- ...` after the
 bootstrap download pipe. No `.env` edits are needed.
