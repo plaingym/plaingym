@@ -138,6 +138,7 @@ import { configurePaymentDelivery, createLapsedRefundJobs } from '../areas/billi
 import { createCustomerCardImportJobs } from '../areas/billing/customer-card-import.js';
 import { createBillingAlerts, createDisputeAlertProvider, sendAlertJob, sendCardSmsJob } from '../areas/billing/alerts/index.js';
 import { configureBillingAlerts } from '../areas/billing/alerts/alerts.jobs.js';
+import { createCheckoutDebitReviewProvider } from '../areas/billing/alerts/checkout-debits.js';
 import { createAccountService } from '../infra/auth/accounts.js';
 import { configureStaffAuth } from '../areas/staff/auth.routes.js';
 import { configureAccount } from '../areas/staff/auth.account.js';
@@ -431,7 +432,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   configurePackSales(createPackSalesService({ clock, settings, transitions: billing.transitions }));
   configureBillingDashboard({ settings });
   // The dashboard reads the same services as portal progress, with the ranks criteria registry and clock.
-  configureDashboard({ members: createMembersService({ clock }), ranks, notSeen: createNotSeenRead() }, [createDisputeAlertProvider(), createPinLimitWidgetProvider(),
+  configureDashboard({ members: createMembersService({ clock }), ranks, notSeen: createNotSeenRead() }, [
+    createDisputeAlertProvider(), createCheckoutDebitReviewProvider(), createPinLimitWidgetProvider(),
     createPortalConfirmationWidgetProvider(), createSkippedCollectionsProvider({ settings }),
     createFollowUpsDueProvider({ settings })]);
   configurePaymentDelivery({ notifications: billing.notifications, detachCard });

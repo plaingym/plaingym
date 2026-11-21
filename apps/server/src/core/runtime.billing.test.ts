@@ -11,8 +11,23 @@ import { setLogSink } from './log.js';
 import { demoStripeEnv, useDemoRuntime } from './runtime.fixture.test-helper.js';
 // After the runtime helper, which loads the OpenAPI extension of Zod before the route modules this one imports.
 import { reportChargeFailures } from '../areas/billing/runner/failures.js';
+import { checkoutReviewAction } from '../areas/billing/runner/reconciliation.js';
 
 const app = useDemoRuntime({ sandbox: true }), { database, factory } = app;
+
+it('shows a Checkout debit that needs review on the runtime dashboard', async () => {
+  const sandbox = app.sandbox, headers = app.headers(sandbox, await app.login('owner'));
+  const household = await factory('households', sandbox.gymId);
+  const invoice = await factory('invoices', sandbox.gymId, { householdId: household.id, status: 'processing', number: 9001 });
+  await factory('auditEvents', sandbox.gymId, { action: checkoutReviewAction, targetType: 'invoice', targetId: invoice.id,
+    after: { paymentIntentId: 'pi_runtime_checkout_review', reason: 'pending' } });
+
+  const dashboard = await app.runtime.app.request(sandbox.origin + '/api/dashboard', { headers });
+  expect(dashboard.status, await dashboard.clone().text()).toBe(200);
+  expect((await dashboard.json()).data.widgets).toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: 'billing.checkout_debits', kind: 'count', count: 1 }),
+  ]));
+});
 
 it('collects assigned invoices, retries a declined cycle, serves staff billing, and detaches cards through the runtime', async () => {
   const sandbox = app.sandbox, cookie = await app.login('owner'), headers = app.headers(sandbox, cookie);
