@@ -58,10 +58,17 @@ and the staff audit. The fake stages writes until commit and reflects a staged
 reset in subsequent failed-job reads in that transaction.
 
 `PostgresJobs` has two more methods outside `JobRecovery`.
-`acknowledgeFailedThrough({ gymId, through, at }, transaction?)` acknowledges every
-unacknowledged failed job of the gym whose failure time is at or before `through`
-and returns the count; the System health page's **Acknowledge failed jobs** action
-uses it. `failInterrupted(names, { at, reason })` runs in system context across every
+`acknowledgeFailedVersion({ gymId, failedVersion, at }, transaction?)` acknowledges
+exactly the gym's unacknowledged failed jobs that `failedVersion` names.
+`JobStatsQuery.failedVersion` is that version: an MD5 digest of the IDs of the gym's
+unacknowledged failed jobs in ID order, or `none` when there are none, computed by
+one shared SQL fragment. The method locks those jobs (`FOR UPDATE`, in ID order),
+computes the digest over the locked rows in the same statement, and returns
+`'changed'` without writing when it differs; otherwise it acknowledges exactly the
+locked IDs and returns `{ acknowledged }`. A job that failed after the version was
+read changes the digest, even when its failure time is earlier (an expired final
+lease is recorded at its expiry). The System health page's **Acknowledge failed
+jobs** action uses it. `failInterrupted(names, { at, reason })` runs in system context across every
 gym and install jobs: it marks every `running` job with one of those names failed and
 acknowledged, records `reason` as its error and clears its lease, and returns the
 count. A restore uses it for the backup jobs its snapshot caught running, which no

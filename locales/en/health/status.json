@@ -151,10 +151,11 @@
   "failures.dismissFailed": "Unable to dismiss. Refresh and try again.",
   "acknowledge": "Acknowledge failed jobs",
   "acknowledgeTitle": "Acknowledge failed jobs",
-  "acknowledgeHelp": "This clears the failed jobs counted here from Background jobs. It doesn't run them again or undo anything they did. Jobs that fail later show again.",
+  "acknowledgeHelp": "This clears exactly the failed jobs counted here from Background jobs, and changes nothing if that set changed since this page was read. It doesn't run them again or undo anything they did. Jobs that fail later show again.",
   "acknowledgeConfirm": "Acknowledge",
   "acknowledging": "Acknowledging…",
   "acknowledgeCancel": "Cancel",
   "acknowledgeClose": "Close",
-  "acknowledgeFailed": "The failed jobs could not be acknowledged. Try again."
+  "acknowledgeFailed": "The failed jobs could not be acknowledged. Try again.",
+  "acknowledgeChanged": "The failed jobs changed. Check the count and try again."
 }

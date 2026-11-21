@@ -24,7 +24,8 @@ export function createStatusRoutes(read = () => service, acknowledgement = creat
     responses: { 200: { description: 'Acknowledged failed jobs', content: { 'application/json': { schema: acknowledge.response } } } } }, async (c) => {
     const context = c.get('context'), principal = context.principal;
     if (principal.kind !== 'staff' || principal.gymId !== context.gym.gymId) throw new AppError('not_found', 'Gym not found');
-    const data = await acknowledgement.acknowledge({ gymId: context.gym.gymId, userId: principal.userId }, c.req.valid('json').through);
+    const { through, failedVersion } = c.req.valid('json');
+    const data = await acknowledgement.acknowledge({ gymId: context.gym.gymId, userId: principal.userId }, { through, failedVersion });
     c.header('Cache-Control', 'no-store');
     return c.json({ data }, 200);
   })];

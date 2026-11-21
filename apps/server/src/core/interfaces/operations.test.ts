@@ -33,8 +33,18 @@ describe('Operational read interfaces', () => {
       { gymId: null, status: 'failed', runAt: '2026-10-21T12:00:00Z' },
       { gymId: otherGym, status: 'failed', runAt: '2026-10-21T12:00:00Z' },
     ]);
-    expect(await fake.get(gym)).toEqual({ pending: 2, running: 1, succeeded: 0, failed: 1, oldestPendingAt: '2026-10-21T13:00:00+02:00', oldestFailureAt: '2026-10-21T12:00:00Z' });
-    expect(await new FakeJobStatsQuery().get(gym)).toEqual({ pending: 0, running: 0, succeeded: 0, failed: 0, oldestPendingAt: null, oldestFailureAt: null });
+    expect(await fake.get(gym)).toEqual({ pending: 2, running: 1, succeeded: 0, failed: 1, oldestPendingAt: '2026-10-21T13:00:00+02:00',
+      oldestFailureAt: '2026-10-21T12:00:00Z', failedVersion: 'job-2' });
+    expect(await new FakeJobStatsQuery().get(gym)).toEqual({ pending: 0, running: 0, succeeded: 0, failed: 0, oldestPendingAt: null,
+      oldestFailureAt: null, failedVersion: 'none' });
+  });
+  it('versions the unacknowledged failed fixtures by their sorted IDs', async () => {
+    const failed = (id: string, acknowledged = false) => ({ id, gymId: gym, status: 'failed' as const, runAt: '2026-10-21T12:00:00Z', acknowledged });
+    expect((await new FakeJobStatsQuery([failed('b'), failed('a'), failed('c', true)]).get(gym)).failedVersion).toBe('a,b');
+    expect((await new FakeJobStatsQuery([failed('c', true)]).get(gym)).failedVersion).toBe('none');
+    const long = await new FakeJobStatsQuery([failed('x'.repeat(40)), failed('y'.repeat(40))]).get(gym);
+    expect(long.failedVersion).toMatch(/^fnv-[0-9a-f]{8}$/);
+    expect((await new FakeJobStatsQuery([failed('y'.repeat(40)), failed('x'.repeat(40))]).get(gym)).failedVersion).toBe(long.failedVersion);
   });
   it('chooses the oldest failed instant across offsets, independently of earlier pending and foreign jobs', async () => {
     const fake = new FakeJobStatsQuery([

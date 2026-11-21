@@ -156,13 +156,21 @@ The tile stays in error while any unacknowledged failed jobs remain, however old
 the failure is. With none, the page leaves out the oldest failure row. A failed
 job whose effect was dismissed by a release that did not yet acknowledge jobs on
 Dismiss stays counted until someone acknowledges the job or retention deletes it.
-While the tile counts failed jobs, owners and admins (`settings.manage`) see
-**Acknowledge failed jobs**. Confirming posts the tile's `checkedAt` from when the dialog opened
-as `through` to `POST /api/health/failed-jobs/acknowledge`, which acknowledges the
-gym's failed jobs that failed by the earlier of `through` and now, so a job that
-fails after the page was read stays counted. It doesn't run the jobs again; the
-answer is the number acknowledged, and a non-zero count writes one
-`health.failed_jobs.acknowledged` audit event in the same transaction.
+The tile's `failedVersion` (`JobStatsQuery.failedVersion`) is an opaque digest of
+the IDs of those unacknowledged failed jobs, `none` when there are none; the page
+doesn't show it. While the tile counts failed jobs, owners and admins
+(`settings.manage`) see **Acknowledge failed jobs**. Confirming posts the tile's
+`checkedAt` as `through` and its `failedVersion`, both from when the dialog opened,
+to `POST /api/health/failed-jobs/acknowledge`. In one gym transaction the server
+locks the gym's unacknowledged failed jobs, computes the digest over the locked
+rows, and acknowledges exactly those jobs only when it matches. When the set
+changed (a job failed after the page was read, even one whose expired lease is
+recorded with an earlier failure time, or a counted job was retried), it answers
+409 `Failed jobs changed`, acknowledges nothing, and the dialog asks the owner to
+check the count again while the page reloads the tiles. It doesn't run the jobs
+again; the answer is the number acknowledged, and a non-zero count writes one
+`health.failed_jobs.acknowledged` audit event (`acknowledged` and `through`) in the
+same transaction.
 Disk details report `uploads` and `backupStaging` separately, each with filesystem
 `totalBytes` and `availableBytes`, plus `sameFilesystem`: true only when a backup
 staging directory is configured on the same device as the uploads directory and the

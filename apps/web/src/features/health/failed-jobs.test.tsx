@@ -9,8 +9,9 @@ import { FailedJobsActions } from './failed-jobs.js';
 vi.mock('../../lib/api.js', () => ({ api: { GET: vi.fn(), POST: vi.fn() } }));
 
 const checkedAt = '2026-10-22T12:00:00.000Z';
-const tile = (failed: number): HealthTile => ({ id: 'failed_jobs', status: failed ? 'error' : 'healthy', checkedAt, message: 'Background jobs',
-  details: { failed, pending: 0, running: 0, oldestFailureAt: failed ? '2026-10-22T10:00:00.000Z' : null } });
+const tile = (failed: number, failedVersion = failed ? 'version-' + failed : 'none'): HealthTile => ({ id: 'failed_jobs',
+  status: failed ? 'error' : 'healthy', checkedAt, message: 'Background jobs',
+  details: { failed, pending: 0, running: 0, oldestFailureAt: failed ? '2026-10-22T10:00:00.000Z' : null, failedVersion } });
 const POST = vi.mocked(api.POST);
 
 /** Reads the tiles as the Health page does, under ['health', gymId], and renders the tile's action. */
@@ -26,21 +27,22 @@ function start(failed: number) {
 }
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 
-it('asks before acknowledging, posts the tile\'s check time once, closes and refetches the tiles', async () => {
+it('asks before acknowledging, posts the tile\'s check time and version once, closes and refetches the tiles', async () => {
   POST.mockResolvedValue({ response: new Response(), data: { data: { acknowledged: 2 } } } as never);
   const { tiles } = start(2);
   fireEvent.click(await screen.findByRole('button', { name: 'Acknowledge failed jobs' }));
   const dialog = screen.getByRole('dialog');
+  expect(within(dialog).getByText(/exactly the failed jobs counted here/)).toBeDefined();
   expect(within(dialog).getByText(/doesn't run them again or undo anything they did/)).toBeDefined();
   expect(POST).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole('button', { name: 'Acknowledge' }));
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   expect(POST).toHaveBeenCalledTimes(1);
-  expect(POST).toHaveBeenCalledWith('/api/health/failed-jobs/acknowledge', { body: { through: checkedAt } });
+  expect(POST).toHaveBeenCalledWith('/api/health/failed-jobs/acknowledge', { body: { through: checkedAt, failedVersion: 'version-2' } });
   await waitFor(() => expect(tiles).toHaveBeenCalledTimes(2));
 });
 
-it('keeps the original cutoff when the tile refreshes during confirmation', async () => {
+it('keeps the check time and version the dialog opened on when the tile refreshes during confirmation', async () => {
   POST.mockResolvedValue({ response: new Response(), data: { data: { acknowledged: 2 } } } as never);
   const client = new QueryClient();
   const view = render(<FailedJobsActions gymId="gym-a" tile={tile(2)}/>, {
@@ -49,17 +51,31 @@ it('keeps the original cutoff when the tile refreshes during confirmation', asyn
   view.rerender(<FailedJobsActions gymId="gym-a" tile={{ ...tile(3), checkedAt: '2026-10-22T12:01:00.000Z' }}/>);
   fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Acknowledge' }));
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-  expect(POST).toHaveBeenCalledWith('/api/health/failed-jobs/acknowledge', { body: { through: checkedAt } });
+  expect(POST).toHaveBeenCalledWith('/api/health/failed-jobs/acknowledge', { body: { through: checkedAt, failedVersion: 'version-2' } });
+});
+
+it('tells the owner to check the count again and refetches the tiles when the failed jobs changed', async () => {
+  POST.mockResolvedValue({ response: new Response(null, { status: 409 }), data: undefined } as never);
+  const { tiles } = start(2);
+  fireEvent.click(await screen.findByRole('button', { name: 'Acknowledge failed jobs' }));
+  const dialog = screen.getByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Acknowledge' }));
+  expect(await within(dialog).findByText('The failed jobs changed. Check the count and try again.')).toBeDefined();
+  expect(within(dialog).queryByText('The failed jobs could not be acknowledged. Try again.')).toBeNull();
+  await waitFor(() => expect(tiles).toHaveBeenCalledTimes(2));
+  expect(screen.getByRole('dialog')).toBeDefined();
+  expect(POST).toHaveBeenCalledTimes(1);
 });
 
 it('keeps the dialog open with an error when acknowledging fails', async () => {
   POST.mockResolvedValue({ response: new Response(null, { status: 500 }), data: undefined } as never);
-  start(2);
+  const { tiles } = start(2);
   fireEvent.click(await screen.findByRole('button', { name: 'Acknowledge failed jobs' }));
   const dialog = screen.getByRole('dialog');
   fireEvent.click(within(dialog).getByRole('button', { name: 'Acknowledge' }));
   expect(await within(dialog).findByText('The failed jobs could not be acknowledged. Try again.')).toBeDefined();
   expect(screen.getByRole('dialog')).toBeDefined();
+  expect(tiles).toHaveBeenCalledTimes(1);
   fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   expect(POST).toHaveBeenCalledTimes(1);

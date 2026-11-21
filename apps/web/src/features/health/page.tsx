@@ -63,8 +63,10 @@ function detailRows(tile: HealthTile): [key: string, label: string, value: unkno
     ];
   }
   const versions = tile.id === 'automatic_updates' ? tile.details : null;
-  // A null oldest failure means no failed jobs remain, not an unknown time, so the row is left out.
+  // A null oldest failure means no failed jobs remain, not an unknown time, so the row is left out. The failed jobs
+  // version is an opaque digest for Acknowledge failed jobs, not something to read.
   return Object.entries(tile.details).filter(([key, value]) => key !== 'keyReminder' && key !== 'noneUnderCurrentKey' && key !== 'pruningHeld' && key !== 'damagedGuardSnapshot' && key !== 'missingGuardSnapshot'
+    && !(tile.id === 'failed_jobs' && key === 'failedVersion')
     && !(versions && (key === 'fromVersion' || key === 'toVersion') && value === null)
     && !(tile.id === 'failed_jobs' && key === 'oldestFailureAt' && value === null))
     .map(([key, value]) => [key, label(versions && (key === 'fromVersion' || key === 'toVersion') ? `field.${key}.${versions.result}` : 'field.' + key),

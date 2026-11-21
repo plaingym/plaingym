@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { and, asc, eq, inArray, isNull, lt, lte, notInArray, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, lt, notInArray, or, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { advisoryLockNamespace, advisoryLocks, forGym, forSystem, isConnectionError, jobs, jobScheduleCursors, uuidv7 } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
@@ -19,6 +19,14 @@ type Scope = { forGym: typeof forGym; forSystem: typeof forSystem };
 type Row = typeof jobs.$inferSelect;
 type Tx = Parameters<Parameters<typeof forSystem>[0]>[0];
 type Gym = Pick<JobOptions, 'gymId' | 'timezone'>;
+const unacknowledgedFailure = sql`${jobs.status} = 'failed' and ${jobs.acknowledgedAt} is null`;
+/**
+ * The failed jobs version: one digest of these job IDs in ID order, or `none` for no rows. The stats read and the
+ * acknowledgment both compute it with this fragment, so a version from the tile matches only the same set of jobs.
+ */
+const failedVersionOf = (id: SQLWrapper, filter?: SQL) =>
+  sql<string>`coalesce(md5(string_agg(${id}::text, ',' order by ${id})${filter ? sql` filter (where ${filter})` : sql``}), 'none')`;
+const lockedIdsSchema = idSchema.array();
 type Envelope = { version: 1; timezone: string; value: unknown; schedule?: { expression: string; at: string }; deferrals?: number };
 export type SystemJobContext = Omit<JobContext, 'gymId'> & { readonly gymId: null };
 export type SystemJobHandler = (payload: unknown, context: SystemJobContext) => Promise<void>;
@@ -336,17 +344,32 @@ export class PostgresJobs implements Jobs, JobRecovery {
     const acknowledged = await (transaction ? update(transaction.tx) : this.#database.forGym(options.gymId, update));
     return acknowledged.length === 1;
   }
-  /** Acknowledges the gym's unacknowledged failed jobs that failed by `through`; later failures stay counted. */
-  async acknowledgeFailedThrough(options: { gymId: string; through: Date; at: Date }, transaction?: JobTransaction): Promise<number> {
+  /**
+   * Acknowledges exactly the gym's unacknowledged failed jobs that `failedVersion` (from `PostgresJobStatsQuery`) named.
+   * It locks them, recomputes the version over the locked rows, and answers `changed`, writing nothing, when the set differs.
+   */
+  async acknowledgeFailedVersion(options: { gymId: string; failedVersion: string; at: Date },
+    transaction?: JobTransaction): Promise<{ acknowledged: number } | 'changed'> {
     if (transaction) assertJobTransaction(transaction, options.gymId);
-    else assertNoTransaction('jobs.acknowledgeFailedThrough');
+    else assertNoTransaction('jobs.acknowledgeFailedVersion');
     idSchema.parse(options.gymId);
-    if (!Number.isFinite(options.through.getTime()) || !Number.isFinite(options.at.getTime())) throw new Error('Invalid job time');
-    const update = (tx: Tx) => tx.update(jobs).set({ acknowledgedAt: options.at })
-      .where(and(eq(jobs.gymId, options.gymId), eq(jobs.status, 'failed'), isNull(jobs.acknowledgedAt),
-        lte(jobs.runAt, options.through)));
-    const acknowledged = await (transaction ? update(transaction.tx) : this.#database.forGym(options.gymId, update));
-    return acknowledged.count;
+    if (!options.failedVersion) throw new Error('Missing failed jobs version');
+    if (!Number.isFinite(options.at.getTime())) throw new Error('Invalid job time');
+    const acknowledge = async (tx: Tx) => {
+      // The version is computed over the locked rows themselves, in the same statement that locks them.
+      const locked = tx.$with('locked').as(tx.select({ id: jobs.id }).from(jobs)
+        .where(and(eq(jobs.gymId, options.gymId), unacknowledgedFailure)).orderBy(asc(jobs.id)).for('update'));
+      const [row] = await tx.with(locked).select({ version: failedVersionOf(locked.id),
+        ids: sql<unknown>`coalesce(json_agg(${locked.id} order by ${locked.id}), '[]'::json)` }).from(locked);
+      if (!row) throw new Error('Missing failed jobs version');
+      if (row.version !== options.failedVersion) return 'changed' as const;
+      const ids = lockedIdsSchema.parse(typeof row.ids === 'string' ? JSON.parse(row.ids) : row.ids);
+      if (!ids.length) return { acknowledged: 0 };
+      const updated = await tx.update(jobs).set({ acknowledgedAt: options.at })
+        .where(and(eq(jobs.gymId, options.gymId), inArray(jobs.id, ids), unacknowledgedFailure));
+      return { acknowledged: updated.count };
+    };
+    return transaction ? acknowledge(transaction.tx) : this.#database.forGym(options.gymId, acknowledge);
   }
   /**
    * Install-wide: fails and acknowledges every running job with one of these names, in every gym and install
@@ -568,7 +591,6 @@ export class PostgresJobStatsQuery implements JobStatsQuery {
   constructor(readonly database: Pick<Scope, 'forSystem'> = { forSystem }) {}
   async get(gymId: Id): Promise<JobStats> {
     idSchema.parse(gymId);
-    const unacknowledgedFailure = sql`${jobs.status} = 'failed' and ${jobs.acknowledgedAt} is null`;
     return this.database.forSystem(async (tx) => {
       const [row] = await tx.select({
         pending: sql<number>`count(*) filter (where ${jobs.status} = 'pending')::int`,
@@ -577,11 +599,13 @@ export class PostgresJobStatsQuery implements JobStatsQuery {
         failed: sql<number>`count(*) filter (where ${unacknowledgedFailure})::int`,
         oldest: sql<string | null>`min(${jobs.runAt}) filter (where ${jobs.status} = 'pending')`,
         oldestFailure: sql<string | null>`min(${jobs.runAt}) filter (where ${unacknowledgedFailure})`,
+        failedVersion: failedVersionOf(jobs.id, unacknowledgedFailure),
       }).from(jobs).where(eq(jobs.gymId, gymId));
       if (!row) throw new Error('Missing job statistics');
       return { pending: row.pending, running: row.running, succeeded: row.succeeded, failed: row.failed,
         oldestPendingAt: row.oldest === null ? null : instantSchema.parse(new Date(row.oldest).toISOString()),
-        oldestFailureAt: row.oldestFailure === null ? null : instantSchema.parse(new Date(row.oldestFailure).toISOString()) };
+        oldestFailureAt: row.oldestFailure === null ? null : instantSchema.parse(new Date(row.oldestFailure).toISOString()),
+        failedVersion: row.failedVersion };
     });
   }
 }

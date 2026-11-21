@@ -65,7 +65,8 @@ export function createStatusProviders(options: StatusOptions = {}) {
       const stats = await jobs.get(context.gymId);
       return { id: 'failed_jobs', status: stats.failed ? 'error' : 'healthy', checkedAt: context.clock.now().toISOString(),
         message: statusMessage(stats.failed ? 'jobsFailed' : 'jobsHealthy', { failed: stats.failed }),
-        details: { failed: stats.failed, pending: stats.pending, running: stats.running, oldestFailureAt: stats.oldestFailureAt } };
+        details: { failed: stats.failed, pending: stats.pending, running: stats.running, oldestFailureAt: stats.oldestFailureAt,
+          failedVersion: stats.failedVersion } };
     }),
     healthProvider('smtp', async (context) => {
       if (env.DEMO_MODE === 'true') return { id: 'smtp', status: 'healthy', checkedAt: context.clock.now().toISOString(),

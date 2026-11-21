@@ -103,7 +103,7 @@ for (const viewport of viewports) {
       await page.route('**/api/health', route => route.fulfill({ json: { data: { ...body.data,
         tiles: body.data.tiles.map(tile => tile.id === 'failed_jobs' ? {
           id: 'failed_jobs', status: 'error', checkedAt: now, message: '2 background jobs failed.',
-          details: { failed: 2, pending: 1, running: 0, oldestFailureAt: oldest },
+          details: { failed: 2, pending: 1, running: 0, oldestFailureAt: oldest, failedVersion: 'e2e-two-failed' },
         } : tile.id === 'disk' ? {
           id: 'disk', status: layout === 'uploads' ? 'healthy' : 'warning', checkedAt: now,
           message: layout === 'shared' ? 'Free space: uploads and backup staging (one volume) 10 GB.'

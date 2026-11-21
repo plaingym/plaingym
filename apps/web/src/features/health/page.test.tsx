@@ -173,8 +173,11 @@ describe('disk sizes', () => {
 it('shows an old failed-job timestamp in the gym timezone while keeping the problem status', () => {
   const oldest = '2026-08-01T00:30:00Z';
   render(<HealthTiles timezone="America/Vancouver" tiles={[healthTileSchema.parse({ id: 'failed_jobs', status: 'error', checkedAt,
-    message: '2 background jobs failed.', details: { failed: 2, pending: 1, running: 0, oldestFailureAt: oldest } })]}/>);
+    message: '2 background jobs failed.', details: { failed: 2, pending: 1, running: 0, oldestFailureAt: oldest, failedVersion: 'digest-of-two' } })]}/>);
   expect(screen.getByText('Problem detected')).toBeDefined();
+  // The version is for Acknowledge failed jobs, not a row to read.
+  expect(screen.queryByText('digest-of-two')).toBeNull();
+  expect(screen.queryByText(/field\.failedVersion/)).toBeNull();
   const value = screen.getByText('Oldest failure').parentElement!.querySelector('time')!;
   expect(value.getAttribute('datetime')).toBe(oldest);
   expect(value.textContent).toContain('Jul 31, 2026');
@@ -182,7 +185,7 @@ it('shows an old failed-job timestamp in the gym timezone while keeping the prob
 });
 it('leaves out the oldest failure row when no failed jobs remain', () => {
   render(<HealthTiles tiles={[healthTileSchema.parse({ id: 'failed_jobs', status: 'healthy', checkedAt,
-    message: 'No background jobs failed.', details: { failed: 0, pending: 1, running: 0, oldestFailureAt: null } })]}/>);
+    message: 'No background jobs failed.', details: { failed: 0, pending: 1, running: 0, oldestFailureAt: null, failedVersion: 'none' } })]}/>);
   expect(screen.getByText('Healthy')).toBeDefined();
   expect(screen.queryByText('Oldest failure')).toBeNull();
   expect(screen.queryByText('Unknown')).toBeNull();

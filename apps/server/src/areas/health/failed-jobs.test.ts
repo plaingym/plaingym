@@ -48,13 +48,14 @@ const failedJob = (gymId: string, runAt = new Date(clock.now().getTime() - hour)
   factory('jobs', gymId, { name: 'test.failed', status: 'failed', runAt, lastError: 'Failed' });
 const acknowledgedAt = async (id: unknown) =>
   (await database.forSystem(tx => tx.select({ at: jobs.acknowledgedAt }).from(jobs).where(eq(jobs.id, id as string))))[0]!.at;
+/** The request the tile sends, from a fresh tile read. */
+const read = async (gymId: string) => ({ through: clock.now().toISOString(), failedVersion: (await stats.get(gymId)).failedVersion });
 const audits = (gymId: string) => database.forGym(gymId, tx => tx.select().from(auditEvents)
   .where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.action, 'health.failed_jobs.acknowledged'))));
 
 describe('acknowledging failed jobs', () => {
   it('acknowledges a job through the production registrations and default service', async () => {
-    const g = await gym(), through = '2000-01-01T00:00:00.000Z';
-    const job = await failedJob(g.gymId, new Date(through));
+    const g = await gym(), job = await failedJob(g.gymId), body = await read(g.gymId);
     await initializeDatabase(database.appUrl);
     try {
       const origin = 'http://localhost';
@@ -62,7 +63,7 @@ describe('acknowledging failed jobs', () => {
         resolveGym: async (c, next) => { c.set('context', { ...c.get('context'), gym: { gymId: g.gymId, timezone: 'UTC', enabledModules: new Set() } }); await next(); },
         session: async (c, next) => { c.set('context', { ...c.get('context'), principal: g.as(['owner']) }); await next(); },
       });
-      const response = await app.request(origin + path, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ through }) });
+      const response = await app.request(origin + path, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify(body) });
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ data: { acknowledged: 1 } });
       expect(await acknowledgedAt(job.id)).toBeInstanceOf(Date);
@@ -72,7 +73,7 @@ describe('acknowledging failed jobs', () => {
 
   it.each(staffRoles)('lets only settings managers acknowledge: %s', async (role) => {
     const g = await gym(), job = await failedJob(g.gymId);
-    const response = await post(server(g.as([role]), g.gymId), { through: clock.now().toISOString() });
+    const response = await post(server(g.as([role]), g.gymId), await read(g.gymId));
     if (role === 'owner' || role === 'admin') {
       expect(response.status).toBe(200);
       expect(response.headers.get('cache-control')).toBe('no-store');
@@ -90,30 +91,47 @@ describe('acknowledging failed jobs', () => {
     }
   });
 
-  it('acknowledges only jobs failed by now when the cutoff is in the future, and writes no audit for none', async () => {
+  it('refuses a stale version with 409 and changes nothing, then acknowledges exactly the jobs a fresh read counted', async () => {
     const g = await gym(), app = server(g.as(['owner']), g.gymId);
-    const earlier = await failedJob(g.gymId), later = await failedJob(g.gymId, new Date(clock.now().getTime() + hour));
-    const response = await post(app, { through: new Date(clock.now().getTime() + 24 * hour).toISOString() });
-    expect(acknowledgeFailedJobsResponseSchema.parse(await response.json())).toEqual({ data: { acknowledged: 1 } });
-    expect(await acknowledgedAt(earlier.id)).toEqual(clock.now());
+    const earlier = await failedJob(g.gymId), stale = await read(g.gymId);
+    const later = await failedJob(g.gymId, new Date(clock.now().getTime() + hour));
+    const refused = await post(app, stale);
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({ error: { code: 'conflict', message: 'Failed jobs changed' } });
+    expect(await acknowledgedAt(earlier.id)).toBeNull();
     expect(await acknowledgedAt(later.id)).toBeNull();
-    expect((await audits(g.gymId))[0]!.after).toEqual({ acknowledged: 1, through: clock.now().toISOString() });
-    expect(await (await post(app, { through: clock.now().toISOString() })).json()).toEqual({ data: { acknowledged: 0 } });
+    expect(await audits(g.gymId)).toEqual([]);
+    const fresh = await read(g.gymId);
+    const response = await post(app, fresh);
+    expect(response.status).toBe(200);
+    expect(acknowledgeFailedJobsResponseSchema.parse(await response.json())).toEqual({ data: { acknowledged: 2 } });
+    expect(await acknowledgedAt(earlier.id)).toEqual(clock.now());
+    expect(await acknowledgedAt(later.id)).toEqual(clock.now());
+    expect((await audits(g.gymId)).map(audit => audit.after)).toEqual([{ acknowledged: 2, through: fresh.through }]);
+    // Once cleared, the tile's version is `none`: acknowledging it changes nothing and writes no audit.
+    expect(await (await post(app, await read(g.gymId))).json()).toEqual({ data: { acknowledged: 0 } });
     expect(await audits(g.gymId)).toHaveLength(1);
   });
 
-  it('refuses a body that is not an instant', async () => {
-    const g = await gym(), job = await failedJob(g.gymId), app = server(g.as(['owner']), g.gymId);
-    for (const body of [{ through: 'x' }, {}, { through: clock.now().toISOString(), extra: true }]) expect((await post(app, body)).status).toBe(400);
+  it('refuses a body without an instant or a version', async () => {
+    const g = await gym(), job = await failedJob(g.gymId), app = server(g.as(['owner']), g.gymId), valid = await read(g.gymId);
+    for (const body of [{ ...valid, through: 'x' }, {}, { through: valid.through }, { failedVersion: valid.failedVersion },
+      { ...valid, failedVersion: '' }, { ...valid, failedVersion: 'x'.repeat(65) }, { ...valid, extra: true }])
+      expect((await post(app, body)).status).toBe(400);
     expect(await acknowledgedAt(job.id)).toBeNull();
   });
 
   it('never reaches another gym', async () => {
     const a = await gym(), b = await gym(), jobA = await failedJob(a.gymId), jobB = await failedJob(b.gymId);
     // A gym A owner on gym B's hostname is refused.
-    expect((await post(server(a.as(['owner']), b.gymId), { through: clock.now().toISOString() })).status).toBe(403);
+    expect((await post(server(a.as(['owner']), b.gymId), await read(b.gymId))).status).toBe(403);
     expect(await acknowledgedAt(jobB.id)).toBeNull();
-    const response = await post(server(b.as(['owner']), b.gymId), { through: clock.now().toISOString() });
+    // Gym B's version never acknowledges gym A's jobs, and gym A's version doesn't match gym B's.
+    expect((await post(server(a.as(['owner']), a.gymId), await read(b.gymId))).status).toBe(409);
+    expect((await post(server(b.as(['owner']), b.gymId), await read(a.gymId))).status).toBe(409);
+    expect(await acknowledgedAt(jobA.id)).toBeNull();
+    expect(await acknowledgedAt(jobB.id)).toBeNull();
+    const response = await post(server(b.as(['owner']), b.gymId), await read(b.gymId));
     expect(await response.json()).toEqual({ data: { acknowledged: 1 } });
     expect(await acknowledgedAt(jobA.id)).toBeNull();
     expect(await audits(a.gymId)).toEqual([]);
