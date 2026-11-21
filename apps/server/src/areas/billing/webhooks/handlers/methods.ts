@@ -2,7 +2,7 @@
 import { and, eq, ne } from 'drizzle-orm';
 import { auditEvents, forGym, households, paymentMethods, uuidv7, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
-import { logWarn } from '../../../../core/log.js';
+import { logInfo, logWarn } from '../../../../core/log.js';
 import type { PaymentMethod, Payments } from '../../../../infra/payments/index.js';
 import { audit } from '../../transitions/store.js';
 
@@ -19,11 +19,18 @@ export function createCardHandlers(options: { scope: typeof forGym; clock: Clock
     return rows.map(row => row.after as { paymentMethodId?: unknown; mandateId?: unknown } | null)
       .find(after => after?.paymentMethodId === methodId);
   }
-  async function save(gymId: string, method: PaymentMethod, collect = false, mandateId?: string) {
+  async function save(gymId: string, method: PaymentMethod, collect = false, mandateId?: string, eventId?: string) {
     if (!Number.isFinite(method.createdAt.getTime())) throw new Error('Payment method creation time is unresolved');
     await scope(gymId, async tx => {
       const household = (await tx.select().from(households).where(eq(households.stripeCustomerId, method.customerId)).for('update'))[0];
-      if (!household) throw new Error('Saved card household is unresolved');
+      if (!household) {
+        // A collection must find its household, so it fails for retry. An update for a customer no household is
+        // linked to (an erased household's redacted card, or a dashboard card never imported) has nothing to change.
+        if (collect) throw new Error('Saved card household is unresolved');
+        logInfo('billing.payment_method.household_unresolved', { gymId, paymentMethodId: method.id,
+          customerId: method.customerId, ...(eventId ? { eventId } : {}) });
+        return;
+      }
       const existing = (await tx.select().from(paymentMethods).where(eq(paymentMethods.processorId, method.id)).for('update'))[0];
       if (existing && existing.householdId !== household.id) throw new Error('Saved card household mismatch');
       if (existing?.revokedAt) return;
@@ -94,5 +101,6 @@ export function createCardHandlers(options: { scope: typeof forGym; clock: Clock
     if (!setup.paymentMethodId) throw new Error('Successful SetupIntent has no payment method');
     await collect(gymId, provider, setup.customerId, setup.paymentMethodId, setup.mandateId);
   }
-  return { collect, setup, update: (gymId: string, method: PaymentMethod) => save(gymId, method) };
+  return { collect, setup,
+    update: (gymId: string, method: PaymentMethod, eventId?: string) => save(gymId, method, false, undefined, eventId) };
 }

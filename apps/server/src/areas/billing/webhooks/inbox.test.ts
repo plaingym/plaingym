@@ -8,6 +8,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { TestClock } from '../../../core/clock.js';
+import { setLogSink } from '../../../core/log.js';
 import type { Principal, RequestEnvironment } from '../../../core/context.js';
 import { errorHandler } from '../../../core/errors.js';
 import { createServerRegistry } from '../../../core/registry.js';
@@ -119,6 +120,84 @@ it('retries failed handlers with safe diagnostics, and replays completed events 
   expect(await command.run(['--gym', gymA, 'evt_test'], { stdout, stderr })).toBe(0);
   expect(stdout).toHaveBeenCalledWith(expect.stringContaining('queued')); expect(stderr).not.toHaveBeenCalled();
   await jobs.runNext(); expect(calls).toBe(3);
+});
+/** Delivers one event per failure, runs each dispatch once, and returns the whole log output and its failure lines. */
+async function failAndLog(failures: Record<string, Error>) {
+  inbox.register('payment_intent.succeeded', async (value) => { throw failures[value.id]!; });
+  for (const id of Object.keys(failures)) await deliver(event(id));
+  const lines: string[] = [], previous = setLogSink((line) => lines.push(line));
+  try { for (let n = 0; n < Object.keys(failures).length; n++) await jobs.runNext(); } finally { setLogSink(previous); }
+  const logged = lines.map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((line) => line.event === 'billing.webhooks.handler_failed');
+  expect(logged).toHaveLength(Object.keys(failures).length);
+  // Each failure keeps only the safe marker and goes back to the queue for a retry.
+  expect((await rows()).map((row) => row.error)).toEqual(Object.keys(failures).map(() => 'handler_failed'));
+  expect(jobs.jobs.map((job) => [job.status, job.attempt])).toEqual(Object.keys(failures).map(() => ['queued', 1]));
+  for (const line of logged) expect(line).not.toHaveProperty('error');
+  return { output: lines.join('\n'), byEvent: new Map(logged.map((line) => [line.eventId, line])) };
+}
+it('logs a failed handler with its event and only a fixed reason', async () => {
+  class ProviderError extends Error {}
+  const failures: Record<string, Error> = {
+    evt_fixed: new Error('Saved card household is unresolved'),
+    evt_provider_text: new Error('No such customer: cus_123'),
+    evt_provider_error: new ProviderError('Card declined'),
+    // Letters and spaces only, but not a handler's own text: it could be a person's name.
+    evt_plain_text: new Error('secret and payer details'),
+    evt_fixed_subclass: new ProviderError('Webhook gym mismatch'),
+  };
+  const { output, byEvent } = await failAndLog(failures);
+  expect(byEvent.get('evt_fixed')).toMatchObject({ level: 'error', gymId: gymA, type: 'payment_intent.succeeded',
+    reason: 'Saved card household is unresolved', errorName: 'Error' });
+  for (const id of ['evt_provider_text', 'evt_provider_error', 'evt_plain_text', 'evt_fixed_subclass']) {
+    expect(byEvent.get(id)).toMatchObject({ level: 'error', gymId: gymA, eventId: id, type: 'payment_intent.succeeded' });
+    expect(byEvent.get(id)).not.toHaveProperty('reason');
+  }
+  expect(byEvent.get('evt_provider_text')).toMatchObject({ errorName: 'Error' });
+  expect(byEvent.get('evt_plain_text')).toMatchObject({ errorName: 'Error' });
+  expect(output).not.toMatch(/cus_123|Card declined|secret and payer details|Webhook gym mismatch/);
+});
+it('builds failure diagnostics without reading message text, top level or nested', async () => {
+  const failures: Record<string, Error> = {
+    evt_fixed: new Error('Saved card household is unresolved'),
+    evt_multiline: new Error('line one\n    at fake (cus_123:1:1)'),
+    evt_query: new Error('Failed query: select * from payer where email = alice@example.com'),
+    evt_cause: new Error('Webhook gym mismatch', { cause: new Error('secret and payer details\n    at x (pm_999:1:1)') }),
+    // A handler's own fixed text, but not letters and spaces only.
+    evt_punctuated: new Error('Invoice has another dispute; staff resolution required'),
+  };
+  const { output, byEvent } = await failAndLog(failures);
+  const fixed = byEvent.get('evt_fixed')!;
+  expect(fixed).toMatchObject({ reason: 'Saved card household is unresolved', errorName: 'Error' });
+  expect(String(fixed.errorFrames).split('\n').filter((line) => line.startsWith('at ')).length).toBeGreaterThan(0);
+  expect(byEvent.get('evt_multiline')).not.toHaveProperty('reason');
+  expect(byEvent.get('evt_multiline')).toMatchObject({ errorName: 'Error' });
+  expect(output).not.toContain('cus_123');
+  for (const line of byEvent.values()) expect(line).not.toHaveProperty('query');
+  expect(output).not.toContain('alice@example.com');
+  expect(byEvent.get('evt_cause')).toMatchObject({ errorName: 'Error', causeName: 'Error' });
+  expect(output).not.toMatch(/secret and payer details|pm_999/);
+  expect(byEvent.get('evt_punctuated')).not.toHaveProperty('reason');
+  expect(output).not.toMatch(/another dispute|staff resolution/);
+});
+it('logs the original handler failure even when the inbox cannot save its marker', async () => {
+  await deliver();
+  const writeError = new Error('marker write unavailable');
+  let rejectWrites = false;
+  const service = createWebhookInbox({ paymentsFor: async () => fake, jobs, gymSettings, clock,
+    scope: (gymId, run) => {
+      if (rejectWrites) throw writeError;
+      return database.forGym(gymId, run);
+    } });
+  service.register('payment_intent.succeeded', async () => {
+    rejectWrites = true;
+    throw new Error('Saved card household is unresolved');
+  });
+  const lines: string[] = [], previous = setLogSink(line => lines.push(line));
+  try { await expect(service.dispatch({ eventId: 'evt_test' }, context())).rejects.toBe(writeError); }
+  finally { setLogSink(previous); }
+  expect(lines.map(line => JSON.parse(line))).toMatchObject([{ event: 'billing.webhooks.handler_failed',
+    gymId: gymA, eventId: 'evt_test', type: 'payment_intent.succeeded', reason: 'Saved card household is unresolved' }]);
 });
 it('can replay an exhausted handler and retries a failed replay too', async () => {
   let fail = true;

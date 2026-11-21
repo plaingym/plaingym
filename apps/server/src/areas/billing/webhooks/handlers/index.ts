@@ -130,7 +130,7 @@ export function registerBillingWebhookHandlers(inbox: Pick<WebhookInbox, 'regist
       const found = await provider.readPaymentObject({ kind: expected, id: event.objectId });
       if (found.status === 'unknown') return;
       if (found.value.kind !== 'payment_method') throw new Error('Webhook object kind mismatch');
-      await cards.update(gymId, found.value.object);
+      await cards.update(gymId, found.value.object, event.id);
       return;
     }
     const current = await readCurrent(provider, { kind: expected, id: event.objectId });

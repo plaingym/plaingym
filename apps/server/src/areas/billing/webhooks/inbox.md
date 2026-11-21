@@ -80,7 +80,22 @@ normal write path.
 
 A failed handler records only `handler_failed`, preserves any existing
 `processed_at` (a failed replay cannot erase a prior successful dispatch), and
-rethrows to the queue. Dispatch jobs allow ten attempts with the queue's backoff.
+rethrows to the queue. Even if the marker write fails, dispatch logs the
+original failure as `billing.webhooks.handler_failed`
+with fields `handlerFailureFields` builds itself, none taken from message text:
+`gymId`, `eventId` and `type`; `errorName` (the error's name when it is an
+identifier, otherwise its JavaScript type) and `errorCode` (a short code of
+letters, digits and underscores); `errorFrames`, the first 15 stack frames, read
+only after the stack's exact `name: message` header, so a multiline message
+never passes for a frame; and `causeName` and `causeCode` for the error's direct
+cause, without frames. The exception itself isn't passed to the shared logger,
+so no query text or schema identifier is logged. A `reason` carries the message
+only when both rules hold: the error is a plain `Error` whose message is one of
+the billing handlers' own fixed texts, listed in `handlerFailureReasons` (a test
+keeps that list in step with the handlers), and the message is letters and
+spaces only, at most 100 characters. Any other message, a provider's, one
+holding an ID or a name, or a fixed text with punctuation, is never logged.
+Dispatch jobs allow ten attempts with the queue's backoff.
 `createWebhookHealthQuery` exposes only per-gym timestamps and pending/failed
 counts; it never returns payloads or provider errors.
 

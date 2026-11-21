@@ -4,6 +4,7 @@ import { forGym, forSystem, stripeEvents, uuidv7, writeAudit } from '@plaingym/d
 import { AppError, type Clock } from '@plaingym/shared';
 import { z } from 'zod';
 import { clock as systemClock } from '../../../core/clock.js';
+import { logError, type LogFields } from '../../../core/log.js';
 import { recentWebhookFailureMs, type WebhookHealthQuery } from '../../../core/interfaces/webhook-health.js';
 import type { JobContext, Jobs, JobRecovery } from '../../../infra/jobs/index.js';
 import type { PaymentEvent, Payments } from '../../../infra/payments/index.js';
@@ -28,6 +29,60 @@ const eventSchema = z.strictObject({
 const storedEventSchema = z.object(eventSchema.shape);
 /** Audited when a Stripe test-mode event is finished, unread, for a gym whose key is now live. */
 export const testEventSkippedAction = 'billing.webhook.test_event_skipped';
+/**
+ * The billing handlers' own fixed failure texts. A failed handler's message is logged only when it is one of
+ * these, thrown as a plain `Error`; any other text (a provider's, or one holding an ID or a name) is left out.
+ */
+export const handlerFailureReasons: ReadonlySet<string> = new Set([
+  'Payments are not configured for this gym', 'Billing retry runner is not configured',
+  'Webhook payment object is unresolved', 'Payment success time is unresolved', 'Checkout link gym mismatch',
+  'Checkout link session is unresolved', 'Checkout link session mismatch', 'Checkout link association is unresolved',
+  'Webhook PaymentIntent is unresolved', 'Webhook payment gym mismatch', 'Webhook invoice is unmatched or ambiguous',
+  'Webhook invoice is unresolved', 'Webhook payment customer mismatch', 'Webhook attempt is unresolved',
+  'Webhook payment amount mismatch', 'Webhook bank account mismatch', 'Refund payment is unresolved',
+  'Dispute payment is unresolved', 'Refund payment mismatch', 'Webhook gym mismatch', 'Webhook object kind mismatch',
+  'Expected PaymentIntent', 'Refunded charge has no resolved refunds', 'Refund parent mismatch',
+  'Invoice has another dispute; staff resolution required', 'Checkout gym mismatch', 'Checkout invoice mismatch',
+  'Checkout payment amount mismatch', 'Completed Checkout payment is unresolved',
+  'Collected payment method is unresolved', 'Completed Checkout setup is unresolved',
+  'Payment method creation time is unresolved', 'Saved card household is unresolved', 'Saved card household mismatch',
+  'SetupIntent is unresolved', 'SetupIntent gym mismatch', 'Successful SetupIntent has no payment method',
+]);
+const fixedReasonText = /^[A-Za-z][A-Za-z ]{0,99}$/;
+function failureReason(error: unknown) {
+  return error instanceof Error && error.constructor === Error && handlerFailureReasons.has(error.message)
+    && fixedReasonText.test(error.message) ? error.message : undefined;
+}
+const errorIdentifier = /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/;
+const errorCode = /^[A-Za-z0-9_]{1,32}$/;
+function errorNameAndCode(error: unknown) {
+  const name = error instanceof Error && errorIdentifier.test(error.name) ? error.name : typeof error;
+  const code = error instanceof Error ? (error as unknown as Record<string, unknown>).code : undefined;
+  return { name, ...(typeof code === 'string' && errorCode.test(code) ? { code } : {}) };
+}
+/**
+ * A failed handler's diagnostics, built here rather than by the shared logger: the error's name and code, its
+ * stack frames, and its cause's name and code. No field is read from message text. Frames are taken only after
+ * the stack's exact `name: message` header, so a multiline message never passes for a frame.
+ */
+export function handlerFailureFields(error: unknown): LogFields {
+  const { name, code } = errorNameAndCode(error);
+  const fields: Record<string, string> = { errorName: name, ...(code ? { errorCode: code } : {}) };
+  if (error instanceof Error && typeof error.stack === 'string') {
+    const header = error.message === '' ? `${error.name}\n` : `${error.name}: ${error.message}\n`;
+    if (error.stack.startsWith(header)) {
+      const frames = error.stack.slice(header.length).split(/\r?\n/).filter((line) => line.startsWith('    at '))
+        .slice(0, 15).map((line) => line.trim());
+      if (frames.length > 0) fields.errorFrames = frames.join('\n');
+    }
+  }
+  if (error instanceof Error && error.cause !== undefined) {
+    const cause = errorNameAndCode(error.cause);
+    fields.causeName = cause.name;
+    if (cause.code) fields.causeCode = cause.code;
+  }
+  return fields;
+}
 // Read from a stored job: unknown keys are ignored for the same reason.
 const dispatchSchema = z.object({ eventId: z.string().min(1), replay: z.boolean().optional() });
 
@@ -120,9 +175,15 @@ export function createWebhookInbox(options: {
             targetType: 'stripe_event', targetId: row.id, before: null, after: { eventId: event.id, type: event.type }, occurredAt: clock.now() });
         });
       } catch (error) {
-        // Provider error messages may contain secrets or personal data. Keep a safe marker only.
-        await scope(context.gymId, (tx) => tx.update(stripeEvents).set({ error: 'handler_failed' })
-          .where(match(context.gymId, input.eventId)));
+        try {
+          await scope(context.gymId, (tx) => tx.update(stripeEvents).set({ error: 'handler_failed' })
+            .where(match(context.gymId, input.eventId)));
+        } finally {
+          // Keep the original diagnostic even when the database cannot record the failure marker.
+          const reason = failureReason(error);
+          logError('billing.webhooks.handler_failed', { gymId: context.gymId, eventId: input.eventId, type: row.type,
+            ...(reason ? { reason } : {}), ...handlerFailureFields(error) });
+        }
         throw error; // The job queue owns retry/backoff and the attempt limit.
       }
     },
