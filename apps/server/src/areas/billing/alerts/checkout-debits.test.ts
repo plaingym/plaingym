@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import { households, uuidv7 } from '@plaingym/db';
 import { createCheckoutDebitReviewProvider } from './checkout-debits.js';
 import { checkoutReviewAction, lateProcessingResolved } from '../runner/reconciliation.js';
+import { stripeTestClearedAction } from '../stripe-writes.js';
 import { useRunnerFixture, type Fixture } from '../runner/runner.fixture.test-helper.js';
 
 const { db, factory, fixture, invoice } = useRunnerFixture();
@@ -75,6 +76,21 @@ describe('Checkout debit dashboard widget', () => {
     await setCustomer(f, 'cus_test');
     expect(await f.runner.reconcile(f.gymId)).toEqual({ inspected: 1, issues: [] });
     expect((await f.read()).payments).toEqual(expect.arrayContaining([expect.objectContaining({ paymentIntentId })]));
+    expect(await read(f)).toBeNull();
+  });
+
+  it('drops a late finding from Stripe test mode once a switch to live clears it', async () => {
+    const f = await fixture({ currency: 'USD' });
+    const { paymentIntentId } = await startCheckout(f, true);
+    await setCustomer(f, 'cus_other');
+    f.provider.settleCharge(paymentIntentId, 'succeeded');
+    expect(await f.runner.reconcile(f.gymId)).toEqual({
+      inspected: 1, issues: [{ kind: 'checkout_debit', id: paymentIntentId, reason: 'customer_mismatch' }],
+    });
+    expect(await read(f)).toHaveProperty('count', 1);
+
+    await factory('auditEvents', f.gymId, { action: stripeTestClearedAction, targetType: 'gym', targetId: f.gymId, after: {} });
+    expect(await f.runner.reconcile(f.gymId)).toEqual({ inspected: 0, issues: [] });
     expect(await read(f)).toBeNull();
   });
 
