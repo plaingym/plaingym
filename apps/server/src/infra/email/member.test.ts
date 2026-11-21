@@ -8,6 +8,7 @@ import { createFactories } from '../../../../../packages/db/src/testing/factorie
 import { FakeGymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import { setLogSink } from '../../core/log.js';
 import { FakeEmail, MemberEmail, SmtpEmail } from './index.js';
+import { logEmailSuppression } from './member.js';
 import { captureSmtp } from './test-smtp.js';
 
 const database = useTestDatabase();
@@ -39,6 +40,19 @@ beforeAll(async () => {
   setEnabled(gymB, true);
 });
 afterAll(async () => { smtp?.close(); await capture?.close(); });
+
+it('routes the same suppression fields to an injected sink or the structured logger', () => {
+  const event = { event: 'email.suppressed', gymId: gymA, memberId: memberA, reason: 'opt_out' } as const;
+  const injected = vi.fn(), lines: string[] = [], previous = setLogSink(line => lines.push(line));
+  try {
+    logEmailSuppression(event, injected);
+    expect(lines).toHaveLength(0);
+    logEmailSuppression(event);
+  } finally { setLogSink(previous); }
+
+  expect(injected.mock.calls).toEqual([[event]]);
+  expect(lines.map(line => JSON.parse(line))).toEqual([{ time: expect.any(String), level: 'info', ...event }]);
+});
 
 describe('member-targeted suppression', () => {
   it('rejects malformed listUnsubscribe before reading settings or an opted-out member', async () => {

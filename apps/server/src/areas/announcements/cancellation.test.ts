@@ -2,7 +2,7 @@
 import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { announcementOptOuts, auditEvents, classBookings, classSessions, emailDeliveries, emailOutbox, members, uuidv7, writeAudit } from '@plaingym/db';
+import { announcementOptOuts, auditEvents, classBookings, classSessions, emailDeliveries, emailOutbox, households, members, uuidv7, writeAudit } from '@plaingym/db';
 // eslint-disable-next-line no-restricted-imports -- Exercise the default schedule routes in the real production registrations.
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
@@ -12,6 +12,7 @@ import { isInTransaction } from '@plaingym/shared/transaction';
 import { createApp } from '../../app.js';
 import { clock as systemClock, TestClock } from '../../core/clock.js';
 import { errorHandler } from '../../core/errors.js';
+import { setLogSink } from '../../core/log.js';
 import { areaContributions } from '../../core/registry-areas.js';
 import { createServerRegistry } from '../../core/registry.js';
 import type { RequestEnvironment } from '../../core/context.js';
@@ -259,6 +260,55 @@ it('rechecks address groups and the go-live switch after mailer preparation', as
   g.options.mailer.mockImplementation(async () => { await g.emailSwitch(false); return g.email; });
   await g.run(); expect(g.email.messages).toHaveLength(0);
 });
+
+it.each(['billing', 'direct'] as const)('drops a member whose %s address moves between the roster read and reservation', async kind => {
+  const f = await fixture();
+  const oldAddress = 'old@example.test', newAddress = 'new@example.test';
+  const home = await factory('households', f.gymId, { email: oldAddress });
+  const moving = await f.booked({ householdId: home.id, firstName: 'Moving', email: kind === 'billing' ? null : oldAddress });
+  await f.booked({ firstName: 'Staying', email: oldAddress });
+  await f.booked({ firstName: 'Current', email: newAddress });
+  await f.cancel();
+
+  let changed = false;
+  const scope: typeof db.forGym = async (gymId, fn) => {
+    const result = await db.forGym(gymId, fn);
+    if (!changed && Array.isArray(result) && result.some(row => row.id === moving.id && row.address === oldAddress)) {
+      changed = true;
+      await db.forGym(gymId, async tx => {
+        if (kind === 'billing') await tx.update(households).set({ email: newAddress }).where(eq(households.id, home.id));
+        else await tx.update(members).set({ email: newAddress }).where(eq(members.id, moving.id));
+      });
+    }
+    return result;
+  };
+  await createCancellationNotice({ ...f.options, scope }).run(f.payload(), f.gymId);
+  expect(changed).toBe(true);
+  expect(f.email.messages).toHaveLength(2);
+  expect(f.email.messages.find(message => message.to === oldAddress)?.text).toContain('Staying');
+  expect(f.email.messages.find(message => message.to === newAddress)?.text).toContain('Current');
+  for (const message of f.email.messages) expect(message.text).not.toContain('Moving');
+});
+
+it('logs only identifiers and the reason when the email switch is disabled after reservation', async () => {
+  const f = await fixture(), member = await f.booked();
+  await f.booked({ email: member.email });
+  await f.cancel();
+  const scope: typeof db.forGym = async (gymId, fn) => {
+    const result = await db.forGym(gymId, fn);
+    if (result && typeof result === 'object' && 'reserved' in result) await f.emailSwitch(false);
+    return result;
+  };
+  const lines: string[] = [], previous = setLogSink(line => lines.push(line));
+  try { await createCancellationNotice({ ...f.options, scope }).run(f.payload(), f.gymId); }
+  finally { setLogSink(previous); }
+
+  expect(f.email.messages).toHaveLength(0);
+  expect(lines.map(line => JSON.parse(line))).toEqual([{
+    time: expect.any(String), level: 'info', event: 'email.suppressed', gymId: f.gymId, memberId: member.id, reason: 'disabled',
+  }]);
+});
+
 it('never adds a job on a retried cancellation or duplicates a message on replay or concurrent jobs', async () => {
   const f = await fixture(); await f.booked(); const cancelled = await f.cancel();
   await expect(f.cancel()).rejects.toMatchObject({ code: 'conflict' });

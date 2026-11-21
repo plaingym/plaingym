@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it } from 'vitest';
-import { auditEvents, emailDeliveries, memberRanks, members, uuidv7 } from '@plaingym/db';
+import { auditEvents, emailDeliveries, households, memberRanks, members, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { announcementDraftSchema } from '@plaingym/shared/contracts';
@@ -9,6 +9,7 @@ import { TestClock } from '../../core/clock.js';
 import { FakeEmail } from '../../infra/email/index.js';
 import { commandDigest } from '../../infra/email/deliveries.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
+import { createSmsPhoneDigest, FakeSms } from '../../infra/sms/index.js';
 import { createAnnouncementsService } from './send.js';
 import { createCancellationNotice } from './cancellation.js';
 
@@ -122,3 +123,68 @@ it.each([25, 250])('bounds cancellation address reads with %i recipients and unr
   console.info(`Cancellation scale: ${size} recipients, ${reads.length} SELECTs, ${reads.reduce((total, read) => total + read.rows, 0)} returned rows`);
 }, 90_000);
 
+it('bounds cancellation email reads for 50 billing addresses with five members each', async () => {
+  const gymId = uuidv7(), clock = new TestClock('2026-11-10T12:00:00Z');
+  await factory('gyms', gymId, { memberEmailsEnabled: true });
+  const unrelated = await factory('households', gymId);
+  const session = await factory('classSessions', gymId, { status: 'cancelled' });
+  const homes = Array.from({ length: 50 }, (_, i) => ({
+    id: uuidv7(), name: `Home ${i}`, email: `home${i}@example.test`,
+    people: Array.from({ length: 5 }, (_, n) => ({ firstName: `H${i}`, lastName: `M${n}` })),
+  }));
+  const people = await db.forGym(gymId, async tx => {
+    await tx.insert(households).values(homes.map(({ id, name, email }) => ({ id, gymId, name, email })));
+    await tx.insert(members).values(Array.from({ length: 1_000 }, (_, i) => ({
+      gymId, householdId: unrelated.id, firstName: 'Unrelated', lastName: String(i), email: `unrelated${i}@example.test`,
+    })));
+    return tx.insert(members).values(homes.flatMap(home => home.people.map(person => ({
+      ...person, gymId, householdId: home.id,
+    })))).returning({ id: members.id });
+  });
+  const reads: Read[] = [], email = new FakeEmail();
+  const service = createCancellationNotice({ scope: recording(reads), clock, jobs: new FakeJobs(clock), demoMode: false,
+    mailer: async () => email, origin: async () => 'https://gym.example.test' });
+  await service.run({ sessionId: session.id, memberIds: people.map(person => person.id), note: '' }, gymId);
+
+  expect(email.messages).toHaveLength(homes.length);
+  const byAddress = new Map(email.messages.map(message => [message.to, message.text]));
+  for (const home of homes) {
+    const names = byAddress.get(home.email)?.match(/^Booked or waitlisted members: (.+)$/m)?.[1]?.split(', ').sort();
+    expect(names).toEqual(home.people.map(person => `${person.firstName} ${person.lastName}`));
+  }
+  expect(reads.some(read => read.sql.includes('btrim('))).toBe(false);
+  const total = reads.reduce((rows, read) => rows + read.rows, 0);
+  expect(total).toBeLessThanOrEqual(250 * 10 + 20);
+  console.info(`Cancellation billing email scale: ${reads.length} SELECTs, ${total} returned rows`);
+}, 90_000);
+
+it('bounds cancellation text rechecks to the members at each of 250 phones', async () => {
+  const gymId = uuidv7(), clock = new TestClock('2026-11-10T12:00:00Z'), size = 250;
+  await factory('gyms', gymId, { name: 'Cedar Gym', memberEmailsEnabled: false, memberSmsEnabled: true,
+    settings: { address: { country: 'US' } } });
+  const home = await factory('households', gymId);
+  const session = await factory('classSessions', gymId, { status: 'cancelled' });
+  const phones = Array.from({ length: size }, (_, i) => `+1202555${1000 + i}`);
+  const people = await db.forGym(gymId, tx => tx.insert(members).values(phones.map((phone, i) => ({
+    gymId, householdId: home.id, firstName: 'Bulk', lastName: String(i), phone, phoneE164: phone,
+    smsNoticesConsentAt: clock.now(), smsNoticesConsentSource: 'staff',
+  }))).returning({ id: members.id }));
+  const reads: Read[] = [], sms = new FakeSms();
+  const resolver = {
+    resolve: async (id: string) => { expect(isInTransaction()).toBe(false); return { gymId: id, name: 'Cedar Gym', sms }; },
+    status: async () => ({ source: 'gym' as const, unreadable: false }), configured: async () => true,
+  };
+  const service = createCancellationNotice({ scope: recording(reads), clock, jobs: new FakeJobs(clock), demoMode: false,
+    mailer: async () => null, origin: async () => 'https://gym.example.test',
+    sms: { resolver, phoneDigest: createSmsPhoneDigest('class-notice-test') } });
+  await service.run({ sessionId: session.id, memberIds: people.map(person => person.id), note: '' }, gymId);
+
+  expect(sms.messages.map(message => message.to).sort()).toEqual(phones);
+  const rosterReads = reads.filter(read => read.rows > 10);
+  expect(rosterReads.length).toBeGreaterThan(0);
+  expect(rosterReads.length).toBeLessThanOrEqual(3);
+  expect(reads.slice(5).every(read => read.rows <= 10)).toBe(true);
+  const total = reads.reduce((rows, read) => rows + read.rows, 0);
+  expect(total).toBeLessThan(size * 15);
+  console.info(`Cancellation text scale: ${reads.length} SELECTs, ${total} returned rows`);
+}, 90_000);

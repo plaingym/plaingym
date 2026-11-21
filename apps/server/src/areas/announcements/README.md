@@ -172,15 +172,19 @@ Requesting notification for an already cancelled session returns a conflict
 without changing its revision, auditing another cancellation or queuing mail.
 
 Delivery uses a member's own email or, when absent, their household's billing
-email under `householdRecipients` suppression rules. It reloads current addresses, groups them after trimming and
-lower-casing, and sends one email per address naming all of its booked and
-waitlisted members. It never adds members outside the snapshot. Each message
+email under `householdRecipients` suppression rules. The email pass groups the
+snapshot by normalized address once per job. Each reservation and the final
+send guard recheck only that address's original candidates for inclusion in the
+message. Each email names the booked and waitlisted candidates still at that
+address. A member who moves between address groups is omitted. Each message
 identifies the gym and class, the date and time in the gym's timezone, the escaped
 plain text note, and the portal schedule link. The group is checked again at the
 send boundary, including the member-email switch and household billing preferences.
-Address suppression uses the same indexed address-group reader as announcements. Content
-renders once inside the final guard; a reload or render failure before transport
-is definitely not accepted, and the remaining addresses are still processed.
+Address suppression uses the same indexed address-group reader as announcements.
+The send guard logs `email.suppressed` with the gym ID, the group's first member
+ID at reservation, and the reason. The guard renders the content once. A reload
+or render failure before transport records a definite non-send, and the job
+continues with the remaining addresses.
 
 A short session-row lock serializes `email_deliveries` reservations. Keys contain
 the session ID and the address group's first member ID; a digest of session ID
@@ -199,9 +203,12 @@ decisions with one member-filtered SQL lookup for the matching reservations.
 After the email pass, the job independently attempts notices texts through
 `createCancellationSms`. Email failure, missing SMTP or an email switch being off
 does not skip the text pass. `memberNoticePhones` selects each member's consented
-phone, falling back to the consented household billing phone. One text per phone
-names every covered member from the snapshot, prefixed with the gym name and
-including the class's date and time in the gym's timezone. Announcement consent
+phone, falling back to the consented household billing phone. The text pass groups
+the snapshot once per job and rechecks only that phone's original candidates at
+reservation and the remaining candidates at send. One text per phone names
+the candidates still covered, prefixed with the gym name and
+including the class's date and time in the timezone read at the start of the text
+pass. Announcement consent
 alone never authorizes these texts. `MemberSms` rechecks notices consent, current
 phones and household membership, the independent member-SMS switch and daily cap.
 

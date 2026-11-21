@@ -13,6 +13,10 @@ export interface EmailSuppression {
   readonly memberId: string;
   readonly reason: SuppressionReason;
 }
+export function logEmailSuppression(event: EmailSuppression, sink?: (event: EmailSuppression) => void): void {
+  (sink ?? (({ event: name, ...fields }) => logInfo(name, fields)))(event);
+}
+
 export interface MemberEmailOptions {
   readonly gymId: string;
   readonly memberId: string;
@@ -61,10 +65,7 @@ export class MemberEmail implements Email {
       throw new DeliveryError('not_accepted', 'Email recipient does not match member');
     const reason = !gym.memberEmailsEnabled ? 'disabled'
       : member.optOut ? 'opt_out' : !member.deliverable ? 'undeliverable' : undefined;
-    if (reason) {
-      const event: EmailSuppression = { event: 'email.suppressed', gymId, memberId, reason };
-      (this.#options.logSuppression ?? (({ event: name, ...fields }) => logInfo(name, fields)))(event);
-    }
+    if (reason) logEmailSuppression({ event: 'email.suppressed', gymId, memberId, reason }, this.#options.logSuppression);
     return reason;
   }
 }

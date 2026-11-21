@@ -84,6 +84,33 @@ it('prefers a member consented phone and own email, and names only the other chi
   expect(f.email.messages.find(message => message.to === 'parent@example.test')!.text).not.toContain('Mia');
 });
 
+it.each(['roster read', 'reservation'] as const)('leaves a member out after they withdraw notices consent after the %s', async phase => {
+  const f = await fixture(), child = f.children[1]!;
+  const home = await factory('households', f.gymId);
+  await db.forGym(f.gymId, tx => tx.update(members).set({ householdId: home.id, phone, phoneE164: phone,
+    smsNoticesConsentAt: f.clock.now(), smsNoticesConsentSource: 'staff' }).where(eq(members.id, child.id)));
+
+  let withdrawn = false;
+  const scope: typeof db.forGym = async (gymId, fn) => {
+    const result = await db.forGym(gymId, fn);
+    const afterRosterRead = Array.isArray(result) && result.some(row => row.phoneE164 === phone && row.memberIds?.includes(child.id));
+    const afterReservation = result && typeof result === 'object' && 'memberIds' in result && 'reserved' in result;
+    if (!withdrawn && (phase === 'roster read' ? afterRosterRead : afterReservation)) {
+      withdrawn = true;
+      await db.forGym(gymId, tx => tx.update(members).set({ smsNoticesConsentAt: null, smsNoticesConsentSource: null })
+        .where(eq(members.id, child.id)));
+    }
+    return result;
+  };
+  await createCancellationNotice({ ...f.options, scope }).run(f.payload, f.gymId);
+  expect(withdrawn).toBe(true);
+  expect(f.sms.messages).toHaveLength(1);
+  expect(f.sms.messages[0]!.to).toBe(phone);
+  expect(f.sms.messages[0]!.body).toContain('Mia');
+  expect(f.sms.messages[0]!.body).toContain('Ari');
+  expect(f.sms.messages[0]!.body).not.toContain('Noa');
+});
+
 it('keeps the SMS and email switches independent and rechecks SMS after provider resolution', async () => {
   const f = await fixture();
   await db.forGym(f.gymId, tx => tx.update(gyms).set({ memberSmsEnabled: false }).where(eq(gyms.id, f.gymId)));

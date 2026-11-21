@@ -7,10 +7,11 @@ import { z } from 'zod';
 import { clock as systemClock } from '../../core/clock.js';
 import { createEmailDeliveries, DeliveryError, deliveryAcceptance, type Email } from '../../infra/email/index.js';
 import { commandDigest, emailInFlightMs } from '../../infra/email/deliveries.js';
+import { logEmailSuppression } from '../../infra/email/member.js';
 import type { Jobs, JobTransaction } from '../../infra/jobs/index.js';
 import { createGymSettingsAccessor, createSettingsService } from '../settings/settings.js';
 import { renderCancellationNotice } from '../../emails/announcements/cancellation.js';
-import { readAddressGroup, readCancellationFallbacks } from './audience.js';
+import { readAddressGroup } from './audience.js';
 import { cancellationDecisionMemberId } from './cancellation.sql.js';
 import { readMemberNoticeEmails } from '../bookings/bookings.recipients.js';
 import { createCancellationSms } from './cancellation.sms.js';
@@ -42,23 +43,20 @@ export function createCancellationNotice(options: CancellationNoticeOptions) {
   const demo = options.demoMode ?? process.env.DEMO_MODE === 'true';
   const sms = createCancellationSms({ scope, clock, settings, ...(options.sms ? { sms: options.sms } : {}) });
 
-  async function group(tx: Transaction, gymId: string, notice: Notice, address: string) {
+  async function group(tx: Transaction, gymId: string, address: string, ids: readonly string[]) {
     // Inspect the whole address, including members outside this session. A global email preference or an
     // undeliverable address blocks it; announcement-only preferences never affect booking notices.
     const rows = await readAddressGroup(tx, address);
     if (rows.some(row => row.emailOptOut || !row.emailDeliverable)) return [];
-    const snapshot = new Set(notice.memberIds);
-    const direct = rows.filter(row => snapshot.has(row.id)).map(row => row.id);
-    const fallback = await readCancellationFallbacks(tx, notice.memberIds, address);
-    return (await readMemberNoticeEmails(tx, gymId, [...new Set([...direct, ...fallback.map(row => row.id)])]))
-      .filter(row => row.address === address);
+    // Membership is bounded by the job-start candidates, including for direct addresses.
+    return (await readMemberNoticeEmails(tx, gymId, [...new Set(ids)])).filter(row => row.address === address);
   }
-  async function reserve(gymId: string, notice: Notice, address: string) {
+  async function reserve(gymId: string, notice: Notice, address: string, ids: readonly string[]) {
     return scope(gymId, async tx => {
       // Only reservations are serialized: SMTP always runs after this transaction commits.
       const [session] = await tx.select().from(classSessions).where(eq(classSessions.id, notice.sessionId)).for('update');
       if (!session || session.status !== 'cancelled') return;
-      const current = await group(tx, gymId, notice, address);
+      const current = await group(tx, gymId, address, ids);
       if (!current.length) return;
       const key = noticeKey(notice.sessionId, current[0]!.id), digest = commandDigest([notice.sessionId, address]);
       // Both stable member keys and destination digests survive retries and address changes/convergence.
@@ -101,14 +99,17 @@ export function createCancellationNotice(options: CancellationNoticeOptions) {
   async function sendEmail(notice: Notice, gymId: string) {
     const gym = await settings.get(gymId);
     if (!gym.memberEmailsEnabled) return;
-    const addresses = new Set<string>();
+    const candidates = new Map<string, string[]>();
     // Bound query parameter counts even for a large roster. Only the cancellation's snapshot may receive mail.
     for (let offset = 0; offset < notice.memberIds.length; offset += 100) {
-      // The stored address is the same normalization `group` looks up.
       const rows = await scope(gymId, tx => readMemberNoticeEmails(tx, gymId, notice.memberIds.slice(offset, offset + 100)));
-      for (const row of rows) if (row.address) addresses.add(row.address);
+      for (const { address, id } of rows) {
+        const ids = candidates.get(address);
+        if (ids) ids.push(id);
+        else candidates.set(address, [id]);
+      }
     }
-    if (!addresses.size) return;
+    if (!candidates.size) return;
     const origin = new URL(await options.origin(gymId));
     if (origin.protocol !== 'https:' || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash)
       throw new AppError('unavailable', 'Cancellation notices require a canonical HTTPS origin');
@@ -117,9 +118,9 @@ export function createCancellationNotice(options: CancellationNoticeOptions) {
     if (!email) throw new AppError('unavailable', 'Cancellation mail is not configured');
     const gymName = (await details.get(gymId)).name;
     let deferred = false;
-    for (const address of addresses) {
+    for (const [address, ids] of candidates) {
       let reservation: Awaited<ReturnType<typeof reserve>>;
-      try { reservation = await reserve(gymId, notice, address); }
+      try { reservation = await reserve(gymId, notice, address, ids); }
       catch (error) { if (error instanceof AppError && error.code === 'conflict') { deferred = true; continue; } throw error; }
       if (!reservation) continue;
       const { reserved, session } = reservation;
@@ -129,9 +130,15 @@ export function createCancellationNotice(options: CancellationNoticeOptions) {
         const guarded: Email = { async sendEmail() {
           let current: Awaited<ReturnType<typeof group>>, latest: Awaited<ReturnType<typeof renderCancellationNotice>>;
           try {
-            if (!(await settings.get(gymId)).memberEmailsEnabled) return { status: 'suppressed', reason: 'disabled' };
-            current = await scope(gymId, tx => group(tx, gymId, notice, address));
-            if (!current.length) return { status: 'suppressed', reason: 'opt_out' };
+            if (!(await settings.get(gymId)).memberEmailsEnabled) {
+              logEmailSuppression({ event: 'email.suppressed', gymId, memberId: reservation.current[0]!.id, reason: 'disabled' });
+              return { status: 'suppressed', reason: 'disabled' };
+            }
+            current = await scope(gymId, tx => group(tx, gymId, address, ids));
+            if (!current.length) {
+              logEmailSuppression({ event: 'email.suppressed', gymId, memberId: reservation.current[0]!.id, reason: 'opt_out' });
+              return { status: 'suppressed', reason: 'opt_out' };
+            }
             latest = await renderCancellationNotice({ gymName, name: session.name, startsAt: session.startsAt, timezone: gym.timezone,
               memberNames: current.map(row => `${row.firstName} ${row.lastName}`), note: notice.note, scheduleUrl: new URL('/portal/schedule', origin).href });
           } catch (cause) { throw new DeliveryError('not_accepted', 'Cancellation notice could not be prepared', { cause }); }

@@ -124,13 +124,16 @@ scan recovers the promotion notice or the freed place.
 
 `createBookingMailer` uses `createSmtpResolver` for each gym's encrypted SMTP
 settings (with its existing install fallback). The runtime may inject the demo
-outbox instead. The notice's own send guard (not `MemberEmail`, since the
-recipient may be a household billing address) reloads the gym's member-email
-switch, the booking and the recipient's delivery/opt-out settings immediately
+outbox instead. The notice uses a send guard that supports household billing
+addresses. The guard reloads the gym's member-email switch, the booking and the
+recipient's delivery/opt-out settings immediately
 before sending. No usable address (neither the member's own nor an unsuppressed
-billing address), erasure, cancellation and a class that has started suppress the notice;
-they do not undo a confirmed place. SMTP failure retries delivery without
-repeating promotion. No network operation runs inside a database transaction.
+billing address), erasure, cancellation and a class that has started suppress the
+notice. A confirmed place remains booked. A suppression at the send guard logs
+`email.suppressed` through `logEmailSuppression`. The email pass logs
+`bookings.notice_skipped` for a stale or missing promotion. SMTP failure retries
+delivery without repeating promotion. No network operation runs inside a
+database transaction.
 
 Runtime composition supplies the queue and mailer to `createBookingDelivery`,
 then passes the result to `configureBookingJobs`, `configureBookingRoutes` and

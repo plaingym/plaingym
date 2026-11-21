@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { idSchema } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
 import { createEmailDeliveries, DeliveryError, SmtpEmail, type Email } from '../../infra/email/index.js';
+import { logEmailSuppression, type SuppressionReason } from '../../infra/email/member.js';
 import { defaultSucceededRetentionDays, type Jobs } from '../../infra/jobs/index.js';
 import { logError, logInfo } from '../../core/log.js';
 import { createSmtpResolver } from '../settings/smtp.js';
@@ -110,7 +111,7 @@ export function createBookingDelivery(options: BookingDeliveryOptions) {
       const [sent] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.targetId, bookingId), eq(auditEvents.action, 'booking.notice_sent')));
       if (sent && !includeSent) return;
       if (!promotion) {
-        logInfo('bookings.notice_skipped', { gymId, bookingId, reason: 'stale_or_missing_promotion' });
+        if (!includeSent) logInfo('bookings.notice_skipped', { gymId, bookingId, reason: 'stale_or_missing_promotion' });
         return;
       }
       const [row] = await tx.select({ booking: classBookings, session: classSessions, memberId: members.id })
@@ -131,14 +132,18 @@ export function createBookingDelivery(options: BookingDeliveryOptions) {
     const [recipient] = await scope(gymId, tx => readMemberNoticeEmails(tx, gymId, [row.memberId]));
     if (!recipient) return;
     const details = await createSettingsService({ scope }).get(gymId);
+    const suppress = (reason: SuppressionReason) => {
+      logEmailSuppression({ event: 'email.suppressed', gymId, memberId: row.memberId, reason });
+      return { status: 'suppressed', reason } as const;
+    };
     const sender: Email = { async sendEmail() {
       let message: Awaited<ReturnType<typeof renderBookingPromotion>>;
       try {
-        if (!(await settings.get(gymId)).memberEmailsEnabled) return { status: 'suppressed', reason: 'disabled' };
+        if (!(await settings.get(gymId)).memberEmailsEnabled) return suppress('disabled');
         const latest = await read();
-        if (!latest) return { status: 'suppressed', reason: 'opt_out' };
+        if (!latest) return suppress('opt_out');
         const [current] = await scope(gymId, tx => readMemberNoticeEmails(tx, gymId, [latest.memberId]));
-        if (!current || current.address !== recipient.address) return { status: 'suppressed', reason: 'opt_out' };
+        if (!current || current.address !== recipient.address) return suppress('opt_out');
         message = await renderBookingPromotion({ gymName: details.name, name: latest.session.name,
           startsAt: latest.session.startsAt, timezone: gym.timezone, memberNames: [`${current.firstName} ${current.lastName}`] });
       } catch (cause) { throw new DeliveryError('not_accepted', 'Promotion notice could not be prepared', { cause }); }

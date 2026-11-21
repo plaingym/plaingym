@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
-// eslint-disable-next-line database/system-tables -- Isolated integration fixtures change the email switch and encrypted gym SMTP settings.
+// eslint-disable-next-line database/system-tables -- Isolated integration fixtures change the notice switches and encrypted gym SMTP settings.
 import { auditEvents, classBookings, classSessions, gyms, members, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -10,6 +10,7 @@ import { setLogSink } from '../../core/log.js';
 import { createServerRegistry } from '../../core/registry.js';
 import { DeliveryError, FakeEmail } from '../../infra/email/index.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
+import { createSmsPhoneDigest, FakeSms } from '../../infra/sms/index.js';
 import { encryptSmtpConfig } from '../settings/smtp.js';
 import { captureSmtp } from '../../infra/email/test-smtp.js';
 import { createBookingService } from './bookings.js';
@@ -52,11 +53,18 @@ describe('promotion jobs and notices', () => {
     const withoutSmtp = createBookingDelivery({ ...f.options, jobs: new FakeJobs(f.clock), mailer: async () => null });
     await withoutSmtp.promote(f.gymId, f.session.id);
     await withoutSmtp.send(f.gymId, f.queued.id);
+    await db.forGym(f.gymId, tx => tx.update(gyms).set({ memberSmsEnabled: true }).where(eq(gyms.id, f.gymId)));
     await db.forGym(f.gymId, tx => tx.update(classSessions).set({ startsAt: new Date('2026-12-30T18:00:00Z'), endsAt: new Date('2026-12-30T19:00:00Z') })
       .where(eq(classSessions.id, f.session.id)));
+    const sms = new FakeSms();
+    const resolver = {
+      resolve: async (gymId: string) => ({ gymId, name: 'Cedar Martial Arts', sms }),
+      status: async () => ({ source: 'gym' as const, unreadable: false }), configured: async () => true,
+    };
     const sweepAfter = async (days: number) => {
       f.clock.set(new Date(Date.parse('2026-10-29T16:00:00Z') + days * 86_400_000).toISOString());
-      const fresh = new FakeJobs(f.clock), restarted = createBookingDelivery({ ...f.options, jobs: fresh, mailer: async () => f.email });
+      const fresh = new FakeJobs(f.clock), restarted = createBookingDelivery({ ...f.options, jobs: fresh, mailer: async () => f.email,
+        sms: { resolver, phoneDigest: createSmsPhoneDigest('class-notice-test') } });
       await restarted.sweep(f.gymId);
       return { fresh, restarted };
     };
@@ -66,10 +74,31 @@ describe('promotion jobs and notices', () => {
     // A notice job still queued from before (or retried) no longer sends, though the gym has SMTP now.
     const logs: string[] = [], previous = setLogSink(line => logs.push(line));
     try { await late.restarted.send(f.gymId, f.queued.id); } finally { setLogSink(previous); }
-    expect(logs.map(line => JSON.parse(line))).toContainEqual(expect.objectContaining({
-      event: 'bookings.notice_skipped', gymId: f.gymId, bookingId: f.queued.id, reason: 'stale_or_missing_promotion',
-    }));
+    expect(logs.map(line => JSON.parse(line))).toEqual([{
+      time: expect.any(String), level: 'info', event: 'bookings.notice_skipped',
+      gymId: f.gymId, bookingId: f.queued.id, reason: 'stale_or_missing_promotion',
+    }]);
     expect(f.email.messages).toHaveLength(0);
+    expect(sms.messages).toHaveLength(0);
+  });
+  it('logs only identifiers and the reason when the promotion email switch is disabled after reservation', async () => {
+    const f = await fixture();
+    await f.delivery.promote(f.gymId, f.session.id);
+    const scope: typeof db.forGym = async (gymId, fn) => {
+      const result = await db.forGym(gymId, fn);
+      if (result && typeof result === 'object' && 'attempts' in result) {
+        await db.forGym(gymId, tx => tx.update(gyms).set({ memberEmailsEnabled: false }).where(eq(gyms.id, gymId)));
+      }
+      return result;
+    };
+    const delivery = createBookingDelivery({ ...f.options, scope, jobs: f.jobs, mailer: async () => f.email });
+    const logs: string[] = [], previous = setLogSink(line => logs.push(line));
+    try { await delivery.send(f.gymId, f.queued.id); } finally { setLogSink(previous); }
+
+    expect(f.email.messages).toHaveLength(0);
+    expect(logs.map(line => JSON.parse(line))).toEqual([{
+      time: expect.any(String), level: 'info', event: 'email.suppressed', gymId: f.gymId, memberId: f.waiting.id, reason: 'disabled',
+    }]);
   });
   it('registered jobs promote once and deliver one escaped, gym-local notice on replay', async () => {
     const f = await fixture();
