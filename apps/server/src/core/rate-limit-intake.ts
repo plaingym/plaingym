@@ -29,8 +29,8 @@ export function createPublicIntakeCeiling(options: {
     if (!buckets.length) return;
     const store = options.store ?? rateLimitStore();
     const result: IntakeReservationResult = store
-      ? await store.reserve?.({ gymId, now, buckets }) ?? { allowed: false, resetAt: now + 1000, failed: true }
-      : (() => {
+      ? await store.reserve({ gymId, now, buckets })
+      : ((): IntakeReservationResult => {
         const keys = buckets.map(bucket => `${gymId}:${bucket.routeKey}:${bucket.start}`);
         for (const [i, bucket] of buckets.entries()) {
           if ((local.get(keys[i]!, now)?.count ?? 0) + bucket.amount > bucket.limit)
@@ -44,7 +44,8 @@ export function createPublicIntakeCeiling(options: {
       })();
     if (result.allowed) return;
     if (result.failed) throw new AppError('rate_limited', 'Public intake is busy', { reason: ['intake_store_failed'], resetAt: [String(now + 1000)] });
-    const bucket = buckets.find(bucket => bucket.routeKey === result.routeKey)!, key = `${gymId}:${bucket.routeKey}`;
+    // A refusal naming no bucket of this reservation is reported against the first one, never a crash.
+    const bucket = buckets.find(bucket => bucket.routeKey === result.routeKey) ?? buckets[0]!, key = `${gymId}:${bucket.routeKey}`;
     if (!reports.get(key, now)) {
       reports.add(key, { count: 1, resetAt: result.resetAt }, now);
       logInfo('public.intake.ceiling_reached', { gymId, resource: bucket.routeKey.slice('public.intake.'.length), limit: bucket.limit, resetAt: result.resetAt });
@@ -53,10 +54,15 @@ export function createPublicIntakeCeiling(options: {
   };
 }
 export const reservePublicIntake = createPublicIntakeCeiling();
+/** A public intake refusal and the page state that shows it: `retry` for a busy store, `limited` for the ceiling. */
+export interface PublicIntakeRefusal { error: AppError; state: 'retry' | 'limited' }
 /** The route supplies translated ceiling and short-retry messages. */
-export function publicIntakeRefusal(error: unknown, context: Context<RequestEnvironment>, message: string, retry: string): AppError | undefined {
+export function publicIntakeRefusal(error: unknown, context: Context<RequestEnvironment>, message: string, retry: string): PublicIntakeRefusal | undefined {
   if (!(error instanceof AppError) || !['intake_ceiling', 'intake_store_failed'].includes(error.details?.reason?.[0] ?? '')) return undefined;
   const failed = error.details!.reason![0] === 'intake_store_failed', resetAt = Number(error.details!.resetAt?.[0]);
   context.header('Retry-After', failed ? '1' : String(Math.max(1, Math.ceil((resetAt - context.get('context').clock.now().getTime()) / 1000))));
-  return new AppError('rate_limited', failed ? retry : message, { ...error.details, reason: [failed ? 'busy' : 'intake_ceiling'] });
+  return {
+    error: new AppError('rate_limited', failed ? retry : message, { ...error.details, reason: [failed ? 'busy' : 'intake_ceiling'] }),
+    state: failed ? 'retry' : 'limited',
+  };
 }

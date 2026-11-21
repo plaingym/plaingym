@@ -18,10 +18,13 @@ export function createAdmissionCleanup<State>(options: {
   const admitted = `${prefix}.admitted`, started = `${prefix}.cleanup.started`, cleaned = `${prefix}.cleaned`, retained = `${prefix}.retained`;
   const audit = (tx: Transaction, gymId: string, targetId: string, action: string) => writeAudit(tx,
     { gymId, actorKind: 'system', action, targetType: options.targetType, targetId, occurredAt: clock.now() });
-  /** Resolve storage at the first candidate, once for an entire cleanup run. */
+  /**
+   * Resolve storage at the first candidate, once for an entire cleanup run unless a resolution fails:
+   * a failure isn't kept, so the next candidate resolves storage again.
+   */
   function uploadsForRun(gymId: string) {
     let uploads: Promise<Uploads> | undefined;
-    return () => uploads ??= options.uploadsFor(gymId);
+    return () => uploads ??= options.uploadsFor(gymId).catch((error: unknown) => { uploads = undefined; throw error; });
   }
   async function remove(gymId: string, targetId: string, uploads = uploadsForRun(gymId)) {
     const storage = await uploads();

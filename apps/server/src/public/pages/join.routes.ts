@@ -91,7 +91,7 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
     route({ ...contracts.joinAdmission, middleware: [admissions, bounded],
       request: { body: { required: true, content: { 'application/json': { schema: contracts.joinAdmission.body } } } }, responses: json(contracts.joinAdmission.response) }, async ctx => {
       try { return ctx.json(await options().service.admit(gymOf(ctx), ctx.req.valid('json'), ctx.get('context').gym.timezone), 200); }
-      catch (error) { throw refusal(error, ctx) ?? error; }
+      catch (error) { throw refusal(error, ctx)?.error ?? error; }
     }),
     // The same response for every address; only the cookie, naming this new household's pending join, continues it.
     route({ ...contracts.join, middleware: [submissions, bounded], request: { body: { required: true, content: { 'application/json': { schema: contracts.join.body } } } },
@@ -148,7 +148,7 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
           return page(ctx, 'admittedFailed', 400);
         }
         const refused = refusal(error, ctx);
-        if (refused) return page(ctx, refused.details?.reason?.[0] === 'busy' ? 'retry' : 'limited', 429);
+        if (refused) return page(ctx, refused.state, 429);
         if (error instanceof AppError && error.code === 'unavailable') return page(ctx, 'unavailable', 503);
         if (fields && (error instanceof JoinFormError || error instanceof AppError && ['invalid_request', 'not_found', 'conflict'].includes(error.code))) {
           const values = Object.fromEntries([...fields].filter((entry): entry is [string, string] => typeof entry[1] === 'string'));

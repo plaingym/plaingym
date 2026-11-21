@@ -164,7 +164,7 @@ it('fails closed on a rejected upsert and reports it, but propagates a database 
 it('remembers a refused budget until its window ends instead of asking the store again', async () => {
   const f = await fixture(), real = createIntakeRateLimitStore(db.forSystem);
   const consume = vi.fn((input: Parameters<SharedRateLimitStore['consume']>[0]) => real.consume(input));
-  const app = f.make(true, [], cacheRefusals({ consume }));
+  const app = f.make(true, [], cacheRefusals({ consume, async reserve() { return { allowed: true, resetAt: 0 }; } }));
   expect((await f.request(app)).status).toBe(200); expect((await f.request(app)).status).toBe(200);
   expect((await f.request(app)).status).toBe(429);
   expect(consume).toHaveBeenCalledTimes(3);
@@ -185,7 +185,7 @@ it('remembers a refused budget until its window ends instead of asking the store
 it('remembers a refusal from a failed counter write for a second only', async () => {
   const f = await fixture();
   const consume = vi.fn(async () => ({ allowed: false, resetAt: f.clock.now().getTime() + 2000, failed: true }));
-  const app = f.make(true, [], cacheRefusals({ consume }));
+  const app = f.make(true, [], cacheRefusals({ consume, async reserve() { return { allowed: true, resetAt: 0 }; } }));
   expect((await f.request(app)).status).toBe(429); expect((await f.request(app)).status).toBe(429);
   expect(consume).toHaveBeenCalledTimes(1);
   f.clock.advance(1000); expect((await f.request(app)).status).toBe(429);
@@ -194,7 +194,7 @@ it('remembers a refusal from a failed counter write for a second only', async ()
 
 it('keeps refusals per budget size and drops the oldest when full', async () => {
   const consume = vi.fn(async ({ limit, now }: { limit: number; now: number }) => ({ allowed: limit > 5, resetAt: now + 1000 }));
-  const cached = cacheRefusals({ consume }, 2), base = { gymId: null, routeKey: 'r', windowMs: 1000, now: 0 };
+  const cached = cacheRefusals({ consume, async reserve() { return { allowed: true, resetAt: 0 }; } }, 2), base = { gymId: null, routeKey: 'r', windowMs: 1000, now: 0 };
   expect((await cached.consume({ ...base, clientKey: 'a', limit: 1 })).allowed).toBe(false);
   // The same key at another size isn't answered by the stricter refusal.
   expect((await cached.consume({ ...base, clientKey: 'a', limit: 10 })).allowed).toBe(true);

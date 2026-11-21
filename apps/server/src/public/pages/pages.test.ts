@@ -236,8 +236,9 @@ describe('core public pages through the production registrations', () => {
 
   it('refuses new trial and drop-in admissions at the shared ceiling with page text while an existing visit finishes', async () => {
     const f = await fixture(), existing = await f.admit(), store = createIntakeRateLimitStore(db.forSystem);
-    await store.consume({ gymId: f.gymId, routeKey: 'public.intake.participants', clientKey: '*', now: f.clock.now().getTime(),
-      windowMs: publicIntakeLimits.windowMs, limit: publicIntakeLimits.participants, amount: publicIntakeLimits.participants });
+    const now = f.clock.now().getTime(), start = Math.floor(now / publicIntakeLimits.windowMs) * publicIntakeLimits.windowMs;
+    await store.reserve({ gymId: f.gymId, now, buckets: [{ routeKey: 'public.intake.participants', amount: publicIntakeLimits.participants,
+      limit: publicIntakeLimits.participants, start, resetAt: start + publicIntakeLimits.windowMs }] });
     const reset = configureSharedRateLimits(store);
     try {
       for (const path of ['/api/public/trial', '/drop-in/signatures']) {

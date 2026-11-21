@@ -66,7 +66,7 @@ it('junk POSTs from 34 addresses cannot spend another provider address\'s one-cl
     const key = [input.gymId, input.routeKey, input.clientKey].join(':');
     const count = (counters.get(key) ?? 0) + 1; counters.set(key, count);
     return { allowed: count <= input.limit, resetAt: input.now + input.windowMs };
-  } });
+  }, async reserve() { return { allowed: true, resetAt: 0 }; } });
   for (let client = 1; client <= 34; client++) {
     for (let i = 0; i < 300; i++) expect((await f.click(oneClickBody, 'junk-' + i, f.server,
       { 'test-peer': `198.51.100.${client}` })).status).toBe(404);
@@ -94,7 +94,7 @@ it('overlong one-click tokens are charged as guesses before any shared counter w
   resetLimits = configureSharedRateLimits({ async consume(input) {
     writes++;
     return { allowed: true, resetAt: input.now + input.windowMs };
-  } });
+  }, async reserve() { return { allowed: true, resetAt: 0 }; } });
   for (let i = 0; i < oneClickGuessBudget; i++) expect((await f.click(oneClickBody, 'x'.repeat(129) + i, f.server, junk)).status).toBe(404);
   expect((await f.click(oneClickBody, 'x'.repeat(129), f.server, junk)).status).toBe(429);
   expect(writes).toBe(0);
