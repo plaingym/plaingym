@@ -135,14 +135,17 @@ export function createDemoRoutes(service: DemoService, options: {
       if (options.enabled !== false) {
         app.get('/demo-assets/:file', async (c, next) => {
           if (!isInstallHost(c.req.header('host') ?? new URL(c.req.url).host)) return next();
-          // The page stylesheet is named by its content hash, so it caches as long as the images.
-          const file = c.req.param('file'), css = /^landing-[a-f0-9]{16}\.css$/.test(file);
-          if (!css && !screenshotFiles.has(file)) return c.notFound();
+          // The stylesheet and script are content-hashed like the screenshots.
+          const file = c.req.param('file');
+          const css = /^landing-[a-f0-9]{16}\.css$/.test(file);
+          const script = /^landing-menu-[a-f0-9]{16}\.js$/.test(file);
+          if (!css && !script && !screenshotFiles.has(file)) return c.notFound();
+          const loadHashed = css ? assets.stylesheet : script ? assets.menuScript : undefined;
           await authorize({ kind: 'public' })(c, async () => {
-            const stylesheet = css ? await assets.stylesheet() : undefined;
-            const body = css ? (file === stylesheet?.file ? stylesheet.body : undefined) : await assets.asset(file);
+            const hashed = await loadHashed?.();
+            const body = loadHashed ? (file === hashed?.file ? hashed.body : undefined) : await assets.asset(file);
             if (!body) { c.res = await c.notFound(); return; }
-            c.header('content-type', css ? 'text/css; charset=utf-8' : 'image/webp');
+            c.header('content-type', css ? 'text/css; charset=utf-8' : script ? 'text/javascript; charset=utf-8' : 'image/webp');
             c.header('x-content-type-options', 'nosniff');
             c.header('cache-control', 'public, max-age=31536000, immutable');
             c.res = c.body(body);
@@ -164,9 +167,11 @@ export function createDemoRoutes(service: DemoService, options: {
         app.get('/', async (c, next) => {
           if (!isInstallHost(c.req.header('host') ?? new URL(c.req.url).host)) return next();
           await authorize({ kind: 'public' })(c, async () => {
-            const [showcase, stylesheet] = await Promise.all([options.pool?.showcase(), assets.stylesheet()]);
+            const [showcase, stylesheet, menuScript] = await Promise.all([options.pool?.showcase(), assets.stylesheet(), assets.menuScript()]);
             c.header('cache-control', 'no-store'); setPolicy(c, demoLandingDirectives);
-            c.res = c.html(demoLandingPage(showcase, options.sourceUrl ?? defaultSourceUrl, { stylesheetFile: stylesheet?.file }));
+            c.res = c.html(demoLandingPage(showcase, options.sourceUrl ?? defaultSourceUrl, {
+              stylesheetFile: stylesheet?.file, menuScriptFile: menuScript?.file,
+            }));
           });
           return c.res;
         });

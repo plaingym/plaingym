@@ -10,17 +10,11 @@ import messages from '../../../../locales/en/demo/product.json' with { type: 'js
 import screenshots from './screenshots.json' with { type: 'json' };
 
 const english = { 'demo/product': messages };
-export const demoLandingDirectives = ["default-src 'none'", "script-src 'none'", "style-src 'self'", "img-src 'self'",
+const tEnglish = createTranslator(english);
+export const demoLandingDirectives = ["default-src 'none'", "script-src 'self'", "style-src 'self'", "img-src 'self'",
   "base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'"];
 export const featureKeys = ['members', 'ranks', 'schedule', 'kiosk', 'portal', 'billing', 'waivers', 'join', 'reports', 'server'] as const;
 type FeatureKey = typeof featureKeys[number];
-/** The bullets each feature has in the locale file: `<key>Bullet1`, `<key>Bullet2`, ... */
-function bulletKeys(key: FeatureKey, catalog: LocaleCatalog): string[] {
-  const numbered = new RegExp(`^${key}Bullet\\d+$`);
-  const index = key.length + 'Bullet'.length;
-  return Object.keys(catalog['demo/product'] ?? {}).filter(name => numbered.test(name))
-    .sort((a, b) => Number(a.slice(index)) - Number(b.slice(index)));
-}
 // The markup never changes, so render each icon once rather than on every request.
 const iconMarkup = new Map<DemoIconName, string>();
 const icon = (name: DemoIconName) => {
@@ -58,11 +52,21 @@ const iconTile = 'inline-flex h-12 w-12 shrink-0 items-center justify-center rou
 const sectionTitle = 'text-3xl font-bold tracking-tight sm:text-4xl';
 const muted = 'text-muted-foreground dark:text-gray-400';
 
-/** Entry-host product page: native links and popovers, with no JavaScript. */
+/** The entry-host product page uses one script to close the phone menu after a link is followed. */
 export function demoLandingPage(showcaseHref: string | undefined, source: string,
-    { stylesheetFile, catalog = english }: { stylesheetFile?: string | undefined; catalog?: LocaleCatalog } = {}) {
+    { stylesheetFile, menuScriptFile, catalog = english }: {
+      stylesheetFile?: string | undefined; menuScriptFile?: string | undefined; catalog?: LocaleCatalog;
+    } = {}) {
   const t = createTranslator(catalog);
   const text = (key: string) => t('demo/product:' + key);
+  function bullets(key: FeatureKey, catalog: LocaleCatalog): string[] {
+    const numbered = new RegExp(`^${key}Bullet\\d+$`);
+    const index = key.length + 'Bullet'.length;
+    const keys = Object.keys(catalog['demo/product'] ?? {}).filter(name => numbered.test(name));
+    const names = keys.length ? keys : Object.keys(messages).filter(name => numbered.test(name));
+    const translate = keys.length ? t : tEnglish;
+    return names.sort((a, b) => Number(a.slice(index)) - Number(b.slice(index))).map(name => translate('demo/product:' + name));
+  }
   const github = githubRepository(source);
   const withIcon = (name: DemoIconName, label: string) => [h('span', { class: 'shrink-0 demo-icon' }, icon(name)), label];
   const tryDemo = (className: string, note = 'demo-starting') => {
@@ -84,7 +88,7 @@ export function demoLandingPage(showcaseHref: string | undefined, source: string
   // One list of links feeds the desktop row and both phone menus (popover, and a details fallback).
   const menuItems = () => [...sectionLinks.map(([href, key]) => h('li', null, h('a', { href, class: menuLink }, text(key)))),
     h('li', null, tryDemo(menuLink)), h('li', null, repository(menuLink))];
-  const panel = 'w-64 max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-white p-2 text-foreground shadow-xl dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100';
+  const panel = 'w-64 max-w-[calc(100vw-2rem)] overflow-y-auto overscroll-contain rounded-xl border border-border bg-white p-2 text-foreground shadow-xl dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100';
   // Sticky on every width: a row of links from md up, below that the call to action and a menu button. The popover
   // panel is fixed just below the header (landing.css); the details panel hangs from it.
   const siteHeader = () => h('header', { class: 'sticky top-0 z-40 border-b border-border bg-white/90 pt-[env(safe-area-inset-top)] backdrop-blur dark:border-gray-800 dark:bg-gray-950/90' },
@@ -122,7 +126,7 @@ export function demoLandingPage(showcaseHref: string | undefined, source: string
         h('span', { class: iconTile }, icon(key)),
         h('h2', { id: key + '-heading', class: 'text-2xl font-bold tracking-tight sm:text-3xl' }, text(key + 'Title')),
         h('p', { class: 'text-lg ' + muted }, text(key + 'Lead')),
-        h('ul', { class: 'list-disc space-y-2 pl-5 marker:text-primary dark:marker:text-teal-400' }, ...bulletKeys(key, catalog).map(bullet => h('li', null, text(bullet)))),
+        h('ul', { class: 'list-disc space-y-2 pl-5 marker:text-primary dark:marker:text-teal-400' }, ...bullets(key, catalog).map(text => h('li', null, text))),
         key === 'billing' ? h('div', { class: 'space-y-3 text-sm' }, h('p', { class: muted }, text('billingHelp')),
           h('p', { class: 'rounded-lg border-l-4 border-primary bg-muted p-4 text-foreground dark:border-teal-400 dark:bg-gray-900 dark:text-gray-100' }, text('billingTest'))) : null),
       h('figure', { class: narrow ? 'mx-auto w-full max-w-sm' : 'min-w-0' },
@@ -138,7 +142,8 @@ export function demoLandingPage(showcaseHref: string | undefined, source: string
     h('head', null, h('meta', { charset: 'utf-8' }), h('meta', { name: 'viewport', content: 'width=device-width, initial-scale=1, viewport-fit=cover' }),
       h('meta', { name: 'color-scheme', content: 'light dark' }), h('meta', { name: 'description', content: text('pitch') }),
       h('title', null, text('title')), h('link', { rel: 'stylesheet', href: '/public/pages/styles.css' }),
-      stylesheetFile ? h('link', { rel: 'stylesheet', href: '/demo-assets/' + stylesheetFile }) : null),
+      stylesheetFile ? h('link', { rel: 'stylesheet', href: '/demo-assets/' + stylesheetFile }) : null,
+      menuScriptFile ? h('script', { src: '/demo-assets/' + menuScriptFile, defer: true }) : null),
     h('body', { class: 'm-0 bg-white font-sans text-base leading-relaxed text-foreground antialiased dark:bg-gray-950 dark:text-gray-100' },
       siteHeader(),
       h('main', null,

@@ -6,6 +6,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { focusManager, onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ShellServicesContext } from '../../app/context.js';
 import { createShellServices, type ShellBootstrap, type ShellServices } from '../../app/services.js';
+import { instantLabel } from '../../lib/instant.js';
 
 const fetcher = vi.fn();
 const loadBootstrap = vi.fn<ShellServices['loadBootstrap']>();
@@ -16,7 +17,7 @@ const signedOutBootstrap: ShellBootstrap = {
 const route = vi.hoisted(() => ({ pathname: '/admin' }));
 vi.mock('@tanstack/react-router', () => ({ useRouterState: () => route.pathname }));
 vi.stubGlobal('fetch', fetcher);
-const { DemoShell, DemoKioskHint, TryDemoButton, useDemoLogin, useDemoSandbox } = await import('./notice.js');
+const { DemoShell, DemoKioskHint, TryDemoButton, useDemoExpiry, useDemoLogin, useDemoSandbox } = await import('./notice.js');
 const { readToken } = await import('../kiosk/api.js');
 beforeEach(() => {
   fetcher.mockReset();
@@ -157,7 +158,18 @@ it('does not consume a token until sandbox discovery succeeds', async () => {
   expect(readToken()).toBe('visitor-device');
   expect(window.location.hash).toBe('');
 });
-const sandbox = (join = false) => Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString(), join } });
+const sandbox = (join = false, expiresAt = new Date(Date.now() + 3600_000).toISOString()) =>
+  Response.json({ data: { mode: 'sandbox', expiresAt, join } });
+it.each(['sandbox', 'showcase'] as const)('exposes private-copy expiry to children in %s mode', async mode => {
+  const expiresAt = new Date(Date.now() + 3600_000).toISOString();
+  fetcher.mockResolvedValue(Response.json({ data: { mode, expiresAt, join: false } }));
+  function ExpiryConsumer() {
+    return <p>{useDemoExpiry() ?? 'No sandbox expiry'}</p>;
+  }
+  start(undefined, <ExpiryConsumer />);
+  await screen.findByRole('complementary', { name: 'Demo controls' });
+  expect(screen.getByText(mode === 'sandbox' ? expiresAt : 'No sandbox expiry')).toBeDefined();
+});
 it('keeps an overdue showcase usable without a private-copy expiry notice', async () => {
   window.history.replaceState(null, '', '/admin#kioskToken=showcase-device');
   fetcher.mockImplementation(async (path: string) => Response.json({ data: path === '/api/demo/menu'
@@ -175,8 +187,8 @@ it('keeps an overdue showcase usable without a private-copy expiry notice', asyn
 });
 const riley = { id: '019a0000-0000-7000-8000-0000000000aa', name: 'Riley Visitor' };
 /** Discovery, the demo menu and any other path, answered by path. */
-function serve(options: { join?: boolean; website?: boolean; members?: { id: string; name: string }[]; login?: () => Promise<Response> } = {}) {
-  fetcher.mockImplementation(async (path: string) => path === '/api/demo' ? sandbox(options.join)
+function serve(options: { join?: boolean; expiresAt?: string; website?: boolean; members?: { id: string; name: string }[]; login?: () => Promise<Response> } = {}) {
+  fetcher.mockImplementation(async (path: string) => path === '/api/demo' ? sandbox(options.join, options.expiresAt)
     : path === '/api/demo/menu' ? Response.json({ data: { members: options.members ?? [], website: options.website ?? false } })
       : path === '/api/demo/login' && options.login ? options.login() : Response.json({}, { status: 404 }));
 }
@@ -203,7 +215,8 @@ it('keeps the bar to one slim row: the sandbox, its expiry and the demo menu, wi
 });
 it('opens the demo menu with its labelled groups and returns focus to the bar on close', async () => {
   route.pathname = '/portal/schedule';
-  serve({ join: true, members: [riley] });
+  const expiresAt = new Date(Date.now() + 3600_000).toISOString();
+  serve({ join: true, expiresAt, members: [riley] });
   start();
   const menu = await openMenu();
   const signIn = within(menu).getByRole('region', { name: 'Sign in as' });
@@ -223,8 +236,10 @@ it('opens the demo menu with its labelled groups and returns focus to the bar on
   }
   expect(fetcher.mock.calls.filter(([path]) => path === '/api/demo/login')).toHaveLength(0);
   const about = within(menu).getByRole('region', { name: 'About this demo' });
-  expect(within(about).getByText(/^Expires: /)).toBeDefined();
-  expect(within(about).getByText(/Using it moves that time later/)).toBeDefined();
+  const expiryLabel = instantLabel(expiresAt);
+  expect(within(about).getByText(/^Expires: /).textContent).toBe(`Expires: ${expiryLabel}`);
+  expect(menu.textContent?.split(expiryLabel)).toHaveLength(2);
+  expect(within(about).getByText(/Using this demo gym moves its deletion time later/)).toBeDefined();
   expect(menu.textContent).not.toMatch(/Marcus Rivera|4242/);
   fireEvent.click(within(menu).getByRole('button', { name: 'Close demo menu' }));
   expect(screen.queryByRole('dialog')).toBeNull();

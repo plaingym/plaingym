@@ -9,6 +9,7 @@
   "title": "Demo outbox",
   "outboxHelp": "Emails and texts stay in the demo outbox and uploads are disabled.",
   "banner": "This demo gym is deleted at {time}. Using it moves that time later, up to 24 hours after it was created. Emails and texts stay in the demo outbox and uploads are disabled.",
+  "bannerRule": "Using this demo gym moves its deletion time later, up to 24 hours after it was created. Emails and texts stay in the demo outbox and uploads are disabled.",
   "expires": "Expires: {time}",
   "try": "Try the demo",
   "creationProgress": "Preparing sample members, billing and waivers. This can take a few minutes. Keep this page open; you will enter your gym automatically.",

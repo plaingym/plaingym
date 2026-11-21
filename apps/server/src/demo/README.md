@@ -12,27 +12,30 @@ top-level sections; the page's scroll padding stops a section reached from a lin
 below it. From the `md` breakpoint the header is a row. Below that it keeps **Try
 the demo** and a menu button that opens the same links in a popover, fixed just
 below the header wherever the page is scrolled, with a `<details>` fallback where
-popovers are missing. Escape or a tap outside closes the popover. Without script a
+popovers are missing. Escape or a tap outside closes the popover. A small script
+closes either phone menu after a link is followed. Without the script a
 followed link leaves it open, so the scroll padding accounts for the panel's maximum
 height. Longer menus scroll inside the panel. The footer lists source, license and
 self-hosting links beside the running version. For other source URLs the license and
 guide links open the configured source via `/source`.
-The page uses the public stylesheet, native links and a policy that forbids scripts.
+The page uses the public stylesheet and native links. Its policy allows same-origin scripts.
 Its controls have their own hover, active and keyboard-focus styles in light and
 dark, and colour transitions stop under reduced motion.
 Ten feature sections have inline SVG icons and seeded screenshots; each lists the
-`<key>BulletN` entries the locale file has. Images use light/dark sources,
+`<key>BulletN` entries the locale file has. A feature with no bullets in the
+supplied catalogue lists its English bullets. Images use light/dark sources,
 responsive densities and lazy loading (the hero's loads first). Native popovers
 enlarge them without JavaScript; on a phone held upright an enlarged screenshot keeps
 its own width and scrolls both ways inside the lightbox, with the close button fixed
 in view. Full-size links work in browsers without popover support.
 Only the entry host serves `/demo-assets/:file`, from an exact asset allowlist.
-Content-hashed WebP images and the page's own stylesheet, `screenshots/landing.css`
-served as `landing-<hash>.css` cache for a year. The server reads each asset on
-first use and caches it in memory. A missing deployment asset returns a 404 and
-is logged once.
-That stylesheet holds only what the public stylesheet's utilities can't: popovers,
-backdrops, the fallbacks, the scroll padding and safe-area gutters.
+Content-hashed WebP images, the page's stylesheet (`landing-<hash>.css`), and
+its menu script (`landing-menu-<hash>.js`) cache for a year. The server reads
+each asset on first use and caches it in memory. A missing deployment asset
+returns a 404 and is logged once.
+`screenshots/landing.css` styles popovers, backdrops, fallbacks, scroll padding
+and safe-area gutters. It sets the menu's variable-based height cap, and
+Tailwind utilities handle the menu's scrolling.
 The server build copies these files beside the bundle in `screenshots/`.
 The sandbox start page uses the app's cards, role icons and numbered join steps,
 including a test-card copy button with a selectable fallback.

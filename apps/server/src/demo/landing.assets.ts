@@ -21,11 +21,14 @@ export function createLandingAssets(read = readLandingAsset) {
     cache.set(file, pending);
     return pending;
   }
-  let stylesheet: Promise<{ file: string; body: Asset } | undefined> | undefined;
+  const hashedAsset = (name: string, extension: string) => asset(`${name}.${extension}`).then(body => body && ({
+    file: `${name}-${createHash('sha256').update(body).digest('hex').slice(0, 16)}.${extension}`, body,
+  }));
+  let stylesheet: ReturnType<typeof hashedAsset> | undefined;
+  let menuScript: ReturnType<typeof hashedAsset> | undefined;
   return {
     asset,
-    stylesheet: () => stylesheet ??= asset('landing.css').then(body => body && ({
-      file: `landing-${createHash('sha256').update(body).digest('hex').slice(0, 16)}.css`, body,
-    })),
+    stylesheet: () => stylesheet ??= hashedAsset('landing', 'css'),
+    menuScript: () => menuScript ??= hashedAsset('landing-menu', 'js'),
   };
 }

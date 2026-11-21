@@ -55,7 +55,7 @@ html {
 /* Phone menu: a popover fixed just below the sticky header wherever the page is scrolled (details where popovers are missing). */
 .demo-menu, .demo-menu-fallback { display: none; }
 .demo-menu, .demo-menu-fallback-panel {
-  max-height: var(--demo-menu-max-height); overflow-y: auto; overscroll-behavior: contain;
+  max-height: var(--demo-menu-max-height);
 }
 .demo-menu:popover-open {
   display: block; position: fixed; inset: auto; top: calc(4rem + env(safe-area-inset-top) + 0.25rem);

@@ -7,6 +7,7 @@ const themes = ['light', 'dark'] as const;
 type Theme = typeof themes[number];
 const entryOrigin = 'https://demo.localhost';
 const showcaseLink = /^https:\/\/showcase\.demo\.localhost\/demo#kioskToken=.+$/;
+const menuScriptPath = /^\/demo-assets\/landing-menu-[a-f0-9]{16}\.js$/;
 
 test.beforeAll(async () => {
   test.setTimeout(180_000);
@@ -74,7 +75,7 @@ for (const width of [360, 768, 1280]) for (const colorScheme of themes) {
     const stylesLoaded = page.waitForResponse(response => new URL(response.url()).pathname === '/public/pages/styles.css');
     const pageStyles = page.waitForResponse(response => /^\/demo-assets\/landing-[a-f0-9]{16}\.css$/.test(new URL(response.url()).pathname));
     const response = await open(page, width, colorScheme);
-    expect(response.headers()['content-security-policy']).toContain("script-src 'none'");
+    expect(response.headers()['content-security-policy']).toContain("script-src 'self'");
     expect(response.headers()['content-security-policy']).toContain("style-src 'self'");
     await expect(page.getByRole('heading', { level: 1, name: 'PlainGym', exact: true })).toBeVisible();
     const links = page.getByRole('main').getByRole('link');
@@ -83,7 +84,8 @@ for (const width of [360, 768, 1280]) for (const colorScheme of themes) {
     await expect(links.nth(1)).toHaveText('GitHub');
     await expect(links.nth(1)).toHaveAttribute('href', 'https://github.com/plaingym/plaingym');
     await expect(page.getByRole('link', { name: 'Source code', exact: true })).toHaveAttribute('href', '/source');
-    await expect(page.locator('script, [style]')).toHaveCount(0);
+    await expect(page.locator('script')).toHaveAttribute('src', menuScriptPath);
+    await expect(page.locator('script:not([src]), [style]')).toHaveCount(0);
     // Explain the general lifetime without showing a particular sandbox's expiry notice.
     await expect(page.getByText('Private copies expire after inactivity and are deleted within 24 hours.', { exact: true })).toBeVisible();
     await expect(page.locator('[data-demo-deletion]')).toHaveCount(0);
@@ -129,6 +131,12 @@ for (const width of [360, 768, 1280]) for (const colorScheme of themes) {
       expect(bounds.x).toBeGreaterThanOrEqual(0);
       expect(bounds.x + bounds.width).toBeLessThanOrEqual(width);
       expect(await horizontalOverflow(page)).toBeUndefined();
+    }
+
+    // Exercise the native section links on phones even when the menu script is unavailable.
+    if (width < 768) {
+      await page.route('**/demo-assets/landing-menu-*.js', route => route.fulfill({ status: 200, contentType: 'text/javascript', body: '' }), { times: 1 });
+      await page.reload();
     }
 
     // Each header link brings its section's heading fully into view below the header.
@@ -189,9 +197,17 @@ test.describe('demo product phone menu', () => {
   test.use({ hasTouch: true });
 
   test('stays below the header with a wrapped label, and dismisses with Escape and an outside tap at 360px', async ({ page }, info) => {
-    await open(page, 360, 'light', 440);
+    await open(page, 360, 'light', 900);
     const menuButton = header(page).getByRole('button', { name: 'Menu', exact: true });
     const menu = header(page).locator('#site-menu');
+    await menuButton.tap();
+    for (const name of ['Why PlainGym', 'Features', 'How the demo works', 'Try the demo', 'GitHub']) {
+      const item = menu.getByRole('link', { name, exact: true });
+      expect((await box(item)).height, name).toBeLessThan(55);
+      expect(await item.evaluate(node => node.scrollWidth <= node.clientWidth), name).toBe(true);
+    }
+
+    await open(page, 360, 'light', 440);
     await expect(header(page).getByRole('navigation', { name: 'Main' })).toBeHidden();
     await expect(header(page).locator('.demo-menu-fallback')).toBeHidden();
     expect(await horizontalOverflow(page)).toBeUndefined();
@@ -206,6 +222,8 @@ test.describe('demo product phone menu', () => {
     const item = menu.getByRole('link', { name: 'Why you can run your gym on your own terms with PlainGym' });
     expect((await box(item)).height).toBeGreaterThan(55);
     expect(await menu.evaluate(node => node.scrollHeight > node.clientHeight)).toBe(true);
+    await expect(menu).toHaveCSS('overflow-y', 'auto');
+    await expect(menu).toHaveCSS('overscroll-behavior-y', 'contain');
     await page.screenshot({ path: info.outputPath('product-360-wrapped-menu.png') });
     await page.keyboard.press('Escape');
     await expect(menu).toBeHidden();
@@ -213,6 +231,20 @@ test.describe('demo product phone menu', () => {
     await expect(menu).toBeVisible();
     await page.touchscreen.tap(10, 425);
     await expect(menu).toBeHidden();
+  });
+
+  test('closes the phone menu after a section link and lets it reopen at 360px', async ({ page }) => {
+    await open(page, 360, 'light');
+    const menuButton = header(page).getByRole('button', { name: 'Menu', exact: true });
+    const menu = header(page).locator('#site-menu');
+    for (const [name, id] of [['Features', 'features'], ['Why PlainGym', 'strengths']] as const) {
+      await menuButton.tap();
+      await expect(menu.getByRole('link')).toHaveCount(5);
+      await menu.getByRole('link', { name, exact: true }).tap();
+      await expect(page).toHaveURL(new RegExp(`#${id}$`));
+      await expect(page.locator('#' + id)).toBeInViewport();
+      await expect(page.locator('#site-menu:popover-open')).toHaveCount(0);
+    }
   });
 });
 
