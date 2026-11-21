@@ -20,8 +20,8 @@ and requests during a restore or before backup setup are refused.
 A snapshot is taken while its own backup is still running. After a restore, the backup run that
 took the restored snapshot counts as a successful backup, and any other run the snapshot caught in
 progress is marked failed. A backup job the snapshot caught running is marked failed and
-acknowledged, so **System health → Background jobs** stays clear. The restore does this
-itself, so it holds for any snapshot, whenever it was taken.
+acknowledged. **System health → Background jobs** still shows any other unacknowledged failures.
+Restore applies these rules to existing snapshots as well.
 
 ## When rollback is refused
 

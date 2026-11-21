@@ -51,6 +51,12 @@ counts once the next claim marks it failed. Its handler may still be running,
 so a retried job's handler needs the same idempotency as any other.
 `retryFailed` returns false for a job that is missing or has another status.
 
+The three recovery methods above accept an optional `JobTransaction` as their last
+argument, validated like `enqueue`'s. Invoice effect recovery takes its invoice lock
+in that transaction and uses the same handle for queue reads, resets or acknowledgments,
+and the staff audit. The fake stages writes until commit and reflects a staged
+reset in subsequent failed-job reads in that transaction.
+
 `PostgresJobs` has two more methods outside `JobRecovery`.
 `acknowledgeFailedThrough({ gymId, through, at }, transaction?)` acknowledges every
 unacknowledged failed job of the gym whose failure time is at or before `through`
@@ -61,12 +67,6 @@ acknowledged, records `reason` as its error and clears its lease, and returns th
 count. A restore uses it for the backup jobs its snapshot caught running, which no
 worker holds in the restored database. Neither method changes jobs with any other
 status, and an acknowledged job stays visible to `failedJobs`.
-
-All three methods accept an optional `JobTransaction` as their last argument,
-validated like `enqueue`'s. Invoice effect recovery takes its invoice lock in that
-transaction and uses the same handle for queue reads, resets or acknowledgments,
-and the staff audit. The fake stages writes until commit and reflects a staged
-reset in subsequent failed-job reads in that transaction.
 
 Install-level work uses `enqueueSystem` and `handleSystem`, with `gymId: null` in
 the handler context. These separate methods keep the gym-required `Jobs` contract

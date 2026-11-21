@@ -155,9 +155,9 @@ gyms never affect this time.
 The tile stays in error while any unacknowledged failed jobs remain, however old
 the failure is. With none, the page leaves out the oldest failure row. A failed
 job whose effect was dismissed by a release that did not yet acknowledge jobs on
-Dismiss has no acknowledgment, so it stays counted until retention deletes it.
+Dismiss stays counted until someone acknowledges the job or retention deletes it.
 While the tile counts failed jobs, owners and admins (`settings.manage`) see
-**Acknowledge failed jobs**. After a confirmation it posts the tile's `checkedAt`
+**Acknowledge failed jobs**. Confirming posts the tile's `checkedAt` from when the dialog opened
 as `through` to `POST /api/health/failed-jobs/acknowledge`, which acknowledges the
 gym's failed jobs that failed by the earlier of `through` and now, so a job that
 fails after the page was read stays counted. It doesn't run the jobs again; the

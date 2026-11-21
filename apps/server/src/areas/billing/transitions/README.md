@@ -210,7 +210,8 @@ the effect again only after a new exhaustion. Dismiss writes
 and acknowledges the effect's retained failed job in the same transaction. The
 failed-jobs tile stops counting the job, and retention deletes it on its usual
 schedule. A job whose effect was dismissed by a release that did not yet
-acknowledge jobs on Dismiss stays counted until retention deletes it. The sweep
+acknowledge jobs on Dismiss stays counted until retention deletes it or an owner
+or admin uses **Acknowledge failed jobs** on the Background jobs tile. The sweep
 leaves dismissed effects alone.
 Duplicate refunds keep their existing reservation, reconciliation and processor
 idempotency key; a staff retry cannot reserve or refund the money a second time.
