@@ -10,7 +10,7 @@ import { jsx } from 'hono/jsx/jsx-runtime';
 import { route } from '../../core/registry.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import { cspNonce } from '../../core/csp.js';
-import { buildLabelItem } from '../health/build-label.js';
+import { buildLabel, buildLabelItem } from '../health/build-label.js';
 import { requestSession } from '../../infra/auth/middleware.js';
 import { createEmailChangeService, emailChangePagePath, type EmailChangeMail, type EmailChangeService } from '../../infra/auth/email-change.js';
 
@@ -53,7 +53,7 @@ export function emailChangePage(text: Translator, nonce: string) {
         jsx('p', { children: [text('auth/account:confirmSessions'), ' ', jsx('a', { href: '/login', children: text('auth/account:signIn') })] }),
       ] }),
       jsx('noscript', { children: text('auth/account:javascriptRequired') }),
-    ] }), jsx('footer', { children: [jsx('a', { href: '/source', children: text('auth/account:source') }), ' ', buildLabelItem('')] }),
+    ] }), jsx('footer', { children: [jsx('a', { href: '/source', children: text('auth/account:source') }), ' ', buildLabelItem('', buildLabel(undefined, undefined, text), { visibleName: true })] }),
     jsx('script', { nonce, dangerouslySetInnerHTML: { __html: script } })] }),
   ] });
 }

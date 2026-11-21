@@ -208,7 +208,9 @@ describe('your account routes', () => {
     expect(html).toContain('<html lang="en" class="theme-system">');
     expect(html).toContain('name="color-scheme" content="light dark"');
     expect(html).toContain('/api/account/email/confirm');
-    expect(html).toContain('href="/source"'); expect(html).toContain('aria-label="Version ');
+    expect(html).toContain('href="/source"');
+    expect(html).toMatch(/<footer>.*<(?:a|span)\b[^>]*>Version [^<]+<\/(?:a|span)><\/footer>/);
+    expect(html).not.toContain('aria-label="Version');
     expect(html).toContain('location.hash');
   });
 });

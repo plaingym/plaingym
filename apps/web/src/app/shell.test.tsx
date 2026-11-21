@@ -505,6 +505,34 @@ describe('root fallbacks', () => {
     expect(screen.getByText('0.4.0+0.g6e55ffe')).toBeDefined();
     expect(screen.getAllByRole('link')).toHaveLength(1);
   });
+  it('links a release after one request per footer mount for the running repository', async () => {
+    const reply = Promise.withResolvers<Response>();
+    const request = vi.fn(() => reply.promise);
+    vi.stubGlobal('fetch', request);
+    render(<SourceFooter version="0.5.0" />, { reactStrictMode: true });
+    expect(screen.getByText('v0.5.0')).toBeDefined();
+    expect(screen.getAllByRole('link')).toHaveLength(1);
+    reply.resolve(Response.json({ data: { url: 'https://git.example.org/acme/gym' } }));
+    expect((await screen.findByRole('link', { name: 'Version v0.5.0' })).getAttribute('href'))
+      .toBe('https://git.example.org/acme/gym/releases/tag/v0.5.0');
+    expect(request).toHaveBeenCalledExactlyOnceWith('/api/source', { credentials: 'same-origin', redirect: 'error', cache: 'no-store' });
+  });
+  it('keeps the release as plain text when the source request fails', async () => {
+    const reply = Promise.resolve(new Response(null, { status: 500 }));
+    const request = vi.fn(() => reply);
+    vi.stubGlobal('fetch', request);
+    render(<SourceFooter version="0.5.0" />);
+    await reply;
+    expect(screen.getByText('v0.5.0')).toBeDefined();
+    expect(screen.getAllByRole('link')).toEqual([screen.getByRole('link', { name: 'Source code' })]);
+    expect(request).toHaveBeenCalledOnce();
+  });
+  it('does not request the source repository for a development build', () => {
+    const request = vi.fn();
+    vi.stubGlobal('fetch', request);
+    render(<SourceFooter version="0.4.0+0.g6e55ffe" />);
+    expect(request).not.toHaveBeenCalled();
+  });
   it('renders not-found routes inside the root footer', async () => {
     start(services(), '/missing');
     await screen.findByRole('heading', { name: 'Page not found' });

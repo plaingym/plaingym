@@ -5,6 +5,7 @@ import { createTranslator, type LocaleCatalog } from '@plaingym/shared';
 import type { DemoIconName } from '../../../web/src/components/demo-icon.js';
 import { demoIconMarkup } from '../../../web/src/components/demo-icon-markup.js';
 import { buildLabel, buildLabelItem } from '../areas/health/build-label.js';
+import { repositoryRoot } from '../core/source-repository.js';
 import { button, buttonControl, secondaryButton } from '../public/pages/page.js';
 import messages from '../../../../locales/en/demo/product.json' with { type: 'json' };
 import screenshots from './screenshots.json' with { type: 'json' };
@@ -24,9 +25,8 @@ const icon = (name: DemoIconName) => {
 
 /** A GitHub source URL may name a tag; on GitHub the project CTA opens its repository root. */
 function githubRepository(source: string): string | undefined {
-  const url = new URL(source);
-  const [owner, repo] = url.pathname.split('/').filter(Boolean);
-  if (url.hostname === 'github.com' && owner && repo) return `${url.origin}/${owner}/${repo.replace(/\.git$/, '')}`;
+  const root = repositoryRoot(source);
+  return root && new URL(root).hostname === 'github.com' ? root : undefined;
 }
 
 // One spacing scale (Tailwind's 4/6/8/12/16/24 steps) and one type scale (sm, base, lg, xl, 3xl/4xl, 4xl-6xl) throughout.
