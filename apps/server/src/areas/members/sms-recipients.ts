@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { households, members, type Transaction } from '@plaingym/db';
+import { normalizePhone } from '@plaingym/shared/phone';
+import { readGymSettings } from '../settings/settings.js';
+import { readPhoneCountry } from './member-write.js';
 
 /** IDs covered by the notice, and the consent holders to pass to MemberSms at send time. */
 export interface SmsRecipientGroup {
@@ -27,16 +30,20 @@ function collector() {
 /** Billing notices: the consented billing phone wins; otherwise consented members at the billing email. */
 export async function householdNoticePhones(tx: Transaction, gymId: string, householdIds: readonly string[]): Promise<SmsRecipientGroup[]> {
   if (!householdIds.length) return [];
-  const homes = await tx.select({ id: households.id, email: households.email, phoneE164: households.phoneE164, at: households.smsNoticesConsentAt })
+  const homes = await tx.select({ id: households.id, email: households.email, phone: households.phone, phoneE164: households.phoneE164, at: households.smsNoticesConsentAt })
     .from(households).where(and(eq(households.gymId, gymId), inArray(households.id, [...householdIds])));
-  const people = await tx.select({ id: members.id, householdId: members.householdId, email: members.email, phoneE164: members.phoneE164, at: members.smsNoticesConsentAt })
+  const people = await tx.select({ id: members.id, householdId: members.householdId, email: members.email, phone: members.phone, phoneE164: members.phoneE164, at: members.smsNoticesConsentAt })
     .from(members).where(and(eq(members.gymId, gymId), inArray(members.householdId, homes.map(home => home.id)), isNull(members.anonymizedAt)));
+  const country = await readPhoneCountry([...homes.map(home => home.phone), ...people.map(person => person.phone)],
+    async () => (await readGymSettings(tx, gymId)).address.country);
+  const current = (row: { phone: string | null; phoneE164: string | null }) =>
+    row.phoneE164 !== null && normalizePhone(row.phone, country) === row.phoneE164;
   const groups = collector();
   for (const home of homes) {
     const covered = people.filter(person => person.householdId === home.id);
-    if (home.phoneE164 && home.at) groups.add(home.phoneE164, covered.map(person => person.id), home.id, 'household', home.id);
+    if (home.phoneE164 && home.at && current(home)) groups.add(home.phoneE164, covered.map(person => person.id), home.id, 'household', home.id);
     else if (home.email?.trim()) for (const person of covered) {
-      if (person.phoneE164 && person.at && person.email?.trim().toLowerCase() === home.email.trim().toLowerCase())
+      if (person.phoneE164 && person.at && current(person) && person.email?.trim().toLowerCase() === home.email.trim().toLowerCase())
         groups.add(person.phoneE164, covered.map(member => member.id), home.id, 'member', person.id);
     }
   }

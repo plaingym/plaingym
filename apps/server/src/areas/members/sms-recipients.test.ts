@@ -39,6 +39,40 @@ it('prefers consent on the billing phone, else uses only consented members at it
   await db.forGym(f.gymId, tx => tx.update(members).set({ email: 'someone-else@example.test' }).where(eq(members.id, child.id)));
   expect(await db.forGym(f.gymId, tx => householdNoticePhones(tx, f.gymId, [f.home.id]))).toEqual([]);
 });
+async function billingFixture(country?: string) {
+  const gymId = uuidv7(); await make('gyms', gymId, country ? { address: { country } } : {});
+  const home = await make('households', gymId, { email: 'payer@example.test', phone: '202 555 0123', phoneE164: '+12025550123', ...consent });
+  const child = await make('members', gymId, { householdId: home.id, email: 'payer@example.test', phone: '+12025550199', phoneE164: '+12025550199', ...consent });
+  return { gymId, home, child };
+}
+it('falls back to a consented member at the billing email when the billing phone is stale for the country', async () => {
+  const f = await billingFixture('GB');
+  expect(await db.forGym(f.gymId, tx => householdNoticePhones(tx, f.gymId, [f.home.id]))).toEqual([{
+    phoneE164: '+12025550199', memberIds: [f.child.id], householdIds: [f.home.id], consentMemberIds: [f.child.id], consentHouseholdIds: [],
+  }]);
+});
+it('keeps a billing phone that is current for the country', async () => {
+  const f = await billingFixture('US');
+  expect(await db.forGym(f.gymId, tx => householdNoticePhones(tx, f.gymId, [f.home.id]))).toEqual([{
+    phoneE164: '+12025550123', memberIds: [f.child.id], householdIds: [f.home.id], consentMemberIds: [], consentHouseholdIds: [f.home.id],
+  }]);
+});
+it('falls back to no phone when the member phone is stale for the country', async () => {
+  const f = await billingFixture('GB');
+  await db.forGym(f.gymId, async tx => {
+    await tx.update(households).set({ smsNoticesConsentAt: null, smsNoticesConsentSource: null }).where(eq(households.id, f.home.id));
+    await tx.update(members).set({ phone: '202 555 0199' }).where(eq(members.id, f.child.id));
+  });
+  expect(await db.forGym(f.gymId, tx => householdNoticePhones(tx, f.gymId, [f.home.id]))).toEqual([]);
+});
+it('keeps an E.164 billing phone without reading the gym country', async () => {
+  // A stored country the settings schema would reject proves the read is skipped.
+  const f = await billingFixture('gb');
+  await db.forGym(f.gymId, tx => tx.update(households).set({ phone: '+12025550123' }).where(eq(households.id, f.home.id)));
+  expect(await db.forGym(f.gymId, tx => householdNoticePhones(tx, f.gymId, [f.home.id]))).toEqual([{
+    phoneE164: '+12025550123', memberIds: [f.child.id], householdIds: [f.home.id], consentMemberIds: [], consentHouseholdIds: [f.home.id],
+  }]);
+});
 it('never substitutes announcements consent, anonymized members, or another gym', async () => {
   const f = await fixture(), other = await fixture(), child = f.children[0]!;
   await db.forGym(f.gymId, async tx => {

@@ -15,6 +15,8 @@ import { householdNoticePhones } from '../members/sms-recipients.js';
 import type { SmsResolver } from '../settings/sms.js';
 import { DeliveryError } from '../../infra/sms/index.js';
 
+const payerOnly = (purpose: SignedLinkRecord['purpose']) => purpose === 'pay_invoice' || purpose === 'update_card';
+
 /** MemberSms checks consent and phone; this additionally binds member recipients to the link's household at the last boundary. */
 export function householdBoundSmsResolver(base: SmsResolver, scope: typeof forGym, gymId: string, householdId: string, memberIds: string[], purpose: SignedLinkRecord['purpose']): SmsResolver {
   return {
@@ -29,7 +31,7 @@ export function householdBoundSmsResolver(base: SmsResolver, scope: typeof forGy
             const found = memberIds.length ? await scope(gymId, tx => tx.select({ id: members.id }).from(members).where(and(
               eq(members.gymId, gymId), eq(members.householdId, householdId), inArray(members.id, memberIds), isNull(members.anonymizedAt)))) : [];
             if (found.length !== memberIds.length) throw new Error('Recipient moved');
-            if (purpose === 'pay_invoice' || purpose === 'update_card') {
+            if (payerOnly(purpose)) {
               const groups = await scope(gymId, tx => householdNoticePhones(tx, gymId, [householdId]));
               if (!groups.some(group => group.phoneE164 === message.to && (memberIds.length
                 ? memberIds.every(id => group.consentMemberIds.includes(id))
@@ -71,7 +73,7 @@ export async function signedLinkSmsRecipient(tx: Transaction, gymId: string, hou
   if (!recipient.smsNoticesConsentAt) throw new AppError('invalid_request', 'SMS notices consent is required', { reason: ['sms_no_consent'] });
   const to = normalizePhone(recipient.phone, country);
   if (!to || to !== recipient.phoneE164) throw new AppError('invalid_request', 'SMS phone is invalid', { reason: ['sms_invalid_phone'] });
-  if (person && (purpose === 'pay_invoice' || purpose === 'update_card')) {
+  if (person && payerOnly(purpose)) {
     const groups = await householdNoticePhones(tx, gymId, [householdId]);
     if (!groups.some(group => group.consentMemberIds.includes(person.id)))
       throw new AppError('invalid_request', 'Billing links can only be texted to the payer', { reason: ['sms_payer_only'] });

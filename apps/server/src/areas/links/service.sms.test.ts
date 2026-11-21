@@ -17,9 +17,10 @@ import { createSignedLinksService } from './service.js';
 import { createSignedLinksRoutes } from './service.routes.js';
 
 const db = useTestDatabase(), make = createFactories(db), t = createTranslator(locales.en ?? {});
-async function fixture() {
+async function fixture(options: { country?: string } = {}) {
   const gymId = uuidv7(), clock = new TestClock('2026-11-16T12:00:00Z'), sms = new FakeSms();
-  await make('gyms', gymId, { memberSmsEnabled: true, memberEmailsEnabled: false });
+  await make('gyms', gymId, { memberSmsEnabled: true, memberEmailsEnabled: false,
+    ...(options.country ? { address: { country: options.country } } : {}) });
   const home = await make('households', gymId, { email: 'payer@example.test', phone: '+12025550123', phoneE164: '+12025550123',
     smsNoticesConsentAt: clock.now(), smsNoticesConsentSource: 'staff' });
   const member = await make('members', gymId, { householdId: home.id, email: 'payer@example.test', phone: '+12025550124', phoneE164: '+12025550124',
@@ -90,6 +91,19 @@ describe('signed links by text', () => {
       .rejects.toMatchObject({ code: 'invalid_request', details: { reason: ['sms_payer_only'] } });
     expect(await f.rows()).toHaveLength(0);
     expect(f.sms.messages).toHaveLength(0);
+  });
+  it.each(['pay_invoice', 'update_card'] as const)('%s falls back to the member when the billing phone is stale for the country', async purpose => {
+    const f = await fixture({ country: 'GB' });
+    await db.forGym(f.gymId, async tx => {
+      await tx.update(households).set({ phone: '202 555 0123', phoneE164: '+12025550123' }).where(eq(households.id, f.home.id));
+      await tx.update(members).set({ email: 'payer@example.test', phone: '+12025550199', phoneE164: '+12025550199' }).where(eq(members.id, f.member.id));
+    });
+    const request = { ...f.request(), ...(purpose === 'pay_invoice' ? { purpose, invoiceId: f.invoice.id } : { purpose }) };
+    await f.links.send(f.context, { ...request, recipientMemberId: f.member.id });
+    expect(f.sms.messages[0]!.to).toBe('+12025550199');
+    await expect(f.links.send(f.context, { ...request, sendGeneration: uuidv7() }))
+      .rejects.toMatchObject({ code: 'invalid_request', details: { reason: ['sms_invalid_phone'] } });
+    expect(f.sms.messages).toHaveLength(1);
   });
   it.each(['onboarding', 'sign_waiver'] as const)('%s still accepts a consenting non-payer', async purpose => {
     const f = await fixture();
