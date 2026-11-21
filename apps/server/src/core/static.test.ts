@@ -53,7 +53,8 @@ it.each(['/admin', '/admin/members/123', '/portal', '/portal/household', '/kiosk
 
 it.each(['/api/missing', '/webhooks/stripe', '/l/token', '/join', '/trial', '/drop-in', '/', '/unrecognized',
   '/assets/missing.js', '/admin/missing.js', '/.env', '/%2eenv', '/assets/%2e%2e%2f.env', '/escape/key.txt',
-  '/assets/%5c..%5c.env', '/assets/%00', '/assets/%ZZ'])('never exposes files or falls back to HTML for %s', async (path) => {
+  '/assets/%5c..%5c.env', '/assets/%00', '/assets/%ZZ',
+  '/assets/app-12345678.js?n=1', '/assets/app-12345678.js?', '/assets/app-12345678.css?v=2'])('never exposes files or falls back to HTML for %s', async (path) => {
   const response = await app.request(path, { headers: { accept: 'text/html' } });
   expect(response.status).toBe(404);
   expect(await response.json()).toMatchObject({ error: { code: 'not_found' } });
@@ -62,6 +63,34 @@ it.each(['/api/missing', '/webhooks/stripe', '/l/token', '/join', '/trial', '/dr
 it('does not replace JSON or write requests with the SPA', async () => {
   expect((await app.request('/admin', { headers: { accept: 'application/json' } })).status).toBe(404);
   expect((await app.request('/admin', { method: 'POST', headers: { accept: 'text/html' } })).status).toBe(404);
+});
+
+it('refuses a HEAD asset request that carries a query string', async () => {
+  const response = await app.request('/assets/app-12345678.js?n=1', { method: 'HEAD' });
+  expect(response.status).toBe(404);
+});
+
+it('still serves the SPA entry for a navigation that carries a query string', async () => {
+  const response = await app.request('/admin?tab=billing', { headers: { accept: 'text/html' } });
+  expect(response.status).toBe(200);
+  expect(response.headers.get('cache-control')).toBe('no-cache');
+  expect(await response.text()).toContain('SPA');
+});
+
+it('counts asset requests that carry a query string toward the flood limit', async () => {
+  const limited = createApp({ publicDirectory: join(directory, 'public'),
+    rateLimit: { limit: 2, peerAddress: () => '127.0.0.1' },
+    resolveGym: async (context, next) => {
+      context.set('context', { ...context.get('context'), gym: { gymId: 'gym', timezone: 'UTC', enabledModules: new Set() } });
+      await next();
+    },
+    session: async (_context, next) => { await next(); },
+    authorize: () => async (_context, next) => { await next(); },
+  });
+  expect((await limited.request('/assets/app-12345678.js?n=1')).status).toBe(404);
+  expect((await limited.request('/assets/app-12345678.js?n=2')).status).toBe(404);
+  expect((await limited.request('/assets/app-12345678.js?n=3')).status).toBe(429);
+  expect((await limited.request('/assets/app-12345678.js')).status).toBe(200);
 });
 
 it('handles HEAD without a response body while preserving file headers', async () => {

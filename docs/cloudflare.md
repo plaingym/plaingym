@@ -26,6 +26,9 @@ a DNS-only record: any other proxy fails the installer's DNS check.
    in 10 seconds, for 10 seconds. Path matching works on the free plan. The proxy alone
    passes a single noisy client on to your server; this rule refuses it at the edge.
    Keep the `/assets/` exclusion: a cold load after an update fetches new hashed files.
+   The app answers an `/assets/` request that carries a query string (`?…`) with 404
+   without reading the file, and counts it toward its own flood limit, so a query string
+   can't be used to get past Cloudflare's cache to your server.
    The current build serves the same HTML for admin, portal and kiosk: each shell loads
    32 declared resources (entry script, preloaded chunks and stylesheet), all under
    `/assets/`. Including the HTML, that is 33 requests, of which this rule counts only

@@ -26,6 +26,9 @@ export function staticAssets(directory = './public'): MiddlewareHandler<RequestE
     if (/[\\\0]/.test(path) || path.split('/').some((part) => part.startsWith('.'))
       || /^\/(?:api|webhooks|l|join|trial|drop-in)(?:\/|$)/.test(path)) return next();
 
+    // Built asset URLs never carry a query, and one would bypass Cloudflare's cache.
+    if (path.startsWith('/assets/') && context.req.url.includes('?')) return next();
+
     const serve = async (relative: string, immutable = false): Promise<Response | undefined> => {
       const file = resolve(root, `.${relative}`);
       if (!file.startsWith(root + sep)) return undefined;
