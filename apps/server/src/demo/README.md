@@ -288,7 +288,9 @@ Portal receipts use a household-authorized generated-PDF path, capped at 1 MiB
 per PDF. A digest of the receipt content names its immutable cached copy;
 repeated downloads reuse it, while a refund or other content change creates a new
 copy. Concurrent requests share generation, and sandbox deletion removes these
-copies with the rest of its upload prefix. This path accepts no visitor files.
+copies with the rest of its upload prefix. Once a sandbox holds 64 cached
+receipt copies, each new receipt is served from a fresh copy marked deleted at
+once, which sandbox cleanup removes. This path accepts no visitor files.
 
 `gym-app seed <gym-uuid>` and `pnpm seed <gym-uuid>` run the registered seed steps.
 Demo and gym-deletion HTTP contracts live in `@plaingym/shared/contracts`.

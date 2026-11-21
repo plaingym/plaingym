@@ -77,7 +77,9 @@ and canceled refunds do not count. Gyms have no locale setting, so money and dat
 use English formatting, as the signed-link pages do. The PDF is stored under
 `<gymId>/receipts/` and marked deleted at once, like waiver PDFs, so the upload
 sweep removes it. Demo sandboxes instead cache one generated PDF per receipt
-content, capped at 1 MiB, until sandbox cleanup. General uploads stay disabled.
+content, capped at 1 MiB, until sandbox cleanup. Once a sandbox holds 64 cached
+receipt copies, each new receipt is served from a fresh copy marked deleted at
+once, which sandbox cleanup removes. General uploads stay disabled.
 
 ## Waivers
 

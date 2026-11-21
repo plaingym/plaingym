@@ -2,11 +2,13 @@
 import { AppError, createTranslator } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
-import type { ReadOptions, Uploads } from '../infra/storage/index.js';
+import type { ReadOptions, UploadInfo, Uploads } from '../infra/storage/index.js';
 import { validateSignatureImage } from '../areas/waivers/snapshot.js';
 import { parseSignatureImageKey } from '../areas/waivers/signature-image-key.js';
 
 const t = createTranslator(locales.en ?? {});
+
+export const demoReceiptCopyLimit = 64;
 
 const pending = new Map<string, Promise<string>>();
 function pdfKey(key: string): string | undefined {
@@ -33,30 +35,49 @@ export class DemoUploads implements Uploads {
     assertNoTransaction('storage.put');
     if (!/^[0-9a-f-]{36}\/receipts\/[0-9a-f-]{36}\/[0-9a-f]{64}\.pdf$/.test(key))
       throw new AppError('not_found', 'Resource not found');
+    return this.#cachedPdf(key, {
+      cached: info => !info.deletedAt && info.contentType === 'application/pdf',
+      render: async () => {
+        const bytes = await render();
+        if (bytes.length > 1024 * 1024 || new TextDecoder().decode(bytes.subarray(0, 5)) !== '%PDF-')
+          throw new AppError('unavailable', 'Receipt is not available');
+        return bytes;
+      },
+      fallbackKey: () => {
+        const fallback = freshKey();
+        if (!/^[0-9a-f-]{36}\/receipts\/[0-9a-f-]{36}\/[0-9a-f-]{36}\.pdf$/.test(fallback)
+          || fallback.slice(0, fallback.lastIndexOf('/')) !== key.slice(0, key.lastIndexOf('/')))
+          throw new AppError('not_found', 'Resource not found');
+        return fallback;
+      },
+      rethrowUnusableWinner: true,
+      full: async () => (await this.source.list(key.slice(0, 36) + '/receipts/')).filter(info => !info.deletedAt).length >= demoReceiptCopyLimit,
+    });
+  }
+  async #cachedPdf(key: string, o: {
+    cached(info: UploadInfo): boolean;
+    render(): Promise<Uint8Array>;
+    fallbackKey(): string;
+    rethrowUnusableWinner: boolean;
+    full?(): Promise<boolean>;
+  }): Promise<string> {
     let work = pending.get(key);
     if (!work) {
       work = (async () => {
         const cached = await this.source.head(key);
         if (cached) {
-          if (cached.deletedAt || cached.contentType !== 'application/pdf') throw new AppError('not_found', 'Resource not found');
-          return key;
+          if (o.cached(cached)) return key;
+          throw new AppError('not_found', 'Resource not found');
         }
-        const bytes = await render();
-        if (bytes.length > 1024 * 1024 || new TextDecoder().decode(bytes.subarray(0, 5)) !== '%PDF-')
-          throw new AppError('unavailable', 'Receipt is not available');
+        const bytes = await o.render();
+        if (o.full && await o.full()) return await this.#ephemeral(o.fallbackKey(), bytes);
         try { await this.source.put(key, bytes, 'application/pdf'); }
         catch (error) {
           const winner = await this.source.head(key);
           if (winner && !winner.deletedAt && winner.contentType === 'application/pdf') return key;
-          if (winner) throw error;
+          if (winner && o.rethrowUnusableWinner) throw error;
           // A failed durable reservation never releases its key. Serve a swept copy, like waiver PDFs.
-          const fallback = freshKey();
-          if (!/^[0-9a-f-]{36}\/receipts\/[0-9a-f-]{36}\/[0-9a-f-]{36}\.pdf$/.test(fallback)
-            || fallback.slice(0, fallback.lastIndexOf('/')) !== key.slice(0, key.lastIndexOf('/')))
-            throw new AppError('not_found', 'Resource not found');
-          await this.source.put(fallback, bytes, 'application/pdf');
-          await this.source.markDeleted(fallback);
-          return fallback;
+          return await this.#ephemeral(o.fallbackKey(), bytes);
         }
         return key;
       })();
@@ -64,6 +85,11 @@ export class DemoUploads implements Uploads {
     }
     try { return await work; }
     finally { if (pending.get(key) === work) pending.delete(key); }
+  }
+  async #ephemeral(fallback: string, bytes: Uint8Array): Promise<string> {
+    await this.source.put(fallback, bytes, 'application/pdf');
+    await this.source.markDeleted(fallback);
+    return fallback;
   }
   get: Uploads['get'] = (key, options) => this.source.get(key, options);
   head: Uploads['head'] = (key, options) => this.source.head(key, options);
@@ -81,33 +107,16 @@ export class DemoUploads implements Uploads {
     assertNoTransaction('storage.put');
     const key = pdfKey(signatureImageKey);
     if (!key) throw new AppError('not_found', 'Resource not found');
-    let work = pending.get(key);
-    if (!work) {
-      work = (async () => {
-        const cached = await this.source.head(key);
-        if (cached) {
-          if (cached.deletedAt) throw new AppError('not_found', 'Resource not found');
-          return key;
-        }
+    return this.#cachedPdf(key, {
+      cached: info => !info.deletedAt,
+      render: async () => {
         const bytes = await render(), image = await this.source.head(signatureImageKey);
         if (!image || image.deletedAt) throw new AppError('not_found', 'Resource not found');
-        try { await this.source.put(key, bytes, 'application/pdf'); }
-        catch {
-          // Another process may have published the same immutable copy first.
-          const winner = await this.source.head(key);
-          if (winner && !winner.deletedAt && winner.contentType === 'application/pdf') return key;
-          // A failed upload can leave an immutable reservation without stored bytes.
-          const fallback = freshKey();
-          await this.source.put(fallback, bytes, 'application/pdf');
-          await this.source.markDeleted(fallback);
-          return fallback;
-        }
-        return key;
-      })();
-      pending.set(key, work);
-    }
-    try { return await work; }
-    finally { if (pending.get(key) === work) pending.delete(key); }
+        return bytes;
+      },
+      fallbackKey: freshKey,
+      rethrowUnusableWinner: false,
+    });
   }
 }
 
