@@ -4,6 +4,7 @@ import type { Sql } from '../client.js';
 import * as schema from '../schema/index.js';
 import { systemTables } from '../../system-tables.mjs';
 import { appendOnlyTables, deletableAppendOnlyTables, mutableColumns } from './apply.js';
+import { privilegedMemberships } from './memberships.js';
 const expectedTables = Object.values(schema).map(getTableName).sort();
 const normalize = (expression: string) => expression.toLowerCase().replaceAll('::text', '').replace(/[()\s]/g, '');
 const gymPredicate = (column: string) => `${column} = nullif(current_setting('app.gym_id', true), '')::uuid`;
@@ -91,21 +92,7 @@ export async function assertCatalog(sql: Sql) {
   `;
   for (const setting of settings) failures.push('Unexpected database or role settings: database ' +
     String(setting.database_name) + ', role ' + String(setting.role_name) + ': ' + String(setting.setting_name));
-  // Follow every membership edge, regardless of INHERIT, SET or ADMIN options.
-  const privilegedRoles = await sql`
-    with recursive memberships(roleid) as (
-      select m.roleid from pg_catalog.pg_auth_members m
-      join pg_catalog.pg_roles r on r.oid = m.member where r.rolname = 'app'
-      union
-      select m.roleid from pg_catalog.pg_auth_members m join memberships on memberships.roleid = m.member
-    )
-    select r.rolname from memberships join pg_catalog.pg_roles r on r.oid = memberships.roleid
-    where r.rolsuper or r.rolbypassrls or r.rolcreaterole or r.rolreplication or r.rolcreatedb
-      or r.rolname in ('maintenance', 'pg_execute_server_program', 'pg_write_server_files', 'pg_read_server_files',
-        'pg_maintain', 'pg_signal_backend', 'pg_create_subscription', 'pg_checkpoint')
-    order by r.rolname
-  `;
-  for (const role of privilegedRoles) failures.push('app is a member of privileged role ' + String(role.rolname));
+  for (const name of await privilegedMemberships(sql)) failures.push('app is a member of privileged role ' + name);
   const [drizzle] = await sql`
     select has_schema_privilege('app', oid, 'USAGE') as usage, has_schema_privilege('app', oid, 'CREATE') as create
     from pg_catalog.pg_namespace where nspname = 'drizzle'

@@ -364,8 +364,13 @@ key rotation. The post-migration catalog check refuses direct or indirect
 membership of `app` in a role with `SUPERUSER`, `BYPASSRLS`, `CREATEROLE`,
 `REPLICATION` or `CREATEDB`. It also refuses membership in `maintenance`,
 `pg_execute_server_program`, `pg_write_server_files`, `pg_read_server_files`,
-`pg_maintain`, `pg_signal_backend`, `pg_create_subscription` or `pg_checkpoint`.
-It counts membership with any options and names each privileged role.
+`pg_maintain`, `pg_signal_backend`, `pg_create_subscription`, `pg_checkpoint`,
+`pg_read_all_data`, `pg_write_all_data`, `pg_read_all_stats`, `pg_monitor` or
+`pg_use_reserved_connections`. It counts membership with any options and names
+each privileged role. The app repeats the membership check at every start in
+both tenancy modes, and so does every `gym-app` command that opens the app
+database (such as `auth reset-password` and `auto-update`); the restore CLI runs
+it for `snapshot` and `snapshot-check`.
 
 * **Single-gym installs** (`TENANCY=single`, this directory's `compose.yaml`):
   the app container holds `MAINTENANCE_PASSWORD` and `MAINTENANCE_DATABASE_URL`.
@@ -378,6 +383,8 @@ It counts membership with any options and names each privileged role.
   reach every gym. A one-shot `migrate` service from the same image runs
   `/app/deploy/database.sh prepare` (role check, then migrations) and exits;
   the app starts only after it succeeds (`service_completed_successfully`).
+  On an app-only restart, the membership check still runs, so a privileged
+  grant made after migrations blocks the next start.
   In production (`NODE_ENV=production`, as in the image) the app refuses to
   start when either variable is set, naming the variable. Without the role,
   multi-gym installs have no in-process backups or restore: their app ignores

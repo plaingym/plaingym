@@ -248,9 +248,14 @@ direct or indirect membership of `app` in a role with `SUPERUSER`, `BYPASSRLS`,
 `CREATEROLE`, `REPLICATION` or `CREATEDB`. It also refuses membership in
 `maintenance`, `pg_execute_server_program`, `pg_write_server_files`,
 `pg_read_server_files`, `pg_maintain`, `pg_signal_backend`,
-`pg_create_subscription` or `pg_checkpoint`. It counts membership with any
-options and names each privileged role. A view outside `app`'s reach passes
-whatever its invoker option.
+`pg_create_subscription`, `pg_checkpoint`, `pg_read_all_data`,
+`pg_write_all_data`, `pg_read_all_stats`, `pg_monitor` or
+`pg_use_reserved_connections`. It counts membership with any options and names
+each privileged role. In both tenancy modes, `initializeDatabase` repeats the
+membership check, so a privileged membership granted after migrations blocks
+the next app start and every `gym-app` command that opens the app database.
+The restore CLI calls `initializeDatabase` for `snapshot` and `snapshot-check`.
+A view outside `app`'s reach passes whatever its invoker option.
 When `app` holds any privilege,
 including column grants or privileges through `PUBLIC`, the view must have
 `security_invoker`, be owned by `maintenance`, and grant no unexpected privileges.

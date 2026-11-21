@@ -7,6 +7,7 @@ import { runInTransaction, assertNoTransaction } from '@plaingym/shared/transact
 import { advisoryLockNamespace, advisoryLocks } from './locks.js';
 import { errorCauses } from './errors.js';
 import { HouseholdAccessError, householdQueries, type HouseholdScope } from './household.js';
+import { privilegedMemberships } from './security/memberships.js';
 export type Sql = ReturnType<typeof postgres>;
 export type Database = PostgresJsDatabase;
 export type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
@@ -138,6 +139,10 @@ export async function initializeDatabase(url: string, max: number = connectionBu
     `;
     if (!role || role.name !== 'app' || role.rolsuper || role.rolbypassrls || role.rolcreatedb || role.rolcreaterole || role.maintenance_member) {
       throw new Error('Application requires the restricted app database role');
+    }
+    const names = await privilegedMemberships(connection.sql);
+    if (names.length) {
+      throw new Error('Database catalog check failed:\n' + names.map(name => 'app is a member of privileged role ' + name).join('\n'));
     }
     applicationConnection = connection;
     systemConnection = system;

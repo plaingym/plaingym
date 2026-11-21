@@ -35,8 +35,14 @@ Isolation is enforced in the database, not only in application code.
   `BYPASSRLS`, `CREATEROLE`, `REPLICATION` or `CREATEDB`. It also refuses
   membership in `maintenance`, `pg_execute_server_program`,
   `pg_write_server_files`, `pg_read_server_files`, `pg_maintain`,
-  `pg_signal_backend`, `pg_create_subscription` or `pg_checkpoint`. It counts
-  membership with any options and names each privileged role.
+  `pg_signal_backend`, `pg_create_subscription`, `pg_checkpoint`,
+  `pg_read_all_data`, `pg_write_all_data`, `pg_read_all_stats`, `pg_monitor` or
+  `pg_use_reserved_connections`. It counts membership with any options and names
+  each privileged role. In both tenancy modes, the app repeats the membership
+  check at startup. A privileged membership granted after migrations blocks
+  the next start, and every `gym-app` command that opens the app database
+  (such as `auth reset-password`) refuses to run. The restore CLI runs the
+  same check for `snapshot` and `snapshot-check`.
   In multi-gym mode the running app never holds the maintenance credentials and
   refuses to start if they are set.
   Every app, authentication and maintenance pool pins `search_path=public` at

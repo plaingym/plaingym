@@ -81,12 +81,15 @@ can store values the previous release's readers reject. A dropped constraint's
 kind is absent from that SQL, so even a
 foreign-key drop needs review. Constraints and required columns
 inside a new `CREATE TABLE` are allowed because older code does not use that table.
-The lint ignores comments and treats ordinary quoted text as opaque; it scans
-dollar-quoted text for `setval`. To name a sequence from an `E'...'` literal it
-decodes `\\` and `\'` and drops the backslash of any other escape. It handles
-multiple ALTER actions; it does not execute SQL, apply its other rules inside
-`DO` or function bodies, inspect single-quoted bodies, follow dynamic SQL, or
-prove reader compatibility.
+The lint ignores comments and treats ordinary quoted text as opaque. It scans
+dollar-quoted text for `setval` and flags `setval` in a single-quoted `DO`,
+function or procedure body as `setval in a single-quoted body`. To name a
+sequence from an `E'...'` literal it decodes `\\` and `\'` and drops the
+backslash of any other escape. It applies the `ALTER TABLE` and `ALTER SEQUENCE`
+rules, including multiple ALTER actions, to statements inside SQL and PL/pgSQL
+`DO`, function and procedure bodies, but not to a body nested inside another.
+The findings report the outer statement's line. The lint reads SQL statically. Review dynamic SQL and confirm reader
+compatibility separately.
 Keep migration changes declarative and review the data readers as well.
 
 An intentional finding needs a comment on its own line immediately before that
@@ -94,7 +97,9 @@ statement: `-- rollback-reviewed: <reason>`. State the major boundary and upgrad
 name the default and the previous release's tolerant reader (including when that
 reader shipped). For a non-CHECK constraint, state its kind and why the change
 preserves rollback. The comment exempts only that statement, not the file; a blank
-reason does not exempt it. Reviewers verify the rationale against the release's
+reason does not exempt it. For a finding inside a `DO`, function or procedure
+body, put the comment before the outer statement, which exempts its whole body.
+Reviewers verify the rationale against the release's
 rollback floor and application code. Existing migrations remain immutable.
 
 Stored job payloads, inbox events and settings JSON tolerate unknown keys, so the

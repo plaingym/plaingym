@@ -4,7 +4,8 @@ import { closeDatabase, initializeDatabase, openConnection } from './client.js';
 import { migrateDatabase } from './migrate.js';
 import { applySecurity } from './security/apply.js';
 import { assertCatalog } from './security/catalog.js';
-import { cloneDatabase, useTestDatabase } from './testing/database.js';
+import { privilegedMemberships } from './security/memberships.js';
+import { cloneDatabase, databaseUrl, useTestDatabase } from './testing/database.js';
 import { createFactories } from './testing/factories.js';
 import { uuidv7 } from './id.js';
 import { households } from './schema/members.js';
@@ -12,6 +13,19 @@ const database = useTestDatabase();
 it('refuses to initialize application access with maintenance credentials', async () => {
   await expect(initializeDatabase(database.maintenanceUrl)).rejects.toThrow('restricted app');
   try { await initializeDatabase(database.appUrl); } finally { await closeDatabase(); }
+});
+it('lists direct and transitive privileged memberships from the app role', async () => {
+  await expect(privilegedMemberships(database.app.sql)).resolves.toEqual([]);
+  const admin = openConnection(databaseUrl(inject('testDatabase').adminUrl, database.name), 1);
+  const sql = admin.sql;
+  try {
+    await sql`begin`;
+    await sql`grant pg_monitor to app`;
+    await sql`set local role app`;
+    await expect(privilegedMemberships(sql)).resolves.toEqual(['pg_monitor', 'pg_read_all_stats']);
+  } finally {
+    try { await sql`rollback`; } finally { await admin.close(); }
+  }
 });
 it('creates independent template clones with restricted app connections', async () => {
   const other = await cloneDatabase(inject('testDatabase'));

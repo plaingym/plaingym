@@ -335,6 +335,81 @@ test('a reviewed statement exempts setval in a dollar-quoted body', () => {
   assert.deepEqual(rollbackFindings("-- rollback-reviewed: sequence has no older writers\nDO $$ BEGIN PERFORM setval('s', 1); END $$;"), []);
 });
 
+test('flags setval in single-quoted procedural bodies', () => {
+  for (const sql of [
+    "DO 'BEGIN PERFORM setval(''s'', 1); END';",
+    "CREATE FUNCTION f() RETURNS void AS 'SELECT setval(''s'', 1)' LANGUAGE sql;",
+    "CREATE OR REPLACE PROCEDURE p() LANGUAGE plpgsql AS E'BEGIN PERFORM \"setval\"(\\'s\\', 1); END';",
+    "DO LANGUAGE 'plpgsql' 'BEGIN PERFORM setval(''s'', 1); END';",
+  ]) {
+    assert.deepEqual(rollbackFindings(sql), [{ line: 1, rule: 'setval in a single-quoted body' }], sql);
+  }
+});
+
+test('accepts routine declarations and signatures named setval', () => {
+  for (const sql of [
+    'CREATE FUNCTION setval(a int) RETURNS int AS $$ SELECT a $$ LANGUAGE sql;',
+    'CREATE PROCEDURE setval(a int) AS $$ SELECT a $$ LANGUAGE sql;',
+    'CREATE AGGREGATE setval(int) (SFUNC = int4pl, STYPE = int);',
+    'DROP FUNCTION setval(int);',
+  ]) assert.deepEqual(rollbackFindings(sql), [], sql);
+});
+
+test('applies ALTER TABLE rules inside SQL and PL/pgSQL bodies', () => {
+  const alter = 'ALTER TABLE members ALTER COLUMN status SET NOT NULL';
+  const rule = 'SET NOT NULL: verify a non-null DEFAULT for older inserts';
+  for (const sql of [
+    `DO $$ BEGIN ${alter}; END $$;`,
+    `DO 'BEGIN ${alter}; END';`,
+    `DO LANGUAGE 'PlPgSql' $$ BEGIN ${alter}; END $$;`,
+    `CREATE FUNCTION f() RETURNS void AS $$ BEGIN ${alter}; END $$ LANGUAGE plpgsql;`,
+    `CREATE OR REPLACE PROCEDURE p() LANGUAGE 'SqL' AS '${alter}';`,
+  ]) {
+    assert.deepEqual(rollbackFindings(sql), [{ line: 1, rule }], sql);
+    assert.deepEqual(rollbackFindings(`-- heading\n${sql}`), [{ line: 2, rule }], sql);
+  }
+  const drop = 'DROP NOT NULL: older readers may reject null stored values';
+  const dropNull = 'ALTER TABLE members ALTER COLUMN status DROP NOT NULL';
+  for (const sql of [
+    `DO $$ BEGIN IF true THEN ${dropNull}; END IF; END $$;`,
+    `DO $$ BEGIN IF true THEN NULL; ELSE ${dropNull}; END IF; END $$;`,
+    `DO $$ BEGIN LOOP ${dropNull}; EXIT; END LOOP; END $$;`,
+  ]) {
+    assert.deepEqual(rollbackFindings(sql), [{ line: 1, rule: drop }], sql);
+  }
+});
+
+test('applies ALTER SEQUENCE rules after a reviewed inner statement', () => {
+  const sql = `DO $$ BEGIN
+  NULL;
+  -- rollback-reviewed: old readers tolerate missing values
+  ALTER TABLE members ALTER COLUMN status DROP NOT NULL;
+  ALTER SEQUENCE s RESTART;
+  END $$;`;
+  assert.deepEqual(rollbackFindings(sql), [
+    { line: 1, rule: 'ALTER SEQUENCE RESTART on s: older inserts may exhaust the sequence or receive conflicting values' },
+  ]);
+});
+
+test('keeps other procedural languages and dynamic ALTER SQL opaque', () => {
+  for (const sql of [
+    'DO LANGUAGE plpython3u $$ ALTER TABLE members ALTER COLUMN status SET NOT NULL $$;',
+    'CREATE FUNCTION f() RETURNS void AS $$ ALTER TABLE members ALTER COLUMN status SET NOT NULL $$ LANGUAGE c;',
+    'CREATE FUNCTION f() RETURNS void AS $$ ALTER TABLE members ALTER COLUMN status SET NOT NULL $$;',
+    "DO $$ BEGIN EXECUTE 'ALTER TABLE members ALTER COLUMN status SET NOT NULL'; END $$;",
+    "CREATE FUNCTION f(s text DEFAULT 'setval(''s'', 1)') RETURNS text AS 'SELECT s' LANGUAGE sql;",
+  ]) assert.deepEqual(rollbackFindings(sql), [], sql);
+});
+
+test('applies an outer review to its whole procedural body', () => {
+  const sql = "-- rollback-reviewed: reason\nDO $$ BEGIN ALTER TABLE members ALTER COLUMN status SET NOT NULL; END $$;";
+  assert.deepEqual(rollbackFindings(sql), []);
+});
+
+test('reports a body tokenization error with its outer statement line', () => {
+  assert.throws(() => rollbackFindings("DO $$ BEGIN SELECT 'x; END $$;"), /In the body of the statement at line 1: Unterminated SQL quote/);
+});
+
 test('flags a NULL default set on an existing column, which acts like a dropped default', () => {
   for (const sql of [
     'ALTER TABLE members ALTER COLUMN status SET DEFAULT NULL;',

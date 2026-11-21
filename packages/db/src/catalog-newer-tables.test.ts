@@ -106,6 +106,11 @@ describe('app role memberships at startup', () => {
     ['pg_signal_backend', null, false],
     ['pg_create_subscription', null, false],
     ['pg_checkpoint', null, false],
+    ['pg_read_all_data', null, false],
+    ['pg_write_all_data', null, false],
+    ['pg_read_all_stats', null, false],
+    ['pg_monitor', null, false],
+    ['pg_use_reserved_connections', null, false],
     ['maintenance', null, false],
   ])('refuses %s and names the role', async (name, attributes, indirect) => {
     const admin = openConnection(databaseUrl(inject('testDatabase').adminUrl, database.name), 1);
@@ -134,6 +139,19 @@ describe('app role memberships at startup', () => {
       }
       await sql`set local role maintenance`;
       await expect(assertCatalog(sql)).rejects.toThrow(`app is a member of privileged role ${role}`);
+    } finally {
+      try { await sql`rollback`; } finally { await admin.close(); }
+    }
+  });
+
+  it('refuses a privileged membership usable with SET ROLE but without inheritance', async () => {
+    const admin = openConnection(databaseUrl(inject('testDatabase').adminUrl, database.name), 1);
+    const sql = admin.sql;
+    try {
+      await sql`begin`;
+      await sql`grant pg_read_all_data to app with inherit false, set true`;
+      await sql`set local role maintenance`;
+      await expect(assertCatalog(sql)).rejects.toThrow('app is a member of privileged role pg_read_all_data');
     } finally {
       try { await sql`rollback`; } finally { await admin.close(); }
     }

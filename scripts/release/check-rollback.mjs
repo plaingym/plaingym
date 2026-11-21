@@ -10,10 +10,10 @@ import { assertMigrationBase, migrations } from './migration-files.mjs';
 function statements(source) {
   const result = [];
   // `trailing` is set after a `;` until the next line, so a comment after a statement can't review the next one.
-  let tokens = [], literals = new Map(), dollarBodies = [], line = 1, start = 1, reviewed = '', index = 0, trailing = false;
+  let tokens = [], literals = new Map(), dollarBodies = new Map(), line = 1, start = 1, reviewed = '', index = 0, trailing = false;
   const finish = () => {
     if (tokens.length) result.push({ tokens, literals, dollarBodies, line: start, reviewed });
-    tokens = []; literals = new Map(); dollarBodies = []; reviewed = ''; trailing = true;
+    tokens = []; literals = new Map(); dollarBodies = new Map(); reviewed = ''; trailing = true;
   };
   while (index < source.length) {
     const rest = source.slice(index);
@@ -42,7 +42,7 @@ function statements(source) {
         raw = rest.slice(0, end + dollar.length);
         const body = rest.slice(dollar.length, end);
         literals.set(tokens.length, body);
-        dollarBodies.push(body);
+        dollarBodies.set(tokens.length, body);
         tokens.push('?');
       } else if (quoted) {
         raw = quoted;
@@ -143,11 +143,11 @@ function setvalCalls(tokens, literals) {
     while (tokens[beforeName] === '.') beforeName -= 2;
     // ONLY can't precede a function call, only a relation (`CREATE INDEX i ON ONLY setval (a)`).
     if (tokens[beforeName] === 'ONLY') beforeName--;
-    // A relation name may also be followed by a column list.
+    // A relation name or routine signature can also be followed by parentheses.
     const previous = tokens[beforeName];
     const indexTarget = previous === 'ON' && tokens[0] === 'CREATE' &&
       (tokens[1] === 'INDEX' || (tokens[1] === 'UNIQUE' && tokens[2] === 'INDEX'));
-    if (indexTarget || ['TABLE', 'INTO', 'REFERENCES', 'OF', 'VIEW', 'COPY'].includes(previous) ||
+    if (indexTarget || ['TABLE', 'INTO', 'REFERENCES', 'OF', 'VIEW', 'COPY', 'FUNCTION', 'PROCEDURE', 'AGGREGATE'].includes(previous) ||
         tokens.slice(beforeName - 3, beforeName + 1).join(' ') === 'TABLE IF NOT EXISTS') continue;
     const argument = index + 2;
     const name = [',', ':'].includes(tokens[argument + 1]) ? literals.get(argument) : undefined;
@@ -170,6 +170,135 @@ function nullDefault(tokens, index) {
   return value[0] === 'NULL' && (value.length === 1 || (value[1] === ':' && value[2] === ':'));
 }
 
+/** @param {string[]} tokens @param {number} line */
+function alterFindings(tokens, line) {
+  const findings = [];
+  if (tokens[0] !== 'ALTER') return findings;
+  if (tokens[1] === 'SEQUENCE') {
+    for (const rule of sequenceAlterations(tokens)) findings.push({ line, rule });
+  }
+  if (tokens[1] !== 'TABLE') return findings;
+  for (const action of actions(tokens, line)) {
+    // A removed constraint may be a CHECK; its kind is not in DROP CONSTRAINT SQL.
+    if (action.includes('CHECK') || contains(action, ['DROP', 'CONSTRAINT']))
+      findings.push({ line, rule: 'changed CHECK (or dropped constraint): older readers may reject new stored values' });
+    if (contains(action, ['SET', 'NOT', 'NULL']))
+      findings.push({ line, rule: 'SET NOT NULL: verify a non-null DEFAULT for older inserts' });
+    if (contains(action, ['DROP', 'NOT', 'NULL']))
+      findings.push({ line, rule: 'DROP NOT NULL: older readers may reject null stored values' });
+    // These rules apply to ALTER [COLUMN] actions on existing columns.
+    const alter = action.lastIndexOf('ALTER');
+    const alteration = alter === -1 ? [] : action.slice(alter + 1);
+    if (alteration[0] === 'COLUMN') alteration.shift();
+    const [alteredColumn, ...change] = alteration;
+    if (alteredColumn && !['TABLE', 'CONSTRAINT'].includes(alteredColumn)) {
+      const name = identifierName(alteredColumn);
+      if (change[0] === 'TYPE' || contains(change, ['SET', 'DATA', 'TYPE']))
+        findings.push({ line, rule: 'SET DATA TYPE (or TYPE): older readers may reject new stored values' });
+      if (change[0] === 'DROP' && change[1] === 'IDENTITY')
+        findings.push({ line, rule: `DROP IDENTITY on ${name}: older inserts that omit the column lose its generated value and fail` });
+      if (change[0] === 'ADD' && change[1] === 'GENERATED' && contains(change, ['AS', 'IDENTITY']))
+        findings.push({ line, rule: `ADD GENERATED AS IDENTITY on ${name}: older inserts may fail on an explicit value or a conflicting sequence value` });
+      if (contains(change, ['SET', 'GENERATED', 'ALWAYS']))
+        findings.push({ line, rule: `SET GENERATED ALWAYS on ${name}: older inserts that supply a value are rejected` });
+      if (change[0] === 'DROP' && change[1] === 'EXPRESSION')
+        findings.push({ line, rule: `DROP EXPRESSION on ${name}: older inserts that omit the column lose its computed value` });
+      if (change[0] === 'SET' && change[1] === 'EXPRESSION')
+        findings.push({ line, rule: `SET EXPRESSION on ${name}: older readers may receive different generated values` });
+      if (change[0] === 'RESTART' || (change[0] === 'SET' && identityOptions.includes(change[1]))) {
+        if (change.includes('RESTART'))
+          findings.push({ line, rule: `RESTART on ${name}: older inserts that omit the column may receive conflicting sequence values` });
+        if (contains(change, ['SET', 'START']))
+          findings.push({ line, rule: `SET START on ${name}: a later restart may give older inserts conflicting sequence values` });
+        if (contains(change, ['SET', 'INCREMENT']))
+          findings.push({ line, rule: `SET INCREMENT BY on ${name}: older inserts that omit the column may receive conflicting sequence values` });
+        if (contains(change, ['SET', 'CYCLE']))
+          findings.push({ line, rule: `SET CYCLE on ${name}: older inserts may receive conflicting sequence values after wraparound` });
+        for (const bound of ['MAXVALUE', 'MINVALUE']) {
+          if (contains(change, ['SET', bound]))
+            findings.push({ line, rule: `SET ${bound} on ${name}: older inserts may exhaust the sequence or receive conflicting values` });
+        }
+        for (const option of ['CYCLE', 'MAXVALUE', 'MINVALUE']) {
+          if (contains(change, ['SET', 'NO', option]))
+            findings.push({ line, rule: `SET NO ${option} on ${name}: older inserts may exhaust the sequence or receive conflicting values` });
+        }
+      }
+    }
+    if (contains(action, ['DROP', 'DEFAULT']))
+      findings.push({ line, rule: 'DROP DEFAULT: older inserts that omit a NOT NULL column fail' });
+    const setDefault = action.findIndex((token, index) => token === 'SET' && action[index + 1] === 'DEFAULT');
+    if (setDefault !== -1 && nullDefault(action, setDefault + 2))
+      findings.push({ line, rule: 'SET DEFAULT NULL: older inserts that omit a NOT NULL column fail' });
+    const add = action.indexOf('ADD');
+    if (add === -1) continue;
+    const definition = action.slice(add + 1);
+    if (definition[0] === 'COLUMN') definition.shift();
+    if (definition.slice(0, 3).join(' ') === 'IF NOT EXISTS') definition.splice(0, 3);
+    const constraint = definition[0] === 'CONSTRAINT' ? definition.slice(2) : definition;
+    if (contains(constraint.slice(0, 2), ['NOT', 'NULL']))
+      findings.push({ line, rule: 'NOT NULL constraint: verify a non-null DEFAULT for older inserts' });
+    if (contains(constraint.slice(0, 2), ['PRIMARY', 'KEY']))
+      findings.push({ line, rule: 'PRIMARY KEY constraint: verify non-null DEFAULTs for older inserts' });
+    if (['CONSTRAINT', 'CHECK', 'UNIQUE', 'PRIMARY', 'FOREIGN', 'EXCLUDE', 'NOT'].includes(definition[0])) continue;
+    const column = definition.slice(2);
+    const required = contains(column, ['NOT', 'NULL']) || contains(column, ['PRIMARY', 'KEY']);
+    const filled = /^(?:SMALLSERIAL|SERIAL|BIGSERIAL|SERIAL[248])$/.test(definition[1] ?? '') ||
+      contains(column, ['GENERATED', 'ALWAYS', 'AS']) || contains(column, ['GENERATED', 'BY', 'DEFAULT', 'AS', 'IDENTITY']);
+    const defaultIndex = definition.indexOf('DEFAULT');
+    if (required && !filled && (defaultIndex === -1 || nullDefault(definition, defaultIndex + 1)))
+      findings.push({ line, rule: 'new NOT NULL column without a non-null DEFAULT: older inserts omit it' });
+  }
+  return findings;
+}
+
+const setvalInBody = /\bsetval"?\s*\(/i;
+
+/** @param {ReturnType<typeof statements>[number]} statement */
+function bodyFindings({ tokens, literals, dollarBodies, line }) {
+  const isDo = tokens[0] === 'DO';
+  const kind = tokens[1] === 'OR' && tokens[2] === 'REPLACE' ? tokens[3] : tokens[1];
+  if (!isDo && (tokens[0] !== 'CREATE' || !['FUNCTION', 'PROCEDURE'].includes(kind))) return [];
+  const bodyIndex = tokens.findIndex((token, index) => token === '?' &&
+    (isDo ? tokens[index - 1] !== 'LANGUAGE' : tokens[index - 1] === 'AS'));
+  const body = literals.get(bodyIndex);
+  if (body === undefined) return [];
+
+  const findings = [];
+  if (!dollarBodies.has(bodyIndex) && setvalInBody.test(body)) {
+    findings.push({ line, rule: 'setval in a single-quoted body' });
+  }
+
+  // A routine's argument list can contain identifiers named LANGUAGE.
+  let depth = 0;
+  const sqlLanguage = tokens.some((token, index) => {
+    if (token === '(') depth++;
+    else if (token === ')') depth--;
+    if (depth !== 0 || token !== 'LANGUAGE') return false;
+    const name = tokens[index + 1];
+    const language = name === '?' ? literals.get(index + 1)?.toUpperCase() : name;
+    return ['PLPGSQL', 'SQL', '"plpgsql"', '"sql"'].includes(language);
+  });
+  if (!sqlLanguage && !(isDo && !tokens.includes('LANGUAGE'))) return findings;
+
+  let inner;
+  try {
+    inner = statements(body);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error('In the body of the statement at line ' + line + ': ' + message, { cause: error });
+  }
+  for (const { tokens, reviewed } of inner) {
+    if (reviewed) continue;
+    for (let i = 0; i < tokens.length; i++) {
+      if (tokens[i] === 'ALTER' && ['TABLE', 'SEQUENCE'].includes(tokens[i + 1]) &&
+          (i === 0 || ['BEGIN', 'THEN', 'ELSE', 'LOOP'].includes(tokens[i - 1]))) {
+        findings.push(...alterFindings(tokens.slice(i), line));
+      }
+    }
+  }
+  return findings;
+}
+
 /** Static review triggers, not proof that arbitrary SQL or application readers are compatible.
  * @param {string} source
  * @returns {{line: number, rule: string}[]}
@@ -180,85 +309,11 @@ export function rollbackFindings(source) {
     const { tokens, literals, dollarBodies, line, reviewed } = statement;
     if (reviewed) continue;
     for (const rule of setvalCalls(tokens, literals)) findings.push({ line, rule });
-    for (const body of dollarBodies) {
+    for (const body of dollarBodies.values()) {
       // Also matches the quoted identifier `"setval"(`, which the token scan flags outside a body.
-      if (/\bsetval"?\s*\(/i.test(body)) findings.push({ line, rule: 'setval in a dollar-quoted body' });
+      if (setvalInBody.test(body)) findings.push({ line, rule: 'setval in a dollar-quoted body' });
     }
-    if (tokens[0] !== 'ALTER') continue;
-    if (tokens[1] === 'SEQUENCE') {
-      for (const rule of sequenceAlterations(tokens)) findings.push({ line, rule });
-    }
-    if (tokens[1] !== 'TABLE') continue;
-    for (const action of actions(tokens, line)) {
-      // A removed constraint may be a CHECK; its kind is not in DROP CONSTRAINT SQL.
-      if (action.includes('CHECK') || contains(action, ['DROP', 'CONSTRAINT']))
-        findings.push({ line, rule: 'changed CHECK (or dropped constraint): older readers may reject new stored values' });
-      if (contains(action, ['SET', 'NOT', 'NULL']))
-        findings.push({ line, rule: 'SET NOT NULL: verify a non-null DEFAULT for older inserts' });
-      if (contains(action, ['DROP', 'NOT', 'NULL']))
-        findings.push({ line, rule: 'DROP NOT NULL: older readers may reject null stored values' });
-      // These rules apply to ALTER [COLUMN] actions on existing columns.
-      const alter = action.lastIndexOf('ALTER');
-      const alteration = alter === -1 ? [] : action.slice(alter + 1);
-      if (alteration[0] === 'COLUMN') alteration.shift();
-      const [alteredColumn, ...change] = alteration;
-      if (alteredColumn && !['TABLE', 'CONSTRAINT'].includes(alteredColumn)) {
-        const name = identifierName(alteredColumn);
-        if (change[0] === 'TYPE' || contains(change, ['SET', 'DATA', 'TYPE']))
-          findings.push({ line, rule: 'SET DATA TYPE (or TYPE): older readers may reject new stored values' });
-        if (change[0] === 'DROP' && change[1] === 'IDENTITY')
-          findings.push({ line, rule: `DROP IDENTITY on ${name}: older inserts that omit the column lose its generated value and fail` });
-        if (change[0] === 'ADD' && change[1] === 'GENERATED' && contains(change, ['AS', 'IDENTITY']))
-          findings.push({ line, rule: `ADD GENERATED AS IDENTITY on ${name}: older inserts may fail on an explicit value or a conflicting sequence value` });
-        if (contains(change, ['SET', 'GENERATED', 'ALWAYS']))
-          findings.push({ line, rule: `SET GENERATED ALWAYS on ${name}: older inserts that supply a value are rejected` });
-        if (change[0] === 'DROP' && change[1] === 'EXPRESSION')
-          findings.push({ line, rule: `DROP EXPRESSION on ${name}: older inserts that omit the column lose its computed value` });
-        if (change[0] === 'SET' && change[1] === 'EXPRESSION')
-          findings.push({ line, rule: `SET EXPRESSION on ${name}: older readers may receive different generated values` });
-        if (change[0] === 'RESTART' || (change[0] === 'SET' && identityOptions.includes(change[1]))) {
-          if (change.includes('RESTART'))
-            findings.push({ line, rule: `RESTART on ${name}: older inserts that omit the column may receive conflicting sequence values` });
-          if (contains(change, ['SET', 'START']))
-            findings.push({ line, rule: `SET START on ${name}: a later restart may give older inserts conflicting sequence values` });
-          if (contains(change, ['SET', 'INCREMENT']))
-            findings.push({ line, rule: `SET INCREMENT BY on ${name}: older inserts that omit the column may receive conflicting sequence values` });
-          if (contains(change, ['SET', 'CYCLE']))
-            findings.push({ line, rule: `SET CYCLE on ${name}: older inserts may receive conflicting sequence values after wraparound` });
-          for (const bound of ['MAXVALUE', 'MINVALUE']) {
-            if (contains(change, ['SET', bound]))
-              findings.push({ line, rule: `SET ${bound} on ${name}: older inserts may exhaust the sequence or receive conflicting values` });
-          }
-          for (const option of ['CYCLE', 'MAXVALUE', 'MINVALUE']) {
-            if (contains(change, ['SET', 'NO', option]))
-              findings.push({ line, rule: `SET NO ${option} on ${name}: older inserts may exhaust the sequence or receive conflicting values` });
-          }
-        }
-      }
-      if (contains(action, ['DROP', 'DEFAULT']))
-        findings.push({ line, rule: 'DROP DEFAULT: older inserts that omit a NOT NULL column fail' });
-      const setDefault = action.findIndex((token, index) => token === 'SET' && action[index + 1] === 'DEFAULT');
-      if (setDefault !== -1 && nullDefault(action, setDefault + 2))
-        findings.push({ line, rule: 'SET DEFAULT NULL: older inserts that omit a NOT NULL column fail' });
-      const add = action.indexOf('ADD');
-      if (add === -1) continue;
-      const definition = action.slice(add + 1);
-      if (definition[0] === 'COLUMN') definition.shift();
-      if (definition.slice(0, 3).join(' ') === 'IF NOT EXISTS') definition.splice(0, 3);
-      const constraint = definition[0] === 'CONSTRAINT' ? definition.slice(2) : definition;
-      if (contains(constraint.slice(0, 2), ['NOT', 'NULL']))
-        findings.push({ line, rule: 'NOT NULL constraint: verify a non-null DEFAULT for older inserts' });
-      if (contains(constraint.slice(0, 2), ['PRIMARY', 'KEY']))
-        findings.push({ line, rule: 'PRIMARY KEY constraint: verify non-null DEFAULTs for older inserts' });
-      if (['CONSTRAINT', 'CHECK', 'UNIQUE', 'PRIMARY', 'FOREIGN', 'EXCLUDE', 'NOT'].includes(definition[0])) continue;
-      const column = definition.slice(2);
-      const required = contains(column, ['NOT', 'NULL']) || contains(column, ['PRIMARY', 'KEY']);
-      const filled = /^(?:SMALLSERIAL|SERIAL|BIGSERIAL|SERIAL[248])$/.test(definition[1] ?? '') ||
-        contains(column, ['GENERATED', 'ALWAYS', 'AS']) || contains(column, ['GENERATED', 'BY', 'DEFAULT', 'AS', 'IDENTITY']);
-      const defaultIndex = definition.indexOf('DEFAULT');
-      if (required && !filled && (defaultIndex === -1 || nullDefault(definition, defaultIndex + 1)))
-        findings.push({ line, rule: 'new NOT NULL column without a non-null DEFAULT: older inserts omit it' });
-    }
+    findings.push(...alterFindings(tokens, line), ...bodyFindings(statement));
   }
   return findings;
 }
